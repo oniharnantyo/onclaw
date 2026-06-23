@@ -1,0 +1,158 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1782137336406,
+  "projectRoot": "/Users/oniharnantyo/projects/onclaw",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Go",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "go.mod"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManager": "go",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": "cd /Users/oniharnantyo/projects/onclaw\necho \"===== make build from root =====\"; rtk make build 2>&1 | tail -3\necho \"===== ./bin/onclaw version =====\"; rtk proxy ./bin/onclaw version\necho \"===== go vet ./... + go test ./... =====\"; rtk go vet ./... 2>&1 | tail -3 && rtk go test ./... 2>&1 | tail -5\necho \"===== make build-all =====\"; rtk make build-all 2>&1 | tail -4\necho \"===== bin/ contents =====\"; rtk ls -la bin/",
+    "testCommand": "cd /Users/oniharnantyo/projects/onclaw\necho \"===== make build from root =====\"; rtk make build 2>&1 | tail -3\necho \"===== ./bin/onclaw version =====\"; rtk proxy ./bin/onclaw version\necho \"===== go vet ./... + go test ./... =====\"; rtk go vet ./... 2>&1 | tail -3 && rtk go test ./... 2>&1 | tail -5\necho \"===== make build-all =====\"; rtk make build-all 2>&1 | tail -4\necho \"===== bin/ contents =====\"; rtk ls -la bin/",
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {},
+  "hotPaths": [
+    {
+      "path": "README.md",
+      "accessCount": 3,
+      "lastAccessed": 1782140759912,
+      "type": "file"
+    },
+    {
+      "path": "Makefile",
+      "accessCount": 2,
+      "lastAccessed": 1782140694763,
+      "type": "file"
+    },
+    {
+      "path": ".goreleaser.yaml",
+      "accessCount": 2,
+      "lastAccessed": 1782140700732,
+      "type": "file"
+    },
+    {
+      "path": "go.mod",
+      "accessCount": 1,
+      "lastAccessed": 1782137467979,
+      "type": "file"
+    },
+    {
+      "path": "internal/version/version.go",
+      "accessCount": 1,
+      "lastAccessed": 1782138583022,
+      "type": "file"
+    },
+    {
+      "path": "internal/version/version_test.go",
+      "accessCount": 1,
+      "lastAccessed": 1782138585935,
+      "type": "file"
+    },
+    {
+      "path": "internal/logging/logging.go",
+      "accessCount": 1,
+      "lastAccessed": 1782138591324,
+      "type": "file"
+    },
+    {
+      "path": "internal/logging/logging_test.go",
+      "accessCount": 1,
+      "lastAccessed": 1782138594771,
+      "type": "file"
+    },
+    {
+      "path": "internal/config/defaults.go",
+      "accessCount": 1,
+      "lastAccessed": 1782138598965,
+      "type": "file"
+    },
+    {
+      "path": "internal/config/config.go",
+      "accessCount": 1,
+      "lastAccessed": 1782138608934,
+      "type": "file"
+    },
+    {
+      "path": "internal/config/config_test.go",
+      "accessCount": 1,
+      "lastAccessed": 1782138616630,
+      "type": "file"
+    },
+    {
+      "path": "internal/cli/context.go",
+      "accessCount": 1,
+      "lastAccessed": 1782138675128,
+      "type": "file"
+    },
+    {
+      "path": "internal/cli/flags.go",
+      "accessCount": 1,
+      "lastAccessed": 1782138677992,
+      "type": "file"
+    },
+    {
+      "path": "internal/cli/app.go",
+      "accessCount": 1,
+      "lastAccessed": 1782138685264,
+      "type": "file"
+    },
+    {
+      "path": "internal/cli/version.go",
+      "accessCount": 1,
+      "lastAccessed": 1782138686664,
+      "type": "file"
+    },
+    {
+      "path": "internal/cli/config_cmd.go",
+      "accessCount": 1,
+      "lastAccessed": 1782138691346,
+      "type": "file"
+    },
+    {
+      "path": "internal/cli/run.go",
+      "accessCount": 1,
+      "lastAccessed": 1782138695044,
+      "type": "file"
+    },
+    {
+      "path": "cmd/onclaw/main.go",
+      "accessCount": 1,
+      "lastAccessed": 1782138697900,
+      "type": "file"
+    },
+    {
+      "path": "main.go",
+      "accessCount": 1,
+      "lastAccessed": 1782140174214,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

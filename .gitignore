@@ -1,0 +1,22 @@
+# Build artifacts
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+
+# Go
+/vendor/
+
+# Local config / env (never commit personal settings)
+*.local
+*.local.yaml
+*.local.yml
+config.local.yaml
+.env
+.env.*
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
