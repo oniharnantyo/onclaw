@@ -8,7 +8,26 @@ func defaults() Config {
 		LogLevel:         "info",
 		LogFormat:        "text",
 		Concurrency:      1,
-		MaxContextTokens: 8192,
+		MaxContextTokens: 64000,
 		Model:            "", // left blank intentionally; the agent picks a default later
+		DbPath:           "",
+		Workspace:        "", // empty string = use current working directory
+		Tools: ToolsConfig{
+			Shell: ShellConfig{
+				Policy:    "deny", // conservative default
+				Allowlist: []string{},
+			},
+		},
+		Agent: AgentConfig{
+			MaxIterations: 20,
+		},
+		Langfuse: LangfuseConfig{
+			Host:      "",
+			PublicKey: "",
+			SecretKey: "",
+			SessionID: "",
+			Release:   "",
+			Mask:      true,
+		},
 	}
 }

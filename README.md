@@ -1,123 +1,130 @@
 # onclaw
 
-> Open, on-device AI coding agent for low-resource devices.
+**Open, on-device AI coding agent for low-resource devices**
 
-**onclaw** is an open alternative to Claude Code–style agents designed to run on
-small single-board computers (**~2 GB RAM, 8 GB storage**, e.g. Raspberry Pi /
-Orange Pi class hardware). It ships as a single statically-linked binary with no
-runtime dependencies.
+A Claude Code–style agent designed for Raspberry Pi / Orange Pi class hardware (~2 GB RAM, 8 GB storage). Ships as a single statically-linked binary with no runtime dependencies.
 
-> **Status:** this repository currently contains the **CLI boilerplate** only —
-> command tree, layered config, structured logging, and a cross-compile release
-> pipeline. Agent/LLM logic is not implemented yet (`onclaw run` is a placeholder).
+## What is this?
+
+**onclaw** is an on-device AI coding agent CLI built for low-resource single-board computers. Every design choice optimizes for tiny footprint: pure Go (no CGO), statically-linked binary, pure-Go SQLite (no libc dependency for ARM cross-compilation), and conservative defaults.
+
+**Current status:** CLI shell + provider/secrets storage layer implemented. Agent logic is not yet — `onclaw run` is a placeholder.
+
+## Quick Start
+
+```bash
+# Clone and build
+git clone <repo-url>
+cd onclaw
+make build              # -> bin/onclaw
+
+# Run interactive onboarding to configure your first provider
+./bin/onclaw init
+
+# Or configure manually
+./bin/onclaw provider add openai --kind openai --model gpt-4o
+./bin/onclaw provider login openai
+./bin/onclaw provider use openai
+```
+
+That's it. Configuration is stored in `~/.onclaw/onclaw.db` (SQLite) with encrypted API keys.
 
 ## Features
 
-- 🪶 **Tiny static binary** — `CGO_ENABLED=0`, stripped (`-s -w`), no libc needed.
-- 🧩 **Cross-compile matrix** — Linux `amd64`, `arm64`, and `armv7` from one command.
-- ⚙️ **Layered config** — defaults `<` config file `<` `ONCLAW_*` env `<` CLI flags.
-- 📋 **Structured logging** — Go stdlib `log/slog`, text or JSON.
-- 🧱 **Clean layout** — `cmd/`, `internal/`, ready to drop the agent into.
+- 🪶 **Tiny static binary** — `CGO_ENABLED=0`, stripped, no libc needed
+- 🧩 **Cross-compile matrix** — Linux `amd64`, `arm64`, `armv7` from one command
+- ⚙️ **Layered config** — defaults `<` config file `<` env `<` CLI flags
+- 📋 **Structured logging** — Go stdlib `log/slog`, text or JSON
+- 🔐 **Encrypted secrets** — AES-256-GCM with keyfile or passphrase KEK
+- 🔄 **Hot-reload** — Running sessions reload provider profiles live
 
-## Requirements
-
-- Go 1.26+ (toolchain already pinned in `go.mod`)
-- GNU Make
-- *(optional)* [GoReleaser](https://goreleaser.com/) for release archives
-- *(optional)* `golangci-lint` for `make lint` (falls back to `go vet`)
-
-## Build & install
+## Build & Install
 
 ```bash
-# Build for the host
-make build                 # -> bin/onclaw
+# Build for host platform
+make build              # -> bin/onclaw
+make install            # -> /usr/local/bin
 
-# Install to /usr/local/bin
-make install
+# Cross-compile for low-resource devices
+make build-all          # -> bin/onclaw-linux-{amd64,arm64,armv7}
 
-# Or via go install (no version metadata)
-go install .
+# Development
+make test               # go test ./...
+make lint               # golangci-lint (or go vet)
+make fmt                # gofmt -s -w .
 ```
-
-### Cross-compile for a low-resource device
-
-```bash
-make build-all
-# -> bin/onclaw-linux-amd64
-# -> bin/onclaw-linux-arm64
-# -> bin/onclaw-linux-armv7
-```
-
-Copy the matching binary to the device — no extra runtime is required.
 
 ## Configuration
 
-Config is resolved in priority order; higher layers override lower ones:
+Config resolves in priority order (higher overrides lower):
 
-1. **Defaults** (conservative, low-resource tuned)
-2. **File** — `config.yaml`, searched in `.` (cwd), `~/.config/onclaw`, `/etc/onclaw`
-3. **Env** — `ONCLAW_*` (e.g. `ONCLAW_LOG_LEVEL=debug`)
-4. **Flags** — `--config`, `--log-level`, `--log-format`
+1. **Defaults** — conservative, low-resource tuned
+2. **File** — `.env` searched in `.`, `~/.onclaw`, `/etc/onclaw` (first found wins)
+3. **Env** — `ONCLAW_*` environment variables
+4. **Flags** — `--config`, `--log-level`, etc.
 
-Example `~/.config/onclaw/config.yaml`:
-
-```yaml
-log_level: info
-log_format: text
-concurrency: 1
-max_context_tokens: 8192
-model: "" # leave unset; the agent will pick a default
-```
-
-Inspect what onclaw actually resolved:
+Inspect effective config:
 
 ```bash
-onclaw config show   # effective config (all layers merged)
-onclaw config path   # which file (if any) was loaded + searched paths
+onclaw config show      # merged config from all layers
+onclaw config path      # which .env file was loaded
 ```
 
-## Usage
-
-```bash
-onclaw                      # show help
-onclaw --version            # print version
-onclaw version              # print version
-onclaw config show          # effective configuration
-onclaw run "hello"          # (placeholder) run a prompt
-onclaw --log-level=debug run "hello"   # flag overrides config + env
-```
-
-## Development
-
-```bash
-make test     # go test ./...
-make vet      # go vet ./...
-make lint     # golangci-lint (or go vet)
-make tidy     # go mod tidy + verify
-make fmt      # gofmt -s -w .
-make release  # GoReleaser snapshot (local, no publish) -> dist/
-```
-
-## Project layout
+## Project Structure
 
 ```
-main.go            Entrypoint (trivial; delegates to internal/cli)
-internal/
-  cli/             urfave/cli v3 command tree + Before-hook setup
-  config/          Viper-backed layered config
-  logging/         log/slog setup
-  version/         Build-time metadata (-ldflags -X)
-Makefile           build / run / test / cross-compile / release
-.goreleaser.yaml   Release matrix (linux + darwin; amd64/arm64/arm)
+onclaw/
+├── bin/                    # Build output
+├── docs/                   # Documentation (security model, migration guide)
+├── internal/
+│   ├── agent/             # Agent core (stub — not implemented)
+│   ├── cli/               # Command tree (urfave/cli v3)
+│   ├── config/            # Layered config (Viper-backed)
+│   ├── llm/               # LLM service facade + adapter registry
+│   ├── logging/           # Structured logging with secret redaction
+│   ├── observability/     # Observability hooks
+│   ├── secrets/           # AES-256-GCM encryption, DEK/KEK management
+│   ├── store/             # SQLite storage (profiles, secrets, KV)
+│   ├── version/           # Build-time metadata
+│   └── workspace/         # Workspace management
+├── openspec/
+│   ├── changes/           # Change proposals
+│   └── specs/             # Feature specifications
+├── main.go                # Entrypoint (delegates to internal/cli)
+├── Makefile               # build / test / cross-compile / release
+├── CLAUDE.md              # Claude Code workspace guidance
+├── AGENTS.md              # Agent execution context
+└── go.mod                 # Go module definition
 ```
 
-## Roadmap
+## Documentation
 
-- [ ] Agent core: prompt handling, model provider abstraction
+| Resource | Description |
+|----------|-------------|
+| [CLAUDE.md](CLAUDE.md) | Project guidance for Claude Code (architecture, conventions) |
+| [AGENTS.md](AGENTS.md) | Agent execution context and capabilities |
+| [docs/security-model.md](docs/security-model.md) | Encryption architecture and threat model |
+| [docs/MIGRATION_GUIDE.md](docs/MIGRATION_GUIDE.md) | Config migration from YAML to .env |
+
+## Contributing
+
+**Roadmap — what's next:**
+- [x] Provider profiles & encrypted secrets storage
+- [ ] Agent core: prompt handling and ReAct execution loop
 - [ ] Tool execution loop
 - [ ] Interactive chat mode
 - [ ] Memory budgeting tuned for 2 GB devices
 
+Development workflow:
+```bash
+make fmt                  # Format with gofmt
+make lint                 # Lint with golangci-lint
+make test                 # Run tests
+make vet                  # go vet ./...
+```
+
+See [CLAUDE.md](CLAUDE.md) for architecture and coding conventions.
+
 ## License
 
-TBD — pick a license before publishing.
+TBD — choose a license before publishing.

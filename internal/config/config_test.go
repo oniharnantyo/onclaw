@@ -22,8 +22,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Concurrency != 1 {
 		t.Errorf("Concurrency = %d, want 1", cfg.Concurrency)
 	}
-	if cfg.MaxContextTokens != 8192 {
-		t.Errorf("MaxContextTokens = %d, want 8192", cfg.MaxContextTokens)
+	if cfg.MaxContextTokens != 64000 {
+		t.Errorf("MaxContextTokens = %d, want 64000", cfg.MaxContextTokens)
 	}
 	if cfg.LoadedFrom != "" {
 		t.Errorf("LoadedFrom = %q, want empty", cfg.LoadedFrom)
@@ -47,8 +47,8 @@ func TestLoadEnvOverridesDefault(t *testing.T) {
 
 func TestLoadFileOverridesDefault(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	content := []byte("log_level: warn\nlog_format: json\nconcurrency: 2\nmax_context_tokens: 4096\nmodel: gpt-test\n")
+	path := filepath.Join(dir, ".env")
+	content := []byte("ONCLAW_LOG_LEVEL=warn\nONCLAW_LOG_FORMAT=json\nONCLAW_CONCURRENCY=2\nONCLAW_MAX_CONTEXT_TOKENS=4096\nONCLAW_MODEL=gpt-test\n")
 	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
@@ -71,6 +71,90 @@ func TestLoadFileOverridesDefault(t *testing.T) {
 	}
 }
 
+func TestLoadEnvFileWithComments(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	content := []byte("# This is a comment\nONCLAW_LOG_LEVEL=debug\n\nONCLAW_CONCURRENCY=2\n")
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	t.Setenv("ONCLAW_LOG_LEVEL", "")
+	t.Setenv("ONCLAW_CONCURRENCY", "")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LogLevel != "debug" {
+		t.Errorf("LogLevel = %q, want debug", cfg.LogLevel)
+	}
+	if cfg.Concurrency != 2 {
+		t.Errorf("Concurrency = %d, want 2", cfg.Concurrency)
+	}
+}
+
+func TestLoadEnvFileWithQuotedValues(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	content := []byte("ONCLAW_WORKSPACE=\"/home/user/my project\"\n")
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Workspace != "/home/user/my project" {
+		t.Errorf("Workspace = %q, want /home/user/my project", cfg.Workspace)
+	}
+}
+
+func TestEnvFileCommaSeparatedArrays(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	content := []byte("ONCLAW_TOOLS_SHELL_ALLOWLIST=ls,cat,git\n")
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	expected := []string{"ls", "cat", "git"}
+	if len(cfg.Tools.Shell.Allowlist) != len(expected) {
+		t.Errorf("Allowlist len = %d, want %d", len(cfg.Tools.Shell.Allowlist), len(expected))
+	} else {
+		for i, v := range expected {
+			if cfg.Tools.Shell.Allowlist[i] != v {
+				t.Errorf("Allowlist[%d] = %q, want %q", i, cfg.Tools.Shell.Allowlist[i], v)
+			}
+		}
+	}
+}
+
+func TestEnvFileTypeConversion(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	content := []byte("ONCLAW_CONCURRENCY=4\nONCLAW_LANGFUSE_MASK=false\n")
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Concurrency != 4 {
+		t.Errorf("Concurrency = %d, want 4", cfg.Concurrency)
+	}
+	if cfg.Langfuse.Mask != false {
+		t.Errorf("Langfuse.Mask = %t, want false", cfg.Langfuse.Mask)
+	}
+}
+
 func TestSearchPathsAlwaysIncludesCwdAndEtc(t *testing.T) {
 	paths := SearchPaths()
 	if len(paths) < 2 {
@@ -87,5 +171,66 @@ func TestSearchPathsAlwaysIncludesCwdAndEtc(t *testing.T) {
 	}
 	if !foundEtc {
 		t.Errorf("/etc/onclaw missing from search paths: %v", paths)
+	}
+}
+
+func TestLoadLangfuseConfig(t *testing.T) {
+	t.Setenv("ONCLAW_LANGFUSE_HOST", "http://localhost:8080")
+	t.Setenv("ONCLAW_LANGFUSE_PUBLIC_KEY", "pk-test")
+	t.Setenv("ONCLAW_LANGFUSE_SECRET_KEY", "sk-test")
+	t.Setenv("ONCLAW_LANGFUSE_SESSION_ID", "sess-test")
+	t.Setenv("ONCLAW_LANGFUSE_RELEASE", "v1.0.0")
+	t.Setenv("ONCLAW_LANGFUSE_MASK", "false")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Langfuse.Host != "http://localhost:8080" {
+		t.Errorf("Langfuse.Host = %q, want http://localhost:8080", cfg.Langfuse.Host)
+	}
+	if cfg.Langfuse.PublicKey != "pk-test" {
+		t.Errorf("Langfuse.PublicKey = %q, want pk-test", cfg.Langfuse.PublicKey)
+	}
+	if cfg.Langfuse.SecretKey != "sk-test" {
+		t.Errorf("Langfuse.SecretKey = %q, want sk-test", cfg.Langfuse.SecretKey)
+	}
+	if cfg.Langfuse.SessionID != "sess-test" {
+		t.Errorf("Langfuse.SessionID = %q, want sess-test", cfg.Langfuse.SessionID)
+	}
+	if cfg.Langfuse.Release != "v1.0.0" {
+		t.Errorf("Langfuse.Release = %q, want v1.0.0", cfg.Langfuse.Release)
+	}
+	if cfg.Langfuse.Mask != false {
+		t.Errorf("Langfuse.Mask = %t, want false", cfg.Langfuse.Mask)
+	}
+}
+
+func TestEnvFileInvalidTypeConversion(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	content := []byte("ONCLAW_CONCURRENCY=invalid\n")
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed on invalid type: %v", err)
+	}
+	if cfg.Concurrency != 1 {
+		t.Errorf("Concurrency = %d, want 1 (default)", cfg.Concurrency)
+	}
+}
+
+func TestEnvVarInvalidTypeConversion(t *testing.T) {
+	t.Setenv("ONCLAW_CONCURRENCY", "invalid-env")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load failed on invalid env: %v", err)
+	}
+	if cfg.Concurrency != 1 {
+		t.Errorf("Concurrency = %d, want 1 (default)", cfg.Concurrency)
 	}
 }
