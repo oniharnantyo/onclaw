@@ -66,13 +66,9 @@ func runProviderSetup(ctx context.Context, mgr *llm.Service, db *sql.DB, dbPath 
 			break
 		}
 
-		model, err := promptString("Enter model name", "", in, out)
-		if err != nil {
-			return err
-		}
-
 		var baseURL string
 		if cfg.promptBaseURL {
+			var err error
 			baseURL, err = promptString("Enter base URL", cfg.defaultBaseURL, in, out)
 			if err != nil {
 				return err
@@ -81,6 +77,7 @@ func runProviderSetup(ctx context.Context, mgr *llm.Service, db *sql.DB, dbPath 
 
 		var apiKey string
 		if !cfg.keyless {
+			var err error
 			apiKey, err = promptSecret("Enter API key", in, out)
 			if err != nil {
 				return err
@@ -91,7 +88,6 @@ func runProviderSetup(ctx context.Context, mgr *llm.Service, db *sql.DB, dbPath 
 			Name:         name,
 			ProviderType: cfg.kind,
 			APIBase:      baseURL,
-			Model:        model,
 			Enabled:      1,
 		}
 		if err := mgr.AddProfile(ctx, p); err != nil {

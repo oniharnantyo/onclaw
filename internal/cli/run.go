@@ -15,6 +15,7 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/agent/tools"
 	"github.com/oniharnantyo/onclaw/internal/llm"
 	"github.com/oniharnantyo/onclaw/internal/observability"
+	"github.com/oniharnantyo/onclaw/internal/store"
 	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
 	"github.com/oniharnantyo/onclaw/internal/workspace"
 	"github.com/urfave/cli/v3"
@@ -168,10 +169,10 @@ func runCommand(st *appState) *cli.Command {
 					return fmt.Errorf("multiple providers available but no default provider is set; use 'onclaw provider use <name>' to set one")
 				}
 
-				if defaultProvider != "" {
-					providerName = defaultProvider
-				} else {
+				if agentConf.Provider != "" {
 					providerName = agentConf.Provider
+				} else {
+					providerName = defaultProvider
 				}
 			}
 
@@ -192,7 +193,10 @@ func runCommand(st *appState) *cli.Command {
 				effModel = agentConf.Model
 			}
 			if effModel == "" {
-				effModel = p.Model
+				effModel = st.cfg.Model
+			}
+			if effModel == "" {
+				return fmt.Errorf("no model specified for agent %q and no default model is configured", agentName)
 			}
 
 			effReasoning := c.String("reasoning")
@@ -200,38 +204,11 @@ func runCommand(st *appState) *cli.Command {
 				effReasoning = agentConf.ReasoningEffort
 			}
 
-			effProfile := *p
-			effProfile.Model = effModel
-
-			if effReasoning != "" {
-				var settings map[string]interface{}
-				if effProfile.Settings != "" {
-					_ = json.Unmarshal([]byte(effProfile.Settings), &settings)
-				}
-				if settings == nil {
-					settings = make(map[string]interface{})
-				}
-				settings["reasoning_effort"] = effReasoning
-				settingsJSON, _ := json.Marshal(settings)
-				effProfile.Settings = string(settingsJSON)
-			}
-
-			// 7. Build ChatModel and assemble agent
-			chatModel, err := mgr.BuildWithProfile(ctx, &effProfile)
-			if err != nil {
-				return fmt.Errorf("failed to build model: %w", err)
-			}
-
-			var settings map[string]interface{}
-			if effProfile.Settings != "" {
-				_ = json.Unmarshal([]byte(effProfile.Settings), &settings)
-			}
 			var contextWindow int
-			if settings != nil {
-				if cwVal, ok := settings["context_window"]; ok {
-					if cwFloat, ok := cwVal.(float64); ok {
-						contextWindow = int(cwFloat)
-					}
+			if agentConf.ModelMetadata != "" {
+				meta, err := store.UnmarshalModelMetadata(agentConf.ModelMetadata)
+				if err == nil && meta != nil {
+					contextWindow = meta.ContextWindow
 				}
 			}
 			if contextWindow <= 0 {
@@ -240,6 +217,32 @@ func runCommand(st *appState) *cli.Command {
 				} else {
 					contextWindow = 64000
 				}
+			}
+
+			effProfile := *p
+
+			var settings map[string]interface{}
+			if effProfile.Settings != "" {
+				_ = json.Unmarshal([]byte(effProfile.Settings), &settings)
+			}
+			if settings == nil {
+				settings = make(map[string]interface{})
+			}
+
+			if effReasoning != "" {
+				settings["reasoning_effort"] = effReasoning
+			}
+
+			settingsJSON, err := json.Marshal(settings)
+			if err != nil {
+				return fmt.Errorf("failed to marshal settings: %w", err)
+			}
+			effProfile.Settings = string(settingsJSON)
+
+			// 7. Build ChatModel and assemble agent
+			chatModel, err := mgr.BuildWithProfile(ctx, &effProfile, effModel)
+			if err != nil {
+				return fmt.Errorf("failed to build model: %w", err)
 			}
 
 			userConfigDir := filepath.Dir(resolvedDbPath)
@@ -260,7 +263,7 @@ func runCommand(st *appState) *cli.Command {
 			st.log.Info("run invoked",
 				"agent", agentName,
 				"provider", providerName,
-				"model", effProfile.Model,
+				"model", effModel,
 				"workspace", resolvedWorkspace,
 			)
 

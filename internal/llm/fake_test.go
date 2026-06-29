@@ -122,3 +122,10 @@ func (f *fakeAgentStore) RemoveAgent(ctx context.Context, name string) error {
 	delete(f.agents, name)
 	return nil
 }
+
+func (f *fakeAgentStore) UpdateAgent(ctx context.Context, a *store.Agent) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.agents[a.Name] = a
+	return nil
+}

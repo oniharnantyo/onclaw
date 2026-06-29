@@ -69,7 +69,6 @@ func configCommand(st *appState) *cli.Command {
 							"name":     p.Name,
 							"kind":     p.ProviderType,
 							"base_url": p.APIBase,
-							"model":    p.Model,
 							"api_key":  apiKeyVal,
 						})
 					}

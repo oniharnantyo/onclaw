@@ -222,9 +222,25 @@ func (s *appState) getOrSeedMasterAgent(ctx context.Context, db *sql.DB, mgr *ll
 			return nil, err
 		}
 
+		var defaultModel string
+		p, err := mgr.GetProfile(ctx, providerName)
+		if err == nil {
+			switch p.ProviderType {
+			case "anthropic":
+				defaultModel = "claude-3-opus"
+			case "openai":
+				defaultModel = "gpt-4o"
+			case "ollama":
+				defaultModel = "llama3"
+			default:
+				defaultModel = "gpt-4o"
+			}
+		}
+
 		agent = &store.Agent{
 			Name:      "master",
 			Provider:  providerName,
+			Model:     defaultModel,
 			Workspace: defaultWS,
 		}
 		if err := as.AddAgent(ctx, agent); err != nil {

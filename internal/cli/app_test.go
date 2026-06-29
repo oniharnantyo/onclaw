@@ -27,7 +27,7 @@ func TestProviderLifecycleAndRedaction(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Add provider
-	args := []string{"onclaw", "provider", "add", "my-openai", "--kind", "openai", "--model", "gpt-4"}
+	args := []string{"onclaw", "provider", "add", "my-openai", "--kind", "openai"}
 	if err := app.Run(ctx, args); err != nil {
 		t.Fatalf("failed to add provider: %v", err)
 	}

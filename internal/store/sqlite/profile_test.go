@@ -25,7 +25,6 @@ func TestProfileStore(t *testing.T) {
 		Name:         "test-prov",
 		ProviderType: "openai",
 		APIBase:      "https://api.openai.com/v1",
-		Model:        "gpt-4",
 		Settings:     `{"reasoning_effort": "high"}`,
 		Enabled:      1,
 	}
@@ -44,7 +43,6 @@ func TestProfileStore(t *testing.T) {
 	if gotP.Name != p.Name ||
 		gotP.ProviderType != p.ProviderType ||
 		gotP.APIBase != p.APIBase ||
-		gotP.Model != p.Model ||
 		gotP.Settings != p.Settings ||
 		gotP.Enabled != p.Enabled {
 		t.Errorf("profile fields mismatch. got: %+v, want: %+v", gotP, p)

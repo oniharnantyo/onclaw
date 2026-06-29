@@ -239,17 +239,8 @@ func (s *Service) resolveAPIKey(ctx context.Context, name, providerType string) 
 	return apiKey, nil
 }
 
-// Build loads profile and secret, then dispatches model construction via registry.
-func (s *Service) Build(ctx context.Context, name string) (model.ToolCallingChatModel, error) {
-	p, err := s.GetProfile(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-	return s.BuildWithProfile(ctx, p)
-}
-
-// BuildWithProfile builds a ToolCallingChatModel using the given profile (handling secret resolution).
-func (s *Service) BuildWithProfile(ctx context.Context, p *store.Profile) (model.ToolCallingChatModel, error) {
+// BuildWithProfile builds a ToolCallingChatModel using the given profile and model (handling secret resolution).
+func (s *Service) BuildWithProfile(ctx context.Context, p *store.Profile, modelName string) (model.ToolCallingChatModel, error) {
 	if p.Enabled == 0 {
 		return nil, fmt.Errorf("provider %s is disabled", p.Name)
 	}
@@ -264,12 +255,21 @@ func (s *Service) BuildWithProfile(ctx context.Context, p *store.Profile) (model
 		return nil, err
 	}
 
-	return adapter.Build(ctx, p, apiKey)
+	return adapter.Build(ctx, p, modelName, apiKey)
 }
 
 // AddAgent inserts a new agent and flags for reload.
 func (s *Service) AddAgent(ctx context.Context, a *store.Agent) error {
 	if err := s.agentStore.AddAgent(ctx, a); err != nil {
+		return err
+	}
+	s.TriggerReload()
+	return nil
+}
+
+// UpdateAgent updates an existing agent and flags for reload.
+func (s *Service) UpdateAgent(ctx context.Context, a *store.Agent) error {
+	if err := s.agentStore.UpdateAgent(ctx, a); err != nil {
 		return err
 	}
 	s.TriggerReload()
@@ -338,35 +338,40 @@ func (s *Service) ResolveAgentProfile(ctx context.Context, agentName string) (*s
 	// Copy the profile to avoid modifying the cached one
 	effProfile := *p
 
-	if agent.Model != "" {
-		effProfile.Model = agent.Model
+	// Parse existing Settings JSON or initialize empty
+	var settings map[string]interface{}
+	if effProfile.Settings != "" {
+		if err := json.Unmarshal([]byte(effProfile.Settings), &settings); err != nil {
+			// If invalid JSON, initialize empty map to override
+			settings = make(map[string]interface{})
+		}
+	} else {
+		settings = make(map[string]interface{})
 	}
 
 	if agent.ReasoningEffort != "" {
-		// Parse existing Settings JSON or initialize empty
-		var settings map[string]interface{}
-		if effProfile.Settings != "" {
-			if err := json.Unmarshal([]byte(effProfile.Settings), &settings); err != nil {
-				// If invalid JSON, initialize empty map to override
-				settings = make(map[string]interface{})
-			}
-		} else {
-			settings = make(map[string]interface{})
-		}
-
 		settings["reasoning_effort"] = agent.ReasoningEffort
-		settingsJSON, err := json.Marshal(settings)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal settings for agent profile: %w", err)
-		}
-		effProfile.Settings = string(settingsJSON)
 	}
+	if agent.ReasoningBudgetTokens > 0 {
+		settings["reasoning_budget_tokens"] = agent.ReasoningBudgetTokens
+	}
+
+	settingsJSON, err := json.Marshal(settings)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal settings for agent profile: %w", err)
+	}
+	effProfile.Settings = string(settingsJSON)
 
 	return &effProfile, nil
 }
 
 // BuildAgent loads the agent, resolves its effective profile, gets provider key, and constructs the ToolCallingChatModel.
 func (s *Service) BuildAgent(ctx context.Context, agentName string) (model.ToolCallingChatModel, error) {
+	agent, err := s.GetAgent(ctx, agentName)
+	if err != nil {
+		return nil, err
+	}
+
 	effProfile, err := s.ResolveAgentProfile(ctx, agentName)
 	if err != nil {
 		return nil, err
@@ -382,5 +387,5 @@ func (s *Service) BuildAgent(ctx context.Context, agentName string) (model.ToolC
 		return nil, err
 	}
 
-	return adapter.Build(ctx, effProfile, apiKey)
+	return adapter.Build(ctx, effProfile, agent.Model, apiKey)
 }

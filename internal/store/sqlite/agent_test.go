@@ -88,6 +88,33 @@ func TestAgentStore(t *testing.T) {
 		t.Error("expected error when adding duplicate agent, got nil")
 	}
 
+	// Test updating agent (including workspace and reasoning budget)
+	gotA.Workspace = "/home/new-workspace"
+	gotA.ReasoningEffort = "high"
+	gotA.ReasoningBudgetTokens = 4096
+	gotA.MaxIterations = 20
+	if err := as.UpdateAgent(ctx, gotA); err != nil {
+		t.Fatalf("failed to UpdateAgent: %v", err)
+	}
+
+	updatedA, err := as.GetAgent(ctx, a.Name)
+	if err != nil {
+		t.Fatalf("failed to GetAgent after update: %v", err)
+	}
+
+	if updatedA.Workspace != gotA.Workspace {
+		t.Errorf("expected updated workspace %q, got %q", gotA.Workspace, updatedA.Workspace)
+	}
+	if updatedA.ReasoningEffort != gotA.ReasoningEffort {
+		t.Errorf("expected updated reasoning effort %q, got %q", gotA.ReasoningEffort, updatedA.ReasoningEffort)
+	}
+	if updatedA.ReasoningBudgetTokens != gotA.ReasoningBudgetTokens {
+		t.Errorf("expected updated reasoning budget %d, got %d", gotA.ReasoningBudgetTokens, updatedA.ReasoningBudgetTokens)
+	}
+	if updatedA.MaxIterations != gotA.MaxIterations {
+		t.Errorf("expected updated max iterations %d, got %d", gotA.MaxIterations, updatedA.MaxIterations)
+	}
+
 	// Test removing agent
 	if err := as.RemoveAgent(ctx, a.Name); err != nil {
 		t.Fatalf("failed to RemoveAgent: %v", err)

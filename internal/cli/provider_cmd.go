@@ -31,11 +31,6 @@ func providerCommand(st *appState) *cli.Command {
 						Required: true,
 					},
 					&cli.StringFlag{
-						Name:     "model",
-						Usage:    "Model name to use by default",
-						Required: true,
-					},
-					&cli.StringFlag{
 						Name:  "base-url",
 						Usage: "Base URL for the provider API",
 					},
@@ -50,7 +45,6 @@ func providerCommand(st *appState) *cli.Command {
 					}
 					name := c.Args().First()
 					kind := c.String("kind")
-					model := c.String("model")
 					baseURL := c.String("base-url")
 					contextWindow := c.Int("context-window")
 
@@ -72,7 +66,6 @@ func providerCommand(st *appState) *cli.Command {
 						Name:         name,
 						ProviderType: kind,
 						APIBase:      baseURL,
-						Model:        model,
 						Enabled:      1,
 						Settings:     string(settingsJSON),
 					}
@@ -172,8 +165,8 @@ func providerCommand(st *appState) *cli.Command {
 							}
 						}
 
-						fmt.Printf("name: %s, kind: %s, model: %s, base_url: %s, context_window: %s, api_key: [%s]\n",
-							p.Name, p.ProviderType, p.Model, p.APIBase, cwStr, status)
+						fmt.Printf("name: %s, kind: %s, base_url: %s, context_window: %s, api_key: [%s]\n",
+							p.Name, p.ProviderType, p.APIBase, cwStr, status)
 					}
 					return nil
 				},
@@ -225,8 +218,11 @@ func providerCommand(st *appState) *cli.Command {
 					}
 					defer db.Close()
 
+					if _, err := mgr.GetProfile(ctx, name); err != nil {
+						return fmt.Errorf("provider profile %q not found: %w", name, err)
+					}
 					if err := mgr.RemoveProfile(ctx, name); err != nil {
-						return err
+						return fmt.Errorf("failed to remove provider profile %q: %w", name, err)
 					}
 					_ = signalRunningProcess(st.cfg.DbPath)
 					fmt.Printf("Provider profile %q removed.\n", name)

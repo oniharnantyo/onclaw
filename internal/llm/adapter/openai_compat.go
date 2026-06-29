@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/cloudwego/eino-ext/libs/acl/openai"
 	"github.com/cloudwego/eino/components/model"
@@ -17,7 +18,7 @@ import (
 type openaiCompatAdapter struct{}
 
 // Build creates a real streaming ChatModel from the profile configuration.
-func (a *openaiCompatAdapter) Build(ctx context.Context, p *store.Profile, apiKey string) (model.ToolCallingChatModel, error) {
+func (a *openaiCompatAdapter) Build(ctx context.Context, p *store.Profile, modelName string, apiKey string) (model.ToolCallingChatModel, error) {
 	// Check if profile is disabled
 	if p.Enabled == 0 {
 		return nil, fmt.Errorf("profile %q is disabled", p.Name)
@@ -34,8 +35,8 @@ func (a *openaiCompatAdapter) Build(ctx context.Context, p *store.Profile, apiKe
 			return nil, fmt.Errorf("profile %q: APIBase is required", p.Name)
 		}
 	}
-	if p.Model == "" {
-		return nil, fmt.Errorf("profile %q: Model is required", p.Name)
+	if modelName == "" {
+		return nil, fmt.Errorf("model name is required")
 	}
 
 	// Keyless providers (e.g. local Ollama) may run without an API key;
@@ -47,7 +48,7 @@ func (a *openaiCompatAdapter) Build(ctx context.Context, p *store.Profile, apiKe
 	// Build OpenAI client config
 	config := &openai.Config{
 		BaseURL: baseURL,
-		Model:   p.Model,
+		Model:   modelName,
 		APIKey:  apiKey,
 	}
 
@@ -81,16 +82,79 @@ func (a *openaiCompatAdapter) Build(ctx context.Context, p *store.Profile, apiKe
 			}
 			config.Stop = stopStrings
 		}
-		if effort, ok := settings["reasoning_effort"].(string); ok {
-			if p.ProviderType == "openai" || p.ProviderType == "openai-compatible" {
-				switch effort {
-				case "low":
-					config.ReasoningEffort = openai.ReasoningEffortLevel("low")
-				case "medium":
-					config.ReasoningEffort = openai.ReasoningEffortLevel("medium")
-				case "high":
-					config.ReasoningEffort = openai.ReasoningEffortLevel("high")
+		var reasoningEffort string
+		if effortVal, ok := settings["reasoning_effort"].(string); ok {
+			reasoningEffort = effortVal
+		}
+		var reasoningBudget int
+		if budgetVal, ok := settings["reasoning_budget_tokens"].(float64); ok {
+			reasoningBudget = int(budgetVal)
+		} else if budgetVal, ok := settings["reasoning_budget_tokens"].(int); ok {
+			reasoningBudget = budgetVal
+		}
+
+		if reasoningEffort != "" || reasoningBudget > 0 {
+			provType := strings.ToLower(p.ProviderType)
+			if provType == "openai" || provType == "openai-compatible" {
+				if reasoningBudget > 0 {
+					config.MaxCompletionTokens = &reasoningBudget
 				}
+				if reasoningEffort != "" {
+					if reasoningEffort == "on" || reasoningEffort == "off" {
+						if reasoningEffort == "on" {
+							config.ReasoningEffort = openai.ReasoningEffortLevel("medium")
+						} else {
+							config.ReasoningEffort = openai.ReasoningEffortLevel("")
+						}
+					} else {
+						switch reasoningEffort {
+						case "low", "medium", "high", "minimal", "xhigh", "max", "none":
+							config.ReasoningEffort = openai.ReasoningEffortLevel(reasoningEffort)
+						default:
+							return nil, fmt.Errorf("openai provider does not support reasoning effort %q", reasoningEffort)
+						}
+					}
+				}
+			} else if provType == "anthropic" {
+				if config.ExtraFields == nil {
+					config.ExtraFields = make(map[string]any)
+				}
+				if reasoningEffort == "off" {
+					config.ExtraFields["thinking"] = map[string]any{
+						"type": "disabled",
+					}
+				} else {
+					budget := reasoningBudget
+					if budget == 0 {
+						budget = 1024 // default fallback
+					}
+					config.ExtraFields["thinking"] = map[string]any{
+						"type": "enabled",
+						"budget_tokens": budget,
+					}
+					config.MaxCompletionTokens = &budget
+				}
+			} else if provType == "google" {
+				if config.ExtraFields == nil {
+					config.ExtraFields = make(map[string]any)
+				}
+				if reasoningEffort == "off" {
+					config.ExtraFields["thinking_config"] = map[string]any{
+						"thinking_budget": 0,
+					}
+				} else {
+					budget := reasoningBudget
+					if budget == 0 {
+						budget = 1024 // default fallback
+					}
+					config.ExtraFields["thinking_config"] = map[string]any{
+						"thinking_budget": budget,
+					}
+				}
+			} else if provType == "ollama" {
+				// Ollama does not natively support reasoning_effort API parameter; skip applying without error.
+			} else {
+				return nil, fmt.Errorf("provider type %q does not support reasoning configuration", p.ProviderType)
 			}
 		}
 	}

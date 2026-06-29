@@ -14,11 +14,12 @@ func TestOpenAICompatAdapter_Build_Success(t *testing.T) {
 	adapter := NewOpenAICompatAdapter()
 
 	tests := []struct {
-		name    string
-		profile *store.Profile
-		apiKey  string
-		wantErr bool
-		errMsg  string
+		name      string
+		profile   *store.Profile
+		modelName string
+		apiKey    string
+		wantErr   bool
+		errMsg    string
 	}{
 		{
 			name: "valid OpenAI profile",
@@ -26,11 +27,11 @@ func TestOpenAICompatAdapter_Build_Success(t *testing.T) {
 				Name:         "openai-test",
 				ProviderType: "openai",
 				APIBase:      "https://api.openai.com/v1",
-				Model:        "gpt-4",
 				Enabled:      1,
 			},
-			apiKey:  "sk-test-key",
-			wantErr: false,
+			modelName: "gpt-4",
+			apiKey:    "sk-test-key",
+			wantErr:   false,
 		},
 		{
 			name: "valid Ollama profile without API key",
@@ -38,11 +39,11 @@ func TestOpenAICompatAdapter_Build_Success(t *testing.T) {
 				Name:         "ollama-test",
 				ProviderType: "ollama",
 				APIBase:      "http://localhost:11434/v1",
-				Model:        "llama2",
 				Enabled:      1,
 			},
-			apiKey:  "",
-			wantErr: false,
+			modelName: "llama2",
+			apiKey:    "",
+			wantErr:   false,
 		},
 		{
 			name: "valid custom OpenAI-compatible",
@@ -50,11 +51,11 @@ func TestOpenAICompatAdapter_Build_Success(t *testing.T) {
 				Name:         "custom-test",
 				ProviderType: "openai-compatible",
 				APIBase:      "https://api.example.com/v1",
-				Model:        "custom-model",
 				Enabled:      1,
 			},
-			apiKey:  "custom-key",
-			wantErr: false,
+			modelName: "custom-model",
+			apiKey:    "custom-key",
+			wantErr:   false,
 		},
 		{
 			name: "disabled profile",
@@ -62,12 +63,12 @@ func TestOpenAICompatAdapter_Build_Success(t *testing.T) {
 				Name:         "disabled-test",
 				ProviderType: "openai",
 				APIBase:      "https://api.openai.com/v1",
-				Model:        "gpt-4",
 				Enabled:      0,
 			},
-			apiKey:  "sk-test-key",
-			wantErr: true,
-			errMsg:  `profile "disabled-test" is disabled`,
+			modelName: "gpt-4",
+			apiKey:    "sk-test-key",
+			wantErr:   true,
+			errMsg:    `profile "disabled-test" is disabled`,
 		},
 		{
 			name: "missing APIBase",
@@ -75,12 +76,12 @@ func TestOpenAICompatAdapter_Build_Success(t *testing.T) {
 				Name:         "no-base-test",
 				ProviderType: "openai-compatible",
 				APIBase:      "",
-				Model:        "gpt-4",
 				Enabled:      1,
 			},
-			apiKey:  "sk-test-key",
-			wantErr: true,
-			errMsg:  `profile "no-base-test": APIBase is required`,
+			modelName: "gpt-4",
+			apiKey:    "sk-test-key",
+			wantErr:   true,
+			errMsg:    `profile "no-base-test": APIBase is required`,
 		},
 		{
 			name: "missing Model",
@@ -88,12 +89,12 @@ func TestOpenAICompatAdapter_Build_Success(t *testing.T) {
 				Name:         "no-model-test",
 				ProviderType: "openai",
 				APIBase:      "https://api.openai.com/v1",
-				Model:        "",
 				Enabled:      1,
 			},
-			apiKey:  "sk-test-key",
-			wantErr: true,
-			errMsg:  `profile "no-model-test": Model is required`,
+			modelName: "",
+			apiKey:    "sk-test-key",
+			wantErr:   true,
+			errMsg:    `model name is required`,
 		},
 		{
 			name: "non-Ollama without API key",
@@ -101,18 +102,18 @@ func TestOpenAICompatAdapter_Build_Success(t *testing.T) {
 				Name:         "no-key-test",
 				ProviderType: "openai",
 				APIBase:      "https://api.openai.com/v1",
-				Model:        "gpt-4",
 				Enabled:      1,
 			},
-			apiKey:  "",
-			wantErr: true,
-			errMsg:  `profile "no-key-test": API key is required for non-Ollama providers`,
+			modelName: "gpt-4",
+			apiKey:    "",
+			wantErr:   true,
+			errMsg:    `profile "no-key-test": API key is required for non-Ollama providers`,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			chatModel, err := adapter.Build(ctx, tt.profile, tt.apiKey)
+			chatModel, err := adapter.Build(ctx, tt.profile, tt.modelName, tt.apiKey)
 
 			if tt.wantErr {
 				if err == nil {
@@ -163,12 +164,11 @@ func TestOpenAICompatAdapter_Build_WithSettings(t *testing.T) {
 		Name:         "settings-test",
 		ProviderType: "openai",
 		APIBase:      "https://api.openai.com/v1",
-		Model:        "gpt-4",
 		Settings:     string(settingsJSON),
 		Enabled:      1,
 	}
 
-	chatModel, err := adapter.Build(ctx, profile, "sk-test-key")
+	chatModel, err := adapter.Build(ctx, profile, "gpt-4", "sk-test-key")
 	if err != nil {
 		t.Fatalf("Build() unexpected error: %v", err)
 	}
@@ -191,12 +191,11 @@ func TestOpenAICompatAdapter_Build_InvalidSettingsJSON(t *testing.T) {
 		Name:         "invalid-settings-test",
 		ProviderType: "openai",
 		APIBase:      "https://api.openai.com/v1",
-		Model:        "gpt-4",
 		Settings:     "{invalid json}",
 		Enabled:      1,
 	}
 
-	_, err := adapter.Build(ctx, profile, "sk-test-key")
+	_, err := adapter.Build(ctx, profile, "gpt-4", "sk-test-key")
 	if err == nil {
 		t.Errorf("Build() expected error for invalid Settings JSON, got nil")
 		return
@@ -267,11 +266,10 @@ func TestOpenAICompatAdapter_OllamaWithoutAPIKey(t *testing.T) {
 				Name:         "ollama-test",
 				ProviderType: "ollama",
 				APIBase:      tt.baseURL,
-				Model:        tt.model,
 				Enabled:      1,
 			}
 
-			chatModel, err := adapter.Build(ctx, profile, tt.apiKey)
+			chatModel, err := adapter.Build(ctx, profile, tt.model, tt.apiKey)
 
 			if tt.wantErr {
 				if err == nil {
@@ -326,11 +324,10 @@ func TestOpenAICompatAdapter_NonOllamaRequiresAPIKey(t *testing.T) {
 				Name:         "no-key-test",
 				ProviderType: tt.providerType,
 				APIBase:      tt.baseURL,
-				Model:        tt.model,
 				Enabled:      1,
 			}
 
-			_, err := adapter.Build(ctx, profile, "")
+			_, err := adapter.Build(ctx, profile, tt.model, "")
 
 			if !tt.wantErr {
 				if err != nil {
@@ -369,12 +366,11 @@ func TestOpenAICompatAdapter_Build_WithReasoningEffort(t *testing.T) {
 		Name:         "reasoning-test",
 		ProviderType: "openai",
 		APIBase:      "https://api.openai.com/v1",
-		Model:        "o1-preview",
 		Settings:     string(settingsJSON),
 		Enabled:      1,
 	}
 
-	chatModel, err := adapter.Build(ctx, profile, "sk-test-key")
+	chatModel, err := adapter.Build(ctx, profile, "o1-preview", "sk-test-key")
 	if err != nil {
 		t.Fatalf("Build() unexpected error: %v", err)
 	}
@@ -387,12 +383,11 @@ func TestOpenAICompatAdapter_Build_WithReasoningEffort(t *testing.T) {
 		Name:         "ollama-reasoning-test",
 		ProviderType: "ollama",
 		APIBase:      "http://localhost:11434/v1",
-		Model:        "llama3",
 		Settings:     string(settingsJSON),
 		Enabled:      1,
 	}
 
-	chatModelOllama, err := adapter.Build(ctx, profileOllama, "")
+	chatModelOllama, err := adapter.Build(ctx, profileOllama, "llama3", "")
 	if err != nil {
 		t.Fatalf("Build() unexpected error: %v", err)
 	}
@@ -400,3 +395,110 @@ func TestOpenAICompatAdapter_Build_WithReasoningEffort(t *testing.T) {
 		t.Errorf("Build() returned nil ChatModel")
 	}
 }
+
+func TestOpenAICompatAdapter_Build_ReasoningMapping(t *testing.T) {
+	ctx := context.Background()
+	ad := NewOpenAICompatAdapter()
+
+	// 1. OpenAI with custom effort enums (minimal, xhigh, max)
+	for _, effort := range []string{"minimal", "xhigh", "max"} {
+		settings := map[string]interface{}{
+			"reasoning_effort": effort,
+		}
+		settingsJSON, _ := json.Marshal(settings)
+		p := &store.Profile{
+			Name:         "openai-effort-" + effort,
+			ProviderType: "openai",
+			APIBase:      "https://api.openai.com/v1",
+			Settings:     string(settingsJSON),
+			Enabled:      1,
+		}
+		chatModel, err := ad.Build(ctx, p, "gpt-4", "sk-test-key")
+		if err != nil {
+			t.Errorf("Build() unexpected error for effort %s: %v", effort, err)
+		}
+		if chatModel == nil {
+			t.Errorf("Build() returned nil ChatModel for effort %s", effort)
+		}
+	}
+
+	// 2. OpenAI with budget tokens (should succeed)
+	settingsBudget := map[string]interface{}{
+		"reasoning_budget_tokens": 1024,
+	}
+	settingsBudgetJSON, _ := json.Marshal(settingsBudget)
+	pBudget := &store.Profile{
+		Name:         "openai-budget",
+		ProviderType: "openai",
+		APIBase:      "https://api.openai.com/v1",
+		Settings:     string(settingsBudgetJSON),
+		Enabled:      1,
+	}
+	chatModelOpenAIBudget, err := ad.Build(ctx, pBudget, "gpt-4", "sk-test-key")
+	if err != nil {
+		t.Errorf("expected no error for budget tokens on openai provider, got %v", err)
+	}
+	if chatModelOpenAIBudget == nil {
+		t.Errorf("expected chatModel to not be nil")
+	}
+
+	// 3. Anthropic with budget tokens
+	settingsAnthropic := map[string]interface{}{
+		"reasoning_budget_tokens": 2048,
+	}
+	settingsAnthropicJSON, _ := json.Marshal(settingsAnthropic)
+	pAnthropic := &store.Profile{
+		Name:         "anthropic-budget",
+		ProviderType: "anthropic",
+		APIBase:      "https://api.anthropic.com/v1",
+		Settings:     string(settingsAnthropicJSON),
+		Enabled:      1,
+	}
+	// Note: anthropic provider uses OpenAICompatAdapter under the hood here for testing mapping
+	// wait, anthropic is registered with NewStubAdapter in defaults.go, but openaiCompatAdapter Build method is called directly on the ad instance in this unit test.
+	chatModelAnthropic, err := ad.Build(ctx, pAnthropic, "claude-3-7-sonnet", "sk-test-key")
+	if err != nil {
+		t.Fatalf("Build() unexpected error for anthropic: %v", err)
+	}
+	if chatModelAnthropic == nil {
+		t.Errorf("Build() returned nil ChatModel for anthropic")
+	}
+
+	// 4. Google with budget tokens
+	settingsGoogle := map[string]interface{}{
+		"reasoning_budget_tokens": 4096,
+	}
+	settingsGoogleJSON, _ := json.Marshal(settingsGoogle)
+	pGoogle := &store.Profile{
+		Name:         "google-budget",
+		ProviderType: "google",
+		APIBase:      "https://generativelanguage.googleapis.com/v1beta/openai",
+		Settings:     string(settingsGoogleJSON),
+		Enabled:      1,
+	}
+	chatModelGoogle, err := ad.Build(ctx, pGoogle, "gemini-2.0-flash-thinking", "sk-test-key")
+	if err != nil {
+		t.Fatalf("Build() unexpected error for google: %v", err)
+	}
+	if chatModelGoogle == nil {
+		t.Errorf("Build() returned nil ChatModel for google")
+	}
+
+	// 5. Unknown provider type (should fail)
+	settingsOllama := map[string]interface{}{
+		"reasoning_effort": "medium",
+	}
+	settingsOllamaJSON, _ := json.Marshal(settingsOllama)
+	pUnknown := &store.Profile{
+		Name:         "unknown-reasoning",
+		ProviderType: "unknown-provider",
+		APIBase:      "http://localhost/v1",
+		Settings:     string(settingsOllamaJSON),
+		Enabled:      1,
+	}
+	_, err = ad.Build(ctx, pUnknown, "model", "sk-test-key")
+	if err == nil {
+		t.Errorf("expected error for unknown provider type, got nil")
+	}
+}
+

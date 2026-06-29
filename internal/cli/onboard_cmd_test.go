@@ -49,7 +49,7 @@ func TestRunProviderSetup_KeyfulHappyPath(t *testing.T) {
 	// claude-3-opus (model)
 	// sk-key123 (api key)
 	// n (do not add another)
-	input := "1\n\nclaude-3-opus\nsk-key123\nn\n"
+	input := "1\n\nsk-key123\nn\n"
 	in := bytes.NewBufferString(input)
 	var out bytes.Buffer
 
@@ -64,7 +64,7 @@ func TestRunProviderSetup_KeyfulHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to retrieve profile: %v", err)
 	}
-	if p.ProviderType != "anthropic" || p.Model != "claude-3-opus" {
+	if p.ProviderType != "anthropic" {
 		t.Errorf("unexpected profile values: %+v", p)
 	}
 
@@ -98,7 +98,7 @@ func TestRunProviderSetup_KeylessOllama(t *testing.T) {
 	// llama3 (model)
 	// (accept default base URL http://localhost:11434/v1) -> empty line
 	// n (do not add another)
-	input := "4\nmy-ollama\nllama3\n\nn\n"
+	input := "4\nmy-ollama\n\nn\n"
 	in := bytes.NewBufferString(input)
 	var out bytes.Buffer
 
@@ -113,7 +113,7 @@ func TestRunProviderSetup_KeylessOllama(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to retrieve profile: %v", err)
 	}
-	if p.ProviderType != "ollama" || p.APIBase != "http://localhost:11434/v1" || p.Model != "llama3" {
+	if p.ProviderType != "ollama" || p.APIBase != "http://localhost:11434/v1" {
 		t.Errorf("unexpected profile values: %+v", p)
 	}
 
@@ -138,7 +138,7 @@ func TestRunProviderSetup_OpenAICompatible(t *testing.T) {
 	// http://custom-url/v1 (base URL)
 	// my-secret-key (api key)
 	// n (do not add another)
-	input := "3\nmy-compat\nmy-model\nhttp://custom-url/v1\nmy-secret-key\nn\n"
+	input := "3\nmy-compat\nhttp://custom-url/v1\nmy-secret-key\nn\n"
 	in := bytes.NewBufferString(input)
 	var out bytes.Buffer
 
@@ -152,7 +152,7 @@ func TestRunProviderSetup_OpenAICompatible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to retrieve profile: %v", err)
 	}
-	if p.APIBase != "http://custom-url/v1" || p.Model != "my-model" {
+	if p.APIBase != "http://custom-url/v1" {
 		t.Errorf("unexpected profile: %+v", p)
 	}
 
@@ -174,7 +174,6 @@ func TestRunProviderSetup_NameCollisionAndEmptyModel(t *testing.T) {
 	err := mgr.AddProfile(ctx, &store.Profile{
 		Name:         "anthropic",
 		ProviderType: "anthropic",
-		Model:        "claude-3-haiku",
 		Enabled:      1,
 	})
 	if err != nil {
@@ -185,12 +184,10 @@ func TestRunProviderSetup_NameCollisionAndEmptyModel(t *testing.T) {
 	// 1 (anthropic)
 	// anthropic (collision -> re-prompt)
 	// new-anthropic (success)
-	// (empty model -> re-prompt)
-	// claude-3-opus (success model)
 	// mykey
 	// n
 	// 2 (select default provider index 2: new-anthropic)
-	input := "1\nanthropic\nnew-anthropic\n\nclaude-3-opus\nmykey\nn\n2\n"
+	input := "1\nanthropic\nnew-anthropic\nmykey\nn\n2\n"
 	in := bytes.NewBufferString(input)
 	var out bytes.Buffer
 
@@ -204,8 +201,8 @@ func TestRunProviderSetup_NameCollisionAndEmptyModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to retrieve new profile: %v", err)
 	}
-	if p.Model != "claude-3-opus" {
-		t.Errorf("expected claude-3-opus, got %q", p.Model)
+	if p.ProviderType != "anthropic" {
+		t.Errorf("expected anthropic provider type, got %q", p.ProviderType)
 	}
 }
 
@@ -217,16 +214,14 @@ func TestRunProviderSetup_MultipleProvidersDefaultPrompt(t *testing.T) {
 	// Inputs:
 	// 1 (anthropic)
 	// (accept "anthropic")
-	// model1
 	// key1
 	// y (add another)
 	// 4 (ollama)
 	// my-ollama
-	// model2
 	// (accept default base URL)
 	// n (do not add another)
 	// 2 (select default provider index 2: my-ollama)
-	input := "1\n\nmodel1\nkey1\ny\n4\nmy-ollama\nmodel2\n\nn\n2\n"
+	input := "1\n\nkey1\ny\n4\nmy-ollama\n\nn\n2\n"
 	in := bytes.NewBufferString(input)
 	var out bytes.Buffer
 
@@ -254,12 +249,11 @@ func TestRunProviderSetup_EOFInterruptionPreservesCompleted(t *testing.T) {
 	// Inputs:
 	// 1 (anthropic)
 	// (accept "anthropic")
-	// model1
 	// key1
 	// y (add another)
 	// 4 (ollama)
 	// (EOF begins here)
-	input := "1\n\nmodel1\nkey1\ny\n4\n"
+	input := "1\n\nkey1\ny\n4\n"
 	in := bytes.NewBufferString(input)
 	var out bytes.Buffer
 
@@ -275,8 +269,8 @@ func TestRunProviderSetup_EOFInterruptionPreservesCompleted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first provider was not saved after EOF: %v", err)
 	}
-	if p.Model != "model1" {
-		t.Errorf("expected first provider model to be 'model1', got %q", p.Model)
+	if p.ProviderType != "anthropic" {
+		t.Errorf("expected first provider type to be 'anthropic', got %q", p.ProviderType)
 	}
 
 	// Second provider ("ollama") should not be created
@@ -329,7 +323,7 @@ func TestProviderSetupCommand_Integration(t *testing.T) {
 	// n (do not add another)
 	go func() {
 		defer wIn.Close()
-		_, _ = io.WriteString(wIn, "1\n\nclaude-3-opus\nsk-key123\nn\n")
+		_, _ = io.WriteString(wIn, "1\n\nsk-key123\nn\n")
 	}()
 
 	err = app.Run(ctx, []string{"onclaw", "provider", "setup"})

@@ -56,7 +56,7 @@ func TestInitCommand_Integration(t *testing.T) {
 	// n (do not add another provider)
 	go func() {
 		defer wIn.Close()
-		_, _ = io.WriteString(wIn, "1\n\nclaude-3-opus\nsk-key123\nn\n")
+		_, _ = io.WriteString(wIn, "1\n\nsk-key123\nn\nclaude-3-opus\nn\n")
 	}()
 
 	err = app.Run(ctx, []string{"onclaw", "init"})
@@ -127,18 +127,17 @@ func TestInitCommand_Integration(t *testing.T) {
 		// 1) anthropic
 		// 2) ollama
 		// We select 2 (ollama) for the agent.
-		_, _ = io.WriteString(wIn2, "4\n\nllama3\n\nn\n2\n")
+		_, _ = io.WriteString(wIn2, "4\n\nhttp://localhost:9999\nn\n2\nllama3\nn\n")
 	}()
 
 	err = app.Run(ctx, []string{"onclaw", "init"})
 	wOut2.Close()
-	if err != nil {
-		t.Fatalf("failed to run onclaw init second time: %v", err)
-	}
-
 	var buf2 bytes.Buffer
 	_, _ = io.Copy(&buf2, rOut2)
 	outStr2 := buf2.String()
+	if err != nil {
+		t.Fatalf("failed to run onclaw init second time: %v\nStdout:\n%s", err, outStr2)
+	}
 
 	if !strings.Contains(outStr2, "Provider profile \"ollama\" configured successfully.") {
 		t.Errorf("expected second provider to be configured, got:\n%s", outStr2)
@@ -174,7 +173,7 @@ func TestAgentSetup_Seeding(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Add provider first so Agent Setup has a profile to bind
-	if err := app.Run(ctx, []string{"onclaw", "provider", "add", "my-prov", "--kind", "openai", "--model", "gpt-4"}); err != nil {
+	if err := app.Run(ctx, []string{"onclaw", "provider", "add", "my-prov", "--kind", "openai"}); err != nil {
 		t.Fatalf("failed to add provider: %v", err)
 	}
 
@@ -193,7 +192,7 @@ func TestAgentSetup_Seeding(t *testing.T) {
 		// We add "my-openai"
 		// Since there are now multiple profiles ("my-prov" and "my-openai"), Agent Setup will prompt choice.
 		// Let's choose 2 (which is "my-prov" or "my-openai" sorted alphabetically)
-		_, _ = io.WriteString(w, "2\nmy-openai\ngpt-4\nsk-key123\nn\n2\n2\n")
+		_, _ = io.WriteString(w, "2\nmy-openai\nsk-key123\nn\n2\n2\ngpt-4\nn\n")
 	}()
 
 	if err := app.Run(ctx, []string{"onclaw", "init"}); err != nil {

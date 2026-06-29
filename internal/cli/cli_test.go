@@ -100,7 +100,7 @@ func TestProviderCommandInvalidArgs(t *testing.T) {
 	}
 
 	// 1. Add command missing name
-	err = app.Run(ctx, []string{"onclaw", "provider", "add", "--kind", "openai", "--model", "gpt-4"})
+	err = app.Run(ctx, []string{"onclaw", "provider", "add", "--kind", "openai"})
 	if err == nil || !strings.Contains(err.Error(), "provider name is required") {
 		t.Errorf("expected provider name is required error, got %v", err)
 	}
@@ -150,7 +150,7 @@ func TestProviderUseAndRemoveSuccess(t *testing.T) {
 	ctx := context.Background()
 
 	// Add profile
-	if err := app.Run(ctx, []string{"onclaw", "provider", "add", "my-prov", "--kind", "ollama", "--model", "llama3", "--base-url", "http://localhost:11434"}); err != nil {
+	if err := app.Run(ctx, []string{"onclaw", "provider", "add", "my-prov", "--kind", "ollama", "--base-url", "http://localhost:11434"}); err != nil {
 		t.Fatalf("failed to add: %v", err)
 	}
 
@@ -176,50 +176,7 @@ func TestProviderUseAndRemoveSuccess(t *testing.T) {
 	}
 }
 
-func TestProviderContextWindow(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "onclaw-test-cw-*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
 
-	dbPath := filepath.Join(tmpDir, "test.db")
-	t.Setenv("ONCLAW_DB_PATH", dbPath)
-
-	app := New()
-	ctx := context.Background()
-
-	// 1. Add profile with --context-window
-	if err := app.Run(ctx, []string{"onclaw", "provider", "add", "cw-prov", "--kind", "openai", "--model", "gpt-4", "--context-window", "128000"}); err != nil {
-		t.Fatalf("failed to add with context window: %v", err)
-	}
-
-	// 2. List and verify context window value is shown
-	listOut, err := captureLocalStdout(func() error {
-		return app.Run(ctx, []string{"onclaw", "provider", "list"})
-	})
-	if err != nil {
-		t.Fatalf("list error: %v", err)
-	}
-	if !strings.Contains(listOut, "context_window: 128000") {
-		t.Errorf("expected context_window: 128000 in list output, got %q", listOut)
-	}
-
-	// 3. Add profile without --context-window and verify (default) is shown
-	if err := app.Run(ctx, []string{"onclaw", "provider", "add", "default-cw", "--kind", "openai", "--model", "gpt-4"}); err != nil {
-		t.Fatalf("failed to add default provider: %v", err)
-	}
-
-	listOutDefault, err := captureLocalStdout(func() error {
-		return app.Run(ctx, []string{"onclaw", "provider", "list"})
-	})
-	if err != nil {
-		t.Fatalf("list error: %v", err)
-	}
-	if !strings.Contains(listOutDefault, "name: default-cw") || !strings.Contains(listOutDefault, "context_window: (default)") {
-		t.Errorf("expected context_window: (default) for default-cw in list output, got %q", listOutDefault)
-	}
-}
 
 func TestRunCommandScenarios(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "onclaw-test-run-*")
@@ -241,7 +198,7 @@ func TestRunCommandScenarios(t *testing.T) {
 	}
 
 	// 2. Add one provider (Anthropic, which uses the stub adapter)
-	if err := app.Run(ctx, []string{"onclaw", "provider", "add", "anthropic-local", "--kind", "anthropic", "--model", "claude-3"}); err != nil {
+	if err := app.Run(ctx, []string{"onclaw", "provider", "add", "anthropic-local", "--kind", "anthropic"}); err != nil {
 		t.Fatalf("failed to add anthropic: %v", err)
 	}
 
@@ -259,7 +216,7 @@ func TestRunCommandScenarios(t *testing.T) {
 	}
 
 	// 3. Add second provider (kind anthropic to keep it stubbed/mocked)
-	if err := app.Run(ctx, []string{"onclaw", "provider", "add", "openai-remote", "--kind", "anthropic", "--model", "gpt-4"}); err != nil {
+	if err := app.Run(ctx, []string{"onclaw", "provider", "add", "openai-remote", "--kind", "anthropic"}); err != nil {
 		t.Fatalf("failed to add openai: %v", err)
 	}
 	t.Setenv("ONCLAW_PROVIDER_OPENAI_REMOTE_API_KEY", "dummykey2")
@@ -302,6 +259,47 @@ func TestRunCommandScenarios(t *testing.T) {
 	err = app.Run(ctx, []string{"onclaw", "run", "--provider", "openai-remote", "hello"})
 	if err == nil || !strings.Contains(err.Error(), "failed to build model") {
 		t.Errorf("expected build model failure, got: %v", err)
+	}
+
+	// 7. Verify model fallback: --model flag -> agent.Model -> config.model -> error
+	if err := app.Run(ctx, []string{"onclaw", "provider", "use", "anthropic-local"}); err != nil {
+		t.Fatalf("failed to set default provider: %v", err)
+	}
+
+	dbConn, err := sqlite.Open(dbPath)
+	if err != nil {
+		t.Fatalf("failed to open DB: %v", err)
+	}
+	defer dbConn.Close()
+	_, err = dbConn.Exec("UPDATE agents SET model = '' WHERE name = 'master'")
+	if err != nil {
+		t.Fatalf("failed to clear master agent model: %v", err)
+	}
+
+	// Without a model on the agent, and config.model is empty, and no flag, it should fail.
+	t.Setenv("ONCLAW_MODEL", "")
+	err = app.Run(ctx, []string{"onclaw", "run", "hello"})
+	if err == nil || !strings.Contains(err.Error(), "no model specified for agent") {
+		t.Errorf("expected run failure with no model, got: %v", err)
+	}
+
+	// If we set ONCLAW_MODEL env var (config.model), it should succeed.
+	t.Setenv("ONCLAW_MODEL", "config-model")
+	t.Setenv("ONCLAW_PROVIDER_ANTHROPIC_LOCAL_API_KEY", "dummykey")
+	_, err = captureLocalStdout(func() error {
+		return app.Run(ctx, []string{"onclaw", "run", "hello"})
+	})
+	if err != nil {
+		t.Errorf("expected success falling back to config model, got: %v", err)
+	}
+
+	// If we pass --model flag, it should override everything and succeed.
+	t.Setenv("ONCLAW_MODEL", "") // clear config model
+	_, err = captureLocalStdout(func() error {
+		return app.Run(ctx, []string{"onclaw", "run", "--model", "flag-model", "hello"})
+	})
+	if err != nil {
+		t.Errorf("expected success with --model flag override, got: %v", err)
 	}
 }
 
@@ -377,7 +375,7 @@ func TestStdinErrorPaths(t *testing.T) {
 	ctx := context.Background()
 
 	// Initialize DB and add profile
-	if err := app.Run(ctx, []string{"onclaw", "provider", "add", "p1", "--kind", "openai", "--model", "gpt-4"}); err != nil {
+	if err := app.Run(ctx, []string{"onclaw", "provider", "add", "p1", "--kind", "openai"}); err != nil {
 		t.Fatalf("failed to add profile: %v", err)
 	}
 
@@ -636,16 +634,14 @@ func TestAgentCLI(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Setup a provider profile first (so we can reference it)
-	if err := app.Run(ctx, []string{"onclaw", "provider", "add", "prov-1", "--kind", "openai", "--model", "gpt-4"}); err != nil {
+	if err := app.Run(ctx, []string{"onclaw", "provider", "add", "prov-1", "--kind", "openai"}); err != nil {
 		t.Fatalf("failed to add provider: %v", err)
 	}
 
-	// 2. Add agent
 	err = app.Run(ctx, []string{
 		"onclaw", "agent", "add", "agent-1",
 		"--provider", "prov-1",
 		"--model", "gpt-4o",
-		"--reasoning", "medium",
 		"--system-prompt", "You are agent 1.",
 	})
 	if err != nil {

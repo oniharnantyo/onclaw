@@ -34,7 +34,7 @@ func (s *StubChatModel) WithTools(tools []*schema.ToolInfo) (model.ToolCallingCh
 
 type stubAdapter struct{}
 
-func (s *stubAdapter) Build(ctx context.Context, p *store.Profile, apiKey string) (model.ToolCallingChatModel, error) {
+func (s *stubAdapter) Build(ctx context.Context, p *store.Profile, modelName string, apiKey string) (model.ToolCallingChatModel, error) {
 	return &StubChatModel{}, nil
 }
 

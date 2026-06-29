@@ -29,5 +29,6 @@ type AgentStore interface {
 	AddAgent(ctx context.Context, a *Agent) error
 	GetAgent(ctx context.Context, name string) (*Agent, error)
 	ListAgents(ctx context.Context) ([]*Agent, error)
+	UpdateAgent(ctx context.Context, a *Agent) error
 	RemoveAgent(ctx context.Context, name string) error
 }

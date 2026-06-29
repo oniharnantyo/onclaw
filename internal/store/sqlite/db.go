@@ -3,6 +3,7 @@ package sqlite
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -75,7 +76,6 @@ func Migrate(db *sql.DB) error {
 			name TEXT PRIMARY KEY,
 			provider_type TEXT NOT NULL,
 			api_base TEXT NOT NULL DEFAULT '',
-			model TEXT NOT NULL,
 			settings TEXT NOT NULL DEFAULT '{}',
 			enabled INTEGER NOT NULL DEFAULT 1,
 			created_at TEXT NOT NULL,
@@ -93,7 +93,9 @@ func Migrate(db *sql.DB) error {
 			name TEXT PRIMARY KEY,
 			provider TEXT NOT NULL,
 			model TEXT NOT NULL DEFAULT '',
+			model_metadata TEXT NOT NULL DEFAULT '{}',
 			reasoning_effort TEXT NOT NULL DEFAULT '',
+			reasoning_budget_tokens INTEGER NOT NULL DEFAULT 0,
 			system_prompt TEXT NOT NULL DEFAULT '',
 			workspace TEXT NOT NULL DEFAULT '',
 			tools TEXT NOT NULL DEFAULT '',
@@ -107,7 +109,62 @@ func Migrate(db *sql.DB) error {
 			return fmt.Errorf("execute migration query: %w", err)
 		}
 	}
+
+	// Guarded migrations for existing DBs
+	hasModel, err := columnExists(db, "llm_providers", "model")
+	if err != nil {
+		return fmt.Errorf("check llm_providers model column: %w", err)
+	}
+	if hasModel {
+		// Attempt to drop the column, swallow error if the sqlite version does not support DROP COLUMN
+		if _, err := db.Exec("ALTER TABLE llm_providers DROP COLUMN model"); err != nil {
+			log.Printf("Warning: failed to drop column 'model' from llm_providers (might not be supported by sqlite version): %v", err)
+		}
+	}
+
+	hasMeta, err := columnExists(db, "agents", "model_metadata")
+	if err != nil {
+		return fmt.Errorf("check agents model_metadata column: %w", err)
+	}
+	if !hasMeta {
+		if _, err := db.Exec("ALTER TABLE agents ADD COLUMN model_metadata TEXT NOT NULL DEFAULT '{}'"); err != nil {
+			return fmt.Errorf("add model_metadata column to agents: %w", err)
+		}
+	}
+
+	hasBudget, err := columnExists(db, "agents", "reasoning_budget_tokens")
+	if err != nil {
+		return fmt.Errorf("check agents reasoning_budget_tokens column: %w", err)
+	}
+	if !hasBudget {
+		if _, err := db.Exec("ALTER TABLE agents ADD COLUMN reasoning_budget_tokens INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return fmt.Errorf("add reasoning_budget_tokens column to agents: %w", err)
+		}
+	}
+
 	return nil
+}
+
+func columnExists(db *sql.DB, table, column string) (bool, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typeStr string
+		var notnull int
+		var dfltVal sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typeStr, &notnull, &dfltVal, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func now() string {

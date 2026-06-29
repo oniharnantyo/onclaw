@@ -19,8 +19,8 @@ func NewProfileStore(db *sql.DB) store.ProfileStore {
 }
 
 func (s *sqliteProfileStore) AddProfile(ctx context.Context, p *store.Profile) error {
-	if p.Name == "" || p.ProviderType == "" || p.Model == "" {
-		return fmt.Errorf("profile name, provider_type, and model must not be empty")
+	if p.Name == "" || p.ProviderType == "" {
+		return fmt.Errorf("profile name and provider_type must not be empty")
 	}
 
 	if p.CreatedAt == "" {
@@ -33,8 +33,8 @@ func (s *sqliteProfileStore) AddProfile(ctx context.Context, p *store.Profile) e
 	}
 
 	_, err := s.db.ExecContext(ctx,
-		"INSERT INTO llm_providers (name, provider_type, api_base, model, settings, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-		p.Name, p.ProviderType, p.APIBase, p.Model, p.Settings, p.Enabled, p.CreatedAt, p.UpdatedAt,
+		"INSERT INTO llm_providers (name, provider_type, api_base, settings, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		p.Name, p.ProviderType, p.APIBase, p.Settings, p.Enabled, p.CreatedAt, p.UpdatedAt,
 	)
 	if err != nil {
 		return err
@@ -45,9 +45,9 @@ func (s *sqliteProfileStore) AddProfile(ctx context.Context, p *store.Profile) e
 func (s *sqliteProfileStore) GetProfile(ctx context.Context, name string) (*store.Profile, error) {
 	var p store.Profile
 	err := s.db.QueryRowContext(ctx,
-		"SELECT name, provider_type, api_base, model, settings, enabled, created_at, updated_at FROM llm_providers WHERE name = ?",
+		"SELECT name, provider_type, api_base, settings, enabled, created_at, updated_at FROM llm_providers WHERE name = ?",
 		name,
-	).Scan(&p.Name, &p.ProviderType, &p.APIBase, &p.Model, &p.Settings, &p.Enabled, &p.CreatedAt, &p.UpdatedAt)
+	).Scan(&p.Name, &p.ProviderType, &p.APIBase, &p.Settings, &p.Enabled, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -56,7 +56,7 @@ func (s *sqliteProfileStore) GetProfile(ctx context.Context, name string) (*stor
 
 func (s *sqliteProfileStore) ListProfiles(ctx context.Context) ([]*store.Profile, error) {
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT name, provider_type, api_base, model, settings, enabled, created_at, updated_at FROM llm_providers ORDER BY name ASC",
+		"SELECT name, provider_type, api_base, settings, enabled, created_at, updated_at FROM llm_providers ORDER BY name ASC",
 	)
 	if err != nil {
 		return nil, err
@@ -66,7 +66,7 @@ func (s *sqliteProfileStore) ListProfiles(ctx context.Context) ([]*store.Profile
 	var profiles []*store.Profile
 	for rows.Next() {
 		var p store.Profile
-		err := rows.Scan(&p.Name, &p.ProviderType, &p.APIBase, &p.Model, &p.Settings, &p.Enabled, &p.CreatedAt, &p.UpdatedAt)
+		err := rows.Scan(&p.Name, &p.ProviderType, &p.APIBase, &p.Settings, &p.Enabled, &p.CreatedAt, &p.UpdatedAt)
 		if err != nil {
 			return nil, err
 		}

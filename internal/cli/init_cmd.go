@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -93,7 +94,6 @@ func runAgentSetup(ctx context.Context, st *appState, mgr *llm.Service, db *sql.
 	var selectedProfile *store.Profile
 	if len(profiles) == 1 {
 		selectedProfile = profiles[0]
-		fmt.Fprintf(out, "Automatically binding master agent to provider %q and model %q.\n", selectedProfile.Name, selectedProfile.Model)
 	} else {
 		var names []string
 		for _, p := range profiles {
@@ -104,13 +104,27 @@ func runAgentSetup(ctx context.Context, st *appState, mgr *llm.Service, db *sql.
 			return err
 		}
 		selectedProfile = profiles[idx]
-		fmt.Fprintf(out, "Binding master agent to provider %q and model %q.\n", selectedProfile.Name, selectedProfile.Model)
+	}
+
+	fmt.Fprintf(out, "Binding master agent to provider %q. Please configure its model.\n", selectedProfile.Name)
+	modelID, meta, effort, budget, err := pickModel(ctx, mgr, selectedProfile.Name, in, out)
+	if err != nil {
+		return fmt.Errorf("failed to pick model for master agent: %w", err)
+	}
+
+	metaJSON, err := json.Marshal(meta)
+	if err != nil {
+		return fmt.Errorf("failed to marshal model metadata: %w", err)
 	}
 
 	masterAgent.Provider = selectedProfile.Name
-	masterAgent.Model = selectedProfile.Model
+	masterAgent.Model = modelID
+	masterAgent.ModelMetadata = string(metaJSON)
+	masterAgent.ReasoningEffort = effort
+	masterAgent.ReasoningBudgetTokens = budget
 
-	_, err = db.ExecContext(ctx, "UPDATE agents SET provider = ?, model = ? WHERE name = 'master'", masterAgent.Provider, masterAgent.Model)
+	_, err = db.ExecContext(ctx, "UPDATE agents SET provider = ?, model = ?, model_metadata = ?, reasoning_effort = ?, reasoning_budget_tokens = ? WHERE name = 'master'",
+		masterAgent.Provider, masterAgent.Model, masterAgent.ModelMetadata, masterAgent.ReasoningEffort, masterAgent.ReasoningBudgetTokens)
 	if err != nil {
 		return fmt.Errorf("failed to persist master agent configuration: %w", err)
 	}

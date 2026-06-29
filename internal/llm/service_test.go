@@ -49,8 +49,8 @@ func testSetup(t *testing.T) (*sql.DB, *Service) {
 	return db, srv
 }
 
-func newEnabledProfile(name, providerType, model string) *store.Profile {
-	return &store.Profile{Name: name, ProviderType: providerType, Model: model, Enabled: 1}
+func newEnabledProfile(name, providerType string) *store.Profile {
+	return &store.Profile{Name: name, ProviderType: providerType, Enabled: 1}
 }
 
 func TestProviderCRUD(t *testing.T) {
@@ -59,12 +59,12 @@ func TestProviderCRUD(t *testing.T) {
 
 	ctx := context.Background()
 
-	badProfile := &store.Profile{Name: "", ProviderType: "openai", Model: "gpt-4"}
+	badProfile := &store.Profile{Name: "", ProviderType: "openai"}
 	if err := srv.AddProfile(ctx, badProfile); err == nil {
 		t.Error("expected error for empty name, got nil")
 	}
 
-	p1 := newEnabledProfile("openai-test", "openai", "gpt-4")
+	p1 := newEnabledProfile("openai-test", "openai")
 	p1.APIBase = "https://api.openai.com/v1"
 	if err := srv.AddProfile(ctx, p1); err != nil {
 		t.Fatalf("failed to add profile: %v", err)
@@ -78,7 +78,7 @@ func TestProviderCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get profile: %v", err)
 	}
-	if retrieved.Name != p1.Name || retrieved.ProviderType != p1.ProviderType || retrieved.APIBase != p1.APIBase || retrieved.Model != p1.Model {
+	if retrieved.Name != p1.Name || retrieved.ProviderType != p1.ProviderType || retrieved.APIBase != p1.APIBase {
 		t.Errorf("retrieved profile mismatch: %+v", retrieved)
 	}
 
@@ -87,7 +87,7 @@ func TestProviderCRUD(t *testing.T) {
 		t.Error("expected error for non-existent profile, got nil")
 	}
 
-	p2 := newEnabledProfile("claude-test", "openai", "claude-3-opus")
+	p2 := newEnabledProfile("claude-test", "openai")
 	if err := srv.AddProfile(ctx, p2); err != nil {
 		t.Fatalf("failed to add second profile: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestEncryptionAtRest(t *testing.T) {
 		t.Error("expected failure setting secret for non-existent profile, got nil")
 	}
 
-	p := newEnabledProfile("openai-test", "openai", "gpt-4")
+	p := newEnabledProfile("openai-test", "openai")
 	if err := srv.AddProfile(ctx, p); err != nil {
 		t.Fatalf("failed to add profile: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestSecretResolutionPrecedence(t *testing.T) {
 	ctx := context.Background()
 
 	pName := "openai-test"
-	p := newEnabledProfile(pName, "openai", "gpt-4")
+	p := newEnabledProfile(pName, "openai")
 	if err := srv.AddProfile(ctx, p); err != nil {
 		t.Fatalf("failed to add profile: %v", err)
 	}
@@ -213,17 +213,18 @@ func TestBuild(t *testing.T) {
 
 	ctx := context.Background()
 
-	_, err := srv.Build(ctx, "non-existent")
+	_, err := srv.BuildAgent(ctx, "non-existent")
 	if err == nil {
-		t.Error("expected error building non-existent profile, got nil")
+		t.Error("expected error building non-existent agent, got nil")
 	}
 
-	p := newEnabledProfile("openai-test", "openai", "gpt-4")
+	p := newEnabledProfile("openai-test", "openai")
 	if err := srv.AddProfile(ctx, p); err != nil {
 		t.Fatalf("failed to add profile: %v", err)
 	}
 
-	_, err = srv.Build(ctx, "openai-test")
+	pCopy := *p
+	_, err = srv.BuildWithProfile(ctx, &pCopy, "gpt-4")
 	if err == nil {
 		t.Error("expected error building profile with no secret, got nil")
 	}
@@ -232,7 +233,8 @@ func TestBuild(t *testing.T) {
 		t.Fatalf("failed to set secret: %v", err)
 	}
 
-	model, err := srv.Build(ctx, "openai-test")
+	pCopy2, _ := srv.GetProfile(ctx, "openai-test")
+	model, err := srv.BuildWithProfile(ctx, pCopy2, "gpt-4")
 	if err != nil {
 		t.Fatalf("failed to build model: %v", err)
 	}
@@ -249,12 +251,13 @@ func TestBuildKeylessProviderWithoutSecret(t *testing.T) {
 
 	// Ollama is keyless: a local server that needs no API key.
 	// Building must succeed with neither a stored nor an env secret.
-	p := newEnabledProfile("ollama-local", "ollama", "llama3")
+	p := newEnabledProfile("ollama-local", "ollama")
 	if err := srv.AddProfile(ctx, p); err != nil {
 		t.Fatalf("failed to add ollama profile: %v", err)
 	}
 
-	chatModel, err := srv.Build(ctx, "ollama-local")
+	pCopy, _ := srv.GetProfile(ctx, "ollama-local")
+	chatModel, err := srv.BuildWithProfile(ctx, pCopy, "llama3")
 	if err != nil {
 		t.Fatalf("expected keyless provider to build without an API key, got error: %v", err)
 	}
@@ -269,7 +272,7 @@ func TestBuildAgentKeylessProviderWithoutSecret(t *testing.T) {
 
 	ctx := context.Background()
 
-	p := newEnabledProfile("ollama-local", "ollama", "llama3")
+	p := newEnabledProfile("ollama-local", "ollama")
 	if err := srv.AddProfile(ctx, p); err != nil {
 		t.Fatalf("failed to add ollama profile: %v", err)
 	}
@@ -341,7 +344,7 @@ func TestHotReload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open second db connection: %v", err)
 	}
-	_, err = db2.Exec("INSERT INTO llm_providers (name, provider_type, api_base, model, settings, enabled, created_at, updated_at) VALUES ('external-openai', 'openai', 'https://api.openai.com/v1', 'gpt-4', '{}', 1, '2026-06-23T21:00:00Z', '2026-06-23T21:00:00Z')")
+	_, err = db2.Exec("INSERT INTO llm_providers (name, provider_type, api_base, settings, enabled, created_at, updated_at) VALUES ('external-openai', 'openai', 'https://api.openai.com/v1', '{}', 1, '2026-06-23T21:00:00Z', '2026-06-23T21:00:00Z')")
 	if err != nil {
 		db2.Close()
 		t.Fatalf("failed to insert external profile: %v", err)
@@ -385,7 +388,7 @@ func TestFakeStoreReplaceability(t *testing.T) {
 	srv := NewService(fakePS, fakeSS, km, ar, fakeAS)
 	ctx := context.Background()
 
-	p := &store.Profile{Name: "openai-fake", ProviderType: "openai", APIBase: "https://api.openai.com/v1", Model: "gpt-4", Enabled: 1}
+	p := &store.Profile{Name: "openai-fake", ProviderType: "openai", APIBase: "https://api.openai.com/v1", Enabled: 1}
 	if err := srv.AddProfile(ctx, p); err != nil {
 		t.Fatalf("failed to add profile to fake store: %v", err)
 	}
@@ -438,12 +441,12 @@ func TestBuildWithDisabledProfile(t *testing.T) {
 
 	ctx := context.Background()
 
-	p := &store.Profile{Name: "disabled-test", ProviderType: "openai", Model: "gpt-4", Enabled: 0}
+	p := &store.Profile{Name: "disabled-test", ProviderType: "openai", Enabled: 0}
 	if err := srv.AddProfile(ctx, p); err != nil {
 		t.Fatalf("failed to add disabled profile: %v", err)
 	}
 
-	_, err := srv.Build(ctx, "disabled-test")
+	_, err := srv.BuildWithProfile(ctx, p, "gpt-4")
 	if err == nil {
 		t.Error("expected error building disabled profile, got nil")
 	}
@@ -459,7 +462,7 @@ func TestAgentCRUDAndResolution(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Add provider
-	p := &store.Profile{Name: "openai-prov", ProviderType: "openai", Model: "gpt-4", Enabled: 1}
+	p := &store.Profile{Name: "openai-prov", ProviderType: "openai", Enabled: 1}
 	if err := srv.AddProfile(ctx, p); err != nil {
 		t.Fatalf("failed to add profile: %v", err)
 	}
@@ -496,9 +499,6 @@ func TestAgentCRUDAndResolution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to resolve agent profile: %v", err)
 	}
-	if effProfile.Model != "gpt-4o" {
-		t.Errorf("expected overlaid model to be gpt-4o, got %s", effProfile.Model)
-	}
 
 	// settings should contain reasoning_effort = medium
 	var settings map[string]interface{}
@@ -516,6 +516,24 @@ func TestAgentCRUDAndResolution(t *testing.T) {
 	}
 	if chatModel == nil {
 		t.Errorf("built agent chat model is nil")
+	}
+
+	// Verify agent metadata update
+	gotA.ModelMetadata = `{"context_window":12345,"thinking":false,"input_modalities":["text","image"]}`
+	if err := srv.UpdateAgent(ctx, gotA); err != nil {
+		t.Fatalf("failed to update agent: %v", err)
+	}
+
+	gotA2, err := srv.GetAgent(ctx, "agent-1")
+	if err != nil {
+		t.Fatalf("failed to get agent after update: %v", err)
+	}
+	var meta store.ModelMetadata
+	if err := json.Unmarshal([]byte(gotA2.ModelMetadata), &meta); err != nil {
+		t.Fatalf("failed to unmarshal agent model metadata: %v", err)
+	}
+	if meta.ContextWindow != 12345 {
+		t.Errorf("expected context window in agent metadata to be 12345, got %d", meta.ContextWindow)
 	}
 
 	// 6. List agents

@@ -30,10 +30,9 @@ func TestAdapterRegistry(t *testing.T) {
 	p := &store.Profile{
 		Name:         "test-openai",
 		ProviderType: "openai",
-		Model:        "gpt-4",
 	}
 
-	cm, err := ad.Build(ctx, p, "test-key")
+	cm, err := ad.Build(ctx, p, "gpt-4", "test-key")
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
