@@ -27,6 +27,7 @@ func New() *cli.Command {
 			chatCommand(st),
 			providerCommand(st),
 			agentCommand(st),
+			serveCommand(st),
 		},
 	}
 }

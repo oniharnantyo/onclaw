@@ -3,24 +3,20 @@ package cli
 import (
 	"bufio"
 	"context"
-	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 
 	"github.com/urfave/cli/v3"
 
 	"github.com/oniharnantyo/onclaw/internal/agent"
+	"github.com/oniharnantyo/onclaw/internal/render"
 	"github.com/oniharnantyo/onclaw/internal/llm"
-	"github.com/oniharnantyo/onclaw/internal/store"
 	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
-	"github.com/oniharnantyo/onclaw/internal/workspace"
 )
 
 func chatCommand(st *appState) *cli.Command {
@@ -64,12 +60,10 @@ func chatCommand(st *appState) *cli.Command {
 			}
 			defer db.Close()
 
-			// Resolve DB and config path
 			resolvedDbPath, err := sqlite.ResolveDbPath(st.cfg.DbPath)
 			if err != nil {
 				return err
 			}
-			userConfigDir := filepath.Dir(resolvedDbPath)
 
 			// Setup SIGHUP handler
 			sigChan := make(chan os.Signal, 1)
@@ -110,6 +104,9 @@ func chatCommand(st *appState) *cli.Command {
 				}
 			}
 
+			convStore := sqlite.NewConversationStore(db)
+			convIDs := make(map[string]int64)
+
 			// Active configurations (mutable via slash commands)
 			activeAgentName := agentName
 			activeReasoning := c.String("reasoning")
@@ -117,153 +114,32 @@ func chatCommand(st *appState) *cli.Command {
 			activeProvider := c.String("provider")
 
 			var assembledAgent *agent.Agent
-			var transcriptPath string
 			var resolvedWorkspace string
 
 			// Helper to initialize or re-initialize the agent
 			initAgent := func() error {
-				agentConf, err := mgr.GetAgent(ctx, activeAgentName)
-				if err != nil {
-					if activeAgentName == "master" {
-						agentConf, err = st.getOrSeedMasterAgent(ctx, db, mgr)
-						if err != nil {
-							return fmt.Errorf("failed to auto-seed master agent: %w", err)
-						}
-					} else {
-						return fmt.Errorf("agent %q not found: %w", activeAgentName, err)
+				convID, ok := convIDs[activeAgentName]
+				if !ok {
+					var err error
+					convID, err = convStore.CreateConversation(ctx, activeAgentName)
+					if err != nil {
+						return fmt.Errorf("create conversation: %w", err)
 					}
+					convIDs[activeAgentName] = convID
 				}
 
-				// Resolve workspace
-				cwd, err := os.Getwd()
+				var err error
+				assembledAgent, resolvedWorkspace, err = resolveAndAssemble(ctx, st, db, mgr, agentSessionRequest{
+					AgentName:    activeAgentName,
+					ProviderName: activeProvider,
+					ModelName:    activeModel,
+					Reasoning:    activeReasoning,
+					Workspace:    c.String("workspace"),
+				}, convStore, convID)
 				if err != nil {
-					return fmt.Errorf("get current directory: %w", err)
-				}
-				resolvedWorkspace, err = workspace.ResolveWorkspace(
-					c.String("workspace"),
-					agentConf.Workspace,
-					st.cfg.Workspace,
-					cwd,
-				)
-				if err != nil {
-					return fmt.Errorf("resolve workspace: %w", err)
-				}
-
-				// Resolve effective provider
-				var defaultProvider string
-				err = db.QueryRowContext(ctx, "SELECT value FROM preferences WHERE key = 'default_provider'").Scan(&defaultProvider)
-				if err != nil && !errors.Is(err, sql.ErrNoRows) {
 					return err
 				}
 
-				providerName := activeProvider
-				if providerName == "" {
-					profiles, err := mgr.ListProfiles(ctx)
-					if err != nil {
-						return err
-					}
-
-					var enabledCount int
-					for _, pr := range profiles {
-						if pr.Enabled != 0 {
-							enabledCount++
-						}
-					}
-
-					if enabledCount > 1 && defaultProvider == "" {
-						return fmt.Errorf("multiple providers available but no default provider is set; use 'onclaw provider use <name>' to set one")
-					}
-
-					if agentConf.Provider != "" {
-						providerName = agentConf.Provider
-					} else {
-						providerName = defaultProvider
-					}
-				}
-
-				if providerName == "" {
-					return fmt.Errorf("no provider specified for agent %q; configure a provider or use the --provider flag", activeAgentName)
-				}
-
-				p, err := mgr.GetProfile(ctx, providerName)
-				if err != nil {
-					return fmt.Errorf("provider %q not found: %w", providerName, err)
-				}
-				if p.Enabled == 0 {
-					return fmt.Errorf("provider %q is disabled", providerName)
-				}
-
-				effModel := activeModel
-				if effModel == "" {
-					effModel = agentConf.Model
-				}
-				if effModel == "" {
-					effModel = st.cfg.Model
-				}
-				if effModel == "" {
-					return fmt.Errorf("no model specified for agent %q and no default model is configured", activeAgentName)
-				}
-
-				effReasoning := activeReasoning
-				if effReasoning == "" {
-					effReasoning = agentConf.ReasoningEffort
-				}
-
-				var contextWindow int
-				if agentConf.ModelMetadata != "" {
-					meta, err := store.UnmarshalModelMetadata(agentConf.ModelMetadata)
-					if err == nil && meta != nil {
-						contextWindow = meta.ContextWindow
-					}
-				}
-				if contextWindow <= 0 {
-					if st.cfg.MaxContextTokens > 0 {
-						contextWindow = st.cfg.MaxContextTokens
-					} else {
-						contextWindow = 64000
-					}
-				}
-
-				effProfile := *p
-
-				var settings map[string]interface{}
-				if effProfile.Settings != "" {
-					_ = json.Unmarshal([]byte(effProfile.Settings), &settings)
-				}
-				if settings == nil {
-					settings = make(map[string]interface{})
-				}
-
-				if effReasoning != "" {
-					settings["reasoning_effort"] = effReasoning
-				}
-
-				settingsJSON, err := json.Marshal(settings)
-				if err != nil {
-					return fmt.Errorf("failed to marshal settings: %w", err)
-				}
-				effProfile.Settings = string(settingsJSON)
-
-				chatModel, err := mgr.BuildWithProfile(ctx, &effProfile, effModel)
-				if err != nil {
-					return fmt.Errorf("failed to build model: %w", err)
-				}
-
-				assembledAgent, err = agent.AssembleAgent(
-					ctx,
-					agentConf,
-					chatModel,
-					resolvedWorkspace,
-					userConfigDir,
-					st.cfg.Tools.Shell.Policy,
-					st.cfg.Tools.Shell.Allowlist,
-					contextWindow,
-				)
-				if err != nil {
-					return fmt.Errorf("assemble agent: %w", err)
-				}
-
-				transcriptPath = filepath.Join(userConfigDir, "conversations", fmt.Sprintf("%s_transcript.jsonl", agentConf.Name))
 				return nil
 			}
 
@@ -281,8 +157,22 @@ func chatCommand(st *appState) *cli.Command {
 			firstPrompt := c.Args().First()
 			if firstPrompt != "" {
 				fmt.Printf("onclaw (%s) > %s\n", activeAgentName, firstPrompt)
-				err = agent.RunAgent(ctx, assembledAgent, firstPrompt, os.Stdout, transcriptPath)
-				if err != nil {
+				it := assembledAgent.Run(ctx, firstPrompt)
+				tr := render.Text(os.Stdout)
+				for {
+					msg, ok := it.Next()
+					if !ok {
+						break
+					}
+					if err := tr.Render(msg); err != nil {
+						fmt.Printf("Error rendering: %v\n", err)
+						break
+					}
+				}
+				if err := tr.Flush(); err != nil {
+					fmt.Printf("Error flushing: %v\n", err)
+				}
+				if err := it.Err(); err != nil {
 					fmt.Printf("Error: %v\n", err)
 				}
 				fmt.Println()
@@ -362,7 +252,22 @@ func chatCommand(st *appState) *cli.Command {
 					signal.Stop(termChan)
 				}()
 
-				err = agent.RunAgent(turnCtx, assembledAgent, input, os.Stdout, transcriptPath)
+				it := assembledAgent.Run(turnCtx, input)
+				tr := render.Text(os.Stdout)
+				for {
+					msg, ok := it.Next()
+					if !ok {
+						break
+					}
+					if err := tr.Render(msg); err != nil {
+						fmt.Printf("\nError rendering: %v\n", err)
+						break
+					}
+				}
+				if err := tr.Flush(); err != nil {
+					fmt.Printf("\nError flushing: %v\n", err)
+				}
+				err = it.Err()
 				turnCancel()
 
 				if err != nil {

@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 
 	"github.com/cloudwego/eino/components/model"
+
 	"github.com/oniharnantyo/onclaw/internal/llm/adapter"
 	"github.com/oniharnantyo/onclaw/internal/secrets"
 	"github.com/oniharnantyo/onclaw/internal/store"
@@ -239,8 +240,8 @@ func (s *Service) resolveAPIKey(ctx context.Context, name, providerType string) 
 	return apiKey, nil
 }
 
-// BuildWithProfile builds a ToolCallingChatModel using the given profile and model (handling secret resolution).
-func (s *Service) BuildWithProfile(ctx context.Context, p *store.Profile, modelName string) (model.ToolCallingChatModel, error) {
+// BuildWithProfile builds a model.AgenticModel using the given profile and model (handling secret resolution).
+func (s *Service) BuildWithProfile(ctx context.Context, p *store.Profile, modelName string) (model.AgenticModel, error) {
 	if p.Enabled == 0 {
 		return nil, fmt.Errorf("provider %s is disabled", p.Name)
 	}
@@ -366,7 +367,7 @@ func (s *Service) ResolveAgentProfile(ctx context.Context, agentName string) (*s
 }
 
 // BuildAgent loads the agent, resolves its effective profile, gets provider key, and constructs the ToolCallingChatModel.
-func (s *Service) BuildAgent(ctx context.Context, agentName string) (model.ToolCallingChatModel, error) {
+func (s *Service) BuildAgent(ctx context.Context, agentName string) (model.AgenticModel, error) {
 	agent, err := s.GetAgent(ctx, agentName)
 	if err != nil {
 		return nil, err

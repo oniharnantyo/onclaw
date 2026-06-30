@@ -30,10 +30,16 @@ type Config struct {
 	Tools            ToolsConfig    `mapstructure:"tools"`
 	Agent            AgentConfig    `mapstructure:"agent"`
 	Langfuse         LangfuseConfig `mapstructure:"langfuse"`
+	Web              WebConfig      `mapstructure:"web"`
 
 	// Runtime-only metadata (populated by Load, not read from the file).
 	LoadedFrom  string   `mapstructure:"-"`
 	SearchPaths []string `mapstructure:"-"`
+}
+
+type WebConfig struct {
+	Bind string `mapstructure:"bind"`
+	Port int    `mapstructure:"port"`
 }
 
 type ToolsConfig struct {
@@ -86,6 +92,8 @@ func mapAndSanitizeEnvKeys(v *viper.Viper, fileLoaded bool) {
 		"langfuse.session_id",
 		"langfuse.release",
 		"langfuse.mask",
+		"web.bind",
+		"web.port",
 	}
 
 	for _, key := range keys {
@@ -94,7 +102,7 @@ func mapAndSanitizeEnvKeys(v *viper.Viper, fileLoaded bool) {
 		// 1. Sanitize OS Environment Variable if present
 		if val := os.Getenv(envVar); val != "" {
 			switch key {
-			case "concurrency", "max_context_tokens", "agent.max_iterations":
+			case "concurrency", "max_context_tokens", "agent.max_iterations", "web.port":
 				if _, err := strconv.Atoi(val); err != nil {
 					fmt.Fprintf(os.Stderr, "WARNING: invalid integer value in environment %s: %q. Falling back to default.\n", envVar, val)
 					os.Unsetenv(envVar)
@@ -117,7 +125,7 @@ func mapAndSanitizeEnvKeys(v *viper.Viper, fileLoaded bool) {
 			if v.IsSet(envStyleKey) {
 				rawVal := v.Get(envStyleKey)
 				switch key {
-				case "concurrency", "max_context_tokens", "agent.max_iterations":
+				case "concurrency", "max_context_tokens", "agent.max_iterations", "web.port":
 					if strVal, ok := rawVal.(string); ok {
 						if _, err := strconv.Atoi(strVal); err != nil {
 							fmt.Fprintf(os.Stderr, "WARNING: invalid integer value for %s: %q. Falling back to default.\n", envVar, strVal)
@@ -161,6 +169,8 @@ func Load(explicitPath string) (*Config, error) {
 	v.SetDefault("langfuse.session_id", d.Langfuse.SessionID)
 	v.SetDefault("langfuse.release", d.Langfuse.Release)
 	v.SetDefault("langfuse.mask", d.Langfuse.Mask)
+	v.SetDefault("web.bind", d.Web.Bind)
+	v.SetDefault("web.port", d.Web.Port)
 
 	v.SetEnvPrefix("ONCLAW")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))

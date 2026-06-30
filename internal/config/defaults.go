@@ -29,5 +29,9 @@ func defaults() Config {
 			Release:   "",
 			Mask:      true,
 		},
+		Web: WebConfig{
+			Bind: "0.0.0.0",
+			Port: 8484,
+		},
 	}
 }

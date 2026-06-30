@@ -4,12 +4,13 @@ import (
 	"context"
 
 	"github.com/cloudwego/eino/components/model"
+
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
 // Adapter defines the contract for constructing a model.ToolCallingChatModel.
 type Adapter interface {
-	Build(ctx context.Context, p *store.Profile, model string, apiKey string) (model.ToolCallingChatModel, error)
+	Build(ctx context.Context, p *store.Profile, model string, apiKey string) (model.AgenticModel, error)
 }
 
 // AdapterFactory creates an Adapter.

@@ -103,6 +103,26 @@ func Migrate(db *sql.DB) error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
+		`CREATE TABLE IF NOT EXISTS conversations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			agent_name TEXT NOT NULL,
+			summary_until_seq INTEGER NOT NULL DEFAULT 0,
+			summary_message_id INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_conversations_agent ON conversations(agent_name);`,
+		`CREATE TABLE IF NOT EXISTS conversation_messages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			conversation_id INTEGER NOT NULL,
+			seq INTEGER NOT NULL,
+			role TEXT NOT NULL,
+			message TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_messages_conv_seq ON conversation_messages(conversation_id, seq);`,
+		`CREATE INDEX IF NOT EXISTS idx_messages_role ON conversation_messages(role);`,
 	}
 	for _, q := range queries {
 		if _, err := db.Exec(q); err != nil {
@@ -142,7 +162,28 @@ func Migrate(db *sql.DB) error {
 		}
 	}
 
+	hasSummarySeq, err := columnExists(db, "conversations", "summary_until_seq")
+	if err != nil {
+		return fmt.Errorf("check conversations summary_until_seq column: %w", err)
+	}
+	if !hasSummarySeq {
+		if _, err := db.Exec("ALTER TABLE conversations ADD COLUMN summary_until_seq INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return fmt.Errorf("add summary_until_seq column to conversations: %w", err)
+		}
+	}
+
+	hasSummaryMsgID, err := columnExists(db, "conversations", "summary_message_id")
+	if err != nil {
+		return fmt.Errorf("check conversations summary_message_id column: %w", err)
+	}
+	if !hasSummaryMsgID {
+		if _, err := db.Exec("ALTER TABLE conversations ADD COLUMN summary_message_id INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return fmt.Errorf("add summary_message_id column to conversations: %w", err)
+		}
+	}
+
 	return nil
+
 }
 
 func columnExists(db *sql.DB, table, column string) (bool, error) {

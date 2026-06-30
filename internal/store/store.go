@@ -32,3 +32,14 @@ type AgentStore interface {
 	UpdateAgent(ctx context.Context, a *Agent) error
 	RemoveAgent(ctx context.Context, name string) error
 }
+
+// ConversationStore defines operations for persisting and retrieving conversation history.
+type ConversationStore interface {
+	CreateConversation(ctx context.Context, agentName string) (int64, error)
+	AppendMessage(ctx context.Context, conversationID int64, role string, messageJSON string) (seq int64, err error)
+	LoadHistory(ctx context.Context, conversationID int64) (summary *MessageRow, tail []*MessageRow, err error)
+	ListMessages(ctx context.Context, conversationID int64) ([]*MessageRow, error)
+	SaveSummary(ctx context.Context, conversationID int64, summaryMessageJSON string, coveredUntilSeq int64) error
+	ListConversations(ctx context.Context) ([]*ConversationRow, error)
+}
+

@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "lastScanned": 1782719627234,
+  "lastScanned": 1782808002937,
   "projectRoot": "/Users/oniharnantyo/projects/onclaw",
   "techStack": {
     "languages": [
@@ -26,8 +26,8 @@
     "runtime": null
   },
   "build": {
-    "buildCommand": "rtk go build -o bin/onclaw .",
-    "testCommand": "make test",
+    "buildCommand": "echo \"=== BUILD ===\"; rtk go build ./... 2>&1 | tail -20; echo \"=== build exit: ${PIPESTATUS[0]:-$?} ===\"",
+    "testCommand": "echo \"=== BUILD ===\"; rtk go build ./... 2>&1 | tail -20; echo \"=== build exit: $? ===\"\necho; echo \"=== VET ===\"; go vet ./internal/api/... ./internal/cli/... 2>&1 | tail -20; echo \"=== vet exit: $? ===\"\necho; echo \"=== TEST ===\"; rtk go test ./internal/api/... 2>&1 | tail -30; echo \"=== test exit: $? ===\"",
     "lintCommand": null,
     "devCommand": null,
     "scripts": {}
@@ -56,7 +56,7 @@
       "path": "bin",
       "purpose": "Executable scripts",
       "fileCount": 1,
-      "lastAccessed": 1782719627218,
+      "lastAccessed": 1782808002900,
       "keyFiles": [
         "onclaw"
       ]
@@ -65,7 +65,7 @@
       "path": "docs",
       "purpose": "Documentation",
       "fileCount": 2,
-      "lastAccessed": 1782719627219,
+      "lastAccessed": 1782808002901,
       "keyFiles": [
         "MIGRATION_GUIDE.md",
         "security-model.md"
@@ -75,14 +75,14 @@
       "path": "internal",
       "purpose": null,
       "fileCount": 0,
-      "lastAccessed": 1782719627227,
+      "lastAccessed": 1782808002901,
       "keyFiles": []
     },
     "openspec": {
       "path": "openspec",
       "purpose": null,
       "fileCount": 1,
-      "lastAccessed": 1782719627228,
+      "lastAccessed": 1782808002901,
       "keyFiles": [
         "config.yaml"
       ]
@@ -91,7 +91,7 @@
       "path": "internal/config",
       "purpose": "Configuration files",
       "fileCount": 3,
-      "lastAccessed": 1782719627229,
+      "lastAccessed": 1782808002903,
       "keyFiles": [
         "config.go",
         "config_test.go",
@@ -102,68 +102,86 @@
   "hotPaths": [
     {
       "path": "internal/cli/provider_cmd.go",
-      "accessCount": 25,
-      "lastAccessed": 1782722228368,
-      "type": "file"
-    },
-    {
-      "path": "internal/llm/service.go",
-      "accessCount": 15,
-      "lastAccessed": 1782723374425,
-      "type": "file"
-    },
-    {
-      "path": "internal/store/types.go",
-      "accessCount": 15,
-      "lastAccessed": 1782723469202,
+      "accessCount": 26,
+      "lastAccessed": 1782789023445,
       "type": "file"
     },
     {
       "path": "internal/agent/agent.go",
-      "accessCount": 14,
-      "lastAccessed": 1782724327312,
+      "accessCount": 22,
+      "lastAccessed": 1782810864738,
+      "type": "file"
+    },
+    {
+      "path": "internal/store/types.go",
+      "accessCount": 19,
+      "lastAccessed": 1782792020145,
+      "type": "file"
+    },
+    {
+      "path": "internal/llm/service.go",
+      "accessCount": 18,
+      "lastAccessed": 1782802094050,
       "type": "file"
     },
     {
       "path": "internal/cli/run.go",
-      "accessCount": 13,
-      "lastAccessed": 1782723523803,
-      "type": "file"
-    },
-    {
-      "path": "internal/cli/agent_cmd.go",
-      "accessCount": 11,
-      "lastAccessed": 1782708531174,
-      "type": "file"
-    },
-    {
-      "path": "internal/store/sqlite/db.go",
-      "accessCount": 10,
-      "lastAccessed": 1782721922412,
-      "type": "file"
-    },
-    {
-      "path": "internal/llm/adapter/openai_compat.go",
-      "accessCount": 10,
-      "lastAccessed": 1782722907984,
+      "accessCount": 17,
+      "lastAccessed": 1782810864683,
       "type": "file"
     },
     {
       "path": "internal/store/store.go",
-      "accessCount": 9,
-      "lastAccessed": 1782702853395,
+      "accessCount": 16,
+      "lastAccessed": 1782821091598,
       "type": "file"
     },
     {
-      "path": "internal/store/sqlite/agent.go",
-      "accessCount": 9,
-      "lastAccessed": 1782708547643,
+      "path": "internal/store/sqlite/db.go",
+      "accessCount": 13,
+      "lastAccessed": 1782792104515,
+      "type": "file"
+    },
+    {
+      "path": "internal/cli/agent_cmd.go",
+      "accessCount": 12,
+      "lastAccessed": 1782789029558,
       "type": "file"
     },
     {
       "path": "internal/cli/chat.go",
+      "accessCount": 12,
+      "lastAccessed": 1782794563710,
+      "type": "file"
+    },
+    {
+      "path": "internal/llm/adapter/openai_compat.go",
+      "accessCount": 11,
+      "lastAccessed": 1782802713773,
+      "type": "file"
+    },
+    {
+      "path": "internal/store/sqlite/agent.go",
+      "accessCount": 10,
+      "lastAccessed": 1782789070016,
+      "type": "file"
+    },
+    {
+      "path": "internal/store/sqlite/profile.go",
       "accessCount": 8,
-      "lastAccessed": 1782723677974,
+      "lastAccessed": 1782789070108,
+      "type": "file"
+    },
+    {
+      "path": "internal/cli/context.go",
+      "accessCount": 8,
+      "lastAccessed": 1782792203109,
+      "type": "file"
+    },
+    {
+      "path": "internal/agent/runner.go",
+      "accessCount": 8,
+      "lastAccessed": 1782806557794,
       "type": "file"
     },
     {
@@ -185,9 +203,15 @@
       "type": "file"
     },
     {
-      "path": "internal/store/sqlite/profile.go",
+      "path": "internal/config/config.go",
       "accessCount": 6,
-      "lastAccessed": 1782719699739,
+      "lastAccessed": 1782791498142,
+      "type": "file"
+    },
+    {
+      "path": "internal/llm/adapter/adapter.go",
+      "accessCount": 6,
+      "lastAccessed": 1782810698872,
       "type": "file"
     },
     {
@@ -203,27 +227,9 @@
       "type": "file"
     },
     {
-      "path": "internal/llm/adapter/adapter.go",
-      "accessCount": 5,
-      "lastAccessed": 1782722845592,
-      "type": "file"
-    },
-    {
       "path": "internal/observability/observability.go",
       "accessCount": 4,
       "lastAccessed": 1782537477085,
-      "type": "file"
-    },
-    {
-      "path": "internal/cli/context.go",
-      "accessCount": 4,
-      "lastAccessed": 1782631727862,
-      "type": "file"
-    },
-    {
-      "path": "internal/config/config.go",
-      "accessCount": 4,
-      "lastAccessed": 1782659646474,
       "type": "file"
     },
     {
@@ -245,9 +251,39 @@
       "type": "file"
     },
     {
-      "path": "internal/agent/runner.go",
+      "path": "internal/cli/init_cmd.go",
       "accessCount": 3,
-      "lastAccessed": 1782723835776,
+      "lastAccessed": 1782789030014,
+      "type": "file"
+    },
+    {
+      "path": "internal/cli/app.go",
+      "accessCount": 3,
+      "lastAccessed": 1782789030680,
+      "type": "file"
+    },
+    {
+      "path": "internal/config/defaults.go",
+      "accessCount": 3,
+      "lastAccessed": 1782789033187,
+      "type": "file"
+    },
+    {
+      "path": "internal/agent/embed.go",
+      "accessCount": 3,
+      "lastAccessed": 1782791523709,
+      "type": "file"
+    },
+    {
+      "path": "internal/llm/adapter/defaults.go",
+      "accessCount": 3,
+      "lastAccessed": 1782802958081,
+      "type": "file"
+    },
+    {
+      "path": "internal/llm/adapter/registry.go",
+      "accessCount": 3,
+      "lastAccessed": 1782802958133,
       "type": "file"
     },
     {
@@ -257,39 +293,15 @@
       "type": "file"
     },
     {
-      "path": "internal/llm/adapter/registry.go",
+      "path": "internal/store/sqlite/kv.go",
       "accessCount": 2,
-      "lastAccessed": 1782631724136,
-      "type": "file"
-    },
-    {
-      "path": "internal/config/defaults.go",
-      "accessCount": 2,
-      "lastAccessed": 1782631743298,
-      "type": "file"
-    },
-    {
-      "path": "internal/llm/adapter/defaults.go",
-      "accessCount": 2,
-      "lastAccessed": 1782631764412,
-      "type": "file"
-    },
-    {
-      "path": "internal/cli/init_cmd.go",
-      "accessCount": 2,
-      "lastAccessed": 1782631768974,
-      "type": "file"
-    },
-    {
-      "path": "internal/cli/app.go",
-      "accessCount": 2,
-      "lastAccessed": 1782702612072,
+      "lastAccessed": 1782777523795,
       "type": "file"
     },
     {
       "path": "internal/agent/tools/redaction.go",
-      "accessCount": 1,
-      "lastAccessed": 1782537122386,
+      "accessCount": 2,
+      "lastAccessed": 1782792432049,
       "type": "file"
     },
     {
@@ -329,12 +341,6 @@
       "type": "file"
     },
     {
-      "path": "internal/agent/embed.go",
-      "accessCount": 1,
-      "lastAccessed": 1782630023744,
-      "type": "file"
-    },
-    {
       "path": "internal/workspace/resolver.go",
       "accessCount": 1,
       "lastAccessed": 1782630028822,
@@ -350,12 +356,6 @@
       "path": "internal/agent/tools/registry.go",
       "accessCount": 1,
       "lastAccessed": 1782630042042,
-      "type": "file"
-    },
-    {
-      "path": "internal/store/sqlite/kv.go",
-      "accessCount": 1,
-      "lastAccessed": 1782630051499,
       "type": "file"
     },
     {

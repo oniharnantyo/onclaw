@@ -19,9 +19,12 @@ LDFLAGS := -s -w \
 BUILD_FLAGS := -trimpath -ldflags="$(LDFLAGS)"
 
 .DEFAULT_GOAL := build
-.PHONY: build run test vet lint tidy fmt build-all release clean install help
+.PHONY: build ui run test vet lint tidy fmt build-all release clean install help
 
-build: ## Build the onclaw binary for the host (static, stripped)
+ui: ## Build the React Web UI assets
+	cd web && npm run build
+
+build: ui ## Build the onclaw binary for the host (static, stripped)
 	CGO_ENABLED=0 go build $(BUILD_FLAGS) -o $(BIN_DIR)/$(APP) .
 
 run: build ## Build then run onclaw, e.g. `make run ARGS='version'`
@@ -43,7 +46,7 @@ tidy: ## Tidy and verify the module graph
 	go mod tidy
 	go mod verify
 
-build-all: ## Cross-compile static binaries for linux amd64 / arm64 / armv7
+build-all: ui ## Cross-compile static binaries for linux amd64 / arm64 / armv7
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(BUILD_FLAGS) -o $(BIN_DIR)/$(APP)-linux-amd64 .
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build $(BUILD_FLAGS) -o $(BIN_DIR)/$(APP)-linux-arm64 .
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build $(BUILD_FLAGS) -o $(BIN_DIR)/$(APP)-linux-armv7 .

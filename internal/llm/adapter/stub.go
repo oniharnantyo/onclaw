@@ -8,33 +8,37 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
-// StubChatModel implements model.ToolCallingChatModel as a test stub.
+// StubChatModel implements model.AgenticModel as a test stub.
 type StubChatModel struct{}
 
-func (s *StubChatModel) Generate(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.Message, error) {
-	return &schema.Message{
-		Role:    schema.Assistant,
-		Content: "Stub response",
+func (s *StubChatModel) Generate(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.AgenticMessage, error) {
+	return &schema.AgenticMessage{
+		Role: schema.AgenticRoleTypeAssistant,
+		ContentBlocks: []*schema.ContentBlock{
+			schema.NewContentBlock(&schema.AssistantGenText{
+				Text: "Stub response",
+			}),
+		},
 	}, nil
 }
 
-func (s *StubChatModel) Stream(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
-	sr, sw := schema.Pipe[*schema.Message](1)
-	sw.Send(&schema.Message{
-		Role:    schema.Assistant,
-		Content: "Stub streaming response",
+func (s *StubChatModel) Stream(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.StreamReader[*schema.AgenticMessage], error) {
+	sr, sw := schema.Pipe[*schema.AgenticMessage](1)
+	sw.Send(&schema.AgenticMessage{
+		Role: schema.AgenticRoleTypeAssistant,
+		ContentBlocks: []*schema.ContentBlock{
+			schema.NewContentBlock(&schema.AssistantGenText{
+				Text: "Stub streaming response",
+			}),
+		},
 	}, nil)
 	sw.Close()
 	return sr, nil
 }
 
-func (s *StubChatModel) WithTools(tools []*schema.ToolInfo) (model.ToolCallingChatModel, error) {
-	return s, nil
-}
-
 type stubAdapter struct{}
 
-func (s *stubAdapter) Build(ctx context.Context, p *store.Profile, modelName string, apiKey string) (model.ToolCallingChatModel, error) {
+func (s *stubAdapter) Build(ctx context.Context, p *store.Profile, modelName string, apiKey string) (model.AgenticModel, error) {
 	return &StubChatModel{}, nil
 }
 
@@ -42,3 +46,4 @@ func (s *stubAdapter) Build(ctx context.Context, p *store.Profile, modelName str
 func NewStubAdapter() Adapter {
 	return &stubAdapter{}
 }
+

@@ -42,3 +42,33 @@ type Agent struct {
 	CreatedAt             string
 	UpdatedAt             string
 }
+
+// Conversation represents a conversation configuration/metadata in the DB.
+type Conversation struct {
+	ID               int64
+	AgentName        string
+	SummaryUntilSeq  int64
+	SummaryMessageID int64
+	CreatedAt        string
+	UpdatedAt        string
+}
+
+// MessageRow represents a persisted conversation message in the DB.
+type MessageRow struct {
+	ID             int64
+	ConversationID int64
+	Seq            int64
+	Role           string
+	Message        string // Opaque JSON string representing the full message
+	CreatedAt      string
+}
+
+// ConversationRow represents a summarized conversation for listing in the web UI.
+type ConversationRow struct {
+	ID           int64  `json:"id"`
+	AgentName    string `json:"agent_name"`
+	MessageCount int    `json:"message_count"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
+}
+

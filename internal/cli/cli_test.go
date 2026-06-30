@@ -197,8 +197,8 @@ func TestRunCommandScenarios(t *testing.T) {
 		t.Errorf("expected 'no provider profiles found' error, got: %v", err)
 	}
 
-	// 2. Add one provider (Anthropic, which uses the stub adapter)
-	if err := app.Run(ctx, []string{"onclaw", "provider", "add", "anthropic-local", "--kind", "anthropic"}); err != nil {
+	// 2. Add one provider (Stub, which uses the stub adapter)
+	if err := app.Run(ctx, []string{"onclaw", "provider", "add", "anthropic-local", "--kind", "stub"}); err != nil {
 		t.Fatalf("failed to add anthropic: %v", err)
 	}
 
@@ -215,8 +215,8 @@ func TestRunCommandScenarios(t *testing.T) {
 		t.Errorf("unexpected run output: %q", runOut)
 	}
 
-	// 3. Add second provider (kind anthropic to keep it stubbed/mocked)
-	if err := app.Run(ctx, []string{"onclaw", "provider", "add", "openai-remote", "--kind", "anthropic"}); err != nil {
+	// 3. Add second provider (kind stub to keep it stubbed/mocked)
+	if err := app.Run(ctx, []string{"onclaw", "provider", "add", "openai-remote", "--kind", "stub"}); err != nil {
 		t.Fatalf("failed to add openai: %v", err)
 	}
 	t.Setenv("ONCLAW_PROVIDER_OPENAI_REMOTE_API_KEY", "dummykey2")

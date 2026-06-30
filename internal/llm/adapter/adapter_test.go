@@ -41,10 +41,6 @@ func TestAdapterRegistry(t *testing.T) {
 		t.Error("expected non-nil ChatModel")
 	}
 
-	// Verify stub interface works
-	if _, err := cm.WithTools(nil); err != nil {
-		t.Errorf("WithTools failed: %v", err)
-	}
 	_, _ = cm.Generate(ctx, nil)
 	_, _ = cm.Stream(ctx, nil)
 }

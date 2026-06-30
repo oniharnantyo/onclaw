@@ -111,6 +111,7 @@ func (s *appState) getProviderManager(c *cli.Command) (*llm.Service, *sql.DB, er
 		ps := sqlite.NewProfileStore(db)
 		ss := sqlite.NewSecretStore(db)
 		as := sqlite.NewAgentStore(db)
+		_ = sqlite.NewConversationStore(db)
 		ar := adapter.NewRegistry()
 		adapter.DefaultAdapters(ar)
 
@@ -132,6 +133,7 @@ func (s *appState) getProviderManager(c *cli.Command) (*llm.Service, *sql.DB, er
 	ps := sqlite.NewProfileStore(db)
 	ss := sqlite.NewSecretStore(db)
 	as := sqlite.NewAgentStore(db)
+	_ = sqlite.NewConversationStore(db)
 	km := secrets.NewKeyManager(dek)
 	ar := adapter.NewRegistry()
 	adapter.DefaultAdapters(ar)

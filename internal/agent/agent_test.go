@@ -3,8 +3,6 @@ package agent
 import (
 	"bytes"
 	"context"
-	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,36 +11,41 @@ import (
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+	"github.com/oniharnantyo/onclaw/internal/render"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
 type fakeChatModel struct {
-	generateFunc func(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.Message, error)
-	streamFunc   func(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error)
-	boundTools   []*schema.ToolInfo
+	generateFunc func(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.AgenticMessage, error)
+	streamFunc   func(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.StreamReader[*schema.AgenticMessage], error)
 }
 
-func (f *fakeChatModel) Generate(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.Message, error) {
+func (f *fakeChatModel) Generate(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.AgenticMessage, error) {
 	if f.generateFunc != nil {
 		return f.generateFunc(ctx, input, opts...)
 	}
-	return &schema.Message{Role: schema.Assistant, Content: "Default fake response"}, nil
+	return &schema.AgenticMessage{
+		Role: schema.AgenticRoleTypeAssistant,
+		ContentBlocks: []*schema.ContentBlock{
+			schema.NewContentBlock(&schema.AssistantGenText{Text: "Default fake response"}),
+		},
+	}, nil
 }
 
-func (f *fakeChatModel) Stream(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+func (f *fakeChatModel) Stream(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.StreamReader[*schema.AgenticMessage], error) {
 	if f.streamFunc != nil {
 		return f.streamFunc(ctx, input, opts...)
 	}
-	msg := &schema.Message{Role: schema.Assistant, Content: "Default fake streaming response"}
-	sr, sw := schema.Pipe[*schema.Message](1)
+	msg := &schema.AgenticMessage{
+		Role: schema.AgenticRoleTypeAssistant,
+		ContentBlocks: []*schema.ContentBlock{
+			schema.NewContentBlock(&schema.AssistantGenText{Text: "Default fake streaming response"}),
+		},
+	}
+	sr, sw := schema.Pipe[*schema.AgenticMessage](1)
 	sw.Send(msg, nil)
 	sw.Close()
 	return sr, nil
-}
-
-func (f *fakeChatModel) WithTools(tools []*schema.ToolInfo) (model.ToolCallingChatModel, error) {
-	f.boundTools = tools
-	return f, nil
 }
 
 func TestAssembleAndRunAgent_ReActLoop(t *testing.T) {
@@ -70,17 +73,17 @@ func TestAssembleAndRunAgent_ReActLoop(t *testing.T) {
 
 	// Setup fake ChatModel to simulate a tool-calling loop
 	modelCalls := 0
-	respondMock := func(input []*schema.Message) (*schema.Message, error) {
+	respondMock := func(input []*schema.AgenticMessage) (*schema.AgenticMessage, error) {
 		modelCalls++
 		if modelCalls == 1 {
 			// First call: trigger read_file tool call
-			return &schema.Message{
-				Role: schema.Assistant,
-				ToolCalls: []schema.ToolCall{
+			return &schema.AgenticMessage{
+				Role: schema.AgenticRoleTypeAssistant,
+				ContentBlocks: []*schema.ContentBlock{
 					{
-						ID:   "call_1",
-						Type: "function",
-						Function: schema.FunctionCall{
+						Type: schema.ContentBlockTypeFunctionToolCall,
+						FunctionToolCall: &schema.FunctionToolCall{
+							CallID:    "call_1",
 							Name:      "read_file",
 							Arguments: `{"path":"README.md"}`,
 						},
@@ -89,22 +92,24 @@ func TestAssembleAndRunAgent_ReActLoop(t *testing.T) {
 			}, nil
 		}
 		// Second call: return final text answer
-		return &schema.Message{
-			Role:    schema.Assistant,
-			Content: "Successfully read README.md. Content: Hello onclaw!",
+		return &schema.AgenticMessage{
+			Role: schema.AgenticRoleTypeAssistant,
+			ContentBlocks: []*schema.ContentBlock{
+				schema.NewContentBlock(&schema.AssistantGenText{Text: "Successfully read README.md. Content: Hello onclaw!"}),
+			},
 		}, nil
 	}
 
 	fm := &fakeChatModel{
-		generateFunc: func(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.Message, error) {
+		generateFunc: func(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.AgenticMessage, error) {
 			return respondMock(input)
 		},
-		streamFunc: func(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+		streamFunc: func(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.StreamReader[*schema.AgenticMessage], error) {
 			msg, err := respondMock(input)
 			if err != nil {
 				return nil, err
 			}
-			sr, sw := schema.Pipe[*schema.Message](1)
+			sr, sw := schema.Pipe[*schema.AgenticMessage](1)
 			sw.Send(msg, nil)
 			sw.Close()
 			return sr, nil
@@ -119,16 +124,27 @@ func TestAssembleAndRunAgent_ReActLoop(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	agent, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000)
+	agent, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
 
 	var stdout bytes.Buffer
-	transcriptPath := filepath.Join(userConfigDir, "transcript.jsonl")
-
-	err = RunAgent(ctx, agent, "Read the README.md file please.", &stdout, transcriptPath)
-	if err != nil {
+	it := agent.Run(ctx, "Read the README.md file please.")
+	tr := render.Text(&stdout)
+	for {
+		msg, ok := it.Next()
+		if !ok {
+			break
+		}
+		if err := tr.Render(msg); err != nil {
+			t.Fatalf("failed to render: %v", err)
+		}
+	}
+	if err := tr.Flush(); err != nil {
+		t.Fatalf("failed to flush: %v", err)
+	}
+	if err := it.Err(); err != nil {
 		t.Fatalf("failed to run agent: %v", err)
 	}
 
@@ -138,23 +154,6 @@ func TestAssembleAndRunAgent_ReActLoop(t *testing.T) {
 	}
 	if !strings.Contains(output, "Successfully read README.md. Content: Hello onclaw!") {
 		t.Errorf("stdout does not contain final response, got: %q", output)
-	}
-
-	// Verify transcript entries
-	entries, err := readTranscript(transcriptPath)
-	if err != nil {
-		t.Fatalf("failed to read transcript: %v", err)
-	}
-
-	expectedTypes := []string{"user", "tool_call", "tool_result", "assistant"}
-	if len(entries) < len(expectedTypes) {
-		t.Fatalf("expected at least %d transcript entries, got %d", len(expectedTypes), len(entries))
-	}
-
-	for i, expected := range expectedTypes {
-		if entries[i].Type != expected {
-			t.Errorf("expected entry %d to have type %q, got %q", i, expected, entries[i].Type)
-		}
 	}
 }
 
@@ -176,15 +175,20 @@ func TestAssembleAndRunAgent_Cancellation(t *testing.T) {
 	}
 
 	fm := &fakeChatModel{
-		streamFunc: func(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+		streamFunc: func(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.StreamReader[*schema.AgenticMessage], error) {
 			// Simulate long-running inference that respects cancellation
-			sr, sw := schema.Pipe[*schema.Message](1)
+			sr, sw := schema.Pipe[*schema.AgenticMessage](1)
 			go func() {
 				select {
 				case <-ctx.Done():
 					sw.Send(nil, ctx.Err())
 				case <-time.After(1 * time.Second):
-					sw.Send(&schema.Message{Role: schema.Assistant, Content: "Finished"}, nil)
+					sw.Send(&schema.AgenticMessage{
+						Role: schema.AgenticRoleTypeAssistant,
+						ContentBlocks: []*schema.ContentBlock{
+							schema.NewContentBlock(&schema.AssistantGenText{Text: "Finished"}),
+						},
+					}, nil)
 				}
 				sw.Close()
 			}()
@@ -197,34 +201,23 @@ func TestAssembleAndRunAgent_Cancellation(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	agent, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000)
+	agent, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
-
-	transcriptPath := filepath.Join(userConfigDir, "transcript.jsonl")
-
 	// Cancel context immediately
 	cancel()
 
-	var stdout bytes.Buffer
-	err = RunAgent(ctx, agent, "Hello", &stdout, transcriptPath)
+	it := agent.Run(ctx, "Hello")
+	for {
+		_, ok := it.Next()
+		if !ok {
+			break
+		}
+	}
+	err = it.Err()
 	if err == nil {
-		t.Error("expected RunAgent to fail with cancellation error, got nil")
-	}
-
-	entries, err := readTranscript(transcriptPath)
-	if err != nil {
-		t.Fatalf("failed to read transcript: %v", err)
-	}
-
-	// Last entry should be "interrupted"
-	if len(entries) == 0 {
-		t.Fatal("expected at least one entry in transcript")
-	}
-	lastEntry := entries[len(entries)-1]
-	if lastEntry.Type != "interrupted" {
-		t.Errorf("expected last transcript entry type to be 'interrupted', got %q", lastEntry.Type)
+		t.Error("expected run to fail with cancellation error, got nil")
 	}
 }
 
@@ -243,7 +236,7 @@ func TestAssembleAgent_ContextWindowTrigger(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Compile and resolve with 128000 context window (verifies 80% logic runs)
-	ag, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 128000)
+	ag, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 128000, dummyConvStore{}, 1)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
@@ -252,34 +245,13 @@ func TestAssembleAgent_ContextWindowTrigger(t *testing.T) {
 	}
 
 	// 2. Re-assemble with 64000 context window
-	ag2, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000)
+	ag2, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1)
 	if err != nil {
 		t.Fatalf("failed to assemble agent second time: %v", err)
 	}
 	if ag2 == nil {
 		t.Fatal("expected non-nil agent on second assembly")
 	}
-}
-
-func readTranscript(path string) ([]TranscriptEntry, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	var entries []TranscriptEntry
-	dec := json.NewDecoder(file)
-	for {
-		var entry TranscriptEntry
-		if err := dec.Decode(&entry); err == io.EOF {
-			break
-		} else if err != nil {
-			return nil, err
-		}
-		entries = append(entries, entry)
-	}
-	return entries, nil
 }
 
 func TestSummarizationTrigger(t *testing.T) {
@@ -297,4 +269,25 @@ func TestSummarizationTrigger(t *testing.T) {
 			t.Errorf("summarizationTrigger(%d) = %d; want %d", tc.window, got, tc.expected)
 		}
 	}
+}
+
+type dummyConvStore struct{}
+
+func (dummyConvStore) CreateConversation(ctx context.Context, agentName string) (int64, error) {
+	return 1, nil
+}
+func (dummyConvStore) AppendMessage(ctx context.Context, conversationID int64, role string, messageJSON string) (int64, error) {
+	return 1, nil
+}
+func (dummyConvStore) LoadHistory(ctx context.Context, conversationID int64) (*store.MessageRow, []*store.MessageRow, error) {
+	return nil, nil, nil
+}
+func (dummyConvStore) ListMessages(ctx context.Context, conversationID int64) ([]*store.MessageRow, error) {
+	return nil, nil
+}
+func (dummyConvStore) SaveSummary(ctx context.Context, conversationID int64, summaryMessageJSON string, coveredUntilSeq int64) error {
+	return nil
+}
+func (dummyConvStore) ListConversations(ctx context.Context) ([]*store.ConversationRow, error) {
+	return nil, nil
 }
