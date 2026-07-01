@@ -27,7 +27,7 @@ type Agent struct {
 }
 
 // AssembleAgent constructs a ChatModelAgent with persona configuration, tools, and summarization middleware.
-func AssembleAgent(ctx context.Context, agentConf *store.Agent, chatModel model.AgenticModel, workspace string, userConfigDir string, shellPolicy string, shellAllowlist []string, contextWindow int, convStore store.ConversationStore, conversationID int64) (*Agent, error) {
+func AssembleAgent(ctx context.Context, agentConf *store.Agent, chatModel model.AgenticModel, workspace string, userConfigDir string, shellPolicy string, shellAllowlist []string, contextWindow int, convStore store.ConversationStore, conversationID int64, mcpTools []tool.BaseTool) (*Agent, error) {
 	// Load existing persona/memory files and AGENTS.md
 	persona, err := LoadPersonaContext(ctx, workspace, userConfigDir)
 	if err != nil {
@@ -61,6 +61,7 @@ func AssembleAgent(ctx context.Context, agentConf *store.Agent, chatModel model.
 		ShellPolicy:    shellPolicy,
 		ShellAllowlist: shellAllowlist,
 	})
+	builtTools = append(builtTools, mcpTools...)
 
 	// Filter tools if a tool subset is configured on the agent
 	if agentConf.Tools != "" {
@@ -177,11 +178,22 @@ func AssembleAgent(ctx context.Context, agentConf *store.Agent, chatModel model.
 			},
 		},
 		MaxIterations: maxIterations,
-		Handlers: []adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage]{
-			summarizationMiddleware,
-			historyMiddleware,
-		},
 	}
+
+	skillMiddleware, err := middlewares.BuildMiddleware(ctx, userConfigDir, agentConf.Name)
+	if err != nil {
+		return nil, fmt.Errorf("build skill middleware: %w", err)
+	}
+
+	handlers := []adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage]{
+		summarizationMiddleware,
+		historyMiddleware,
+	}
+	if skillMiddleware != nil {
+		handlers = append(handlers, skillMiddleware)
+	}
+	agentConfig.Handlers = handlers
+
 
 	einoAgent, err := adk.NewTypedChatModelAgent[*schema.AgenticMessage](ctx, agentConfig)
 	if err != nil {

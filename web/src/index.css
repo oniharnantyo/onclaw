@@ -270,6 +270,17 @@ body {
   padding: 8px 10px 4px;
 }
 
+/* Navigation group - adds spacing between groups */
+.nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-group + .nav-group {
+  margin-top: 8px;
+}
+
 .nav-item {
   display: flex;
   align-items: center;

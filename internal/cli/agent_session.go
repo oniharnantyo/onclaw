@@ -9,8 +9,10 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/cloudwego/eino/components/tool"
 	"github.com/oniharnantyo/onclaw/internal/agent"
 	"github.com/oniharnantyo/onclaw/internal/llm"
+	"github.com/oniharnantyo/onclaw/internal/mcp"
 	"github.com/oniharnantyo/onclaw/internal/store"
 	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
 	"github.com/oniharnantyo/onclaw/internal/workspace"
@@ -24,7 +26,7 @@ type agentSessionRequest struct {
 	Workspace    string
 }
 
-func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.Service, req agentSessionRequest, convStore store.ConversationStore, convID int64) (*agent.Agent, string, error) {
+func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.Service, req agentSessionRequest, convStore store.ConversationStore, convID int64, mcpMgr mcp.Manager) (*agent.Agent, string, error) {
 	// 1. Resolve agent configuration
 	agentConf, err := mgr.GetAgent(ctx, req.AgentName)
 	if err != nil {
@@ -161,6 +163,14 @@ func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.
 	}
 	userConfigDir := filepath.Dir(resolvedDbPath)
 
+	var mcpTools []tool.BaseTool
+	if mcpMgr != nil {
+		mcpTools, err = mcpMgr.Tools(ctx)
+		if err != nil {
+			return nil, "", fmt.Errorf("retrieve mcp tools: %w", err)
+		}
+	}
+
 	assembledAgent, err := agent.AssembleAgent(
 		ctx,
 		agentConf,
@@ -172,6 +182,7 @@ func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.
 		contextWindow,
 		convStore,
 		convID,
+		mcpTools,
 	)
 	if err != nil {
 		return nil, "", fmt.Errorf("assemble agent: %w", err)

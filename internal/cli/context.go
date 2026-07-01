@@ -14,6 +14,7 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/llm"
 	"github.com/oniharnantyo/onclaw/internal/llm/adapter"
 	"github.com/oniharnantyo/onclaw/internal/secrets"
+	"github.com/oniharnantyo/onclaw/internal/skill"
 	"github.com/oniharnantyo/onclaw/internal/store"
 	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
 	"github.com/urfave/cli/v3"
@@ -44,24 +45,24 @@ func decryptDEK(ctx context.Context, db *sql.DB, resolvedPath string) ([]byte, e
 	return dek, nil
 }
 
-func (s *appState) getProviderManager(c *cli.Command) (*llm.Service, *sql.DB, error) {
+func (s *appState) getProviderManager(c *cli.Command) (*llm.Service, store.MCPServerStore, *sql.DB, error) {
 	if err := s.ensure(c); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	resolvedPath, err := sqlite.ResolveDbPath(s.cfg.DbPath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("resolve db path: %w", err)
+		return nil, nil, nil, fmt.Errorf("resolve db path: %w", err)
 	}
 
 	db, err := sqlite.Open(resolvedPath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("open db: %w", err)
+		return nil, nil, nil, fmt.Errorf("open db: %w", err)
 	}
 
 	if err := sqlite.Migrate(db); err != nil {
 		db.Close()
-		return nil, nil, fmt.Errorf("migrate db: %w", err)
+		return nil, nil, nil, fmt.Errorf("migrate db: %w", err)
 	}
 
 	ctx := context.Background()
@@ -74,7 +75,7 @@ func (s *appState) getProviderManager(c *cli.Command) (*llm.Service, *sql.DB, er
 		dek, err := secrets.GenerateDEK()
 		if err != nil {
 			db.Close()
-			return nil, nil, fmt.Errorf("generate DEK: %w", err)
+			return nil, nil, nil, fmt.Errorf("generate DEK: %w", err)
 		}
 
 		keyfilePath := secrets.ResolveKeyfilePath(resolvedPath)
@@ -82,30 +83,30 @@ func (s *appState) getProviderManager(c *cli.Command) (*llm.Service, *sql.DB, er
 		wrapped, err := km.SwitchToKeyfile(keyfilePath)
 		if err != nil {
 			db.Close()
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
 			db.Close()
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		defer tx.Rollback()
 
 		_, err = tx.ExecContext(ctx, "INSERT OR REPLACE INTO preferences (key, value) VALUES ('wrapped_dek', ?)", wrapped)
 		if err != nil {
 			db.Close()
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 
 		if err != nil {
 			db.Close()
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 
 		if err := tx.Commit(); err != nil {
 			db.Close()
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 
 		ps := sqlite.NewProfileStore(db)
@@ -116,18 +117,18 @@ func (s *appState) getProviderManager(c *cli.Command) (*llm.Service, *sql.DB, er
 		adapter.DefaultAdapters(ar)
 
 		mgr := llm.NewService(ps, ss, km, ar, as)
-		return mgr, db, nil
+		return mgr, sqlite.NewMCPServerStore(db), db, nil
 
 	} else if err != nil {
 		db.Close()
-		return nil, nil, fmt.Errorf("query wrapped_dek preference: %w", err)
+		return nil, nil, nil, fmt.Errorf("query wrapped_dek preference: %w", err)
 	}
 
 	// wrapped_dek exists
 	dek, err := decryptDEK(ctx, db, resolvedPath)
 	if err != nil {
 		db.Close()
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	ps := sqlite.NewProfileStore(db)
@@ -139,7 +140,7 @@ func (s *appState) getProviderManager(c *cli.Command) (*llm.Service, *sql.DB, er
 	adapter.DefaultAdapters(ar)
 
 	mgr := llm.NewService(ps, ss, km, ar, as)
-	return mgr, db, nil
+	return mgr, sqlite.NewMCPServerStore(db), db, nil
 }
 
 func writePIDFile(dbPath string) (string, error) {
@@ -261,3 +262,31 @@ func (s *appState) getOrSeedMasterAgent(ctx context.Context, db *sql.DB, mgr *ll
 
 	return nil, err
 }
+
+func (s *appState) getSkillInstaller(c *cli.Command) (*skill.Installer, *sql.DB, error) {
+	if err := s.ensure(c); err != nil {
+		return nil, nil, err
+	}
+
+	resolvedPath, err := sqlite.ResolveDbPath(s.cfg.DbPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve db path: %w", err)
+	}
+
+	db, err := sqlite.Open(resolvedPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open db: %w", err)
+	}
+
+	if err := sqlite.Migrate(db); err != nil {
+		db.Close()
+		return nil, nil, fmt.Errorf("migrate db: %w", err)
+	}
+
+	ss := sqlite.NewSkillStore(db)
+	home := filepath.Dir(resolvedPath)
+
+	inst := skill.NewInstaller(ss, home)
+	return inst, db, nil
+}
+

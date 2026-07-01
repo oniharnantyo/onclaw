@@ -72,7 +72,7 @@ func agentCommand(st *appState) *cli.Command {
 						systemPrompt = string(data)
 					}
 
-					mgr, db, err := st.getProviderManager(c)
+					mgr, _, db, err := st.getProviderManager(c)
 					if err != nil {
 						return err
 					}
@@ -169,7 +169,7 @@ func agentCommand(st *appState) *cli.Command {
 					}
 					name := c.Args().First()
 
-					mgr, db, err := st.getProviderManager(c)
+					mgr, _, db, err := st.getProviderManager(c)
 					if err != nil {
 						return err
 					}
@@ -195,7 +195,7 @@ func agentCommand(st *appState) *cli.Command {
 				Name:  "list",
 				Usage: "List all agent profiles",
 				Action: func(ctx context.Context, c *cli.Command) error {
-					mgr, db, err := st.getProviderManager(c)
+					mgr, _, db, err := st.getProviderManager(c)
 					if err != nil {
 						return err
 					}
@@ -236,7 +236,7 @@ func agentCommand(st *appState) *cli.Command {
 					}
 					name := c.Args().First()
 
-					mgr, db, err := st.getProviderManager(c)
+					mgr, _, db, err := st.getProviderManager(c)
 					if err != nil {
 						return err
 					}
@@ -299,7 +299,7 @@ func agentCommand(st *appState) *cli.Command {
 					}
 					name := c.Args().First()
 
-					mgr, db, err := st.getProviderManager(c)
+					mgr, _, db, err := st.getProviderManager(c)
 					if err != nil {
 						return err
 					}
@@ -393,7 +393,7 @@ func agentCommand(st *appState) *cli.Command {
 					}
 					name := c.Args().First()
 
-					mgr, db, err := st.getProviderManager(c)
+					mgr, _, db, err := st.getProviderManager(c)
 					if err != nil {
 						return err
 					}

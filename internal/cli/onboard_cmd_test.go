@@ -32,7 +32,7 @@ func setupTestDB(t *testing.T) (*appState, *llm.Service, *sql.DB, string) {
 		},
 	}
 
-	mgr, db, err := st.getProviderManager(nil)
+	mgr, _, db, err := st.getProviderManager(nil)
 	if err != nil {
 		t.Fatalf("failed to get provider manager: %v", err)
 	}

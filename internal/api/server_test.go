@@ -22,6 +22,7 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/llm"
 	"github.com/oniharnantyo/onclaw/internal/llm/adapter"
 	"github.com/oniharnantyo/onclaw/internal/secrets"
+	"github.com/oniharnantyo/onclaw/internal/skill"
 	"github.com/oniharnantyo/onclaw/internal/store"
 	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
 	"golang.org/x/crypto/bcrypt"
@@ -69,7 +70,15 @@ func setupTestServer(t *testing.T, db *sql.DB, resolveFn ResolveAndAssembleFunc)
 		}
 	}
 
-	svc := service.New(mgr, kv, convStore, resolveFn, logger)
+	skillStore := sqlite.NewSkillStore(db)
+	tempHome, err := os.MkdirTemp("", "onclaw-server-test-home")
+	if err != nil {
+		t.Fatalf("failed to create temp home: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(tempHome) })
+	inst := skill.NewInstaller(skillStore, tempHome)
+
+	svc := service.New(mgr, kv, convStore, resolveFn, inst, logger)
 	s := NewServer(svc, logger)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

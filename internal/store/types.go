@@ -72,3 +72,33 @@ type ConversationRow struct {
 	UpdatedAt    string `json:"updated_at"`
 }
 
+// Skill represents an installed skill metadata ledger entry in the DB.
+type Skill struct {
+	Name        string `json:"name"`
+	Scope       string `json:"scope"`       // e.g. "global" or agent name
+	SourceType  string `json:"source_type"` // e.g. "github", "http", "local", "plugin"
+	Source      string `json:"source"`      // original source identifier/URL
+	SkillPath   string `json:"skill_path"`  // relative/absolute directory path on disk
+	Version     string `json:"version"`
+	Hash        string `json:"hash"`
+	Description string `json:"description"`
+	Enabled     int    `json:"enabled"` // 1 = enabled, 0 = disabled
+	InstalledAt string `json:"installed_at"`
+	UpdatedAt   string `json:"updated_at"`
+}
+
+// MCPServer represents a managed Model Context Protocol server configuration in the DB.
+type MCPServer struct {
+	Name      string `json:"name"`
+	Transport string `json:"transport"` // "stdio", "http", or "sse"
+	Command   string `json:"command"`   // Command to run for stdio
+	Args      string `json:"args"`      // JSON array of command arguments
+	Env       string `json:"env"`       // JSON object of environment variables
+	URL       string `json:"url"`       // Server URL for http or sse
+	Enabled   int    `json:"enabled"`   // 1 = enabled, 0 = disabled
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+
+

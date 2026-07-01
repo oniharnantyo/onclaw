@@ -183,7 +183,7 @@ func providerSetupCommand(st *appState) *cli.Command {
 		Name:  "setup",
 		Usage: "Guide setup of LLM provider profiles interactively",
 		Action: func(ctx context.Context, c *cli.Command) error {
-			mgr, db, err := st.getProviderManager(c)
+			mgr, _, db, err := st.getProviderManager(c)
 			if err != nil {
 				return err
 			}

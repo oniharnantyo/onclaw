@@ -48,7 +48,7 @@ func providerCommand(st *appState) *cli.Command {
 					baseURL := c.String("base-url")
 					contextWindow := c.Int("context-window")
 
-					mgr, db, err := st.getProviderManager(c)
+					mgr, _, db, err := st.getProviderManager(c)
 					if err != nil {
 						return err
 					}
@@ -87,7 +87,7 @@ func providerCommand(st *appState) *cli.Command {
 					}
 					name := c.Args().First()
 
-					mgr, db, err := st.getProviderManager(c)
+					mgr, _, db, err := st.getProviderManager(c)
 					if err != nil {
 						return err
 					}
@@ -131,7 +131,7 @@ func providerCommand(st *appState) *cli.Command {
 				Name:  "list",
 				Usage: "List all provider profiles",
 				Action: func(ctx context.Context, c *cli.Command) error {
-					mgr, db, err := st.getProviderManager(c)
+					mgr, _, db, err := st.getProviderManager(c)
 					if err != nil {
 						return err
 					}
@@ -181,7 +181,7 @@ func providerCommand(st *appState) *cli.Command {
 					}
 					name := c.Args().First()
 
-					mgr, db, err := st.getProviderManager(c)
+					mgr, _, db, err := st.getProviderManager(c)
 					if err != nil {
 						return err
 					}
@@ -212,7 +212,7 @@ func providerCommand(st *appState) *cli.Command {
 					}
 					name := c.Args().First()
 
-					mgr, db, err := st.getProviderManager(c)
+					mgr, _, db, err := st.getProviderManager(c)
 					if err != nil {
 						return err
 					}

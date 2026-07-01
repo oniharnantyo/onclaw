@@ -61,7 +61,7 @@ func initCommand(st *appState) *cli.Command {
 		Name:  "init",
 		Usage: "Initialize onclaw interactively",
 		Action: func(ctx context.Context, c *cli.Command) error {
-			mgr, db, err := st.getProviderManager(c)
+			mgr, _, db, err := st.getProviderManager(c)
 			if err != nil {
 				return err
 			}

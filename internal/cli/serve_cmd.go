@@ -7,12 +7,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
-	"github.com/oniharnantyo/onclaw/internal/llm"
-	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
 	"github.com/oniharnantyo/onclaw/internal/api"
 	"github.com/oniharnantyo/onclaw/internal/api/service"
+	"github.com/oniharnantyo/onclaw/internal/llm"
+	"github.com/oniharnantyo/onclaw/internal/mcp"
+	"github.com/oniharnantyo/onclaw/internal/skill"
+	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
 	"github.com/urfave/cli/v3"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/term"
@@ -43,11 +46,14 @@ func serveCommand(st *appState) *cli.Command {
 				return err
 			}
 
-			mgr, db, err := st.getProviderManager(c)
+			mgr, mcpStore, db, err := st.getProviderManager(c)
 			if err != nil {
 				return err
 			}
 			defer db.Close()
+
+			mcpMgr := mcp.NewManager(mcpStore)
+			defer mcpMgr.Close()
 
 			kv := sqlite.NewKVStore(db)
 			convStore := sqlite.NewConversationStore(db)
@@ -164,10 +170,15 @@ func serveCommand(st *appState) *cli.Command {
 					ModelName:    modelName,
 					Reasoning:    reasoning,
 					Workspace:    workspacePath,
-				}, convStore, convID)
+				}, convStore, convID, mcpMgr)
 			}
 
-			svc := service.New(mgr, kv, convStore, resolveFn, st.log)
+			ss := sqlite.NewSkillStore(db)
+			resolvedPath, _ := sqlite.ResolveDbPath(st.cfg.DbPath)
+			home := filepath.Dir(resolvedPath)
+			installer := skill.NewInstaller(ss, home)
+
+			svc := service.New(mgr, kv, convStore, resolveFn, installer, st.log)
 			server := api.NewServer(svc, st.log)
 
 			st.log.Info("Starting web management console", "addr", addr)

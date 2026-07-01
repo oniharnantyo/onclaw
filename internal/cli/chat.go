@@ -14,8 +14,9 @@ import (
 	"github.com/urfave/cli/v3"
 
 	"github.com/oniharnantyo/onclaw/internal/agent"
-	"github.com/oniharnantyo/onclaw/internal/render"
 	"github.com/oniharnantyo/onclaw/internal/llm"
+	"github.com/oniharnantyo/onclaw/internal/mcp"
+	"github.com/oniharnantyo/onclaw/internal/render"
 	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
 )
 
@@ -54,11 +55,14 @@ func chatCommand(st *appState) *cli.Command {
 				return err
 			}
 
-			mgr, db, err := st.getProviderManager(c)
+			mgr, mcpStore, db, err := st.getProviderManager(c)
 			if err != nil {
 				return err
 			}
 			defer db.Close()
+
+			mcpMgr := mcp.NewManager(mcpStore)
+			defer mcpMgr.Close()
 
 			resolvedDbPath, err := sqlite.ResolveDbPath(st.cfg.DbPath)
 			if err != nil {
@@ -135,7 +139,7 @@ func chatCommand(st *appState) *cli.Command {
 					ModelName:    activeModel,
 					Reasoning:    activeReasoning,
 					Workspace:    c.String("workspace"),
-				}, convStore, convID)
+				}, convStore, convID, mcpMgr)
 				if err != nil {
 					return err
 				}

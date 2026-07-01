@@ -422,7 +422,7 @@ func TestStdinErrorPaths(t *testing.T) {
 	c := &cli.Command{}
 	_ = st.ensure(c)
 	st.cfg.DbPath = "/nonexistent-dir/test.db"
-	_, db, err := st.getProviderManager(c)
+	_, _, db, err := st.getProviderManager(c)
 	if err == nil {
 		t.Error("expected getProviderManager to fail for nonexistent db directory path")
 	}
@@ -440,7 +440,7 @@ func TestStdinErrorPaths(t *testing.T) {
 	_ = os.WriteFile(keyfilePath, make([]byte, 32), 0666) // create keyfile with 0666 permissions
 	_ = os.Chmod(keyfilePath, 0666)                       // force permissions to be too wide regardless of umask
 
-	_, db, err = st.getProviderManager(c)
+	_, _, db, err = st.getProviderManager(c)
 	if err == nil || !strings.Contains(err.Error(), "too wide") {
 		t.Errorf("expected permissions too wide error, got: %v", err)
 	}
@@ -451,7 +451,7 @@ func TestStdinErrorPaths(t *testing.T) {
 	// 9. Keyfile wrong size error in getProviderManager
 	_ = os.Remove(keyfilePath)
 	_ = os.WriteFile(keyfilePath, make([]byte, 10), 0600)
-	_, db, err = st.getProviderManager(c)
+	_, _, db, err = st.getProviderManager(c)
 	if err == nil || !strings.Contains(err.Error(), "exactly 32 bytes") {
 		t.Errorf("expected size 32 bytes error, got: %v", err)
 	}
@@ -569,7 +569,7 @@ func TestProviderManagerInitWriteError(t *testing.T) {
 	c := &cli.Command{}
 	_ = st.ensure(c)
 
-	mgr, db, err := st.getProviderManager(c)
+	mgr, _, db, err := st.getProviderManager(c)
 	if err == nil {
 		t.Error("expected getProviderManager to fail to write KEK keyfile")
 	}

@@ -8,6 +8,7 @@ import {
   SignOut,
   WarningCircle,
   CheckCircle,
+  Code,
 } from '@phosphor-icons/react';
 
 import Login from './components/Login';
@@ -19,8 +20,21 @@ import Conversations from './components/Conversations';
 import type { Conversation } from './components/Conversations';
 import Chat from './components/Chat';
 import type { Message } from './components/MessageBubble';
+import Skills from './components/Skills';
+import type { Skill } from './components/Skills';
 
-type Tab = 'chat' | 'conversations' | 'providers' | 'agents';
+type Tab = 'chat' | 'conversations' | 'providers' | 'agents' | 'skills';
+
+interface NavItem {
+  id: Tab;
+  label: string;
+  icon: React.ReactNode;
+}
+
+interface NavGroup {
+  label: string;
+  items: NavItem[];
+}
 
 interface Toast {
   id: number;
@@ -36,6 +50,7 @@ export default function App() {
   // Data States
   const [providers, setProviders] = useState<Provider[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [skills, setSkills] = useState<Skill[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [activeConvID, setActiveConvID] = useState<number | null>(null);
@@ -75,6 +90,7 @@ export default function App() {
       loadProviders();
       loadAgents();
       loadConversations();
+      loadSkills();
     }
   }, [isLoggedIn]);
 
@@ -123,6 +139,18 @@ export default function App() {
       }
     } catch {
       showToast('Failed to load conversations', 'error');
+    }
+  };
+
+  const loadSkills = async () => {
+    try {
+      const res = await fetch('/api/skills');
+      if (res.ok) {
+        const data = await res.json();
+        setSkills(data || []);
+      }
+    } catch {
+      showToast('Failed to load skills', 'error');
     }
   };
 
@@ -180,11 +208,27 @@ export default function App() {
     return <Login onLoginSuccess={() => setIsLoggedIn(true)} showToast={showToast} />;
   }
 
-  const NAV_ITEMS: { id: Tab; label: string; icon: React.ReactNode }[] = [
-    { id: 'chat',          label: 'Live Chat',  icon: <ChatCircle weight="duotone" size={18} /> },
-    { id: 'conversations', label: 'History',    icon: <ClockCounterClockwise weight="duotone" size={18} /> },
-    { id: 'providers',     label: 'Providers',  icon: <Key weight="duotone" size={18} /> },
-    { id: 'agents',        label: 'Agents',     icon: <Robot weight="duotone" size={18} /> },
+  const NAV_GROUPS: NavGroup[] = [
+    {
+      label: 'Chat',
+      items: [
+        { id: 'chat',          label: 'Live Chat',  icon: <ChatCircle weight="duotone" size={18} /> },
+        { id: 'conversations', label: 'History',    icon: <ClockCounterClockwise weight="duotone" size={18} /> },
+      ],
+    },
+    {
+      label: 'Agent',
+      items: [
+        { id: 'agents',        label: 'Agents',     icon: <Robot weight="duotone" size={18} /> },
+        { id: 'skills',        label: 'Skills',     icon: <Code weight="duotone" size={18} /> },
+      ],
+    },
+    {
+      label: 'Configuration',
+      items: [
+        { id: 'providers',     label: 'Providers',  icon: <Key weight="duotone" size={18} /> },
+      ],
+    },
   ];
 
   const HEADER_TITLES: Record<Tab, string> = {
@@ -192,6 +236,7 @@ export default function App() {
     conversations: 'Conversation History',
     providers:     'LLM Providers',
     agents:        'AI Agents',
+    skills:        'Agent Skills',
   };
 
   return (
@@ -222,18 +267,22 @@ export default function App() {
         </div>
 
         <nav className="sidebar-nav">
-          <div className="nav-section-label">Navigation</div>
-          {NAV_ITEMS.map((item) => (
-            <button
-              key={item.id}
-              id={`nav-${item.id}`}
-              className={`nav-item ${activeTab === item.id ? 'active' : ''}`}
-              onClick={() => setActiveTab(item.id)}
-              aria-current={activeTab === item.id ? 'page' : undefined}
-            >
-              <span className="nav-item-icon" aria-hidden="true">{item.icon}</span>
-              {item.label}
-            </button>
+          {NAV_GROUPS.map((group) => (
+            <div key={group.label} className="nav-group">
+              <div className="nav-section-label">{group.label}</div>
+              {group.items.map((item) => (
+                <button
+                  key={item.id}
+                  id={`nav-${item.id}`}
+                  className={`nav-item ${activeTab === item.id ? 'active' : ''}`}
+                  onClick={() => setActiveTab(item.id)}
+                  aria-current={activeTab === item.id ? 'page' : undefined}
+                >
+                  <span className="nav-item-icon" aria-hidden="true">{item.icon}</span>
+                  {item.label}
+                </button>
+              ))}
+            </div>
           ))}
         </nav>
 
@@ -307,6 +356,14 @@ export default function App() {
             agents={agents}
             providers={providers}
             loadAgents={loadAgents}
+            showToast={showToast}
+          />
+        )}
+
+        {activeTab === 'skills' && (
+          <Skills
+            skills={skills}
+            loadSkills={loadSkills}
             showToast={showToast}
           />
         )}

@@ -37,6 +37,15 @@ func (s *Server) routes() *http.ServeMux {
 	mux.Handle("GET /api/conversations", requireAuth(http.HandlerFunc(s.handlers.ListConversations)))
 	mux.Handle("GET /api/conversations/{id}/messages", requireAuth(http.HandlerFunc(s.handlers.ListMessages)))
 
+	mux.Handle("GET /api/skills", requireAuth(http.HandlerFunc(s.handlers.ListSkills)))
+	mux.Handle("POST /api/skills/discover", requireAuth(http.HandlerFunc(s.handlers.DiscoverSkills)))
+	mux.Handle("POST /api/skills", requireAuth(http.HandlerFunc(s.handlers.InstallSkills)))
+	mux.Handle("GET /api/skills/{name}", requireAuth(http.HandlerFunc(s.handlers.GetSkill)))
+	mux.Handle("DELETE /api/skills/{name}", requireAuth(http.HandlerFunc(s.handlers.DeleteSkill)))
+	mux.Handle("POST /api/skills/{name}/update", requireAuth(http.HandlerFunc(s.handlers.UpdateSkill)))
+	mux.Handle("GET /api/fs/browse", requireAuth(http.HandlerFunc(s.handlers.BrowseFS)))
+	mux.Handle("POST /api/skills/upload", requireAuth(http.HandlerFunc(s.handlers.UploadSkill)))
+
 	mux.Handle("POST /api/chat", requireAuth(http.HandlerFunc(s.handlers.Chat)))
 	mux.Handle("POST /api/logout", requireAuth(auth.Logout(s.sessions)))
 

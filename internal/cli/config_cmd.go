@@ -44,7 +44,7 @@ func configCommand(st *appState) *cli.Command {
 					}
 
 					// Load provider profiles to append providers section
-					mgr, db, err := st.getProviderManager(c)
+					mgr, _, db, err := st.getProviderManager(c)
 					if err != nil {
 						return err
 					}

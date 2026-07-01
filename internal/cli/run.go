@@ -7,10 +7,11 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/oniharnantyo/onclaw/internal/render"
 	"github.com/oniharnantyo/onclaw/internal/agent/tools"
 	"github.com/oniharnantyo/onclaw/internal/llm"
+	"github.com/oniharnantyo/onclaw/internal/mcp"
 	"github.com/oniharnantyo/onclaw/internal/observability"
+	"github.com/oniharnantyo/onclaw/internal/render"
 	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
 	"github.com/urfave/cli/v3"
 )
@@ -54,11 +55,14 @@ func runCommand(st *appState) *cli.Command {
 				return fmt.Errorf("prompt argument is required for 'run' command")
 			}
 
-			mgr, db, err := st.getProviderManager(c)
+			mgr, mcpStore, db, err := st.getProviderManager(c)
 			if err != nil {
 				return err
 			}
 			defer db.Close()
+
+			mcpMgr := mcp.NewManager(mcpStore)
+			defer mcpMgr.Close()
 
 			// 1. Write PID file
 			pidPath, err := writePIDFile(st.cfg.DbPath)
@@ -122,7 +126,7 @@ func runCommand(st *appState) *cli.Command {
 				ModelName:    c.String("model"),
 				Reasoning:    c.String("reasoning"),
 				Workspace:    c.String("workspace"),
-			}, convStore, convID)
+			}, convStore, convID, mcpMgr)
 			if err != nil {
 				return err
 			}

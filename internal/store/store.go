@@ -43,3 +43,24 @@ type ConversationStore interface {
 	ListConversations(ctx context.Context) ([]*ConversationRow, error)
 }
 
+// SkillStore defines skill metadata ledger operations.
+type SkillStore interface {
+	AddSkill(ctx context.Context, s *Skill) error
+	GetSkill(ctx context.Context, name string, scope string) (*Skill, error)
+	ListSkills(ctx context.Context) ([]*Skill, error)
+	ListSkillsByScope(ctx context.Context, scope string) ([]*Skill, error)
+	UpdateSkill(ctx context.Context, s *Skill) error
+	RemoveSkill(ctx context.Context, name string, scope string) error
+}
+
+// MCPServerStore defines MCP server configuration operations.
+type MCPServerStore interface {
+	AddServer(ctx context.Context, s *MCPServer) error
+	GetServer(ctx context.Context, name string) (*MCPServer, error)
+	ListServers(ctx context.Context) ([]*MCPServer, error)
+	UpdateServer(ctx context.Context, s *MCPServer) error
+	RemoveServer(ctx context.Context, name string) error
+}
+
+
+

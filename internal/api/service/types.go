@@ -80,3 +80,43 @@ type ChatInput struct {
 	Workspace      string `json:"workspace"`
 	ConversationID int64  `json:"conversation_id"`
 }
+
+type SkillView struct {
+	Name        string `json:"name"`
+	Scope       string `json:"scope"`
+	SourceType  string `json:"source_type"`
+	Source      string `json:"source"`
+	SkillPath   string `json:"skill_path"`
+	Version     string `json:"version"`
+	Hash        string `json:"hash"`
+	Description string `json:"description"`
+	Enabled     bool   `json:"enabled"`
+	InstalledAt string `json:"installed_at"`
+	UpdatedAt   string `json:"updated_at"`
+}
+
+type DiscoverInput struct {
+	Source string `json:"source"`
+	Branch string `json:"branch,omitempty"`
+}
+
+type DiscoveredSkill struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+type DiscoverResult struct {
+	PackageName string            `json:"package_name"`
+	IsPlugin    bool              `json:"is_plugin"`
+	Skills      []DiscoveredSkill `json:"skills"`
+}
+
+type InstallSkillInput struct {
+	Source        string   `json:"source"`
+	SelectedNames []string `json:"selected_names,omitempty"`
+	Scope         string   `json:"scope"`
+	Branch        string   `json:"branch,omitempty"`
+	AsName        string   `json:"as_name,omitempty"`
+	Force         bool     `json:"force,omitempty"`
+}
+

@@ -36,9 +36,13 @@ func RequireAuth(store *SessionStore, log *slog.Logger) func(http.Handler) http.
 					reqHost = r.Host
 				}
 				if originHost != reqHost {
-					log.Warn("CSRF block: origin hostname does not match request Hostname", "origin_host", originHost, "request_host", reqHost)
-					httpx.Error(w, http.StatusForbidden, "CSRF verification failed")
-					return
+					isLocalLoopback := (originHost == "localhost" || originHost == "127.0.0.1") &&
+						(reqHost == "localhost" || reqHost == "127.0.0.1")
+					if !isLocalLoopback {
+						log.Warn("CSRF block: origin hostname does not match request Hostname", "origin_host", originHost, "request_host", reqHost)
+						httpx.Error(w, http.StatusForbidden, "CSRF verification failed")
+						return
+					}
 				}
 			}
 

@@ -123,7 +123,37 @@ func Migrate(db *sql.DB) error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_conv_seq ON conversation_messages(conversation_id, seq);`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_role ON conversation_messages(role);`,
+		`CREATE TABLE IF NOT EXISTS skills (
+			name TEXT,
+			scope TEXT NOT NULL,
+			source_type TEXT NOT NULL,
+			source TEXT NOT NULL,
+			skill_path TEXT NOT NULL,
+			version TEXT NOT NULL,
+			hash TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			enabled INTEGER NOT NULL DEFAULT 1,
+			installed_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY (name, scope)
+		);`,
+		`CREATE TABLE IF NOT EXISTS mcp_servers (
+			name TEXT PRIMARY KEY,
+			transport TEXT NOT NULL,
+			command TEXT NOT NULL DEFAULT '',
+			args TEXT NOT NULL DEFAULT '[]',
+			env TEXT NOT NULL DEFAULT '{}',
+			url TEXT NOT NULL DEFAULT '',
+			enabled INTEGER NOT NULL DEFAULT 1,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
 	}
+
+	// Drop old skills table (if it had only name as PK) to migrate cleanly.
+	// This is safe since the feature is not yet released.
+	_, _ = db.Exec("DROP TABLE IF EXISTS skills;")
+
 	for _, q := range queries {
 		if _, err := db.Exec(q); err != nil {
 			return fmt.Errorf("execute migration query: %w", err)
