@@ -14,6 +14,10 @@ Minimal context for agents working on onclaw. Full details: see `CLAUDE.md`.
 
 **Hot-reload mechanism**: Provider profile edits write PID file and `SIGHUP` the running process; `fsnotify` watcher is fallback. Both set `Service.reloadPending` flag.
 
+## Web UI
+
+Frontend lives in `web/`. Follow the design system at `web/design-system/onclaw/MASTER.md` (it owns colors, typography, components, and anti-patterns for all UI work).
+
 ## Code conventions
 
 **Store package structure** (STRICT separation):

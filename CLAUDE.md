@@ -41,6 +41,10 @@ go test -run TestName ./internal/cli/...
 
 **Hot-reload:** provider profile edits made by `onclaw provider …` write a PID file and `SIGHUP` the running process; a `fsnotify` watcher is the in-process fallback. Both set `Service.reloadPending`, so the next turn re-reads from SQLite.
 
+## Web UI
+
+The React + Vite app in `web/` has a design system that is the source of truth for all frontend work: see `web/design-system/onclaw/MASTER.md` (dark-mode palette, typography, spacing/shadow tokens, component specs, anti-patterns). Page-specific files under `web/design-system/onclaw/pages/` override the Master; otherwise follow it strictly.
+
 ## Conventions
 
 - **OpenSpec** (`openspec/`) drives planned changes — proposals under `openspec/changes/`, specs under `openspec/specs/`. Check there before designing non-trivial features.
