@@ -10,6 +10,7 @@
 
 # Local config / env (never commit personal settings)
 .env
+master.key
 
 # Editor / OS
 .idea/
