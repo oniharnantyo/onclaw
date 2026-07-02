@@ -10,6 +10,7 @@ import (
 	"os"
 
 	clicmd "github.com/oniharnantyo/onclaw/internal/cli"
+	_ "github.com/oniharnantyo/onclaw/internal/agent/tools/browser"
 )
 
 func main() {
