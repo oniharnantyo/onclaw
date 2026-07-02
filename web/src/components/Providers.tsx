@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useReactTable, getCoreRowModel, flexRender, createColumnHelper } from '@tanstack/react-table';
+import Tooltip from './Tooltip';
 import {
   Plus,
   Trash,
@@ -416,7 +417,10 @@ export default function Providers({ providers, loadProviders, showToast }: Provi
 
             {!editingProvider && (
               <div className="form-group">
-                <label className="form-label" htmlFor="prov-name">Name</label>
+                <label className="form-label" htmlFor="prov-name">
+                  Name
+                  <Tooltip content="Unique identifier name for this provider profile." position="bottom" align="left" />
+                </label>
                 <input
                   id="prov-name"
                   type="text"
@@ -429,9 +433,12 @@ export default function Providers({ providers, loadProviders, showToast }: Provi
                 />
               </div>
             )}
-
+ 
             <div className="form-group">
-              <label className="form-label" htmlFor="prov-type">Provider Type</label>
+              <label className="form-label" htmlFor="prov-type">
+                Provider Type
+                <Tooltip content="The type of underlying API service (e.g. openai, anthropic, ollama)." position="bottom" align="left" />
+              </label>
               <select
                 id="prov-type"
                 className="form-select"
@@ -444,9 +451,12 @@ export default function Providers({ providers, loadProviders, showToast }: Provi
                 <option value="openai-compatible">openai-compatible</option>
               </select>
             </div>
-
+ 
             <div className="form-group">
-              <label className="form-label" htmlFor="prov-api-base">API Base URL</label>
+              <label className="form-label" htmlFor="prov-api-base">
+                API Base URL
+                <Tooltip content="Base URL endpoint of the API. Leave empty to use default provider endpoint." position="bottom" align="left" />
+              </label>
               <input
                 id="prov-api-base"
                 type="url"
@@ -456,9 +466,12 @@ export default function Providers({ providers, loadProviders, showToast }: Provi
                 placeholder="Leave blank to use provider default"
               />
             </div>
-
+ 
             <div className="form-group">
-              <label className="form-label" htmlFor="prov-settings">Settings (JSON)</label>
+              <label className="form-label" htmlFor="prov-settings">
+                Settings (JSON)
+                <Tooltip content="Custom connection or parameter settings as a JSON object." position="bottom" align="left" />
+              </label>
               <textarea
                 id="prov-settings"
                 className="form-textarea"

@@ -176,8 +176,6 @@ func TestProviderUseAndRemoveSuccess(t *testing.T) {
 	}
 }
 
-
-
 func TestRunCommandScenarios(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "onclaw-test-run-*")
 	if err != nil {

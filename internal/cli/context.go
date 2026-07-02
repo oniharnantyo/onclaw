@@ -289,4 +289,3 @@ func (s *appState) getSkillInstaller(c *cli.Command) (*skill.Installer, *sql.DB,
 	inst := skill.NewInstaller(ss, home)
 	return inst, db, nil
 }
-

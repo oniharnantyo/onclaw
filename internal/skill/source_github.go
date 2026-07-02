@@ -26,10 +26,10 @@ func (f *githubFetcher) Fetch(ctx context.Context, source string, branch string)
 	clean = strings.TrimPrefix(clean, "https://")
 	clean = strings.TrimPrefix(clean, "http://")
 	clean = strings.TrimPrefix(clean, "github.com/")
-	
+
 	// Remove trailing slashes
 	clean = strings.TrimRight(clean, "/")
-	
+
 	parts := strings.Split(clean, "/")
 	if len(parts) < 2 {
 		return "", fmt.Errorf("invalid github repository identifier: %s", source)
@@ -54,7 +54,7 @@ func (f *githubFetcher) Fetch(ctx context.Context, source string, branch string)
 
 	for _, b := range branchesToTry {
 		url := fmt.Sprintf("https://codeload.github.com/%s/%s/tar.gz/%s", owner, repo, b)
-		
+
 		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 		if err != nil {
 			lastErr = err

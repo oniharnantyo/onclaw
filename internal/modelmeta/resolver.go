@@ -9,6 +9,7 @@ import (
 )
 
 type CacheKey string
+
 const OpenaiModelsCacheKey CacheKey = "openai_models_cache"
 
 type ModelCache struct {

@@ -189,7 +189,7 @@ Body content of math skill
 		t.Fatalf("failed temp dir: %v", err)
 	}
 	defer os.RemoveAll(otherSrcDir)
-	
+
 	otherSkillDir := filepath.Join(otherSrcDir, "math-helper")
 	if err := os.MkdirAll(otherSkillDir, 0755); err != nil {
 		t.Fatalf("failed mkdir: %v", err)

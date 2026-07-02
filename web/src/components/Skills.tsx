@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useReactTable, getCoreRowModel, flexRender, createColumnHelper } from '@tanstack/react-table';
+import Tooltip from './Tooltip';
 import {
   Plus,
   Trash,
@@ -445,7 +446,10 @@ export default function Skills({ skills, loadSkills, showToast }: SkillsProps) {
             {installStep === 1 ? (
               <form onSubmit={handleDiscover} noValidate>
                 <div className="form-group">
-                  <label className="form-label" htmlFor="source">Source URL or Repository</label>
+                  <label className="form-label" htmlFor="source">
+                    Source URL or Repository
+                    <Tooltip content="Source repository identifier (owner/repo) or URL of zip/tarball." position="bottom" align="left" />
+                  </label>
                   <input
                     id="source"
                     type="text"
@@ -501,7 +505,10 @@ export default function Skills({ skills, loadSkills, showToast }: SkillsProps) {
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                   <div className="form-group">
-                    <label className="form-label" htmlFor="scope">Scope</label>
+                    <label className="form-label" htmlFor="scope">
+                      Scope
+                      <Tooltip content="Assigns the skill to run globally for all agents or restrict it to specific agent scopes." position="bottom" align="left" />
+                    </label>
                     <select
                       id="scope"
                       className="form-select"
@@ -514,7 +521,10 @@ export default function Skills({ skills, loadSkills, showToast }: SkillsProps) {
                   </div>
 
                   <div className="form-group">
-                    <label className="form-label" htmlFor="branch">GitHub Branch (Optional)</label>
+                    <label className="form-label" htmlFor="branch">
+                      GitHub Branch (Optional)
+                      <Tooltip content="Optional branch or revision ref (e.g. main, dev, v1.0.0)." position="bottom" align="right" />
+                    </label>
                     <input
                       id="branch"
                       type="text"

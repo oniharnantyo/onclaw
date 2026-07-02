@@ -13,4 +13,3 @@ func DefaultAdapters(r Registry) {
 	r.Register("ark", NewAgenticArkAdapter)
 	r.Register("stub", NewStubAdapter)
 }
-

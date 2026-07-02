@@ -57,7 +57,7 @@ func Discover(root string, restrict string) ([]*Candidate, error) {
 
 				fallbackName := filepath.Base(dirPath)
 				_, meta, err := ParseAndNormalizeManifest(content, fallbackName)
-				
+
 				var name, desc, version string
 				if err != nil {
 					name = fallbackName

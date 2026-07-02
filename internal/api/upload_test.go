@@ -44,7 +44,7 @@ func TestWebSkillsUpload(t *testing.T) {
 	// Create zip file in memory
 	var zipBuf bytes.Buffer
 	zw := zip.NewWriter(&zipBuf)
-	
+
 	// Create SKILL.md inside zip
 	fw, err := zw.Create("SKILL.md")
 	if err != nil {

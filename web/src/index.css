@@ -1432,3 +1432,133 @@ pre {
   clip: rect(0,0,0,0);
   border: 0;
 }
+
+/* ── Tooltips ──────────────────────────────────────────────── */
+.tooltip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.tooltip-trigger {
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  background: none;
+  padding: 0;
+  outline: none;
+  transition: color var(--t-fast);
+}
+
+.tooltip-trigger:hover,
+.tooltip-trigger:focus {
+  color: var(--accent);
+}
+
+.tooltip-content {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%) translateY(-8px);
+  background-color: var(--card-hover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-bright);
+  padding: 6px 10px;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: normal;
+  width: 220px;
+  box-shadow: var(--shadow-sm);
+  z-index: 100;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-fast), transform var(--t-fast);
+  text-align: left;
+  font-weight: normal;
+}
+
+.tooltip-trigger:hover + .tooltip-content,
+.tooltip-trigger:focus + .tooltip-content,
+.tooltip:hover .tooltip-content {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(-50%) translateY(-4px);
+}
+
+.tooltip-bottom .tooltip-content {
+  bottom: auto;
+  top: 100%;
+  transform: translateX(-50%) translateY(8px);
+}
+
+.tooltip-bottom .tooltip-trigger:hover + .tooltip-content,
+.tooltip-bottom .tooltip-trigger:focus + .tooltip-content,
+.tooltip-bottom:hover .tooltip-content {
+  transform: translateX(-50%) translateY(4px);
+}
+
+/* Tooltip horizontal alignment overrides */
+.tooltip-align-left .tooltip-content {
+  left: 0;
+  transform: translateY(-8px);
+}
+.tooltip-align-left.tooltip-bottom .tooltip-content {
+  bottom: auto;
+  top: 100%;
+  transform: translateY(8px);
+}
+.tooltip-align-left .tooltip-trigger:hover + .tooltip-content,
+.tooltip-align-left .tooltip-trigger:focus + .tooltip-content,
+.tooltip-align-left:hover .tooltip-content {
+  transform: translateY(-4px);
+}
+.tooltip-align-left.tooltip-bottom .tooltip-trigger:hover + .tooltip-content,
+.tooltip-align-left.tooltip-bottom .tooltip-trigger:focus + .tooltip-content,
+.tooltip-align-left.tooltip-bottom:hover .tooltip-content {
+  transform: translateY(4px);
+}
+
+.tooltip-align-right .tooltip-content {
+  left: auto;
+  right: 0;
+  transform: translateY(-8px);
+}
+.tooltip-align-right.tooltip-bottom .tooltip-content {
+  bottom: auto;
+  top: 100%;
+  transform: translateY(8px);
+}
+.tooltip-align-right .tooltip-trigger:hover + .tooltip-content,
+.tooltip-align-right .tooltip-trigger:focus + .tooltip-content,
+.tooltip-align-right:hover .tooltip-content {
+  transform: translateY(-4px);
+}
+.tooltip-align-right.tooltip-bottom .tooltip-trigger:hover + .tooltip-content,
+.tooltip-align-right.tooltip-bottom .tooltip-trigger:focus + .tooltip-content,
+.tooltip-align-right.tooltip-bottom:hover .tooltip-content {
+  transform: translateY(4px);
+}
+
+/* ── Form validation ────────────────────────────────────────── */
+.form-error {
+  color: var(--error);
+  font-size: 11px;
+  margin-top: 4px;
+  display: block;
+}
+
+.form-input.is-invalid,
+.form-textarea.is-invalid {
+  border-color: var(--error);
+}
+
+.form-input.is-invalid:focus,
+.form-textarea.is-invalid:focus {
+  border-color: var(--error);
+  box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.25);
+}

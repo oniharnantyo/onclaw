@@ -3,8 +3,8 @@ package observability
 import (
 	"context"
 	"fmt"
-	"strings"
 	"log/slog"
+	"strings"
 
 	"github.com/cloudwego/eino-ext/callbacks/langfuse"
 	"github.com/cloudwego/eino/callbacks"

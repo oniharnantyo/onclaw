@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import Tooltip from './Tooltip';
 import {
   Plus,
   Trash,
@@ -254,7 +255,10 @@ export default function Agents({ agents, providers, loadAgents, showToast }: Age
 
             {!editingAgent && (
               <div className="form-group">
-                <label className="form-label" htmlFor="agent-name">Name</label>
+                <label className="form-label" htmlFor="agent-name">
+                  Name
+                  <Tooltip content="Unique identifier name for this agent." position="bottom" align="left" />
+                </label>
                 <input
                   id="agent-name"
                   type="text"
@@ -269,7 +273,10 @@ export default function Agents({ agents, providers, loadAgents, showToast }: Age
             )}
 
             <div className="form-group">
-              <label className="form-label" htmlFor="agent-provider">LLM Provider</label>
+              <label className="form-label" htmlFor="agent-provider">
+                LLM Provider
+                <Tooltip content="Choose the model provider profile configured for this agent." position="bottom" align="left" />
+              </label>
               <select
                 id="agent-provider"
                 className="form-select"
@@ -285,7 +292,10 @@ export default function Agents({ agents, providers, loadAgents, showToast }: Age
             </div>
 
             <div className="form-group">
-              <label className="form-label" htmlFor="agent-model">Model Name</label>
+              <label className="form-label" htmlFor="agent-model">
+                Model Name
+                <Tooltip content="The specific model identifier to request (e.g. gpt-4o, claude-3-5-sonnet)." position="bottom" align="left" />
+              </label>
               <input
                 id="agent-model"
                 type="text"
@@ -298,7 +308,10 @@ export default function Agents({ agents, providers, loadAgents, showToast }: Age
             </div>
 
             <div className="form-group">
-              <label className="form-label" htmlFor="agent-prompt">System Prompt</label>
+              <label className="form-label" htmlFor="agent-prompt">
+                System Prompt
+                <Tooltip content="Instruction set defining the agent's character, constraints, and instructions." position="bottom" align="left" />
+              </label>
               <textarea
                 id="agent-prompt"
                 className="form-textarea"
@@ -311,7 +324,10 @@ export default function Agents({ agents, providers, loadAgents, showToast }: Age
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
               <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label" htmlFor="agent-reasoning">Reasoning Effort</label>
+                <label className="form-label" htmlFor="agent-reasoning">
+                  Reasoning Effort
+                  <Tooltip content="Controls the amount of reasoning tokens allocated (only supported by reasoning models)." position="bottom" align="left" />
+                </label>
                 <select
                   id="agent-reasoning"
                   className="form-select"
@@ -326,7 +342,10 @@ export default function Agents({ agents, providers, loadAgents, showToast }: Age
               </div>
 
               <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label" htmlFor="agent-iterations">Max Iterations</label>
+                <label className="form-label" htmlFor="agent-iterations">
+                  Max Iterations
+                  <Tooltip content="The maximum execution loop turns the agent is allowed to take before stopping." position="bottom" align="right" />
+                </label>
                 <input
                   id="agent-iterations"
                   type="number"
@@ -341,7 +360,10 @@ export default function Agents({ agents, providers, loadAgents, showToast }: Age
             </div>
 
             <div className="form-group">
-              <label className="form-label" htmlFor="agent-tools">Tools (comma-separated)</label>
+              <label className="form-label" htmlFor="agent-tools">
+                Tools (comma-separated)
+                <Tooltip content="Comma-separated list of enabled tools the agent can execute (e.g. read_file, run_command)." position="bottom" align="left" />
+              </label>
               <input
                 id="agent-tools"
                 type="text"

@@ -133,7 +133,7 @@ func skillCommand(st *appState) *cli.Command {
 							fmt.Printf("[%d] %s: %s (path: %s)\n", i+1, cand.Name, cand.Description, cand.RelPath)
 						}
 						fmt.Print("Enter comma-separated numbers of skills to install (or press Enter for all): ")
-						
+
 						reader := bufio.NewReader(os.Stdin)
 						line, _ := reader.ReadString('\n')
 						line = strings.TrimSpace(line)

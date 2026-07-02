@@ -46,4 +46,3 @@ func (s *stubAdapter) Build(ctx context.Context, p *store.Profile, modelName str
 func NewStubAdapter() Adapter {
 	return &stubAdapter{}
 }
-

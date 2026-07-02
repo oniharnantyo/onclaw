@@ -151,7 +151,7 @@ func (h *Handler) UploadSkill(w http.ResponseWriter, r *http.Request) {
 	// Create a temp directory
 	uploadDir, err := os.MkdirTemp("", "onclaw-upload-*")
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "Failed to create temp directory: " + err.Error())
+		httpx.Error(w, http.StatusInternalServerError, "Failed to create temp directory: "+err.Error())
 		return
 	}
 
@@ -159,7 +159,7 @@ func (h *Handler) UploadSkill(w http.ResponseWriter, r *http.Request) {
 	tempFile, err := os.Create(tempFilePath)
 	if err != nil {
 		os.RemoveAll(uploadDir)
-		httpx.Error(w, http.StatusInternalServerError, "Failed to create temp file: " + err.Error())
+		httpx.Error(w, http.StatusInternalServerError, "Failed to create temp file: "+err.Error())
 		return
 	}
 	defer tempFile.Close()
@@ -167,7 +167,7 @@ func (h *Handler) UploadSkill(w http.ResponseWriter, r *http.Request) {
 	_, err = io.Copy(tempFile, file)
 	if err != nil {
 		os.RemoveAll(uploadDir)
-		httpx.Error(w, http.StatusInternalServerError, "Failed to save uploaded file: " + err.Error())
+		httpx.Error(w, http.StatusInternalServerError, "Failed to save uploaded file: "+err.Error())
 		return
 	}
 

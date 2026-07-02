@@ -159,7 +159,7 @@ func mcpCommand(st *appState) *cli.Command {
 						if srv.Transport == "stdio" {
 							var args []string
 							_ = json.Unmarshal([]byte(srv.Args), &args)
-							
+
 							var envMap map[string]string
 							_ = json.Unmarshal([]byte(srv.Env), &envMap)
 
@@ -167,7 +167,7 @@ func mcpCommand(st *appState) *cli.Command {
 							for k := range envMap {
 								redactedEnv = append(redactedEnv, fmt.Sprintf("%s=***", k))
 							}
-							
+
 							detail = fmt.Sprintf("command: %s %s, env: {%s}", srv.Command, strings.Join(args, " "), strings.Join(redactedEnv, ", "))
 						} else {
 							detail = fmt.Sprintf("url: %s", srv.URL)

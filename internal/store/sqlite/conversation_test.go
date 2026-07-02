@@ -119,4 +119,3 @@ func TestConversationStore(t *testing.T) {
 		}
 	}
 }
-
