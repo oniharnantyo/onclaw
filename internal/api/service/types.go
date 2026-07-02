@@ -145,3 +145,30 @@ type MCPServerInput struct {
 type ToggleMCPServerInput struct {
 	Enabled bool `json:"enabled"`
 }
+
+type ToolView struct {
+	Name        string `json:"name"`
+	Category    string `json:"category"`
+	Enabled     bool   `json:"enabled"`
+	Description string `json:"description,omitempty"`
+}
+
+type ToolCategoryView struct {
+	Category     string      `json:"category"`
+	Configurable bool        `json:"configurable"`
+	Schema       string      `json:"schema,omitempty"`
+	Tools        []*ToolView `json:"tools"`
+}
+
+type CategoryConfigView struct {
+	Category string `json:"category"`
+	Config   string `json:"config"` // JSON string
+}
+
+type PutCategoryConfigInput struct {
+	Config string `json:"config"` // JSON string
+}
+
+type ToggleToolInput struct {
+	Enabled bool `json:"enabled"`
+}

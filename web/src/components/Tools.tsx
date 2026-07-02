@@ -6,6 +6,7 @@ export interface Tool {
 	name: string;
 	category: string;
 	enabled: boolean;
+	description?: string;
 }
 
 export interface ToolCategory {
@@ -237,10 +238,15 @@ export default function Tools({ showToast }: ToolsProps) {
 													borderRadius: '6px',
 												}}
 											>
-												<div style={{ display: 'flex', flexDirection: 'column' }}>
+												<div style={{ display: 'flex', flexDirection: 'column', flexGrow: 1, marginRight: '16px' }}>
 													<span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--foreground)' }}>
 														{t.name}
 													</span>
+													{t.description && (
+														<span style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px', lineHeight: '1.4' }}>
+															{t.description}
+														</span>
+													)}
 												</div>
 												<button
 													type="button"
