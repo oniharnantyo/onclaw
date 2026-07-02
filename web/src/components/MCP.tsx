@@ -42,6 +42,7 @@ export default function MCP({ showToast }: MCPProps) {
 	const [command, setCommand] = useState('');
 	const [args, setArgs] = useState('');
 	const [env, setEnv] = useState('');
+	const [envPairs, setEnvPairs] = useState<{ key: string; value: string }[]>([{ key: '', value: '' }]);
 	const [url, setUrl] = useState('');
 	const [enabled, setEnabled] = useState(true);
 
@@ -127,6 +128,7 @@ export default function MCP({ showToast }: MCPProps) {
 		setCommand('');
 		setArgs('');
 		setEnv('');
+		setEnvPairs([{ key: '', value: '' }]);
 		setUrl('');
 		setEnabled(true);
 		setErrors({});
@@ -148,6 +150,21 @@ export default function MCP({ showToast }: MCPProps) {
 		setCommand(srv.command || '');
 		setArgs(srv.args || '');
 		setEnv(srv.env || '');
+		let parsedEnvPairs = [{ key: '', value: '' }];
+		if (srv.env) {
+			try {
+				const parsed = JSON.parse(srv.env);
+				if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+					parsedEnvPairs = Object.entries(parsed).map(([k, v]) => ({ key: k, value: String(v) }));
+				}
+			} catch {
+				// ignore
+			}
+		}
+		if (parsedEnvPairs.length === 0) {
+			parsedEnvPairs = [{ key: '', value: '' }];
+		}
+		setEnvPairs(parsedEnvPairs);
 		setUrl(srv.url || '');
 		setEnabled(srv.enabled);
 		setErrors({});
@@ -558,24 +575,96 @@ export default function MCP({ showToast }: MCPProps) {
 								</div>
 
 								<div className="form-group">
-									<label className="form-label" htmlFor="mcp-env">
-										Environment Variables (JSON Object)
-										<Tooltip content="Environment variables for the subprocess as a JSON object (e.g. {'PGHOST': '127.0.0.1'})." position="bottom" align="left" />
+									<label className="form-label">
+										Environment Variables
+										<Tooltip content="Configure environment variables for the MCP subprocess." position="bottom" align="left" />
 									</label>
-									<textarea
-										id="mcp-env"
-										className={`form-textarea ${(touched.env && errors.env) ? 'is-invalid' : ''}`}
-										rows={4}
-										value={env}
-										onChange={e => {
-											setEnv(e.target.value);
-											setTouched(prev => ({ ...prev, env: true }));
-										}}
-										placeholder='e.g. { "API_KEY": "secret-value" }'
-										style={{ fontFamily: 'monospace', fontSize: '13px' }}
-									/>
+									<div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+										{envPairs.map((pair, index) => (
+											<div key={index} style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+												<input
+													type="text"
+													className="form-input"
+													style={{ flex: 1, fontFamily: 'monospace', fontSize: '13px' }}
+													placeholder="Variable Name (e.g. API_KEY)"
+													value={pair.key}
+													onChange={(e) => {
+														const newPairs = [...envPairs];
+														newPairs[index].key = e.target.value;
+														setEnvPairs(newPairs);
+														
+														// update raw env state
+														const obj: Record<string, string> = {};
+														for (const p of newPairs) {
+															if (p.key.trim()) {
+																obj[p.key.trim()] = p.value;
+															}
+														}
+														setEnv(Object.keys(obj).length > 0 ? JSON.stringify(obj) : '');
+														setTouched(prev => ({ ...prev, env: true }));
+													}}
+												/>
+												<input
+													type="text"
+													className="form-input"
+													style={{ flex: 2, fontFamily: 'monospace', fontSize: '13px' }}
+													placeholder="Value"
+													value={pair.value}
+													onChange={(e) => {
+														const newPairs = [...envPairs];
+														newPairs[index].value = e.target.value;
+														setEnvPairs(newPairs);
+														
+														// update raw env state
+														const obj: Record<string, string> = {};
+														for (const p of newPairs) {
+															if (p.key.trim()) {
+																obj[p.key.trim()] = p.value;
+															}
+														}
+														setEnv(Object.keys(obj).length > 0 ? JSON.stringify(obj) : '');
+														setTouched(prev => ({ ...prev, env: true }));
+													}}
+												/>
+												<button
+													type="button"
+													className="btn btn-secondary"
+													style={{ padding: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderColor: 'var(--border)' }}
+													onClick={() => {
+														const newPairs = envPairs.filter((_, idx) => idx !== index);
+														const finalPairs = newPairs.length > 0 ? newPairs : [{ key: '', value: '' }];
+														setEnvPairs(finalPairs);
+														
+														// update raw env state
+														const obj: Record<string, string> = {};
+														for (const p of finalPairs) {
+															if (p.key.trim()) {
+																obj[p.key.trim()] = p.value;
+															}
+														}
+														setEnv(Object.keys(obj).length > 0 ? JSON.stringify(obj) : '');
+														setTouched(prev => ({ ...prev, env: true }));
+													}}
+													title="Remove variable"
+												>
+													<Trash size={15} />
+												</button>
+											</div>
+										))}
+
+										<button
+											type="button"
+											className="btn btn-secondary btn-sm"
+											style={{ display: 'flex', alignItems: 'center', gap: '4px', alignSelf: 'flex-start', marginTop: '4px' }}
+											onClick={() => {
+												setEnvPairs([...envPairs, { key: '', value: '' }]);
+											}}
+										>
+											<Plus size={14} /> Add Variable
+										</button>
+									</div>
 									{touched.env && errors.env && (
-										<span className="form-error">{errors.env}</span>
+										<span className="form-error" style={{ display: 'block', marginTop: '4px' }}>{errors.env}</span>
 									)}
 								</div>
 							</>
