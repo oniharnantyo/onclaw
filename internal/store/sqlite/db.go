@@ -148,6 +148,32 @@ func Migrate(db *sql.DB) error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
+		`CREATE TABLE IF NOT EXISTS agent_hooks (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			scope TEXT NOT NULL,
+			event TEXT NOT NULL,
+			handler_type TEXT NOT NULL,
+			config TEXT NOT NULL DEFAULT '{}',
+			matcher TEXT NOT NULL DEFAULT '',
+			timeout_ms INTEGER NOT NULL DEFAULT 5000,
+			on_timeout TEXT NOT NULL DEFAULT 'block',
+			priority INTEGER NOT NULL DEFAULT 0,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS hook_executions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			hook_id TEXT,
+			event TEXT NOT NULL,
+			handler_type TEXT NOT NULL,
+			decision TEXT NOT NULL,
+			duration_ms INTEGER NOT NULL,
+			error TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			FOREIGN KEY(hook_id) REFERENCES agent_hooks(id) ON DELETE SET NULL
+		);`,
 	}
 
 	// Drop old skills table (if it had only name as PK) to migrate cleanly.

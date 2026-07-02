@@ -62,5 +62,19 @@ type MCPServerStore interface {
 	RemoveServer(ctx context.Context, name string) error
 }
 
+// HookStore defines operations for managing agent hooks.
+type HookStore interface {
+	AddHook(ctx context.Context, h *Hook) error
+	GetHook(ctx context.Context, id string) (*Hook, error)
+	ListHooks(ctx context.Context) ([]*Hook, error)
+	ListHooksByScopeAndEvent(ctx context.Context, scope string, event string) ([]*Hook, error)
+	UpdateHook(ctx context.Context, h *Hook) error
+	RemoveHook(ctx context.Context, id string) error
+	ToggleHook(ctx context.Context, id string, enabled bool) error
+}
 
-
+// HookExecutionStore defines operations for logging hook executions.
+type HookExecutionStore interface {
+	AppendExecution(ctx context.Context, exec *HookExecution) error
+	ListExecutions(ctx context.Context) ([]*HookExecution, error)
+}

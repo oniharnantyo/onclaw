@@ -46,6 +46,23 @@ func (s *Server) routes() *http.ServeMux {
 	mux.Handle("GET /api/fs/browse", requireAuth(http.HandlerFunc(s.handlers.BrowseFS)))
 	mux.Handle("POST /api/skills/upload", requireAuth(http.HandlerFunc(s.handlers.UploadSkill)))
 
+	mux.Handle("GET /api/hooks", requireAuth(http.HandlerFunc(s.handlers.ListHooks)))
+	mux.Handle("GET /api/hooks/{id}", requireAuth(http.HandlerFunc(s.handlers.GetHook)))
+	mux.Handle("POST /api/hooks", requireAuth(http.HandlerFunc(s.handlers.AddHook)))
+	mux.Handle("PUT /api/hooks/{id}", requireAuth(http.HandlerFunc(s.handlers.UpdateHook)))
+	mux.Handle("DELETE /api/hooks/{id}", requireAuth(http.HandlerFunc(s.handlers.RemoveHook)))
+	mux.Handle("POST /api/hooks/{id}/toggle", requireAuth(http.HandlerFunc(s.handlers.ToggleHook)))
+	mux.Handle("POST /api/hooks/test", requireAuth(http.HandlerFunc(s.handlers.TestHook)))
+	mux.Handle("GET /api/hooks/executions", requireAuth(http.HandlerFunc(s.handlers.ListHookExecutions)))
+
+	mux.Handle("GET /api/mcp", requireAuth(http.HandlerFunc(s.handlers.ListMCP)))
+	mux.Handle("GET /api/mcp/{name}", requireAuth(http.HandlerFunc(s.handlers.GetMCP)))
+	mux.Handle("POST /api/mcp", requireAuth(http.HandlerFunc(s.handlers.AddMCP)))
+	mux.Handle("PUT /api/mcp/{name}", requireAuth(http.HandlerFunc(s.handlers.UpdateMCP)))
+	mux.Handle("DELETE /api/mcp/{name}", requireAuth(http.HandlerFunc(s.handlers.RemoveMCP)))
+	mux.Handle("POST /api/mcp/{name}/toggle", requireAuth(http.HandlerFunc(s.handlers.ToggleMCPServer)))
+	mux.Handle("POST /api/mcp/test", requireAuth(http.HandlerFunc(s.handlers.TestMCP)))
+
 	mux.Handle("POST /api/chat", requireAuth(http.HandlerFunc(s.handlers.Chat)))
 	mux.Handle("POST /api/logout", requireAuth(auth.Logout(s.sessions)))
 

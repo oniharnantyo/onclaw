@@ -24,6 +24,7 @@ type agentSessionRequest struct {
 	ModelName    string
 	Reasoning    string
 	Workspace    string
+	Channel      string
 }
 
 func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.Service, req agentSessionRequest, convStore store.ConversationStore, convID int64, mcpMgr mcp.Manager) (*agent.Agent, string, error) {
@@ -171,6 +172,9 @@ func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.
 		}
 	}
 
+	hookStore := sqlite.NewHookStore(db)
+	execStore := sqlite.NewHookExecutionStore(db)
+
 	assembledAgent, err := agent.AssembleAgent(
 		ctx,
 		agentConf,
@@ -183,6 +187,9 @@ func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.
 		convStore,
 		convID,
 		mcpTools,
+		hookStore,
+		execStore,
+		req.Channel,
 	)
 	if err != nil {
 		return nil, "", fmt.Errorf("assemble agent: %w", err)

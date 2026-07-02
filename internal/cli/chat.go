@@ -139,6 +139,7 @@ func chatCommand(st *appState) *cli.Command {
 					ModelName:    activeModel,
 					Reasoning:    activeReasoning,
 					Workspace:    c.String("workspace"),
+					Channel:      "cli",
 				}, convStore, convID, mcpMgr)
 				if err != nil {
 					return err

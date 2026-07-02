@@ -126,6 +126,7 @@ func runCommand(st *appState) *cli.Command {
 				ModelName:    c.String("model"),
 				Reasoning:    c.String("reasoning"),
 				Workspace:    c.String("workspace"),
+				Channel:      "cli",
 			}, convStore, convID, mcpMgr)
 			if err != nil {
 				return err

@@ -9,12 +9,15 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/oniharnantyo/onclaw/internal/api"
 	"github.com/oniharnantyo/onclaw/internal/api/service"
 	"github.com/oniharnantyo/onclaw/internal/llm"
 	"github.com/oniharnantyo/onclaw/internal/mcp"
 	"github.com/oniharnantyo/onclaw/internal/skill"
+	"github.com/oniharnantyo/onclaw/internal/store"
 	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
 	"github.com/urfave/cli/v3"
 	"golang.org/x/crypto/bcrypt"
@@ -170,6 +173,7 @@ func serveCommand(st *appState) *cli.Command {
 					ModelName:    modelName,
 					Reasoning:    reasoning,
 					Workspace:    workspacePath,
+					Channel:      "web",
 				}, convStore, convID, mcpMgr)
 			}
 
@@ -178,7 +182,33 @@ func serveCommand(st *appState) *cli.Command {
 			home := filepath.Dir(resolvedPath)
 			installer := skill.NewInstaller(ss, home)
 
-			svc := service.New(mgr, kv, convStore, resolveFn, installer, st.log)
+			hookStore := sqlite.NewHookStore(db)
+			execStore := sqlite.NewHookExecutionStore(db)
+
+			testMCPFn := func(ctx context.Context, srv *store.MCPServer) ([]string, error) {
+				cliCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+				cli, err := mcp.NewClient(cliCtx, srv)
+				cancel()
+				if err != nil {
+					return nil, err
+				}
+				defer cli.Close()
+
+				toolsCtx, toolsCancel := context.WithTimeout(ctx, 5*time.Second)
+				listResult, err := cli.ListTools(toolsCtx, mcpgo.ListToolsRequest{})
+				toolsCancel()
+				if err != nil {
+					return nil, err
+				}
+
+				var toolNames []string
+				for _, t := range listResult.Tools {
+					toolNames = append(toolNames, t.Name)
+				}
+				return toolNames, nil
+			}
+
+			svc := service.New(mgr, kv, convStore, resolveFn, installer, st.log, hookStore, execStore, mcpStore, mcpMgr.Reload, testMCPFn)
 			server := api.NewServer(svc, st.log)
 
 			st.log.Info("Starting web management console", "addr", addr)

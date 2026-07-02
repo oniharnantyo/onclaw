@@ -13,6 +13,7 @@ type eventIterator struct {
 	iterator      *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]]
 	currentStream *schema.StreamReader[*schema.AgenticMessage]
 	err           error
+	onTurnError   func(error)
 }
 
 func (it *eventIterator) Next() (*schema.AgenticMessage, bool) {
@@ -46,6 +47,9 @@ func (it *eventIterator) Next() (*schema.AgenticMessage, bool) {
 		}
 
 		if event.Err != nil {
+			if it.onTurnError != nil {
+				it.onTurnError(event.Err)
+			}
 			it.err = event.Err
 			return nil, false
 		}

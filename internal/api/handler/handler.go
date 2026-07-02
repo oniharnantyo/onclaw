@@ -23,5 +23,9 @@ func (h *Handler) handleError(w http.ResponseWriter, err error) {
 		httpx.Error(w, http.StatusNotFound, err.Error())
 		return
 	}
+	if errors.Is(err, service.ErrInvalidInput) {
+		httpx.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	httpx.Error(w, http.StatusInternalServerError, err.Error())
 }

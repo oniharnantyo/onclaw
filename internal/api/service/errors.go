@@ -8,6 +8,9 @@ import (
 // ErrNotFound is returned when a resource is not found.
 var ErrNotFound = errors.New("not found")
 
+// ErrInvalidInput is returned when validation fails.
+var ErrInvalidInput = errors.New("invalid input")
+
 // classify wraps errors that indicate a missing resource (e.g. from LLM service or DB) into ErrNotFound.
 // It avoids importing database/sql by checking the error message string.
 func classify(err error) error {

@@ -100,5 +100,31 @@ type MCPServer struct {
 	UpdatedAt string `json:"updated_at"`
 }
 
+// Hook represents a user-configured lifecycle hook definition.
+type Hook struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Scope       string `json:"scope"`        // "global" or agent name
+	Event       string `json:"event"`        // e.g. "session_start", "user_prompt_submit", "pre_tool_use", "post_tool_use", "stop"
+	HandlerType string `json:"handler_type"` // "command" or "script"
+	Config      string `json:"config"`       // JSON string representing handler-specific config
+	Matcher     string `json:"matcher"`      // Regex matching tool_name (optional)
+	TimeoutMS   int    `json:"timeout_ms"`
+	OnTimeout   string `json:"on_timeout"` // "block" or "allow"
+	Priority    int    `json:"priority"`
+	Enabled     int    `json:"enabled"` // 1 = enabled, 0 = disabled
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+}
 
-
+// HookExecution represents an audit log entry for a hook execution.
+type HookExecution struct {
+	ID          int64  `json:"id"`
+	HookID      string `json:"hook_id"` // references Hook.ID, can be empty/NULL if hook was deleted
+	Event       string `json:"event"`
+	HandlerType string `json:"handler_type"`
+	Decision    string `json:"decision"` // "allow" or "block" or "observe"
+	DurationMS  int64  `json:"duration_ms"`
+	Error       string `json:"error"`
+	CreatedAt   string `json:"created_at"`
+}

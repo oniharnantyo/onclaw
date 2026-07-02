@@ -1,6 +1,8 @@
 package service
 
 import (
+	"context"
+	"fmt"
 	"log/slog"
 
 	"github.com/oniharnantyo/onclaw/internal/llm"
@@ -16,10 +18,35 @@ type Service struct {
 	resolve   ResolveAndAssembleFunc
 	installer *skill.Installer
 	log       *slog.Logger
+	hookStore store.HookStore
+	execStore store.HookExecutionStore
+	mcpStore  store.MCPServerStore
+	reloadMCP func()
+	testMCP   func(ctx context.Context, srv *store.MCPServer) ([]string, error)
 }
 
 // New returns a new Service instance.
-func New(mgr *llm.Service, kv store.KVStore, conv store.ConversationStore, resolve ResolveAndAssembleFunc, installer *skill.Installer, log *slog.Logger) *Service {
+func New(
+	mgr *llm.Service,
+	kv store.KVStore,
+	conv store.ConversationStore,
+	resolve ResolveAndAssembleFunc,
+	installer *skill.Installer,
+	log *slog.Logger,
+	hookStore store.HookStore,
+	execStore store.HookExecutionStore,
+	mcpStore store.MCPServerStore,
+	reloadMCP func(),
+	testMCP func(ctx context.Context, srv *store.MCPServer) ([]string, error),
+) *Service {
+	if reloadMCP == nil {
+		reloadMCP = func() {}
+	}
+	if testMCP == nil {
+		testMCP = func(ctx context.Context, srv *store.MCPServer) ([]string, error) {
+			return nil, fmt.Errorf("testMCP not implemented")
+		}
+	}
 	return &Service{
 		mgr:       mgr,
 		kv:        kv,
@@ -27,5 +54,10 @@ func New(mgr *llm.Service, kv store.KVStore, conv store.ConversationStore, resol
 		resolve:   resolve,
 		installer: installer,
 		log:       log,
+		hookStore: hookStore,
+		execStore: execStore,
+		mcpStore:  mcpStore,
+		reloadMCP: reloadMCP,
+		testMCP:   testMCP,
 	}
 }

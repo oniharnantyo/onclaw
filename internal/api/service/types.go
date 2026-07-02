@@ -120,3 +120,28 @@ type InstallSkillInput struct {
 	Force         bool     `json:"force,omitempty"`
 }
 
+type MCPServerView struct {
+	Name      string `json:"name"`
+	Transport string `json:"transport"`
+	Command   string `json:"command"`
+	Args      string `json:"args"`
+	Env       string `json:"env"`
+	URL       string `json:"url"`
+	Enabled   bool   `json:"enabled"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+type MCPServerInput struct {
+	Name      string `json:"name"`
+	Transport string `json:"transport"`
+	Command   string `json:"command"`
+	Args      string `json:"args"`
+	Env       string `json:"env"`
+	URL       string `json:"url"`
+	Enabled   bool   `json:"enabled"`
+}
+
+type ToggleMCPServerInput struct {
+	Enabled bool `json:"enabled"`
+}

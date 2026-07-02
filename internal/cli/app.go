@@ -30,6 +30,7 @@ func New() *cli.Command {
 			skillCommand(st),
 			mcpCommand(st),
 			serveCommand(st),
+			hooksCommand(st),
 		},
 	}
 }

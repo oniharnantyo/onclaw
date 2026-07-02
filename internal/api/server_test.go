@@ -78,7 +78,10 @@ func setupTestServer(t *testing.T, db *sql.DB, resolveFn ResolveAndAssembleFunc)
 	t.Cleanup(func() { os.RemoveAll(tempHome) })
 	inst := skill.NewInstaller(skillStore, tempHome)
 
-	svc := service.New(mgr, kv, convStore, resolveFn, inst, logger)
+	hookStore := sqlite.NewHookStore(db)
+	execStore := sqlite.NewHookExecutionStore(db)
+	mcpStore := sqlite.NewMCPServerStore(db)
+	svc := service.New(mgr, kv, convStore, resolveFn, inst, logger, hookStore, execStore, mcpStore, nil, nil)
 	s := NewServer(svc, logger)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

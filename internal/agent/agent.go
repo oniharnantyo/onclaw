@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/adk/middlewares/summarization"
@@ -16,18 +18,22 @@ import (
 
 	"github.com/oniharnantyo/onclaw/internal/agent/middlewares"
 	"github.com/oniharnantyo/onclaw/internal/agent/tools"
+	"github.com/oniharnantyo/onclaw/internal/hooks"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
 // Agent wraps eino ADK ChatModelAgent and configuration context.
 type Agent struct {
-	EinoAgent *adk.TypedChatModelAgent[*schema.AgenticMessage]
-	Config    *store.Agent
-	Workspace string
+	EinoAgent        *adk.TypedChatModelAgent[*schema.AgenticMessage]
+	Config           *store.Agent
+	Workspace        string
+	Dispatcher       *hooks.Dispatcher
+	Session          *middlewares.SessionState
+	sessionStartOnce sync.Once
 }
 
 // AssembleAgent constructs a ChatModelAgent with persona configuration, tools, and summarization middleware.
-func AssembleAgent(ctx context.Context, agentConf *store.Agent, chatModel model.AgenticModel, workspace string, userConfigDir string, shellPolicy string, shellAllowlist []string, contextWindow int, convStore store.ConversationStore, conversationID int64, mcpTools []tool.BaseTool) (*Agent, error) {
+func AssembleAgent(ctx context.Context, agentConf *store.Agent, chatModel model.AgenticModel, workspace string, userConfigDir string, shellPolicy string, shellAllowlist []string, contextWindow int, convStore store.ConversationStore, conversationID int64, mcpTools []tool.BaseTool, hookStore store.HookStore, execStore store.HookExecutionStore, channel string) (*Agent, error) {
 	// Load existing persona/memory files and AGENTS.md
 	persona, err := LoadPersonaContext(ctx, workspace, userConfigDir)
 	if err != nil {
@@ -161,6 +167,20 @@ func AssembleAgent(ctx context.Context, agentConf *store.Agent, chatModel model.
 
 	historyMiddleware := middlewares.NewHistoryMiddleware(convStore, conversationID)
 
+	var dispatcher *hooks.Dispatcher
+	var sessionState *middlewares.SessionState
+	var hooksMiddleware adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage]
+
+	if hookStore != nil && execStore != nil {
+		dispatcher = hooks.NewDispatcher(hookStore, execStore)
+		sessionID := strconv.FormatInt(conversationID, 10)
+		sessionState = &middlewares.SessionState{
+			Channel:   channel,
+			SessionID: sessionID,
+		}
+		hooksMiddleware = middlewares.NewHooksMiddleware(dispatcher, agentConf.Name, sessionState)
+	}
+
 	maxIterations := agentConf.MaxIterations
 	if maxIterations <= 0 {
 		maxIterations = 20 // Default to 20 cycles
@@ -192,8 +212,10 @@ func AssembleAgent(ctx context.Context, agentConf *store.Agent, chatModel model.
 	if skillMiddleware != nil {
 		handlers = append(handlers, skillMiddleware)
 	}
+	if hooksMiddleware != nil {
+		handlers = append(handlers, hooksMiddleware)
+	}
 	agentConfig.Handlers = handlers
-
 
 	einoAgent, err := adk.NewTypedChatModelAgent[*schema.AgenticMessage](ctx, agentConfig)
 	if err != nil {
@@ -201,9 +223,11 @@ func AssembleAgent(ctx context.Context, agentConf *store.Agent, chatModel model.
 	}
 
 	return &Agent{
-		EinoAgent: einoAgent,
-		Config:    agentConf,
-		Workspace: workspace,
+		EinoAgent:  einoAgent,
+		Config:     agentConf,
+		Workspace:  workspace,
+		Dispatcher: dispatcher,
+		Session:    sessionState,
 	}, nil
 }
 
@@ -213,6 +237,16 @@ func summarizationTrigger(contextWindow int) int {
 
 // Run executes a single turn of the agent and returns an EventIterator.
 func (a *Agent) Run(ctx context.Context, userInput string) EventIterator {
+	a.sessionStartOnce.Do(func() {
+		if a.Dispatcher != nil && a.Session != nil {
+			_, _ = a.Dispatcher.Fire(ctx, hooks.EventSessionStart, hooks.Payload{
+				Agent:     a.Config.Name,
+				Channel:   a.Session.Channel,
+				SessionID: a.Session.SessionID,
+			})
+		}
+	})
+
 	slog.Debug("agent_run",
 		"agent_name", a.Config.Name,
 		"workspace", a.Workspace,
@@ -233,8 +267,20 @@ func (a *Agent) Run(ctx context.Context, userInput string) EventIterator {
 
 	iterator := a.EinoAgent.Run(ctx, input)
 
+	onTurnError := func(err error) {
+		if a.Dispatcher != nil && a.Session != nil {
+			_, _ = a.Dispatcher.Fire(ctx, hooks.EventStop, hooks.Payload{
+				Agent:     a.Config.Name,
+				Channel:   a.Session.Channel,
+				SessionID: a.Session.SessionID,
+				Error:     err.Error(),
+			})
+		}
+	}
 	return &eventIterator{
-		ctx:      ctx,
-		iterator: iterator,
+		ctx:         ctx,
+		iterator:    iterator,
+		onTurnError: onTurnError,
 	}
 }
+

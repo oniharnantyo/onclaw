@@ -124,7 +124,7 @@ func TestAssembleAndRunAgent_ReActLoop(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	agent, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil)
+	agent, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test")
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestAssembleAndRunAgent_Cancellation(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	agent, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil)
+	agent, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test")
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestAssembleAgent_ContextWindowTrigger(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Compile and resolve with 128000 context window (verifies 80% logic runs)
-	ag, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 128000, dummyConvStore{}, 1, nil)
+	ag, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 128000, dummyConvStore{}, 1, nil, nil, nil, "test")
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestAssembleAgent_ContextWindowTrigger(t *testing.T) {
 	}
 
 	// 2. Re-assemble with 64000 context window
-	ag2, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil)
+	ag2, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test")
 	if err != nil {
 		t.Fatalf("failed to assemble agent second time: %v", err)
 	}
