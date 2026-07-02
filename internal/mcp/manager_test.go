@@ -142,3 +142,98 @@ func TestManager_Tools(t *testing.T) {
 		t.Errorf("second Close() returned error (not idempotent): %v", err)
 	}
 }
+
+func TestManager_Reload(t *testing.T) {
+	ctx := context.Background()
+
+	// 1. Create a mock MCP server with a tool
+	s1 := server.NewMCPServer("Server1", "1.0.0")
+	t1 := mcp.NewTool("echo", mcp.WithDescription("Echo something"))
+	s1.AddTool(t1, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return mcp.NewToolResultText("hello"), nil
+	})
+
+	s2 := server.NewMCPServer("Server2", "1.0.0")
+	t2 := mcp.NewTool("search", mcp.WithDescription("Search something"))
+	s2.AddTool(t2, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return mcp.NewToolResultText("found"), nil
+	})
+
+	st := &mockServerStore{
+		servers: []*store.MCPServer{
+			{
+				Name:      "server1",
+				Transport: "stdio",
+				Enabled:   1,
+			},
+		},
+	}
+
+	mgr := NewManager(st).(*manager)
+
+	mgr.connectClient = func(ctx context.Context, srv *store.MCPServer) (*client.Client, error) {
+		var s *server.MCPServer
+		if srv.Name == "server1" {
+			s = s1
+		} else if srv.Name == "server2" {
+			s = s2
+		} else {
+			return nil, fmt.Errorf("unknown server: %s", srv.Name)
+		}
+		cli, err := client.NewInProcessClient(s)
+		if err != nil {
+			return nil, err
+		}
+		initReq := mcp.InitializeRequest{}
+		initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+		initReq.Params.ClientInfo = mcp.Implementation{
+			Name:    "test",
+			Version: "1.0.0",
+		}
+		if _, err := cli.Initialize(ctx, initReq); err != nil {
+			return nil, err
+		}
+		return cli, nil
+	}
+
+	// 2. Call Tools() to cache
+	tools, err := mgr.Tools(ctx)
+	if err != nil {
+		t.Fatalf("Tools() returned error: %v", err)
+	}
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+
+	// 3. Add server2 to store, but don't reload yet
+	st.servers = append(st.servers, &store.MCPServer{
+		Name:      "server2",
+		Transport: "stdio",
+		Enabled:   1,
+	})
+
+	// 4. Stale tools cache should still return 1 tool
+	tools, err = mgr.Tools(ctx)
+	if err != nil {
+		t.Fatalf("Tools() returned error: %v", err)
+	}
+	if len(tools) != 1 {
+		t.Fatalf("expected cached 1 tool, got %d", len(tools))
+	}
+
+	// 5. Reload
+	mgr.Reload()
+
+	// 6. Tools should now load both
+	tools, err = mgr.Tools(ctx)
+	if err != nil {
+		t.Fatalf("Tools() returned error: %v", err)
+	}
+	if len(tools) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(tools))
+	}
+
+	// 7. Verify reload on empty/new state does not panic
+	emptyMgr := NewManager(&mockServerStore{}).(*manager)
+	emptyMgr.Reload() // should not panic
+}

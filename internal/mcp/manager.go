@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cloudwego/eino/components/tool"
 	mcpp "github.com/cloudwego/eino-ext/components/tool/mcp"
+	"github.com/cloudwego/eino/components/tool"
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/oniharnantyo/onclaw/internal/agent/tools"
 	"github.com/oniharnantyo/onclaw/internal/store"
@@ -20,6 +20,8 @@ type Manager interface {
 	Tools(ctx context.Context) ([]tool.BaseTool, error)
 	// Close cleanly closes all active MCP client connections.
 	Close() error
+	// Reload drops all active clients and tools cache to force reload on the next Tools call.
+	Reload()
 }
 
 type manager struct {
@@ -99,7 +101,16 @@ func (m *manager) Tools(ctx context.Context) ([]tool.BaseTool, error) {
 func (m *manager) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.closeAndReset()
+}
 
+func (m *manager) Reload() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_ = m.closeAndReset()
+}
+
+func (m *manager) closeAndReset() error {
 	var firstErr error
 	for name, cli := range m.clients {
 		if err := cli.Close(); err != nil {
