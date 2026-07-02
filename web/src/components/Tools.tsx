@@ -32,6 +32,14 @@ export default function Tools({ showToast }: ToolsProps) {
 	const [jsonError, setJsonError] = useState<string | null>(null);
 	const [saving, setSaving] = useState(false);
 
+	// Browser Config States
+	const [browserEngine, setBrowserEngine] = useState<'lightpanda' | 'chromium' | 'remote'>('lightpanda');
+	const [browserHeadless, setBrowserHeadless] = useState<boolean>(true);
+	const [lightpandaBinPath, setLightpandaBinPath] = useState<string>('');
+	const [lightpandaPort, setLightpandaPort] = useState<number>(9222);
+	const [chromiumBinPath, setChromiumBinPath] = useState<string>('');
+	const [remoteURL, setRemoteURL] = useState<string>('');
+
 	useEffect(() => {
 		loadTools();
 		// eslint-disable-next-line react-hooks/exhaustive-deps
@@ -84,12 +92,24 @@ export default function Tools({ showToast }: ToolsProps) {
 			const res = await fetch(`/api/tools/categories/${encodeURIComponent(categoryView.category)}/config`);
 			if (res.ok) {
 				const data = await res.json();
+				let configStr = data.config || '{}';
 				// Format JSON nicely
 				try {
-					const formatted = JSON.stringify(JSON.parse(data.config), null, 2);
+					const parsed = JSON.parse(configStr);
+					const formatted = JSON.stringify(parsed, null, 2);
 					setConfigJSON(formatted);
+
+					// If category is Browser, populate browser form states
+					if (categoryView.category.toLowerCase() === 'browser') {
+						setBrowserEngine(parsed.engine || 'lightpanda');
+						setBrowserHeadless(parsed.headless !== false); // default to true
+						setLightpandaBinPath(parsed.lightpanda?.binPath || '');
+						setLightpandaPort(parsed.lightpanda?.port || 9222);
+						setChromiumBinPath(parsed.chromium?.binPath || '');
+						setRemoteURL(parsed.remote?.url || '');
+					}
 				} catch {
-					setConfigJSON(data.config || '{}');
+					setConfigJSON(configStr);
 				}
 				setShowConfigModal(true);
 			} else {
@@ -105,10 +125,33 @@ export default function Tools({ showToast }: ToolsProps) {
 		e.preventDefault();
 		if (!activeCategory) return;
 
+		let finalConfigJSON = configJSON;
+		if (activeCategory.toLowerCase() === 'browser') {
+			const browserConfigObj: any = {
+				engine: browserEngine,
+				headless: browserHeadless,
+			};
+			if (browserEngine === 'lightpanda') {
+				browserConfigObj.lightpanda = {
+					binPath: lightpandaBinPath || undefined,
+					port: Number(lightpandaPort) || 9222,
+				};
+			} else if (browserEngine === 'chromium') {
+				browserConfigObj.chromium = {
+					binPath: chromiumBinPath || undefined,
+				};
+			} else if (browserEngine === 'remote') {
+				browserConfigObj.remote = {
+					url: remoteURL || undefined,
+				};
+			}
+			finalConfigJSON = JSON.stringify(browserConfigObj);
+		}
+
 		// Client-side JSON verification
 		let parsedConfig = '';
 		try {
-			parsedConfig = JSON.stringify(JSON.parse(configJSON));
+			parsedConfig = JSON.stringify(JSON.parse(finalConfigJSON));
 			setJsonError(null);
 		} catch (err: any) {
 			setJsonError(`Invalid JSON: ${err.message}`);
@@ -297,43 +340,157 @@ export default function Tools({ showToast }: ToolsProps) {
 							</button>
 						</div>
 
-						<div className="form-group">
-							<label className="form-label" htmlFor="category-config">
-								Configuration JSON
-								<Tooltip content="Edit category settings in JSON format. Validated against the registered schema." position="bottom" align="left" />
-							</label>
-							<textarea
-								id="category-config"
-								className={`form-input ${(jsonError) ? 'is-invalid' : ''}`}
-								style={{
-									fontFamily: 'monospace',
-									fontSize: '12px',
-									minHeight: '240px',
-									resize: 'vertical',
-									backgroundColor: 'rgba(0,0,0,0.2)',
-									color: '#e2e8f0',
-									lineHeight: '1.5',
-								}}
-								value={configJSON}
-								onChange={(e) => {
-									setConfigJSON(e.target.value);
-									setJsonError(null);
-								}}
-								placeholder="{}"
-								required
-							/>
-							{jsonError && (
-								<span className="form-error" style={{ display: 'block', marginTop: '4px' }}>{jsonError}</span>
-							)}
-						</div>
+						{activeCategory.toLowerCase() === 'browser' ? (
+							<div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+								{/* Engine Selection */}
+								<div className="form-group">
+									<label className="form-label" htmlFor="browser-engine">
+										Browser Engine
+										<Tooltip content="Select the browser rendering engine. Lightpanda is a lightweight CDP subprocess; Chromium is standard Chrome; Remote connects to an existing CDP server." position="bottom" align="left" />
+									</label>
+									<select
+										id="browser-engine"
+										className="form-select"
+										value={browserEngine}
+										onChange={(e) => setBrowserEngine(e.target.value as any)}
+									>
+										<option value="lightpanda">Lightpanda (Embedded, low-memory)</option>
+										<option value="chromium">Chromium (Full browser, high-fidelity)</option>
+										<option value="remote">Remote CDP Server (Attach to running instance)</option>
+									</select>
+								</div>
 
-						{configSchema && (
-							<div style={{ marginTop: '16px', padding: '12px', borderRadius: '6px', backgroundColor: 'rgba(0,0,0,0.15)', border: '1px solid var(--border)' }}>
-								<span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Config Schema</span>
-								<pre style={{ margin: '8px 0 0 0', fontSize: '11px', fontFamily: 'monospace', color: 'var(--text-muted)', overflowX: 'auto', maxHeight: '120px' }}>
-									{configSchema}
-								</pre>
+								{/* Headless Mode (Chromium / Lightpanda) */}
+								{browserEngine !== 'remote' && (
+									<div className="form-group" style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '8px' }}>
+										<input
+											id="browser-headless"
+											type="checkbox"
+											checked={browserHeadless}
+											onChange={(e) => setBrowserHeadless(e.target.checked)}
+											style={{ width: 'auto', margin: 0 }}
+										/>
+										<label htmlFor="browser-headless" style={{ margin: 0, fontWeight: 500, fontSize: '13px', cursor: 'pointer' }}>
+											Headless Mode (Recommended)
+										</label>
+									</div>
+								)}
+
+								{/* Lightpanda specific inputs */}
+								{browserEngine === 'lightpanda' && (
+									<div style={{ display: 'flex', flexDirection: 'column', gap: '12px', padding: '12px', border: '1px solid var(--border)', borderRadius: '6px', backgroundColor: 'rgba(0,0,0,0.1)' }}>
+										<div className="form-group">
+											<label className="form-label" htmlFor="lp-bin-path">
+												Lightpanda Binary Path
+												<Tooltip content="Optional path to custom lightpanda executable (defaults to searching in PATH)." position="bottom" align="left" />
+											</label>
+											<input
+												id="lp-bin-path"
+												type="text"
+												className="form-input"
+												value={lightpandaBinPath}
+												onChange={(e) => setLightpandaBinPath(e.target.value)}
+												placeholder="e.g. /usr/local/bin/lightpanda"
+											/>
+										</div>
+										<div className="form-group">
+											<label className="form-label" htmlFor="lp-port">
+												CDP Port
+											</label>
+											<input
+												id="lp-port"
+												type="number"
+												className="form-input"
+												value={lightpandaPort}
+												onChange={(e) => setLightpandaPort(Number(e.target.value))}
+												placeholder="9222"
+											/>
+										</div>
+									</div>
+								)}
+
+								{/* Chromium specific inputs */}
+								{browserEngine === 'chromium' && (
+									<div style={{ display: 'flex', flexDirection: 'column', gap: '12px', padding: '12px', border: '1px solid var(--border)', borderRadius: '6px', backgroundColor: 'rgba(0,0,0,0.1)' }}>
+										<div className="form-group">
+											<label className="form-label" htmlFor="chrome-bin-path">
+												Chromium/Chrome Binary Path
+												<Tooltip content="Optional path to chromium binary (e.g. /usr/bin/chromium-browser or applications path)." position="bottom" align="left" />
+											</label>
+											<input
+												id="chrome-bin-path"
+												type="text"
+												className="form-input"
+												value={chromiumBinPath}
+												onChange={(e) => setChromiumBinPath(e.target.value)}
+												placeholder="e.g. /Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+											/>
+										</div>
+									</div>
+								)}
+
+								{/* Remote specific inputs */}
+								{browserEngine === 'remote' && (
+									<div style={{ display: 'flex', flexDirection: 'column', gap: '12px', padding: '12px', border: '1px solid var(--border)', borderRadius: '6px', backgroundColor: 'rgba(0,0,0,0.1)' }}>
+										<div className="form-group">
+											<label className="form-label" htmlFor="remote-url">
+												Remote CDP Endpoint URL *
+												<Tooltip content="Host address exposing Chrome DevTools protocol, e.g. http://127.0.0.1:9222" position="bottom" align="left" />
+											</label>
+											<input
+												id="remote-url"
+												type="text"
+												className="form-input"
+												value={remoteURL}
+												onChange={(e) => setRemoteURL(e.target.value)}
+												placeholder="e.g. http://127.0.0.1:9222"
+												required
+											/>
+										</div>
+									</div>
+								)}
 							</div>
+						) : (
+							<>
+								<div className="form-group">
+									<label className="form-label" htmlFor="category-config">
+										Configuration JSON
+										<Tooltip content="Edit category settings in JSON format. Validated against the registered schema." position="bottom" align="left" />
+									</label>
+									<textarea
+										id="category-config"
+										className={`form-input ${(jsonError) ? 'is-invalid' : ''}`}
+										style={{
+											fontFamily: 'monospace',
+											fontSize: '12px',
+											minHeight: '240px',
+											resize: 'vertical',
+											backgroundColor: 'rgba(0,0,0,0.2)',
+											color: '#e2e8f0',
+											lineHeight: '1.5',
+										}}
+										value={configJSON}
+										onChange={(e) => {
+											setConfigJSON(e.target.value);
+											setJsonError(null);
+										}}
+										placeholder="{}"
+										required
+									/>
+									{jsonError && (
+										<span className="form-error" style={{ display: 'block', marginTop: '4px' }}>{jsonError}</span>
+									)}
+								</div>
+
+								{configSchema && (
+									<div style={{ marginTop: '16px', padding: '12px', borderRadius: '6px', backgroundColor: 'rgba(0,0,0,0.15)', border: '1px solid var(--border)' }}>
+										<span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Config Schema</span>
+										<pre style={{ margin: '8px 0 0 0', fontSize: '11px', fontFamily: 'monospace', color: 'var(--text-muted)', overflowX: 'auto', maxHeight: '120px' }}>
+											{configSchema}
+										</pre>
+									</div>
+								)}
+							</>
 						)}
 
 						<div className="modal-footer" style={{ marginTop: '24px', display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
