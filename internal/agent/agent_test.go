@@ -124,7 +124,7 @@ func TestAssembleAndRunAgent_ReActLoop(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	agent, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test")
+	agent, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestAssembleAndRunAgent_Cancellation(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	agent, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test")
+	agent, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestAssembleAgent_ContextWindowTrigger(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Compile and resolve with 128000 context window (verifies 80% logic runs)
-	ag, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 128000, dummyConvStore{}, 1, nil, nil, nil, "test")
+	ag, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 128000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestAssembleAgent_ContextWindowTrigger(t *testing.T) {
 	}
 
 	// 2. Re-assemble with 64000 context window
-	ag2, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test")
+	ag2, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to assemble agent second time: %v", err)
 	}
@@ -290,4 +290,100 @@ func (dummyConvStore) SaveSummary(ctx context.Context, conversationID int64, sum
 }
 func (dummyConvStore) ListConversations(ctx context.Context) ([]*store.ConversationRow, error) {
 	return nil, nil
+}
+
+type mockEnabledChecker struct {
+	disabled map[string]bool
+}
+
+func (m *mockEnabledChecker) Enabled(name string) bool {
+	return !m.disabled[name]
+}
+
+type mockToolRegistryStore struct {
+	list []*store.ToolRegistry
+}
+
+func (m *mockToolRegistryStore) ListTools(ctx context.Context) ([]*store.ToolRegistry, error) {
+	return m.list, nil
+}
+func (m *mockToolRegistryStore) GetTool(ctx context.Context, name string) (*store.ToolRegistry, error) {
+	return nil, nil
+}
+func (m *mockToolRegistryStore) UpsertTool(ctx context.Context, t *store.ToolRegistry) error {
+	return nil
+}
+func (m *mockToolRegistryStore) ToggleTool(ctx context.Context, name string, enabled bool) error {
+	return nil
+}
+
+func TestAssembleAgent_GlobalToolEnable(t *testing.T) {
+	tmpDir := t.TempDir()
+	workspace := filepath.Join(tmpDir, "workspace")
+	_ = os.MkdirAll(workspace, 0755)
+	userConfigDir := filepath.Join(tmpDir, "config")
+	_ = os.MkdirAll(userConfigDir, 0755)
+
+	fm := &fakeChatModel{}
+	ctx := context.Background()
+
+	// 1. With all tools enabled
+	agentConf := &store.Agent{
+		Name: "test-global-enable",
+	}
+	ag, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("failed to assemble agent: %v", err)
+	}
+	if len(ag.Tools) == 0 {
+		t.Error("expected tools, got 0")
+	}
+
+	// 2. With read_file disabled globally
+	mockStore := &mockToolRegistryStore{
+		list: []*store.ToolRegistry{
+			{Name: "read_file", Enabled: 0},
+			{Name: "write_file", Enabled: 1},
+			{Name: "list_dir", Enabled: 1},
+			{Name: "shell", Enabled: 1},
+		},
+	}
+	ag, err = AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", mockStore, nil, nil)
+	if err != nil {
+		t.Fatalf("failed to assemble agent: %v", err)
+	}
+
+	hasReadFile := false
+	hasWriteFile := false
+	for _, tl := range ag.Tools {
+		info, _ := tl.Info(ctx)
+		if info.Name == "read_file" {
+			hasReadFile = true
+		}
+		if info.Name == "write_file" {
+			hasWriteFile = true
+		}
+	}
+	if hasReadFile {
+		t.Error("expected read_file to be globally excluded, but it was present")
+	}
+	if !hasWriteFile {
+		t.Error("expected write_file to be present")
+	}
+
+	// 3. Intersection with per-agent allowlist
+	agentConf.Tools = "write_file,read_file" // agent only allows write_file and read_file
+	ag, err = AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", mockStore, nil, nil)
+	if err != nil {
+		t.Fatalf("failed to assemble agent: %v", err)
+	}
+	var activeTools []string
+	for _, tl := range ag.Tools {
+		info, _ := tl.Info(ctx)
+		activeTools = append(activeTools, info.Name)
+	}
+	if len(activeTools) != 1 || activeTools[0] != "write_file" {
+		t.Errorf("expected effective tools to be exactly [write_file], got %v", activeTools)
+	}
+
 }

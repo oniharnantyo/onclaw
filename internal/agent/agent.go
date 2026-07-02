@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/oniharnantyo/onclaw/internal/agent/middlewares"
 	"github.com/oniharnantyo/onclaw/internal/agent/tools"
+	_ "github.com/oniharnantyo/onclaw/internal/agent/tools/browser"
 	"github.com/oniharnantyo/onclaw/internal/hooks"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
@@ -30,10 +33,41 @@ type Agent struct {
 	Dispatcher       *hooks.Dispatcher
 	Session          *middlewares.SessionState
 	sessionStartOnce sync.Once
+	Tools            []tool.BaseTool
+}
+
+type inMemoryEnabledChecker struct {
+	enabledMap map[string]bool
+}
+
+func (c *inMemoryEnabledChecker) Enabled(name string) bool {
+	enabled, ok := c.enabledMap[name]
+	if !ok {
+		return true // Default to enabled
+	}
+	return enabled
 }
 
 // AssembleAgent constructs a ChatModelAgent with persona configuration, tools, and summarization middleware.
-func AssembleAgent(ctx context.Context, agentConf *store.Agent, chatModel model.AgenticModel, workspace string, userConfigDir string, shellPolicy string, shellAllowlist []string, contextWindow int, convStore store.ConversationStore, conversationID int64, mcpTools []tool.BaseTool, hookStore store.HookStore, execStore store.HookExecutionStore, channel string) (*Agent, error) {
+func AssembleAgent(
+	ctx context.Context,
+	agentConf *store.Agent,
+	chatModel model.AgenticModel,
+	workspace string,
+	userConfigDir string,
+	shellPolicy string,
+	shellAllowlist []string,
+	contextWindow int,
+	convStore store.ConversationStore,
+	conversationID int64,
+	mcpTools []tool.BaseTool,
+	hookStore store.HookStore,
+	execStore store.HookExecutionStore,
+	channel string,
+	toolRegistryStore store.ToolRegistryStore,
+	toolGroupCfg tools.ToolGroupCfg,
+	kvStore store.KVStore,
+) (*Agent, error) {
 	// Load existing persona/memory files and AGENTS.md
 	persona, err := LoadPersonaContext(ctx, workspace, userConfigDir)
 	if err != nil {
@@ -61,12 +95,27 @@ func AssembleAgent(ctx context.Context, agentConf *store.Agent, chatModel model.
 
 	const persistedKey = "_onclaw_persisted"
 
+	var enabledChecker tools.EnabledChecker
+	if toolRegistryStore != nil {
+		list, err := toolRegistryStore.ListTools(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("list tools for enabled checker: %w", err)
+		}
+		enabledMap := make(map[string]bool)
+		for _, t := range list {
+			enabledMap[t.Name] = t.Enabled == 1
+		}
+		enabledChecker = &inMemoryEnabledChecker{enabledMap: enabledMap}
+	}
+
 	// 2. Build tools
 	builtTools := tools.Builtin(&tools.Scope{
 		Workspace:      workspace,
 		ShellPolicy:    shellPolicy,
 		ShellAllowlist: shellAllowlist,
-	})
+		ToolGroupCfg:   toolGroupCfg,
+		KVStore:        kvStore,
+	}, enabledChecker)
 	builtTools = append(builtTools, mcpTools...)
 
 	// Filter tools if a tool subset is configured on the agent
@@ -228,6 +277,7 @@ func AssembleAgent(ctx context.Context, agentConf *store.Agent, chatModel model.
 		Workspace:  workspace,
 		Dispatcher: dispatcher,
 		Session:    sessionState,
+		Tools:      builtTools,
 	}, nil
 }
 
@@ -284,3 +334,22 @@ func (a *Agent) Run(ctx context.Context, userInput string) EventIterator {
 	}
 }
 
+// ToolGroupCfgWrapper wraps a store.ToolGroupConfigStore to implement tools.ToolGroupCfg.
+type ToolGroupCfgWrapper struct {
+	Store store.ToolGroupConfigStore
+}
+
+// GetConfig reads the category configuration and returns it as a JSON string.
+func (w *ToolGroupCfgWrapper) GetConfig(ctx context.Context, category string) (string, error) {
+	if w.Store == nil {
+		return "{}", nil
+	}
+	cfg, err := w.Store.GetConfig(ctx, category)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "{}", nil
+		}
+		return "", err
+	}
+	return cfg.Config, nil
+}
