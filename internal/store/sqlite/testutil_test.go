@@ -1,10 +1,12 @@
-package sqlite
+package sqlite_test
 
 import (
 	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
 )
 
 // setupTestDB creates a temporary SQLite database for testing.
@@ -16,13 +18,13 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 	}
 
 	dbPath := filepath.Join(tmpDir, "onclaw.db")
-	db, err := Open(dbPath)
+	db, err := sqlite.Open(dbPath)
 	if err != nil {
 		os.RemoveAll(tmpDir)
 		t.Fatalf("Open failed: %v", err)
 	}
 
-	if err := Migrate(db); err != nil {
+	if err := sqlite.Migrate(db); err != nil {
 		db.Close()
 		os.RemoveAll(tmpDir)
 		t.Fatalf("Migrate failed: %v", err)

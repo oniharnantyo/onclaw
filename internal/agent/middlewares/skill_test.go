@@ -1,7 +1,8 @@
-package middlewares
+package middlewares_test
 
 import (
 	"context"
+	"github.com/oniharnantyo/onclaw/internal/agent/middlewares"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +15,7 @@ func TestResolveDirs(t *testing.T) {
 	home := "/home/test"
 	agent := "myagent"
 
-	dirs := ResolveDirs(home, agent)
+	dirs := middlewares.ResolveDirs(home, agent)
 	expectedDirs := []string{
 		filepath.Join(home, "workspace", agent, "skills"),
 		filepath.Join(home, "workspace", agent, ".agents", "skills"),
@@ -86,7 +87,7 @@ Body Y
 	}
 
 	// Setup backend
-	backend := NewMultiDirBackend([]string{dir1, dir2})
+	backend := middlewares.NewMultiDirBackend([]string{dir1, dir2})
 	ctx := context.Background()
 
 	// List
@@ -133,5 +134,43 @@ Body Y
 	}
 	if strings.TrimSpace(skY.Content) != "Body Y" {
 		t.Errorf("expected body Y, got: %q", skY.Content)
+	}
+}
+
+func TestResolveDirs_EmptyAgent(t *testing.T) {
+	dirs := middlewares.ResolveDirs("/my-home", "")
+	if len(dirs) != 1 || dirs[0] != filepath.Join("/my-home", "skills") {
+		t.Errorf("expected global path only, got %v", dirs)
+	}
+}
+
+func TestBuildMiddleware_Nonexistent(t *testing.T) {
+	mw, err := middlewares.BuildMiddleware(context.Background(), "/nonexistent-home-dir-xyz", "agent")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if mw != nil {
+		t.Errorf("expected nil middleware, got %v", mw)
+	}
+}
+
+func TestBuildMiddleware_Exist(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "onclaw-buildmw-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	skillDir := filepath.Join(tmpDir, "skills")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("failed to create skillDir: %v", err)
+	}
+
+	mw, err := middlewares.BuildMiddleware(context.Background(), tmpDir, "")
+	if err != nil {
+		t.Fatalf("BuildMiddleware error: %v", err)
+	}
+	if mw == nil {
+		t.Error("expected non-nil middleware, got nil")
 	}
 }

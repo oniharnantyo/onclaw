@@ -1,10 +1,11 @@
-package api
+package api_test
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/oniharnantyo/onclaw/internal/api"
 	"log/slog"
 	"net"
 	"net/http"
@@ -50,7 +51,7 @@ func TestMCPAPI(t *testing.T) {
 		return []string{"mock-tool1", "mock-tool2"}, nil
 	}
 
-	// Setup Server
+	// Setup api.Server
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	km := secrets.NewKeyManager([]byte("0123456789abcdef0123456789abcdef"))
 	ps := sqlite.NewProfileStore(db)
@@ -67,8 +68,11 @@ func TestMCPAPI(t *testing.T) {
 	execStore := sqlite.NewHookExecutionStore(db)
 	mcpStore := sqlite.NewMCPServerStore(db)
 
-	svc := service.New(mgr, kv, convStore, nil, inst, logger, hookStore, execStore, mcpStore, reloadFn, testMCPFn)
-	s := NewServer(svc, logger)
+	toolRegistryStore := sqlite.NewToolRegistryStore(db)
+	toolGroupConfigStore := sqlite.NewToolGroupConfigStore(db)
+
+	svc := service.New(mgr, kv, convStore, nil, inst, logger, hookStore, execStore, mcpStore, reloadFn, testMCPFn, toolRegistryStore, toolGroupConfigStore)
+	s := api.NewServer(svc, logger)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

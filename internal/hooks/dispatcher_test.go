@@ -1,4 +1,4 @@
-package hooks
+package hooks_test
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/oniharnantyo/onclaw/internal/hooks"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
@@ -109,16 +110,16 @@ func (m *mockExecStore) ListExecutions(ctx context.Context) ([]*store.HookExecut
 }
 
 type mockHandler struct {
-	dec   Decision
+	dec   hooks.Decision
 	err   error
 	delay time.Duration
 }
 
-func (mh *mockHandler) Run(ctx context.Context, payload Payload) (Decision, error) {
+func (mh *mockHandler) Run(ctx context.Context, payload hooks.Payload) (hooks.Decision, error) {
 	if mh.delay > 0 {
 		select {
 		case <-ctx.Done():
-			return DecisionBlock, ctx.Err()
+			return hooks.DecisionBlock, ctx.Err()
 		case <-time.After(mh.delay):
 		}
 	}
@@ -127,25 +128,25 @@ func (mh *mockHandler) Run(ctx context.Context, payload Payload) (Decision, erro
 
 func TestDispatcher_Fire(t *testing.T) {
 	// Register mock handler factory
-	Register("mock", func(cfg []byte) (Handler, error) {
+	hooks.Register("mock", func(cfg []byte) (hooks.Handler, error) {
 		if string(cfg) == "error" {
 			return nil, errors.New("factory error")
 		}
 		if string(cfg) == "run-error" {
-			return &mockHandler{dec: DecisionBlock, err: errors.New("run error")}, nil
+			return &mockHandler{dec: hooks.DecisionBlock, err: errors.New("run error")}, nil
 		}
 		if string(cfg) == "block" {
-			return &mockHandler{dec: DecisionBlock}, nil
+			return &mockHandler{dec: hooks.DecisionBlock}, nil
 		}
 		if string(cfg) == "timeout" {
-			return &mockHandler{dec: DecisionAllow, delay: 50 * time.Millisecond}, nil
+			return &mockHandler{dec: hooks.DecisionAllow, delay: 50 * time.Millisecond}, nil
 		}
-		return &mockHandler{dec: DecisionAllow}, nil
+		return &mockHandler{dec: hooks.DecisionAllow}, nil
 	})
 
 	hs := newMockHookStore()
 	es := newMockExecStore()
-	d := NewDispatcher(hs, es)
+	d := hooks.NewDispatcher(hs, es)
 
 	ctx := context.Background()
 
@@ -158,7 +159,7 @@ func TestDispatcher_Fire(t *testing.T) {
 	_ = hs.AddHook(ctx, h2)
 	_ = hs.AddHook(ctx, h3)
 
-	resolved, err := d.resolveHooks(ctx, "agent-1", EventPreToolUse)
+	resolved, err := d.ResolveHooks(ctx, "agent-1", hooks.EventPreToolUse)
 	if err != nil {
 		t.Fatalf("resolveHooks error: %v", err)
 	}
@@ -180,8 +181,8 @@ func TestDispatcher_Fire(t *testing.T) {
 	_ = hs.AddHook(ctx, blockHook)
 	_ = hs.AddHook(ctx, allowHook)
 
-	dec, err := d.Fire(ctx, EventPreToolUse, Payload{Agent: "agent-1"})
-	if dec != DecisionBlock {
+	dec, err := d.Fire(ctx, hooks.EventPreToolUse, hooks.Payload{Agent: "agent-1"})
+	if dec != hooks.DecisionBlock {
 		t.Errorf("expected DecisionBlock, got %s", dec)
 	}
 
@@ -191,13 +192,13 @@ func TestDispatcher_Fire(t *testing.T) {
 	_ = hs.AddHook(ctx, matchHook)
 
 	// Miss (should not fire, so allow)
-	dec, err = d.Fire(ctx, EventPreToolUse, Payload{Agent: "agent-1", ToolName: "read_file"})
-	if dec != DecisionAllow {
+	dec, err = d.Fire(ctx, hooks.EventPreToolUse, hooks.Payload{Agent: "agent-1", ToolName: "read_file"})
+	if dec != hooks.DecisionAllow {
 		t.Errorf("expected miss to result in allow, got %s", dec)
 	}
 	// Hit
-	dec, err = d.Fire(ctx, EventPreToolUse, Payload{Agent: "agent-1", ToolName: "exec"})
-	if dec != DecisionAllow {
+	dec, err = d.Fire(ctx, hooks.EventPreToolUse, hooks.Payload{Agent: "agent-1", ToolName: "exec"})
+	if dec != hooks.DecisionAllow {
 		t.Errorf("expected hit to result in allow, got %s", dec)
 	}
 
@@ -206,16 +207,16 @@ func TestDispatcher_Fire(t *testing.T) {
 	timeoutHook := &store.Hook{ID: "ht", Name: "ht", Scope: "global", Event: "pre_tool_use", HandlerType: "mock", Config: "timeout", TimeoutMS: 10, OnTimeout: "block", Enabled: 1}
 	_ = hs.AddHook(ctx, timeoutHook)
 
-	dec, err = d.Fire(ctx, EventPreToolUse, Payload{Agent: "agent-1"})
-	if dec != DecisionBlock {
+	dec, err = d.Fire(ctx, hooks.EventPreToolUse, hooks.Payload{Agent: "agent-1"})
+	if dec != hooks.DecisionBlock {
 		t.Errorf("expected block on timeout, got %s", dec)
 	}
 
 	// Change on_timeout to allow
 	timeoutHook.OnTimeout = "allow"
 	_ = hs.UpdateHook(ctx, timeoutHook)
-	dec, err = d.Fire(ctx, EventPreToolUse, Payload{Agent: "agent-1"})
-	if dec != DecisionAllow {
+	dec, err = d.Fire(ctx, hooks.EventPreToolUse, hooks.Payload{Agent: "agent-1"})
+	if dec != hooks.DecisionAllow {
 		t.Errorf("expected allow on timeout, got %s", dec)
 	}
 
@@ -223,8 +224,8 @@ func TestDispatcher_Fire(t *testing.T) {
 	hs.hooks = make(map[string]*store.Hook)
 	errHook := &store.Hook{ID: "he", Name: "he", Scope: "global", Event: "pre_tool_use", HandlerType: "mock", Config: "run-error", Enabled: 1}
 	_ = hs.AddHook(ctx, errHook)
-	dec, err = d.Fire(ctx, EventPreToolUse, Payload{Agent: "agent-1"})
-	if dec != DecisionBlock {
+	dec, err = d.Fire(ctx, hooks.EventPreToolUse, hooks.Payload{Agent: "agent-1"})
+	if dec != hooks.DecisionBlock {
 		t.Errorf("expected block on error, got %s", dec)
 	}
 
@@ -235,7 +236,7 @@ func TestDispatcher_Fire(t *testing.T) {
 
 	// Trigger 5 blocks
 	for i := 0; i < 5; i++ {
-		_, _ = d.Fire(ctx, EventPreToolUse, Payload{Agent: "agent-1"})
+		_, _ = d.Fire(ctx, hooks.EventPreToolUse, hooks.Payload{Agent: "agent-1"})
 	}
 
 	// Verify hook is disabled in store

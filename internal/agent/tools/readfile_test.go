@@ -1,21 +1,23 @@
-package tools
+package tools_test
 
 import (
 	"context"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/oniharnantyo/onclaw/internal/agent/tools"
 )
 
 func TestReadFileTool(t *testing.T) {
 	tmpDir := t.TempDir()
 	workspace, _ := filepath.Abs(tmpDir)
 
-	scope := &Scope{
+	scope := &tools.Scope{
 		Workspace: workspace,
 	}
 
-	toolObj := &readFileTool{}
+	toolObj := getTool("read_file")
 	invokable := toolObj.Build(scope)
 
 	// Write a file to read

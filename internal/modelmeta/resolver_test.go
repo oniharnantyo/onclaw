@@ -1,4 +1,4 @@
-package modelmeta
+package modelmeta_test
 
 import (
 	"context"
@@ -6,34 +6,36 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/oniharnantyo/onclaw/internal/modelmeta"
 )
 
 func TestResolveLayersAndFallback(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Prepare Mock Catalog
-	catalog := &ApiJSON{
-		Providers: map[string]ProviderObj{
+	catalog := &modelmeta.ApiJSON{
+		Providers: map[string]modelmeta.ProviderObj{
 			"openai": {
-				Models: map[string]ModelObj{
+				Models: map[string]modelmeta.ModelObj{
 					"gpt-4o": {
-						Limit:      LimitObj{Context: 128000},
+						Limit:      modelmeta.LimitObj{Context: 128000},
 						Reasoning:  false,
-						Modalities: ModalitiesObj{Input: []string{"text", "image"}},
+						Modalities: modelmeta.ModalitiesObj{Input: []string{"text", "image"}},
 					},
 					"gpt-3.5-turbo": {
-						Limit:      LimitObj{Context: 16385},
+						Limit:      modelmeta.LimitObj{Context: 16385},
 						Reasoning:  false,
-						Modalities: ModalitiesObj{Input: []string{"text"}},
+						Modalities: modelmeta.ModalitiesObj{Input: []string{"text"}},
 					},
 				},
 			},
 			"ollama": {
-				Models: map[string]ModelObj{
+				Models: map[string]modelmeta.ModelObj{
 					"llama3": {
-						Limit:      LimitObj{Context: 8192},
+						Limit:      modelmeta.LimitObj{Context: 8192},
 						Reasoning:  false,
-						Modalities: ModalitiesObj{Input: []string{"text"}},
+						Modalities: modelmeta.ModalitiesObj{Input: []string{"text"}},
 					},
 				},
 			},
@@ -41,7 +43,7 @@ func TestResolveLayersAndFallback(t *testing.T) {
 	}
 
 	// 2. Scenario: Unknown model falls back to defaults
-	metaDefault := Resolve(ctx, "non-existent-model", "openai", "http://localhost", "", catalog)
+	metaDefault := modelmeta.Resolve(ctx, "non-existent-model", "openai", "http://localhost", "", catalog)
 	if metaDefault.ContextWindow != 0 {
 		t.Errorf("expected context window 0, got %d", metaDefault.ContextWindow)
 	}
@@ -53,7 +55,7 @@ func TestResolveLayersAndFallback(t *testing.T) {
 	}
 
 	// 3. Scenario: Found in Catalog directly
-	metaCatalog := Resolve(ctx, "gpt-4o", "openai", "http://localhost", "", catalog)
+	metaCatalog := modelmeta.Resolve(ctx, "gpt-4o", "openai", "http://localhost", "", catalog)
 	if metaCatalog.ContextWindow != 128000 {
 		t.Errorf("expected 128000, got %d", metaCatalog.ContextWindow)
 	}
@@ -62,7 +64,7 @@ func TestResolveLayersAndFallback(t *testing.T) {
 	}
 
 	// 4. Scenario: Global search fallback (mismatched provider type, e.g. openai-compatible)
-	metaGlobal := Resolve(ctx, "gpt-4o", "openai-compatible", "http://localhost", "", catalog)
+	metaGlobal := modelmeta.Resolve(ctx, "gpt-4o", "openai-compatible", "http://localhost", "", catalog)
 	if metaGlobal.ContextWindow != 128000 {
 		t.Errorf("expected 128000 from global search, got %d", metaGlobal.ContextWindow)
 	}
@@ -79,7 +81,7 @@ func TestResolveLayersAndFallback(t *testing.T) {
 	}))
 	defer ollamaServer.Close()
 
-	metaOllamaNative := Resolve(ctx, "llama3", "ollama", ollamaServer.URL, "", catalog)
+	metaOllamaNative := modelmeta.Resolve(ctx, "llama3", "ollama", ollamaServer.URL, "", catalog)
 	// Even though catalog has llama3 context_window as 8192, native provider-native source should take precedence!
 	if metaOllamaNative.ContextWindow != 4096 {
 		t.Errorf("expected native context length 4096, got %d", metaOllamaNative.ContextWindow)
@@ -107,7 +109,7 @@ func TestApiJSONUnmarshalRegression(t *testing.T) {
 		}
 	}`
 
-	var catalog ApiJSON
+	var catalog modelmeta.ApiJSON
 	if err := json.Unmarshal([]byte(jsonData), &catalog); err != nil {
 		t.Fatalf("failed to unmarshal real-shaped JSON: %v", err)
 	}
@@ -195,7 +197,7 @@ func TestResolveReasoningOptions(t *testing.T) {
 		}
 	}`
 
-	var catalog ApiJSON
+	var catalog modelmeta.ApiJSON
 	if err := json.Unmarshal([]byte(jsonData), &catalog); err != nil {
 		t.Fatalf("failed to unmarshal JSON with reasoning options: %v", err)
 	}
@@ -203,7 +205,7 @@ func TestResolveReasoningOptions(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Verify o1-preview (effort type option)
-	metaO1 := Resolve(ctx, "o1-preview", "openai", "http://localhost", "", &catalog)
+	metaO1 := modelmeta.Resolve(ctx, "o1-preview", "openai", "http://localhost", "", &catalog)
 	if !metaO1.Thinking {
 		t.Errorf("expected thinking true for o1-preview")
 	}
@@ -220,7 +222,7 @@ func TestResolveReasoningOptions(t *testing.T) {
 	}
 
 	// 2. Verify o3-mini (effort and budget_tokens)
-	metaO3 := Resolve(ctx, "o3-mini", "openai", "http://localhost", "", &catalog)
+	metaO3 := modelmeta.Resolve(ctx, "o3-mini", "openai", "http://localhost", "", &catalog)
 	if len(metaO3.ReasoningOptions) != 2 {
 		t.Errorf("expected 2 reasoning options, got %d", len(metaO3.ReasoningOptions))
 	} else {
@@ -235,7 +237,7 @@ func TestResolveReasoningOptions(t *testing.T) {
 	}
 
 	// 3. Verify claude-3-7-sonnet (toggle and budget_tokens)
-	metaClaude := Resolve(ctx, "claude-3-7-sonnet", "openai", "http://localhost", "", &catalog)
+	metaClaude := modelmeta.Resolve(ctx, "claude-3-7-sonnet", "openai", "http://localhost", "", &catalog)
 	if len(metaClaude.ReasoningOptions) != 2 {
 		t.Errorf("expected 2 reasoning options, got %d", len(metaClaude.ReasoningOptions))
 	} else {

@@ -23,6 +23,9 @@ type Service struct {
 	mcpStore  store.MCPServerStore
 	reloadMCP func()
 	testMCP   func(ctx context.Context, srv *store.MCPServer) ([]string, error)
+
+	toolRegistryStore    store.ToolRegistryStore
+	toolGroupConfigStore store.ToolGroupConfigStore
 }
 
 // New returns a new Service instance.
@@ -38,6 +41,8 @@ func New(
 	mcpStore store.MCPServerStore,
 	reloadMCP func(),
 	testMCP func(ctx context.Context, srv *store.MCPServer) ([]string, error),
+	toolRegistryStore store.ToolRegistryStore,
+	toolGroupConfigStore store.ToolGroupConfigStore,
 ) *Service {
 	if reloadMCP == nil {
 		reloadMCP = func() {}
@@ -48,16 +53,18 @@ func New(
 		}
 	}
 	return &Service{
-		mgr:       mgr,
-		kv:        kv,
-		conv:      conv,
-		resolve:   resolve,
-		installer: installer,
-		log:       log,
-		hookStore: hookStore,
-		execStore: execStore,
-		mcpStore:  mcpStore,
-		reloadMCP: reloadMCP,
-		testMCP:   testMCP,
+		mgr:                  mgr,
+		kv:                   kv,
+		conv:                 conv,
+		resolve:              resolve,
+		installer:            installer,
+		log:                  log,
+		hookStore:            hookStore,
+		execStore:            execStore,
+		mcpStore:             mcpStore,
+		reloadMCP:            reloadMCP,
+		testMCP:              testMCP,
+		toolRegistryStore:    toolRegistryStore,
+		toolGroupConfigStore: toolGroupConfigStore,
 	}
 }

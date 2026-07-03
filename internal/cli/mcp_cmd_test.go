@@ -1,4 +1,4 @@
-package cli
+package cli_test
 
 import (
 	"context"
@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/oniharnantyo/onclaw/internal/cli"
 )
 
 func TestMCPCommandLifecycle(t *testing.T) {
@@ -18,7 +20,7 @@ func TestMCPCommandLifecycle(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test.db")
 	t.Setenv("ONCLAW_DB_PATH", dbPath)
 
-	app := New()
+	app := cli.New()
 	ctx := context.Background()
 
 	// 1. Add stdio server

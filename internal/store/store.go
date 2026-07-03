@@ -78,3 +78,17 @@ type HookExecutionStore interface {
 	AppendExecution(ctx context.Context, exec *HookExecution) error
 	ListExecutions(ctx context.Context) ([]*HookExecution, error)
 }
+
+// ToolRegistryStore defines operations for listing, toggling, and retrieving tools.
+type ToolRegistryStore interface {
+	ListTools(ctx context.Context) ([]*ToolRegistry, error)
+	GetTool(ctx context.Context, name string) (*ToolRegistry, error)
+	UpsertTool(ctx context.Context, t *ToolRegistry) error
+	ToggleTool(ctx context.Context, name string, enabled bool) error
+}
+
+// ToolGroupConfigStore defines operations for retrieving and updating category configuration.
+type ToolGroupConfigStore interface {
+	GetConfig(ctx context.Context, category string) (*ToolGroupConfig, error)
+	PutConfig(ctx context.Context, category string, config string) error
+}

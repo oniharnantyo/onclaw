@@ -1,4 +1,4 @@
-package cli
+package cli_test
 
 import (
 	"bytes"
@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/oniharnantyo/onclaw/internal/cli"
 	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
 )
 
@@ -23,7 +24,7 @@ func TestInitCommand_Integration(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test.db")
 	t.Setenv("ONCLAW_DB_PATH", dbPath)
 
-	app := New()
+	app := cli.New()
 	ctx := context.Background()
 
 	// Capture stdout
@@ -169,7 +170,7 @@ func TestAgentSetup_Seeding(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test.db")
 	t.Setenv("ONCLAW_DB_PATH", dbPath)
 
-	app := New()
+	app := cli.New()
 	ctx := context.Background()
 
 	// 1. Add provider first so Agent Setup has a profile to bind

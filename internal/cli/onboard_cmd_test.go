@@ -1,4 +1,4 @@
-package cli
+package cli_test
 
 import (
 	"bytes"
@@ -10,12 +10,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/oniharnantyo/onclaw/internal/cli"
 	"github.com/oniharnantyo/onclaw/internal/config"
 	"github.com/oniharnantyo/onclaw/internal/llm"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
-func setupTestDB(t *testing.T) (*appState, *llm.Service, *sql.DB, string) {
+func setupTestDB(t *testing.T) (*cli.AppState, *llm.Service, *sql.DB, string) {
 	t.Helper()
 	tmpDir, err := os.MkdirTemp("", "onclaw-onboard-test-*")
 	if err != nil {
@@ -26,13 +27,12 @@ func setupTestDB(t *testing.T) (*appState, *llm.Service, *sql.DB, string) {
 	})
 
 	dbPath := filepath.Join(tmpDir, "test.db")
-	st := &appState{
-		cfg: &config.Config{
-			DbPath: dbPath,
-		},
-	}
+	st := &cli.AppState{}
+	st.SetConfig(&config.Config{
+		DbPath: dbPath,
+	})
 
-	mgr, _, db, err := st.getProviderManager(nil)
+	mgr, db, err := st.GetProviderManager(nil)
 	if err != nil {
 		t.Fatalf("failed to get provider manager: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestRunProviderSetup_KeyfulHappyPath(t *testing.T) {
 	var out bytes.Buffer
 
 	ctx := context.Background()
-	err := runProviderSetup(ctx, mgr, db, dbPath, in, &out)
+	err := cli.RunProviderSetup(ctx, mgr, db, dbPath, in, &out)
 	if err != nil {
 		t.Fatalf("unexpected error running provider setup: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestRunProviderSetup_KeylessOllama(t *testing.T) {
 	var out bytes.Buffer
 
 	ctx := context.Background()
-	err := runProviderSetup(ctx, mgr, db, dbPath, in, &out)
+	err := cli.RunProviderSetup(ctx, mgr, db, dbPath, in, &out)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestRunProviderSetup_OpenAICompatible(t *testing.T) {
 	var out bytes.Buffer
 
 	ctx := context.Background()
-	err := runProviderSetup(ctx, mgr, db, dbPath, in, &out)
+	err := cli.RunProviderSetup(ctx, mgr, db, dbPath, in, &out)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestRunProviderSetup_NameCollisionAndEmptyModel(t *testing.T) {
 	in := bytes.NewBufferString(input)
 	var out bytes.Buffer
 
-	err = runProviderSetup(ctx, mgr, db, dbPath, in, &out)
+	err = cli.RunProviderSetup(ctx, mgr, db, dbPath, in, &out)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestRunProviderSetup_MultipleProvidersDefaultPrompt(t *testing.T) {
 	var out bytes.Buffer
 
 	ctx := context.Background()
-	err := runProviderSetup(ctx, mgr, db, dbPath, in, &out)
+	err := cli.RunProviderSetup(ctx, mgr, db, dbPath, in, &out)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestRunProviderSetup_EOFInterruptionPreservesCompleted(t *testing.T) {
 	var out bytes.Buffer
 
 	ctx := context.Background()
-	err := runProviderSetup(ctx, mgr, db, dbPath, in, &out)
+	err := cli.RunProviderSetup(ctx, mgr, db, dbPath, in, &out)
 	// Since EOF happened during the flow, it returns or breaks. Either way, the first should be saved.
 	if err != nil && err != io.EOF {
 		t.Fatalf("unexpected error format: %v", err)
@@ -290,7 +290,7 @@ func TestProviderSetupCommand_Integration(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test.db")
 	t.Setenv("ONCLAW_DB_PATH", dbPath)
 
-	app := New()
+	app := cli.New()
 	ctx := context.Background()
 
 	// Capture stdout

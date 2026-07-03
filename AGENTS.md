@@ -18,6 +18,8 @@ Minimal context for agents working on onclaw. Full details: see `CLAUDE.md`.
 
 Frontend lives in `web/`. Follow the design system at `web/design-system/onclaw/MASTER.md` (it owns colors, typography, components, and anti-patterns for all UI work).
 
+**Config forms must be structured fields, never a raw JSON input.** Every configuration dialog renders one field per property (select / text / number / checkbox, each with a label, tooltip, and inline validation), derived from that config's JSON schema or DTO — never a single editable JSON `<textarea>`. A read-only JSON `<pre>` preview is allowed for *displaying* stored config, never for editing it. Free-text/code values whose content is genuinely unstructured (hook scripts, agent system prompts) stay as textareas — that is a value, not structured config. Current offenders to fix: Browser category config (`web/src/components/Tools.tsx`) and the MCP server `env` field (`web/src/components/MCP.tsx`). Full rationale in `CLAUDE.md` → Web UI.
+
 ## Code conventions
 
 **Store package structure** (STRICT separation):

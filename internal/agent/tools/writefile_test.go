@@ -1,21 +1,23 @@
-package tools
+package tools_test
 
 import (
 	"context"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/oniharnantyo/onclaw/internal/agent/tools"
 )
 
 func TestWriteFileTool(t *testing.T) {
 	tmpDir := t.TempDir()
 	workspace, _ := filepath.Abs(tmpDir)
 
-	scope := &Scope{
+	scope := &tools.Scope{
 		Workspace: workspace,
 	}
 
-	toolObj := &writeFileTool{}
+	toolObj := getTool("write_file")
 	invokable := toolObj.Build(scope)
 
 	ctx := context.Background()

@@ -1,15 +1,17 @@
-package store
+package store_test
 
 import (
 	"testing"
+
+	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
 func TestMarshalUnmarshalModelMetadata(t *testing.T) {
-	meta := &ModelMetadata{
+	meta := &store.ModelMetadata{
 		ContextWindow:   16384,
 		Thinking:        true,
 		InputModalities: []string{"text", "image"},
-		ReasoningOptions: []ReasoningOption{
+		ReasoningOptions: []store.ReasoningOption{
 			{
 				Type:   "effort",
 				Values: []string{"low", "medium", "high"},
@@ -22,12 +24,12 @@ func TestMarshalUnmarshalModelMetadata(t *testing.T) {
 		},
 	}
 
-	metaJSON, err := MarshalModelMetadata(meta)
+	metaJSON, err := store.MarshalModelMetadata(meta)
 	if err != nil {
 		t.Fatalf("failed to marshal model metadata: %v", err)
 	}
 
-	unmarshaled, err := UnmarshalModelMetadata(metaJSON)
+	unmarshaled, err := store.UnmarshalModelMetadata(metaJSON)
 	if err != nil {
 		t.Fatalf("failed to unmarshal model metadata: %v", err)
 	}
@@ -46,7 +48,7 @@ func TestMarshalUnmarshalModelMetadata(t *testing.T) {
 	}
 
 	// Test unmarshalling empty JSON string
-	emptyMeta, err := UnmarshalModelMetadata("")
+	emptyMeta, err := store.UnmarshalModelMetadata("")
 	if err != nil {
 		t.Fatalf("failed to unmarshal empty model metadata: %v", err)
 	}

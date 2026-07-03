@@ -1,8 +1,10 @@
-package middlewares
+package middlewares_test
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"github.com/oniharnantyo/onclaw/internal/agent/middlewares"
 	"os"
 	"path/filepath"
 	"strings"
@@ -147,7 +149,7 @@ func TestHistoryMiddleware(t *testing.T) {
 		t.Fatalf("failed to create conversation: %v", err)
 	}
 
-	h := NewHistoryMiddleware(s, convID)
+	h := middlewares.NewHistoryMiddleware(s, convID)
 
 	// --- Turn 1 ---
 	// BeforeAgent: input user message
@@ -164,7 +166,7 @@ func TestHistoryMiddleware(t *testing.T) {
 	}
 
 	// Verify user message is marked as persisted and has seq
-	if !IsPersisted(userMsg) {
+	if !middlewares.IsPersisted(userMsg) {
 		t.Errorf("user message should be marked as persisted")
 	}
 	seqVal, ok := userMsg.Extra["_onclaw_seq"].(int64)
@@ -173,9 +175,9 @@ func TestHistoryMiddleware(t *testing.T) {
 	}
 
 	// Verify cursor is in context
-	cursor, ok := ctx.Value(cursorKey).(*RunCursor)
+	cursor, ok := middlewares.GetRunCursor(ctx)
 	if !ok || cursor == nil {
-		t.Fatalf("RunCursor missing from context")
+		t.Fatalf("middlewares.RunCursor missing from context")
 	}
 	if cursor.MaxSeq != 1 {
 		t.Errorf("expected cursor MaxSeq to be 1, got %d", cursor.MaxSeq)
@@ -204,7 +206,7 @@ func TestHistoryMiddleware(t *testing.T) {
 	}
 
 	// Verify assistant message is now persisted
-	if !IsPersisted(assistantMsg) {
+	if !middlewares.IsPersisted(assistantMsg) {
 		t.Errorf("assistant message should be marked as persisted")
 	}
 	if assistantMsg.Extra["_onclaw_seq"] != int64(2) {
@@ -314,18 +316,18 @@ func TestRedaction(t *testing.T) {
 	s := newMockConversationStore()
 	ctx := context.Background()
 	convID, _ := s.CreateConversation(ctx, "test-agent")
-	h := NewHistoryMiddleware(s, convID)
+	h := middlewares.NewHistoryMiddleware(s, convID)
 
 	// 1. Normal message without secrets
 	msg := schema.UserAgenticMessage("Hello normal message")
-	_, err := h.saveMessage(ctx, msg)
+	_, err := h.SaveMessage(ctx, msg)
 	if err != nil {
 		t.Fatalf("saveMessage failed: %v", err)
 	}
 
 	// 2. Secret message containing key pattern
 	secretMsg := schema.UserAgenticMessage("My secret key is sk-12345678901234567890")
-	_, err = h.saveMessage(ctx, secretMsg)
+	_, err = h.SaveMessage(ctx, secretMsg)
 	if err != nil {
 		t.Fatalf("saveMessage failed: %v", err)
 	}
@@ -387,25 +389,25 @@ func TestSummarizationExtraPreservation(t *testing.T) {
 	}
 
 	msg1 := schema.UserAgenticMessage("Msg 1")
-	msg1.Extra = map[string]interface{}{persistedKey: true, "_onclaw_seq": int64(1)}
+	msg1.Extra = map[string]interface{}{middlewares.PersistedKey: true, "_onclaw_seq": int64(1)}
 
 	msg2 := &schema.AgenticMessage{
 		Role: schema.AgenticRoleTypeAssistant,
 		ContentBlocks: []*schema.ContentBlock{
 			schema.NewContentBlock(&schema.AssistantGenText{Text: "Msg 2"}),
 		},
-		Extra: map[string]interface{}{persistedKey: true, "_onclaw_seq": int64(2)},
+		Extra: map[string]interface{}{middlewares.PersistedKey: true, "_onclaw_seq": int64(2)},
 	}
 
 	msg3 := schema.UserAgenticMessage("Msg 3")
-	msg3.Extra = map[string]interface{}{persistedKey: true, "_onclaw_seq": int64(3)}
+	msg3.Extra = map[string]interface{}{middlewares.PersistedKey: true, "_onclaw_seq": int64(3)}
 
 	msg4 := &schema.AgenticMessage{
 		Role: schema.AgenticRoleTypeAssistant,
 		ContentBlocks: []*schema.ContentBlock{
 			schema.NewContentBlock(&schema.AssistantGenText{Text: "Msg 4"}),
 		},
-		Extra: map[string]interface{}{persistedKey: true, "_onclaw_seq": int64(4)},
+		Extra: map[string]interface{}{middlewares.PersistedKey: true, "_onclaw_seq": int64(4)},
 	}
 
 	runCtx := &adk.ChatModelAgentContext[*schema.AgenticMessage]{
@@ -436,7 +438,7 @@ func TestSummarizationExtraPreservation(t *testing.T) {
 
 		if content == "Msg 3" {
 			foundMsg3 = true
-			if !IsPersisted(m) {
+			if !middlewares.IsPersisted(m) {
 				t.Errorf("Msg 3 lost its persisted flag!")
 			}
 			if seq, ok := m.Extra["_onclaw_seq"].(int64); !ok || seq != 3 {
@@ -445,7 +447,7 @@ func TestSummarizationExtraPreservation(t *testing.T) {
 		}
 		if content == "Msg 4" {
 			foundMsg4 = true
-			if !IsPersisted(m) {
+			if !middlewares.IsPersisted(m) {
 				t.Errorf("Msg 4 lost its persisted flag!")
 			}
 			if seq, ok := m.Extra["_onclaw_seq"].(int64); !ok || seq != 4 {
@@ -500,8 +502,8 @@ func TestMessageFidelityRoundTrip(t *testing.T) {
 			},
 		},
 		Extra: map[string]interface{}{
-			"summarization_tag": "some-value",
-			persistedKey:        true,
+			"summarization_tag":      "some-value",
+			middlewares.PersistedKey: true,
 		},
 	}
 
@@ -559,8 +561,8 @@ func TestMessageFidelityRoundTrip(t *testing.T) {
 	if loadedMsg.Extra["summarization_tag"] != "some-value" {
 		t.Errorf("summarization_tag extra mismatch: expected 'some-value', got %v", loadedMsg.Extra["summarization_tag"])
 	}
-	if loadedMsg.Extra[persistedKey] != true {
-		t.Errorf("_onclaw_persisted extra mismatch: expected true, got %v", loadedMsg.Extra[persistedKey])
+	if loadedMsg.Extra[middlewares.PersistedKey] != true {
+		t.Errorf("_onclaw_persisted extra mismatch: expected true, got %v", loadedMsg.Extra[middlewares.PersistedKey])
 	}
 }
 
@@ -590,7 +592,7 @@ func TestCompactionAndToolTurnIntegration(t *testing.T) {
 		t.Fatalf("failed to create conversation: %v", err)
 	}
 
-	h := NewHistoryMiddleware(convStore, convID)
+	h := middlewares.NewHistoryMiddleware(convStore, convID)
 
 	userMsg := schema.UserAgenticMessage("Run tool")
 	runCtx := &adk.ChatModelAgentContext[*schema.AgenticMessage]{
@@ -734,7 +736,7 @@ func TestCompactionAndToolTurnIntegration(t *testing.T) {
 	if redactedSummaryMsg.Extra == nil {
 		redactedSummaryMsg.Extra = make(map[string]interface{})
 	}
-	redactedSummaryMsg.Extra[persistedKey] = true
+	redactedSummaryMsg.Extra[middlewares.PersistedKey] = true
 
 	summaryMsgJSON, err := json.Marshal(redactedSummaryMsg)
 	if err != nil {
@@ -746,7 +748,7 @@ func TestCompactionAndToolTurnIntegration(t *testing.T) {
 		t.Fatalf("SaveSummary failed: %v", err)
 	}
 
-	foundSummary.Extra = map[string]interface{}{persistedKey: true}
+	foundSummary.Extra = map[string]interface{}{middlewares.PersistedKey: true}
 
 	summaryRow, tailRows, err := convStore.LoadHistory(ctx, convID)
 	if err != nil {
@@ -769,7 +771,7 @@ func TestCompactionAndToolTurnIntegration(t *testing.T) {
 	state2 := &adk.TypedChatModelAgentState[*schema.AgenticMessage]{
 		Messages: []*schema.AgenticMessage{foundSummary, finalAssistantMsg},
 	}
-	err = h.saveUnmarkedMessages(ctx, state2.Messages)
+	err = h.SaveUnmarkedMessages(ctx, state2.Messages)
 	if err != nil {
 		t.Fatalf("saveUnmarkedMessages failed: %v", err)
 	}
@@ -809,7 +811,7 @@ func TestCancellationNonPersistence(t *testing.T) {
 		t.Fatalf("failed to create conversation: %v", err)
 	}
 
-	h := NewHistoryMiddleware(convStore, convID)
+	h := middlewares.NewHistoryMiddleware(convStore, convID)
 
 	userMsg := schema.UserAgenticMessage("Prompt")
 	runCtx := &adk.ChatModelAgentContext[*schema.AgenticMessage]{
@@ -826,7 +828,7 @@ func TestCancellationNonPersistence(t *testing.T) {
 	cancelCtx, cancelFunc := context.WithCancel(ctx)
 	cancelFunc()
 
-	err = h.saveUnmarkedMessages(cancelCtx, []*schema.AgenticMessage{
+	err = h.SaveUnmarkedMessages(cancelCtx, []*schema.AgenticMessage{
 		{
 			Role: schema.AgenticRoleTypeAssistant,
 			ContentBlocks: []*schema.ContentBlock{
@@ -876,7 +878,7 @@ func TestCancellationMidStreamPersistence(t *testing.T) {
 		t.Fatalf("failed to create conversation: %v", err)
 	}
 
-	h := NewHistoryMiddleware(convStore, convID)
+	h := middlewares.NewHistoryMiddleware(convStore, convID)
 
 	userMsg := schema.UserAgenticMessage("Prompt")
 	runCtx := &adk.ChatModelAgentContext[*schema.AgenticMessage]{
@@ -917,5 +919,35 @@ func TestCancellationMidStreamPersistence(t *testing.T) {
 	}
 	if msgs[0].Role != "user" {
 		t.Errorf("expected saved message to be 'user', got %s", msgs[0].Role)
+	}
+}
+
+type mockFailedHistoryStore struct {
+	store.ConversationStore
+}
+
+func (m *mockFailedHistoryStore) LoadHistory(ctx context.Context, convID int64) (*store.MessageRow, []*store.MessageRow, error) {
+	return nil, nil, nil
+}
+
+func (m *mockFailedHistoryStore) AppendMessage(ctx context.Context, convID int64, role string, message string) (int64, error) {
+	return 0, errors.New("db write failed")
+}
+
+func TestHistoryMiddleware_ErrorPaths(t *testing.T) {
+	s := &mockFailedHistoryStore{}
+	mw := middlewares.NewHistoryMiddleware(s, 123)
+
+	ctx := context.Background()
+
+	userMsg := schema.UserAgenticMessage("Hello")
+	runCtx := &adk.ChatModelAgentContext[*schema.AgenticMessage]{
+		AgentInput: &adk.TypedAgentInput[*schema.AgenticMessage]{
+			Messages: []*schema.AgenticMessage{userMsg},
+		},
+	}
+	_, _, err := mw.BeforeAgent(ctx, runCtx)
+	if err == nil {
+		t.Error("expected error from BeforeAgent when DB write fails, got nil")
 	}
 }

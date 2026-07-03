@@ -1,7 +1,8 @@
-package sqlite
+package sqlite_test
 
 import (
 	"context"
+	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
 	"testing"
 )
 
@@ -10,7 +11,7 @@ func TestSecretStore(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	ss := NewSecretStore(db)
+	ss := sqlite.NewSecretStore(db)
 
 	// Test setting secret with empty key
 	if err := ss.SetSecret(ctx, "", "val"); err == nil {

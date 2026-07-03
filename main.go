@@ -9,8 +9,8 @@ import (
 	"log"
 	"os"
 
-	clicmd "github.com/oniharnantyo/onclaw/internal/cli"
 	_ "github.com/oniharnantyo/onclaw/internal/agent/tools/browser"
+	clicmd "github.com/oniharnantyo/onclaw/internal/cli"
 )
 
 func main() {

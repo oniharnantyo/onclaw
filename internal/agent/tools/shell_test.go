@@ -1,9 +1,11 @@
-package tools
+package tools_test
 
 import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/oniharnantyo/onclaw/internal/agent/tools"
 )
 
 func TestShellToolPolicy(t *testing.T) {
@@ -47,13 +49,13 @@ func TestShellToolPolicy(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			scope := &Scope{
+			scope := &tools.Scope{
 				Workspace:      tmpDir,
 				ShellPolicy:    tc.policy,
 				ShellAllowlist: tc.allowlist,
 			}
 
-			toolObj := &shellTool{}
+			toolObj := getTool("shell")
 			invokable := toolObj.Build(scope)
 
 			ctx := context.Background()

@@ -1,10 +1,12 @@
-package cli
+package cli_test
 
 import (
 	"bytes"
 	"errors"
 	"io"
 	"testing"
+
+	"github.com/oniharnantyo/onclaw/internal/cli"
 )
 
 func TestParseString(t *testing.T) {
@@ -23,9 +25,9 @@ func TestParseString(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		val, ok := parseString(tc.input, tc.def)
+		val, ok := cli.ParseString(tc.input, tc.def)
 		if val != tc.expected || ok != tc.ok {
-			t.Errorf("parseString(%q, %q) = (%q, %t); expected (%q, %t)", tc.input, tc.def, val, ok, tc.expected, tc.ok)
+			t.Errorf("ParseString(%q, %q) = (%q, %t); expected (%q, %t)", tc.input, tc.def, val, ok, tc.expected, tc.ok)
 		}
 	}
 }
@@ -46,9 +48,9 @@ func TestParseChoice(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		val, ok := parseChoice(tc.input, tc.num)
+		val, ok := cli.ParseChoice(tc.input, tc.num)
 		if val != tc.expected || ok != tc.ok {
-			t.Errorf("parseChoice(%q, %d) = (%d, %t); expected (%d, %t)", tc.input, tc.num, val, ok, tc.expected, tc.ok)
+			t.Errorf("ParseChoice(%q, %d) = (%d, %t); expected (%d, %t)", tc.input, tc.num, val, ok, tc.expected, tc.ok)
 		}
 	}
 }
@@ -70,9 +72,9 @@ func TestParseConfirm(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		val, ok := parseConfirm(tc.input, tc.defYes)
+		val, ok := cli.ParseConfirm(tc.input, tc.defYes)
 		if val != tc.expected || ok != tc.ok {
-			t.Errorf("parseConfirm(%q, %t) = (%t, %t); expected (%t, %t)", tc.input, tc.defYes, val, ok, tc.expected, tc.ok)
+			t.Errorf("ParseConfirm(%q, %t) = (%t, %t); expected (%t, %t)", tc.input, tc.defYes, val, ok, tc.expected, tc.ok)
 		}
 	}
 }
@@ -81,7 +83,7 @@ func TestPromptString(t *testing.T) {
 	// Case 1: valid input
 	in := bytes.NewBufferString("user input\n")
 	var out bytes.Buffer
-	val, err := promptString("Enter something", "", in, &out)
+	val, err := cli.PromptString("Enter something", "", in, &out)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -95,7 +97,7 @@ func TestPromptString(t *testing.T) {
 	// Case 2: default fallback on empty
 	in = bytes.NewBufferString("\n")
 	out.Reset()
-	val, err = promptString("Enter value", "my-default", in, &out)
+	val, err = cli.PromptString("Enter value", "my-default", in, &out)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -109,7 +111,7 @@ func TestPromptString(t *testing.T) {
 	// Case 3: empty input re-prompts, then valid input
 	in = bytes.NewBufferString("\n\nhello\n")
 	out.Reset()
-	val, err = promptString("Enter value", "", in, &out)
+	val, err = cli.PromptString("Enter value", "", in, &out)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -120,7 +122,7 @@ func TestPromptString(t *testing.T) {
 	// Case 4: EOF
 	in = bytes.NewBufferString("")
 	out.Reset()
-	_, err = promptString("Enter value", "", in, &out)
+	_, err = cli.PromptString("Enter value", "", in, &out)
 	if !errors.Is(err, io.EOF) {
 		t.Errorf("expected io.EOF, got %v", err)
 	}
@@ -130,7 +132,7 @@ func TestPromptSecret(t *testing.T) {
 	// Piped input
 	in := bytes.NewBufferString("my-secret\n")
 	var out bytes.Buffer
-	val, err := promptSecret("API Key", in, &out)
+	val, err := cli.PromptSecret("API Key", in, &out)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -141,7 +143,7 @@ func TestPromptSecret(t *testing.T) {
 	// Empty input re-prompt, then valid
 	in = bytes.NewBufferString("\nmy-secret2\n")
 	out.Reset()
-	val, err = promptSecret("API Key", in, &out)
+	val, err = cli.PromptSecret("API Key", in, &out)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -154,7 +156,7 @@ func TestPromptChoice(t *testing.T) {
 	choices := []string{"apple", "banana"}
 	in := bytes.NewBufferString("invalid\n2\n")
 	var out bytes.Buffer
-	val, err := promptChoice("Select fruit", choices, in, &out)
+	val, err := cli.PromptChoice("Select fruit", choices, in, &out)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -166,7 +168,7 @@ func TestPromptChoice(t *testing.T) {
 func TestPromptConfirm(t *testing.T) {
 	in := bytes.NewBufferString("invalid\ny\n")
 	var out bytes.Buffer
-	val, err := promptConfirm("Continue", false, in, &out)
+	val, err := cli.PromptConfirm("Continue", false, in, &out)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

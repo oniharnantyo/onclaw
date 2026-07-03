@@ -1,4 +1,4 @@
-package observability
+package observability_test
 
 import (
 	"context"
@@ -6,12 +6,14 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/oniharnantyo/onclaw/internal/observability"
 )
 
 func TestSetup_Empty(t *testing.T) {
 	ctx := context.Background()
-	cfg := Config{}
-	flush, err := Setup(ctx, cfg, nil)
+	cfg := observability.Config{}
+	flush, err := observability.Setup(ctx, cfg, nil)
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
@@ -24,8 +26,8 @@ func TestSetup_Incomplete(t *testing.T) {
 	ctx := context.Background()
 
 	// Missing public and secret key
-	cfg1 := Config{Host: "http://localhost"}
-	_, err := Setup(ctx, cfg1, nil)
+	cfg1 := observability.Config{Host: "http://localhost"}
+	_, err := observability.Setup(ctx, cfg1, nil)
 	if err == nil {
 		t.Error("expected error for incomplete config")
 	} else if !strings.Contains(err.Error(), "public_key") || !strings.Contains(err.Error(), "secret_key") {
@@ -33,8 +35,8 @@ func TestSetup_Incomplete(t *testing.T) {
 	}
 
 	// Missing secret key
-	cfg2 := Config{Host: "http://localhost", PublicKey: "pk-123"}
-	_, err = Setup(ctx, cfg2, nil)
+	cfg2 := observability.Config{Host: "http://localhost", PublicKey: "pk-123"}
+	_, err = observability.Setup(ctx, cfg2, nil)
 	if err == nil {
 		t.Error("expected error for incomplete config")
 	} else if !strings.Contains(err.Error(), "secret_key") {
@@ -49,7 +51,7 @@ func TestSetup_SuccessAndMasking(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := Config{
+	cfg := observability.Config{
 		Host:      server.URL,
 		PublicKey: "pk-test",
 		SecretKey: "sk-test",
@@ -62,7 +64,7 @@ func TestSetup_SuccessAndMasking(t *testing.T) {
 		return redactedStr
 	}
 
-	flush, err := Setup(ctx, cfg, maskFunc)
+	flush, err := observability.Setup(ctx, cfg, maskFunc)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -78,13 +80,13 @@ func TestBuildConfig_Masking(t *testing.T) {
 	dummyMask := func(s string) string { return s + "-masked" }
 
 	// 1. Mask = true, maskFunc != nil -> should set MaskFunc
-	cfg1 := Config{
+	cfg1 := observability.Config{
 		Host:      "http://localhost",
 		PublicKey: "pk-1",
 		SecretKey: "sk-1",
 		Mask:      true,
 	}
-	lfCfg1 := buildConfig(cfg1, dummyMask)
+	lfCfg1 := observability.BuildConfig(cfg1, dummyMask)
 	if lfCfg1.MaskFunc == nil {
 		t.Error("expected MaskFunc to be configured when Mask is true and maskFunc is provided")
 	} else if lfCfg1.MaskFunc("test") != "test-masked" {
@@ -92,25 +94,25 @@ func TestBuildConfig_Masking(t *testing.T) {
 	}
 
 	// 2. Mask = false, maskFunc != nil -> should NOT set MaskFunc
-	cfg2 := Config{
+	cfg2 := observability.Config{
 		Host:      "http://localhost",
 		PublicKey: "pk-1",
 		SecretKey: "sk-1",
 		Mask:      false,
 	}
-	lfCfg2 := buildConfig(cfg2, dummyMask)
+	lfCfg2 := observability.BuildConfig(cfg2, dummyMask)
 	if lfCfg2.MaskFunc != nil {
 		t.Error("expected MaskFunc to be nil when Mask is false")
 	}
 
 	// 3. Mask = true, maskFunc = nil -> should NOT set MaskFunc (no panic)
-	cfg3 := Config{
+	cfg3 := observability.Config{
 		Host:      "http://localhost",
 		PublicKey: "pk-1",
 		SecretKey: "sk-1",
 		Mask:      true,
 	}
-	lfCfg3 := buildConfig(cfg3, nil)
+	lfCfg3 := observability.BuildConfig(cfg3, nil)
 	if lfCfg3.MaskFunc != nil {
 		t.Error("expected MaskFunc to be nil when maskFunc is nil")
 	}

@@ -1,4 +1,4 @@
-package api
+package api_test
 
 import (
 	"bytes"
@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/oniharnantyo/onclaw/internal/api"
 	"io"
 	"log/slog"
 	"net"
@@ -46,7 +47,7 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 	return db, cleanup
 }
 
-func setupTestServer(t *testing.T, db *sql.DB, resolveFn ResolveAndAssembleFunc) (*Server, string, func()) {
+func setupTestServer(t *testing.T, db *sql.DB, resolveFn api.ResolveAndAssembleFunc) (*api.Server, string, func()) {
 	t.Helper()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
@@ -65,7 +66,7 @@ func setupTestServer(t *testing.T, db *sql.DB, resolveFn ResolveAndAssembleFunc)
 	convStore := sqlite.NewConversationStore(db)
 
 	if resolveFn == nil {
-		resolveFn = func(ctx context.Context, agentName, providerName, modelName, reasoning, workspacePath string, convID int64) (AssembledAgent, string, error) {
+		resolveFn = func(ctx context.Context, agentName, providerName, modelName, reasoning, workspacePath string, convID int64) (api.AssembledAgent, string, error) {
 			return nil, "", fmt.Errorf("resolve agent not implemented in tests")
 		}
 	}
@@ -81,8 +82,10 @@ func setupTestServer(t *testing.T, db *sql.DB, resolveFn ResolveAndAssembleFunc)
 	hookStore := sqlite.NewHookStore(db)
 	execStore := sqlite.NewHookExecutionStore(db)
 	mcpStore := sqlite.NewMCPServerStore(db)
-	svc := service.New(mgr, kv, convStore, resolveFn, inst, logger, hookStore, execStore, mcpStore, nil, nil)
-	s := NewServer(svc, logger)
+	toolRegistryStore := sqlite.NewToolRegistryStore(db)
+	toolGroupConfigStore := sqlite.NewToolGroupConfigStore(db)
+	svc := service.New(mgr, kv, convStore, resolveFn, inst, logger, hookStore, execStore, mcpStore, nil, nil, toolRegistryStore, toolGroupConfigStore)
+	s := api.NewServer(svc, logger)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -657,7 +660,7 @@ func TestWebSSEChat(t *testing.T) {
 		},
 	}
 
-	resolveFn := func(ctx context.Context, agentName, providerName, modelName, reasoning, workspacePath string, convID int64) (AssembledAgent, string, error) {
+	resolveFn := func(ctx context.Context, agentName, providerName, modelName, reasoning, workspacePath string, convID int64) (api.AssembledAgent, string, error) {
 		return &mockAgent{
 			iterator: &mockEventIterator{msgs: mockMsgs},
 		}, "/tmp/workspace", nil

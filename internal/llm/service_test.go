@@ -1,4 +1,4 @@
-package llm
+package llm_test
 
 import (
 	"context"
@@ -14,13 +14,14 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/oniharnantyo/onclaw/internal/llm"
 	"github.com/oniharnantyo/onclaw/internal/llm/adapter"
 	"github.com/oniharnantyo/onclaw/internal/secrets"
 	"github.com/oniharnantyo/onclaw/internal/store"
 	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
 )
 
-func testSetup(t *testing.T) (*sql.DB, *Service) {
+func testSetup(t *testing.T) (*sql.DB, *llm.Service) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("failed to open in-memory db: %v", err)
@@ -45,7 +46,7 @@ func testSetup(t *testing.T) (*sql.DB, *Service) {
 	ar.Register("openai", func() adapter.Adapter { return adapter.NewStubAdapter() })
 	ar.Register("ollama", func() adapter.Adapter { return adapter.NewStubAdapter() })
 
-	srv := NewService(ps, ss, km, ar, as)
+	srv := llm.NewService(ps, ss, km, ar, as)
 	return db, srv
 }
 
@@ -173,7 +174,7 @@ func TestSecretResolutionPrecedence(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error resolving unset secret, got nil")
 	}
-	if !errors.Is(err, ErrSecretNotSet) {
+	if !errors.Is(err, llm.ErrSecretNotSet) {
 		t.Errorf("expected ErrSecretNotSet, got %v", err)
 	}
 	if !strings.Contains(err.Error(), "API key for provider openai-test is not set") {
@@ -322,11 +323,11 @@ func TestHotReload(t *testing.T) {
 	ar := adapter.NewRegistry()
 	ar.Register("openai", func() adapter.Adapter { return adapter.NewStubAdapter() })
 
-	srv := NewService(ps, ss, km, ar, as)
+	srv := llm.NewService(ps, ss, km, ar, as)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	watcher, err := StartDBWatcher(ctx, tmpPath, srv)
+	watcher, err := llm.StartDBWatcher(ctx, tmpPath, srv)
 	if err != nil {
 		t.Fatalf("failed to start DB watcher: %v", err)
 	}
@@ -385,7 +386,7 @@ func TestFakeStoreReplaceability(t *testing.T) {
 	ar := adapter.NewRegistry()
 	ar.Register("openai", func() adapter.Adapter { return adapter.NewStubAdapter() })
 
-	srv := NewService(fakePS, fakeSS, km, ar, fakeAS)
+	srv := llm.NewService(fakePS, fakeSS, km, ar, fakeAS)
 	ctx := context.Background()
 
 	p := &store.Profile{Name: "openai-fake", ProviderType: "openai", APIBase: "https://api.openai.com/v1", Enabled: 1}

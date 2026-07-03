@@ -26,6 +26,10 @@ func (s *shellTool) Desc() string {
 	return "Execute a shell command inside the workspace directory"
 }
 
+func (s *shellTool) Category() string {
+	return "Shell"
+}
+
 type ShellInput struct {
 	Command string `json:"command" jsonschema_description:"The shell command to execute in the workspace"`
 }

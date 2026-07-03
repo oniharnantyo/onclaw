@@ -1,15 +1,17 @@
-package config
+package config_test
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/oniharnantyo/onclaw/internal/config"
 )
 
 func TestLoadDefaults(t *testing.T) {
 	t.Setenv("ONCLAW_LOG_LEVEL", "")
 	t.Setenv("ONCLAW_CONCURRENCY", "")
-	cfg, err := Load("")
+	cfg, err := config.Load("")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -33,7 +35,7 @@ func TestLoadDefaults(t *testing.T) {
 func TestLoadEnvOverridesDefault(t *testing.T) {
 	t.Setenv("ONCLAW_LOG_LEVEL", "debug")
 	t.Setenv("ONCLAW_CONCURRENCY", "4")
-	cfg, err := Load("")
+	cfg, err := config.Load("")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -58,7 +60,7 @@ func TestLoadFileOverridesDefault(t *testing.T) {
 	t.Setenv("ONCLAW_LOG_FORMAT", "")
 	t.Setenv("ONCLAW_CONCURRENCY", "")
 
-	cfg, err := Load(path)
+	cfg, err := config.Load(path)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -82,7 +84,7 @@ func TestLoadEnvFileWithComments(t *testing.T) {
 	t.Setenv("ONCLAW_LOG_LEVEL", "")
 	t.Setenv("ONCLAW_CONCURRENCY", "")
 
-	cfg, err := Load(path)
+	cfg, err := config.Load(path)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -102,7 +104,7 @@ func TestLoadEnvFileWithQuotedValues(t *testing.T) {
 		t.Fatalf("write file: %v", err)
 	}
 
-	cfg, err := Load(path)
+	cfg, err := config.Load(path)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -119,7 +121,7 @@ func TestEnvFileCommaSeparatedArrays(t *testing.T) {
 		t.Fatalf("write file: %v", err)
 	}
 
-	cfg, err := Load(path)
+	cfg, err := config.Load(path)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -143,7 +145,7 @@ func TestEnvFileTypeConversion(t *testing.T) {
 		t.Fatalf("write file: %v", err)
 	}
 
-	cfg, err := Load(path)
+	cfg, err := config.Load(path)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -156,7 +158,7 @@ func TestEnvFileTypeConversion(t *testing.T) {
 }
 
 func TestSearchPathsAlwaysIncludesCwdAndEtc(t *testing.T) {
-	paths := SearchPaths()
+	paths := config.SearchPaths()
 	if len(paths) < 2 {
 		t.Fatalf("expected at least 2 search paths, got %v", paths)
 	}
@@ -182,7 +184,7 @@ func TestLoadLangfuseConfig(t *testing.T) {
 	t.Setenv("ONCLAW_LANGFUSE_RELEASE", "v1.0.0")
 	t.Setenv("ONCLAW_LANGFUSE_MASK", "false")
 
-	cfg, err := Load("")
+	cfg, err := config.Load("")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -215,7 +217,7 @@ func TestEnvFileInvalidTypeConversion(t *testing.T) {
 		t.Fatalf("write file: %v", err)
 	}
 
-	cfg, err := Load(path)
+	cfg, err := config.Load(path)
 	if err != nil {
 		t.Fatalf("Load failed on invalid type: %v", err)
 	}
@@ -226,7 +228,7 @@ func TestEnvFileInvalidTypeConversion(t *testing.T) {
 
 func TestEnvVarInvalidTypeConversion(t *testing.T) {
 	t.Setenv("ONCLAW_CONCURRENCY", "invalid-env")
-	cfg, err := Load("")
+	cfg, err := config.Load("")
 	if err != nil {
 		t.Fatalf("Load failed on invalid env: %v", err)
 	}

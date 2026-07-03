@@ -9,6 +9,8 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/oniharnantyo/onclaw/internal/agent/tools"
 )
 
 // ResolveDbPath resolves the database path from configuration.
@@ -174,11 +176,24 @@ func Migrate(db *sql.DB) error {
 			created_at TEXT NOT NULL,
 			FOREIGN KEY(hook_id) REFERENCES agent_hooks(id) ON DELETE SET NULL
 		);`,
+		`CREATE TABLE IF NOT EXISTS tool_registry (
+			name TEXT PRIMARY KEY,
+			category TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS tool_group_config (
+			category TEXT PRIMARY KEY,
+			config TEXT NOT NULL DEFAULT '{}',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
 	}
 
 	// Drop old skills table (if it had only name as PK) to migrate cleanly.
 	// This is safe since the feature is not yet released.
-	_, _ = db.Exec("DROP TABLE IF EXISTS skills;")
+	// _, _ = db.Exec("DROP TABLE IF EXISTS skills;")
 
 	for _, q := range queries {
 		if _, err := db.Exec(q); err != nil {
@@ -238,8 +253,20 @@ func Migrate(db *sql.DB) error {
 		}
 	}
 
-	return nil
+	// Seed tool_registry from the builtin tools registry
+	currentTime := now()
+	for _, t := range tools.GetRegistry() {
+		_, err := db.Exec(`
+			INSERT OR IGNORE INTO tool_registry (name, category, enabled, created_at, updated_at)
+			VALUES (?, ?, 1, ?, ?)`,
+			t.Name(), t.Category(), currentTime, currentTime,
+		)
+		if err != nil {
+			return fmt.Errorf("seed tool %s: %w", t.Name(), err)
+		}
+	}
 
+	return nil
 }
 
 func columnExists(db *sql.DB, table, column string) (bool, error) {

@@ -1,4 +1,4 @@
-package tools
+package tools_test
 
 import (
 	"context"
@@ -6,17 +6,28 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/oniharnantyo/onclaw/internal/agent/tools"
 )
+
+func getTool(name string) tools.Tool {
+	for _, t := range tools.GetRegistry() {
+		if t.Name() == name {
+			return t
+		}
+	}
+	panic("tool not found: " + name)
+}
 
 func TestListDirTool(t *testing.T) {
 	tmpDir := t.TempDir()
 	workspace, _ := filepath.Abs(tmpDir)
 
-	scope := &Scope{
+	scope := &tools.Scope{
 		Workspace: workspace,
 	}
 
-	toolObj := &listDirTool{}
+	toolObj := getTool("list_dir")
 	invokable := toolObj.Build(scope)
 
 	// Create a file and a dir

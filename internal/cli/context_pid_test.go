@@ -1,4 +1,4 @@
-package cli
+package cli_test
 
 import (
 	"fmt"
@@ -8,6 +8,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/oniharnantyo/onclaw/internal/cli"
 )
 
 func TestPidFileAndSighup(t *testing.T) {
@@ -20,7 +22,7 @@ func TestPidFileAndSighup(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test.db")
 
 	// 1. Test writePIDFile
-	pidPath, err := writePIDFile(dbPath)
+	pidPath, err := cli.WritePIDFile(dbPath)
 	if err != nil {
 		t.Fatalf("failed to write pid file: %v", err)
 	}
@@ -44,7 +46,7 @@ func TestPidFileAndSighup(t *testing.T) {
 	defer signal.Stop(sigChan)
 
 	// Call signalRunningProcess
-	if err := signalRunningProcess(dbPath); err != nil {
+	if err := cli.SignalRunningProcess(dbPath); err != nil {
 		t.Fatalf("failed to signal running process: %v", err)
 	}
 
@@ -64,7 +66,7 @@ func TestPidFileAndSighup(t *testing.T) {
 	}
 
 	// Calling it now should do nothing and return no error
-	if err := signalRunningProcess(dbPath); err != nil {
+	if err := cli.SignalRunningProcess(dbPath); err != nil {
 		t.Errorf("expected no error when pidfile is missing, got %v", err)
 	}
 }

@@ -1,8 +1,10 @@
-package service
+package service_test
 
 import (
 	"errors"
 	"testing"
+
+	"github.com/oniharnantyo/onclaw/internal/api/service"
 )
 
 func TestClassify(t *testing.T) {
@@ -18,18 +20,18 @@ func TestClassify(t *testing.T) {
 		},
 		{
 			name:     "ErrNotFound directly",
-			input:    ErrNotFound,
-			expected: ErrNotFound,
+			input:    service.ErrNotFound,
+			expected: service.ErrNotFound,
 		},
 		{
 			name:     "wrapped ErrNotFound",
 			input:    errors.New("agent master: not found"),
-			expected: ErrNotFound,
+			expected: service.ErrNotFound,
 		},
 		{
 			name:     "database sql no rows error",
 			input:    errors.New("sql: no rows in result set"),
-			expected: ErrNotFound,
+			expected: service.ErrNotFound,
 		},
 		{
 			name:     "arbitrary error",
@@ -40,7 +42,7 @@ func TestClassify(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := classify(tt.input)
+			got := service.Classify(tt.input)
 			if tt.expected == nil {
 				if got != nil {
 					t.Errorf("expected nil error, got: %v", got)
@@ -50,8 +52,8 @@ func TestClassify(t *testing.T) {
 			if got == nil {
 				t.Fatalf("expected non-nil error, got nil")
 			}
-			if tt.expected == ErrNotFound {
-				if !errors.Is(got, ErrNotFound) {
+			if tt.expected == service.ErrNotFound {
+				if !errors.Is(got, service.ErrNotFound) {
 					t.Errorf("expected ErrNotFound, got: %v", got)
 				}
 			} else {

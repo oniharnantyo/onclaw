@@ -24,6 +24,10 @@ func (l *listDirTool) Desc() string {
 	return "List files and directories inside a workspace directory"
 }
 
+func (l *listDirTool) Category() string {
+	return "Filesystem"
+}
+
 type ListDirInput struct {
 	Path string `json:"path" jsonschema_description:"The directory path to list, relative to the workspace"`
 }

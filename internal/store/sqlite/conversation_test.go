@@ -1,7 +1,8 @@
-package sqlite
+package sqlite_test
 
 import (
 	"context"
+	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
 	"testing"
 )
 
@@ -9,7 +10,7 @@ func TestConversationStore(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	store := NewConversationStore(db)
+	store := sqlite.NewConversationStore(db)
 	ctx := context.Background()
 
 	// Create conversation

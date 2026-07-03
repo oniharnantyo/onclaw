@@ -24,6 +24,10 @@ func (w *writeFileTool) Desc() string {
 	return "Write contents to a file in the workspace (creates parent directories if needed)"
 }
 
+func (w *writeFileTool) Category() string {
+	return "Filesystem"
+}
+
 type WriteFileInput struct {
 	Path    string `json:"path" jsonschema_description:"The file path to write, relative to the workspace"`
 	Content string `json:"content" jsonschema_description:"The content to write to the file"`
