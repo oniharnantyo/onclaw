@@ -1,4 +1,4 @@
-package skill
+package skill_test
 
 import (
 	"archive/tar"
@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/oniharnantyo/onclaw/internal/skill"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
@@ -138,11 +139,11 @@ Body content of math skill
 
 	// Setup mock store and installer
 	ms := newMockSkillStore()
-	inst := NewInstaller(ms, homeDir)
+	inst := skill.NewInstaller(ms, homeDir)
 	ctx := context.Background()
 
 	// Install skill from local source (using the skill directory path directly)
-	installed, err := inst.Install(ctx, skillDir, nil, "global", InstallOpts{})
+	installed, err := inst.Install(ctx, skillDir, nil, "global", skill.InstallOpts{})
 	if err != nil {
 		t.Fatalf("failed to Install: %v", err)
 	}
@@ -171,7 +172,7 @@ Body content of math skill
 	}
 
 	// Test Idempotency (re-install, same source, same hash)
-	installed2, err := inst.Install(ctx, skillDir, nil, "global", InstallOpts{})
+	installed2, err := inst.Install(ctx, skillDir, nil, "global", skill.InstallOpts{})
 	if err != nil {
 		t.Fatalf("failed second install: %v", err)
 	}
@@ -198,13 +199,13 @@ Body content of math skill
 		t.Fatalf("failed write: %v", err)
 	}
 
-	_, err = inst.Install(ctx, otherSkillDir, nil, "global", InstallOpts{})
+	_, err = inst.Install(ctx, otherSkillDir, nil, "global", skill.InstallOpts{})
 	if err == nil {
 		t.Error("expected error due to name collision from different source, got nil")
 	}
 
 	// Overwrite with Force
-	_, err = inst.Install(ctx, otherSkillDir, nil, "global", InstallOpts{Force: true})
+	_, err = inst.Install(ctx, otherSkillDir, nil, "global", skill.InstallOpts{Force: true})
 	if err != nil {
 		t.Fatalf("expected force install to succeed, got error: %v", err)
 	}
@@ -248,7 +249,7 @@ Body B
 	defer server.Close()
 
 	ms := newMockSkillStore()
-	inst := NewInstaller(ms, homeDir)
+	inst := skill.NewInstaller(ms, homeDir)
 	ctx := context.Background()
 
 	// Discover source
@@ -269,7 +270,7 @@ Body B
 	}
 
 	// Install all (explicit selection)
-	installed, err := inst.Install(ctx, server.URL, []string{"skillA", "skillB"}, "global", InstallOpts{})
+	installed, err := inst.Install(ctx, server.URL, []string{"skillA", "skillB"}, "global", skill.InstallOpts{})
 	if err != nil {
 		t.Fatalf("failed to install: %v", err)
 	}
@@ -302,7 +303,7 @@ func TestClassifySourceType(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := classifySourceType(tt.source)
+		got := skill.ClassifySourceType(tt.source)
 		if got != tt.want {
 			t.Errorf("classifySourceType(%q) = %q, want %q", tt.source, got, tt.want)
 		}
@@ -347,17 +348,17 @@ body`
 	}
 
 	ms := newMockSkillStore()
-	inst := NewInstaller(ms, homeDir)
+	inst := skill.NewInstaller(ms, homeDir)
 	ctx := context.Background()
 
 	// Install globally
-	_, err = inst.Install(ctx, skillDir, nil, "global", InstallOpts{})
+	_, err = inst.Install(ctx, skillDir, nil, "global", skill.InstallOpts{})
 	if err != nil {
 		t.Fatalf("failed to install globally: %v", err)
 	}
 
 	// Install to agent scope: should coexist without collision
-	_, err = inst.Install(ctx, skillDir, nil, "my-agent", InstallOpts{})
+	_, err = inst.Install(ctx, skillDir, nil, "my-agent", skill.InstallOpts{})
 	if err != nil {
 		t.Fatalf("failed to install in agent scope (should coexist): %v", err)
 	}
@@ -374,5 +375,88 @@ body`
 
 	if globalSk == nil || agentSk == nil {
 		t.Errorf("expected both skills to exist")
+	}
+}
+
+func TestInstaller_WrapperMethods(t *testing.T) {
+	homeDir, err := os.MkdirTemp("", "onclaw-skills-wrapper-home")
+	if err != nil {
+		t.Fatalf("failed temp dir: %v", err)
+	}
+	defer os.RemoveAll(homeDir)
+
+	ms := newMockSkillStore()
+	inst := skill.NewInstaller(ms, homeDir)
+	ctx := context.Background()
+
+	// 1. GetSkill on empty -> error
+	_, err = inst.GetSkill(ctx, "nonexistent", "global")
+	if err == nil {
+		t.Error("expected error for GetSkill of nonexistent skill")
+	}
+
+	// 2. Remove on empty -> error
+	err = inst.Remove(ctx, "nonexistent", "global")
+	if err == nil {
+		t.Error("expected error for Remove of nonexistent skill")
+	}
+
+	// 3. Update on empty -> error
+	_, err = inst.Update(ctx, "nonexistent", "global")
+	if err == nil {
+		t.Error("expected error for Update of nonexistent skill")
+	}
+
+	// 4. List empty
+	list, err := inst.List(ctx)
+	if err != nil {
+		t.Errorf("List failed: %v", err)
+	}
+	if len(list) != 0 {
+		t.Errorf("expected 0 skills, got %d", len(list))
+	}
+
+	// Populate a skill
+	sk := &store.Skill{
+		Name:      "test-skill",
+		Scope:     "global",
+		Source:    "/some/source",
+		SkillPath: filepath.Join(homeDir, "skills", "test-skill"),
+	}
+	if err := os.MkdirAll(sk.SkillPath, 0755); err != nil {
+		t.Fatalf("failed to create skill directory: %v", err)
+	}
+
+	if err := ms.AddSkill(ctx, sk); err != nil {
+		t.Fatalf("AddSkill failed: %v", err)
+	}
+
+	// List again
+	list, err = inst.List(ctx)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(list) != 1 {
+		t.Errorf("expected 1 skill, got %d", len(list))
+	}
+
+	// GetSkill
+	retrieved, err := inst.GetSkill(ctx, "test-skill", "global")
+	if err != nil {
+		t.Fatalf("GetSkill failed: %v", err)
+	}
+	if retrieved.Name != "test-skill" {
+		t.Errorf("expected test-skill, got %s", retrieved.Name)
+	}
+
+	// Remove
+	err = inst.Remove(ctx, "test-skill", "global")
+	if err != nil {
+		t.Fatalf("Remove failed: %v", err)
+	}
+
+	// Verify dir deleted
+	if _, err := os.Stat(sk.SkillPath); !os.IsNotExist(err) {
+		t.Errorf("expected skill directory to be deleted")
 	}
 }
