@@ -1,16 +1,20 @@
-package agent
+package agent_test
 
 import (
 	"bytes"
 	"context"
+	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+	"github.com/oniharnantyo/onclaw/internal/agent"
 	"github.com/oniharnantyo/onclaw/internal/render"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
@@ -124,13 +128,13 @@ func TestAssembleAndRunAgent_ReActLoop(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	agent, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil)
+	agentVal, err := agent.AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
 
 	var stdout bytes.Buffer
-	it := agent.Run(ctx, "Read the README.md file please.")
+	it := agentVal.Run(ctx, "Read the README.md file please.")
 	tr := render.Text(&stdout)
 	for {
 		msg, ok := it.Next()
@@ -201,14 +205,14 @@ func TestAssembleAndRunAgent_Cancellation(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	agent, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil)
+	agentVal, err := agent.AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
 	// Cancel context immediately
 	cancel()
 
-	it := agent.Run(ctx, "Hello")
+	it := agentVal.Run(ctx, "Hello")
 	for {
 		_, ok := it.Next()
 		if !ok {
@@ -236,7 +240,7 @@ func TestAssembleAgent_ContextWindowTrigger(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Compile and resolve with 128000 context window (verifies 80% logic runs)
-	ag, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 128000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil)
+	ag, err := agent.AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 128000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
@@ -245,7 +249,7 @@ func TestAssembleAgent_ContextWindowTrigger(t *testing.T) {
 	}
 
 	// 2. Re-assemble with 64000 context window
-	ag2, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil)
+	ag2, err := agent.AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to assemble agent second time: %v", err)
 	}
@@ -264,7 +268,7 @@ func TestSummarizationTrigger(t *testing.T) {
 		{0, 0},
 	}
 	for _, tc := range tests {
-		got := summarizationTrigger(tc.window)
+		got := agent.SummarizationTrigger(tc.window)
 		if got != tc.expected {
 			t.Errorf("summarizationTrigger(%d) = %d; want %d", tc.window, got, tc.expected)
 		}
@@ -331,7 +335,7 @@ func TestAssembleAgent_GlobalToolEnable(t *testing.T) {
 	agentConf := &store.Agent{
 		Name: "test-global-enable",
 	}
-	ag, err := AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil)
+	ag, err := agent.AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
@@ -348,7 +352,7 @@ func TestAssembleAgent_GlobalToolEnable(t *testing.T) {
 			{Name: "shell", Enabled: 1},
 		},
 	}
-	ag, err = AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", mockStore, nil, nil)
+	ag, err = agent.AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", mockStore, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
@@ -373,7 +377,7 @@ func TestAssembleAgent_GlobalToolEnable(t *testing.T) {
 
 	// 3. Intersection with per-agent allowlist
 	agentConf.Tools = "write_file,read_file" // agent only allows write_file and read_file
-	ag, err = AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", mockStore, nil, nil)
+	ag, err = agent.AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", mockStore, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
@@ -386,4 +390,270 @@ func TestAssembleAgent_GlobalToolEnable(t *testing.T) {
 		t.Errorf("expected effective tools to be exactly [write_file], got %v", activeTools)
 	}
 
+}
+
+type mockToolGroupConfigStore struct {
+	config *store.ToolGroupConfig
+	err    error
+}
+
+func (m *mockToolGroupConfigStore) GetConfig(ctx context.Context, category string) (*store.ToolGroupConfig, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.config, nil
+}
+
+func (m *mockToolGroupConfigStore) PutConfig(ctx context.Context, category string, config string) error {
+	return nil
+}
+
+func (m *mockToolGroupConfigStore) UpsertConfig(ctx context.Context, cfg *store.ToolGroupConfig) error {
+	return nil
+}
+
+func TestToolGroupCfgWrapper(t *testing.T) {
+	ctx := context.Background()
+
+	// Case 1: Store is nil
+	w1 := &agent.ToolGroupCfgWrapper{Store: nil}
+	cfg1, err := w1.GetConfig(ctx, "Browser")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if cfg1 != "{}" {
+		t.Errorf("expected '{}', got %q", cfg1)
+	}
+
+	// Case 2: Store returns sql.ErrNoRows
+	mockStore2 := &mockToolGroupConfigStore{err: sql.ErrNoRows}
+	w2 := &agent.ToolGroupCfgWrapper{Store: mockStore2}
+	cfg2, err := w2.GetConfig(ctx, "Browser")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if cfg2 != "{}" {
+		t.Errorf("expected '{}', got %q", cfg2)
+	}
+
+	// Case 3: Store returns other error
+	mockStore3 := &mockToolGroupConfigStore{err: errors.New("db error")}
+	w3 := &agent.ToolGroupCfgWrapper{Store: mockStore3}
+	_, err = w3.GetConfig(ctx, "Browser")
+	if err == nil || !strings.Contains(err.Error(), "db error") {
+		t.Errorf("expected db error, got %v", err)
+	}
+
+	// Case 4: Store success
+	mockStore4 := &mockToolGroupConfigStore{
+		config: &store.ToolGroupConfig{Config: `{"key":"val"}`},
+	}
+	w4 := &agent.ToolGroupCfgWrapper{Store: mockStore4}
+	cfg4, err := w4.GetConfig(ctx, "Browser")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if cfg4 != `{"key":"val"}` {
+		t.Errorf("expected config JSON, got %q", cfg4)
+	}
+}
+
+func TestAssembleAgent_ErrorPaths(t *testing.T) {
+	ctx := context.Background()
+	fm := &fakeChatModel{}
+
+	tmpDir := t.TempDir()
+	workspace := filepath.Join(tmpDir, "workspace")
+	_ = os.MkdirAll(workspace, 0755)
+
+	// 1. LoadPersonaContext fails (USER.md is a directory, leading to EISDIR read error)
+	userConfigDir := filepath.Join(tmpDir, "config")
+	_ = os.MkdirAll(userConfigDir, 0755)
+	badUserFile := filepath.Join(userConfigDir, "USER.md")
+	_ = os.MkdirAll(badUserFile, 0755) // Create directory instead of file
+
+	agentConf := &store.Agent{Name: "test-err-agent"}
+	_, err := agent.AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "load persona context") {
+		t.Errorf("expected load persona context error, got %v", err)
+	}
+
+	// Clean up for next test
+	_ = os.RemoveAll(badUserFile)
+}
+
+type mockFailedToolRegistryStore struct {
+	store.ToolRegistryStore
+}
+
+func (m *mockFailedToolRegistryStore) ListTools(ctx context.Context) ([]*store.ToolRegistry, error) {
+	return nil, errors.New("list tools error")
+}
+
+func TestAssembleAgent_ListToolsError(t *testing.T) {
+	ctx := context.Background()
+	fm := &fakeChatModel{}
+	tmpDir := t.TempDir()
+	workspace := filepath.Join(tmpDir, "workspace")
+	_ = os.MkdirAll(workspace, 0755)
+	userConfigDir := filepath.Join(tmpDir, "config")
+	_ = os.MkdirAll(userConfigDir, 0755)
+
+	agentConf := &store.Agent{Name: "test-err-agent"}
+	mockStore := &mockFailedToolRegistryStore{}
+	_, err := agent.AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", mockStore, nil, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "list tools for enabled checker") {
+		t.Errorf("expected list tools error, got %v", err)
+	}
+}
+
+func TestEventIterator_EdgeCases(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("prior error", func(t *testing.T) {
+		err := errors.New("prior error")
+		it := agent.NewEventIterator(ctx, nil, nil, err, nil)
+		msg, ok := it.Next()
+		if ok || msg != nil {
+			t.Errorf("expected false, nil, got %v, %v", ok, msg)
+		}
+		if it.Err() != err {
+			t.Errorf("expected err %v, got %v", err, it.Err())
+		}
+	})
+
+	t.Run("cancelled context", func(t *testing.T) {
+		cctx, cancel := context.WithCancel(ctx)
+		cancel()
+		it := agent.NewEventIterator(cctx, nil, nil, nil, nil)
+		msg, ok := it.Next()
+		if ok || msg != nil {
+			t.Errorf("expected false, nil, got %v, %v", ok, msg)
+		}
+		if it.Err() != context.Canceled {
+			t.Errorf("expected context.Canceled, got %v", it.Err())
+		}
+	})
+
+	t.Run("currentStream read error", func(t *testing.T) {
+		sr, sw := schema.Pipe[*schema.AgenticMessage](1)
+		streamErr := errors.New("stream error")
+		sw.Send(nil, streamErr)
+		sw.Close()
+
+		it := agent.NewEventIterator(ctx, nil, sr, nil, nil)
+		msg, ok := it.Next()
+		if ok || msg != nil {
+			t.Errorf("expected false, nil, got %v, %v", ok, msg)
+		}
+		if it.Err() != streamErr {
+			t.Errorf("expected %v, got %v", streamErr, it.Err())
+		}
+	})
+
+	t.Run("event error and onTurnError callback", func(t *testing.T) {
+		iter, gen := adk.NewAsyncIteratorPair[*adk.TypedAgentEvent[*schema.AgenticMessage]]()
+		eventErr := errors.New("event error")
+
+		var turnErr error
+		onTurnError := func(err error) {
+			turnErr = err
+		}
+
+		it := agent.NewEventIterator(ctx, iter, nil, nil, onTurnError)
+
+		gen.Send(&adk.TypedAgentEvent[*schema.AgenticMessage]{
+			Err: eventErr,
+		})
+		gen.Close()
+
+		msg, ok := it.Next()
+		if ok || msg != nil {
+			t.Errorf("expected false, nil, got %v, %v", ok, msg)
+		}
+		if turnErr != eventErr {
+			t.Errorf("expected turnErr %v, got %v", eventErr, turnErr)
+		}
+		if it.Err() != eventErr {
+			t.Errorf("expected Err() %v, got %v", eventErr, it.Err())
+		}
+	})
+
+	t.Run("event interrupted", func(t *testing.T) {
+		iter, gen := adk.NewAsyncIteratorPair[*adk.TypedAgentEvent[*schema.AgenticMessage]]()
+
+		it := agent.NewEventIterator(ctx, iter, nil, nil, nil)
+
+		gen.Send(&adk.TypedAgentEvent[*schema.AgenticMessage]{
+			Action: &adk.AgentAction{
+				Interrupted: &adk.InterruptInfo{},
+			},
+		})
+		gen.Close()
+
+		msg, ok := it.Next()
+		if ok || msg != nil {
+			t.Errorf("expected false, nil, got %v, %v", ok, msg)
+		}
+	})
+
+	t.Run("event message output success", func(t *testing.T) {
+		iter, gen := adk.NewAsyncIteratorPair[*adk.TypedAgentEvent[*schema.AgenticMessage]]()
+
+		it := agent.NewEventIterator(ctx, iter, nil, nil, nil)
+
+		expectedMsg := &schema.AgenticMessage{
+			Role: schema.AgenticRoleTypeAssistant,
+		}
+
+		gen.Send(&adk.TypedAgentEvent[*schema.AgenticMessage]{
+			Output: &adk.TypedAgentOutput[*schema.AgenticMessage]{
+				MessageOutput: &adk.TypedMessageVariant[*schema.AgenticMessage]{
+					Message: expectedMsg,
+				},
+			},
+		})
+		gen.Close()
+
+		msg, ok := it.Next()
+		if !ok || msg != expectedMsg {
+			t.Errorf("expected true, %v, got %v, %v", expectedMsg, ok, msg)
+		}
+	})
+
+	t.Run("event message output streaming success", func(t *testing.T) {
+		iter, gen := adk.NewAsyncIteratorPair[*adk.TypedAgentEvent[*schema.AgenticMessage]]()
+
+		it := agent.NewEventIterator(ctx, iter, nil, nil, nil)
+
+		expectedMsg := &schema.AgenticMessage{
+			Role: schema.AgenticRoleTypeAssistant,
+		}
+
+		sr, sw := schema.Pipe[*schema.AgenticMessage](1)
+		sw.Send(expectedMsg, nil)
+		sw.Close()
+
+		gen.Send(&adk.TypedAgentEvent[*schema.AgenticMessage]{
+			Output: &adk.TypedAgentOutput[*schema.AgenticMessage]{
+				MessageOutput: &adk.TypedMessageVariant[*schema.AgenticMessage]{
+					IsStreaming:   true,
+					MessageStream: sr,
+				},
+			},
+		})
+		gen.Close()
+
+		// Read the streamed message
+		msg, ok := it.Next()
+		if !ok || msg != expectedMsg {
+			t.Errorf("expected true, %v, got %v, %v", expectedMsg, ok, msg)
+		}
+
+		// Next call should drain/finish since stream is EOF and gen is closed
+		msg2, ok2 := it.Next()
+		if ok2 || msg2 != nil {
+			t.Errorf("expected false, nil, got %v, %v", ok2, msg2)
+		}
+	})
 }

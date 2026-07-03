@@ -21,7 +21,9 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/agent/middlewares"
 	"github.com/oniharnantyo/onclaw/internal/agent/tools"
 	_ "github.com/oniharnantyo/onclaw/internal/agent/tools/browser"
+	_ "github.com/oniharnantyo/onclaw/internal/agent/tools/web"
 	"github.com/oniharnantyo/onclaw/internal/hooks"
+	"github.com/oniharnantyo/onclaw/internal/secrets"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
@@ -67,6 +69,7 @@ func AssembleAgent(
 	toolRegistryStore store.ToolRegistryStore,
 	toolGroupCfg tools.ToolGroupCfg,
 	kvStore store.KVStore,
+	resolver secrets.SecretResolver,
 ) (*Agent, error) {
 	// Load existing persona/memory files and AGENTS.md
 	persona, err := LoadPersonaContext(ctx, workspace, userConfigDir)
@@ -115,6 +118,7 @@ func AssembleAgent(
 		ShellAllowlist: shellAllowlist,
 		ToolGroupCfg:   toolGroupCfg,
 		KVStore:        kvStore,
+		SecretResolver: resolver,
 	}, enabledChecker)
 	builtTools = append(builtTools, mcpTools...)
 

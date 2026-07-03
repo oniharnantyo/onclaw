@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/cloudwego/eino/components/tool"
+	"github.com/oniharnantyo/onclaw/internal/secrets"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
@@ -19,6 +20,7 @@ type Scope struct {
 	ShellAllowlist []string
 	ToolGroupCfg   ToolGroupCfg
 	KVStore        store.KVStore
+	SecretResolver secrets.SecretResolver
 }
 
 // Tool defines the interface that extensible tools must implement to register with the system.

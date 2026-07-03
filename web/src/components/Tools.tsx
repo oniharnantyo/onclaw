@@ -40,6 +40,15 @@ export default function Tools({ showToast }: ToolsProps) {
 	const [chromiumBinPath, setChromiumBinPath] = useState<string>('');
 	const [remoteURL, setRemoteURL] = useState<string>('');
 
+	// Web Config States
+	const [searchProvider, setSearchProvider] = useState<string>('duckduckgo');
+	const [fetchProvider, setFetchProvider] = useState<string>('http');
+	const [userAgent, setUserAgent] = useState<string>('');
+	const [timeoutSeconds, setTimeoutSeconds] = useState<number>(10);
+	const [maxBytes, setMaxBytes] = useState<number>(1048576);
+	const [googleCX, setGoogleCX] = useState<string>('');
+	const [webLightpandaBinPath, setWebLightpandaBinPath] = useState<string>('');
+
 	useEffect(() => {
 		loadTools();
 		// eslint-disable-next-line react-hooks/exhaustive-deps
@@ -107,6 +116,14 @@ export default function Tools({ showToast }: ToolsProps) {
 						setLightpandaPort(parsed.lightpanda?.port || 9222);
 						setChromiumBinPath(parsed.chromium?.binPath || '');
 						setRemoteURL(parsed.remote?.url || '');
+					} else if (categoryView.category.toLowerCase() === 'web') {
+						setSearchProvider(parsed.search_provider || 'duckduckgo');
+						setFetchProvider(parsed.fetch_provider || 'http');
+						setUserAgent(parsed.user_agent || '');
+						setTimeoutSeconds(parsed.timeout_seconds !== undefined ? parsed.timeout_seconds : 10);
+						setMaxBytes(parsed.max_bytes !== undefined ? parsed.max_bytes : 1048576);
+						setGoogleCX(parsed.google_cx || '');
+						setWebLightpandaBinPath(parsed.lightpanda_bin_path || '');
 					}
 				} catch {
 					setConfigJSON(configStr);
@@ -146,6 +163,17 @@ export default function Tools({ showToast }: ToolsProps) {
 				};
 			}
 			finalConfigJSON = JSON.stringify(browserConfigObj);
+		} else if (activeCategory.toLowerCase() === 'web') {
+			const webConfigObj: any = {
+				search_provider: searchProvider,
+				fetch_provider: fetchProvider,
+				user_agent: userAgent || undefined,
+				timeout_seconds: Number(timeoutSeconds) || 10,
+				max_bytes: Number(maxBytes) || 1048576,
+				google_cx: googleCX || undefined,
+				lightpanda_bin_path: webLightpandaBinPath || undefined,
+			};
+			finalConfigJSON = JSON.stringify(webConfigObj);
 		}
 
 		// Client-side JSON verification
@@ -447,6 +475,129 @@ export default function Tools({ showToast }: ToolsProps) {
 												required
 											/>
 										</div>
+									</div>
+								)}
+							</div>
+						) : activeCategory.toLowerCase() === 'web' ? (
+							<div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+								{/* Search Provider Selection */}
+								<div className="form-group">
+									<label className="form-label" htmlFor="search-provider">
+										Search Provider
+										<Tooltip content="Select the search provider backend." position="bottom" align="left" />
+									</label>
+									<select
+										id="search-provider"
+										className="form-select"
+										value={searchProvider}
+										onChange={(e) => setSearchProvider(e.target.value)}
+									>
+										<option value="duckduckgo">DuckDuckGo (No key needed)</option>
+										<option value="tavily">Tavily (API Key)</option>
+										<option value="exa">Exa (API Key)</option>
+										<option value="google">Google Custom Search (API Key + CX)</option>
+									</select>
+								</div>
+
+								{/* Fetch Provider Selection */}
+								<div className="form-group">
+									<label className="form-label" htmlFor="fetch-provider">
+										Fetch Provider
+										<Tooltip content="Select the fetch provider backend." position="bottom" align="left" />
+									</label>
+									<select
+										id="fetch-provider"
+										className="form-select"
+										value={fetchProvider}
+										onChange={(e) => setFetchProvider(e.target.value)}
+									>
+										<option value="http">HTTP Client (Standard, low-memory)</option>
+										<option value="lightpanda">Lightpanda CLI (Exec-based fetcher)</option>
+									</select>
+								</div>
+
+								{/* Timeout Seconds */}
+								<div className="form-group">
+									<label className="form-label" htmlFor="web-timeout">
+										Timeout (Seconds)
+										<Tooltip content="Request timeout in seconds." position="bottom" align="left" />
+									</label>
+									<input
+										id="web-timeout"
+										type="number"
+										className="form-input"
+										value={timeoutSeconds}
+										onChange={(e) => setTimeoutSeconds(Number(e.target.value))}
+										placeholder="10"
+									/>
+								</div>
+
+								{/* Max Bytes */}
+								<div className="form-group">
+									<label className="form-label" htmlFor="web-max-bytes">
+										Max Response Bytes
+										<Tooltip content="Maximum allowed response size in bytes." position="bottom" align="left" />
+									</label>
+									<input
+										id="web-max-bytes"
+										type="number"
+										className="form-input"
+										value={maxBytes}
+										onChange={(e) => setMaxBytes(Number(e.target.value))}
+										placeholder="1048576"
+									/>
+								</div>
+
+								{/* User Agent */}
+								<div className="form-group">
+									<label className="form-label" htmlFor="web-user-agent">
+										User Agent
+										<Tooltip content="Custom HTTP User-Agent string." position="bottom" align="left" />
+									</label>
+									<input
+										id="web-user-agent"
+										type="text"
+										className="form-input"
+										value={userAgent}
+										onChange={(e) => setUserAgent(e.target.value)}
+										placeholder="e.g. Mozilla/5.0..."
+									/>
+								</div>
+
+								{/* Google CX */}
+								{searchProvider === 'google' && (
+									<div className="form-group">
+										<label className="form-label" htmlFor="web-google-cx">
+											Google Custom Search Engine ID (CX) *
+											<Tooltip content="Your Google Custom Search Engine CX ID." position="bottom" align="left" />
+										</label>
+										<input
+											id="web-google-cx"
+											type="text"
+											className="form-input"
+											value={googleCX}
+											onChange={(e) => setGoogleCX(e.target.value)}
+											placeholder="e.g. 0123456789abcdef0"
+											required
+										/>
+									</div>
+								)}
+
+								{/* Lightpanda Bin Path */}
+								{fetchProvider === 'lightpanda' && (
+									<div className="form-group">
+										<label className="form-label" htmlFor="web-lp-bin-path">
+											Lightpanda Binary Path
+											<Tooltip content="Optional path to custom lightpanda executable." position="bottom" align="left" />
+										</label>
+										<input
+											id="web-lp-bin-path"
+											type="text"
+											className="form-input"
+											value={webLightpandaBinPath}
+											onChange={(e) => setWebLightpandaBinPath(e.target.value)}
+											placeholder="e.g. /usr/local/bin/lightpanda"
+										/>
 									</div>
 								)}
 							</div>

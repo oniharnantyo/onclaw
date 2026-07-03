@@ -196,6 +196,7 @@ func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.
 		toolRegistryStore,
 		&agent.ToolGroupCfgWrapper{Store: toolGroupConfigStore},
 		kvStore,
+		mgr,
 	)
 	if err != nil {
 		return nil, "", fmt.Errorf("assemble agent: %w", err)
