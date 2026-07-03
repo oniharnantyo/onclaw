@@ -1,10 +1,12 @@
-package secrets
+package secrets_test
 
 import (
 	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/oniharnantyo/onclaw/internal/secrets"
 )
 
 func TestGetOrCreateKeyfileKEK(t *testing.T) {
@@ -17,7 +19,7 @@ func TestGetOrCreateKeyfileKEK(t *testing.T) {
 	keyfilePath := filepath.Join(tempDir, "master.key")
 
 	// 1. Should create a new keyfile since it doesn't exist
-	kek1, err := GetOrCreateKeyfileKEK(keyfilePath)
+	kek1, err := secrets.GetOrCreateKeyfileKEK(keyfilePath)
 	if err != nil {
 		t.Fatalf("failed to get/create keyfile KEK: %v", err)
 	}
@@ -35,7 +37,7 @@ func TestGetOrCreateKeyfileKEK(t *testing.T) {
 	}
 
 	// 2. Should read the existing keyfile
-	kek2, err := GetOrCreateKeyfileKEK(keyfilePath)
+	kek2, err := secrets.GetOrCreateKeyfileKEK(keyfilePath)
 	if err != nil {
 		t.Fatalf("failed to get existing keyfile KEK: %v", err)
 	}
@@ -49,7 +51,7 @@ func TestGetOrCreateKeyfileKEK(t *testing.T) {
 		t.Fatalf("failed to chmod keyfile: %v", err)
 	}
 
-	_, err = GetOrCreateKeyfileKEK(keyfilePath)
+	_, err = secrets.GetOrCreateKeyfileKEK(keyfilePath)
 	if err == nil {
 		t.Error("expected error due to wider permissions (0644), but it succeeded")
 	}
@@ -58,7 +60,7 @@ func TestGetOrCreateKeyfileKEK(t *testing.T) {
 func TestResolveKeyfilePath(t *testing.T) {
 	dbPath := "/path/to/db/data.db"
 	expected := "/path/to/db/master.key"
-	got := ResolveKeyfilePath(dbPath)
+	got := secrets.ResolveKeyfilePath(dbPath)
 	if got != expected {
 		t.Errorf("expected ResolveKeyfilePath to return %q, got %q", expected, got)
 	}
@@ -79,7 +81,7 @@ func TestKeyfileErrors(t *testing.T) {
 
 	// parent dir creation is blocked by filePath
 	blockedKeyPath := filepath.Join(filePath, "master.key")
-	_, err = GetOrCreateKeyfileKEK(blockedKeyPath)
+	_, err = secrets.GetOrCreateKeyfileKEK(blockedKeyPath)
 	if err == nil {
 		t.Error("expected GetOrCreateKeyfileKEK to fail when parent dir creation is blocked, got nil")
 	}
@@ -89,7 +91,7 @@ func TestKeyfileErrors(t *testing.T) {
 	if err := os.WriteFile(invalidKeyPath, []byte("too-short"), 0600); err != nil {
 		t.Fatalf("failed to write invalid keyfile: %v", err)
 	}
-	_, err = GetOrCreateKeyfileKEK(invalidKeyPath)
+	_, err = secrets.GetOrCreateKeyfileKEK(invalidKeyPath)
 	if err == nil {
 		t.Error("expected GetOrCreateKeyfileKEK to fail when keyfile is not 32 bytes, got nil")
 	}

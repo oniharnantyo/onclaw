@@ -208,7 +208,10 @@ func serveCommand(st *appState) *cli.Command {
 				return toolNames, nil
 			}
 
-			svc := service.New(mgr, kv, convStore, resolveFn, installer, st.log, hookStore, execStore, mcpStore, mcpMgr.Reload, testMCPFn)
+			toolRegistryStore := sqlite.NewToolRegistryStore(db)
+			toolGroupConfigStore := sqlite.NewToolGroupConfigStore(db)
+
+			svc := service.New(mgr, kv, convStore, resolveFn, installer, st.log, hookStore, execStore, mcpStore, mcpMgr.Reload, testMCPFn, toolRegistryStore, toolGroupConfigStore)
 			server := api.NewServer(svc, st.log)
 
 			st.log.Info("Starting web management console", "addr", addr)

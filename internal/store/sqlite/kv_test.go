@@ -1,9 +1,10 @@
-package sqlite
+package sqlite_test
 
 import (
 	"context"
 	"database/sql"
 	"errors"
+	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
 	"testing"
 )
 
@@ -12,7 +13,7 @@ func TestKVStore(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	ks := NewKVStore(db)
+	ks := sqlite.NewKVStore(db)
 
 	// Test setting KV with empty key
 	if err := ks.Set(ctx, "", "val"); err == nil {

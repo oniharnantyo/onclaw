@@ -22,7 +22,7 @@ import (
 // provider profile (neither in the environment nor in the secret store).
 // Keyless providers (see adapter.IsKeyless) tolerate this; all others must
 // treat it as a hard error.
-var ErrSecretNotSet = errors.New("api key not set")
+var ErrSecretNotSet = secrets.ErrSecretNotSet
 
 // Service composes storage, key management, and adapter registry facades.
 type Service struct {
@@ -206,25 +206,50 @@ func (s *Service) GetSecret(ctx context.Context, name string) (string, error) {
 	return val, nil
 }
 
-// ResolveSecret resolves provider secrets by Env > DB > error.
-func (s *Service) ResolveSecret(ctx context.Context, name string) (string, error) {
-	if err := s.ReloadIfNeeded(ctx); err != nil {
-		return "", err
-	}
-	envKey := fmt.Sprintf("ONCLAW_PROVIDER_%s_API_KEY", strings.ReplaceAll(strings.ReplaceAll(strings.ToUpper(name), "-", "_"), ".", "_"))
-	if val := os.Getenv(envKey); val != "" {
+// Resolve resolves a secret by environment variable or key store.
+func (s *Service) Resolve(ctx context.Context, envVar, secretKey string) (string, error) {
+	if val := os.Getenv(envVar); val != "" {
 		return val, nil
 	}
 
-	secret, err := s.GetSecret(ctx, name)
+	if err := s.ReloadIfNeeded(ctx); err != nil {
+		return "", err
+	}
+
+	s.mu.RLock()
+	val, ok := s.secrets[secretKey]
+	s.mu.RUnlock()
+	if ok && val != "" {
+		return val, nil
+	}
+
+	// Try direct fetch from the SecretStore if not in cache (e.g. web.* secrets)
+	encryptedBlob, err := s.secretStore.GetSecret(ctx, secretKey)
 	if err != nil {
 		return "", err
 	}
-	if secret != "" {
-		return secret, nil
+	if encryptedBlob != "" {
+		decryptedBytes, err := s.keyManager.Decrypt(encryptedBlob)
+		if err != nil {
+			return "", err
+		}
+		return string(decryptedBytes), nil
 	}
 
-	return "", fmt.Errorf("API key for provider %s is not set. Run 'onclaw provider login %s' or set %s: %w", name, name, envKey, ErrSecretNotSet)
+	return "", fmt.Errorf("secret not found: %w", ErrSecretNotSet)
+}
+
+// ResolveSecret resolves provider secrets by Env > DB > error.
+func (s *Service) ResolveSecret(ctx context.Context, name string) (string, error) {
+	envKey := fmt.Sprintf("ONCLAW_PROVIDER_%s_API_KEY", strings.ReplaceAll(strings.ReplaceAll(strings.ToUpper(name), "-", "_"), ".", "_"))
+	val, err := s.Resolve(ctx, envKey, name)
+	if err != nil {
+		if errors.Is(err, secrets.ErrSecretNotSet) {
+			return "", fmt.Errorf("API key for provider %s is not set. Run 'onclaw provider login %s' or set %s: %w", name, name, envKey, ErrSecretNotSet)
+		}
+		return "", err
+	}
+	return val, nil
 }
 
 // resolveAPIKey resolves the API key for a profile. Keyless providers (e.g.

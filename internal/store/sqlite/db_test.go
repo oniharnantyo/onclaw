@@ -1,6 +1,7 @@
-package sqlite
+package sqlite_test
 
 import (
+	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
 	"os"
 	"path/filepath"
 	"testing"
@@ -8,7 +9,7 @@ import (
 
 func TestResolveDbPath(t *testing.T) {
 	// 1. Explicit path
-	p, err := ResolveDbPath("/tmp/test.db")
+	p, err := sqlite.ResolveDbPath("/tmp/test.db")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -24,7 +25,7 @@ func TestResolveDbPath(t *testing.T) {
 
 	// 2. Empty db_path, uses HOME/.onclaw/onclaw.db
 	os.Setenv("HOME", "/custom/home")
-	p, err = ResolveDbPath("")
+	p, err = sqlite.ResolveDbPath("")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -35,7 +36,7 @@ func TestResolveDbPath(t *testing.T) {
 
 	// 3. Empty db_path, empty HOME (causes UserHomeDir error)
 	os.Setenv("HOME", "")
-	_, err = ResolveDbPath("")
+	_, err = sqlite.ResolveDbPath("")
 	if err == nil {
 		t.Error("expected error resolving db path with empty HOME, got nil")
 	}
@@ -51,7 +52,7 @@ func TestOpenAndPermissions(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "onclaw.db")
 
 	// 1. Open new db file (should create with 0600)
-	db, err := Open(dbPath)
+	db, err := sqlite.Open(dbPath)
 	if err != nil {
 		t.Fatalf("Open failed on non-existent file: %v", err)
 	}
@@ -71,7 +72,7 @@ func TestOpenAndPermissions(t *testing.T) {
 		t.Fatalf("Chmod failed: %v", err)
 	}
 
-	_, err = Open(dbPath)
+	_, err = sqlite.Open(dbPath)
 	if err == nil {
 		t.Fatal("expected Open to fail for 0644 file, but it succeeded")
 	}
@@ -80,7 +81,7 @@ func TestOpenAndPermissions(t *testing.T) {
 	if err := os.Chmod(dbPath, 0600); err != nil {
 		t.Fatalf("Chmod failed: %v", err)
 	}
-	db2, err := Open(dbPath)
+	db2, err := sqlite.Open(dbPath)
 	if err != nil {
 		t.Fatalf("Open failed on restored 0600 file: %v", err)
 	}
@@ -102,7 +103,7 @@ func TestOpenErrors(t *testing.T) {
 
 	// This path attempts to create a directory under a regular file
 	badPath := filepath.Join(filePath, "database.db")
-	_, err = Open(badPath)
+	_, err = sqlite.Open(badPath)
 	if err == nil {
 		t.Fatal("expected error when parent directory creation is blocked by a file, but succeeded")
 	}
@@ -114,7 +115,7 @@ func TestOpenErrors(t *testing.T) {
 	}
 
 	// stat succeeds, but it is a directory, not a 0600 file
-	_, err = Open(dirPath)
+	_, err = sqlite.Open(dirPath)
 	if err == nil {
 		t.Fatal("expected error when trying to open a directory as a DB file, but succeeded")
 	}

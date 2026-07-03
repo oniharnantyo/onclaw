@@ -1,10 +1,12 @@
-package service
+package service_test
 
 import (
 	"context"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/oniharnantyo/onclaw/internal/api/service"
 )
 
 func TestBrowseFS(t *testing.T) {
@@ -29,7 +31,7 @@ func TestBrowseFS(t *testing.T) {
 		t.Fatalf("failed to create test file: %v", err)
 	}
 
-	svc := &Service{}
+	svc := &service.Service{}
 	ctx := context.Background()
 
 	res, err := svc.BrowseFS(ctx, tempDir)

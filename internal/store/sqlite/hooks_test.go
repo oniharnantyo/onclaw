@@ -1,7 +1,8 @@
-package sqlite
+package sqlite_test
 
 import (
 	"context"
+	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
 	"testing"
 
 	"github.com/oniharnantyo/onclaw/internal/store"
@@ -12,8 +13,8 @@ func TestHookStore(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	hs := NewHookStore(db)
-	es := NewHookExecutionStore(db)
+	hs := sqlite.NewHookStore(db)
+	es := sqlite.NewHookExecutionStore(db)
 
 	// Test adding invalid hooks
 	if err := hs.AddHook(ctx, &store.Hook{ID: "", Name: "test"}); err == nil {

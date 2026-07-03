@@ -1,19 +1,21 @@
-package secrets
+package secrets_test
 
 import (
 	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/oniharnantyo/onclaw/internal/secrets"
 )
 
 func TestKeyManager(t *testing.T) {
-	dek, err := GenerateDEK()
+	dek, err := secrets.GenerateDEK()
 	if err != nil {
 		t.Fatalf("failed to generate DEK: %v", err)
 	}
 
-	km := NewKeyManager(dek)
+	km := secrets.NewKeyManager(dek)
 
 	// 1. GetDEK
 	if !bytes.Equal(km.GetDEK(), dek) {
@@ -46,11 +48,11 @@ func TestKeyManager(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SwitchToKeyfile failed: %v", err)
 	}
-	kfKek, err := GetOrCreateKeyfileKEK(keyfilePath)
+	kfKek, err := secrets.GetOrCreateKeyfileKEK(keyfilePath)
 	if err != nil {
 		t.Fatalf("failed to get/create keyfile KEK: %v", err)
 	}
-	unwrappedKf, err := UnwrapDEK(newWrappedKf, kfKek)
+	unwrappedKf, err := secrets.UnwrapDEK(newWrappedKf, kfKek)
 	if err != nil {
 		t.Fatalf("failed to unwrap keyfile DEK: %v", err)
 	}

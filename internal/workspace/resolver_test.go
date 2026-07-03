@@ -1,9 +1,11 @@
-package workspace
+package workspace_test
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/oniharnantyo/onclaw/internal/workspace"
 )
 
 func setupTestDir(t *testing.T) string {
@@ -24,7 +26,7 @@ func TestResolveWorkspace_PriorityOrder(t *testing.T) {
 	t.Setenv("ONCLAW_WORKSPACE", envDir)
 
 	// Test 1: Flag overrides everything (flag > agent > env > config > cwd)
-	result, err := ResolveWorkspace(flagDir, agentDir, configDir, cwd)
+	result, err := workspace.ResolveWorkspace(flagDir, agentDir, configDir, cwd)
 	if err != nil {
 		t.Fatalf("ResolveWorkspace failed: %v", err)
 	}
@@ -33,7 +35,7 @@ func TestResolveWorkspace_PriorityOrder(t *testing.T) {
 	}
 
 	// Test 2: Agent overrides env, config, and cwd
-	result, err = ResolveWorkspace("", agentDir, configDir, cwd)
+	result, err = workspace.ResolveWorkspace("", agentDir, configDir, cwd)
 	if err != nil {
 		t.Fatalf("ResolveWorkspace failed: %v", err)
 	}
@@ -42,7 +44,7 @@ func TestResolveWorkspace_PriorityOrder(t *testing.T) {
 	}
 
 	// Test 3: Env overrides config and cwd
-	result, err = ResolveWorkspace("", "", configDir, cwd)
+	result, err = workspace.ResolveWorkspace("", "", configDir, cwd)
 	if err != nil {
 		t.Fatalf("ResolveWorkspace failed: %v", err)
 	}
@@ -52,7 +54,7 @@ func TestResolveWorkspace_PriorityOrder(t *testing.T) {
 
 	// Test 4: Config overrides cwd
 	t.Setenv("ONCLAW_WORKSPACE", "")
-	result, err = ResolveWorkspace("", "", configDir, cwd)
+	result, err = workspace.ResolveWorkspace("", "", configDir, cwd)
 	if err != nil {
 		t.Fatalf("ResolveWorkspace failed: %v", err)
 	}
@@ -61,7 +63,7 @@ func TestResolveWorkspace_PriorityOrder(t *testing.T) {
 	}
 
 	// Test 5: Cwd as fallback
-	result, err = ResolveWorkspace("", "", "", cwd)
+	result, err = workspace.ResolveWorkspace("", "", "", cwd)
 	if err != nil {
 		t.Fatalf("ResolveWorkspace failed: %v", err)
 	}
@@ -88,7 +90,7 @@ func TestResolveWorkspace_AbsolutePathNormalization(t *testing.T) {
 	defer os.Chdir(originalWd)
 
 	// Test with relative path - should return absolute path
-	result, err := ResolveWorkspace("", "", "", "./subdir")
+	result, err := workspace.ResolveWorkspace("", "", "", "./subdir")
 	if err != nil {
 		t.Fatalf("ResolveWorkspace failed: %v", err)
 	}
@@ -123,7 +125,7 @@ func TestResolveWorkspace_NonExistentPath(t *testing.T) {
 	// Test with a non-existent path
 	nonExistent := "/tmp/onclaw-test-nonexistent-xyz123"
 
-	_, err := ResolveWorkspace("", "", "", nonExistent)
+	_, err := workspace.ResolveWorkspace("", "", "", nonExistent)
 	if err == nil {
 		t.Error("expected error for non-existent path, got nil")
 	}
@@ -137,7 +139,7 @@ func TestResolveWorkspace_FileInsteadOfDirectory(t *testing.T) {
 	}
 
 	// Test with a file path instead of directory
-	_, err := ResolveWorkspace("", "", "", tmpFile)
+	_, err := workspace.ResolveWorkspace("", "", "", tmpFile)
 	if err == nil {
 		t.Error("expected error for file path, got nil")
 	}

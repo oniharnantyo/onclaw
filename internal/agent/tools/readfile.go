@@ -23,6 +23,10 @@ func (r *readFileTool) Desc() string {
 	return "Read the contents of a file in the workspace"
 }
 
+func (r *readFileTool) Category() string {
+	return "Filesystem"
+}
+
 type ReadFileInput struct {
 	Path string `json:"path" jsonschema_description:"The file path to read, relative to the workspace"`
 }

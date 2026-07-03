@@ -1,4 +1,4 @@
-package hooks
+package hooks_test
 
 import (
 	"context"
@@ -8,37 +8,39 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/oniharnantyo/onclaw/internal/hooks"
 )
 
 func TestCommandHandler(t *testing.T) {
 	// Command config testing exit codes
 	// Exit 0 -> Allow
-	h0, err := New("command", []byte(`{"command":"exit 0"}`))
+	h0, err := hooks.New("command", []byte(`{"command":"exit 0"}`))
 	if err != nil {
 		t.Fatalf("failed to create exit 0 handler: %v", err)
 	}
-	dec, err := h0.Run(context.Background(), Payload{})
-	if err != nil || dec != DecisionAllow {
+	dec, err := h0.Run(context.Background(), hooks.Payload{})
+	if err != nil || dec != hooks.DecisionAllow {
 		t.Errorf("expected exit 0 to allow, got dec=%s, err=%v", dec, err)
 	}
 
 	// Exit 2 -> Block (with stderr)
-	h2, err := New("command", []byte(`{"command":"echo 'blocked reason' >&2; exit 2"}`))
+	h2, err := hooks.New("command", []byte(`{"command":"echo 'blocked reason' >&2; exit 2"}`))
 	if err != nil {
 		t.Fatalf("failed to create exit 2 handler: %v", err)
 	}
-	dec, err = h2.Run(context.Background(), Payload{})
-	if err == nil || !strings.Contains(err.Error(), "blocked reason") || dec != DecisionBlock {
+	dec, err = h2.Run(context.Background(), hooks.Payload{})
+	if err == nil || !strings.Contains(err.Error(), "blocked reason") || dec != hooks.DecisionBlock {
 		t.Errorf("expected exit 2 to block with reason, got dec=%s, err=%v", dec, err)
 	}
 
 	// Exit 1 -> Error
-	h1, err := New("command", []byte(`{"command":"exit 1"}`))
+	h1, err := hooks.New("command", []byte(`{"command":"exit 1"}`))
 	if err != nil {
 		t.Fatalf("failed to create exit 1 handler: %v", err)
 	}
-	dec, err = h1.Run(context.Background(), Payload{})
-	if err == nil || dec != DecisionBlock {
+	dec, err = h1.Run(context.Background(), hooks.Payload{})
+	if err == nil || dec != hooks.DecisionBlock {
 		t.Errorf("expected exit 1 to error and block, got dec=%s, err=%v", dec, err)
 	}
 
@@ -56,7 +58,7 @@ func TestCommandHandler(t *testing.T) {
 	defer os.RemoveAll(tempDir)
 
 	outFile := filepath.Join(tempDir, "env.out")
-	hEnvOut, err := New("command", []byte(`{
+	hEnvOut, err := hooks.New("command", []byte(`{
 		"command": "env > `+outFile+`",
 		"allowed_env_vars": ["TEST_ALLOWED_VAR"]
 	}`))
@@ -64,7 +66,7 @@ func TestCommandHandler(t *testing.T) {
 		t.Fatalf("failed to create env out handler: %v", err)
 	}
 
-	_, err = hEnvOut.Run(context.Background(), Payload{})
+	_, err = hEnvOut.Run(context.Background(), hooks.Payload{})
 	if err != nil {
 		t.Fatalf("env command failed: %v", err)
 	}
@@ -84,14 +86,14 @@ func TestCommandHandler(t *testing.T) {
 
 	// Test stdin payload
 	stdinOut := filepath.Join(tempDir, "stdin.out")
-	hStdin, err := New("command", []byte(`{
+	hStdin, err := hooks.New("command", []byte(`{
 		"command": "cat > `+stdinOut+`"
 	}`))
 	if err != nil {
 		t.Fatalf("failed to create stdin handler: %v", err)
 	}
 
-	_, err = hStdin.Run(context.Background(), Payload{Agent: "my-test-agent", ToolName: "my-tool"})
+	_, err = hStdin.Run(context.Background(), hooks.Payload{Agent: "my-test-agent", ToolName: "my-tool"})
 	if err != nil {
 		t.Fatalf("stdin command failed: %v", err)
 	}
@@ -101,7 +103,7 @@ func TestCommandHandler(t *testing.T) {
 		t.Fatalf("failed to read stdin output: %v", err)
 	}
 
-	var p Payload
+	var p hooks.Payload
 	if err := json.Unmarshal(stdinBytes, &p); err != nil {
 		t.Fatalf("failed to parse payload from stdin: %v", err)
 	}
@@ -117,12 +119,12 @@ func TestScriptHandler(t *testing.T) {
 		return { decision: "allow" };
 	}
 	`
-	hAllow, err := New("script", []byte(`{"script":`+stringJSON(sAllow)+`}`))
+	hAllow, err := hooks.New("script", []byte(`{"script":`+stringJSON(sAllow)+`}`))
 	if err != nil {
 		t.Fatalf("failed to create script: %v", err)
 	}
-	dec, err := hAllow.Run(context.Background(), Payload{})
-	if err != nil || dec != DecisionAllow {
+	dec, err := hAllow.Run(context.Background(), hooks.Payload{})
+	if err != nil || dec != hooks.DecisionAllow {
 		t.Errorf("expected allow, got dec=%s, err=%v", dec, err)
 	}
 
@@ -132,12 +134,12 @@ func TestScriptHandler(t *testing.T) {
 		return { decision: "block", reason: "no access" };
 	}
 	`
-	hBlock, err := New("script", []byte(`{"script":`+stringJSON(sBlock)+`}`))
+	hBlock, err := hooks.New("script", []byte(`{"script":`+stringJSON(sBlock)+`}`))
 	if err != nil {
 		t.Fatalf("failed to create script: %v", err)
 	}
-	dec, err = hBlock.Run(context.Background(), Payload{})
-	if err == nil || !strings.Contains(err.Error(), "no access") || dec != DecisionBlock {
+	dec, err = hBlock.Run(context.Background(), hooks.Payload{})
+	if err == nil || !strings.Contains(err.Error(), "no access") || dec != hooks.DecisionBlock {
 		t.Errorf("expected block with reason, got dec=%s, err=%v", dec, err)
 	}
 
@@ -147,12 +149,12 @@ func TestScriptHandler(t *testing.T) {
 		throw new Error("oops");
 	}
 	`
-	hThrow, err := New("script", []byte(`{"script":`+stringJSON(sThrow)+`}`))
+	hThrow, err := hooks.New("script", []byte(`{"script":`+stringJSON(sThrow)+`}`))
 	if err != nil {
 		t.Fatalf("failed to create script: %v", err)
 	}
-	dec, err = hThrow.Run(context.Background(), Payload{})
-	if err == nil || dec != DecisionBlock {
+	dec, err = hThrow.Run(context.Background(), hooks.Payload{})
+	if err == nil || dec != hooks.DecisionBlock {
 		t.Errorf("expected exception to error and block, got dec=%s, err=%v", dec, err)
 	}
 
@@ -165,12 +167,12 @@ func TestScriptHandler(t *testing.T) {
 		return { decision: "allow" };
 	}
 	`
-	hSandbox, err := New("script", []byte(`{"script":`+stringJSON(sSandbox)+`}`))
+	hSandbox, err := hooks.New("script", []byte(`{"script":`+stringJSON(sSandbox)+`}`))
 	if err != nil {
 		t.Fatalf("failed to create script: %v", err)
 	}
-	dec, err = hSandbox.Run(context.Background(), Payload{})
-	if err != nil || dec != DecisionAllow {
+	dec, err = hSandbox.Run(context.Background(), hooks.Payload{})
+	if err != nil || dec != hooks.DecisionAllow {
 		t.Errorf("sandbox requirement failed: dec=%s, err=%v", dec, err)
 	}
 
@@ -181,23 +183,23 @@ func TestScriptHandler(t *testing.T) {
 		return { decision: "allow" };
 	}
 	`
-	hConsole, err := New("script", []byte(`{"script":`+stringJSON(sConsole)+`}`))
+	hConsole, err := hooks.New("script", []byte(`{"script":`+stringJSON(sConsole)+`}`))
 	if err != nil {
 		t.Fatalf("failed to create script: %v", err)
 	}
 
 	var captured []string
-	testConsoleMu.Lock()
-	testConsoleCaptured = func(msg string) {
+	hooks.LockTestConsole()
+	hooks.SetTestConsoleCaptured(func(msg string) {
 		captured = append(captured, msg)
-	}
-	testConsoleMu.Unlock()
+	})
+	hooks.UnlockTestConsole()
 
-	_, _ = hConsole.Run(context.Background(), Payload{})
+	_, _ = hConsole.Run(context.Background(), hooks.Payload{})
 
-	testConsoleMu.Lock()
-	testConsoleCaptured = nil
-	testConsoleMu.Unlock()
+	hooks.LockTestConsole()
+	hooks.SetTestConsoleCaptured(nil)
+	hooks.UnlockTestConsole()
 
 	if len(captured) != 1 || captured[0] != "hello from js" {
 		t.Errorf("expected captured log 'hello from js', got %v", captured)
@@ -209,7 +211,7 @@ func TestScriptHandler(t *testing.T) {
 		while (true) {}
 	}
 	`
-	hHang, err := New("script", []byte(`{"script":`+stringJSON(sHang)+`}`))
+	hHang, err := hooks.New("script", []byte(`{"script":`+stringJSON(sHang)+`}`))
 	if err != nil {
 		t.Fatalf("failed to create script: %v", err)
 	}
@@ -217,7 +219,7 @@ func TestScriptHandler(t *testing.T) {
 	ctxTimeout, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
-	_, err = hHang.Run(ctxTimeout, Payload{})
+	_, err = hHang.Run(ctxTimeout, hooks.Payload{})
 	if err == nil {
 		t.Error("expected timeout error for infinite loop")
 	}

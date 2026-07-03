@@ -174,6 +174,9 @@ func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.
 
 	hookStore := sqlite.NewHookStore(db)
 	execStore := sqlite.NewHookExecutionStore(db)
+	toolRegistryStore := sqlite.NewToolRegistryStore(db)
+	toolGroupConfigStore := sqlite.NewToolGroupConfigStore(db)
+	kvStore := sqlite.NewKVStore(db)
 
 	assembledAgent, err := agent.AssembleAgent(
 		ctx,
@@ -190,6 +193,10 @@ func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.
 		hookStore,
 		execStore,
 		req.Channel,
+		toolRegistryStore,
+		&agent.ToolGroupCfgWrapper{Store: toolGroupConfigStore},
+		kvStore,
+		mgr,
 	)
 	if err != nil {
 		return nil, "", fmt.Errorf("assemble agent: %w", err)

@@ -11,6 +11,7 @@ import {
   Code,
   Lightning,
   Plug,
+  Wrench,
 } from '@phosphor-icons/react';
 
 import Login from './components/Login';
@@ -26,8 +27,10 @@ import Skills from './components/Skills';
 import type { Skill } from './components/Skills';
 import Hooks from './components/Hooks';
 import MCP from './components/MCP';
+import Tools from './components/Tools';
 
-type Tab = 'chat' | 'conversations' | 'providers' | 'agents' | 'skills' | 'hooks' | 'mcp';
+type Tab = 'chat' | 'conversations' | 'providers' | 'agents' | 'skills' | 'hooks' | 'mcp' | 'tools';
+
 
 interface NavItem {
   id: Tab;
@@ -227,6 +230,7 @@ export default function App() {
         { id: 'skills',        label: 'Skills',     icon: <Code weight="duotone" size={18} /> },
         { id: 'hooks',         label: 'Hooks',      icon: <Lightning weight="duotone" size={18} /> },
         { id: 'mcp',           label: 'MCP Servers',icon: <Plug weight="duotone" size={18} /> },
+        { id: 'tools',         label: 'Tools',      icon: <Wrench weight="duotone" size={18} /> },
       ],
     },
     {
@@ -245,7 +249,9 @@ export default function App() {
     skills:        'Agent Skills',
     hooks:         'Lifecycle Hooks',
     mcp:           'MCP Servers',
+    tools:         'Builtin Tools',
   };
+
 
   return (
     <div className="app-container">
@@ -388,7 +394,14 @@ export default function App() {
             showToast={showToast}
           />
         )}
+
+        {activeTab === 'tools' && (
+          <Tools
+            showToast={showToast}
+          />
+        )}
       </main>
+
     </div>
   );
 }

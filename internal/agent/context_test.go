@@ -1,10 +1,12 @@
-package agent
+package agent_test
 
 import (
 	"context"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/oniharnantyo/onclaw/internal/agent"
 )
 
 func TestLoadPersonaContext_AssemblyOrder(t *testing.T) {
@@ -33,7 +35,7 @@ func TestLoadPersonaContext_AssemblyOrder(t *testing.T) {
 
 	// Load persona context
 	ctx := context.Background()
-	result, err := LoadPersonaContext(ctx, tmpWorkspace, tmpConfig)
+	result, err := agent.LoadPersonaContext(ctx, tmpWorkspace, tmpConfig)
 	if err != nil {
 		t.Fatalf("LoadPersonaContext failed: %v", err)
 	}
@@ -67,7 +69,7 @@ func TestLoadPersonaContext_MissingFilesSkipped(t *testing.T) {
 
 	// Load persona context
 	ctx := context.Background()
-	result, err := LoadPersonaContext(ctx, tmpWorkspace, tmpConfig)
+	result, err := agent.LoadPersonaContext(ctx, tmpWorkspace, tmpConfig)
 	if err != nil {
 		t.Fatalf("LoadPersonaContext failed: %v", err)
 	}
@@ -90,7 +92,7 @@ func TestLoadPersonaContext_EmptyFilesSkipped(t *testing.T) {
 
 	// Load persona context
 	ctx := context.Background()
-	result, err := LoadPersonaContext(ctx, tmpWorkspace, tmpConfig)
+	result, err := agent.LoadPersonaContext(ctx, tmpWorkspace, tmpConfig)
 	if err != nil {
 		t.Fatalf("LoadPersonaContext failed: %v", err)
 	}
@@ -107,7 +109,7 @@ func TestLoadPersonaContext_ByteCapEnforced(t *testing.T) {
 	tmpWorkspace := t.TempDir()
 
 	// Create IDENTITY.md in workspace with content that exceeds maxPersonaBytes
-	largeContent := make([]byte, maxPersonaBytes+100)
+	largeContent := make([]byte, agent.MaxPersonaBytes+100)
 	for i := range largeContent {
 		largeContent[i] = 'A'
 	}
@@ -115,18 +117,18 @@ func TestLoadPersonaContext_ByteCapEnforced(t *testing.T) {
 
 	// Load persona context
 	ctx := context.Background()
-	result, err := LoadPersonaContext(ctx, tmpWorkspace, tmpConfig)
+	result, err := agent.LoadPersonaContext(ctx, tmpWorkspace, tmpConfig)
 	if err != nil {
 		t.Fatalf("LoadPersonaContext failed: %v", err)
 	}
 
 	// Should be capped at maxPersonaBytes
-	if len(result) > maxPersonaBytes {
-		t.Errorf("Result exceeds byte cap. Got %d bytes, want max %d", len(result), maxPersonaBytes)
+	if len(result) > agent.MaxPersonaBytes {
+		t.Errorf("Result exceeds byte cap. Got %d bytes, want max %d", len(result), agent.MaxPersonaBytes)
 	}
 	// Should be exactly maxPersonaBytes since we had more content available
-	if len(result) != maxPersonaBytes {
-		t.Errorf("Result not capped correctly. Got %d bytes, want %d", len(result), maxPersonaBytes)
+	if len(result) != agent.MaxPersonaBytes {
+		t.Errorf("Result not capped correctly. Got %d bytes, want %d", len(result), agent.MaxPersonaBytes)
 	}
 }
 
@@ -136,11 +138,11 @@ func TestLoadPersonaContext_MultiFileCap(t *testing.T) {
 	tmpWorkspace := t.TempDir()
 
 	// Create files that together exceed the cap
-	firstContent := make([]byte, maxPersonaBytes/2)
+	firstContent := make([]byte, agent.MaxPersonaBytes/2)
 	for i := range firstContent {
 		firstContent[i] = 'A'
 	}
-	secondContent := make([]byte, maxPersonaBytes) // This should be partially included
+	secondContent := make([]byte, agent.MaxPersonaBytes) // This should be partially included
 	for i := range secondContent {
 		secondContent[i] = 'B'
 	}
@@ -150,18 +152,18 @@ func TestLoadPersonaContext_MultiFileCap(t *testing.T) {
 
 	// Load persona context
 	ctx := context.Background()
-	result, err := LoadPersonaContext(ctx, tmpWorkspace, tmpConfig)
+	result, err := agent.LoadPersonaContext(ctx, tmpWorkspace, tmpConfig)
 	if err != nil {
 		t.Fatalf("LoadPersonaContext failed: %v", err)
 	}
 
 	// Should be capped at maxPersonaBytes
-	if len(result) > maxPersonaBytes {
-		t.Errorf("Result exceeds byte cap. Got %d bytes, want max %d", len(result), maxPersonaBytes)
+	if len(result) > agent.MaxPersonaBytes {
+		t.Errorf("Result exceeds byte cap. Got %d bytes, want max %d", len(result), agent.MaxPersonaBytes)
 	}
 	// Should contain all of first file and part of second
-	if len(result) != maxPersonaBytes {
-		t.Errorf("Multi-file cap not enforced correctly. Got %d bytes, want %d", len(result), maxPersonaBytes)
+	if len(result) != agent.MaxPersonaBytes {
+		t.Errorf("Multi-file cap not enforced correctly. Got %d bytes, want %d", len(result), agent.MaxPersonaBytes)
 	}
 
 	// Verify content contains both A and B
@@ -192,7 +194,7 @@ func TestLoadPersonaContext_NoPersonaFiles(t *testing.T) {
 
 	// Load persona context
 	ctx := context.Background()
-	result, err := LoadPersonaContext(ctx, tmpWorkspace, tmpConfig)
+	result, err := agent.LoadPersonaContext(ctx, tmpWorkspace, tmpConfig)
 	if err != nil {
 		t.Fatalf("LoadPersonaContext failed: %v", err)
 	}
@@ -213,7 +215,7 @@ func TestLoadPersonaContext_ReadError(t *testing.T) {
 
 	// Load persona context
 	ctx := context.Background()
-	_, err := LoadPersonaContext(ctx, tmpWorkspace, tmpConfig)
+	_, err := agent.LoadPersonaContext(ctx, tmpWorkspace, tmpConfig)
 
 	// Should return error
 	if err == nil {

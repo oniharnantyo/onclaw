@@ -12,7 +12,7 @@ import (
 func (s *Service) DiscoverSkills(ctx context.Context, input DiscoverInput) (DiscoverResult, error) {
 	pkgName, isPlugin, candidates, tempDir, err := s.installer.DiscoverSource(ctx, input.Source, input.Branch, false)
 	if err != nil {
-		return DiscoverResult{}, err
+		return DiscoverResult{}, classify(err)
 	}
 	defer func() {
 		if tempDir != "" {
@@ -45,7 +45,7 @@ func (s *Service) InstallSkills(ctx context.Context, input InstallSkillInput) ([
 
 	installed, err := s.installer.Install(ctx, input.Source, input.SelectedNames, input.Scope, opts)
 	if err != nil {
-		return nil, err
+		return nil, classify(err)
 	}
 
 	var views []SkillView
@@ -59,7 +59,7 @@ func (s *Service) InstallSkills(ctx context.Context, input InstallSkillInput) ([
 func (s *Service) ListSkills(ctx context.Context) ([]SkillView, error) {
 	skills, err := s.installer.List(ctx)
 	if err != nil {
-		return nil, err
+		return nil, classify(err)
 	}
 
 	var views []SkillView
@@ -73,21 +73,21 @@ func (s *Service) ListSkills(ctx context.Context) ([]SkillView, error) {
 func (s *Service) GetSkill(ctx context.Context, name string, scope string) (SkillView, error) {
 	sk, err := s.installer.GetSkill(ctx, name, scope)
 	if err != nil {
-		return SkillView{}, err
+		return SkillView{}, classify(err)
 	}
 	return mapSkillToView(sk), nil
 }
 
 // RemoveSkill uninstalls a skill.
 func (s *Service) RemoveSkill(ctx context.Context, name string, scope string) error {
-	return s.installer.Remove(ctx, name, scope)
+	return classify(s.installer.Remove(ctx, name, scope))
 }
 
 // UpdateSkill updates a skill from its original source.
 func (s *Service) UpdateSkill(ctx context.Context, name string, scope string) (SkillView, error) {
 	updated, err := s.installer.Update(ctx, name, scope)
 	if err != nil {
-		return SkillView{}, err
+		return SkillView{}, classify(err)
 	}
 	return mapSkillToView(updated), nil
 }

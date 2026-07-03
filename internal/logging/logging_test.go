@@ -1,14 +1,16 @@
-package logging
+package logging_test
 
 import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/oniharnantyo/onclaw/internal/logging"
 )
 
 func TestNewDefaultIsTextInfo(t *testing.T) {
 	var buf bytes.Buffer
-	l, err := New("", "", &buf)
+	l, err := logging.New("", "", &buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -25,7 +27,7 @@ func TestNewDefaultIsTextInfo(t *testing.T) {
 
 func TestNewJSONHandler(t *testing.T) {
 	var buf bytes.Buffer
-	l, err := New("debug", "json", &buf)
+	l, err := logging.New("debug", "json", &buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -36,14 +38,14 @@ func TestNewJSONHandler(t *testing.T) {
 }
 
 func TestNewRejectsBadFormat(t *testing.T) {
-	if _, err := New("info", "xml", &bytes.Buffer{}); err == nil {
+	if _, err := logging.New("info", "xml", &bytes.Buffer{}); err == nil {
 		t.Fatal("expected error for unsupported format")
 	}
 }
 
 func TestNewRedactsSecrets(t *testing.T) {
 	var buf bytes.Buffer
-	l, err := New("info", "text", &buf)
+	l, err := logging.New("info", "text", &buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

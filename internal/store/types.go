@@ -128,3 +128,20 @@ type HookExecution struct {
 	Error       string `json:"error"`
 	CreatedAt   string `json:"created_at"`
 }
+
+// ToolRegistry represents a registered tool with enable state.
+type ToolRegistry struct {
+	Name      string `json:"name"`
+	Category  string `json:"category"`
+	Enabled   int    `json:"enabled"` // 1 = enabled, 0 = disabled
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// ToolGroupConfig represents category-level configuration.
+type ToolGroupConfig struct {
+	Category  string `json:"category"`
+	Config    string `json:"config"` // JSON string
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}

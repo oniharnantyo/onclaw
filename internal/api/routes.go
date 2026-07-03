@@ -63,6 +63,11 @@ func (s *Server) routes() *http.ServeMux {
 	mux.Handle("POST /api/mcp/{name}/toggle", requireAuth(http.HandlerFunc(s.handlers.ToggleMCPServer)))
 	mux.Handle("POST /api/mcp/test", requireAuth(http.HandlerFunc(s.handlers.TestMCP)))
 
+	mux.Handle("GET /api/tools", requireAuth(http.HandlerFunc(s.handlers.ListTools)))
+	mux.Handle("POST /api/tools/{name}/toggle", requireAuth(http.HandlerFunc(s.handlers.ToggleTool)))
+	mux.Handle("GET /api/tools/categories/{cat}/config", requireAuth(http.HandlerFunc(s.handlers.GetCategoryConfig)))
+	mux.Handle("PUT /api/tools/categories/{cat}/config", requireAuth(http.HandlerFunc(s.handlers.PutCategoryConfig)))
+
 	mux.Handle("POST /api/chat", requireAuth(http.HandlerFunc(s.handlers.Chat)))
 	mux.Handle("POST /api/logout", requireAuth(auth.Logout(s.sessions)))
 

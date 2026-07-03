@@ -1,4 +1,4 @@
-package cli
+package cli_test
 
 import (
 	"bytes"
@@ -9,12 +9,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/oniharnantyo/onclaw/internal/cli"
 	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
-	"github.com/urfave/cli/v3"
+	urfavecli "github.com/urfave/cli/v3"
 )
 
 func TestVersionCommand(t *testing.T) {
-	app := New()
+	app := cli.New()
 	ctx := context.Background()
 
 	buf := &bytes.Buffer{}
@@ -50,7 +51,7 @@ func TestAppBeforeErrorAndFlags(t *testing.T) {
 	}
 	tmpFile.Close()
 
-	app := New()
+	app := cli.New()
 	ctx := context.Background()
 	err = app.Run(ctx, []string{"onclaw", "--config", tmpFile.Name(), "version"})
 	if err == nil {
@@ -91,7 +92,7 @@ func TestProviderCommandInvalidArgs(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test.db")
 	t.Setenv("ONCLAW_DB_PATH", dbPath)
 
-	app := New()
+	app := cli.New()
 	ctx := context.Background()
 
 	// Initialize DB by listing
@@ -146,7 +147,7 @@ func TestProviderUseAndRemoveSuccess(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test.db")
 	t.Setenv("ONCLAW_DB_PATH", dbPath)
 
-	app := New()
+	app := cli.New()
 	ctx := context.Background()
 
 	// Add profile
@@ -186,7 +187,7 @@ func TestRunCommandScenarios(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test.db")
 	t.Setenv("ONCLAW_DB_PATH", dbPath)
 
-	app := New()
+	app := cli.New()
 	ctx := context.Background()
 
 	// 1. Run with no providers
@@ -311,7 +312,7 @@ func TestConfigPathCommand(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test.db")
 	t.Setenv("ONCLAW_DB_PATH", dbPath)
 
-	app := New()
+	app := cli.New()
 	ctx := context.Background()
 
 	// Test config path output when config file is empty
@@ -348,13 +349,13 @@ func TestConfigPathCommand(t *testing.T) {
 }
 
 func TestEnsureNilCfg(t *testing.T) {
-	st := &appState{}
-	c := &cli.Command{}
-	err := st.ensure(c)
+	st := &cli.AppState{}
+	c := &urfavecli.Command{}
+	err := st.Ensure(c)
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
-	if st.cfg == nil {
+	if st.GetConfig() == nil {
 		t.Error("expected cfg to be populated after ensure")
 	}
 }
@@ -369,7 +370,7 @@ func TestStdinErrorPaths(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test.db")
 	t.Setenv("ONCLAW_DB_PATH", dbPath)
 
-	app := New()
+	app := cli.New()
 	ctx := context.Background()
 
 	// Initialize DB and add profile
@@ -416,11 +417,11 @@ func TestStdinErrorPaths(t *testing.T) {
 	_ = r.Close()
 
 	// 6. DB open/migration failure path (using nonexistent directory)
-	st := &appState{}
-	c := &cli.Command{}
-	_ = st.ensure(c)
-	st.cfg.DbPath = "/nonexistent-dir/test.db"
-	_, _, db, err := st.getProviderManager(c)
+	st := &cli.AppState{}
+	c := &urfavecli.Command{}
+	_ = st.Ensure(c)
+	st.GetConfig().DbPath = "/nonexistent-dir/test.db"
+	_, db, err := st.GetProviderManager(c)
 	if err == nil {
 		t.Error("expected getProviderManager to fail for nonexistent db directory path")
 	}
@@ -429,7 +430,7 @@ func TestStdinErrorPaths(t *testing.T) {
 	}
 
 	// 8. Too wide keyfile permissions error in getProviderManager
-	st.cfg.DbPath = dbPath
+	st.GetConfig().DbPath = dbPath
 	_, err = sqlite.ResolveDbPath(dbPath)
 	if err != nil {
 		t.Fatalf("resolve db path: %v", err)
@@ -438,7 +439,7 @@ func TestStdinErrorPaths(t *testing.T) {
 	_ = os.WriteFile(keyfilePath, make([]byte, 32), 0666) // create keyfile with 0666 permissions
 	_ = os.Chmod(keyfilePath, 0666)                       // force permissions to be too wide regardless of umask
 
-	_, _, db, err = st.getProviderManager(c)
+	_, db, err = st.GetProviderManager(c)
 	if err == nil || !strings.Contains(err.Error(), "too wide") {
 		t.Errorf("expected permissions too wide error, got: %v", err)
 	}
@@ -449,7 +450,7 @@ func TestStdinErrorPaths(t *testing.T) {
 	// 9. Keyfile wrong size error in getProviderManager
 	_ = os.Remove(keyfilePath)
 	_ = os.WriteFile(keyfilePath, make([]byte, 10), 0600)
-	_, _, db, err = st.getProviderManager(c)
+	_, db, err = st.GetProviderManager(c)
 	if err == nil || !strings.Contains(err.Error(), "exactly 32 bytes") {
 		t.Errorf("expected size 32 bytes error, got: %v", err)
 	}
@@ -477,7 +478,7 @@ func TestResolveDbPathHomeError(t *testing.T) {
 		t.Setenv("ONCLAW_DB_PATH", oldDb)
 	}()
 
-	app := New()
+	app := cli.New()
 	ctx := context.Background()
 
 	err := app.Run(ctx, []string{"onclaw", "provider", "list"})
@@ -500,7 +501,7 @@ func TestPidFileEdgeCases(t *testing.T) {
 	if err := os.WriteFile(pidPath, []byte("invalid-pid\n"), 0644); err != nil {
 		t.Fatalf("failed to write pid: %v", err)
 	}
-	if err := signalRunningProcess(dbPath); err != nil {
+	if err := cli.SignalRunningProcess(dbPath); err != nil {
 		t.Errorf("expected no error for invalid pid, got: %v", err)
 	}
 
@@ -508,7 +509,7 @@ func TestPidFileEdgeCases(t *testing.T) {
 	if err := os.WriteFile(pidPath, []byte("999999\n"), 0644); err != nil {
 		t.Fatalf("failed to write pid: %v", err)
 	}
-	if err := signalRunningProcess(dbPath); err != nil {
+	if err := cli.SignalRunningProcess(dbPath); err != nil {
 		t.Errorf("expected no error for non-existent pid, got: %v", err)
 	}
 
@@ -518,7 +519,7 @@ func TestPidFileEdgeCases(t *testing.T) {
 	if err := os.Mkdir(pidDir, 0755); err != nil {
 		t.Fatalf("failed to create pid dir: %v", err)
 	}
-	if err := signalRunningProcess(dbPath); err == nil {
+	if err := cli.SignalRunningProcess(dbPath); err == nil {
 		t.Error("expected error when pid file is a directory")
 	}
 }
@@ -538,7 +539,7 @@ func TestProviderManagerInitWriteError(t *testing.T) {
 	dbPath := filepath.Join(subDir, "test.db")
 	t.Setenv("ONCLAW_DB_PATH", dbPath)
 
-	app := New()
+	app := cli.New()
 	ctx := context.Background()
 
 	// Initialize DB (any command)
@@ -563,11 +564,11 @@ func TestProviderManagerInitWriteError(t *testing.T) {
 		_ = os.Chmod(subDir, 0700)
 	}()
 
-	st := &appState{}
-	c := &cli.Command{}
-	_ = st.ensure(c)
+	st := &cli.AppState{}
+	c := &urfavecli.Command{}
+	_ = st.Ensure(c)
 
-	mgr, _, db, err := st.getProviderManager(c)
+	mgr, db, err := st.GetProviderManager(c)
 	if err == nil {
 		t.Error("expected getProviderManager to fail to write KEK keyfile")
 	}
@@ -612,7 +613,7 @@ func TestWritePIDFileError(t *testing.T) {
 		_ = os.Chmod(subDir, 0700)
 	}()
 
-	_, err = writePIDFile(filepath.Join(subDir, "test.db"))
+	_, err = cli.WritePIDFile(filepath.Join(subDir, "test.db"))
 	if err == nil {
 		t.Error("expected writePIDFile to fail on read-only directory, got nil")
 	}
@@ -628,7 +629,7 @@ func TestAgentCLI(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test.db")
 	t.Setenv("ONCLAW_DB_PATH", dbPath)
 
-	app := New()
+	app := cli.New()
 	ctx := context.Background()
 
 	// 1. Setup a provider profile first (so we can reference it)
@@ -702,5 +703,213 @@ func TestAgentCLI(t *testing.T) {
 	}
 	if strings.Contains(listOut2, "agent-1") {
 		t.Errorf("agent-1 still present in list after removal: %s", listOut2)
+	}
+}
+
+func TestChatCommand(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "onclaw-test-chat-*")
+	if err != nil {
+		t.Fatalf("failed temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	t.Setenv("ONCLAW_DB_PATH", dbPath)
+
+	app := cli.New()
+	ctx := context.Background()
+
+	// Add provider
+	if err := app.Run(ctx, []string{"onclaw", "provider", "add", "prov-stub", "--kind", "stub"}); err != nil {
+		t.Fatalf("failed to add provider: %v", err)
+	}
+	t.Setenv("ONCLAW_PROVIDER_PROV_STUB_API_KEY", "dummykey")
+
+	// Set up stdin inputs for REPL loop
+	oldStdin := os.Stdin
+	defer func() { os.Stdin = oldStdin }()
+
+	r, w, _ := os.Pipe()
+	os.Stdin = r
+
+	// Write inputs to stdin pipe
+	_, _ = w.Write([]byte("\n"))                   // empty line test
+	_, _ = w.Write([]byte("/agent\n"))             // missing agent name
+	_, _ = w.Write([]byte("/agent master\n"))      // valid switch
+	_, _ = w.Write([]byte("/reasoning\n"))         // missing reasoning level
+	_, _ = w.Write([]byte("/reasoning invalid\n")) // invalid level
+	_, _ = w.Write([]byte("/reasoning high\n"))    // valid switch
+	_, _ = w.Write([]byte("/invalidcommand\n"))    // unknown slash command
+	_, _ = w.Write([]byte("hello world\n"))        // normal prompt
+	w.Close()
+
+	// Run chat command with prompt (firstPrompt) and empty stdin so it immediately exits REPL
+	chatOut, err := captureLocalStdout(func() error {
+		return app.Run(ctx, []string{"onclaw", "chat", "--provider", "prov-stub", "hello"})
+	})
+	r.Close()
+
+	if err != nil {
+		t.Fatalf("chat command failed: %v", err)
+	}
+	if !strings.Contains(chatOut, "onclaw REPL session started") {
+		t.Errorf("expected REPL started, got: %s", chatOut)
+	}
+}
+
+func TestServeCommand(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "onclaw-test-serve-*")
+	if err != nil {
+		t.Fatalf("failed temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	t.Setenv("ONCLAW_DB_PATH", dbPath)
+
+	app := cli.New()
+	ctx := context.Background()
+
+	// 1. Serve with no password hash -> should return error
+	err = app.Run(ctx, []string{"onclaw", "serve"})
+	if err == nil || !strings.Contains(err.Error(), "web password is not set") {
+		t.Errorf("expected error web password is not set, got: %v", err)
+	}
+
+	// 2. Serve set-password mismatch
+	oldStdin := os.Stdin
+	defer func() { os.Stdin = oldStdin }()
+
+	rMismatch, wMismatch, _ := os.Pipe()
+	os.Stdin = rMismatch
+	_, _ = wMismatch.Write([]byte("pass1\npass2\n"))
+	wMismatch.Close()
+
+	err = app.Run(ctx, []string{"onclaw", "serve", "--set-password"})
+	if err == nil || !strings.Contains(err.Error(), "passwords do not match") {
+		t.Errorf("expected passwords do not match error, got: %v", err)
+	}
+	rMismatch.Close()
+
+	// 3. Serve set-password success
+	rSuccess, wSuccess, _ := os.Pipe()
+	os.Stdin = rSuccess
+	_, _ = wSuccess.Write([]byte("mypassword\nmypassword\n"))
+	wSuccess.Close()
+
+	err = app.Run(ctx, []string{"onclaw", "serve", "--set-password"})
+	if err != nil {
+		t.Fatalf("set-password failed: %v", err)
+	}
+	rSuccess.Close()
+
+	// 4. Try starting server with invalid bind address (so it returns immediate bind error)
+	err = app.Run(ctx, []string{"onclaw", "serve", "--bind", "999.999.999.999", "--port", "80"})
+	if err == nil || !strings.Contains(err.Error(), "web server error") {
+		t.Errorf("expected web server bind error, got: %v", err)
+	}
+}
+
+func TestSkillCLI(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "onclaw-test-skill-cli-*")
+	if err != nil {
+		t.Fatalf("failed temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	t.Setenv("ONCLAW_DB_PATH", dbPath)
+
+	app := cli.New()
+	ctx := context.Background()
+
+	// Install subcommand: invalid args
+	err = app.Run(ctx, []string{"onclaw", "skill", "install"})
+	if err == nil || !strings.Contains(err.Error(), "source argument is required") {
+		t.Errorf("expected source argument required error, got: %v", err)
+	}
+
+	// Create a mock local skill source
+	srcDir := filepath.Join(tmpDir, "my-src")
+	if err := os.MkdirAll(srcDir, 0755); err != nil {
+		t.Fatalf("failed mkdir: %v", err)
+	}
+	skillContent := `---
+name: cli-skill
+description: helper
+---
+instruction body
+`
+	if err := os.WriteFile(filepath.Join(srcDir, "SKILL.md"), []byte(skillContent), 0644); err != nil {
+		t.Fatalf("failed write SKILL.md: %v", err)
+	}
+
+	// Install skill dry-run
+	dryOut, err := captureLocalStdout(func() error {
+		return app.Run(ctx, []string{"onclaw", "skill", "install", "--dry-run", srcDir})
+	})
+	if err != nil {
+		t.Fatalf("dry-run failed: %v", err)
+	}
+	if !strings.Contains(dryOut, "Discovered 1 skill(s)") {
+		t.Errorf("expected discovery output, got: %s", dryOut)
+	}
+
+	// Install skill for real
+	err = app.Run(ctx, []string{"onclaw", "skill", "install", srcDir})
+	if err != nil {
+		t.Fatalf("install skill failed: %v", err)
+	}
+
+	// List skills
+	listOut, err := captureLocalStdout(func() error {
+		return app.Run(ctx, []string{"onclaw", "skill", "list"})
+	})
+	if err != nil {
+		t.Fatalf("list failed: %v", err)
+	}
+	if !strings.Contains(listOut, "cli-skill") {
+		t.Errorf("expected cli-skill in list, got: %s", listOut)
+	}
+
+	// Show skill: missing name
+	err = app.Run(ctx, []string{"onclaw", "skill", "show"})
+	if err == nil || !strings.Contains(err.Error(), "skill name is required") {
+		t.Errorf("expected name required error, got: %v", err)
+	}
+
+	// Show skill
+	showOut, err := captureLocalStdout(func() error {
+		return app.Run(ctx, []string{"onclaw", "skill", "show", "cli-skill"})
+	})
+	if err != nil {
+		t.Fatalf("show failed: %v", err)
+	}
+	if !strings.Contains(showOut, "cli-skill") {
+		t.Errorf("expected cli-skill details in show, got: %s", showOut)
+	}
+
+	// Update skill
+	err = app.Run(ctx, []string{"onclaw", "skill", "update", "cli-skill"})
+	if err != nil {
+		t.Fatalf("update failed: %v", err)
+	}
+
+	// Update all skills
+	err = app.Run(ctx, []string{"onclaw", "skill", "update", "--all"})
+	if err != nil {
+		t.Fatalf("update all failed: %v", err)
+	}
+
+	// Remove skill: missing name
+	err = app.Run(ctx, []string{"onclaw", "skill", "remove"})
+	if err == nil || !strings.Contains(err.Error(), "skill name is required") {
+		t.Errorf("expected name required error, got: %v", err)
+	}
+
+	// Remove skill
+	err = app.Run(ctx, []string{"onclaw", "skill", "remove", "cli-skill"})
+	if err != nil {
+		t.Fatalf("remove failed: %v", err)
 	}
 }

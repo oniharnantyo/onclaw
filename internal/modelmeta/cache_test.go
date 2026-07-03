@@ -1,4 +1,4 @@
-package modelmeta
+package modelmeta_test
 
 import (
 	"crypto/sha256"
@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/oniharnantyo/onclaw/internal/modelmeta"
 )
 
 func TestCacheTTLAndChecksum(t *testing.T) {
@@ -29,7 +31,7 @@ func TestCacheTTLAndChecksum(t *testing.T) {
 	os.Setenv("HOME", tmpDir)
 
 	// Let's verify CacheDir returns tmpDir
-	cd, err := CacheDir()
+	cd, err := modelmeta.CacheDir()
 	if err != nil {
 		t.Fatalf("CacheDir err: %v", err)
 	}
@@ -50,7 +52,7 @@ func TestCacheTTLAndChecksum(t *testing.T) {
 	defer server.Close()
 
 	// 2. First call: should fetch from server and write files
-	data, err := LoadOrRefreshCatalog(server.URL)
+	data, err := modelmeta.LoadOrRefreshCatalog(server.URL)
 	if err != nil {
 		t.Fatalf("LoadOrRefreshCatalog first call err: %v", err)
 	}
@@ -81,7 +83,7 @@ func TestCacheTTLAndChecksum(t *testing.T) {
 	}
 
 	// 3. Second call: should hit cache directly (since within 12h) and not call server
-	_, err = LoadOrRefreshCatalog(server.URL)
+	_, err = modelmeta.LoadOrRefreshCatalog(server.URL)
 	if err != nil {
 		t.Fatalf("LoadOrRefreshCatalog second call err: %v", err)
 	}
@@ -96,7 +98,7 @@ func TestCacheTTLAndChecksum(t *testing.T) {
 	}
 
 	// 5. Third call (expired): should fetch again
-	_, err = LoadOrRefreshCatalog(server.URL)
+	_, err = modelmeta.LoadOrRefreshCatalog(server.URL)
 	if err != nil {
 		t.Fatalf("LoadOrRefreshCatalog third call err: %v", err)
 	}
@@ -110,7 +112,7 @@ func TestCacheTTLAndChecksum(t *testing.T) {
 		t.Fatalf("failed to chtimes: %v", err)
 	}
 	// Call LoadOrRefreshCatalog with invalid URL (network failure)
-	data, err = LoadOrRefreshCatalog("http://invalid-url-that-fails.local/api.json")
+	data, err = modelmeta.LoadOrRefreshCatalog("http://invalid-url-that-fails.local/api.json")
 	if err != nil {
 		t.Fatalf("LoadOrRefreshCatalog expected fallback to stale cache, but got err: %v", err)
 	}

@@ -1,7 +1,8 @@
-package sqlite
+package sqlite_test
 
 import (
 	"context"
+	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
 	"testing"
 
 	"github.com/oniharnantyo/onclaw/internal/store"
@@ -12,7 +13,7 @@ func TestAgentStore(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	as := NewAgentStore(db)
+	as := sqlite.NewAgentStore(db)
 
 	// Test adding invalid agent (empty name)
 	invalidA := &store.Agent{Name: "", Provider: "openai"}

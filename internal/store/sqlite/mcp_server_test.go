@@ -1,9 +1,10 @@
-package sqlite
+package sqlite_test
 
 import (
 	"context"
 	"database/sql"
 	"errors"
+	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
 	"testing"
 
 	"github.com/oniharnantyo/onclaw/internal/store"
@@ -14,7 +15,7 @@ func TestMCPServerStore(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	ms := NewMCPServerStore(db)
+	ms := sqlite.NewMCPServerStore(db)
 
 	// Test adding invalid server (empty name)
 	invalidSrv := &store.MCPServer{Name: ""}

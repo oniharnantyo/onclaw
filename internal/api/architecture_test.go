@@ -1,4 +1,4 @@
-package api
+package api_test
 
 import (
 	"go/build"
@@ -55,7 +55,7 @@ func TestArchitectureInvariants(t *testing.T) {
 	})
 
 	t.Run("transport structs have no *sql.DB fields", func(t *testing.T) {
-		// Verify server.go (Server struct) doesn't contain *sql.DB
+		// Verify server.go (api.Server struct) doesn't contain *sql.DB
 		pkg, err := build.Default.Import("github.com/oniharnantyo/onclaw/internal/api", "", build.ImportComment)
 		if err != nil {
 			t.Fatalf("failed to import github.com/oniharnantyo/onclaw/internal/api: %v", err)

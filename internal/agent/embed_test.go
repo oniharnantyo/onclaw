@@ -1,15 +1,17 @@
-package agent
+package agent_test
 
 import (
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/oniharnantyo/onclaw/internal/agent"
 )
 
 func TestGetTemplate(t *testing.T) {
 	// Verify we can read standard templates
-	content, err := GetTemplate("IDENTITY.md")
+	content, err := agent.GetTemplate("IDENTITY.md")
 	if err != nil {
 		t.Fatalf("failed to read IDENTITY.md template: %v", err)
 	}
@@ -18,7 +20,7 @@ func TestGetTemplate(t *testing.T) {
 	}
 
 	// Verify non-existent template returns error
-	_, err = GetTemplate("nonexistent.md")
+	_, err = agent.GetTemplate("nonexistent.md")
 	if err == nil {
 		t.Error("expected error reading nonexistent template, got nil")
 	}
@@ -29,7 +31,7 @@ func TestSeedWorkspace(t *testing.T) {
 	workspace := filepath.Join(tmpDir, "workspace")
 
 	// 1. Fresh seed
-	err := SeedWorkspace(workspace)
+	err := agent.SeedWorkspace(workspace)
 	if err != nil {
 		t.Fatalf("SeedWorkspace failed: %v", err)
 	}
@@ -56,7 +58,7 @@ func TestSeedWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read AGENTS.md: %v", err)
 	}
-	tpl, _ := GetTemplate("AGENTS.md")
+	tpl, _ := agent.GetTemplate("AGENTS.md")
 	if string(agentsContent) != tpl {
 		t.Errorf("AGENTS.md content does not match template. Got: %q, Expected: %q", string(agentsContent), tpl)
 	}
@@ -68,7 +70,7 @@ func TestSeedWorkspace(t *testing.T) {
 		t.Fatalf("failed to write custom identity: %v", err)
 	}
 
-	err = SeedWorkspace(workspace)
+	err = agent.SeedWorkspace(workspace)
 	if err != nil {
 		t.Fatalf("SeedWorkspace on populated workspace failed: %v", err)
 	}
@@ -88,7 +90,7 @@ func TestSeedGlobalUser(t *testing.T) {
 	configDir := filepath.Join(tmpDir, ".onclaw")
 
 	// 1. Fresh seed
-	err := SeedGlobalUser(configDir)
+	err := agent.SeedGlobalUser(configDir)
 	if err != nil {
 		t.Fatalf("SeedGlobalUser failed: %v", err)
 	}
@@ -102,7 +104,7 @@ func TestSeedGlobalUser(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read global USER.md: %v", err)
 	}
-	tpl, _ := GetTemplate("USER.md")
+	tpl, _ := agent.GetTemplate("USER.md")
 	if string(userContent) != tpl {
 		t.Errorf("global USER.md content does not match template. Got: %q, Expected: %q", string(userContent), tpl)
 	}
@@ -114,7 +116,7 @@ func TestSeedGlobalUser(t *testing.T) {
 		t.Fatalf("failed to write custom global USER.md: %v", err)
 	}
 
-	err = SeedGlobalUser(configDir)
+	err = agent.SeedGlobalUser(configDir)
 	if err != nil {
 		t.Fatalf("SeedGlobalUser on populated config dir failed: %v", err)
 	}
@@ -133,7 +135,7 @@ func TestSeedBootstrap(t *testing.T) {
 	workspace := filepath.Join(tmpDir, "workspace")
 
 	// 1. Fresh seed
-	err := SeedBootstrap(workspace)
+	err := agent.SeedBootstrap(workspace)
 	if err != nil {
 		t.Fatalf("SeedBootstrap failed: %v", err)
 	}
@@ -147,7 +149,7 @@ func TestSeedBootstrap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read BOOTSTRAP.md: %v", err)
 	}
-	tpl, _ := GetTemplate("BOOTSTRAP.md")
+	tpl, _ := agent.GetTemplate("BOOTSTRAP.md")
 	if string(bootstrapContent) != tpl {
 		t.Errorf("BOOTSTRAP.md content does not match template. Got: %q, Expected: %q", string(bootstrapContent), tpl)
 	}
@@ -159,7 +161,7 @@ func TestSeedBootstrap(t *testing.T) {
 		t.Fatalf("failed to write custom BOOTSTRAP.md: %v", err)
 	}
 
-	err = SeedBootstrap(workspace)
+	err = agent.SeedBootstrap(workspace)
 	if err != nil {
 		t.Fatalf("SeedBootstrap on populated workspace failed: %v", err)
 	}

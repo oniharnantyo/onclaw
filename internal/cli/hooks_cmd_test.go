@@ -1,4 +1,4 @@
-package cli
+package cli_test
 
 import (
 	"context"
@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/oniharnantyo/onclaw/internal/cli"
 )
 
 func TestHooksCommandLifecycle(t *testing.T) {
@@ -19,7 +21,7 @@ func TestHooksCommandLifecycle(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test.db")
 	t.Setenv("ONCLAW_DB_PATH", dbPath)
 
-	app := New()
+	app := cli.New()
 	ctx := context.Background()
 
 	// Initialize DB

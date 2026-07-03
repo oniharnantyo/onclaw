@@ -1,8 +1,10 @@
-package tools
+package tools_test
 
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/oniharnantyo/onclaw/internal/agent/tools"
 )
 
 func TestValidatePath(t *testing.T) {
@@ -56,7 +58,7 @@ func TestValidatePath(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := ValidatePath(workspaceAbs, tc.pathStr)
+			_, err := tools.ValidatePath(workspaceAbs, tc.pathStr)
 			if (err != nil) != tc.expectErr {
 				t.Errorf("expected error: %v, got error: %v", tc.expectErr, err)
 			}

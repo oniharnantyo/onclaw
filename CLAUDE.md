@@ -45,7 +45,18 @@ go test -run TestName ./internal/cli/...
 
 The React + Vite app in `web/` has a design system that is the source of truth for all frontend work: see `web/design-system/onclaw/MASTER.md` (dark-mode palette, typography, spacing/shadow tokens, component specs, anti-patterns). Page-specific files under `web/design-system/onclaw/pages/` override the Master; otherwise follow it strictly.
 
+### Configuration forms: structured fields, never a raw JSON input
+
+Every configuration dialog MUST render **one form field per config property** (selects, text inputs, number inputs, checkboxes — each with a label, tooltip, and inline validation), derived from that config's JSON schema or DTO. Never expose editable configuration as a single raw-JSON `<textarea>`. Structured fields give correct input types, inline validation, labels/tooltips, and accessibility; a JSON textarea gives none of these and forces the user to re-derive a schema the code already knows.
+
+- **Editable config = structured fields only.** Example: the Browser category config is an `engine` select (`lightpanda`/`chromium`/`remote`), a `headless` checkbox, and per-engine `binPath`/`port`/`url` text/number inputs — its schema is defined in `internal/agent/tools/browser/register.go`. The same applies to MCP server config (per-field inputs; `env` is a key/value editor, not a JSON blob).
+- **A read-only JSON preview (`<pre>` pretty-print) is fine for *displaying* stored config** (e.g. a hook's stored config in a details panel), never for editing it.
+- **Free-text/code values whose content is genuinely unstructured stay as `<textarea>`s** — hook scripts (`Hooks.tsx`), agent system prompts (`Agents.tsx`). That is a value, not structured config.
+
+Known current offenders to bring up to this rule: the Browser config dialog (`web/src/components/Tools.tsx`) and the MCP server `env` field (`web/src/components/MCP.tsx`) both currently edit raw JSON.
+
 ## Conventions
 
 - **OpenSpec** (`openspec/`) drives planned changes — proposals under `openspec/changes/`, specs under `openspec/specs/`. Check there before designing non-trivial features.
+- **Testing**: All test files in `internal/...` must be black-box (use `<pkg>_test` packages and qualification) unless a private algorithm requires direct unit testing (rare). Re-export unexported helpers only via `export_test.go` (e.g. `var BuildConfig = buildConfig`). Every `internal/...` package must maintain ≥ 70.0% statement coverage, except documented exemptions recorded in the `testing-conventions` spec.
 - **IMPORTANT**: Go style + the store-package layout rules live in `.claude/rules/coding-style.md` (tabs/gofmt, separate contract/types/impl files, `errors.Is`-friendly `%w` wrapping, `context.Context` first param). You should strictly follow the rules.

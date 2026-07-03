@@ -1,7 +1,8 @@
-package sqlite
+package sqlite_test
 
 import (
 	"context"
+	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
 	"testing"
 
 	"github.com/oniharnantyo/onclaw/internal/store"
@@ -12,7 +13,7 @@ func TestProfileStore(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	ps := NewProfileStore(db)
+	ps := sqlite.NewProfileStore(db)
 
 	// Test adding invalid profile (empty name)
 	invalidP := &store.Profile{Name: ""}
@@ -101,7 +102,7 @@ func TestMigrateIdempotency(t *testing.T) {
 	defer cleanup()
 
 	// Run migration second time - should not error
-	if err := Migrate(db); err != nil {
+	if err := sqlite.Migrate(db); err != nil {
 		t.Errorf("second migration failed: %v", err)
 	}
 
@@ -121,7 +122,7 @@ func TestMigrateClosedDB(t *testing.T) {
 	cleanup() // Close and cleanup
 
 	// Running migrate on closed DB should fail
-	if err := Migrate(db); err == nil {
-		t.Error("expected Migrate to fail on closed database, got nil")
+	if err := sqlite.Migrate(db); err == nil {
+		t.Error("expected sqlite.Migrate to fail on closed database, got nil")
 	}
 }

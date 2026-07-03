@@ -1,7 +1,8 @@
-package sqlite
+package sqlite_test
 
 import (
 	"context"
+	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
 	"testing"
 
 	"github.com/oniharnantyo/onclaw/internal/store"
@@ -12,7 +13,7 @@ func TestSkillStore(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	ss := NewSkillStore(db)
+	ss := sqlite.NewSkillStore(db)
 
 	// Test adding invalid skill (empty name)
 	invalidSk := &store.Skill{Name: ""}

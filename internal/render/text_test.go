@@ -1,15 +1,16 @@
-package render
+package render_test
 
 import (
 	"bytes"
 	"testing"
 
 	"github.com/cloudwego/eino/schema"
+	"github.com/oniharnantyo/onclaw/internal/render"
 )
 
 func TestTextRenderer(t *testing.T) {
 	var buf bytes.Buffer
-	tr := Text(&buf)
+	tr := render.Text(&buf)
 
 	// 1. Render assistant text block
 	msg1 := &schema.AgenticMessage{
