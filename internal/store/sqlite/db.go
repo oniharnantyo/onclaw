@@ -189,6 +189,94 @@ func Migrate(db *sql.DB) error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
+		`CREATE TABLE IF NOT EXISTS memory_documents (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			agent TEXT NOT NULL,
+			scope TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			content TEXT NOT NULL,
+			source TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_memory_docs_agent_scope ON memory_documents(agent, scope);`,
+		`CREATE VIRTUAL TABLE IF NOT EXISTS memory_documents_fts USING fts5(content, content='memory_documents', content_rowid='id');`,
+		`CREATE TRIGGER IF NOT EXISTS memory_documents_ai AFTER INSERT ON memory_documents BEGIN
+			INSERT INTO memory_documents_fts(rowid, content) VALUES (new.id, new.content);
+		END;`,
+		`CREATE TRIGGER IF NOT EXISTS memory_documents_ad AFTER DELETE ON memory_documents BEGIN
+			INSERT INTO memory_documents_fts(memory_documents_fts, rowid, content) VALUES('delete', old.id, old.content);
+		END;`,
+		`CREATE TRIGGER IF NOT EXISTS memory_documents_au AFTER UPDATE ON memory_documents BEGIN
+			INSERT INTO memory_documents_fts(memory_documents_fts, rowid, content) VALUES('delete', old.id, old.content);
+			INSERT INTO memory_documents_fts(rowid, content) VALUES (new.id, new.content);
+		END;`,
+		`CREATE TABLE IF NOT EXISTS memory_embeddings (
+			document_id INTEGER PRIMARY KEY,
+			vector BLOB,
+			FOREIGN KEY(document_id) REFERENCES memory_documents(id) ON DELETE CASCADE
+		);`,
+		`CREATE TABLE IF NOT EXISTS embedding_cache (
+			content_hash TEXT PRIMARY KEY,
+			vector BLOB,
+			created_at TEXT NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS staged_memory_writes (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			agent TEXT NOT NULL,
+			operation TEXT NOT NULL,
+			target TEXT NOT NULL DEFAULT '',
+			content TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'pending',
+			created_at TEXT NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS episodic_summaries (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			agent TEXT NOT NULL,
+			summary TEXT NOT NULL,
+			l0_abstract TEXT NOT NULL DEFAULT '',
+			key_topics TEXT NOT NULL DEFAULT '',
+			source_id TEXT NOT NULL DEFAULT '',
+			promoted_at TEXT,
+			expires_at TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_episodic_agent_unpromoted ON episodic_summaries(agent, promoted_at);`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_episodic_source_id ON episodic_summaries(agent, source_id) WHERE source_id != '';`,
+		`CREATE VIRTUAL TABLE IF NOT EXISTS conversation_messages_fts USING fts5(message, content='conversation_messages', content_rowid='id');`,
+		`CREATE TRIGGER IF NOT EXISTS conversation_messages_ai AFTER INSERT ON conversation_messages BEGIN
+			INSERT INTO conversation_messages_fts(rowid, message) VALUES (new.id, new.message);
+		END;`,
+		`CREATE TRIGGER IF NOT EXISTS conversation_messages_ad AFTER DELETE ON conversation_messages BEGIN
+			INSERT INTO conversation_messages_fts(conversation_messages_fts, rowid, message) VALUES('delete', old.id, old.message);
+		END;`,
+		`CREATE TRIGGER IF NOT EXISTS conversation_messages_au AFTER UPDATE ON conversation_messages BEGIN
+			INSERT INTO conversation_messages_fts(conversation_messages_fts, rowid, message) VALUES('delete', old.id, old.message);
+			INSERT INTO conversation_messages_fts(rowid, message) VALUES (new.id, new.message);
+		END;`,
+		`CREATE TABLE IF NOT EXISTS kg_entities (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			type TEXT NOT NULL,
+			name TEXT NOT NULL,
+			agent TEXT NOT NULL,
+			valid_from TEXT NOT NULL,
+			valid_until TEXT
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_kg_entities_agent_valid ON kg_entities(agent, valid_until);`,
+		`CREATE INDEX IF NOT EXISTS idx_kg_entities_type_name ON kg_entities(type, name);`,
+		`CREATE TABLE IF NOT EXISTS kg_relations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			from_entity INTEGER NOT NULL,
+			to_entity INTEGER NOT NULL,
+			predicate TEXT NOT NULL,
+			agent TEXT NOT NULL,
+			valid_from TEXT NOT NULL,
+			valid_until TEXT,
+			FOREIGN KEY(from_entity) REFERENCES kg_entities(id),
+			FOREIGN KEY(to_entity) REFERENCES kg_entities(id)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_kg_relations_agent_valid ON kg_relations(agent, valid_until);`,
+		`CREATE INDEX IF NOT EXISTS idx_kg_relations_from_entity ON kg_relations(from_entity);`,
+		`CREATE INDEX IF NOT EXISTS idx_kg_relations_to_entity ON kg_relations(to_entity);`,
 	}
 
 	// Drop old skills table (if it had only name as PK) to migrate cleanly.
@@ -199,6 +287,14 @@ func Migrate(db *sql.DB) error {
 		if _, err := db.Exec(q); err != nil {
 			return fmt.Errorf("execute migration query: %w", err)
 		}
+	}
+
+	// Backfill FTS tables if they are empty
+	if _, err := db.Exec(`INSERT OR IGNORE INTO memory_documents_fts(rowid, content) SELECT id, content FROM memory_documents;`); err != nil {
+		return fmt.Errorf("backfill memory_documents_fts: %w", err)
+	}
+	if _, err := db.Exec(`INSERT OR IGNORE INTO conversation_messages_fts(rowid, message) SELECT id, message FROM conversation_messages;`); err != nil {
+		return fmt.Errorf("backfill conversation_messages_fts: %w", err)
 	}
 
 	// Guarded migrations for existing DBs
