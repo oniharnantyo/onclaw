@@ -14,20 +14,20 @@ const (
 
 // LoadPersonaContext loads persona context files in fixed order and concatenates them.
 // Missing files are skipped. Empty files contribute nothing. Total size is capped at maxPersonaBytes.
+// CURATED CORE INTEGRATION: The memory middleware will now handle MEMORY.md independently with its own cap.
 func LoadPersonaContext(ctx context.Context, workspace, userConfigDir string) (string, error) {
 	var filesToRead []string
 
 	// 1. Global USER.md
 	filesToRead = append(filesToRead, filepath.Join(userConfigDir, "USER.md"))
 
-	// 2. Per-agent workspace files
+	// 2. Per-agent workspace files (excluding MEMORY.md as it's handled by memory middleware)
 	workspaceFiles := []string{
 		"BOOTSTRAP.md",
 		"IDENTITY.md",
 		"SOUL.md",
 		"CAPABILITIES.md",
 		"USER.md",
-		"MEMORY.md",
 	}
 	for _, f := range workspaceFiles {
 		filesToRead = append(filesToRead, filepath.Join(workspace, f))

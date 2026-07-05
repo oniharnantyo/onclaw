@@ -21,7 +21,6 @@ func TestLoadPersonaContext_AssemblyOrder(t *testing.T) {
 	soulContent := "SOUL content"
 	capabilitiesContent := "CAPABILITIES content"
 	userContent := "USER content"
-	memoryContent := "MEMORY content"
 	agentsContent := "AGENTS content"
 
 	_ = os.WriteFile(filepath.Join(tmpConfig, "USER.md"), []byte(globalUserContent), 0644)
@@ -30,7 +29,6 @@ func TestLoadPersonaContext_AssemblyOrder(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(tmpWorkspace, "SOUL.md"), []byte(soulContent), 0644)
 	_ = os.WriteFile(filepath.Join(tmpWorkspace, "CAPABILITIES.md"), []byte(capabilitiesContent), 0644)
 	_ = os.WriteFile(filepath.Join(tmpWorkspace, "USER.md"), []byte(userContent), 0644)
-	_ = os.WriteFile(filepath.Join(tmpWorkspace, "MEMORY.md"), []byte(memoryContent), 0644)
 	_ = os.WriteFile(filepath.Join(tmpWorkspace, "AGENTS.md"), []byte(agentsContent), 0644)
 
 	// Load persona context
@@ -40,14 +38,13 @@ func TestLoadPersonaContext_AssemblyOrder(t *testing.T) {
 		t.Fatalf("LoadPersonaContext failed: %v", err)
 	}
 
-	// Verify the order: Global USER, BOOTSTRAP, IDENTITY, SOUL, CAPABILITIES, USER, MEMORY, AGENTS
+	// Verify the order: Global USER, BOOTSTRAP, IDENTITY, SOUL, CAPABILITIES, USER, AGENTS
 	expected := globalUserContent + "\n" +
 		bootstrapContent + "\n" +
 		identityContent + "\n" +
 		soulContent + "\n" +
 		capabilitiesContent + "\n" +
 		userContent + "\n" +
-		memoryContent + "\n" +
 		agentsContent
 
 	if result != expected {

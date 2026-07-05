@@ -212,6 +212,10 @@ func serveCommand(st *appState) *cli.Command {
 			toolGroupConfigStore := sqlite.NewToolGroupConfigStore(db)
 
 			svc := service.New(mgr, kv, convStore, resolveFn, installer, st.log, hookStore, execStore, mcpStore, mcpMgr.Reload, testMCPFn, toolRegistryStore, toolGroupConfigStore)
+			stagedWriteStore := sqlite.NewStagedWriteStore(db)
+			svc.SetStagedWriteStore(stagedWriteStore)
+			svc.SetWorkspacePath(filepath.Dir(resolvedDbPath))
+
 			server := api.NewServer(svc, st.log)
 
 			st.log.Info("Starting web management console", "addr", addr)

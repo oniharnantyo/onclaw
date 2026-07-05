@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/adk/middlewares/summarization"
@@ -23,6 +24,7 @@ import (
 	_ "github.com/oniharnantyo/onclaw/internal/agent/tools/browser"
 	_ "github.com/oniharnantyo/onclaw/internal/agent/tools/web"
 	"github.com/oniharnantyo/onclaw/internal/hooks"
+	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/secrets"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
@@ -36,6 +38,10 @@ type Agent struct {
 	Session          *middlewares.SessionState
 	sessionStartOnce sync.Once
 	Tools            []tool.BaseTool
+	// memoryMiddleware is non-nil when memory is enabled; used for EventStop flush.
+	memoryMiddleware *middlewares.MemoryMiddleware
+	// Pruner periodically prunes expired episodic summaries.
+	Pruner *memory.PeriodicPruner
 }
 
 type inMemoryEnabledChecker struct {
@@ -55,6 +61,7 @@ func AssembleAgent(
 	ctx context.Context,
 	agentConf *store.Agent,
 	chatModel model.AgenticModel,
+	reviewModel model.AgenticModel,
 	workspace string,
 	userConfigDir string,
 	shellPolicy string,
@@ -70,6 +77,17 @@ func AssembleAgent(
 	toolGroupCfg tools.ToolGroupCfg,
 	kvStore store.KVStore,
 	resolver secrets.SecretResolver,
+	memoryStore memory.MemoryStore,
+	coreStore memory.CoreStore,
+	embedder *memory.Embedder,
+	stagedWriteStore memory.StagedWriteStore,
+	episodicStore memory.EpisodicStore,
+	dreamer *memory.Dreamer,
+	kgStore memory.KGStore,
+	charLimit int,
+	episodicTTLDays int,
+	db *sql.DB,
+	kgTraversalDepth int,
 ) (*Agent, error) {
 	// Load existing persona/memory files and AGENTS.md
 	persona, err := LoadPersonaContext(ctx, workspace, userConfigDir)
@@ -113,12 +131,20 @@ func AssembleAgent(
 
 	// 2. Build tools
 	builtTools := tools.Builtin(&tools.Scope{
-		Workspace:      workspace,
-		ShellPolicy:    shellPolicy,
-		ShellAllowlist: shellAllowlist,
-		ToolGroupCfg:   toolGroupCfg,
-		KVStore:        kvStore,
-		SecretResolver: resolver,
+		Workspace:          workspace,
+		ShellPolicy:        shellPolicy,
+		ShellAllowlist:     shellAllowlist,
+		ToolGroupCfg:       toolGroupCfg,
+		KVStore:            kvStore,
+		SecretResolver:     resolver,
+		AgentName:          agentConf.Name,
+		Db:                 db,
+		MemoryStore:        memoryStore,
+		Embedder:           embedder,
+		StagedWriteStore:   stagedWriteStore,
+		CharLimit:          charLimit,
+		KGStore:            kgStore,
+		KGTraversalDepth:   kgTraversalDepth,
 	}, enabledChecker)
 	builtTools = append(builtTools, mcpTools...)
 
@@ -144,74 +170,32 @@ func AssembleAgent(
 	// 3. Assemble summarization middleware
 	// We trigger when total tokens exceed 80% of context window
 	triggerTokens := summarizationTrigger(contextWindow)
+	// lastCompactionSummary captures the most recent compaction summary text
+	// so that EpisodicStore can reuse it instead of making a second LLM call.
+	// memMW is declared here so the summarization callback can store the
+	// compaction summary on it before the MemoryMiddleware is fully assembled.
+	var memMW *middlewares.MemoryMiddleware
 	summarizationMiddleware, err := summarization.NewTyped[*schema.AgenticMessage](ctx, &summarization.TypedConfig[*schema.AgenticMessage]{
 		Model: chatModel,
 		Trigger: &summarization.TriggerCondition{
 			ContextTokens: triggerTokens,
 		},
 		Callback: func(ctx context.Context, before adk.TypedChatModelAgentState[*schema.AgenticMessage], after adk.TypedChatModelAgentState[*schema.AgenticMessage]) error {
-			beforeMap := make(map[*schema.AgenticMessage]bool)
-			for _, msg := range before.Messages {
-				beforeMap[msg] = true
+			summary, err := handleSummarization(ctx, handleSummarizationParams{
+				Before:         before,
+				After:          after,
+				ChatModel:      chatModel,
+				MemoryStore:    memoryStore,
+				Embedder:       embedder,
+				KVStore:        kvStore,
+				AgentName:      agentConf.Name,
+				ConversationID: conversationID,
+				ConvStore:      convStore,
+			})
+			if err == nil && summary != "" && memMW != nil {
+				memMW.CompactionSummary = summary
 			}
-
-			var summaryMsg *schema.AgenticMessage
-			for _, msg := range after.Messages {
-				if !beforeMap[msg] {
-					summaryMsg = msg
-					break
-				}
-			}
-
-			if summaryMsg == nil {
-				return nil
-			}
-
-			afterMap := make(map[*schema.AgenticMessage]bool)
-			for _, msg := range after.Messages {
-				afterMap[msg] = true
-			}
-
-			var maxSeq int64
-			for _, msg := range before.Messages {
-				if !afterMap[msg] {
-					if msg.Extra != nil {
-						if seqVal, ok := msg.Extra["_onclaw_seq"].(int64); ok {
-							if seqVal > maxSeq {
-								maxSeq = seqVal
-							}
-						} else if seqValF, ok := msg.Extra["_onclaw_seq"].(float64); ok {
-							seqVal := int64(seqValF)
-							if seqVal > maxSeq {
-								maxSeq = seqVal
-							}
-						}
-					}
-				}
-			}
-
-			redactedSummaryMsg := tools.RedactAgenticMessage(summaryMsg)
-			if redactedSummaryMsg.Extra == nil {
-				redactedSummaryMsg.Extra = make(map[string]interface{})
-			}
-			redactedSummaryMsg.Extra[persistedKey] = true
-
-			summaryMsgJSON, err := json.Marshal(redactedSummaryMsg)
-			if err != nil {
-				return fmt.Errorf("marshal summary message: %w", err)
-			}
-
-			err = convStore.SaveSummary(ctx, conversationID, string(summaryMsgJSON), maxSeq)
-			if err != nil {
-				return fmt.Errorf("save summary: %w", err)
-			}
-
-			if summaryMsg.Extra == nil {
-				summaryMsg.Extra = make(map[string]interface{})
-			}
-			summaryMsg.Extra[persistedKey] = true
-
-			return nil
+			return err
 		},
 	})
 	if err != nil {
@@ -262,6 +246,25 @@ func AssembleAgent(
 		summarizationMiddleware,
 		historyMiddleware,
 	}
+	if memoryStore != nil {
+		memMW = middlewares.NewMemoryMiddleware(
+			coreStore,
+			memoryStore,
+			embedder,
+			kvStore,
+			chatModel,
+			reviewModel,
+			workspace,
+			agentConf.Name,
+			conversationID,
+			charLimit,
+			episodicStore,
+			dreamer,
+			episodicTTLDays,
+			kgStore,
+		)
+		handlers = append(handlers, memMW)
+	}
 	if skillMiddleware != nil {
 		handlers = append(handlers, skillMiddleware)
 	}
@@ -275,14 +278,22 @@ func AssembleAgent(
 		return nil, fmt.Errorf("create Eino ChatModelAgent: %w", err)
 	}
 
-	return &Agent{
-		EinoAgent:  einoAgent,
-		Config:     agentConf,
-		Workspace:  workspace,
-		Dispatcher: dispatcher,
-		Session:    sessionState,
-		Tools:      builtTools,
-	}, nil
+	agent := &Agent{
+		EinoAgent:        einoAgent,
+		Config:           agentConf,
+		Workspace:        workspace,
+		Dispatcher:       dispatcher,
+		Session:          sessionState,
+		Tools:            builtTools,
+		memoryMiddleware: memMW,
+	}
+
+	if episodicStore != nil {
+		agent.Pruner = memory.NewPeriodicPruner(episodicStore, 1*time.Hour)
+		agent.Pruner.Start(ctx)
+	}
+
+	return agent, nil
 }
 
 func summarizationTrigger(contextWindow int) int {
@@ -331,11 +342,126 @@ func (a *Agent) Run(ctx context.Context, userInput string) EventIterator {
 			})
 		}
 	}
+	// EventStop flush (D3 / task 4.4): fire once when the turn ends so memory is persisted.
+	// Uses the most recent compaction summary (if any) to avoid a second LLM call.
+	onStopFlush := func(msgs []*schema.AgenticMessage) {
+		if a.memoryMiddleware != nil {
+			a.memoryMiddleware.FlushMessages(ctx, msgs, a.memoryMiddleware.CompactionSummary)
+		}
+	}
 	return &eventIterator{
 		ctx:         ctx,
 		iterator:    iterator,
 		onTurnError: onTurnError,
+		onStopFlush: onStopFlush,
 	}
+}
+
+type handleSummarizationParams struct {
+	Before         adk.TypedChatModelAgentState[*schema.AgenticMessage]
+	After          adk.TypedChatModelAgentState[*schema.AgenticMessage]
+	ChatModel      model.AgenticModel
+	MemoryStore    memory.MemoryStore
+	Embedder       *memory.Embedder
+	KVStore        store.KVStore
+	AgentName      string
+	ConversationID int64
+	ConvStore      store.ConversationStore
+}
+
+// handleSummarization saves the compaction summary message and returns the summary text
+// for reuse in episodic summarization. Returns empty string when no compaction occurred.
+func handleSummarization(ctx context.Context, p handleSummarizationParams) (string, error) {
+	const persistedKey = "_onclaw_persisted"
+
+	beforeMap := make(map[*schema.AgenticMessage]bool)
+	for _, msg := range p.Before.Messages {
+		beforeMap[msg] = true
+	}
+
+	var summaryMsg *schema.AgenticMessage
+	for _, msg := range p.After.Messages {
+		if !beforeMap[msg] {
+			summaryMsg = msg
+			break
+		}
+	}
+
+	if summaryMsg == nil {
+		return "", nil
+	}
+
+	// Extract the summary text from the compaction message for episodic reuse.
+	var compactionSummary string
+	for _, block := range summaryMsg.ContentBlocks {
+		if block == nil {
+			continue
+		}
+		if block.AssistantGenText != nil && block.AssistantGenText.Text != "" {
+			if compactionSummary != "" {
+				compactionSummary += "\n"
+			}
+			compactionSummary += block.AssistantGenText.Text
+		}
+		if block.UserInputText != nil && block.UserInputText.Text != "" {
+			if compactionSummary != "" {
+				compactionSummary += "\n"
+			}
+			compactionSummary += block.UserInputText.Text
+		}
+	}
+
+	afterMap := make(map[*schema.AgenticMessage]bool)
+	for _, msg := range p.After.Messages {
+		afterMap[msg] = true
+	}
+
+	var discardedMessages []*schema.AgenticMessage
+	var maxSeq int64
+	for _, msg := range p.Before.Messages {
+		if !afterMap[msg] {
+			discardedMessages = append(discardedMessages, msg)
+			if msg.Extra != nil {
+				if seqVal, ok := msg.Extra["_onclaw_seq"].(int64); ok {
+					if seqVal > maxSeq {
+						maxSeq = seqVal
+					}
+				} else if seqValF, ok := msg.Extra["_onclaw_seq"].(float64); ok {
+					seqVal := int64(seqValF)
+					if seqVal > maxSeq {
+						maxSeq = seqVal
+					}
+				}
+			}
+		}
+	}
+
+	if len(discardedMessages) > 0 && p.MemoryStore != nil {
+		_ = memory.ExtractAndFlush(ctx, p.ChatModel, p.MemoryStore, p.Embedder, p.KVStore, p.AgentName, p.ConversationID, discardedMessages)
+	}
+
+	redactedSummaryMsg := tools.RedactAgenticMessage(summaryMsg)
+	if redactedSummaryMsg.Extra == nil {
+		redactedSummaryMsg.Extra = make(map[string]interface{})
+	}
+	redactedSummaryMsg.Extra[persistedKey] = true
+
+	summaryMsgJSON, err := json.Marshal(redactedSummaryMsg)
+	if err != nil {
+		return "", fmt.Errorf("marshal summary message: %w", err)
+	}
+
+	err = p.ConvStore.SaveSummary(ctx, p.ConversationID, string(summaryMsgJSON), maxSeq)
+	if err != nil {
+		return "", fmt.Errorf("save summary: %w", err)
+	}
+
+	if summaryMsg.Extra == nil {
+		summaryMsg.Extra = make(map[string]interface{})
+	}
+	summaryMsg.Extra[persistedKey] = true
+
+	return compactionSummary, nil
 }
 
 // ToolGroupCfgWrapper wraps a store.ToolGroupConfigStore to implement tools.ToolGroupCfg.

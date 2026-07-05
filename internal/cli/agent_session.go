@@ -8,11 +8,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
+	einoembedgemini "github.com/cloudwego/eino-ext/components/embedding/gemini"
+	einoembedollama "github.com/cloudwego/eino-ext/components/embedding/ollama"
+	einoembedopenai "github.com/cloudwego/eino-ext/components/embedding/openai"
+	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/tool"
+	"google.golang.org/genai"
+
 	"github.com/oniharnantyo/onclaw/internal/agent"
 	"github.com/oniharnantyo/onclaw/internal/llm"
 	"github.com/oniharnantyo/onclaw/internal/mcp"
+	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/store"
 	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
 	"github.com/oniharnantyo/onclaw/internal/workspace"
@@ -178,10 +186,106 @@ func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.
 	toolGroupConfigStore := sqlite.NewToolGroupConfigStore(db)
 	kvStore := sqlite.NewKVStore(db)
 
+	var memoryStore memory.MemoryStore
+	var coreStore memory.CoreStore
+	var embedder *memory.Embedder
+	var stagedWriteStore memory.StagedWriteStore
+	var episodicStore memory.EpisodicStore
+	var kgStore memory.KGStore
+	if st.cfg.Memory.Enabled {
+		memoryStore = sqlite.NewMemoryStore(db)
+		coreStore = memory.NewFileCoreStore(st.cfg.Memory.CharLimit)
+		stagedWriteStore = sqlite.NewStagedWriteStore(db)
+		episodicStore = sqlite.NewEpisodicStore(db)
+		if st.cfg.Memory.KGEnabled {
+			kgStore = sqlite.NewKGStore(db)
+		}
+
+		embedProvider := st.cfg.Memory.EmbeddingProvider
+		if embedProvider == "" {
+			embedProvider = providerName
+		}
+		embedModel := st.cfg.Memory.EmbeddingModel
+		if embedModel == "" {
+			if embedProvider == "openai" {
+				embedModel = "text-embedding-3-small"
+			} else if embedProvider == "gemini" {
+				embedModel = "text-embedding-004"
+			} else if embedProvider == "ollama" {
+				embedModel = "nomic-embed-text"
+			}
+		}
+
+		var embedAPIKey string
+		var embedAPIBase string
+		if ep, err := mgr.GetProfile(ctx, embedProvider); err == nil && ep != nil {
+			embedAPIBase = ep.APIBase
+			embedAPIKey, _ = mgr.GetSecret(ctx, embedProvider)
+		}
+
+		var einoProvider memory.EinoEmbedder
+		switch embedProvider {
+		case "gemini", "google":
+			if embedAPIKey != "" {
+				genaiClient, genaiErr := genai.NewClient(ctx, &genai.ClientConfig{
+					APIKey:  embedAPIKey,
+					Backend: genai.BackendGeminiAPI,
+				})
+				if genaiErr == nil {
+					einoProvider, _ = einoembedgemini.NewEmbedder(ctx, &einoembedgemini.EmbeddingConfig{
+						Client: genaiClient,
+						Model:  embedModel,
+					})
+				}
+			}
+		case "ollama":
+			einoProvider, _ = einoembedollama.NewEmbedder(ctx, &einoembedollama.EmbeddingConfig{
+				BaseURL: embedAPIBase,
+				Model:   embedModel,
+			})
+		default: // openai, agenticopenai, or any OpenAI-compatible provider
+			if embedAPIKey != "" {
+				einoProvider, _ = einoembedopenai.NewEmbedder(ctx, &einoembedopenai.EmbeddingConfig{
+					APIKey:  embedAPIKey,
+					BaseURL: embedAPIBase,
+					Model:   embedModel,
+				})
+			}
+		}
+
+		// einoProvider may be nil (no API key, provider build failed) — FTS-only mode.
+		embedder = memory.NewEmbedder(memoryStore, einoProvider)
+	}
+
+	var reviewModel model.AgenticModel
+	if st.cfg.Memory.ReviewModel != "" {
+		reviewProfile, revErr := mgr.GetProfile(ctx, providerName)
+		if revErr == nil {
+			reviewModel, _ = mgr.BuildWithProfile(ctx, reviewProfile, st.cfg.Memory.ReviewModel)
+		}
+	}
+
+	var dreamer *memory.Dreamer
+	if episodicStore != nil {
+		dreamer = memory.NewDreamer(
+			episodicStore,
+			coreStore,
+			stagedWriteStore,
+			reviewModel,
+			req.AgentName,
+			resolvedWorkspace,
+			st.cfg.Memory.DreamThreshold,
+			10*time.Minute,
+			st.cfg.Memory.WriteApproval,
+			st.cfg.Memory.ReviewModel,
+		)
+	}
+
 	assembledAgent, err := agent.AssembleAgent(
 		ctx,
 		agentConf,
 		chatModel,
+		reviewModel,
 		resolvedWorkspace,
 		userConfigDir,
 		st.cfg.Tools.Shell.Policy,
@@ -197,6 +301,17 @@ func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.
 		&agent.ToolGroupCfgWrapper{Store: toolGroupConfigStore},
 		kvStore,
 		mgr,
+		memoryStore,
+		coreStore,
+		embedder,
+		stagedWriteStore,
+		episodicStore,
+		dreamer,
+		kgStore,
+		st.cfg.Memory.CharLimit,
+		st.cfg.Memory.EpisodicTTLDays,
+		db,
+		st.cfg.Memory.KGTraversalDepth,
 	)
 	if err != nil {
 		return nil, "", fmt.Errorf("assemble agent: %w", err)

@@ -33,5 +33,19 @@ func defaults() Config {
 			Bind: "0.0.0.0",
 			Port: 8484,
 		},
+		Memory: MemoryConfig{
+			Enabled:           true,
+			EmbeddingProvider: "",
+			EmbeddingModel:    "",
+			CharLimit:         3200,
+			WriteApproval:     false,
+			FtsWeight:         0.3,
+			VectorWeight:      0.7,
+			ReviewModel:       "",
+			DreamThreshold:    5,
+			EpisodicTTLDays:   90,
+			KGEnabled:         true,
+			KGTraversalDepth:  3,
+		},
 	}
 }

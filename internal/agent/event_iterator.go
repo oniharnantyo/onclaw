@@ -14,6 +14,11 @@ type eventIterator struct {
 	currentStream *schema.StreamReader[*schema.AgenticMessage]
 	err           error
 	onTurnError   func(error)
+	// onStopFlush is called on normal termination with the final message list;
+	// used to flush memory in short sessions (EventStop / D3 task 4.4).
+	onStopFlush func([]*schema.AgenticMessage)
+	// collectedMsgs accumulates messages for the onStopFlush call.
+	collectedMsgs []*schema.AgenticMessage
 }
 
 func (it *eventIterator) Next() (*schema.AgenticMessage, bool) {
@@ -43,6 +48,11 @@ func (it *eventIterator) Next() (*schema.AgenticMessage, bool) {
 	for {
 		event, ok := it.iterator.Next()
 		if !ok {
+			// Normal session end — fire EventStop flush.
+			if it.onStopFlush != nil {
+				it.onStopFlush(it.collectedMsgs)
+				it.onStopFlush = nil // fire once only
+			}
 			return nil, false
 		}
 
@@ -65,6 +75,7 @@ func (it *eventIterator) Next() (*schema.AgenticMessage, bool) {
 				it.currentStream = mv.MessageStream
 				return it.Next()
 			} else if mv.Message != nil {
+				it.collectedMsgs = append(it.collectedMsgs, mv.Message)
 				return mv.Message, true
 			}
 		}

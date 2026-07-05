@@ -13,6 +13,10 @@ func SummarizationTrigger(contextWindow int) int {
 
 const MaxPersonaBytes = maxPersonaBytes
 
+type HandleSummarizationParams = handleSummarizationParams
+
+var HandleSummarization = handleSummarization
+
 // NewEventIterator is a test helper to construct an eventIterator.
 func NewEventIterator(
 	ctx context.Context,

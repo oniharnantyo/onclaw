@@ -31,6 +31,7 @@ func New() *cli.Command {
 			mcpCommand(st),
 			serveCommand(st),
 			hooksCommand(st),
+			memoryCommand(st),
 		},
 	}
 }

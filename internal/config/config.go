@@ -31,6 +31,7 @@ type Config struct {
 	Agent            AgentConfig    `mapstructure:"agent"`
 	Langfuse         LangfuseConfig `mapstructure:"langfuse"`
 	Web              WebConfig      `mapstructure:"web"`
+	Memory           MemoryConfig   `mapstructure:"memory"`
 
 	// Runtime-only metadata (populated by Load, not read from the file).
 	LoadedFrom  string   `mapstructure:"-"`
@@ -64,6 +65,21 @@ type LangfuseConfig struct {
 	Mask      bool   `mapstructure:"mask"`
 }
 
+type MemoryConfig struct {
+	Enabled           bool    `mapstructure:"enabled"`
+	EmbeddingProvider string  `mapstructure:"embedding_provider"`
+	EmbeddingModel    string  `mapstructure:"embedding_model"`
+	CharLimit         int     `mapstructure:"char_limit"`
+	WriteApproval     bool    `mapstructure:"write_approval"`
+	FtsWeight         float64 `mapstructure:"fts_weight"`
+	VectorWeight      float64 `mapstructure:"vector_weight"`
+	ReviewModel       string  `mapstructure:"review_model"`
+	DreamThreshold    int     `mapstructure:"dream_threshold"`
+	EpisodicTTLDays   int     `mapstructure:"episodic_ttl_days"`
+	KGEnabled         bool    `mapstructure:"kg_enabled"`
+	KGTraversalDepth  int     `mapstructure:"kg_traversal_depth"`
+}
+
 // SearchPaths returns the directories onclaw searches for .env, in order.
 func SearchPaths() []string {
 	paths := []string{"."} // current working directory
@@ -94,6 +110,18 @@ func mapAndSanitizeEnvKeys(v *viper.Viper, fileLoaded bool) {
 		"langfuse.mask",
 		"web.bind",
 		"web.port",
+		"memory.enabled",
+		"memory.embedding_provider",
+		"memory.embedding_model",
+		"memory.char_limit",
+		"memory.write_approval",
+		"memory.fts_weight",
+		"memory.vector_weight",
+		"memory.review_model",
+		"memory.dream_threshold",
+		"memory.episodic_ttl_days",
+		"memory.kg_enabled",
+		"memory.kg_traversal_depth",
 	}
 
 	for _, key := range keys {
@@ -102,15 +130,21 @@ func mapAndSanitizeEnvKeys(v *viper.Viper, fileLoaded bool) {
 		// 1. Sanitize OS Environment Variable if present
 		if val := os.Getenv(envVar); val != "" {
 			switch key {
-			case "concurrency", "max_context_tokens", "agent.max_iterations", "web.port":
+			case "concurrency", "max_context_tokens", "agent.max_iterations", "web.port", "memory.char_limit", "memory.kg_traversal_depth":
 				if _, err := strconv.Atoi(val); err != nil {
 					fmt.Fprintf(os.Stderr, "WARNING: invalid integer value in environment %s: %q. Falling back to default.\n", envVar, val)
 					os.Unsetenv(envVar)
 					continue
 				}
-			case "langfuse.mask":
+			case "langfuse.mask", "memory.enabled", "memory.kg_enabled":
 				if _, err := strconv.ParseBool(val); err != nil {
 					fmt.Fprintf(os.Stderr, "WARNING: invalid boolean value in environment %s: %q. Falling back to default.\n", envVar, val)
+					os.Unsetenv(envVar)
+					continue
+				}
+			case "memory.fts_weight", "memory.vector_weight":
+				if _, err := strconv.ParseFloat(val, 64); err != nil {
+					fmt.Fprintf(os.Stderr, "WARNING: invalid float value in environment %s: %q. Falling back to default.\n", envVar, val)
 					os.Unsetenv(envVar)
 					continue
 				}
@@ -125,17 +159,24 @@ func mapAndSanitizeEnvKeys(v *viper.Viper, fileLoaded bool) {
 			if v.IsSet(envStyleKey) {
 				rawVal := v.Get(envStyleKey)
 				switch key {
-				case "concurrency", "max_context_tokens", "agent.max_iterations", "web.port":
+				case "concurrency", "max_context_tokens", "agent.max_iterations", "web.port", "memory.char_limit", "memory.dream_threshold", "memory.episodic_ttl_days", "memory.kg_traversal_depth":
 					if strVal, ok := rawVal.(string); ok {
 						if _, err := strconv.Atoi(strVal); err != nil {
 							fmt.Fprintf(os.Stderr, "WARNING: invalid integer value for %s: %q. Falling back to default.\n", envVar, strVal)
 							continue
 						}
 					}
-				case "langfuse.mask":
+				case "langfuse.mask", "memory.enabled", "memory.kg_enabled":
 					if strVal, ok := rawVal.(string); ok {
 						if _, err := strconv.ParseBool(strVal); err != nil {
 							fmt.Fprintf(os.Stderr, "WARNING: invalid boolean value for %s: %q. Falling back to default.\n", envVar, strVal)
+							continue
+						}
+					}
+				case "memory.fts_weight", "memory.vector_weight":
+					if strVal, ok := rawVal.(string); ok {
+						if _, err := strconv.ParseFloat(strVal, 64); err != nil {
+							fmt.Fprintf(os.Stderr, "WARNING: invalid float value for %s: %q. Falling back to default.\n", envVar, strVal)
 							continue
 						}
 					}
@@ -171,6 +212,18 @@ func Load(explicitPath string) (*Config, error) {
 	v.SetDefault("langfuse.mask", d.Langfuse.Mask)
 	v.SetDefault("web.bind", d.Web.Bind)
 	v.SetDefault("web.port", d.Web.Port)
+	v.SetDefault("memory.enabled", d.Memory.Enabled)
+	v.SetDefault("memory.embedding_provider", d.Memory.EmbeddingProvider)
+	v.SetDefault("memory.embedding_model", d.Memory.EmbeddingModel)
+	v.SetDefault("memory.char_limit", d.Memory.CharLimit)
+	v.SetDefault("memory.write_approval", d.Memory.WriteApproval)
+	v.SetDefault("memory.fts_weight", d.Memory.FtsWeight)
+	v.SetDefault("memory.vector_weight", d.Memory.VectorWeight)
+	v.SetDefault("memory.review_model", d.Memory.ReviewModel)
+	v.SetDefault("memory.dream_threshold", d.Memory.DreamThreshold)
+	v.SetDefault("memory.episodic_ttl_days", d.Memory.EpisodicTTLDays)
+	v.SetDefault("memory.kg_enabled", d.Memory.KGEnabled)
+	v.SetDefault("memory.kg_traversal_depth", d.Memory.KGTraversalDepth)
 
 	v.SetEnvPrefix("ONCLAW")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
