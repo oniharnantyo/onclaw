@@ -68,6 +68,11 @@ func (s *Server) routes() *http.ServeMux {
 	mux.Handle("GET /api/tools/categories/{cat}/config", requireAuth(http.HandlerFunc(s.handlers.GetCategoryConfig)))
 	mux.Handle("PUT /api/tools/categories/{cat}/config", requireAuth(http.HandlerFunc(s.handlers.PutCategoryConfig)))
 
+	mux.Handle("GET /api/memory/dreams", requireAuth(http.HandlerFunc(s.handlers.ListDreamSweeps)))
+	mux.Handle("GET /api/memory/staged", requireAuth(http.HandlerFunc(s.handlers.ListStagedWrites)))
+	mux.Handle("POST /api/memory/staged/{id}/approve", requireAuth(http.HandlerFunc(s.handlers.ApproveStagedWrite)))
+	mux.Handle("POST /api/memory/staged/{id}/reject", requireAuth(http.HandlerFunc(s.handlers.RejectStagedWrite)))
+
 	mux.Handle("POST /api/chat", requireAuth(http.HandlerFunc(s.handlers.Chat)))
 	mux.Handle("POST /api/logout", requireAuth(auth.Logout(s.sessions)))
 

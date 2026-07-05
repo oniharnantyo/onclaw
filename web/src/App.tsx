@@ -10,6 +10,7 @@ import {
   CheckCircle,
   Code,
   Lightning,
+  Brain,
   Plug,
   Wrench,
 } from '@phosphor-icons/react';
@@ -28,8 +29,9 @@ import type { Skill } from './components/Skills';
 import Hooks from './components/Hooks';
 import MCP from './components/MCP';
 import Tools from './components/Tools';
+import Memory from './components/Memory';
 
-type Tab = 'chat' | 'conversations' | 'providers' | 'agents' | 'skills' | 'hooks' | 'mcp' | 'tools';
+type Tab = 'chat' | 'conversations' | 'providers' | 'agents' | 'skills' | 'hooks' | 'mcp' | 'tools' | 'memory';
 
 
 interface NavItem {
@@ -229,6 +231,7 @@ export default function App() {
         { id: 'agents',        label: 'Agents',     icon: <Robot weight="duotone" size={18} /> },
         { id: 'skills',        label: 'Skills',     icon: <Code weight="duotone" size={18} /> },
         { id: 'hooks',         label: 'Hooks',      icon: <Lightning weight="duotone" size={18} /> },
+        { id: 'memory',        label: 'Memory',     icon: <Brain weight="duotone" size={18} /> },
         { id: 'mcp',           label: 'MCP Servers',icon: <Plug weight="duotone" size={18} /> },
         { id: 'tools',         label: 'Tools',      icon: <Wrench weight="duotone" size={18} /> },
       ],
@@ -248,6 +251,7 @@ export default function App() {
     agents:        'AI Agents',
     skills:        'Agent Skills',
     hooks:         'Lifecycle Hooks',
+    memory:        'Agent Memory',
     mcp:           'MCP Servers',
     tools:         'Builtin Tools',
   };
@@ -385,6 +389,12 @@ export default function App() {
         {activeTab === 'hooks' && (
           <Hooks
             agents={agents}
+            showToast={showToast}
+          />
+        )}
+
+        {activeTab === 'memory' && (
+          <Memory
             showToast={showToast}
           />
         )}

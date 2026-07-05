@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/oniharnantyo/onclaw/internal/llm"
+	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/skill"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
@@ -26,6 +27,19 @@ type Service struct {
 
 	toolRegistryStore    store.ToolRegistryStore
 	toolGroupConfigStore store.ToolGroupConfigStore
+
+	stagedWriteStore memory.StagedWriteStore
+	workspacePath    string
+}
+
+// SetStagedWriteStore sets the staged write store for memory approval flows.
+func (s *Service) SetStagedWriteStore(sts memory.StagedWriteStore) {
+	s.stagedWriteStore = sts
+}
+
+// SetWorkspacePath sets the base workspace path for reading dream sweep files.
+func (s *Service) SetWorkspacePath(wp string) {
+	s.workspacePath = wp
 }
 
 // New returns a new Service instance.
