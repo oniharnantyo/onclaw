@@ -2,8 +2,10 @@ package tools
 
 import (
 	"context"
+	"database/sql"
 
 	"github.com/cloudwego/eino/components/tool"
+	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/secrets"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
@@ -15,12 +17,20 @@ type ToolGroupCfg interface {
 
 // Scope defines the workspace and security configurations for tools.
 type Scope struct {
-	Workspace      string
-	ShellPolicy    string
-	ShellAllowlist []string
-	ToolGroupCfg   ToolGroupCfg
-	KVStore        store.KVStore
-	SecretResolver secrets.SecretResolver
+	Workspace          string
+	ShellPolicy        string
+	ShellAllowlist     []string
+	ToolGroupCfg       ToolGroupCfg
+	KVStore            store.KVStore
+	SecretResolver     secrets.SecretResolver
+	AgentName          string
+	Db                 *sql.DB
+	MemoryStore        memory.MemoryStore
+	Embedder           *memory.Embedder
+	StagedWriteStore   memory.StagedWriteStore
+	CharLimit          int
+	KGStore            memory.KGStore
+	KGTraversalDepth   int
 }
 
 // Tool defines the interface that extensible tools must implement to register with the system.
