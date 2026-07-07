@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-07-06
+goal: Turn-per-row history with per-turn accounting, bounded replay, and
+  response-id threading columns

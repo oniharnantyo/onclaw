@@ -1,13 +1,5 @@
-# conversation-history
+## MODIFIED Requirements
 
-## Purpose
-
-Persist full conversation messages (the entire `*schema.Message`) to the SQLite
-database onclaw already opens, replay them into the agent before each run for
-multi-turn memory, and keep replay bounded via durable summarization compaction.
-History replaces the former per-session `.jsonl` transcript and is the substrate
-for future durable summarization and vector search.
-## Requirements
 ### Requirement: History is replayed into the agent before each run
 The system SHALL, before each agent run, reconstruct the message list from stored turn rows by concatenating each turn's `message` array in `sequence_num` order and inject it before the new user message so the agent has multi-turn memory. Replay SHALL be bounded: with no summary present it SHALL send all turns; once a summary exists it SHALL send the summary message plus the last 3 turns past the summary's coverage cursor (`tailTurnWindow = 3`), and SHALL NOT load the full raw session into memory. `onclaw chat` SHALL reuse one conversation across all turns of a REPL session; `onclaw run` SHALL create one conversation per invocation.
 
@@ -30,17 +22,12 @@ The system SHALL persist the summary and a coverage cursor whenever summarizatio
 - **WHEN** a long conversation exceeds the summarization threshold and compaction fires
 - **THEN** a summary turn row is persisted, the coverage cursor advances, and the next turn replays the summary plus the last 3 turns instead of the full history
 
-### Requirement: Persisted history excludes resolved secret values
+### Requirement: Conversation history is full-text searchable
+The conversation store SHALL support FTS5 search over each turn's `question` and `answer` text so the agent can recall specific past conversations via `session_search`, independent of the live history window. FTS SHALL NOT index the raw `message` JSON array.
 
-The system SHALL redact known secret values from message content, tool-call arguments, and tool
-results before persisting them, using the same redaction applied to transcripts today
-(cross-ref `providers`). The conversation store SHALL NOT receive or hold resolved secret
-values.
-
-#### Scenario: A message containing a secret is redacted
-
-- **WHEN** a tool result contains a resolved secret value
-- **THEN** the persisted row contains the redacted form, not the secret
+#### Scenario: A past turn is found by keyword
+- **WHEN** `session_search` runs a query that matches a past turn's question or answer
+- **THEN** that turn is returned (with its question and answer) ranked by FTS5 relevance
 
 ### Requirement: Conversations can be enumerated
 The system SHALL provide `ConversationStore.ListConversations(ctx) ([]*ConversationRow, error)` returning each conversation's id, agent name, created and updated timestamps, turn count, and the first turn's `question` as a preview. The store interface, the `ConversationRow` DTO, and the SQLite implementation SHALL follow the existing contract/types/implementation separation. This enumeration supports the web UI's conversation list and any future listing surface.
@@ -53,46 +40,7 @@ The system SHALL provide `ConversationStore.ListConversations(ctx) ([]*Conversat
 - **WHEN** `ListConversations` is called and no conversations exist
 - **THEN** it returns an empty (or nil) slice and no error
 
-### Requirement: Conversation history is full-text searchable
-The conversation store SHALL support FTS5 search over each turn's `question` and `answer` text so the agent can recall specific past conversations via `session_search`, independent of the live history window. FTS SHALL NOT index the raw `message` JSON array.
-
-#### Scenario: A past turn is found by keyword
-- **WHEN** `session_search` runs a query that matches a past turn's question or answer
-- **THEN** that turn is returned (with its question and answer) ranked by FTS5 relevance
-
-### Requirement: Memory flush precedes summary persistence
-
-The summarization path SHALL offer a flush hook that runs memory extraction over the messages
-being compacted before the compaction summary is persisted to the conversation store.
-
-#### Scenario: The flush hook runs before SaveSummary
-
-- **WHEN** the summarization middleware persists a compaction summary
-- **THEN** the memory flush hook has already run over the compacted message range
-
-### Requirement: Response ID must never be empty
-The system SHALL guarantee that every persisted conversation turn has a non-empty `response_id` field when possible.
-
-#### Scenario: New conversation turn with provider response ID
-- **WHEN** a conversation turn is persisted with provider-supplied response ID
-- **THEN** `response_id` field MUST contain a non-empty string
-- **AND** `previous_response_id` references the prior turn's `response_id`
-
-#### Scenario: Fallback to Eino message ID
-- **WHEN** provider does not supply a response ID
-- **AND** Eino framework has populated `_eino_msg_id` in message metadata
-- **THEN** system MUST use `_eino_msg_id` as `response_id`
-- **AND** `response_id` field MUST NOT be empty
-
-#### Scenario: Response chaining across providers
-- **WHEN** conversation spans multiple providers (e.g., OpenAI → Bedrock)
-- **THEN** each turn MUST have a valid `response_id` regardless of provider
-- **AND** `previous_response_id` MUST correctly reference the immediate predecessor
-
-#### Scenario: Graceful degradation when no ID available
-- **WHEN** neither provider nor Eino metadata provides a response ID
-- **THEN** system MAY persist with empty `response_id`
-- **AND** system MUST log a warning about missing response ID
+## ADDED Requirements
 
 ### Requirement: Conversation history is persisted as turn rows in SQLite
 The system SHALL persist conversation history as **one row per turn** (a turn being a complete exchange ending in the final assistant response). Each turn row SHALL carry the turn's messages as a JSON array of the full `*schema.AgenticMessage` deltas (role, content blocks — including assistant text, reasoning, function tool calls, and function tool results — response metadata, and the message `Extra` map) produced during that turn, a monotonically increasing per-conversation `sequence_num`, the `model` used, per-turn `prompt_tokens`/`completion_tokens`/`total_tokens`, denormalized `question` (first user block text) and `answer` (last assistant block text), and `response_id`/`previous_response_id` for follow-up threading. Turns SHALL be grouped into conversations; each conversation SHALL belong to an agent. Persistence SHALL be append-only; the run loop SHALL NOT mutate or delete existing rows. The store package SHALL remain free of eino imports; the agent layer SHALL perform `*schema.AgenticMessage` <-> JSON conversion and secret redaction before persistence. **BREAKING:** rows previously persisted one-message-per-row are not read back; this is a clean format break (pre-release).
@@ -145,3 +93,10 @@ Each turn row SHALL carry a `response_id` identifying the turn and a `previous_r
 - **WHEN** the client sends `previous_response_id` on a follow-up
 - **THEN** it is accepted and persisted as the new turn's `previous_response_id`
 
+## REMOVED Requirements
+
+### Requirement: Conversation history is persisted as full messages in SQLite
+**Reason:** Superseded by "Conversation history is persisted as turn rows in SQLite". History is now one row per turn carrying the turn's message array, not one row per message.
+
+### Requirement: New messages are saved eagerly as they are produced
+**Reason:** Superseded by "A turn is committed as one row at turn end". Turn-per-row persistence buffers the turn and commits once at turn end; messages are no longer saved eagerly per message. The "crash mid-turn loses at most the message being produced" guarantee is intentionally relaxed (a turn interrupted before completion leaves no row).

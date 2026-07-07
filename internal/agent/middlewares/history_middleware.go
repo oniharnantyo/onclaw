@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"regexp"
+	"strings"
+	"sync"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
@@ -14,9 +18,23 @@ import (
 type contextKey string
 
 const (
-	cursorKey    = contextKey("onclaw_history_cursor")
-	persistedKey = "_onclaw_persisted"
+	cursorKey            = contextKey("onclaw_history_cursor")
+	persistedKey         = "_onclaw_persisted"
+	prevResponseIDCtxKey = contextKey("onclaw_prev_response_id")
 )
+
+var uuidRegex = regexp.MustCompile(`^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$`)
+
+// WithPreviousResponseID attaches a client-supplied previous response ID to the context.
+func WithPreviousResponseID(ctx context.Context, prevID string) context.Context {
+	return context.WithValue(ctx, prevResponseIDCtxKey, prevID)
+}
+
+// GetPreviousResponseID retrieves the client-supplied previous response ID from the context.
+func GetPreviousResponseID(ctx context.Context) (string, bool) {
+	val, ok := ctx.Value(prevResponseIDCtxKey).(string)
+	return val, ok
+}
 
 // RunCursor tracks the max sequence number within a single run.
 type RunCursor struct {
@@ -26,15 +44,21 @@ type RunCursor struct {
 // HistoryMiddleware embeds Eino's base middleware and persists/replays conversation history.
 type HistoryMiddleware struct {
 	adk.TypedBaseChatModelAgentMiddleware[*schema.AgenticMessage]
-	Store          store.ConversationStore
-	ConversationID int64
+	Store              store.ConversationStore
+	ConversationID     int64
+	Model              string
+	previousResponseID string
+	bufferedMessages   []*schema.AgenticMessage
+	lastTurnMeta       *store.TurnMeta
+	lock               sync.Mutex
 }
 
 // NewHistoryMiddleware creates a new HistoryMiddleware.
-func NewHistoryMiddleware(s store.ConversationStore, convID int64) *HistoryMiddleware {
+func NewHistoryMiddleware(s store.ConversationStore, convID int64, model string) *HistoryMiddleware {
 	return &HistoryMiddleware{
 		Store:          s,
 		ConversationID: convID,
+		Model:          model,
 	}
 }
 
@@ -47,62 +71,65 @@ func (h *HistoryMiddleware) BeforeAgent(ctx context.Context, runCtx *adk.ChatMod
 
 	var historyMessages []*schema.AgenticMessage
 
-	unmarshalMsg := func(row *store.MessageRow) (*schema.AgenticMessage, error) {
-		var msg schema.AgenticMessage
-		if err := json.Unmarshal([]byte(row.Message), &msg); err != nil {
-			return nil, fmt.Errorf("unmarshal message row: %w", err)
+	unmarshalTurn := func(row *store.TurnRow) ([]*schema.AgenticMessage, error) {
+		var msgs []*schema.AgenticMessage
+		if err := json.Unmarshal([]byte(row.Message), &msgs); err != nil {
+			return nil, fmt.Errorf("unmarshal turn messages: %w", err)
 		}
-		if msg.Extra == nil {
-			msg.Extra = make(map[string]interface{})
+		for _, msg := range msgs {
+			if msg.Extra == nil {
+				msg.Extra = make(map[string]interface{})
+			}
+			msg.Extra[persistedKey] = true
+			msg.Extra["_onclaw_seq"] = row.SequenceNum
 		}
-		msg.Extra[persistedKey] = true
-		msg.Extra["_onclaw_seq"] = row.Seq
-		return &msg, nil
+		return msgs, nil
 	}
 
 	if summaryRow != nil {
-		sMsg, err := unmarshalMsg(summaryRow)
+		sMsgs, err := unmarshalTurn(summaryRow)
 		if err != nil {
 			return ctx, nil, err
 		}
-		historyMessages = append(historyMessages, sMsg)
+		historyMessages = append(historyMessages, sMsgs...)
 	}
 
 	for _, row := range tailRows {
-		tMsg, err := unmarshalMsg(row)
+		tMsgs, err := unmarshalTurn(row)
 		if err != nil {
 			return ctx, nil, err
 		}
-		historyMessages = append(historyMessages, tMsg)
+		historyMessages = append(historyMessages, tMsgs...)
 	}
+
+	// Track the previous response ID from the last loaded turn
+	var prevResponseID string
+	var maxSeq int64
+	if len(tailRows) > 0 {
+		prevResponseID = tailRows[len(tailRows)-1].ResponseID
+		maxSeq = tailRows[len(tailRows)-1].SequenceNum
+	} else if summaryRow != nil {
+		prevResponseID = summaryRow.ResponseID
+		maxSeq = summaryRow.SequenceNum
+	}
+
+	if clientPrevID, ok := GetPreviousResponseID(ctx); ok && clientPrevID != "" {
+		prevResponseID = clientPrevID
+	}
+	h.previousResponseID = prevResponseID
 
 	// Inject history before the user input messages
 	originalMessages := runCtx.AgentInput.Messages
 	runCtx.AgentInput.Messages = append(historyMessages, originalMessages...)
 
-	// Determine max sequence number from loaded history
-	var maxSeq int64
-	if len(tailRows) > 0 {
-		maxSeq = tailRows[len(tailRows)-1].Seq
-	} else if summaryRow != nil {
-		maxSeq = summaryRow.Seq
-	}
-
-	// Save and mark the new user messages immediately
+	// Buffer the new user message (no eager write)
+	h.bufferedMessages = nil
 	for _, msg := range originalMessages {
 		if msg.Extra == nil {
 			msg.Extra = make(map[string]interface{})
 		}
 		if !IsPersisted(msg) {
-			seq, err := h.saveMessage(ctx, msg)
-			if err != nil {
-				return ctx, nil, fmt.Errorf("save user message: %w", err)
-			}
-			msg.Extra[persistedKey] = true
-			msg.Extra["_onclaw_seq"] = seq
-			if seq > maxSeq {
-				maxSeq = seq
-			}
+			h.bufferedMessages = append(h.bufferedMessages, msg)
 		}
 	}
 
@@ -114,62 +141,158 @@ func (h *HistoryMiddleware) BeforeAgent(ctx context.Context, runCtx *adk.ChatMod
 }
 
 func (h *HistoryMiddleware) AfterModelRewriteState(ctx context.Context, state *adk.TypedChatModelAgentState[*schema.AgenticMessage], modelCtx *adk.TypedModelContext[*schema.AgenticMessage]) (context.Context, *adk.TypedChatModelAgentState[*schema.AgenticMessage], error) {
-	if err := h.saveUnmarkedMessages(ctx, state.Messages); err != nil {
-		return ctx, nil, fmt.Errorf("after model rewrite state: %w", err)
-	}
+	h.accumulateNewMessages(state.Messages)
 	return ctx, state, nil
 }
 
 func (h *HistoryMiddleware) AfterAgent(ctx context.Context, state *adk.TypedChatModelAgentState[*schema.AgenticMessage]) (context.Context, error) {
-	if err := h.saveUnmarkedMessages(ctx, state.Messages); err != nil {
-		return ctx, fmt.Errorf("after agent: %w", err)
+	h.accumulateNewMessages(state.Messages)
+
+	if len(h.bufferedMessages) == 0 {
+		return ctx, nil
 	}
+
+	// 1. Extract question and answer
+	question, answer := extractQuestionAndAnswer(h.bufferedMessages)
+
+	// 2. Extract token usage and response_id from the final assistant message
+	var prompt, completion, total int64
+	var responseID string
+	var finalAssistantMsg *schema.AgenticMessage
+
+	// Find the final assistant message in the turn
+	for i := len(h.bufferedMessages) - 1; i >= 0; i-- {
+		msg := h.bufferedMessages[i]
+		if msg.Role == schema.AgenticRoleTypeAssistant {
+			finalAssistantMsg = msg
+			break
+		}
+	}
+
+	if finalAssistantMsg != nil && finalAssistantMsg.ResponseMeta != nil {
+		if finalAssistantMsg.ResponseMeta.TokenUsage != nil {
+			prompt = int64(finalAssistantMsg.ResponseMeta.TokenUsage.PromptTokens)
+			completion = int64(finalAssistantMsg.ResponseMeta.TokenUsage.CompletionTokens)
+			total = int64(finalAssistantMsg.ResponseMeta.TokenUsage.TotalTokens)
+		}
+		if finalAssistantMsg.ResponseMeta.OpenAIExtension != nil {
+			responseID = finalAssistantMsg.ResponseMeta.OpenAIExtension.ID
+		} else if finalAssistantMsg.ResponseMeta.GeminiExtension != nil {
+			responseID = finalAssistantMsg.ResponseMeta.GeminiExtension.ID
+		}
+	}
+
+	// Fallback chain priority:
+	// 1. Provider-specific extensions (OpenAIExtension, GeminiExtension)
+	// 2. Universal Eino framework message ID fallback (_eino_msg_id from Extra)
+	// 3. Graceful degradation (empty ID with warning log)
+	var isEinoID bool
+	if responseID == "" && finalAssistantMsg != nil && finalAssistantMsg.Extra != nil {
+		if einoID, ok := finalAssistantMsg.Extra["_eino_msg_id"].(string); ok && einoID != "" {
+			responseID = einoID
+			isEinoID = true
+		}
+	}
+
+	// Validate Eino fallback ID format (must be a valid UUID)
+	if responseID != "" && isEinoID {
+		if !uuidRegex.MatchString(responseID) {
+			log.Printf("HistoryMiddleware: invalid response ID %q (expected UUID), using empty fallback", responseID)
+			responseID = ""
+		}
+	}
+
+	if responseID == "" {
+		log.Printf("HistoryMiddleware: missing response ID for conversation %d, using empty fallback", h.ConversationID)
+	}
+
+	// 3. Marshal redacted buffered messages
+	var redactedMessages []*schema.AgenticMessage
+	for _, msg := range h.bufferedMessages {
+		redactedMsg := tools.RedactAgenticMessage(msg)
+		if redactedMsg.Extra == nil {
+			redactedMsg.Extra = make(map[string]interface{})
+		}
+		redactedMsg.Extra[persistedKey] = true
+		redactedMessages = append(redactedMessages, redactedMsg)
+	}
+
+	msgArrayJSONBytes, err := json.Marshal(redactedMessages)
+	if err != nil {
+		return ctx, fmt.Errorf("marshal turn messages to JSON: %w", err)
+	}
+	msgArrayJSON := string(msgArrayJSONBytes)
+
+	// 4. Commit turn row
+	seq, err := h.Store.AppendTurn(
+		ctx,
+		h.ConversationID,
+		msgArrayJSON,
+		responseID,
+		h.previousResponseID,
+		h.Model,
+		prompt,
+		completion,
+		total,
+		question,
+		answer,
+	)
+	if err != nil {
+		return ctx, fmt.Errorf("append turn to store: %w", err)
+	}
+
+	// 5. Flag buffered messages persisted and set sequence num
+	for _, msg := range h.bufferedMessages {
+		if msg.Extra == nil {
+			msg.Extra = make(map[string]interface{})
+		}
+		msg.Extra[persistedKey] = true
+		msg.Extra["_onclaw_seq"] = seq
+	}
+
+	// 6. Record lastTurnMeta
+	h.lock.Lock()
+	h.lastTurnMeta = &store.TurnMeta{
+		ConversationID:     h.ConversationID,
+		SequenceNum:        seq,
+		ResponseID:         responseID,
+		PreviousResponseID: h.previousResponseID,
+		Model:              h.Model,
+		Tokens:             total,
+	}
+	h.lock.Unlock()
+
+	// Clear buffer
+	h.bufferedMessages = nil
+
 	return ctx, nil
 }
 
-func (h *HistoryMiddleware) saveUnmarkedMessages(ctx context.Context, stateMessages []*schema.AgenticMessage) error {
-	cursor, ok := ctx.Value(cursorKey).(*RunCursor)
-	if !ok {
-		return nil
-	}
+func (h *HistoryMiddleware) LastTurnMeta() *store.TurnMeta {
+	h.lock.Lock()
+	defer h.lock.Unlock()
+	return h.lastTurnMeta
+}
 
+func (h *HistoryMiddleware) accumulateNewMessages(stateMessages []*schema.AgenticMessage) {
+	if len(stateMessages) == 0 {
+		return
+	}
+	bufferedSet := make(map[*schema.AgenticMessage]struct{}, len(h.bufferedMessages))
+	for _, bm := range h.bufferedMessages {
+		bufferedSet[bm] = struct{}{}
+	}
 	for _, msg := range stateMessages {
 		if msg.Extra == nil {
 			msg.Extra = make(map[string]interface{})
 		}
 		if !IsPersisted(msg) {
-			seq, err := h.saveMessage(ctx, msg)
-			if err != nil {
-				return err
-			}
-			msg.Extra[persistedKey] = true
-			msg.Extra["_onclaw_seq"] = seq
-			if seq > cursor.MaxSeq {
-				cursor.MaxSeq = seq
+			if _, ok := bufferedSet[msg]; !ok {
+				h.bufferedMessages = append(h.bufferedMessages, msg)
+				bufferedSet[msg] = struct{}{}
 			}
 		}
 	}
-	return nil
-}
-
-func (h *HistoryMiddleware) saveMessage(ctx context.Context, msg *schema.AgenticMessage) (int64, error) {
-	redactedMsg := tools.RedactAgenticMessage(msg)
-	if redactedMsg.Extra == nil {
-		redactedMsg.Extra = make(map[string]interface{})
-	}
-	redactedMsg.Extra[persistedKey] = true
-
-	messageJSON, err := json.Marshal(redactedMsg)
-	if err != nil {
-		return 0, fmt.Errorf("marshal message to JSON: %w", err)
-	}
-
-	seq, err := h.Store.AppendMessage(ctx, h.ConversationID, string(msg.Role), string(messageJSON))
-	if err != nil {
-		return 0, fmt.Errorf("append message to store: %w", err)
-	}
-
-	return seq, nil
 }
 
 // IsPersisted checks if a message has been saved to the store.
@@ -183,4 +306,42 @@ func IsPersisted(msg *schema.AgenticMessage) bool {
 	}
 	b, ok := val.(bool)
 	return ok && b
+}
+
+func getAgenticMessageText(msg *schema.AgenticMessage) string {
+	if msg == nil {
+		return ""
+	}
+	var sb strings.Builder
+	for _, block := range msg.ContentBlocks {
+		if block == nil {
+			continue
+		}
+		if block.UserInputText != nil {
+			sb.WriteString(block.UserInputText.Text)
+		} else if block.AssistantGenText != nil {
+			sb.WriteString(block.AssistantGenText.Text)
+		} else if block.FunctionToolResult != nil {
+			for _, cb := range block.FunctionToolResult.Content {
+				if cb != nil && cb.Text != nil {
+					sb.WriteString(cb.Text.Text)
+				}
+			}
+		}
+	}
+	return sb.String()
+}
+
+func extractQuestionAndAnswer(messages []*schema.AgenticMessage) (string, string) {
+	var question, answer string
+	for _, msg := range messages {
+		if msg.Role == schema.AgenticRoleTypeUser {
+			if question == "" {
+				question = getAgenticMessageText(msg)
+			}
+		} else if msg.Role == schema.AgenticRoleTypeAssistant {
+			answer = getAgenticMessageText(msg)
+		}
+	}
+	return question, answer
 }
