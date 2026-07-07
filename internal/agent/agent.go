@@ -39,7 +39,8 @@ type Agent struct {
 	sessionStartOnce sync.Once
 	Tools            []tool.BaseTool
 	// memoryMiddleware is non-nil when memory is enabled; used for EventStop flush.
-	memoryMiddleware *middlewares.MemoryMiddleware
+	memoryMiddleware  *middlewares.MemoryMiddleware
+	historyMiddleware *middlewares.HistoryMiddleware
 	// Pruner periodically prunes expired episodic summaries.
 	Pruner *memory.PeriodicPruner
 }
@@ -113,8 +114,6 @@ func AssembleAgent(
 	promptParts = append(promptParts, "You can execute commands in this workspace using your tools.")
 
 	instruction := strings.Join(promptParts, "\n\n")
-
-	const persistedKey = "_onclaw_persisted"
 
 	var enabledChecker tools.EnabledChecker
 	if toolRegistryStore != nil {
@@ -202,7 +201,7 @@ func AssembleAgent(
 		return nil, fmt.Errorf("create summarization middleware: %w", err)
 	}
 
-	historyMiddleware := middlewares.NewHistoryMiddleware(convStore, conversationID)
+	historyMiddleware := middlewares.NewHistoryMiddleware(convStore, conversationID, agentConf.Model)
 
 	var dispatcher *hooks.Dispatcher
 	var sessionState *middlewares.SessionState
@@ -279,13 +278,14 @@ func AssembleAgent(
 	}
 
 	agent := &Agent{
-		EinoAgent:        einoAgent,
-		Config:           agentConf,
-		Workspace:        workspace,
-		Dispatcher:       dispatcher,
-		Session:          sessionState,
-		Tools:            builtTools,
-		memoryMiddleware: memMW,
+		EinoAgent:         einoAgent,
+		Config:            agentConf,
+		Workspace:         workspace,
+		Dispatcher:        dispatcher,
+		Session:           sessionState,
+		Tools:             builtTools,
+		memoryMiddleware:  memMW,
+		historyMiddleware: historyMiddleware,
 	}
 
 	if episodicStore != nil {
@@ -301,7 +301,7 @@ func summarizationTrigger(contextWindow int) int {
 }
 
 // Run executes a single turn of the agent and returns an EventIterator.
-func (a *Agent) Run(ctx context.Context, userInput string) EventIterator {
+func (a *Agent) Run(ctx context.Context, userInput string, contentBlocks ...*schema.ContentBlock) EventIterator {
 	a.sessionStartOnce.Do(func() {
 		if a.Dispatcher != nil && a.Session != nil {
 			_, _ = a.Dispatcher.Fire(ctx, hooks.EventSessionStart, hooks.Payload{
@@ -324,9 +324,16 @@ func (a *Agent) Run(ctx context.Context, userInput string) EventIterator {
 		"input_length", len(userInput),
 	)
 
+	msg := schema.UserAgenticMessage(userInput)
+	for _, cb := range contentBlocks {
+		if cb != nil {
+			msg.ContentBlocks = append(msg.ContentBlocks, cb)
+		}
+	}
+
 	input := &adk.TypedAgentInput[*schema.AgenticMessage]{
 		Messages: []*schema.AgenticMessage{
-			schema.UserAgenticMessage(userInput),
+			msg,
 		},
 	}
 
@@ -355,6 +362,14 @@ func (a *Agent) Run(ctx context.Context, userInput string) EventIterator {
 		onTurnError: onTurnError,
 		onStopFlush: onStopFlush,
 	}
+}
+
+// LastTurnMeta retrieves metadata for the most recently committed turn.
+func (a *Agent) LastTurnMeta() *store.TurnMeta {
+	if a.historyMiddleware == nil {
+		return nil
+	}
+	return a.historyMiddleware.LastTurnMeta()
 }
 
 type handleSummarizationParams struct {

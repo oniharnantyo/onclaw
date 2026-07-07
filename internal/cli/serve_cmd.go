@@ -12,16 +12,22 @@ import (
 	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
+	"github.com/oniharnantyo/onclaw/internal/agent/tools"
 	"github.com/oniharnantyo/onclaw/internal/api"
 	"github.com/oniharnantyo/onclaw/internal/api/service"
 	"github.com/oniharnantyo/onclaw/internal/llm"
 	"github.com/oniharnantyo/onclaw/internal/mcp"
+	"github.com/oniharnantyo/onclaw/internal/observability"
 	"github.com/oniharnantyo/onclaw/internal/skill"
 	"github.com/oniharnantyo/onclaw/internal/store"
 	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
 	"github.com/urfave/cli/v3"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/term"
+)
+
+var (
+	langfuseFlusher func()
 )
 
 func serveCommand(st *appState) *cli.Command {
@@ -155,7 +161,26 @@ func serveCommand(st *appState) *cli.Command {
 			}
 			defer watcher.Close()
 
-			// 4. Determine bind address and port
+			// 4. Setup observability BEFORE agent assembly
+			// This ensures Langfuse handlers are registered before any Eino components are created
+			obsCfg := observability.Config{
+				Host:      st.cfg.Langfuse.Host,
+				PublicKey: st.cfg.Langfuse.PublicKey,
+				SecretKey: st.cfg.Langfuse.SecretKey,
+				SessionID: st.cfg.Langfuse.SessionID,
+				Release:   st.cfg.Langfuse.Release,
+				Mask:      st.cfg.Langfuse.Mask,
+			}
+			flush, err := observability.Setup(ctx, obsCfg, tools.Redact)
+			if err != nil {
+				return fmt.Errorf("observability setup: %w", err)
+			}
+			if flush != nil {
+				langfuseFlusher = flush
+				st.log.Info("langfuse_flush_ready")
+			}
+
+			// 5. Determine bind address and port
 			bind := c.String("bind")
 			if bind == "" {
 				bind = st.cfg.Web.Bind
@@ -218,12 +243,36 @@ func serveCommand(st *appState) *cli.Command {
 
 			server := api.NewServer(svc, st.log)
 
-			st.log.Info("Starting web management console", "addr", addr)
-			fmt.Printf("Web console listening on http://%s\n", addr)
-			if err := server.ListenAndServe(addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				return fmt.Errorf("web server error: %w", err)
+			// Start server in goroutine
+			go func() {
+				st.log.Info("server listening", "address", addr)
+				if err := server.ListenAndServe(addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					st.log.Error("server error", "error", err)
+				}
+			}()
+
+			// Wait for shutdown signal
+			quit := make(chan os.Signal, 1)
+			signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+			<-quit
+
+			st.log.Info("shutting_down_server...")
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			// Flush Langfuse events before shutdown
+			if langfuseFlusher != nil {
+				st.log.Info("flushing_langfuse_events")
+				langfuseFlusher()
+				st.log.Info("langfuse_events_flushed")
 			}
 
+			if err := server.Shutdown(ctx); err != nil {
+				return fmt.Errorf("server forced to shutdown: %w", err)
+			}
+
+			st.log.Info("server_stopped")
 			return nil
 		},
 	}

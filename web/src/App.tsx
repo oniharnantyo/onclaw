@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react';
 import {
   Terminal,
   ChatCircle,
-  ClockCounterClockwise,
   Key,
   Robot,
   SignOut,
@@ -20,19 +19,17 @@ import Providers from './components/Providers';
 import type { Provider } from './components/Providers';
 import Agents from './components/Agents';
 import type { Agent } from './components/Agents';
-import Conversations from './components/Conversations';
-import type { Conversation } from './components/Conversations';
 import Chat from './components/Chat';
-import type { Message } from './components/MessageBubble';
 import Skills from './components/Skills';
 import type { Skill } from './components/Skills';
+import ThreadRuntime from './components/ThreadRuntime';
+import type { Conversation } from './types/chat';
 import Hooks from './components/Hooks';
 import MCP from './components/MCP';
 import Tools from './components/Tools';
 import Memory from './components/Memory';
 
-type Tab = 'chat' | 'conversations' | 'providers' | 'agents' | 'skills' | 'hooks' | 'mcp' | 'tools' | 'memory';
-
+type Tab = 'chat' | 'providers' | 'agents' | 'skills' | 'hooks' | 'mcp' | 'tools' | 'memory';
 
 interface NavItem {
   id: Tab;
@@ -56,16 +53,14 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('chat');
   const [toasts, setToasts] = useState<Toast[]>([]);
 
-  // Data States
   const [providers, setProviders] = useState<Provider[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [activeConvID, setActiveConvID] = useState<number | null>(null);
   const [chatAgent, setChatAgent] = useState('');
 
-  // Toast Helper
+  const [threadKey, setThreadKey] = useState(0);
+
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
     const id = Date.now();
     setToasts((prev) => [...prev, { id, message, type }]);
@@ -74,7 +69,6 @@ export default function App() {
     }, 4000);
   };
 
-  // Auth check on mount
   useEffect(() => {
     fetch('/api/health')
       .then((res) => {
@@ -93,7 +87,6 @@ export default function App() {
       .catch(() => setIsLoggedIn(false));
   }, []);
 
-  // Fetch initial data when logged in
   useEffect(() => {
     if (isLoggedIn === true) {
       loadProviders();
@@ -163,45 +156,10 @@ export default function App() {
     }
   };
 
-  const loadMessages = async (convId: number) => {
-    try {
-      const res = await fetch(`/api/conversations/${convId}/messages`);
-      if (res.ok) {
-        const rawMsgs = await res.json();
-        const parsedMsgs: Message[] = rawMsgs.map((m: any) => {
-          try {
-            const parsed = JSON.parse(m.Message);
-            return {
-              id: m.ID,
-              seq: m.Seq,
-              role: m.Role,
-              content_blocks: parsed.content_blocks || [{ type: 'text', assistant_gen_text: { text: parsed.content || '' } }],
-              created_at: m.CreatedAt
-            };
-          } catch {
-            return {
-              id: m.ID,
-              seq: m.Seq,
-              role: m.Role,
-              content_blocks: [{ type: 'text', assistant_gen_text: { text: m.Message } }],
-              created_at: m.CreatedAt
-            };
-          }
-        });
-        setMessages(parsedMsgs);
-      }
-    } catch {
-      showToast('Failed to load conversation history', 'error');
-    }
+  const handleNewConversation = () => {
+    setThreadKey((k) => k + 1);
   };
 
-  const selectConversation = (id: number) => {
-    setActiveConvID(id);
-    loadMessages(id);
-    setActiveTab('chat');
-  };
-
-  // Loading state
   if (isLoggedIn === null) {
     return (
       <div className="loading-screen">
@@ -221,45 +179,41 @@ export default function App() {
     {
       label: 'Chat',
       items: [
-        { id: 'chat',          label: 'Live Chat',  icon: <ChatCircle weight="duotone" size={18} /> },
-        { id: 'conversations', label: 'History',    icon: <ClockCounterClockwise weight="duotone" size={18} /> },
+        { id: 'chat', label: 'Live Chat', icon: <ChatCircle weight="duotone" size={18} /> },
       ],
     },
     {
       label: 'Agent',
       items: [
-        { id: 'agents',        label: 'Agents',     icon: <Robot weight="duotone" size={18} /> },
-        { id: 'skills',        label: 'Skills',     icon: <Code weight="duotone" size={18} /> },
-        { id: 'hooks',         label: 'Hooks',      icon: <Lightning weight="duotone" size={18} /> },
-        { id: 'memory',        label: 'Memory',     icon: <Brain weight="duotone" size={18} /> },
-        { id: 'mcp',           label: 'MCP Servers',icon: <Plug weight="duotone" size={18} /> },
-        { id: 'tools',         label: 'Tools',      icon: <Wrench weight="duotone" size={18} /> },
+        { id: 'agents', label: 'Agents', icon: <Robot weight="duotone" size={18} /> },
+        { id: 'skills', label: 'Skills', icon: <Code weight="duotone" size={18} /> },
+        { id: 'hooks', label: 'Hooks', icon: <Lightning weight="duotone" size={18} /> },
+        { id: 'memory', label: 'Memory', icon: <Brain weight="duotone" size={18} /> },
+        { id: 'mcp', label: 'MCP Servers', icon: <Plug weight="duotone" size={18} /> },
+        { id: 'tools', label: 'Tools', icon: <Wrench weight="duotone" size={18} /> },
       ],
     },
     {
       label: 'Configuration',
       items: [
-        { id: 'providers',     label: 'Providers',  icon: <Key weight="duotone" size={18} /> },
+        { id: 'providers', label: 'Providers', icon: <Key weight="duotone" size={18} /> },
       ],
     },
   ];
 
   const HEADER_TITLES: Record<Tab, string> = {
-    chat:          'Live Agent Session',
-    conversations: 'Conversation History',
-    providers:     'LLM Providers',
-    agents:        'AI Agents',
-    skills:        'Agent Skills',
-    hooks:         'Lifecycle Hooks',
-    memory:        'Agent Memory',
-    mcp:           'MCP Servers',
-    tools:         'Builtin Tools',
+    chat: 'Live Agent Session',
+    providers: 'LLM Providers',
+    agents: 'AI Agents',
+    skills: 'Agent Skills',
+    hooks: 'Lifecycle Hooks',
+    memory: 'Agent Memory',
+    mcp: 'MCP Servers',
+    tools: 'Builtin Tools',
   };
-
 
   return (
     <div className="app-container">
-      {/* Toast notifications */}
       <div className="toast-container" role="status" aria-live="polite">
         {toasts.map((t) => (
           <div key={t.id} className={`toast toast-${t.type}`} role="alert">
@@ -272,7 +226,6 @@ export default function App() {
         ))}
       </div>
 
-      {/* Sidebar */}
       <aside className="sidebar" role="navigation" aria-label="Main navigation">
         <div className="sidebar-header">
           <div className="logo-icon" aria-hidden="true">
@@ -320,19 +273,15 @@ export default function App() {
         </div>
       </aside>
 
-      {/* Main Content */}
       <main className="main-content" role="main">
         <header className="main-header">
           <div className="header-title">{HEADER_TITLES[activeTab]}</div>
           <div className="header-actions">
-            {activeTab === 'chat' && activeConvID && (
+            {activeTab === 'chat' && (
               <button
                 id="new-conversation-btn"
                 className="btn btn-secondary btn-sm"
-                onClick={() => {
-                  setActiveConvID(null);
-                  setMessages([]);
-                }}
+                onClick={handleNewConversation}
               >
                 New Conversation
               </button>
@@ -341,24 +290,16 @@ export default function App() {
         </header>
 
         {activeTab === 'chat' && (
-          <Chat
-            agents={agents}
-            chatAgent={chatAgent}
-            setChatAgent={setChatAgent}
-            activeConvID={activeConvID}
-            setActiveConvID={setActiveConvID}
-            messages={messages}
-            loadMessages={loadMessages}
-            loadConversations={loadConversations}
+          <ThreadRuntime
+            key={threadKey}
             showToast={showToast}
-          />
-        )}
-
-        {activeTab === 'conversations' && (
-          <Conversations
-            conversations={conversations}
-            selectConversation={selectConversation}
-          />
+            initialAgents={agents}
+            initialSkills={skills}
+            initialConversations={conversations}
+            defaultAgent={chatAgent}
+          >
+            <Chat onNewConversation={handleNewConversation} />
+          </ThreadRuntime>
         )}
 
         {activeTab === 'providers' && (
@@ -411,7 +352,6 @@ export default function App() {
           />
         )}
       </main>
-
     </div>
   );
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/cloudwego/eino-ext/callbacks/langfuse"
 	"github.com/cloudwego/eino/callbacks"
@@ -19,6 +20,15 @@ type Config struct {
 	SessionID string
 	Release   string
 	Mask      bool
+
+	// Performance and reliability options
+	SampleRate       float64
+	Threads          int
+	Timeout          time.Duration
+	FlushAt          int
+	FlushInterval    time.Duration
+	MaxTaskQueueSize int
+	MaxRetry         uint64
 }
 
 // Setup configures Langfuse tracing if enabled.
@@ -32,6 +42,7 @@ func Setup(_ context.Context, cfg Config, maskFunc func(string) string) (func(),
 		"session_id", cfg.SessionID,
 		"release", cfg.Release,
 		"mask", cfg.Mask,
+		"sample_rate", cfg.SampleRate,
 	)
 
 	// Check if all are empty
@@ -56,12 +67,71 @@ func Setup(_ context.Context, cfg Config, maskFunc func(string) string) (func(),
 		return nil, fmt.Errorf("langfuse configuration is incomplete: missing %s", strings.Join(missing, ", "))
 	}
 
-	// Prepare Langfuse configuration
-	lfCfg := buildConfig(cfg, maskFunc)
+	// Prepare Langfuse configuration with production-ready defaults
+	lfCfg := &langfuse.Config{
+		Host:      cfg.Host,
+		PublicKey: cfg.PublicKey,
+		SecretKey: cfg.SecretKey,
+		SessionID: cfg.SessionID,
+		Release:   cfg.Release,
+	}
+
+	// Apply performance and reliability options with sensible defaults
+	if cfg.Threads > 0 {
+		lfCfg.Threads = cfg.Threads
+	} else {
+		lfCfg.Threads = 2 // Default: 2 concurrent workers
+	}
+
+	if cfg.Timeout > 0 {
+		lfCfg.Timeout = cfg.Timeout
+	} else {
+		lfCfg.Timeout = 30 * time.Second // Default: 30s timeout
+	}
+
+	if cfg.FlushAt > 0 {
+		lfCfg.FlushAt = cfg.FlushAt
+	} else {
+		lfCfg.FlushAt = 15 // Default: flush every 15 events
+	}
+
+	if cfg.FlushInterval > 0 {
+		lfCfg.FlushInterval = cfg.FlushInterval
+	} else {
+		lfCfg.FlushInterval = 500 * time.Millisecond // Default: flush every 500ms
+	}
+
+	if cfg.MaxTaskQueueSize > 0 {
+		lfCfg.MaxTaskQueueSize = cfg.MaxTaskQueueSize
+	} else {
+		lfCfg.MaxTaskQueueSize = 100 // Default: 100 events buffer
+	}
+
+	if cfg.SampleRate > 0 {
+		lfCfg.SampleRate = cfg.SampleRate
+	} else {
+		lfCfg.SampleRate = 1.0 // Default: 100% sampling
+	}
+
+	if cfg.MaxRetry > 0 {
+		lfCfg.MaxRetry = cfg.MaxRetry
+	} else {
+		lfCfg.MaxRetry = 3 // Default: 3 retry attempts
+	}
+
+	if cfg.Mask && maskFunc != nil {
+		lfCfg.MaskFunc = maskFunc
+	}
 
 	slog.Info("observability_enabled",
 		"host", cfg.Host,
 		"mask", cfg.Mask,
+		"sample_rate", lfCfg.SampleRate,
+		"threads", lfCfg.Threads,
+		"flush_at", lfCfg.FlushAt,
+		"flush_interval", lfCfg.FlushInterval,
+		"max_task_queue_size", lfCfg.MaxTaskQueueSize,
+		"max_retry", lfCfg.MaxRetry,
 	)
 
 	// Create handler and flush function
@@ -80,19 +150,4 @@ func maskFirstChars(s string) string {
 		return "***"
 	}
 	return s[:4] + "***" + s[len(s)-4:]
-}
-
-func buildConfig(cfg Config, maskFunc func(string) string) *langfuse.Config {
-	lfCfg := &langfuse.Config{
-		Host:      cfg.Host,
-		PublicKey: cfg.PublicKey,
-		SecretKey: cfg.SecretKey,
-		SessionID: cfg.SessionID,
-		Release:   cfg.Release,
-	}
-
-	if cfg.Mask && maskFunc != nil {
-		lfCfg.MaskFunc = maskFunc
-	}
-	return lfCfg
 }

@@ -2,8 +2,10 @@ package sqlite_test
 
 import (
 	"context"
-	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
+	"strings"
 	"testing"
+
+	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
 )
 
 func TestConversationStore(t *testing.T) {
@@ -19,31 +21,42 @@ func TestConversationStore(t *testing.T) {
 		t.Fatalf("CreateConversation failed: %v", err)
 	}
 
-	// Append user message
-	seq1, err := store.AppendMessage(ctx, convID, "user", `{"role":"user","content":"Hello"}`)
+	// Append turn 1
+	seq1, err := store.AppendTurn(
+		ctx,
+		convID,
+		`[{"role":"user","content_blocks":[{"type":"user_input_text","user_input_text":{"text":"Hello"}}]},{"role":"assistant","content_blocks":[{"type":"assistant_gen_text","assistant_gen_text":{"text":"Hi there"}}]}]`,
+		"resp-1",
+		"",
+		"model-1",
+		10, 20, 30,
+		"Hello",
+		"Hi there",
+	)
 	if err != nil {
-		t.Fatalf("AppendMessage failed: %v", err)
+		t.Fatalf("AppendTurn failed: %v", err)
 	}
 	if seq1 != 1 {
 		t.Errorf("expected seq 1, got %d", seq1)
 	}
 
-	// Append assistant message
-	seq2, err := store.AppendMessage(ctx, convID, "assistant", `{"role":"assistant","content":"Hi there"}`)
+	// Append turn 2 (chaining to turn 1)
+	seq2, err := store.AppendTurn(
+		ctx,
+		convID,
+		`[]`,
+		"resp-2",
+		"resp-1",
+		"model-1",
+		10, 20, 30,
+		"How are you?",
+		"I'm fine",
+	)
 	if err != nil {
-		t.Fatalf("AppendMessage failed: %v", err)
+		t.Fatalf("AppendTurn 2 failed: %v", err)
 	}
 	if seq2 != 2 {
 		t.Errorf("expected seq 2, got %d", seq2)
-	}
-
-	// Append tool message
-	seq3, err := store.AppendMessage(ctx, convID, "tool", `{"role":"tool","content":"some tool output"}`)
-	if err != nil {
-		t.Fatalf("AppendMessage failed: %v", err)
-	}
-	if seq3 != 3 {
-		t.Errorf("expected seq 3, got %d", seq3)
 	}
 
 	// Load history
@@ -54,25 +67,37 @@ func TestConversationStore(t *testing.T) {
 	if summary != nil {
 		t.Errorf("expected nil summary initially")
 	}
-	if len(tail) != 3 {
-		t.Errorf("expected 3 tail messages, got %d", len(tail))
+	if len(tail) != 2 {
+		t.Errorf("expected 2 tail turns, got %d", len(tail))
 	} else {
-		if tail[0].Seq != 1 || tail[1].Seq != 2 || tail[2].Seq != 3 {
-			t.Errorf("unexpected tail order or seq numbers: %v, %v, %v", tail[0].Seq, tail[1].Seq, tail[2].Seq)
+		if tail[0].SequenceNum != 1 {
+			t.Errorf("unexpected tail[0] seq number: %d", tail[0].SequenceNum)
+		}
+		if tail[0].Question != "Hello" || tail[0].Answer != "Hi there" {
+			t.Errorf("unexpected question/answer: %q/%q", tail[0].Question, tail[0].Answer)
+		}
+		if tail[1].SequenceNum != 2 {
+			t.Errorf("unexpected tail[1] seq number: %d", tail[1].SequenceNum)
+		}
+		if tail[1].PreviousResponseID != "resp-1" {
+			t.Errorf("expected Turn 2's PreviousResponseID to be 'resp-1', got %q", tail[1].PreviousResponseID)
+		}
+		if tail[1].ResponseID != "resp-2" {
+			t.Errorf("expected Turn 2's ResponseID to be 'resp-2', got %q", tail[1].ResponseID)
 		}
 	}
 
-	// List messages
-	allMsgs, err := store.ListMessages(ctx, convID)
+	// List turns
+	allTurns, err := store.ListTurns(ctx, convID)
 	if err != nil {
-		t.Fatalf("ListMessages failed: %v", err)
+		t.Fatalf("ListTurns failed: %v", err)
 	}
-	if len(allMsgs) != 3 {
-		t.Errorf("expected 3 messages, got %d", len(allMsgs))
+	if len(allTurns) != 2 {
+		t.Errorf("expected 2 turns, got %d", len(allTurns))
 	}
 
-	// Save summary (representing compaction of seq 1 and 2)
-	err = store.SaveSummary(ctx, convID, `{"role":"assistant","content":"Summary of conversation"}`, 2)
+	// Save summary (representing compaction of seq 1)
+	err = store.SaveSummary(ctx, convID, `{"role":"assistant","content_blocks":[{"type":"assistant_gen_text","assistant_gen_text":{"text":"Summary of conversation"}}]}`, 1)
 	if err != nil {
 		t.Fatalf("SaveSummary failed: %v", err)
 	}
@@ -85,18 +110,15 @@ func TestConversationStore(t *testing.T) {
 	if summary == nil {
 		t.Fatalf("expected non-nil summary after SaveSummary")
 	}
-	if summary.Message != `{"role":"assistant","content":"Summary of conversation"}` {
-		t.Errorf("unexpected summary message: %s", summary.Message)
+	if !strings.Contains(summary.Message, "Summary of conversation") {
+		t.Errorf("unexpected summary turn message: %s", summary.Message)
 	}
 
-	// The tail should only contain messages with seq > 2. So only seq3 (tool message) should be returned.
+	// The tail should only contain turns with sequence_num > 1. So only turn 2 should remain.
 	if len(tail) != 1 {
-		t.Errorf("expected 1 tail message (seq 3), got %d", len(tail))
-		for _, m := range tail {
-			t.Logf("Tail message: seq=%d ID=%d role=%s content=%s", m.Seq, m.ID, m.Role, m.Message)
-		}
-	} else if tail[0].Seq != 3 {
-		t.Errorf("expected tail message to be seq 3, got %d", tail[0].Seq)
+		t.Errorf("expected 1 tail turn, got %d", len(tail))
+	} else if tail[0].SequenceNum != 2 {
+		t.Errorf("expected remaining tail turn to be seq 2, got %d", tail[0].SequenceNum)
 	}
 
 	// Test ListConversations
@@ -114,9 +136,12 @@ func TestConversationStore(t *testing.T) {
 		if row.AgentName != "test-agent" {
 			t.Errorf("expected agent name test-agent, got %s", row.AgentName)
 		}
-		// The total messages added: seq1, seq2, seq3, and the summary message added in SaveSummary makes it 4!
-		if row.MessageCount != 4 {
-			t.Errorf("expected 4 messages, got %d", row.MessageCount)
+		// The total turn rows added: turn 1 + turn 2 + summary turn = 3 rows
+		if row.MessageCount != 3 {
+			t.Errorf("expected 3 turns, got %d", row.MessageCount)
+		}
+		if row.Preview != "Hello" {
+			t.Errorf("expected Preview to be 'Hello', got %q", row.Preview)
 		}
 	}
 }

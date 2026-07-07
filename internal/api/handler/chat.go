@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/oniharnantyo/onclaw/internal/agent/middlewares"
 	"github.com/oniharnantyo/onclaw/internal/api/httpx"
 	"github.com/oniharnantyo/onclaw/internal/api/service"
 )
@@ -46,7 +47,11 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Run the agent iteration
-	it := assembledAgent.Run(ctx, req.Prompt)
+	if req.PreviousResponseID != "" {
+		ctx = middlewares.WithPreviousResponseID(ctx, req.PreviousResponseID)
+	}
+
+	it := assembledAgent.Run(ctx, req.Prompt, req.ContentBlocks...)
 	for {
 		msg, ok := it.Next()
 		if !ok {
@@ -60,6 +65,25 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 	if err := it.Err(); err != nil {
 		_ = sse.WriteEvent("error", map[string]string{"error": err.Error()})
 		return
+	}
+
+	if meta := assembledAgent.LastTurnMeta(); meta != nil {
+		type turnSSEEvent struct {
+			ConversationID     int64  `json:"conversation_id"`
+			SequenceNum        int64  `json:"sequence_num"`
+			ResponseID         string `json:"response_id"`
+			PreviousResponseID string `json:"previous_response_id"`
+			Model              string `json:"model"`
+			Tokens             int64  `json:"tokens"`
+		}
+		_ = sse.WriteEvent("turn", turnSSEEvent{
+			ConversationID:     meta.ConversationID,
+			SequenceNum:        meta.SequenceNum,
+			ResponseID:         meta.ResponseID,
+			PreviousResponseID: meta.PreviousResponseID,
+			Model:              meta.Model,
+			Tokens:             meta.Tokens,
+		})
 	}
 
 	_ = sse.WriteEvent("done", map[string]string{"status": "completed"})

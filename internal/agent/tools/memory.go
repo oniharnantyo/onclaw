@@ -9,7 +9,6 @@ import (
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/components/tool/utils"
-	"github.com/cloudwego/eino/schema"
 	"github.com/oniharnantyo/onclaw/internal/memory"
 )
 
@@ -115,30 +114,6 @@ func sanitizeFts(q string) string {
 	return strings.Join(escaped, " AND ")
 }
 
-func getAgenticMessageText(msg *schema.AgenticMessage) string {
-	if msg == nil {
-		return ""
-	}
-	var sb strings.Builder
-	for _, block := range msg.ContentBlocks {
-		if block == nil {
-			continue
-		}
-		if block.UserInputText != nil {
-			sb.WriteString(block.UserInputText.Text)
-		} else if block.AssistantGenText != nil {
-			sb.WriteString(block.AssistantGenText.Text)
-		} else if block.FunctionToolResult != nil {
-			for _, cb := range block.FunctionToolResult.Content {
-				if cb != nil && cb.Text != nil {
-					sb.WriteString(cb.Text.Text)
-				}
-			}
-		}
-	}
-	return sb.String()
-}
-
 func (s *sessionSearchTool) Build(scope *Scope) tool.InvokableTool {
 	t, err := utils.InferTool(s.Name(), s.Desc(), func(ctx context.Context, input *SessionSearchInput) (string, error) {
 		if scope.Db == nil {
@@ -153,10 +128,10 @@ func (s *sessionSearchTool) Build(scope *Scope) tool.InvokableTool {
 			limit = 5
 		}
 		q := `
-			SELECT m.conversation_id, m.seq, m.role, m.message, m.created_at
+			SELECT m.conversation_id, m.sequence_num, m.question, m.answer, m.created_at
 			FROM conversation_messages m
 			JOIN conversation_messages_fts fts ON m.id = fts.rowid
-			WHERE fts.message MATCH ?
+			WHERE conversation_messages_fts MATCH ?
 			ORDER BY fts.rank ASC
 			LIMIT ?
 		`
@@ -169,17 +144,11 @@ func (s *sessionSearchTool) Build(scope *Scope) tool.InvokableTool {
 		var results []string
 		for rows.Next() {
 			var convID, seq int64
-			var role, msgJSON, createdAt string
-			if err := rows.Scan(&convID, &seq, &role, &msgJSON, &createdAt); err != nil {
+			var question, answer, createdAt string
+			if err := rows.Scan(&convID, &seq, &question, &answer, &createdAt); err != nil {
 				return "", err
 			}
-			var msg schema.AgenticMessage
-			if err := json.Unmarshal([]byte(msgJSON), &msg); err == nil {
-				txt := getAgenticMessageText(&msg)
-				results = append(results, fmt.Sprintf("- [Session %d, Seq %d, Role %s, Date %s]: %s", convID, seq, role, createdAt, txt))
-			} else {
-				results = append(results, fmt.Sprintf("- [Session %d, Seq %d, Role %s, Date %s]: %s", convID, seq, role, createdAt, msgJSON))
-			}
+			results = append(results, fmt.Sprintf("- [Session %d, Turn %d, Date %s]:\n  Q: %s\n  A: %s", convID, seq, createdAt, question, answer))
 		}
 		if len(results) == 0 {
 			return "No matching past conversation messages found.", nil

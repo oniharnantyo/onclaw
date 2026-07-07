@@ -13,7 +13,7 @@ func (s *Service) ListConversations(ctx context.Context) ([]*store.ConversationR
 }
 
 // ListMessages returns all message history for a given conversation ID.
-func (s *Service) ListMessages(ctx context.Context, conversationID int64) ([]*store.MessageRow, error) {
-	res, err := s.conv.ListMessages(ctx, conversationID)
+func (s *Service) ListMessages(ctx context.Context, conversationID int64) ([]*store.TurnRow, error) {
+	res, err := s.conv.ListTurns(ctx, conversationID)
 	return res, classify(err)
 }

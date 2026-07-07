@@ -36,7 +36,19 @@ func (s *sqliteConversationStore) CreateConversation(ctx context.Context, agentN
 	return id, nil
 }
 
-func (s *sqliteConversationStore) AppendMessage(ctx context.Context, conversationID int64, role string, messageJSON string) (int64, error) {
+func (s *sqliteConversationStore) AppendTurn(
+	ctx context.Context,
+	convID int64,
+	msgArrayJSON string,
+	responseID string,
+	previousResponseID string,
+	model string,
+	prompt int64,
+	completion int64,
+	total int64,
+	question string,
+	answer string,
+) (int64, error) {
 	t := now()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -46,28 +58,38 @@ func (s *sqliteConversationStore) AppendMessage(ctx context.Context, conversatio
 
 	var seq int64
 	err = tx.QueryRowContext(ctx,
-		`INSERT INTO conversation_messages (conversation_id, seq, role, message, created_at)
-		 VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM conversation_messages WHERE conversation_id = ?), ?, ?, ?)
-		 RETURNING seq`,
-		conversationID, conversationID, role, messageJSON, t,
+		`INSERT INTO conversation_messages (
+			conversation_id, sequence_num, response_id, previous_response_id,
+			message, model, prompt_tokens, completion_tokens, total_tokens,
+			question, answer, created_at
+		 )
+		 VALUES (
+			?,
+			(SELECT COALESCE(MAX(sequence_num), 0) + 1 FROM conversation_messages WHERE conversation_id = ?),
+			?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		 )
+		 RETURNING sequence_num`,
+		convID, convID, responseID, previousResponseID,
+		msgArrayJSON, model, prompt, completion, total,
+		question, answer, t,
 	).Scan(&seq)
 	if err != nil {
-		return 0, fmt.Errorf("append message row: %w", err)
+		return 0, fmt.Errorf("append turn row: %w", err)
 	}
 
-	_, err = tx.ExecContext(ctx, "UPDATE conversations SET updated_at = ? WHERE id = ?", t, conversationID)
+	_, err = tx.ExecContext(ctx, "UPDATE conversations SET updated_at = ? WHERE id = ?", t, convID)
 	if err != nil {
 		return 0, fmt.Errorf("update conversation updated_at: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit append message: %w", err)
+		return 0, fmt.Errorf("commit append turn: %w", err)
 	}
 
 	return seq, nil
 }
 
-func (s *sqliteConversationStore) LoadHistory(ctx context.Context, conversationID int64) (*store.MessageRow, []*store.MessageRow, error) {
+func (s *sqliteConversationStore) LoadHistory(ctx context.Context, conversationID int64) (*store.TurnRow, []*store.TurnRow, error) {
 	var summaryMessageID sql.NullInt64
 	var summaryUntilSeq int64
 	err := s.db.QueryRowContext(ctx,
@@ -81,15 +103,20 @@ func (s *sqliteConversationStore) LoadHistory(ctx context.Context, conversationI
 		return nil, nil, fmt.Errorf("get conversation meta: %w", err)
 	}
 
-	var summary *store.MessageRow
+	var summary *store.TurnRow
 	if summaryMessageID.Valid && summaryMessageID.Int64 != 0 {
-		var row store.MessageRow
+		var row store.TurnRow
 		err = s.db.QueryRowContext(ctx,
-			"SELECT id, conversation_id, seq, role, message, created_at FROM conversation_messages WHERE id = ?",
+			`SELECT id, conversation_id, sequence_num, response_id, previous_response_id,
+			        message, model, prompt_tokens, completion_tokens, total_tokens,
+			        question, answer, created_at
+			 FROM conversation_messages WHERE id = ?`,
 			summaryMessageID.Int64,
-		).Scan(&row.ID, &row.ConversationID, &row.Seq, &row.Role, &row.Message, &row.CreatedAt)
+		).Scan(&row.ID, &row.ConversationID, &row.SequenceNum, &row.ResponseID, &row.PreviousResponseID,
+			&row.Message, &row.Model, &row.PromptTokens, &row.CompletionTokens, &row.TotalTokens,
+			&row.Question, &row.Answer, &row.CreatedAt)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return nil, nil, fmt.Errorf("load summary message: %w", err)
+			return nil, nil, fmt.Errorf("load summary turn: %w", err)
 		}
 		if err == nil {
 			summary = &row
@@ -101,23 +128,39 @@ func (s *sqliteConversationStore) LoadHistory(ctx context.Context, conversationI
 		summaryMsgIDVal = summaryMessageID.Int64
 	}
 
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, conversation_id, seq, role, message, created_at
+	var query string
+	if summary != nil {
+		query = `SELECT * FROM (
+			SELECT id, conversation_id, sequence_num, response_id, previous_response_id,
+			       message, model, prompt_tokens, completion_tokens, total_tokens,
+			       question, answer, created_at
+			FROM conversation_messages
+			WHERE conversation_id = ? AND sequence_num > ? AND id <> ?
+			ORDER BY sequence_num DESC
+			LIMIT 3
+		) ORDER BY sequence_num ASC`
+	} else {
+		query = `SELECT id, conversation_id, sequence_num, response_id, previous_response_id,
+		        message, model, prompt_tokens, completion_tokens, total_tokens,
+		        question, answer, created_at
 		 FROM conversation_messages
-		 WHERE conversation_id = ? AND seq > ? AND id <> ?
-		 ORDER BY seq ASC`,
-		conversationID, summaryUntilSeq, summaryMsgIDVal,
-	)
+		 WHERE conversation_id = ? AND sequence_num > ? AND id <> ?
+		 ORDER BY sequence_num ASC`
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, conversationID, summaryUntilSeq, summaryMsgIDVal)
 	if err != nil {
-		return nil, nil, fmt.Errorf("query tail messages: %w", err)
+		return nil, nil, fmt.Errorf("query tail turns: %w", err)
 	}
 	defer rows.Close()
 
-	var tail []*store.MessageRow
+	var tail []*store.TurnRow
 	for rows.Next() {
-		var row store.MessageRow
-		if err := rows.Scan(&row.ID, &row.ConversationID, &row.Seq, &row.Role, &row.Message, &row.CreatedAt); err != nil {
-			return nil, nil, fmt.Errorf("scan tail message: %w", err)
+		var row store.TurnRow
+		if err := rows.Scan(&row.ID, &row.ConversationID, &row.SequenceNum, &row.ResponseID, &row.PreviousResponseID,
+			&row.Message, &row.Model, &row.PromptTokens, &row.CompletionTokens, &row.TotalTokens,
+			&row.Question, &row.Answer, &row.CreatedAt); err != nil {
+			return nil, nil, fmt.Errorf("scan tail turn: %w", err)
 		}
 		tail = append(tail, &row)
 	}
@@ -128,43 +171,70 @@ func (s *sqliteConversationStore) LoadHistory(ctx context.Context, conversationI
 	return summary, tail, nil
 }
 
-func (s *sqliteConversationStore) ListMessages(ctx context.Context, conversationID int64) ([]*store.MessageRow, error) {
+func (s *sqliteConversationStore) ListTurns(ctx context.Context, conversationID int64) ([]*store.TurnRow, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, conversation_id, seq, role, message, created_at
+		`SELECT id, conversation_id, sequence_num, response_id, previous_response_id,
+		        message, model, prompt_tokens, completion_tokens, total_tokens,
+		        question, answer, created_at
 		 FROM conversation_messages
 		 WHERE conversation_id = ?
-		 ORDER BY seq ASC`,
+		 ORDER BY sequence_num ASC`,
 		conversationID,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("list messages: %w", err)
+		return nil, fmt.Errorf("list turns: %w", err)
 	}
 	defer rows.Close()
 
-	var msgs []*store.MessageRow
+	var turns []*store.TurnRow
 	for rows.Next() {
-		var row store.MessageRow
-		if err := rows.Scan(&row.ID, &row.ConversationID, &row.Seq, &row.Role, &row.Message, &row.CreatedAt); err != nil {
-			return nil, fmt.Errorf("scan message: %w", err)
+		var row store.TurnRow
+		if err := rows.Scan(&row.ID, &row.ConversationID, &row.SequenceNum, &row.ResponseID, &row.PreviousResponseID,
+			&row.Message, &row.Model, &row.PromptTokens, &row.CompletionTokens, &row.TotalTokens,
+			&row.Question, &row.Answer, &row.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan turn: %w", err)
 		}
-		msgs = append(msgs, &row)
+		turns = append(turns, &row)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("rows error: %w", err)
 	}
-	return msgs, nil
+	return turns, nil
 }
 
 func (s *sqliteConversationStore) SaveSummary(ctx context.Context, conversationID int64, summaryMessageJSON string, coveredUntilSeq int64) error {
-	var msgRole struct {
-		Role string `json:"role"`
+	var msg struct {
+		Role          string `json:"role"`
+		ContentBlocks []struct {
+			AssistantGenText *struct {
+				Text string `json:"text"`
+			} `json:"assistant_gen_text"`
+		} `json:"content_blocks"`
 	}
-	if err := json.Unmarshal([]byte(summaryMessageJSON), &msgRole); err != nil {
-		return fmt.Errorf("unmarshal summary message role: %w", err)
+	if err := json.Unmarshal([]byte(summaryMessageJSON), &msg); err != nil {
+		return fmt.Errorf("unmarshal summary message: %w", err)
 	}
-	if msgRole.Role == "" {
-		msgRole.Role = "assistant"
+	if msg.Role == "" {
+		msg.Role = "assistant"
 	}
+
+	var answer string
+	for _, block := range msg.ContentBlocks {
+		if block.AssistantGenText != nil {
+			if answer != "" {
+				answer += "\n"
+			}
+			answer += block.AssistantGenText.Text
+		}
+	}
+
+	var msgArray []json.RawMessage
+	msgArray = append(msgArray, json.RawMessage(summaryMessageJSON))
+	msgArrayJSONBytes, err := json.Marshal(msgArray)
+	if err != nil {
+		return fmt.Errorf("marshal summary message array: %w", err)
+	}
+	msgArrayJSON := string(msgArrayJSONBytes)
 
 	t := now()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -175,13 +245,15 @@ func (s *sqliteConversationStore) SaveSummary(ctx context.Context, conversationI
 
 	var summaryMessageID int64
 	err = tx.QueryRowContext(ctx,
-		`INSERT INTO conversation_messages (conversation_id, seq, role, message, created_at)
-		 VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM conversation_messages WHERE conversation_id = ?), ?, ?, ?)
+		`INSERT INTO conversation_messages (
+			conversation_id, sequence_num, message, question, answer, created_at
+		 )
+		 VALUES (?, (SELECT COALESCE(MAX(sequence_num), 0) + 1 FROM conversation_messages WHERE conversation_id = ?), ?, '', ?, ?)
 		 RETURNING id`,
-		conversationID, conversationID, msgRole.Role, summaryMessageJSON, t,
+		conversationID, conversationID, msgArrayJSON, answer, t,
 	).Scan(&summaryMessageID)
 	if err != nil {
-		return fmt.Errorf("insert summary message row: %w", err)
+		return fmt.Errorf("insert summary turn row: %w", err)
 	}
 
 	_, err = tx.ExecContext(ctx,
@@ -203,7 +275,8 @@ func (s *sqliteConversationStore) SaveSummary(ctx context.Context, conversationI
 
 func (s *sqliteConversationStore) ListConversations(ctx context.Context) ([]*store.ConversationRow, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT c.id, c.agent_name, c.created_at, c.updated_at, COUNT(m.id) AS message_count
+		`SELECT c.id, c.agent_name, c.created_at, c.updated_at, COUNT(m.id) AS message_count,
+		        COALESCE((SELECT question FROM conversation_messages WHERE conversation_id = c.id ORDER BY sequence_num ASC LIMIT 1), '') AS preview
 		 FROM conversations c
 		 LEFT JOIN conversation_messages m ON c.id = m.conversation_id
 		 GROUP BY c.id
@@ -217,7 +290,7 @@ func (s *sqliteConversationStore) ListConversations(ctx context.Context) ([]*sto
 	var result []*store.ConversationRow
 	for rows.Next() {
 		var row store.ConversationRow
-		if err := rows.Scan(&row.ID, &row.AgentName, &row.CreatedAt, &row.UpdatedAt, &row.MessageCount); err != nil {
+		if err := rows.Scan(&row.ID, &row.AgentName, &row.CreatedAt, &row.UpdatedAt, &row.MessageCount, &row.Preview); err != nil {
 			return nil, fmt.Errorf("scan conversation row: %w", err)
 		}
 		result = append(result, &row)

@@ -53,15 +53,33 @@ type Conversation struct {
 	UpdatedAt        string
 }
 
-// MessageRow represents a persisted conversation message in the DB.
-type MessageRow struct {
-	ID             int64
-	ConversationID int64
-	Seq            int64
-	Role           string
-	Message        string // Opaque JSON string representing the full message
-	CreatedAt      string
+// TurnRow represents a persisted conversation turn in the DB.
+type TurnRow struct {
+	ID                 int64  `json:"id"`
+	ConversationID     int64  `json:"conversation_id"`
+	SequenceNum        int64  `json:"sequence_num"`
+	ResponseID         string `json:"response_id"`
+	PreviousResponseID string `json:"previous_response_id"`
+	Message            string `json:"message"` // JSON array of the turn's AgenticMessage deltas
+	Model              string `json:"model"`
+	PromptTokens       int64  `json:"prompt_tokens"`
+	CompletionTokens   int64  `json:"completion_tokens"`
+	TotalTokens        int64  `json:"total_tokens"`
+	Question           string `json:"question"`
+	Answer             string `json:"answer"`
+	CreatedAt          string `json:"created_at"`
 }
+
+// TurnMeta represents metadata for a committed turn.
+type TurnMeta struct {
+	ConversationID     int64  `json:"conversation_id"`
+	SequenceNum        int64  `json:"sequence_num"`
+	ResponseID         string `json:"response_id"`
+	PreviousResponseID string `json:"previous_response_id"`
+	Model              string `json:"model"`
+	Tokens             int64  `json:"tokens"`
+}
+
 
 // ConversationRow represents a summarized conversation for listing in the web UI.
 type ConversationRow struct {
@@ -70,6 +88,7 @@ type ConversationRow struct {
 	MessageCount int    `json:"message_count"`
 	CreatedAt    string `json:"created_at"`
 	UpdatedAt    string `json:"updated_at"`
+	Preview      string `json:"preview"`
 }
 
 // Skill represents an installed skill metadata ledger entry in the DB.

@@ -184,13 +184,13 @@ type fakeConversationStore struct{}
 func (f *fakeConversationStore) CreateConversation(_ context.Context, _ string) (int64, error) {
 	return 1, nil
 }
-func (f *fakeConversationStore) AppendMessage(_ context.Context, _ int64, _, _ string) (int64, error) {
+func (f *fakeConversationStore) AppendTurn(_ context.Context, _ int64, _, _, _, _ string, _, _, _ int64, _, _ string) (int64, error) {
 	return 1, nil
 }
-func (f *fakeConversationStore) LoadHistory(_ context.Context, _ int64) (*store.MessageRow, []*store.MessageRow, error) {
+func (f *fakeConversationStore) LoadHistory(_ context.Context, _ int64) (*store.TurnRow, []*store.TurnRow, error) {
 	return nil, nil, nil
 }
-func (f *fakeConversationStore) ListMessages(_ context.Context, _ int64) ([]*store.MessageRow, error) {
+func (f *fakeConversationStore) ListTurns(_ context.Context, _ int64) ([]*store.TurnRow, error) {
 	return nil, nil
 }
 func (f *fakeConversationStore) SaveSummary(_ context.Context, _ int64, _ string, _ int64) error {

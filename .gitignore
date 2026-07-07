@@ -21,3 +21,5 @@ master.key
 .omc
 .omg
 skills-lock.json
+
+node_modules/

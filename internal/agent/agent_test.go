@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	"github.com/oniharnantyo/onclaw/internal/agent"
+	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/render"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
@@ -128,7 +130,7 @@ func TestAssembleAndRunAgent_ReActLoop(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	agentVal, err := agent.AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil)
+	agentVal, err := agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
@@ -205,7 +207,7 @@ func TestAssembleAndRunAgent_Cancellation(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	agentVal, err := agent.AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil)
+	agentVal, err := agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
@@ -240,7 +242,7 @@ func TestAssembleAgent_ContextWindowTrigger(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Compile and resolve with 128000 context window (verifies 80% logic runs)
-	ag, err := agent.AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 128000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil)
+	ag, err := agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, 128000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
@@ -249,7 +251,7 @@ func TestAssembleAgent_ContextWindowTrigger(t *testing.T) {
 	}
 
 	// 2. Re-assemble with 64000 context window
-	ag2, err := agent.AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil)
+	ag2, err := agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
 	if err != nil {
 		t.Fatalf("failed to assemble agent second time: %v", err)
 	}
@@ -280,13 +282,13 @@ type dummyConvStore struct{}
 func (dummyConvStore) CreateConversation(ctx context.Context, agentName string) (int64, error) {
 	return 1, nil
 }
-func (dummyConvStore) AppendMessage(ctx context.Context, conversationID int64, role string, messageJSON string) (int64, error) {
+func (dummyConvStore) AppendTurn(ctx context.Context, convID int64, msgArrayJSON string, responseID string, previousResponseID string, model string, prompt int64, completion int64, total int64, question string, answer string) (int64, error) {
 	return 1, nil
 }
-func (dummyConvStore) LoadHistory(ctx context.Context, conversationID int64) (*store.MessageRow, []*store.MessageRow, error) {
+func (dummyConvStore) LoadHistory(ctx context.Context, conversationID int64) (*store.TurnRow, []*store.TurnRow, error) {
 	return nil, nil, nil
 }
-func (dummyConvStore) ListMessages(ctx context.Context, conversationID int64) ([]*store.MessageRow, error) {
+func (dummyConvStore) ListTurns(ctx context.Context, conversationID int64) ([]*store.TurnRow, error) {
 	return nil, nil
 }
 func (dummyConvStore) SaveSummary(ctx context.Context, conversationID int64, summaryMessageJSON string, coveredUntilSeq int64) error {
@@ -335,7 +337,7 @@ func TestAssembleAgent_GlobalToolEnable(t *testing.T) {
 	agentConf := &store.Agent{
 		Name: "test-global-enable",
 	}
-	ag, err := agent.AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil)
+	ag, err := agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
@@ -352,7 +354,7 @@ func TestAssembleAgent_GlobalToolEnable(t *testing.T) {
 			{Name: "shell", Enabled: 1},
 		},
 	}
-	ag, err = agent.AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", mockStore, nil, nil, nil)
+	ag, err = agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", mockStore, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
@@ -377,7 +379,7 @@ func TestAssembleAgent_GlobalToolEnable(t *testing.T) {
 
 	// 3. Intersection with per-agent allowlist
 	agentConf.Tools = "write_file,read_file" // agent only allows write_file and read_file
-	ag, err = agent.AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", mockStore, nil, nil, nil)
+	ag, err = agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", mockStore, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
@@ -473,7 +475,7 @@ func TestAssembleAgent_ErrorPaths(t *testing.T) {
 	_ = os.MkdirAll(badUserFile, 0755) // Create directory instead of file
 
 	agentConf := &store.Agent{Name: "test-err-agent"}
-	_, err := agent.AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil)
+	_, err := agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
 	if err == nil || !strings.Contains(err.Error(), "load persona context") {
 		t.Errorf("expected load persona context error, got %v", err)
 	}
@@ -501,9 +503,279 @@ func TestAssembleAgent_ListToolsError(t *testing.T) {
 
 	agentConf := &store.Agent{Name: "test-err-agent"}
 	mockStore := &mockFailedToolRegistryStore{}
-	_, err := agent.AssembleAgent(ctx, agentConf, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", mockStore, nil, nil, nil)
+	_, err := agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", mockStore, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
 	if err == nil || !strings.Contains(err.Error(), "list tools for enabled checker") {
 		t.Errorf("expected list tools error, got %v", err)
+	}
+}
+
+type fakeMemoryStore struct {
+	docs  []*memory.MemoryDocument
+	cache map[string][]float32
+}
+
+func (f *fakeMemoryStore) IndexDocument(ctx context.Context, doc *memory.MemoryDocument, vector []float32) (int64, error) {
+	f.docs = append(f.docs, doc)
+	return int64(len(f.docs)), nil
+}
+func (f *fakeMemoryStore) SearchArchive(ctx context.Context, q *memory.ArchiveQuery) ([]*memory.MemoryHit, error) {
+	return nil, nil
+}
+func (f *fakeMemoryStore) GetDocument(ctx context.Context, id int64) (*memory.MemoryDocument, error) {
+	return nil, nil
+}
+func (f *fakeMemoryStore) DeleteDocument(ctx context.Context, id int64) error {
+	return nil
+}
+func (f *fakeMemoryStore) GetCachedEmbedding(ctx context.Context, hash string) ([]float32, error) {
+	return f.cache[hash], nil
+}
+func (f *fakeMemoryStore) PutCachedEmbedding(ctx context.Context, hash string, vec []float32) error {
+	if f.cache == nil {
+		f.cache = make(map[string][]float32)
+	}
+	f.cache[hash] = vec
+	return nil
+}
+
+type fakeModelForSummary struct {
+	response string
+}
+
+func (f *fakeModelForSummary) Generate(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.AgenticMessage, error) {
+	return &schema.AgenticMessage{
+		Role: schema.AgenticRoleTypeAssistant,
+		ContentBlocks: []*schema.ContentBlock{
+			{
+				Type:             schema.ContentBlockTypeAssistantGenText,
+				AssistantGenText: &schema.AssistantGenText{Text: f.response},
+			},
+		},
+	}, nil
+}
+
+func (f *fakeModelForSummary) Stream(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.StreamReader[*schema.AgenticMessage], error) {
+	return nil, fmt.Errorf("stream not implemented")
+}
+
+type fakeKVStore struct {
+	data map[string]string
+}
+
+func (f *fakeKVStore) Get(ctx context.Context, key string) (string, error) {
+	v, ok := f.data[key]
+	if !ok {
+		return "", fmt.Errorf("not found")
+	}
+	return v, nil
+}
+func (f *fakeKVStore) Set(ctx context.Context, key, value string) error {
+	if f.data == nil {
+		f.data = make(map[string]string)
+	}
+	f.data[key] = value
+	return nil
+}
+func (f *fakeKVStore) Delete(ctx context.Context, key string) error {
+	delete(f.data, key)
+	return nil
+}
+
+type recordingConvStore struct {
+	dummyConvStore
+	lastSummary    string
+	lastCoveredSeq int64
+	saveSummaryErr error
+}
+
+func (r *recordingConvStore) SaveSummary(ctx context.Context, conversationID int64, summaryMessageJSON string, coveredUntilSeq int64) error {
+	if r.saveSummaryErr != nil {
+		return r.saveSummaryErr
+	}
+	r.lastSummary = summaryMessageJSON
+	r.lastCoveredSeq = coveredUntilSeq
+	return nil
+}
+
+func TestHandleSummarization_ExtractAndFlushCalled(t *testing.T) {
+	ctx := context.Background()
+	ms := &fakeMemoryStore{}
+	kv := &fakeKVStore{data: map[string]string{}}
+	model := &fakeModelForSummary{response: "- User prefers Go\n- Project uses SQLite"}
+	conv := &recordingConvStore{}
+
+	discardedMsg := schema.UserAgenticMessage("I need help with X")
+	discardedMsg.Extra = map[string]interface{}{"_onclaw_seq": int64(1)}
+	summaryMsg := &schema.AgenticMessage{
+		Role: schema.AgenticRoleTypeAssistant,
+		ContentBlocks: []*schema.ContentBlock{
+			schema.NewContentBlock(&schema.AssistantGenText{Text: "Summary of the discussion"}),
+		},
+	}
+
+	before := adk.TypedChatModelAgentState[*schema.AgenticMessage]{
+		Messages: []*schema.AgenticMessage{discardedMsg},
+	}
+	after := adk.TypedChatModelAgentState[*schema.AgenticMessage]{
+		Messages: []*schema.AgenticMessage{summaryMsg},
+	}
+
+	_, err := agent.HandleSummarization(ctx, agent.HandleSummarizationParams{
+		Before:         before,
+		After:          after,
+		ChatModel:      model,
+		MemoryStore:    ms,
+		Embedder:       nil,
+		KVStore:        kv,
+		AgentName:      "test-agent",
+		ConversationID: 42,
+		ConvStore:      conv,
+	})
+	if err != nil {
+		t.Fatalf("HandleSummarization returned error: %v", err)
+	}
+	if len(ms.docs) == 0 {
+		t.Error("expected at least one document to be indexed via ExtractAndFlush")
+	}
+	if conv.lastSummary == "" {
+		t.Error("expected SaveSummary to have been called")
+	}
+	if conv.lastCoveredSeq != 1 {
+		t.Errorf("expected coveredUntilSeq=1, got %d", conv.lastCoveredSeq)
+	}
+}
+
+func TestHandleSummarization_MemoryStoreNil(t *testing.T) {
+	ctx := context.Background()
+	model := &fakeModelForSummary{response: "- fact: test"}
+	conv := &recordingConvStore{}
+
+	discardedMsg := schema.UserAgenticMessage("help")
+	summaryMsg := &schema.AgenticMessage{
+		Role: schema.AgenticRoleTypeAssistant,
+		ContentBlocks: []*schema.ContentBlock{
+			schema.NewContentBlock(&schema.AssistantGenText{Text: "summary here"}),
+		},
+	}
+
+	before := adk.TypedChatModelAgentState[*schema.AgenticMessage]{
+		Messages: []*schema.AgenticMessage{discardedMsg},
+	}
+	after := adk.TypedChatModelAgentState[*schema.AgenticMessage]{
+		Messages: []*schema.AgenticMessage{summaryMsg},
+	}
+
+	_, err := agent.HandleSummarization(ctx, agent.HandleSummarizationParams{
+		Before:         before,
+		After:          after,
+		ChatModel:      model,
+		MemoryStore:    nil,
+		Embedder:       nil,
+		KVStore:        nil,
+		AgentName:      "test-agent",
+		ConversationID: 42,
+		ConvStore:      conv,
+	})
+	if err != nil {
+		t.Fatalf("HandleSummarization returned error: %v", err)
+	}
+	if conv.lastSummary == "" {
+		t.Error("expected SaveSummary to have been called even without memoryStore")
+	}
+}
+
+func TestHandleSummarization_NoSummaryMsg(t *testing.T) {
+	ctx := context.Background()
+	conv := &recordingConvStore{}
+
+	beforeMsg := schema.UserAgenticMessage("hello")
+
+	before := adk.TypedChatModelAgentState[*schema.AgenticMessage]{
+		Messages: []*schema.AgenticMessage{beforeMsg},
+	}
+	after := adk.TypedChatModelAgentState[*schema.AgenticMessage]{
+		Messages: []*schema.AgenticMessage{beforeMsg},
+	}
+
+	_, err := agent.HandleSummarization(ctx, agent.HandleSummarizationParams{
+		Before:    before,
+		After:     after,
+		ConvStore: conv,
+	})
+	if err != nil {
+		t.Fatalf("HandleSummarization should not error on noop: %v", err)
+	}
+	if conv.lastSummary != "" {
+		t.Error("expected no SaveSummary call when there is no new message")
+	}
+}
+
+func TestHandleSummarization_MaxSeqFromExtra(t *testing.T) {
+	ctx := context.Background()
+	model := &fakeModelForSummary{response: "- fact: important"}
+	conv := &recordingConvStore{}
+
+	msg1 := schema.UserAgenticMessage("first")
+	msg1.Extra = map[string]interface{}{"_onclaw_seq": int64(5)}
+	msg2 := schema.UserAgenticMessage("second")
+	msg2.Extra = map[string]interface{}{"_onclaw_seq": int64(10)}
+	summaryMsg := &schema.AgenticMessage{
+		Role: schema.AgenticRoleTypeAssistant,
+		ContentBlocks: []*schema.ContentBlock{
+			schema.NewContentBlock(&schema.AssistantGenText{Text: "final summary"}),
+		},
+	}
+
+	before := adk.TypedChatModelAgentState[*schema.AgenticMessage]{
+		Messages: []*schema.AgenticMessage{msg1, msg2},
+	}
+	after := adk.TypedChatModelAgentState[*schema.AgenticMessage]{
+		Messages: []*schema.AgenticMessage{summaryMsg},
+	}
+
+	_, err := agent.HandleSummarization(ctx, agent.HandleSummarizationParams{
+		Before:      before,
+		After:       after,
+		ChatModel:   model,
+		MemoryStore: nil,
+		ConvStore:   conv,
+	})
+	if err != nil {
+		t.Fatalf("HandleSummarization returned error: %v", err)
+	}
+	if conv.lastCoveredSeq != 10 {
+		t.Errorf("expected maxSeq=10 (highest _onclaw_seq), got %d", conv.lastCoveredSeq)
+	}
+}
+
+func TestHandleSummarization_SaveSummaryError(t *testing.T) {
+	ctx := context.Background()
+	conv := &recordingConvStore{saveSummaryErr: fmt.Errorf("db error")}
+
+	discardedMsg := schema.UserAgenticMessage("hello")
+	summaryMsg := &schema.AgenticMessage{
+		Role: schema.AgenticRoleTypeAssistant,
+		ContentBlocks: []*schema.ContentBlock{
+			schema.NewContentBlock(&schema.AssistantGenText{Text: "summary"}),
+		},
+	}
+
+	before := adk.TypedChatModelAgentState[*schema.AgenticMessage]{
+		Messages: []*schema.AgenticMessage{discardedMsg},
+	}
+	after := adk.TypedChatModelAgentState[*schema.AgenticMessage]{
+		Messages: []*schema.AgenticMessage{summaryMsg},
+	}
+
+	_, err := agent.HandleSummarization(ctx, agent.HandleSummarizationParams{
+		Before:      before,
+		After:       after,
+		ChatModel:   &fakeModelForSummary{},
+		MemoryStore: nil,
+		ConvStore:   conv,
+	})
+	if err == nil || !strings.Contains(err.Error(), "db error") {
+		t.Errorf("expected 'db error', got %v", err)
 	}
 }
 

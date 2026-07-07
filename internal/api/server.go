@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"log/slog"
 	"net"
 	"net/http"
@@ -22,6 +23,7 @@ type Server struct {
 	handlers *handler.Handler
 	sessions *auth.SessionStore
 	log      *slog.Logger
+	server   *http.Server
 }
 
 // NewServer initializes a new Server with service layer and logging.
@@ -39,12 +41,21 @@ func (s *Server) ListenAndServe(addr string) error {
 	mux := s.routes()
 
 	s.log.Info("Web UI server starting", "addr", addr)
-	server := &http.Server{
+	s.server = &http.Server{
 		Addr:    addr,
 		Handler: mux,
 	}
 
-	return server.ListenAndServe()
+	return s.server.ListenAndServe()
+}
+
+// Shutdown gracefully shuts down the server with a timeout.
+func (s *Server) Shutdown(ctx context.Context) error {
+	if s.server != nil {
+		s.log.Info("server_shutting_down")
+		return s.server.Shutdown(ctx)
+	}
+	return nil
 }
 
 // Start starts the server on a given listener (useful for testing or dynamic ports).

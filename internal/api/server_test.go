@@ -525,8 +525,8 @@ func TestWebConversations(t *testing.T) {
 	cStore := sqlite.NewConversationStore(db)
 	ctx := context.Background()
 	convID, _ := cStore.CreateConversation(ctx, "test-agent")
-	_, _ = cStore.AppendMessage(ctx, convID, "user", `{"role":"user","content":"Hello"}`)
-	_, _ = cStore.AppendMessage(ctx, convID, "assistant", `{"role":"assistant","content":"Hi"}`)
+	_, _ = cStore.AppendTurn(ctx, convID, `[{"role":"user","content_blocks":[{"type":"user_input_text","user_input_text":{"text":"Hello"}}]}]`, "resp-1", "", "model-1", 10, 10, 20, "Hello", "")
+	_, _ = cStore.AppendTurn(ctx, convID, `[{"role":"assistant","content_blocks":[{"type":"assistant_gen_text","assistant_gen_text":{"text":"Hi"}}]}]`, "resp-2", "resp-1", "model-1", 10, 10, 20, "", "Hi")
 
 	_, addr, srvCleanup := setupTestServer(t, db, nil)
 	defer srvCleanup()
@@ -561,11 +561,11 @@ func TestWebConversations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get messages failed: %v", err)
 	}
-	var messages []store.MessageRow
+	var messages []store.TurnRow
 	_ = json.NewDecoder(resp.Body).Decode(&messages)
 	resp.Body.Close()
 	if len(messages) != 2 {
-		t.Errorf("expected 2 messages, got %d", len(messages))
+		t.Errorf("expected 2 turns, got %d", len(messages))
 	}
 }
 
@@ -627,8 +627,12 @@ type mockAgent struct {
 	iterator agent.EventIterator
 }
 
-func (m *mockAgent) Run(ctx context.Context, userInput string) agent.EventIterator {
+func (m *mockAgent) Run(ctx context.Context, userInput string, contentBlocks ...*schema.ContentBlock) agent.EventIterator {
 	return m.iterator
+}
+
+func (m *mockAgent) LastTurnMeta() *store.TurnMeta {
+	return nil
 }
 
 func TestWebSSEChat(t *testing.T) {
@@ -708,5 +712,117 @@ func TestWebSSEChat(t *testing.T) {
 	}
 	if !bytes.Contains(buf.Bytes(), []byte("event: done")) {
 		t.Errorf("expected done event in stream, got:\n%s", respStr)
+	}
+}
+
+type customMockAgent struct {
+	runFn func(ctx context.Context, userInput string, contentBlocks ...*schema.ContentBlock) agent.EventIterator
+}
+
+func (c *customMockAgent) Run(ctx context.Context, userInput string, contentBlocks ...*schema.ContentBlock) agent.EventIterator {
+	return c.runFn(ctx, userInput, contentBlocks...)
+}
+
+func (c *customMockAgent) LastTurnMeta() *store.TurnMeta {
+	return nil
+}
+
+func TestWebSSEChat_MediaBlocks(t *testing.T) {
+	db, dbCleanup := setupTestDB(t)
+	defer dbCleanup()
+
+	// Seed web password
+	hash, err := bcrypt.GenerateFromPassword([]byte("secret123"), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("bcrypt hash failed: %v", err)
+	}
+	_, err = db.Exec("INSERT OR REPLACE INTO preferences (key, value) VALUES ('web_password_hash', ?)", string(hash))
+	if err != nil {
+		t.Fatalf("seed password failed: %v", err)
+	}
+
+	var capturedBlocks []*schema.ContentBlock
+	var capturedPrompt string
+
+	mockMsgs := []*schema.AgenticMessage{
+		{
+			Role: schema.AgenticRoleTypeAssistant,
+			ContentBlocks: []*schema.ContentBlock{
+				schema.NewContentBlock(&schema.AssistantGenText{Text: "Received media"}),
+			},
+		},
+	}
+
+	resolveFn := func(ctx context.Context, agentName, providerName, modelName, reasoning, workspacePath string, convID int64) (api.AssembledAgent, string, error) {
+		return &customMockAgent{
+			runFn: func(ctx context.Context, userInput string, contentBlocks ...*schema.ContentBlock) agent.EventIterator {
+				capturedPrompt = userInput
+				capturedBlocks = contentBlocks
+				return &mockEventIterator{msgs: mockMsgs}
+			},
+		}, "/tmp/workspace", nil
+	}
+
+	_, addr, srvCleanup := setupTestServer(t, db, resolveFn)
+	defer srvCleanup()
+
+	client := newTestClient()
+
+	// Login
+	loginURL := fmt.Sprintf("http://%s/api/login", addr)
+	body, _ := json.Marshal(map[string]string{"password": "secret123"})
+	resp, _ := client.Post(loginURL, "application/json", bytes.NewReader(body))
+	resp.Body.Close()
+
+	// Run Chat with media content blocks
+	chatReq, _ := json.Marshal(service.ChatInput{
+		Prompt: "Here is an image",
+		ContentBlocks: []*schema.ContentBlock{
+			{
+				Type: schema.ContentBlockTypeUserInputImage,
+				UserInputImage: &schema.UserInputImage{
+					Base64Data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+					MIMEType:   "image/png",
+				},
+			},
+			{
+				Type: schema.ContentBlockTypeUserInputFile,
+				UserInputFile: &schema.UserInputFile{
+					Name:       "test.txt",
+					Base64Data: "aGVsbG8=",
+					MIMEType:   "text/plain",
+				},
+			},
+		},
+	})
+	chatURL := fmt.Sprintf("http://%s/api/chat", addr)
+	resp, err = client.Post(chatURL, "application/json", bytes.NewReader(chatReq))
+	if err != nil {
+		t.Fatalf("POST chat failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Consume the iterator so the run is executed
+	buf := new(bytes.Buffer)
+	_, _ = io.Copy(buf, resp.Body)
+
+	if capturedPrompt != "Here is an image" {
+		t.Errorf("expected prompt 'Here is an image', got %q", capturedPrompt)
+	}
+	if len(capturedBlocks) != 2 {
+		t.Errorf("expected 2 captured content blocks, got %d", len(capturedBlocks))
+	} else {
+		img := capturedBlocks[0]
+		if img.Type != schema.ContentBlockTypeUserInputImage || img.UserInputImage == nil || img.UserInputImage.MIMEType != "image/png" {
+			t.Errorf("expected PNG image block, got: %+v", img)
+		}
+		fileBlock := capturedBlocks[1]
+		if fileBlock.Type != schema.ContentBlockTypeUserInputFile || fileBlock.UserInputFile == nil || fileBlock.UserInputFile.Name != "test.txt" {
+			t.Errorf("expected text/plain file block, got: %+v", fileBlock)
+		}
 	}
 }

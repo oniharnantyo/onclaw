@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cloudwego/eino/schema"
 	"github.com/oniharnantyo/onclaw/internal/agent/tools"
 	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
@@ -112,11 +111,19 @@ func TestSessionSearchTool(t *testing.T) {
 		t.Fatalf("CreateConversation failed: %v", err)
 	}
 
-	msg := schema.UserAgenticMessage("We need to implement FTS5 indexing for our search tool.")
-	msgJSON, _ := json.Marshal(msg)
-	_, err = convStore.AppendMessage(ctx, convID, "user", string(msgJSON))
+	_, err = convStore.AppendTurn(
+		ctx,
+		convID,
+		`[{"role":"user","content_blocks":[{"type":"user_input_text","user_input_text":{"text":"We need to implement FTS5 indexing for our search tool."}}]}]`,
+		"resp-1",
+		"",
+		"model-1",
+		10, 20, 30,
+		"We need to implement FTS5 indexing for our search tool.",
+		"",
+	)
 	if err != nil {
-		t.Fatalf("AppendMessage failed: %v", err)
+		t.Fatalf("AppendTurn failed: %v", err)
 	}
 
 	scope := &tools.Scope{

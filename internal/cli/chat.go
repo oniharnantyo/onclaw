@@ -14,8 +14,10 @@ import (
 	"github.com/urfave/cli/v3"
 
 	"github.com/oniharnantyo/onclaw/internal/agent"
+	"github.com/oniharnantyo/onclaw/internal/agent/tools"
 	"github.com/oniharnantyo/onclaw/internal/llm"
 	"github.com/oniharnantyo/onclaw/internal/mcp"
+	"github.com/oniharnantyo/onclaw/internal/observability"
 	"github.com/oniharnantyo/onclaw/internal/render"
 	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
 )
@@ -94,6 +96,29 @@ func chatCommand(st *appState) *cli.Command {
 			}
 			defer watcher.Close()
 
+			// Setup observability BEFORE agent assembly
+			// This ensures Langfuse handlers are registered before any Eino components are created
+			obsCfg := observability.Config{
+				Host:      st.cfg.Langfuse.Host,
+				PublicKey: st.cfg.Langfuse.PublicKey,
+				SecretKey: st.cfg.Langfuse.SecretKey,
+				SessionID: st.cfg.Langfuse.SessionID,
+				Release:   st.cfg.Langfuse.Release,
+				Mask:      st.cfg.Langfuse.Mask,
+			}
+			flush, err := observability.Setup(ctx, obsCfg, tools.Redact)
+			if err != nil {
+				return fmt.Errorf("observability setup: %w", err)
+			}
+			if flush != nil {
+				st.log.Info("langfuse_flush_deferred")
+				defer func() {
+					st.log.Info("langfuse_flush_starting")
+					flush()
+					st.log.Info("langfuse_flush_completed")
+				}()
+			}
+
 			// Resolve starting agent
 			var agentName string
 			if c.String("agent") != "" {
@@ -162,6 +187,7 @@ func chatCommand(st *appState) *cli.Command {
 			firstPrompt := c.Args().First()
 			if firstPrompt != "" {
 				fmt.Printf("onclaw (%s) > %s\n", activeAgentName, firstPrompt)
+
 				it := assembledAgent.Run(ctx, firstPrompt)
 				tr := render.Text(os.Stdout)
 				for {

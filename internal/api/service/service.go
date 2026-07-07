@@ -42,6 +42,11 @@ func (s *Service) SetWorkspacePath(wp string) {
 	s.workspacePath = wp
 }
 
+// SetResolve sets the ResolveAndAssembleFunc (used for mocking in tests).
+func (s *Service) SetResolve(fn ResolveAndAssembleFunc) {
+	s.resolve = fn
+}
+
 // New returns a new Service instance.
 func New(
 	mgr *llm.Service,

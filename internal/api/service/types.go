@@ -3,12 +3,15 @@ package service
 import (
 	"context"
 
+	"github.com/cloudwego/eino/schema"
 	"github.com/oniharnantyo/onclaw/internal/agent"
+	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
 // AssembledAgent defines the interface for running the assembled agent.
 type AssembledAgent interface {
-	Run(ctx context.Context, userInput string) agent.EventIterator
+	Run(ctx context.Context, userInput string, contentBlocks ...*schema.ContentBlock) agent.EventIterator
+	LastTurnMeta() *store.TurnMeta
 }
 
 // ResolveAndAssembleFunc resolves agent settings and assembles an agent instance.
@@ -72,13 +75,15 @@ type AgentInput struct {
 }
 
 type ChatInput struct {
-	Prompt         string `json:"prompt"`
-	Agent          string `json:"agent"`
-	Provider       string `json:"provider"`
-	Model          string `json:"model"`
-	Reasoning      string `json:"reasoning"`
-	Workspace      string `json:"workspace"`
-	ConversationID int64  `json:"conversation_id"`
+	Prompt             string                 `json:"prompt"`
+	Agent              string                 `json:"agent"`
+	Provider           string                 `json:"provider"`
+	Model              string                 `json:"model"`
+	Reasoning          string                 `json:"reasoning"`
+	Workspace          string                 `json:"workspace"`
+	ConversationID     int64                  `json:"conversation_id"`
+	PreviousResponseID string                 `json:"previous_response_id"`
+	ContentBlocks      []*schema.ContentBlock `json:"content_blocks,omitempty"`
 }
 
 type SkillView struct {

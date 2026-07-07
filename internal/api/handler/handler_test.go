@@ -173,13 +173,13 @@ type hFakeConversationStore struct{}
 func (f *hFakeConversationStore) CreateConversation(_ context.Context, _ string) (int64, error) {
 	return 1, nil
 }
-func (f *hFakeConversationStore) AppendMessage(_ context.Context, _ int64, _, _ string) (int64, error) {
+func (f *hFakeConversationStore) AppendTurn(_ context.Context, _ int64, _, _, _, _ string, _, _, _ int64, _, _ string) (int64, error) {
 	return 1, nil
 }
-func (f *hFakeConversationStore) LoadHistory(_ context.Context, _ int64) (*store.MessageRow, []*store.MessageRow, error) {
+func (f *hFakeConversationStore) LoadHistory(_ context.Context, _ int64) (*store.TurnRow, []*store.TurnRow, error) {
 	return nil, nil, nil
 }
-func (f *hFakeConversationStore) ListMessages(_ context.Context, _ int64) ([]*store.MessageRow, error) {
+func (f *hFakeConversationStore) ListTurns(_ context.Context, _ int64) ([]*store.TurnRow, error) {
 	return nil, nil
 }
 func (f *hFakeConversationStore) SaveSummary(_ context.Context, _ int64, _ string, _ int64) error {

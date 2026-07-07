@@ -120,26 +120,8 @@ func runCommand(st *appState) *cli.Command {
 				return fmt.Errorf("create conversation: %w", err)
 			}
 
-			assembledAgent, resolvedWorkspace, err := resolveAndAssemble(ctx, st, db, mgr, agentSessionRequest{
-				AgentName:    agentName,
-				ProviderName: c.String("provider"),
-				ModelName:    c.String("model"),
-				Reasoning:    c.String("reasoning"),
-				Workspace:    c.String("workspace"),
-				Channel:      "cli",
-			}, convStore, convID, mcpMgr)
-			if err != nil {
-				return err
-			}
-
-			st.log.Info("run invoked",
-				"agent", agentName,
-				"provider", assembledAgent.Config.Provider,
-				"model", assembledAgent.Config.Model,
-				"workspace", resolvedWorkspace,
-			)
-
-			// 8. Run the agent turn
+			// 5. Setup observability BEFORE agent assembly
+			// This ensures Langfuse handlers are registered before any Eino components are created
 			obsCfg := observability.Config{
 				Host:      st.cfg.Langfuse.Host,
 				PublicKey: st.cfg.Langfuse.PublicKey,
@@ -161,6 +143,27 @@ func runCommand(st *appState) *cli.Command {
 				}()
 			}
 
+			// 6. Assemble agent (after observability is setup)
+			assembledAgent, resolvedWorkspace, err := resolveAndAssemble(ctx, st, db, mgr, agentSessionRequest{
+				AgentName:    agentName,
+				ProviderName: c.String("provider"),
+				ModelName:    c.String("model"),
+				Reasoning:    c.String("reasoning"),
+				Workspace:    c.String("workspace"),
+				Channel:      "cli",
+			}, convStore, convID, mcpMgr)
+			if err != nil {
+				return err
+			}
+
+			st.log.Info("run invoked",
+				"agent", agentName,
+				"provider", assembledAgent.Config.Provider,
+				"model", assembledAgent.Config.Model,
+				"workspace", resolvedWorkspace,
+			)
+
+			// 7. Run the agent turn
 			it := assembledAgent.Run(ctx, prompt)
 			tr := render.Text(os.Stdout)
 			for {

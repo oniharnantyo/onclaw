@@ -73,6 +73,22 @@ func Open(dbPath string) (*sql.DB, error) {
 
 // Migrate runs idempotent migrations for the database schema.
 func Migrate(db *sql.DB) error {
+	// Guarded clean rebuild: if old shape (role column present), DROP table + FTS, recreate.
+	// One-time wipe of pre-release data.
+	hasRole, err := columnExists(db, "conversation_messages", "role")
+	if err == nil && hasRole {
+		dropQueries := []string{
+			"DROP TRIGGER IF EXISTS conversation_messages_ai;",
+			"DROP TRIGGER IF EXISTS conversation_messages_ad;",
+			"DROP TRIGGER IF EXISTS conversation_messages_au;",
+			"DROP TABLE IF EXISTS conversation_messages_fts;",
+			"DROP TABLE IF EXISTS conversation_messages;",
+		}
+		for _, q := range dropQueries {
+			_, _ = db.Exec(q)
+		}
+	}
+
 	queries := []string{
 		`CREATE TABLE IF NOT EXISTS llm_providers (
 			name TEXT PRIMARY KEY,
@@ -117,14 +133,21 @@ func Migrate(db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS conversation_messages (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			conversation_id INTEGER NOT NULL,
-			seq INTEGER NOT NULL,
-			role TEXT NOT NULL,
+			sequence_num INTEGER NOT NULL,
+			response_id TEXT NOT NULL DEFAULT '',
+			previous_response_id TEXT NOT NULL DEFAULT '',
 			message TEXT NOT NULL,
+			model TEXT NOT NULL DEFAULT '',
+			prompt_tokens INTEGER NOT NULL DEFAULT 0,
+			completion_tokens INTEGER NOT NULL DEFAULT 0,
+			total_tokens INTEGER NOT NULL DEFAULT 0,
+			question TEXT NOT NULL DEFAULT '',
+			answer TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
 			FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
 		);`,
-		`CREATE INDEX IF NOT EXISTS idx_messages_conv_seq ON conversation_messages(conversation_id, seq);`,
-		`CREATE INDEX IF NOT EXISTS idx_messages_role ON conversation_messages(role);`,
+		`CREATE INDEX IF NOT EXISTS idx_messages_conv_seq ON conversation_messages(conversation_id, sequence_num DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_messages_response_id ON conversation_messages(response_id);`,
 		`CREATE TABLE IF NOT EXISTS skills (
 			name TEXT,
 			scope TEXT NOT NULL,
@@ -242,16 +265,16 @@ func Migrate(db *sql.DB) error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_episodic_agent_unpromoted ON episodic_summaries(agent, promoted_at);`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_episodic_source_id ON episodic_summaries(agent, source_id) WHERE source_id != '';`,
-		`CREATE VIRTUAL TABLE IF NOT EXISTS conversation_messages_fts USING fts5(message, content='conversation_messages', content_rowid='id');`,
+		`CREATE VIRTUAL TABLE IF NOT EXISTS conversation_messages_fts USING fts5(question, answer, content='conversation_messages', content_rowid='id');`,
 		`CREATE TRIGGER IF NOT EXISTS conversation_messages_ai AFTER INSERT ON conversation_messages BEGIN
-			INSERT INTO conversation_messages_fts(rowid, message) VALUES (new.id, new.message);
+			INSERT INTO conversation_messages_fts(rowid, question, answer) VALUES (new.id, new.question, new.answer);
 		END;`,
 		`CREATE TRIGGER IF NOT EXISTS conversation_messages_ad AFTER DELETE ON conversation_messages BEGIN
-			INSERT INTO conversation_messages_fts(conversation_messages_fts, rowid, message) VALUES('delete', old.id, old.message);
+			INSERT INTO conversation_messages_fts(conversation_messages_fts, rowid, question, answer) VALUES('delete', old.id, old.question, old.answer);
 		END;`,
 		`CREATE TRIGGER IF NOT EXISTS conversation_messages_au AFTER UPDATE ON conversation_messages BEGIN
-			INSERT INTO conversation_messages_fts(conversation_messages_fts, rowid, message) VALUES('delete', old.id, old.message);
-			INSERT INTO conversation_messages_fts(rowid, message) VALUES (new.id, new.message);
+			INSERT INTO conversation_messages_fts(conversation_messages_fts, rowid, question, answer) VALUES('delete', old.id, old.question, old.answer);
+			INSERT INTO conversation_messages_fts(rowid, question, answer) VALUES (new.id, new.question, new.answer);
 		END;`,
 		`CREATE TABLE IF NOT EXISTS kg_entities (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -292,9 +315,6 @@ func Migrate(db *sql.DB) error {
 	// Backfill FTS tables if they are empty
 	if _, err := db.Exec(`INSERT OR IGNORE INTO memory_documents_fts(rowid, content) SELECT id, content FROM memory_documents;`); err != nil {
 		return fmt.Errorf("backfill memory_documents_fts: %w", err)
-	}
-	if _, err := db.Exec(`INSERT OR IGNORE INTO conversation_messages_fts(rowid, message) SELECT id, message FROM conversation_messages;`); err != nil {
-		return fmt.Errorf("backfill conversation_messages_fts: %w", err)
 	}
 
 	// Guarded migrations for existing DBs

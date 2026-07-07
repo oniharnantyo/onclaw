@@ -7,6 +7,9 @@ export interface Tool {
 	category: string;
 	enabled: boolean;
 	description?: string;
+	// Config metadata inherited from category
+	configurable: boolean;
+	categorySchema?: string;
 }
 
 export interface ToolCategory {
@@ -23,10 +26,11 @@ interface ToolsProps {
 export default function Tools({ showToast }: ToolsProps) {
 	const [categories, setCategories] = useState<ToolCategory[]>([]);
 	const [loading, setLoading] = useState(true);
-	
+
 	// Configuration Modal States
 	const [showConfigModal, setShowConfigModal] = useState(false);
 	const [activeCategory, setActiveCategory] = useState<string | null>(null);
+	const [activeTool, setActiveTool] = useState<string | null>(null); // For tool-level config
 	const [configSchema, setConfigSchema] = useState<string>('');
 	const [configJSON, setConfigJSON] = useState<string>('{}');
 	const [jsonError, setJsonError] = useState<string | null>(null);
@@ -47,6 +51,8 @@ export default function Tools({ showToast }: ToolsProps) {
 	const [timeoutSeconds, setTimeoutSeconds] = useState<number>(10);
 	const [maxBytes, setMaxBytes] = useState<number>(1048576);
 	const [googleCX, setGoogleCX] = useState<string>('');
+	const [tavilyAPIKey, setTavilyAPIKey] = useState<string>('');
+	const [exaAPIKey, setExaAPIKey] = useState<string>('');
 	const [webLightpandaBinPath, setWebLightpandaBinPath] = useState<string>('');
 
 	useEffect(() => {
@@ -59,7 +65,17 @@ export default function Tools({ showToast }: ToolsProps) {
 		try {
 			const res = await fetch('/api/tools');
 			if (res.ok) {
-				setCategories(await res.json());
+				const data = await res.json();
+				// Propagate category config info to individual tools
+				const enriched = data.map((cat: ToolCategory) => ({
+					...cat,
+					tools: cat.tools.map((t: Tool) => ({
+						...t,
+						configurable: cat.configurable,
+						categorySchema: cat.schema,
+					})),
+				}));
+				setCategories(enriched);
 			} else {
 				showToast('Failed to load tools registry', 'error');
 			}
@@ -92,13 +108,14 @@ export default function Tools({ showToast }: ToolsProps) {
 		}
 	};
 
-	const openConfig = async (categoryView: ToolCategory) => {
-		setActiveCategory(categoryView.category);
-		setConfigSchema(categoryView.schema || '');
+	const openCategoryConfig = async (category: string, schema?: string) => {
+		setActiveCategory(category);
+		setActiveTool(null); // No specific tool
+		setConfigSchema(schema || '');
 		setJsonError(null);
-		
+
 		try {
-			const res = await fetch(`/api/tools/categories/${encodeURIComponent(categoryView.category)}/config`);
+			const res = await fetch(`/api/tools/categories/${encodeURIComponent(category)}/config`);
 			if (res.ok) {
 				const data = await res.json();
 				let configStr = data.config || '{}';
@@ -109,20 +126,22 @@ export default function Tools({ showToast }: ToolsProps) {
 					setConfigJSON(formatted);
 
 					// If category is Browser, populate browser form states
-					if (categoryView.category.toLowerCase() === 'browser') {
+					if (category.toLowerCase() === 'browser') {
 						setBrowserEngine(parsed.engine || 'lightpanda');
-						setBrowserHeadless(parsed.headless !== false); // default to true
+						setBrowserHeadless(parsed.headless !== false);
 						setLightpandaBinPath(parsed.lightpanda?.binPath || '');
 						setLightpandaPort(parsed.lightpanda?.port || 9222);
 						setChromiumBinPath(parsed.chromium?.binPath || '');
 						setRemoteURL(parsed.remote?.url || '');
-					} else if (categoryView.category.toLowerCase() === 'web') {
+					} else if (category.toLowerCase() === 'web') {
 						setSearchProvider(parsed.search_provider || 'duckduckgo');
 						setFetchProvider(parsed.fetch_provider || 'http');
 						setUserAgent(parsed.user_agent || '');
 						setTimeoutSeconds(parsed.timeout_seconds !== undefined ? parsed.timeout_seconds : 10);
 						setMaxBytes(parsed.max_bytes !== undefined ? parsed.max_bytes : 1048576);
 						setGoogleCX(parsed.google_cx || '');
+						setTavilyAPIKey(parsed.tavily_api_key || '');
+						setExaAPIKey(parsed.exa_api_key || '');
 						setWebLightpandaBinPath(parsed.lightpanda_bin_path || '');
 					}
 				} catch {
@@ -138,12 +157,57 @@ export default function Tools({ showToast }: ToolsProps) {
 		}
 	};
 
+	const openToolConfig = async (tool: Tool) => {
+		setActiveCategory(tool.category);
+		setActiveTool(tool.name); // Specific tool
+		setConfigSchema(tool.categorySchema || '');
+		setJsonError(null);
+
+		try {
+			const res = await fetch(`/api/tools/categories/${encodeURIComponent(tool.category)}/config`);
+			if (res.ok) {
+				const data = await res.json();
+				let configStr = data.config || '{}';
+				// Format JSON nicely
+				try {
+					const parsed = JSON.parse(configStr);
+					const formatted = JSON.stringify(parsed, null, 2);
+					setConfigJSON(formatted);
+
+					// Populate web config states
+					if (tool.category.toLowerCase() === 'web') {
+						setSearchProvider(parsed.search_provider || 'duckduckgo');
+						setFetchProvider(parsed.fetch_provider || 'http');
+						setUserAgent(parsed.user_agent || '');
+						setTimeoutSeconds(parsed.timeout_seconds !== undefined ? parsed.timeout_seconds : 10);
+						setMaxBytes(parsed.max_bytes !== undefined ? parsed.max_bytes : 1048576);
+						setGoogleCX(parsed.google_cx || '');
+						setTavilyAPIKey(parsed.tavily_api_key || '');
+						setExaAPIKey(parsed.exa_api_key || '');
+						setWebLightpandaBinPath(parsed.lightpanda_bin_path || '');
+					}
+				} catch {
+					setConfigJSON(configStr);
+				}
+				setShowConfigModal(true);
+			} else {
+				const err = await res.json();
+				showToast(err.error || 'Failed to load tool configuration', 'error');
+			}
+		} catch {
+			showToast('Failed to load tool configuration', 'error');
+		}
+	};
+
 	const handleConfigSave = async (e: React.FormEvent) => {
 		e.preventDefault();
 		if (!activeCategory) return;
 
 		let finalConfigJSON = configJSON;
-		if (activeCategory.toLowerCase() === 'browser') {
+		const isToolLevel = activeTool !== null;
+
+		// For browser category config (category-level)
+		if (activeCategory.toLowerCase() === 'browser' && !isToolLevel) {
 			const browserConfigObj: any = {
 				engine: browserEngine,
 				headless: browserHeadless,
@@ -164,16 +228,66 @@ export default function Tools({ showToast }: ToolsProps) {
 			}
 			finalConfigJSON = JSON.stringify(browserConfigObj);
 		} else if (activeCategory.toLowerCase() === 'web') {
-			const webConfigObj: any = {
-				search_provider: searchProvider,
-				fetch_provider: fetchProvider,
-				user_agent: userAgent || undefined,
-				timeout_seconds: Number(timeoutSeconds) || 10,
-				max_bytes: Number(maxBytes) || 1048576,
-				google_cx: googleCX || undefined,
-				lightpanda_bin_path: webLightpandaBinPath || undefined,
-			};
-			finalConfigJSON = JSON.stringify(webConfigObj);
+			// For web tools, only include fields relevant to the specific tool
+			if (isToolLevel) {
+				if (activeTool === 'web_search') {
+					// Web search only needs search-related fields
+					const webSearchConfigObj: any = {
+						search_provider: searchProvider,
+						timeout_seconds: Number(timeoutSeconds) || 10,
+					};
+					if (searchProvider === 'google') {
+						webSearchConfigObj.google_cx = googleCX || undefined;
+					}
+					if (searchProvider === 'tavily') {
+						webSearchConfigObj.tavily_api_key = tavilyAPIKey || undefined;
+					}
+					if (searchProvider === 'exa') {
+						webSearchConfigObj.exa_api_key = exaAPIKey || undefined;
+					}
+					// Merge with existing config to preserve fetch_provider settings
+					const existing = JSON.parse(configJSON || '{}');
+					finalConfigJSON = JSON.stringify({ ...existing, ...webSearchConfigObj }, null, 2);
+				} else if (activeTool === 'web_fetch') {
+					// Web fetch only needs fetch-related fields
+					const webFetchConfigObj: any = {
+						fetch_provider: fetchProvider,
+						user_agent: userAgent || undefined,
+						timeout_seconds: Number(timeoutSeconds) || 10,
+						max_bytes: Number(maxBytes) || 1048576,
+					};
+					if (fetchProvider === 'lightpanda') {
+						webFetchConfigObj.lightpanda_bin_path = webLightpandaBinPath || undefined;
+					}
+					// Merge with existing config to preserve search_provider settings
+					const existing = JSON.parse(configJSON || '{}');
+					finalConfigJSON = JSON.stringify({ ...existing, ...webFetchConfigObj }, null, 2);
+				} else {
+					// Full web config for other cases
+					const webConfigObj: any = {
+						search_provider: searchProvider,
+						fetch_provider: fetchProvider,
+						user_agent: userAgent || undefined,
+						timeout_seconds: Number(timeoutSeconds) || 10,
+						max_bytes: Number(maxBytes) || 1048576,
+						google_cx: googleCX || undefined,
+						lightpanda_bin_path: webLightpandaBinPath || undefined,
+					};
+					finalConfigJSON = JSON.stringify(webConfigObj);
+				}
+			} else {
+				// Full web category config
+				const webConfigObj: any = {
+					search_provider: searchProvider,
+					fetch_provider: fetchProvider,
+					user_agent: userAgent || undefined,
+					timeout_seconds: Number(timeoutSeconds) || 10,
+					max_bytes: Number(maxBytes) || 1048576,
+					google_cx: googleCX || undefined,
+					lightpanda_bin_path: webLightpandaBinPath || undefined,
+				};
+				finalConfigJSON = JSON.stringify(webConfigObj);
+			}
 		}
 
 		// Client-side JSON verification
@@ -195,7 +309,7 @@ export default function Tools({ showToast }: ToolsProps) {
 			});
 
 			if (res.ok) {
-				showToast(`Configuration for "${activeCategory}" saved successfully`, 'success');
+				showToast(`Configuration for "${isToolLevel ? activeTool : activeCategory}" saved successfully`, 'success');
 				setShowConfigModal(false);
 				loadTools();
 			} else {
@@ -217,6 +331,10 @@ export default function Tools({ showToast }: ToolsProps) {
 				return 'Tools enabling the agent to read, write, and list files inside the workspace.';
 			case 'shell':
 				return 'Executes arbitrary shell commands inside the workspace directory.';
+			case 'browser':
+				return 'Browser automation tools for rendering and interacting with web pages.';
+			case 'web':
+				return 'Web search and content fetching tools for accessing online resources.';
 			default:
 				return `Custom capability group: ${cat}.`;
 		}
@@ -268,7 +386,8 @@ export default function Tools({ showToast }: ToolsProps) {
 										<h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: 'var(--foreground)' }}>
 											{catView.category}
 										</h3>
-										{catView.configurable && (
+										{/* Browser category keeps config at category level */}
+										{catView.category.toLowerCase() === 'browser' && catView.configurable && (
 											<button
 												className="btn btn-secondary btn-sm"
 												style={{
@@ -283,7 +402,7 @@ export default function Tools({ showToast }: ToolsProps) {
 													background: 'var(--bg-muted)',
 													cursor: 'pointer',
 												}}
-												onClick={() => openConfig(catView)}
+												onClick={() => openCategoryConfig(catView.category, catView.schema)}
 												title={`Configure ${catView.category}`}
 											>
 												<Gear size={14} /> Config
@@ -319,26 +438,52 @@ export default function Tools({ showToast }: ToolsProps) {
 														</span>
 													)}
 												</div>
-												<button
-													type="button"
-													style={{
-														background: 'none',
-														border: 'none',
-														cursor: 'pointer',
-														color: t.enabled ? 'var(--color-accent)' : 'var(--text-muted)',
-														padding: '4px',
-														display: 'flex',
-														alignItems: 'center',
-													}}
-													onClick={() => toggleTool(t)}
-													aria-label={t.enabled ? `Disable ${t.name}` : `Enable ${t.name}`}
-												>
-													{t.enabled ? (
-														<ToggleRight size={28} weight="fill" />
-													) : (
-														<ToggleLeft size={28} weight="fill" />
+												<div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+													{/* Web category has per-tool config */}
+													{t.category.toLowerCase() === 'web' && t.configurable && (
+														<button
+															type="button"
+															className="btn btn-secondary btn-sm"
+															style={{
+																display: 'flex',
+																alignItems: 'center',
+																gap: '4px',
+																padding: '4px 8px',
+																fontSize: '12px',
+																border: '1px solid var(--border)',
+																borderRadius: '6px',
+																color: 'var(--foreground)',
+																background: 'var(--bg-muted)',
+																cursor: 'pointer',
+															}}
+															onClick={() => openToolConfig(t)}
+															title={`Configure ${t.name}`}
+														>
+															<Gear size={14} /> Config
+														</button>
 													)}
-												</button>
+													{/* Toggle button */}
+													<button
+														type="button"
+														style={{
+															background: 'none',
+															border: 'none',
+															cursor: 'pointer',
+															color: t.enabled ? 'var(--color-accent)' : 'var(--text-muted)',
+															padding: '4px',
+															display: 'flex',
+															alignItems: 'center',
+														}}
+														onClick={() => toggleTool(t)}
+														aria-label={t.enabled ? `Disable ${t.name}` : `Enable ${t.name}`}
+													>
+														{t.enabled ? (
+															<ToggleRight size={28} weight="fill" />
+														) : (
+															<ToggleLeft size={28} weight="fill" />
+														)}
+													</button>
+												</div>
 											</div>
 										))}
 									</div>
@@ -361,7 +506,7 @@ export default function Tools({ showToast }: ToolsProps) {
 					<form className="modal-content" onSubmit={handleConfigSave} style={{ maxWidth: '600px' }} noValidate>
 						<div className="modal-header">
 							<h2 id="config-modal-title" className="modal-title" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-								<Gear size={20} weight="bold" /> Configure {activeCategory}
+								<Gear size={20} weight="bold" /> Configure {activeTool ? activeTool : activeCategory}
 							</h2>
 							<button type="button" className="modal-close" onClick={() => setShowConfigModal(false)} aria-label="Close dialog">
 								<X size={18} weight="bold" />
@@ -478,13 +623,13 @@ export default function Tools({ showToast }: ToolsProps) {
 									</div>
 								)}
 							</div>
-						) : activeCategory.toLowerCase() === 'web' ? (
+						) : activeCategory.toLowerCase() === 'web' && activeTool === 'web_search' ? (
 							<div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-								{/* Search Provider Selection */}
+								{/* Only search-related fields for web_search */}
 								<div className="form-group">
 									<label className="form-label" htmlFor="search-provider">
 										Search Provider
-										<Tooltip content="Select the search provider backend." position="bottom" align="left" />
+										<Tooltip content="Select the search provider backend for web searches." position="bottom" align="left" />
 									</label>
 									<select
 										id="search-provider"
@@ -499,24 +644,6 @@ export default function Tools({ showToast }: ToolsProps) {
 									</select>
 								</div>
 
-								{/* Fetch Provider Selection */}
-								<div className="form-group">
-									<label className="form-label" htmlFor="fetch-provider">
-										Fetch Provider
-										<Tooltip content="Select the fetch provider backend." position="bottom" align="left" />
-									</label>
-									<select
-										id="fetch-provider"
-										className="form-select"
-										value={fetchProvider}
-										onChange={(e) => setFetchProvider(e.target.value)}
-									>
-										<option value="http">HTTP Client (Standard, low-memory)</option>
-										<option value="lightpanda">Lightpanda CLI (Exec-based fetcher)</option>
-									</select>
-								</div>
-
-								{/* Timeout Seconds */}
 								<div className="form-group">
 									<label className="form-label" htmlFor="web-timeout">
 										Timeout (Seconds)
@@ -532,39 +659,6 @@ export default function Tools({ showToast }: ToolsProps) {
 									/>
 								</div>
 
-								{/* Max Bytes */}
-								<div className="form-group">
-									<label className="form-label" htmlFor="web-max-bytes">
-										Max Response Bytes
-										<Tooltip content="Maximum allowed response size in bytes." position="bottom" align="left" />
-									</label>
-									<input
-										id="web-max-bytes"
-										type="number"
-										className="form-input"
-										value={maxBytes}
-										onChange={(e) => setMaxBytes(Number(e.target.value))}
-										placeholder="1048576"
-									/>
-								</div>
-
-								{/* User Agent */}
-								<div className="form-group">
-									<label className="form-label" htmlFor="web-user-agent">
-										User Agent
-										<Tooltip content="Custom HTTP User-Agent string." position="bottom" align="left" />
-									</label>
-									<input
-										id="web-user-agent"
-										type="text"
-										className="form-input"
-										value={userAgent}
-										onChange={(e) => setUserAgent(e.target.value)}
-										placeholder="e.g. Mozilla/5.0..."
-									/>
-								</div>
-
-								{/* Google CX */}
 								{searchProvider === 'google' && (
 									<div className="form-group">
 										<label className="form-label" htmlFor="web-google-cx">
@@ -583,7 +677,106 @@ export default function Tools({ showToast }: ToolsProps) {
 									</div>
 								)}
 
-								{/* Lightpanda Bin Path */}
+								{searchProvider === 'tavily' && (
+									<div className="form-group">
+										<label className="form-label" htmlFor="web-tavily-key">
+											Tavily API Key *
+											<Tooltip content="Your Tavily API key for search operations." position="bottom" align="left" />
+										</label>
+										<input
+											id="web-tavily-key"
+											type="password"
+											className="form-input"
+											value={tavilyAPIKey}
+											onChange={(e) => setTavilyAPIKey(e.target.value)}
+											placeholder="tvly-..."
+											required
+										/>
+									</div>
+								)}
+
+								{searchProvider === 'exa' && (
+									<div className="form-group">
+										<label className="form-label" htmlFor="web-exa-key">
+											Exa API Key *
+											<Tooltip content="Your Exa API key for search operations." position="bottom" align="left" />
+										</label>
+										<input
+											id="web-exa-key"
+											type="password"
+											className="form-input"
+											value={exaAPIKey}
+											onChange={(e) => setExaAPIKey(e.target.value)}
+											placeholder="exa_..."
+											required
+										/>
+									</div>
+								)}
+							</div>
+						) : activeCategory.toLowerCase() === 'web' && activeTool === 'web_fetch' ? (
+							<div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+								{/* Only fetch-related fields for web_fetch */}
+								<div className="form-group">
+									<label className="form-label" htmlFor="fetch-provider">
+										Fetch Provider
+										<Tooltip content="Select the fetch provider backend for retrieving web content." position="bottom" align="left" />
+									</label>
+									<select
+										id="fetch-provider"
+										className="form-select"
+										value={fetchProvider}
+										onChange={(e) => setFetchProvider(e.target.value)}
+									>
+										<option value="http">HTTP Client (Standard, low-memory)</option>
+										<option value="lightpanda">Lightpanda CLI (Exec-based fetcher)</option>
+									</select>
+								</div>
+
+								<div className="form-group">
+									<label className="form-label" htmlFor="web-user-agent">
+										User Agent
+										<Tooltip content="Custom HTTP User-Agent header." position="bottom" align="left" />
+									</label>
+									<input
+										id="web-user-agent"
+										type="text"
+										className="form-input"
+										value={userAgent}
+										onChange={(e) => setUserAgent(e.target.value)}
+										placeholder="e.g. Mozilla/5.0..."
+									/>
+								</div>
+
+								<div className="form-group">
+									<label className="form-label" htmlFor="web-timeout">
+										Timeout (Seconds)
+										<Tooltip content="Request timeout in seconds." position="bottom" align="left" />
+									</label>
+									<input
+										id="web-timeout"
+										type="number"
+										className="form-input"
+										value={timeoutSeconds}
+										onChange={(e) => setTimeoutSeconds(Number(e.target.value))}
+										placeholder="10"
+									/>
+								</div>
+
+								<div className="form-group">
+									<label className="form-label" htmlFor="web-max-bytes">
+										Max Response Bytes
+										<Tooltip content="Maximum allowed response size in bytes." position="bottom" align="left" />
+									</label>
+									<input
+										id="web-max-bytes"
+										type="number"
+										className="form-input"
+										value={maxBytes}
+										onChange={(e) => setMaxBytes(Number(e.target.value))}
+										placeholder="1048576"
+									/>
+								</div>
+
 								{fetchProvider === 'lightpanda' && (
 									<div className="form-group">
 										<label className="form-label" htmlFor="web-lp-bin-path">
