@@ -276,3 +276,94 @@ func TestGetSecretStatus_NotFound(t *testing.T) {
 		t.Errorf("expected 404, got %d", resp.StatusCode)
 	}
 }
+
+func TestListProviderModels_NotFound(t *testing.T) {
+	f := newHFixture(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/providers/{name}/models", f.h.ListProviderModels)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/api/providers/ghost/models")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestListProviderModels_Success(t *testing.T) {
+	f := newHFixture(t)
+	ctx := context.Background()
+	f.svc.CreateProvider(ctx, service.ProfileInput{Name: "models-prov", ProviderType: "openai"})
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/providers/{name}/models", f.h.ListProviderModels)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/api/providers/models-prov/models")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var result service.ProviderModelsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if result.Models == nil {
+		t.Error("expected models slice to be initialized, got nil")
+	}
+}
+
+func TestListProviderModels_EnumerationSuccess(t *testing.T) {
+	serverMock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"data": [
+				{"id": "mock-model-1"},
+				{"id": "mock-model-2"}
+			]
+		}`))
+	}))
+	defer serverMock.Close()
+
+	f := newHFixture(t)
+	ctx := context.Background()
+	f.svc.CreateProvider(ctx, service.ProfileInput{
+		Name:         "mock-prov-handler",
+		ProviderType: "openai",
+		APIBase:      serverMock.URL,
+	})
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/providers/{name}/models", f.h.ListProviderModels)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/api/providers/mock-prov-handler/models")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var result service.ProviderModelsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(result.Models) != 2 {
+		t.Errorf("expected 2 models, got %d", len(result.Models))
+	}
+	if result.Models[0].ID != "mock-model-1" || result.Models[1].ID != "mock-model-2" {
+		t.Errorf("unexpected models: %+v", result.Models)
+	}
+}

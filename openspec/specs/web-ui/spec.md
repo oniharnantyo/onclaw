@@ -222,3 +222,134 @@ saving. All page actions SHALL operate exclusively through the authenticated `/a
 - **WHEN** the user clicks the enabled toggle on a server row
 - **THEN** the page calls `POST /api/mcp/{name}/toggle` and the row's state updates
 
+### Requirement: The web app uses URL-based routing
+
+The system SHALL serve the management UI through a client-side router with one URL per primary surface, so that views are deep-linkable and browser back/forward navigation works. Agent configuration SHALL have its own URL rather than being a transient dialog. The default entry path SHALL redirect to the chat surface.
+
+#### Scenario: An agent configuration page is deep-linkable
+
+- **WHEN** a user navigates directly to the URL for a specific agent
+- **THEN** that agent's configuration page loads without first visiting another view
+
+#### Scenario: Browser navigation works across surfaces
+
+- **WHEN** a user moves between the chat, agents list, and an agent configuration page
+- **THEN** the browser back and forward buttons move between those views as expected
+
+### Requirement: Agent configuration is a dedicated page, not a dialog
+
+Creating and editing an agent SHALL happen on a dedicated page rather than a modal dialog. The
+create form SHALL be a focused identity+model form — agent name, provider, model and its discovered
+metadata, reasoning control, system prompt, workspace, max iterations, and default flag — and SHALL
+NOT present resource sections (tools, hooks, skills, MCP servers, memory, persona) at create time.
+Those resource sections SHALL appear only when editing an existing agent. A newly created agent
+SHALL receive all globally-enabled builtin tools by default, expressed as an empty per-agent tool
+allowlist, matching the `onclaw agent add` subcommand (which sets no allowlist). Global-scope
+resources (hooks, skills, and the MCP/tool registries) SHALL be manageable from the same page
+rendered for a reserved `global` scope, and the top-level navigation entries for those resources
+SHALL route there.
+
+#### Scenario: Creating an agent opens a focused page
+
+- **WHEN** the user chooses to add an agent
+- **THEN** a dedicated create page opens at a distinct URL (not a modal) showing only the
+  identity+model form, with no tools, hooks, skills, MCP, memory, or persona sections
+
+#### Scenario: A new agent defaults to all builtin tools
+
+- **WHEN** the user creates an agent through the web create form and saves
+- **THEN** the agent's per-agent tool allowlist is empty and the agent is offered every
+  globally-enabled builtin tool at run time, identical to `onclaw agent add <name> --provider <p>`
+
+#### Scenario: Resource sections appear when editing an existing agent
+
+- **WHEN** the user opens an existing agent's configuration page
+- **THEN** the page presents the tools, hooks, skills, MCP, memory, and persona sections scoped to
+  that agent, and the tools section renders an empty allowlist as "all tools enabled"
+
+#### Scenario: Global resources are managed on the same page
+
+- **WHEN** the user opens the global hooks view from navigation
+- **THEN** the agent configuration page renders in its global scope showing global hooks
+
+### Requirement: Editable configuration is rendered as structured fields
+
+Every editable configuration exposed in the agent page — including the per-agent memory configuration and MCP server selection — SHALL be rendered as one typed form field per property (selects, checkboxes, number and text inputs, each labeled with a tooltip and inline validation), driven by the configuration's schema. The UI SHALL NOT expose editable structured configuration as a single raw-JSON textarea. Free-text values whose content is genuinely unstructured (system prompt, persona markdown) MAY remain textareas.
+
+#### Scenario: The memory configuration form uses one field per property
+
+- **WHEN** the user edits an agent's memory configuration
+- **THEN** each feature toggle is a switch and each parameter is a typed input, and saving persists the structured configuration
+
+#### Scenario: A raw-JSON configuration editor is not offered
+
+- **WHEN** the user edits per-agent memory or MCP configuration
+- **THEN** no raw-JSON textarea is presented as the editing surface for that structured configuration
+
+### Requirement: The web agent-edit form preserves all agent fields across a save
+
+The web agent-edit page SHALL round-trip every persisted agent field unchanged when the user saves, regardless of whether model metadata has finished loading. In particular, a stored `reasoning_effort` and `reasoning_budget_tokens` SHALL be retained unless the user explicitly changes them, and the form SHALL NOT clear those fields as a side effect of a client-side model-capability guess. Reasoning capability SHALL be determined solely from the live model metadata returned by `/api/providers/{name}/models` (`thinking` flag and `reasoning_options`); the UI SHALL NOT infer reasoning support from the model's name (no provider-specific name regexes or prefixes), matching the `agent-update` requirement. When the selected model changes, the form SHALL re-resolve and store that model's discovered metadata into `model_metadata` so the persisted row reflects the chosen model (default metadata for a custom/unknown model), matching the `agent-update` requirement.
+
+#### Scenario: Reasoning effort survives an edit on a non-OpenAI reasoning model
+
+- **WHEN** the user edits an agent whose model is a reasoning model whose name does not start with `o1` or `o3` and whose `reasoning_effort` is `high`, and saves without touching the reasoning field
+- **THEN** `GET /api/agents/{name}` still returns `reasoning_effort: high` (the value is not wiped while model metadata loads)
+
+#### Scenario: Reasoning support is not inferred from the model name
+
+- **WHEN** the agent's model is a reasoning model and the `/api/providers/{name}/models` response flags it `thinking: true`
+- **THEN** the reasoning controls are shown and the stored reasoning value is preserved, with no fallback to a name-prefix check
+
+#### Scenario: Changing the model refreshes stored metadata
+
+- **WHEN** the user changes the agent's model to a discovered reasoning model and saves
+- **THEN** `GET /api/agents/{name}` returns `model_metadata` with `thinking: true` and the Agents list card shows the reasoning badge
+
+#### Scenario: A custom model is stored with default metadata
+
+- **WHEN** the user types a model name absent from enumeration and saves
+- **THEN** the agent is persisted with default metadata (context window 0, thinking false, text-only) and no error is shown
+
+### Requirement: The agent workspace is editable from the web UI
+
+The agent-edit Overview form SHALL expose `workspace` as a structured text field with a label, tooltip, and inline hint, and SHALL persist it through the existing agent update endpoint. The field SHALL NOT be presented as a raw-JSON editor. An empty value SHALL be valid and SHALL resolve to the agent's default workspace per the `agent-workspace` resolution precedence.
+
+#### Scenario: A workspace set in the UI is visible to the CLI
+
+- **WHEN** the user enters a workspace path on the agent-edit page and saves
+- **THEN** `onclaw agent show <name>` reports that workspace
+
+#### Scenario: An empty workspace resolves to the agent default
+
+- **WHEN** the user leaves the workspace field empty and saves
+- **THEN** the stored `workspace` is empty and the agent resolves its default workspace (`~/.onclaw/workspace/<agent>/`)
+
+#### Scenario: An existing workspace round-trips through an edit
+
+- **WHEN** the user opens an agent that already has a workspace and saves the Overview form without changing it
+- **THEN** the workspace value is unchanged after the save
+
+### Requirement: The agent-edit form exposes a checkbox-gated max-context override
+
+The web agent-edit Overview form SHALL expose the per-agent max-context override behind an "Override max context" checkbox. The checkbox state SHALL derive from the stored value — checked when `max_context_tokens > 0`, unchecked when it is `0`. When unchecked, the number input SHALL be disabled or hidden and the agent inherits the global default context window on save; when checked, the number input SHALL be enabled and accept a positive integer. Unchecking and saving SHALL store `max_context_tokens = 0` (inherit); checking and saving SHALL store the entered value. The checkbox maps to the existing `0 = inherit` sentinel and introduces no new storage field. The number field SHALL carry a label, tooltip, inline validation (positive integer), and a hint showing the global default, and MAY pre-fill with the selected model's discovered context window when the override is first enabled. The value SHALL be saved through the existing agent update endpoint as a typed integer (never a raw-JSON editor and never dropped due to undefined-omission).
+
+#### Scenario: The override is off by default and inherits the global value
+
+- **WHEN** the user opens an agent whose `max_context_tokens` is `0` (or creates a new agent)
+- **THEN** the "Override max context" checkbox is unchecked, the number field is disabled or hidden, and saving leaves the agent inheriting the global default context window
+
+#### Scenario: Checking the box enables the override
+
+- **WHEN** the user checks "Override max context", enters `32000`, and saves
+- **THEN** `onclaw agent show <name>` reports `max_context_tokens: 32000` and the agent assembles with a 32000-token context window
+
+#### Scenario: A previously-set override re-opens checked and populated
+
+- **WHEN** the user opens an agent with a stored `max_context_tokens` of `32000`
+- **THEN** the checkbox renders checked and the number field shows `32000`; saving without changing it leaves the value unchanged
+
+#### Scenario: Unchecking clears the override back to inherit
+
+- **WHEN** the user unchecks "Override max context" on an agent whose override was `32000` and saves
+- **THEN** the stored `max_context_tokens` becomes `0` and the agent assembles with the global default context window
+

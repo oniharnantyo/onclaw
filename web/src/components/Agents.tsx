@@ -1,15 +1,15 @@
-import React, { useState } from 'react';
-import Tooltip from './Tooltip';
+import { Link } from 'react-router-dom';
 import {
   Plus,
   Trash,
   PencilSimple,
   Robot,
-  X,
   Cpu,
   Wrench,
   Lightning,
   Star,
+  BookOpen,
+  Network,
 } from '@phosphor-icons/react';
 import type { Provider } from './Providers';
 
@@ -24,7 +24,11 @@ export interface Agent {
   workspace: string;
   tools: string;
   max_iterations: number;
+  max_context_tokens: number;
   is_default: boolean;
+  memory_config: string;
+  skills_count: number;
+  mcp_count: number;
 }
 
 interface AgentsProps {
@@ -34,75 +38,7 @@ interface AgentsProps {
   showToast: (msg: string, type?: 'success' | 'error') => void;
 }
 
-const DEFAULT_FORM = {
-  name: '',
-  provider: '',
-  model: '',
-  system_prompt: 'You are a helpful coding assistant.',
-  reasoning_effort: '',
-  max_iterations: 20,
-  tools: 'shell',
-  is_default: false,
-};
-
-export default function Agents({ agents, providers, loadAgents, showToast }: AgentsProps) {
-  const [showModal, setShowModal] = useState(false);
-  const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
-  const [agentForm, setAgentForm] = useState(DEFAULT_FORM);
-  const [isSaving, setIsSaving] = useState(false);
-
-  const openCreate = () => {
-    setEditingAgent(null);
-    setAgentForm({ ...DEFAULT_FORM, provider: providers[0]?.name || '' });
-    setShowModal(true);
-  };
-
-  const openEdit = (a: Agent) => {
-    setEditingAgent(a);
-    setAgentForm({
-      name: a.name,
-      provider: a.provider,
-      model: a.model,
-      system_prompt: a.system_prompt,
-      reasoning_effort: a.reasoning_effort,
-      max_iterations: a.max_iterations,
-      tools: a.tools,
-      is_default: a.is_default,
-    });
-    setShowModal(true);
-  };
-
-  const closeModal = () => {
-    setShowModal(false);
-    setEditingAgent(null);
-  };
-
-  const saveAgent = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsSaving(true);
-    const url = editingAgent ? `/api/agents/${editingAgent.name}` : '/api/agents';
-    const method = editingAgent ? 'PUT' : 'POST';
-    try {
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(agentForm),
-      });
-      if (res.ok) {
-        showToast(`Agent ${editingAgent ? 'updated' : 'created'} successfully`);
-        closeModal();
-        loadAgents();
-      } else {
-        const data = await res.json();
-        showToast(data.error || 'Failed to save agent', 'error');
-      }
-    } catch {
-      showToast('Failed to save agent', 'error');
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
+export default function Agents({ agents, loadAgents, showToast }: AgentsProps) {
   const deleteAgent = async (name: string) => {
     if (!confirm(`Delete agent "${name}"? This cannot be undone.`)) return;
     try {
@@ -118,10 +54,6 @@ export default function Agents({ agents, providers, loadAgents, showToast }: Age
     }
   };
 
-  const set = (field: keyof typeof DEFAULT_FORM) =>
-    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
-      setAgentForm({ ...agentForm, [field]: e.target.value });
-
   return (
     <div className="page-container">
       {/* Toolbar */}
@@ -131,14 +63,14 @@ export default function Agents({ agents, providers, loadAgents, showToast }: Age
             {agents.length} agent{agents.length !== 1 ? 's' : ''}
           </span>
         </div>
-        <button
+        <Link
           id="add-agent-btn"
           className="btn btn-primary btn-sm"
-          onClick={openCreate}
+          to="/agents/new"
         >
           <Plus size={14} weight="bold" aria-hidden />
           Add Agent
-        </button>
+        </Link>
       </div>
 
       {/* Agent cards */}
@@ -149,10 +81,10 @@ export default function Agents({ agents, providers, loadAgents, showToast }: Age
           </div>
           <h3>No agents configured</h3>
           <p>Create an agent to start routing AI conversations through your providers.</p>
-          <button className="btn btn-primary btn-sm" onClick={openCreate} style={{ marginTop: '8px' }}>
+          <Link to="/agents/new" className="btn btn-primary btn-sm" style={{ marginTop: '8px' }}>
             <Plus size={14} weight="bold" aria-hidden />
             Add your first agent
-          </button>
+          </Link>
         </div>
       ) : (
         <div className="grid" role="list" aria-label="AI agents">
@@ -191,29 +123,82 @@ export default function Agents({ agents, providers, loadAgents, showToast }: Age
                   <Cpu size={12} weight="duotone" style={{ color: 'var(--text-muted)', flexShrink: 0 }} aria-hidden />
                   <span className="card-meta">{a.provider} · <code style={{ fontSize: '11.5px' }}>{a.model}</code></span>
                 </div>
+
+                {/* Tools count */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                   <Wrench size={12} weight="duotone" style={{ color: 'var(--text-muted)', flexShrink: 0 }} aria-hidden />
-                  <span className="card-meta">{a.tools || 'no tools'}</span>
+                  {(() => {
+                    const toolList = a.tools ? a.tools.split(',').filter(t => t.trim()) : [];
+                    const toolCount = toolList.length;
+                    return (
+                      <span className="card-meta">
+                        {toolCount === 0 ? 'No tools' : `${toolCount} tool${toolCount !== 1 ? 's' : ''}`}
+                      </span>
+                    );
+                  })()}
                 </div>
-                {a.reasoning_effort && (
+
+                {/* Reasoning support indicator */}
+                {(() => {
+                  let reasoningSupported = false;
+                  let reasoningConfig = '';
+
+                  if (a.model_metadata) {
+                    try {
+                      const meta = JSON.parse(a.model_metadata);
+                      reasoningSupported = meta.thinking === true;
+                    } catch (e) {
+                      // If parsing fails, check reasoning_effort as fallback
+                      reasoningSupported = a.reasoning_effort !== undefined && a.reasoning_effort !== '';
+                    }
+                  }
+
+                  if (a.reasoning_effort) {
+                    reasoningConfig = a.reasoning_effort;
+                  }
+
+                  return reasoningSupported ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <Lightning size={12} weight="duotone" style={{ color: reasoningConfig ? 'var(--accent)' : 'var(--text-muted)', flexShrink: 0 }} aria-hidden />
+                      <span className="card-meta">
+                        {reasoningConfig ? `Reasoning: ${reasoningConfig}` : 'Reasoning supported'}
+                      </span>
+                    </div>
+                  ) : null;
+                })()}
+
+                {/* Skills count */}
+                {a.skills_count > 0 && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <Lightning size={12} weight="duotone" style={{ color: 'var(--text-muted)', flexShrink: 0 }} aria-hidden />
-                    <span className="card-meta">Reasoning: {a.reasoning_effort}</span>
+                    <BookOpen size={12} weight="duotone" style={{ color: 'var(--text-muted)', flexShrink: 0 }} aria-hidden />
+                    <span className="card-meta">
+                      {a.skills_count} skill{a.skills_count !== 1 ? 's' : ''}
+                    </span>
+                  </div>
+                )}
+
+                {/* MCP servers count */}
+                {a.mcp_count > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Network size={12} weight="duotone" style={{ color: 'var(--text-muted)', flexShrink: 0 }} aria-hidden />
+                    <span className="card-meta">
+                      {a.mcp_count} MCP server{a.mcp_count !== 1 ? 's' : ''}
+                    </span>
                   </div>
                 )}
               </div>
 
               {/* Actions */}
               <div className="card-actions">
-                <button
+                <Link
                   id={`edit-agent-${a.name}`}
                   className="btn btn-secondary btn-sm"
-                  onClick={() => openEdit(a)}
+                  to={`/agents/${a.name}`}
                   aria-label={`Edit agent ${a.name}`}
                 >
                   <PencilSimple size={13} weight="bold" aria-hidden />
                   Edit
-                </button>
+                </Link>
                 <button
                   id={`delete-agent-${a.name}`}
                   className="btn btn-danger btn-sm"
@@ -226,186 +211,6 @@ export default function Agents({ agents, providers, loadAgents, showToast }: Age
               </div>
             </div>
           ))}
-        </div>
-      )}
-
-      {/* Modal */}
-      {showModal && (
-        <div
-          className="modal-overlay"
-          onClick={(e) => { if (e.target === e.currentTarget) closeModal(); }}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="agent-modal-title"
-        >
-          <form className="modal-content" onSubmit={saveAgent} noValidate>
-            <div className="modal-header">
-              <h2 id="agent-modal-title" className="modal-title">
-                {editingAgent ? `Edit: ${editingAgent.name}` : 'Add AI Agent'}
-              </h2>
-              <button
-                type="button"
-                className="modal-close"
-                onClick={closeModal}
-                aria-label="Close dialog"
-              >
-                <X size={18} weight="bold" />
-              </button>
-            </div>
-
-            {!editingAgent && (
-              <div className="form-group">
-                <label className="form-label" htmlFor="agent-name">
-                  Name
-                  <Tooltip content="Unique identifier name for this agent." position="bottom" align="left" />
-                </label>
-                <input
-                  id="agent-name"
-                  type="text"
-                  className="form-input"
-                  value={agentForm.name}
-                  onChange={set('name')}
-                  placeholder="e.g. master, coder, analyst"
-                  required
-                  autoFocus
-                />
-              </div>
-            )}
-
-            <div className="form-group">
-              <label className="form-label" htmlFor="agent-provider">
-                LLM Provider
-                <Tooltip content="Choose the model provider profile configured for this agent." position="bottom" align="left" />
-              </label>
-              <select
-                id="agent-provider"
-                className="form-select"
-                value={agentForm.provider}
-                onChange={set('provider')}
-                required
-              >
-                <option value="">Select a provider…</option>
-                {providers.map((p) => (
-                  <option key={p.name} value={p.name}>{p.name} ({p.provider_type})</option>
-                ))}
-              </select>
-            </div>
-
-            <div className="form-group">
-              <label className="form-label" htmlFor="agent-model">
-                Model Name
-                <Tooltip content="The specific model identifier to request (e.g. gpt-4o, claude-3-5-sonnet)." position="bottom" align="left" />
-              </label>
-              <input
-                id="agent-model"
-                type="text"
-                className="form-input"
-                value={agentForm.model}
-                onChange={set('model')}
-                placeholder="e.g. gpt-4o, claude-opus-4-5"
-                required
-              />
-            </div>
-
-            <div className="form-group">
-              <label className="form-label" htmlFor="agent-prompt">
-                System Prompt
-                <Tooltip content="Instruction set defining the agent's character, constraints, and instructions." position="bottom" align="left" />
-              </label>
-              <textarea
-                id="agent-prompt"
-                className="form-textarea"
-                value={agentForm.system_prompt}
-                onChange={set('system_prompt')}
-                placeholder="Describe the agent's role and capabilities…"
-                style={{ minHeight: '90px' }}
-              />
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label" htmlFor="agent-reasoning">
-                  Reasoning Effort
-                  <Tooltip content="Controls the amount of reasoning tokens allocated (only supported by reasoning models)." position="bottom" align="left" />
-                </label>
-                <select
-                  id="agent-reasoning"
-                  className="form-select"
-                  value={agentForm.reasoning_effort}
-                  onChange={set('reasoning_effort')}
-                >
-                  <option value="">None (default)</option>
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                </select>
-              </div>
-
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label" htmlFor="agent-iterations">
-                  Max Iterations
-                  <Tooltip content="The maximum execution loop turns the agent is allowed to take before stopping." position="bottom" align="right" />
-                </label>
-                <input
-                  id="agent-iterations"
-                  type="number"
-                  className="form-input"
-                  value={agentForm.max_iterations}
-                  onChange={(e) => setAgentForm({ ...agentForm, max_iterations: parseInt(e.target.value) || 20 })}
-                  min="1"
-                  max="100"
-                  required
-                />
-              </div>
-            </div>
-
-            <div className="form-group">
-              <label className="form-label" htmlFor="agent-tools">
-                Tools (comma-separated)
-                <Tooltip content="Comma-separated list of enabled tools the agent can execute (e.g. read_file, run_command)." position="bottom" align="left" />
-              </label>
-              <input
-                id="agent-tools"
-                type="text"
-                className="form-input"
-                value={agentForm.tools}
-                onChange={set('tools')}
-                placeholder="e.g. shell, file_read, web_search"
-              />
-              <span className="form-hint">Leave empty to disable tool use</span>
-            </div>
-
-            <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={agentForm.is_default}
-                onChange={(e) => setAgentForm({ ...agentForm, is_default: e.target.checked })}
-                style={{ width: '15px', height: '15px', accentColor: 'var(--accent)', cursor: 'pointer' }}
-              />
-              <span className="form-label" style={{ margin: 0, cursor: 'pointer' }}>
-                Set as default agent
-              </span>
-            </label>
-
-            <div className="modal-footer">
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={closeModal}
-                disabled={isSaving}
-              >
-                Cancel
-              </button>
-              <button
-                id="save-agent-btn"
-                type="submit"
-                className="btn btn-primary"
-                disabled={isSaving}
-              >
-                {isSaving ? 'Saving…' : editingAgent ? 'Save Changes' : 'Create Agent'}
-              </button>
-            </div>
-          </form>
         </div>
       )}
     </div>

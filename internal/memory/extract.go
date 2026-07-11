@@ -22,6 +22,7 @@ func ExtractAndFlush(
 	agentName string,
 	conversationID int64,
 	messages []*schema.AgenticMessage,
+	skipSecurityScan bool,
 ) error {
 	cursorKey := fmt.Sprintf("memory_cursor:%d", conversationID)
 	var lastCursor int64
@@ -114,6 +115,12 @@ Conversation Segment:
 		line = strings.TrimSpace(line)
 		if line == "" || strings.ToUpper(line) == "NONE" {
 			continue
+		}
+
+		if !skipSecurityScan {
+			if err := ScanContent(line); err != nil {
+				continue
+			}
 		}
 
 		var vector []float32

@@ -31,6 +31,7 @@ type AgentStore interface {
 	ListAgents(ctx context.Context) ([]*Agent, error)
 	UpdateAgent(ctx context.Context, a *Agent) error
 	RemoveAgent(ctx context.Context, name string) error
+	UpdateAgentTools(ctx context.Context, name string, tools string) error
 }
 
 // ConversationStore defines operations for persisting and retrieving conversation history.
@@ -60,6 +61,8 @@ type MCPServerStore interface {
 	ListServers(ctx context.Context) ([]*MCPServer, error)
 	UpdateServer(ctx context.Context, s *MCPServer) error
 	RemoveServer(ctx context.Context, name string) error
+	ListAgentServers(ctx context.Context, agentName string) ([]*MCPServer, error)
+	SetAgentServerEnabled(ctx context.Context, agentName string, serverName string, enabled bool) error
 }
 
 // HookStore defines operations for managing agent hooks.

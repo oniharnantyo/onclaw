@@ -2,9 +2,11 @@ package service_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/oniharnantyo/onclaw/internal/api/service"
+	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
 func TestService_CreateAgent_IsDefault(t *testing.T) {
@@ -101,14 +103,93 @@ func TestService_GetAgent_NotFound(t *testing.T) {
 	}
 }
 
+func TestService_SetAgentTools_EmptyAllowlist(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	// Seed the tool registry with four builtin tools.
+	registry := []string{"read_file", "write_file", "list_dir", "shell"}
+	for _, name := range registry {
+		f.toolStore.UpsertTool(ctx, &store.ToolRegistry{Name: name, Enabled: 1})
+	}
+
+	// Agent created via the web create form / CLI carries an empty allowlist = all tools.
+	f.svc.CreateAgent(ctx, service.AgentInput{Name: "empty-agent", Provider: "openai"})
+	if got := mustAgentTools(t, f, "empty-agent"); got != "" {
+		t.Fatalf("expected empty allowlist initially, got %q", got)
+	}
+
+	// Disabling one tool from the all-state stores every other registry tool.
+	if err := f.svc.SetAgentTools(ctx, "empty-agent", "read_file", false); err != nil {
+		t.Fatalf("SetAgentTools: %v", err)
+	}
+	got := splitSet(mustAgentTools(t, f, "empty-agent"))
+	want := splitSet("write_file,list_dir,shell")
+	if !equalSet(got, want) {
+		t.Errorf("after disabling read_file, expected %v, got %v", want, got)
+	}
+
+	// Disabling a second tool from the all-derived state removes it too.
+	if err := f.svc.SetAgentTools(ctx, "empty-agent", "shell", false); err != nil {
+		t.Fatalf("SetAgentTools: %v", err)
+	}
+	got = splitSet(mustAgentTools(t, f, "empty-agent"))
+	want = splitSet("write_file,list_dir")
+	if !equalSet(got, want) {
+		t.Errorf("after disabling shell, expected %v, got %v", want, got)
+	}
+
+	// Enabling an already-present tool is a no-op (the list is unchanged).
+	if err := f.svc.SetAgentTools(ctx, "empty-agent", "write_file", true); err != nil {
+		t.Fatalf("SetAgentTools: %v", err)
+	}
+	got = splitSet(mustAgentTools(t, f, "empty-agent"))
+	want = splitSet("write_file,list_dir")
+	if !equalSet(got, want) {
+		t.Errorf("enabling an already-present tool should be a no-op, got %v", got)
+	}
+}
+
+func mustAgentTools(t *testing.T, f *fixture, name string) string {
+	t.Helper()
+	a, err := f.svc.GetAgent(context.Background(), name)
+	if err != nil {
+		t.Fatalf("GetAgent %q: %v", name, err)
+	}
+	return a.Tools
+}
+
+func splitSet(s string) map[string]bool {
+	out := make(map[string]bool)
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out[p] = true
+		}
+	}
+	return out
+}
+
+func equalSet(a, b map[string]bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k := range a {
+		if !b[k] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestService_UpdateAgent(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
-	f.svc.CreateAgent(ctx, service.AgentInput{Name: "updatable", Provider: "openai", Model: "gpt-3"})
+	f.svc.CreateAgent(ctx, service.AgentInput{Name: "updatable", Provider: "openai", Model: "gpt-3", MaxContextTokens: 2000})
 	_, err := f.svc.UpdateAgent(ctx, "updatable", service.AgentInput{
 		Provider: "anthropic",
 		Model:    "claude-3",
+		MaxContextTokens: 4000,
 	})
 	if err != nil {
 		t.Fatalf("UpdateAgent: %v", err)
@@ -117,6 +198,9 @@ func TestService_UpdateAgent(t *testing.T) {
 	v, _ := f.svc.GetAgent(ctx, "updatable")
 	if v.Provider != "anthropic" {
 		t.Errorf("expected Provider=anthropic, got %q", v.Provider)
+	}
+	if v.MaxContextTokens != 4000 {
+		t.Errorf("expected MaxContextTokens=4000, got %d", v.MaxContextTokens)
 	}
 }
 

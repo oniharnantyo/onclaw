@@ -16,19 +16,21 @@ func TestMemoryStore(t *testing.T) {
 	ms := sqlite.NewMemoryStore(db)
 
 	doc1 := &memory.MemoryDocument{
-		Agent:   "test-agent",
-		Scope:   "project-1",
-		Kind:    "curated",
-		Content: "Use Go for implementing core logic.",
-		Source:  "test",
+		Agent:          "test-agent",
+		Scope:          "project-1",
+		Kind:           "curated",
+		Content:        "Use Go for implementing core logic.",
+		Source:         "test",
+		EmbeddingModel: "test-model",
 	}
 
 	doc2 := &memory.MemoryDocument{
-		Agent:   "test-agent",
-		Scope:   "global",
-		Kind:    "curated",
-		Content: "Always prioritize security scans.",
-		Source:  "test",
+		Agent:          "test-agent",
+		Scope:          "global",
+		Kind:           "curated",
+		Content:        "Always prioritize security scans.",
+		Source:         "test",
+		EmbeddingModel: "test-model",
 	}
 
 	id1, err := ms.IndexDocument(ctx, doc1, []float32{0.1, 0.2, 0.3})
@@ -53,10 +55,11 @@ func TestMemoryStore(t *testing.T) {
 	// 2. SearchArchive (FTS and Cosine ranking)
 	// Query FTS matching "security"
 	res, err := ms.SearchArchive(ctx, &memory.ArchiveQuery{
-		Query: "security",
-		Agent: "test-agent",
-		Scope: "project-1",
-		Limit: 10,
+		Query:          "security",
+		Agent:          "test-agent",
+		Scope:          "project-1",
+		EmbeddingModel: "test-model",
+		Limit:          10,
 	})
 	if err != nil {
 		t.Fatalf("failed to search archive: %v", err)
@@ -70,7 +73,8 @@ func TestMemoryStore(t *testing.T) {
 
 	// 3. Embedding cache
 	hash := "some-content-hash"
-	cached, err := ms.GetCachedEmbedding(ctx, hash)
+	modelName := "test-model"
+	cached, err := ms.GetCachedEmbedding(ctx, modelName, hash)
 	if err != nil {
 		t.Fatalf("failed to get cached embedding: %v", err)
 	}
@@ -79,12 +83,12 @@ func TestMemoryStore(t *testing.T) {
 	}
 
 	vec := []float32{0.9, 0.8, 0.7}
-	err = ms.PutCachedEmbedding(ctx, hash, vec)
+	err = ms.PutCachedEmbedding(ctx, modelName, hash, vec)
 	if err != nil {
 		t.Fatalf("failed to put cached embedding: %v", err)
 	}
 
-	cached, err = ms.GetCachedEmbedding(ctx, hash)
+	cached, err = ms.GetCachedEmbedding(ctx, modelName, hash)
 	if err != nil {
 		t.Fatalf("failed to get cached embedding: %v", err)
 	}

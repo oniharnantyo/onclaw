@@ -139,6 +139,16 @@ func (f *hFakeAgentStore) RemoveAgent(_ context.Context, name string) error {
 	delete(f.agents, name)
 	return nil
 }
+func (f *hFakeAgentStore) UpdateAgentTools(_ context.Context, name string, tools string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	a, ok := f.agents[name]
+	if !ok {
+		return fmt.Errorf("agent not found")
+	}
+	a.Tools = tools
+	return nil
+}
 
 type hFakeKVStore struct {
 	mu   sync.RWMutex
@@ -233,6 +243,12 @@ func (f *hFakeMCPStore) RemoveServer(_ context.Context, name string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.servers, name)
+	return nil
+}
+func (f *hFakeMCPStore) ListAgentServers(ctx context.Context, agentName string) ([]*store.MCPServer, error) {
+	return f.ListServers(ctx)
+}
+func (f *hFakeMCPStore) SetAgentServerEnabled(ctx context.Context, agentName string, serverName string, enabled bool) error {
 	return nil
 }
 

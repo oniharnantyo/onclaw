@@ -63,25 +63,27 @@ Text to analyze:
 
 // ExtractEntitiesWithSecurity extracts entities and applies security scanning.
 // Returns error if security threats are detected in the extracted content.
-func ExtractEntitiesWithSecurity(ctx context.Context, chatModel model.AgenticModel, text string, agentName string, sourceID string) (*Extraction, error) {
+func ExtractEntitiesWithSecurity(ctx context.Context, chatModel model.AgenticModel, text string, agentName string, sourceID string, skipSecurityScan bool) (*Extraction, error) {
 	ext, err := ExtractEntities(ctx, chatModel, text)
 	if err != nil {
 		return nil, err
 	}
 
-	// Security scan: check all entity names and relation predicates
-	for _, ent := range ext.Entities {
-		if err := ScanContent(ent.Type); err != nil {
-			return nil, fmt.Errorf("security threat in entity type %q: %w", ent.Type, err)
+	if !skipSecurityScan {
+		// Security scan: check all entity names and relation predicates
+		for _, ent := range ext.Entities {
+			if err := ScanContent(ent.Type); err != nil {
+				return nil, fmt.Errorf("security threat in entity type %q: %w", ent.Type, err)
+			}
+			if err := ScanContent(ent.Name); err != nil {
+				return nil, fmt.Errorf("security threat in entity name %q: %w", ent.Name, err)
+			}
 		}
-		if err := ScanContent(ent.Name); err != nil {
-			return nil, fmt.Errorf("security threat in entity name %q: %w", ent.Name, err)
-		}
-	}
 
-	for _, rel := range ext.Relations {
-		if err := ScanContent(rel.Predicate); err != nil {
-			return nil, fmt.Errorf("security threat in relation predicate %q: %w", rel.Predicate, err)
+		for _, rel := range ext.Relations {
+			if err := ScanContent(rel.Predicate); err != nil {
+				return nil, fmt.Errorf("security threat in relation predicate %q: %w", rel.Predicate, err)
+			}
 		}
 	}
 

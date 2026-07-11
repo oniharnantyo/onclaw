@@ -30,6 +30,7 @@ func SeedWorkspace(workspace string) error {
 		"IDENTITY.md":     "IDENTITY.md",
 		"SOUL.md":         "SOUL.md",
 		"CAPABILITIES.md": "CAPABILITIES.md",
+		"TOOLS.md":        "TOOLS.md",
 		"USER.md":         "USER.md",
 		"MEMORY.md":       "MEMORY.md",
 		"AGENTS.md":       "AGENTS.md",

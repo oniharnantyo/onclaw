@@ -22,6 +22,11 @@ export function MessageRoot({ children, message, index, isLast, className = '' }
 
   const roleClass = message.role === 'user' ? 'message-user' : 'message-assistant';
 
+  // Don't render the container if there are no content blocks
+  if (!message.content_blocks || message.content_blocks.length === 0) {
+    return null;
+  }
+
   return (
     <MessageContext.Provider value={value}>
       <div
@@ -62,6 +67,10 @@ export interface MessagePartsProps {
 export function MessageParts({ children }: MessagePartsProps) {
   const { message } = useMessage();
   const groups = memoizedGroupBlocks(message.content_blocks);
+
+  if (!groups || groups.length === 0) {
+    return null;
+  }
 
   return (
     <div className="message-parts" role="none">

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-**onclaw** is an on-device AI coding agent CLI built for **low-resource single-board computers (~2 GB RAM, 8 GB storage)** — Raspberry Pi / Orange Pi class. Every design choice optimizes for that: a single statically-linked binary (`CGO_ENABLED=0`), a pure-Go SQLite (no CGO/libc dependency so it cross-compiles to ARM), and conservative defaults (`concurrency: 1`, `max_context_tokens: 8192`). Keep memory footprint in mind when adding features.
+**onclaw** is an on-device AI coding agent CLI built for **low-resource single-board computers (~2 GB RAM, 8 GB storage)** — Raspberry Pi / Orange Pi class. Every design choice optimizes for that: a single statically-linked binary (`CGO_ENABLED=0`), a pure-Go SQLite (no CGO/libc dependency so it cross-compiles to ARM), and conservative defaults (`concurrency: 1`, `max_context_tokens: 64000`). Keep memory footprint in mind when adding features.
 
 > **Status:** CLI shell + provider/secrets storage layer are implemented. The agent itself is **not** — `onclaw run` is a placeholder, `internal/agent/` is a stub, and only a stub LLM adapter is registered.
 
@@ -53,10 +53,18 @@ Every configuration dialog MUST render **one form field per config property** (s
 - **A read-only JSON preview (`<pre>` pretty-print) is fine for *displaying* stored config** (e.g. a hook's stored config in a details panel), never for editing it.
 - **Free-text/code values whose content is genuinely unstructured stay as `<textarea>`s** — hook scripts (`Hooks.tsx`), agent system prompts (`Agents.tsx`). That is a value, not structured config.
 
-Known current offenders to bring up to this rule: the Browser config dialog (`web/src/components/Tools.tsx`) and the MCP server `env` field (`web/src/components/MCP.tsx`) both currently edit raw JSON.
-
 ## Conventions
 
 - **OpenSpec** (`openspec/`) drives planned changes — proposals under `openspec/changes/`, specs under `openspec/specs/`. Check there before designing non-trivial features.
 - **Testing**: All test files in `internal/...` must be black-box (use `<pkg>_test` packages and qualification) unless a private algorithm requires direct unit testing (rare). Re-export unexported helpers only via `export_test.go` (e.g. `var BuildConfig = buildConfig`). Every `internal/...` package must maintain ≥ 70.0% statement coverage, except documented exemptions recorded in the `testing-conventions` spec.
 - **IMPORTANT**: Go style + the store-package layout rules live in `.claude/rules/coding-style.md` (tabs/gofmt, separate contract/types/impl files, `errors.Is`-friendly `%w` wrapping, `context.Context` first param). You should strictly follow the rules.
+
+### Web UI Routing and Pages
+
+Frontend routing is managed via `react-router-dom` in `web/src/pages/` and `App.tsx`.
+- `/chat`: Live chat page.
+- `/agents`: Agent list page.
+- `/agents/new`: Create agent page.
+- `/agents/:name`: Detailed agent configuration page (tabbed sections: Overview, Hooks, Skills, Memory, MCP, Tools, Persona).
+- `/memory`, `/mcp`, `/tools`, `/hooks`, `/skills`: Aggregate top-level pages displaying resources across all scopes (global + all agents).
+- `/providers`: LLM providers configuration page.

@@ -1,5 +1,5 @@
 import { createContext, useContext, useReducer, useCallback, useRef, useEffect, type ReactNode } from 'react';
-import type { ChatMessage, ContentBlock, Conversation, SSEInitEvent, SSEMessageEvent } from '../types/chat';
+import type { ChatMessage, ContentBlock, Conversation, SSEInitEvent, SSEMessageEvent, SSETurnEvent } from '../types/chat';
 
 /* ── State ─────────────────────────────────────────────────── */
 
@@ -12,6 +12,8 @@ interface ChatState {
   chatAgent: string;
   agents: { name: string; is_default: boolean }[];
   skills: { name: string; description: string }[];
+  contextWindow: number;
+  contextUsed: number;
 }
 
 type ChatAction =
@@ -24,7 +26,9 @@ type ChatAction =
   | { type: 'SET_ACTIVE_CONV_ID'; id: number | null }
   | { type: 'SET_AGENTS'; agents: { name: string; is_default: boolean }[] }
   | { type: 'SET_CHAT_AGENT'; name: string }
-  | { type: 'SET_SKILLS'; skills: { name: string; description: string }[] };
+  | { type: 'SET_SKILLS'; skills: { name: string; description: string }[] }
+  | { type: 'SET_CONTEXT_WINDOW'; windowSize: number }
+  | { type: 'SET_CONTEXT_USED'; usedSize: number };
 
 function chatReducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
@@ -76,7 +80,7 @@ function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return { ...state, conversations: action.conversations || [] };
     case 'SET_ACTIVE_CONV_ID': {
       if (action.id === state.activeConvID) return state;
-      return { ...state, activeConvID: action.id, messages: [] };
+      return { ...state, activeConvID: action.id, messages: [], contextWindow: 0, contextUsed: 0 };
     }
     case 'SET_AGENTS':
       return { ...state, agents: action.agents };
@@ -84,6 +88,10 @@ function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return { ...state, chatAgent: action.name };
     case 'SET_SKILLS':
       return { ...state, skills: action.skills };
+    case 'SET_CONTEXT_WINDOW':
+      return { ...state, contextWindow: action.windowSize };
+    case 'SET_CONTEXT_USED':
+      return { ...state, contextUsed: action.usedSize };
     default:
       return state;
   }
@@ -137,6 +145,8 @@ export default function ChatProvider({
     chatAgent: defaultAgent,
     agents: initialAgents,
     skills: initialSkills,
+    contextWindow: 0,
+    contextUsed: 0,
   });
 
   // Sync state when props change (fix for race condition)
@@ -170,7 +180,18 @@ export default function ChatProvider({
     try {
       const res = await fetch(`/api/conversations/${convId}/messages`);
       if (res.ok) {
-        const rawMsgs = (await res.json()) || [];
+        const payload = await res.json();
+        const rawMsgs = payload.messages || [];
+        const contextWindow = payload.context_window || 0;
+        dispatch({ type: 'SET_CONTEXT_WINDOW', windowSize: contextWindow });
+
+        let contextUsed = 0;
+        if (rawMsgs.length > 0) {
+          const lastTurn = rawMsgs[rawMsgs.length - 1];
+          contextUsed = lastTurn.prompt_tokens ?? lastTurn.total_tokens ?? 0;
+        }
+        dispatch({ type: 'SET_CONTEXT_USED', usedSize: contextUsed });
+
         const parsedMsgs: ChatMessage[] = [];
         for (const turn of rawMsgs) {
           let messages: any[] = [];
@@ -179,6 +200,72 @@ export default function ChatProvider({
           } catch {
             messages = [];
           }
+          // Track messages properties to implement Q/A fallbacks
+          let hasUserMsg = false;
+          let assistantMsg: any = null;
+          let hasAssistantText = false;
+
+          for (const msg of messages) {
+            let role = msg.role as 'user' | 'assistant' | 'system';
+            let content_blocks = msg.content_blocks || [];
+
+            // Handle flat schema.Message formatting where text is under the 'content' key
+            if (content_blocks.length === 0 && typeof msg.content === 'string' && msg.content) {
+              if (role === 'user') {
+                content_blocks = [{
+                  type: 'user_input_text',
+                  user_input_text: { text: msg.content }
+                }];
+              } else if (role === 'assistant') {
+                content_blocks = [{
+                  type: 'assistant_gen_text',
+                  assistant_gen_text: { text: msg.content }
+                }];
+              }
+            }
+
+            if (role === 'user') {
+              hasUserMsg = true;
+            } else if (role === 'assistant') {
+              assistantMsg = msg;
+              if (content_blocks.some((b: any) => b.assistant_gen_text?.text?.trim())) {
+                hasAssistantText = true;
+              }
+            }
+            msg.content_blocks = content_blocks;
+          }
+
+          // Fallback check for missing user message
+          if (!hasUserMsg && typeof turn.question === 'string' && turn.question.trim()) {
+            messages.unshift({
+              role: 'user',
+              content_blocks: [{
+                type: 'user_input_text',
+                user_input_text: { text: turn.question }
+              }]
+            });
+          }
+
+          // Fallback check for missing assistant response text
+          if (typeof turn.answer === 'string' && turn.answer.trim()) {
+            if (assistantMsg) {
+              if (!hasAssistantText) {
+                assistantMsg.content_blocks.push({
+                  type: 'assistant_gen_text',
+                  assistant_gen_text: { text: turn.answer }
+                });
+              }
+            } else {
+              messages.push({
+                role: 'assistant',
+                content_blocks: [{
+                  type: 'assistant_gen_text',
+                  assistant_gen_text: { text: turn.answer }
+                }]
+              });
+            }
+          }
+
           for (const msg of messages) {
             let role = msg.role as 'user' | 'assistant' | 'system';
             const content_blocks = msg.content_blocks || [];
@@ -231,6 +318,7 @@ export default function ChatProvider({
         { type: 'user_input_text', user_input_text: { text: prompt } },
         ...(attachments || []),
       ],
+      created_at: new Date().toISOString(),
     };
 
     dispatch({ type: 'STREAM_INIT', userMsg });
@@ -297,6 +385,9 @@ export default function ChatProvider({
                 tempConvID = initData.conversation_id;
                 activeConvIDRef.current = tempConvID;
                 dispatch({ type: 'SET_ACTIVE_CONV_ID', id: tempConvID });
+                if (initData.context_window) {
+                  dispatch({ type: 'SET_CONTEXT_WINDOW', windowSize: initData.context_window });
+                }
                 if (!convSet) {
                   convSet = true;
                   fetchConversations();
@@ -308,6 +399,12 @@ export default function ChatProvider({
                   conversationID: tempConvID!,
                   blocks: msgData.content_blocks || [],
                 });
+              } else if (event === 'turn') {
+                const turnData = data as SSETurnEvent;
+                const used = turnData.prompt_tokens ?? turnData.tokens;
+                if (typeof used === 'number') {
+                  dispatch({ type: 'SET_CONTEXT_USED', usedSize: used });
+                }
               } else if (event === 'error') {
                 const errData = data as { error: string };
                 showToast(errData.error || 'Stream error occurred', 'error');

@@ -41,13 +41,13 @@ func (m *mockEmbedStore) GetDocument(_ context.Context, _ int64) (*memory.Memory
 	return nil, nil
 }
 func (m *mockEmbedStore) DeleteDocument(_ context.Context, _ int64) error { return nil }
-func (m *mockEmbedStore) GetCachedEmbedding(_ context.Context, hash string) ([]float32, error) {
+func (m *mockEmbedStore) GetCachedEmbedding(_ context.Context, _ string, hash string) ([]float32, error) {
 	if m.cache == nil {
 		return nil, nil
 	}
 	return m.cache[hash], nil
 }
-func (m *mockEmbedStore) PutCachedEmbedding(_ context.Context, hash string, vec []float32) error {
+func (m *mockEmbedStore) PutCachedEmbedding(_ context.Context, _ string, hash string, vec []float32) error {
 	if m.cache == nil {
 		m.cache = make(map[string][]float32)
 	}
@@ -56,7 +56,7 @@ func (m *mockEmbedStore) PutCachedEmbedding(_ context.Context, hash string, vec 
 }
 
 func TestEmbedder_EmptyText(t *testing.T) {
-	e := memory.NewEmbedder(nil, nil)
+	e := memory.NewEmbedder(nil, nil, "mock-model")
 	vec, err := e.Embed(context.Background(), "")
 	if err != nil || vec != nil {
 		t.Errorf("expected nil, nil for empty text; got vec=%v err=%v", vec, err)
@@ -64,7 +64,7 @@ func TestEmbedder_EmptyText(t *testing.T) {
 }
 
 func TestEmbedder_NilProvider_ReturnNil(t *testing.T) {
-	e := memory.NewEmbedder(nil, nil)
+	e := memory.NewEmbedder(nil, nil, "mock-model")
 	vec, err := e.Embed(context.Background(), "some text")
 	if err != nil || vec != nil {
 		t.Errorf("expected nil, nil when provider is nil (FTS-only mode); got vec=%v err=%v", vec, err)
@@ -76,9 +76,9 @@ func TestEmbedder_CacheHit(t *testing.T) {
 	provider := &mockEinoEmbedder{} // never called; cache should intercept
 
 	hash := memory.ComputeHash("hello")
-	_ = store.PutCachedEmbedding(context.Background(), hash, []float32{0.1, 0.2})
+	_ = store.PutCachedEmbedding(context.Background(), "mock-model", hash, []float32{0.1, 0.2})
 
-	e := memory.NewEmbedder(store, provider)
+	e := memory.NewEmbedder(store, provider, "mock-model")
 	vec, err := e.Embed(context.Background(), "hello")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -97,7 +97,7 @@ func TestEmbedder_HappyPath_CachesResult(t *testing.T) {
 		vecs: [][]float64{{0.5, -0.5, 0.1}},
 	}
 
-	e := memory.NewEmbedder(store, provider)
+	e := memory.NewEmbedder(store, provider, "mock-model")
 	vec, err := e.Embed(context.Background(), "test content")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -108,7 +108,7 @@ func TestEmbedder_HappyPath_CachesResult(t *testing.T) {
 
 	// Verify it cached the result.
 	hash := memory.ComputeHash("test content")
-	cached, _ := store.GetCachedEmbedding(context.Background(), hash)
+	cached, _ := store.GetCachedEmbedding(context.Background(), "mock-model", hash)
 	if len(cached) != 3 || cached[0] != 0.5 {
 		t.Errorf("vector was not cached correctly: %v", cached)
 	}
@@ -123,7 +123,7 @@ func TestEmbedder_HappyPath_CachesResult(t *testing.T) {
 
 func TestEmbedder_ProviderError(t *testing.T) {
 	provider := &mockEinoEmbedder{err: fmt.Errorf("provider unavailable")}
-	e := memory.NewEmbedder(nil, provider)
+	e := memory.NewEmbedder(nil, provider, "mock-model")
 	_, err := e.Embed(context.Background(), "fail content")
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -135,7 +135,7 @@ func TestEmbedder_ProviderError(t *testing.T) {
 
 func TestEmbedder_ProviderEmptyResult(t *testing.T) {
 	provider := &mockEinoEmbedder{vecs: [][]float64{}} // empty slice
-	e := memory.NewEmbedder(nil, provider)
+	e := memory.NewEmbedder(nil, provider, "mock-model")
 	_, err := e.Embed(context.Background(), "empty response")
 	if err == nil || !strings.Contains(err.Error(), "empty vector") {
 		t.Errorf("expected 'empty vector' error, got: %v", err)
@@ -146,7 +146,7 @@ func TestEmbedder_Float64ToFloat32Conversion(t *testing.T) {
 	provider := &mockEinoEmbedder{
 		vecs: [][]float64{{1.0, 2.0, 3.0}},
 	}
-	e := memory.NewEmbedder(nil, provider)
+	e := memory.NewEmbedder(nil, provider, "mock-model")
 	vec, err := e.Embed(context.Background(), "conversion test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -160,7 +160,7 @@ func TestEmbedder_NilStore_NoCache(t *testing.T) {
 	provider := &mockEinoEmbedder{
 		vecs: [][]float64{{1.0}},
 	}
-	e := memory.NewEmbedder(nil, provider) // nil store
+	e := memory.NewEmbedder(nil, provider, "mock-model") // nil store
 	vec, err := e.Embed(context.Background(), "no-store text")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

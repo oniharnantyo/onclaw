@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/oniharnantyo/onclaw/internal/api/httpx"
+	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
 // ListConversations handles listing of all conversations.
@@ -29,11 +30,19 @@ func (h *Handler) ListMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	messages, err := h.svc.ListMessages(ctx, id)
+	messages, contextWindow, err := h.svc.ListMessages(ctx, id)
 	if err != nil {
 		h.handleError(w, err)
 		return
 	}
 
-	httpx.JSON(w, http.StatusOK, messages)
+	type listMessagesResponse struct {
+		Messages      []*store.TurnRow `json:"messages"`
+		ContextWindow int64            `json:"context_window"`
+	}
+
+	httpx.JSON(w, http.StatusOK, listMessagesResponse{
+		Messages:      messages,
+		ContextWindow: contextWindow,
+	})
 }

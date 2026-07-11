@@ -39,6 +39,8 @@ type Agent struct {
 	Workspace             string
 	Tools                 string // Comma-separated list of enabled tools
 	MaxIterations         int
+	MaxContextTokens      int
+	MemoryConfig          string // JSON string representing AgentMemoryConfig
 	CreatedAt             string
 	UpdatedAt             string
 }
@@ -78,6 +80,8 @@ type TurnMeta struct {
 	PreviousResponseID string `json:"previous_response_id"`
 	Model              string `json:"model"`
 	Tokens             int64  `json:"tokens"`
+	PromptTokens       int64  `json:"prompt_tokens"`
+	CompletionTokens   int64  `json:"completion_tokens"`
 }
 
 

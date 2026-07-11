@@ -267,11 +267,10 @@ export function SkillActivatedBlock({ block }: { block: ContentBlock }) {
 /* ── Generic Tool Call ─────────────────────────────────────── */
 
 export function ToolCallBlock({ block }: { block: ContentBlock }) {
+  const { isStreaming, messages } = useThread();
   const [open, setOpen] = useState(false);
   const tc = block.function_tool_call;
   if (!tc) return null;
-
-  const { isStreaming, messages } = useThread();
   const allBlocks = messages.flatMap((m) => m.content_blocks || []);
 
   const tcId = (tc as any).call_id || tc.id;
@@ -372,10 +371,12 @@ export function ToolCallBlock({ block }: { block: ContentBlock }) {
 }
 
 export function ToolResultBlock({ block }: { block: ContentBlock }) {
+  const { messages } = useThread();
+  const [open, setOpen] = useState(false);
+
   const tr = block.function_tool_result;
   if (!tr) return null;
 
-  const { messages } = useThread();
   const allBlocks = messages.flatMap((m) => m.content_blocks || []);
 
   const trId = tr.call_id || (tr as any).id;
@@ -393,8 +394,6 @@ export function ToolResultBlock({ block }: { block: ContentBlock }) {
   if (hasCall) {
     return null;
   }
-
-  const [open, setOpen] = useState(false);
   const content = tr.content?.[0]?.text?.text || '';
   const isError = content.toLowerCase().includes('error') || content.toLowerCase().includes('failed');
 

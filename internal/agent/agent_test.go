@@ -333,6 +333,32 @@ func TestAssembleAgent_GlobalToolEnable(t *testing.T) {
 	fm := &fakeChatModel{}
 	ctx := context.Background()
 
+	// 0. Explicit: an empty allowlist must offer every globally-enabled tool (empty = all).
+	mockAll := &mockToolRegistryStore{
+		list: []*store.ToolRegistry{
+			{Name: "read_file", Enabled: 1},
+			{Name: "write_file", Enabled: 1},
+			{Name: "list_dir", Enabled: 1},
+			{Name: "shell", Enabled: 1},
+		},
+	}
+	agentConfEmpty := &store.Agent{Name: "test-empty-allowlist"}
+	agEmpty, err := agent.AssembleAgent(ctx, agentConfEmpty, fm, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", mockAll, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
+	if err != nil {
+		t.Fatalf("failed to assemble agent: %v", err)
+	}
+	gotAll := make(map[string]bool)
+	for _, tl := range agEmpty.Tools {
+		info, _ := tl.Info(ctx)
+		gotAll[info.Name] = true
+	}
+	// With no per-agent allowlist, every globally-enabled registry tool must be offered.
+	for _, name := range []string{"read_file", "write_file", "list_dir", "shell"} {
+		if !gotAll[name] {
+			t.Errorf("empty allowlist should offer globally-enabled tool %q, but it was absent", name)
+		}
+	}
+
 	// 1. With all tools enabled
 	agentConf := &store.Agent{
 		Name: "test-global-enable",
@@ -527,10 +553,10 @@ func (f *fakeMemoryStore) GetDocument(ctx context.Context, id int64) (*memory.Me
 func (f *fakeMemoryStore) DeleteDocument(ctx context.Context, id int64) error {
 	return nil
 }
-func (f *fakeMemoryStore) GetCachedEmbedding(ctx context.Context, hash string) ([]float32, error) {
+func (f *fakeMemoryStore) GetCachedEmbedding(ctx context.Context, embeddingModel string, hash string) ([]float32, error) {
 	return f.cache[hash], nil
 }
-func (f *fakeMemoryStore) PutCachedEmbedding(ctx context.Context, hash string, vec []float32) error {
+func (f *fakeMemoryStore) PutCachedEmbedding(ctx context.Context, embeddingModel string, hash string, vec []float32) error {
 	if f.cache == nil {
 		f.cache = make(map[string][]float32)
 	}

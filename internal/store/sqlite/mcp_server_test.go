@@ -103,6 +103,81 @@ func TestMCPServerStore(t *testing.T) {
 		t.Error("expected error when adding duplicate server, got nil")
 	}
 
+	// Test agent specific server enabled override
+	srv2 := &store.MCPServer{
+		Name:      "test-mcp-agent",
+		Transport: "stdio",
+		Command:   "node",
+		Enabled:   1,
+	}
+	if err := ms.AddServer(ctx, srv2); err != nil {
+		t.Fatalf("failed to AddServer: %v", err)
+	}
+
+	// 1. By default, ListAgentServers should list it as enabled (since we fallback to global enabled if no override row exists)
+	agentServers, err := ms.ListAgentServers(ctx, "agent-bob")
+	if err != nil {
+		t.Fatalf("failed to ListAgentServers: %v", err)
+	}
+	found := false
+	for _, as := range agentServers {
+		if as.Name == srv2.Name {
+			found = true
+			if as.Enabled != 1 {
+				t.Errorf("expected server to fall back to enabled globally (Enabled=1) for agent-bob, got %d", as.Enabled)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected to find test-mcp-agent in ListAgentServers")
+	}
+
+	// 2. Override enabled to false
+	if err := ms.SetAgentServerEnabled(ctx, "agent-bob", srv2.Name, false); err != nil {
+		t.Fatalf("failed to SetAgentServerEnabled: %v", err)
+	}
+
+	agentServers, err = ms.ListAgentServers(ctx, "agent-bob")
+	if err != nil {
+		t.Fatalf("failed to ListAgentServers: %v", err)
+	}
+	found = false
+	for _, as := range agentServers {
+		if as.Name == srv2.Name {
+			found = true
+			if as.Enabled != 0 {
+				t.Error("expected server to be overridden to disabled (Enabled=0) for agent-bob")
+			}
+		}
+	}
+	if !found {
+		t.Error("expected to find test-mcp-agent in ListAgentServers after override")
+	}
+
+	// 3. Override enabled back to true
+	if err := ms.SetAgentServerEnabled(ctx, "agent-bob", srv2.Name, true); err != nil {
+		t.Fatalf("failed to SetAgentServerEnabled: %v", err)
+	}
+
+	agentServers, err = ms.ListAgentServers(ctx, "agent-bob")
+	if err != nil {
+		t.Fatalf("failed to ListAgentServers: %v", err)
+	}
+	found = false
+	for _, as := range agentServers {
+		if as.Name == srv2.Name {
+			found = true
+			if as.Enabled != 1 {
+				t.Error("expected server to be overridden to enabled (Enabled=1) for agent-bob")
+			}
+		}
+	}
+
+	// Cleanup srv2
+	if err := ms.RemoveServer(ctx, srv2.Name); err != nil {
+		t.Fatalf("failed to RemoveServer: %v", err)
+	}
+
 	// Test removing server
 	if err := ms.RemoveServer(ctx, srv.Name); err != nil {
 		t.Fatalf("failed to RemoveServer: %v", err)

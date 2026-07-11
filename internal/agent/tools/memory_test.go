@@ -27,10 +27,10 @@ func (m *mockMemoryStore) GetDocument(ctx context.Context, id int64) (*memory.Me
 	return nil, nil
 }
 func (m *mockMemoryStore) DeleteDocument(ctx context.Context, id int64) error { return nil }
-func (m *mockMemoryStore) GetCachedEmbedding(ctx context.Context, hash string) ([]float32, error) {
+func (m *mockMemoryStore) GetCachedEmbedding(ctx context.Context, embeddingModel string, hash string) ([]float32, error) {
 	return nil, nil
 }
-func (m *mockMemoryStore) PutCachedEmbedding(ctx context.Context, hash string, vec []float32) error {
+func (m *mockMemoryStore) PutCachedEmbedding(ctx context.Context, embeddingModel string, hash string, vec []float32) error {
 	return nil
 }
 

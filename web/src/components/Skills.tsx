@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useReactTable, getCoreRowModel, flexRender, createColumnHelper } from '@tanstack/react-table';
 import Tooltip from './Tooltip';
 import {
@@ -28,6 +28,7 @@ interface SkillsProps {
   skills: Skill[];
   loadSkills: () => void;
   showToast: (msg: string, type?: 'success' | 'error') => void;
+  pinnedScope?: string;
 }
 
 interface DiscoveredSkillItem {
@@ -41,18 +42,29 @@ interface DiscoverResult {
   skills: DiscoveredSkillItem[];
 }
 
-export default function Skills({ skills, loadSkills, showToast }: SkillsProps) {
+export default function Skills({ skills, loadSkills, showToast, pinnedScope }: SkillsProps) {
   const safeSkills = skills || [];
+  const filteredSkills = safeSkills.filter(sk => {
+    if (!pinnedScope) return true;
+    return sk.scope === pinnedScope;
+  });
+
   const [showInstallModal, setShowInstallModal] = useState(false);
   const [installStep, setInstallStep] = useState<1 | 2>(1);
   const [isProcessing, setIsProcessing] = useState(false);
 
   // Form inputs
   const [source, setSource] = useState('');
-  const [scope, setScope] = useState('global');
+  const [scope, setScope] = useState(pinnedScope || 'global');
   const [branch, setBranch] = useState('');
   const [asName, setAsName] = useState('');
   const [force, setForce] = useState(false);
+
+  useEffect(() => {
+    if (pinnedScope) {
+      setScope(pinnedScope);
+    }
+  }, [pinnedScope]);
 
   // Discovery results
   const [discoverResult, setDiscoverResult] = useState<DiscoverResult | null>(null);
@@ -204,7 +216,7 @@ export default function Skills({ skills, loadSkills, showToast }: SkillsProps) {
 
   const resetForm = () => {
     setSource('');
-    setScope('global');
+    setScope(pinnedScope || 'global');
     setBranch('');
     setAsName('');
     setForce(false);
@@ -304,7 +316,7 @@ export default function Skills({ skills, loadSkills, showToast }: SkillsProps) {
   ];
 
   const table = useReactTable({
-    data: safeSkills,
+    data: filteredSkills,
     columns,
     getCoreRowModel: getCoreRowModel(),
   });
@@ -315,7 +327,7 @@ export default function Skills({ skills, loadSkills, showToast }: SkillsProps) {
       <div className="page-toolbar">
         <div className="page-toolbar-left">
           <span className="badge badge-inactive">
-            {safeSkills.length} skill{safeSkills.length !== 1 ? 's' : ''}
+            {filteredSkills.length} skill{filteredSkills.length !== 1 ? 's' : ''}
           </span>
         </div>
         <button
@@ -333,7 +345,7 @@ export default function Skills({ skills, loadSkills, showToast }: SkillsProps) {
 
       {/* Content */}
       <div style={{ padding: '20px 24px', overflow: 'auto', flexGrow: 1 }}>
-        {safeSkills.length === 0 ? (
+        {filteredSkills.length === 0 ? (
           <div className="empty-state">
             <div className="empty-state-icon" aria-hidden="true">
               <Code size={40} weight="duotone" />
@@ -503,22 +515,24 @@ export default function Skills({ skills, loadSkills, showToast }: SkillsProps) {
                   </label>
                 </div>
 
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-                  <div className="form-group">
-                    <label className="form-label" htmlFor="scope">
-                      Scope
-                      <Tooltip content="Assigns the skill to run globally for all agents or restrict it to specific agent scopes." position="bottom" align="left" />
-                    </label>
-                    <select
-                      id="scope"
-                      className="form-select"
-                      value={scope}
-                      onChange={(e) => setScope(e.target.value)}
-                    >
-                      <option value="global">Global (all agents)</option>
-                      <option value="master">Master Agent</option>
-                    </select>
-                  </div>
+                <div style={{ display: 'grid', gridTemplateColumns: pinnedScope ? '1fr' : '1fr 1fr', gap: '12px' }}>
+                  {!pinnedScope && (
+                    <div className="form-group">
+                      <label className="form-label" htmlFor="scope">
+                        Scope
+                        <Tooltip content="Assigns the skill to run globally for all agents or restrict it to specific agent scopes." position="bottom" align="left" />
+                      </label>
+                      <select
+                        id="scope"
+                        className="form-select"
+                        value={scope}
+                        onChange={(e) => setScope(e.target.value)}
+                      >
+                        <option value="global">Global (all agents)</option>
+                        <option value="master">Master Agent</option>
+                      </select>
+                    </div>
+                  )}
 
                   <div className="form-group">
                     <label className="form-label" htmlFor="branch">

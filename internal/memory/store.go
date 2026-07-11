@@ -9,8 +9,8 @@ type MemoryStore interface {
 	GetDocument(ctx context.Context, id int64) (*MemoryDocument, error)
 	DeleteDocument(ctx context.Context, id int64) error
 
-	GetCachedEmbedding(ctx context.Context, contentHash string) ([]float32, error)
-	PutCachedEmbedding(ctx context.Context, contentHash string, vector []float32) error
+	GetCachedEmbedding(ctx context.Context, embeddingModel string, contentHash string) ([]float32, error)
+	PutCachedEmbedding(ctx context.Context, embeddingModel string, contentHash string, vector []float32) error
 }
 
 // CoreStore defines operations for managing the curated memory core file (MEMORY.md).

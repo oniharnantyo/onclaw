@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { Link, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import {
   Terminal,
   ChatCircle,
@@ -15,19 +16,20 @@ import {
 } from '@phosphor-icons/react';
 
 import Login from './components/Login';
-import Providers from './components/Providers';
 import type { Provider } from './components/Providers';
-import Agents from './components/Agents';
 import type { Agent } from './components/Agents';
-import Chat from './components/Chat';
-import Skills from './components/Skills';
 import type { Skill } from './components/Skills';
-import ThreadRuntime from './components/ThreadRuntime';
 import type { Conversation } from './types/chat';
-import Hooks from './components/Hooks';
-import MCP from './components/MCP';
-import Tools from './components/Tools';
-import Memory from './components/Memory';
+
+import ChatPage from './pages/ChatPage';
+import ProvidersPage from './pages/ProvidersPage';
+import AgentsPage from './pages/AgentsPage';
+import SkillsPage from './pages/SkillsPage';
+import HooksPage from './pages/HooksPage';
+import MemoryPage from './pages/MemoryPage';
+import McpPage from './pages/McpPage';
+import ToolsPage from './pages/ToolsPage';
+import AgentDetailPage from './pages/AgentDetailPage';
 
 type Tab = 'chat' | 'providers' | 'agents' | 'skills' | 'hooks' | 'mcp' | 'tools' | 'memory';
 
@@ -35,6 +37,7 @@ interface NavItem {
   id: Tab;
   label: string;
   icon: React.ReactNode;
+  to?: string;
 }
 
 interface NavGroup {
@@ -50,7 +53,7 @@ interface Toast {
 
 export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState<boolean | null>(null);
-  const [activeTab, setActiveTab] = useState<Tab>('chat');
+  const location = useLocation();
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -119,16 +122,25 @@ export default function App() {
 
   const loadAgents = async () => {
     try {
+      console.log('[DEBUG] Fetching /api/agents...');
       const res = await fetch('/api/agents');
+      console.log('[DEBUG] /api/agents response status:', res.status, res.statusText);
       if (res.ok) {
         const data = await res.json();
+        console.log('[DEBUG] /api/agents response data:', data);
         setAgents(data);
         if (data.length > 0) {
           const defAgent = data.find((a: Agent) => a.is_default) || data[0];
           setChatAgent(defAgent.name);
         }
+      } else {
+        console.error('[DEBUG] /api/agents fetch failed with status:', res.status);
+        const errorText = await res.text();
+        console.error('[DEBUG] Error response:', errorText);
+        showToast('Failed to load agents', 'error');
       }
-    } catch {
+    } catch (error) {
+      console.error('[DEBUG] /api/agents fetch error:', error);
       showToast('Failed to load agents', 'error');
     }
   };
@@ -241,18 +253,24 @@ export default function App() {
           {NAV_GROUPS.map((group) => (
             <div key={group.label} className="nav-group">
               <div className="nav-section-label">{group.label}</div>
-              {group.items.map((item) => (
-                <button
-                  key={item.id}
-                  id={`nav-${item.id}`}
-                  className={`nav-item ${activeTab === item.id ? 'active' : ''}`}
-                  onClick={() => setActiveTab(item.id)}
-                  aria-current={activeTab === item.id ? 'page' : undefined}
-                >
-                  <span className="nav-item-icon" aria-hidden="true">{item.icon}</span>
-                  {item.label}
-                </button>
-              ))}
+              {group.items.map((item) => {
+                const targetPath = item.to || `/${item.id}`;
+                const isActive = item.id === 'chat'
+                  ? location.pathname === '/chat' || location.pathname === '/'
+                  : location.pathname === targetPath || (item.id === 'agents' && location.pathname.startsWith('/agents'));
+                return (
+                  <Link
+                    key={item.id}
+                    id={`nav-${item.id}`}
+                    to={targetPath}
+                    className={`nav-item ${isActive ? 'active' : ''}`}
+                    aria-current={isActive ? 'page' : undefined}
+                  >
+                    <span className="nav-item-icon" aria-hidden="true">{item.icon}</span>
+                    {item.label}
+                  </Link>
+                );
+              })}
             </div>
           ))}
         </nav>
@@ -275,9 +293,13 @@ export default function App() {
 
       <main className="main-content" role="main">
         <header className="main-header">
-          <div className="header-title">{HEADER_TITLES[activeTab]}</div>
+          <div className="header-title">
+            {location.pathname.startsWith('/agents/')
+              ? 'Agent Details'
+              : HEADER_TITLES[(location.pathname.split('/')[1] as Tab) || 'chat'] || 'Console'}
+          </div>
           <div className="header-actions">
-            {activeTab === 'chat' && (
+            {((location.pathname.split('/')[1] as Tab) || 'chat') === 'chat' && (
               <button
                 id="new-conversation-btn"
                 className="btn btn-secondary btn-sm"
@@ -289,68 +311,115 @@ export default function App() {
           </div>
         </header>
 
-        {activeTab === 'chat' && (
-          <ThreadRuntime
-            key={threadKey}
-            showToast={showToast}
-            initialAgents={agents}
-            initialSkills={skills}
-            initialConversations={conversations}
-            defaultAgent={chatAgent}
-          >
-            <Chat onNewConversation={handleNewConversation} />
-          </ThreadRuntime>
-        )}
-
-        {activeTab === 'providers' && (
-          <Providers
-            providers={providers}
-            loadProviders={loadProviders}
-            showToast={showToast}
+        <Routes>
+          <Route path="/" element={<Navigate to="/chat" replace />} />
+          <Route
+            path="/chat"
+            element={
+              <ChatPage
+                showToast={showToast}
+                agents={agents}
+                skills={skills}
+                conversations={conversations}
+                chatAgent={chatAgent}
+                threadKey={threadKey}
+                onNewConversation={handleNewConversation}
+              />
+            }
           />
-        )}
-
-        {activeTab === 'agents' && (
-          <Agents
-            agents={agents}
-            providers={providers}
-            loadAgents={loadAgents}
-            showToast={showToast}
+          <Route
+            path="/providers"
+            element={
+              <ProvidersPage
+                providers={providers}
+                loadProviders={loadProviders}
+                showToast={showToast}
+              />
+            }
           />
-        )}
-
-        {activeTab === 'skills' && (
-          <Skills
-            skills={skills}
-            loadSkills={loadSkills}
-            showToast={showToast}
+          <Route
+            path="/agents"
+            element={
+              <AgentsPage
+                agents={agents}
+                providers={providers}
+                loadAgents={loadAgents}
+                showToast={showToast}
+              />
+            }
           />
-        )}
-
-        {activeTab === 'hooks' && (
-          <Hooks
-            agents={agents}
-            showToast={showToast}
+          <Route
+            path="/agents/new"
+            element={
+              <AgentDetailPage
+                agents={agents}
+                providers={providers}
+                loadAgents={loadAgents}
+                showToast={showToast}
+                mode="create"
+                skills={skills}
+                loadSkills={loadSkills}
+              />
+            }
           />
-        )}
-
-        {activeTab === 'memory' && (
-          <Memory
-            showToast={showToast}
+          <Route
+            path="/agents/:name"
+            element={
+              <AgentDetailPage
+                agents={agents}
+                providers={providers}
+                loadAgents={loadAgents}
+                showToast={showToast}
+                skills={skills}
+                loadSkills={loadSkills}
+              />
+            }
           />
-        )}
 
-        {activeTab === 'mcp' && (
-          <MCP
-            showToast={showToast}
+          <Route
+            path="/skills"
+            element={
+              <SkillsPage
+                skills={skills}
+                loadSkills={loadSkills}
+                showToast={showToast}
+              />
+            }
           />
-        )}
-
-        {activeTab === 'tools' && (
-          <Tools
-            showToast={showToast}
+          <Route
+            path="/hooks"
+            element={
+              <HooksPage
+                agents={agents}
+                showToast={showToast}
+              />
+            }
           />
-        )}
+          <Route
+            path="/memory"
+            element={
+              <MemoryPage
+                showToast={showToast}
+              />
+            }
+          />
+          <Route
+            path="/mcp"
+            element={
+              <McpPage
+                showToast={showToast}
+              />
+            }
+          />
+          <Route
+            path="/tools"
+            element={
+              <ToolsPage
+                showToast={showToast}
+              />
+            }
+          />
+        </Routes>
       </main>
     </div>
   );

@@ -23,14 +23,17 @@ type Embedder struct {
 	// Store is used to read/write the embedding_cache table.
 	// May be nil (no caching).
 	Store MemoryStore
+	// ModelName is the name of the embedding model being used.
+	ModelName string
 }
 
 // NewEmbedder constructs an Embedder that wraps the given eino-ext provider and
 // caches results in store. Either argument may be nil.
-func NewEmbedder(store MemoryStore, provider EinoEmbedder) *Embedder {
+func NewEmbedder(store MemoryStore, provider EinoEmbedder, modelName string) *Embedder {
 	return &Embedder{
-		Provider: provider,
-		Store:    store,
+		Provider:  provider,
+		Store:     store,
+		ModelName: modelName,
 	}
 }
 
@@ -55,7 +58,7 @@ func (e *Embedder) Embed(ctx context.Context, text string) ([]float32, error) {
 
 	hash := ComputeHash(text)
 	if e.Store != nil {
-		if cached, err := e.Store.GetCachedEmbedding(ctx, hash); err == nil && len(cached) > 0 {
+		if cached, err := e.Store.GetCachedEmbedding(ctx, e.ModelName, hash); err == nil && len(cached) > 0 {
 			return cached, nil
 		}
 	}
@@ -77,7 +80,7 @@ func (e *Embedder) Embed(ctx context.Context, text string) ([]float32, error) {
 	}
 
 	if e.Store != nil {
-		_ = e.Store.PutCachedEmbedding(ctx, hash, vec)
+		_ = e.Store.PutCachedEmbedding(ctx, e.ModelName, hash, vec)
 	}
 	return vec, nil
 }

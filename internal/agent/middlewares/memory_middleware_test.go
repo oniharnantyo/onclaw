@@ -47,11 +47,11 @@ func (m *mockMemoryStore) DeleteDocument(ctx context.Context, id int64) error {
 	return nil
 }
 
-func (m *mockMemoryStore) GetCachedEmbedding(ctx context.Context, hash string) ([]float32, error) {
+func (m *mockMemoryStore) GetCachedEmbedding(ctx context.Context, embeddingModel string, hash string) ([]float32, error) {
 	return m.Embeds[hash], nil
 }
 
-func (m *mockMemoryStore) PutCachedEmbedding(ctx context.Context, hash string, vec []float32) error {
+func (m *mockMemoryStore) PutCachedEmbedding(ctx context.Context, embeddingModel string, hash string, vec []float32) error {
 	if m.Embeds == nil {
 		m.Embeds = make(map[string][]float32)
 	}

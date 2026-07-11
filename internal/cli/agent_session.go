@@ -125,20 +125,7 @@ func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.
 		effReasoning = agentConf.ReasoningEffort
 	}
 
-	var contextWindow int
-	if agentConf.ModelMetadata != "" {
-		meta, err := store.UnmarshalModelMetadata(agentConf.ModelMetadata)
-		if err == nil && meta != nil {
-			contextWindow = meta.ContextWindow
-		}
-	}
-	if contextWindow <= 0 {
-		if st.cfg.MaxContextTokens > 0 {
-			contextWindow = st.cfg.MaxContextTokens
-		} else {
-			contextWindow = 64000
-		}
-	}
+	contextWindow := resolveContextWindow(agentConf.MaxContextTokens, st.cfg.MaxContextTokens, agentConf.ModelMetadata)
 
 	effProfile := *p
 
@@ -174,7 +161,7 @@ func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.
 
 	var mcpTools []tool.BaseTool
 	if mcpMgr != nil {
-		mcpTools, err = mcpMgr.Tools(ctx)
+		mcpTools, err = mcpMgr.ToolsForAgent(ctx, req.AgentName)
 		if err != nil {
 			return nil, "", fmt.Errorf("retrieve mcp tools: %w", err)
 		}
@@ -186,13 +173,32 @@ func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.
 	toolGroupConfigStore := sqlite.NewToolGroupConfigStore(db)
 	kvStore := sqlite.NewKVStore(db)
 
+	var memOver memory.AgentMemoryConfig
+	if agentConf.MemoryConfig != "" {
+		_ = json.Unmarshal([]byte(agentConf.MemoryConfig), &memOver)
+	}
+
+	resolvedMem := memOver.Resolve(
+		st.cfg.Memory.Enabled,
+		true, // default CuratedEnabled to true
+		true, // default EpisodicEnabled to true
+		st.cfg.Memory.KGEnabled,
+		st.cfg.Memory.EmbeddingProvider,
+		st.cfg.Memory.EmbeddingModel,
+		true, // default SecurityScanEnabled to true
+		true, // default ExtractionEnabled to true
+		true, // default RetrievalEnabled to true
+		true, // default DreamingEnabled to true
+		st.cfg.Memory.WriteApproval,
+	)
+
 	var memoryStore memory.MemoryStore
 	var coreStore memory.CoreStore
 	var embedder *memory.Embedder
 	var stagedWriteStore memory.StagedWriteStore
 	var episodicStore memory.EpisodicStore
 	var kgStore memory.KGStore
-	if st.cfg.Memory.Enabled {
+	if resolvedMem.Enabled {
 		memoryStore = sqlite.NewMemoryStore(db)
 		coreStore = memory.NewFileCoreStore(st.cfg.Memory.CharLimit)
 		stagedWriteStore = sqlite.NewStagedWriteStore(db)
@@ -201,11 +207,11 @@ func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.
 			kgStore = sqlite.NewKGStore(db)
 		}
 
-		embedProvider := st.cfg.Memory.EmbeddingProvider
+		embedProvider := resolvedMem.EmbeddingProvider
 		if embedProvider == "" {
 			embedProvider = providerName
 		}
-		embedModel := st.cfg.Memory.EmbeddingModel
+		embedModel := resolvedMem.EmbeddingModel
 		if embedModel == "" {
 			if embedProvider == "openai" {
 				embedModel = "text-embedding-3-small"
@@ -254,7 +260,7 @@ func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.
 		}
 
 		// einoProvider may be nil (no API key, provider build failed) — FTS-only mode.
-		embedder = memory.NewEmbedder(memoryStore, einoProvider)
+		embedder = memory.NewEmbedder(memoryStore, einoProvider, embedModel)
 	}
 
 	var reviewModel model.AgenticModel
@@ -276,7 +282,7 @@ func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.
 			resolvedWorkspace,
 			st.cfg.Memory.DreamThreshold,
 			10*time.Minute,
-			st.cfg.Memory.WriteApproval,
+			resolvedMem.StagedWriteApproval,
 			st.cfg.Memory.ReviewModel,
 		)
 	}
@@ -318,4 +324,24 @@ func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.
 	}
 
 	return assembledAgent, resolvedWorkspace, nil
+}
+
+func resolveContextWindow(maxContextTokens int, globalMaxContextTokens int, modelMetadata string) int {
+	var contextWindow int
+	if maxContextTokens > 0 {
+		contextWindow = maxContextTokens
+	} else if globalMaxContextTokens > 0 {
+		contextWindow = globalMaxContextTokens
+	} else {
+		if modelMetadata != "" {
+			meta, err := store.UnmarshalModelMetadata(modelMetadata)
+			if err == nil && meta != nil {
+				contextWindow = meta.ContextWindow
+			}
+		}
+		if contextWindow <= 0 {
+			contextWindow = 64000
+		}
+	}
+	return contextWindow
 }

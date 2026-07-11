@@ -302,6 +302,15 @@ func (s *Service) UpdateAgent(ctx context.Context, a *store.Agent) error {
 	return nil
 }
 
+// UpdateAgentTools updates tools configuration for an agent and flags for reload.
+func (s *Service) UpdateAgentTools(ctx context.Context, name string, tools string) error {
+	if err := s.agentStore.UpdateAgentTools(ctx, name, tools); err != nil {
+		return err
+	}
+	s.TriggerReload()
+	return nil
+}
+
 // GetAgent retrieves a cached agent.
 func (s *Service) GetAgent(ctx context.Context, name string) (*store.Agent, error) {
 	if err := s.ReloadIfNeeded(ctx); err != nil {

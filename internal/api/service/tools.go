@@ -68,6 +68,19 @@ func (s *Service) ListTools(ctx context.Context) ([]*ToolCategoryView, error) {
 
 // ToggleTool updates the enabled state of a tool globally.
 func (s *Service) ToggleTool(ctx context.Context, name string, enabled bool) error {
+	if name == "*" {
+		toolsList, err := s.toolRegistryStore.ListTools(ctx)
+		if err != nil {
+			return classify(err)
+		}
+		for _, t := range toolsList {
+			if err := s.toolRegistryStore.ToggleTool(ctx, t.Name, enabled); err != nil {
+				return classify(err)
+			}
+		}
+		return nil
+	}
+
 	err := s.toolRegistryStore.ToggleTool(ctx, name, enabled)
 	if err != nil {
 		return classify(err)

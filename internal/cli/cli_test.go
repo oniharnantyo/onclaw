@@ -642,6 +642,7 @@ func TestAgentCLI(t *testing.T) {
 		"--provider", "prov-1",
 		"--model", "gpt-4o",
 		"--system-prompt", "You are agent 1.",
+		"--max-context", "1234",
 	})
 	if err != nil {
 		t.Fatalf("failed to add agent: %v", err)
@@ -676,6 +677,24 @@ func TestAgentCLI(t *testing.T) {
 	}
 	if !strings.Contains(showOut, "Name:             agent-1") || !strings.Contains(showOut, "Model Override:   gpt-4o") {
 		t.Errorf("show output missing expected details: %s", showOut)
+	}
+	if !strings.Contains(showOut, "Max Context Override: 1234 tokens") {
+		t.Errorf("show output missing max context override details: %s", showOut)
+	}
+
+	// 4.5. Edit agent's max-context
+	if err := app.Run(ctx, []string{"onclaw", "agent", "edit", "agent-1", "--max-context", "5678"}); err != nil {
+		t.Fatalf("failed to edit agent: %v", err)
+	}
+
+	showOut2, err := captureLocalStdout(func() error {
+		return app.Run(ctx, []string{"onclaw", "agent", "show", "agent-1"})
+	})
+	if err != nil {
+		t.Fatalf("failed to show agent after edit: %v", err)
+	}
+	if !strings.Contains(showOut2, "Max Context Override: 5678 tokens") {
+		t.Errorf("show output missing updated max context override details: %s", showOut2)
 	}
 
 	// 5. Use agent (set default)

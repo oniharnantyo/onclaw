@@ -36,6 +36,14 @@ func (d *dummyAgent) LastTurnMeta() *store.TurnMeta {
 	return d.lastTurnMeta
 }
 
+func (d *dummyAgent) ContextWindow() int {
+	return 64000
+}
+
+func (d *dummyAgent) AgentName() string {
+	return "test"
+}
+
 func TestChat_InvalidPayload(t *testing.T) {
 	f := newHFixture(t)
 	req := makeReq(http.MethodPost, "/api/chat", "bad-json")

@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useRef, Fragment } from 'react';
 import { Cpu, Code, PaperPlaneTilt, FileText, X, Plus } from '@phosphor-icons/react';
 import { useChat, useComposer } from './ChatProvider';
 import { Thread } from './primitives/Thread';
@@ -7,6 +7,7 @@ import { Message } from './primitives/Message';
 import { Composer } from './primitives/Composer';
 
 import Sources from './chat/Sources';
+import { isMessageVisible } from './chat/groupBlocks';
 import {
   MarkdownBlock,
   ReasoningBlock,
@@ -26,6 +27,9 @@ function getConversationTitle(c: Conversation) {
     if (msg.startsWith('{') || msg.startsWith('[')) {
       try {
         const parsed = JSON.parse(msg);
+        if (parsed?.content) {
+          return parsed.content;
+        }
         const textBlock = parsed?.content_blocks?.find(
           (b: any) => b.user_input_text?.text
         );
@@ -67,10 +71,11 @@ function renderSingleBlock(block: ContentBlock) {
   if (block.user_input_file) {
     return <FileBlock block={block} />;
   }
-  if (block.assistant_gen_text?.text) {
+  // Check for text content with trim() to match filtering logic
+  if (block.assistant_gen_text?.text?.trim()) {
     return <MarkdownBlock text={block.assistant_gen_text.text} />;
   }
-  if (block.user_input_text?.text) {
+  if (block.user_input_text?.text?.trim()) {
     return <div className="block-text">{block.user_input_text.text}</div>;
   }
   return <UnknownBlock block={block} />;
@@ -118,66 +123,85 @@ function SendIcon() {
   return <PaperPlaneTilt size={16} weight="fill" aria-hidden />;
 }
 
-function formatRelativeTime(dateStr: string): string {
+function formatRelativeTime(dateStr: string) {
   const date = new Date(dateStr);
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffMins = Math.floor(diffMs / 60000);
-  const diffHours = Math.floor(diffMins / 60);
-  const diffDays = Math.floor(diffHours / 24);
-
   if (diffMins < 1) return 'just now';
   if (diffMins < 60) return `${diffMins}m ago`;
+  const diffHours = Math.floor(diffMins / 60);
   if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 7) return `${diffDays}d ago`;
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+
+
+function formatMessageTimeOnly(dateStr?: string) {
+  if (!dateStr) return '';
+  const date = new Date(dateStr);
+  if (isNaN(date.getTime())) return '';
+  
+  const options: Intl.DateTimeFormatOptions = {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  };
+  return date.toLocaleString(undefined, options);
+}
+
+function ContextMeter() {
+  const { state } = useChat();
+  const { contextWindow, contextUsed } = state;
+
+  if (!contextWindow || contextWindow <= 0) {
+    return null;
+  }
+
+  const percentage = Math.min(100, Math.max(0, (contextUsed / contextWindow) * 100));
+
+  const formatTokens = (n: number) => {
+    if (n >= 1000) {
+      return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+    }
+    return n.toString();
+  };
+
+  return (
+    <div className="context-meter" title={`Context window usage: ${contextUsed} / ${contextWindow} tokens (${percentage.toFixed(1)}%)`}>
+      <span className="context-meter-label">
+        {formatTokens(contextUsed)} / {formatTokens(contextWindow)}
+      </span>
+      <div className="context-meter-track">
+        <div 
+          className="context-meter-fill" 
+          style={{ width: `${percentage}%` }} 
+        />
+      </div>
+    </div>
+  );
+}
+
+function ChatHeaderBar() {
+  return (
+    <div className="chat-header-bar">
+      <div className="chat-header-left">
+        <AgentSelector />
+      </div>
+      <div className="chat-header-right">
+        <ContextMeter />
+      </div>
+    </div>
+  );
 }
 
 export default function Chat({ onNewConversation }: ChatProps) {
   const { state, selectConversation } = useChat();
   const viewportRef = useRef<HTMLDivElement>(null);
 
-  const visibleMessages = state.messages.filter((m) => {
-    if (m.role === 'system') return false;
-    if (!m.content_blocks || m.content_blocks.length === 0) return false;
-
-    const allBlocks = state.messages.flatMap((msg) => msg.content_blocks || []);
-
-    const hasVisibleBlock = m.content_blocks.some((b) => {
-      if (b.type === 'assistant_gen_text' || b.assistant_gen_text) {
-        return !!b.assistant_gen_text?.text?.trim();
-      }
-      if (b.type === 'user_input_text' || b.user_input_text) {
-        return !!b.user_input_text?.text?.trim();
-      }
-      if (b.type === 'reasoning' || (b as any).reasoning) {
-        const text = b.reasoning?.text || (b as any).reasoning?.text;
-        return !!text?.trim();
-      }
-      if (b.type === 'function_tool_call' || b.function_tool_call || b.mcp_tool_call || b.server_tool_call) {
-        return true;
-      }
-      if (b.type === 'function_tool_result' || b.function_tool_result) {
-        const tr = b.function_tool_result;
-        if (!tr) return false;
-        const trId = tr.call_id || (tr as any).id;
-        const hasCall = allBlocks.some((otherBlock) => {
-          if (otherBlock.type !== 'function_tool_call' || !otherBlock.function_tool_call) return false;
-          const tc = otherBlock.function_tool_call;
-          const tcId = (tc as any).call_id || tc.id;
-          if (tcId && trId) return tcId === trId;
-          return tc.name === tr.name;
-        });
-        return !hasCall;
-      }
-      if ((b as any).type === 'assistant_gen_image' || b.user_input_image || b.user_input_file || b.mcp_tool_result || b.server_tool_result || (b as any).assistant_gen_image) {
-        return true;
-      }
-      return false;
-    });
-
-    return hasVisibleBlock;
-  });
+  const visibleMessages = state.messages.filter((m) => isMessageVisible(m, state.messages));
   const visibleMessagesCount = visibleMessages.length;
   // check isLastInTurn inline below
 
@@ -232,6 +256,7 @@ export default function Chat({ onNewConversation }: ChatProps) {
       {/* 2. Main Thread View (Thread primitive) */}
       <Thread.Root>
         <div className="thread-main">
+          <ChatHeaderBar />
           <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
             {/* Viewport for messages */}
             <Thread.Viewport ref={viewportRef} className="message-list">
@@ -243,8 +268,7 @@ export default function Chat({ onNewConversation }: ChatProps) {
                   </div>
                   <h3>Agent Session Idle</h3>
                   <p>
-                    Type a prompt below to start the ReAct execution loop.
-                    The agent will reason, act, and respond in real time.
+                    Hi. What can i help you today?
                   </p>
                 </div>
               </Thread.Empty>
@@ -252,13 +276,13 @@ export default function Chat({ onNewConversation }: ChatProps) {
               {/* Messages list */}
               <Thread.Messages>
                 {(msg, idx) => (
-                  <Message.Root
-                    key={msg.id ?? idx}
-                    message={msg}
-                    index={idx}
-                    isLast={idx === visibleMessagesCount - 1}
-                    className={`message-bubble ${msg.role}`}
-                  >
+                  <Fragment key={msg.id ?? idx}>
+                    <Message.Root
+                      message={msg}
+                      index={idx}
+                      isLast={idx === visibleMessagesCount - 1}
+                      className={`message-bubble ${msg.role}`}
+                    >
                     <div className="message-content">
                       <Message.Parts>
                         {(group, groupIdx) => (
@@ -271,9 +295,16 @@ export default function Chat({ onNewConversation }: ChatProps) {
                         <Sources blocks={msg.content_blocks} />
                       )}
 
-                      {/* Action Bar */}
+                      {/* Action Bar & inline timestamp */}
                       {msg.role === 'assistant' && (idx === visibleMessagesCount - 1 || visibleMessages[idx + 1]?.role === 'user') && (
-                        <Message.ActionBar />
+                        <div className="message-footer" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '8px' }}>
+                          {msg.created_at && (
+                            <time className="message-time-inline" dateTime={msg.created_at} style={{ fontSize: '11px', color: 'var(--text-muted, #86868b)', userSelect: 'none' }}>
+                              {formatMessageTimeOnly(msg.created_at)}
+                            </time>
+                          )}
+                          <Message.ActionBar className="no-margin-top" />
+                        </div>
                       )}
 
                       {/* Streaming typing indicator */}
@@ -286,6 +317,7 @@ export default function Chat({ onNewConversation }: ChatProps) {
                       )}
                     </div>
                   </Message.Root>
+                </Fragment>
                 )}
               </Thread.Messages>
             </Thread.Viewport>
@@ -302,7 +334,7 @@ export default function Chat({ onNewConversation }: ChatProps) {
               <div className="chat-input-box">
                 {/* Text area input */}
                 <div style={{ position: 'relative', width: '100%' }}>
-                  <Composer.Input placeholder="Ask agent to perform a task…" className="composer-input" />
+                  <Composer.Input placeholder="Ask agent to perform a task… (Shift+Enter for new line)" className="composer-input" />
 
                   {/* Popover trigger */}
                   <Composer.TriggerPopover className="skill-popover">
@@ -353,7 +385,6 @@ export default function Chat({ onNewConversation }: ChatProps) {
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', marginTop: '6px', paddingTop: '6px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                     <Composer.Attach className="composer-attach-btn" />
-                    <AgentSelector />
                   </div>
 
                   <Composer.Send className="composer-send-btn">
@@ -364,7 +395,7 @@ export default function Chat({ onNewConversation }: ChatProps) {
             </div>
 
             <p className="composer-fineprint">
-              Responses are AI-generated. Review before acting on them.
+              Responses are AI-generated. Review before acting on them. Enter to send, Shift+Enter for new line.
             </p>
           </Composer>
         </div>

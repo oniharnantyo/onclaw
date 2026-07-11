@@ -18,6 +18,8 @@ import (
 type Manager interface {
 	// Tools discovers and aggregates tools across all enabled MCP servers.
 	Tools(ctx context.Context) ([]tool.BaseTool, error)
+	// ToolsForAgent discovers and aggregates tools across all enabled MCP servers for a specific agent.
+	ToolsForAgent(ctx context.Context, agentName string) ([]tool.BaseTool, error)
 	// Close cleanly closes all active MCP client connections.
 	Close() error
 	// Reload drops all active clients and tools cache to force reload on the next Tools call.
@@ -43,6 +45,14 @@ func NewManager(s store.MCPServerStore) Manager {
 }
 
 func (m *manager) Tools(ctx context.Context) ([]tool.BaseTool, error) {
+	return m.loadTools(ctx, "")
+}
+
+func (m *manager) ToolsForAgent(ctx context.Context, agentName string) ([]tool.BaseTool, error) {
+	return m.loadTools(ctx, agentName)
+}
+
+func (m *manager) loadTools(ctx context.Context, agentName string) ([]tool.BaseTool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -50,7 +60,13 @@ func (m *manager) Tools(ctx context.Context) ([]tool.BaseTool, error) {
 		return m.tools, nil
 	}
 
-	servers, err := m.store.ListServers(ctx)
+	var servers []*store.MCPServer
+	var err error
+	if agentName != "" {
+		servers, err = m.store.ListAgentServers(ctx, agentName)
+	} else {
+		servers, err = m.store.ListServers(ctx)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("list mcp servers: %w", err)
 	}

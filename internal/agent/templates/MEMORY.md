@@ -7,7 +7,6 @@ read_when:
 
 # MEMORY.md - Long-Term Memory
 
-This is your curated long-term memory. It contains distilled facts, decisions, and patterns learned over time.
+What's worth remembering across conversations. Add one line per fact below; the memory tool keeps this file.
 
-- **Key Information:**
-  - [Log of important facts learned about the project and user over time]
+- _(example — replace with real facts) I live on a small device; keep memory tight and don't waste resources._

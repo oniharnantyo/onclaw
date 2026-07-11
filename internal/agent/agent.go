@@ -42,7 +42,8 @@ type Agent struct {
 	memoryMiddleware  *middlewares.MemoryMiddleware
 	historyMiddleware *middlewares.HistoryMiddleware
 	// Pruner periodically prunes expired episodic summaries.
-	Pruner *memory.PeriodicPruner
+	Pruner        *memory.PeriodicPruner
+	contextWindow int
 }
 
 type inMemoryEnabledChecker struct {
@@ -91,6 +92,26 @@ func AssembleAgent(
 	kgTraversalDepth int,
 ) (*Agent, error) {
 	// Load existing persona/memory files and AGENTS.md
+	var memOver memory.AgentMemoryConfig
+	if agentConf.MemoryConfig != "" {
+		if err := json.Unmarshal([]byte(agentConf.MemoryConfig), &memOver); err != nil {
+			slog.Warn("AssembleAgent: Failed to parse memory config", "agent", agentConf.Name, "error", err)
+		}
+	}
+
+	resolvedMem := memOver.Resolve(
+		memoryStore != nil,
+		coreStore != nil,
+		episodicStore != nil,
+		kgStore != nil,
+		"", "", // embedder already constructed
+		true, // security scan default ON
+		true, // extraction default ON
+		true, // retrieval default ON
+		true, // dreaming default ON
+		false, // staged write approval handled by dreamer
+	)
+
 	persona, err := LoadPersonaContext(ctx, workspace, userConfigDir)
 	if err != nil {
 		return nil, fmt.Errorf("load persona context: %w", err)
@@ -147,6 +168,33 @@ func AssembleAgent(
 	}, enabledChecker)
 	builtTools = append(builtTools, mcpTools...)
 
+	// Filter tools based on agent-specific memory configuration features
+	var finalTools []tool.BaseTool
+	for _, t := range builtTools {
+		info, err := t.Info(ctx)
+		if err != nil {
+			finalTools = append(finalTools, t)
+			continue
+		}
+		if info.Name == "memory_search" {
+			if !resolvedMem.RetrievalEnabled || memoryStore == nil || !resolvedMem.CuratedEnabled {
+				continue
+			}
+		}
+		if info.Name == "session_search" {
+			if !resolvedMem.RetrievalEnabled || episodicStore == nil || !resolvedMem.EpisodicEnabled {
+				continue
+			}
+		}
+		if info.Name == "kg_search" {
+			if !resolvedMem.RetrievalEnabled || kgStore == nil || !resolvedMem.KGEnabled {
+				continue
+			}
+		}
+		finalTools = append(finalTools, t)
+	}
+	builtTools = finalTools
+
 	// Filter tools if a tool subset is configured on the agent
 	if agentConf.Tools != "" {
 		allowedTools := make(map[string]bool)
@@ -181,15 +229,16 @@ func AssembleAgent(
 		},
 		Callback: func(ctx context.Context, before adk.TypedChatModelAgentState[*schema.AgenticMessage], after adk.TypedChatModelAgentState[*schema.AgenticMessage]) error {
 			summary, err := handleSummarization(ctx, handleSummarizationParams{
-				Before:         before,
-				After:          after,
-				ChatModel:      chatModel,
-				MemoryStore:    memoryStore,
-				Embedder:       embedder,
-				KVStore:        kvStore,
-				AgentName:      agentConf.Name,
-				ConversationID: conversationID,
-				ConvStore:      convStore,
+				Before:           before,
+				After:            after,
+				ChatModel:        chatModel,
+				MemoryStore:      memoryStore,
+				Embedder:         embedder,
+				KVStore:          kvStore,
+				AgentName:        agentConf.Name,
+				ConversationID:   conversationID,
+				ConvStore:        convStore,
+				SkipSecurityScan: !resolvedMem.SecurityScanEnabled,
 			})
 			if err == nil && summary != "" && memMW != nil {
 				memMW.CompactionSummary = summary
@@ -246,8 +295,30 @@ func AssembleAgent(
 		historyMiddleware,
 	}
 	if memoryStore != nil {
+		// Curated Core Memory toggle
+		var activeCoreStore memory.CoreStore
+		if coreStore != nil && resolvedMem.CuratedEnabled {
+			activeCoreStore = coreStore
+		}
+
+		// Episodic memory toggle
+		var activeEpisodicStore memory.EpisodicStore
+		var activeDreamer *memory.Dreamer
+		if episodicStore != nil && resolvedMem.EpisodicEnabled {
+			activeEpisodicStore = episodicStore
+			if resolvedMem.DreamingEnabled {
+				activeDreamer = dreamer
+			}
+		}
+
+		// KG memory toggle
+		var activeKGStore memory.KGStore
+		if kgStore != nil && resolvedMem.KGEnabled {
+			activeKGStore = kgStore
+		}
+
 		memMW = middlewares.NewMemoryMiddleware(
-			coreStore,
+			activeCoreStore,
 			memoryStore,
 			embedder,
 			kvStore,
@@ -257,11 +328,13 @@ func AssembleAgent(
 			agentConf.Name,
 			conversationID,
 			charLimit,
-			episodicStore,
-			dreamer,
+			activeEpisodicStore,
+			activeDreamer,
 			episodicTTLDays,
-			kgStore,
+			activeKGStore,
 		)
+		memMW.SkipSecurityScan = !resolvedMem.SecurityScanEnabled
+		memMW.ExtractionEnabled = resolvedMem.ExtractionEnabled
 		handlers = append(handlers, memMW)
 	}
 	if skillMiddleware != nil {
@@ -286,6 +359,7 @@ func AssembleAgent(
 		Tools:             builtTools,
 		memoryMiddleware:  memMW,
 		historyMiddleware: historyMiddleware,
+		contextWindow:     contextWindow,
 	}
 
 	if episodicStore != nil {
@@ -372,16 +446,30 @@ func (a *Agent) LastTurnMeta() *store.TurnMeta {
 	return a.historyMiddleware.LastTurnMeta()
 }
 
+// ContextWindow returns the resolved context window limit for the agent.
+func (a *Agent) ContextWindow() int {
+	return a.contextWindow
+}
+
+// AgentName returns the name of the agent.
+func (a *Agent) AgentName() string {
+	if a.Config != nil {
+		return a.Config.Name
+	}
+	return ""
+}
+
 type handleSummarizationParams struct {
-	Before         adk.TypedChatModelAgentState[*schema.AgenticMessage]
-	After          adk.TypedChatModelAgentState[*schema.AgenticMessage]
-	ChatModel      model.AgenticModel
-	MemoryStore    memory.MemoryStore
-	Embedder       *memory.Embedder
-	KVStore        store.KVStore
-	AgentName      string
-	ConversationID int64
-	ConvStore      store.ConversationStore
+	Before           adk.TypedChatModelAgentState[*schema.AgenticMessage]
+	After            adk.TypedChatModelAgentState[*schema.AgenticMessage]
+	ChatModel        model.AgenticModel
+	MemoryStore      memory.MemoryStore
+	Embedder         *memory.Embedder
+	KVStore          store.KVStore
+	AgentName        string
+	ConversationID   int64
+	ConvStore        store.ConversationStore
+	SkipSecurityScan bool
 }
 
 // handleSummarization saves the compaction summary message and returns the summary text
@@ -452,7 +540,7 @@ func handleSummarization(ctx context.Context, p handleSummarizationParams) (stri
 	}
 
 	if len(discardedMessages) > 0 && p.MemoryStore != nil {
-		_ = memory.ExtractAndFlush(ctx, p.ChatModel, p.MemoryStore, p.Embedder, p.KVStore, p.AgentName, p.ConversationID, discardedMessages)
+		_ = memory.ExtractAndFlush(ctx, p.ChatModel, p.MemoryStore, p.Embedder, p.KVStore, p.AgentName, p.ConversationID, discardedMessages, p.SkipSecurityScan)
 	}
 
 	redactedSummaryMsg := tools.RedactAgenticMessage(summaryMsg)

@@ -28,9 +28,10 @@ export interface MCPServer {
 
 interface MCPProps {
 	showToast: (msg: string, type?: 'success' | 'error') => void;
+	pinnedScope?: string;
 }
 
-export default function MCP({ showToast }: MCPProps) {
+export default function MCP({ showToast, pinnedScope }: MCPProps) {
 	const [servers, setServers] = useState<MCPServer[]>([]);
 	const [showModal, setShowModal] = useState(false);
 	const [isEdit, setIsEdit] = useState(false);
@@ -111,7 +112,10 @@ export default function MCP({ showToast }: MCPProps) {
 
 	const loadServers = async () => {
 		try {
-			const res = await fetch('/api/mcp');
+			const fetchUrl = pinnedScope && pinnedScope !== 'global'
+				? `/api/agents/${pinnedScope}/mcp`
+				: '/api/mcp';
+			const res = await fetch(fetchUrl);
 			if (res.ok) {
 				setServers(await res.json());
 			} else {
@@ -176,6 +180,21 @@ export default function MCP({ showToast }: MCPProps) {
 
 	const toggleEnabled = async (srv: MCPServer) => {
 		try {
+			if (pinnedScope && pinnedScope !== 'global') {
+				const res = await fetch(`/api/agents/${pinnedScope}/mcp`, {
+					method: 'PUT',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ server_name: srv.name, enabled: !srv.enabled }),
+				});
+				if (res.ok) {
+					showToast(`MCP server "${srv.name}" ${!srv.enabled ? 'enabled' : 'disabled'} for agent successfully`, 'success');
+					loadServers();
+				} else {
+					const err = await res.json();
+					showToast(err.error || 'Failed to toggle MCP server for agent', 'error');
+				}
+				return;
+			}
 			const res = await fetch(`/api/mcp/${encodeURIComponent(srv.name)}/toggle`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
@@ -378,34 +397,39 @@ export default function MCP({ showToast }: MCPProps) {
 				);
 			},
 		}),
-		columnHelper.display({
-			id: 'actions',
-			header: 'Actions',
-			cell: (info) => {
-				const srv = info.row.original;
-				return (
-					<div style={{ display: 'flex', gap: '6px' }}>
-						<button
-							className="btn btn-secondary btn-sm"
-							onClick={() => handleEditClick(srv)}
-							title="Edit config"
-							style={{ padding: '4px' }}
-						>
-							<Pencil size={15} />
-						</button>
-						<button
-							className="btn btn-danger btn-sm"
-							onClick={() => handleDelete(srv)}
-							title="Delete server"
-							style={{ padding: '4px' }}
-						>
-							<Trash size={15} />
-						</button>
-					</div>
-				);
-			},
-		}),
 	];
+
+	if (!pinnedScope || pinnedScope === 'global') {
+		columns.push(
+			columnHelper.display({
+				id: 'actions',
+				header: 'Actions',
+				cell: (info) => {
+					const srv = info.row.original;
+					return (
+						<div style={{ display: 'flex', gap: '6px' }}>
+							<button
+								className="btn btn-secondary btn-sm"
+								onClick={() => handleEditClick(srv)}
+								title="Edit config"
+								style={{ padding: '4px' }}
+							>
+								<Pencil size={15} />
+							</button>
+							<button
+								className="btn btn-danger btn-sm"
+								onClick={() => handleDelete(srv)}
+								title="Delete server"
+								style={{ padding: '4px' }}
+							>
+								<Trash size={15} />
+							</button>
+						</div>
+					);
+				},
+			})
+		);
+	}
 
 	const table = useReactTable({
 		data: servers || [],
@@ -422,9 +446,11 @@ export default function MCP({ showToast }: MCPProps) {
 						{servers.length} server{servers.length !== 1 ? 's' : ''}
 					</span>
 				</div>
-				<button className="btn btn-primary btn-sm" onClick={handleAddClick}>
-					<Plus size={14} weight="bold" aria-hidden /> Add Server
-				</button>
+				{!pinnedScope && (
+					<button className="btn btn-primary btn-sm" onClick={handleAddClick}>
+						<Plus size={14} weight="bold" aria-hidden /> Add Server
+					</button>
+				)}
 			</div>
 
 			{/* Content */}
@@ -435,10 +461,16 @@ export default function MCP({ showToast }: MCPProps) {
 							<Plug size={40} weight="duotone" />
 						</div>
 						<h3>No MCP servers configured</h3>
-						<p>Add a local stdio command server or a remote http/sse server to get started.</p>
-						<button className="btn btn-primary btn-sm" style={{ marginTop: '8px' }} onClick={handleAddClick}>
-							<Plus size={14} weight="bold" aria-hidden /> Configure first server
-						</button>
+						<p>
+							{pinnedScope && pinnedScope !== 'global'
+								? 'No MCP servers are enabled or configured for this agent.'
+								: 'Add a local stdio command server or a remote http/sse server to get started.'}
+						</p>
+						{!pinnedScope && (
+							<button className="btn btn-primary btn-sm" style={{ marginTop: '8px' }} onClick={handleAddClick}>
+								<Plus size={14} weight="bold" aria-hidden /> Configure first server
+							</button>
+						)}
 					</div>
 				) : (
 					<div style={{ overflowX: 'auto', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)' }}>

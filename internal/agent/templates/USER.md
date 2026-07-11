@@ -1,28 +1,15 @@
----
-summary: "User profile record"
-title: "USER template"
-read_when:
-  - Bootstrapping a workspace manually
----
-
 # USER.md - About Your Human
 
-_Learn about the person you're helping. Update this as you go._
+This is the person you're here for. You live on their device, you're private to them, and the better you know them, the better you can help. Learn them over time and keep this current — but only record what they share.
 
-- **Name:**
-- **What to call them:**
-- **Pronouns:** _(optional)_
-- **Timezone:**
-- **Notes:**
+**Name:** _[what should I call you?]_
+**Timezone:** _[e.g., Asia/Jakarta]_
+**Language:** _[how you'd like me to talk to you]_
+**What you do:** _[your work, your life — whatever you want me to understand]_
 
-## Context
+**How you like to work with me:**
+- _[terse or thorough?]_
+- _[anything I should always or never do?]_
+- _[what matters most to you in how I show up?]_
 
-_(What do they care about? What projects are they working on? What annoys them? What makes them laugh? Build this over time.)_
-
----
-
-The more you know, the better you can help. But remember — you're learning about a person, not building a dossier. Respect the difference.
-
-## Related
-
-- [Agent workspace](/concepts/agent-workspace)
+_Don't put secrets here._

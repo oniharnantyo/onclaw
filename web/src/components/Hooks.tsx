@@ -58,6 +58,7 @@ export interface HookExecution {
 interface HooksProps {
   agents: Agent[];
   showToast: (msg: string, type?: 'success' | 'error') => void;
+  pinnedScope?: string;
 }
 
 const DEFAULT_SCRIPT_TEMPLATE = `function handle(ctx) {
@@ -68,11 +69,23 @@ const DEFAULT_SCRIPT_TEMPLATE = `function handle(ctx) {
   };
 }`;
 
-export default function Hooks({ agents, showToast }: HooksProps) {
+export default function Hooks({ agents, showToast, pinnedScope }: HooksProps) {
   const [hooks, setHooks] = useState<Hook[]>([]);
   const [executions, setExecutions] = useState<HookExecution[]>([]);
   const safeHooks = hooks || [];
   const safeExecutions = executions || [];
+
+  const filteredHooks = safeHooks.filter(h => {
+    if (!pinnedScope) return true;
+    return h.scope === pinnedScope;
+  });
+
+  const filteredExecutions = safeExecutions.filter(e => {
+    if (!pinnedScope) return true;
+    if (pinnedScope === 'global') return true;
+    return e.agent === pinnedScope;
+  });
+
   const [activeSubTab, setActiveSubTab] = useState<'configured' | 'audit'>('configured');
   const [showAddModal, setShowAddModal] = useState(false);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
@@ -82,8 +95,8 @@ export default function Hooks({ agents, showToast }: HooksProps) {
 
   // Form Inputs
   const [name, setName] = useState('');
-  const [scopeType, setScopeType] = useState('global');
-  const [selectedAgent, setSelectedAgent] = useState('');
+  const [scopeType, setScopeType] = useState(pinnedScope === 'global' || !pinnedScope ? 'global' : 'agent');
+  const [selectedAgent, setSelectedAgent] = useState(pinnedScope && pinnedScope !== 'global' ? pinnedScope : '');
   const [event, setEvent] = useState('pre_tool_use');
   const [handlerType, setHandlerType] = useState('command');
   const [matcher, setMatcher] = useState('');
@@ -108,6 +121,18 @@ export default function Hooks({ agents, showToast }: HooksProps) {
     loadHooks();
     loadExecutions();
   }, []);
+
+  useEffect(() => {
+    if (pinnedScope) {
+      if (pinnedScope === 'global') {
+        setScopeType('global');
+        setSelectedAgent('');
+      } else {
+        setScopeType('agent');
+        setSelectedAgent(pinnedScope);
+      }
+    }
+  }, [pinnedScope]);
 
   // Real-time validation
   useEffect(() => {
@@ -174,8 +199,18 @@ export default function Hooks({ agents, showToast }: HooksProps) {
 
   const resetForm = () => {
     setName('');
-    setScopeType('global');
-    setSelectedAgent('');
+    if (pinnedScope) {
+      if (pinnedScope === 'global') {
+        setScopeType('global');
+        setSelectedAgent('');
+      } else {
+        setScopeType('agent');
+        setSelectedAgent(pinnedScope);
+      }
+    } else {
+      setScopeType('global');
+      setSelectedAgent('');
+    }
     setEvent('pre_tool_use');
     setHandlerType('command');
     setMatcher('');
@@ -477,7 +512,7 @@ export default function Hooks({ agents, showToast }: HooksProps) {
   ];
 
   const hookTable = useReactTable({
-    data: safeHooks,
+    data: filteredHooks,
     columns: hookColumns,
     getCoreRowModel: getCoreRowModel(),
   });
@@ -537,7 +572,7 @@ export default function Hooks({ agents, showToast }: HooksProps) {
   ];
 
   const execTable = useReactTable({
-    data: safeExecutions,
+    data: filteredExecutions,
     columns: execColumns,
     getCoreRowModel: getCoreRowModel(),
   });
@@ -578,7 +613,7 @@ export default function Hooks({ agents, showToast }: HooksProps) {
       {/* Main Content Pane */}
       <div style={{ padding: '20px 24px', overflow: 'auto', flexGrow: 1 }}>
         {activeSubTab === 'configured' ? (
-          safeHooks.length === 0 ? (
+          filteredHooks.length === 0 ? (
             <div className="empty-state">
               <div className="empty-state-icon">
                 <Lightning size={40} weight="duotone" />
@@ -618,7 +653,7 @@ export default function Hooks({ agents, showToast }: HooksProps) {
             </div>
           )
         ) : (
-          safeExecutions.length === 0 ? (
+          filteredExecutions.length === 0 ? (
             <div className="empty-state">
               <div className="empty-state-icon">
                 <ClipboardText size={40} weight="duotone" />
@@ -682,7 +717,7 @@ export default function Hooks({ agents, showToast }: HooksProps) {
               </label>
               <input id="hook-name" type="text" className="form-input" value={name} onChange={e => setName(e.target.value)} placeholder="e.g. deny-unapproved-tools" required />
             </div>
-            <div className="form-row" style={{ display: 'grid', gridTemplateColumns: scopeType === 'agent' ? '1fr 1fr 1fr' : '1fr 1fr', gap: '16px' }}>
+            <div className="form-row" style={{ display: 'grid', gridTemplateColumns: pinnedScope ? '1fr' : (scopeType === 'agent' ? '1fr 1fr 1fr' : '1fr 1fr'), gap: '16px' }}>
               <div className="form-group">
                 <label className="form-label" htmlFor="hook-event">
                   Lifecycle Event
@@ -696,45 +731,49 @@ export default function Hooks({ agents, showToast }: HooksProps) {
                   <option value="stop" title="Runs when a session is stopped. Blocking.">stop</option>
                 </select>
               </div>
-              <div className="form-group">
-                <label className="form-label" htmlFor="hook-scope-type">
-                  Scope
-                  <Tooltip content="Determines if the hook applies globally to all agents or only to a specific agent." position="bottom" align="right" />
-                </label>
-                <select
-                  id="hook-scope-type"
-                  className="form-select"
-                  value={scopeType}
-                  onChange={e => {
-                    setScopeType(e.target.value);
-                    if (e.target.value === 'agent' && agents.length > 0 && !selectedAgent) {
-                      setSelectedAgent(agents[0].name);
-                    }
-                  }}
-                >
-                  <option value="global">global</option>
-                  <option value="agent">agent</option>
-                </select>
-              </div>
-              {scopeType === 'agent' && (
-                <div className="form-group">
-                  <label className="form-label" htmlFor="hook-selected-agent">
-                    Select Agent
-                    <Tooltip content="Choose which agent this hook is active for." position="bottom" align="right" />
-                  </label>
-                  <select
-                    id="hook-selected-agent"
-                    className="form-select"
-                    value={selectedAgent}
-                    onChange={e => setSelectedAgent(e.target.value)}
-                    required
-                  >
-                    <option value="">Choose an agent...</option>
-                    {agents.map(a => (
-                      <option key={a.name} value={a.name}>{a.name}</option>
-                    ))}
-                  </select>
-                </div>
+              {!pinnedScope && (
+                <>
+                  <div className="form-group">
+                    <label className="form-label" htmlFor="hook-scope-type">
+                      Scope
+                      <Tooltip content="Determines if the hook applies globally to all agents or only to a specific agent." position="bottom" align="right" />
+                    </label>
+                    <select
+                      id="hook-scope-type"
+                      className="form-select"
+                      value={scopeType}
+                      onChange={e => {
+                        setScopeType(e.target.value);
+                        if (e.target.value === 'agent' && agents.length > 0 && !selectedAgent) {
+                          setSelectedAgent(agents[0].name);
+                        }
+                      }}
+                    >
+                      <option value="global">global</option>
+                      <option value="agent">agent</option>
+                    </select>
+                  </div>
+                  {scopeType === 'agent' && (
+                    <div className="form-group">
+                      <label className="form-label" htmlFor="hook-selected-agent">
+                        Select Agent
+                        <Tooltip content="Choose which agent this hook is active for." position="bottom" align="right" />
+                      </label>
+                      <select
+                        id="hook-selected-agent"
+                        className="form-select"
+                        value={selectedAgent}
+                        onChange={e => setSelectedAgent(e.target.value)}
+                        required
+                      >
+                        <option value="">Choose an agent...</option>
+                        {agents.map(a => (
+                          <option key={a.name} value={a.name}>{a.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </>
               )}
             </div>
             <div className="form-row" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>

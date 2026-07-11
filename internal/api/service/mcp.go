@@ -219,3 +219,26 @@ func redactEnv(envJSON string) string {
 	b, _ := json.Marshal(redacted)
 	return string(b)
 }
+
+// ListAgentMCP retrieves MCP servers with their overridden enabled state for the agent, redacting env values.
+func (s *Service) ListAgentMCP(ctx context.Context, agentName string) ([]MCPServerView, error) {
+	servers, err := s.mcpStore.ListAgentServers(ctx, agentName)
+	if err != nil {
+		return nil, classify(err)
+	}
+
+	resp := make([]MCPServerView, 0, len(servers))
+	for _, srv := range servers {
+		resp = append(resp, *toMCPServerView(srv))
+	}
+	return resp, nil
+}
+
+// SetAgentMCP sets the overridden enabled state of an MCP server for the agent.
+func (s *Service) SetAgentMCP(ctx context.Context, agentName string, serverName string, enabled bool) error {
+	err := s.mcpStore.SetAgentServerEnabled(ctx, agentName, serverName, enabled)
+	if err != nil {
+		return classify(err)
+	}
+	return nil
+}

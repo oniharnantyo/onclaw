@@ -21,9 +21,19 @@ export interface ToolCategory {
 
 interface ToolsProps {
 	showToast: (msg: string, type?: 'success' | 'error') => void;
+	variant?: 'global' | 'agent';
+	agentName?: string;
+	agentTools?: string;
+	onAgentToolsChange?: (tools: string) => void;
 }
 
-export default function Tools({ showToast }: ToolsProps) {
+export default function Tools({
+	showToast,
+	variant = 'global',
+	agentName,
+	agentTools,
+	onAgentToolsChange,
+}: ToolsProps) {
 	const [categories, setCategories] = useState<ToolCategory[]>([]);
 	const [loading, setLoading] = useState(true);
 
@@ -86,25 +96,157 @@ export default function Tools({ showToast }: ToolsProps) {
 		}
 	};
 
+	const isToolEnabled = (tool: Tool) => {
+		if (variant === 'agent') {
+			// An empty allowlist means "all globally-enabled tools" (matches assembly).
+			if (!agentTools) return true;
+			const allowed = agentTools.split(',').map(s => s.trim());
+			return allowed.includes(tool.name);
+		}
+		return tool.enabled;
+	};
+
 	const toggleTool = async (tool: Tool) => {
-		try {
-			const res = await fetch(`/api/tools/${encodeURIComponent(tool.name)}/toggle`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ enabled: !tool.enabled }),
-			});
-			if (res.ok) {
+		const currentlyEnabled = isToolEnabled(tool);
+		const targetEnabled = !currentlyEnabled;
+
+		if (variant === 'agent') {
+			let updated: string[];
+			const allowed = agentTools ? agentTools.split(',').map(s => s.trim()).filter(Boolean) : [];
+			if (allowed.length === 0) {
+				// Empty allowlist = all tools enabled. Enabling is a no-op (stays empty);
+				// disabling computes every registry tool name minus this one.
+				if (targetEnabled) {
+					updated = [];
+				} else {
+					const allNames = categories.flatMap(cat => cat.tools.map(t => t.name));
+					updated = allNames.filter(name => name !== tool.name);
+				}
+			} else if (targetEnabled) {
+				if (!allowed.includes(tool.name)) {
+					updated = [...allowed, tool.name];
+				} else {
+					updated = allowed;
+				}
+			} else {
+				updated = allowed.filter(name => name !== tool.name);
+			}
+			const newToolsString = updated.join(',');
+
+			if (agentName) {
+				// edit mode -> save directly to backend
+				try {
+					const res = await fetch(`/api/agents/${encodeURIComponent(agentName)}/tools`, {
+						method: 'PUT',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ tool: tool.name, enabled: targetEnabled }),
+					});
+					if (res.ok) {
+						showToast(
+							`Tool "${tool.name}" ${targetEnabled ? 'enabled' : 'disabled'} for agent successfully`,
+							'success'
+						);
+						if (onAgentToolsChange) {
+							onAgentToolsChange(newToolsString);
+						}
+					} else {
+						const err = await res.json();
+						showToast(err.error || 'Failed to update agent tools', 'error');
+					}
+				} catch {
+					showToast('Failed to update agent tools', 'error');
+				}
+			} else {
+				// create mode -> update local state only
+				if (onAgentToolsChange) {
+					onAgentToolsChange(newToolsString);
+				}
 				showToast(
-					`Tool "${tool.name}" ${!tool.enabled ? 'enabled' : 'disabled'} successfully`,
+					`Tool "${tool.name}" ${targetEnabled ? 'enabled' : 'disabled'} successfully`,
 					'success'
 				);
-				loadTools();
-			} else {
-				const err = await res.json();
-				showToast(err.error || 'Failed to toggle tool', 'error');
 			}
-		} catch {
-			showToast('Failed to toggle tool', 'error');
+		} else {
+			try {
+				const res = await fetch(`/api/tools/${encodeURIComponent(tool.name)}/toggle`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ enabled: targetEnabled }),
+				});
+				if (res.ok) {
+					showToast(
+						`Tool "${tool.name}" ${targetEnabled ? 'enabled' : 'disabled'} successfully`,
+						'success'
+					);
+					loadTools();
+				} else {
+					const err = await res.json();
+					showToast(err.error || 'Failed to toggle tool', 'error');
+				}
+			} catch {
+				showToast('Failed to toggle tool', 'error');
+			}
+		}
+	};
+
+	const toggleAllTools = async (targetEnabled: boolean) => {
+		if (variant === 'agent') {
+			// Empty allowlist = all tools (matches assembly), so enabling all stores the
+			// empty sentinel. Disabling all is unrepresentable under empty=all, so the
+			// Disable All button is hidden for the agent variant.
+			const newToolsString = '';
+
+			if (agentName) {
+				try {
+					const res = await fetch(`/api/agents/${encodeURIComponent(agentName)}/tools`, {
+						method: 'PUT',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ tool: '*', enabled: targetEnabled }),
+					});
+					if (res.ok) {
+						showToast(
+							`All tools ${targetEnabled ? 'enabled' : 'disabled'} for agent successfully`,
+							'success'
+						);
+						if (onAgentToolsChange) {
+							onAgentToolsChange(newToolsString);
+						}
+					} else {
+						const err = await res.json();
+						showToast(err.error || 'Failed to update agent tools', 'error');
+					}
+				} catch {
+					showToast('Failed to update agent tools', 'error');
+				}
+			} else {
+				if (onAgentToolsChange) {
+					onAgentToolsChange(newToolsString);
+				}
+				showToast(
+					`All tools ${targetEnabled ? 'enabled' : 'disabled'} successfully`,
+					'success'
+				);
+			}
+		} else {
+			try {
+				const res = await fetch(`/api/tools/*/toggle`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ enabled: targetEnabled }),
+				});
+				if (res.ok) {
+					showToast(
+						`All tools ${targetEnabled ? 'enabled' : 'disabled'} successfully`,
+						'success'
+					);
+					loadTools();
+				} else {
+					const err = await res.json();
+					showToast(err.error || 'Failed to toggle all tools', 'error');
+				}
+			} catch {
+				showToast('Failed to toggle all tools', 'error');
+			}
 		}
 	};
 
@@ -343,11 +485,31 @@ export default function Tools({ showToast }: ToolsProps) {
 	return (
 		<div className="page-container">
 			{/* Toolbar */}
-			<div className="page-toolbar">
+			<div className="page-toolbar" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
 				<div className="page-toolbar-left">
 					<span className="badge badge-inactive">
 						{categories.reduce((acc, cat) => acc + cat.tools.length, 0)} tool(s) across {categories.length} categories
 					</span>
+				</div>
+				<div className="page-toolbar-right" style={{ display: 'flex', gap: '8px' }}>
+					<button
+						type="button"
+						className="btn btn-secondary btn-sm"
+						onClick={() => toggleAllTools(true)}
+						title="Enable all tools"
+					>
+						Enable All
+					</button>
+					{variant !== 'agent' && (
+					<button
+						type="button"
+						className="btn btn-secondary btn-sm"
+						onClick={() => toggleAllTools(false)}
+						title="Disable all tools"
+					>
+						Disable All
+					</button>
+					)}
 				</div>
 			</div>
 
@@ -387,7 +549,7 @@ export default function Tools({ showToast }: ToolsProps) {
 											{catView.category}
 										</h3>
 										{/* Browser category keeps config at category level */}
-										{catView.category.toLowerCase() === 'browser' && catView.configurable && (
+										{variant !== 'agent' && catView.category.toLowerCase() === 'browser' && catView.configurable && (
 											<button
 												className="btn btn-secondary btn-sm"
 												style={{
@@ -440,7 +602,7 @@ export default function Tools({ showToast }: ToolsProps) {
 												</div>
 												<div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
 													{/* Web category has per-tool config */}
-													{t.category.toLowerCase() === 'web' && t.configurable && (
+													{variant !== 'agent' && t.category.toLowerCase() === 'web' && t.configurable && (
 														<button
 															type="button"
 															className="btn btn-secondary btn-sm"
@@ -469,15 +631,15 @@ export default function Tools({ showToast }: ToolsProps) {
 															background: 'none',
 															border: 'none',
 															cursor: 'pointer',
-															color: t.enabled ? 'var(--color-accent)' : 'var(--text-muted)',
+															color: isToolEnabled(t) ? 'var(--color-accent)' : 'var(--text-muted)',
 															padding: '4px',
 															display: 'flex',
 															alignItems: 'center',
 														}}
 														onClick={() => toggleTool(t)}
-														aria-label={t.enabled ? `Disable ${t.name}` : `Enable ${t.name}`}
+														aria-label={isToolEnabled(t) ? `Disable ${t.name}` : `Enable ${t.name}`}
 													>
-														{t.enabled ? (
+														{isToolEnabled(t) ? (
 															<ToggleRight size={28} weight="fill" />
 														) : (
 															<ToggleLeft size={28} weight="fill" />

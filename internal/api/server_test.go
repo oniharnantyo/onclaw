@@ -14,6 +14,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/cloudwego/eino/schema"
@@ -507,6 +508,139 @@ func TestWebAgentsCRUD(t *testing.T) {
 	}
 }
 
+// TestWebAgentCreateEmptyToolsAndToggle exercises the exact endpoints the web UI drives
+// (tasks 3.5 / 3.6): a UI-created agent carries an empty allowlist (= all builtin tools),
+// and disabling one tool from that all-state persists as the explicit all-minus-one list.
+func TestWebAgentCreateEmptyToolsAndToggle(t *testing.T) {
+	db, dbCleanup := setupTestDB(t)
+	defer dbCleanup()
+
+	// Seed web password
+	hash, err := bcrypt.GenerateFromPassword([]byte("secret123"), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("bcrypt hash failed: %v", err)
+	}
+	_, err = db.Exec("INSERT OR REPLACE INTO preferences (key, value) VALUES ('web_password_hash', ?)", string(hash))
+	if err != nil {
+		t.Fatalf("seed password failed: %v", err)
+	}
+
+	_, addr, srvCleanup := setupTestServer(t, db, nil)
+	defer srvCleanup()
+
+	client := newTestClient()
+
+	// Login
+	loginURL := fmt.Sprintf("http://%s/api/login", addr)
+	body, _ := json.Marshal(map[string]string{"password": "secret123"})
+	resp, _ := client.Post(loginURL, "application/json", bytes.NewReader(body))
+	resp.Body.Close()
+
+	agentsURL := fmt.Sprintf("http://%s/api/agents", addr)
+	getURL := fmt.Sprintf("%s/ui-created", agentsURL)
+
+	// 3.5: the web create form seeds tools:"" (matching DEFAULT_FORM after the change).
+	input := service.AgentInput{
+		Name:     "ui-created",
+		Provider: "openai",
+		Model:    "gpt-4",
+		Tools:    "",
+	}
+	body, _ = json.Marshal(input)
+	resp, err = client.Post(agentsURL, "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("create agent failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected status 201, got %d", resp.StatusCode)
+	}
+
+	// 3.5: the created agent reports an empty allowlist (all builtin tools).
+	resp, err = client.Get(getURL)
+	if err != nil {
+		t.Fatalf("get agent failed: %v", err)
+	}
+	var a service.AgentView
+	if err := json.NewDecoder(resp.Body).Decode(&a); err != nil {
+		t.Fatalf("decode agent: %v", err)
+	}
+	resp.Body.Close()
+	if a.Tools != "" {
+		t.Errorf("UI-created agent should have empty tools, got %q", a.Tools)
+	}
+
+	// Capture the full builtin registry to compute the expected post-disable set.
+	resp, err = client.Get(fmt.Sprintf("http://%s/api/tools", addr))
+	if err != nil {
+		t.Fatalf("list tools failed: %v", err)
+	}
+	var toolCategories []struct {
+		Tools []struct {
+			Name string `json:"name"`
+		} `json:"tools"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&toolCategories); err != nil {
+		t.Fatalf("decode tools: %v", err)
+	}
+	resp.Body.Close()
+	allNames := make(map[string]bool)
+	for _, cat := range toolCategories {
+		for _, tl := range cat.Tools {
+			allNames[tl.Name] = true
+		}
+	}
+	if len(allNames) == 0 {
+		t.Fatal("expected a non-empty builtin tool registry")
+	}
+
+	// 3.6: disable one tool (shell) from the all-state via the edit Tools tab endpoint.
+	toggleURL := fmt.Sprintf("http://%s/api/agents/ui-created/tools", addr)
+	toggleBody, _ := json.Marshal(map[string]interface{}{"tool": "shell", "enabled": false})
+	req, _ := http.NewRequest(http.MethodPut, toggleURL, bytes.NewReader(toggleBody))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("toggle tool failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200 from toggle, got %d", resp.StatusCode)
+	}
+
+	// 3.6: reload (second GET) — the disabled tool must be absent and all others present.
+	resp, err = client.Get(getURL)
+	if err != nil {
+		t.Fatalf("reload agent failed: %v", err)
+	}
+	var a2 service.AgentView
+	if err := json.NewDecoder(resp.Body).Decode(&a2); err != nil {
+		t.Fatalf("decode reloaded agent: %v", err)
+	}
+	resp.Body.Close()
+
+	got := make(map[string]bool)
+	for _, n := range strings.Split(a2.Tools, ",") {
+		if n = strings.TrimSpace(n); n != "" {
+			got[n] = true
+		}
+	}
+	if got["shell"] {
+		t.Errorf("disabled tool 'shell' should be absent after reload, got %q", a2.Tools)
+	}
+	for name := range allNames {
+		if name == "shell" {
+			continue
+		}
+		if !got[name] {
+			t.Errorf("tool %q should remain enabled after disabling shell, got %q", name, a2.Tools)
+		}
+	}
+	if len(got) != len(allNames)-1 {
+		t.Errorf("expected %d enabled tools after disabling one, got %d (%q)", len(allNames)-1, len(got), a2.Tools)
+	}
+}
+
 func TestWebConversations(t *testing.T) {
 	db, dbCleanup := setupTestDB(t)
 	defer dbCleanup()
@@ -561,11 +695,13 @@ func TestWebConversations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get messages failed: %v", err)
 	}
-	var messages []store.TurnRow
-	_ = json.NewDecoder(resp.Body).Decode(&messages)
+	var wrapper struct {
+		Messages []*store.TurnRow `json:"messages"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&wrapper)
 	resp.Body.Close()
-	if len(messages) != 2 {
-		t.Errorf("expected 2 turns, got %d", len(messages))
+	if len(wrapper.Messages) != 2 {
+		t.Errorf("expected 2 turns, got %d", len(wrapper.Messages))
 	}
 }
 
@@ -633,6 +769,14 @@ func (m *mockAgent) Run(ctx context.Context, userInput string, contentBlocks ...
 
 func (m *mockAgent) LastTurnMeta() *store.TurnMeta {
 	return nil
+}
+
+func (m *mockAgent) ContextWindow() int {
+	return 64000
+}
+
+func (m *mockAgent) AgentName() string {
+	return "test"
 }
 
 func TestWebSSEChat(t *testing.T) {
@@ -725,6 +869,14 @@ func (c *customMockAgent) Run(ctx context.Context, userInput string, contentBloc
 
 func (c *customMockAgent) LastTurnMeta() *store.TurnMeta {
 	return nil
+}
+
+func (c *customMockAgent) ContextWindow() int {
+	return 64000
+}
+
+func (c *customMockAgent) AgentName() string {
+	return "test"
 }
 
 func TestWebSSEChat_MediaBlocks(t *testing.T) {

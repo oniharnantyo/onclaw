@@ -41,6 +41,7 @@ func TestSeedWorkspace(t *testing.T) {
 		"IDENTITY.md",
 		"SOUL.md",
 		"CAPABILITIES.md",
+		"TOOLS.md",
 		"USER.md",
 		"MEMORY.md",
 		"AGENTS.md",

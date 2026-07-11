@@ -18,7 +18,6 @@ export interface Provider {
   name: string;
   provider_type: string;
   api_base: string;
-  settings: string;
   enabled: boolean;
   is_default: boolean;
   secret_set: boolean;
@@ -34,7 +33,7 @@ const DEFAULT_PROVIDER_FORM = {
   name: '',
   provider_type: 'openai',
   api_base: '',
-  settings: '{}',
+  api_key: '',
   enabled: true,
 };
 
@@ -43,6 +42,8 @@ export default function Providers({ providers, loadProviders, showToast }: Provi
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [providerForm, setProviderForm] = useState(DEFAULT_PROVIDER_FORM);
   const [isSaving, setIsSaving] = useState(false);
+  const [isTesting, setIsTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
 
   const [showSecretModal, setShowSecretModal] = useState(false);
   const [secretProviderName, setSecretProviderName] = useState('');
@@ -50,25 +51,157 @@ export default function Providers({ providers, loadProviders, showToast }: Provi
   const [secretStatus, setSecretStatus] = useState<{ set: boolean; hint: string }>({ set: false, hint: '' });
   const [isSavingSecret, setIsSavingSecret] = useState(false);
 
+  const testConnection = async () => {
+    // For new providers, need to save first before testing
+    if (!editingProvider) {
+      if (!providerForm.name.trim()) {
+        showToast('Please enter a provider name first', 'error');
+        return;
+      }
+      if (!providerForm.api_key.trim()) {
+        showToast('Please enter an API key to test the connection', 'error');
+        return;
+      }
+
+      // For new providers, we need to create them first
+      setIsTesting(true);
+      setTestResult(null);
+
+      try {
+        // First create the provider without the key
+        const { api_key, ...providerPayload } = providerForm;
+        const res = await fetch('/api/providers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(providerPayload),
+        });
+
+        if (!res.ok) {
+          const data = await res.json();
+          showToast(`Failed to create provider: ${data.error || 'Unknown error'}`, 'error');
+          setIsTesting(false);
+          return;
+        }
+
+        const createdProvider = await res.json();
+        const providerName = createdProvider.name || providerForm.name;
+
+        // Then set the API key
+        const secretRes = await fetch(`/api/providers/${providerName}/secret`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ api_key: api_key }),
+        });
+
+        if (!secretRes.ok) {
+          const data = await res.json();
+          showToast(`Provider created but API key failed: ${data.error || 'Unknown error'}`, 'error');
+          setIsTesting(false);
+          return;
+        }
+
+        // Now test the connection
+        const testRes = await fetch(`/api/providers/${providerName}/test-connection`, {
+          method: 'POST',
+        });
+
+        if (testRes.ok) {
+          const data = await testRes.json();
+          setTestResult({ success: data.success, message: data.message });
+          showToast(data.success ? 'Connection test successful' : 'Connection test failed', data.success ? 'success' : 'error');
+        } else {
+          const data = await testRes.json();
+          const errorMsg = data.error || 'Connection test failed';
+          setTestResult({ success: false, message: errorMsg });
+          showToast(errorMsg, 'error');
+        }
+      } catch {
+        const errorMsg = 'Connection test failed - network error';
+        setTestResult({ success: false, message: errorMsg });
+        showToast(errorMsg, 'error');
+      } finally {
+        setIsTesting(false);
+      }
+    } else {
+      // For existing providers, just test directly
+      if (!editingProvider.secret_set) {
+        showToast('No API key configured for this provider', 'error');
+        return;
+      }
+
+      setIsTesting(true);
+      setTestResult(null);
+
+      try {
+        const res = await fetch(`/api/providers/${editingProvider.name}/test-connection`, {
+          method: 'POST',
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          setTestResult({ success: data.success, message: data.message });
+          showToast(data.success ? 'Connection test successful' : 'Connection test failed', data.success ? 'success' : 'error');
+        } else {
+          const data = await res.json();
+          const errorMsg = data.error || 'Connection test failed';
+          setTestResult({ success: false, message: errorMsg });
+          showToast(errorMsg, 'error');
+        }
+      } catch {
+        const errorMsg = 'Connection test failed - network error';
+        setTestResult({ success: false, message: errorMsg });
+        showToast(errorMsg, 'error');
+      } finally {
+        setIsTesting(false);
+      }
+    }
+  };
+
   const saveProvider = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSaving(true);
+
+    // Build payload excluding API key (will be set separately if provided)
+    const { api_key, ...providerPayload } = providerForm;
     const url = editingProvider ? `/api/providers/${editingProvider.name}` : '/api/providers';
     const method = editingProvider ? 'PUT' : 'POST';
+
     try {
+      // First, save the provider configuration
       const res = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(providerForm),
+        body: JSON.stringify(providerPayload),
       });
-      if (res.ok) {
-        showToast(`Provider ${editingProvider ? 'updated' : 'created'} successfully`);
-        setShowProviderModal(false);
-        loadProviders();
-      } else {
+
+      if (!res.ok) {
         const data = await res.json();
         showToast(data.error || 'Failed to save provider', 'error');
+        setIsSaving(false);
+        return;
       }
+
+      // If API key was provided during creation/update, set it separately
+      if (api_key.trim()) {
+        const providerName = editingProvider ? editingProvider.name : providerForm.name;
+        const secretRes = await fetch(`/api/providers/${providerName}/secret`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ api_key: api_key }),
+        });
+
+        if (!secretRes.ok) {
+          const data = await res.json();
+          showToast(`Provider saved but API key failed: ${data.error || 'Unknown error'}`, 'error');
+          setIsSaving(false);
+          return;
+        }
+      }
+
+      showToast(`Provider ${editingProvider ? 'updated' : 'created'} successfully`);
+      setShowProviderModal(false);
+      setTestResult(null); // Clear test result on success
+      loadProviders();
     } catch {
       showToast('Failed to save provider', 'error');
     } finally {
@@ -237,9 +370,10 @@ export default function Providers({ providers, loadProviders, showToast }: Provi
                   name: p.name,
                   provider_type: p.provider_type,
                   api_base: p.api_base,
-                  settings: p.settings,
+                  api_key: '', // Never pre-fill API keys for security
                   enabled: p.enabled,
                 });
+                setTestResult(null);
                 setShowProviderModal(true);
               }}
               aria-label={`Edit ${p.name}`}
@@ -294,6 +428,7 @@ export default function Providers({ providers, loadProviders, showToast }: Provi
           onClick={() => {
             setEditingProvider(null);
             setProviderForm(DEFAULT_PROVIDER_FORM);
+            setTestResult(null);
             setShowProviderModal(true);
           }}
         >
@@ -317,6 +452,7 @@ export default function Providers({ providers, loadProviders, showToast }: Provi
               onClick={() => {
                 setEditingProvider(null);
                 setProviderForm(DEFAULT_PROVIDER_FORM);
+                setTestResult(null);
                 setShowProviderModal(true);
               }}
             >
@@ -433,7 +569,7 @@ export default function Providers({ providers, loadProviders, showToast }: Provi
                 />
               </div>
             )}
- 
+
             <div className="form-group">
               <label className="form-label" htmlFor="prov-type">
                 Provider Type
@@ -451,7 +587,7 @@ export default function Providers({ providers, loadProviders, showToast }: Provi
                 <option value="openai-compatible">openai-compatible</option>
               </select>
             </div>
- 
+
             <div className="form-group">
               <label className="form-label" htmlFor="prov-api-base">
                 API Base URL
@@ -466,20 +602,96 @@ export default function Providers({ providers, loadProviders, showToast }: Provi
                 placeholder="Leave blank to use provider default"
               />
             </div>
- 
+
             <div className="form-group">
-              <label className="form-label" htmlFor="prov-settings">
-                Settings (JSON)
-                <Tooltip content="Custom connection or parameter settings as a JSON object." position="bottom" align="left" />
+              <label className="form-label" htmlFor="prov-api-key">
+                API Key
+                {editingProvider && editingProvider.secret_set ? (
+                  <Tooltip content="Enter a new API key to replace the existing one, or leave blank to keep the current key." position="bottom" align="left" />
+                ) : (
+                  <Tooltip content="API key for authentication (optional - can be set later). Keys are encrypted at rest." position="bottom" align="left" />
+                )}
               </label>
-              <textarea
-                id="prov-settings"
-                className="form-textarea"
-                value={providerForm.settings}
-                onChange={(e) => setProviderForm({ ...providerForm, settings: e.target.value })}
-                placeholder="{}"
-                style={{ minHeight: '80px', fontFamily: 'var(--mono)', fontSize: '12.5px' }}
+              <input
+                id="prov-api-key"
+                type="password"
+                className="form-input"
+                value={providerForm.api_key}
+                onChange={(e) => {
+                  setProviderForm({ ...providerForm, api_key: e.target.value });
+                  setTestResult(null); // Clear test result when API key changes
+                }}
+                placeholder={
+                  editingProvider && editingProvider.secret_set
+                    ? 'Enter new key to replace existing (optional)'
+                    : 'sk-… (optional)'
+                }
+                autoComplete="off"
               />
+              {editingProvider && editingProvider.secret_set ? (
+                <span className="form-hint">
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '4px', color: 'var(--success)', fontSize: '12px' }}>
+                    <ShieldCheck size={11} weight="fill" aria-hidden />
+                    API key already configured (hidden for security). Leave blank to keep existing key, or enter a new key to replace it.
+                  </span>
+                </span>
+              ) : (
+                <span className="form-hint">Leave blank to set the API key later via the "Key" button.</span>
+              )}
+            </div>
+
+            {/* Test Connection */}
+            <div className="form-group">
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={testConnection}
+                disabled={isTesting || (!editingProvider && (!providerForm.name.trim() || !providerForm.api_key.trim())) || (editingProvider != null && !editingProvider.secret_set)}
+                style={{ width: '100%' }}
+              >
+                {isTesting ? 'Testing Connection…' : 'Test Connection'}
+              </button>
+              {!editingProvider && (
+                <span className="form-hint" style={{ marginTop: '6px', display: 'block' }}>
+                  This will create the provider and test the connection with the provided credentials
+                </span>
+              )}
+              {editingProvider && editingProvider.secret_set && (
+                <span className="form-hint" style={{ marginTop: '6px', display: 'block' }}>
+                  Testing with existing stored API key
+                </span>
+              )}
+              {testResult && (
+                <div
+                  style={{
+                    marginTop: '10px',
+                    padding: '10px 12px',
+                    borderRadius: 'var(--radius-sm)',
+                    fontSize: '13px',
+                    background: testResult.success
+                      ? 'var(--success-muted)'
+                      : 'var(--error-muted)',
+                    border: `1px solid ${
+                      testResult.success
+                        ? 'rgba(52,211,153,0.2)'
+                        : 'rgba(239,68,68,0.2)'
+                    }`,
+                    color: 'var(--text)',
+                  }}
+                >
+                  {testResult.success ? (
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <ShieldCheck size={14} weight="fill" style={{ color: 'var(--success)' }} aria-hidden />
+                      {testResult.message}
+                    </span>
+                  ) : (
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <ShieldWarning size={14} weight="fill" style={{ color: 'var(--error)' }} aria-hidden />
+                      {testResult.message}
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
 
             <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>

@@ -57,6 +57,9 @@ func (s *Service) InstallSkills(ctx context.Context, input InstallSkillInput) ([
 
 // ListSkills returns all installed skills.
 func (s *Service) ListSkills(ctx context.Context) ([]SkillView, error) {
+	if s.installer == nil {
+		return []SkillView{}, nil
+	}
 	skills, err := s.installer.List(ctx)
 	if err != nil {
 		return nil, classify(err)

@@ -3,12 +3,10 @@
 ## Purpose
 
 Let a user create more than one named agent, select which one runs, and have each agent select its own model and reasoning effort — without duplicating credentials or running more than one agent at a time.
-
 ## Requirements
-
 ### Requirement: Named agents are stored in an `agents` table and selected per run
 
-The system SHALL store agent definitions in an `agents` table (name, provider, model, reasoning_effort, system_prompt, tools, max_iterations, workspace, enabled). `onclaw run` and `onclaw chat` SHALL select the agent to use from a `--agent <name>` flag, or when absent from a `default_agent` preference. The selected agent SHALL be the only agent that runs for that invocation. Running with no `--agent` and no `default_agent` SHALL fail with a clear error.
+The system SHALL store agent definitions in an `agents` table (name, provider, model, model metadata, reasoning control, system prompt, workspace, tools, max iterations, memory configuration, enabled). `onclaw run` and `onclaw chat` SHALL select the agent to use from a `--agent <name>` flag, or when absent from a `default_agent` preference. The selected agent SHALL be the only agent that runs for that invocation. Running with no `--agent` and no `default_agent` SHALL fail with a clear error.
 
 #### Scenario: The default agent is used when `--agent` is absent
 
@@ -24,6 +22,11 @@ The system SHALL store agent definitions in an `agents` table (name, provider, m
 
 - **WHEN** no `--agent` is given and no `default_agent` is set
 - **THEN** the command fails with an error telling the user to add or select an agent
+
+#### Scenario: An agent's memory configuration is stored alongside its definition
+
+- **WHEN** an agent row is read for assembly
+- **THEN** the row includes the agent's `memory_config`, used to derive the effective memory configuration
 
 ### Requirement: An agent owns its model and metadata and resolves to an effective provider profile without holding credentials
 
@@ -133,3 +136,42 @@ master's persona and learned memory are shared globally across agents (cross-ref
 
 - **WHEN** onboarding completes provider setup and the user runs `onclaw run "hi"` without adding any agent
 - **THEN** the builtin master agent runs rather than failing with "no agent available"
+
+### Requirement: An agent stores its own memory configuration
+
+The system SHALL persist a per-agent memory configuration on the agent row as a JSON document (`agents.memory_config`). The configuration SHALL round-trip through agent create and edit without loss, and SHALL default to an empty document for agents created before the column existed. The configuration SHALL be editable through the agent management UI and the agent API.
+
+#### Scenario: A saved memory configuration is preserved across edits
+
+- **WHEN** an agent's memory configuration is updated and the agent is later edited for an unrelated field
+- **THEN** the previously saved memory configuration is unchanged
+
+#### Scenario: A pre-existing agent gets an empty configuration
+
+- **WHEN** the `memory_config` column is added to a database that already contains agents
+- **THEN** every existing agent's `memory_config` is `{}` and the agent behaves as the global defaults
+
+### Requirement: An agent stores a per-agent maximum context window
+
+The system SHALL store a per-agent `max_context_tokens` on the agent profile. A value of `0` SHALL mean "inherit." When assembling an agent, the system SHALL resolve the effective context window as the first available of: the agent's `max_context_tokens` when greater than zero, the global `max_context_tokens` config value when greater than zero, then the selected model's discovered context window. The per-agent value SHALL override the global config value, which SHALL override the model default. Existing agents SHALL default to `0` so current global-driven behavior is preserved.
+
+#### Scenario: A per-agent override wins over the global value
+
+- **WHEN** an agent has `max_context_tokens = 32000` and the global config is `64000`
+- **THEN** the agent assembles with an effective context window of `32000`
+
+#### Scenario: An unset agent inherits the global value
+
+- **WHEN** an agent has `max_context_tokens = 0` and the global config is `64000`
+- **THEN** the agent assembles with an effective context window of `64000` (unchanged from today)
+
+#### Scenario: Both unset falls back to the model default
+
+- **WHEN** an agent has `max_context_tokens = 0`, the global config is `0`/unset, and the model's discovered context window is `128000`
+- **THEN** the agent assembles with an effective context window of `128000`
+
+#### Scenario: Existing agents are unaffected by the migration
+
+- **WHEN** the `agents.max_context_tokens` column is added
+- **THEN** every existing row has `max_context_tokens = 0` and preserves its prior behavior
+

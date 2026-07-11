@@ -142,3 +142,36 @@ func (h *Handler) SetSecret(w http.ResponseWriter, r *http.Request) {
 
 	httpx.JSON(w, http.StatusOK, map[string]string{"status": "secret_set"})
 }
+
+// ListProviderModels handles GET /api/providers/{name}/models.
+func (h *Handler) ListProviderModels(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	name := r.PathValue("name")
+
+	resp, err := h.svc.ListProviderModels(ctx, name)
+	if err != nil {
+		h.handleError(w, err)
+		return
+	}
+
+	httpx.JSON(w, http.StatusOK, resp)
+}
+
+// TestProviderConnection handles POST /api/providers/{name}/test-connection.
+func (h *Handler) TestProviderConnection(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	name := r.PathValue("name")
+
+	resp, err := h.svc.TestConnection(ctx, name)
+	if err != nil {
+		h.handleError(w, err)
+		return
+	}
+
+	if resp.Success {
+		httpx.JSON(w, http.StatusOK, resp)
+	} else {
+		// Still return OK but with success=false so frontend can show the error message
+		httpx.JSON(w, http.StatusOK, resp)
+	}
+}

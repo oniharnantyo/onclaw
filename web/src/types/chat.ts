@@ -203,6 +203,20 @@ export interface Conversation {
 
 export interface SSEInitEvent {
   conversation_id: number;
+  context_window?: number;
+  agent_name?: string;
+}
+
+export interface SSETurnEvent {
+  conversation_id: number;
+  sequence_num: number;
+  response_id: string;
+  previous_response_id?: string;
+  model: string;
+  tokens: number;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
 }
 
 export interface SSEMessageEvent {

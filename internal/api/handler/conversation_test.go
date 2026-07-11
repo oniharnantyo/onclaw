@@ -1,10 +1,13 @@
 package handler_test
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
 func TestListConversations(t *testing.T) {
@@ -50,6 +53,17 @@ func TestListMessages_ValidID(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		t.Errorf("expected 200, got %d: %s", resp.StatusCode, string(body))
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	var wrapper struct {
+		Messages      []*store.TurnRow `json:"messages"`
+		ContextWindow int64            `json:"context_window"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&wrapper); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if wrapper.ContextWindow <= 0 {
+		t.Errorf("expected context_window > 0, got %d", wrapper.ContextWindow)
 	}
 }

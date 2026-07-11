@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -240,6 +241,13 @@ func serveCommand(st *appState) *cli.Command {
 			stagedWriteStore := sqlite.NewStagedWriteStore(db)
 			svc.SetStagedWriteStore(stagedWriteStore)
 			svc.SetWorkspacePath(filepath.Dir(resolvedDbPath))
+
+			// Pre-flight check: validate bind address/port synchronously
+			ln, err := net.Listen("tcp", addr)
+			if err != nil {
+				return fmt.Errorf("web server error: %w", err)
+			}
+			ln.Close()
 
 			server := api.NewServer(svc, st.log)
 

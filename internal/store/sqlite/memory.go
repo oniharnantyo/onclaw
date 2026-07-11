@@ -64,9 +64,9 @@ func (s *sqliteMemoryStore) IndexDocument(ctx context.Context, doc *memory.Memor
 	defer tx.Rollback()
 
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO memory_documents (agent, scope, kind, content, source, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		doc.Agent, doc.Scope, doc.Kind, doc.Content, doc.Source, t,
+		`INSERT INTO memory_documents (agent, scope, kind, content, source, embedding_model, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		doc.Agent, doc.Scope, doc.Kind, doc.Content, doc.Source, doc.EmbeddingModel, t,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("insert document: %w", err)
@@ -98,10 +98,10 @@ func (s *sqliteMemoryStore) IndexDocument(ctx context.Context, doc *memory.Memor
 func (s *sqliteMemoryStore) GetDocument(ctx context.Context, id int64) (*memory.MemoryDocument, error) {
 	var doc memory.MemoryDocument
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, agent, scope, kind, content, source, created_at
+		`SELECT id, agent, scope, kind, content, source, embedding_model, created_at
 		 FROM memory_documents WHERE id = ?`,
 		id,
-	).Scan(&doc.ID, &doc.Agent, &doc.Scope, &doc.Kind, &doc.Content, &doc.Source, &doc.CreatedAt)
+	).Scan(&doc.ID, &doc.Agent, &doc.Scope, &doc.Kind, &doc.Content, &doc.Source, &doc.EmbeddingModel, &doc.CreatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -127,30 +127,30 @@ func (s *sqliteMemoryStore) SearchArchive(ctx context.Context, query *memory.Arc
 		sanitized := sanitizeFts(query.Query)
 		if sanitized == "" {
 			q := `
-				SELECT d.id, d.agent, d.scope, d.kind, d.content, d.source, d.created_at, e.vector, 0.0 as rank
+				SELECT d.id, d.agent, d.scope, d.kind, d.content, d.source, d.embedding_model, d.created_at, e.vector, 0.0 as rank
 				FROM memory_documents d
 				LEFT JOIN memory_embeddings e ON d.id = e.document_id
-				WHERE d.agent = ? AND (d.scope = ? OR d.scope = 'global')
+				WHERE d.agent = ? AND (d.scope = ? OR d.scope = 'global') AND d.embedding_model = ?
 			`
-			rows, err = s.db.QueryContext(ctx, q, query.Agent, query.Scope)
+			rows, err = s.db.QueryContext(ctx, q, query.Agent, query.Scope, query.EmbeddingModel)
 		} else {
 			q := `
-				SELECT d.id, d.agent, d.scope, d.kind, d.content, d.source, d.created_at, e.vector, fts.rank
+				SELECT d.id, d.agent, d.scope, d.kind, d.content, d.source, d.embedding_model, d.created_at, e.vector, fts.rank
 				FROM memory_documents d
 				JOIN memory_documents_fts fts ON d.id = fts.rowid
 				LEFT JOIN memory_embeddings e ON d.id = e.document_id
-				WHERE d.agent = ? AND (d.scope = ? OR d.scope = 'global') AND fts.content MATCH ?
+				WHERE d.agent = ? AND (d.scope = ? OR d.scope = 'global') AND fts.content MATCH ? AND d.embedding_model = ?
 			`
-			rows, err = s.db.QueryContext(ctx, q, query.Agent, query.Scope, sanitized)
+			rows, err = s.db.QueryContext(ctx, q, query.Agent, query.Scope, sanitized, query.EmbeddingModel)
 		}
 	} else {
 		q := `
-			SELECT d.id, d.agent, d.scope, d.kind, d.content, d.source, d.created_at, e.vector, 0.0 as rank
+			SELECT d.id, d.agent, d.scope, d.kind, d.content, d.source, d.embedding_model, d.created_at, e.vector, 0.0 as rank
 			FROM memory_documents d
 			LEFT JOIN memory_embeddings e ON d.id = e.document_id
-			WHERE d.agent = ? AND (d.scope = ? OR d.scope = 'global')
+			WHERE d.agent = ? AND (d.scope = ? OR d.scope = 'global') AND d.embedding_model = ?
 		`
-		rows, err = s.db.QueryContext(ctx, q, query.Agent, query.Scope)
+		rows, err = s.db.QueryContext(ctx, q, query.Agent, query.Scope, query.EmbeddingModel)
 	}
 
 	if err != nil {
@@ -165,7 +165,7 @@ func (s *sqliteMemoryStore) SearchArchive(ctx context.Context, query *memory.Arc
 		var rank float64
 		err := rows.Scan(
 			&doc.ID, &doc.Agent, &doc.Scope, &doc.Kind,
-			&doc.Content, &doc.Source, &doc.CreatedAt,
+			&doc.Content, &doc.Source, &doc.EmbeddingModel, &doc.CreatedAt,
 			&vecBlob, &rank,
 		)
 		if err != nil {
@@ -188,11 +188,11 @@ func (s *sqliteMemoryStore) SearchArchive(ctx context.Context, query *memory.Arc
 	return memory.RankCandidates(candidates, query)
 }
 
-func (s *sqliteMemoryStore) GetCachedEmbedding(ctx context.Context, contentHash string) ([]float32, error) {
+func (s *sqliteMemoryStore) GetCachedEmbedding(ctx context.Context, embeddingModel string, contentHash string) ([]float32, error) {
 	var blob []byte
 	err := s.db.QueryRowContext(ctx,
-		"SELECT vector FROM embedding_cache WHERE content_hash = ?",
-		contentHash,
+		"SELECT vector FROM embedding_cache WHERE embedding_model = ? AND content_hash = ?",
+		embeddingModel, contentHash,
 	).Scan(&blob)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -203,12 +203,12 @@ func (s *sqliteMemoryStore) GetCachedEmbedding(ctx context.Context, contentHash 
 	return blobToVector(blob), nil
 }
 
-func (s *sqliteMemoryStore) PutCachedEmbedding(ctx context.Context, contentHash string, vector []float32) error {
+func (s *sqliteMemoryStore) PutCachedEmbedding(ctx context.Context, embeddingModel string, contentHash string, vector []float32) error {
 	blob := vectorToBlob(vector)
 	t := now()
 	_, err := s.db.ExecContext(ctx,
-		"INSERT OR REPLACE INTO embedding_cache (content_hash, vector, created_at) VALUES (?, ?, ?)",
-		contentHash, blob, t,
+		"INSERT OR REPLACE INTO embedding_cache (embedding_model, content_hash, vector, created_at) VALUES (?, ?, ?, ?)",
+		embeddingModel, contentHash, blob, t,
 	)
 	if err != nil {
 		return fmt.Errorf("put cached embedding: %w", err)

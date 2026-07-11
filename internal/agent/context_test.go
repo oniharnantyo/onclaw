@@ -20,6 +20,7 @@ func TestLoadPersonaContext_AssemblyOrder(t *testing.T) {
 	identityContent := "IDENTITY content"
 	soulContent := "SOUL content"
 	capabilitiesContent := "CAPABILITIES content"
+	toolsContent := "TOOLS content"
 	userContent := "USER content"
 	agentsContent := "AGENTS content"
 
@@ -28,6 +29,7 @@ func TestLoadPersonaContext_AssemblyOrder(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(tmpWorkspace, "IDENTITY.md"), []byte(identityContent), 0644)
 	_ = os.WriteFile(filepath.Join(tmpWorkspace, "SOUL.md"), []byte(soulContent), 0644)
 	_ = os.WriteFile(filepath.Join(tmpWorkspace, "CAPABILITIES.md"), []byte(capabilitiesContent), 0644)
+	_ = os.WriteFile(filepath.Join(tmpWorkspace, "TOOLS.md"), []byte(toolsContent), 0644)
 	_ = os.WriteFile(filepath.Join(tmpWorkspace, "USER.md"), []byte(userContent), 0644)
 	_ = os.WriteFile(filepath.Join(tmpWorkspace, "AGENTS.md"), []byte(agentsContent), 0644)
 
@@ -38,14 +40,15 @@ func TestLoadPersonaContext_AssemblyOrder(t *testing.T) {
 		t.Fatalf("LoadPersonaContext failed: %v", err)
 	}
 
-	// Verify the order: Global USER, BOOTSTRAP, IDENTITY, SOUL, CAPABILITIES, USER, AGENTS
-	expected := globalUserContent + "\n" +
-		bootstrapContent + "\n" +
-		identityContent + "\n" +
+	// Verify the order: AGENTS, SOUL, IDENTITY, CAPABILITIES, TOOLS, global USER, per-agent USER, BOOTSTRAP
+	expected := agentsContent + "\n" +
 		soulContent + "\n" +
+		identityContent + "\n" +
 		capabilitiesContent + "\n" +
+		toolsContent + "\n" +
+		globalUserContent + "\n" +
 		userContent + "\n" +
-		agentsContent
+		bootstrapContent
 
 	if result != expected {
 		t.Errorf("Unexpected content order.\nGot: %q\nWant: %q", result, expected)
@@ -71,8 +74,8 @@ func TestLoadPersonaContext_MissingFilesSkipped(t *testing.T) {
 		t.Fatalf("LoadPersonaContext failed: %v", err)
 	}
 
-	// Should contain only IDENTITY and AGENTS
-	expected := identityContent + "\n" + agentsContent
+	// Should contain only AGENTS and IDENTITY (AGENTS loads first in the order)
+	expected := agentsContent + "\n" + identityContent
 	if result != expected {
 		t.Errorf("Unexpected content with missing files.\nGot: %q\nWant: %q", result, expected)
 	}
@@ -144,8 +147,10 @@ func TestLoadPersonaContext_MultiFileCap(t *testing.T) {
 		secondContent[i] = 'B'
 	}
 
-	_ = os.WriteFile(filepath.Join(tmpWorkspace, "IDENTITY.md"), firstContent, 0644)
-	_ = os.WriteFile(filepath.Join(tmpWorkspace, "SOUL.md"), secondContent, 0644)
+	// SOUL loads before IDENTITY, so SOUL gets the smaller "first" content
+	// (fully included under the cap) and IDENTITY gets the larger "second" content (partial).
+	_ = os.WriteFile(filepath.Join(tmpWorkspace, "SOUL.md"), firstContent, 0644)
+	_ = os.WriteFile(filepath.Join(tmpWorkspace, "IDENTITY.md"), secondContent, 0644)
 
 	// Load persona context
 	ctx := context.Background()

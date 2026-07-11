@@ -47,6 +47,14 @@ func (m *mockServerStore) RemoveServer(ctx context.Context, name string) error {
 	return nil
 }
 
+func (m *mockServerStore) ListAgentServers(ctx context.Context, agentName string) ([]*store.MCPServer, error) {
+	return m.ListServers(ctx)
+}
+
+func (m *mockServerStore) SetAgentServerEnabled(ctx context.Context, agentName string, serverName string, enabled bool) error {
+	return nil
+}
+
 func TestManager_Tools(t *testing.T) {
 	ctx := context.Background()
 

@@ -15,16 +15,18 @@ import (
 // MemoryMiddleware handles curated core memory injection and episodic memory extraction.
 type MemoryMiddleware struct {
 	adk.TypedBaseChatModelAgentMiddleware[*schema.AgenticMessage]
-	CoreStore      memory.CoreStore
-	MemoryStore    memory.MemoryStore
-	Embedder       *memory.Embedder
-	KVStore        store.KVStore
-	ChatModel      model.AgenticModel
-	ReviewModel    model.AgenticModel
-	Workspace      string
-	AgentName      string
-	ConversationID int64
-	CharLimit      int
+	CoreStore        memory.CoreStore
+	MemoryStore      memory.MemoryStore
+	Embedder         *memory.Embedder
+	KVStore          store.KVStore
+	ChatModel        model.AgenticModel
+	ReviewModel      model.AgenticModel
+	Workspace        string
+	AgentName        string
+	ConversationID   int64
+	CharLimit        int
+	SkipSecurityScan bool
+	ExtractionEnabled bool
 
 	EpisodicStore   memory.EpisodicStore
 	Dreamer         *memory.Dreamer
@@ -75,6 +77,7 @@ func NewMemoryMiddleware(
 		Dreamer:         dreamer,
 		EpisodicTTLDays: episodicTTLDays,
 		KGStore:         kgStore,
+		ExtractionEnabled: true, // Default to true, overridden in AssembleAgent
 	}
 }
 
@@ -115,7 +118,9 @@ func (m *MemoryMiddleware) FlushMessages(ctx context.Context, messages []*schema
 	if m.MemoryStore == nil {
 		return
 	}
-	_ = memory.ExtractAndFlush(ctx, m.ChatModel, m.MemoryStore, m.Embedder, m.KVStore, m.AgentName, m.ConversationID, messages)
+	if m.ExtractionEnabled {
+		_ = memory.ExtractAndFlush(ctx, m.ChatModel, m.MemoryStore, m.Embedder, m.KVStore, m.AgentName, m.ConversationID, messages, m.SkipSecurityScan)
+	}
 
 	if m.EpisodicStore != nil && len(messages) > 0 {
 		summary, l0Abstract, keyTopics, err := memory.SummarizeSession(ctx, m.ChatModel, compactionSummary, messages)
@@ -146,7 +151,7 @@ func (m *MemoryMiddleware) extractAndIngestEntities(ctx context.Context, summary
 		extractionModel = m.ReviewModel
 	}
 
-	ext, err := memory.ExtractEntitiesWithSecurity(ctx, extractionModel, summary, m.AgentName, sourceID)
+	ext, err := memory.ExtractEntitiesWithSecurity(ctx, extractionModel, summary, m.AgentName, sourceID, m.SkipSecurityScan)
 	if err != nil {
 		// Security threat or extraction failure - log and skip ingest
 		return

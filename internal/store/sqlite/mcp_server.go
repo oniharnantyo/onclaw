@@ -104,3 +104,55 @@ func (s *sqliteMCPServerStore) RemoveServer(ctx context.Context, name string) er
 	}
 	return nil
 }
+
+func (s *sqliteMCPServerStore) ListAgentServers(ctx context.Context, agentName string) ([]*store.MCPServer, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			ms.name,
+			ms.transport,
+			ms.command,
+			ms.args,
+			ms.env,
+			ms.url,
+			COALESCE(ams.enabled, ms.enabled) AS enabled,
+			ms.created_at,
+			ms.updated_at
+		FROM mcp_servers ms
+		LEFT JOIN agent_mcp_servers ams ON ams.server_name = ms.name AND ams.agent_name = ?
+		ORDER BY ms.name ASC`,
+		agentName,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var servers []*store.MCPServer
+	for rows.Next() {
+		var srv store.MCPServer
+		err := rows.Scan(&srv.Name, &srv.Transport, &srv.Command, &srv.Args, &srv.Env, &srv.URL, &srv.Enabled, &srv.CreatedAt, &srv.UpdatedAt)
+		if err != nil {
+			return nil, err
+		}
+		servers = append(servers, &srv)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return servers, nil
+}
+
+func (s *sqliteMCPServerStore) SetAgentServerEnabled(ctx context.Context, agentName string, serverName string, enabled bool) error {
+	enabledVal := 0
+	if enabled {
+		enabledVal = 1
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO agent_mcp_servers (agent_name, server_name, enabled)
+		VALUES (?, ?, ?)
+		ON CONFLICT(agent_name, server_name) DO UPDATE SET enabled = excluded.enabled`,
+		agentName, serverName, enabledVal,
+	)
+	return err
+}

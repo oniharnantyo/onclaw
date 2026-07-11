@@ -1,5 +1,6 @@
 import { useRef, useEffect, type ReactNode, useImperativeHandle, forwardRef } from 'react';
 import { useThread } from '../ChatProvider';
+import { isMessageVisible } from '../chat/groupBlocks';
 import type { ChatMessage } from '../../types/chat';
 
 export interface ThreadRootProps {
@@ -79,7 +80,7 @@ export interface ThreadMessagesProps {
 
 export function ThreadMessages({ children }: ThreadMessagesProps) {
   const { messages } = useThread();
-  const visibleMessages = messages.filter((m) => m.role !== 'system');
+  const visibleMessages = messages.filter((m) => isMessageVisible(m, messages));
   return (
     <div className="thread-messages" role="none">
       {visibleMessages.map((msg, idx) => children(msg, idx))}

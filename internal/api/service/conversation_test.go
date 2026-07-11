@@ -22,7 +22,7 @@ func TestService_ListMessages(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
-	list, err := f.svc.ListMessages(ctx, 123)
+	list, _, err := f.svc.ListMessages(ctx, 123)
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}

@@ -12,6 +12,8 @@ import (
 type AssembledAgent interface {
 	Run(ctx context.Context, userInput string, contentBlocks ...*schema.ContentBlock) agent.EventIterator
 	LastTurnMeta() *store.TurnMeta
+	ContextWindow() int
+	AgentName() string
 }
 
 // ResolveAndAssembleFunc resolves agent settings and assembles an agent instance.
@@ -55,9 +57,13 @@ type AgentView struct {
 	Workspace             string `json:"workspace"`
 	Tools                 string `json:"tools"`
 	MaxIterations         int    `json:"max_iterations"`
+	MaxContextTokens      int    `json:"max_context_tokens"`
+	MemoryConfig          string `json:"memory_config"`
 	IsDefault             bool   `json:"is_default"`
 	CreatedAt             string `json:"created_at"`
 	UpdatedAt             string `json:"updated_at"`
+	SkillsCount           int    `json:"skills_count"`
+	MCPCount              int    `json:"mcp_count"`
 }
 
 type AgentInput struct {
@@ -71,6 +77,8 @@ type AgentInput struct {
 	Workspace             string `json:"workspace"`
 	Tools                 string `json:"tools"`
 	MaxIterations         int    `json:"max_iterations"`
+	MaxContextTokens      int    `json:"max_context_tokens"`
+	MemoryConfig          string `json:"memory_config"`
 	IsDefault             bool   `json:"is_default"`
 }
 
@@ -176,4 +184,24 @@ type PutCategoryConfigInput struct {
 
 type ToggleToolInput struct {
 	Enabled bool `json:"enabled"`
+}
+
+type ProviderModelReasoningOption struct {
+	Type   string   `json:"type"`
+	Values []string `json:"values,omitempty"`
+	Min    int      `json:"min,omitempty"`
+	Max    int      `json:"max,omitempty"`
+}
+
+type ProviderModelView struct {
+	ID               string                         `json:"id"`
+	ContextWindow    int                            `json:"contextWindow"`
+	Thinking         bool                           `json:"thinking"`
+	InputModalities  []string                       `json:"inputModalities"`
+	ReasoningOptions []ProviderModelReasoningOption `json:"reasoningOptions,omitempty"`
+}
+
+type ProviderModelsResponse struct {
+	Models  []ProviderModelView `json:"models"`
+	Warning string              `json:"warning,omitempty"`
 }

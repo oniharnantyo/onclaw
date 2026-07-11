@@ -2,6 +2,8 @@ package service_test
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/oniharnantyo/onclaw/internal/api/service"
@@ -137,5 +139,63 @@ func TestService_UpdateProvider(t *testing.T) {
 	v, _ := f.svc.GetProvider(ctx, "upd-p")
 	if v.ProviderType != "anthropic" {
 		t.Errorf("expected ProviderType=anthropic, got %q", v.ProviderType)
+	}
+}
+
+func TestService_ListProviderModels_NotFound(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	_, err := f.svc.ListProviderModels(ctx, "nonexistent")
+	if err == nil {
+		t.Error("expected error for nonexistent provider")
+	}
+}
+
+func TestService_ListProviderModels_Success(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	f.svc.CreateProvider(ctx, service.ProfileInput{Name: "openai-models", ProviderType: "openai"})
+
+	resp, err := f.svc.ListProviderModels(ctx, "openai-models")
+	if err != nil {
+		t.Fatalf("ListProviderModels: %v", err)
+	}
+	if resp.Models == nil {
+		t.Error("expected models slice to be initialized, got nil")
+	}
+}
+
+func TestService_ListProviderModels_EnumerationSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"data": [
+				{"id": "mock-model-1"},
+				{"id": "mock-model-2"}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	f := newFixture(t)
+	ctx := context.Background()
+	f.svc.CreateProvider(ctx, service.ProfileInput{
+		Name:         "mock-prov",
+		ProviderType: "openai",
+		APIBase:      server.URL,
+	})
+
+	resp, err := f.svc.ListProviderModels(ctx, "mock-prov")
+	if err != nil {
+		t.Fatalf("ListProviderModels: %v", err)
+	}
+	if resp.Warning != "" {
+		t.Errorf("unexpected warning: %q", resp.Warning)
+	}
+	if len(resp.Models) != 2 {
+		t.Errorf("expected 2 models, got %d", len(resp.Models))
+	}
+	if resp.Models[0].ID != "mock-model-1" || resp.Models[1].ID != "mock-model-2" {
+		t.Errorf("unexpected models: %+v", resp.Models)
 	}
 }

@@ -10,7 +10,9 @@ import (
 )
 
 type chatInitEvent struct {
-	ConversationID int64 `json:"conversation_id"`
+	ConversationID int64  `json:"conversation_id"`
+	ContextWindow  int64  `json:"context_window"`
+	AgentName      string `json:"agent_name"`
 }
 
 // Chat handles agent chat requests using Server-Sent Events (SSE).
@@ -42,7 +44,11 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Send init event to inform client of the conversation ID
-	if err := sse.WriteEvent("init", chatInitEvent{ConversationID: convID}); err != nil {
+	if err := sse.WriteEvent("init", chatInitEvent{
+		ConversationID: convID,
+		ContextWindow:  int64(assembledAgent.ContextWindow()),
+		AgentName:      assembledAgent.AgentName(),
+	}); err != nil {
 		return
 	}
 
@@ -75,6 +81,9 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 			PreviousResponseID string `json:"previous_response_id"`
 			Model              string `json:"model"`
 			Tokens             int64  `json:"tokens"`
+			PromptTokens       int64  `json:"prompt_tokens"`
+			CompletionTokens   int64  `json:"completion_tokens"`
+			TotalTokens        int64  `json:"total_tokens"`
 		}
 		_ = sse.WriteEvent("turn", turnSSEEvent{
 			ConversationID:     meta.ConversationID,
@@ -83,6 +92,9 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 			PreviousResponseID: meta.PreviousResponseID,
 			Model:              meta.Model,
 			Tokens:             meta.Tokens,
+			PromptTokens:       meta.PromptTokens,
+			CompletionTokens:   meta.CompletionTokens,
+			TotalTokens:        meta.Tokens, // meta.Tokens represents the total token count
 		})
 	}
 

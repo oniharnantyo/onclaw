@@ -250,7 +250,7 @@ func (h *HistoryMiddleware) AfterAgent(ctx context.Context, state *adk.TypedChat
 		msg.Extra["_onclaw_seq"] = seq
 	}
 
-	// 6. Record lastTurnMeta
+		// 6. Record lastTurnMeta
 	h.lock.Lock()
 	h.lastTurnMeta = &store.TurnMeta{
 		ConversationID:     h.ConversationID,
@@ -259,6 +259,8 @@ func (h *HistoryMiddleware) AfterAgent(ctx context.Context, state *adk.TypedChat
 		PreviousResponseID: h.previousResponseID,
 		Model:              h.Model,
 		Tokens:             total,
+		PromptTokens:       prompt,
+		CompletionTokens:   completion,
 	}
 	h.lock.Unlock()
 

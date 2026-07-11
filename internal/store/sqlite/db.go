@@ -73,6 +73,13 @@ func Open(dbPath string) (*sql.DB, error) {
 
 // Migrate runs idempotent migrations for the database schema.
 func Migrate(db *sql.DB) error {
+	// Drop old embedding_cache table if it doesn't have the embedding_model column yet,
+	// so that it gets recreated with composite PK correctly.
+	hasCacheModel, err := columnExists(db, "embedding_cache", "embedding_model")
+	if err == nil && !hasCacheModel {
+		_, _ = db.Exec("DROP TABLE IF EXISTS embedding_cache;")
+	}
+
 	// Guarded clean rebuild: if old shape (role column present), DROP table + FTS, recreate.
 	// One-time wipe of pre-release data.
 	hasRole, err := columnExists(db, "conversation_messages", "role")
@@ -118,6 +125,7 @@ func Migrate(db *sql.DB) error {
 			workspace TEXT NOT NULL DEFAULT '',
 			tools TEXT NOT NULL DEFAULT '',
 			max_iterations INTEGER NOT NULL DEFAULT 0,
+			max_context_tokens INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
@@ -172,6 +180,12 @@ func Migrate(db *sql.DB) error {
 			enabled INTEGER NOT NULL DEFAULT 1,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS agent_mcp_servers (
+			agent_name TEXT NOT NULL,
+			server_name TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			PRIMARY KEY (agent_name, server_name)
 		);`,
 		`CREATE TABLE IF NOT EXISTS agent_hooks (
 			id TEXT PRIMARY KEY,
@@ -239,9 +253,11 @@ func Migrate(db *sql.DB) error {
 			FOREIGN KEY(document_id) REFERENCES memory_documents(id) ON DELETE CASCADE
 		);`,
 		`CREATE TABLE IF NOT EXISTS embedding_cache (
-			content_hash TEXT PRIMARY KEY,
+			embedding_model TEXT NOT NULL,
+			content_hash TEXT NOT NULL,
 			vector BLOB,
-			created_at TEXT NOT NULL
+			created_at TEXT NOT NULL,
+			PRIMARY KEY (embedding_model, content_hash)
 		);`,
 		`CREATE TABLE IF NOT EXISTS staged_memory_writes (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -367,6 +383,43 @@ func Migrate(db *sql.DB) error {
 		if _, err := db.Exec("ALTER TABLE conversations ADD COLUMN summary_message_id INTEGER NOT NULL DEFAULT 0"); err != nil {
 			return fmt.Errorf("add summary_message_id column to conversations: %w", err)
 		}
+	}
+
+	hasMemConfig, err := columnExists(db, "agents", "memory_config")
+	if err != nil {
+		return fmt.Errorf("check agents memory_config column: %w", err)
+	}
+	if !hasMemConfig {
+		if _, err := db.Exec("ALTER TABLE agents ADD COLUMN memory_config TEXT NOT NULL DEFAULT '{}'"); err != nil {
+			return fmt.Errorf("add memory_config column to agents: %w", err)
+		}
+	}
+
+	hasMaxContext, err := columnExists(db, "agents", "max_context_tokens")
+	if err != nil {
+		return fmt.Errorf("check agents max_context_tokens column: %w", err)
+	}
+	if !hasMaxContext {
+		if _, err := db.Exec("ALTER TABLE agents ADD COLUMN max_context_tokens INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return fmt.Errorf("add max_context_tokens column to agents: %w", err)
+		}
+	}
+
+	hasDocModel, err := columnExists(db, "memory_documents", "embedding_model")
+	if err != nil {
+		return fmt.Errorf("check memory_documents embedding_model column: %w", err)
+	}
+	if !hasDocModel {
+		if _, err := db.Exec("ALTER TABLE memory_documents ADD COLUMN embedding_model TEXT NOT NULL DEFAULT ''"); err != nil {
+			return fmt.Errorf("add embedding_model column to memory_documents: %w", err)
+		}
+	}
+
+	if _, err := db.Exec(`INSERT OR IGNORE INTO agent_mcp_servers (agent_name, server_name, enabled)
+		SELECT a.name, m.name, 1
+		FROM agents a, mcp_servers m
+		WHERE m.enabled = 1;`); err != nil {
+		return fmt.Errorf("backfill agent_mcp_servers: %w", err)
 	}
 
 	// Seed tool_registry from the builtin tools registry

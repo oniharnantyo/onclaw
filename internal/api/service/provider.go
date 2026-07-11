@@ -2,7 +2,11 @@ package service
 
 import (
 	"context"
+	"fmt"
+	"sort"
+	"strings"
 
+	"github.com/oniharnantyo/onclaw/internal/modelmeta"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
@@ -181,4 +185,163 @@ func (s *Service) SetSecret(ctx context.Context, name string, apiKey string) err
 	}
 
 	return classify(s.mgr.SetSecret(ctx, name, apiKey))
+}
+
+// ListProviderModels retrieves discovered models for the provider and resolves their metadata.
+func (s *Service) ListProviderModels(ctx context.Context, providerName string) (*ProviderModelsResponse, error) {
+	p, err := s.mgr.GetProfile(ctx, providerName)
+	if err != nil {
+		return nil, classify(err)
+	}
+
+	apiKey, _ := s.mgr.ResolveSecret(ctx, providerName)
+
+	catalog, _ := modelmeta.GetCatalog()
+
+	// Setup context cache for models discovery to avoid N+1 requests
+	ctx = context.WithValue(ctx, modelmeta.OpenaiModelsCacheKey, &modelmeta.ModelCache{})
+
+	models, err := modelmeta.Enumerate(ctx, p.ProviderType, p.APIBase, apiKey)
+	if err != nil || len(models) == 0 {
+		s.log.Warn("Failed to enumerate models for provider, falling back to catalog", "provider", providerName, "error", err)
+
+		var warning string
+		if err != nil {
+			warning = fmt.Sprintf("Failed to enumerate models: %v. Showing catalog defaults.", err)
+		} else {
+			warning = "No models returned from provider. Showing catalog defaults."
+		}
+
+		var modelViews []ProviderModelView
+		if catalog != nil {
+			if provObj, ok := catalog.Providers[strings.ToLower(p.ProviderType)]; ok {
+				for modelID, mObj := range provObj.Models {
+					var opts []ProviderModelReasoningOption
+					for _, opt := range mObj.ReasoningOptions {
+						opts = append(opts, ProviderModelReasoningOption{
+							Type:   opt.Type,
+							Values: opt.Values,
+							Min:    opt.Min,
+							Max:    opt.Max,
+						})
+					}
+					modelViews = append(modelViews, ProviderModelView{
+						ID:               modelID,
+						ContextWindow:    mObj.Limit.Context,
+						Thinking:         mObj.Reasoning,
+						InputModalities:  mObj.Modalities.Input,
+						ReasoningOptions: opts,
+					})
+				}
+			}
+		}
+
+		sort.Slice(modelViews, func(i, j int) bool {
+			return modelViews[i].ID < modelViews[j].ID
+		})
+
+		return &ProviderModelsResponse{
+			Models:  modelViews,
+			Warning: warning,
+		}, nil
+	}
+
+	var modelViews []ProviderModelView
+	for _, m := range models {
+		mMeta := modelmeta.Resolve(ctx, m, p.ProviderType, p.APIBase, apiKey, catalog)
+		var opts []ProviderModelReasoningOption
+		for _, opt := range mMeta.ReasoningOptions {
+			opts = append(opts, ProviderModelReasoningOption{
+				Type:   opt.Type,
+				Values: opt.Values,
+				Min:    opt.Min,
+				Max:    opt.Max,
+			})
+		}
+		modelViews = append(modelViews, ProviderModelView{
+			ID:               m,
+			ContextWindow:    mMeta.ContextWindow,
+			Thinking:         mMeta.Thinking,
+			InputModalities:  mMeta.InputModalities,
+			ReasoningOptions: opts,
+		})
+	}
+
+	sort.Slice(modelViews, func(i, j int) bool {
+		return modelViews[i].ID < modelViews[j].ID
+	})
+
+	return &ProviderModelsResponse{
+		Models: modelViews,
+	}, nil
+}
+
+// TestConnectionResponse holds the response from testing provider connection.
+type TestConnectionResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+}
+
+// TestConnection tests the provider connection by attempting to enumerate models.
+// It uses the stored credentials for the named provider.
+func (s *Service) TestConnection(ctx context.Context, providerName string) (*TestConnectionResponse, error) {
+	p, err := s.mgr.GetProfile(ctx, providerName)
+	if err != nil {
+		return &TestConnectionResponse{
+			Success: false,
+			Message: fmt.Sprintf("Provider not found: %s", providerName),
+		}, classify(err)
+	}
+
+	if p.Enabled == 0 {
+		return &TestConnectionResponse{
+			Success: false,
+			Message: "Provider is disabled",
+		}, nil
+	}
+
+	apiKey, err := s.mgr.ResolveSecret(ctx, providerName)
+	if err != nil {
+		return &TestConnectionResponse{
+			Success: false,
+			Message: "API key not configured for this provider",
+		}, nil
+	}
+
+	// Test connection by attempting to enumerate models
+	catalog, _ := modelmeta.GetCatalog()
+
+	// Setup context cache for models discovery
+	ctx = context.WithValue(ctx, modelmeta.OpenaiModelsCacheKey, &modelmeta.ModelCache{})
+
+	models, err := modelmeta.Enumerate(ctx, p.ProviderType, p.APIBase, apiKey)
+	if err != nil {
+		return &TestConnectionResponse{
+			Success: false,
+			Message: fmt.Sprintf("Connection failed: %v", err),
+		}, nil
+	}
+
+	if len(models) == 0 {
+		// Try to get models from catalog as fallback
+		if catalog != nil {
+			if provObj, ok := catalog.Providers[strings.ToLower(p.ProviderType)]; ok {
+				if len(provObj.Models) > 0 {
+					return &TestConnectionResponse{
+						Success: true,
+						Message: "Connection successful (using catalog fallback)",
+					}, nil
+				}
+			}
+		}
+		return &TestConnectionResponse{
+			Success: false,
+			Message: "Connection succeeded but no models available",
+		}, nil
+	}
+
+	return &TestConnectionResponse{
+		Success: true,
+		Message: "Connection successful",
+	}, nil
 }
