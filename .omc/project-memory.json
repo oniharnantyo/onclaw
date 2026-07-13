@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "lastScanned": 1783069870762,
+  "lastScanned": 1783862865752,
   "projectRoot": "/Users/oniharnantyo/projects/onclaw",
   "techStack": {
     "languages": [
@@ -26,8 +26,8 @@
     "runtime": null
   },
   "build": {
-    "buildCommand": "echo \"=== is config.go (RegisterConfig) in HEAD a3d43a1, or only in working tree? ===\" \ngit cat-file -e HEAD:internal/agent/tools/config.go 2>/dev/null && echo \"IN HEAD ✓ (committed)\" || echo \"NOT in HEAD ✗ — a3d43a1 depends on uncommitted config.go\"\necho \"\"\necho \"=== does committed a3d43a1 code call RegisterConfig/GetConfigEntry? ===\" \ngit grep -l \"tools.RegisterConfig\\|GetConfigEntry\" HEAD -- internal/ 2>/dev/null | head\necho \"\"\necho \"=== does current working tree compile? (go build ./...) ===\" \nrtk go build ./... 2>&1 | tail -5 && echo \"BUILD OK ✓\"",
-    "testCommand": "rtk go test ./... 2>&1 | tail -20; echo \"=== TEST EXIT: $? ===\"",
+    "buildCommand": "cd /Users/oniharnantyo/projects/onclaw\necho \"=== go test (targeted packages) ===\"\ngo test ./internal/agent/tools/... ./internal/agent/middlewares/... ./internal/agent/... 2>&1 | tail -20\necho \"\"\necho \"=== go vet (agent + store + api) ===\"\ngo vet ./internal/agent/... ./internal/store/... ./internal/api/... 2>&1 | tail -15\necho \"=== vet exit: $? ===\"\necho \"\"\necho \"=== go build ./... ===\"\ngo build ./... 2>&1 | tail -10\necho \"=== build exit: $? ===\"",
+    "testCommand": "cd /Users/oniharnantyo/projects/onclaw\necho \"=== coverage: tools + middlewares ===\"\ngo test -cover ./internal/agent/tools/ ./internal/agent/middlewares/ 2>&1 | grep -E \"coverage|ok|FAIL\"",
     "lintCommand": null,
     "devCommand": null,
     "scripts": {}
@@ -52,11 +52,28 @@
   },
   "customNotes": [],
   "directoryMap": {
+    "_bmad": {
+      "path": "_bmad",
+      "purpose": null,
+      "fileCount": 2,
+      "lastAccessed": 1783862865736,
+      "keyFiles": [
+        "config.toml",
+        "config.user.toml"
+      ]
+    },
+    "_bmad-output": {
+      "path": "_bmad-output",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1783862865737,
+      "keyFiles": []
+    },
     "bin": {
       "path": "bin",
       "purpose": "Executable scripts",
       "fileCount": 3,
-      "lastAccessed": 1783069870751,
+      "lastAccessed": 1783862865738,
       "keyFiles": [
         "onclaw",
         "onclaw-linux-amd64",
@@ -66,10 +83,11 @@
     "docs": {
       "path": "docs",
       "purpose": "Documentation",
-      "fileCount": 2,
-      "lastAccessed": 1783069870751,
+      "fileCount": 3,
+      "lastAccessed": 1783862865739,
       "keyFiles": [
         "MIGRATION_GUIDE.md",
+        "memory.md",
         "security-model.md"
       ]
     },
@@ -77,14 +95,14 @@
       "path": "internal",
       "purpose": null,
       "fileCount": 0,
-      "lastAccessed": 1783069870752,
+      "lastAccessed": 1783862865740,
       "keyFiles": []
     },
     "openspec": {
       "path": "openspec",
       "purpose": null,
       "fileCount": 1,
-      "lastAccessed": 1783069870752,
+      "lastAccessed": 1783862865741,
       "keyFiles": [
         "config.yaml"
       ]
@@ -92,21 +110,32 @@
     "web": {
       "path": "web",
       "purpose": null,
-      "fileCount": 10,
-      "lastAccessed": 1783069870753,
+      "fileCount": 12,
+      "lastAccessed": 1783862865742,
       "keyFiles": [
         "README.md",
+        "bun.lock",
         "index.html",
         "package-lock.json",
-        "package.json",
-        "tsconfig.app.json"
+        "package.json"
+      ]
+    },
+    "_bmad/scripts": {
+      "path": "_bmad/scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 3,
+      "lastAccessed": 1783862865743,
+      "keyFiles": [
+        "memlog.py",
+        "resolve_config.py",
+        "resolve_customization.py"
       ]
     },
     "internal/api": {
       "path": "internal/api",
       "purpose": "API routes",
       "fileCount": 10,
-      "lastAccessed": 1783069870754,
+      "lastAccessed": 1783862865744,
       "keyFiles": [
         "architecture_test.go",
         "embed.go",
@@ -117,7 +146,7 @@
       "path": "internal/config",
       "purpose": "Configuration files",
       "fileCount": 3,
-      "lastAccessed": 1783069870755,
+      "lastAccessed": 1783862865745,
       "keyFiles": [
         "config.go",
         "config_test.go",
@@ -128,43 +157,183 @@
       "path": "web/node_modules",
       "purpose": "Dependencies",
       "fileCount": 1,
-      "lastAccessed": 1783069870756,
+      "lastAccessed": 1783862865748,
       "keyFiles": []
-    },
-    "web/public": {
-      "path": "web/public",
-      "purpose": "Public files",
-      "fileCount": 2,
-      "lastAccessed": 1783069870756,
-      "keyFiles": [
-        "favicon.svg",
-        "icons.svg"
-      ]
     }
   },
   "hotPaths": [
     {
-      "path": "openspec/changes/add-web-and-edit-tools/tasks.md",
-      "accessCount": 4,
-      "lastAccessed": 1783070393475,
+      "path": "internal/agent/agent.go",
+      "accessCount": 41,
+      "lastAccessed": 1783917805557,
       "type": "file"
     },
     {
-      "path": "openspec/changes/add-web-and-edit-tools/design.md",
-      "accessCount": 4,
-      "lastAccessed": 1783070454931,
-      "type": "file"
-    },
-    {
-      "path": "openspec/changes/add-web-and-edit-tools/proposal.md",
-      "accessCount": 3,
-      "lastAccessed": 1783070499803,
+      "path": "web/src/components/Tools.tsx",
+      "accessCount": 20,
+      "lastAccessed": 1783755604282,
       "type": "file"
     },
     {
       "path": "internal/llm/service.go",
+      "accessCount": 13,
+      "lastAccessed": 1783838733458,
+      "type": "file"
+    },
+    {
+      "path": "internal/agent/tools/tools.go",
+      "accessCount": 12,
+      "lastAccessed": 1783905759752,
+      "type": "file"
+    },
+    {
+      "path": "internal/store/sqlite/conversation.go",
+      "accessCount": 6,
+      "lastAccessed": 1783611207926,
+      "type": "file"
+    },
+    {
+      "path": "internal/agent/tools/registry.go",
+      "accessCount": 6,
+      "lastAccessed": 1783924528934,
+      "type": "file"
+    },
+    {
+      "path": "openspec/changes/add-web-and-edit-tools/design.md",
+      "accessCount": 5,
+      "lastAccessed": 1783140046995,
+      "type": "file"
+    },
+    {
+      "path": "openspec/changes/add-web-and-edit-tools/tasks.md",
+      "accessCount": 5,
+      "lastAccessed": 1783140047049,
+      "type": "file"
+    },
+    {
+      "path": "openspec/changes/add-agent-memory-graph/design.md",
+      "accessCount": 5,
+      "lastAccessed": 1783239783470,
+      "type": "file"
+    },
+    {
+      "path": "openspec/changes/add-web-and-edit-tools/proposal.md",
+      "accessCount": 4,
+      "lastAccessed": 1783140045516,
+      "type": "file"
+    },
+    {
+      "path": "internal/store/store.go",
+      "accessCount": 4,
+      "lastAccessed": 1783712594100,
+      "type": "file"
+    },
+    {
+      "path": "internal/agent/tools/config.go",
+      "accessCount": 4,
+      "lastAccessed": 1783753789413,
+      "type": "file"
+    },
+    {
+      "path": "internal/api/service/tools.go",
+      "accessCount": 4,
+      "lastAccessed": 1783753843087,
+      "type": "file"
+    },
+    {
+      "path": "internal/agent/context.go",
+      "accessCount": 4,
+      "lastAccessed": 1783786365284,
+      "type": "file"
+    },
+    {
+      "path": "openspec/config.yaml",
+      "accessCount": 4,
+      "lastAccessed": 1783907571500,
+      "type": "file"
+    },
+    {
+      "path": "internal/agent/tools/browser/register.go",
+      "accessCount": 4,
+      "lastAccessed": 1783924599966,
+      "type": "file"
+    },
+    {
+      "path": "openspec/changes/add-agent-memory-graph/proposal.md",
+      "accessCount": 3,
+      "lastAccessed": 1783239783347,
+      "type": "file"
+    },
+    {
+      "path": "internal/api/handler/tools.go",
+      "accessCount": 3,
+      "lastAccessed": 1783533134485,
+      "type": "file"
+    },
+    {
+      "path": "internal/agent/tools/web/register.go",
+      "accessCount": 3,
+      "lastAccessed": 1783753796967,
+      "type": "file"
+    },
+    {
+      "path": "internal/agent/embed.go",
+      "accessCount": 3,
+      "lastAccessed": 1783785050447,
+      "type": "file"
+    },
+    {
+      "path": "internal/agent/tools/web/webfetch.go",
+      "accessCount": 3,
+      "lastAccessed": 1783924528826,
+      "type": "file"
+    },
+    {
+      "path": "internal/agent/tools/web/websearch.go",
+      "accessCount": 3,
+      "lastAccessed": 1783924529146,
+      "type": "file"
+    },
+    {
+      "path": "openspec/changes/add-agent-memory-dreaming/specs/agent-memory/spec.md",
       "accessCount": 2,
-      "lastAccessed": 1783071600731,
+      "lastAccessed": 1783140666253,
+      "type": "file"
+    },
+    {
+      "path": "openspec/changes/add-agent-memory-core/design.md",
+      "accessCount": 2,
+      "lastAccessed": 1783145194023,
+      "type": "file"
+    },
+    {
+      "path": "openspec/changes/add-agent-memory-core/tasks.md",
+      "accessCount": 2,
+      "lastAccessed": 1783145231186,
+      "type": "file"
+    },
+    {
+      "path": "openspec/changes/add-agent-memory-core/proposal.md",
+      "accessCount": 2,
+      "lastAccessed": 1783145231290,
+      "type": "file"
+    },
+    {
+      "path": "openspec/changes/add-agent-memory-graph/.openspec.yaml",
+      "accessCount": 2,
+      "lastAccessed": 1783179861023,
+      "type": "file"
+    },
+    {
+      "path": "internal/agent/tools/editfile.go",
+      "accessCount": 2,
+      "lastAccessed": 1783753806572,
+      "type": "file"
+    },
+    {
+      "path": "go.mod",
+      "accessCount": 2,
+      "lastAccessed": 1783839080569,
       "type": "file"
     },
     {
@@ -186,12 +355,6 @@
       "type": "file"
     },
     {
-      "path": "internal/agent/tools/browser/register.go",
-      "accessCount": 1,
-      "lastAccessed": 1783070038577,
-      "type": "file"
-    },
-    {
       "path": "internal/browser/engine.go",
       "accessCount": 1,
       "lastAccessed": 1783070038628,
@@ -201,36 +364,6 @@
       "path": "internal/browser/types.go",
       "accessCount": 1,
       "lastAccessed": 1783070038684,
-      "type": "file"
-    },
-    {
-      "path": "internal/agent/tools/config.go",
-      "accessCount": 1,
-      "lastAccessed": 1783070068549,
-      "type": "file"
-    },
-    {
-      "path": "internal/agent/tools/registry.go",
-      "accessCount": 1,
-      "lastAccessed": 1783070068620,
-      "type": "file"
-    },
-    {
-      "path": "internal/agent/tools/tools.go",
-      "accessCount": 1,
-      "lastAccessed": 1783070068676,
-      "type": "file"
-    },
-    {
-      "path": "web/src/components/Tools.tsx",
-      "accessCount": 1,
-      "lastAccessed": 1783070194711,
-      "type": "file"
-    },
-    {
-      "path": "internal/agent/tools/editfile.go",
-      "accessCount": 1,
-      "lastAccessed": 1783071508828,
       "type": "file"
     },
     {
@@ -264,21 +397,69 @@
       "type": "file"
     },
     {
-      "path": "internal/agent/tools/web/register.go",
+      "path": ".claude/skills/bmad-party-mode/references/party-memory.md",
       "accessCount": 1,
-      "lastAccessed": 1783071547004,
+      "lastAccessed": 1783081945621,
       "type": "file"
     },
     {
-      "path": "internal/agent/tools/web/websearch.go",
+      "path": "openspec/changes/add-web-and-edit-tools/.openspec.yaml",
       "accessCount": 1,
-      "lastAccessed": 1783071547065,
+      "lastAccessed": 1783140047124,
       "type": "file"
     },
     {
-      "path": "internal/agent/tools/web/webfetch.go",
+      "path": "openspec/changes/add-agent-memory-core/.openspec.yaml",
       "accessCount": 1,
-      "lastAccessed": 1783071600680,
+      "lastAccessed": 1783140438420,
+      "type": "file"
+    },
+    {
+      "path": "openspec/changes/add-agent-memory-core/specs/agent-memory/spec.md",
+      "accessCount": 1,
+      "lastAccessed": 1783140486002,
+      "type": "file"
+    },
+    {
+      "path": "openspec/changes/add-agent-memory-core/specs/agent-core/spec.md",
+      "accessCount": 1,
+      "lastAccessed": 1783140489718,
+      "type": "file"
+    },
+    {
+      "path": "openspec/changes/add-agent-memory-core/specs/conversation-history/spec.md",
+      "accessCount": 1,
+      "lastAccessed": 1783140493521,
+      "type": "file"
+    },
+    {
+      "path": "openspec/changes/add-agent-memory-core/specs/agent-tools/spec.md",
+      "accessCount": 1,
+      "lastAccessed": 1783140497464,
+      "type": "file"
+    },
+    {
+      "path": "openspec/changes/add-agent-memory-dreaming/.openspec.yaml",
+      "accessCount": 1,
+      "lastAccessed": 1783140551113,
+      "type": "file"
+    },
+    {
+      "path": "openspec/changes/add-agent-memory-dreaming/proposal.md",
+      "accessCount": 1,
+      "lastAccessed": 1783140562493,
+      "type": "file"
+    },
+    {
+      "path": "openspec/changes/add-agent-memory-dreaming/design.md",
+      "accessCount": 1,
+      "lastAccessed": 1783140594620,
+      "type": "file"
+    },
+    {
+      "path": "openspec/changes/add-agent-memory-dreaming/tasks.md",
+      "accessCount": 1,
+      "lastAccessed": 1783140605665,
       "type": "file"
     }
   ],

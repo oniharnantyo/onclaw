@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-07-13
+goal: Replace onclaw's hand-rolled file/shell tools with the Eino filesystem
+  middleware to gain structured glob+grep and align with the ADK Backend abstraction,
+  while preserving workspace confinement, secret redaction, shell policy, and
+  tool_registry manageability.

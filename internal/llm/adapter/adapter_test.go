@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/cloudwego/eino/schema"
 	"github.com/oniharnantyo/onclaw/internal/llm/adapter"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
@@ -188,5 +189,49 @@ func TestAdapterBuildSuccess(t *testing.T) {
 	_, err = arkAd.Build(ctx, arkProfile, "ark-model", "test-key")
 	if err != nil {
 		t.Errorf("failed to build ark: %v", err)
+	}
+}
+
+// TestStubStreamEmitsIndexedDeltas verifies the stub adapter emits at least two
+// delta blocks that share a stable streaming_meta.index, so streaming + the
+// client-side delta merge are exercisable without a real provider.
+func TestStubStreamEmitsIndexedDeltas(t *testing.T) {
+	r := adapter.NewRegistry()
+	adapter.DefaultAdapters(r)
+	ad, err := r.Get("stub")
+	if err != nil {
+		t.Fatalf("get stub adapter: %v", err)
+	}
+
+	ctx := context.Background()
+	m, err := ad.Build(ctx, &store.Profile{Name: "test", ProviderType: "stub", Enabled: 1}, "model", "")
+	if err != nil {
+		t.Fatalf("build stub model: %v", err)
+	}
+
+	sr, err := m.Stream(ctx, nil)
+	if err != nil {
+		t.Fatalf("stub Stream: %v", err)
+	}
+	defer sr.Close()
+
+	var blocks []*schema.ContentBlock
+	for {
+		msg, err := sr.Recv()
+		if err != nil {
+			break
+		}
+		blocks = append(blocks, msg.ContentBlocks...)
+	}
+
+	if len(blocks) < 2 {
+		t.Fatalf("expected >=2 delta blocks, got %d", len(blocks))
+	}
+
+	firstIdx := blocks[0].StreamingMeta.Index
+	for i, b := range blocks {
+		if b.StreamingMeta == nil || b.StreamingMeta.Index != firstIdx {
+			t.Errorf("block %d has unstable streaming index (want %d)", i, firstIdx)
+		}
 	}
 }

@@ -50,6 +50,7 @@ type ToolsConfig struct {
 type ShellConfig struct {
 	Policy    string   `mapstructure:"policy"`
 	Allowlist []string `mapstructure:"allowlist"`
+	Denylist  []string `mapstructure:"denylist"`
 }
 
 type AgentConfig struct {
@@ -101,6 +102,7 @@ func mapAndSanitizeEnvKeys(v *viper.Viper, fileLoaded bool) {
 		"workspace",
 		"tools.shell.policy",
 		"tools.shell.allowlist",
+		"tools.shell.denylist",
 		"agent.max_iterations",
 		"langfuse.host",
 		"langfuse.public_key",
@@ -203,6 +205,7 @@ func Load(explicitPath string) (*Config, error) {
 	v.SetDefault("workspace", d.Workspace)
 	v.SetDefault("tools.shell.policy", d.Tools.Shell.Policy)
 	v.SetDefault("tools.shell.allowlist", d.Tools.Shell.Allowlist)
+	v.SetDefault("tools.shell.denylist", d.Tools.Shell.Denylist)
 	v.SetDefault("agent.max_iterations", d.Agent.MaxIterations)
 	v.SetDefault("langfuse.host", d.Langfuse.Host)
 	v.SetDefault("langfuse.public_key", d.Langfuse.PublicKey)

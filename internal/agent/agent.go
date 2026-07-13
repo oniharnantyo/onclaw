@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/adk/middlewares/filesystem"
 	"github.com/cloudwego/eino/adk/middlewares/summarization"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/tool"
@@ -68,6 +69,7 @@ func AssembleAgent(
 	userConfigDir string,
 	shellPolicy string,
 	shellAllowlist []string,
+	shellDenylist []string,
 	contextWindow int,
 	convStore store.ConversationStore,
 	conversationID int64,
@@ -105,10 +107,10 @@ func AssembleAgent(
 		episodicStore != nil,
 		kgStore != nil,
 		"", "", // embedder already constructed
-		true, // security scan default ON
-		true, // extraction default ON
-		true, // retrieval default ON
-		true, // dreaming default ON
+		true,  // security scan default ON
+		true,  // extraction default ON
+		true,  // retrieval default ON
+		true,  // dreaming default ON
 		false, // staged write approval handled by dreamer
 	)
 
@@ -151,20 +153,21 @@ func AssembleAgent(
 
 	// 2. Build tools
 	builtTools := tools.Builtin(&tools.Scope{
-		Workspace:          workspace,
-		ShellPolicy:        shellPolicy,
-		ShellAllowlist:     shellAllowlist,
-		ToolGroupCfg:       toolGroupCfg,
-		KVStore:            kvStore,
-		SecretResolver:     resolver,
-		AgentName:          agentConf.Name,
-		Db:                 db,
-		MemoryStore:        memoryStore,
-		Embedder:           embedder,
-		StagedWriteStore:   stagedWriteStore,
-		CharLimit:          charLimit,
-		KGStore:            kgStore,
-		KGTraversalDepth:   kgTraversalDepth,
+		Workspace:        workspace,
+		ShellPolicy:      shellPolicy,
+		ShellAllowlist:   shellAllowlist,
+		ShellDenylist:    shellDenylist,
+		ToolGroupCfg:     toolGroupCfg,
+		KVStore:          kvStore,
+		SecretResolver:   resolver,
+		AgentName:        agentConf.Name,
+		Db:               db,
+		MemoryStore:      memoryStore,
+		Embedder:         embedder,
+		StagedWriteStore: stagedWriteStore,
+		CharLimit:        charLimit,
+		KGStore:          kgStore,
+		KGTraversalDepth: kgTraversalDepth,
 	}, enabledChecker)
 	builtTools = append(builtTools, mcpTools...)
 
@@ -213,6 +216,18 @@ func AssembleAgent(
 		}
 		builtTools = filteredTools
 	}
+
+	// 2b. Filesystem middleware (Eino) injects ls/read_file/write_file/edit_file/
+	// glob/grep/execute, backed by onclaw-controlled Backend/Shell. The toggle
+	// middleware enforces the tool_registry enable flag on those tools.
+	fsMiddleware, err := filesystem.NewTyped[*schema.AgenticMessage](ctx, &filesystem.MiddlewareConfig{
+		Backend: tools.NewFSBackend(workspace),
+		Shell:   tools.NewFSShell(workspace, shellPolicy, shellAllowlist, shellDenylist),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create filesystem middleware: %w", err)
+	}
+	fsToggle := middlewares.NewFSToggleMiddleware(enabledChecker)
 
 	// 3. Assemble summarization middleware
 	// We trigger when total tokens exceed 80% of context window
@@ -293,6 +308,8 @@ func AssembleAgent(
 	handlers := []adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage]{
 		summarizationMiddleware,
 		historyMiddleware,
+		fsMiddleware,
+		fsToggle,
 	}
 	if memoryStore != nil {
 		// Curated Core Memory toggle
@@ -409,6 +426,7 @@ func (a *Agent) Run(ctx context.Context, userInput string, contentBlocks ...*sch
 		Messages: []*schema.AgenticMessage{
 			msg,
 		},
+		EnableStreaming: middlewares.StreamingFromContext(ctx),
 	}
 
 	iterator := a.EinoAgent.Run(ctx, input)

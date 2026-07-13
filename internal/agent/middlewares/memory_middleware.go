@@ -85,12 +85,14 @@ func NewMemoryMiddleware(
 func (m *MemoryMiddleware) BeforeAgent(ctx context.Context, runCtx *adk.ChatModelAgentContext[*schema.AgenticMessage]) (context.Context, *adk.ChatModelAgentContext[*schema.AgenticMessage], error) {
 	m.mu.Lock()
 	if !m.loaded {
-		core, err := m.CoreStore.ReadCore(ctx, m.Workspace)
-		if err == nil {
-			if len(core) > m.CharLimit {
-				core = fmt.Sprintf("WARNING: Curated core memory was truncated because it exceeded the character cap of %d.\n\n%s", m.CharLimit, core[:m.CharLimit])
+		if m.CoreStore != nil {
+			core, err := m.CoreStore.ReadCore(ctx, m.Workspace)
+			if err == nil {
+				if len(core) > m.CharLimit {
+					core = fmt.Sprintf("WARNING: Curated core memory was truncated because it exceeded the character cap of %d.\n\n%s", m.CharLimit, core[:m.CharLimit])
+				}
+				m.frozenCore = core
 			}
-			m.frozenCore = core
 		}
 		m.loaded = true
 	}

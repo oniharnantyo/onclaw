@@ -596,7 +596,7 @@ func TestWebAgentCreateEmptyToolsAndToggle(t *testing.T) {
 
 	// 3.6: disable one tool (shell) from the all-state via the edit Tools tab endpoint.
 	toggleURL := fmt.Sprintf("http://%s/api/agents/ui-created/tools", addr)
-	toggleBody, _ := json.Marshal(map[string]interface{}{"tool": "shell", "enabled": false})
+	toggleBody, _ := json.Marshal(map[string]interface{}{"tool": "execute", "enabled": false})
 	req, _ := http.NewRequest(http.MethodPut, toggleURL, bytes.NewReader(toggleBody))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err = client.Do(req)
@@ -625,11 +625,11 @@ func TestWebAgentCreateEmptyToolsAndToggle(t *testing.T) {
 			got[n] = true
 		}
 	}
-	if got["shell"] {
-		t.Errorf("disabled tool 'shell' should be absent after reload, got %q", a2.Tools)
+	if got["execute"] {
+		t.Errorf("disabled tool 'execute' should be absent after reload, got %q", a2.Tools)
 	}
 	for name := range allNames {
-		if name == "shell" {
+		if name == "execute" {
 			continue
 		}
 		if !got[name] {

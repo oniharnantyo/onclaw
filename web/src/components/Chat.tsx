@@ -1,5 +1,5 @@
 import { useRef, Fragment } from 'react';
-import { Cpu, Code, PaperPlaneTilt, FileText, X, Plus } from '@phosphor-icons/react';
+import { Cpu, Code, PaperPlaneTilt, FileText, X, Plus, Stop } from '@phosphor-icons/react';
 import { useChat, useComposer } from './ChatProvider';
 import { Thread } from './primitives/Thread';
 import { ThreadList } from './primitives/ThreadList';
@@ -123,6 +123,23 @@ function SendIcon() {
   return <PaperPlaneTilt size={16} weight="fill" aria-hidden />;
 }
 
+// Toggle between the stop (cancel) control while streaming and the send
+// control while idle. Extracted so the toggle is unit-testable without a DOM.
+export function ComposerActions({ isStreaming, stopChat }: { isStreaming: boolean; stopChat: () => void }) {
+  if (isStreaming) {
+    return (
+      <Composer.Cancel className="composer-cancel-btn" onClick={stopChat}>
+        <Stop size={16} weight="fill" aria-hidden />
+      </Composer.Cancel>
+    );
+  }
+  return (
+    <Composer.Send className="composer-send-btn">
+      <SendIcon />
+    </Composer.Send>
+  );
+}
+
 function formatRelativeTime(dateStr: string) {
   const date = new Date(dateStr);
   const now = new Date();
@@ -199,6 +216,7 @@ function ChatHeaderBar() {
 
 export default function Chat({ onNewConversation }: ChatProps) {
   const { state, selectConversation } = useChat();
+  const { isStreaming, stopChat } = useComposer();
   const viewportRef = useRef<HTMLDivElement>(null);
 
   const visibleMessages = state.messages.filter((m) => isMessageVisible(m, state.messages));
@@ -303,6 +321,9 @@ export default function Chat({ onNewConversation }: ChatProps) {
                               {formatMessageTimeOnly(msg.created_at)}
                             </time>
                           )}
+                          {msg.stopped && (
+                            <span className="message-stopped-badge">stopped</span>
+                          )}
                           <Message.ActionBar className="no-margin-top" />
                         </div>
                       )}
@@ -387,9 +408,7 @@ export default function Chat({ onNewConversation }: ChatProps) {
                     <Composer.Attach className="composer-attach-btn" />
                   </div>
 
-                  <Composer.Send className="composer-send-btn">
-                    <SendIcon />
-                  </Composer.Send>
+                  <ComposerActions isStreaming={isStreaming} stopChat={stopChat} />
                 </div>
               </div>
             </div>

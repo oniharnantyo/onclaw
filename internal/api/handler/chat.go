@@ -56,6 +56,7 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 	if req.PreviousResponseID != "" {
 		ctx = middlewares.WithPreviousResponseID(ctx, req.PreviousResponseID)
 	}
+	ctx = middlewares.WithStreaming(ctx, true)
 
 	it := assembledAgent.Run(ctx, req.Prompt, req.ContentBlocks...)
 	for {

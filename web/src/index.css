@@ -2629,6 +2629,43 @@ pre {
   opacity: 0.5;
 }
 
+.composer-cancel-btn {
+  background: var(--accent);
+  color: #0a0f1e;
+  border: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50% !important;
+  padding: 0 !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all var(--t-fast) ease;
+}
+
+.composer-cancel-btn:hover:not(:disabled) {
+  background: var(--accent-light, #00ffaa);
+  transform: scale(1.05);
+}
+
+.composer-cancel-btn:disabled {
+  background: var(--border);
+  color: var(--text-muted);
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.message-stopped-badge {
+  font-size: 11px;
+  color: var(--text-muted, #86868b);
+  font-style: italic;
+  user-select: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+
 /* Code block diff override */
 .code-block-container .diff-pre {
   margin: 0;

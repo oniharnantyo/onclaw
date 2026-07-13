@@ -91,7 +91,7 @@ func TestAssembleAndRunAgent_ReActLoop(t *testing.T) {
 						FunctionToolCall: &schema.FunctionToolCall{
 							CallID:    "call_1",
 							Name:      "read_file",
-							Arguments: `{"path":"README.md"}`,
+							Arguments: `{"file_path":"README.md"}`,
 						},
 					},
 				},
@@ -130,7 +130,7 @@ func TestAssembleAndRunAgent_ReActLoop(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	agentVal, err := agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
+	agentVal, err := agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestAssembleAndRunAgent_Cancellation(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	agentVal, err := agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
+	agentVal, err := agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestAssembleAgent_ContextWindowTrigger(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Compile and resolve with 128000 context window (verifies 80% logic runs)
-	ag, err := agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, 128000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
+	ag, err := agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, nil, 128000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestAssembleAgent_ContextWindowTrigger(t *testing.T) {
 	}
 
 	// 2. Re-assemble with 64000 context window
-	ag2, err := agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
+	ag2, err := agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
 	if err != nil {
 		t.Fatalf("failed to assemble agent second time: %v", err)
 	}
@@ -334,16 +334,17 @@ func TestAssembleAgent_GlobalToolEnable(t *testing.T) {
 	ctx := context.Background()
 
 	// 0. Explicit: an empty allowlist must offer every globally-enabled tool (empty = all).
+	// Use tools that are always registered regardless of memory-store wiring in tests
+	// (web_search/web_fetch), since the memory_* tools are filtered out when no
+	// memory stores are provided.
 	mockAll := &mockToolRegistryStore{
 		list: []*store.ToolRegistry{
-			{Name: "read_file", Enabled: 1},
-			{Name: "write_file", Enabled: 1},
-			{Name: "list_dir", Enabled: 1},
-			{Name: "shell", Enabled: 1},
+			{Name: "web_search", Enabled: 1},
+			{Name: "web_fetch", Enabled: 1},
 		},
 	}
 	agentConfEmpty := &store.Agent{Name: "test-empty-allowlist"}
-	agEmpty, err := agent.AssembleAgent(ctx, agentConfEmpty, fm, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", mockAll, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
+	agEmpty, err := agent.AssembleAgent(ctx, agentConfEmpty, fm, fm, workspace, userConfigDir, "deny", nil, nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", mockAll, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
@@ -353,7 +354,7 @@ func TestAssembleAgent_GlobalToolEnable(t *testing.T) {
 		gotAll[info.Name] = true
 	}
 	// With no per-agent allowlist, every globally-enabled registry tool must be offered.
-	for _, name := range []string{"read_file", "write_file", "list_dir", "shell"} {
+	for _, name := range []string{"web_search", "web_fetch"} {
 		if !gotAll[name] {
 			t.Errorf("empty allowlist should offer globally-enabled tool %q, but it was absent", name)
 		}
@@ -363,7 +364,7 @@ func TestAssembleAgent_GlobalToolEnable(t *testing.T) {
 	agentConf := &store.Agent{
 		Name: "test-global-enable",
 	}
-	ag, err := agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
+	ag, err := agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
@@ -371,41 +372,41 @@ func TestAssembleAgent_GlobalToolEnable(t *testing.T) {
 		t.Error("expected tools, got 0")
 	}
 
-	// 2. With read_file disabled globally
+	// 2. With memory_search disabled globally. Factory tools are filtered by the
+	// registry enable flag inside tools.Builtin; the filesystem tools are injected
+	// separately by the Eino middleware and so are never part of ag.Tools.
 	mockStore := &mockToolRegistryStore{
 		list: []*store.ToolRegistry{
-			{Name: "read_file", Enabled: 0},
-			{Name: "write_file", Enabled: 1},
-			{Name: "list_dir", Enabled: 1},
-			{Name: "shell", Enabled: 1},
+			{Name: "web_search", Enabled: 0},
+			{Name: "web_fetch", Enabled: 1},
 		},
 	}
-	ag, err = agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", mockStore, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
+	ag, err = agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", mockStore, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
 
-	hasReadFile := false
-	hasWriteFile := false
+	hasWebSearch := false
+	hasWebFetch := false
 	for _, tl := range ag.Tools {
 		info, _ := tl.Info(ctx)
-		if info.Name == "read_file" {
-			hasReadFile = true
+		if info.Name == "web_search" {
+			hasWebSearch = true
 		}
-		if info.Name == "write_file" {
-			hasWriteFile = true
+		if info.Name == "web_fetch" {
+			hasWebFetch = true
 		}
 	}
-	if hasReadFile {
-		t.Error("expected read_file to be globally excluded, but it was present")
+	if hasWebSearch {
+		t.Error("expected web_search to be globally excluded, but it was present")
 	}
-	if !hasWriteFile {
-		t.Error("expected write_file to be present")
+	if !hasWebFetch {
+		t.Error("expected web_fetch to be present")
 	}
 
 	// 3. Intersection with per-agent allowlist
-	agentConf.Tools = "write_file,read_file" // agent only allows write_file and read_file
-	ag, err = agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", mockStore, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
+	agentConf.Tools = "web_search,web_fetch" // agent only allows these two factory tools
+	ag, err = agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", mockStore, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
@@ -414,8 +415,9 @@ func TestAssembleAgent_GlobalToolEnable(t *testing.T) {
 		info, _ := tl.Info(ctx)
 		activeTools = append(activeTools, info.Name)
 	}
-	if len(activeTools) != 1 || activeTools[0] != "write_file" {
-		t.Errorf("expected effective tools to be exactly [write_file], got %v", activeTools)
+	// web_search is disabled globally, so the allowlist resolves to [web_fetch].
+	if len(activeTools) != 1 || activeTools[0] != "web_fetch" {
+		t.Errorf("expected effective tools to be exactly [web_fetch], got %v", activeTools)
 	}
 
 }
@@ -501,7 +503,7 @@ func TestAssembleAgent_ErrorPaths(t *testing.T) {
 	_ = os.MkdirAll(badUserFile, 0755) // Create directory instead of file
 
 	agentConf := &store.Agent{Name: "test-err-agent"}
-	_, err := agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
+	_, err := agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
 	if err == nil || !strings.Contains(err.Error(), "load persona context") {
 		t.Errorf("expected load persona context error, got %v", err)
 	}
@@ -529,7 +531,7 @@ func TestAssembleAgent_ListToolsError(t *testing.T) {
 
 	agentConf := &store.Agent{Name: "test-err-agent"}
 	mockStore := &mockFailedToolRegistryStore{}
-	_, err := agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", mockStore, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
+	_, err := agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", mockStore, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
 	if err == nil || !strings.Contains(err.Error(), "list tools for enabled checker") {
 		t.Errorf("expected list tools error, got %v", err)
 	}

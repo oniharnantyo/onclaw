@@ -266,4 +266,103 @@ Each rendered chat message SHALL display its creation date and time. The optimis
 - **WHEN** an assistant message is actively streaming and has no creation time
 - **THEN** no timestamp line is rendered for it
 
+### Requirement: Token-Delta Streaming over the Chat Stream
+
+When streaming is enabled, the chat streaming protocol SHALL deliver token-level assistant content
+as it is generated. Each SSE `message` event SHALL carry one delta content block stamped with
+`streaming_meta.index`, and the client SHALL merge delta blocks into coherent content blocks by
+that index rather than treating each event as a whole message. The client SHALL accumulate
+text deltas into the indexed block's text, reasoning deltas into the indexed block's reasoning,
+and tool-call argument deltas into the indexed call's raw argument string. This merge SHALL work
+uniformly across all provider kinds (OpenAI, Anthropic, Gemini, Ark, DeepSeek, Qwen) without
+per-provider branching.
+
+#### Scenario: Tokens appear as they are generated
+
+- **WHEN** the web client receives streaming `message` events during a turn
+- **THEN** assistant text appears progressively as tokens arrive, not only after the full message completes
+
+#### Scenario: Delta fragments merge by index
+
+- **WHEN** multiple `message` events carry delta blocks with the same `streaming_meta.index`
+- **THEN** their text/argument fragments accumulate into a single content block rather than producing duplicate or fragmented blocks
+
+#### Scenario: A new block is created on first sighting
+
+- **WHEN** a delta block arrives with an index not yet present in the streaming assistant message
+- **THEN** the client creates a new content block at that index, carrying the block's identity (e.g. a tool call's name and call id) for subsequent fragments to merge into
+
+#### Scenario: Out-of-order block arrival is handled
+
+- **WHEN** delta blocks arrive in an order other than strictly increasing index
+- **THEN** each block is still routed to its correct index and merged correctly
+
+### Requirement: Streaming Tool-Call Rendering
+
+During streaming, a tool call's name SHALL render as soon as its item-added block arrives, before
+its arguments complete. Tool-call arguments arrive as JSON fragments and SHALL be accumulated as a
+raw string; renderers SHALL NOT attempt to parse incomplete argument JSON. Any renderer that parses
+tool arguments SHALL degrade gracefully to the raw string or the tool name when the JSON is
+incomplete or invalid. The persisted-message re-fetch after stream completion SHALL replace the
+streamed assistant bubble with the authoritative merged message.
+
+#### Scenario: A tool call's name renders before its arguments complete
+
+- **WHEN** a tool-call block arrives during streaming
+- **THEN** the tool name renders immediately, ahead of the (still-accumulating) arguments
+
+#### Scenario: Incomplete argument JSON does not break rendering
+
+- **WHEN** a renderer encounters tool-call argument JSON that is partial or invalid mid-stream
+- **THEN** it falls back to the raw argument string or the tool name rather than throwing
+
+#### Scenario: The streamed bubble re-syncs to persisted truth
+
+- **WHEN** the stream completes
+- **THEN** the streamed assistant message is replaced by the fetched persisted message so the final render is authoritative
+
+### Requirement: Stop Control During Streaming
+The composer SHALL surface a stop control that is visible and enabled only while the agent is streaming, and that cancels the in-flight stream when activated. The send control and the stop control SHALL be mutually exclusive by streaming state (send while idle, stop while streaming), rendered in the same composer action slot.
+
+#### Scenario: A stop control appears while streaming
+- **WHEN** the agent begins streaming a response
+- **THEN** the composer action slot renders an enabled stop control in place of the send control
+
+#### Scenario: The send control returns when streaming ends
+- **WHEN** streaming ends for any reason (completion, stop, or error)
+- **THEN** the composer action slot renders the send control again
+
+#### Scenario: Activating stop cancels the stream
+- **WHEN** the user activates the stop control during streaming
+- **THEN** the in-flight chat stream is cancelled and no further streaming content is processed for that turn
+
+### Requirement: Abort-Based Stream Cancellation
+The chat runtime SHALL cancel an in-flight stream by aborting the underlying `/api/chat` request via an `AbortController` signal. Cancellation SHALL be signalled to the backend solely by closing the connection (which cancels the request context the agent runs under); no separate stop endpoint SHALL be introduced. A user-initiated abort SHALL be distinguished from a genuine network error so that it is treated as a normal end of the turn, not an error.
+
+#### Scenario: Stop aborts the fetch, not a new request
+- **WHEN** the user stops a running stream
+- **THEN** the runtime aborts the active `/api/chat` fetch via its `AbortController` rather than issuing a second request
+
+#### Scenario: Abort is not reported as an error
+- **WHEN** the fetch is aborted by the stop control
+- **THEN** no error toast is shown and the stream is treated as normally ended (the streaming flag is cleared)
+
+#### Scenario: A real network error is still reported
+- **WHEN** the fetch fails for a reason other than a user abort
+- **THEN** the existing stream-error toast and error state are shown
+
+### Requirement: Stopped-Partial Retention In Memory
+When the user stops a stream, the partial assistant content already received SHALL remain visible in the transcript for the remainder of the session and SHALL be marked as stopped. The runtime SHALL NOT re-fetch conversation history from the server as a consequence of a stop (which would otherwise replace the in-memory partial with persisted history, dropping the partial because a stopped turn is not persisted). A stopped partial SHALL NOT be persisted to the conversation history.
+
+#### Scenario: The partial stays visible after stop
+- **WHEN** the user stops a stream mid-response
+- **THEN** the assistant text received so far remains in the transcript, marked as stopped, without an immediate history re-fetch
+
+#### Scenario: The stopped partial is visually marked
+- **WHEN** a stopped assistant message renders
+- **THEN** it is visually distinguished from completed messages via a "stopped" affordance
+
+#### Scenario: A stopped turn is not persisted
+- **WHEN** a turn is stopped and the conversation is later reloaded from the server
+- **THEN** that stopped turn is absent from the persisted history (the partial existed only in the prior session's memory)
 

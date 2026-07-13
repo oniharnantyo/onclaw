@@ -21,6 +21,13 @@ func (s *Service) ListTools(ctx context.Context) ([]*ToolCategoryView, error) {
 	for _, t := range tools.GetRegistry() {
 		descMap[t.Name()] = t.Desc()
 	}
+	// Filesystem-middleware tools are injected by the Eino middleware and are
+	// not in the tool factory registry, so seed their descriptions here.
+	for _, meta := range tools.FSToolMetadata() {
+		if _, ok := descMap[meta.Name]; !ok {
+			descMap[meta.Name] = meta.Desc
+		}
+	}
 
 	catMap := make(map[string][]*ToolView)
 	for _, t := range toolsList {

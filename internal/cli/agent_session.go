@@ -296,6 +296,7 @@ func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.
 		userConfigDir,
 		st.cfg.Tools.Shell.Policy,
 		st.cfg.Tools.Shell.Allowlist,
+		st.cfg.Tools.Shell.Denylist,
 		contextWindow,
 		convStore,
 		convID,

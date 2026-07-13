@@ -206,7 +206,7 @@ func TestAgentPersona_ScanContentWriteRejection(t *testing.T) {
 func TestSetAgentTools_Success(t *testing.T) {
 	f := newHFixture(t)
 	ctx := context.Background()
-	f.svc.CreateAgent(ctx, service.AgentInput{Name: "tools-agt", Provider: "openai", Tools: "shell"})
+	f.svc.CreateAgent(ctx, service.AgentInput{Name: "tools-agt", Provider: "openai", Tools: "execute"})
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("PUT /api/agents/{name}/tools", f.h.SetAgentTools)
@@ -230,12 +230,12 @@ func TestSetAgentTools_Success(t *testing.T) {
 
 	// Verify tools were updated via service
 	got, _ := f.svc.GetAgent(ctx, "tools-agt")
-	if got.Tools != "shell,read_file" {
-		t.Errorf("expected tools 'shell,read_file', got %q", got.Tools)
+	if got.Tools != "execute,read_file" {
+		t.Errorf("expected tools 'execute,read_file', got %q", got.Tools)
 	}
 
 	// Test enabling all tools via wildcard "*"
-	f.toolStore.UpsertTool(ctx, &store.ToolRegistry{Name: "shell", Category: "Shell", Enabled: 1})
+	f.toolStore.UpsertTool(ctx, &store.ToolRegistry{Name: "execute", Category: "Shell", Enabled: 1})
 	f.toolStore.UpsertTool(ctx, &store.ToolRegistry{Name: "read_file", Category: "Filesystem", Enabled: 1})
 	f.toolStore.UpsertTool(ctx, &store.ToolRegistry{Name: "write_file", Category: "Filesystem", Enabled: 1})
 
@@ -255,7 +255,7 @@ func TestSetAgentTools_Success(t *testing.T) {
 	}
 
 	gotAll, _ := f.svc.GetAgent(ctx, "tools-agt")
-	if !strings.Contains(gotAll.Tools, "shell") || !strings.Contains(gotAll.Tools, "read_file") || !strings.Contains(gotAll.Tools, "write_file") {
+	if !strings.Contains(gotAll.Tools, "execute") || !strings.Contains(gotAll.Tools, "read_file") || !strings.Contains(gotAll.Tools, "write_file") {
 		t.Errorf("expected all tools in wildcard list, got %q", gotAll.Tools)
 	}
 
@@ -299,7 +299,7 @@ func TestSetAgentTools_NotFound(t *testing.T) {
 	defer server.Close()
 
 	body, _ := json.Marshal(map[string]any{
-		"tool":    "shell",
+		"tool":    "execute",
 		"enabled": true,
 	})
 	req, _ := http.NewRequest(http.MethodPut, server.URL+"/api/agents/ghost/tools", bytes.NewBuffer(body))

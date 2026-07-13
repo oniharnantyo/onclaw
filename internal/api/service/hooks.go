@@ -81,8 +81,8 @@ func (s *Service) TestHook(ctx context.Context, h *store.Hook) (hooks.Decision, 
 		Channel:   "web",
 		SessionID: "test-session-id",
 		Prompt:    "List files in the active workspace directory",
-		ToolName:  "list_dir",
-		ToolArgs:  map[string]interface{}{"DirectoryPath": "."},
+		ToolName:  "ls",
+		ToolArgs:  map[string]interface{}{"path": "."},
 	}
 
 	dispatcher := hooks.NewDispatcher(s.hookStore, s.execStore)

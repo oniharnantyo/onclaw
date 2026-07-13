@@ -435,6 +435,19 @@ func Migrate(db *sql.DB) error {
 		}
 	}
 
+	// Seed tool_registry from the filesystem-middleware tools (injected by the
+	// Eino filesystem middleware, not the tool factory).
+	for _, meta := range tools.FSToolMetadata() {
+		_, err := db.Exec(`
+			INSERT OR IGNORE INTO tool_registry (name, category, enabled, created_at, updated_at)
+			VALUES (?, ?, 1, ?, ?)`,
+			meta.Name, meta.Category, currentTime, currentTime,
+		)
+		if err != nil {
+			return fmt.Errorf("seed fs tool %s: %w", meta.Name, err)
+		}
+	}
+
 	return nil
 }
 

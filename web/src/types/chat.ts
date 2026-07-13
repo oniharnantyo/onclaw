@@ -127,8 +127,10 @@ export interface AssistantGenVideo {
 
 // ── Streaming Metadata ─────────────────────────────────────────
 
+// Stable per-block id stamped by the streaming transport so the client can
+// merge delta fragments into the correct content block.
 export interface StreamingMeta {
-  [key: string]: unknown;
+  index: number;
 }
 
 // ── Content Block (unified type) ───────────────────────────────
@@ -184,6 +186,7 @@ export interface ChatMessage {
   content_blocks?: ContentBlock[];
   created_at?: string;
   isStreaming?: boolean;
+  stopped?: boolean;
   response_meta?: Record<string, unknown>;
   extra?: Record<string, unknown>;
 }

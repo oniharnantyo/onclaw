@@ -32,6 +32,49 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultsShellConfig(t *testing.T) {
+	t.Setenv("ONCLAW_TOOLS_SHELL_POLICY", "")
+	t.Setenv("ONCLAW_TOOLS_SHELL_ALLOWLIST", "")
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Tools.Shell.Policy != "denylist" {
+		t.Errorf("Tools.Shell.Policy = %q, want denylist", cfg.Tools.Shell.Policy)
+	}
+	expected := []string{"ls", "cat", "git", "go", "make", "npm", "node", "python3", "python", "docker"}
+	if len(cfg.Tools.Shell.Allowlist) != len(expected) {
+		t.Fatalf("Tools.Shell.Allowlist len = %d, want %d (%v)", len(cfg.Tools.Shell.Allowlist), len(expected), cfg.Tools.Shell.Allowlist)
+	}
+	for i, v := range expected {
+		if cfg.Tools.Shell.Allowlist[i] != v {
+			t.Errorf("Tools.Shell.Allowlist[%d] = %q, want %q", i, cfg.Tools.Shell.Allowlist[i], v)
+		}
+	}
+	if len(cfg.Tools.Shell.Denylist) == 0 {
+		t.Errorf("Tools.Shell.Denylist len = 0, want non-empty default floor")
+	}
+}
+
+func TestLoadDenylistEnvOverride(t *testing.T) {
+	t.Setenv("ONCLAW_TOOLS_SHELL_DENYLIST", "rm -rf /,curl|sh,/dev/tcp/")
+	t.Setenv("ONCLAW_TOOLS_SHELL_POLICY", "")
+	t.Setenv("ONCLAW_TOOLS_SHELL_ALLOWLIST", "")
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	expected := []string{"rm -rf /", "curl|sh", "/dev/tcp/"}
+	if len(cfg.Tools.Shell.Denylist) != len(expected) {
+		t.Fatalf("Denylist len = %d, want %d (%v)", len(cfg.Tools.Shell.Denylist), len(expected), cfg.Tools.Shell.Denylist)
+	}
+	for i, v := range expected {
+		if cfg.Tools.Shell.Denylist[i] != v {
+			t.Errorf("Denylist[%d] = %q, want %q", i, cfg.Tools.Shell.Denylist[i], v)
+		}
+	}
+}
+
 func TestLoadEnvOverridesDefault(t *testing.T) {
 	t.Setenv("ONCLAW_LOG_LEVEL", "debug")
 	t.Setenv("ONCLAW_CONCURRENCY", "4")

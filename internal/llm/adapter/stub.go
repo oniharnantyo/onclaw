@@ -23,13 +23,19 @@ func (s *StubChatModel) Generate(ctx context.Context, input []*schema.AgenticMes
 }
 
 func (s *StubChatModel) Stream(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.StreamReader[*schema.AgenticMessage], error) {
-	sr, sw := schema.Pipe[*schema.AgenticMessage](1)
+	// Emit two delta chunks sharing the same streaming_meta.index so that
+	// streaming + delta-merge are unit-testable without a real provider.
+	sr, sw := schema.Pipe[*schema.AgenticMessage](2)
 	sw.Send(&schema.AgenticMessage{
 		Role: schema.AgenticRoleTypeAssistant,
 		ContentBlocks: []*schema.ContentBlock{
-			schema.NewContentBlock(&schema.AssistantGenText{
-				Text: "Stub streaming response",
-			}),
+			schema.NewContentBlockChunk(&schema.AssistantGenText{Text: "Stub "}, &schema.StreamingMeta{Index: 0}),
+		},
+	}, nil)
+	sw.Send(&schema.AgenticMessage{
+		Role: schema.AgenticRoleTypeAssistant,
+		ContentBlocks: []*schema.ContentBlock{
+			schema.NewContentBlockChunk(&schema.AssistantGenText{Text: "streaming response"}, &schema.StreamingMeta{Index: 0}),
 		},
 	}, nil)
 	sw.Close()

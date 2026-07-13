@@ -1,5 +1,7 @@
 package config
 
+import "github.com/oniharnantyo/onclaw/internal/shellpolicy"
+
 // defaults returns the conservative, low-resource baseline for a 2 GB RAM /
 // 8 GB storage device. Every layer above (config file, ONCLAW_* env, CLI flags)
 // can override these.
@@ -14,8 +16,16 @@ func defaults() Config {
 		Workspace:        "", // empty string = use current working directory
 		Tools: ToolsConfig{
 			Shell: ShellConfig{
-				Policy:    "deny", // conservative default
-				Allowlist: []string{},
+				// Loose by default: every command runs except those matching the
+				// catastrophic denylist (full-command evaluation). Switch to
+				// deny/allowlist/ask via ONCLAW_TOOLS_SHELL_POLICY; override the
+				// floor via ONCLAW_TOOLS_SHELL_DENYLIST.
+				Policy: "denylist",
+				Allowlist: []string{
+					"ls", "cat", "git", "go", "make",
+					"npm", "node", "python3", "python", "docker",
+				},
+				Denylist: shellpolicy.FloorPatterns(),
 			},
 		},
 		Agent: AgentConfig{

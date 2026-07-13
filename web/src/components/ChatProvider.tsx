@@ -1,9 +1,11 @@
 import { createContext, useContext, useReducer, useCallback, useRef, useEffect, type ReactNode } from 'react';
-import type { ChatMessage, ContentBlock, Conversation, SSEInitEvent, SSEMessageEvent, SSETurnEvent } from '../types/chat';
+import type { ChatMessage, ContentBlock, Conversation } from '../types/chat';
+import { mergeStreamingDeltas } from './chat/mergeBlockDelta';
+import { runChatStream } from './chat/runChatStream';
 
 /* ── State ─────────────────────────────────────────────────── */
 
-interface ChatState {
+export interface ChatState {
   messages: ChatMessage[];
   isStreaming: boolean;
   streamingStart?: number;
@@ -22,6 +24,7 @@ type ChatAction =
   | { type: 'STREAM_MESSAGE'; conversationID: number; blocks: ContentBlock[] }
   | { type: 'STREAM_ERROR'; error: string }
   | { type: 'STREAM_DONE' }
+  | { type: 'STREAM_STOPPED' }
   | { type: 'SET_CONVERSATIONS'; conversations: Conversation[] }
   | { type: 'SET_ACTIVE_CONV_ID'; id: number | null }
   | { type: 'SET_AGENTS'; agents: { name: string; is_default: boolean }[] }
@@ -30,7 +33,7 @@ type ChatAction =
   | { type: 'SET_CONTEXT_WINDOW'; windowSize: number }
   | { type: 'SET_CONTEXT_USED'; usedSize: number };
 
-function chatReducer(state: ChatState, action: ChatAction): ChatState {
+export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
     case 'SET_MESSAGES':
       return { ...state, messages: action.messages };
@@ -46,34 +49,47 @@ function chatReducer(state: ChatState, action: ChatAction): ChatState {
       const lastMsg = state.messages[state.messages.length - 1];
       const isAssistant = lastMsg?.role === 'assistant';
 
-      let msgs: ChatMessage[];
+      // Merge by streaming_meta.index so token-level deltas accumulate into
+      // the correct content block instead of appending whole blocks.
       if (isAssistant) {
-        // Accumulate blocks into the last assistant message
-        msgs = [
+        const msgs: ChatMessage[] = [
           ...state.messages.slice(0, -1),
           {
             ...lastMsg,
-            content_blocks: [...(lastMsg.content_blocks || []), ...blocks],
+            content_blocks: mergeStreamingDeltas(lastMsg.content_blocks || [], blocks),
             isStreaming: true,
           },
         ];
-      } else {
-        msgs = [
-          ...state.messages,
-          {
-            role: 'assistant',
-            content_blocks: blocks,
-            isStreaming: true,
-          },
-        ];
+        return { ...state, messages: msgs };
       }
 
+      const msgs: ChatMessage[] = [
+        ...state.messages,
+        {
+          role: 'assistant',
+          content_blocks: mergeStreamingDeltas([], blocks),
+          isStreaming: true,
+        },
+      ];
       return { ...state, messages: msgs };
     }
     case 'STREAM_ERROR':
       return { ...state, isStreaming: false };
     case 'STREAM_DONE': {
       const msgs = state.messages.map((m) => ({ ...m, isStreaming: false }));
+      return { ...state, messages: msgs, isStreaming: false };
+    }
+    case 'STREAM_STOPPED': {
+      let lastAssistant = -1;
+      for (let i = state.messages.length - 1; i >= 0; i--) {
+        if (state.messages[i].role === 'assistant') {
+          lastAssistant = i;
+          break;
+        }
+      }
+      const msgs = state.messages.map((m, i) =>
+        i === lastAssistant ? { ...m, isStreaming: false, stopped: true } : m
+      );
       return { ...state, messages: msgs, isStreaming: false };
     }
     case 'SET_CONVERSATIONS':
@@ -103,6 +119,7 @@ interface ChatContextValue {
   state: ChatState;
   dispatch: React.Dispatch<ChatAction>;
   runChat: (prompt: string, attachments?: ContentBlock[]) => Promise<void>;
+  stopChat: () => void;
   loadConversations: () => Promise<void>;
   loadMessages: (convId: number) => Promise<void>;
   loadSkills: () => Promise<void>;
@@ -163,6 +180,8 @@ export default function ChatProvider({
   }, [initialConversations]);
 
   const activeConvIDRef = useRef(state.activeConvID);
+
+  const abortRef = useRef<AbortController | null>(null);
 
   const fetchConversations = useCallback(async () => {
     try {
@@ -309,6 +328,10 @@ export default function ChatProvider({
     }
   }, []);
 
+  const stopChat = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
+
   const runChat = useCallback(async (prompt: string, attachments?: ContentBlock[]) => {
     if (!prompt.trim() || state.isStreaming) return;
 
@@ -329,102 +352,67 @@ export default function ChatProvider({
       messages: state.activeConvID ? [...state.messages, userMsg] : [userMsg],
     });
 
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    const tempConvID0 = state.activeConvID;
+    let tempConvID = tempConvID0;
+    let convSet = false;
+
+    const body = JSON.stringify({
+      prompt,
+      agent: state.chatAgent,
+      conversation_id: tempConvID0 || 0,
+      content_blocks: attachments || [],
+    });
+
     try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt,
-          agent: state.chatAgent,
-          conversation_id: state.activeConvID || 0,
-          content_blocks: attachments || [],
-        }),
+      await runChatStream(body, controller.signal, {
+        onInit: (initData) => {
+          tempConvID = initData.conversation_id;
+          activeConvIDRef.current = tempConvID;
+          dispatch({ type: 'SET_ACTIVE_CONV_ID', id: tempConvID });
+          if (initData.context_window) {
+            dispatch({ type: 'SET_CONTEXT_WINDOW', windowSize: initData.context_window });
+          }
+          if (!convSet) {
+            convSet = true;
+            fetchConversations();
+          }
+        },
+        onMessage: (msgData) => {
+          dispatch({
+            type: 'STREAM_MESSAGE',
+            conversationID: tempConvID!,
+            blocks: msgData.content_blocks || [],
+          });
+        },
+        onTurn: (turnData) => {
+          const used = turnData.prompt_tokens ?? turnData.tokens;
+          if (typeof used === 'number') {
+            dispatch({ type: 'SET_CONTEXT_USED', usedSize: used });
+          }
+        },
+        onStreamError: (err) => {
+          showToast(err, 'error');
+        },
+        onDone: () => {
+          dispatch({ type: 'STREAM_DONE' });
+          if (tempConvID) {
+            // Small delay to let backend persist
+            setTimeout(() => fetchMessages(tempConvID!), 200);
+          }
+        },
+        onStopped: () => {
+          dispatch({ type: 'STREAM_STOPPED' });
+        },
+        onConnectionError: (err) => {
+          showToast(err, 'error');
+          dispatch({ type: 'STREAM_ERROR', error: err });
+        },
       });
-
-      if (!res.ok) {
-        const errData = await res.json();
-        showToast(errData.error || 'Chat stream failed to start', 'error');
-        dispatch({ type: 'STREAM_ERROR', error: errData.error || 'Unknown' });
-        return;
-      }
-
-      const reader = res.body?.getReader();
-      if (!reader) {
-        showToast('ReadableStream not supported', 'error');
-        dispatch({ type: 'STREAM_ERROR', error: 'ReadableStream not supported' });
-        return;
-      }
-
-      const decoder = new TextDecoder('utf-8');
-      let buffer = '';
-      let tempConvID = state.activeConvID;
-      let convSet = false;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const blocks = buffer.split('\n\n');
-        buffer = blocks.pop() || '';
-
-        for (const block of blocks) {
-          const lines = block.split('\n');
-          let event = '';
-          let dataStr = '';
-          for (const line of lines) {
-            if (line.startsWith('event: ')) event = line.slice(7).trim();
-            if (line.startsWith('data: ')) dataStr = line.slice(6).trim();
-          }
-
-          if (dataStr) {
-            try {
-              const data = JSON.parse(dataStr);
-              if (event === 'init') {
-                const initData = data as SSEInitEvent;
-                tempConvID = initData.conversation_id;
-                activeConvIDRef.current = tempConvID;
-                dispatch({ type: 'SET_ACTIVE_CONV_ID', id: tempConvID });
-                if (initData.context_window) {
-                  dispatch({ type: 'SET_CONTEXT_WINDOW', windowSize: initData.context_window });
-                }
-                if (!convSet) {
-                  convSet = true;
-                  fetchConversations();
-                }
-              } else if (event === 'message') {
-                const msgData = data as SSEMessageEvent;
-                dispatch({
-                  type: 'STREAM_MESSAGE',
-                  conversationID: tempConvID!,
-                  blocks: msgData.content_blocks || [],
-                });
-              } else if (event === 'turn') {
-                const turnData = data as SSETurnEvent;
-                const used = turnData.prompt_tokens ?? turnData.tokens;
-                if (typeof used === 'number') {
-                  dispatch({ type: 'SET_CONTEXT_USED', usedSize: used });
-                }
-              } else if (event === 'error') {
-                const errData = data as { error: string };
-                showToast(errData.error || 'Stream error occurred', 'error');
-              }
-            } catch {
-              // skip malformed data
-            }
-          }
-        }
-      }
-
-      dispatch({ type: 'STREAM_DONE' });
-
-      if (tempConvID) {
-        // Small delay to let backend persist
-        setTimeout(() => fetchMessages(tempConvID!), 200);
-      }
-    } catch {
-      showToast('Stream interrupted due to connection error', 'error');
-      dispatch({ type: 'STREAM_ERROR', error: 'Connection error' });
+    } finally {
+      abortRef.current = null;
     }
   }, [state.isStreaming, state.chatAgent, state.activeConvID, showToast, fetchConversations, fetchMessages]);
 
@@ -437,6 +425,7 @@ export default function ChatProvider({
     state,
     dispatch,
     runChat,
+    stopChat,
     loadConversations: fetchConversations,
     loadMessages: fetchMessages,
     loadSkills: fetchSkills,
@@ -469,6 +458,7 @@ export function useComposer() {
     isStreaming: chat.state.isStreaming,
     dispatch: chat.dispatch,
     runChat: chat.runChat,
+    stopChat: chat.stopChat,
   };
 }
 

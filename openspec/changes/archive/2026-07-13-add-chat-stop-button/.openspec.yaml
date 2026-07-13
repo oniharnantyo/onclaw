@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-07-13
+goal: Let the user cancel an in-progress agent stream from the chat composer via an
+  AbortController on the existing /api/chat fetch, retaining the in-memory partial as
+  a stopped message without re-fetching or persisting it.

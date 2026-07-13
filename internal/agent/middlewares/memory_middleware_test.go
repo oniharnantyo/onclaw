@@ -144,6 +144,38 @@ func TestMemoryMiddleware_BeforeAgent(t *testing.T) {
 	}
 }
 
+// TestMemoryMiddleware_BeforeAgent_NilCoreStore reproduces the panic in
+// BeforeAgent when the middleware is built with a nil CoreStore (curated core
+// memory disabled) while memory/extraction remains enabled. Previously this
+// dereferenced the nil CoreStore and crashed the request.
+func TestMemoryMiddleware_BeforeAgent_NilCoreStore(t *testing.T) {
+	ctx := context.Background()
+	middleware := middlewares.NewMemoryMiddleware(
+		nil, nil, nil, nil, nil, nil, "workspace", "agent-1", 123, 100, nil, nil, 0, nil,
+	)
+
+	runCtx := &adk.ChatModelAgentContext[*schema.AgenticMessage]{
+		AgentInput: &adk.TypedAgentInput[*schema.AgenticMessage]{
+			Messages: []*schema.AgenticMessage{
+				schema.UserAgenticMessage("hello"),
+			},
+		},
+	}
+
+	_, newCtx, err := middleware.BeforeAgent(ctx, runCtx)
+	if err != nil {
+		t.Fatalf("BeforeAgent failed: %v", err)
+	}
+
+	// No core memory should be injected when CoreStore is nil.
+	if len(newCtx.AgentInput.Messages) != 1 {
+		t.Errorf("expected 1 message (no injection), got %d", len(newCtx.AgentInput.Messages))
+	}
+	if getMsgText(newCtx.AgentInput.Messages[0]) != "hello" {
+		t.Errorf("unexpected message mutation: %q", getMsgText(newCtx.AgentInput.Messages[0]))
+	}
+}
+
 func TestMemoryMiddleware_FlushMessages_EventStop(t *testing.T) {
 	ctx := context.Background()
 	memoryStore := &mockMemoryStore{}

@@ -116,8 +116,8 @@ func TestToolsAPI(t *testing.T) {
 			if c.Configurable {
 				t.Error("Filesystem category should not be configurable by default")
 			}
-			// Should contain read_file, write_file, list_dir
-			expected := map[string]bool{"read_file": true, "write_file": true, "list_dir": true}
+			// Should contain read_file, write_file, ls
+			expected := map[string]bool{"read_file": true, "write_file": true, "ls": true}
 			for _, tl := range c.Tools {
 				if tl.Description == "" {
 					t.Errorf("expected tool %s to have a non-empty description", tl.Name)
@@ -130,7 +130,7 @@ func TestToolsAPI(t *testing.T) {
 		}
 		if c.Category == "Shell" {
 			foundShell = true
-			if len(c.Tools) != 1 || c.Tools[0].Name != "shell" {
+			if len(c.Tools) != 1 || c.Tools[0].Name != "execute" {
 				t.Errorf("unexpected tools in Shell category: %v", c.Tools)
 			}
 		}
@@ -140,7 +140,7 @@ func TestToolsAPI(t *testing.T) {
 	}
 
 	// 3. POST /api/tools/{name}/toggle
-	toggleURL := fmt.Sprintf("http://%s/api/tools/shell/toggle", addr)
+	toggleURL := fmt.Sprintf("http://%s/api/tools/execute/toggle", addr)
 	toggleBody, _ := json.Marshal(service.ToggleToolInput{Enabled: false})
 	toggleResp, err := client.Post(toggleURL, "application/json", bytes.NewReader(toggleBody))
 	if err != nil {
@@ -159,8 +159,8 @@ func TestToolsAPI(t *testing.T) {
 
 	for _, c := range categories2 {
 		if c.Category == "Shell" {
-			if len(c.Tools) != 1 || c.Tools[0].Name != "shell" || c.Tools[0].Enabled {
-				t.Errorf("expected shell tool to be disabled, got: %+v", c.Tools[0])
+			if len(c.Tools) != 1 || c.Tools[0].Name != "execute" || c.Tools[0].Enabled {
+				t.Errorf("expected execute tool to be disabled, got: %+v", c.Tools[0])
 			}
 		}
 	}

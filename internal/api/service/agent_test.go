@@ -108,7 +108,7 @@ func TestService_SetAgentTools_EmptyAllowlist(t *testing.T) {
 	ctx := context.Background()
 
 	// Seed the tool registry with four builtin tools.
-	registry := []string{"read_file", "write_file", "list_dir", "shell"}
+	registry := []string{"read_file", "write_file", "ls", "execute"}
 	for _, name := range registry {
 		f.toolStore.UpsertTool(ctx, &store.ToolRegistry{Name: name, Enabled: 1})
 	}
@@ -124,19 +124,19 @@ func TestService_SetAgentTools_EmptyAllowlist(t *testing.T) {
 		t.Fatalf("SetAgentTools: %v", err)
 	}
 	got := splitSet(mustAgentTools(t, f, "empty-agent"))
-	want := splitSet("write_file,list_dir,shell")
+	want := splitSet("write_file,ls,execute")
 	if !equalSet(got, want) {
 		t.Errorf("after disabling read_file, expected %v, got %v", want, got)
 	}
 
 	// Disabling a second tool from the all-derived state removes it too.
-	if err := f.svc.SetAgentTools(ctx, "empty-agent", "shell", false); err != nil {
+	if err := f.svc.SetAgentTools(ctx, "empty-agent", "execute", false); err != nil {
 		t.Fatalf("SetAgentTools: %v", err)
 	}
 	got = splitSet(mustAgentTools(t, f, "empty-agent"))
-	want = splitSet("write_file,list_dir")
+	want = splitSet("write_file,ls")
 	if !equalSet(got, want) {
-		t.Errorf("after disabling shell, expected %v, got %v", want, got)
+		t.Errorf("after disabling execute, expected %v, got %v", want, got)
 	}
 
 	// Enabling an already-present tool is a no-op (the list is unchanged).
@@ -144,7 +144,7 @@ func TestService_SetAgentTools_EmptyAllowlist(t *testing.T) {
 		t.Fatalf("SetAgentTools: %v", err)
 	}
 	got = splitSet(mustAgentTools(t, f, "empty-agent"))
-	want = splitSet("write_file,list_dir")
+	want = splitSet("write_file,ls")
 	if !equalSet(got, want) {
 		t.Errorf("enabling an already-present tool should be a no-op, got %v", got)
 	}

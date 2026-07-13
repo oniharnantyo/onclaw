@@ -383,8 +383,8 @@ func hooksCommand(st *appState) *cli.Command {
 						Channel:   "cli",
 						SessionID: "test-session-id",
 						Prompt:    "List files in the active workspace directory",
-						ToolName:  "list_dir",
-						ToolArgs:  map[string]interface{}{"DirectoryPath": "."},
+						ToolName:  "ls",
+						ToolArgs:  map[string]interface{}{"path": "."},
 					}
 
 					hs := &mockHookStore{hooks: map[string]*store.Hook{h.ID: h}}

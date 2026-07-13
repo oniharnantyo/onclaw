@@ -24,12 +24,12 @@ func TestToolRegistryStore(t *testing.T) {
 		t.Fatalf("failed to list tools: %v", err)
 	}
 
-	// Verify seeding works (should contain at least shell, read_file, write_file, list_dir)
+	// Verify seeding works (should contain at least the filesystem-middleware tools).
 	expectedTools := map[string]string{
-		"shell":      "Shell",
 		"read_file":  "Filesystem",
 		"write_file": "Filesystem",
-		"list_dir":   "Filesystem",
+		"ls":         "Filesystem",
+		"execute":    "Shell",
 	}
 
 	for name, cat := range expectedTools {
@@ -52,12 +52,12 @@ func TestToolRegistryStore(t *testing.T) {
 	}
 
 	// Test GetTool
-	shellTool, err := tr.GetTool(ctx, "shell")
+	executeTool, err := tr.GetTool(ctx, "execute")
 	if err != nil {
-		t.Fatalf("failed to get tool 'shell': %v", err)
+		t.Fatalf("failed to get tool 'execute': %v", err)
 	}
-	if shellTool.Name != "shell" || shellTool.Category != "Shell" || shellTool.Enabled != 1 {
-		t.Errorf("unexpected tool values: %+v", shellTool)
+	if executeTool.Name != "execute" || executeTool.Category != "Shell" || executeTool.Enabled != 1 {
+		t.Errorf("unexpected tool values: %+v", executeTool)
 	}
 
 	// Test GetTool on nonexistent
@@ -69,17 +69,17 @@ func TestToolRegistryStore(t *testing.T) {
 	}
 
 	// Test ToggleTool off
-	err = tr.ToggleTool(ctx, "shell", false)
+	err = tr.ToggleTool(ctx, "execute", false)
 	if err != nil {
 		t.Fatalf("failed to toggle tool off: %v", err)
 	}
 
-	shellTool, err = tr.GetTool(ctx, "shell")
+	executeTool, err = tr.GetTool(ctx, "execute")
 	if err != nil {
-		t.Fatalf("failed to get tool 'shell': %v", err)
+		t.Fatalf("failed to get tool 'execute': %v", err)
 	}
-	if shellTool.Enabled != 0 {
-		t.Errorf("expected shell tool to be disabled, got %d", shellTool.Enabled)
+	if executeTool.Enabled != 0 {
+		t.Errorf("expected execute tool to be disabled, got %d", executeTool.Enabled)
 	}
 
 	// Test ToggleTool nonexistent
@@ -97,12 +97,12 @@ func TestToolRegistryStore(t *testing.T) {
 		t.Fatalf("failed to run sqlite.Migrate: %v", err)
 	}
 
-	shellTool, err = tr.GetTool(ctx, "shell")
+	executeTool, err = tr.GetTool(ctx, "execute")
 	if err != nil {
-		t.Fatalf("failed to get tool 'shell' after migration: %v", err)
+		t.Fatalf("failed to get tool 'execute' after migration: %v", err)
 	}
-	if shellTool.Enabled != 0 {
-		t.Errorf("expected shell tool to remain disabled after migration, got %d", shellTool.Enabled)
+	if executeTool.Enabled != 0 {
+		t.Errorf("expected execute tool to remain disabled after migration, got %d", executeTool.Enabled)
 	}
 
 	// Test UpsertTool

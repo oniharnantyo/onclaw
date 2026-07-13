@@ -31,6 +31,12 @@ per-agent restriction — so an agent that carries no allowlist (the shape produ
 the allowlisted tool names. Toggling a tool SHALL take effect on subsequent agent runs without a
 process restart.
 
+The enable flag SHALL also govern builtin tools that are injected by the Eino filesystem middleware
+(`ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `execute`) even though those tools
+are not assembled through the tool factory. A toggle middleware SHALL wrap each such tool's call and
+withhold any tool whose global enable flag is false, so toggling takes effect on subsequent agent
+runs without a restart — the same guarantee the spec makes for factory-assembled tools.
+
 #### Scenario: A disabled tool is withheld from the agent
 
 - **WHEN** a tool's global enable flag is false and an agent runs
@@ -51,6 +57,33 @@ process restart.
 
 - **WHEN** a tool is toggled off and the process restarts
 - **THEN** the tool remains disabled
+
+#### Scenario: A middleware-injected tool respects the global enable flag
+
+- **WHEN** a filesystem-middleware tool (e.g. `glob`) has its global enable flag set to false and an
+  agent run invokes it
+- **THEN** the toggle middleware withholds the call and returns a disabled result, without a process
+  restart
+
+### Requirement: Middleware-injected tools are seeded into the registry
+
+The system SHALL seed the builtin tools injected by the Eino filesystem middleware into
+`tool_registry` on startup alongside factory-assembled tools, with a default of enabled, so they
+appear in the management API and Web UI grouped by category and are toggleable there. The seeded
+tools are `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep` (category `Filesystem`) and
+`execute` (category `Shell`).
+
+#### Scenario: Filesystem-middleware tools appear in the seeded registry
+
+- **WHEN** the tool registry is seeded
+- **THEN** `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, and `execute` are present,
+  enabled by default, and grouped under their `Filesystem` / `Shell` categories
+
+#### Scenario: Middleware tools are grouped by category in the management API
+
+- **WHEN** the client requests the tool list
+- **THEN** the filesystem-middleware tools are returned grouped under the `Filesystem` and `Shell`
+  categories alongside the other builtin tools
 
 ### Requirement: Per-category configuration storage
 
@@ -117,4 +150,3 @@ When every tool is globally enabled (the default) and no category configuration 
 
 - **WHEN** no tool has been toggled and no category config edited
 - **THEN** agent behavior is unchanged from before tools management
-

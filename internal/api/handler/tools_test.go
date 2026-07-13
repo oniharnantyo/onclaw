@@ -45,7 +45,7 @@ func TestToggleTool_Success(t *testing.T) {
 	f := newHFixture(t)
 	ctx := context.Background()
 
-	f.toolStore.UpsertTool(ctx, &store.ToolRegistry{Name: "list_dir", Category: "Filesystem", Enabled: 1})
+	f.toolStore.UpsertTool(ctx, &store.ToolRegistry{Name: "ls", Category: "Filesystem", Enabled: 1})
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/tools/{name}/toggle", f.h.ToggleTool)
@@ -53,7 +53,7 @@ func TestToggleTool_Success(t *testing.T) {
 	defer server.Close()
 
 	body, _ := json.Marshal(map[string]bool{"enabled": false})
-	res, err := http.Post(server.URL+"/api/tools/list_dir/toggle", "application/json", bytes.NewBuffer(body))
+	res, err := http.Post(server.URL+"/api/tools/ls/toggle", "application/json", bytes.NewBuffer(body))
 	if err != nil {
 		t.Fatalf("request: %v", err)
 	}
