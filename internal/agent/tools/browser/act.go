@@ -39,9 +39,12 @@ type ActInput struct {
 
 func (t *actTool) Build(scope *tools.Scope) tool.InvokableTool {
 	inv, err := utils.InferTool(t.Name(), t.Desc(), func(ctx context.Context, input *ActInput) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		page, err := Mgr.GetActivePage()
 		if err != nil {
-			return "", err
+			return fmt.Sprintf("%s could not complete: %s", "browser_act", err.Error()), nil
 		}
 
 		req := sysbrowser.ActRequest{
@@ -54,7 +57,7 @@ func (t *actTool) Build(scope *tools.Scope) tool.InvokableTool {
 
 		err = page.Act(ctx, req)
 		if err != nil {
-			return "", err
+			return fmt.Sprintf("%s could not complete: %s", "browser_act", err.Error()), nil
 		}
 
 		return fmt.Sprintf("Successfully executed action %q on page", input.Kind), nil

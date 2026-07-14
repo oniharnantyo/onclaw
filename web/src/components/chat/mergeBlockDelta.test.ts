@@ -59,4 +59,19 @@ export function runMergeBlockDeltaTests() {
   const merged = mergeBlockDelta(target, delta);
   if (merged.assistant_gen_text?.text !== 'ab') throw new Error('Test 7 Failed: merge wrong');
   if (target.assistant_gen_text?.text !== 'a') throw new Error('Test 7 Failed: target was mutated');
+
+  // Test 8: Eino streams tool-call deltas where the identity fields (name,
+  // call_id) only arrive in the first fragment; later fragments carry empty
+  // strings. The merge must preserve the real name instead of clobbering it
+  // with the empty value from subsequent fragments.
+  const tcFragments = mergeStreamingDeltas([], [
+    { type: 'function_tool_call', function_tool_call: { call_id: 'c1', name: 'ls', arguments: '' } as any, streaming_meta: { index: 0 } },
+    { type: 'function_tool_call', function_tool_call: { call_id: '', name: '', arguments: '{"path":' } as any, streaming_meta: { index: 0 } },
+    { type: 'function_tool_call', function_tool_call: { call_id: '', name: '', arguments: ' "."}' } as any, streaming_meta: { index: 0 } },
+  ]);
+  const ftc = tcFragments[0].function_tool_call as any;
+  if (!ftc) throw new Error('Test 8 Failed: missing tool call');
+  if (ftc.name !== 'ls') throw new Error(`Test 8 Failed: name clobbered to "${ftc.name}"`);
+  if (ftc.call_id !== 'c1') throw new Error(`Test 8 Failed: call_id clobbered to "${ftc.call_id}"`);
+  if (ftc.arguments !== '{"path": "."}') throw new Error(`Test 8 Failed: arguments not accumulated: ${ftc.arguments}`);
 }

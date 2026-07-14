@@ -36,11 +36,11 @@ func (b *fsBackend) LsInfo(_ context.Context, req *filesystem.LsInfoRequest) ([]
 	}
 	absDir, err := ValidatePath(b.workspace, dir)
 	if err != nil {
-		return nil, err
+		return nil, wrapSentinel(ErrPathOutsideWorkspace, dir)
 	}
 	entries, err := os.ReadDir(absDir)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list directory: %w", err)
+		return nil, mapOSError(fmt.Errorf("failed to list directory: %w", err), dir)
 	}
 	result := make([]filesystem.FileInfo, 0, len(entries))
 	for _, e := range entries {
@@ -64,11 +64,11 @@ func (b *fsBackend) LsInfo(_ context.Context, req *filesystem.LsInfoRequest) ([]
 func (b *fsBackend) Read(_ context.Context, req *filesystem.ReadRequest) (*filesystem.FileContent, error) {
 	absPath, err := ValidatePath(b.workspace, req.FilePath)
 	if err != nil {
-		return nil, err
+		return nil, wrapSentinel(ErrPathOutsideWorkspace, req.FilePath)
 	}
 	data, err := os.ReadFile(absPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read file: %w", err)
+		return nil, mapOSError(fmt.Errorf("failed to read file: %w", err), req.FilePath)
 	}
 
 	offset := req.Offset - 1
@@ -97,7 +97,7 @@ func (b *fsBackend) Read(_ context.Context, req *filesystem.ReadRequest) (*files
 // redacting secret patterns in matched content.
 func (b *fsBackend) GrepRaw(_ context.Context, req *filesystem.GrepRequest) ([]filesystem.GrepMatch, error) {
 	if req.Pattern == "" {
-		return nil, fmt.Errorf("pattern cannot be empty")
+		return nil, wrapSentinel(ErrEmptyPattern, req.Pattern)
 	}
 	pattern := req.Pattern
 	if req.CaseInsensitive {
@@ -105,7 +105,7 @@ func (b *fsBackend) GrepRaw(_ context.Context, req *filesystem.GrepRequest) ([]f
 	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
-		return nil, fmt.Errorf("invalid regex pattern: %w", err)
+		return nil, wrapSentinel(ErrInvalidRegex, pattern)
 	}
 
 	root := req.Path
@@ -114,7 +114,7 @@ func (b *fsBackend) GrepRaw(_ context.Context, req *filesystem.GrepRequest) ([]f
 	}
 	absRoot, err := ValidatePath(b.workspace, root)
 	if err != nil {
-		return nil, err
+		return nil, wrapSentinel(ErrPathOutsideWorkspace, root)
 	}
 
 	candidates, err := b.grepCandidates(absRoot, req.Glob, req.FileType)
@@ -159,7 +159,7 @@ func (b *fsBackend) GlobInfo(_ context.Context, req *filesystem.GlobInfoRequest)
 	}
 	absRoot, err := ValidatePath(b.workspace, root)
 	if err != nil {
-		return nil, err
+		return nil, wrapSentinel(ErrPathOutsideWorkspace, root)
 	}
 	files, err := b.walkFiles(absRoot)
 	if err != nil {
@@ -173,7 +173,7 @@ func (b *fsBackend) GlobInfo(_ context.Context, req *filesystem.GlobInfoRequest)
 		}
 		ok, mErr := doublestar.Match(req.Pattern, rel)
 		if mErr != nil {
-			return nil, fmt.Errorf("invalid glob pattern: %w", mErr)
+			return nil, wrapSentinel(ErrInvalidGlob, req.Pattern)
 		}
 		if !ok {
 			continue
@@ -196,13 +196,13 @@ func (b *fsBackend) GlobInfo(_ context.Context, req *filesystem.GlobInfoRequest)
 func (b *fsBackend) Write(_ context.Context, req *filesystem.WriteRequest) error {
 	absPath, err := ValidatePath(b.workspace, req.FilePath)
 	if err != nil {
-		return err
+		return wrapSentinel(ErrPathOutsideWorkspace, req.FilePath)
 	}
 	if err := os.MkdirAll(filepath.Dir(absPath), 0755); err != nil {
-		return fmt.Errorf("failed to create directories: %w", err)
+		return mapOSError(fmt.Errorf("failed to create directories: %w", err), req.FilePath)
 	}
 	if err := os.WriteFile(absPath, []byte(req.Content), 0644); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
+		return mapOSError(fmt.Errorf("failed to write file: %w", err), req.FilePath)
 	}
 	return nil
 }
@@ -212,24 +212,24 @@ func (b *fsBackend) Write(_ context.Context, req *filesystem.WriteRequest) error
 func (b *fsBackend) Edit(_ context.Context, req *filesystem.EditRequest) error {
 	absPath, err := ValidatePath(b.workspace, req.FilePath)
 	if err != nil {
-		return err
+		return wrapSentinel(ErrPathOutsideWorkspace, req.FilePath)
 	}
 	data, err := os.ReadFile(absPath)
 	if err != nil {
-		return fmt.Errorf("failed to read file: %w", err)
+		return mapOSError(fmt.Errorf("failed to read file: %w", err), req.FilePath)
 	}
 	content := string(data)
 
 	if req.OldString == "" {
-		return fmt.Errorf("old_string must be non-empty")
+		return wrapSentinel(ErrEditOldStringMissing, req.FilePath)
 	}
 	if !strings.Contains(content, req.OldString) {
-		return fmt.Errorf("old_string not found in file: %s", req.FilePath)
+		return wrapSentinel(ErrEditOldStringMissing, req.FilePath)
 	}
 	if !req.ReplaceAll {
 		first := strings.Index(content, req.OldString)
 		if first != -1 && strings.Contains(content[first+len(req.OldString):], req.OldString) {
-			return fmt.Errorf("multiple occurrences of old_string found in file %s, but ReplaceAll is false", req.FilePath)
+			return wrapSentinel(ErrEditNotUnique, req.FilePath)
 		}
 	}
 
@@ -240,7 +240,7 @@ func (b *fsBackend) Edit(_ context.Context, req *filesystem.EditRequest) error {
 		newContent = strings.Replace(content, req.OldString, req.NewString, 1)
 	}
 	if err := os.WriteFile(absPath, []byte(newContent), 0644); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
+		return mapOSError(fmt.Errorf("failed to write file: %w", err), req.FilePath)
 	}
 	return nil
 }

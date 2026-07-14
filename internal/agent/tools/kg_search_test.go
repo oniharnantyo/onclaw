@@ -153,7 +153,7 @@ func TestKGSearchTool_EmptyGraphReturnsEmptyResult(t *testing.T) {
 	}
 }
 
-func TestKGSearchTool_MissingSeedEntityNameReturnsError(t *testing.T) {
+func TestKGSearchTool_MissingSeedEntityNameReturnsObservation(t *testing.T) {
 	tool := &tools.KGSearchTool{}
 
 	scope := &tools.Scope{
@@ -162,13 +162,15 @@ func TestKGSearchTool_MissingSeedEntityNameReturnsError(t *testing.T) {
 	}
 
 	invokable := tool.Build(scope)
-	_, err := invokable.InvokableRun(context.Background(), `{}`)
+	result, err := invokable.InvokableRun(context.Background(), `{}`)
 
-	if err == nil {
-		t.Error("expected error for missing seed_entity_name, got nil")
+	// An empty required field is an expected, recoverable condition: it must
+	// surface as a tool-result observation (nil error), not a fatal error.
+	if err != nil {
+		t.Errorf("expected nil error (recoverable observation) for missing seed_entity_name, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "seed_entity_name is required") {
-		t.Errorf("expected 'seed_entity_name is required' error, got: %v", err)
+	if !strings.Contains(result, "seed_entity_name is required") {
+		t.Errorf("expected 'seed_entity_name is required' observation, got: %v", result)
 	}
 }
 
@@ -191,5 +193,3 @@ func TestKGSearchTool_NilKGStoreReturnsUnavailableMessage(t *testing.T) {
 		t.Errorf("expected 'Knowledge graph is not available.' message, got: %s", result)
 	}
 }
-
-

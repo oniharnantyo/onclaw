@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/components/tool/utils"
@@ -31,14 +32,17 @@ type ConsoleInput struct{}
 
 func (t *consoleTool) Build(scope *tools.Scope) tool.InvokableTool {
 	inv, err := utils.InferTool(t.Name(), t.Desc(), func(ctx context.Context, input *ConsoleInput) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		page, err := Mgr.GetActivePage()
 		if err != nil {
-			return "", err
+			return fmt.Sprintf("%s could not complete: %s", "browser_console", err.Error()), nil
 		}
 
 		msgs, err := page.ConsoleMessages(ctx)
 		if err != nil {
-			return "", err
+			return fmt.Sprintf("%s could not complete: %s", "browser_console", err.Error()), nil
 		}
 
 		bytes, err := json.Marshal(msgs)

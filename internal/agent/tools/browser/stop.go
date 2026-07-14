@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/components/tool/utils"
@@ -30,9 +31,12 @@ type StopInput struct{}
 
 func (t *stopTool) Build(scope *tools.Scope) tool.InvokableTool {
 	inv, err := utils.InferTool(t.Name(), t.Desc(), func(ctx context.Context, input *StopInput) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		err := Mgr.Stop(ctx)
 		if err != nil {
-			return "", err
+			return fmt.Sprintf("%s could not complete: %s", "browser_stop", err.Error()), nil
 		}
 		return "Browser engine stopped successfully", nil
 	})

@@ -33,13 +33,16 @@ type NavigateInput struct {
 
 func (t *navigateTool) Build(scope *tools.Scope) tool.InvokableTool {
 	inv, err := utils.InferTool(t.Name(), t.Desc(), func(ctx context.Context, input *NavigateInput) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		page, err := Mgr.GetActivePage()
 		if err != nil {
-			return "", err
+			return fmt.Sprintf("%s could not complete: %s", "browser_navigate", err.Error()), nil
 		}
 		err = page.Navigate(ctx, input.URL)
 		if err != nil {
-			return "", err
+			return fmt.Sprintf("%s could not complete: %s", "browser_navigate", err.Error()), nil
 		}
 		u, _ := page.URL(ctx)
 		title, _ := page.Title(ctx)

@@ -31,9 +31,12 @@ type OpenInput struct{}
 
 func (t *openTool) Build(scope *tools.Scope) tool.InvokableTool {
 	inv, err := utils.InferTool(t.Name(), t.Desc(), func(ctx context.Context, input *OpenInput) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		page, err := Mgr.OpenPage(ctx, scope.Workspace, scope.ToolGroupCfg, scope.KVStore)
 		if err != nil {
-			return "", err
+			return fmt.Sprintf("%s could not complete: %s", "browser_open", err.Error()), nil
 		}
 		url, _ := page.URL(ctx)
 		title, _ := page.Title(ctx)

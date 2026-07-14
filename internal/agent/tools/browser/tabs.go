@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/components/tool/utils"
@@ -33,16 +34,19 @@ type TabsInput struct {
 
 func (t *tabsTool) Build(scope *tools.Scope) tool.InvokableTool {
 	inv, err := utils.InferTool(t.Name(), t.Desc(), func(ctx context.Context, input *TabsInput) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		if input.ActivateIndex != nil {
 			err := Mgr.SetActivePage(*input.ActivateIndex)
 			if err != nil {
-				return "", err
+				return fmt.Sprintf("%s could not complete: %s", "browser_tabs", err.Error()), nil
 			}
 		}
 
 		list, err := Mgr.ListPages(ctx)
 		if err != nil {
-			return "", err
+			return fmt.Sprintf("%s could not complete: %s", "browser_tabs", err.Error()), nil
 		}
 
 		bytes, err := json.Marshal(list)

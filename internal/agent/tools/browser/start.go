@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/components/tool/utils"
@@ -30,9 +31,12 @@ type StartInput struct{}
 
 func (t *startTool) Build(scope *tools.Scope) tool.InvokableTool {
 	inv, err := utils.InferTool(t.Name(), t.Desc(), func(ctx context.Context, input *StartInput) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		err := Mgr.Start(ctx, scope.Workspace, scope.ToolGroupCfg, scope.KVStore)
 		if err != nil {
-			return "", err
+			return fmt.Sprintf("%s could not complete: %s", "browser_start", err.Error()), nil
 		}
 		return "Browser engine started successfully", nil
 	})

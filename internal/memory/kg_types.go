@@ -15,8 +15,8 @@ type Relation struct {
 	ID         int64   `json:"id"`
 	FromEntity int64   `json:"from_entity"`
 	ToEntity   int64   `json:"to_entity"`
-	FromName   string  `json:"from_name,omitempty"`  // entity name (used before ID resolution)
-	ToName     string  `json:"to_name,omitempty"`    // entity name (used before ID resolution)
+	FromName   string  `json:"from_name,omitempty"` // entity name (used before ID resolution)
+	ToName     string  `json:"to_name,omitempty"`   // entity name (used before ID resolution)
 	Predicate  string  `json:"predicate"`
 	Agent      string  `json:"agent"`
 	ValidFrom  string  `json:"valid_from"`
@@ -33,7 +33,7 @@ type Extraction struct {
 
 // KGQuery represents a knowledge graph search query.
 type KGQuery struct {
-	SeedEntity     int64  `json:"seed_entity"`               // starting entity ID (direct)
+	SeedEntity     int64  `json:"seed_entity"`                // starting entity ID (direct)
 	SeedEntityName string `json:"seed_entity_name,omitempty"` // starting entity name (resolved if SeedEntity=0)
 	Agent          string `json:"agent"`                      // scope to this agent
 	MaxDepth       int    `json:"max_depth"`                  // maximum hops from seed

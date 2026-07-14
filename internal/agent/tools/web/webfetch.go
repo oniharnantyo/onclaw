@@ -42,6 +42,10 @@ func (t *webFetchTool) Build(scope *tools.Scope) tool.InvokableTool {
 			rawCfg, err = scope.ToolGroupCfg.GetConfig(ctx, "Web")
 		}
 
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+
 		cfg, err := sysweb.ParseConfig(rawCfg)
 		if err != nil {
 			cfg, _ = sysweb.ParseConfig("")
@@ -75,10 +79,10 @@ func (t *webFetchTool) Build(scope *tools.Scope) tool.InvokableTool {
 			fallbackFetcher, _ := fallbackFactory(cfg, scope.SecretResolver)
 			result, err = fallbackFetcher.Fetch(ctx, input.URL, input.Headers)
 			if err != nil {
-				return "", fmt.Errorf("fallback HTTP fetch also failed: %w", err)
+				return fmt.Sprintf("web_fetch failed for %s: %s", input.URL, err.Error()), nil
 			}
 		} else if originalErr != nil {
-			return "", originalErr
+			return fmt.Sprintf("web_fetch failed for %s: %s", input.URL, originalErr.Error()), nil
 		}
 
 		var sb strings.Builder

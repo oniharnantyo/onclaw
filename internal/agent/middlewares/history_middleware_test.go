@@ -1088,3 +1088,126 @@ func TestHistoryMiddleware_ResponseIDFallbacks(t *testing.T) {
 		}
 	})
 }
+
+func TestSystemMessagesNotPersisted(t *testing.T) {
+	s := newMockConversationStore()
+	ctx := context.Background()
+
+	convID, err := s.CreateConversation(ctx, "test-agent")
+	if err != nil {
+		t.Fatalf("failed to create conversation: %v", err)
+	}
+
+	h := middlewares.NewHistoryMiddleware(s, convID, "model-1")
+
+	sysMsg := schema.SystemAgenticMessage("system instructions")
+	userMsg := schema.UserAgenticMessage("hello")
+	assistantMsg := &schema.AgenticMessage{
+		Role: schema.AgenticRoleTypeAssistant,
+		ContentBlocks: []*schema.ContentBlock{
+			schema.NewContentBlock(&schema.AssistantGenText{Text: "hi there"}),
+		},
+		ResponseMeta: &schema.AgenticResponseMeta{
+			OpenAIExtension: &openai.ResponseMetaExtension{
+				ID: "resp-sys-1",
+			},
+		},
+	}
+
+	// BeforeAgent buffers the user input (system prompt is not part of the
+	// user input; it lives in state.Messages).
+	runCtx := &adk.ChatModelAgentContext[*schema.AgenticMessage]{
+		AgentInput: &adk.TypedAgentInput[*schema.AgenticMessage]{
+			Messages: []*schema.AgenticMessage{userMsg},
+		},
+	}
+	ctx, runCtx, err = h.BeforeAgent(ctx, runCtx)
+	if err != nil {
+		t.Fatalf("BeforeAgent failed: %v", err)
+	}
+
+	state := &adk.TypedChatModelAgentState[*schema.AgenticMessage]{
+		Messages: []*schema.AgenticMessage{sysMsg, userMsg, assistantMsg},
+	}
+
+	ctx, state, err = h.AfterModelRewriteState(ctx, state, nil)
+	if err != nil {
+		t.Fatalf("AfterModelRewriteState failed: %v", err)
+	}
+
+	ctx, err = h.AfterAgent(ctx, state)
+	if err != nil {
+		t.Fatalf("AfterAgent failed: %v", err)
+	}
+
+	// Exactly one turn row stored.
+	turns, _ := s.ListTurns(ctx, convID)
+	if len(turns) != 1 {
+		t.Fatalf("expected 1 stored turn, got %d", len(turns))
+	}
+
+	// Persisted message array must contain no system-role message, but must
+	// still contain the user and assistant messages.
+	var savedMsgs []*schema.AgenticMessage
+	if err := json.Unmarshal([]byte(turns[0].Message), &savedMsgs); err != nil {
+		t.Fatalf("failed to unmarshal saved turn messages: %v", err)
+	}
+
+	getText := func(msg *schema.AgenticMessage) string {
+		if len(msg.ContentBlocks) > 0 {
+			if msg.ContentBlocks[0].UserInputText != nil {
+				return msg.ContentBlocks[0].UserInputText.Text
+			}
+			if msg.ContentBlocks[0].AssistantGenText != nil {
+				return msg.ContentBlocks[0].AssistantGenText.Text
+			}
+		}
+		return ""
+	}
+
+	var sysCount int
+	var hasUser, hasAssistant bool
+	for _, msg := range savedMsgs {
+		if msg.Role == schema.AgenticRoleTypeSystem {
+			sysCount++
+		}
+		switch msg.Role {
+		case schema.AgenticRoleTypeUser:
+			if getText(msg) == "hello" {
+				hasUser = true
+			}
+		case schema.AgenticRoleTypeAssistant:
+			if getText(msg) == "hi there" {
+				hasAssistant = true
+			}
+		}
+	}
+
+	if sysCount != 0 {
+		t.Errorf("expected 0 system-role messages persisted, got %d", sysCount)
+	}
+	if !hasUser {
+		t.Errorf("expected persisted turn to contain the user message")
+	}
+	if !hasAssistant {
+		t.Errorf("expected persisted turn to contain the assistant message")
+	}
+
+	// --- Replay assertion (Task 2.2): second turn must inject no system message.
+	userMsg2 := schema.UserAgenticMessage("follow up")
+	runCtx2 := &adk.ChatModelAgentContext[*schema.AgenticMessage]{
+		AgentInput: &adk.TypedAgentInput[*schema.AgenticMessage]{
+			Messages: []*schema.AgenticMessage{userMsg2},
+		},
+	}
+	_, runCtx2, err = h.BeforeAgent(context.Background(), runCtx2)
+	if err != nil {
+		t.Fatalf("BeforeAgent turn 2 failed: %v", err)
+	}
+
+	for _, msg := range runCtx2.AgentInput.Messages {
+		if msg.Role == schema.AgenticRoleTypeSystem {
+			t.Errorf("replay injected a system-role message from history: %q", getText(msg))
+		}
+	}
+}

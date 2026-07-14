@@ -2,6 +2,8 @@ package browser_test
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/oniharnantyo/onclaw/internal/agent/tools"
@@ -101,3 +103,89 @@ func (d *dummyToolGroupCfg) GetConfig(ctx context.Context, category string) (str
 
 // Import browser package to run side effects
 var _ = browser.Mgr
+
+// TestBrowserNavigateNoActivePageReturnsObservation verifies that calling a
+// browser op with no active page/engine returns a recoverable observation (nil
+// error) so the agent can start a browser, rather than terminating the turn.
+func TestBrowserNavigateNoActivePageReturnsObservation(t *testing.T) {
+	scope := &tools.Scope{Workspace: "test_ws", ToolGroupCfg: &dummyToolGroupCfg{}}
+	var navTool tools.Tool
+	for _, tl := range tools.GetRegistry() {
+		if tl.Name() == "browser_navigate" {
+			navTool = tl
+			break
+		}
+	}
+	if navTool == nil {
+		t.Fatal("browser_navigate tool not registered")
+	}
+	invokable := navTool.Build(scope)
+	res, err := invokable.InvokableRun(context.Background(), `{"url":"http://example.com"}`)
+	if err != nil {
+		t.Fatalf("expected nil error (recoverable observation), got %v", err)
+	}
+	if !strings.Contains(res, "could not complete") {
+		t.Errorf("expected recoverable observation for no active page, got %q", res)
+	}
+}
+
+// TestBrowserNavigate_ContextCancelledPropagated verifies context cancellation
+// is returned as a fatal error and not converted to an observation.
+func TestBrowserNavigate_ContextCancelledPropagated(t *testing.T) {
+	scope := &tools.Scope{Workspace: "test_ws", ToolGroupCfg: &dummyToolGroupCfg{}}
+	var navTool tools.Tool
+	for _, tl := range tools.GetRegistry() {
+		if tl.Name() == "browser_navigate" {
+			navTool = tl
+			break
+		}
+	}
+	if navTool == nil {
+		t.Fatal("browser_navigate tool not registered")
+	}
+	invokable := navTool.Build(scope)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := invokable.InvokableRun(ctx, `{"url":"http://example.com"}`)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled to propagate, got %v", err)
+	}
+}
+
+// TestBrowserAllOpsNoFatalError exercises every browser op and asserts the
+// core contract: no op ever returns a fatal error that would terminate the
+// agent turn. On the happy path each op returns a nil error (whether a success
+// result or a recoverable observation); and with a cancelled context the
+// cancellation is propagated (covering each op's ctx.Err guard).
+func TestBrowserAllOpsNoFatalError(t *testing.T) {
+	scope := &tools.Scope{Workspace: "test_ws", ToolGroupCfg: &dummyToolGroupCfg{}}
+	argsByTool := map[string]string{
+		"browser_navigate": `{"url":"http://example.com"}`,
+		"browser_act":      `{"kind":"click","ref":"e1"}`,
+	}
+	for _, tl := range tools.GetRegistry() {
+		if tl.Category() != "Browser" {
+			continue
+		}
+		inv := tl.Build(scope)
+		args := argsByTool[tl.Name()]
+		if args == "" {
+			args = "{}"
+		}
+		// Happy path: must never return a fatal error.
+		res, err := inv.InvokableRun(context.Background(), args)
+		if err != nil {
+			t.Errorf("%s: expected nil error (never fatal), got %v", tl.Name(), err)
+			continue
+		}
+		_ = res
+		// Cancelled path: cancellation must propagate (covers the guard branch).
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, errC := inv.InvokableRun(ctx, args)
+		if !errors.Is(errC, context.Canceled) {
+			t.Errorf("%s: expected context.Canceled to propagate, got %v", tl.Name(), errC)
+		}
+	}
+}

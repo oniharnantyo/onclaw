@@ -29,8 +29,11 @@ func (k *KGSearchTool) Build(scope *Scope) tool.InvokableTool {
 		if scope.KGStore == nil {
 			return "Knowledge graph is not available.", nil
 		}
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		if input.SeedEntityName == "" {
-			return "", fmt.Errorf("seed_entity_name is required")
+			return "seed_entity_name is required", nil
 		}
 		maxDepth := input.MaxDepth
 		if maxDepth <= 0 && scope.KGTraversalDepth > 0 {

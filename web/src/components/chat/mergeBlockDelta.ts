@@ -28,15 +28,28 @@ export function mergeBlockDelta(target: ContentBlock, delta: ContentBlock): Cont
   }
 
   const argFields: (keyof ContentBlock)[] = ['function_tool_call', 'mcp_tool_call', 'server_tool_call'];
+  // Identity fields are only carried by the first streaming fragment of a tool
+  // call; later fragments (carrying the rest of `arguments`) arrive with these
+  // fields empty. A naive spread would overwrite the real name/call_id with the
+  // empty value, so we keep whichever side has a non-empty identity value.
+  const identityKeys = ['name', 'call_id', 'id'];
   for (const field of argFields) {
     const deltaTool = delta[field] as { arguments?: string; [k: string]: unknown } | undefined;
     if (!deltaTool) continue;
     const targetTool = (target[field] as { arguments?: string; [k: string]: unknown } | undefined) ?? {};
-    (merged as unknown as Record<string, unknown>)[field] = {
+    const mergedTool: Record<string, unknown> = {
       ...targetTool,
       ...deltaTool,
       arguments: (targetTool.arguments ?? '') + (deltaTool.arguments ?? ''),
     };
+    for (const key of identityKeys) {
+      const tVal = (targetTool as Record<string, unknown>)[key];
+      const dVal = (deltaTool as Record<string, unknown>)[key];
+      if ((dVal === undefined || dVal === '') && tVal) {
+        mergedTool[key] = tVal;
+      }
+    }
+    (merged as unknown as Record<string, unknown>)[field] = mergedTool;
   }
 
   return merged;

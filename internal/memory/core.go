@@ -9,6 +9,18 @@ import (
 	"strings"
 )
 
+// Sentinel errors classify expected, recoverable MEMORY.md write conditions.
+// The agent tool converts these into recoverable observations instead of
+// fatal tool errors; genuine I/O failures (read/write of MEMORY.md) remain
+// unwrapped and stay fatal so real infrastructure breakage is not masked.
+var (
+	ErrTargetNotFound    = errors.New("memory target not found")
+	ErrTargetNotUnique   = errors.New("memory target not unique")
+	ErrTargetRequired    = errors.New("memory target required")
+	ErrUnknownOp         = errors.New("unknown memory operation")
+	ErrCharLimitExceeded = errors.New("memory character limit exceeded")
+)
+
 // FileCoreStore implements CoreStore, reading and writing MEMORY.md in the agent workspace.
 type FileCoreStore struct {
 	CharLimit int
@@ -69,35 +81,35 @@ func (s *FileCoreStore) WriteCore(ctx context.Context, workspace string, op stri
 		}
 	case "replace":
 		if target == "" {
-			return "", fmt.Errorf("replace operation requires a target string")
+			return "", fmt.Errorf("%w: replace operation requires a target string", ErrTargetRequired)
 		}
 		count := strings.Count(existing, target)
 		if count == 0 {
-			return "", fmt.Errorf("target string not found in MEMORY.md: %q", target)
+			return "", fmt.Errorf("%w: target string not found in MEMORY.md: %q", ErrTargetNotFound, target)
 		}
 		if count > 1 {
-			return "", fmt.Errorf("target string is not unique in MEMORY.md (found %d occurrences): %q", count, target)
+			return "", fmt.Errorf("%w: target string is not unique in MEMORY.md (found %d occurrences): %q", ErrTargetNotUnique, count, target)
 		}
 		newContent = strings.Replace(existing, target, content, 1)
 	case "remove":
 		if target == "" {
-			return "", fmt.Errorf("remove operation requires a target string")
+			return "", fmt.Errorf("%w: remove operation requires a target string", ErrTargetRequired)
 		}
 		count := strings.Count(existing, target)
 		if count == 0 {
-			return "", fmt.Errorf("target string not found in MEMORY.md: %q", target)
+			return "", fmt.Errorf("%w: target string not found in MEMORY.md: %q", ErrTargetNotFound, target)
 		}
 		if count > 1 {
-			return "", fmt.Errorf("target string is not unique in MEMORY.md (found %d occurrences): %q", count, target)
+			return "", fmt.Errorf("%w: target string is not unique in MEMORY.md (found %d occurrences): %q", ErrTargetNotUnique, count, target)
 		}
 		newContent = strings.Replace(existing, target, "", 1)
 	default:
-		return "", fmt.Errorf("unknown operation: %q", op)
+		return "", fmt.Errorf("%w: unknown operation: %q", ErrUnknownOp, op)
 	}
 
 	// Verify character cap limit
 	if len(newContent) > s.CharLimit {
-		return "", fmt.Errorf("write would exceed character limit of %d (result would be %d characters). Please consolidate or delete old memories first.", s.CharLimit, len(newContent))
+		return "", fmt.Errorf("%w: write would exceed character limit of %d (result would be %d characters). Please consolidate or delete old memories first.", ErrCharLimitExceeded, s.CharLimit, len(newContent))
 	}
 
 	// Ensure parent directory exists

@@ -195,3 +195,134 @@ type roundTripFetcher func(ctx context.Context, url string, headers map[string]s
 func (f roundTripFetcher) Fetch(ctx context.Context, url string, headers map[string]string) (sysweb.FetchResult, error) {
 	return f(ctx, url, headers)
 }
+
+// TestWebFetchTool_TerminalFailureReturnsObservation verifies that when both
+// the preferred provider and the http fallback fail, web_fetch returns a
+// recoverable observation (nil error) rather than a fatal error.
+func TestWebFetchTool_TerminalFailureReturnsObservation(t *testing.T) {
+	origBoom, _ := sysweb.LookupFetcher("boom")
+	origHTTP, _ := sysweb.LookupFetcher("http")
+
+	sysweb.RegisterFetcher("boom", func(cfg sysweb.Config, resolver secrets.SecretResolver) (sysweb.Fetcher, error) {
+		return roundTripFetcher(func(ctx context.Context, url string, headers map[string]string) (sysweb.FetchResult, error) {
+			return sysweb.FetchResult{}, errors.New("boom provider failed")
+		}), nil
+	})
+	// Override the http fallback so it also fails deterministically.
+	sysweb.RegisterFetcher("http", func(cfg sysweb.Config, resolver secrets.SecretResolver) (sysweb.Fetcher, error) {
+		return roundTripFetcher(func(ctx context.Context, url string, headers map[string]string) (sysweb.FetchResult, error) {
+			return sysweb.FetchResult{}, errors.New("http fallback failed")
+		}), nil
+	})
+
+	defer func() {
+		if origBoom != nil {
+			sysweb.RegisterFetcher("boom", origBoom)
+		}
+		if origHTTP != nil {
+			sysweb.RegisterFetcher("http", origHTTP)
+		}
+	}()
+
+	var fetchTool tools.Tool
+	for _, tl := range tools.GetRegistry() {
+		if tl.Name() == "web_fetch" {
+			fetchTool = tl
+			break
+		}
+	}
+	if fetchTool == nil {
+		t.Fatal("web_fetch tool not registered")
+	}
+
+	scope := &tools.Scope{
+		Workspace:    "test_ws",
+		ToolGroupCfg: &dummyToolGroupCfg{config: `{"fetch_provider":"boom"}`},
+	}
+
+	invokable := fetchTool.Build(scope)
+	res, err := invokable.InvokableRun(context.Background(), `{"url": "http://unreachable.example.com"}`)
+	if err != nil {
+		t.Fatalf("expected nil error (recoverable observation), got %v", err)
+	}
+	if !strings.Contains(res, "web_fetch failed") {
+		t.Errorf("expected observation naming the failure, got %q", res)
+	}
+}
+
+// TestWebFetchTool_ContextCancelledPropagated verifies context cancellation
+// is returned as a fatal error and not converted to an observation.
+func TestWebFetchTool_ContextCancelledPropagated(t *testing.T) {
+	var fetchTool tools.Tool
+	for _, tl := range tools.GetRegistry() {
+		if tl.Name() == "web_fetch" {
+			fetchTool = tl
+			break
+		}
+	}
+	if fetchTool == nil {
+		t.Fatal("web_fetch tool not registered")
+	}
+	scope := &tools.Scope{Workspace: "test_ws", ToolGroupCfg: &dummyToolGroupCfg{config: `{"fetch_provider":"http"}`}}
+	invokable := fetchTool.Build(scope)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := invokable.InvokableRun(ctx, `{"url": "http://example.com"}`)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled to propagate, got %v", err)
+	}
+}
+
+// TestWebSearchTool_TerminalFailureReturnsObservation verifies that when both
+// the preferred provider and the DuckDuckGo fallback fail, web_search returns
+// a recoverable observation (nil error) rather than a fatal error.
+func TestWebSearchTool_TerminalFailureReturnsObservation(t *testing.T) {
+	origBoom, _ := sysweb.LookupSearcher("boom")
+	origDDG, _ := sysweb.LookupSearcher("duckduckgo")
+
+	sysweb.RegisterSearcher("boom", func(cfg sysweb.Config, resolver secrets.SecretResolver) (sysweb.Searcher, error) {
+		return roundTripSearcher(func(ctx context.Context, query string, limit int) ([]sysweb.SearchResult, error) {
+			return nil, errors.New("boom provider failed")
+		}), nil
+	})
+	sysweb.RegisterSearcher("duckduckgo", func(cfg sysweb.Config, resolver secrets.SecretResolver) (sysweb.Searcher, error) {
+		return roundTripSearcher(func(ctx context.Context, query string, limit int) ([]sysweb.SearchResult, error) {
+			return nil, errors.New("ddg fallback failed")
+		}), nil
+	})
+
+	defer func() {
+		if origBoom != nil {
+			sysweb.RegisterSearcher("boom", origBoom)
+		}
+		if origDDG != nil {
+			sysweb.RegisterSearcher("duckduckgo", origDDG)
+		}
+	}()
+
+	var searchTool tools.Tool
+	for _, tl := range tools.GetRegistry() {
+		if tl.Name() == "web_search" {
+			searchTool = tl
+			break
+		}
+	}
+	if searchTool == nil {
+		t.Fatal("web_search tool not registered")
+	}
+
+	scope := &tools.Scope{
+		Workspace:    "test_ws",
+		ToolGroupCfg: &dummyToolGroupCfg{config: `{"search_provider":"boom"}`},
+	}
+
+	invokable := searchTool.Build(scope)
+	res, err := invokable.InvokableRun(context.Background(), `{"query": "golang"}`)
+	if err != nil {
+		t.Fatalf("expected nil error (recoverable observation), got %v", err)
+	}
+	if !strings.Contains(res, "web_search failed") {
+		t.Errorf("expected observation naming the failure, got %q", res)
+	}
+}

@@ -285,6 +285,13 @@ func (h *HistoryMiddleware) accumulateNewMessages(stateMessages []*schema.Agenti
 		bufferedSet[bm] = struct{}{}
 	}
 	for _, msg := range stateMessages {
+		// System messages are re-injected by the framework each turn (the Eino
+		// Instruction plus the MemoryMiddleware's "## CURATED LONG-TERM MEMORY"
+		// block), so they must never be persisted. Persisting them causes 1+N
+		// duplication on replay: N persisted copies plus the fresh framework copy.
+		if msg.Role == schema.AgenticRoleTypeSystem {
+			continue
+		}
 		if msg.Extra == nil {
 			msg.Extra = make(map[string]interface{})
 		}

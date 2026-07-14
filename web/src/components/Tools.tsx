@@ -466,6 +466,20 @@ export default function Tools({
 		}
 	};
 
+	// Truncate long tool descriptions for compact display (~200 chars).
+	// If the first 200 chars still contain a period, cut at that period
+	// (removing everything after it) so we keep a complete sentence —
+	// no ellipsis needed since the sentence ends naturally there.
+	const truncateDesc = (s: string, max = 200) => {
+		if (s.length <= max) return s;
+		const head = s.slice(0, max);
+		const dot = head.indexOf('.');
+		if (dot !== -1) {
+			return head.slice(0, dot + 1).trimEnd();
+		}
+		return `${head.trimEnd()}…`;
+	};
+
 	// Helper to get nice category icons or descriptions if needed
 	const getCategoryDescription = (cat: string) => {
 		switch (cat.toLowerCase()) {
@@ -595,8 +609,8 @@ export default function Tools({
 														{t.name}
 													</span>
 													{t.description && (
-														<span style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px', lineHeight: '1.4' }}>
-															{t.description}
+														<span style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px', lineHeight: '1.4' }} title={t.description}>
+															{truncateDesc(t.description)}
 														</span>
 													)}
 												</div>

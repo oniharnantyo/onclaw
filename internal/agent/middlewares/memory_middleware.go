@@ -15,17 +15,17 @@ import (
 // MemoryMiddleware handles curated core memory injection and episodic memory extraction.
 type MemoryMiddleware struct {
 	adk.TypedBaseChatModelAgentMiddleware[*schema.AgenticMessage]
-	CoreStore        memory.CoreStore
-	MemoryStore      memory.MemoryStore
-	Embedder         *memory.Embedder
-	KVStore          store.KVStore
-	ChatModel        model.AgenticModel
-	ReviewModel      model.AgenticModel
-	Workspace        string
-	AgentName        string
-	ConversationID   int64
-	CharLimit        int
-	SkipSecurityScan bool
+	CoreStore         memory.CoreStore
+	MemoryStore       memory.MemoryStore
+	Embedder          *memory.Embedder
+	KVStore           store.KVStore
+	ChatModel         model.AgenticModel
+	ReviewModel       model.AgenticModel
+	Workspace         string
+	AgentName         string
+	ConversationID    int64
+	CharLimit         int
+	SkipSecurityScan  bool
 	ExtractionEnabled bool
 
 	EpisodicStore   memory.EpisodicStore
@@ -63,20 +63,20 @@ func NewMemoryMiddleware(
 		episodicTTLDays = 90
 	}
 	return &MemoryMiddleware{
-		CoreStore:       coreStore,
-		MemoryStore:     memoryStore,
-		Embedder:        embedder,
-		KVStore:         kvStore,
-		ChatModel:       chatModel,
-		ReviewModel:     reviewModel,
-		Workspace:       workspace,
-		AgentName:       agentName,
-		ConversationID:  conversationID,
-		CharLimit:       charLimit,
-		EpisodicStore:   episodicStore,
-		Dreamer:         dreamer,
-		EpisodicTTLDays: episodicTTLDays,
-		KGStore:         kgStore,
+		CoreStore:         coreStore,
+		MemoryStore:       memoryStore,
+		Embedder:          embedder,
+		KVStore:           kvStore,
+		ChatModel:         chatModel,
+		ReviewModel:       reviewModel,
+		Workspace:         workspace,
+		AgentName:         agentName,
+		ConversationID:    conversationID,
+		CharLimit:         charLimit,
+		EpisodicStore:     episodicStore,
+		Dreamer:           dreamer,
+		EpisodicTTLDays:   episodicTTLDays,
+		KGStore:           kgStore,
 		ExtractionEnabled: true, // Default to true, overridden in AssembleAgent
 	}
 }

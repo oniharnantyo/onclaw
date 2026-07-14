@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -203,6 +204,9 @@ func (m *memoryTool) Build(scope *Scope) tool.InvokableTool {
 		}
 
 		// Direct write path (write_approval disabled)
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		limit := scope.CharLimit
 		if limit <= 0 {
 			limit = 3200
@@ -210,6 +214,16 @@ func (m *memoryTool) Build(scope *Scope) tool.InvokableTool {
 		coreStore := memory.NewFileCoreStore(limit)
 		newContent, err := coreStore.WriteCore(ctx, scope.Workspace, input.Op, input.Target, input.Content)
 		if err != nil {
+			// Expected conditions (target not found/unique/required, unknown
+			// op, char limit) are recoverable observations. Genuine I/O
+			// failures (read/write of MEMORY.md) propagate as fatal errors.
+			if errors.Is(err, memory.ErrTargetNotFound) ||
+				errors.Is(err, memory.ErrTargetNotUnique) ||
+				errors.Is(err, memory.ErrTargetRequired) ||
+				errors.Is(err, memory.ErrUnknownOp) ||
+				errors.Is(err, memory.ErrCharLimitExceeded) {
+				return err.Error(), nil
+			}
 			return "", err
 		}
 		return fmt.Sprintf("Successfully updated MEMORY.md. New memory state:\n%s", newContent), nil

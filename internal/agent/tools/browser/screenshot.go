@@ -35,9 +35,12 @@ type ScreenshotInput struct {
 
 func (t *screenshotTool) Build(scope *tools.Scope) tool.InvokableTool {
 	inv, err := utils.InferTool(t.Name(), t.Desc(), func(ctx context.Context, input *ScreenshotInput) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		page, err := Mgr.GetActivePage()
 		if err != nil {
-			return "", err
+			return fmt.Sprintf("%s could not complete: %s", "browser_screenshot", err.Error()), nil
 		}
 
 		opts := sysbrowser.ShotOpts{
@@ -46,7 +49,7 @@ func (t *screenshotTool) Build(scope *tools.Scope) tool.InvokableTool {
 
 		data, err := page.Screenshot(ctx, opts)
 		if err != nil {
-			return "", err
+			return fmt.Sprintf("%s could not complete: %s", "browser_screenshot", err.Error()), nil
 		}
 
 		encoded := base64.StdEncoding.EncodeToString(data)

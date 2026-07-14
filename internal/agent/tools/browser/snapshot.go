@@ -32,13 +32,16 @@ type SnapshotInput struct{}
 
 func (t *snapshotTool) Build(scope *tools.Scope) tool.InvokableTool {
 	inv, err := utils.InferTool(t.Name(), t.Desc(), func(ctx context.Context, input *SnapshotInput) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		page, err := Mgr.GetActivePage()
 		if err != nil {
-			return "", err
+			return fmt.Sprintf("%s could not complete: %s", "browser_snapshot", err.Error()), nil
 		}
 		snap, err := page.Snapshot(ctx, sysbrowser.SnapshotOpts{})
 		if err != nil {
-			return "", err
+			return fmt.Sprintf("%s could not complete: %s", "browser_snapshot", err.Error()), nil
 		}
 
 		res := fmt.Sprintf("--- ACCESSIBILITY TREE ---\n%s\n\n--- PAGE TEXT ---\n%s", snap.AXTree, snap.Text)

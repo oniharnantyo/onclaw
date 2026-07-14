@@ -31,6 +31,9 @@ type StatusInput struct{}
 
 func (t *statusTool) Build(scope *tools.Scope) tool.InvokableTool {
 	inv, err := utils.InferTool(t.Name(), t.Desc(), func(ctx context.Context, input *StatusInput) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		started := Mgr.IsStarted()
 		if !started {
 			return "Browser engine is not running", nil
@@ -38,7 +41,7 @@ func (t *statusTool) Build(scope *tools.Scope) tool.InvokableTool {
 
 		list, err := Mgr.ListPages(ctx)
 		if err != nil {
-			return "", err
+			return fmt.Sprintf("%s could not complete: %s", "browser_status", err.Error()), nil
 		}
 
 		activeTitle := "None"

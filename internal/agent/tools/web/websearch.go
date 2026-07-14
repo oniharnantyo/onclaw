@@ -42,6 +42,10 @@ func (t *webSearchTool) Build(scope *tools.Scope) tool.InvokableTool {
 			rawCfg, err = scope.ToolGroupCfg.GetConfig(ctx, "Web")
 		}
 
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+
 		cfg, err := sysweb.ParseConfig(rawCfg)
 		if err != nil {
 			// Degrading gracefully to defaults
@@ -76,11 +80,11 @@ func (t *webSearchTool) Build(scope *tools.Scope) tool.InvokableTool {
 			fallbackSearcher, _ := fallbackFactory(cfg, scope.SecretResolver)
 			results, err = fallbackSearcher.Search(ctx, input.Query, input.Limit)
 			if err != nil {
-				return "", fmt.Errorf("fallback DuckDuckGo search also failed: %w", err)
+				return fmt.Sprintf("web_search failed for %q: %s", input.Query, err.Error()), nil
 			}
 		} else if originalErr != nil {
 			// DuckDuckGo was preferred and failed
-			return "", originalErr
+			return fmt.Sprintf("web_search failed for %q: %s", input.Query, originalErr.Error()), nil
 		}
 
 		var sb strings.Builder

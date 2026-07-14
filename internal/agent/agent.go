@@ -228,6 +228,11 @@ func AssembleAgent(
 		return nil, fmt.Errorf("create filesystem middleware: %w", err)
 	}
 	fsToggle := middlewares.NewFSToggleMiddleware(enabledChecker)
+	// Converts expected filesystem failures (path blocked, not found,
+	// ambiguous edit, invalid pattern) into recoverable observations so the
+	// agent turn continues. Must run after fsToggle so disabled tools stay
+	// disabled rather than being "recovered".
+	fsError := middlewares.NewFSErrorMiddleware()
 
 	// 3. Assemble summarization middleware
 	// We trigger when total tokens exceed 80% of context window
@@ -310,6 +315,7 @@ func AssembleAgent(
 		historyMiddleware,
 		fsMiddleware,
 		fsToggle,
+		fsError,
 	}
 	if memoryStore != nil {
 		// Curated Core Memory toggle

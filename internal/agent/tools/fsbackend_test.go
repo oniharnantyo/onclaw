@@ -2,6 +2,8 @@ package tools_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -215,4 +217,64 @@ func contains(ss []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// TestFSBackendSentinelWrapping verifies a sentinel survives Eino-style %w
+// wrapping (the Eino invokable_func wraps endpoint errors) and still matches
+// errors.Is, which the FSErrorMiddleware relies on.
+func TestFSBackendSentinelWrapping(t *testing.T) {
+	wrapped := fmt.Errorf("invokable func: %w", tools.ErrFileNotFound)
+	if !errors.Is(wrapped, tools.ErrFileNotFound) {
+		t.Error("expected errors.Is to match through Eino-style %w wrapping")
+	}
+	wrappedCtx := fmt.Errorf("inner: %w", tools.ErrEditNotUnique)
+	if !errors.Is(wrappedCtx, tools.ErrEditNotUnique) {
+		t.Error("expected errors.Is to match nested sentinel")
+	}
+}
+
+// TestFSBackendSentinelsMatch verifies each expected condition returns the
+// correct classified sentinel so the middleware can convert it to an
+// observation. Genuine infrastructure failures must NOT match.
+func TestFSBackendSentinelsMatch(t *testing.T) {
+	b, ws := newTestBackend(t)
+	ctx := context.Background()
+
+	// Path traversal -> ErrPathOutsideWorkspace
+	if err := b.Write(ctx, &filesystem.WriteRequest{FilePath: "../../etc/passwd", Content: "x"}); err == nil || !errors.Is(err, tools.ErrPathOutsideWorkspace) {
+		t.Errorf("expected ErrPathOutsideWorkspace for traversal, got %v", err)
+	}
+
+	// Not found -> ErrFileNotFound
+	if _, err := b.Read(ctx, &filesystem.ReadRequest{FilePath: "nope.txt"}); err == nil || !errors.Is(err, tools.ErrFileNotFound) {
+		t.Errorf("expected ErrFileNotFound, got %v", err)
+	}
+
+	// Edit missing -> ErrEditOldStringMissing
+	if err := b.Write(ctx, &filesystem.WriteRequest{FilePath: "e.txt", Content: "a"}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := b.Edit(ctx, &filesystem.EditRequest{FilePath: "e.txt", OldString: "zzz", NewString: "b"}); err == nil || !errors.Is(err, tools.ErrEditOldStringMissing) {
+		t.Errorf("expected ErrEditOldStringMissing, got %v", err)
+	}
+	// Edit non-unique -> ErrEditNotUnique
+	if err := b.Write(ctx, &filesystem.WriteRequest{FilePath: "u.txt", Content: "x\nx\n"}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := b.Edit(ctx, &filesystem.EditRequest{FilePath: "u.txt", OldString: "x", NewString: "y"}); err == nil || !errors.Is(err, tools.ErrEditNotUnique) {
+		t.Errorf("expected ErrEditNotUnique, got %v", err)
+	}
+
+	// Grep empty pattern -> ErrEmptyPattern
+	if _, err := b.GrepRaw(ctx, &filesystem.GrepRequest{Pattern: "", Path: ws}); err == nil || !errors.Is(err, tools.ErrEmptyPattern) {
+		t.Errorf("expected ErrEmptyPattern, got %v", err)
+	}
+	// Grep invalid regex -> ErrInvalidRegex
+	if _, err := b.GrepRaw(ctx, &filesystem.GrepRequest{Pattern: "[", Path: ws}); err == nil || !errors.Is(err, tools.ErrInvalidRegex) {
+		t.Errorf("expected ErrInvalidRegex, got %v", err)
+	}
+	// Glob invalid -> ErrInvalidGlob
+	if _, err := b.GlobInfo(ctx, &filesystem.GlobInfoRequest{Pattern: "[", Path: ws}); err == nil || !errors.Is(err, tools.ErrInvalidGlob) {
+		t.Errorf("expected ErrInvalidGlob, got %v", err)
+	}
 }

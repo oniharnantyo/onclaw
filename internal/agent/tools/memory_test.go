@@ -296,3 +296,60 @@ func TestMemoryCoreTool(t *testing.T) {
 		t.Errorf("unexpected output after replace: %q", res)
 	}
 }
+
+// TestMemoryCoreTool_DeclineReturnsObservation verifies expected MEMORY.md
+// write failures (target not found, unknown op, char limit) surface as
+// recoverable tool-result observations (nil error) rather than fatal errors.
+func TestMemoryCoreTool_DeclineReturnsObservation(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "onclaw-memory-decline-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	scope := &tools.Scope{Workspace: tmpDir, CharLimit: 100}
+	reg := tools.GetRegistry()
+	var memTool tools.Tool
+	for _, tl := range reg {
+		if tl.Name() == "memory" {
+			memTool = tl
+			break
+		}
+	}
+	invokable := memTool.Build(scope)
+
+	// replace with non-existent target -> recoverable observation
+	args, _ := json.Marshal(map[string]interface{}{"op": "replace", "target": "does-not-exist", "content": "x"})
+	res, err := invokable.InvokableRun(context.Background(), string(args))
+	if err != nil {
+		t.Fatalf("expected nil error (recoverable observation), got %v", err)
+	}
+	if !strings.Contains(res, "not found") {
+		t.Errorf("expected 'not found' observation, got %q", res)
+	}
+
+	// unknown op -> recoverable observation
+	argsU, _ := json.Marshal(map[string]interface{}{"op": "frobnicate"})
+	resU, errU := invokable.InvokableRun(context.Background(), string(argsU))
+	if errU != nil {
+		t.Fatalf("expected nil error for unknown op, got %v", errU)
+	}
+	if !strings.Contains(resU, "unknown operation") {
+		t.Errorf("expected 'unknown operation' observation, got %q", resU)
+	}
+
+	// char limit exceeded -> recoverable observation with consolidation guidance
+	limitScope := &tools.Scope{Workspace: tmpDir, CharLimit: 10}
+	limitInv := memTool.Build(limitScope)
+	argsC, _ := json.Marshal(map[string]interface{}{"op": "add", "content": "this memory is far too long for the tiny limit"})
+	resC, errC := limitInv.InvokableRun(context.Background(), string(argsC))
+	if errC != nil {
+		t.Fatalf("expected nil error for char-limit decline, got %v", errC)
+	}
+	if !strings.Contains(resC, "character limit") {
+		t.Errorf("expected char-limit observation, got %q", resC)
+	}
+	if !strings.Contains(resC, "consolidate or delete") {
+		t.Errorf("expected consolidation guidance in observation, got %q", resC)
+	}
+}

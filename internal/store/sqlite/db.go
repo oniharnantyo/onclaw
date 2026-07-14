@@ -448,6 +448,23 @@ func Migrate(db *sql.DB) error {
 		}
 	}
 
+	// Prune orphaned tool rows left behind by renames. The seed above is
+	// add-only (INSERT OR IGNORE), so when a tool was renamed
+	// (readfile→read_file, writefile→write_file, editfile→edit_file,
+	// listdir/list_dir→ls, shell→execute during filesystem-middleware
+	// adoption) existing databases keep the dead row and the UI shows both
+	// names. Delete every legacy name wherever it lingers; each is a
+	// no-op if the name is absent.
+	for _, orphan := range []string{
+		"readfile", "writefile", "editfile",
+		"listdir", "list_dir",
+		"shell",
+	} {
+		if _, err := db.Exec(`DELETE FROM tool_registry WHERE name = ?`, orphan); err != nil {
+			return fmt.Errorf("prune orphan tool %s: %w", orphan, err)
+		}
+	}
+
 	return nil
 }
 
