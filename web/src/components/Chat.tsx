@@ -1,6 +1,6 @@
 import { useRef, Fragment } from 'react';
 import { Cpu, Code, PaperPlaneTilt, FileText, X, Plus, Stop } from '@phosphor-icons/react';
-import { useChat, useComposer } from './ChatProvider';
+import { useChat, useComposer, isContextOverLimit } from './ChatProvider';
 import { Thread } from './primitives/Thread';
 import { ThreadList } from './primitives/ThreadList';
 import { Message } from './primitives/Message';
@@ -17,7 +17,9 @@ import {
   ImageBlock,
   FileBlock,
   UnknownBlock,
-  pickToolRenderer
+  pickToolRenderer,
+  CompactionMarker,
+  shouldRenderCompactionMarker
 } from './chat/Renderers';
 import type { ContentBlock, Conversation } from '../types/chat';
 
@@ -177,6 +179,7 @@ function ContextMeter() {
     return null;
   }
 
+  const contextOverLimit = isContextOverLimit(contextWindow, contextUsed);
   const percentage = Math.min(100, Math.max(0, (contextUsed / contextWindow) * 100));
 
   const formatTokens = (n: number) => {
@@ -187,16 +190,35 @@ function ContextMeter() {
   };
 
   return (
-    <div className="context-meter" title={`Context window usage: ${contextUsed} / ${contextWindow} tokens (${percentage.toFixed(1)}%)`}>
+    <div
+      className={`context-meter ${contextOverLimit ? 'over' : ''}`}
+      title={`Context window usage: ${contextUsed} / ${contextWindow} tokens (${percentage.toFixed(1)}%)${contextOverLimit ? ' — exceeded' : ''}`}
+    >
       <span className="context-meter-label">
         {formatTokens(contextUsed)} / {formatTokens(contextWindow)}
       </span>
       <div className="context-meter-track">
-        <div 
-          className="context-meter-fill" 
-          style={{ width: `${percentage}%` }} 
+        <div
+          className="context-meter-fill"
+          style={{ width: `${percentage}%` }}
         />
       </div>
+      {state.contextCompactionAnnotated && (
+        <span
+          className="context-meter-annotation"
+          title="Context was compacted: earlier messages were summarized to free up the context window."
+        >
+          Context compacted
+        </span>
+      )}
+      {contextOverLimit && (
+        <span
+          className="context-meter-warning"
+          title="The conversation exceeds the context window. Reduce the conversation or raise max context tokens before sending."
+        >
+          Context limit exceeded
+        </span>
+      )}
     </div>
   );
 }
@@ -293,7 +315,17 @@ export default function Chat({ onNewConversation }: ChatProps) {
 
               {/* Messages list */}
               <Thread.Messages>
-                {(msg, idx) => (
+                {(msg, idx) => {
+                  // A flagged summary turn renders as a compaction boundary
+                  // marker, never as a normal assistant bubble.
+                  if (shouldRenderCompactionMarker(msg)) {
+                    return (
+                      <Fragment key={msg.id ?? idx}>
+                        <CompactionMarker message={msg} />
+                      </Fragment>
+                    );
+                  }
+                  return (
                   <Fragment key={msg.id ?? idx}>
                     <Message.Root
                       message={msg}
@@ -339,7 +371,8 @@ export default function Chat({ onNewConversation }: ChatProps) {
                     </div>
                   </Message.Root>
                 </Fragment>
-                )}
+                  );
+                }}
               </Thread.Messages>
             </Thread.Viewport>
 

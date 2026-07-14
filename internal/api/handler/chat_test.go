@@ -3,6 +3,7 @@ package handler_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -178,6 +179,24 @@ func TestChat_WithFileBlock(t *testing.T) {
 		if file == nil || file.Name != "file.txt" || file.Base64Data != "abc" || file.MIMEType != "text/plain" {
 			t.Errorf("unexpected file block content: %+v", file)
 		}
+	}
+}
+
+func TestChat_InputFloorExceedsSafetyLimit(t *testing.T) {
+	f := newHFixture(t)
+	// The resolve (assembly) path fails fast when the static tool/system floor
+	// exceeds the safety limit; the handler must translate that into a 400.
+	f.svc.SetResolve(func(ctx context.Context, agentName, providerName, modelName, reasoning, workspace string, convID int64) (service.AssembledAgent, string, error) {
+		return nil, "", fmt.Errorf("input floor 5000 tokens reaches safety limit 3700 tokens (context window 7400): %w", middlewares.ErrInputFloorExceedsSafetyLimit)
+	})
+
+	body, _ := json.Marshal(service.ChatInput{Prompt: "hello"})
+	req := makeReq(http.MethodPost, "/api/chat", string(body))
+	w := httptest.NewRecorder()
+	f.h.Chat(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for input floor error, got %d", w.Code)
 	}
 }
 

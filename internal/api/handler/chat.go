@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/oniharnantyo/onclaw/internal/agent/middlewares"
@@ -32,6 +33,12 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 
 	convID, assembledAgent, err := h.svc.Chat(ctx, req)
 	if err != nil {
+		// The input-safety floor guard fails fast before any model call; the
+		// client can fix the agent's tool set, so this is a 400 not a 500.
+		if errors.Is(err, middlewares.ErrInputFloorExceedsSafetyLimit) {
+			httpx.Error(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}

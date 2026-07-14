@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -217,6 +219,28 @@ func AssembleAgent(
 		builtTools = filteredTools
 	}
 
+	// 2a. Input-safety floor guard (task 10.3): fail fast if the fixed input
+	// floor (system instruction + tool schemas) would consume too much of the
+	// context window, leaving insufficient room for conversation history.
+	floorToolInfos := make([]*schema.ToolInfo, 0, len(builtTools))
+	for _, t := range builtTools {
+		info, err := t.Info(ctx)
+		if err != nil {
+			// A tool whose schema cannot be resolved is skipped; the model
+			// will not see it either.
+			continue
+		}
+		floorToolInfos = append(floorToolInfos, info)
+	}
+	floor, err := estimateFloorTokens(ctx, instruction, floorToolInfos)
+	if err != nil {
+		return nil, fmt.Errorf("input floor estimate: %w", err)
+	}
+	if floor >= middlewares.FloorSafetyLimit(contextWindow) {
+		return nil, fmt.Errorf("input floor %d tokens exceeds safety limit %d tokens for context window %d: %w",
+			floor, middlewares.FloorSafetyLimit(contextWindow), contextWindow, middlewares.ErrInputFloorExceedsSafetyLimit)
+	}
+
 	// 2b. Filesystem middleware (Eino) injects ls/read_file/write_file/edit_file/
 	// glob/grep/execute, backed by onclaw-controlled Backend/Shell. The toggle
 	// middleware enforces the tool_registry enable flag on those tools.
@@ -235,37 +259,39 @@ func AssembleAgent(
 	fsError := middlewares.NewFSErrorMiddleware()
 
 	// 3. Assemble summarization middleware
-	// We trigger when total tokens exceed 80% of context window
+	// We trigger when input tokens exceed 80% of the context window, or when the
+	// message count exceeds a bounded ceiling (ContextMessages backstop).
 	triggerTokens := summarizationTrigger(contextWindow)
 	// lastCompactionSummary captures the most recent compaction summary text
 	// so that EpisodicStore can reuse it instead of making a second LLM call.
 	// memMW is declared here so the summarization callback can store the
 	// compaction summary on it before the MemoryMiddleware is fully assembled.
 	var memMW *middlewares.MemoryMiddleware
-	summarizationMiddleware, err := summarization.NewTyped[*schema.AgenticMessage](ctx, &summarization.TypedConfig[*schema.AgenticMessage]{
-		Model: chatModel,
-		Trigger: &summarization.TriggerCondition{
-			ContextTokens: triggerTokens,
-		},
-		Callback: func(ctx context.Context, before adk.TypedChatModelAgentState[*schema.AgenticMessage], after adk.TypedChatModelAgentState[*schema.AgenticMessage]) error {
-			summary, err := handleSummarization(ctx, handleSummarizationParams{
-				Before:           before,
-				After:            after,
-				ChatModel:        chatModel,
-				MemoryStore:      memoryStore,
-				Embedder:         embedder,
-				KVStore:          kvStore,
-				AgentName:        agentConf.Name,
-				ConversationID:   conversationID,
-				ConvStore:        convStore,
-				SkipSecurityScan: !resolvedMem.SecurityScanEnabled,
-			})
-			if err == nil && summary != "" && memMW != nil {
-				memMW.CompactionSummary = summary
-			}
-			return err
-		},
-	})
+	// transcriptPath points at a per-conversation file holding the compacted
+	// range; Eino appends it to the summary so the agent can re-read exact
+	// prior detail. The callback writes the file after each compaction.
+	transcriptPath := buildTranscriptPath(workspace, conversationID)
+	sumCfg := buildSummarizationConfig(chatModel, triggerTokens, transcriptPath)
+	sumCfg.Callback = func(ctx context.Context, before adk.TypedChatModelAgentState[*schema.AgenticMessage], after adk.TypedChatModelAgentState[*schema.AgenticMessage]) error {
+		summary, err := handleSummarization(ctx, handleSummarizationParams{
+			Before:           before,
+			After:            after,
+			ChatModel:        chatModel,
+			MemoryStore:      memoryStore,
+			Embedder:         embedder,
+			KVStore:          kvStore,
+			AgentName:        agentConf.Name,
+			ConversationID:   conversationID,
+			ConvStore:        convStore,
+			TranscriptPath:   transcriptPath,
+			SkipSecurityScan: !resolvedMem.SecurityScanEnabled,
+		})
+		if err == nil && summary != "" && memMW != nil {
+			memMW.CompactionSummary = summary
+		}
+		return err
+	}
+	summarizationMiddleware, err := summarization.NewTyped[*schema.AgenticMessage](ctx, sumCfg)
 	if err != nil {
 		return nil, fmt.Errorf("create summarization middleware: %w", err)
 	}
@@ -310,7 +336,12 @@ func AssembleAgent(
 		return nil, fmt.Errorf("build skill middleware: %w", err)
 	}
 
+	// Input-safety preflight (task 10.5): runs first, before summarization,
+	// so a turn whose static tool/system floor exceeds the safety limit is
+	// rejected before any model call.
+	inputSafetyMiddleware := middlewares.NewInputSafetyMiddleware(estimateTokenCount(len(instruction)), contextWindow)
 	handlers := []adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage]{
+		inputSafetyMiddleware,
 		summarizationMiddleware,
 		historyMiddleware,
 		fsMiddleware,
@@ -395,6 +426,39 @@ func AssembleAgent(
 
 func summarizationTrigger(contextWindow int) int {
 	return int(float64(contextWindow) * 0.8)
+}
+
+// summarizationContextMessagesBackstop caps how many messages may accumulate
+// before summarization triggers regardless of token fill (design Decision 3,
+// task 4.2: default 200).
+const summarizationContextMessagesBackstop = 200
+
+// summarizationMaxRetries bounds how often compaction re-attempts a transient
+// summary-generation failure so it stays best-effort (design Decision 3).
+const summarizationMaxRetries = 2
+
+// buildSummarizationConfig assembles the Eino summarization TypedConfig:
+// input-token anchoring, a message-count backstop, bounded retries, and a
+// per-conversation transcript path. The Callback is attached by the caller
+// because it closes over the memory middleware.
+func buildSummarizationConfig(chatModel model.AgenticModel, triggerTokens int, transcriptPath string) *summarization.TypedConfig[*schema.AgenticMessage] {
+	maxRetries := summarizationMaxRetries
+	return &summarization.TypedConfig[*schema.AgenticMessage]{
+		Model: chatModel,
+		// Anchor the trigger on input (prompt) tokens, not total tokens, so a
+		// long prior completion does not fire compaction early.
+		TokenCounter: inputTokenCounter,
+		Trigger: &summarization.TriggerCondition{
+			ContextTokens:   triggerTokens,
+			ContextMessages: summarizationContextMessagesBackstop,
+		},
+		// Make compaction best-effort: a transient summary-generation failure
+		// is retried rather than failing the turn.
+		Retry: &summarization.TypedRetryConfig[*schema.AgenticMessage]{
+			MaxRetries: &maxRetries,
+		},
+		TranscriptFilePath: transcriptPath,
+	}
 }
 
 // Run executes a single turn of the agent and returns an EventIterator.
@@ -493,6 +557,7 @@ type handleSummarizationParams struct {
 	AgentName        string
 	ConversationID   int64
 	ConvStore        store.ConversationStore
+	TranscriptPath   string
 	SkipSecurityScan bool
 }
 
@@ -581,6 +646,25 @@ func handleSummarization(ctx context.Context, p handleSummarizationParams) (stri
 	err = p.ConvStore.SaveSummary(ctx, p.ConversationID, string(summaryMsgJSON), maxSeq)
 	if err != nil {
 		return "", fmt.Errorf("save summary: %w", err)
+	}
+
+	// Export the compacted range to a transcript file so the agent can re-read
+	// exact prior detail the summary abbreviates. Eino appends TranscriptFilePath
+	// to the summary; this writes the file the path points at. Runs inside the
+	// Eino summarization callback (after the summary is generated), so the file
+	// is not present at generation time, only on later turns.
+	if p.TranscriptPath != "" && maxSeq > 0 {
+		if transcript, terr := p.ConvStore.Transcript(ctx, p.ConversationID, maxSeq); terr == nil {
+			if mkErr := os.MkdirAll(filepath.Dir(p.TranscriptPath), 0700); mkErr == nil {
+				if wErr := os.WriteFile(p.TranscriptPath, []byte(transcript), 0600); wErr != nil {
+					slog.Warn("handleSummarization: failed to write transcript file", "path", p.TranscriptPath, "error", wErr)
+				}
+			} else {
+				slog.Warn("handleSummarization: failed to create transcript dir", "path", p.TranscriptPath, "error", mkErr)
+			}
+		} else {
+			slog.Warn("handleSummarization: failed to build transcript", "error", terr)
+		}
 	}
 
 	if summaryMsg.Extra == nil {

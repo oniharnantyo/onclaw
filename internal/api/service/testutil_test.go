@@ -11,7 +11,9 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/api/service"
 	"github.com/oniharnantyo/onclaw/internal/llm"
 	"github.com/oniharnantyo/onclaw/internal/llm/adapter"
+	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/secrets"
+	"github.com/oniharnantyo/onclaw/internal/skill"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
@@ -209,6 +211,34 @@ func (f *fakeConversationStore) SaveSummary(_ context.Context, _ int64, _ string
 }
 func (f *fakeConversationStore) ListConversations(_ context.Context) ([]*store.ConversationRow, error) {
 	return nil, nil
+}
+func (f *fakeConversationStore) GetCompactionMeta(_ context.Context, _ int64) (int, string, error) {
+	return 0, "", nil
+}
+func (f *fakeConversationStore) Transcript(_ context.Context, _ int64, _ int64) (string, error) {
+	return "", nil
+}
+
+// errConvStore wraps fakeConversationStore to inject per-method errors for
+// testing error paths in service methods that depend on the conversation store.
+type errConvStore struct {
+	fakeConversationStore
+	listTurnsErr      error
+	compactionMetaErr error
+}
+
+func (e *errConvStore) ListTurns(ctx context.Context, id int64) ([]*store.TurnRow, error) {
+	if e.listTurnsErr != nil {
+		return nil, e.listTurnsErr
+	}
+	return e.fakeConversationStore.ListTurns(ctx, id)
+}
+
+func (e *errConvStore) GetCompactionMeta(ctx context.Context, id int64) (int, string, error) {
+	if e.compactionMetaErr != nil {
+		return 0, "", e.compactionMetaErr
+	}
+	return e.fakeConversationStore.GetCompactionMeta(ctx, id)
 }
 
 // fakeMCPStore satisfies store.MCPServerStore.
@@ -475,6 +505,10 @@ type fixture struct {
 }
 
 func newFixture(t *testing.T) *fixture {
+	return newFixtureWithConv(t, &fakeConversationStore{})
+}
+
+func newFixtureWithConv(t *testing.T, conv store.ConversationStore) *fixture {
 	t.Helper()
 
 	ps := newFakeProfileStore()
@@ -497,7 +531,7 @@ func newFixture(t *testing.T) *fixture {
 	svc := service.New(
 		llmSvc,
 		kv,
-		&fakeConversationStore{},
+		conv,
 		nil,
 		nil,
 		log,
@@ -511,6 +545,194 @@ func newFixture(t *testing.T) *fixture {
 		tools,
 		cfg,
 	)
+
+	return &fixture{
+		profileStore: ps,
+		secretStore:  ss,
+		agentStore:   as,
+		kvStore:      kv,
+		mcpStore:     mcp,
+		hookStore:    hooks,
+		execStore:    execs,
+		toolStore:    tools,
+		cfgStore:     cfg,
+		llmSvc:       llmSvc,
+		svc:          svc,
+	}
+}
+
+// fakeSkillStore satisfies store.SkillStore.
+type fakeSkillStore struct {
+	mu     sync.RWMutex
+	skills map[string]*store.Skill
+}
+
+func newFakeSkillStore() *fakeSkillStore {
+	return &fakeSkillStore{skills: make(map[string]*store.Skill)}
+}
+
+func (f *fakeSkillStore) AddSkill(_ context.Context, s *store.Skill) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.skills[s.Name+":"+s.Scope] = s
+	return nil
+}
+
+func (f *fakeSkillStore) GetSkill(_ context.Context, name, scope string) (*store.Skill, error) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	s, ok := f.skills[name+":"+scope]
+	if !ok {
+		return nil, fmt.Errorf("skill %q not found", name)
+	}
+	sc := *s
+	return &sc, nil
+}
+
+func (f *fakeSkillStore) ListSkills(_ context.Context) ([]*store.Skill, error) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	var list []*store.Skill
+	for _, s := range f.skills {
+		sc := *s
+		list = append(list, &sc)
+	}
+	return list, nil
+}
+
+func (f *fakeSkillStore) ListSkillsByScope(_ context.Context, scope string) ([]*store.Skill, error) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	var list []*store.Skill
+	for _, s := range f.skills {
+		if s.Scope == scope {
+			sc := *s
+			list = append(list, &sc)
+		}
+	}
+	return list, nil
+}
+
+func (f *fakeSkillStore) UpdateSkill(_ context.Context, s *store.Skill) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.skills[s.Name+":"+s.Scope] = s
+	return nil
+}
+
+func (f *fakeSkillStore) RemoveSkill(_ context.Context, name, scope string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.skills[name+":"+scope]; !ok {
+		return fmt.Errorf("skill %q not found", name)
+	}
+	delete(f.skills, name+":"+scope)
+	return nil
+}
+
+// fakeStagedWriteStore satisfies memory.StagedWriteStore.
+type fakeStagedWriteStore struct {
+	mu     sync.RWMutex
+	writes map[int64]*memory.StagedWrite
+	nextID int64
+}
+
+func newFakeStagedWriteStore() *fakeStagedWriteStore {
+	return &fakeStagedWriteStore{writes: make(map[int64]*memory.StagedWrite)}
+}
+
+func (f *fakeStagedWriteStore) StageWrite(_ context.Context, agent, op, target, content string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nextID++
+	f.writes[f.nextID] = &memory.StagedWrite{ID: f.nextID, Agent: agent, Operation: op, Target: target, Content: content}
+	return f.nextID, nil
+}
+
+func (f *fakeStagedWriteStore) ListStaged(_ context.Context, _ string) ([]*memory.StagedWrite, error) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	var list []*memory.StagedWrite
+	for _, w := range f.writes {
+		wc := *w
+		list = append(list, &wc)
+	}
+	return list, nil
+}
+
+func (f *fakeStagedWriteStore) GetStagedWrite(_ context.Context, id int64) (*memory.StagedWrite, error) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	w, ok := f.writes[id]
+	if !ok {
+		return nil, fmt.Errorf("staged write %d not found", id)
+	}
+	wc := *w
+	return &wc, nil
+}
+
+func (f *fakeStagedWriteStore) ApproveWrite(_ context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.writes[id]; !ok {
+		return fmt.Errorf("staged write %d not found", id)
+	}
+	delete(f.writes, id)
+	return nil
+}
+
+func (f *fakeStagedWriteStore) RejectWrite(_ context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.writes[id]; !ok {
+		return fmt.Errorf("staged write %d not found", id)
+	}
+	delete(f.writes, id)
+	return nil
+}
+
+// newFixtureFull wires the installer and staged-write store so coverage tests can
+// exercise skill and memory service methods that the minimal fixture leaves nil.
+func newFixtureFull(t *testing.T) *fixture {
+	t.Helper()
+
+	ps := newFakeProfileStore()
+	ss := newFakeSecretStore()
+	as := newFakeAgentStore()
+	kv := newFakeKVStore()
+	mcp := newFakeMCPStore()
+	hooks := newFakeHookStore()
+	execs := newFakeHookExecutionStore()
+	tools := newFakeToolRegistryStore()
+	cfg := newFakeToolGroupConfigStore()
+	skillStore := newFakeSkillStore()
+
+	km := &fakeKeyManager{}
+	reg := adapter.NewRegistry()
+	llmSvc := llm.NewService(ps, ss, km, reg, as)
+
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	installer := skill.NewInstaller(skillStore, t.TempDir())
+
+	svc := service.New(
+		llmSvc,
+		kv,
+		&fakeConversationStore{},
+		nil,
+		installer,
+		log,
+		hooks,
+		execs,
+		mcp,
+		func() {},
+		func(_ context.Context, _ *store.MCPServer) ([]string, error) {
+			return []string{"tool_a", "tool_b"}, nil
+		},
+		tools,
+		cfg,
+	)
+	svc.SetStagedWriteStore(newFakeStagedWriteStore())
 
 	return &fixture{
 		profileStore: ps,

@@ -198,6 +198,12 @@ func (f *hFakeConversationStore) SaveSummary(_ context.Context, _ int64, _ strin
 func (f *hFakeConversationStore) ListConversations(_ context.Context) ([]*store.ConversationRow, error) {
 	return nil, nil
 }
+func (f *hFakeConversationStore) GetCompactionMeta(_ context.Context, _ int64) (int, string, error) {
+	return 0, "", nil
+}
+func (f *hFakeConversationStore) Transcript(_ context.Context, _ int64, _ int64) (string, error) {
+	return "", nil
+}
 
 type hFakeMCPStore struct {
 	mu      sync.RWMutex

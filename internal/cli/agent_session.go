@@ -328,21 +328,5 @@ func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.
 }
 
 func resolveContextWindow(maxContextTokens int, globalMaxContextTokens int, modelMetadata string) int {
-	var contextWindow int
-	if maxContextTokens > 0 {
-		contextWindow = maxContextTokens
-	} else if globalMaxContextTokens > 0 {
-		contextWindow = globalMaxContextTokens
-	} else {
-		if modelMetadata != "" {
-			meta, err := store.UnmarshalModelMetadata(modelMetadata)
-			if err == nil && meta != nil {
-				contextWindow = meta.ContextWindow
-			}
-		}
-		if contextWindow <= 0 {
-			contextWindow = 64000
-		}
-	}
-	return contextWindow
+	return store.ResolveContextWindow(maxContextTokens, globalMaxContextTokens, modelMetadata)
 }

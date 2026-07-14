@@ -2808,6 +2808,33 @@ pre {
   transition: width 0.3s ease;
 }
 
+/* ── Context meter over-limit (red) ───────────────────────── */
+
+.context-meter.over .context-meter-label {
+  color: var(--error);
+}
+
+.context-meter.over .context-meter-track {
+  background: var(--error-muted);
+}
+
+.context-meter.over .context-meter-fill {
+  background: var(--error);
+}
+
+.context-meter-warning {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--error);
+  border: 1px solid var(--error-border);
+  border-radius: 999px;
+  padding: 1px 7px;
+  white-space: nowrap;
+  cursor: help;
+}
+
 .message-time {
   display: block;
   text-align: center;
@@ -2820,6 +2847,65 @@ pre {
 
 .message-action-bar.no-margin-top {
   margin-top: 0;
+}
+
+/* ── Context meter compaction annotation ─────────────────── */
+
+.context-meter-annotation {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+  border: 1px solid var(--accent, rgba(255, 255, 255, 0.15));
+  border-radius: 999px;
+  padding: 1px 7px;
+  white-space: nowrap;
+  cursor: help;
+}
+
+/* ── Compaction boundary marker ───────────────────────────── */
+
+.compaction-marker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 14px 0;
+  padding: 0;
+}
+
+.compaction-marker-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.compaction-marker-divider-line {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(
+    to right,
+    transparent,
+    rgba(255, 255, 255, 0.14),
+    transparent
+  );
+}
+
+.compaction-marker-text {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.compaction-marker-content {
+  padding: 8px 12px;
+  border-left: 2px solid var(--accent, rgba(255, 255, 255, 0.15));
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 0 6px 6px 0;
 }
 
 

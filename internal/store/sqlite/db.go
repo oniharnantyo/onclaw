@@ -395,6 +395,28 @@ func Migrate(db *sql.DB) error {
 		}
 	}
 
+	hasIsSummary, err := columnExists(db, "conversation_messages", "is_summary")
+	if err != nil {
+		return fmt.Errorf("check conversation_messages is_summary column: %w", err)
+	}
+	if !hasIsSummary {
+		if _, err := db.Exec("ALTER TABLE conversation_messages ADD COLUMN is_summary INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return fmt.Errorf("add is_summary column to conversation_messages: %w", err)
+		}
+	}
+
+	// Backfill is_summary for any pre-existing active summary rows. After this
+	// change every compaction flags its row at insert; for databases created
+	// before that, mark the rows currently referenced by conversations.summary_message_id.
+	if _, err := db.Exec(`
+		UPDATE conversation_messages
+		SET is_summary = 1
+		WHERE id IN (SELECT summary_message_id FROM conversations WHERE summary_message_id != 0)
+		  AND is_summary = 0
+	`); err != nil {
+		return fmt.Errorf("backfill is_summary: %w", err)
+	}
+
 	hasMaxContext, err := columnExists(db, "agents", "max_context_tokens")
 	if err != nil {
 		return fmt.Errorf("check agents max_context_tokens column: %w", err)

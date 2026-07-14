@@ -30,6 +30,10 @@ type Service struct {
 
 	stagedWriteStore memory.StagedWriteStore
 	workspacePath    string
+	// globalMaxContextTokens is the app-wide default context window limit,
+	// used to resolve the effective window when an agent has no per-agent
+	// MaxContextTokens override.
+	globalMaxContextTokens int
 }
 
 // SetStagedWriteStore sets the staged write store for memory approval flows.
@@ -40,6 +44,12 @@ func (s *Service) SetStagedWriteStore(sts memory.StagedWriteStore) {
 // SetWorkspacePath sets the base workspace path for reading dream sweep files.
 func (s *Service) SetWorkspacePath(wp string) {
 	s.workspacePath = wp
+}
+
+// SetGlobalMaxContextTokens sets the app-wide default context window limit,
+// used to resolve the effective window for the web context meter.
+func (s *Service) SetGlobalMaxContextTokens(n int) {
+	s.globalMaxContextTokens = n
 }
 
 // SetResolve sets the ResolveAndAssembleFunc (used for mocking in tests).

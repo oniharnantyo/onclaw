@@ -12,17 +12,28 @@ func (s *Service) ListConversations(ctx context.Context) ([]*store.ConversationR
 	return res, classify(err)
 }
 
-// ListMessages returns all message history and resolved context window for a given conversation ID.
-func (s *Service) ListMessages(ctx context.Context, conversationID int64) ([]*store.TurnRow, int64, error) {
+// ListMessagesResult holds a conversation's message history plus the resolved
+// context window and compaction metadata for the web UI.
+type ListMessagesResult struct {
+	Messages         []*store.TurnRow
+	ContextWindow    int64
+	CompactionCount  int
+	LastCompactionAt string
+}
+
+// ListMessages returns all message history, the resolved context window, and
+// conversation-level compaction metadata for a given conversation ID.
+func (s *Service) ListMessages(ctx context.Context, conversationID int64) (*ListMessagesResult, error) {
 	res, err := s.conv.ListTurns(ctx, conversationID)
 	if err != nil {
-		return nil, 0, classify(err)
+		return nil, classify(err)
 	}
 
-	// Default context window to 64000
-	contextWindow := int64(64000)
-
-	// Resolve the conversation to find the agent name
+	// Resolve the conversation to find the agent name, then derive the
+	// effective context window using the same precedence as the CLI run path
+	// (agent MaxContextTokens > global default > model metadata > 64000) so the
+	// web meter reflects the agent's configured limit.
+	contextWindow := int64(store.ResolveContextWindow(0, s.globalMaxContextTokens, ""))
 	convs, errConv := s.conv.ListConversations(ctx)
 	if errConv == nil {
 		var agentName string
@@ -35,15 +46,20 @@ func (s *Service) ListMessages(ctx context.Context, conversationID int64) ([]*st
 		if agentName != "" {
 			agentConf, errAgent := s.mgr.GetAgent(ctx, agentName)
 			if errAgent == nil && agentConf != nil {
-				if agentConf.ModelMetadata != "" {
-					meta, errMeta := store.UnmarshalModelMetadata(agentConf.ModelMetadata)
-					if errMeta == nil && meta != nil && meta.ContextWindow > 0 {
-						contextWindow = int64(meta.ContextWindow)
-					}
-				}
+				contextWindow = int64(store.ResolveContextWindow(agentConf.MaxContextTokens, s.globalMaxContextTokens, agentConf.ModelMetadata))
 			}
 		}
 	}
 
-	return res, contextWindow, nil
+	count, lastAt, err := s.conv.GetCompactionMeta(ctx, conversationID)
+	if err != nil {
+		return nil, classify(err)
+	}
+
+	return &ListMessagesResult{
+		Messages:         res,
+		ContextWindow:    contextWindow,
+		CompactionCount:  count,
+		LastCompactionAt: lastAt,
+	}, nil
 }

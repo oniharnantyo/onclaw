@@ -145,3 +145,113 @@ func TestConversationStore(t *testing.T) {
 		}
 	}
 }
+
+func TestConversationStoreSummaryFlag(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	store := sqlite.NewConversationStore(db)
+	ctx := context.Background()
+
+	convID, err := store.CreateConversation(ctx, "test-agent")
+	if err != nil {
+		t.Fatalf("CreateConversation failed: %v", err)
+	}
+
+	_, err = store.AppendTurn(ctx, convID,
+		`[{"role":"user","content_blocks":[{"type":"user_input_text","user_input_text":{"text":"Hello"}}]},{"role":"assistant","content_blocks":[{"type":"assistant_gen_text","assistant_gen_text":{"text":"Hi"}}]}]`,
+		"resp-1", "", "model-1", 10, 20, 30, "Hello", "Hi")
+	if err != nil {
+		t.Fatalf("AppendTurn failed: %v", err)
+	}
+	_, err = store.AppendTurn(ctx, convID,
+		`[{"role":"user","content_blocks":[{"type":"user_input_text","user_input_text":{"text":"Bye"}}]},{"role":"assistant","content_blocks":[{"type":"assistant_gen_text","assistant_gen_text":{"text":"See you"}}]}]`,
+		"resp-2", "resp-1", "model-1", 10, 20, 30, "Bye", "See you")
+	if err != nil {
+		t.Fatalf("AppendTurn failed: %v", err)
+	}
+
+	// First compaction (covers seq 1)
+	if err := store.SaveSummary(ctx, convID,
+		`{"role":"assistant","content_blocks":[{"type":"assistant_gen_text","assistant_gen_text":{"text":"Summary 1"}}]}`, 1); err != nil {
+		t.Fatalf("SaveSummary 1 failed: %v", err)
+	}
+
+	all, err := store.ListTurns(ctx, convID)
+	if err != nil {
+		t.Fatalf("ListTurns failed: %v", err)
+	}
+	// 2 turns + 1 summary = 3 rows
+	if len(all) != 3 {
+		t.Fatalf("expected 3 rows, got %d", len(all))
+	}
+	var summaryRows, normalRows int
+	for _, r := range all {
+		if r.IsSummary {
+			summaryRows++
+		} else {
+			normalRows++
+		}
+	}
+	if normalRows != 2 {
+		t.Errorf("expected 2 normal rows, got %d", normalRows)
+	}
+	if summaryRows != 1 {
+		t.Errorf("expected 1 summary row, got %d", summaryRows)
+	}
+
+	count, lastAt, err := store.GetCompactionMeta(ctx, convID)
+	if err != nil {
+		t.Fatalf("GetCompactionMeta failed: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected compaction_count 1, got %d", count)
+	}
+	if lastAt == "" {
+		t.Errorf("expected non-empty last_compaction_at")
+	}
+
+	// Re-compaction: the new summary row also must be flagged, so both the
+	// superseded and the new summary rows carry is_summary=true.
+	if err := store.SaveSummary(ctx, convID,
+		`{"role":"assistant","content_blocks":[{"type":"assistant_gen_text","assistant_gen_text":{"text":"Summary 2"}}]}`, 2); err != nil {
+		t.Fatalf("SaveSummary 2 failed: %v", err)
+	}
+
+	all, err = store.ListTurns(ctx, convID)
+	if err != nil {
+		t.Fatalf("ListTurns failed: %v", err)
+	}
+	summaryRows = 0
+	for _, r := range all {
+		if r.IsSummary {
+			summaryRows++
+		}
+	}
+	if summaryRows != 2 {
+		t.Errorf("expected 2 summary rows after re-compaction, got %d", summaryRows)
+	}
+
+	count, lastAt, err = store.GetCompactionMeta(ctx, convID)
+	if err != nil {
+		t.Fatalf("GetCompactionMeta failed: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("expected compaction_count 2, got %d", count)
+	}
+	if lastAt == "" {
+		t.Errorf("expected non-empty last_compaction_at after re-compaction")
+	}
+
+	// Transcript export covers the compacted range (seq <= 2).
+	transcript, err := store.Transcript(ctx, convID, 2)
+	if err != nil {
+		t.Fatalf("Transcript failed: %v", err)
+	}
+	if !strings.Contains(transcript, "Hello") || !strings.Contains(transcript, "Bye") {
+		t.Errorf("transcript should include compacted turns, got: %q", transcript)
+	}
+	if strings.Contains(transcript, "Summary 1") || strings.Contains(transcript, "Summary 2") {
+		t.Errorf("transcript should not include summary rows, got: %q", transcript)
+	}
+}

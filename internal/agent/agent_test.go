@@ -297,6 +297,12 @@ func (dummyConvStore) SaveSummary(ctx context.Context, conversationID int64, sum
 func (dummyConvStore) ListConversations(ctx context.Context) ([]*store.ConversationRow, error) {
 	return nil, nil
 }
+func (dummyConvStore) GetCompactionMeta(_ context.Context, _ int64) (int, string, error) {
+	return 0, "", nil
+}
+func (dummyConvStore) Transcript(_ context.Context, _ int64, _ int64) (string, error) {
+	return "", nil
+}
 
 type mockEnabledChecker struct {
 	disabled map[string]bool
@@ -956,4 +962,111 @@ func TestEventIterator_EdgeCases(t *testing.T) {
 			t.Errorf("expected false, nil, got %v, %v", ok2, msg2)
 		}
 	})
+}
+
+// transcriptConvStore records the saved summary and returns a fixed compacted
+// transcript so the transcript-write path in handleSummarization is exercised.
+type transcriptConvStore struct {
+	dummyConvStore
+	lastSummary    string
+	lastCoveredSeq int64
+}
+
+func (r *transcriptConvStore) SaveSummary(ctx context.Context, conversationID int64, summaryMessageJSON string, coveredUntilSeq int64) error {
+	r.lastSummary = summaryMessageJSON
+	r.lastCoveredSeq = coveredUntilSeq
+	return nil
+}
+
+func (r *transcriptConvStore) Transcript(ctx context.Context, conversationID int64, upToSeq int64) (string, error) {
+	return "--- Turn 3 (2026-01-01T00:00:00Z) ---\nUser: earlier question\nAssistant: earlier answer\n", nil
+}
+
+// TestBuildSummarizationConfig locks design Decision 3: the summarization
+// middleware is configured with input-token anchoring, a message-count
+// backstop (ContextMessages=200), bounded retries (MaxRetries=2), and a
+// per-conversation transcript path.
+func TestBuildSummarizationConfig(t *testing.T) {
+	cfg := agent.BuildSummarizationConfig(nil, 51200, "/tmp/conversation-42.txt")
+	if cfg == nil {
+		t.Fatal("expected non-nil summarization config")
+	}
+	if cfg.Trigger == nil {
+		t.Fatal("expected Trigger condition set")
+	}
+	if cfg.Trigger.ContextTokens != 51200 {
+		t.Errorf("expected ContextTokens 51200, got %d", cfg.Trigger.ContextTokens)
+	}
+	if cfg.Trigger.ContextMessages != 200 {
+		t.Errorf("expected ContextMessages backstop 200, got %d", cfg.Trigger.ContextMessages)
+	}
+	if cfg.Retry == nil || cfg.Retry.MaxRetries == nil {
+		t.Fatal("expected Retry with MaxRetries set")
+	}
+	if *cfg.Retry.MaxRetries != 2 {
+		t.Errorf("expected MaxRetries 2, got %d", *cfg.Retry.MaxRetries)
+	}
+	if cfg.TranscriptFilePath != "/tmp/conversation-42.txt" {
+		t.Errorf("expected TranscriptFilePath wired, got %q", cfg.TranscriptFilePath)
+	}
+	if cfg.TokenCounter == nil {
+		t.Error("expected TokenCounter wired")
+	}
+}
+
+// TestHandleSummarization_WritesTranscript verifies that after a compaction the
+// compacted range is exported to the transcript file at TranscriptFilePath, so
+// the agent can re-read exact prior detail (spec requirement: compacted
+// transcript is re-readable by the agent).
+func TestHandleSummarization_WritesTranscript(t *testing.T) {
+	ctx := context.Background()
+	conv := &transcriptConvStore{}
+
+	tmpDir := t.TempDir()
+	transcriptPath := filepath.Join(tmpDir, "conversation-42.txt")
+
+	// A discarded message carrying the coverage sequence so maxSeq > 0.
+	discarded := schema.UserAgenticMessage("earlier question")
+	discarded.Extra = map[string]interface{}{"_onclaw_seq": int64(3)}
+	summaryMsg := &schema.AgenticMessage{
+		Role: schema.AgenticRoleTypeAssistant,
+		ContentBlocks: []*schema.ContentBlock{
+			schema.NewContentBlock(&schema.AssistantGenText{Text: "summary of earlier discussion"}),
+		},
+	}
+
+	before := adk.TypedChatModelAgentState[*schema.AgenticMessage]{
+		Messages: []*schema.AgenticMessage{discarded},
+	}
+	after := adk.TypedChatModelAgentState[*schema.AgenticMessage]{
+		Messages: []*schema.AgenticMessage{summaryMsg},
+	}
+
+	_, err := agent.HandleSummarization(ctx, agent.HandleSummarizationParams{
+		Before:         before,
+		After:          after,
+		ChatModel:      &fakeModelForSummary{response: "summary of earlier discussion"},
+		MemoryStore:    nil,
+		Embedder:       nil,
+		KVStore:        nil,
+		AgentName:      "test-agent",
+		ConversationID: 42,
+		ConvStore:      conv,
+		TranscriptPath: transcriptPath,
+	})
+	if err != nil {
+		t.Fatalf("HandleSummarization returned error: %v", err)
+	}
+	if conv.lastSummary == "" {
+		t.Fatal("expected SaveSummary to be called")
+	}
+
+	// The compacted-range transcript must be written to TranscriptFilePath.
+	data, err := os.ReadFile(transcriptPath)
+	if err != nil {
+		t.Fatalf("expected transcript file at %s: %v", transcriptPath, err)
+	}
+	if !strings.Contains(string(data), "User: earlier question") {
+		t.Errorf("transcript file missing compacted detail: %q", string(data))
+	}
 }

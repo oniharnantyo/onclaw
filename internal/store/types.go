@@ -69,6 +69,7 @@ type TurnRow struct {
 	TotalTokens        int64  `json:"total_tokens"`
 	Question           string `json:"question"`
 	Answer             string `json:"answer"`
+	IsSummary          bool   `json:"is_summary"`
 	CreatedAt          string `json:"created_at"`
 }
 

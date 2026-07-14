@@ -28,3 +28,27 @@ func UnmarshalModelMetadata(metaJSON string) (*ModelMetadata, error) {
 	}
 	return &meta, nil
 }
+
+// ResolveContextWindow determines the effective context window limit using the
+// precedence: agent-level MaxContextTokens, then the global default, then the
+// model metadata's reported context window, falling back to 64000. The CLI run
+// path and the web API must agree on this so the context meter reflects the
+// agent's configured limit rather than the hard-coded default.
+func ResolveContextWindow(maxContextTokens, globalMaxContextTokens int, modelMetadata string) int {
+	var contextWindow int
+	if maxContextTokens > 0 {
+		contextWindow = maxContextTokens
+	} else if globalMaxContextTokens > 0 {
+		contextWindow = globalMaxContextTokens
+	} else {
+		if modelMetadata != "" {
+			if meta, err := UnmarshalModelMetadata(modelMetadata); err == nil && meta != nil {
+				contextWindow = meta.ContextWindow
+			}
+		}
+		if contextWindow <= 0 {
+			contextWindow = 64000
+		}
+	}
+	return contextWindow
+}

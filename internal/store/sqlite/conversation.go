@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
@@ -175,7 +176,7 @@ func (s *sqliteConversationStore) ListTurns(ctx context.Context, conversationID 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, conversation_id, sequence_num, response_id, previous_response_id,
 		        message, model, prompt_tokens, completion_tokens, total_tokens,
-		        question, answer, created_at
+		        question, answer, is_summary, created_at
 		 FROM conversation_messages
 		 WHERE conversation_id = ?
 		 ORDER BY sequence_num ASC`,
@@ -191,7 +192,7 @@ func (s *sqliteConversationStore) ListTurns(ctx context.Context, conversationID 
 		var row store.TurnRow
 		if err := rows.Scan(&row.ID, &row.ConversationID, &row.SequenceNum, &row.ResponseID, &row.PreviousResponseID,
 			&row.Message, &row.Model, &row.PromptTokens, &row.CompletionTokens, &row.TotalTokens,
-			&row.Question, &row.Answer, &row.CreatedAt); err != nil {
+			&row.Question, &row.Answer, &row.IsSummary, &row.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan turn: %w", err)
 		}
 		turns = append(turns, &row)
@@ -246,9 +247,9 @@ func (s *sqliteConversationStore) SaveSummary(ctx context.Context, conversationI
 	var summaryMessageID int64
 	err = tx.QueryRowContext(ctx,
 		`INSERT INTO conversation_messages (
-			conversation_id, sequence_num, message, question, answer, created_at
+			conversation_id, sequence_num, message, question, answer, is_summary, created_at
 		 )
-		 VALUES (?, (SELECT COALESCE(MAX(sequence_num), 0) + 1 FROM conversation_messages WHERE conversation_id = ?), ?, '', ?, ?)
+		 VALUES (?, (SELECT COALESCE(MAX(sequence_num), 0) + 1 FROM conversation_messages WHERE conversation_id = ?), ?, '', ?, 1, ?)
 		 RETURNING id`,
 		conversationID, conversationID, msgArrayJSON, answer, t,
 	).Scan(&summaryMessageID)
@@ -271,6 +272,58 @@ func (s *sqliteConversationStore) SaveSummary(ctx context.Context, conversationI
 	}
 
 	return nil
+}
+
+func (s *sqliteConversationStore) GetCompactionMeta(ctx context.Context, conversationID int64) (int, string, error) {
+	var count int
+	var lastAt sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*), COALESCE(MAX(created_at), '')
+		 FROM conversation_messages
+		 WHERE conversation_id = ? AND is_summary = 1`,
+		conversationID,
+	).Scan(&count, &lastAt)
+	if err != nil {
+		return 0, "", fmt.Errorf("get compaction meta: %w", err)
+	}
+	return count, lastAt.String, nil
+}
+
+func (s *sqliteConversationStore) Transcript(ctx context.Context, conversationID int64, upToSeq int64) (string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT sequence_num, message, question, answer, created_at
+		 FROM conversation_messages
+		 WHERE conversation_id = ? AND sequence_num <= ? AND is_summary = 0
+		 ORDER BY sequence_num ASC`,
+		conversationID, upToSeq,
+	)
+	if err != nil {
+		return "", fmt.Errorf("query transcript: %w", err)
+	}
+	defer rows.Close()
+
+	var b strings.Builder
+	for rows.Next() {
+		var seq int64
+		var message, question, answer, createdAt string
+		if err := rows.Scan(&seq, &message, &question, &answer, &createdAt); err != nil {
+			return "", fmt.Errorf("scan transcript row: %w", err)
+		}
+		b.WriteString(fmt.Sprintf("--- Turn %d (%s) ---\n", seq, createdAt))
+		if question != "" {
+			b.WriteString("User: " + question + "\n")
+		}
+		if answer != "" {
+			b.WriteString("Assistant: " + answer + "\n")
+		}
+		// Include the exact message array so the agent can recover tool calls
+		// and other structured detail the summary abbreviates.
+		b.WriteString(message + "\n\n")
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("rows error: %w", err)
+	}
+	return b.String(), nil
 }
 
 func (s *sqliteConversationStore) ListConversations(ctx context.Context) ([]*store.ConversationRow, error) {

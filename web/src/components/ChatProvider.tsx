@@ -1,7 +1,52 @@
 import { createContext, useContext, useReducer, useCallback, useRef, useEffect, type ReactNode } from 'react';
-import type { ChatMessage, ContentBlock, Conversation } from '../types/chat';
+import type { ChatMessage, ContentBlock, Conversation, RawTurn } from '../types/chat';
 import { mergeStreamingDeltas } from './chat/mergeBlockDelta';
 import { runChatStream } from './chat/runChatStream';
+
+/* ── Pure helpers (unit-testable without React) ───────────── */
+
+/**
+ * computeContextUsed walks backward through the turn rows and returns the
+ * prompt_tokens of the most recent NON-summary turn (falling back to
+ * total_tokens, then 0). Summary turns anchor the meter on zero prompt tokens,
+ * so they must be skipped — otherwise a summary-ending conversation reads 0.
+ */
+export function computeContextUsed(rawMsgs: RawTurn[]): number {
+  if (!rawMsgs || rawMsgs.length === 0) return 0;
+  for (let i = rawMsgs.length - 1; i >= 0; i--) {
+    const turn = rawMsgs[i];
+    if (turn.is_summary) continue;
+    return typeof turn.prompt_tokens === 'number' ? turn.prompt_tokens
+      : (typeof turn.total_tokens === 'number' ? turn.total_tokens : 0);
+  }
+  return 0;
+}
+
+/**
+ * isContextOverLimit reports whether the used token count has exceeded the
+ * context window. When the window is unknown (0) the guard is inactive so the
+ * meter and composer never disable input on missing data.
+ */
+export function isContextOverLimit(contextWindow: number, contextUsed: number): boolean {
+  return contextWindow > 0 && contextUsed > contextWindow;
+}
+
+/**
+ * computeCompactionAnnotated decides whether to show the one-time
+ * "context compacted" annotation. Returns true only when a baseline has
+ * already been established for the current conversation AND the new
+ * compaction_count has increased. On the first load of a conversation
+ * (baselineEstablished=false — e.g. right after switching) it stays false,
+ * so reopening a previously-compacted conversation does not re-flash it.
+ */
+export function computeCompactionAnnotated(
+  prevCount: number,
+  newCount: number,
+  baselineEstablished: boolean
+): boolean {
+  if (!baselineEstablished) return false;
+  return newCount > prevCount;
+}
 
 /* ── State ─────────────────────────────────────────────────── */
 
@@ -16,6 +61,7 @@ export interface ChatState {
   skills: { name: string; description: string }[];
   contextWindow: number;
   contextUsed: number;
+  contextCompactionAnnotated: boolean;
 }
 
 type ChatAction =
@@ -31,7 +77,8 @@ type ChatAction =
   | { type: 'SET_CHAT_AGENT'; name: string }
   | { type: 'SET_SKILLS'; skills: { name: string; description: string }[] }
   | { type: 'SET_CONTEXT_WINDOW'; windowSize: number }
-  | { type: 'SET_CONTEXT_USED'; usedSize: number };
+  | { type: 'SET_CONTEXT_USED'; usedSize: number }
+  | { type: 'SET_CONTEXT_COMPACTION_ANNOTATED'; annotated: boolean };
 
 export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
@@ -96,7 +143,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return { ...state, conversations: action.conversations || [] };
     case 'SET_ACTIVE_CONV_ID': {
       if (action.id === state.activeConvID) return state;
-      return { ...state, activeConvID: action.id, messages: [], contextWindow: 0, contextUsed: 0 };
+      return { ...state, activeConvID: action.id, messages: [], contextWindow: 0, contextUsed: 0, contextCompactionAnnotated: false };
     }
     case 'SET_AGENTS':
       return { ...state, agents: action.agents };
@@ -108,6 +155,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return { ...state, contextWindow: action.windowSize };
     case 'SET_CONTEXT_USED':
       return { ...state, contextUsed: action.usedSize };
+    case 'SET_CONTEXT_COMPACTION_ANNOTATED':
+      return { ...state, contextCompactionAnnotated: action.annotated };
     default:
       return state;
   }
@@ -164,6 +213,7 @@ export default function ChatProvider({
     skills: initialSkills,
     contextWindow: 0,
     contextUsed: 0,
+    contextCompactionAnnotated: false,
   });
 
   // Sync state when props change (fix for race condition)
@@ -183,6 +233,17 @@ export default function ChatProvider({
 
   const abortRef = useRef<AbortController | null>(null);
 
+  // Compaction annotation bookkeeping, keyed per conversation:
+  // prevCompactionCountRef holds the last-seen compaction_count for the
+  // current conversation; convSeenRef marks whether a baseline has been
+  // established (i.e. fetchMessages has run at least once for it). Both are
+  // reset to "no baseline" whenever the active conversation changes so that
+  // reopening a previously-compacted conversation does not re-flash the
+  // annotation. The ref survives the post-turn re-fetch in runChat.onDone
+  // because that path does NOT dispatch SET_ACTIVE_CONV_ID.
+  const prevCompactionCountRef = useRef(0);
+  const convSeenRef = useRef(false);
+
   const fetchConversations = useCallback(async () => {
     try {
       const res = await fetch('/api/conversations');
@@ -200,16 +261,29 @@ export default function ChatProvider({
       const res = await fetch(`/api/conversations/${convId}/messages`);
       if (res.ok) {
         const payload = await res.json();
-        const rawMsgs = payload.messages || [];
+        const rawMsgs: RawTurn[] = payload.messages || [];
         const contextWindow = payload.context_window || 0;
         dispatch({ type: 'SET_CONTEXT_WINDOW', windowSize: contextWindow });
 
-        let contextUsed = 0;
-        if (rawMsgs.length > 0) {
-          const lastTurn = rawMsgs[rawMsgs.length - 1];
-          contextUsed = lastTurn.prompt_tokens ?? lastTurn.total_tokens ?? 0;
-        }
+        // Guard: skip any trailing summary turn(s) so the meter's `used`
+        // value is anchored on a real prompt-token count, never on a summary
+        // row (which reports zero prompt tokens).
+        const contextUsed = computeContextUsed(rawMsgs);
         dispatch({ type: 'SET_CONTEXT_USED', usedSize: contextUsed });
+
+        // One-time compaction annotation: surfaces when compaction_count
+        // increases for the current conversation. The first load establishes
+        // the baseline without annotating; re-fetches within the same
+        // conversation detect the increase.
+        const newCount: number = typeof payload.compaction_count === 'number' ? payload.compaction_count : 0;
+        const annotated = computeCompactionAnnotated(
+          prevCompactionCountRef.current,
+          newCount,
+          convSeenRef.current
+        );
+        prevCompactionCountRef.current = newCount;
+        convSeenRef.current = true;
+        dispatch({ type: 'SET_CONTEXT_COMPACTION_ANNOTATED', annotated });
 
         const parsedMsgs: ChatMessage[] = [];
         for (const turn of rawMsgs) {
@@ -300,6 +374,7 @@ export default function ChatProvider({
               role,
               content_blocks,
               created_at: turn.created_at as string,
+              is_summary: (turn as RawTurn).is_summary ?? false,
             });
           }
         }
@@ -371,6 +446,9 @@ export default function ChatProvider({
         onInit: (initData) => {
           tempConvID = initData.conversation_id;
           activeConvIDRef.current = tempConvID;
+          // New conversation: clear compaction baseline so it starts fresh.
+          prevCompactionCountRef.current = 0;
+          convSeenRef.current = false;
           dispatch({ type: 'SET_ACTIVE_CONV_ID', id: tempConvID });
           if (initData.context_window) {
             dispatch({ type: 'SET_CONTEXT_WINDOW', windowSize: initData.context_window });
@@ -417,6 +495,10 @@ export default function ChatProvider({
   }, [state.isStreaming, state.chatAgent, state.activeConvID, showToast, fetchConversations, fetchMessages]);
 
   const selectConversation = useCallback((id: number) => {
+    // Clear compaction baseline so reopening a conversation never re-flashes
+    // the annotation; the first fetchMessages establishes a fresh baseline.
+    prevCompactionCountRef.current = 0;
+    convSeenRef.current = false;
     dispatch({ type: 'SET_ACTIVE_CONV_ID', id });
     fetchMessages(id);
   }, [fetchMessages]);
@@ -456,6 +538,7 @@ export function useComposer() {
     agents: chat.state.agents,
     skills: chat.state.skills,
     isStreaming: chat.state.isStreaming,
+    contextOverLimit: isContextOverLimit(chat.state.contextWindow, chat.state.contextUsed),
     dispatch: chat.dispatch,
     runChat: chat.runChat,
     stopChat: chat.stopChat,

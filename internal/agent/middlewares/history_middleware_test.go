@@ -175,6 +175,12 @@ func (m *mockConversationStore) SaveSummary(ctx context.Context, conversationID 
 func (m *mockConversationStore) ListConversations(ctx context.Context) ([]*store.ConversationRow, error) {
 	return nil, nil
 }
+func (m *mockConversationStore) GetCompactionMeta(_ context.Context, _ int64) (int, string, error) {
+	return 0, "", nil
+}
+func (m *mockConversationStore) Transcript(_ context.Context, _ int64, _ int64) (string, error) {
+	return "", nil
+}
 
 func TestHistoryMiddleware(t *testing.T) {
 	s := newMockConversationStore()

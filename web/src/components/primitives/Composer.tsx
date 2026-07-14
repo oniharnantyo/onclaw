@@ -31,6 +31,7 @@ interface ComposerContextValue {
   setSkillSearch: React.Dispatch<React.SetStateAction<string>>;
   submit: () => void;
   isStreaming: boolean;
+  contextOverLimit: boolean;
   errorMsg: string | null;
   setErrorMsg: React.Dispatch<React.SetStateAction<string | null>>;
 }
@@ -49,7 +50,7 @@ export interface ComposerRootProps {
 }
 
 export function ComposerRoot({ children, className = '' }: ComposerRootProps) {
-  const { runChat, isStreaming } = useComposer();
+  const { runChat, isStreaming, contextOverLimit } = useComposer();
   const [prompt, setPrompt] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [showSkills, setShowSkills] = useState(false);
@@ -59,6 +60,10 @@ export function ComposerRoot({ children, className = '' }: ComposerRootProps) {
 
   const submit = useCallback(() => {
     if (isStreaming) return;
+    if (contextOverLimit) {
+      setErrorMsg('Context window exceeded — reduce the conversation or raise max context tokens before sending.');
+      return;
+    }
     if (!prompt.trim()) {
       setErrorMsg('Prompt is required');
       return;
@@ -99,7 +104,7 @@ export function ComposerRoot({ children, className = '' }: ComposerRootProps) {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
-  }, [prompt, attachments, runChat, isStreaming]);
+  }, [prompt, attachments, runChat, isStreaming, contextOverLimit]);
 
   const value: ComposerContextValue = {
     prompt,
@@ -113,6 +118,7 @@ export function ComposerRoot({ children, className = '' }: ComposerRootProps) {
     setSkillSearch,
     submit,
     isStreaming,
+    contextOverLimit,
     errorMsg,
     setErrorMsg,
   };
@@ -138,6 +144,7 @@ export function ComposerInput({ className = '', placeholder = 'Ask agent to perf
     setSkillSearch,
     submit,
     isStreaming,
+    contextOverLimit,
     setAttachments,
     setErrorMsg,
   } = useComposerContext();
@@ -218,12 +225,12 @@ export function ComposerInput({ className = '', placeholder = 'Ask agent to perf
     <textarea
       ref={textareaRef}
       className={`composer-input ${className}`}
-      placeholder={isStreaming ? 'Agent is responding…' : placeholder}
+      placeholder={isStreaming ? 'Agent is responding…' : contextOverLimit ? 'Context window exceeded — cannot send' : placeholder}
       value={prompt}
       onChange={handleInputChange}
       onKeyDown={handleKeyDown}
       onPaste={handlePaste}
-      disabled={isStreaming}
+      disabled={isStreaming || contextOverLimit}
       rows={1}
       aria-label="Message input"
     />
@@ -237,14 +244,14 @@ export interface ComposerSendProps {
 }
 
 export function ComposerSend({ children, className = '', style }: ComposerSendProps) {
-  const { submit, isStreaming, prompt } = useComposerContext();
+  const { submit, isStreaming, prompt, contextOverLimit } = useComposerContext();
   return (
     <button
       onClick={submit}
       className={`composer-send ${className}`}
       type="button"
       style={style}
-      disabled={isStreaming || !prompt.trim()}
+      disabled={isStreaming || contextOverLimit || !prompt.trim()}
       aria-label="Send message"
     >
       {children}
@@ -353,10 +360,11 @@ export interface ComposerAttachProps {
 }
 
 export function ComposerAttach({ className = '', accept = 'image/*,.pdf,.doc,.docx,.txt,.md,.json' }: ComposerAttachProps) {
-  const { setAttachments, setErrorMsg } = useComposerContext();
+  const { setAttachments, setErrorMsg, contextOverLimit } = useComposerContext();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleClick = () => {
+    if (contextOverLimit) return;
     fileInputRef.current?.click();
   };
 

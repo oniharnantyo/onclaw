@@ -13,6 +13,7 @@ function makeBaseState(overrides?: Partial<ChatState>): ChatState {
     skills: [],
     contextWindow: 0,
     contextUsed: 0,
+    contextCompactionAnnotated: false,
     ...overrides,
   };
 }

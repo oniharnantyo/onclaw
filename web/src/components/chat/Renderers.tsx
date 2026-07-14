@@ -16,7 +16,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { useThread } from '../ChatProvider';
-import type { ContentBlock } from '../../types/chat';
+import type { ContentBlock, ChatMessage } from '../../types/chat';
 
 /* ── Diff Renderer ─────────────────────────────────────────── */
 
@@ -527,4 +527,70 @@ export function UnknownBlock({ block }: { block: ContentBlock }) {
 export function pickToolRenderer(name: string) {
   if (name === 'skill') return SkillActivatedBlock;
   return null;
+}
+
+/* ── Compaction Marker ────────────────────────────────────── */
+
+// Pure dispatch decision: a summary turn renders as a compaction boundary
+// marker, never as a normal assistant bubble. Kept framework-free so it can
+// be unit-tested without React rendering.
+export function shouldRenderCompactionMarker(message: ChatMessage): boolean {
+  return message.is_summary === true;
+}
+
+// Extract the summary text from a flagged summary turn. The summary lives in
+// the assistant_gen_text block of the single assistant message it wraps.
+export function getSummaryText(message: ChatMessage): string {
+  const blocks = message.content_blocks || [];
+  return blocks
+    .map((b) => b.assistant_gen_text?.text || '')
+    .filter((t) => t.trim().length > 0)
+    .join('\n\n');
+}
+
+export function CompactionMarker({ message }: { message: ChatMessage }) {
+  const [open, setOpen] = useState(false);
+  const summaryText = getSummaryText(message);
+
+  return (
+    <div className="compaction-marker" role="region" aria-label="Earlier conversation summarized">
+      <div className="compaction-marker-divider">
+        <span className="compaction-marker-divider-line" aria-hidden="true" />
+        <span className="compaction-marker-text">Earlier conversation summarized</span>
+        <span className="compaction-marker-divider-line" aria-hidden="true" />
+      </div>
+      {summaryText && (
+        <button
+          className="block-reasoning-header"
+          onClick={() => setOpen(!open)}
+          aria-expanded={open}
+          type="button"
+        >
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+            {open ? <CaretDown size={12} weight="fill" /> : <CaretRight size={12} weight="fill" />}
+            <strong>Summary</strong>
+          </span>
+        </button>
+      )}
+      {open && summaryText && (
+        <div className="compaction-marker-content">
+          <code
+            style={{
+              fontFamily: 'var(--mono)',
+              fontSize: '12px',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              display: 'block',
+              background: 'none',
+              border: 'none',
+              padding: 0,
+              color: 'var(--text-muted)',
+            }}
+          >
+            {summaryText}
+          </code>
+        </div>
+      )}
+    </div>
+  );
 }

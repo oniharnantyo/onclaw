@@ -30,19 +30,23 @@ func (h *Handler) ListMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	messages, contextWindow, err := h.svc.ListMessages(ctx, id)
+	messages, err := h.svc.ListMessages(ctx, id)
 	if err != nil {
 		h.handleError(w, err)
 		return
 	}
 
 	type listMessagesResponse struct {
-		Messages      []*store.TurnRow `json:"messages"`
-		ContextWindow int64            `json:"context_window"`
+		Messages         []*store.TurnRow `json:"messages"`
+		ContextWindow    int64            `json:"context_window"`
+		CompactionCount  int              `json:"compaction_count"`
+		LastCompactionAt string           `json:"last_compaction_at"`
 	}
 
 	httpx.JSON(w, http.StatusOK, listMessagesResponse{
-		Messages:      messages,
-		ContextWindow: contextWindow,
+		Messages:         messages.Messages,
+		ContextWindow:    messages.ContextWindow,
+		CompactionCount:  messages.CompactionCount,
+		LastCompactionAt: messages.LastCompactionAt,
 	})
 }

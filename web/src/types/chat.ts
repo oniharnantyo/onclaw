@@ -185,10 +185,20 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content_blocks?: ContentBlock[];
   created_at?: string;
+  is_summary?: boolean;
   isStreaming?: boolean;
   stopped?: boolean;
   response_meta?: Record<string, unknown>;
   extra?: Record<string, unknown>;
+}
+
+// A single turn row as returned by GET /api/conversations/{id}/messages.
+// Summary turns carry is_summary: true and zero prompt tokens.
+export interface RawTurn {
+  is_summary?: boolean;
+  prompt_tokens?: number;
+  total_tokens?: number;
+  [key: string]: unknown;
 }
 
 // ── Conversation ────────────────────────────────────────────────

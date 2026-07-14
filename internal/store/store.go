@@ -41,6 +41,13 @@ type ConversationStore interface {
 	LoadHistory(ctx context.Context, conversationID int64) (summary *TurnRow, tail []*TurnRow, err error)
 	ListTurns(ctx context.Context, conversationID int64) ([]*TurnRow, error)
 	SaveSummary(ctx context.Context, conversationID int64, summaryMessageJSON string, coveredUntilSeq int64) error
+	// GetCompactionMeta returns conversation-level compaction metadata: the
+	// number of summary (is_summary) rows and the created_at of the most
+	// recent one. Used by the API to surface compaction without scanning content.
+	GetCompactionMeta(ctx context.Context, conversationID int64) (count int, lastAt string, err error)
+	// Transcript returns a readable dump of turns with sequence_num <= upToSeq,
+	// i.e. the compacted range, so the agent can re-read exact prior detail.
+	Transcript(ctx context.Context, conversationID int64, upToSeq int64) (string, error)
 	ListConversations(ctx context.Context) ([]*ConversationRow, error)
 }
 

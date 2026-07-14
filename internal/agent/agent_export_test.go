@@ -11,6 +11,10 @@ func SummarizationTrigger(contextWindow int) int {
 	return summarizationTrigger(contextWindow)
 }
 
+var BuildSummarizationConfig = buildSummarizationConfig
+
+var EstimateFloorTokens = estimateFloorTokens
+
 const MaxPersonaBytes = maxPersonaBytes
 
 type HandleSummarizationParams = handleSummarizationParams
