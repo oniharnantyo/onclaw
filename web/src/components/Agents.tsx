@@ -20,7 +20,7 @@ export interface Agent {
   model_metadata: string;
   reasoning_effort: string;
   reasoning_budget_tokens: number;
-  system_prompt: string;
+  description: string;
   workspace: string;
   tools: string;
   max_iterations: number;

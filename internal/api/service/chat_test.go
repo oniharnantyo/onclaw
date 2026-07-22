@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/oniharnantyo/onclaw/internal/api/service"
+	"github.com/oniharnantyo/onclaw/internal/conversation"
 )
 
 func TestService_Chat_WithResolveError(t *testing.T) {
@@ -16,8 +17,8 @@ func TestService_Chat_WithResolveError(t *testing.T) {
 		f.llmSvc,
 		f.kvStore,
 		&fakeConversationStore{},
-		func(_ context.Context, agentName, _, _, _, _ string, _ int64) (service.AssembledAgent, string, error) {
-			return nil, "", service.ErrNotFound
+		func(_ context.Context, agentName, _, _, _, _ string, _ int64) (service.AssembledAgent, *conversation.SessionManager, string, error) {
+			return nil, nil, "", service.ErrNotFound
 		},
 		nil, // installer
 		nil, // log
@@ -30,7 +31,7 @@ func TestService_Chat_WithResolveError(t *testing.T) {
 		f.cfgStore,
 	)
 
-	_, _, err := svc.Chat(ctx, service.ChatInput{
+	_, _, _, err := svc.Chat(ctx, service.ChatInput{
 		Prompt: "hello",
 	})
 	if err == nil {
@@ -50,9 +51,9 @@ func TestService_Chat_NoAgent_UsesDefault(t *testing.T) {
 		f.llmSvc,
 		f.kvStore,
 		&fakeConversationStore{},
-		func(_ context.Context, agentName, _, _, _, _ string, convID int64) (service.AssembledAgent, string, error) {
+		func(_ context.Context, agentName, _, _, _, _ string, convID int64) (service.AssembledAgent, *conversation.SessionManager, string, error) {
 			resolved = agentName
-			return nil, "", service.ErrNotFound // abort after resolving
+			return nil, nil, "", service.ErrNotFound // abort after resolving
 		},
 		nil, nil,
 		f.hookStore, f.execStore, f.mcpStore,

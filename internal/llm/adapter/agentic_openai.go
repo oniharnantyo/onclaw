@@ -13,6 +13,12 @@ import (
 
 type agenticOpenAIAdapter struct{}
 
+// OpenAI and OpenAI-compatible providers (qwen, deepseek, ark, and local
+// openai-compatible servers) perform automatic prefix caching: an identical
+// verbatim prefix is cached and re-billed at a discount with no opt-in. Because
+// Layer A/B keep the replay prefix verbatim and compaction-anchored (design
+// Decision 6), onclaw's prefix is stable and benefits automatically. No code is
+// required here; the "prompt_caching" flag is a no-op for these providers.
 func (a *agenticOpenAIAdapter) Build(ctx context.Context, p *store.Profile, modelName string, apiKey string) (model.AgenticModel, error) {
 	if p.Enabled == 0 {
 		return nil, fmt.Errorf("profile %q is disabled", p.Name)

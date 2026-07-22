@@ -55,6 +55,11 @@ const jsonSchema = `{
           "description": "HTTP URL of the remote CDP host, e.g. http://127.0.0.1:9222"
         }
       }
+    },
+    "spill_threshold_bytes": {
+      "type": "integer",
+      "default": 16384,
+      "description": "Results larger than this (bytes) are spilled to a session file instead of injected inline into the model context"
     }
   },
   "required": ["engine"]
@@ -62,7 +67,7 @@ const jsonSchema = `{
 
 var (
 	configMu sync.Mutex
-	lastCfg  = `{"engine":"lightpanda","headless":true,"lightpanda":{"port":9222}}`
+	lastCfg  = `{"engine":"lightpanda","headless":true,"lightpanda":{"port":9222},"spill_threshold_bytes":16384}`
 )
 
 func init() {

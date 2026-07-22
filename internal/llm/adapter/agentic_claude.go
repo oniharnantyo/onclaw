@@ -93,12 +93,25 @@ func (a *agenticClaudeAdapter) Build(ctx context.Context, p *store.Profile, mode
 		}
 	}
 
+	// Layer D (design Decision 7): enable Anthropic prompt caching by pinning
+	// the cache breakpoint at the stable prefix (system + tools + history) via
+	// per-content-block cache_control. The request-level `config.CacheControl`
+	// is deliberately NOT set: the SDK serializes it as a single cache_control
+	// on the last block of the last message, a coarse, moving boundary that
+	// shifts as the agent appends tool results within a turn. The
+	// `claudePrefixCache` wrapper (built below) instead marks the boundary
+	// message (last message before the current user turn) and every tool
+	// definition, so the prefix is explicitly and stably cached. Disable
+	// per-profile via Settings "prompt_caching": false.
 	client, err := agenticclaude.New(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create agentic Claude client for profile %q: %w", p.Name, err)
 	}
 
-	return client, nil
+	if !PromptCachingEnabled(p) {
+		return client, nil
+	}
+	return newClaudePrefixCache(client, true), nil
 }
 
 func NewAgenticClaudeAdapter() Adapter {

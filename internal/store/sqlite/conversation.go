@@ -210,6 +210,9 @@ func (s *sqliteConversationStore) SaveSummary(ctx context.Context, conversationI
 			AssistantGenText *struct {
 				Text string `json:"text"`
 			} `json:"assistant_gen_text"`
+			UserInputText *struct {
+				Text string `json:"text"`
+			} `json:"user_input_text"`
 		} `json:"content_blocks"`
 	}
 	if err := json.Unmarshal([]byte(summaryMessageJSON), &msg); err != nil {
@@ -226,6 +229,12 @@ func (s *sqliteConversationStore) SaveSummary(ctx context.Context, conversationI
 				answer += "\n"
 			}
 			answer += block.AssistantGenText.Text
+		}
+		if block.UserInputText != nil {
+			if answer != "" {
+				answer += "\n"
+			}
+			answer += block.UserInputText.Text
 		}
 	}
 

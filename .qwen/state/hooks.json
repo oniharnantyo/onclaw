@@ -1,0 +1,50 @@
+{
+  "enabled": true,
+  "profile": "balanced",
+  "qwen_events": ["Stop", "UserPromptSubmit"],
+  "oma_event_mapping": {
+    "AfterAgent": "Stop",
+    "BeforeModel": "UserPromptSubmit (trace-only; Qwen Code cannot rewrite model)"
+  },
+  "derived_signals": {
+    "context-drift": true,
+    "risk-spike": true,
+    "loop-stall": true,
+    "token-burst": false,
+    "blocker-repeat": true,
+    "agent-blocked": true,
+    "agent-finished-early": true,
+    "stage-transition": true,
+    "pre-verify": true,
+    "post-verify": true,
+    "checkpoint-save": true,
+    "blocker-raised": true
+  },
+  "lanes": {
+    "P0-safety": { "timeout_ms": 400, "debounce_ms": 0 },
+    "P1-quality": { "timeout_ms": 800, "debounce_ms": 200 },
+    "P2-optimization": { "timeout_ms": 600, "debounce_ms": 500 }
+  },
+  "lifecycle_policy": {
+    "before_after_symmetry": true,
+    "continuation_reenters_safety_lane": true,
+    "terminal_states": ["completed", "blocked", "stopped"]
+  },
+  "runtime_controls": {
+    "hook_profile_env": "OMG_HOOK_PROFILE=minimal|balanced|strict",
+    "disabled_hooks_env": "OMG_DISABLED_HOOKS=learn,model-routing",
+    "state_root_env": "OMG_STATE_ROOT (set per-hook to <project>/.qwen/state)"
+  },
+  "team_safety": {
+    "disable_side_effects_for_worker_sessions": true
+  },
+  "source": "oma:hooks",
+  "registration_path": "project .qwen/settings.json -> hooks key (Qwen Code schema)",
+  "notes": [
+    "Qwen Code has NO BeforeModel/AfterAgent events; OmA hooks were mapped to nearest Qwen Code events.",
+    "learn.js (AfterAgent) -> Stop: runs after each response, reads transcript, nudges /oma:learn on actionable sessions.",
+    "before-model-banner.js (BeforeModel) -> UserPromptSubmit: detects lane + writes model-router-last.json trace, but CANNOT switch the model (Qwen Code has no model-rewrite hook). Trace-only.",
+    "OMG_STATE_ROOT points at <project>/.qwen/state to keep OmA state consistent with the .qwen adaptation (scripts default to .omg/state).",
+    "BeforeModel model routing is non-functional in Qwen Code; remove the oma-model-router hook if the trace-only behavior is unwanted."
+  ]
+}

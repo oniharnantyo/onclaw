@@ -3,10 +3,13 @@ package web
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/components/tool/utils"
+
 	"github.com/oniharnantyo/onclaw/internal/agent/tools"
 	sysweb "github.com/oniharnantyo/onclaw/internal/web"
 )
@@ -36,6 +39,11 @@ type FetchInput struct {
 
 func (t *webFetchTool) Build(scope *tools.Scope) tool.InvokableTool {
 	inv, err := utils.InferTool(t.Name(), t.Desc(), func(ctx context.Context, input *FetchInput) (string, error) {
+		slog.Info("web_fetch_invoke", "url", input.URL, "ctx_err", ctx.Err())
+		defer func(t0 time.Time) {
+			slog.Info("web_fetch_return", "url", input.URL, "elapsed_ms", time.Since(t0).Milliseconds())
+		}(time.Now())
+
 		var rawCfg string
 		var err error
 		if scope.ToolGroupCfg != nil {

@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"sort"
 	"sync"
 )
 
@@ -32,17 +31,6 @@ func IsConfigurable(category string) bool {
 	defer configRegistryMu.RUnlock()
 	_, ok := configRegistry[category]
 	return ok
-}
-
-func ConfigurableCategories() []string {
-	configRegistryMu.RLock()
-	defer configRegistryMu.RUnlock()
-	var cats []string
-	for cat := range configRegistry {
-		cats = append(cats, cat)
-	}
-	sort.Strings(cats)
-	return cats
 }
 
 func GetConfigEntry(category string) (ConfigEntry, bool) {

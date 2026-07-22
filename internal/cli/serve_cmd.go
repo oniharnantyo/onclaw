@@ -16,6 +16,7 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/agent/tools"
 	"github.com/oniharnantyo/onclaw/internal/api"
 	"github.com/oniharnantyo/onclaw/internal/api/service"
+	"github.com/oniharnantyo/onclaw/internal/conversation"
 	"github.com/oniharnantyo/onclaw/internal/llm"
 	"github.com/oniharnantyo/onclaw/internal/mcp"
 	"github.com/oniharnantyo/onclaw/internal/observability"
@@ -192,7 +193,7 @@ func serveCommand(st *appState) *cli.Command {
 			}
 			addr := fmt.Sprintf("%s:%d", bind, port)
 
-			resolveFn := func(ctx context.Context, agentName, providerName, modelName, reasoning, workspacePath string, convID int64) (service.AssembledAgent, string, error) {
+			resolveFn := func(ctx context.Context, agentName, providerName, modelName, reasoning, workspacePath string, convID int64) (service.AssembledAgent, *conversation.SessionManager, string, error) {
 				return resolveAndAssemble(ctx, st, db, mgr, agentSessionRequest{
 					AgentName:    agentName,
 					ProviderName: providerName,

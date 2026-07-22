@@ -27,6 +27,17 @@ func NewFSBackend(workspace string) filesystem.Backend {
 	return &fsBackend{workspace: workspace}
 }
 
+// fsGrepCapBytes bounds the total matched content (in bytes) returned by
+// GrepRaw so a broad pattern can't blow the model context. Once the next match
+// would push the running total over this cap, GrepRaw stops and appends a
+// synthetic truncation marker instead of calling applyGrepContext.
+const fsGrepCapBytes = 32 * 1024
+
+// fsGlobCapEntries bounds the number of entries returned by GlobInfo. Once the
+// result reaches this count, GlobInfo stops and appends a synthetic truncation
+// marker.
+const fsGlobCapEntries = 200
+
 // LsInfo lists the immediate children of the given directory (default:
 // workspace root). Paths are returned as child names, matching `ls` output.
 func (b *fsBackend) LsInfo(_ context.Context, req *filesystem.LsInfoRequest) ([]filesystem.FileInfo, error) {
@@ -61,11 +72,12 @@ func (b *fsBackend) LsInfo(_ context.Context, req *filesystem.LsInfoRequest) ([]
 // Read returns a line-sliced view of the file (1-based offset/limit). The
 // middleware applies line numbering; this returns the raw slice and redacts
 // any secret patterns.
-func (b *fsBackend) Read(_ context.Context, req *filesystem.ReadRequest) (*filesystem.FileContent, error) {
+func (b *fsBackend) Read(ctx context.Context, req *filesystem.ReadRequest) (*filesystem.FileContent, error) {
 	absPath, err := ValidatePath(b.workspace, req.FilePath)
 	if err != nil {
 		return nil, wrapSentinel(ErrPathOutsideWorkspace, req.FilePath)
 	}
+
 	data, err := os.ReadFile(absPath)
 	if err != nil {
 		return nil, mapOSError(fmt.Errorf("failed to read file: %w", err), req.FilePath)
@@ -123,6 +135,8 @@ func (b *fsBackend) GrepRaw(_ context.Context, req *filesystem.GrepRequest) ([]f
 	}
 
 	var matches []filesystem.GrepMatch
+	truncated := false
+	var totalBytes int
 	for _, f := range candidates {
 		data, err := os.ReadFile(f)
 		if err != nil {
@@ -133,19 +147,39 @@ func (b *fsBackend) GrepRaw(_ context.Context, req *filesystem.GrepRequest) ([]f
 			rel = f
 		}
 		content := string(data)
+		var fileMatches []filesystem.GrepMatch
 		if req.EnableMultiline {
-			matches = append(matches, findMultilineMatches(rel, content, re)...)
+			fileMatches = findMultilineMatches(rel, content, re)
 		} else {
-			matches = append(matches, findSingleLineMatches(rel, content, re)...)
+			fileMatches = findSingleLineMatches(rel, content, re)
+		}
+		for _, m := range fileMatches {
+			if totalBytes+len(m.Content) > fsGrepCapBytes {
+				truncated = true
+				break
+			}
+			totalBytes += len(m.Content)
+			matches = append(matches, m)
+		}
+		if truncated {
+			break
 		}
 	}
 
-	if req.BeforeLines > 0 || req.AfterLines > 0 {
+	if !truncated && (req.BeforeLines > 0 || req.AfterLines > 0) {
 		matches = b.applyGrepContext(matches, req.BeforeLines, req.AfterLines)
 	}
 
 	for i := range matches {
 		matches[i].Content = Redact(matches[i].Content)
+	}
+
+	if truncated {
+		matches = append(matches, filesystem.GrepMatch{
+			Path:    "",
+			Line:    0,
+			Content: "[grep results truncated at 32 KB; use a narrower pattern or path to see more]",
+		})
 	}
 	return matches, nil
 }
@@ -166,6 +200,7 @@ func (b *fsBackend) GlobInfo(_ context.Context, req *filesystem.GlobInfoRequest)
 		return nil, err
 	}
 	var result []filesystem.FileInfo
+	truncated := false
 	for _, f := range files {
 		rel, relErr := filepath.Rel(b.workspace, f)
 		if relErr != nil {
@@ -182,11 +217,23 @@ func (b *fsBackend) GlobInfo(_ context.Context, req *filesystem.GlobInfoRequest)
 		if infoErr != nil {
 			continue
 		}
+		if len(result) >= fsGlobCapEntries {
+			truncated = true
+			break
+		}
 		result = append(result, filesystem.FileInfo{
 			Path:       rel,
 			IsDir:      info.IsDir(),
 			Size:       info.Size(),
 			ModifiedAt: info.ModTime().Format(time.RFC3339),
+		})
+	}
+	if truncated {
+		result = append(result, filesystem.FileInfo{
+			Path:       "[glob results truncated; use a narrower pattern to see more]",
+			IsDir:      false,
+			Size:       0,
+			ModifiedAt: "",
 		})
 	}
 	return result, nil

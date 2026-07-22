@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/cloudwego/eino-ext/components/model/agenticgemini"
 	"github.com/cloudwego/eino/components/model"
@@ -85,12 +86,28 @@ func (a *agenticGeminiAdapter) Build(ctx context.Context, p *store.Profile, mode
 		}
 	}
 
+	// Layer D (design Decision 7): Gemini context caching, wired at runtime by
+	// the `complete-prefix-caching` change. Gemini needs a named cached-content
+	// resource built from the stable prefix plus a reference to it on each
+	// request. `config.CacheExpiration` supplies the TTL used when the resource
+	// is created; the `geminiPrefixCache` wrapper (built below) creates the
+	// resource from the stable prefix and references it on every Generate/Stream.
+	// Without it, Gemini re-bills the prefix every turn (graceful degradation).
+	// Disable per-profile via Settings "prompt_caching": false.
+	if PromptCachingEnabled(p) {
+		ttl := 5 * time.Minute
+		config.CacheExpiration = &agenticgemini.CacheExpiration{TTL: &ttl}
+	}
+
 	client, err := agenticgemini.New(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create agentic Gemini client for profile %q: %w", p.Name, err)
 	}
 
-	return client, nil
+	if !PromptCachingEnabled(p) {
+		return client, nil
+	}
+	return newGeminiPrefixCache(client, client, true), nil
 }
 
 func NewAgenticGeminiAdapter() Adapter {

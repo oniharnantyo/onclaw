@@ -1,9 +1,12 @@
-import type { SSEInitEvent, SSEMessageEvent, SSETurnEvent } from '../../types/chat';
+import type { SSEInitEvent, SSEMessageEvent, SSETurnEvent, SSECompactionEvent, SSECompactionProgressEvent, SSEUsageEvent } from '../../types/chat';
 
 export interface RunChatStreamCallbacks {
   onInit: (data: SSEInitEvent) => void;
   onMessage: (data: SSEMessageEvent) => void;
   onTurn: (data: SSETurnEvent) => void;
+  onCompaction?: (data: SSECompactionEvent) => void;
+  onCompactionProgress?: (data: SSECompactionProgressEvent) => void;
+  onUsage?: (data: SSEUsageEvent) => void;
   onStreamError: (error: string) => void;
   onDone: () => void;
   onStopped: () => void;
@@ -69,6 +72,12 @@ export async function runChatStream(
               cb.onMessage(data as SSEMessageEvent);
             } else if (event === 'turn') {
               cb.onTurn(data as SSETurnEvent);
+            } else if (event === 'compaction') {
+              cb.onCompaction?.(data as SSECompactionEvent);
+            } else if (event === 'compaction_progress') {
+              cb.onCompactionProgress?.(data as SSECompactionProgressEvent);
+            } else if (event === 'usage') {
+              cb.onUsage?.(data as SSEUsageEvent);
             } else if (event === 'error') {
               const errData = data as { error: string };
               cb.onStreamError(errData.error || 'Stream error occurred');

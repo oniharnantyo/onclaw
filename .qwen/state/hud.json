@@ -1,0 +1,7 @@
+{
+  "visibility": "normal",
+  "updated_at": "2026-07-11T06:55:09Z",
+  "source": "oma:hud",
+  "integration": "qwen-statusline",
+  "note": "HUD normal and integrated with Qwen Code ui.statusLine (preset mode: model+reasoning | git-branch | context-used | current-dir). OmA /oma:status visual summaries enabled. Per-lane model routing is non-functional in Qwen Code (no BeforeModel hook)."
+}

@@ -1,7 +1,20 @@
 package cli
 
 import (
+	"context"
+	"database/sql"
 	"testing"
+
+	_ "modernc.org/sqlite"
+
+	"github.com/cloudwego/eino/schema"
+
+	"github.com/oniharnantyo/onclaw/internal/config"
+	"github.com/oniharnantyo/onclaw/internal/llm"
+	"github.com/oniharnantyo/onclaw/internal/llm/adapter"
+	"github.com/oniharnantyo/onclaw/internal/secrets"
+	"github.com/oniharnantyo/onclaw/internal/store"
+	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
 )
 
 func TestResolveContextWindow(t *testing.T) {
@@ -36,4 +49,187 @@ func TestResolveContextWindow(t *testing.T) {
 			t.Errorf("expected 64000, got %d", res)
 		}
 	})
+}
+
+func TestResolveAndAssemble_AgentNotFound(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := sqlite.Migrate(db); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	ps := sqlite.NewProfileStore(db)
+	ss := sqlite.NewSecretStore(db)
+	as := sqlite.NewAgentStore(db)
+	km := secrets.NewKeyManager([]byte("0123456789abcdef0123456789abcdef"))
+	ar := adapter.NewRegistry()
+	adapter.DefaultAdapters(ar)
+	mgr := llm.NewService(ps, ss, km, ar, as)
+
+	cfg, _ := config.Load("")
+	st := &appState{cfg: cfg}
+
+	ctx := context.Background()
+	req := agentSessionRequest{AgentName: "nonexistent"}
+	convStore := sqlite.NewConversationStore(db)
+
+	_, _, _, err = resolveAndAssemble(ctx, st, db, mgr, req, convStore, 1, nil)
+	if err == nil {
+		t.Error("expected error for nonexistent agent")
+	}
+}
+
+func TestResolveAndAssemble_ProviderDisabled(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := sqlite.Migrate(db); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	ps := sqlite.NewProfileStore(db)
+	ss := sqlite.NewSecretStore(db)
+	as := sqlite.NewAgentStore(db)
+	km := secrets.NewKeyManager([]byte("0123456789abcdef0123456789abcdef"))
+	ar := adapter.NewRegistry()
+	adapter.DefaultAdapters(ar)
+	mgr := llm.NewService(ps, ss, km, ar, as)
+
+	ctx := context.Background()
+	_ = as.AddAgent(ctx, &store.Agent{
+		Name:     "test-agent",
+		Provider: "disabled-prov",
+		Model:    "gpt-4",
+	})
+	_ = ps.AddProfile(ctx, &store.Profile{
+		Name:    "disabled-prov",
+		Enabled: 0,
+	})
+
+	cfg, _ := config.Load("")
+	st := &appState{cfg: cfg}
+	req := agentSessionRequest{AgentName: "test-agent"}
+	convStore := sqlite.NewConversationStore(db)
+
+	_, _, _, err = resolveAndAssemble(ctx, st, db, mgr, req, convStore, 1, nil)
+	if err == nil {
+		t.Error("expected error for disabled provider")
+	}
+}
+
+func TestResolveAndAssemble_Success(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := sqlite.Migrate(db); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	ps := sqlite.NewProfileStore(db)
+	ss := sqlite.NewSecretStore(db)
+	as := sqlite.NewAgentStore(db)
+	km := secrets.NewKeyManager([]byte("0123456789abcdef0123456789abcdef"))
+	ar := adapter.NewRegistry()
+	adapter.DefaultAdapters(ar)
+	mgr := llm.NewService(ps, ss, km, ar, as)
+
+	ctx := context.Background()
+	_ = as.AddAgent(ctx, &store.Agent{
+		Name:     "test-agent",
+		Provider: "mock-prov",
+		Model:    "mock-model",
+	})
+	_ = mgr.AddProfile(ctx, &store.Profile{
+		Name:         "mock-prov",
+		ProviderType: "openai",
+		Enabled:      1,
+	})
+	_ = mgr.SetSecret(ctx, "mock-prov", "sk-dummy-key")
+
+	cfg, _ := config.Load("")
+	st := &appState{cfg: cfg}
+	req := agentSessionRequest{AgentName: "test-agent"}
+	convStore := sqlite.NewConversationStore(db)
+	convID, err := convStore.CreateConversation(ctx, "test-agent")
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+
+	ag, sessionMgr, workspacePath, err := resolveAndAssemble(ctx, st, db, mgr, req, convStore, convID, nil)
+	if err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+	if ag == nil || sessionMgr == nil || workspacePath == "" {
+		t.Errorf("unexpected nil output: ag=%v, sessionMgr=%v, workspace=%s", ag, sessionMgr, workspacePath)
+	}
+
+	// Exercise LoadHistory -> Run(messages) -> LastTurnMeta()
+	history, prevID, err := sessionMgr.LoadHistory(ctx)
+	if err != nil {
+		t.Fatalf("load history failed: %v", err)
+	}
+	if prevID != "" {
+		t.Errorf("expected empty prevID for new conv, got %q", prevID)
+	}
+	userMsg := schema.UserAgenticMessage("hello test turn")
+	turnMsgs := append(history, userMsg)
+	it := ag.Run(ctx, turnMsgs)
+	for {
+		_, ok := it.Next()
+		if !ok {
+			break
+		}
+	}
+	_ = sessionMgr.LastTurnMeta()
+}
+
+func TestResolveAndAssemble_AutoSeedMasterAgent(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := sqlite.Migrate(db); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	ps := sqlite.NewProfileStore(db)
+	ss := sqlite.NewSecretStore(db)
+	as := sqlite.NewAgentStore(db)
+	km := secrets.NewKeyManager([]byte("0123456789abcdef0123456789abcdef"))
+	ar := adapter.NewRegistry()
+	adapter.DefaultAdapters(ar)
+	mgr := llm.NewService(ps, ss, km, ar, as)
+
+	ctx := context.Background()
+	_ = mgr.AddProfile(ctx, &store.Profile{
+		Name:         "mock-prov",
+		ProviderType: "openai",
+		Enabled:      1,
+	})
+	_ = mgr.SetSecret(ctx, "mock-prov", "sk-dummy-key")
+
+	cfg, _ := config.Load("")
+	st := &appState{cfg: cfg}
+	req := agentSessionRequest{AgentName: "master"}
+	convStore := sqlite.NewConversationStore(db)
+	convID, err := convStore.CreateConversation(ctx, "master")
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+
+	ag, sessionMgr, workspacePath, err := resolveAndAssemble(ctx, st, db, mgr, req, convStore, convID, nil)
+	if err != nil {
+		t.Fatalf("auto-seed master agent failed: %v", err)
+	}
+	if ag == nil || sessionMgr == nil || workspacePath == "" {
+		t.Errorf("unexpected nil output for master agent: ag=%v, sessionMgr=%v, workspace=%s", ag, sessionMgr, workspacePath)
+	}
 }

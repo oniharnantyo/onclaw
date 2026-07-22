@@ -132,20 +132,31 @@ func TestAgent_ExpectedToolFailuresAcrossFamilies(t *testing.T) {
 			}
 
 			agentConf := &store.Agent{Name: "errsig-" + sc.name, Tools: sc.tool, MaxIterations: 5}
-			agentVal, err := agent.AssembleAgent(context.Background(), agentConf, fm, fm, workspace, userConfigDir, "deny", nil, nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, sc.toolGroup, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
+			opts := agent.NewTestAssembleOpts(t, func(o *agent.AssembleAgentOpts) {
+				o.AgentConf = agentConf
+				o.ChatModel = fm
+				o.ReviewModel = fm
+				o.Workspace = workspace
+				o.UserConfigDir = userConfigDir
+				o.ToolGroupCfg = sc.toolGroup
+			})
+			agentVal, err := agent.AssembleAgent(context.Background(), opts)
 			if err != nil {
 				t.Fatalf("assemble: %v", err)
 			}
 
 			var stdout bytes.Buffer
-			it := agentVal.Run(context.Background(), "do it")
+			it := agentVal.Run(context.Background(), []*schema.AgenticMessage{schema.UserAgenticMessage("do it")})
 			tr := render.Text(&stdout)
 			for {
-				msg, ok := it.Next()
+				ev, ok := it.Next()
 				if !ok {
 					break
 				}
-				if err := tr.Render(msg); err != nil {
+				if ev.Message == nil {
+					continue
+				}
+				if err := tr.Render(ev.Message); err != nil {
 					t.Fatalf("render: %v", err)
 				}
 			}

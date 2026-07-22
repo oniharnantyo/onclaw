@@ -16,8 +16,9 @@ export function computeContextUsed(rawMsgs: RawTurn[]): number {
   for (let i = rawMsgs.length - 1; i >= 0; i--) {
     const turn = rawMsgs[i];
     if (turn.is_summary) continue;
-    return typeof turn.prompt_tokens === 'number' ? turn.prompt_tokens
-      : (typeof turn.total_tokens === 'number' ? turn.total_tokens : 0);
+    return typeof turn.total_tokens === 'number' && turn.total_tokens > 0
+      ? turn.total_tokens
+      : (typeof turn.prompt_tokens === 'number' ? turn.prompt_tokens : 0);
   }
   return 0;
 }
@@ -48,6 +49,30 @@ export function computeCompactionAnnotated(
   return newCount > prevCount;
 }
 
+/**
+ * lastTurnResponseID returns the response_id of the most recent NON-summary
+ * turn, so a resumed session can chain its first following chat onto the
+ * prior response. Summary turns are skipped (they don't carry a usable id).
+ */
+export function lastTurnResponseID(rawMsgs: RawTurn[]): string {
+  if (!rawMsgs || rawMsgs.length === 0) return '';
+  for (let i = rawMsgs.length - 1; i >= 0; i--) {
+    const turn = rawMsgs[i];
+    if (turn.is_summary) continue;
+    const rid = turn.response_id;
+    return typeof rid === 'string' ? rid : '';
+  }
+  return '';
+}
+
+/**
+ * isValidConversationId validates that a conversation ID is a positive integer.
+ */
+export function isValidConversationId(id: number | null | undefined): boolean {
+  return typeof id === 'number' && Number.isInteger(id) && id > 0;
+}
+
+
 /* ── State ─────────────────────────────────────────────────── */
 
 export interface ChatState {
@@ -62,6 +87,8 @@ export interface ChatState {
   contextWindow: number;
   contextUsed: number;
   contextCompactionAnnotated: boolean;
+  isCompacting: boolean;
+  compactionProgress?: number | null;
 }
 
 type ChatAction =
@@ -78,7 +105,9 @@ type ChatAction =
   | { type: 'SET_SKILLS'; skills: { name: string; description: string }[] }
   | { type: 'SET_CONTEXT_WINDOW'; windowSize: number }
   | { type: 'SET_CONTEXT_USED'; usedSize: number }
-  | { type: 'SET_CONTEXT_COMPACTION_ANNOTATED'; annotated: boolean };
+  | { type: 'SET_CONTEXT_COMPACTION_ANNOTATED'; annotated: boolean }
+  | { type: 'SET_COMPACTING'; compacting: boolean }
+  | { type: 'SET_COMPACTION_PROGRESS'; progress: number | null };
 
 export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
@@ -88,7 +117,6 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return {
         ...state,
         isStreaming: true,
-        messages: [],
         streamingStart: Date.now(),
       };
     case 'STREAM_MESSAGE': {
@@ -143,7 +171,16 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return { ...state, conversations: action.conversations || [] };
     case 'SET_ACTIVE_CONV_ID': {
       if (action.id === state.activeConvID) return state;
-      return { ...state, activeConvID: action.id, messages: [], contextWindow: 0, contextUsed: 0, contextCompactionAnnotated: false };
+      return {
+        ...state,
+        activeConvID: action.id,
+        messages: state.isStreaming ? state.messages : [],
+        contextWindow: 0,
+        contextUsed: 0,
+        contextCompactionAnnotated: false,
+        isCompacting: false,
+        compactionProgress: null,
+      };
     }
     case 'SET_AGENTS':
       return { ...state, agents: action.agents };
@@ -157,6 +194,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return { ...state, contextUsed: action.usedSize };
     case 'SET_CONTEXT_COMPACTION_ANNOTATED':
       return { ...state, contextCompactionAnnotated: action.annotated };
+    case 'SET_COMPACTING':
+      return { ...state, isCompacting: action.compacting };
+    case 'SET_COMPACTION_PROGRESS':
+      return { ...state, compactionProgress: action.progress };
     default:
       return state;
   }
@@ -214,6 +255,8 @@ export default function ChatProvider({
     contextWindow: 0,
     contextUsed: 0,
     contextCompactionAnnotated: false,
+    isCompacting: false,
+    compactionProgress: null,
   });
 
   // Sync state when props change (fix for race condition)
@@ -244,6 +287,12 @@ export default function ChatProvider({
   const prevCompactionCountRef = useRef(0);
   const convSeenRef = useRef(false);
 
+  // response_id of the most recent committed turn for the active conversation.
+  // Sent as previous_response_id on the next (following) chat so the Responses
+  // API chains onto the prior turn. Reset on conversation switch; seeded from
+  // history on resume.
+  const lastResponseIDRef = useRef('');
+
   const fetchConversations = useCallback(async () => {
     try {
       const res = await fetch('/api/conversations');
@@ -257,11 +306,16 @@ export default function ChatProvider({
   }, [showToast]);
 
   const fetchMessages = useCallback(async (convId: number) => {
+    if (!isValidConversationId(convId)) return;
     try {
       const res = await fetch(`/api/conversations/${convId}/messages`);
       if (res.ok) {
         const payload = await res.json();
         const rawMsgs: RawTurn[] = payload.messages || [];
+        const seeded = lastTurnResponseID(rawMsgs);
+        if (seeded) {
+          lastResponseIDRef.current = seeded;
+        }
         const contextWindow = payload.context_window || 0;
         dispatch({ type: 'SET_CONTEXT_WINDOW', windowSize: contextWindow });
 
@@ -293,6 +347,30 @@ export default function ChatProvider({
           } catch {
             messages = [];
           }
+
+          // Handle corrupted/old message formats where role field is missing
+          // If messages array is empty but question/answer exist, reconstruct from fallback fields
+          if (!Array.isArray(messages) || messages.length === 0) {
+            if (typeof turn.question === 'string' && turn.question.trim()) {
+              messages.push({
+                role: 'user',
+                content_blocks: [{
+                  type: 'user_input_text',
+                  user_input_text: { text: turn.question }
+                }]
+              });
+            }
+            if (typeof turn.answer === 'string' && turn.answer.trim()) {
+              messages.push({
+                role: 'assistant',
+                content_blocks: [{
+                  type: 'assistant_gen_text',
+                  assistant_gen_text: { text: turn.answer }
+                }]
+              });
+            }
+          }
+
           // Track messages properties to implement Q/A fallbacks
           let hasUserMsg = false;
           let assistantMsg: any = null;
@@ -300,6 +378,16 @@ export default function ChatProvider({
 
           for (const msg of messages) {
             let role = msg.role as 'user' | 'assistant' | 'system';
+
+            // Handle missing role field - infer from content or fallback
+            if (!role || (role !== 'user' && role !== 'assistant' && role !== 'system')) {
+              // Try to infer role from content blocks
+              const hasAssistantContent = msg.content_blocks?.some((b: any) =>
+                b.assistant_gen_text || b.assistant_gen_image || b.function_tool_call
+              );
+              role = hasAssistantContent ? 'assistant' : 'user';
+            }
+
             let content_blocks = msg.content_blocks || [];
 
             // Handle flat schema.Message formatting where text is under the 'content' key
@@ -420,6 +508,7 @@ export default function ChatProvider({
     };
 
     dispatch({ type: 'STREAM_INIT', userMsg });
+    dispatch({ type: 'SET_COMPACTION_PROGRESS', progress: null });
 
     // Optimistically show user message
     dispatch({
@@ -438,6 +527,7 @@ export default function ChatProvider({
       prompt,
       agent: state.chatAgent,
       conversation_id: tempConvID0 || 0,
+      previous_response_id: lastResponseIDRef.current,
       content_blocks: attachments || [],
     });
 
@@ -453,7 +543,7 @@ export default function ChatProvider({
           if (initData.context_window) {
             dispatch({ type: 'SET_CONTEXT_WINDOW', windowSize: initData.context_window });
           }
-          if (!convSet) {
+          if (!tempConvID0 && !convSet) {
             convSet = true;
             fetchConversations();
           }
@@ -464,27 +554,65 @@ export default function ChatProvider({
             conversationID: tempConvID!,
             blocks: msgData.content_blocks || [],
           });
+          const usage = msgData.response_meta?.token_usage as { total_tokens?: number; totalTokens?: number; prompt_tokens?: number } | undefined;
+          const tokens = typeof usage?.total_tokens === 'number' && usage.total_tokens > 0
+            ? usage.total_tokens
+            : (typeof usage?.totalTokens === 'number' && usage.totalTokens > 0
+              ? usage.totalTokens
+              : usage?.prompt_tokens);
+          if (typeof tokens === 'number' && tokens > 0) {
+            dispatch({ type: 'SET_CONTEXT_USED', usedSize: tokens });
+          }
         },
         onTurn: (turnData) => {
-          const used = turnData.prompt_tokens ?? turnData.tokens;
-          if (typeof used === 'number') {
+          if (turnData.response_id) {
+            lastResponseIDRef.current = turnData.response_id;
+          }
+          const used = typeof turnData.total_tokens === 'number' && turnData.total_tokens > 0
+            ? turnData.total_tokens
+            : (typeof turnData.tokens === 'number' && turnData.tokens > 0
+              ? turnData.tokens
+              : turnData.prompt_tokens);
+          if (typeof used === 'number' && used > 0) {
+            dispatch({ type: 'SET_CONTEXT_USED', usedSize: used });
+          }
+        },
+        onCompaction: (compactionData) => {
+          dispatch({ type: 'SET_COMPACTING', compacting: compactionData.status === 'started' });
+        },
+        onCompactionProgress: (compactionProgressData) => {
+          dispatch({ type: 'SET_COMPACTION_PROGRESS', progress: compactionProgressData.progress });
+        },
+        onUsage: (usageData) => {
+          const used = typeof usageData.total_tokens === 'number' && usageData.total_tokens > 0
+            ? usageData.total_tokens
+            : usageData.prompt_tokens;
+          if (typeof used === 'number' && used > 0) {
             dispatch({ type: 'SET_CONTEXT_USED', usedSize: used });
           }
         },
         onStreamError: (err) => {
+          // The SSE "error" event is terminal: the backend has already returned
+          // (chat.go writes it then exits). Clear compacting + isStreaming so the
+          // UI never hangs on "loading" — matches onConnectionError.
+          dispatch({ type: 'SET_COMPACTING', compacting: false });
+          dispatch({ type: 'SET_COMPACTION_PROGRESS', progress: null });
           showToast(err, 'error');
+          dispatch({ type: 'STREAM_ERROR', error: err });
         },
         onDone: () => {
+          dispatch({ type: 'SET_COMPACTING', compacting: false });
+          dispatch({ type: 'SET_COMPACTION_PROGRESS', progress: null });
           dispatch({ type: 'STREAM_DONE' });
-          if (tempConvID) {
-            // Small delay to let backend persist
-            setTimeout(() => fetchMessages(tempConvID!), 200);
-          }
         },
         onStopped: () => {
+          dispatch({ type: 'SET_COMPACTING', compacting: false });
+          dispatch({ type: 'SET_COMPACTION_PROGRESS', progress: null });
           dispatch({ type: 'STREAM_STOPPED' });
         },
         onConnectionError: (err) => {
+          dispatch({ type: 'SET_COMPACTING', compacting: false });
+          dispatch({ type: 'SET_COMPACTION_PROGRESS', progress: null });
           showToast(err, 'error');
           dispatch({ type: 'STREAM_ERROR', error: err });
         },
@@ -499,6 +627,7 @@ export default function ChatProvider({
     // the annotation; the first fetchMessages establishes a fresh baseline.
     prevCompactionCountRef.current = 0;
     convSeenRef.current = false;
+    lastResponseIDRef.current = '';
     dispatch({ type: 'SET_ACTIVE_CONV_ID', id });
     fetchMessages(id);
   }, [fetchMessages]);
@@ -525,6 +654,8 @@ export function useThread() {
   return {
     messages: chat.state.messages,
     isStreaming: chat.state.isStreaming,
+    isCompacting: chat.state.isCompacting,
+    compactionProgress: chat.state.compactionProgress,
     activeConvID: chat.state.activeConvID,
     runChat: chat.runChat,
     selectConversation: chat.selectConversation,

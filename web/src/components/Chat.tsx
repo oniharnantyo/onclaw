@@ -374,6 +374,19 @@ export default function Chat({ onNewConversation }: ChatProps) {
                   );
                 }}
               </Thread.Messages>
+              {state.isCompacting && (
+                <div className="compaction-status-banner">
+                  <div className="compaction-progress-bar">
+                    <div
+                      className={`compaction-progress-fill ${state.compactionProgress === null ? 'indeterminate' : ''}`}
+                      style={{ width: `${state.compactionProgress !== null ? state.compactionProgress : 100}%` }}
+                    />
+                  </div>
+                  <span className="compaction-status-text">
+                    Compacting context...
+                  </span>
+                </div>
+              )}
             </Thread.Viewport>
 
             {/* Float Scroll to Bottom button */}

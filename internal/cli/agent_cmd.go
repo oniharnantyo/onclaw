@@ -47,8 +47,8 @@ func agentCommand(st *appState) *cli.Command {
 						Usage: "Optional custom workspace path",
 					},
 					&cli.StringFlag{
-						Name:  "system-prompt",
-						Usage: "Optional extra system instructions or '-' to read from stdin",
+						Name:  "description",
+						Usage: "Optional agent description or '-' to read from stdin",
 					},
 					&cli.IntFlag{
 						Name:  "max-context",
@@ -65,19 +65,19 @@ func agentCommand(st *appState) *cli.Command {
 					reasoning := c.String("reasoning")
 					reasoningBudget := int(c.Int("reasoning-budget"))
 					workspace := c.String("workspace")
-					systemPrompt := c.String("system-prompt")
+					description := c.String("description")
 					maxContext := int(c.Int("max-context"))
 					if maxContext < 0 {
 						return fmt.Errorf("max-context must be >= 0")
 					}
 
-					if systemPrompt == "-" {
-						fmt.Println("Reading system prompt from stdin... (Ctrl+D to finish)")
+					if description == "-" {
+						fmt.Println("Reading agent description from stdin... (Ctrl+D to finish)")
 						data, err := io.ReadAll(os.Stdin)
 						if err != nil {
-							return fmt.Errorf("failed to read system prompt from stdin: %w", err)
+							return fmt.Errorf("failed to read agent description from stdin: %w", err)
 						}
-						systemPrompt = string(data)
+						description = string(data)
 					}
 
 					mgr, _, db, err := st.getProviderManager(c)
@@ -154,7 +154,7 @@ func agentCommand(st *appState) *cli.Command {
 						ModelMetadata:         modelMetadataJSON,
 						ReasoningEffort:       reasoning,
 						ReasoningBudgetTokens: reasoningBudget,
-						SystemPrompt:          systemPrompt,
+						Description:           description,
 						Workspace:             agentWS,
 						MaxContextTokens:      maxContext,
 					}
@@ -279,7 +279,7 @@ func agentCommand(st *appState) *cli.Command {
 						fmt.Printf("Max Context Override: %d tokens\n", a.MaxContextTokens)
 					}
 					fmt.Printf("Max Iterations:   %d\n", a.MaxIterations)
-					fmt.Printf("System Prompt:\n%s\n", a.SystemPrompt)
+					fmt.Printf("Description:\n%s\n", a.Description)
 					return nil
 				},
 			},

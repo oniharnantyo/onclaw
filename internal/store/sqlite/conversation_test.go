@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/oniharnantyo/onclaw/internal/store"
 	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
 )
 
@@ -254,4 +255,84 @@ func TestConversationStoreSummaryFlag(t *testing.T) {
 	if strings.Contains(transcript, "Summary 1") || strings.Contains(transcript, "Summary 2") {
 		t.Errorf("transcript should not include summary rows, got: %q", transcript)
 	}
+}
+
+// TestConversationStoreSummaryExtractsUserInputText pins the real Eino summary
+// message shape: the summary text lives in a user_input_text block (Eino wraps
+// the summary as a user-role continuation message), and the only
+// assistant_gen_text block is the onclaw-injected recency note. The persisted
+// answer column (and therefore the FTS index) must surface the real summary,
+// not just the recency note.
+func TestConversationStoreSummaryExtractsUserInputText(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	s := sqlite.NewConversationStore(db)
+	ctx := context.Background()
+
+	convID, err := s.CreateConversation(ctx, "test-agent")
+	if err != nil {
+		t.Fatalf("CreateConversation failed: %v", err)
+	}
+
+	// Mirrors the shape produced by Eino summarization's summary message.
+	const summaryMsg = `{"role":"user","content_blocks":[
+		{"type":"user_input_text","user_input_text":{"text":"This session is being continued from a previous conversation. Primary Request: gather context engineering articles."}},
+		{"type":"assistant_gen_text","assistant_gen_text":{"text":"## Recently accessed files\n- /tmp/file.md"}}
+	]}`
+	if err := s.SaveSummary(ctx, convID, summaryMsg, 1); err != nil {
+		t.Fatalf("SaveSummary failed: %v", err)
+	}
+
+	turns, err := s.ListTurns(ctx, convID)
+	if err != nil {
+		t.Fatalf("ListTurns failed: %v", err)
+	}
+	var summary *store.TurnRow
+	var found bool
+	for _, tr := range turns {
+		if tr.IsSummary {
+			summary = tr
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected a summary row after SaveSummary")
+	}
+
+	// The real summary text (from user_input_text) must be captured in answer so
+	// it is searchable via the conversation_messages_fts index.
+	if !strings.Contains(summary.Answer, "Primary Request: gather context engineering articles") {
+		t.Errorf("expected answer to contain the user_input_text summary, got: %q", summary.Answer)
+	}
+
+	// Prove FTS searchability by querying the virtual table directly
+	var count int
+	err = db.QueryRowContext(ctx, "SELECT count(*) FROM conversation_messages_fts WHERE answer MATCH 'gather'").Scan(&count)
+	if err != nil {
+		t.Fatalf("FTS match query failed: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 match in FTS virtual table, got %d", count)
+	}
+}
+
+// turnRow mirrors store.TurnRow for test-local inspection without importing
+// the unexported sqlite package details.
+type turnRow = struct {
+	ID                 int64
+	ConversationID     int64
+	SequenceNum        int64
+	ResponseID         string
+	PreviousResponseID string
+	Message            string
+	Model              string
+	PromptTokens       int64
+	CompletionTokens   int64
+	TotalTokens        int64
+	Question           string
+	Answer             string
+	IsSummary          bool
+	CreatedAt          string
 }

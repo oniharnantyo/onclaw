@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,6 +29,7 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/secrets"
 	"github.com/oniharnantyo/onclaw/internal/store"
+	"github.com/oniharnantyo/onclaw/internal/tokens"
 )
 
 // Agent wraps eino ADK ChatModelAgent and configuration context.
@@ -42,8 +42,7 @@ type Agent struct {
 	sessionStartOnce sync.Once
 	Tools            []tool.BaseTool
 	// memoryMiddleware is non-nil when memory is enabled; used for EventStop flush.
-	memoryMiddleware  *middlewares.MemoryMiddleware
-	historyMiddleware *middlewares.HistoryMiddleware
+	memoryMiddleware *middlewares.MemoryMiddleware
 	// Pruner periodically prunes expired episodic summaries.
 	Pruner        *memory.PeriodicPruner
 	contextWindow int
@@ -61,119 +60,170 @@ func (c *inMemoryEnabledChecker) Enabled(name string) bool {
 	return enabled
 }
 
+// AssembleAgentOpts contains configuration parameters for assembling an Agent.
+type AssembleAgentOpts struct {
+	AgentConf         *store.Agent
+	ChatModel         model.AgenticModel
+	ReviewModel       model.AgenticModel
+	Workspace         string
+	UserConfigDir     string
+	ShellPolicy       string
+	ShellAllowlist    []string
+	ShellDenylist     []string
+	ContextWindow     int
+	ConvStore         store.ConversationStore
+	ConversationID    int64
+	McpTools          []tool.BaseTool
+	HookStore         store.HookStore
+	ExecStore         store.HookExecutionStore
+	Channel           string
+	ToolRegistryStore store.ToolRegistryStore
+	ToolGroupCfg      tools.ToolGroupCfg
+	KVStore           store.KVStore
+	Resolver          secrets.SecretResolver
+	MemoryStore       memory.MemoryStore
+	CoreStore         memory.CoreStore
+	Embedder          *memory.Embedder
+	StagedWriteStore  memory.StagedWriteStore
+	EpisodicStore     memory.EpisodicStore
+	Dreamer           *memory.Dreamer
+	KGStore           memory.KGStore
+	CharLimit         int
+	EpisodicTTLDays   int
+	DB                *sql.DB
+	KGTraversalDepth  int
+	SummarizationOpts SummarizationOpts
+}
+
+type SummarizationOpts struct {
+	TriggerContextTokens   int
+	TriggerContextMessages int
+	TranscriptFilePath     string
+	PreviousMessagesKeep   int
+}
+
+type agentBuilder struct {
+	opts             AssembleAgentOpts
+	instruction      string
+	resolvedMemory   *memory.ResolvedMemoryConfig
+	tools            []tool.BaseTool
+	enabledChecker   tools.EnabledChecker
+	memoryMiddleware *middlewares.MemoryMiddleware
+	dispatcher       *hooks.Dispatcher
+	sessionState     *middlewares.SessionState
+	handlers         []adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage]
+}
+
+// applySummarizationDefaults applies default values to SummarizationOpts if not set.
+func applySummarizationDefaults(opts AssembleAgentOpts) AssembleAgentOpts {
+	if opts.SummarizationOpts.TriggerContextTokens == 0 {
+		opts.SummarizationOpts.TriggerContextTokens = 64000
+	}
+	if opts.SummarizationOpts.TriggerContextMessages == 0 {
+		opts.SummarizationOpts.TriggerContextMessages = 100
+	}
+	if opts.SummarizationOpts.PreviousMessagesKeep == 0 {
+		opts.SummarizationOpts.PreviousMessagesKeep = 4
+	}
+	// TranscriptFilePath will be set in buildMiddleware if not provided
+	return opts
+}
+
 // AssembleAgent constructs a ChatModelAgent with persona configuration, tools, and summarization middleware.
-func AssembleAgent(
-	ctx context.Context,
-	agentConf *store.Agent,
-	chatModel model.AgenticModel,
-	reviewModel model.AgenticModel,
-	workspace string,
-	userConfigDir string,
-	shellPolicy string,
-	shellAllowlist []string,
-	shellDenylist []string,
-	contextWindow int,
-	convStore store.ConversationStore,
-	conversationID int64,
-	mcpTools []tool.BaseTool,
-	hookStore store.HookStore,
-	execStore store.HookExecutionStore,
-	channel string,
-	toolRegistryStore store.ToolRegistryStore,
-	toolGroupCfg tools.ToolGroupCfg,
-	kvStore store.KVStore,
-	resolver secrets.SecretResolver,
-	memoryStore memory.MemoryStore,
-	coreStore memory.CoreStore,
-	embedder *memory.Embedder,
-	stagedWriteStore memory.StagedWriteStore,
-	episodicStore memory.EpisodicStore,
-	dreamer *memory.Dreamer,
-	kgStore memory.KGStore,
-	charLimit int,
-	episodicTTLDays int,
-	db *sql.DB,
-	kgTraversalDepth int,
-) (*Agent, error) {
-	// Load existing persona/memory files and AGENTS.md
+func AssembleAgent(ctx context.Context, opts AssembleAgentOpts) (*Agent, error) {
+	opts = applySummarizationDefaults(opts)
+	b := &agentBuilder{opts: opts}
+	if err := b.resolveConfig(); err != nil {
+		return nil, err
+	}
+	if err := b.buildPrompt(ctx); err != nil {
+		return nil, err
+	}
+	if err := b.buildTools(ctx); err != nil {
+		return nil, err
+	}
+	if err := b.buildMiddleware(ctx); err != nil {
+		return nil, err
+	}
+	return b.assemble(ctx)
+}
+
+func (b *agentBuilder) resolveConfig() error {
 	var memOver memory.AgentMemoryConfig
-	if agentConf.MemoryConfig != "" {
-		if err := json.Unmarshal([]byte(agentConf.MemoryConfig), &memOver); err != nil {
-			slog.Warn("AssembleAgent: Failed to parse memory config", "agent", agentConf.Name, "error", err)
+	if b.opts.AgentConf.MemoryConfig != "" {
+		if err := json.Unmarshal([]byte(b.opts.AgentConf.MemoryConfig), &memOver); err != nil {
+			slog.Warn("AssembleAgent: Failed to parse memory config", "agent", b.opts.AgentConf.Name, "error", err)
 		}
 	}
 
-	resolvedMem := memOver.Resolve(
-		memoryStore != nil,
-		coreStore != nil,
-		episodicStore != nil,
-		kgStore != nil,
-		"", "", // embedder already constructed
-		true,  // security scan default ON
-		true,  // extraction default ON
-		true,  // retrieval default ON
-		true,  // dreaming default ON
-		false, // staged write approval handled by dreamer
+	b.resolvedMemory = memOver.Resolve(
+		b.opts.MemoryStore != nil,
+		b.opts.CoreStore != nil,
+		b.opts.EpisodicStore != nil,
+		b.opts.KGStore != nil,
+		"", "",
+		true,
+		true,
+		true,
+		true,
+		true,
 	)
+	return nil
+}
 
-	persona, err := LoadPersonaContext(ctx, workspace, userConfigDir)
+func (b *agentBuilder) buildPrompt(ctx context.Context) error {
+	persona, err := LoadPersonaContext(ctx, b.opts.Workspace, b.opts.UserConfigDir)
 	if err != nil {
-		return nil, fmt.Errorf("load persona context: %w", err)
+		return fmt.Errorf("load persona context: %w", err)
 	}
 
 	var promptParts []string
-	// Agent-specific system prompt comes first (highest priority)
-	if agentConf.SystemPrompt != "" {
-		promptParts = append(promptParts, agentConf.SystemPrompt)
-	}
-	// Persona context files second (identity, vibes, workspace rules)
 	if persona != "" {
 		promptParts = append(promptParts, persona)
 	}
 
-	// Workspace grounding
-	grounding := fmt.Sprintf("Your active workspace directory is: %s", workspace)
+	grounding := fmt.Sprintf("Your active workspace directory is: %s", b.opts.Workspace)
 	promptParts = append(promptParts, grounding)
 
-	// Base instruction
 	promptParts = append(promptParts, "You can execute commands in this workspace using your tools.")
 
-	instruction := strings.Join(promptParts, "\n\n")
+	b.instruction = strings.Join(promptParts, "\n\n")
+	return nil
+}
 
-	var enabledChecker tools.EnabledChecker
-	if toolRegistryStore != nil {
-		list, err := toolRegistryStore.ListTools(ctx)
+func (b *agentBuilder) buildTools(ctx context.Context) error {
+	if b.opts.ToolRegistryStore != nil {
+		list, err := b.opts.ToolRegistryStore.ListTools(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("list tools for enabled checker: %w", err)
+			return fmt.Errorf("list tools for enabled checker: %w", err)
 		}
 		enabledMap := make(map[string]bool)
 		for _, t := range list {
 			enabledMap[t.Name] = t.Enabled == 1
 		}
-		enabledChecker = &inMemoryEnabledChecker{enabledMap: enabledMap}
+		b.enabledChecker = &inMemoryEnabledChecker{enabledMap: enabledMap}
 	}
 
-	// 2. Build tools
 	builtTools := tools.Builtin(&tools.Scope{
-		Workspace:        workspace,
-		ShellPolicy:      shellPolicy,
-		ShellAllowlist:   shellAllowlist,
-		ShellDenylist:    shellDenylist,
-		ToolGroupCfg:     toolGroupCfg,
-		KVStore:          kvStore,
-		SecretResolver:   resolver,
-		AgentName:        agentConf.Name,
-		Db:               db,
-		MemoryStore:      memoryStore,
-		Embedder:         embedder,
-		StagedWriteStore: stagedWriteStore,
-		CharLimit:        charLimit,
-		KGStore:          kgStore,
-		KGTraversalDepth: kgTraversalDepth,
-	}, enabledChecker)
-	builtTools = append(builtTools, mcpTools...)
+		Workspace:        b.opts.Workspace,
+		ShellPolicy:      b.opts.ShellPolicy,
+		ShellAllowlist:   b.opts.ShellAllowlist,
+		ShellDenylist:    b.opts.ShellDenylist,
+		ToolGroupCfg:     b.opts.ToolGroupCfg,
+		KVStore:          b.opts.KVStore,
+		SecretResolver:   b.opts.Resolver,
+		AgentName:        b.opts.AgentConf.Name,
+		SessionID:        strconv.FormatInt(b.opts.ConversationID, 10),
+		Db:               b.opts.DB,
+		MemoryStore:      b.opts.MemoryStore,
+		Embedder:         b.opts.Embedder,
+		StagedWriteStore: b.opts.StagedWriteStore,
+		CharLimit:        b.opts.CharLimit,
+		KGStore:          b.opts.KGStore,
+		KGTraversalDepth: b.opts.KGTraversalDepth,
+	}, b.enabledChecker)
+	builtTools = append(builtTools, b.opts.McpTools...)
 
-	// Filter tools based on agent-specific memory configuration features
 	var finalTools []tool.BaseTool
 	for _, t := range builtTools {
 		info, err := t.Info(ctx)
@@ -182,17 +232,17 @@ func AssembleAgent(
 			continue
 		}
 		if info.Name == "memory_search" {
-			if !resolvedMem.RetrievalEnabled || memoryStore == nil || !resolvedMem.CuratedEnabled {
+			if !b.resolvedMemory.RetrievalEnabled || b.opts.MemoryStore == nil || !b.resolvedMemory.CuratedEnabled {
 				continue
 			}
 		}
 		if info.Name == "session_search" {
-			if !resolvedMem.RetrievalEnabled || episodicStore == nil || !resolvedMem.EpisodicEnabled {
+			if !b.resolvedMemory.RetrievalEnabled || b.opts.EpisodicStore == nil || !b.resolvedMemory.EpisodicEnabled {
 				continue
 			}
 		}
 		if info.Name == "kg_search" {
-			if !resolvedMem.RetrievalEnabled || kgStore == nil || !resolvedMem.KGEnabled {
+			if !b.resolvedMemory.RetrievalEnabled || b.opts.KGStore == nil || !b.resolvedMemory.KGEnabled {
 				continue
 			}
 		}
@@ -201,9 +251,9 @@ func AssembleAgent(
 	builtTools = finalTools
 
 	// Filter tools if a tool subset is configured on the agent
-	if agentConf.Tools != "" {
+	if b.opts.AgentConf.Tools != "" {
 		allowedTools := make(map[string]bool)
-		for _, t := range strings.Split(agentConf.Tools, ",") {
+		for _, t := range strings.Split(b.opts.AgentConf.Tools, ",") {
 			allowedTools[strings.TrimSpace(t)] = true
 		}
 		var filteredTools []tool.BaseTool
@@ -218,178 +268,158 @@ func AssembleAgent(
 		}
 		builtTools = filteredTools
 	}
+	b.tools = builtTools
 
-	// 2a. Input-safety floor guard (task 10.3): fail fast if the fixed input
-	// floor (system instruction + tool schemas) would consume too much of the
-	// context window, leaving insufficient room for conversation history.
-	floorToolInfos := make([]*schema.ToolInfo, 0, len(builtTools))
-	for _, t := range builtTools {
+	// Input-safety floor guard: fail fast if the fixed input floor would consume too much context window.
+	floorToolInfos := make([]*schema.ToolInfo, 0, len(b.tools))
+	for _, t := range b.tools {
 		info, err := t.Info(ctx)
 		if err != nil {
-			// A tool whose schema cannot be resolved is skipped; the model
-			// will not see it either.
 			continue
 		}
 		floorToolInfos = append(floorToolInfos, info)
 	}
-	floor, err := estimateFloorTokens(ctx, instruction, floorToolInfos)
+	floor, err := estimateFloorTokens(ctx, b.instruction, floorToolInfos)
 	if err != nil {
-		return nil, fmt.Errorf("input floor estimate: %w", err)
+		return fmt.Errorf("input floor estimate: %w", err)
 	}
-	if floor >= middlewares.FloorSafetyLimit(contextWindow) {
-		return nil, fmt.Errorf("input floor %d tokens exceeds safety limit %d tokens for context window %d: %w",
-			floor, middlewares.FloorSafetyLimit(contextWindow), contextWindow, middlewares.ErrInputFloorExceedsSafetyLimit)
+	if floor >= middlewares.FloorSafetyLimit(b.opts.ContextWindow) {
+		return fmt.Errorf("input floor %d tokens exceeds safety limit %d tokens for context window %d: %w",
+			floor, middlewares.FloorSafetyLimit(b.opts.ContextWindow), b.opts.ContextWindow, middlewares.ErrInputFloorExceedsSafetyLimit)
 	}
 
-	// 2b. Filesystem middleware (Eino) injects ls/read_file/write_file/edit_file/
-	// glob/grep/execute, backed by onclaw-controlled Backend/Shell. The toggle
-	// middleware enforces the tool_registry enable flag on those tools.
+	return nil
+}
+
+func (b *agentBuilder) buildMemoryMiddleware(ctx context.Context) error {
+	if b.opts.MemoryStore == nil {
+		return nil
+	}
+
+	// Curated Core Memory toggle
+	var activeCoreStore memory.CoreStore
+	if b.opts.CoreStore != nil && b.resolvedMemory.CuratedEnabled {
+		activeCoreStore = b.opts.CoreStore
+	}
+
+	// Episodic memory toggle
+	var activeEpisodicStore memory.EpisodicStore
+	var activeDreamer *memory.Dreamer
+	if b.opts.EpisodicStore != nil && b.resolvedMemory.EpisodicEnabled {
+		activeEpisodicStore = b.opts.EpisodicStore
+		if b.resolvedMemory.DreamingEnabled {
+			activeDreamer = b.opts.Dreamer
+		}
+	}
+
+	// KG memory toggle
+	var activeKGStore memory.KGStore
+	if b.opts.KGStore != nil && b.resolvedMemory.KGEnabled {
+		activeKGStore = b.opts.KGStore
+	}
+
+	b.memoryMiddleware = middlewares.NewMemoryMiddleware(
+		activeCoreStore,
+		b.opts.MemoryStore,
+		b.opts.Embedder,
+		b.opts.KVStore,
+		b.opts.ChatModel,
+		b.opts.ReviewModel,
+		b.opts.Workspace,
+		b.opts.AgentConf.Name,
+		b.opts.ConversationID,
+		b.opts.CharLimit,
+		activeEpisodicStore,
+		activeDreamer,
+		b.opts.EpisodicTTLDays,
+		activeKGStore,
+	)
+	b.memoryMiddleware.SkipSecurityScan = !b.resolvedMemory.SecurityScanEnabled
+	b.memoryMiddleware.ExtractionEnabled = b.resolvedMemory.ExtractionEnabled
+	return nil
+}
+
+func (b *agentBuilder) buildMiddleware(ctx context.Context) error {
 	fsMiddleware, err := filesystem.NewTyped[*schema.AgenticMessage](ctx, &filesystem.MiddlewareConfig{
-		Backend: tools.NewFSBackend(workspace),
-		Shell:   tools.NewFSShell(workspace, shellPolicy, shellAllowlist, shellDenylist),
+		Backend: tools.NewFSBackend(b.opts.Workspace),
+		Shell:   tools.NewFSShell(b.opts.Workspace, b.opts.ShellPolicy, b.opts.ShellAllowlist, b.opts.ShellDenylist),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("create filesystem middleware: %w", err)
+		return fmt.Errorf("create filesystem middleware: %w", err)
 	}
-	fsToggle := middlewares.NewFSToggleMiddleware(enabledChecker)
-	// Converts expected filesystem failures (path blocked, not found,
-	// ambiguous edit, invalid pattern) into recoverable observations so the
-	// agent turn continues. Must run after fsToggle so disabled tools stay
-	// disabled rather than being "recovered".
+	fsToggle := middlewares.NewFSToggleMiddleware(b.enabledChecker)
 	fsError := middlewares.NewFSErrorMiddleware()
 
-	// 3. Assemble summarization middleware
-	// We trigger when input tokens exceed 80% of the context window, or when the
-	// message count exceeds a bounded ceiling (ContextMessages backstop).
-	triggerTokens := summarizationTrigger(contextWindow)
-	// lastCompactionSummary captures the most recent compaction summary text
-	// so that EpisodicStore can reuse it instead of making a second LLM call.
-	// memMW is declared here so the summarization callback can store the
-	// compaction summary on it before the MemoryMiddleware is fully assembled.
-	var memMW *middlewares.MemoryMiddleware
-	// transcriptPath points at a per-conversation file holding the compacted
-	// range; Eino appends it to the summary so the agent can re-read exact
-	// prior detail. The callback writes the file after each compaction.
-	transcriptPath := buildTranscriptPath(workspace, conversationID)
-	sumCfg := buildSummarizationConfig(chatModel, triggerTokens, transcriptPath)
-	sumCfg.Callback = func(ctx context.Context, before adk.TypedChatModelAgentState[*schema.AgenticMessage], after adk.TypedChatModelAgentState[*schema.AgenticMessage]) error {
-		summary, err := handleSummarization(ctx, handleSummarizationParams{
-			Before:           before,
-			After:            after,
-			ChatModel:        chatModel,
-			MemoryStore:      memoryStore,
-			Embedder:         embedder,
-			KVStore:          kvStore,
-			AgentName:        agentConf.Name,
-			ConversationID:   conversationID,
-			ConvStore:        convStore,
-			TranscriptPath:   transcriptPath,
-			SkipSecurityScan: !resolvedMem.SecurityScanEnabled,
-		})
-		if err == nil && summary != "" && memMW != nil {
-			memMW.CompactionSummary = summary
-		}
+	if err := b.buildMemoryMiddleware(ctx); err != nil {
 		return err
 	}
-	summarizationMiddleware, err := summarization.NewTyped[*schema.AgenticMessage](ctx, sumCfg)
-	if err != nil {
-		return nil, fmt.Errorf("create summarization middleware: %w", err)
+
+	// Set default transcript file path if not provided
+	transcriptPath := b.opts.SummarizationOpts.TranscriptFilePath
+	if transcriptPath == "" {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("get user home dir: %w", err)
+		}
+		transcriptPath = buildTranscriptPath(homeDir, b.opts.AgentConf.Name)
 	}
 
-	historyMiddleware := middlewares.NewHistoryMiddleware(convStore, conversationID, agentConf.Model)
+	summarizationMiddleware, err := summarization.NewTyped[*schema.AgenticMessage](ctx, &summarization.TypedConfig[*schema.AgenticMessage]{
+		Model:              b.opts.ChatModel,
+		EmitInternalEvents: true,
+		ReusePromptCaching: true,
+		TokenCounter: func(ctx context.Context, input *summarization.TypedTokenCounterInput[*schema.AgenticMessage]) (int, error) {
+			var count int
+			for _, msg := range input.Messages {
+				if msg.ResponseMeta != nil && msg.ResponseMeta.TokenUsage != nil && msg.ResponseMeta.TokenUsage.TotalTokens != 0 {
+					count += msg.ResponseMeta.TokenUsage.TotalTokens
+				} else {
+					count += tokens.EstimateMessage(msg)
+				}
+			}
+			return count, nil
+		},
+		Trigger: &summarization.TriggerCondition{
+			ContextTokens:   b.opts.SummarizationOpts.TriggerContextTokens,
+			ContextMessages: b.opts.SummarizationOpts.TriggerContextMessages,
+		},
+		TranscriptFilePath: transcriptPath,
+		Finalize: func(ctx context.Context, originalMessages []*schema.AgenticMessage, summary *schema.AgenticMessage) ([]*schema.AgenticMessage, error) {
+			return reconstructMessages(ctx, originalMessages, summary, b.opts.SummarizationOpts.PreviousMessagesKeep)
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("create summarization middleware: %w", err)
+	}
 
-	var dispatcher *hooks.Dispatcher
-	var sessionState *middlewares.SessionState
 	var hooksMiddleware adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage]
-
-	if hookStore != nil && execStore != nil {
-		dispatcher = hooks.NewDispatcher(hookStore, execStore)
-		sessionID := strconv.FormatInt(conversationID, 10)
-		sessionState = &middlewares.SessionState{
-			Channel:   channel,
+	if b.opts.HookStore != nil && b.opts.ExecStore != nil {
+		b.dispatcher = hooks.NewDispatcher(b.opts.HookStore, b.opts.ExecStore)
+		sessionID := strconv.FormatInt(b.opts.ConversationID, 10)
+		b.sessionState = &middlewares.SessionState{
+			Channel:   b.opts.Channel,
 			SessionID: sessionID,
 		}
-		hooksMiddleware = middlewares.NewHooksMiddleware(dispatcher, agentConf.Name, sessionState)
+		hooksMiddleware = middlewares.NewHooksMiddleware(b.dispatcher, b.opts.AgentConf.Name, b.sessionState)
 	}
 
-	maxIterations := agentConf.MaxIterations
-	if maxIterations <= 0 {
-		maxIterations = 20 // Default to 20 cycles
-	}
-
-	// 4. Create TypedChatModelAgentConfig
-	agentConfig := &adk.TypedChatModelAgentConfig[*schema.AgenticMessage]{
-		Name:        agentConf.Name,
-		Instruction: instruction,
-		Model:       chatModel,
-		ToolsConfig: adk.ToolsConfig{
-			ToolsNodeConfig: compose.ToolsNodeConfig{
-				Tools:               builtTools,
-				ExecuteSequentially: true,
-			},
-		},
-		MaxIterations: maxIterations,
-	}
-
-	skillMiddleware, err := middlewares.BuildMiddleware(ctx, userConfigDir, agentConf.Name)
+	skillMiddleware, err := middlewares.BuildMiddleware(ctx, b.opts.UserConfigDir, b.opts.AgentConf.Name)
 	if err != nil {
-		return nil, fmt.Errorf("build skill middleware: %w", err)
+		return fmt.Errorf("build skill middleware: %w", err)
 	}
 
-	// Input-safety preflight (task 10.5): runs first, before summarization,
-	// so a turn whose static tool/system floor exceeds the safety limit is
-	// rejected before any model call.
-	inputSafetyMiddleware := middlewares.NewInputSafetyMiddleware(estimateTokenCount(len(instruction)), contextWindow)
+	inputSafetyMiddleware := middlewares.NewInputSafetyMiddleware(tokens.Estimate(len(b.instruction)), b.opts.ContextWindow)
+
 	handlers := []adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage]{
 		inputSafetyMiddleware,
 		summarizationMiddleware,
-		historyMiddleware,
 		fsMiddleware,
 		fsToggle,
 		fsError,
 	}
-	if memoryStore != nil {
-		// Curated Core Memory toggle
-		var activeCoreStore memory.CoreStore
-		if coreStore != nil && resolvedMem.CuratedEnabled {
-			activeCoreStore = coreStore
-		}
 
-		// Episodic memory toggle
-		var activeEpisodicStore memory.EpisodicStore
-		var activeDreamer *memory.Dreamer
-		if episodicStore != nil && resolvedMem.EpisodicEnabled {
-			activeEpisodicStore = episodicStore
-			if resolvedMem.DreamingEnabled {
-				activeDreamer = dreamer
-			}
-		}
-
-		// KG memory toggle
-		var activeKGStore memory.KGStore
-		if kgStore != nil && resolvedMem.KGEnabled {
-			activeKGStore = kgStore
-		}
-
-		memMW = middlewares.NewMemoryMiddleware(
-			activeCoreStore,
-			memoryStore,
-			embedder,
-			kvStore,
-			chatModel,
-			reviewModel,
-			workspace,
-			agentConf.Name,
-			conversationID,
-			charLimit,
-			activeEpisodicStore,
-			activeDreamer,
-			episodicTTLDays,
-			activeKGStore,
-		)
-		memMW.SkipSecurityScan = !resolvedMem.SecurityScanEnabled
-		memMW.ExtractionEnabled = resolvedMem.ExtractionEnabled
-		handlers = append(handlers, memMW)
+	if b.memoryMiddleware != nil {
+		handlers = append(handlers, b.memoryMiddleware)
 	}
 	if skillMiddleware != nil {
 		handlers = append(handlers, skillMiddleware)
@@ -397,7 +427,31 @@ func AssembleAgent(
 	if hooksMiddleware != nil {
 		handlers = append(handlers, hooksMiddleware)
 	}
-	agentConfig.Handlers = handlers
+
+	b.handlers = handlers
+	return nil
+}
+
+func (b *agentBuilder) assemble(ctx context.Context) (*Agent, error) {
+	maxIterations := b.opts.AgentConf.MaxIterations
+	if maxIterations <= 0 {
+		maxIterations = 20
+	}
+
+	agentConfig := &adk.TypedChatModelAgentConfig[*schema.AgenticMessage]{
+		Name:        b.opts.AgentConf.Name,
+		Description: b.opts.AgentConf.Description,
+		Instruction: b.instruction,
+		Model:       b.opts.ChatModel,
+		ToolsConfig: adk.ToolsConfig{
+			ToolsNodeConfig: compose.ToolsNodeConfig{
+				Tools:               b.tools,
+				ExecuteSequentially: true,
+			},
+		},
+		MaxIterations: maxIterations,
+		Handlers:      b.handlers,
+	}
 
 	einoAgent, err := adk.NewTypedChatModelAgent[*schema.AgenticMessage](ctx, agentConfig)
 	if err != nil {
@@ -405,64 +459,26 @@ func AssembleAgent(
 	}
 
 	agent := &Agent{
-		EinoAgent:         einoAgent,
-		Config:            agentConf,
-		Workspace:         workspace,
-		Dispatcher:        dispatcher,
-		Session:           sessionState,
-		Tools:             builtTools,
-		memoryMiddleware:  memMW,
-		historyMiddleware: historyMiddleware,
-		contextWindow:     contextWindow,
+		EinoAgent:        einoAgent,
+		Config:           b.opts.AgentConf,
+		Workspace:        b.opts.Workspace,
+		Dispatcher:       b.dispatcher,
+		Session:          b.sessionState,
+		Tools:            b.tools,
+		memoryMiddleware: b.memoryMiddleware,
+		contextWindow:    b.opts.ContextWindow,
 	}
 
-	if episodicStore != nil {
-		agent.Pruner = memory.NewPeriodicPruner(episodicStore, 1*time.Hour)
+	if b.opts.EpisodicStore != nil {
+		agent.Pruner = memory.NewPeriodicPruner(b.opts.EpisodicStore, 1*time.Hour)
 		agent.Pruner.Start(ctx)
 	}
 
 	return agent, nil
 }
 
-func summarizationTrigger(contextWindow int) int {
-	return int(float64(contextWindow) * 0.8)
-}
-
-// summarizationContextMessagesBackstop caps how many messages may accumulate
-// before summarization triggers regardless of token fill (design Decision 3,
-// task 4.2: default 200).
-const summarizationContextMessagesBackstop = 200
-
-// summarizationMaxRetries bounds how often compaction re-attempts a transient
-// summary-generation failure so it stays best-effort (design Decision 3).
-const summarizationMaxRetries = 2
-
-// buildSummarizationConfig assembles the Eino summarization TypedConfig:
-// input-token anchoring, a message-count backstop, bounded retries, and a
-// per-conversation transcript path. The Callback is attached by the caller
-// because it closes over the memory middleware.
-func buildSummarizationConfig(chatModel model.AgenticModel, triggerTokens int, transcriptPath string) *summarization.TypedConfig[*schema.AgenticMessage] {
-	maxRetries := summarizationMaxRetries
-	return &summarization.TypedConfig[*schema.AgenticMessage]{
-		Model: chatModel,
-		// Anchor the trigger on input (prompt) tokens, not total tokens, so a
-		// long prior completion does not fire compaction early.
-		TokenCounter: inputTokenCounter,
-		Trigger: &summarization.TriggerCondition{
-			ContextTokens:   triggerTokens,
-			ContextMessages: summarizationContextMessagesBackstop,
-		},
-		// Make compaction best-effort: a transient summary-generation failure
-		// is retried rather than failing the turn.
-		Retry: &summarization.TypedRetryConfig[*schema.AgenticMessage]{
-			MaxRetries: &maxRetries,
-		},
-		TranscriptFilePath: transcriptPath,
-	}
-}
-
-// Run executes a single turn of the agent and returns an EventIterator.
-func (a *Agent) Run(ctx context.Context, userInput string, contentBlocks ...*schema.ContentBlock) EventIterator {
+// Run executes a single turn of the agent given an assembled message list and returns an EventIterator.
+func (a *Agent) Run(ctx context.Context, messages []*schema.AgenticMessage) EventIterator {
 	a.sessionStartOnce.Do(func() {
 		if a.Dispatcher != nil && a.Session != nil {
 			_, _ = a.Dispatcher.Fire(ctx, hooks.EventSessionStart, hooks.Payload{
@@ -476,26 +492,12 @@ func (a *Agent) Run(ctx context.Context, userInput string, contentBlocks ...*sch
 	slog.Debug("agent_run",
 		"agent_name", a.Config.Name,
 		"workspace", a.Workspace,
-		"system_prompt", a.Config.SystemPrompt,
+		"description", a.Config.Description,
+		"message_count", len(messages),
 	)
-
-	slog.Debug("agent_user_input",
-		"agent_name", a.Config.Name,
-		"user_input", userInput,
-		"input_length", len(userInput),
-	)
-
-	msg := schema.UserAgenticMessage(userInput)
-	for _, cb := range contentBlocks {
-		if cb != nil {
-			msg.ContentBlocks = append(msg.ContentBlocks, cb)
-		}
-	}
 
 	input := &adk.TypedAgentInput[*schema.AgenticMessage]{
-		Messages: []*schema.AgenticMessage{
-			msg,
-		},
+		Messages:        messages,
 		EnableStreaming: middlewares.StreamingFromContext(ctx),
 	}
 
@@ -526,14 +528,6 @@ func (a *Agent) Run(ctx context.Context, userInput string, contentBlocks ...*sch
 	}
 }
 
-// LastTurnMeta retrieves metadata for the most recently committed turn.
-func (a *Agent) LastTurnMeta() *store.TurnMeta {
-	if a.historyMiddleware == nil {
-		return nil
-	}
-	return a.historyMiddleware.LastTurnMeta()
-}
-
 // ContextWindow returns the resolved context window limit for the agent.
 func (a *Agent) ContextWindow() int {
 	return a.contextWindow
@@ -547,132 +541,63 @@ func (a *Agent) AgentName() string {
 	return ""
 }
 
-type handleSummarizationParams struct {
-	Before           adk.TypedChatModelAgentState[*schema.AgenticMessage]
-	After            adk.TypedChatModelAgentState[*schema.AgenticMessage]
-	ChatModel        model.AgenticModel
-	MemoryStore      memory.MemoryStore
-	Embedder         *memory.Embedder
-	KVStore          store.KVStore
-	AgentName        string
-	ConversationID   int64
-	ConvStore        store.ConversationStore
-	TranscriptPath   string
-	SkipSecurityScan bool
-}
-
-// handleSummarization saves the compaction summary message and returns the summary text
-// for reuse in episodic summarization. Returns empty string when no compaction occurred.
-func handleSummarization(ctx context.Context, p handleSummarizationParams) (string, error) {
-	const persistedKey = "_onclaw_persisted"
-
-	beforeMap := make(map[*schema.AgenticMessage]bool)
-	for _, msg := range p.Before.Messages {
-		beforeMap[msg] = true
+// reconstructMessages rebuilds the message list after summarization by keeping
+// the system message, the last N messages based on PreviousMessagesKeep, and
+// appending the summary. This ensures the context window contains the most
+// relevant recent history plus the condensed earlier context.
+func reconstructMessages(_ context.Context, originalMessages []*schema.AgenticMessage, summary *schema.AgenticMessage, previousMessagesKeep int) ([]*schema.AgenticMessage, error) {
+	// Default to keeping 2 previous messages if not specified
+	if previousMessagesKeep <= 0 {
+		previousMessagesKeep = 2
 	}
 
-	var summaryMsg *schema.AgenticMessage
-	for _, msg := range p.After.Messages {
-		if !beforeMap[msg] {
-			summaryMsg = msg
-			break
-		}
-	}
+	// Separate system messages from regular messages
+	var systemMessages []*schema.AgenticMessage
+	var regularMessages []*schema.AgenticMessage
 
-	if summaryMsg == nil {
-		return "", nil
-	}
-
-	// Extract the summary text from the compaction message for episodic reuse.
-	var compactionSummary string
-	for _, block := range summaryMsg.ContentBlocks {
-		if block == nil {
+	for _, msg := range originalMessages {
+		if msg == nil {
 			continue
 		}
-		if block.AssistantGenText != nil && block.AssistantGenText.Text != "" {
-			if compactionSummary != "" {
-				compactionSummary += "\n"
-			}
-			compactionSummary += block.AssistantGenText.Text
-		}
-		if block.UserInputText != nil && block.UserInputText.Text != "" {
-			if compactionSummary != "" {
-				compactionSummary += "\n"
-			}
-			compactionSummary += block.UserInputText.Text
-		}
-	}
-
-	afterMap := make(map[*schema.AgenticMessage]bool)
-	for _, msg := range p.After.Messages {
-		afterMap[msg] = true
-	}
-
-	var discardedMessages []*schema.AgenticMessage
-	var maxSeq int64
-	for _, msg := range p.Before.Messages {
-		if !afterMap[msg] {
-			discardedMessages = append(discardedMessages, msg)
-			if msg.Extra != nil {
-				if seqVal, ok := msg.Extra["_onclaw_seq"].(int64); ok {
-					if seqVal > maxSeq {
-						maxSeq = seqVal
-					}
-				} else if seqValF, ok := msg.Extra["_onclaw_seq"].(float64); ok {
-					seqVal := int64(seqValF)
-					if seqVal > maxSeq {
-						maxSeq = seqVal
-					}
-				}
-			}
-		}
-	}
-
-	if len(discardedMessages) > 0 && p.MemoryStore != nil {
-		_ = memory.ExtractAndFlush(ctx, p.ChatModel, p.MemoryStore, p.Embedder, p.KVStore, p.AgentName, p.ConversationID, discardedMessages, p.SkipSecurityScan)
-	}
-
-	redactedSummaryMsg := tools.RedactAgenticMessage(summaryMsg)
-	if redactedSummaryMsg.Extra == nil {
-		redactedSummaryMsg.Extra = make(map[string]interface{})
-	}
-	redactedSummaryMsg.Extra[persistedKey] = true
-
-	summaryMsgJSON, err := json.Marshal(redactedSummaryMsg)
-	if err != nil {
-		return "", fmt.Errorf("marshal summary message: %w", err)
-	}
-
-	err = p.ConvStore.SaveSummary(ctx, p.ConversationID, string(summaryMsgJSON), maxSeq)
-	if err != nil {
-		return "", fmt.Errorf("save summary: %w", err)
-	}
-
-	// Export the compacted range to a transcript file so the agent can re-read
-	// exact prior detail the summary abbreviates. Eino appends TranscriptFilePath
-	// to the summary; this writes the file the path points at. Runs inside the
-	// Eino summarization callback (after the summary is generated), so the file
-	// is not present at generation time, only on later turns.
-	if p.TranscriptPath != "" && maxSeq > 0 {
-		if transcript, terr := p.ConvStore.Transcript(ctx, p.ConversationID, maxSeq); terr == nil {
-			if mkErr := os.MkdirAll(filepath.Dir(p.TranscriptPath), 0700); mkErr == nil {
-				if wErr := os.WriteFile(p.TranscriptPath, []byte(transcript), 0600); wErr != nil {
-					slog.Warn("handleSummarization: failed to write transcript file", "path", p.TranscriptPath, "error", wErr)
-				}
-			} else {
-				slog.Warn("handleSummarization: failed to create transcript dir", "path", p.TranscriptPath, "error", mkErr)
-			}
+		if msg.Role == schema.AgenticRoleTypeSystem {
+			systemMessages = append(systemMessages, msg)
 		} else {
-			slog.Warn("handleSummarization: failed to build transcript", "error", terr)
+			regularMessages = append(regularMessages, msg)
 		}
 	}
 
-	if summaryMsg.Extra == nil {
-		summaryMsg.Extra = make(map[string]interface{})
-	}
-	summaryMsg.Extra[persistedKey] = true
+	// Start building the result with system messages
+	var result []*schema.AgenticMessage
+	result = append(result, systemMessages...)
 
-	return compactionSummary, nil
+	// Keep the last N regular messages (most recent history)
+	keepCount := previousMessagesKeep
+	if len(regularMessages) < keepCount {
+		keepCount = len(regularMessages)
+	}
+
+	if keepCount > 0 {
+		startIdx := len(regularMessages) - keepCount
+		result = append(result, regularMessages[startIdx:]...)
+	}
+
+	// Append the summary message
+	if summary != nil {
+		result = append(result, summary)
+	}
+
+	slog.Debug("reconstruct_messages",
+		"system_messages", len(systemMessages),
+		"regular_messages", len(regularMessages),
+		"kept_messages", keepCount,
+		"final_count", len(result),
+	)
+
+	return result, nil
+}
+
+func buildTranscriptPath(homeDir, agentName string) string {
+	return fmt.Sprintf("%s/.onclaw/workspace/agents/%s/summary_transcript", homeDir, agentName)
 }
 
 // ToolGroupCfgWrapper wraps a store.ToolGroupConfigStore to implement tools.ToolGroupCfg.

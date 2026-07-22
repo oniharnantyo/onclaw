@@ -193,3 +193,55 @@ func TestKGSearchTool_NilKGStoreReturnsUnavailableMessage(t *testing.T) {
 		t.Errorf("expected 'Knowledge graph is not available.' message, got: %s", result)
 	}
 }
+
+// kgTestCfg is a configurable ToolGroupCfg double.
+type kgTestCfg struct {
+	cfg string
+}
+
+func (c *kgTestCfg) GetConfig(ctx context.Context, category string) (string, error) {
+	return c.cfg, nil
+}
+
+// kg_search must read its traversal depth from the shared Memory category
+// config (Phase 3): it no longer registers its own clobbering schema.
+func TestKGSearchTool_ConfigMaxDepth(t *testing.T) {
+	tool := &tools.KGSearchTool{}
+	maxDepthCaptured := 0
+	scope := &tools.Scope{
+		AgentName: "test-agent",
+		KGStore: &mockKGStore{
+			searchGraphFunc: func(ctx context.Context, query *memory.KGQuery) ([]memory.KGHit, error) {
+				maxDepthCaptured = query.MaxDepth
+				return []memory.KGHit{}, nil
+			},
+		},
+		ToolGroupCfg: &kgTestCfg{cfg: `{"max_depth":5}`},
+	}
+
+	invokable := tool.Build(scope)
+	if _, err := invokable.InvokableRun(context.Background(), `{"seed_entity_name":"Seed"}`); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if maxDepthCaptured != 5 {
+		t.Errorf("expected max_depth 5 read from Memory config, got %d", maxDepthCaptured)
+	}
+}
+
+// The Memory category must have exactly one schema owner, now carrying both the
+// spill threshold and kg_search's max_depth (Phase 3 collision fix).
+func TestMemoryCategorySingleSchemaOwner(t *testing.T) {
+	if !tools.IsConfigurable("Memory") {
+		t.Fatal("Memory category must be configurable")
+	}
+	entry, ok := tools.GetConfigEntry("Memory")
+	if !ok {
+		t.Fatal("Memory config entry missing")
+	}
+	if !strings.Contains(entry.JSONSchema, "spill_threshold_bytes") {
+		t.Error("Memory schema missing spill_threshold_bytes (expected single owner exposing the spill field)")
+	}
+	if !strings.Contains(entry.JSONSchema, "max_depth") {
+		t.Error("Memory schema missing max_depth (kg_search must read it from here, not register its own)")
+	}
+}

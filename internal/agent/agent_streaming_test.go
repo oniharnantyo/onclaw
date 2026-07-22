@@ -42,12 +42,14 @@ func newStreamingAgent(t *testing.T, rec *streamingRecorder) *agent.Agent {
 
 	agentConf := &store.Agent{Name: "test-streaming-agent"}
 
-	ag, err := agent.AssembleAgent(
-		context.Background(), agentConf, rec, rec,
-		workspace, userConfigDir, "deny", nil, nil, 64000,
-		dummyConvStore{}, 1, nil, nil, nil, "test",
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3,
-	)
+	opts := agent.NewTestAssembleOpts(t, func(o *agent.AssembleAgentOpts) {
+		o.AgentConf = agentConf
+		o.ChatModel = rec
+		o.ReviewModel = rec
+		o.Workspace = workspace
+		o.UserConfigDir = userConfigDir
+	})
+	ag, err := agent.AssembleAgent(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("assemble agent: %v", err)
 	}
@@ -84,7 +86,7 @@ func TestAgentRun_StreamingEnabledUsesStreamPath(t *testing.T) {
 	ag := newStreamingAgent(t, rec)
 
 	ctx := middlewares.WithStreaming(context.Background(), true)
-	drainAgentRun(t, ag.Run(ctx, "Hello"))
+	drainAgentRun(t, ag.Run(ctx, []*schema.AgenticMessage{schema.UserAgenticMessage("Hello")}))
 
 	if rec.streamed == 0 {
 		t.Error("expected model Stream to be called when streaming is enabled")
@@ -99,7 +101,7 @@ func TestAgentRun_StreamingDisabledUsesGeneratePath(t *testing.T) {
 	ag := newStreamingAgent(t, rec)
 
 	// No WithStreaming call -> defaults to disabled.
-	drainAgentRun(t, ag.Run(context.Background(), "Hello"))
+	drainAgentRun(t, ag.Run(context.Background(), []*schema.AgenticMessage{schema.UserAgenticMessage("Hello")}))
 
 	if rec.generated == 0 {
 		t.Error("expected model Generate to be called when streaming is disabled")

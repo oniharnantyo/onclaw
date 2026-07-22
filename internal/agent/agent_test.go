@@ -16,7 +16,6 @@ import (
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	"github.com/oniharnantyo/onclaw/internal/agent"
-	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/render"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
@@ -130,20 +129,30 @@ func TestAssembleAndRunAgent_ReActLoop(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	agentVal, err := agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
+	opts := agent.NewTestAssembleOpts(t, func(o *agent.AssembleAgentOpts) {
+		o.AgentConf = agentConf
+		o.ChatModel = fm
+		o.ReviewModel = fm
+		o.Workspace = workspace
+		o.UserConfigDir = userConfigDir
+	})
+	agentVal, err := agent.AssembleAgent(ctx, opts)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
 
 	var stdout bytes.Buffer
-	it := agentVal.Run(ctx, "Read the README.md file please.")
+	it := agentVal.Run(ctx, []*schema.AgenticMessage{schema.UserAgenticMessage("Read the README.md file please.")})
 	tr := render.Text(&stdout)
 	for {
-		msg, ok := it.Next()
+		ev, ok := it.Next()
 		if !ok {
 			break
 		}
-		if err := tr.Render(msg); err != nil {
+		if ev.Message == nil {
+			continue
+		}
+		if err := tr.Render(ev.Message); err != nil {
 			t.Fatalf("failed to render: %v", err)
 		}
 	}
@@ -207,14 +216,21 @@ func TestAssembleAndRunAgent_Cancellation(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	agentVal, err := agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
+	opts := agent.NewTestAssembleOpts(t, func(o *agent.AssembleAgentOpts) {
+		o.AgentConf = agentConf
+		o.ChatModel = fm
+		o.ReviewModel = fm
+		o.Workspace = workspace
+		o.UserConfigDir = userConfigDir
+	})
+	agentVal, err := agent.AssembleAgent(ctx, opts)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
 	// Cancel context immediately
 	cancel()
 
-	it := agentVal.Run(ctx, "Hello")
+	it := agentVal.Run(ctx, []*schema.AgenticMessage{schema.UserAgenticMessage("Hello")})
 	for {
 		_, ok := it.Next()
 		if !ok {
@@ -242,7 +258,15 @@ func TestAssembleAgent_ContextWindowTrigger(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Compile and resolve with 128000 context window (verifies 80% logic runs)
-	ag, err := agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, nil, 128000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
+	opts1 := agent.NewTestAssembleOpts(t, func(o *agent.AssembleAgentOpts) {
+		o.AgentConf = agentConf
+		o.ChatModel = fm
+		o.ReviewModel = fm
+		o.Workspace = workspace
+		o.UserConfigDir = userConfigDir
+		o.ContextWindow = 128000
+	})
+	ag, err := agent.AssembleAgent(ctx, opts1)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
@@ -251,7 +275,14 @@ func TestAssembleAgent_ContextWindowTrigger(t *testing.T) {
 	}
 
 	// 2. Re-assemble with 64000 context window
-	ag2, err := agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
+	opts2 := agent.NewTestAssembleOpts(t, func(o *agent.AssembleAgentOpts) {
+		o.AgentConf = agentConf
+		o.ChatModel = fm
+		o.ReviewModel = fm
+		o.Workspace = workspace
+		o.UserConfigDir = userConfigDir
+	})
+	ag2, err := agent.AssembleAgent(ctx, opts2)
 	if err != nil {
 		t.Fatalf("failed to assemble agent second time: %v", err)
 	}
@@ -260,57 +291,6 @@ func TestAssembleAgent_ContextWindowTrigger(t *testing.T) {
 	}
 }
 
-func TestSummarizationTrigger(t *testing.T) {
-	tests := []struct {
-		window   int
-		expected int
-	}{
-		{128000, 102400},
-		{64000, 51200},
-		{0, 0},
-	}
-	for _, tc := range tests {
-		got := agent.SummarizationTrigger(tc.window)
-		if got != tc.expected {
-			t.Errorf("summarizationTrigger(%d) = %d; want %d", tc.window, got, tc.expected)
-		}
-	}
-}
-
-type dummyConvStore struct{}
-
-func (dummyConvStore) CreateConversation(ctx context.Context, agentName string) (int64, error) {
-	return 1, nil
-}
-func (dummyConvStore) AppendTurn(ctx context.Context, convID int64, msgArrayJSON string, responseID string, previousResponseID string, model string, prompt int64, completion int64, total int64, question string, answer string) (int64, error) {
-	return 1, nil
-}
-func (dummyConvStore) LoadHistory(ctx context.Context, conversationID int64) (*store.TurnRow, []*store.TurnRow, error) {
-	return nil, nil, nil
-}
-func (dummyConvStore) ListTurns(ctx context.Context, conversationID int64) ([]*store.TurnRow, error) {
-	return nil, nil
-}
-func (dummyConvStore) SaveSummary(ctx context.Context, conversationID int64, summaryMessageJSON string, coveredUntilSeq int64) error {
-	return nil
-}
-func (dummyConvStore) ListConversations(ctx context.Context) ([]*store.ConversationRow, error) {
-	return nil, nil
-}
-func (dummyConvStore) GetCompactionMeta(_ context.Context, _ int64) (int, string, error) {
-	return 0, "", nil
-}
-func (dummyConvStore) Transcript(_ context.Context, _ int64, _ int64) (string, error) {
-	return "", nil
-}
-
-type mockEnabledChecker struct {
-	disabled map[string]bool
-}
-
-func (m *mockEnabledChecker) Enabled(name string) bool {
-	return !m.disabled[name]
-}
 
 type mockToolRegistryStore struct {
 	list []*store.ToolRegistry
@@ -350,7 +330,15 @@ func TestAssembleAgent_GlobalToolEnable(t *testing.T) {
 		},
 	}
 	agentConfEmpty := &store.Agent{Name: "test-empty-allowlist"}
-	agEmpty, err := agent.AssembleAgent(ctx, agentConfEmpty, fm, fm, workspace, userConfigDir, "deny", nil, nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", mockAll, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
+	optsEmpty := agent.NewTestAssembleOpts(t, func(o *agent.AssembleAgentOpts) {
+		o.AgentConf = agentConfEmpty
+		o.ChatModel = fm
+		o.ReviewModel = fm
+		o.Workspace = workspace
+		o.UserConfigDir = userConfigDir
+		o.ToolRegistryStore = mockAll
+	})
+	agEmpty, err := agent.AssembleAgent(ctx, optsEmpty)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
@@ -370,7 +358,14 @@ func TestAssembleAgent_GlobalToolEnable(t *testing.T) {
 	agentConf := &store.Agent{
 		Name: "test-global-enable",
 	}
-	ag, err := agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
+	opts := agent.NewTestAssembleOpts(t, func(o *agent.AssembleAgentOpts) {
+		o.AgentConf = agentConf
+		o.ChatModel = fm
+		o.ReviewModel = fm
+		o.Workspace = workspace
+		o.UserConfigDir = userConfigDir
+	})
+	ag, err := agent.AssembleAgent(ctx, opts)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
@@ -387,7 +382,15 @@ func TestAssembleAgent_GlobalToolEnable(t *testing.T) {
 			{Name: "web_fetch", Enabled: 1},
 		},
 	}
-	ag, err = agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", mockStore, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
+	optsMock := agent.NewTestAssembleOpts(t, func(o *agent.AssembleAgentOpts) {
+		o.AgentConf = agentConf
+		o.ChatModel = fm
+		o.ReviewModel = fm
+		o.Workspace = workspace
+		o.UserConfigDir = userConfigDir
+		o.ToolRegistryStore = mockStore
+	})
+	ag, err = agent.AssembleAgent(ctx, optsMock)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
@@ -412,7 +415,15 @@ func TestAssembleAgent_GlobalToolEnable(t *testing.T) {
 
 	// 3. Intersection with per-agent allowlist
 	agentConf.Tools = "web_search,web_fetch" // agent only allows these two factory tools
-	ag, err = agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", mockStore, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
+	optsMockAllow := agent.NewTestAssembleOpts(t, func(o *agent.AssembleAgentOpts) {
+		o.AgentConf = agentConf
+		o.ChatModel = fm
+		o.ReviewModel = fm
+		o.Workspace = workspace
+		o.UserConfigDir = userConfigDir
+		o.ToolRegistryStore = mockStore
+	})
+	ag, err = agent.AssembleAgent(ctx, optsMockAllow)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
@@ -509,7 +520,14 @@ func TestAssembleAgent_ErrorPaths(t *testing.T) {
 	_ = os.MkdirAll(badUserFile, 0755) // Create directory instead of file
 
 	agentConf := &store.Agent{Name: "test-err-agent"}
-	_, err := agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
+	optsErr := agent.NewTestAssembleOpts(t, func(o *agent.AssembleAgentOpts) {
+		o.AgentConf = agentConf
+		o.ChatModel = fm
+		o.ReviewModel = fm
+		o.Workspace = workspace
+		o.UserConfigDir = userConfigDir
+	})
+	_, err := agent.AssembleAgent(ctx, optsErr)
 	if err == nil || !strings.Contains(err.Error(), "load persona context") {
 		t.Errorf("expected load persona context error, got %v", err)
 	}
@@ -537,291 +555,28 @@ func TestAssembleAgent_ListToolsError(t *testing.T) {
 
 	agentConf := &store.Agent{Name: "test-err-agent"}
 	mockStore := &mockFailedToolRegistryStore{}
-	_, err := agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, nil, 64000, dummyConvStore{}, 1, nil, nil, nil, "test", mockStore, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
+	optsErrList := agent.NewTestAssembleOpts(t, func(o *agent.AssembleAgentOpts) {
+		o.AgentConf = agentConf
+		o.ChatModel = fm
+		o.ReviewModel = fm
+		o.Workspace = workspace
+		o.UserConfigDir = userConfigDir
+		o.ToolRegistryStore = mockStore
+	})
+	_, err := agent.AssembleAgent(ctx, optsErrList)
 	if err == nil || !strings.Contains(err.Error(), "list tools for enabled checker") {
 		t.Errorf("expected list tools error, got %v", err)
 	}
 }
-
-type fakeMemoryStore struct {
-	docs  []*memory.MemoryDocument
-	cache map[string][]float32
-}
-
-func (f *fakeMemoryStore) IndexDocument(ctx context.Context, doc *memory.MemoryDocument, vector []float32) (int64, error) {
-	f.docs = append(f.docs, doc)
-	return int64(len(f.docs)), nil
-}
-func (f *fakeMemoryStore) SearchArchive(ctx context.Context, q *memory.ArchiveQuery) ([]*memory.MemoryHit, error) {
-	return nil, nil
-}
-func (f *fakeMemoryStore) GetDocument(ctx context.Context, id int64) (*memory.MemoryDocument, error) {
-	return nil, nil
-}
-func (f *fakeMemoryStore) DeleteDocument(ctx context.Context, id int64) error {
-	return nil
-}
-func (f *fakeMemoryStore) GetCachedEmbedding(ctx context.Context, embeddingModel string, hash string) ([]float32, error) {
-	return f.cache[hash], nil
-}
-func (f *fakeMemoryStore) PutCachedEmbedding(ctx context.Context, embeddingModel string, hash string, vec []float32) error {
-	if f.cache == nil {
-		f.cache = make(map[string][]float32)
-	}
-	f.cache[hash] = vec
-	return nil
-}
-
-type fakeModelForSummary struct {
-	response string
-}
-
-func (f *fakeModelForSummary) Generate(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.AgenticMessage, error) {
-	return &schema.AgenticMessage{
-		Role: schema.AgenticRoleTypeAssistant,
-		ContentBlocks: []*schema.ContentBlock{
-			{
-				Type:             schema.ContentBlockTypeAssistantGenText,
-				AssistantGenText: &schema.AssistantGenText{Text: f.response},
-			},
-		},
-	}, nil
-}
-
-func (f *fakeModelForSummary) Stream(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.StreamReader[*schema.AgenticMessage], error) {
-	return nil, fmt.Errorf("stream not implemented")
-}
-
-type fakeKVStore struct {
-	data map[string]string
-}
-
-func (f *fakeKVStore) Get(ctx context.Context, key string) (string, error) {
-	v, ok := f.data[key]
-	if !ok {
-		return "", fmt.Errorf("not found")
-	}
-	return v, nil
-}
-func (f *fakeKVStore) Set(ctx context.Context, key, value string) error {
-	if f.data == nil {
-		f.data = make(map[string]string)
-	}
-	f.data[key] = value
-	return nil
-}
-func (f *fakeKVStore) Delete(ctx context.Context, key string) error {
-	delete(f.data, key)
-	return nil
-}
-
-type recordingConvStore struct {
-	dummyConvStore
-	lastSummary    string
-	lastCoveredSeq int64
-	saveSummaryErr error
-}
-
-func (r *recordingConvStore) SaveSummary(ctx context.Context, conversationID int64, summaryMessageJSON string, coveredUntilSeq int64) error {
-	if r.saveSummaryErr != nil {
-		return r.saveSummaryErr
-	}
-	r.lastSummary = summaryMessageJSON
-	r.lastCoveredSeq = coveredUntilSeq
-	return nil
-}
-
-func TestHandleSummarization_ExtractAndFlushCalled(t *testing.T) {
-	ctx := context.Background()
-	ms := &fakeMemoryStore{}
-	kv := &fakeKVStore{data: map[string]string{}}
-	model := &fakeModelForSummary{response: "- User prefers Go\n- Project uses SQLite"}
-	conv := &recordingConvStore{}
-
-	discardedMsg := schema.UserAgenticMessage("I need help with X")
-	discardedMsg.Extra = map[string]interface{}{"_onclaw_seq": int64(1)}
-	summaryMsg := &schema.AgenticMessage{
-		Role: schema.AgenticRoleTypeAssistant,
-		ContentBlocks: []*schema.ContentBlock{
-			schema.NewContentBlock(&schema.AssistantGenText{Text: "Summary of the discussion"}),
-		},
-	}
-
-	before := adk.TypedChatModelAgentState[*schema.AgenticMessage]{
-		Messages: []*schema.AgenticMessage{discardedMsg},
-	}
-	after := adk.TypedChatModelAgentState[*schema.AgenticMessage]{
-		Messages: []*schema.AgenticMessage{summaryMsg},
-	}
-
-	_, err := agent.HandleSummarization(ctx, agent.HandleSummarizationParams{
-		Before:         before,
-		After:          after,
-		ChatModel:      model,
-		MemoryStore:    ms,
-		Embedder:       nil,
-		KVStore:        kv,
-		AgentName:      "test-agent",
-		ConversationID: 42,
-		ConvStore:      conv,
-	})
-	if err != nil {
-		t.Fatalf("HandleSummarization returned error: %v", err)
-	}
-	if len(ms.docs) == 0 {
-		t.Error("expected at least one document to be indexed via ExtractAndFlush")
-	}
-	if conv.lastSummary == "" {
-		t.Error("expected SaveSummary to have been called")
-	}
-	if conv.lastCoveredSeq != 1 {
-		t.Errorf("expected coveredUntilSeq=1, got %d", conv.lastCoveredSeq)
-	}
-}
-
-func TestHandleSummarization_MemoryStoreNil(t *testing.T) {
-	ctx := context.Background()
-	model := &fakeModelForSummary{response: "- fact: test"}
-	conv := &recordingConvStore{}
-
-	discardedMsg := schema.UserAgenticMessage("help")
-	summaryMsg := &schema.AgenticMessage{
-		Role: schema.AgenticRoleTypeAssistant,
-		ContentBlocks: []*schema.ContentBlock{
-			schema.NewContentBlock(&schema.AssistantGenText{Text: "summary here"}),
-		},
-	}
-
-	before := adk.TypedChatModelAgentState[*schema.AgenticMessage]{
-		Messages: []*schema.AgenticMessage{discardedMsg},
-	}
-	after := adk.TypedChatModelAgentState[*schema.AgenticMessage]{
-		Messages: []*schema.AgenticMessage{summaryMsg},
-	}
-
-	_, err := agent.HandleSummarization(ctx, agent.HandleSummarizationParams{
-		Before:         before,
-		After:          after,
-		ChatModel:      model,
-		MemoryStore:    nil,
-		Embedder:       nil,
-		KVStore:        nil,
-		AgentName:      "test-agent",
-		ConversationID: 42,
-		ConvStore:      conv,
-	})
-	if err != nil {
-		t.Fatalf("HandleSummarization returned error: %v", err)
-	}
-	if conv.lastSummary == "" {
-		t.Error("expected SaveSummary to have been called even without memoryStore")
-	}
-}
-
-func TestHandleSummarization_NoSummaryMsg(t *testing.T) {
-	ctx := context.Background()
-	conv := &recordingConvStore{}
-
-	beforeMsg := schema.UserAgenticMessage("hello")
-
-	before := adk.TypedChatModelAgentState[*schema.AgenticMessage]{
-		Messages: []*schema.AgenticMessage{beforeMsg},
-	}
-	after := adk.TypedChatModelAgentState[*schema.AgenticMessage]{
-		Messages: []*schema.AgenticMessage{beforeMsg},
-	}
-
-	_, err := agent.HandleSummarization(ctx, agent.HandleSummarizationParams{
-		Before:    before,
-		After:     after,
-		ConvStore: conv,
-	})
-	if err != nil {
-		t.Fatalf("HandleSummarization should not error on noop: %v", err)
-	}
-	if conv.lastSummary != "" {
-		t.Error("expected no SaveSummary call when there is no new message")
-	}
-}
-
-func TestHandleSummarization_MaxSeqFromExtra(t *testing.T) {
-	ctx := context.Background()
-	model := &fakeModelForSummary{response: "- fact: important"}
-	conv := &recordingConvStore{}
-
-	msg1 := schema.UserAgenticMessage("first")
-	msg1.Extra = map[string]interface{}{"_onclaw_seq": int64(5)}
-	msg2 := schema.UserAgenticMessage("second")
-	msg2.Extra = map[string]interface{}{"_onclaw_seq": int64(10)}
-	summaryMsg := &schema.AgenticMessage{
-		Role: schema.AgenticRoleTypeAssistant,
-		ContentBlocks: []*schema.ContentBlock{
-			schema.NewContentBlock(&schema.AssistantGenText{Text: "final summary"}),
-		},
-	}
-
-	before := adk.TypedChatModelAgentState[*schema.AgenticMessage]{
-		Messages: []*schema.AgenticMessage{msg1, msg2},
-	}
-	after := adk.TypedChatModelAgentState[*schema.AgenticMessage]{
-		Messages: []*schema.AgenticMessage{summaryMsg},
-	}
-
-	_, err := agent.HandleSummarization(ctx, agent.HandleSummarizationParams{
-		Before:      before,
-		After:       after,
-		ChatModel:   model,
-		MemoryStore: nil,
-		ConvStore:   conv,
-	})
-	if err != nil {
-		t.Fatalf("HandleSummarization returned error: %v", err)
-	}
-	if conv.lastCoveredSeq != 10 {
-		t.Errorf("expected maxSeq=10 (highest _onclaw_seq), got %d", conv.lastCoveredSeq)
-	}
-}
-
-func TestHandleSummarization_SaveSummaryError(t *testing.T) {
-	ctx := context.Background()
-	conv := &recordingConvStore{saveSummaryErr: fmt.Errorf("db error")}
-
-	discardedMsg := schema.UserAgenticMessage("hello")
-	summaryMsg := &schema.AgenticMessage{
-		Role: schema.AgenticRoleTypeAssistant,
-		ContentBlocks: []*schema.ContentBlock{
-			schema.NewContentBlock(&schema.AssistantGenText{Text: "summary"}),
-		},
-	}
-
-	before := adk.TypedChatModelAgentState[*schema.AgenticMessage]{
-		Messages: []*schema.AgenticMessage{discardedMsg},
-	}
-	after := adk.TypedChatModelAgentState[*schema.AgenticMessage]{
-		Messages: []*schema.AgenticMessage{summaryMsg},
-	}
-
-	_, err := agent.HandleSummarization(ctx, agent.HandleSummarizationParams{
-		Before:      before,
-		After:       after,
-		ChatModel:   &fakeModelForSummary{},
-		MemoryStore: nil,
-		ConvStore:   conv,
-	})
-	if err == nil || !strings.Contains(err.Error(), "db error") {
-		t.Errorf("expected 'db error', got %v", err)
-	}
-}
-
 func TestEventIterator_EdgeCases(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("prior error", func(t *testing.T) {
 		err := errors.New("prior error")
 		it := agent.NewEventIterator(ctx, nil, nil, err, nil)
-		msg, ok := it.Next()
-		if ok || msg != nil {
-			t.Errorf("expected false, nil, got %v, %v", ok, msg)
+		ev, ok := it.Next()
+		if ok || ev.Message != nil {
+			t.Errorf("expected false, nil, got %v, %+v", ok, ev)
 		}
 		if it.Err() != err {
 			t.Errorf("expected err %v, got %v", err, it.Err())
@@ -832,9 +587,9 @@ func TestEventIterator_EdgeCases(t *testing.T) {
 		cctx, cancel := context.WithCancel(ctx)
 		cancel()
 		it := agent.NewEventIterator(cctx, nil, nil, nil, nil)
-		msg, ok := it.Next()
-		if ok || msg != nil {
-			t.Errorf("expected false, nil, got %v, %v", ok, msg)
+		ev, ok := it.Next()
+		if ok || ev.Message != nil {
+			t.Errorf("expected false, nil, got %v, %+v", ok, ev)
 		}
 		if it.Err() != context.Canceled {
 			t.Errorf("expected context.Canceled, got %v", it.Err())
@@ -848,9 +603,9 @@ func TestEventIterator_EdgeCases(t *testing.T) {
 		sw.Close()
 
 		it := agent.NewEventIterator(ctx, nil, sr, nil, nil)
-		msg, ok := it.Next()
-		if ok || msg != nil {
-			t.Errorf("expected false, nil, got %v, %v", ok, msg)
+		ev, ok := it.Next()
+		if ok || ev.Message != nil {
+			t.Errorf("expected false, nil, got %v, %+v", ok, ev)
 		}
 		if it.Err() != streamErr {
 			t.Errorf("expected %v, got %v", streamErr, it.Err())
@@ -873,9 +628,9 @@ func TestEventIterator_EdgeCases(t *testing.T) {
 		})
 		gen.Close()
 
-		msg, ok := it.Next()
-		if ok || msg != nil {
-			t.Errorf("expected false, nil, got %v, %v", ok, msg)
+		ev, ok := it.Next()
+		if ok || ev.Message != nil {
+			t.Errorf("expected false, nil, got %v, %+v", ok, ev)
 		}
 		if turnErr != eventErr {
 			t.Errorf("expected turnErr %v, got %v", eventErr, turnErr)
@@ -897,9 +652,9 @@ func TestEventIterator_EdgeCases(t *testing.T) {
 		})
 		gen.Close()
 
-		msg, ok := it.Next()
-		if ok || msg != nil {
-			t.Errorf("expected false, nil, got %v, %v", ok, msg)
+		ev, ok := it.Next()
+		if ok || ev.Message != nil {
+			t.Errorf("expected false, nil, got %v, %+v", ok, ev)
 		}
 	})
 
@@ -921,9 +676,9 @@ func TestEventIterator_EdgeCases(t *testing.T) {
 		})
 		gen.Close()
 
-		msg, ok := it.Next()
-		if !ok || msg != expectedMsg {
-			t.Errorf("expected true, %v, got %v, %v", expectedMsg, ok, msg)
+		ev, ok := it.Next()
+		if !ok || ev.Message != expectedMsg {
+			t.Errorf("expected true, %v, got %v, %+v", expectedMsg, ok, ev)
 		}
 	})
 
@@ -951,122 +706,222 @@ func TestEventIterator_EdgeCases(t *testing.T) {
 		gen.Close()
 
 		// Read the streamed message
-		msg, ok := it.Next()
-		if !ok || msg != expectedMsg {
-			t.Errorf("expected true, %v, got %v, %v", expectedMsg, ok, msg)
+		ev, ok := it.Next()
+		if !ok || ev.Message != expectedMsg {
+			t.Errorf("expected true, %v, got %v, %+v", expectedMsg, ok, ev)
 		}
 
 		// Next call should drain/finish since stream is EOF and gen is closed
-		msg2, ok2 := it.Next()
-		if ok2 || msg2 != nil {
-			t.Errorf("expected false, nil, got %v, %v", ok2, msg2)
+		ev2, ok2 := it.Next()
+		if ok2 || ev2.Message != nil {
+			t.Errorf("expected false, nil, got %v, %+v", ok2, ev2)
 		}
 	})
 }
 
-// transcriptConvStore records the saved summary and returns a fixed compacted
-// transcript so the transcript-write path in handleSummarization is exercised.
-type transcriptConvStore struct {
-	dummyConvStore
-	lastSummary    string
-	lastCoveredSeq int64
-}
+func TestAssembleAndRunAgent_ToolResultInEventStream(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "onclaw-tool-result-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
 
-func (r *transcriptConvStore) SaveSummary(ctx context.Context, conversationID int64, summaryMessageJSON string, coveredUntilSeq int64) error {
-	r.lastSummary = summaryMessageJSON
-	r.lastCoveredSeq = coveredUntilSeq
-	return nil
-}
+	workspace := filepath.Join(tmpDir, "workspace")
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatalf("failed to create workspace: %v", err)
+	}
 
-func (r *transcriptConvStore) Transcript(ctx context.Context, conversationID int64, upToSeq int64) (string, error) {
-	return "--- Turn 3 (2026-01-01T00:00:00Z) ---\nUser: earlier question\nAssistant: earlier answer\n", nil
-}
+	userConfigDir := filepath.Join(tmpDir, "config")
+	if err := os.MkdirAll(userConfigDir, 0755); err != nil {
+		t.Fatalf("failed to create config dir: %v", err)
+	}
 
-// TestBuildSummarizationConfig locks design Decision 3: the summarization
-// middleware is configured with input-token anchoring, a message-count
-// backstop (ContextMessages=200), bounded retries (MaxRetries=2), and a
-// per-conversation transcript path.
-func TestBuildSummarizationConfig(t *testing.T) {
-	cfg := agent.BuildSummarizationConfig(nil, 51200, "/tmp/conversation-42.txt")
-	if cfg == nil {
-		t.Fatal("expected non-nil summarization config")
+	testFile := filepath.Join(workspace, "README.md")
+	if err := os.WriteFile(testFile, []byte("Hello onclaw!"), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
 	}
-	if cfg.Trigger == nil {
-		t.Fatal("expected Trigger condition set")
-	}
-	if cfg.Trigger.ContextTokens != 51200 {
-		t.Errorf("expected ContextTokens 51200, got %d", cfg.Trigger.ContextTokens)
-	}
-	if cfg.Trigger.ContextMessages != 200 {
-		t.Errorf("expected ContextMessages backstop 200, got %d", cfg.Trigger.ContextMessages)
-	}
-	if cfg.Retry == nil || cfg.Retry.MaxRetries == nil {
-		t.Fatal("expected Retry with MaxRetries set")
-	}
-	if *cfg.Retry.MaxRetries != 2 {
-		t.Errorf("expected MaxRetries 2, got %d", *cfg.Retry.MaxRetries)
-	}
-	if cfg.TranscriptFilePath != "/tmp/conversation-42.txt" {
-		t.Errorf("expected TranscriptFilePath wired, got %q", cfg.TranscriptFilePath)
-	}
-	if cfg.TokenCounter == nil {
-		t.Error("expected TokenCounter wired")
-	}
-}
 
-// TestHandleSummarization_WritesTranscript verifies that after a compaction the
-// compacted range is exported to the transcript file at TranscriptFilePath, so
-// the agent can re-read exact prior detail (spec requirement: compacted
-// transcript is re-readable by the agent).
-func TestHandleSummarization_WritesTranscript(t *testing.T) {
-	ctx := context.Background()
-	conv := &transcriptConvStore{}
+	modelCalls := 0
+	respondMock := func(input []*schema.AgenticMessage) (*schema.AgenticMessage, error) {
+		modelCalls++
+		if modelCalls == 1 {
+			return &schema.AgenticMessage{
+				Role: schema.AgenticRoleTypeAssistant,
+				ContentBlocks: []*schema.ContentBlock{
+					{
+						Type: schema.ContentBlockTypeFunctionToolCall,
+						FunctionToolCall: &schema.FunctionToolCall{
+							CallID:    "call_1",
+							Name:      "read_file",
+							Arguments: `{"file_path":"README.md"}`,
+						},
+					},
+				},
+			}, nil
+		}
+		return &schema.AgenticMessage{
+			Role: schema.AgenticRoleTypeAssistant,
+			ContentBlocks: []*schema.ContentBlock{
+				schema.NewContentBlock(&schema.AssistantGenText{Text: "Successfully read README.md. Content: Hello onclaw!"}),
+			},
+		}, nil
+	}
 
-	tmpDir := t.TempDir()
-	transcriptPath := filepath.Join(tmpDir, "conversation-42.txt")
-
-	// A discarded message carrying the coverage sequence so maxSeq > 0.
-	discarded := schema.UserAgenticMessage("earlier question")
-	discarded.Extra = map[string]interface{}{"_onclaw_seq": int64(3)}
-	summaryMsg := &schema.AgenticMessage{
-		Role: schema.AgenticRoleTypeAssistant,
-		ContentBlocks: []*schema.ContentBlock{
-			schema.NewContentBlock(&schema.AssistantGenText{Text: "summary of earlier discussion"}),
+	fm := &fakeChatModel{
+		generateFunc: func(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.AgenticMessage, error) {
+			return respondMock(input)
+		},
+		streamFunc: func(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.StreamReader[*schema.AgenticMessage], error) {
+			msg, err := respondMock(input)
+			if err != nil {
+				return nil, err
+			}
+			sr, sw := schema.Pipe[*schema.AgenticMessage](1)
+			sw.Send(msg, nil)
+			sw.Close()
+			return sr, nil
 		},
 	}
 
-	before := adk.TypedChatModelAgentState[*schema.AgenticMessage]{
-		Messages: []*schema.AgenticMessage{discarded},
-	}
-	after := adk.TypedChatModelAgentState[*schema.AgenticMessage]{
-		Messages: []*schema.AgenticMessage{summaryMsg},
+	agentConf := &store.Agent{
+		Name:          "test-react-agent",
+		Provider:      "fake-prov",
+		Tools:         "read_file,write_file",
+		MaxIterations: 5,
 	}
 
-	_, err := agent.HandleSummarization(ctx, agent.HandleSummarizationParams{
-		Before:         before,
-		After:          after,
-		ChatModel:      &fakeModelForSummary{response: "summary of earlier discussion"},
-		MemoryStore:    nil,
-		Embedder:       nil,
-		KVStore:        nil,
-		AgentName:      "test-agent",
-		ConversationID: 42,
-		ConvStore:      conv,
-		TranscriptPath: transcriptPath,
+	ctx := context.Background()
+	opts := agent.NewTestAssembleOpts(t, func(o *agent.AssembleAgentOpts) {
+		o.AgentConf = agentConf
+		o.ChatModel = fm
+		o.ReviewModel = fm
+		o.Workspace = workspace
+		o.UserConfigDir = userConfigDir
 	})
+	agentVal, err := agent.AssembleAgent(ctx, opts)
 	if err != nil {
-		t.Fatalf("HandleSummarization returned error: %v", err)
-	}
-	if conv.lastSummary == "" {
-		t.Fatal("expected SaveSummary to be called")
+		t.Fatalf("failed to assemble agent: %v", err)
 	}
 
-	// The compacted-range transcript must be written to TranscriptFilePath.
-	data, err := os.ReadFile(transcriptPath)
-	if err != nil {
-		t.Fatalf("expected transcript file at %s: %v", transcriptPath, err)
+	it := agentVal.Run(ctx, []*schema.AgenticMessage{schema.UserAgenticMessage("Read the README.md file please.")})
+	var collected []*schema.AgenticMessage
+	for {
+		ev, ok := it.Next()
+		if !ok {
+			break
+		}
+		if ev.Message != nil {
+			collected = append(collected, ev.Message)
+		}
 	}
-	if !strings.Contains(string(data), "User: earlier question") {
-		t.Errorf("transcript file missing compacted detail: %q", string(data))
+	if err := it.Err(); err != nil {
+		t.Fatalf("failed to run agent: %v", err)
+	}
+
+	hasToolResult := false
+	for _, msg := range collected {
+		for _, block := range msg.ContentBlocks {
+			if block.Type == schema.ContentBlockTypeFunctionToolResult || block.FunctionToolResult != nil {
+				hasToolResult = true
+			}
+		}
+	}
+
+	if !hasToolResult {
+		t.Errorf("expected FunctionToolResult in event stream, but none was found. Messages: %+v", collected)
+	}
+}
+
+func TestAssembleAgent_DescriptionDecoupledFromSystemPrompt(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "onclaw-agent-desc-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	workspace := filepath.Join(tmpDir, "workspace")
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatalf("failed to create workspace: %v", err)
+	}
+
+	userConfigDir := filepath.Join(tmpDir, "config")
+	if err := os.MkdirAll(userConfigDir, 0755); err != nil {
+		t.Fatalf("failed to create config dir: %v", err)
+	}
+
+	descText := "A specialized assistant for testing description decoupling"
+	var receivedMessages []*schema.AgenticMessage
+
+	fm := &fakeChatModel{
+		generateFunc: func(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.AgenticMessage, error) {
+			receivedMessages = input
+			return &schema.AgenticMessage{
+				Role: schema.AgenticRoleTypeAssistant,
+				ContentBlocks: []*schema.ContentBlock{
+					schema.NewContentBlock(&schema.AssistantGenText{Text: "Response"}),
+				},
+			}, nil
+		},
+		streamFunc: func(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.StreamReader[*schema.AgenticMessage], error) {
+			receivedMessages = input
+			sr, sw := schema.Pipe[*schema.AgenticMessage](1)
+			sw.Send(&schema.AgenticMessage{
+				Role: schema.AgenticRoleTypeAssistant,
+				ContentBlocks: []*schema.ContentBlock{
+					schema.NewContentBlock(&schema.AssistantGenText{Text: "Stream Response"}),
+				},
+			}, nil)
+			sw.Close()
+			return sr, nil
+		},
+	}
+
+	agentConf := &store.Agent{
+		Name:        "test-desc-agent",
+		Provider:    "fake-prov",
+		Description: descText,
+	}
+
+	ctx := context.Background()
+	opts := agent.NewTestAssembleOpts(t, func(o *agent.AssembleAgentOpts) {
+		o.AgentConf = agentConf
+		o.ChatModel = fm
+		o.ReviewModel = fm
+		o.Workspace = workspace
+		o.UserConfigDir = userConfigDir
+	})
+
+	agentVal, err := agent.AssembleAgent(ctx, opts)
+	if err != nil {
+		t.Fatalf("failed to assemble agent: %v", err)
+	}
+
+	it := agentVal.Run(ctx, []*schema.AgenticMessage{schema.UserAgenticMessage("Hello")})
+	for {
+		if _, ok := it.Next(); !ok {
+			break
+		}
+	}
+
+	foundGrounding := false
+	foundDescInSystemPrompt := false
+
+	for _, msg := range receivedMessages {
+		if msg.Role == schema.AgenticRoleTypeSystem {
+			msgStr := fmt.Sprintf("%+v", msg)
+			if strings.Contains(msgStr, "Your active workspace directory is:") {
+				foundGrounding = true
+			}
+			if descText != "" && strings.Contains(msgStr, descText) {
+				foundDescInSystemPrompt = true
+			}
+		}
+	}
+
+	if !foundGrounding {
+		t.Error("expected system message to contain workspace grounding")
+	}
+	if foundDescInSystemPrompt {
+		t.Error("expected agent description NOT to be included in the system prompt instruction")
 	}
 }

@@ -15,7 +15,7 @@ import (
 )
 
 // TestEstimateFloorTokens verifies the fixed floor (system instruction + tool
-// schemas) is computed as chars/4, mirroring the in-package estimateTokenCount.
+// schemas) is computed as chars/4, mirroring tokens.Estimate.
 func TestEstimateFloorTokens(t *testing.T) {
 	instruction := "You are a helpful assistant."
 	tools := []*schema.ToolInfo{
@@ -77,7 +77,15 @@ func TestAssembleAgent_InputFloorExceedsSafetyLimit(t *testing.T) {
 	ctx := context.Background()
 	// contextWindow=100 -> FloorSafetyLimit=50; the default builtin tool floor
 	// is far larger, so assembly must be rejected before any model call.
-	_, err = agent.AssembleAgent(ctx, agentConf, fm, fm, workspace, userConfigDir, "deny", nil, nil, 100, dummyConvStore{}, 1, nil, nil, nil, "test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 0, nil, 3)
+	opts := agent.NewTestAssembleOpts(t, func(o *agent.AssembleAgentOpts) {
+		o.AgentConf = agentConf
+		o.ChatModel = fm
+		o.ReviewModel = fm
+		o.Workspace = workspace
+		o.UserConfigDir = userConfigDir
+		o.ContextWindow = 100
+	})
+	_, err = agent.AssembleAgent(ctx, opts)
 	if err == nil {
 		t.Fatal("expected AssembleAgent to fail on input floor, got nil")
 	}

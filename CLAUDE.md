@@ -58,6 +58,7 @@ Every configuration dialog MUST render **one form field per config property** (s
 - **OpenSpec** (`openspec/`) drives planned changes — proposals under `openspec/changes/`, specs under `openspec/specs/`. Check there before designing non-trivial features.
 - **Testing**: All test files in `internal/...` must be black-box (use `<pkg>_test` packages and qualification) unless a private algorithm requires direct unit testing (rare). Re-export unexported helpers only via `export_test.go` (e.g. `var BuildConfig = buildConfig`). Every `internal/...` package must maintain ≥ 70.0% statement coverage, except documented exemptions recorded in the `testing-conventions` spec.
 - **IMPORTANT**: Go style + the store-package layout rules live in `.claude/rules/coding-style.md` (tabs/gofmt, separate contract/types/impl files, `errors.Is`-friendly `%w` wrapping, `context.Context` first param). You should strictly follow the rules.
+- **Readability conventions**: (a) **Full identifier names, not cryptic abbreviations** — `memoryMiddleware` not `memMW`, `resolvedMemory` not `resolvedMem` (fields, parameters, and non-trivial locals; tight loop scopes still use idiomatic short names like `i`, `buf`). (b) **Terse comments** — keep comments short and intent-focused; avoid long multi-line explanatory blocks inside function bodies and let naming/structure self-document. Exported declarations still get a concise doc comment.
 
 ### Web UI Routing and Pages
 
@@ -68,3 +69,13 @@ Frontend routing is managed via `react-router-dom` in `web/src/pages/` and `App.
 - `/agents/:name`: Detailed agent configuration page (tabbed sections: Overview, Hooks, Skills, Memory, MCP, Tools, Persona).
 - `/memory`, `/mcp`, `/tools`, `/hooks`, `/skills`: Aggregate top-level pages displaying resources across all scopes (global + all agents).
 - `/providers`: LLM providers configuration page.
+
+<!-- OPENWIKI:START -->
+
+## OpenWiki
+
+This repository uses OpenWiki for recurring code documentation. Start with `openwiki/quickstart.md`, then follow its links to architecture, workflows, domain concepts, operations, integrations, testing guidance, and source maps.
+
+The scheduled OpenWiki GitHub Actions workflow refreshes the repository wiki. Do not hand-edit generated OpenWiki pages unless explicitly asked; prefer updating source code/docs and letting OpenWiki regenerate.
+
+<!-- OPENWIKI:END -->

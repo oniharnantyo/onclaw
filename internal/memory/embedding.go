@@ -51,8 +51,8 @@ func (e *Embedder) Embed(ctx context.Context, text string) ([]float32, error) {
 	if text == "" {
 		return nil, nil
 	}
-	if e.Provider == nil {
-		// No provider configured — FTS-only mode, callers handle nil vectors.
+	if e.Provider == nil || e.ModelName == "" {
+		// No provider or model configured — FTS-only mode, callers handle nil vectors.
 		return nil, nil
 	}
 

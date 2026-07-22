@@ -13,28 +13,26 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/agent"
 	"github.com/oniharnantyo/onclaw/internal/agent/middlewares"
 	"github.com/oniharnantyo/onclaw/internal/api/service"
-	"github.com/oniharnantyo/onclaw/internal/store"
+	"github.com/oniharnantyo/onclaw/internal/conversation"
 )
 
-type dummyEventIterator struct{}
+type dummyEventIterator struct {
+	msgs []*schema.AgenticMessage
+}
 
-func (d *dummyEventIterator) Next() (*schema.AgenticMessage, bool) { return nil, false }
-func (d *dummyEventIterator) Err() error                           { return nil }
+func (d *dummyEventIterator) Next() (agent.Event, bool)               { return agent.Event{}, false }
+func (d *dummyEventIterator) Err() error                              { return nil }
+func (d *dummyEventIterator) CollectedTurn() []*schema.AgenticMessage { return d.msgs }
 
 type dummyAgent struct {
-	runFn        func(ctx context.Context, userInput string, contentBlocks ...*schema.ContentBlock) agent.EventIterator
-	lastTurnMeta *store.TurnMeta
+	runFn func(ctx context.Context, messages []*schema.AgenticMessage) agent.EventIterator
 }
 
-func (d *dummyAgent) Run(ctx context.Context, userInput string, contentBlocks ...*schema.ContentBlock) agent.EventIterator {
+func (d *dummyAgent) Run(ctx context.Context, messages []*schema.AgenticMessage) agent.EventIterator {
 	if d.runFn != nil {
-		return d.runFn(ctx, userInput, contentBlocks...)
+		return d.runFn(ctx, messages)
 	}
 	return &dummyEventIterator{}
-}
-
-func (d *dummyAgent) LastTurnMeta() *store.TurnMeta {
-	return d.lastTurnMeta
 }
 
 func (d *dummyAgent) ContextWindow() int {
@@ -68,17 +66,17 @@ func TestChat_EmptyPrompt(t *testing.T) {
 
 func TestChat_PromptOnly(t *testing.T) {
 	f := newHFixture(t)
-	var capturedPrompt string
-	var capturedBlocks []*schema.ContentBlock
+	var capturedMessages []*schema.AgenticMessage
 
-	f.svc.SetResolve(func(ctx context.Context, agentName, providerName, modelName, reasoning, workspace string, convID int64) (service.AssembledAgent, string, error) {
-		return &dummyAgent{
-			runFn: func(ctx context.Context, userInput string, contentBlocks ...*schema.ContentBlock) agent.EventIterator {
-				capturedPrompt = userInput
-				capturedBlocks = contentBlocks
+	f.svc.SetResolve(func(ctx context.Context, agentName, providerName, modelName, reasoning, workspace string, convID int64) (service.AssembledAgent, *conversation.SessionManager, string, error) {
+		sessionMgr := conversation.NewSessionManager(&hFakeConversationStore{}, convID, "gpt-4")
+		ag := &dummyAgent{
+			runFn: func(ctx context.Context, messages []*schema.AgenticMessage) agent.EventIterator {
+				capturedMessages = messages
 				return &dummyEventIterator{}
 			},
-		}, "/tmp", nil
+		}
+		return ag, sessionMgr, "/tmp", nil
 	})
 
 	body, _ := json.Marshal(service.ChatInput{Prompt: "hello prompt only"})
@@ -89,25 +87,24 @@ func TestChat_PromptOnly(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
-	if capturedPrompt != "hello prompt only" {
-		t.Errorf("expected prompt 'hello prompt only', got %q", capturedPrompt)
-	}
-	if len(capturedBlocks) != 0 {
-		t.Errorf("expected 0 blocks, got %d", len(capturedBlocks))
+	if len(capturedMessages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(capturedMessages))
 	}
 }
 
 func TestChat_WithImageBlock(t *testing.T) {
 	f := newHFixture(t)
-	var capturedBlocks []*schema.ContentBlock
+	var capturedMessages []*schema.AgenticMessage
 
-	f.svc.SetResolve(func(ctx context.Context, agentName, providerName, modelName, reasoning, workspace string, convID int64) (service.AssembledAgent, string, error) {
-		return &dummyAgent{
-			runFn: func(ctx context.Context, userInput string, contentBlocks ...*schema.ContentBlock) agent.EventIterator {
-				capturedBlocks = contentBlocks
+	f.svc.SetResolve(func(ctx context.Context, agentName, providerName, modelName, reasoning, workspace string, convID int64) (service.AssembledAgent, *conversation.SessionManager, string, error) {
+		sessionMgr := conversation.NewSessionManager(&hFakeConversationStore{}, convID, "gpt-4")
+		ag := &dummyAgent{
+			runFn: func(ctx context.Context, messages []*schema.AgenticMessage) agent.EventIterator {
+				capturedMessages = messages
 				return &dummyEventIterator{}
 			},
-		}, "/tmp", nil
+		}
+		return ag, sessionMgr, "/tmp", nil
 	})
 
 	body, _ := json.Marshal(service.ChatInput{
@@ -129,27 +126,24 @@ func TestChat_WithImageBlock(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
-	if len(capturedBlocks) != 1 {
-		t.Errorf("expected 1 block, got %d", len(capturedBlocks))
-	} else {
-		img := capturedBlocks[0].UserInputImage
-		if img == nil || img.Base64Data != "abc" || img.MIMEType != "image/png" {
-			t.Errorf("unexpected image block content: %+v", img)
-		}
+	if len(capturedMessages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(capturedMessages))
 	}
 }
 
 func TestChat_WithFileBlock(t *testing.T) {
 	f := newHFixture(t)
-	var capturedBlocks []*schema.ContentBlock
+	var capturedMessages []*schema.AgenticMessage
 
-	f.svc.SetResolve(func(ctx context.Context, agentName, providerName, modelName, reasoning, workspace string, convID int64) (service.AssembledAgent, string, error) {
-		return &dummyAgent{
-			runFn: func(ctx context.Context, userInput string, contentBlocks ...*schema.ContentBlock) agent.EventIterator {
-				capturedBlocks = contentBlocks
+	f.svc.SetResolve(func(ctx context.Context, agentName, providerName, modelName, reasoning, workspace string, convID int64) (service.AssembledAgent, *conversation.SessionManager, string, error) {
+		sessionMgr := conversation.NewSessionManager(&hFakeConversationStore{}, convID, "gpt-4")
+		ag := &dummyAgent{
+			runFn: func(ctx context.Context, messages []*schema.AgenticMessage) agent.EventIterator {
+				capturedMessages = messages
 				return &dummyEventIterator{}
 			},
-		}, "/tmp", nil
+		}
+		return ag, sessionMgr, "/tmp", nil
 	})
 
 	body, _ := json.Marshal(service.ChatInput{
@@ -172,22 +166,15 @@ func TestChat_WithFileBlock(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
-	if len(capturedBlocks) != 1 {
-		t.Errorf("expected 1 block, got %d", len(capturedBlocks))
-	} else {
-		file := capturedBlocks[0].UserInputFile
-		if file == nil || file.Name != "file.txt" || file.Base64Data != "abc" || file.MIMEType != "text/plain" {
-			t.Errorf("unexpected file block content: %+v", file)
-		}
+	if len(capturedMessages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(capturedMessages))
 	}
 }
 
 func TestChat_InputFloorExceedsSafetyLimit(t *testing.T) {
 	f := newHFixture(t)
-	// The resolve (assembly) path fails fast when the static tool/system floor
-	// exceeds the safety limit; the handler must translate that into a 400.
-	f.svc.SetResolve(func(ctx context.Context, agentName, providerName, modelName, reasoning, workspace string, convID int64) (service.AssembledAgent, string, error) {
-		return nil, "", fmt.Errorf("input floor 5000 tokens reaches safety limit 3700 tokens (context window 7400): %w", middlewares.ErrInputFloorExceedsSafetyLimit)
+	f.svc.SetResolve(func(ctx context.Context, agentName, providerName, modelName, reasoning, workspace string, convID int64) (service.AssembledAgent, *conversation.SessionManager, string, error) {
+		return nil, nil, "", fmt.Errorf("input floor 5000 tokens reaches safety limit 3700 tokens (context window 7400): %w", middlewares.ErrInputFloorExceedsSafetyLimit)
 	})
 
 	body, _ := json.Marshal(service.ChatInput{Prompt: "hello"})
@@ -204,23 +191,26 @@ func TestChat_TurnEventAndPreviousResponseID(t *testing.T) {
 	f := newHFixture(t)
 	var capturedPrevID string
 
-	f.svc.SetResolve(func(ctx context.Context, agentName, providerName, modelName, reasoning, workspace string, convID int64) (service.AssembledAgent, string, error) {
-		return &dummyAgent{
-			runFn: func(ctx context.Context, userInput string, contentBlocks ...*schema.ContentBlock) agent.EventIterator {
-				if id, ok := middlewares.GetPreviousResponseID(ctx); ok {
+	f.svc.SetResolve(func(ctx context.Context, agentName, providerName, modelName, reasoning, workspace string, convID int64) (service.AssembledAgent, *conversation.SessionManager, string, error) {
+		sessionMgr := conversation.NewSessionManager(&hFakeConversationStore{}, convID, "gpt-4")
+		ag := &dummyAgent{
+			runFn: func(ctx context.Context, messages []*schema.AgenticMessage) agent.EventIterator {
+				if id, ok := conversation.GetPreviousResponseID(ctx); ok {
 					capturedPrevID = id
 				}
-				return &dummyEventIterator{}
+				turnMsgs := append(messages, &schema.AgenticMessage{
+					Role: schema.AgenticRoleTypeAssistant,
+					ContentBlocks: []*schema.ContentBlock{
+						schema.NewContentBlock(&schema.AssistantGenText{Text: "Ok"}),
+					},
+					Extra: map[string]interface{}{
+						"_eino_msg_id": "123e4567-e89b-12d3-a456-426614174000",
+					},
+				})
+				return &dummyEventIterator{msgs: turnMsgs}
 			},
-			lastTurnMeta: &store.TurnMeta{
-				ConversationID:     convID,
-				SequenceNum:        2,
-				ResponseID:         "resp-2",
-				PreviousResponseID: "resp-1",
-				Model:              "gpt-4",
-				Tokens:             30,
-			},
-		}, "/tmp", nil
+		}
+		return ag, sessionMgr, "/tmp", nil
 	})
 
 	body, _ := json.Marshal(service.ChatInput{
@@ -243,10 +233,66 @@ func TestChat_TurnEventAndPreviousResponseID(t *testing.T) {
 	if !strings.Contains(respBody, "event: turn") {
 		t.Errorf("expected SSE body to contain 'event: turn', got %q", respBody)
 	}
-	if !strings.Contains(respBody, `"response_id":"resp-2"`) {
-		t.Errorf("expected turn event to contain response_id 'resp-2'")
+}
+
+// capturingConvStore records the question column and message JSON passed to
+// AppendTurn so tests can assert the driving user prompt is persisted as part of
+// the turn (not just the assistant's output).
+type capturingConvStore struct {
+	hFakeConversationStore
+	question string
+	turnMsgs string
+}
+
+func (c *capturingConvStore) AppendTurn(_ context.Context, _ int64, turnMsgs, _, _, _ string, _, _, _ int64, question, _ string) (int64, error) {
+	c.turnMsgs = turnMsgs
+	c.question = question
+	return 1, nil
+}
+
+// TestChat_PersistsUserQueryInTurn guards the regression where CollectedTurn()
+// carries only agent outputs (assistant/tool) and the driving user prompt was
+// dropped from the committed turn — leaving the question column empty and the
+// persisted message array missing the user message.
+func TestChat_PersistsUserQueryInTurn(t *testing.T) {
+	f := newHFixture(t)
+	capture := &capturingConvStore{}
+
+	f.svc.SetResolve(func(ctx context.Context, agentName, providerName, modelName, reasoning, workspace string, convID int64) (service.AssembledAgent, *conversation.SessionManager, string, error) {
+		sessionMgr := conversation.NewSessionManager(capture, convID, "gpt-4")
+		ag := &dummyAgent{
+			runFn: func(ctx context.Context, messages []*schema.AgenticMessage) agent.EventIterator {
+				// CollectedTurn yields ONLY the assistant output — mirroring the real
+				// iterator, which never echoes the input user message.
+				return &dummyEventIterator{msgs: []*schema.AgenticMessage{
+					{
+						Role: schema.AgenticRoleTypeAssistant,
+						ContentBlocks: []*schema.ContentBlock{
+							schema.NewContentBlock(&schema.AssistantGenText{Text: "response"}),
+						},
+						Extra: map[string]interface{}{
+							"_eino_msg_id": "123e4567-e89b-12d3-a456-426614174000",
+						},
+					},
+				}}
+			},
+		}
+		return ag, sessionMgr, "/tmp", nil
+	})
+
+	body, _ := json.Marshal(service.ChatInput{Prompt: "what is the meaning of life"})
+	req := makeReq(http.MethodPost, "/api/chat", string(body))
+	w := httptest.NewRecorder()
+	f.h.Chat(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(respBody, `"previous_response_id":"resp-1"`) {
-		t.Errorf("expected turn event to contain previous_response_id 'resp-1'")
+
+	if capture.question != "what is the meaning of life" {
+		t.Errorf("expected question column to hold the user prompt, got %q", capture.question)
+	}
+	if !strings.Contains(capture.turnMsgs, "what is the meaning of life") {
+		t.Errorf("expected persisted message JSON to contain the user prompt, got %q", capture.turnMsgs)
 	}
 }

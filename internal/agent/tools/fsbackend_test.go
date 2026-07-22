@@ -219,6 +219,139 @@ func contains(ss []string, s string) bool {
 	return false
 }
 
+// TestFSBackendGrepTruncated verifies GrepRaw caps matched content at
+// fsGrepCapBytes: a file with far more matched content than the cap yields a
+// bounded result set plus a synthetic "truncated" marker, while the kept
+// (non-marker) matches are still returned.
+func TestFSBackendGrepTruncated(t *testing.T) {
+	b, ws := newTestBackend(t)
+	ctx := context.Background()
+	_ = ws
+
+	var sb strings.Builder
+	for i := 0; i < 2000; i++ {
+		sb.WriteString("needle abcdefghijklmnopqrstuvwxyz0123456789\n")
+	}
+	if err := b.Write(ctx, &filesystem.WriteRequest{FilePath: "big.txt", Content: sb.String()}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	matches, err := b.GrepRaw(ctx, &filesystem.GrepRequest{Pattern: "needle", Path: ws})
+	if err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+
+	var marker bool
+	var nonMarker int
+	var totalBytes int
+	for _, m := range matches {
+		if strings.Contains(m.Content, "truncated") {
+			marker = true
+			continue
+		}
+		nonMarker++
+		totalBytes += len(m.Content)
+	}
+
+	if !marker {
+		t.Errorf("expected a truncation marker in grep results")
+	}
+	if nonMarker == 0 {
+		t.Error("expected non-marker matches to still be present")
+	}
+	if len(matches) >= 2000 {
+		t.Errorf("expected grep results truncated below 2000 matches, got %d", len(matches))
+	}
+	if totalBytes > 32*1024 {
+		t.Errorf("matched content bytes not bounded: %d (cap %d)", totalBytes, 32*1024)
+	}
+}
+
+// TestFSBackendGrepBounded verifies GrepRaw returns exactly the matches for a
+// small file with no truncation marker.
+func TestFSBackendGrepBounded(t *testing.T) {
+	b, ws := newTestBackend(t)
+	ctx := context.Background()
+	_ = ws
+
+	if err := b.Write(ctx, &filesystem.WriteRequest{FilePath: "one.txt", Content: "needle here\nsecond line\n"}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	matches, err := b.GrepRaw(ctx, &filesystem.GrepRequest{Pattern: "needle", Path: ws})
+	if err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("expected exactly 1 match, got %d: %v", len(matches), matches)
+	}
+	if strings.Contains(matches[0].Content, "truncated") {
+		t.Errorf("did not expect a truncation marker for a small file")
+	}
+}
+
+// TestFSBackendGlobTruncated verifies GlobInfo caps returned entries at
+// fsGlobCapEntries: more than that many files yields a bounded result set plus
+// a synthetic "truncated" marker.
+func TestFSBackendGlobTruncated(t *testing.T) {
+	b, ws := newTestBackend(t)
+	ctx := context.Background()
+	_ = ws
+
+	dir := filepath.Join(ws, "many")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	for i := 0; i < 250; i++ {
+		name := fmt.Sprintf("f%03d.go", i)
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("package x\n"), 0644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	infos, err := b.GlobInfo(ctx, &filesystem.GlobInfoRequest{Pattern: "**", Path: ws})
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+
+	var marker bool
+	for _, info := range infos {
+		if strings.Contains(info.Path, "truncated") {
+			marker = true
+		}
+	}
+	if !marker {
+		t.Errorf("expected a truncation marker in glob results; got %d entries", len(infos))
+	}
+}
+
+// TestFSBackendGlobBounded verifies GlobInfo returns exactly the files for a
+// small set with no truncation marker.
+func TestFSBackendGlobBounded(t *testing.T) {
+	b, ws := newTestBackend(t)
+	ctx := context.Background()
+	_ = ws
+
+	for i := 0; i < 3; i++ {
+		name := fmt.Sprintf("f%d.txt", i)
+		if err := os.WriteFile(filepath.Join(ws, name), []byte("x\n"), 0644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	infos, err := b.GlobInfo(ctx, &filesystem.GlobInfoRequest{Pattern: "**", Path: ws})
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	for _, info := range infos {
+		if strings.Contains(info.Path, "truncated") {
+			t.Errorf("did not expect a truncation marker for few files; got %q", info.Path)
+		}
+	}
+	if len(infos) != 3 {
+		t.Errorf("expected exactly 3 files, got %d: %v", len(infos), infos)
+	}
+}
+
 // TestFSBackendSentinelWrapping verifies a sentinel survives Eino-style %w
 // wrapping (the Eino invokable_func wraps endpoint errors) and still matches
 // errors.Is, which the FSErrorMiddleware relies on.

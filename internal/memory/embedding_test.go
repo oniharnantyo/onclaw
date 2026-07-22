@@ -187,3 +187,15 @@ func TestEmbedder_ComputeHash_Stable(t *testing.T) {
 		t.Errorf("different text produced the same hash")
 	}
 }
+
+func TestEmbedder_EmptyModelName_ReturnNil(t *testing.T) {
+	provider := &mockEinoEmbedder{}
+	e := memory.NewEmbedder(nil, provider, "")
+	vec, err := e.Embed(context.Background(), "some text")
+	if err != nil || vec != nil {
+		t.Errorf("expected nil, nil when model name is empty; got vec=%v err=%v", vec, err)
+	}
+	if provider.callCount != 0 {
+		t.Errorf("provider should not have been called, got %d calls", provider.callCount)
+	}
+}

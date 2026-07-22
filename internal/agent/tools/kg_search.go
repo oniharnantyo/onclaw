@@ -48,7 +48,7 @@ func (k *KGSearchTool) Build(scope *Scope) tool.InvokableTool {
 				var tc struct {
 					MaxDepth int `json:"max_depth"`
 				}
-				if err := jsonUnmarshalStrict([]byte(cfgStr), &tc); err == nil && tc.MaxDepth > 0 {
+				if err := json.Unmarshal([]byte(cfgStr), &tc); err == nil && tc.MaxDepth > 0 {
 					// Use configured max_depth if user didn't override
 					if input.MaxDepth <= 0 {
 						maxDepth = tc.MaxDepth
@@ -101,30 +101,6 @@ func (k *KGSearchTool) Build(scope *Scope) tool.InvokableTool {
 	return t
 }
 
-// jsonUnmarshalStrict is a strict JSON unmarshaler that rejects unknown fields.
-func jsonUnmarshalStrict(data []byte, v interface{}) error {
-	// Use standard json.Unmarshal for simplicity; could be made stricter if needed
-	return json.Unmarshal(data, v)
-}
-
-const kgJSONSchema = `{
-  "type": "object",
-  "properties": {
-    "max_depth": {
-      "type": "integer",
-      "default": 3,
-      "description": "Maximum graph traversal depth (default 3)"
-    }
-  }
-}`
-
 func init() {
 	Register(&KGSearchTool{})
-	RegisterConfig("Memory", kgJSONSchema, func(ctx context.Context, cfg string) error {
-		// Config validation if needed
-		return nil
-	}, func(ctx context.Context) (string, error) {
-		// Return default config
-		return `{"max_depth":3}`, nil
-	})
 }

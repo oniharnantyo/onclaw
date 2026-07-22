@@ -3,6 +3,8 @@ package browser_test
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -187,5 +189,61 @@ func TestBrowserAllOpsNoFatalError(t *testing.T) {
 		if !errors.Is(errC, context.Canceled) {
 			t.Errorf("%s: expected context.Canceled to propagate, got %v", tl.Name(), errC)
 		}
+	}
+}
+
+// TestBrowserScreenshotPersistsPNG exercises the exact persistence path the
+// screenshot tool uses, without spinning up a live browser. It writes a fake
+// PNG via tools.WriteSpillFile and asserts the workspace-relative path shape
+// and that the bytes land on disk under the session's tool_results dir.
+func TestBrowserScreenshotPersistsPNG(t *testing.T) {
+	ws, _ := filepath.Abs(t.TempDir())
+	scope := &tools.Scope{Workspace: ws, AgentName: "test-agent", SessionID: "42"}
+	rel, err := tools.WriteSpillFile(scope, "browser_screenshot", "example-com-index", ".png", []byte("fake-png-bytes"))
+	if err != nil {
+		t.Fatalf("WriteSpillFile returned error: %v", err)
+	}
+	if !strings.Contains(rel, "tool_results") {
+		t.Errorf("expected rel path to contain tool_results, got %q", rel)
+	}
+	if !strings.HasSuffix(rel, ".png") {
+		t.Errorf("expected rel path to end with .png, got %q", rel)
+	}
+	abs := filepath.Join(ws, filepath.FromSlash(rel))
+	got, rErr := os.ReadFile(abs)
+	if rErr != nil {
+		t.Fatalf("spilled file not found at %s: %v", abs, rErr)
+	}
+	if string(got) != "fake-png-bytes" {
+		t.Errorf("spilled content mismatch: got %q", string(got))
+	}
+}
+
+// TestBrowserScreenshotNoActivePageObservation verifies that with no active
+// page the screenshot tool returns a non-fatal observation (nil error) and that
+// the result contains no inline base64 data URL (the PNG is now spilled to a
+// session file instead).
+func TestBrowserScreenshotNoActivePageObservation(t *testing.T) {
+	scope := &tools.Scope{Workspace: "test_ws", ToolGroupCfg: &dummyToolGroupCfg{}}
+	var shotTool tools.Tool
+	for _, tl := range tools.GetRegistry() {
+		if tl.Name() == "browser_screenshot" {
+			shotTool = tl
+			break
+		}
+	}
+	if shotTool == nil {
+		t.Fatal("browser_screenshot tool not registered")
+	}
+	invokable := shotTool.Build(scope)
+	res, err := invokable.InvokableRun(context.Background(), "{}")
+	if err != nil {
+		t.Fatalf("expected nil error (recoverable observation), got %v", err)
+	}
+	if !strings.Contains(res, "could not complete") {
+		t.Errorf("expected recoverable observation for no active page, got %q", res)
+	}
+	if strings.Contains(res, "data:image/png;base64") {
+		t.Errorf("expected no inline base64 in result, got %q", res)
 	}
 }

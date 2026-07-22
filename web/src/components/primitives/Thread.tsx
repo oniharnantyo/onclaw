@@ -18,7 +18,7 @@ export interface ThreadViewportProps {
 
 export const ThreadViewport = forwardRef<HTMLDivElement, ThreadViewportProps>(
   ({ children, className = '' }, ref) => {
-    const { messages, isStreaming } = useThread();
+    const { messages, isStreaming, isCompacting } = useThread();
     const viewportRef = useRef<HTMLDivElement>(null);
     useImperativeHandle(ref, () => viewportRef.current!);
 
@@ -34,10 +34,13 @@ export const ThreadViewport = forwardRef<HTMLDivElement, ThreadViewportProps>(
     useEffect(() => {
       const el = viewportRef.current;
       if (!el) return;
+      // isCompacting mounts the compaction banner below the last message; with no
+      // streaming deltas during compaction, the banner would render below the fold
+      // unless we also scroll when it appears/disappears.
       if (isStreaming && isAtBottomRef.current) {
         el.scrollTop = el.scrollHeight;
       }
-    }, [messages, isStreaming]);
+    }, [messages, isStreaming, isCompacting]);
 
     useEffect(() => {
       const el = viewportRef.current;

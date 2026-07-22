@@ -47,18 +47,6 @@ func TestToolCategoryAndConfigRegistry(t *testing.T) {
 		t.Error("expected unknown category to not be configurable")
 	}
 
-	cats := tools.ConfigurableCategories()
-	found := false
-	for _, c := range cats {
-		if c == cat {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("expected category %q in configurable categories list", cat)
-	}
-
 	entry, ok := tools.GetConfigEntry(cat)
 	if !ok {
 		t.Fatalf("failed to get config entry for %q", cat)

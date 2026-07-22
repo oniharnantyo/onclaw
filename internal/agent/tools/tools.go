@@ -25,6 +25,7 @@ type Scope struct {
 	KVStore          store.KVStore
 	SecretResolver   secrets.SecretResolver
 	AgentName        string
+	SessionID        string
 	Db               *sql.DB
 	MemoryStore      memory.MemoryStore
 	Embedder         *memory.Embedder

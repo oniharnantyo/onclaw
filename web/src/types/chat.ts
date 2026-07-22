@@ -246,3 +246,17 @@ export interface SSEErrorEvent {
 export interface SSEDoneEvent {
   status: string;
 }
+
+export interface SSECompactionEvent {
+  status: 'started' | 'completed';
+}
+
+export interface SSECompactionProgressEvent {
+  progress: number;
+}
+
+export interface SSEUsageEvent {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}

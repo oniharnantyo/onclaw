@@ -4,6 +4,8 @@ import (
 	"context"
 )
 
+type contextKey string
+
 const streamingCtxKey = contextKey("onclaw_streaming")
 
 // WithStreaming attaches the per-call streaming flag to the context. When

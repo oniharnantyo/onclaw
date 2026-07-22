@@ -641,7 +641,7 @@ func TestAgentCLI(t *testing.T) {
 		"onclaw", "agent", "add", "agent-1",
 		"--provider", "prov-1",
 		"--model", "gpt-4o",
-		"--system-prompt", "You are agent 1.",
+		"--description", "You are agent 1.",
 		"--max-context", "1234",
 	})
 	if err != nil {

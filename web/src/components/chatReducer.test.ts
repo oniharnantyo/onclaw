@@ -14,6 +14,7 @@ function makeBaseState(overrides?: Partial<ChatState>): ChatState {
     contextWindow: 0,
     contextUsed: 0,
     contextCompactionAnnotated: false,
+    isCompacting: false,
     ...overrides,
   };
 }
@@ -141,6 +142,31 @@ export function runChatReducerTests(): void {
     }
     if (next.isStreaming !== false) {
       throw new Error('STREAM_STOPPED: expected isStreaming false');
+    }
+  }
+
+  /* f. SET_COMPACTING updates isCompacting */
+  {
+    const state = makeBaseState({ isCompacting: false });
+    const next = chatReducer(state, { type: 'SET_COMPACTING', compacting: true });
+    if (next.isCompacting !== true) {
+      throw new Error(`SET_COMPACTING: expected isCompacting true, got ${next.isCompacting}`);
+    }
+  }
+
+  /* h. SET_ACTIVE_CONV_ID preserves messages when isStreaming is true */
+  {
+    const state = makeBaseState({
+      isStreaming: true,
+      activeConvID: null,
+      messages: [userMsg()],
+    });
+    const next = chatReducer(state, { type: 'SET_ACTIVE_CONV_ID', id: 42 });
+    if (next.activeConvID !== 42) {
+      throw new Error(`SET_ACTIVE_CONV_ID: expected activeConvID 42, got ${next.activeConvID}`);
+    }
+    if (next.messages.length !== 1) {
+      throw new Error(`SET_ACTIVE_CONV_ID: expected messages length 1 during streaming, got ${next.messages.length}`);
     }
   }
 

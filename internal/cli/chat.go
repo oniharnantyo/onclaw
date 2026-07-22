@@ -11,10 +11,12 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/cloudwego/eino/schema"
 	"github.com/urfave/cli/v3"
 
 	"github.com/oniharnantyo/onclaw/internal/agent"
 	"github.com/oniharnantyo/onclaw/internal/agent/tools"
+	"github.com/oniharnantyo/onclaw/internal/conversation"
 	"github.com/oniharnantyo/onclaw/internal/llm"
 	"github.com/oniharnantyo/onclaw/internal/mcp"
 	"github.com/oniharnantyo/onclaw/internal/observability"
@@ -143,6 +145,7 @@ func chatCommand(st *appState) *cli.Command {
 			activeProvider := c.String("provider")
 
 			var assembledAgent *agent.Agent
+			var sessionMgr *conversation.SessionManager
 			var resolvedWorkspace string
 
 			// Helper to initialize or re-initialize the agent
@@ -158,7 +161,7 @@ func chatCommand(st *appState) *cli.Command {
 				}
 
 				var err error
-				assembledAgent, resolvedWorkspace, err = resolveAndAssemble(ctx, st, db, mgr, agentSessionRequest{
+				assembledAgent, sessionMgr, resolvedWorkspace, err = resolveAndAssemble(ctx, st, db, mgr, agentSessionRequest{
 					AgentName:    activeAgentName,
 					ProviderName: activeProvider,
 					ModelName:    activeModel,
@@ -188,23 +191,37 @@ func chatCommand(st *appState) *cli.Command {
 			if firstPrompt != "" {
 				fmt.Printf("onclaw (%s) > %s\n", activeAgentName, firstPrompt)
 
-				it := assembledAgent.Run(ctx, firstPrompt)
-				tr := render.Text(os.Stdout)
-				for {
-					msg, ok := it.Next()
-					if !ok {
-						break
+				history, _, err := sessionMgr.LoadHistory(ctx)
+				if err != nil {
+					fmt.Printf("Error loading history: %v\n", err)
+				} else {
+					userMsg := schema.UserAgenticMessage(firstPrompt)
+					turnMsgs := append(history, userMsg)
+					it := assembledAgent.Run(ctx, turnMsgs)
+					tr := render.Text(os.Stdout)
+					for {
+						ev, ok := it.Next()
+						if !ok {
+							break
+						}
+						if ev.Message == nil {
+							continue
+						}
+						if err := tr.Render(ev.Message); err != nil {
+							fmt.Printf("Error rendering: %v\n", err)
+							break
+						}
 					}
-					if err := tr.Render(msg); err != nil {
-						fmt.Printf("Error rendering: %v\n", err)
-						break
+					if err := tr.Flush(); err != nil {
+						fmt.Printf("Error flushing: %v\n", err)
 					}
-				}
-				if err := tr.Flush(); err != nil {
-					fmt.Printf("Error flushing: %v\n", err)
-				}
-				if err := it.Err(); err != nil {
-					fmt.Printf("Error: %v\n", err)
+					if err := it.Err(); err != nil {
+						fmt.Printf("Error: %v\n", err)
+					}
+					turnWithUser := append([]*schema.AgenticMessage{userMsg}, it.CollectedTurn()...)
+					if _, err := sessionMgr.CommitTurn(ctx, turnWithUser); err != nil {
+						fmt.Printf("Error committing turn: %v\n", err)
+					}
 				}
 				fmt.Println()
 			}
@@ -283,14 +300,26 @@ func chatCommand(st *appState) *cli.Command {
 					signal.Stop(termChan)
 				}()
 
-				it := assembledAgent.Run(turnCtx, input)
+				history, _, err := sessionMgr.LoadHistory(turnCtx)
+				if err != nil {
+					fmt.Printf("\nError loading history: %v\n", err)
+					turnCancel()
+					continue
+				}
+
+				userMsg := schema.UserAgenticMessage(input)
+				turnMsgs := append(history, userMsg)
+				it := assembledAgent.Run(turnCtx, turnMsgs)
 				tr := render.Text(os.Stdout)
 				for {
-					msg, ok := it.Next()
+					ev, ok := it.Next()
 					if !ok {
 						break
 					}
-					if err := tr.Render(msg); err != nil {
+					if ev.Message == nil {
+						continue
+					}
+					if err := tr.Render(ev.Message); err != nil {
 						fmt.Printf("\nError rendering: %v\n", err)
 						break
 					}
@@ -299,6 +328,10 @@ func chatCommand(st *appState) *cli.Command {
 					fmt.Printf("\nError flushing: %v\n", err)
 				}
 				err = it.Err()
+				turnWithUser := append([]*schema.AgenticMessage{userMsg}, it.CollectedTurn()...)
+				if _, commitErr := sessionMgr.CommitTurn(ctx, turnWithUser); commitErr != nil {
+					fmt.Printf("\nError committing turn: %v\n", commitErr)
+				}
 				turnCancel()
 
 				if err != nil {

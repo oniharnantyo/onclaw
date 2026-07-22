@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "pi-specific": {
+      "command": "optional-mcp-server",
+      "args": [],
+      "disabled": true
+    }
+  },
+  "globalDisabledServers": [
+    "context7",
+    "ddg-search", 
+    "fetcher",
+    "agentation"
+  ],
+  "agentScope": "pi-only"
+}

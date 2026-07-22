@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/cloudwego/eino/schema"
 	"github.com/oniharnantyo/onclaw/internal/agent/tools"
 	"github.com/oniharnantyo/onclaw/internal/llm"
 	"github.com/oniharnantyo/onclaw/internal/mcp"
@@ -144,7 +145,7 @@ func runCommand(st *appState) *cli.Command {
 			}
 
 			// 6. Assemble agent (after observability is setup)
-			assembledAgent, resolvedWorkspace, err := resolveAndAssemble(ctx, st, db, mgr, agentSessionRequest{
+			assembledAgent, sessionMgr, resolvedWorkspace, err := resolveAndAssemble(ctx, st, db, mgr, agentSessionRequest{
 				AgentName:    agentName,
 				ProviderName: c.String("provider"),
 				ModelName:    c.String("model"),
@@ -164,14 +165,23 @@ func runCommand(st *appState) *cli.Command {
 			)
 
 			// 7. Run the agent turn
-			it := assembledAgent.Run(ctx, prompt)
+			history, _, err := sessionMgr.LoadHistory(ctx)
+			if err != nil {
+				return fmt.Errorf("load history: %w", err)
+			}
+			userMsg := schema.UserAgenticMessage(prompt)
+			turnMsgs := append(history, userMsg)
+			it := assembledAgent.Run(ctx, turnMsgs)
 			tr := render.Text(os.Stdout)
 			for {
-				msg, ok := it.Next()
+				ev, ok := it.Next()
 				if !ok {
 					break
 				}
-				if err := tr.Render(msg); err != nil {
+				if ev.Message == nil {
+					continue
+				}
+				if err := tr.Render(ev.Message); err != nil {
 					return fmt.Errorf("render message failed: %w", err)
 				}
 			}
@@ -180,6 +190,11 @@ func runCommand(st *appState) *cli.Command {
 			}
 			if err := it.Err(); err != nil {
 				return fmt.Errorf("agent run execution failed: %w", err)
+			}
+
+			turnWithUser := append([]*schema.AgenticMessage{userMsg}, it.CollectedTurn()...)
+			if _, err := sessionMgr.CommitTurn(ctx, turnWithUser); err != nil {
+				return fmt.Errorf("commit turn failed: %w", err)
 			}
 
 			return nil

@@ -271,13 +271,23 @@ const jsonSchema = `{
       "type": "number",
       "default": 0.7,
       "description": "Vector similarity weight for hybrid search"
+    },
+    "spill_threshold_bytes": {
+      "type": "integer",
+      "default": 16384,
+      "description": "Results larger than this (bytes) are spilled to a session file instead of injected inline into the model context"
+    },
+    "max_depth": {
+      "type": "integer",
+      "default": 3,
+      "description": "Maximum knowledge-graph traversal depth (shared with kg_search)"
     }
   }
 }`
 
 var (
 	configMu sync.Mutex
-	lastCfg  = `{"enabled":true,"embedding_provider":"","embedding_model":"","char_limit":3200,"fts_weight":0.3,"vector_weight":0.7}`
+	lastCfg  = `{"enabled":true,"embedding_provider":"","embedding_model":"","char_limit":3200,"fts_weight":0.3,"vector_weight":0.7,"spill_threshold_bytes":16384,"max_depth":3}`
 )
 
 func init() {

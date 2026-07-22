@@ -29,12 +29,12 @@ func TestRunAgent_DebugLogging(t *testing.T) {
 
 	// Test that we can create the necessary structures
 	agentConf := &store.Agent{
-		Name:         "test-agent",
-		SystemPrompt: "You are a test agent",
+		Name:        "test-agent",
+		Description: "You are a test agent",
 	}
 
-	if agentConf.SystemPrompt == "" {
-		t.Error("System prompt should not be empty")
+	if agentConf.Description == "" {
+		t.Error("Description should not be empty")
 	}
 
 	if agentConf.Name == "" {
@@ -48,28 +48,28 @@ func TestRunAgent_DebugLogging(t *testing.T) {
 func TestRunAgent_LoggingFields(t *testing.T) {
 	// Test data
 	testCases := []struct {
-		name         string
-		systemPrompt string
-		userInput    string
-		workspace    string
+		name        string
+		description string
+		userInput   string
+		workspace   string
 	}{
 		{
-			name:         "basic logging",
-			systemPrompt: "You are a helpful assistant",
-			userInput:    "Hello, agent!",
-			workspace:    "/tmp/workspace",
+			name:        "basic logging",
+			description: "You are a helpful assistant",
+			userInput:   "Hello, agent!",
+			workspace:   "/tmp/workspace",
 		},
 		{
-			name:         "empty system prompt",
-			systemPrompt: "",
-			userInput:    "Test message",
-			workspace:    "/home/user/project",
+			name:        "empty description",
+			description: "",
+			userInput:   "Test message",
+			workspace:   "/home/user/project",
 		},
 		{
-			name:         "multiline input",
-			systemPrompt: "Multi-line\nsystem prompt",
-			userInput:    "First line\nSecond line\nThird line",
-			workspace:    "/workspace",
+			name:        "multiline input",
+			description: "Multi-line\nsystem prompt",
+			userInput:   "First line\nSecond line\nThird line",
+			workspace:   "/workspace",
 		},
 	}
 

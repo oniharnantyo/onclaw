@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-07-22
+goal: Rename the agent system_prompt field, DB column, CLI flag, JSON key, and UI
+  label to description; stop folding it into the eino agent's system-prompt Instruction
+  (now persona + grounding only); and pass the renamed field as the eino
+  ChatModelAgentConfig.Description (agent-to-agent metadata).

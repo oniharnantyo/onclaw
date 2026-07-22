@@ -1,4 +1,5 @@
-import { computeContextUsed, computeCompactionAnnotated, isContextOverLimit } from './ChatProvider';
+import { computeContextUsed, computeCompactionAnnotated, isContextOverLimit, chatReducer } from './ChatProvider';
+import type { ChatState } from './ChatProvider';
 import { shouldRenderCompactionMarker, getSummaryText } from './chat/Renderers';
 import type { ChatMessage, RawTurn } from '../types/chat';
 
@@ -45,25 +46,25 @@ export function runCompactionTests() {
     throw new Error(`S5 Failed: getSummaryText returned "${text}", expected "Summary body here"`);
   }
 
-  /* S6: computeContextUsed skips a trailing summary row and returns the prior turn's prompt_tokens */
+  /* S6: computeContextUsed skips a trailing summary row and returns the prior turn's total_tokens */
   const turnsWithTrailingSummary: RawTurn[] = [
     { is_summary: false, prompt_tokens: 1200, total_tokens: 1300 },
     { is_summary: false, prompt_tokens: 800, total_tokens: 900 },
     { is_summary: true, prompt_tokens: 0, total_tokens: 0 },
   ];
-  if (computeContextUsed(turnsWithTrailingSummary) !== 800) {
+  if (computeContextUsed(turnsWithTrailingSummary) !== 900) {
     throw new Error(
-      `S6 Failed: computeContextUsed should skip trailing summary and return 800, got ${computeContextUsed(turnsWithTrailingSummary)}`
+      `S6 Failed: computeContextUsed should skip trailing summary and return 900, got ${computeContextUsed(turnsWithTrailingSummary)}`
     );
   }
 
-  /* S6: when the last turn is a normal turn, its prompt_tokens are used */
+  /* S6: when the last turn is a normal turn, its total_tokens are used */
   const turnsNoSummary: RawTurn[] = [
     { is_summary: false, prompt_tokens: 1200, total_tokens: 1300 },
     { is_summary: false, prompt_tokens: 800, total_tokens: 900 },
   ];
-  if (computeContextUsed(turnsNoSummary) !== 800) {
-    throw new Error(`S6 Failed: computeContextUsed should return 800, got ${computeContextUsed(turnsNoSummary)}`);
+  if (computeContextUsed(turnsNoSummary) !== 900) {
+    throw new Error(`S6 Failed: computeContextUsed should return 900, got ${computeContextUsed(turnsNoSummary)}`);
   }
 
   /* S6: empty list returns 0 */
@@ -71,13 +72,13 @@ export function runCompactionTests() {
     throw new Error('S6 Failed: computeContextUsed must return 0 for an empty list');
   }
 
-  /* S6: fallback to total_tokens when prompt_tokens is missing on the last non-summary turn */
+  /* S6: fallback to prompt_tokens when total_tokens is 0 on the last non-summary turn */
   const turnsFallback: RawTurn[] = [
     { is_summary: false, prompt_tokens: 500, total_tokens: 600 },
     { is_summary: true, prompt_tokens: 0, total_tokens: 0 },
   ];
-  if (computeContextUsed(turnsFallback) !== 500) {
-    throw new Error(`S6 Failed: computeContextUsed should fall back to prompt_tokens 500, got ${computeContextUsed(turnsFallback)}`);
+  if (computeContextUsed(turnsFallback) !== 600) {
+    throw new Error(`S6 Failed: computeContextUsed should return total_tokens 600, got ${computeContextUsed(turnsFallback)}`);
   }
 
   /* S6: one-time annotation — increased count while baseline established => true */
@@ -108,6 +109,38 @@ export function runCompactionTests() {
   /* Unknown window (0) keeps the guard inactive so input is never disabled on missing data */
   if (isContextOverLimit(0, 99999) !== false) {
     throw new Error('Over-limit Failed: window 0 must keep guard inactive');
+  }
+
+  /* S6: Live compaction state updates - SET_COMPACTING reducer transitions */
+  const makeBaseState = (overrides?: Partial<ChatState>): ChatState => ({
+    messages: [],
+    isStreaming: false,
+    conversations: [],
+    activeConvID: null,
+    chatAgent: '',
+    agents: [],
+    skills: [],
+    contextWindow: 0,
+    contextUsed: 0,
+    contextCompactionAnnotated: false,
+    isCompacting: false,
+    ...overrides,
+  });
+
+  const startCompactionState = chatReducer(makeBaseState(), { type: 'SET_COMPACTING', compacting: true });
+  if (startCompactionState.isCompacting !== true) {
+    throw new Error('S6 Live Failed: SET_COMPACTING started must set isCompacting to true');
+  }
+
+  const endCompactionState = chatReducer(startCompactionState, { type: 'SET_COMPACTING', compacting: false });
+  if (endCompactionState.isCompacting !== false) {
+    throw new Error('S6 Live Failed: SET_COMPACTING completed must set isCompacting to false');
+  }
+
+  /* S6: Live usage updates - SET_CONTEXT_USED reducer transitions */
+  const usageState = chatReducer(makeBaseState(), { type: 'SET_CONTEXT_USED', usedSize: 450 });
+  if (usageState.contextUsed !== 450) {
+    throw new Error(`S6 Live Failed: SET_CONTEXT_USED must set contextUsed, expected 450, got ${usageState.contextUsed}`);
   }
 
   console.log('compaction tests passed');

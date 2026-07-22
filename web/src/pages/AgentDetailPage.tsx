@@ -26,7 +26,7 @@ const DEFAULT_FORM = {
   name: '',
   provider: '',
   model: '',
-  system_prompt: 'You are a helpful coding assistant.',
+  description: 'You are a helpful coding assistant.',
   reasoning_effort: '',
   reasoning_budget_tokens: 0,
   max_iterations: 20,
@@ -172,7 +172,7 @@ export default function AgentDetailPage({
         name: currentAgent.name,
         provider: currentAgent.provider,
         model: currentAgent.model,
-        system_prompt: currentAgent.system_prompt,
+        description: currentAgent.description,
         reasoning_effort: currentAgent.reasoning_effort || '',
         reasoning_budget_tokens: currentAgent.reasoning_budget_tokens || 0,
         max_iterations: currentAgent.max_iterations,
@@ -660,15 +660,15 @@ export default function AgentDetailPage({
 
 
             <div className="form-group">
-              <label className="form-label" htmlFor="agent-prompt">
-                System Prompt
-                <Tooltip content="Instruction set defining the agent's character, constraints, and instructions." position="bottom" align="left" />
+              <label className="form-label" htmlFor="agent-description">
+                Description
+                <Tooltip content="Optional description of what the agent is for." position="bottom" align="left" />
               </label>
               <textarea
-                id="agent-prompt"
+                id="agent-description"
                 className="form-textarea"
-                value={agentForm.system_prompt}
-                onChange={set('system_prompt')}
+                value={agentForm.description}
+                onChange={set('description')}
                 placeholder="Describe the agent's role and capabilities…"
                 style={{ minHeight: '120px' }}
               />

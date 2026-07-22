@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-07-21
+goal: Move conversation-history load/persist out of the Eino runner into a
+  business-layer SessionManager (03.md split); Agent.Run takes a message list;
+  HistoryMiddleware reduced to a framework TurnCollector.

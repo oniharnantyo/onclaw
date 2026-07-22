@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "lastScanned": 1783862865752,
+  "lastScanned": 1784690760915,
   "projectRoot": "/Users/oniharnantyo/projects/onclaw",
   "techStack": {
     "languages": [
@@ -26,8 +26,8 @@
     "runtime": null
   },
   "build": {
-    "buildCommand": "cd /Users/oniharnantyo/projects/onclaw\necho \"=== go test (targeted packages) ===\"\ngo test ./internal/agent/tools/... ./internal/agent/middlewares/... ./internal/agent/... 2>&1 | tail -20\necho \"\"\necho \"=== go vet (agent + store + api) ===\"\ngo vet ./internal/agent/... ./internal/store/... ./internal/api/... 2>&1 | tail -15\necho \"=== vet exit: $? ===\"\necho \"\"\necho \"=== go build ./... ===\"\ngo build ./... 2>&1 | tail -10\necho \"=== build exit: $? ===\"",
-    "testCommand": "cd /Users/oniharnantyo/projects/onclaw\necho \"=== coverage: tools + middlewares ===\"\ngo test -cover ./internal/agent/tools/ ./internal/agent/middlewares/ 2>&1 | grep -E \"coverage|ok|FAIL\"",
+    "buildCommand": "rtk gofmt -w internal/tokens/message.go internal/tokens/message_test.go internal/conversation/session_manager.go internal/agent/agent.go && echo \"=== gofmt -l (should be empty) ===\" && rtk gofmt -l internal/tokens/message.go internal/tokens/message_test.go internal/conversation/session_manager.go internal/agent/agent.go && echo \"=== build ===\" && rtk go build ./... && echo \"=== build OK ===\" && echo \"=== test ===\" && rtk go test ./internal/tokens/... ./internal/conversation/... ./internal/agent/... 2>&1 | tail -20",
+    "testCommand": "rtk proxy go test -cover ./internal/tokens/ 2>&1 | tail -3",
     "lintCommand": null,
     "devCommand": null,
     "scripts": {}
@@ -56,7 +56,7 @@
       "path": "_bmad",
       "purpose": null,
       "fileCount": 2,
-      "lastAccessed": 1783862865736,
+      "lastAccessed": 1784690760892,
       "keyFiles": [
         "config.toml",
         "config.user.toml"
@@ -66,14 +66,14 @@
       "path": "_bmad-output",
       "purpose": null,
       "fileCount": 0,
-      "lastAccessed": 1783862865737,
+      "lastAccessed": 1784690760894,
       "keyFiles": []
     },
     "bin": {
       "path": "bin",
       "purpose": "Executable scripts",
       "fileCount": 3,
-      "lastAccessed": 1783862865738,
+      "lastAccessed": 1784690760895,
       "keyFiles": [
         "onclaw",
         "onclaw-linux-amd64",
@@ -84,7 +84,7 @@
       "path": "docs",
       "purpose": "Documentation",
       "fileCount": 3,
-      "lastAccessed": 1783862865739,
+      "lastAccessed": 1784690760895,
       "keyFiles": [
         "MIGRATION_GUIDE.md",
         "memory.md",
@@ -95,14 +95,14 @@
       "path": "internal",
       "purpose": null,
       "fileCount": 0,
-      "lastAccessed": 1783862865740,
+      "lastAccessed": 1784690760897,
       "keyFiles": []
     },
     "openspec": {
       "path": "openspec",
       "purpose": null,
       "fileCount": 1,
-      "lastAccessed": 1783862865741,
+      "lastAccessed": 1784690760898,
       "keyFiles": [
         "config.yaml"
       ]
@@ -111,7 +111,7 @@
       "path": "web",
       "purpose": null,
       "fileCount": 12,
-      "lastAccessed": 1783862865742,
+      "lastAccessed": 1784690760899,
       "keyFiles": [
         "README.md",
         "bun.lock",
@@ -124,7 +124,7 @@
       "path": "_bmad/scripts",
       "purpose": "Build/utility scripts",
       "fileCount": 3,
-      "lastAccessed": 1783862865743,
+      "lastAccessed": 1784690760900,
       "keyFiles": [
         "memlog.py",
         "resolve_config.py",
@@ -135,7 +135,7 @@
       "path": "internal/api",
       "purpose": "API routes",
       "fileCount": 10,
-      "lastAccessed": 1783862865744,
+      "lastAccessed": 1784690760907,
       "keyFiles": [
         "architecture_test.go",
         "embed.go",
@@ -146,7 +146,7 @@
       "path": "internal/config",
       "purpose": "Configuration files",
       "fileCount": 3,
-      "lastAccessed": 1783862865745,
+      "lastAccessed": 1784690760911,
       "keyFiles": [
         "config.go",
         "config_test.go",
@@ -157,15 +157,27 @@
       "path": "web/node_modules",
       "purpose": "Dependencies",
       "fileCount": 1,
-      "lastAccessed": 1783862865748,
+      "lastAccessed": 1784690760915,
       "keyFiles": []
     }
   },
   "hotPaths": [
     {
       "path": "internal/agent/agent.go",
-      "accessCount": 41,
-      "lastAccessed": 1783917805557,
+      "accessCount": 163,
+      "lastAccessed": 1784729773384,
+      "type": "file"
+    },
+    {
+      "path": "internal/store/sqlite/conversation.go",
+      "accessCount": 24,
+      "lastAccessed": 1784710124890,
+      "type": "file"
+    },
+    {
+      "path": "internal/agent/tools/tools.go",
+      "accessCount": 21,
+      "lastAccessed": 1784721988333,
       "type": "file"
     },
     {
@@ -175,27 +187,51 @@
       "type": "file"
     },
     {
+      "path": "internal/agent/context.go",
+      "accessCount": 15,
+      "lastAccessed": 1784721988704,
+      "type": "file"
+    },
+    {
+      "path": "internal/agent/tools/registry.go",
+      "accessCount": 14,
+      "lastAccessed": 1784721999025,
+      "type": "file"
+    },
+    {
       "path": "internal/llm/service.go",
       "accessCount": 13,
       "lastAccessed": 1783838733458,
       "type": "file"
     },
     {
-      "path": "internal/agent/tools/tools.go",
-      "accessCount": 12,
-      "lastAccessed": 1783905759752,
+      "path": "internal/agent/tools/config.go",
+      "accessCount": 11,
+      "lastAccessed": 1784721988811,
       "type": "file"
     },
     {
-      "path": "internal/store/sqlite/conversation.go",
-      "accessCount": 6,
-      "lastAccessed": 1783611207926,
+      "path": "internal/agent/tools/web/register.go",
+      "accessCount": 10,
+      "lastAccessed": 1784612737457,
       "type": "file"
     },
     {
-      "path": "internal/agent/tools/registry.go",
+      "path": "internal/agent/tools/web/webfetch.go",
+      "accessCount": 9,
+      "lastAccessed": 1784332240976,
+      "type": "file"
+    },
+    {
+      "path": "internal/store/store.go",
+      "accessCount": 8,
+      "lastAccessed": 1784618971224,
+      "type": "file"
+    },
+    {
+      "path": "internal/agent/tools/browser/register.go",
       "accessCount": 6,
-      "lastAccessed": 1783924528934,
+      "lastAccessed": 1784612737276,
       "type": "file"
     },
     {
@@ -217,21 +253,21 @@
       "type": "file"
     },
     {
+      "path": "openspec/config.yaml",
+      "accessCount": 5,
+      "lastAccessed": 1784607119384,
+      "type": "file"
+    },
+    {
+      "path": "go.mod",
+      "accessCount": 5,
+      "lastAccessed": 1784729297700,
+      "type": "file"
+    },
+    {
       "path": "openspec/changes/add-web-and-edit-tools/proposal.md",
       "accessCount": 4,
       "lastAccessed": 1783140045516,
-      "type": "file"
-    },
-    {
-      "path": "internal/store/store.go",
-      "accessCount": 4,
-      "lastAccessed": 1783712594100,
-      "type": "file"
-    },
-    {
-      "path": "internal/agent/tools/config.go",
-      "accessCount": 4,
-      "lastAccessed": 1783753789413,
       "type": "file"
     },
     {
@@ -241,21 +277,9 @@
       "type": "file"
     },
     {
-      "path": "internal/agent/context.go",
+      "path": "internal/agent/tools/web/websearch.go",
       "accessCount": 4,
-      "lastAccessed": 1783786365284,
-      "type": "file"
-    },
-    {
-      "path": "openspec/config.yaml",
-      "accessCount": 4,
-      "lastAccessed": 1783907571500,
-      "type": "file"
-    },
-    {
-      "path": "internal/agent/tools/browser/register.go",
-      "accessCount": 4,
-      "lastAccessed": 1783924599966,
+      "lastAccessed": 1784043402717,
       "type": "file"
     },
     {
@@ -271,27 +295,9 @@
       "type": "file"
     },
     {
-      "path": "internal/agent/tools/web/register.go",
-      "accessCount": 3,
-      "lastAccessed": 1783753796967,
-      "type": "file"
-    },
-    {
       "path": "internal/agent/embed.go",
       "accessCount": 3,
       "lastAccessed": 1783785050447,
-      "type": "file"
-    },
-    {
-      "path": "internal/agent/tools/web/webfetch.go",
-      "accessCount": 3,
-      "lastAccessed": 1783924528826,
-      "type": "file"
-    },
-    {
-      "path": "internal/agent/tools/web/websearch.go",
-      "accessCount": 3,
-      "lastAccessed": 1783924529146,
       "type": "file"
     },
     {
@@ -331,9 +337,9 @@
       "type": "file"
     },
     {
-      "path": "go.mod",
+      "path": "internal/web/config.go",
       "accessCount": 2,
-      "lastAccessed": 1783839080569,
+      "lastAccessed": 1784044310874,
       "type": "file"
     },
     {
@@ -364,12 +370,6 @@
       "path": "internal/browser/types.go",
       "accessCount": 1,
       "lastAccessed": 1783070038684,
-      "type": "file"
-    },
-    {
-      "path": "internal/web/config.go",
-      "accessCount": 1,
-      "lastAccessed": 1783071508948,
       "type": "file"
     },
     {

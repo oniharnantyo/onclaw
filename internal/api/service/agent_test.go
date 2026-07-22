@@ -187,8 +187,8 @@ func TestService_UpdateAgent(t *testing.T) {
 
 	f.svc.CreateAgent(ctx, service.AgentInput{Name: "updatable", Provider: "openai", Model: "gpt-3", MaxContextTokens: 2000})
 	_, err := f.svc.UpdateAgent(ctx, "updatable", service.AgentInput{
-		Provider: "anthropic",
-		Model:    "claude-3",
+		Provider:         "anthropic",
+		Model:            "claude-3",
 		MaxContextTokens: 4000,
 	})
 	if err != nil {

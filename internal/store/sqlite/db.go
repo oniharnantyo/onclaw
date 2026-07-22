@@ -121,7 +121,7 @@ func Migrate(db *sql.DB) error {
 			model_metadata TEXT NOT NULL DEFAULT '{}',
 			reasoning_effort TEXT NOT NULL DEFAULT '',
 			reasoning_budget_tokens INTEGER NOT NULL DEFAULT 0,
-			system_prompt TEXT NOT NULL DEFAULT '',
+			description TEXT NOT NULL DEFAULT '',
 			workspace TEXT NOT NULL DEFAULT '',
 			tools TEXT NOT NULL DEFAULT '',
 			max_iterations INTEGER NOT NULL DEFAULT 0,
@@ -424,6 +424,20 @@ func Migrate(db *sql.DB) error {
 	if !hasMaxContext {
 		if _, err := db.Exec("ALTER TABLE agents ADD COLUMN max_context_tokens INTEGER NOT NULL DEFAULT 0"); err != nil {
 			return fmt.Errorf("add max_context_tokens column to agents: %w", err)
+		}
+	}
+
+	hasSystemPrompt, err := columnExists(db, "agents", "system_prompt")
+	if err != nil {
+		return fmt.Errorf("check agents system_prompt column: %w", err)
+	}
+	hasDescCol, err := columnExists(db, "agents", "description")
+	if err != nil {
+		return fmt.Errorf("check agents description column: %w", err)
+	}
+	if hasSystemPrompt && !hasDescCol {
+		if _, err := db.Exec("ALTER TABLE agents RENAME COLUMN system_prompt TO description"); err != nil {
+			return fmt.Errorf("rename system_prompt column to description in agents: %w", err)
 		}
 	}
 

@@ -238,3 +238,6 @@ func TestRedactAgenticMessage(t *testing.T) {
 		t.Error("streamingMeta passthrough failed")
 	}
 }
+
+// StripReasoning drops reasoning/thinking blocks but preserves everything else
+// (design Decision 3).

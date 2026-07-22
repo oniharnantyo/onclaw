@@ -44,6 +44,11 @@ const jsonSchema = `{
       "default": 1048576,
       "description": "Max allowed response size in bytes"
     },
+    "spill_threshold_bytes": {
+      "type": "integer",
+      "default": 4096,
+      "description": "Results larger than this (bytes) are spilled to a session file instead of injected inline into the model context. Keep small on low-context agents so web pages survive compaction as a re-readable path rather than being cleared."
+    },
     "google_cx": {
       "type": "string",
       "description": "Google Custom Search Engine ID (CX)"
@@ -59,7 +64,7 @@ const jsonSchema = `{
 
 var (
 	configMu sync.Mutex
-	lastCfg  = `{"search_provider":"duckduckgo","fetch_provider":"http","timeout_seconds":10,"max_bytes":1048576,"lightpanda_bin_path":"lightpanda"}`
+	lastCfg  = `{"search_provider":"duckduckgo","fetch_provider":"http","timeout_seconds":10,"max_bytes":1048576,"spill_threshold_bytes":4096,"lightpanda_bin_path":"lightpanda"}`
 )
 
 func init() {

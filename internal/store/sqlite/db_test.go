@@ -120,3 +120,55 @@ func TestOpenErrors(t *testing.T) {
 		t.Fatal("expected error when trying to open a directory as a DB file, but succeeded")
 	}
 }
+
+func TestMigrate_RenamesSystemPromptToDescription(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// 1. Manually set up a legacy agents table with system_prompt column
+	_, err := db.Exec("DROP TABLE IF EXISTS agents;")
+	if err != nil {
+		t.Fatalf("failed to drop agents table: %v", err)
+	}
+
+	createLegacyQuery := `CREATE TABLE agents (
+		name TEXT PRIMARY KEY,
+		provider TEXT NOT NULL,
+		model TEXT NOT NULL DEFAULT '',
+		model_metadata TEXT NOT NULL DEFAULT '{}',
+		reasoning_effort TEXT NOT NULL DEFAULT '',
+		reasoning_budget_tokens INTEGER NOT NULL DEFAULT 0,
+		system_prompt TEXT NOT NULL DEFAULT '',
+		workspace TEXT NOT NULL DEFAULT '',
+		tools TEXT NOT NULL DEFAULT '',
+		max_iterations INTEGER NOT NULL DEFAULT 0,
+		max_context_tokens INTEGER NOT NULL DEFAULT 0,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	);`
+	if _, err := db.Exec(createLegacyQuery); err != nil {
+		t.Fatalf("failed to create legacy agents table: %v", err)
+	}
+
+	insertLegacyQuery := `INSERT INTO agents (name, provider, system_prompt, created_at, updated_at)
+		VALUES ('legacy-agent', 'openai-prov', 'You are a legacy prompt', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');`
+	if _, err := db.Exec(insertLegacyQuery); err != nil {
+		t.Fatalf("failed to insert legacy agent: %v", err)
+	}
+
+	// 2. Run Migrate
+	if err := sqlite.Migrate(db); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+
+	// 3. Verify column is renamed to description and text is preserved
+	var name, desc string
+	err = db.QueryRow("SELECT name, description FROM agents WHERE name = 'legacy-agent'").Scan(&name, &desc)
+	if err != nil {
+		t.Fatalf("failed to query migrated agent: %v", err)
+	}
+
+	if desc != "You are a legacy prompt" {
+		t.Errorf("expected migrated description 'You are a legacy prompt', got %q", desc)
+	}
+}

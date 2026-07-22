@@ -1,0 +1,89 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(oma:doctor)",
+      "Bash(ls *)",
+      "Bash(find *)",
+      "Bash(cat *)",
+      "Bash(mkdir *)",
+      "Bash(cd *)",
+      "Bash(})",
+      "Bash(echo *)",
+      "Bash(do *)",
+      "Bash(done)",
+      "Bash(grep *)",
+      "Bash(cp *)",
+      "Bash(date *)",
+      "Read(//Users/oniharnantyo/**)",
+      "Bash(set *)",
+      "Bash(node *)",
+      "Bash(which *)",
+      "Bash(go *)",
+      "Bash(make *)",
+      "Bash(openspec *)",
+      "Bash(npm run *)",
+      "Bash(env *)",
+      "Bash(npx *)",
+      "Bash(python3)",
+      "Bash(import *)",
+      "Bash(def *)",
+      "Bash(path, *)",
+      "Bash(.read)",
+      "Bash(s, *)",
+      "Bash(.group)",
+      "Bash(return *)",
+      "Bash(r'`([^`]*)`', *)",
+      "Bash('internal/config/defaults.go','denylist: []string{','},\\n\\t\\t\\t\\t},')",
+      "Bash('internal/agent/tools/shell_test.go','var floordenylist = []string{','}')",
+      "Bash(print)",
+      "Bash(enumerate)",
+      "Bash(eof)",
+      "Bash(git *)",
+      "Bash(tail *)",
+      "Bash(gofmt *)",
+      "Bash(then *)",
+      "Bash(sqlite3 *)",
+      "Bash(else *)",
+      "Bash(fi)",
+      "Bash(test *)",
+      "Bash(sed *)",
+      "Bash(mv *)"
+    ]
+  },
+  "$version": 4,
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/oniharnantyo/.qwen/extensions/oh-my-antigravity/hooks/scripts/hook-bootstrap.js\" \"/Users/oniharnantyo/.qwen/extensions/oh-my-antigravity/hooks/scripts/learn.js\"",
+            "name": "oma-learn-signal",
+            "timeout": 8000,
+            "env": {
+              "OMG_STATE_ROOT": "/Users/oniharnantyo/projects/onclaw/.qwen/state"
+            }
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/oniharnantyo/.qwen/extensions/oh-my-antigravity/hooks/scripts/hook-bootstrap.js\" \"/Users/oniharnantyo/.qwen/extensions/oh-my-antigravity/hooks/scripts/before-model-banner.js\"",
+            "name": "oma-model-router",
+            "timeout": 5000,
+            "env": {
+              "OMG_STATE_ROOT": "/Users/oniharnantyo/projects/onclaw/.qwen/state"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "memory": {
+    "enableAutoSkill": false
+  }
+}

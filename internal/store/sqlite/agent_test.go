@@ -29,14 +29,14 @@ func TestAgentStore(t *testing.T) {
 
 	// Test adding valid agent
 	a := &store.Agent{
-		Name:            "test-agent",
-		Provider:        "openai-prov",
-		Model:           "gpt-4o",
-		ReasoningEffort: "medium",
-		SystemPrompt:    "System prompt text",
-		Workspace:       "/home/workspace",
-		Tools:           "read_file,write_file",
-		MaxIterations:   10,
+		Name:             "test-agent",
+		Provider:         "openai-prov",
+		Model:            "gpt-4o",
+		ReasoningEffort:  "medium",
+		Description:      "System prompt text",
+		Workspace:        "/home/workspace",
+		Tools:            "read_file,write_file",
+		MaxIterations:    10,
 		MaxContextTokens: 4000,
 	}
 
@@ -59,7 +59,7 @@ func TestAgentStore(t *testing.T) {
 		gotA.Provider != a.Provider ||
 		gotA.Model != a.Model ||
 		gotA.ReasoningEffort != a.ReasoningEffort ||
-		gotA.SystemPrompt != a.SystemPrompt ||
+		gotA.Description != a.Description ||
 		gotA.Workspace != a.Workspace ||
 		gotA.Tools != a.Tools ||
 		gotA.MaxIterations != a.MaxIterations ||

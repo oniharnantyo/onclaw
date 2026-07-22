@@ -18,6 +18,7 @@ import (
 	"google.golang.org/genai"
 
 	"github.com/oniharnantyo/onclaw/internal/agent"
+	"github.com/oniharnantyo/onclaw/internal/conversation"
 	"github.com/oniharnantyo/onclaw/internal/llm"
 	"github.com/oniharnantyo/onclaw/internal/mcp"
 	"github.com/oniharnantyo/onclaw/internal/memory"
@@ -35,24 +36,24 @@ type agentSessionRequest struct {
 	Channel      string
 }
 
-func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.Service, req agentSessionRequest, convStore store.ConversationStore, convID int64, mcpMgr mcp.Manager) (*agent.Agent, string, error) {
+func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.Service, req agentSessionRequest, convStore store.ConversationStore, convID int64, mcpMgr mcp.Manager) (*agent.Agent, *conversation.SessionManager, string, error) {
 	// 1. Resolve agent configuration
 	agentConf, err := mgr.GetAgent(ctx, req.AgentName)
 	if err != nil {
 		if req.AgentName == "master" {
 			agentConf, err = st.getOrSeedMasterAgent(ctx, db, mgr)
 			if err != nil {
-				return nil, "", fmt.Errorf("failed to auto-seed master agent: %w", err)
+				return nil, nil, "", fmt.Errorf("failed to auto-seed master agent: %w", err)
 			}
 		} else {
-			return nil, "", fmt.Errorf("agent %q not found: %w", req.AgentName, err)
+			return nil, nil, "", fmt.Errorf("agent %q not found: %w", req.AgentName, err)
 		}
 	}
 
 	// 2. Resolve workspace
 	cwd, err := os.Getwd()
 	if err != nil {
-		return nil, "", fmt.Errorf("get current directory: %w", err)
+		return nil, nil, "", fmt.Errorf("get current directory: %w", err)
 	}
 
 	resolvedWorkspace, err := workspace.ResolveWorkspace(
@@ -62,21 +63,21 @@ func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.
 		cwd,
 	)
 	if err != nil {
-		return nil, "", fmt.Errorf("resolve workspace: %w", err)
+		return nil, nil, "", fmt.Errorf("resolve workspace: %w", err)
 	}
 
 	// 3. Build effective profile
 	var defaultProvider string
 	err = db.QueryRowContext(ctx, "SELECT value FROM preferences WHERE key = 'default_provider'").Scan(&defaultProvider)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 
 	providerName := req.ProviderName
 	if providerName == "" {
 		profiles, err := mgr.ListProfiles(ctx)
 		if err != nil {
-			return nil, "", err
+			return nil, nil, "", err
 		}
 
 		var enabledCount int
@@ -87,7 +88,7 @@ func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.
 		}
 
 		if enabledCount > 1 && defaultProvider == "" {
-			return nil, "", fmt.Errorf("multiple providers available but no default provider is set; use 'onclaw provider use <name>' to set one")
+			return nil, nil, "", fmt.Errorf("multiple providers available but no default provider is set; use 'onclaw provider use <name>' to set one")
 		}
 
 		if agentConf.Provider != "" {
@@ -98,15 +99,15 @@ func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.
 	}
 
 	if providerName == "" {
-		return nil, "", fmt.Errorf("no provider specified for agent %q; configure a provider or use the --provider flag", req.AgentName)
+		return nil, nil, "", fmt.Errorf("no provider specified for agent %q; configure a provider or use the --provider flag", req.AgentName)
 	}
 
 	p, err := mgr.GetProfile(ctx, providerName)
 	if err != nil {
-		return nil, "", fmt.Errorf("provider %q not found: %w", providerName, err)
+		return nil, nil, "", fmt.Errorf("provider %q not found: %w", providerName, err)
 	}
 	if p.Enabled == 0 {
-		return nil, "", fmt.Errorf("provider %q is disabled", providerName)
+		return nil, nil, "", fmt.Errorf("provider %q is disabled", providerName)
 	}
 
 	effModel := req.ModelName
@@ -117,7 +118,7 @@ func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.
 		effModel = st.cfg.Model
 	}
 	if effModel == "" {
-		return nil, "", fmt.Errorf("no model specified for agent %q and no default model is configured", req.AgentName)
+		return nil, nil, "", fmt.Errorf("no model specified for agent %q and no default model is configured", req.AgentName)
 	}
 
 	effReasoning := req.Reasoning
@@ -143,19 +144,19 @@ func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.
 
 	settingsJSON, err := json.Marshal(settings)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to marshal settings: %w", err)
+		return nil, nil, "", fmt.Errorf("failed to marshal settings: %w", err)
 	}
 	effProfile.Settings = string(settingsJSON)
 
 	// 4. Build ChatModel and assemble agent
 	chatModel, err := mgr.BuildWithProfile(ctx, &effProfile, effModel)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to build model: %w", err)
+		return nil, nil, "", fmt.Errorf("failed to build model: %w", err)
 	}
 
 	resolvedDbPath, err := sqlite.ResolveDbPath(st.cfg.DbPath)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	userConfigDir := filepath.Dir(resolvedDbPath)
 
@@ -163,7 +164,7 @@ func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.
 	if mcpMgr != nil {
 		mcpTools, err = mcpMgr.ToolsForAgent(ctx, req.AgentName)
 		if err != nil {
-			return nil, "", fmt.Errorf("retrieve mcp tools: %w", err)
+			return nil, nil, "", fmt.Errorf("retrieve mcp tools: %w", err)
 		}
 	}
 
@@ -287,44 +288,45 @@ func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.
 		)
 	}
 
-	assembledAgent, err := agent.AssembleAgent(
-		ctx,
-		agentConf,
-		chatModel,
-		reviewModel,
-		resolvedWorkspace,
-		userConfigDir,
-		st.cfg.Tools.Shell.Policy,
-		st.cfg.Tools.Shell.Allowlist,
-		st.cfg.Tools.Shell.Denylist,
-		contextWindow,
-		convStore,
-		convID,
-		mcpTools,
-		hookStore,
-		execStore,
-		req.Channel,
-		toolRegistryStore,
-		&agent.ToolGroupCfgWrapper{Store: toolGroupConfigStore},
-		kvStore,
-		mgr,
-		memoryStore,
-		coreStore,
-		embedder,
-		stagedWriteStore,
-		episodicStore,
-		dreamer,
-		kgStore,
-		st.cfg.Memory.CharLimit,
-		st.cfg.Memory.EpisodicTTLDays,
-		db,
-		st.cfg.Memory.KGTraversalDepth,
-	)
+	sessionMgr := conversation.NewSessionManager(convStore, convID, agentConf.Model)
+
+	assembledAgent, err := agent.AssembleAgent(ctx, agent.AssembleAgentOpts{
+		AgentConf:         agentConf,
+		ChatModel:         chatModel,
+		ReviewModel:       reviewModel,
+		Workspace:         resolvedWorkspace,
+		UserConfigDir:     userConfigDir,
+		ShellPolicy:       st.cfg.Tools.Shell.Policy,
+		ShellAllowlist:    st.cfg.Tools.Shell.Allowlist,
+		ShellDenylist:     st.cfg.Tools.Shell.Denylist,
+		ContextWindow:     contextWindow,
+		ConvStore:         convStore,
+		ConversationID:    convID,
+		McpTools:          mcpTools,
+		HookStore:         hookStore,
+		ExecStore:         execStore,
+		Channel:           req.Channel,
+		ToolRegistryStore: toolRegistryStore,
+		ToolGroupCfg:      &agent.ToolGroupCfgWrapper{Store: toolGroupConfigStore},
+		KVStore:           kvStore,
+		Resolver:          mgr,
+		MemoryStore:       memoryStore,
+		CoreStore:         coreStore,
+		Embedder:          embedder,
+		StagedWriteStore:  stagedWriteStore,
+		EpisodicStore:     episodicStore,
+		Dreamer:           dreamer,
+		KGStore:           kgStore,
+		CharLimit:         st.cfg.Memory.CharLimit,
+		EpisodicTTLDays:   st.cfg.Memory.EpisodicTTLDays,
+		DB:                db,
+		KGTraversalDepth:  st.cfg.Memory.KGTraversalDepth,
+	})
 	if err != nil {
-		return nil, "", fmt.Errorf("assemble agent: %w", err)
+		return nil, nil, "", fmt.Errorf("assemble agent: %w", err)
 	}
 
-	return assembledAgent, resolvedWorkspace, nil
+	return assembledAgent, sessionMgr, resolvedWorkspace, nil
 }
 
 func resolveContextWindow(maxContextTokens int, globalMaxContextTokens int, modelMetadata string) int {

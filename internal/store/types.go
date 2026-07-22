@@ -35,7 +35,7 @@ type Agent struct {
 	ModelMetadata         string // JSON string representing ModelMetadata
 	ReasoningEffort       string // reasoning effort level (e.g. low, medium, high, minimal, xhigh, max, none, or toggle: on/off)
 	ReasoningBudgetTokens int
-	SystemPrompt          string
+	Description           string
 	Workspace             string
 	Tools                 string // Comma-separated list of enabled tools
 	MaxIterations         int
@@ -84,7 +84,6 @@ type TurnMeta struct {
 	PromptTokens       int64  `json:"prompt_tokens"`
 	CompletionTokens   int64  `json:"completion_tokens"`
 }
-
 
 // ConversationRow represents a summarized conversation for listing in the web UI.
 type ConversationRow struct {

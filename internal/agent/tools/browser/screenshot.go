@@ -2,8 +2,8 @@ package browser
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
+	"net/url"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/components/tool/utils"
@@ -22,7 +22,7 @@ func (t *screenshotTool) Name() string {
 }
 
 func (t *screenshotTool) Desc() string {
-	return "Capture a PNG screenshot of the active page and return it base64 encoded"
+	return "Capture a PNG screenshot of the active page and save it to a session file, returning a path reference"
 }
 
 func (t *screenshotTool) Category() string {
@@ -52,8 +52,23 @@ func (t *screenshotTool) Build(scope *tools.Scope) tool.InvokableTool {
 			return fmt.Sprintf("%s could not complete: %s", "browser_screenshot", err.Error()), nil
 		}
 
-		encoded := base64.StdEncoding.EncodeToString(data)
-		return fmt.Sprintf("data:image/png;base64,%s", encoded), nil
+		title := "page"
+		if rawURL, urlErr := page.URL(ctx); urlErr == nil && rawURL != "" {
+			if u, parseErr := url.Parse(rawURL); parseErr == nil && u.Host != "" {
+				title = tools.Slugify(u.Host + u.Path)
+			} else {
+				title = tools.Slugify(rawURL)
+			}
+		} else if rawTitle, titleErr := page.Title(ctx); titleErr == nil && rawTitle != "" {
+			title = tools.Slugify(rawTitle)
+		}
+
+		rel, wErr := tools.WriteSpillFile(scope, t.Name(), title, ".png", data)
+		if wErr != nil {
+			return fmt.Sprintf("%s could not complete: %s", "browser_screenshot", wErr.Error()), nil
+		}
+
+		return fmt.Sprintf("Screenshot saved to a session file.\nPath: %s\nUse the read_file tool to view it.", rel), nil
 	})
 	if err != nil {
 		panic(err)

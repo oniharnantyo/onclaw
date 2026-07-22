@@ -477,7 +477,7 @@ func TestAgentCRUDAndResolution(t *testing.T) {
 		Provider:        "openai-prov",
 		Model:           "gpt-4o",
 		ReasoningEffort: "medium",
-		SystemPrompt:    "System instructions",
+		Description:     "System instructions",
 		Workspace:       "/tmp/agent-ws",
 		Tools:           "read_file,write_file",
 		MaxIterations:   5,

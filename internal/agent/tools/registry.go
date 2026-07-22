@@ -56,8 +56,10 @@ func Builtin(scope *Scope, enabled EnabledChecker) []tool.BaseTool {
 			continue
 		}
 		invokable := t.Build(scope)
-		// Decorate it with WrapRedacted
-		tools = append(tools, WrapRedacted(invokable))
+		// Decorate: redact secrets, then spill oversized results to a
+		// session file. WrapFileSpill(WrapRedacted(invokable)) ensures the
+		// spilled file and envelope preview never contain raw secrets.
+		tools = append(tools, WrapFileSpill(WrapRedacted(invokable), scope, t.Category(), t.Name()))
 	}
 	return tools
 }

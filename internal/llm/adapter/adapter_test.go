@@ -18,6 +18,52 @@ func TestIsKeyless(t *testing.T) {
 	}
 }
 
+// Prompt caching defaults ON and is disabled only by an explicit
+// "prompt_caching": false. A malformed Settings blob must not break the build.
+func TestPromptCachingEnabled(t *testing.T) {
+	cases := []struct {
+		name    string
+		profile *store.Profile
+		want    bool
+	}{
+		{"empty settings defaults on", &store.Profile{Settings: ""}, true},
+		{"explicit true", &store.Profile{Settings: `{"prompt_caching": true}`}, true},
+		{"explicit false", &store.Profile{Settings: `{"prompt_caching": false}`}, false},
+		{"non-bool ignored -> on", &store.Profile{Settings: `{"prompt_caching": "yes"}`}, true},
+		{"malformed -> on", &store.Profile{Settings: `not-json`}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := adapter.PromptCachingEnabled(c.profile); got != c.want {
+				t.Errorf("promptCachingEnabled = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// Disabling prompt caching must not break adapter construction.
+func TestAdapterBuildWithCachingDisabled(t *testing.T) {
+	r := adapter.NewRegistry()
+	adapter.DefaultAdapters(r)
+	ctx := context.Background()
+
+	for _, provider := range []string{"anthropic", "gemini"} {
+		ad, err := r.Get(provider)
+		if err != nil {
+			t.Fatalf("get %s: %v", provider, err)
+		}
+		p := &store.Profile{
+			Name:         "test",
+			ProviderType: provider,
+			Enabled:      1,
+			Settings:     `{"prompt_caching": false}`,
+		}
+		if _, err := ad.Build(ctx, p, "model", "test-key"); err != nil {
+			t.Errorf("build %s with caching disabled: %v", provider, err)
+		}
+	}
+}
+
 func TestRegistryAndStub(t *testing.T) {
 	r := adapter.NewRegistry()
 	_, err := r.Get("stub")
@@ -232,6 +278,70 @@ func TestStubStreamEmitsIndexedDeltas(t *testing.T) {
 	for i, b := range blocks {
 		if b.StreamingMeta == nil || b.StreamingMeta.Index != firstIdx {
 			t.Errorf("block %d has unstable streaming index (want %d)", i, firstIdx)
+		}
+	}
+}
+
+// TestCacheablePrefixMarkedAcrossTurns asserts the provider caching decision is
+// stable turn-to-turn (the adapter-output proxy for "the stable prefix is marked
+// cacheable and reused across turns", Req 5 scenario). Anthropic keeps caching
+// enabled on every turn; Ollama (keyless, no caching) keeps building.
+func TestCacheablePrefixMarkedAcrossTurns(t *testing.T) {
+	r := adapter.NewRegistry()
+	adapter.DefaultAdapters(r)
+	ctx := context.Background()
+
+	claudeAd, err := r.Get("anthropic")
+	if err != nil {
+		t.Fatalf("get anthropic: %v", err)
+	}
+	cp := &store.Profile{Name: "t", ProviderType: "anthropic", Enabled: 1}
+	for turn := 1; turn <= 3; turn++ {
+		if !adapter.PromptCachingEnabled(cp) {
+			t.Fatalf("turn %d: expected anthropic prefix caching enabled", turn)
+		}
+		if _, err := claudeAd.Build(ctx, cp, "claude-3-5-sonnet", "k"); err != nil {
+			t.Fatalf("turn %d: anthropic build: %v", turn, err)
+		}
+	}
+
+	ollamaAd, err := r.Get("ollama")
+	if err != nil {
+		t.Fatalf("get ollama: %v", err)
+	}
+	op := &store.Profile{Name: "t", ProviderType: "ollama", Enabled: 1}
+	for turn := 1; turn <= 3; turn++ {
+		m, berr := ollamaAd.Build(ctx, op, "llama3", "")
+		if berr != nil {
+			t.Fatalf("turn %d: ollama build: %v", turn, berr)
+		}
+		if m == nil {
+			t.Fatalf("turn %d: expected non-nil ollama model", turn)
+		}
+	}
+}
+
+// TestNonCachingProviderStillFunctions asserts a provider that offers no prefix
+// caching (Ollama) still builds and is usable, including when the caching flag is
+// explicitly disabled — the graceful-degradation path of Req 5.
+func TestNonCachingProviderStillFunctions(t *testing.T) {
+	r := adapter.NewRegistry()
+	adapter.DefaultAdapters(r)
+	ctx := context.Background()
+
+	ollamaAd, err := r.Get("ollama")
+	if err != nil {
+		t.Fatalf("get ollama: %v", err)
+	}
+
+	for _, settings := range []string{"", `{"prompt_caching": false}`} {
+		p := &store.Profile{Name: "t", ProviderType: "ollama", Enabled: 1, Settings: settings}
+		m, berr := ollamaAd.Build(ctx, p, "llama3", "")
+		if berr != nil {
+			t.Fatalf("ollama build (settings=%q): %v", settings, berr)
+		}
+		if m == nil {
+			t.Fatalf("ollama build (settings=%q): expected non-nil model", settings)
 		}
 	}
 }

@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-07-21
+goal: Remove the TurnCollector framework middleware entirely; reconstruct the
+  turn from the event stream in the entrypoint and estimate token usage on the
+  business layer (char-based); entrypoint drives SessionManager.CommitTurn. No
+  persistence middleware in the agent runner.

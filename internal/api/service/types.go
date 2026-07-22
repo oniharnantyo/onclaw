@@ -5,19 +5,18 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 	"github.com/oniharnantyo/onclaw/internal/agent"
-	"github.com/oniharnantyo/onclaw/internal/store"
+	"github.com/oniharnantyo/onclaw/internal/conversation"
 )
 
 // AssembledAgent defines the interface for running the assembled agent.
 type AssembledAgent interface {
-	Run(ctx context.Context, userInput string, contentBlocks ...*schema.ContentBlock) agent.EventIterator
-	LastTurnMeta() *store.TurnMeta
+	Run(ctx context.Context, messages []*schema.AgenticMessage) agent.EventIterator
 	ContextWindow() int
 	AgentName() string
 }
 
 // ResolveAndAssembleFunc resolves agent settings and assembles an agent instance.
-type ResolveAndAssembleFunc func(ctx context.Context, agentName, providerName, modelName, reasoning, workspace string, convID int64) (AssembledAgent, string, error)
+type ResolveAndAssembleFunc func(ctx context.Context, agentName, providerName, modelName, reasoning, workspace string, convID int64) (AssembledAgent, *conversation.SessionManager, string, error)
 
 type ProviderView struct {
 	Name         string `json:"name"`
@@ -53,7 +52,7 @@ type AgentView struct {
 	ModelMetadata         string `json:"model_metadata"`
 	ReasoningEffort       string `json:"reasoning_effort"`
 	ReasoningBudgetTokens int    `json:"reasoning_budget_tokens"`
-	SystemPrompt          string `json:"system_prompt"`
+	Description           string `json:"description"`
 	Workspace             string `json:"workspace"`
 	Tools                 string `json:"tools"`
 	MaxIterations         int    `json:"max_iterations"`
@@ -73,7 +72,7 @@ type AgentInput struct {
 	ModelMetadata         string `json:"model_metadata"`
 	ReasoningEffort       string `json:"reasoning_effort"`
 	ReasoningBudgetTokens int    `json:"reasoning_budget_tokens"`
-	SystemPrompt          string `json:"system_prompt"`
+	Description           string `json:"description"`
 	Workspace             string `json:"workspace"`
 	Tools                 string `json:"tools"`
 	MaxIterations         int    `json:"max_iterations"`

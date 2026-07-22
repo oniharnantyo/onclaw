@@ -7,6 +7,8 @@ import (
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
+
+	"github.com/oniharnantyo/onclaw/internal/tokens"
 )
 
 // InputSafetyMiddleware is a preflight guard that fails fast when the fixed
@@ -31,12 +33,6 @@ func NewInputSafetyMiddleware(systemPromptTokens, contextWindow int) *InputSafet
 	}
 }
 
-// estimateTokens mirrors agent.estimateTokenCount (chars/4). It is duplicated
-// here rather than imported to avoid an agent -> middlewares import cycle.
-func estimateTokens(charLen int) int {
-	return charLen / 4
-}
-
 // BeforeModelRewriteState recomputes the input floor and fails fast when it
 // reaches the safety limit.
 func (m *InputSafetyMiddleware) BeforeModelRewriteState(ctx context.Context, state *adk.TypedChatModelAgentState[*schema.AgenticMessage], modelCtx *adk.TypedModelContext[*schema.AgenticMessage]) (context.Context, *adk.TypedChatModelAgentState[*schema.AgenticMessage], error) {
@@ -51,7 +47,7 @@ func (m *InputSafetyMiddleware) BeforeModelRewriteState(ctx context.Context, sta
 		if err != nil {
 			return ctx, state, fmt.Errorf("input safety: marshal tool info: %w", err)
 		}
-		floor += estimateTokens(len(text))
+		floor += tokens.Estimate(len(text))
 	}
 
 	limit := FloorSafetyLimit(m.contextWindow)

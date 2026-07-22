@@ -21,6 +21,7 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/agent"
 	"github.com/oniharnantyo/onclaw/internal/api/auth"
 	"github.com/oniharnantyo/onclaw/internal/api/service"
+	"github.com/oniharnantyo/onclaw/internal/conversation"
 	"github.com/oniharnantyo/onclaw/internal/llm"
 	"github.com/oniharnantyo/onclaw/internal/llm/adapter"
 	"github.com/oniharnantyo/onclaw/internal/secrets"
@@ -67,8 +68,8 @@ func setupTestServer(t *testing.T, db *sql.DB, resolveFn api.ResolveAndAssembleF
 	convStore := sqlite.NewConversationStore(db)
 
 	if resolveFn == nil {
-		resolveFn = func(ctx context.Context, agentName, providerName, modelName, reasoning, workspacePath string, convID int64) (api.AssembledAgent, string, error) {
-			return nil, "", fmt.Errorf("resolve agent not implemented in tests")
+		resolveFn = func(ctx context.Context, agentName, providerName, modelName, reasoning, workspacePath string, convID int64) (api.AssembledAgent, *conversation.SessionManager, string, error) {
+			return nil, nil, "", fmt.Errorf("resolve agent not implemented in tests")
 		}
 	}
 
@@ -432,7 +433,7 @@ func TestWebAgentsCRUD(t *testing.T) {
 		Name:            "coding-agent",
 		Provider:        "openai",
 		Model:           "gpt-4",
-		SystemPrompt:    "You are a coder",
+		Description:     "You are a coder",
 		ReasoningEffort: "medium",
 		MaxIterations:   5,
 		IsDefault:       true,
@@ -459,12 +460,12 @@ func TestWebAgentsCRUD(t *testing.T) {
 		t.Fatalf("expected 1 agent, got %d", len(list))
 	}
 	a := list[0]
-	if a.Name != "coding-agent" || !a.IsDefault || a.SystemPrompt != "You are a coder" {
+	if a.Name != "coding-agent" || !a.IsDefault || a.Description != "You are a coder" {
 		t.Errorf("unexpected agent data: %+v", a)
 	}
 
 	// Update agent
-	input.SystemPrompt = "You are a senior coder"
+	input.Description = "You are a senior coder"
 	body, _ = json.Marshal(input)
 	getURL := fmt.Sprintf("http://%s/api/agents/coding-agent", addr)
 	req, _ := http.NewRequest(http.MethodPut, getURL, bytes.NewReader(body))
@@ -485,8 +486,8 @@ func TestWebAgentsCRUD(t *testing.T) {
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&a)
 	resp.Body.Close()
-	if a.SystemPrompt != "You are a senior coder" {
-		t.Errorf("expected updated prompt, got %s", a.SystemPrompt)
+	if a.Description != "You are a senior coder" {
+		t.Errorf("expected updated prompt, got %s", a.Description)
 	}
 
 	// Delete agent
@@ -746,29 +747,29 @@ type mockEventIterator struct {
 	index int
 }
 
-func (m *mockEventIterator) Next() (*schema.AgenticMessage, bool) {
+func (m *mockEventIterator) Next() (agent.Event, bool) {
 	if m.index >= len(m.msgs) {
-		return nil, false
+		return agent.Event{}, false
 	}
 	msg := m.msgs[m.index]
 	m.index++
-	return msg, true
+	return agent.Event{Message: msg}, true
 }
 
 func (m *mockEventIterator) Err() error {
 	return nil
 }
 
+func (m *mockEventIterator) CollectedTurn() []*schema.AgenticMessage {
+	return m.msgs
+}
+
 type mockAgent struct {
 	iterator agent.EventIterator
 }
 
-func (m *mockAgent) Run(ctx context.Context, userInput string, contentBlocks ...*schema.ContentBlock) agent.EventIterator {
+func (m *mockAgent) Run(ctx context.Context, messages []*schema.AgenticMessage) agent.EventIterator {
 	return m.iterator
-}
-
-func (m *mockAgent) LastTurnMeta() *store.TurnMeta {
-	return nil
 }
 
 func (m *mockAgent) ContextWindow() int {
@@ -808,10 +809,11 @@ func TestWebSSEChat(t *testing.T) {
 		},
 	}
 
-	resolveFn := func(ctx context.Context, agentName, providerName, modelName, reasoning, workspacePath string, convID int64) (api.AssembledAgent, string, error) {
+	resolveFn := func(ctx context.Context, agentName, providerName, modelName, reasoning, workspacePath string, convID int64) (api.AssembledAgent, *conversation.SessionManager, string, error) {
+		sessionMgr := conversation.NewSessionManager(sqlite.NewConversationStore(db), convID, "gpt-4")
 		return &mockAgent{
 			iterator: &mockEventIterator{msgs: mockMsgs},
-		}, "/tmp/workspace", nil
+		}, sessionMgr, "/tmp/workspace", nil
 	}
 
 	_, addr, srvCleanup := setupTestServer(t, db, resolveFn)
@@ -860,15 +862,11 @@ func TestWebSSEChat(t *testing.T) {
 }
 
 type customMockAgent struct {
-	runFn func(ctx context.Context, userInput string, contentBlocks ...*schema.ContentBlock) agent.EventIterator
+	runFn func(ctx context.Context, messages []*schema.AgenticMessage) agent.EventIterator
 }
 
-func (c *customMockAgent) Run(ctx context.Context, userInput string, contentBlocks ...*schema.ContentBlock) agent.EventIterator {
-	return c.runFn(ctx, userInput, contentBlocks...)
-}
-
-func (c *customMockAgent) LastTurnMeta() *store.TurnMeta {
-	return nil
+func (c *customMockAgent) Run(ctx context.Context, messages []*schema.AgenticMessage) agent.EventIterator {
+	return c.runFn(ctx, messages)
 }
 
 func (c *customMockAgent) ContextWindow() int {
@@ -893,8 +891,7 @@ func TestWebSSEChat_MediaBlocks(t *testing.T) {
 		t.Fatalf("seed password failed: %v", err)
 	}
 
-	var capturedBlocks []*schema.ContentBlock
-	var capturedPrompt string
+	var capturedMessages []*schema.AgenticMessage
 
 	mockMsgs := []*schema.AgenticMessage{
 		{
@@ -905,14 +902,14 @@ func TestWebSSEChat_MediaBlocks(t *testing.T) {
 		},
 	}
 
-	resolveFn := func(ctx context.Context, agentName, providerName, modelName, reasoning, workspacePath string, convID int64) (api.AssembledAgent, string, error) {
+	resolveFn := func(ctx context.Context, agentName, providerName, modelName, reasoning, workspacePath string, convID int64) (api.AssembledAgent, *conversation.SessionManager, string, error) {
+		sessionMgr := conversation.NewSessionManager(sqlite.NewConversationStore(db), convID, "gpt-4")
 		return &customMockAgent{
-			runFn: func(ctx context.Context, userInput string, contentBlocks ...*schema.ContentBlock) agent.EventIterator {
-				capturedPrompt = userInput
-				capturedBlocks = contentBlocks
+			runFn: func(ctx context.Context, messages []*schema.AgenticMessage) agent.EventIterator {
+				capturedMessages = messages
 				return &mockEventIterator{msgs: mockMsgs}
 			},
-		}, "/tmp/workspace", nil
+		}, sessionMgr, "/tmp/workspace", nil
 	}
 
 	_, addr, srvCleanup := setupTestServer(t, db, resolveFn)
@@ -962,19 +959,23 @@ func TestWebSSEChat_MediaBlocks(t *testing.T) {
 	buf := new(bytes.Buffer)
 	_, _ = io.Copy(buf, resp.Body)
 
-	if capturedPrompt != "Here is an image" {
-		t.Errorf("expected prompt 'Here is an image', got %q", capturedPrompt)
+	if len(capturedMessages) == 0 {
+		t.Fatalf("expected captured messages")
 	}
-	if len(capturedBlocks) != 2 {
-		t.Errorf("expected 2 captured content blocks, got %d", len(capturedBlocks))
-	} else {
-		img := capturedBlocks[0]
-		if img.Type != schema.ContentBlockTypeUserInputImage || img.UserInputImage == nil || img.UserInputImage.MIMEType != "image/png" {
-			t.Errorf("expected PNG image block, got: %+v", img)
-		}
-		fileBlock := capturedBlocks[1]
-		if fileBlock.Type != schema.ContentBlockTypeUserInputFile || fileBlock.UserInputFile == nil || fileBlock.UserInputFile.Name != "test.txt" {
-			t.Errorf("expected text/plain file block, got: %+v", fileBlock)
-		}
+	userMsg := capturedMessages[len(capturedMessages)-1]
+	if len(userMsg.ContentBlocks) < 3 {
+		t.Fatalf("expected at least 3 content blocks, got %d", len(userMsg.ContentBlocks))
+	}
+	promptBlock := userMsg.ContentBlocks[0].UserInputText
+	if promptBlock == nil || promptBlock.Text != "Here is an image" {
+		t.Errorf("expected prompt 'Here is an image', got %v", promptBlock)
+	}
+	img := userMsg.ContentBlocks[1]
+	if img.Type != schema.ContentBlockTypeUserInputImage || img.UserInputImage == nil || img.UserInputImage.MIMEType != "image/png" {
+		t.Errorf("expected PNG image block, got: %+v", img)
+	}
+	fileBlock := userMsg.ContentBlocks[2]
+	if fileBlock.Type != schema.ContentBlockTypeUserInputFile || fileBlock.UserInputFile == nil || fileBlock.UserInputFile.Name != "test.txt" {
+		t.Errorf("expected text/plain file block, got: %+v", fileBlock)
 	}
 }

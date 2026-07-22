@@ -1,0 +1,8 @@
+# Ignore other agent configurations
+.claude/agents/*/
+.agents/
+.omc/sessions/
+transcripts/
+
+# Only allow pi-specific context
+!.claude/agents/pi/

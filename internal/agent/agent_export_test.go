@@ -2,24 +2,31 @@ package agent
 
 import (
 	"context"
+	"testing"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
 )
 
-func SummarizationTrigger(contextWindow int) int {
-	return summarizationTrigger(contextWindow)
+func NewTestAssembleOpts(t *testing.T, overrides ...func(*AssembleAgentOpts)) AssembleAgentOpts {
+	opts := AssembleAgentOpts{
+		ContextWindow:    64000,
+		ConversationID:   1,
+		Channel:          "test",
+		KGTraversalDepth: 3,
+		ShellPolicy:      "deny",
+	}
+	for _, o := range overrides {
+		o(&opts)
+	}
+	return opts
 }
-
-var BuildSummarizationConfig = buildSummarizationConfig
 
 var EstimateFloorTokens = estimateFloorTokens
 
 const MaxPersonaBytes = maxPersonaBytes
 
-type HandleSummarizationParams = handleSummarizationParams
-
-var HandleSummarization = handleSummarization
+var BuildTranscriptPath = buildTranscriptPath
 
 // NewEventIterator is a test helper to construct an eventIterator.
 func NewEventIterator(

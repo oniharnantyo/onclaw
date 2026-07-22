@@ -68,6 +68,14 @@ func RedactAgenticMessage(msg *schema.AgenticMessage) *schema.AgenticMessage {
 }
 
 func redactContentBlock(b *schema.ContentBlock) *schema.ContentBlock {
+	return cloneContentBlock(b, true)
+}
+
+// cloneContentBlock deep-copies a content block. When redact is true, secret
+// patterns in text fields are masked. It is the single structural source for
+// RedactAgenticMessage (redact=true). The redact=false case is used internally
+// to preserve full content structure.
+func cloneContentBlock(b *schema.ContentBlock, redact bool) *schema.ContentBlock {
 	if b == nil {
 		return nil
 	}
@@ -82,12 +90,12 @@ func redactContentBlock(b *schema.ContentBlock) *schema.ContentBlock {
 	}
 	if b.UserInputText != nil {
 		res.UserInputText = &schema.UserInputText{
-			Text: Redact(b.UserInputText.Text),
+			Text: maskText(b.UserInputText.Text, redact),
 		}
 	}
 	if b.AssistantGenText != nil {
 		res.AssistantGenText = &schema.AssistantGenText{
-			Text:            Redact(b.AssistantGenText.Text),
+			Text:            maskText(b.AssistantGenText.Text, redact),
 			OpenAIExtension: b.AssistantGenText.OpenAIExtension,
 			ClaudeExtension: b.AssistantGenText.ClaudeExtension,
 			Extension:       b.AssistantGenText.Extension,
@@ -95,7 +103,7 @@ func redactContentBlock(b *schema.ContentBlock) *schema.ContentBlock {
 	}
 	if b.Reasoning != nil {
 		res.Reasoning = &schema.Reasoning{
-			Text:            Redact(b.Reasoning.Text),
+			Text:            maskText(b.Reasoning.Text, redact),
 			Signature:       b.Reasoning.Signature,
 			OpenAIExtension: b.Reasoning.OpenAIExtension,
 		}
@@ -104,7 +112,7 @@ func redactContentBlock(b *schema.ContentBlock) *schema.ContentBlock {
 		res.FunctionToolCall = &schema.FunctionToolCall{
 			CallID:    b.FunctionToolCall.CallID,
 			Name:      b.FunctionToolCall.Name,
-			Arguments: Redact(b.FunctionToolCall.Arguments),
+			Arguments: maskText(b.FunctionToolCall.Arguments, redact),
 		}
 	}
 	if b.FunctionToolResult != nil {
@@ -115,7 +123,7 @@ func redactContentBlock(b *schema.ContentBlock) *schema.ContentBlock {
 		if len(b.FunctionToolResult.Content) > 0 {
 			res.FunctionToolResult.Content = make([]*schema.FunctionToolResultContentBlock, len(b.FunctionToolResult.Content))
 			for i, cb := range b.FunctionToolResult.Content {
-				res.FunctionToolResult.Content[i] = redactToolResultContentBlock(cb)
+				res.FunctionToolResult.Content[i] = cloneToolResultContentBlock(cb, redact)
 			}
 		}
 	}
@@ -167,7 +175,15 @@ func redactContentBlock(b *schema.ContentBlock) *schema.ContentBlock {
 	return res
 }
 
-func redactToolResultContentBlock(cb *schema.FunctionToolResultContentBlock) *schema.FunctionToolResultContentBlock {
+func maskText(s string, redact bool) string {
+	if redact {
+		return Redact(s)
+	}
+	return s
+}
+
+
+func cloneToolResultContentBlock(cb *schema.FunctionToolResultContentBlock, redact bool) *schema.FunctionToolResultContentBlock {
 	if cb == nil {
 		return nil
 	}
@@ -186,7 +202,7 @@ func redactToolResultContentBlock(cb *schema.FunctionToolResultContentBlock) *sc
 	}
 	if cb.Text != nil {
 		res.Text = &schema.UserInputText{
-			Text: Redact(cb.Text.Text),
+			Text: maskText(cb.Text.Text, redact),
 		}
 	}
 	return res
