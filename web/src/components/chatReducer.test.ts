@@ -170,5 +170,56 @@ export function runChatReducerTests(): void {
     }
   }
 
+  /* g. STREAM_MESSAGE separates assistant sub-responses on a tool result so
+     streaming_meta.index (unique only within one assistant message) cannot
+     collide across them. Reproduces the "final answer hidden until refresh"
+     bug: a tool-using turn streams [toolcall idx1] -> tool result -> [text idx1];
+     the text must land in its own assistant message, not merge into the
+     earlier tool-call block. */
+  {
+    const toolCall = (idx: number): ContentBlock => ({
+      type: 'function_tool_call',
+      streaming_meta: { index: idx },
+      function_tool_call: { id: 'c1', name: 'read_file', arguments: '{}' },
+    });
+    const toolResult = (): ContentBlock => ({
+      type: 'function_tool_result',
+      function_tool_result: { call_id: 'c1', name: 'read_file', content: [] as never[] },
+    });
+    const textDelta = (idx: number, text: string): ContentBlock => ({
+      type: 'assistant_gen_text',
+      streaming_meta: { index: idx },
+      assistant_gen_text: { text },
+    });
+
+    let state = makeBaseState({ isStreaming: true, messages: [userMsg()] });
+
+    state = chatReducer(state, { type: 'STREAM_MESSAGE', conversationID: 1, role: 'assistant', blocks: [toolCall(1)] });
+    state = chatReducer(state, { type: 'STREAM_MESSAGE', conversationID: 1, role: 'user', blocks: [toolResult()] });
+    state = chatReducer(state, { type: 'STREAM_MESSAGE', conversationID: 1, role: 'assistant', blocks: [textDelta(1, 'final answer')] });
+
+    const msgs = state.messages;
+    if (msgs.length !== 4) {
+      throw new Error(`STREAM_MESSAGE: expected 4 messages after a tool-using turn, got ${msgs.length}`);
+    }
+    if (msgs[1].role !== 'assistant' || msgs[1].content_blocks?.[0]?.type !== 'function_tool_call') {
+      throw new Error('STREAM_MESSAGE: sub-response 1 must remain a function_tool_call assistant message');
+    }
+    if (msgs[2].role !== 'user') {
+      throw new Error('STREAM_MESSAGE: tool result must be its own user message');
+    }
+    const finalMsg = msgs[3];
+    if (finalMsg.role !== 'assistant') {
+      throw new Error('STREAM_MESSAGE: final sub-response must be a separate assistant message');
+    }
+    const finalText = finalMsg.content_blocks?.find((b) => b.type === 'assistant_gen_text')?.assistant_gen_text?.text;
+    if (finalText !== 'final answer') {
+      throw new Error(`STREAM_MESSAGE: expected final answer in its own message, got ${JSON.stringify(finalText)}`);
+    }
+    if (msgs[1].content_blocks?.[0]?.assistant_gen_text) {
+      throw new Error('STREAM_MESSAGE: tool-call block was mutated by the later text delta (index collision)');
+    }
+  }
+
   console.log('chatReducer tests passed');
 }

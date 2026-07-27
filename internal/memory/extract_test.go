@@ -41,6 +41,9 @@ func (f *fakeMemoryStore) IndexDocument(ctx context.Context, doc *memory.MemoryD
 	f.docs = append(f.docs, doc)
 	return int64(len(f.docs)), nil
 }
+func (f *fakeMemoryStore) UpdateDocument(ctx context.Context, id int64, content string, vector []float32) error {
+	return nil
+}
 func (f *fakeMemoryStore) SearchArchive(ctx context.Context, q *memory.ArchiveQuery) ([]*memory.MemoryHit, error) {
 	return nil, nil
 }

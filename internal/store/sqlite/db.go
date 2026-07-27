@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -123,7 +124,7 @@ func Migrate(db *sql.DB) error {
 			reasoning_budget_tokens INTEGER NOT NULL DEFAULT 0,
 			description TEXT NOT NULL DEFAULT '',
 			workspace TEXT NOT NULL DEFAULT '',
-			tools TEXT NOT NULL DEFAULT '',
+			disabled_tools TEXT NOT NULL DEFAULT '',
 			max_iterations INTEGER NOT NULL DEFAULT 0,
 			max_context_tokens INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL,
@@ -328,9 +329,16 @@ func Migrate(db *sql.DB) error {
 		}
 	}
 
-	// Backfill FTS tables if they are empty
+	// Backfill FTS tables if they are empty. A corrupt memory_documents_fts
+	// (its sqlite_master entry survives but the shadow tables were emptied,
+	// e.g. by a manual truncation) makes this INSERT fail with "invalid fts5
+	// file format"; rebuild the index rather than bricking startup, since the
+	// FTS is derived from memory_documents.
 	if _, err := db.Exec(`INSERT OR IGNORE INTO memory_documents_fts(rowid, content) SELECT id, content FROM memory_documents;`); err != nil {
-		return fmt.Errorf("backfill memory_documents_fts: %w", err)
+		log.Printf("memory_documents_fts index appears corrupt (%v); rebuilding from memory_documents", err)
+		if err := rebuildMemoryFts(db); err != nil {
+			return fmt.Errorf("rebuild corrupt memory_documents_fts: %w", err)
+		}
 	}
 
 	// Guarded migrations for existing DBs
@@ -441,6 +449,23 @@ func Migrate(db *sql.DB) error {
 		}
 	}
 
+	hasTools, err := columnExists(db, "agents", "tools")
+	if err != nil {
+		return fmt.Errorf("check agents tools column: %w", err)
+	}
+	hasDisabledTools, err := columnExists(db, "agents", "disabled_tools")
+	if err != nil {
+		return fmt.Errorf("check agents disabled_tools column: %w", err)
+	}
+	if hasTools && !hasDisabledTools {
+		if _, err := db.Exec("ALTER TABLE agents RENAME COLUMN tools TO disabled_tools"); err != nil {
+			return fmt.Errorf("rename tools column to disabled_tools in agents: %w", err)
+		}
+		if _, err := db.Exec("UPDATE agents SET disabled_tools = ''"); err != nil {
+			return fmt.Errorf("clear disabled_tools on migration: %w", err)
+		}
+	}
+
 	hasDocModel, err := columnExists(db, "memory_documents", "embedding_model")
 	if err != nil {
 		return fmt.Errorf("check memory_documents embedding_model column: %w", err)
@@ -501,6 +526,82 @@ func Migrate(db *sql.DB) error {
 		}
 	}
 
+	return nil
+}
+
+// rebuildMemoryFts recreates a corrupt memory_documents_fts virtual table.
+//
+// The FTS5 index is derived data and memory_documents is the source of truth,
+// so a rebuild loses no content. Recovery is needed when the index is left as a
+// "phantom": its sqlite_master entry survives but the shadow tables (notably
+// memory_documents_fts_config, which must hold a version row) were emptied, so
+// the vtable cannot be instantiated and every access fails with
+// "invalid fts5 file format (found 0, expected 4 or 5)". DROP TABLE cannot
+// remove such a phantom (xConnect fails first), so it is excised via
+// writable_schema and recreated.
+//
+// Engine notes (modernc.org/sqlite) that drive the shape of this function:
+//   - the driver executes only the first statement of a multi-statement Exec,
+//     so each statement is issued separately;
+//   - writable_schema is connection-local, so the whole surgery runs on one
+//     dedicated connection (db.Conn);
+//   - the excision DELETEs are committed in an explicit transaction so they
+//     survive the connection being returned to the pool;
+//   - PRAGMA writable_schema=RESET (not =OFF) reloads the in-memory schema
+//     cache, which is what lets CREATE VIRTUAL TABLE see the phantom as gone.
+func rebuildMemoryFts(db *sql.DB) error {
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire connection: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "PRAGMA writable_schema=ON"); err != nil {
+		return fmt.Errorf("enable writable_schema: %w", err)
+	}
+
+	excise := []string{
+		`DELETE FROM sqlite_master WHERE type='table' AND name='memory_documents_fts'`,
+		`DELETE FROM sqlite_master WHERE type='table' AND name='memory_documents_fts_data'`,
+		`DELETE FROM sqlite_master WHERE type='table' AND name='memory_documents_fts_idx'`,
+		`DELETE FROM sqlite_master WHERE type='table' AND name='memory_documents_fts_docsize'`,
+		`DELETE FROM sqlite_master WHERE type='table' AND name='memory_documents_fts_config'`,
+		`DELETE FROM sqlite_master WHERE type='trigger' AND name IN ('memory_documents_ai','memory_documents_ad','memory_documents_au')`,
+	}
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin excise transaction: %w", err)
+	}
+	for _, q := range excise {
+		if _, err := tx.ExecContext(ctx, q); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("excise phantom fts: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit excise: %w", err)
+	}
+
+	if _, err := conn.ExecContext(ctx, "PRAGMA writable_schema=RESET"); err != nil {
+		return fmt.Errorf("reset writable_schema: %w", err)
+	}
+
+	recreate := []string{
+		`CREATE VIRTUAL TABLE memory_documents_fts USING fts5(content, content='memory_documents', content_rowid='id')`,
+		`CREATE TRIGGER memory_documents_ai AFTER INSERT ON memory_documents BEGIN INSERT INTO memory_documents_fts(rowid, content) VALUES (new.id, new.content); END`,
+		`CREATE TRIGGER memory_documents_ad AFTER DELETE ON memory_documents BEGIN INSERT INTO memory_documents_fts(memory_documents_fts, rowid, content) VALUES('delete', old.id, old.content); END`,
+		`CREATE TRIGGER memory_documents_au AFTER UPDATE ON memory_documents BEGIN INSERT INTO memory_documents_fts(memory_documents_fts, rowid, content) VALUES('delete', old.id, old.content); INSERT INTO memory_documents_fts(rowid, content) VALUES (new.id, new.content); END`,
+	}
+	for _, q := range recreate {
+		if _, err := conn.ExecContext(ctx, q); err != nil {
+			return fmt.Errorf("recreate fts: %w", err)
+		}
+	}
+
+	if _, err := conn.ExecContext(ctx, `INSERT INTO memory_documents_fts(rowid, content) SELECT id, content FROM memory_documents`); err != nil {
+		return fmt.Errorf("backfill rebuilt fts: %w", err)
+	}
 	return nil
 }
 

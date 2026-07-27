@@ -479,7 +479,7 @@ func TestAgentCRUDAndResolution(t *testing.T) {
 		ReasoningEffort: "medium",
 		Description:     "System instructions",
 		Workspace:       "/tmp/agent-ws",
-		Tools:           "read_file,write_file",
+		DisabledTools:   "read_file,write_file",
 		MaxIterations:   5,
 	}
 	if err := srv.AddAgent(ctx, a); err != nil {

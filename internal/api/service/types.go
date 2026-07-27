@@ -54,7 +54,7 @@ type AgentView struct {
 	ReasoningBudgetTokens int    `json:"reasoning_budget_tokens"`
 	Description           string `json:"description"`
 	Workspace             string `json:"workspace"`
-	Tools                 string `json:"tools"`
+	DisabledTools         string `json:"disabled_tools"`
 	MaxIterations         int    `json:"max_iterations"`
 	MaxContextTokens      int    `json:"max_context_tokens"`
 	MemoryConfig          string `json:"memory_config"`
@@ -74,7 +74,7 @@ type AgentInput struct {
 	ReasoningBudgetTokens int    `json:"reasoning_budget_tokens"`
 	Description           string `json:"description"`
 	Workspace             string `json:"workspace"`
-	Tools                 string `json:"tools"`
+	DisabledTools         string `json:"disabled_tools"`
 	MaxIterations         int    `json:"max_iterations"`
 	MaxContextTokens      int    `json:"max_context_tokens"`
 	MemoryConfig          string `json:"memory_config"`
@@ -203,4 +203,11 @@ type ProviderModelView struct {
 type ProviderModelsResponse struct {
 	Models  []ProviderModelView `json:"models"`
 	Warning string              `json:"warning,omitempty"`
+}
+
+type EmbeddingsConfig struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	APIBase  string `json:"api_base,omitempty"`
+	Timeout  string `json:"timeout,omitempty"`
 }

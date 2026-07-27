@@ -206,7 +206,7 @@ func TestAgentPersona_ScanContentWriteRejection(t *testing.T) {
 func TestSetAgentTools_Success(t *testing.T) {
 	f := newHFixture(t)
 	ctx := context.Background()
-	f.svc.CreateAgent(ctx, service.AgentInput{Name: "tools-agt", Provider: "openai", Tools: "execute"})
+	f.svc.CreateAgent(ctx, service.AgentInput{Name: "tools-agt", Provider: "openai", DisabledTools: "execute"})
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("PUT /api/agents/{name}/tools", f.h.SetAgentTools)
@@ -215,7 +215,7 @@ func TestSetAgentTools_Success(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]any{
 		"tool":    "read_file",
-		"enabled": true,
+		"enabled": false,
 	})
 	req, _ := http.NewRequest(http.MethodPut, server.URL+"/api/agents/tools-agt/tools", bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -228,13 +228,13 @@ func TestSetAgentTools_Success(t *testing.T) {
 		t.Errorf("expected 200, got %d", res.StatusCode)
 	}
 
-	// Verify tools were updated via service
+	// Verify disabled_tools were updated via service
 	got, _ := f.svc.GetAgent(ctx, "tools-agt")
-	if got.Tools != "execute,read_file" {
-		t.Errorf("expected tools 'execute,read_file', got %q", got.Tools)
+	if got.DisabledTools != "execute,read_file" {
+		t.Errorf("expected disabled_tools 'execute,read_file', got %q", got.DisabledTools)
 	}
 
-	// Test enabling all tools via wildcard "*"
+	// Test enabling all tools via wildcard "*" (clears denylist)
 	f.toolStore.UpsertTool(ctx, &store.ToolRegistry{Name: "execute", Category: "Shell", Enabled: 1})
 	f.toolStore.UpsertTool(ctx, &store.ToolRegistry{Name: "read_file", Category: "Filesystem", Enabled: 1})
 	f.toolStore.UpsertTool(ctx, &store.ToolRegistry{Name: "write_file", Category: "Filesystem", Enabled: 1})
@@ -255,11 +255,11 @@ func TestSetAgentTools_Success(t *testing.T) {
 	}
 
 	gotAll, _ := f.svc.GetAgent(ctx, "tools-agt")
-	if !strings.Contains(gotAll.Tools, "execute") || !strings.Contains(gotAll.Tools, "read_file") || !strings.Contains(gotAll.Tools, "write_file") {
-		t.Errorf("expected all tools in wildcard list, got %q", gotAll.Tools)
+	if gotAll.DisabledTools != "" {
+		t.Errorf("expected empty disabled_tools after enabling all, got %q", gotAll.DisabledTools)
 	}
 
-	// Test disabling all tools via wildcard "*"
+	// Test disabling all tools via wildcard "*" (adds all registry tools to denylist)
 	bodyNone, _ := json.Marshal(map[string]any{
 		"tool":    "*",
 		"enabled": false,
@@ -276,8 +276,8 @@ func TestSetAgentTools_Success(t *testing.T) {
 	}
 
 	gotNone, _ := f.svc.GetAgent(ctx, "tools-agt")
-	if gotNone.Tools != "" {
-		t.Errorf("expected tools to be empty, got %q", gotNone.Tools)
+	if !strings.Contains(gotNone.DisabledTools, "execute") || !strings.Contains(gotNone.DisabledTools, "read_file") || !strings.Contains(gotNone.DisabledTools, "write_file") {
+		t.Errorf("expected all tools in disabled_tools list, got %q", gotNone.DisabledTools)
 	}
 }
 

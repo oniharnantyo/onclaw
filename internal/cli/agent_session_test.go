@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -16,6 +17,53 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/store"
 	"github.com/oniharnantyo/onclaw/internal/store/sqlite"
 )
+
+func TestResolveEmbedTimeout(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want time.Duration
+	}{
+		{"empty defaults to 30s", "", 30 * time.Second},
+		{"invalid defaults to 30s", "not-a-duration", 30 * time.Second},
+		{"zero defaults to 30s", "0s", 30 * time.Second},
+		{"negative defaults to 30s", "-5s", 30 * time.Second},
+		{"seconds parsed", "45s", 45 * time.Second},
+		{"minutes parsed", "2m", 120 * time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveEmbedTimeout(tc.in); got != tc.want {
+				t.Errorf("resolveEmbedTimeout(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeOllamaBaseURL(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty defaults to local daemon", "", "http://localhost:11434"},
+		{"bare base unchanged", "http://localhost:11434", "http://localhost:11434"},
+		{"trailing slash stripped", "http://localhost:11434/", "http://localhost:11434"},
+		{"openai v1 suffix stripped", "http://localhost:11434/v1", "http://localhost:11434"},
+		{"v1 with trailing slash", "http://localhost:11434/v1/", "http://localhost:11434"},
+		{"remote base unchanged", "https://gpu.box:11434", "https://gpu.box:11434"},
+		{"remote v1 stripped", "https://gpu.box/v1", "https://gpu.box"},
+		{"subpath before v1 preserved", "https://proxy.example.com/ollama/v1", "https://proxy.example.com/ollama"},
+		{"only v1 collapses to default", "/v1", "http://localhost:11434"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeOllamaBaseURL(tc.in); got != tc.want {
+				t.Errorf("normalizeOllamaBaseURL(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
 
 func TestResolveContextWindow(t *testing.T) {
 	// Case 1: Agent override present

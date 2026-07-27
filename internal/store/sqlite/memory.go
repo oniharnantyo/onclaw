@@ -111,6 +111,47 @@ func (s *sqliteMemoryStore) GetDocument(ctx context.Context, id int64) (*memory.
 	return &doc, nil
 }
 
+func (s *sqliteMemoryStore) UpdateDocument(ctx context.Context, id int64, content string, vector []float32) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx,
+		`UPDATE memory_documents SET content = ? WHERE id = ?`,
+		content, id,
+	)
+	if err != nil {
+		return fmt.Errorf("update document: %w", err)
+	}
+
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("document not found: %w", sql.ErrNoRows)
+	}
+
+	if len(vector) > 0 {
+		blob := vectorToBlob(vector)
+		_, err = tx.ExecContext(ctx,
+			`INSERT OR REPLACE INTO memory_embeddings (document_id, vector) VALUES (?, ?)`,
+			id, blob,
+		)
+		if err != nil {
+			return fmt.Errorf("update embedding: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+
+	return nil
+}
+
 func (s *sqliteMemoryStore) DeleteDocument(ctx context.Context, id int64) error {
 	_, err := s.db.ExecContext(ctx, "DELETE FROM memory_documents WHERE id = ?", id)
 	if err != nil {

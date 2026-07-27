@@ -5,6 +5,7 @@ import "context"
 // MemoryStore defines operations for persisting and retrieving documents in the archive.
 type MemoryStore interface {
 	IndexDocument(ctx context.Context, doc *MemoryDocument, vector []float32) (int64, error)
+	UpdateDocument(ctx context.Context, id int64, content string, vector []float32) error
 	SearchArchive(ctx context.Context, query *ArchiveQuery) ([]*MemoryHit, error)
 	GetDocument(ctx context.Context, id int64) (*MemoryDocument, error)
 	DeleteDocument(ctx context.Context, id int64) error

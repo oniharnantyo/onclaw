@@ -35,7 +35,7 @@ func TestAgentStore(t *testing.T) {
 		ReasoningEffort:  "medium",
 		Description:      "System prompt text",
 		Workspace:        "/home/workspace",
-		Tools:            "read_file,write_file",
+		DisabledTools:    "read_file,write_file",
 		MaxIterations:    10,
 		MaxContextTokens: 4000,
 	}
@@ -61,7 +61,7 @@ func TestAgentStore(t *testing.T) {
 		gotA.ReasoningEffort != a.ReasoningEffort ||
 		gotA.Description != a.Description ||
 		gotA.Workspace != a.Workspace ||
-		gotA.Tools != a.Tools ||
+		gotA.DisabledTools != a.DisabledTools ||
 		gotA.MaxIterations != a.MaxIterations ||
 		gotA.MaxContextTokens != a.MaxContextTokens {
 		t.Errorf("agent fields mismatch. got: %+v, want: %+v", gotA, a)
@@ -130,19 +130,19 @@ func TestAgentStore(t *testing.T) {
 		t.Errorf("expected updated memory config %q, got %q", gotA.MemoryConfig, updatedA.MemoryConfig)
 	}
 
-	// Test updating agent tools
-	if err := as.UpdateAgentTools(ctx, a.Name, "new_tool_1,new_tool_2"); err != nil {
-		t.Fatalf("failed to UpdateAgentTools: %v", err)
+	// Test updating agent disabled tools
+	if err := as.UpdateAgentDisabledTools(ctx, a.Name, "new_tool_1,new_tool_2"); err != nil {
+		t.Fatalf("failed to UpdateAgentDisabledTools: %v", err)
 	}
 	updatedToolsA, err := as.GetAgent(ctx, a.Name)
 	if err != nil {
 		t.Fatalf("failed to GetAgent: %v", err)
 	}
-	if updatedToolsA.Tools != "new_tool_1,new_tool_2" {
-		t.Errorf("expected updated tools 'new_tool_1,new_tool_2', got %q", updatedToolsA.Tools)
+	if updatedToolsA.DisabledTools != "new_tool_1,new_tool_2" {
+		t.Errorf("expected updated disabled tools 'new_tool_1,new_tool_2', got %q", updatedToolsA.DisabledTools)
 	}
 	// Test updating tools for non-existent agent returns error
-	if err := as.UpdateAgentTools(ctx, "nonexistent", "new_tool_1"); err == nil {
+	if err := as.UpdateAgentDisabledTools(ctx, "nonexistent", "new_tool_1"); err == nil {
 		t.Error("expected error when updating tools for nonexistent agent, got nil")
 	}
 
@@ -160,5 +160,56 @@ func TestAgentStore(t *testing.T) {
 	// Test removing non-existent agent
 	if err := as.RemoveAgent(ctx, "nonexistent"); err == nil {
 		t.Error("expected RemoveAgent to return error for nonexistent agent")
+	}
+}
+
+func TestAgentToolsMigration(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Drop agents table to recreate a legacy version with tools column
+	_, err := db.Exec("DROP TABLE IF EXISTS agents;")
+	if err != nil {
+		t.Fatalf("failed to drop agents table: %v", err)
+	}
+
+	createLegacyQuery := `CREATE TABLE agents (
+		name TEXT PRIMARY KEY,
+		provider TEXT NOT NULL,
+		model TEXT NOT NULL DEFAULT '',
+		model_metadata TEXT NOT NULL DEFAULT '{}',
+		reasoning_effort TEXT NOT NULL DEFAULT '',
+		reasoning_budget_tokens INTEGER NOT NULL DEFAULT 0,
+		description TEXT NOT NULL DEFAULT '',
+		workspace TEXT NOT NULL DEFAULT '',
+		tools TEXT NOT NULL DEFAULT '',
+		max_iterations INTEGER NOT NULL DEFAULT 0,
+		max_context_tokens INTEGER NOT NULL DEFAULT 0,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	);`
+	if _, err := db.Exec(createLegacyQuery); err != nil {
+		t.Fatalf("failed to create legacy agents table: %v", err)
+	}
+
+	insertLegacyQuery := `INSERT INTO agents (name, provider, tools, created_at, updated_at)
+		VALUES ('legacy-agent', 'openai-prov', 'read_file,write_file', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');`
+	if _, err := db.Exec(insertLegacyQuery); err != nil {
+		t.Fatalf("failed to insert legacy agent: %v", err)
+	}
+
+	// Run Migrate to trigger column rename & clearing
+	if err := sqlite.Migrate(db); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+
+	// Verify column is renamed to disabled_tools and value is cleared to ""
+	as := sqlite.NewAgentStore(db)
+	got, err := as.GetAgent(context.Background(), "legacy-agent")
+	if err != nil {
+		t.Fatalf("failed to GetAgent after migration: %v", err)
+	}
+	if got.DisabledTools != "" {
+		t.Errorf("expected DisabledTools to be cleared to %q, got %q", "", got.DisabledTools)
 	}
 }

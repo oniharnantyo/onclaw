@@ -64,7 +64,7 @@ func (s *Service) ListAgents(ctx context.Context) ([]AgentView, error) {
 			ReasoningBudgetTokens: a.ReasoningBudgetTokens,
 			Description:           a.Description,
 			Workspace:             a.Workspace,
-			Tools:                 a.Tools,
+			DisabledTools:         a.DisabledTools,
 			MaxIterations:         a.MaxIterations,
 			MaxContextTokens:      a.MaxContextTokens,
 			MemoryConfig:          a.MemoryConfig,
@@ -90,7 +90,7 @@ func (s *Service) CreateAgent(ctx context.Context, input AgentInput) (*store.Age
 		ReasoningBudgetTokens: input.ReasoningBudgetTokens,
 		Description:           input.Description,
 		Workspace:             input.Workspace,
-		Tools:                 input.Tools,
+		DisabledTools:         input.DisabledTools,
 		MaxIterations:         input.MaxIterations,
 		MaxContextTokens:      input.MaxContextTokens,
 		MemoryConfig:          input.MemoryConfig,
@@ -127,7 +127,7 @@ func (s *Service) GetAgent(ctx context.Context, name string) (AgentView, error) 
 		ReasoningBudgetTokens: a.ReasoningBudgetTokens,
 		Description:           a.Description,
 		Workspace:             a.Workspace,
-		Tools:                 a.Tools,
+		DisabledTools:         a.DisabledTools,
 		MaxIterations:         a.MaxIterations,
 		MaxContextTokens:      a.MaxContextTokens,
 		MemoryConfig:          a.MemoryConfig,
@@ -152,7 +152,7 @@ func (s *Service) UpdateAgent(ctx context.Context, name string, input AgentInput
 		ReasoningBudgetTokens: input.ReasoningBudgetTokens,
 		Description:           input.Description,
 		Workspace:             input.Workspace,
-		Tools:                 input.Tools,
+		DisabledTools:         input.DisabledTools,
 		MaxIterations:         input.MaxIterations,
 		MaxContextTokens:      input.MaxContextTokens,
 		MemoryConfig:          input.MemoryConfig,
@@ -264,7 +264,7 @@ func (s *Service) resolveAgentWorkspace(ctx context.Context, name string) (strin
 	return workspace.ResolveWorkspace("", agent.Workspace, s.workspacePath, cwd)
 }
 
-// SetAgentTools updates the list of enabled tools for the agent.
+// SetAgentTools updates the list of disabled tools for the agent.
 func (s *Service) SetAgentTools(ctx context.Context, name string, tool string, enabled bool) error {
 	agent, err := s.mgr.GetAgent(ctx, name)
 	if err != nil {
@@ -272,8 +272,10 @@ func (s *Service) SetAgentTools(ctx context.Context, name string, tool string, e
 	}
 
 	if tool == "*" {
-		var newTools string
+		var newDisabledTools string
 		if enabled {
+			newDisabledTools = ""
+		} else {
 			list, err := s.toolRegistryStore.ListTools(ctx)
 			if err != nil {
 				return classify(err)
@@ -282,71 +284,42 @@ func (s *Service) SetAgentTools(ctx context.Context, name string, tool string, e
 			for _, t := range list {
 				allNames = append(allNames, t.Name)
 			}
-			newTools = strings.Join(allNames, ",")
-		} else {
-			newTools = ""
+			newDisabledTools = strings.Join(allNames, ",")
 		}
-		if err := s.mgr.UpdateAgentTools(ctx, name, newTools); err != nil {
+		if err := s.mgr.UpdateAgentDisabledTools(ctx, name, newDisabledTools); err != nil {
 			return classify(err)
 		}
 		return nil
 	}
 
-	// An empty allowlist means "all globally-enabled tools" (matches assembly). Toggling a
-	// single tool from that state must be symmetric: disabling one tool stores the explicit
-	// list of every other registry tool; enabling one is a no-op (stays empty).
-	if agent.Tools == "" {
-		var newTools string
-		if enabled {
-			newTools = ""
-		} else {
-			list, err := s.toolRegistryStore.ListTools(ctx)
-			if err != nil {
-				return classify(err)
-			}
-			var allNames []string
-			for _, t := range list {
-				if t.Name != tool {
-					allNames = append(allNames, t.Name)
-				}
-			}
-			newTools = strings.Join(allNames, ",")
-		}
-		if err := s.mgr.UpdateAgentTools(ctx, name, newTools); err != nil {
-			return classify(err)
-		}
-		return nil
-	}
-
-	var tools []string
-	if agent.Tools != "" {
-		for _, t := range strings.Split(agent.Tools, ",") {
+	var currentDisabled []string
+	if agent.DisabledTools != "" {
+		for _, t := range strings.Split(agent.DisabledTools, ",") {
 			trimmed := strings.TrimSpace(t)
 			if trimmed != "" {
-				tools = append(tools, trimmed)
+				currentDisabled = append(currentDisabled, trimmed)
 			}
 		}
 	}
 
-	found := false
 	var updated []string
-	for _, t := range tools {
+	found := false
+	for _, t := range currentDisabled {
 		if t == tool {
 			found = true
-			if enabled {
+			if !enabled {
 				updated = append(updated, t)
 			}
 		} else {
 			updated = append(updated, t)
 		}
 	}
-	if enabled && !found {
+	if !enabled && !found {
 		updated = append(updated, tool)
 	}
 
-	newTools := strings.Join(updated, ",")
-
-	if err := s.mgr.UpdateAgentTools(ctx, name, newTools); err != nil {
+	newDisabledTools := strings.Join(updated, ",")
+	if err := s.mgr.UpdateAgentDisabledTools(ctx, name, newDisabledTools); err != nil {
 		return classify(err)
 	}
 	return nil

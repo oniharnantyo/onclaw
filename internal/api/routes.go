@@ -80,6 +80,9 @@ func (s *Server) routes() *http.ServeMux {
 	mux.Handle("POST /api/memory/staged/{id}/approve", requireAuth(http.HandlerFunc(s.handlers.ApproveStagedWrite)))
 	mux.Handle("POST /api/memory/staged/{id}/reject", requireAuth(http.HandlerFunc(s.handlers.RejectStagedWrite)))
 
+	mux.Handle("GET /api/config/embeddings", requireAuth(http.HandlerFunc(s.handlers.GetEmbeddingsConfig)))
+	mux.Handle("PUT /api/config/embeddings", requireAuth(http.HandlerFunc(s.handlers.SetEmbeddingsConfig)))
+
 	mux.Handle("POST /api/chat", requireAuth(http.HandlerFunc(s.handlers.Chat)))
 	mux.Handle("POST /api/logout", requireAuth(auth.Logout(s.sessions)))
 

@@ -23,6 +23,7 @@ interface ToolsProps {
 	showToast: (msg: string, type?: 'success' | 'error') => void;
 	variant?: 'global' | 'agent';
 	agentName?: string;
+	agentDisabledTools?: string;
 	agentTools?: string;
 	onAgentToolsChange?: (tools: string) => void;
 }
@@ -31,9 +32,11 @@ export default function Tools({
 	showToast,
 	variant = 'global',
 	agentName,
+	agentDisabledTools: rawAgentDisabledTools,
 	agentTools,
 	onAgentToolsChange,
 }: ToolsProps) {
+	const agentDisabledTools = rawAgentDisabledTools !== undefined ? rawAgentDisabledTools : agentTools;
 	const [categories, setCategories] = useState<ToolCategory[]>([]);
 	const [loading, setLoading] = useState(true);
 
@@ -98,10 +101,10 @@ export default function Tools({
 
 	const isToolEnabled = (tool: Tool) => {
 		if (variant === 'agent') {
-			// An empty allowlist means "all globally-enabled tools" (matches assembly).
-			if (!agentTools) return true;
-			const allowed = agentTools.split(',').map(s => s.trim());
-			return allowed.includes(tool.name);
+			// An empty denylist means "all globally-enabled tools" (matches assembly).
+			if (!agentDisabledTools) return true;
+			const disabled = agentDisabledTools.split(',').map(s => s.trim()).filter(Boolean);
+			return !disabled.includes(tool.name);
 		}
 		return tool.enabled;
 	};
@@ -111,27 +114,20 @@ export default function Tools({
 		const targetEnabled = !currentlyEnabled;
 
 		if (variant === 'agent') {
-			let updated: string[];
-			const allowed = agentTools ? agentTools.split(',').map(s => s.trim()).filter(Boolean) : [];
-			if (allowed.length === 0) {
-				// Empty allowlist = all tools enabled. Enabling is a no-op (stays empty);
-				// disabling computes every registry tool name minus this one.
-				if (targetEnabled) {
-					updated = [];
-				} else {
-					const allNames = categories.flatMap(cat => cat.tools.map(t => t.name));
-					updated = allNames.filter(name => name !== tool.name);
-				}
-			} else if (targetEnabled) {
-				if (!allowed.includes(tool.name)) {
-					updated = [...allowed, tool.name];
-				} else {
-					updated = allowed;
-				}
+			let updatedDisabled: string[];
+			const disabled = agentDisabledTools ? agentDisabledTools.split(',').map(s => s.trim()).filter(Boolean) : [];
+			if (targetEnabled) {
+				// Enabling tool: remove from disabled_tools denylist
+				updatedDisabled = disabled.filter(name => name !== tool.name);
 			} else {
-				updated = allowed.filter(name => name !== tool.name);
+				// Disabling tool: add to disabled_tools denylist
+				if (!disabled.includes(tool.name)) {
+					updatedDisabled = [...disabled, tool.name];
+				} else {
+					updatedDisabled = disabled;
+				}
 			}
-			const newToolsString = updated.join(',');
+			const newToolsString = updatedDisabled.join(',');
 
 			if (agentName) {
 				// edit mode -> save directly to backend
@@ -191,10 +187,11 @@ export default function Tools({
 
 	const toggleAllTools = async (targetEnabled: boolean) => {
 		if (variant === 'agent') {
-			// Empty allowlist = all tools (matches assembly), so enabling all stores the
-			// empty sentinel. Disabling all is unrepresentable under empty=all, so the
-			// Disable All button is hidden for the agent variant.
-			const newToolsString = '';
+			let newToolsString = '';
+			if (!targetEnabled) {
+				const allNames = categories.flatMap(cat => cat.tools.map(t => t.name));
+				newToolsString = allNames.join(',');
+			}
 
 			if (agentName) {
 				try {
@@ -514,7 +511,6 @@ export default function Tools({
 					>
 						Enable All
 					</button>
-					{variant !== 'agent' && (
 					<button
 						type="button"
 						className="btn btn-secondary btn-sm"
@@ -523,7 +519,6 @@ export default function Tools({
 					>
 						Disable All
 					</button>
-					)}
 				</div>
 			</div>
 

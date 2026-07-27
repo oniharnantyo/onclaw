@@ -100,6 +100,11 @@ func (s *SessionManager) LoadHistory(ctx context.Context) ([]*schema.AgenticMess
 		stripReplayReasoning(msg)
 	}
 
+	// Drop tool calls with corrupt arguments (and the orphaned results they
+	// leave behind) so replay never hands the provider a message it rejects —
+	// heals turns already persisted before the stream-reconstruction fix.
+	historyMessages = sanitizeCorruptToolCalls(historyMessages)
+
 	return historyMessages, prevResponseID, nil
 }
 

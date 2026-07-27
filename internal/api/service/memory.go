@@ -60,3 +60,43 @@ func (s *Service) RejectStagedWrite(ctx context.Context, id int64) error {
 	}
 	return s.stagedWriteStore.RejectWrite(ctx, id)
 }
+
+// GetEmbeddingsConfig retrieves global embeddings configuration from preferences KV.
+func (s *Service) GetEmbeddingsConfig(ctx context.Context) (*EmbeddingsConfig, error) {
+	if s.kv == nil {
+		return &EmbeddingsConfig{}, nil
+	}
+	provider, _ := s.kv.Get(ctx, "embedding_provider")
+	model, _ := s.kv.Get(ctx, "embedding_model")
+	apiBase, _ := s.kv.Get(ctx, "embedding_api_base")
+	timeout, _ := s.kv.Get(ctx, "embedding_timeout")
+	return &EmbeddingsConfig{
+		Provider: provider,
+		Model:    model,
+		APIBase:  apiBase,
+		Timeout:  timeout,
+	}, nil
+}
+
+// SetEmbeddingsConfig updates global embeddings configuration in preferences KV.
+func (s *Service) SetEmbeddingsConfig(ctx context.Context, cfg *EmbeddingsConfig) error {
+	if s.kv == nil {
+		return fmt.Errorf("kv store not configured")
+	}
+	if cfg == nil {
+		return nil
+	}
+	if err := s.kv.Set(ctx, "embedding_provider", cfg.Provider); err != nil {
+		return fmt.Errorf("set embedding_provider: %w", err)
+	}
+	if err := s.kv.Set(ctx, "embedding_model", cfg.Model); err != nil {
+		return fmt.Errorf("set embedding_model: %w", err)
+	}
+	if err := s.kv.Set(ctx, "embedding_api_base", cfg.APIBase); err != nil {
+		return fmt.Errorf("set embedding_api_base: %w", err)
+	}
+	if err := s.kv.Set(ctx, "embedding_timeout", cfg.Timeout); err != nil {
+		return fmt.Errorf("set embedding_timeout: %w", err)
+	}
+	return nil
+}

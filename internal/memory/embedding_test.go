@@ -34,6 +34,9 @@ type mockEmbedStore struct {
 func (m *mockEmbedStore) IndexDocument(_ context.Context, _ *memory.MemoryDocument, _ []float32) (int64, error) {
 	return 0, nil
 }
+func (m *mockEmbedStore) UpdateDocument(_ context.Context, _ int64, _ string, _ []float32) error {
+	return nil
+}
 func (m *mockEmbedStore) SearchArchive(_ context.Context, _ *memory.ArchiveQuery) ([]*memory.MemoryHit, error) {
 	return nil, nil
 }

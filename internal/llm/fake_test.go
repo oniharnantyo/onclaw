@@ -130,13 +130,13 @@ func (f *fakeAgentStore) UpdateAgent(ctx context.Context, a *store.Agent) error 
 	return nil
 }
 
-func (f *fakeAgentStore) UpdateAgentTools(ctx context.Context, name string, tools string) error {
+func (f *fakeAgentStore) UpdateAgentDisabledTools(ctx context.Context, name string, disabledTools string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	a, ok := f.agents[name]
 	if !ok {
 		return fmt.Errorf("agent not found")
 	}
-	a.Tools = tools
+	a.DisabledTools = disabledTools
 	return nil
 }

@@ -89,7 +89,7 @@ stateDiagram-v2
 | Layer | CREATE trigger | UPDATE trigger | DELETE trigger |
 |-------|---------------|----------------|----------------|
 | **Short-Term** (MEMORY.md) | Dreamer promotes N≥threshold facts; agent calls `memory` tool (`add`) | Agent calls `memory` tool (`replace`); Dreamer `consolidateFacts` on cap overflow | Agent calls `memory` tool (`remove`) |
-| **Long-Term Archive** | `ExtractAndFlush` — runs on every turn (post-response) and before each context compaction | N/A — documents are immutable; new extraction creates new rows | Manual delete via API (`DeleteDocument`) |
+| **Long-Term Archive** | `ExtractAndFlush` — runs on every turn (post-response) and before context compaction, or agent calls `memory_remember` | Agent calls `memory_update` tool (updates content in place, re-embeds vector, and re-syncs FTS index) | Agent calls `memory_forget` tool or manual delete via API (`DeleteDocument`) |
 | **Episodic** | `FlushMessages` at session end (EventStop path or compaction callback) | `MarkPromoted` — set after Dreamer processes the episode | `PruneExpired` — background goroutine, runs every hour |
 | **Knowledge Graph** | `IngestExtraction` — runs after each episodic write | `DedupAfterExtraction` — merge duplicates; superseded relations get `valid_until` set | Entity/relation `valid_until` set by dedup (soft delete); no hard-delete path |
 
@@ -192,7 +192,10 @@ memory_documents_fts  ← FTS5 virtual table (auto-synced via triggers)
 |-------|-----------|--------|
 | End of every agent turn (response completed) | **CREATE** — new `memory_documents` rows per extracted fact | `EventStop` → `onStopFlush` → `FlushMessages` → `ExtractAndFlush` |
 | Context-window compaction (messages being discarded) | **CREATE** — extracts from about-to-be-dropped messages before they leave context | `CompactMessages` in `agent.go` → `ExtractAndFlush` on `discardedMessages` |
-| Agent calls `memory_search` tool | Read-only — no write | `memorySearchTool.Build` → `MemoryStore.SearchArchive` |
+| Agent calls `memory_remember` tool | **CREATE** — stores a new fact in the archive | `memoryRememberTool.Build` → `MemoryStore.IndexDocument` |
+| Agent calls `memory_update` tool | **UPDATE** — updates document content and vector in place | `memoryUpdateTool.Build` → `MemoryStore.UpdateDocument` |
+| Agent calls `memory_forget` tool | **DELETE** — removes document and vector from archive | `memoryForgetTool.Build` → `MemoryStore.DeleteDocument` |
+| Agent calls `memory_search` tool | Read-only — returns matching documents with document `id` | `memorySearchTool.Build` → `MemoryStore.SearchArchive` |
 | Manual delete via API | **DELETE** — hard removal of a document row | `MemoryStore.DeleteDocument` |
 
 **Hybrid search:**

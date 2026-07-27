@@ -103,60 +103,60 @@ func TestService_GetAgent_NotFound(t *testing.T) {
 	}
 }
 
-func TestService_SetAgentTools_EmptyAllowlist(t *testing.T) {
+func TestService_SetAgentTools_Denylist(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
-	// Seed the tool registry with four builtin tools.
+	// Seed the tool registry with builtin tools.
 	registry := []string{"read_file", "write_file", "ls", "execute"}
 	for _, name := range registry {
 		f.toolStore.UpsertTool(ctx, &store.ToolRegistry{Name: name, Enabled: 1})
 	}
 
-	// Agent created via the web create form / CLI carries an empty allowlist = all tools.
-	f.svc.CreateAgent(ctx, service.AgentInput{Name: "empty-agent", Provider: "openai"})
-	if got := mustAgentTools(t, f, "empty-agent"); got != "" {
-		t.Fatalf("expected empty allowlist initially, got %q", got)
+	// Agent created carries an empty denylist = all tools enabled.
+	f.svc.CreateAgent(ctx, service.AgentInput{Name: "test-agent", Provider: "openai"})
+	if got := mustAgentDisabledTools(t, f, "test-agent"); got != "" {
+		t.Fatalf("expected empty denylist initially, got %q", got)
 	}
 
-	// Disabling one tool from the all-state stores every other registry tool.
-	if err := f.svc.SetAgentTools(ctx, "empty-agent", "read_file", false); err != nil {
+	// Disabling one tool adds it to disabled_tools.
+	if err := f.svc.SetAgentTools(ctx, "test-agent", "read_file", false); err != nil {
 		t.Fatalf("SetAgentTools: %v", err)
 	}
-	got := splitSet(mustAgentTools(t, f, "empty-agent"))
-	want := splitSet("write_file,ls,execute")
+	got := splitSet(mustAgentDisabledTools(t, f, "test-agent"))
+	want := splitSet("read_file")
 	if !equalSet(got, want) {
 		t.Errorf("after disabling read_file, expected %v, got %v", want, got)
 	}
 
-	// Disabling a second tool from the all-derived state removes it too.
-	if err := f.svc.SetAgentTools(ctx, "empty-agent", "execute", false); err != nil {
+	// Disabling a second tool adds it to disabled_tools as well.
+	if err := f.svc.SetAgentTools(ctx, "test-agent", "execute", false); err != nil {
 		t.Fatalf("SetAgentTools: %v", err)
 	}
-	got = splitSet(mustAgentTools(t, f, "empty-agent"))
-	want = splitSet("write_file,ls")
+	got = splitSet(mustAgentDisabledTools(t, f, "test-agent"))
+	want = splitSet("read_file,execute")
 	if !equalSet(got, want) {
 		t.Errorf("after disabling execute, expected %v, got %v", want, got)
 	}
 
-	// Enabling an already-present tool is a no-op (the list is unchanged).
-	if err := f.svc.SetAgentTools(ctx, "empty-agent", "write_file", true); err != nil {
+	// Enabling a tool removes it from disabled_tools.
+	if err := f.svc.SetAgentTools(ctx, "test-agent", "read_file", true); err != nil {
 		t.Fatalf("SetAgentTools: %v", err)
 	}
-	got = splitSet(mustAgentTools(t, f, "empty-agent"))
-	want = splitSet("write_file,ls")
+	got = splitSet(mustAgentDisabledTools(t, f, "test-agent"))
+	want = splitSet("execute")
 	if !equalSet(got, want) {
-		t.Errorf("enabling an already-present tool should be a no-op, got %v", got)
+		t.Errorf("after enabling read_file, expected %v, got %v", want, got)
 	}
 }
 
-func mustAgentTools(t *testing.T, f *fixture, name string) string {
+func mustAgentDisabledTools(t *testing.T, f *fixture, name string) string {
 	t.Helper()
 	a, err := f.svc.GetAgent(context.Background(), name)
 	if err != nil {
 		t.Fatalf("GetAgent %q: %v", name, err)
 	}
-	return a.Tools
+	return a.DisabledTools
 }
 
 func splitSet(s string) map[string]bool {

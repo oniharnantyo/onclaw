@@ -302,9 +302,9 @@ func (s *Service) UpdateAgent(ctx context.Context, a *store.Agent) error {
 	return nil
 }
 
-// UpdateAgentTools updates tools configuration for an agent and flags for reload.
-func (s *Service) UpdateAgentTools(ctx context.Context, name string, tools string) error {
-	if err := s.agentStore.UpdateAgentTools(ctx, name, tools); err != nil {
+// UpdateAgentDisabledTools updates disabled tools configuration for an agent and flags for reload.
+func (s *Service) UpdateAgentDisabledTools(ctx context.Context, name string, disabledTools string) error {
+	if err := s.agentStore.UpdateAgentDisabledTools(ctx, name, disabledTools); err != nil {
 		return err
 	}
 	s.TriggerReload()

@@ -46,6 +46,87 @@ func stripReplayReasoning(msg *schema.AgenticMessage) {
 	msg.ContentBlocks = filtered
 }
 
+// sanitizeCorruptToolCalls scrubs tool-call blocks whose arguments are not a
+// single valid JSON value, plus any tool-result blocks orphaned by that scrub —
+// including results whose matching call was never present (e.g. two parallel
+// calls whose streamed fragments were wrongly merged into one arguments blob,
+// which both invalidates that call and dangles the other call's result). Like
+// stripReplayReasoning it mutates only the freshly loaded replay copy; persisted
+// rows are untouched. Messages left with no blocks are dropped so an empty
+// assistant/tool turn is never handed to the provider.
+func sanitizeCorruptToolCalls(msgs []*schema.AgenticMessage) []*schema.AgenticMessage {
+	if len(msgs) == 0 {
+		return msgs
+	}
+
+	// Collect CallIDs of assistant tool calls whose arguments are valid JSON
+	// (empty arguments are allowed — a call with no parameters). Calls with
+	// corrupt arguments are excluded, which also orphans their tool results.
+	validCalls := make(map[string]struct{})
+	corrupt := false
+	for _, msg := range msgs {
+		if msg == nil {
+			continue
+		}
+		for _, b := range msg.ContentBlocks {
+			if b == nil || b.FunctionToolCall == nil {
+				continue
+			}
+			if args := b.FunctionToolCall.Arguments; args != "" && !json.Valid([]byte(args)) {
+				corrupt = true
+				continue
+			}
+			if b.FunctionToolCall.CallID != "" {
+				validCalls[b.FunctionToolCall.CallID] = struct{}{}
+			}
+		}
+	}
+	if !corrupt {
+		return msgs
+	}
+
+	out := make([]*schema.AgenticMessage, 0, len(msgs))
+	for _, msg := range msgs {
+		if msg == nil {
+			continue
+		}
+		filtered := msg.ContentBlocks[:0]
+		for _, b := range msg.ContentBlocks {
+			if keepReplayBlock(b, validCalls) {
+				filtered = append(filtered, b)
+			}
+		}
+		msg.ContentBlocks = filtered
+		if len(filtered) > 0 {
+			out = append(out, msg)
+		}
+	}
+	return out
+}
+
+// keepReplayBlock reports whether a content block survives corrupt-tool-call
+// scrubbing: tool calls with invalid JSON arguments are dropped, tool results
+// whose CallID has no surviving call are dropped as orphans, everything else is
+// kept.
+func keepReplayBlock(b *schema.ContentBlock, validCalls map[string]struct{}) bool {
+	if b == nil {
+		return false
+	}
+	switch {
+	case b.FunctionToolCall != nil:
+		args := b.FunctionToolCall.Arguments
+		return args == "" || json.Valid([]byte(args))
+	case b.FunctionToolResult != nil:
+		if b.FunctionToolResult.CallID == "" {
+			return true
+		}
+		_, ok := validCalls[b.FunctionToolResult.CallID]
+		return ok
+	default:
+		return true
+	}
+}
+
 // SanitizeSummaryMessage ensures the message complies with the SummaryMessage contract.
 // It forces the role to user and strips any blocks that are not user_input_text.
 // If it encounters an assistant_gen_text block (legacy shape), it converts it to user_input_text.

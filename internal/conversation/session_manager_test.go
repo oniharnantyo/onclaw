@@ -502,6 +502,82 @@ func TestCommitTurn_FallsBackToEstimateWithoutUsage(t *testing.T) {
 	}
 }
 
+// TestLoadHistory_DropsCorruptToolCallsAndOrphanedResults reproduces the
+// corruption that bricked a conversation with HTTP 400 "Extra data": two
+// parallel tool calls whose streamed fragments were merged into one assistant
+// tool call with two JSON objects concatenated as arguments. That both
+// invalidates the merged call and orphans the other call's tool result.
+// LoadHistory must drop the corrupt call and both results on replay.
+func TestLoadHistory_DropsCorruptToolCallsAndOrphanedResults(t *testing.T) {
+	st := newMockStore()
+	convID, _ := st.CreateConversation(context.Background(), "master")
+
+	corruptTurn := []*schema.AgenticMessage{
+		{Role: schema.AgenticRoleTypeUser, ContentBlocks: []*schema.ContentBlock{
+			{Type: schema.ContentBlockTypeUserInputText, UserInputText: &schema.UserInputText{Text: "hello"}},
+		}},
+		{Role: schema.AgenticRoleTypeAssistant, ContentBlocks: []*schema.ContentBlock{
+			{Type: schema.ContentBlockTypeFunctionToolCall, FunctionToolCall: &schema.FunctionToolCall{
+				CallID: "call_ls",
+				Name:   "ls",
+				// Two JSON objects back-to-back — exactly the "Extra data" shape.
+				Arguments: `{"file_path":"USER.md"}{"path":"/ws"}`,
+			}},
+		}},
+		{Role: schema.AgenticRoleTypeUser, ContentBlocks: []*schema.ContentBlock{
+			{Type: schema.ContentBlockTypeFunctionToolResult, FunctionToolResult: &schema.FunctionToolResult{
+				CallID: "call_read", // orphaned: no assistant call carries this id
+				Name:   "read_file",
+			}},
+		}},
+		{Role: schema.AgenticRoleTypeUser, ContentBlocks: []*schema.ContentBlock{
+			{Type: schema.ContentBlockTypeFunctionToolResult, FunctionToolResult: &schema.FunctionToolResult{
+				CallID: "call_ls", // matched the corrupt call, now dropped
+				Name:   "ls",
+			}},
+		}},
+	}
+	raw, _ := json.Marshal(corruptTurn)
+	st.AppendTurn(context.Background(), convID, string(raw), "resp-1", "", "step-3.7-flash", 0, 0, 0, "hello", "")
+
+	sm := conversation.NewSessionManager(st, convID, "step-3.7-flash")
+	msgs, _, err := sm.LoadHistory(context.Background())
+	if err != nil {
+		t.Fatalf("LoadHistory failed: %v", err)
+	}
+
+	// No surviving tool call may carry invalid arguments, and no surviving tool
+	// result may reference a call that isn't present.
+	calls := make(map[string]bool)
+	for _, m := range msgs {
+		for _, b := range m.ContentBlocks {
+			if b.FunctionToolCall != nil && b.FunctionToolCall.Arguments != "" {
+				if !json.Valid([]byte(b.FunctionToolCall.Arguments)) {
+					t.Errorf("corrupt tool-call args survived load: %q", b.FunctionToolCall.Arguments)
+				}
+				calls[b.FunctionToolCall.CallID] = true
+			}
+		}
+	}
+	for _, m := range msgs {
+		for _, b := range m.ContentBlocks {
+			if b.FunctionToolResult != nil && b.FunctionToolResult.CallID != "" && !calls[b.FunctionToolResult.CallID] {
+				t.Errorf("orphaned tool result survived load: call_id=%q", b.FunctionToolResult.CallID)
+			}
+		}
+	}
+
+	// The corrupt call and both tool results are gone; only the greeting remains.
+	if len(msgs) != 1 {
+		t.Fatalf("expected only the surviving user greeting, got %d messages: %+v", len(msgs), msgs)
+	}
+	first := msgs[0]
+	if first.Role != schema.AgenticRoleTypeUser || len(first.ContentBlocks) != 1 ||
+		first.ContentBlocks[0].UserInputText == nil || first.ContentBlocks[0].UserInputText.Text != "hello" {
+		t.Errorf("expected the user greeting to survive, got %+v", first)
+	}
+}
+
 func containsString(s, substr string) bool {
 	return len(s) >= len(substr) && func() bool {
 		for i := 0; i <= len(s)-len(substr); i++ {

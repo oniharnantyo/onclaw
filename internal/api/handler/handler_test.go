@@ -139,15 +139,16 @@ func (f *hFakeAgentStore) RemoveAgent(_ context.Context, name string) error {
 	delete(f.agents, name)
 	return nil
 }
-func (f *hFakeAgentStore) UpdateAgentTools(_ context.Context, name string, tools string) error {
+func (f *hFakeAgentStore) UpdateAgentDisabledTools(_ context.Context, name string, disabledTools string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	a, ok := f.agents[name]
-	if !ok {
-		return fmt.Errorf("agent not found")
+	for _, a := range f.agents {
+		if a.Name == name {
+			a.DisabledTools = disabledTools
+			return nil
+		}
 	}
-	a.Tools = tools
-	return nil
+	return fmt.Errorf("agent not found")
 }
 
 type hFakeKVStore struct {

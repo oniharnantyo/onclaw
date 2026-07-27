@@ -182,7 +182,6 @@ func maskText(s string, redact bool) string {
 	return s
 }
 
-
 func cloneToolResultContentBlock(cb *schema.FunctionToolResultContentBlock, redact bool) *schema.FunctionToolResultContentBlock {
 	if cb == nil {
 		return nil

@@ -35,6 +35,10 @@ func (m *mockMemoryStore) IndexDocument(ctx context.Context, doc *memory.MemoryD
 	return int64(len(m.Docs)), nil
 }
 
+func (m *mockMemoryStore) UpdateDocument(ctx context.Context, id int64, content string, vector []float32) error {
+	return nil
+}
+
 func (m *mockMemoryStore) SearchArchive(ctx context.Context, query *memory.ArchiveQuery) ([]*memory.MemoryHit, error) {
 	return nil, nil
 }
@@ -242,5 +246,32 @@ func TestMemoryMiddleware_AfterAgent_IsNoOp(t *testing.T) {
 	// D3: AfterAgent must be a no-op — no documents extracted per turn.
 	if len(memoryStore.Docs) != 0 {
 		t.Errorf("D3 violation: AfterAgent should not extract; got %d docs", len(memoryStore.Docs))
+	}
+}
+
+func TestMemoryMiddleware_BeforeAgent_RetrievalDisabled(t *testing.T) {
+	ctx := context.Background()
+	coreStore := &mockCoreStore{ReadVal: "Curated memory line 1"}
+	middleware := middlewares.NewMemoryMiddleware(
+		coreStore, nil, nil, nil, nil, nil, "workspace", "agent-1", 123, 100, nil, nil, 0, nil,
+	)
+	middleware.RetrievalEnabled = false
+
+	runCtx := &adk.ChatModelAgentContext[*schema.AgenticMessage]{
+		AgentInput: &adk.TypedAgentInput[*schema.AgenticMessage]{
+			Messages: []*schema.AgenticMessage{
+				schema.UserAgenticMessage("hello"),
+			},
+		},
+	}
+
+	_, newCtx, err := middleware.BeforeAgent(ctx, runCtx)
+	if err != nil {
+		t.Fatalf("BeforeAgent failed: %v", err)
+	}
+
+	// Turn-start auto-injection must be skipped when RetrievalEnabled is false
+	if len(newCtx.AgentInput.Messages) != 1 {
+		t.Errorf("expected 1 message (auto-injection skipped), got %d", len(newCtx.AgentInput.Messages))
 	}
 }

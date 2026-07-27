@@ -37,7 +37,7 @@ type Agent struct {
 	ReasoningBudgetTokens int
 	Description           string
 	Workspace             string
-	Tools                 string // Comma-separated list of enabled tools
+	DisabledTools         string // Comma-separated list of disabled tools (denylist)
 	MaxIterations         int
 	MaxContextTokens      int
 	MemoryConfig          string // JSON string representing AgentMemoryConfig

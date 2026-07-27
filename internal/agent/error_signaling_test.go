@@ -131,7 +131,7 @@ func TestAgent_ExpectedToolFailuresAcrossFamilies(t *testing.T) {
 				},
 			}
 
-			agentConf := &store.Agent{Name: "errsig-" + sc.name, Tools: sc.tool, MaxIterations: 5}
+			agentConf := &store.Agent{Name: "errsig-" + sc.name, MaxIterations: 5}
 			opts := agent.NewTestAssembleOpts(t, func(o *agent.AssembleAgentOpts) {
 				o.AgentConf = agentConf
 				o.ChatModel = fm

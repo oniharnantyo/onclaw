@@ -127,6 +127,23 @@ func mergeMessageChunk(accumulated *schema.AgenticMessage, chunk *schema.Agentic
 			continue
 		}
 
+		// Streamed tool-call fragments share a stable StreamingMeta.Index (eino
+		// derives it from the provider tool_calls[].index). CallID and Name
+		// arrive only on a call's first delta, so index is the only reliable way
+		// to route argument fragments to their call. Handle this before the
+		// lastBlock type gate so a fragment always reaches its call even when a
+		// block of another type was emitted in between; without it, parallel
+		// calls collide and their arguments concatenate into invalid JSON that
+		// the provider later rejects (HTTP 400 "Extra data").
+		if cb.Type == schema.ContentBlockTypeFunctionToolCall && cb.FunctionToolCall != nil && cb.StreamingMeta != nil {
+			if target := toolCallBlockByIndex(accumulated, cb.StreamingMeta.Index); target != nil {
+				mergeToolCall(target, cb)
+				continue
+			}
+			accumulated.ContentBlocks = append(accumulated.ContentBlocks, cloneContentBlock(cb))
+			continue
+		}
+
 		lastBlock := accumulated.ContentBlocks[len(accumulated.ContentBlocks)-1]
 		if lastBlock.Type == cb.Type {
 			switch cb.Type {
@@ -136,13 +153,35 @@ func mergeMessageChunk(accumulated *schema.AgenticMessage, chunk *schema.Agentic
 				}
 			case schema.ContentBlockTypeFunctionToolCall:
 				if lastBlock.FunctionToolCall != nil && cb.FunctionToolCall != nil {
+					var targetBlock *schema.ContentBlock
 					if cb.FunctionToolCall.CallID != "" {
-						lastBlock.FunctionToolCall.CallID = cb.FunctionToolCall.CallID
+						for i := len(accumulated.ContentBlocks) - 1; i >= 0; i-- {
+							b := accumulated.ContentBlocks[i]
+							if b.Type == schema.ContentBlockTypeFunctionToolCall && b.FunctionToolCall != nil && b.FunctionToolCall.CallID == cb.FunctionToolCall.CallID {
+								targetBlock = b
+								break
+							}
+						}
 					}
-					if cb.FunctionToolCall.Name != "" {
-						lastBlock.FunctionToolCall.Name = cb.FunctionToolCall.Name
+
+					if targetBlock != nil {
+						if cb.FunctionToolCall.Name != "" {
+							targetBlock.FunctionToolCall.Name = cb.FunctionToolCall.Name
+						}
+						targetBlock.FunctionToolCall.Arguments += cb.FunctionToolCall.Arguments
+					} else {
+						if lastBlock.FunctionToolCall.CallID == "" && (cb.FunctionToolCall.Name == "" || lastBlock.FunctionToolCall.Name == "" || lastBlock.FunctionToolCall.Name == cb.FunctionToolCall.Name) {
+							if cb.FunctionToolCall.CallID != "" {
+								lastBlock.FunctionToolCall.CallID = cb.FunctionToolCall.CallID
+							}
+							if cb.FunctionToolCall.Name != "" {
+								lastBlock.FunctionToolCall.Name = cb.FunctionToolCall.Name
+							}
+							lastBlock.FunctionToolCall.Arguments += cb.FunctionToolCall.Arguments
+						} else {
+							accumulated.ContentBlocks = append(accumulated.ContentBlocks, cloneContentBlock(cb))
+						}
 					}
-					lastBlock.FunctionToolCall.Arguments += cb.FunctionToolCall.Arguments
 				}
 			case schema.ContentBlockTypeReasoning:
 				if lastBlock.Reasoning != nil && cb.Reasoning != nil {
@@ -189,6 +228,35 @@ func mergeMessageChunk(accumulated *schema.AgenticMessage, chunk *schema.Agentic
 	return accumulated
 }
 
+// toolCallBlockByIndex returns the most recent accumulated function-tool-call
+// block whose StreamingMeta.Index matches idx, or nil if none.
+func toolCallBlockByIndex(msg *schema.AgenticMessage, idx int) *schema.ContentBlock {
+	for i := len(msg.ContentBlocks) - 1; i >= 0; i-- {
+		b := msg.ContentBlocks[i]
+		if b.Type == schema.ContentBlockTypeFunctionToolCall && b.FunctionToolCall != nil &&
+			b.StreamingMeta != nil && b.StreamingMeta.Index == idx {
+			return b
+		}
+	}
+	return nil
+}
+
+// mergeToolCall folds a streamed tool-call fragment into an existing block.
+// CallID and Name are taken only when the fragment carries them (they appear
+// solely on a call's first delta); argument fragments append in arrival order.
+func mergeToolCall(target, fragment *schema.ContentBlock) {
+	if target.FunctionToolCall == nil || fragment.FunctionToolCall == nil {
+		return
+	}
+	if fragment.FunctionToolCall.CallID != "" {
+		target.FunctionToolCall.CallID = fragment.FunctionToolCall.CallID
+	}
+	if fragment.FunctionToolCall.Name != "" {
+		target.FunctionToolCall.Name = fragment.FunctionToolCall.Name
+	}
+	target.FunctionToolCall.Arguments += fragment.FunctionToolCall.Arguments
+}
+
 func cloneMessage(msg *schema.AgenticMessage) *schema.AgenticMessage {
 	if msg == nil {
 		return nil
@@ -230,6 +298,9 @@ func cloneContentBlock(cb *schema.ContentBlock) *schema.ContentBlock {
 	}
 	res := &schema.ContentBlock{
 		Type: cb.Type,
+	}
+	if cb.StreamingMeta != nil {
+		res.StreamingMeta = &schema.StreamingMeta{Index: cb.StreamingMeta.Index}
 	}
 	if cb.AssistantGenText != nil {
 		res.AssistantGenText = &schema.AssistantGenText{

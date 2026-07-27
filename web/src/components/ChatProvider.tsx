@@ -94,7 +94,7 @@ export interface ChatState {
 type ChatAction =
   | { type: 'SET_MESSAGES'; messages: ChatMessage[] }
   | { type: 'STREAM_INIT'; userMsg: ChatMessage }
-  | { type: 'STREAM_MESSAGE'; conversationID: number; blocks: ContentBlock[] }
+  | { type: 'STREAM_MESSAGE'; conversationID: number; role: 'assistant' | 'user'; blocks: ContentBlock[] }
   | { type: 'STREAM_ERROR'; error: string }
   | { type: 'STREAM_DONE' }
   | { type: 'STREAM_STOPPED' }
@@ -120,13 +120,37 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         streamingStart: Date.now(),
       };
     case 'STREAM_MESSAGE': {
-      const { blocks } = action;
+      const { blocks, role } = action;
+      // Trailing end-of-message markers carry role but no blocks; ignore them.
+      if (blocks.length === 0) return state;
       const lastMsg = state.messages[state.messages.length - 1];
-      const isAssistant = lastMsg?.role === 'assistant';
 
-      // Merge by streaming_meta.index so token-level deltas accumulate into
-      // the correct content block instead of appending whole blocks.
-      if (isAssistant) {
+      // Tool results arrive as user-role messages. Keep them in their own
+      // message (merging consecutive same-role) so each assistant sub-response
+      // is a separate message. streaming_meta.index is unique only within one
+      // assistant message; if a tool result is folded into the running
+      // assistant message, the next sub-response reuses indices 0,1,... and its
+      // text delta collides with the prior tool-call block — hiding the live
+      // answer until a refresh re-syncs from the correctly-separated history.
+      if (role === 'user') {
+        if (lastMsg?.role === 'user') {
+          return {
+            ...state,
+            messages: [
+              ...state.messages.slice(0, -1),
+              { ...lastMsg, content_blocks: [...(lastMsg.content_blocks || []), ...blocks] },
+            ],
+          };
+        }
+        return {
+          ...state,
+          messages: [...state.messages, { role: 'user', content_blocks: blocks }],
+        };
+      }
+
+      // Assistant deltas: merge by streaming_meta.index so token-level fragments
+      // accumulate into the correct content block instead of appending wholes.
+      if (lastMsg?.role === 'assistant') {
         const msgs: ChatMessage[] = [
           ...state.messages.slice(0, -1),
           {
@@ -552,6 +576,7 @@ export default function ChatProvider({
           dispatch({
             type: 'STREAM_MESSAGE',
             conversationID: tempConvID!,
+            role: msgData.role === 'user' ? 'user' : 'assistant',
             blocks: msgData.content_blocks || [],
           });
           const usage = msgData.response_meta?.token_usage as { total_tokens?: number; totalTokens?: number; prompt_tokens?: number } | undefined;

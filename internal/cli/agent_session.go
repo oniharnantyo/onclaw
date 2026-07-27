@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	einoembedgemini "github.com/cloudwego/eino-ext/components/embedding/gemini"
@@ -34,6 +36,39 @@ type agentSessionRequest struct {
 	Reasoning    string
 	Workspace    string
 	Channel      string
+}
+
+// normalizeOllamaBaseURL returns a base URL suitable for Ollama's native API
+// client, which appends /api/embed to the base path. It strips a trailing
+// slash and the OpenAI-compatible "/v1" suffix, defaulting to the local
+// daemon when empty. This lets a provider profile whose api_base is the
+// OpenAI-compatible "http://host:11434/v1" (correct for chat) still resolve
+// to the native "http://host:11434" needed for embeddings.
+func normalizeOllamaBaseURL(base string) string {
+	trimmed := strings.TrimRight(base, "/")
+	trimmed = strings.TrimSuffix(trimmed, "/v1")
+	if trimmed == "" {
+		return "http://localhost:11434"
+	}
+	return trimmed
+}
+
+// defaultEmbedTimeout is used when the global embedding_timeout preference is
+// empty or unparseable. Embedding calls on low-resource hosts can stall, so a
+// bounded default keeps memory indexing responsive.
+const defaultEmbedTimeout = 30 * time.Second
+
+// resolveEmbedTimeout parses a duration string from preferences, falling back to
+// the 30s default when empty, invalid, or non-positive.
+func resolveEmbedTimeout(raw string) time.Duration {
+	if raw == "" {
+		return defaultEmbedTimeout
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return defaultEmbedTimeout
+	}
+	return d
 }
 
 func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.Service, req agentSessionRequest, convStore store.ConversationStore, convID int64, mcpMgr mcp.Manager) (*agent.Agent, *conversation.SessionManager, string, error) {
@@ -179,13 +214,31 @@ func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.
 		_ = json.Unmarshal([]byte(agentConf.MemoryConfig), &memOver)
 	}
 
+	var globalEmbedProvider, globalEmbedModel, globalEmbedAPIBase string
+	_ = db.QueryRowContext(ctx, "SELECT value FROM preferences WHERE key = 'embedding_provider'").Scan(&globalEmbedProvider)
+	_ = db.QueryRowContext(ctx, "SELECT value FROM preferences WHERE key = 'embedding_model'").Scan(&globalEmbedModel)
+	_ = db.QueryRowContext(ctx, "SELECT value FROM preferences WHERE key = 'embedding_api_base'").Scan(&globalEmbedAPIBase)
+
+	var globalEmbedTimeout string
+	_ = db.QueryRowContext(ctx, "SELECT value FROM preferences WHERE key = 'embedding_timeout'").Scan(&globalEmbedTimeout)
+	embedTimeout := resolveEmbedTimeout(globalEmbedTimeout)
+
+	effEmbedProvider := globalEmbedProvider
+	if effEmbedProvider == "" {
+		effEmbedProvider = st.cfg.Memory.EmbeddingProvider
+	}
+	effEmbedModel := globalEmbedModel
+	if effEmbedModel == "" {
+		effEmbedModel = st.cfg.Memory.EmbeddingModel
+	}
+
 	resolvedMem := memOver.Resolve(
 		st.cfg.Memory.Enabled,
 		true, // default CuratedEnabled to true
 		true, // default EpisodicEnabled to true
 		st.cfg.Memory.KGEnabled,
-		st.cfg.Memory.EmbeddingProvider,
-		st.cfg.Memory.EmbeddingModel,
+		effEmbedProvider,
+		effEmbedModel,
 		true, // default SecurityScanEnabled to true
 		true, // default ExtractionEnabled to true
 		true, // default RetrievalEnabled to true
@@ -193,75 +246,88 @@ func resolveAndAssemble(ctx context.Context, st *appState, db *sql.DB, mgr *llm.
 		st.cfg.Memory.WriteApproval,
 	)
 
-	var memoryStore memory.MemoryStore
-	var coreStore memory.CoreStore
-	var embedder *memory.Embedder
-	var stagedWriteStore memory.StagedWriteStore
-	var episodicStore memory.EpisodicStore
+	memoryStore := sqlite.NewMemoryStore(db)
+	coreStore := memory.NewFileCoreStore(st.cfg.Memory.CharLimit)
+	stagedWriteStore := sqlite.NewStagedWriteStore(db)
+	episodicStore := sqlite.NewEpisodicStore(db)
 	var kgStore memory.KGStore
-	if resolvedMem.Enabled {
-		memoryStore = sqlite.NewMemoryStore(db)
-		coreStore = memory.NewFileCoreStore(st.cfg.Memory.CharLimit)
-		stagedWriteStore = sqlite.NewStagedWriteStore(db)
-		episodicStore = sqlite.NewEpisodicStore(db)
-		if st.cfg.Memory.KGEnabled {
-			kgStore = sqlite.NewKGStore(db)
-		}
+	if st.cfg.Memory.KGEnabled {
+		kgStore = sqlite.NewKGStore(db)
+	}
 
-		embedProvider := resolvedMem.EmbeddingProvider
-		if embedProvider == "" {
-			embedProvider = providerName
-		}
-		embedModel := resolvedMem.EmbeddingModel
-		if embedModel == "" {
-			if embedProvider == "openai" {
-				embedModel = "text-embedding-3-small"
-			} else if embedProvider == "gemini" {
-				embedModel = "text-embedding-004"
-			} else if embedProvider == "ollama" {
-				embedModel = "nomic-embed-text"
-			}
-		}
+	embedProvider := resolvedMem.EmbeddingProvider
+	if embedProvider == "" {
+		embedProvider = providerName
+	}
 
-		var embedAPIKey string
-		var embedAPIBase string
-		if ep, err := mgr.GetProfile(ctx, embedProvider); err == nil && ep != nil {
+	embedModel := resolvedMem.EmbeddingModel
+	if embedModel == "" {
+		if embedProvider == "openai" {
+			embedModel = "text-embedding-3-small"
+		} else if embedProvider == "gemini" {
+			embedModel = "text-embedding-004"
+		} else if embedProvider == "ollama" {
+			embedModel = "nomic-embed-text"
+		}
+	}
+
+	embedAPIBase := globalEmbedAPIBase
+	var embedAPIKey string
+	if ep, err := mgr.GetProfile(ctx, embedProvider); err == nil && ep != nil {
+		if embedAPIBase == "" {
 			embedAPIBase = ep.APIBase
-			embedAPIKey, _ = mgr.GetSecret(ctx, embedProvider)
 		}
+		embedAPIKey, _ = mgr.GetSecret(ctx, embedProvider)
+	}
 
-		var einoProvider memory.EinoEmbedder
-		switch embedProvider {
-		case "gemini", "google":
-			if embedAPIKey != "" {
-				genaiClient, genaiErr := genai.NewClient(ctx, &genai.ClientConfig{
-					APIKey:  embedAPIKey,
-					Backend: genai.BackendGeminiAPI,
+	var einoProvider memory.EinoEmbedder
+	var embedBaseUsed string
+	switch embedProvider {
+	case "gemini", "google":
+		if embedAPIKey != "" {
+			genaiClient, genaiErr := genai.NewClient(ctx, &genai.ClientConfig{
+				APIKey:  embedAPIKey,
+				Backend: genai.BackendGeminiAPI,
+			})
+			if genaiErr == nil {
+				einoProvider, _ = einoembedgemini.NewEmbedder(ctx, &einoembedgemini.EmbeddingConfig{
+					Client: genaiClient,
+					Model:  embedModel,
 				})
-				if genaiErr == nil {
-					einoProvider, _ = einoembedgemini.NewEmbedder(ctx, &einoembedgemini.EmbeddingConfig{
-						Client: genaiClient,
-						Model:  embedModel,
-					})
-				}
 			}
-		case "ollama":
-			einoProvider, _ = einoembedollama.NewEmbedder(ctx, &einoembedollama.EmbeddingConfig{
+		}
+	case "ollama":
+		// The native Ollama client appends /api/embed to the base path, so a
+		// profile's OpenAI-compatible "/v1" base (right for chat) must be
+		// stripped for native embeddings or it yields 404 page not found.
+		embedBaseUsed = normalizeOllamaBaseURL(embedAPIBase)
+		einoProvider, _ = einoembedollama.NewEmbedder(ctx, &einoembedollama.EmbeddingConfig{
+			BaseURL: embedBaseUsed,
+			Model:   embedModel,
+			Timeout: embedTimeout,
+		})
+	default: // openai, agenticopenai, or any OpenAI-compatible provider
+		embedBaseUsed = embedAPIBase
+		if embedAPIKey != "" {
+			einoProvider, _ = einoembedopenai.NewEmbedder(ctx, &einoembedopenai.EmbeddingConfig{
+				APIKey:  embedAPIKey,
 				BaseURL: embedAPIBase,
 				Model:   embedModel,
+				Timeout: embedTimeout,
 			})
-		default: // openai, agenticopenai, or any OpenAI-compatible provider
-			if embedAPIKey != "" {
-				einoProvider, _ = einoembedopenai.NewEmbedder(ctx, &einoembedopenai.EmbeddingConfig{
-					APIKey:  embedAPIKey,
-					BaseURL: embedAPIBase,
-					Model:   embedModel,
-				})
-			}
 		}
+	}
 
-		// einoProvider may be nil (no API key, provider build failed) — FTS-only mode.
-		embedder = memory.NewEmbedder(memoryStore, einoProvider, embedModel)
+	// einoProvider may be nil (no API key, provider build failed) — FTS-only mode.
+	embedder := memory.NewEmbedder(memoryStore, einoProvider, embedModel)
+	if einoProvider != nil && embedModel != "" {
+		if embedBaseUsed != "" {
+			log.Printf("memory embeddings: %s/%s base=%s", embedProvider, embedModel, embedBaseUsed)
+		} else {
+			log.Printf("memory embeddings: %s/%s", embedProvider, embedModel)
+		}
+	} else {
+		log.Printf("memory embeddings: disabled (FTS-only)")
 	}
 
 	var reviewModel model.AgenticModel

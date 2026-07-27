@@ -27,6 +27,7 @@ type MemoryMiddleware struct {
 	CharLimit         int
 	SkipSecurityScan  bool
 	ExtractionEnabled bool
+	RetrievalEnabled  bool
 
 	EpisodicStore   memory.EpisodicStore
 	Dreamer         *memory.Dreamer
@@ -78,11 +79,16 @@ func NewMemoryMiddleware(
 		EpisodicTTLDays:   episodicTTLDays,
 		KGStore:           kgStore,
 		ExtractionEnabled: true, // Default to true, overridden in AssembleAgent
+		RetrievalEnabled:  true, // Default to true, overridden in AssembleAgent
 	}
 }
 
 // BeforeAgent injects the curated memory core once per session.
 func (m *MemoryMiddleware) BeforeAgent(ctx context.Context, runCtx *adk.ChatModelAgentContext[*schema.AgenticMessage]) (context.Context, *adk.ChatModelAgentContext[*schema.AgenticMessage], error) {
+	if !m.RetrievalEnabled {
+		return ctx, runCtx, nil
+	}
+
 	m.mu.Lock()
 	if !m.loaded {
 		if m.CoreStore != nil {

@@ -14,7 +14,6 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"os"
-	"strings"
 	"testing"
 
 	"github.com/cloudwego/eino/schema"
@@ -545,7 +544,7 @@ func TestWebAgentCreateEmptyToolsAndToggle(t *testing.T) {
 		Name:     "ui-created",
 		Provider: "openai",
 		Model:    "gpt-4",
-		Tools:    "",
+		DisabledTools: "",
 	}
 	body, _ = json.Marshal(input)
 	resp, err = client.Post(agentsURL, "application/json", bytes.NewReader(body))
@@ -567,35 +566,11 @@ func TestWebAgentCreateEmptyToolsAndToggle(t *testing.T) {
 		t.Fatalf("decode agent: %v", err)
 	}
 	resp.Body.Close()
-	if a.Tools != "" {
-		t.Errorf("UI-created agent should have empty tools, got %q", a.Tools)
+	if a.DisabledTools != "" {
+		t.Errorf("UI-created agent should have empty disabled_tools, got %q", a.DisabledTools)
 	}
 
-	// Capture the full builtin registry to compute the expected post-disable set.
-	resp, err = client.Get(fmt.Sprintf("http://%s/api/tools", addr))
-	if err != nil {
-		t.Fatalf("list tools failed: %v", err)
-	}
-	var toolCategories []struct {
-		Tools []struct {
-			Name string `json:"name"`
-		} `json:"tools"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&toolCategories); err != nil {
-		t.Fatalf("decode tools: %v", err)
-	}
-	resp.Body.Close()
-	allNames := make(map[string]bool)
-	for _, cat := range toolCategories {
-		for _, tl := range cat.Tools {
-			allNames[tl.Name] = true
-		}
-	}
-	if len(allNames) == 0 {
-		t.Fatal("expected a non-empty builtin tool registry")
-	}
-
-	// 3.6: disable one tool (shell) from the all-state via the edit Tools tab endpoint.
+	// 3.6: disable one tool (execute) via the edit Tools tab endpoint.
 	toggleURL := fmt.Sprintf("http://%s/api/agents/ui-created/tools", addr)
 	toggleBody, _ := json.Marshal(map[string]interface{}{"tool": "execute", "enabled": false})
 	req, _ := http.NewRequest(http.MethodPut, toggleURL, bytes.NewReader(toggleBody))
@@ -609,7 +584,7 @@ func TestWebAgentCreateEmptyToolsAndToggle(t *testing.T) {
 		t.Fatalf("expected status 200 from toggle, got %d", resp.StatusCode)
 	}
 
-	// 3.6: reload (second GET) — the disabled tool must be absent and all others present.
+	// 3.6: reload (second GET) — disabled tool "execute" should be present in disabled_tools.
 	resp, err = client.Get(getURL)
 	if err != nil {
 		t.Fatalf("reload agent failed: %v", err)
@@ -620,25 +595,8 @@ func TestWebAgentCreateEmptyToolsAndToggle(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	got := make(map[string]bool)
-	for _, n := range strings.Split(a2.Tools, ",") {
-		if n = strings.TrimSpace(n); n != "" {
-			got[n] = true
-		}
-	}
-	if got["execute"] {
-		t.Errorf("disabled tool 'execute' should be absent after reload, got %q", a2.Tools)
-	}
-	for name := range allNames {
-		if name == "execute" {
-			continue
-		}
-		if !got[name] {
-			t.Errorf("tool %q should remain enabled after disabling shell, got %q", name, a2.Tools)
-		}
-	}
-	if len(got) != len(allNames)-1 {
-		t.Errorf("expected %d enabled tools after disabling one, got %d (%q)", len(allNames)-1, len(got), a2.Tools)
+	if a2.DisabledTools != "execute" {
+		t.Errorf("expected disabled_tools to be %q, got %q", "execute", a2.DisabledTools)
 	}
 }
 

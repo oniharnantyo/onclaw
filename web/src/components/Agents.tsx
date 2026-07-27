@@ -22,7 +22,7 @@ export interface Agent {
   reasoning_budget_tokens: number;
   description: string;
   workspace: string;
-  tools: string;
+  disabled_tools: string;
   max_iterations: number;
   max_context_tokens: number;
   is_default: boolean;
@@ -128,11 +128,11 @@ export default function Agents({ agents, loadAgents, showToast }: AgentsProps) {
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                   <Wrench size={12} weight="duotone" style={{ color: 'var(--text-muted)', flexShrink: 0 }} aria-hidden />
                   {(() => {
-                    const toolList = a.tools ? a.tools.split(',').filter(t => t.trim()) : [];
-                    const toolCount = toolList.length;
+                    const disabledList = a.disabled_tools ? a.disabled_tools.split(',').filter(t => t.trim()) : [];
+                    const disabledCount = disabledList.length;
                     return (
                       <span className="card-meta">
-                        {toolCount === 0 ? 'No tools' : `${toolCount} tool${toolCount !== 1 ? 's' : ''}`}
+                        {disabledCount === 0 ? 'All tools enabled' : `${disabledCount} disabled`}
                       </span>
                     );
                   })()}

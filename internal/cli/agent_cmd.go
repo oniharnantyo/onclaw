@@ -54,6 +54,10 @@ func agentCommand(st *appState) *cli.Command {
 						Name:  "max-context",
 						Usage: "Optional max context tokens override (0 = use global default)",
 					},
+					&cli.StringFlag{
+						Name:  "disabled-tools",
+						Usage: "Comma-separated list of disabled tools (denylist)",
+					},
 				},
 				Action: func(ctx context.Context, c *cli.Command) error {
 					if c.Args().Len() < 1 {
@@ -66,6 +70,7 @@ func agentCommand(st *appState) *cli.Command {
 					reasoningBudget := int(c.Int("reasoning-budget"))
 					workspace := c.String("workspace")
 					description := c.String("description")
+					disabledTools := c.String("disabled-tools")
 					maxContext := int(c.Int("max-context"))
 					if maxContext < 0 {
 						return fmt.Errorf("max-context must be >= 0")
@@ -156,6 +161,7 @@ func agentCommand(st *appState) *cli.Command {
 						ReasoningBudgetTokens: reasoningBudget,
 						Description:           description,
 						Workspace:             agentWS,
+						DisabledTools:         disabledTools,
 						MaxContextTokens:      maxContext,
 					}
 
@@ -274,7 +280,11 @@ func agentCommand(st *appState) *cli.Command {
 						fmt.Printf("Reasoning Budget: %d tokens\n", a.ReasoningBudgetTokens)
 					}
 					fmt.Printf("Workspace:        %s\n", a.Workspace)
-					fmt.Printf("Tools Allowed:    %s\n", a.Tools)
+					disabledStr := a.DisabledTools
+					if disabledStr == "" {
+						disabledStr = "(all enabled)"
+					}
+					fmt.Printf("Disabled Tools:   %s\n", disabledStr)
 					if a.MaxContextTokens > 0 {
 						fmt.Printf("Max Context Override: %d tokens\n", a.MaxContextTokens)
 					}
@@ -308,6 +318,10 @@ func agentCommand(st *appState) *cli.Command {
 						Name:  "max-context",
 						Usage: "Override max context tokens (0 = use global default)",
 					},
+					&cli.StringFlag{
+						Name:  "disabled-tools",
+						Usage: "Override disabled tools denylist",
+					},
 				},
 				Action: func(ctx context.Context, c *cli.Command) error {
 					if c.Args().Len() < 1 {
@@ -331,12 +345,13 @@ func agentCommand(st *appState) *cli.Command {
 					hasReasoningBudget := c.IsSet("reasoning-budget")
 					hasWorkspace := c.IsSet("workspace")
 					hasMaxContext := c.IsSet("max-context")
+					hasDisabledTools := c.IsSet("disabled-tools")
 
 					if hasMaxContext && c.Int("max-context") < 0 {
 						return fmt.Errorf("max-context must be >= 0")
 					}
 
-					triggerPicker := (!hasModel && !hasReasoning && !hasReasoningBudget && !hasWorkspace && !hasMaxContext) || (hasModel && c.String("model") == "")
+					triggerPicker := (!hasModel && !hasReasoning && !hasReasoningBudget && !hasWorkspace && !hasMaxContext && !hasDisabledTools) || (hasModel && c.String("model") == "")
 
 					if triggerPicker {
 						mID, meta, effort, budget, err := pickModel(ctx, mgr, a.Provider, os.Stdin, os.Stdout)
@@ -397,6 +412,9 @@ func agentCommand(st *appState) *cli.Command {
 
 					if hasMaxContext {
 						a.MaxContextTokens = int(c.Int("max-context"))
+					}
+					if hasDisabledTools {
+						a.DisabledTools = c.String("disabled-tools")
 					}
 
 					if err := mgr.UpdateAgent(ctx, a); err != nil {

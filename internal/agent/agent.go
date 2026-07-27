@@ -226,35 +226,22 @@ func (b *agentBuilder) buildTools(ctx context.Context) error {
 
 	var finalTools []tool.BaseTool
 	for _, t := range builtTools {
-		info, err := t.Info(ctx)
+		_, err := t.Info(ctx)
 		if err != nil {
 			finalTools = append(finalTools, t)
 			continue
-		}
-		if info.Name == "memory_search" {
-			if !b.resolvedMemory.RetrievalEnabled || b.opts.MemoryStore == nil || !b.resolvedMemory.CuratedEnabled {
-				continue
-			}
-		}
-		if info.Name == "session_search" {
-			if !b.resolvedMemory.RetrievalEnabled || b.opts.EpisodicStore == nil || !b.resolvedMemory.EpisodicEnabled {
-				continue
-			}
-		}
-		if info.Name == "kg_search" {
-			if !b.resolvedMemory.RetrievalEnabled || b.opts.KGStore == nil || !b.resolvedMemory.KGEnabled {
-				continue
-			}
 		}
 		finalTools = append(finalTools, t)
 	}
 	builtTools = finalTools
 
-	// Filter tools if a tool subset is configured on the agent
-	if b.opts.AgentConf.Tools != "" {
-		allowedTools := make(map[string]bool)
-		for _, t := range strings.Split(b.opts.AgentConf.Tools, ",") {
-			allowedTools[strings.TrimSpace(t)] = true
+	// Filter tools if a denylist is configured on the agent
+	if b.opts.AgentConf.DisabledTools != "" {
+		disabledTools := make(map[string]bool)
+		for _, t := range strings.Split(b.opts.AgentConf.DisabledTools, ",") {
+			if trimmed := strings.TrimSpace(t); trimmed != "" {
+				disabledTools[trimmed] = true
+			}
 		}
 		var filteredTools []tool.BaseTool
 		for _, t := range builtTools {
@@ -262,7 +249,7 @@ func (b *agentBuilder) buildTools(ctx context.Context) error {
 			if err != nil {
 				continue
 			}
-			if allowedTools[info.Name] {
+			if !disabledTools[info.Name] {
 				filteredTools = append(filteredTools, t)
 			}
 		}
@@ -336,6 +323,7 @@ func (b *agentBuilder) buildMemoryMiddleware(ctx context.Context) error {
 	)
 	b.memoryMiddleware.SkipSecurityScan = !b.resolvedMemory.SecurityScanEnabled
 	b.memoryMiddleware.ExtractionEnabled = b.resolvedMemory.ExtractionEnabled
+	b.memoryMiddleware.RetrievalEnabled = b.resolvedMemory.RetrievalEnabled
 	return nil
 }
 
@@ -364,19 +352,40 @@ func (b *agentBuilder) buildMiddleware(ctx context.Context) error {
 		transcriptPath = buildTranscriptPath(homeDir, b.opts.AgentConf.Name)
 	}
 
+	slog.Info("summarization config",
+		"agent", b.opts.AgentConf.Name,
+		"context_window", b.opts.ContextWindow,
+		"trigger_context_tokens", b.opts.SummarizationOpts.TriggerContextTokens,
+		"trigger_context_messages", b.opts.SummarizationOpts.TriggerContextMessages,
+		"previous_messages_keep", b.opts.SummarizationOpts.PreviousMessagesKeep,
+		"transcript_path", transcriptPath,
+	)
+
 	summarizationMiddleware, err := summarization.NewTyped[*schema.AgenticMessage](ctx, &summarization.TypedConfig[*schema.AgenticMessage]{
 		Model:              b.opts.ChatModel,
 		EmitInternalEvents: true,
 		ReusePromptCaching: true,
 		TokenCounter: func(ctx context.Context, input *summarization.TypedTokenCounterInput[*schema.AgenticMessage]) (int, error) {
 			var count int
+			fromUsage, estimated := 0, 0
 			for _, msg := range input.Messages {
 				if msg.ResponseMeta != nil && msg.ResponseMeta.TokenUsage != nil && msg.ResponseMeta.TokenUsage.TotalTokens != 0 {
-					count += msg.ResponseMeta.TokenUsage.TotalTokens
+					count = msg.ResponseMeta.TokenUsage.TotalTokens
+					fromUsage++
 				} else {
 					count += tokens.EstimateMessage(msg)
+					estimated++
 				}
 			}
+			slog.Info("summarization token counter",
+				"agent", b.opts.AgentConf.Name,
+				"messages", len(input.Messages),
+				"counted_from_usage", fromUsage,
+				"estimated", estimated,
+				"total_tokens", count,
+				"trigger_tokens", b.opts.SummarizationOpts.TriggerContextTokens,
+				"trigger_messages", b.opts.SummarizationOpts.TriggerContextMessages,
+			)
 			return count, nil
 		},
 		Trigger: &summarization.TriggerCondition{

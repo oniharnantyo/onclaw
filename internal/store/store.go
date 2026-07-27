@@ -31,7 +31,7 @@ type AgentStore interface {
 	ListAgents(ctx context.Context) ([]*Agent, error)
 	UpdateAgent(ctx context.Context, a *Agent) error
 	RemoveAgent(ctx context.Context, name string) error
-	UpdateAgentTools(ctx context.Context, name string, tools string) error
+	UpdateAgentDisabledTools(ctx context.Context, name string, disabledTools string) error
 }
 
 // ConversationStore defines operations for persisting and retrieving conversation history.

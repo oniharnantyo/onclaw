@@ -31,7 +31,7 @@ const DEFAULT_FORM = {
   reasoning_budget_tokens: 0,
   max_iterations: 20,
   max_context_tokens: 0,
-  tools: '',
+  disabled_tools: '',
   workspace: '',
   model_metadata: '',
   is_default: false,
@@ -61,6 +61,9 @@ export default function AgentDetailPage({
 
   // Determine active tab
   const [activeTab, setActiveTab] = useState<TabType>('overview');
+  const handleTabClick = (tabId: TabType) => {
+    setActiveTab(tabId);
+  };
   const [agentForm, setAgentForm] = useState(DEFAULT_FORM);
   const [isSaving, setIsSaving] = useState(false);
   const [hasLoadedAgent, setHasLoadedAgent] = useState(false);
@@ -115,13 +118,6 @@ export default function AgentDetailPage({
     fetchModels();
   }, [agentForm.provider]);
 
-  const handleTabClick = (tabId: TabType) => {
-    setActiveTab(tabId);
-  };
-
-  // Find agent if in edit mode
-  const currentAgent = mode === 'edit' ? agents.find((a) => a.name === name) : null;
-
   const [memConfig, setMemConfig] = useState({
     curated_enabled: true,
     episodic_enabled: true,
@@ -134,6 +130,39 @@ export default function AgentDetailPage({
     dreaming_enabled: true,
     staged_write_approval: false,
   });
+
+  const [embedModels, setEmbedModels] = useState<{ id: string; contextWindow: number }[]>([]);
+  const [loadingEmbedModels, setLoadingEmbedModels] = useState(false);
+  const [showEmbedModelsDropdown, setShowEmbedModelsDropdown] = useState(false);
+
+  useEffect(() => {
+    if (!memConfig.embedding_provider) {
+      setEmbedModels([]);
+      return;
+    }
+
+    const fetchEmbedModels = async () => {
+      setLoadingEmbedModels(true);
+      try {
+        const res = await fetch(`/api/providers/${encodeURIComponent(memConfig.embedding_provider)}/models`);
+        if (res.ok) {
+          const data = await res.json();
+          setEmbedModels(data.models || []);
+        } else {
+          setEmbedModels([]);
+        }
+      } catch {
+        setEmbedModels([]);
+      } finally {
+        setLoadingEmbedModels(false);
+      }
+    };
+
+    fetchEmbedModels();
+  }, [memConfig.embedding_provider]);
+
+  // Find agent if in edit mode
+  const currentAgent = mode === 'edit' ? agents.find((a) => a.name === name) : null;
 
   // Sync memory_config from agent row
   useEffect(() => {
@@ -177,7 +206,7 @@ export default function AgentDetailPage({
         reasoning_budget_tokens: currentAgent.reasoning_budget_tokens || 0,
         max_iterations: currentAgent.max_iterations,
         max_context_tokens: currentAgent.max_context_tokens || 0,
-        tools: currentAgent.tools,
+        disabled_tools: currentAgent.disabled_tools,
         workspace: currentAgent.workspace,
         model_metadata: currentAgent.model_metadata,
         is_default: currentAgent.is_default,
@@ -347,9 +376,6 @@ export default function AgentDetailPage({
     );
   }
 
-  const filteredModels = models.filter((m) =>
-    m.id.toLowerCase().includes(agentForm.model.toLowerCase())
-  );
   const selectedModelMeta = models.find((m) => m.id === agentForm.model);
 
   // Parse stored model_metadata if available
@@ -369,10 +395,6 @@ export default function AgentDetailPage({
 
   const currentModelMeta = selectedModelMeta || parsedMetadata;
   const reasoningSupported = loadingModels || (currentModelMeta ? currentModelMeta.thinking === true : false);
-
-  const isExactMatch = models.some(
-    (m) => m.id.toLowerCase() === agentForm.model.toLowerCase()
-  );
   const effortOption = currentModelMeta?.reasoningOptions?.find((o: any) => o.type === 'effort' || o.type === 'select' || (o.values && o.values.length > 0));
   const budgetOption = currentModelMeta?.reasoningOptions?.find((o: any) => o.type === 'range' || o.type === 'budget' || o.type === 'budget_tokens' || o.min !== undefined || o.max !== undefined);
   const toggleOption = currentModelMeta?.reasoningOptions?.find((o: any) => o.type === 'toggle' || o.type === 'checkbox');
@@ -471,185 +493,148 @@ export default function AgentDetailPage({
                 Model Name
                 <Tooltip content="The specific model identifier to request (e.g. gpt-4o, claude-3-5-sonnet)." position="bottom" align="left" />
               </label>
-              <div style={{ position: 'relative' }}>
-                <input
-                  id="agent-model"
-                  type="text"
-                  className="form-input"
-                  value={agentForm.model}
-                  onChange={set('model')}
-                  placeholder={loadingModels ? "Loading models..." : "e.g. gpt-4o, claude-opus-4-5"}
-                  onFocus={() => setShowModelsDropdown(true)}
-                  onBlur={() => setTimeout(() => setShowModelsDropdown(false), 200)}
-                  style={{ paddingRight: models.length > 0 ? '36px' : '12px' }}
-                  required
-                />
-                {models.length > 0 && (
-                  <button
-                    type="button"
-                    style={{
-                      position: 'absolute',
-                      right: '4px',
-                      top: '50%',
-                      transform: 'translateY(-50%)',
-                      background: 'none',
-                      border: 'none',
-                      color: 'var(--text-muted)',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      padding: '8px',
-                    }}
-                    onClick={() => setShowModelsDropdown(!showModelsDropdown)}
-                    onFocus={(e) => e.stopPropagation()}
-                    aria-label="Toggle models list"
-                  >
-                    <span style={{ fontSize: '9px', opacity: 0.6 }}>▼</span>
-                  </button>
-                )}
+              {(() => {
+                const isEmbeddingModel = (id: string) => {
+                  const lower = id.toLowerCase();
+                  return (
+                    lower.includes('embed') ||
+                    lower.includes('bge') ||
+                    lower.includes('e5') ||
+                    lower.includes('gte') ||
+                    lower.includes('minilm') ||
+                    lower.includes('ada') ||
+                    lower.includes('voyage') ||
+                    lower.includes('nomic') ||
+                    lower.includes('mxbai') ||
+                    lower.includes('snowflake')
+                  );
+                };
 
-                {showModelsDropdown && (filteredModels.length > 0 || (agentForm.model.trim() !== '' && !isExactMatch)) && (
-                  <div
-                    style={{
-                      position: 'absolute',
-                      top: '100%',
-                      left: 0,
-                      right: 0,
-                      marginTop: '6px',
-                      maxHeight: '220px',
-                      overflowY: 'auto',
-                      backgroundColor: '#161d31', // matched Sleek dark theme bg
-                      border: '1px solid var(--border-soft)',
-                      borderRadius: '6px',
-                      boxShadow: '0 8px 24px rgba(0, 0, 0, 0.4)',
-                      zIndex: 100,
-                    }}
-                  >
-                    {filteredModels.map((m) => (
-                      <div
-                        key={m.id}
-                        style={{
-                          padding: '10px 14px',
-                          cursor: 'pointer',
-                          borderBottom: '1px solid var(--border-soft)',
-                          fontSize: '13px',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: '2px',
-                        }}
-                        onMouseDown={() => {
-                          setAgentForm(prev => ({ ...prev, model: m.id }));
-                          setShowModelsDropdown(false);
-                        }}
-                        className="model-option-item"
-                      >
-                        <span style={{ fontWeight: 500, color: 'var(--text)' }}>{m.id}</span>
-                        <span style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '6px', marginTop: '3px' }}>
-                          <span
-                            title={`Context: ${m.contextWindow.toLocaleString()} tokens`}
-                            style={{
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: '4px',
-                              backgroundColor: 'rgba(59, 130, 246, 0.15)',
-                              color: '#93c5fd',
-                              padding: '2px 6px',
-                              borderRadius: '4px',
-                            }}
-                          >
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'inline-block' }}>
-                              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                              <polyline points="14 2 14 8 20 8" />
-                              <line x1="16" y1="13" x2="8" y2="13" />
-                              <line x1="16" y1="17" x2="8" y2="17" />
-                              <polyline points="10 9 9 9 8 9" />
-                            </svg>
-                            {(m.contextWindow / 1000).toFixed(0)}k
-                          </span>
-                          {m.thinking && (
-                            <span
-                              className="model-badge-hoverable"
-                              title="Supports Reasoning / Thinking"
-                              style={{
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                backgroundColor: 'rgba(99, 102, 241, 0.15)',
-                                color: '#a5b4fc',
-                                padding: '2px 6px',
-                                borderRadius: '4px',
-                              }}
-                            >
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'inline-block', flexShrink: 0 }}>
-                                <circle cx="12" cy="12" r="3" />
-                                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-                              </svg>
-                              <span className="model-badge-text">thinking</span>
-                            </span>
-                          )}
-                          {m.inputModalities && m.inputModalities.includes('image') && (
-                            <span
-                              className="model-badge-hoverable"
-                              title="Supports Vision / Image Input"
-                              style={{
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                backgroundColor: 'rgba(16, 185, 129, 0.15)',
-                                color: '#34d399',
-                                padding: '2px 6px',
-                                borderRadius: '4px',
-                              }}
-                            >
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'inline-block', flexShrink: 0 }}>
-                                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                                <circle cx="12" cy="12" r="3" />
-                              </svg>
-                              <span className="model-badge-text">vision</span>
-                            </span>
-                          )}
-                          <span
-                            className="model-badge-hoverable"
-                            title="Supports Tool Calling / Functions"
-                            style={{
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              backgroundColor: 'rgba(234, 179, 8, 0.15)',
-                              color: '#fef08a',
-                              padding: '2px 6px',
-                              borderRadius: '4px',
-                            }}
-                          >
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'inline-block', flexShrink: 0 }}>
-                              <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
-                            </svg>
-                            <span className="model-badge-text">tools</span>
-                          </span>
-                        </span>
-                      </div>
-                    ))}
+                const chatModels = models.filter((m) => !isEmbeddingModel(m.id));
+                const candidateModels = chatModels.length > 0 ? chatModels : models;
+                const filteredModels = candidateModels.filter((m) =>
+                  m.id.toLowerCase().includes(agentForm.model.toLowerCase())
+                );
+                const isExactMatch = candidateModels.some(
+                  (m) => m.id.toLowerCase() === agentForm.model.trim().toLowerCase()
+                );
 
-                    {agentForm.model.trim() !== '' && !isExactMatch && (
-                      <div
-                        style={{
-                          padding: '10px 14px',
-                          cursor: 'pointer',
-                          backgroundColor: 'rgba(255, 255, 255, 0.02)',
-                          fontSize: '13px',
-                          display: 'flex',
-                          alignItems: 'center',
-                          color: 'var(--accent)',
-                          fontWeight: 500,
-                        }}
-                        onMouseDown={() => {
-                          setShowModelsDropdown(false);
-                        }}
-                        className="model-option-item"
-                      >
-                        <span>Use custom: &ldquo;{agentForm.model}&rdquo;</span>
+                return (
+                  <>
+                    <div style={{ position: 'relative' }}>
+                      <input
+                        id="agent-model"
+                        type="text"
+                        className="form-input"
+                        value={agentForm.model}
+                        onChange={set('model')}
+                        placeholder={loadingModels ? "Loading models..." : "e.g. gpt-4o, claude-opus-4-5"}
+                        onFocus={() => setShowModelsDropdown(true)}
+                        onBlur={() => setTimeout(() => setShowModelsDropdown(false), 200)}
+                        style={{ paddingRight: candidateModels.length > 0 ? '36px' : '12px' }}
+                        required
+                      />
+                      {candidateModels.length > 0 && (
+                        <button
+                          type="button"
+                          style={{
+                            position: 'absolute',
+                            right: '4px',
+                            top: '50%',
+                            transform: 'translateY(-50%)',
+                            background: 'none',
+                            border: 'none',
+                            color: 'var(--text-muted)',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            padding: '8px',
+                          }}
+                          onClick={() => setShowModelsDropdown(!showModelsDropdown)}
+                          onFocus={(e) => e.stopPropagation()}
+                          aria-label="Toggle models list"
+                        >
+                          <span style={{ fontSize: '9px', opacity: 0.6 }}>▼</span>
+                        </button>
+                      )}
+
+                      {showModelsDropdown && (filteredModels.length > 0 || (agentForm.model.trim() !== '' && !isExactMatch)) && (
+                        <div
+                          style={{
+                            position: 'absolute',
+                            top: '100%',
+                            left: 0,
+                            right: 0,
+                            marginTop: '6px',
+                            maxHeight: '220px',
+                            overflowY: 'auto',
+                            backgroundColor: '#161d31',
+                            border: '1px solid var(--border-soft)',
+                            borderRadius: '6px',
+                            boxShadow: '0 8px 24px rgba(0, 0, 0, 0.4)',
+                            zIndex: 100,
+                          }}
+                        >
+                          {filteredModels.map((m) => (
+                            <div
+                              key={m.id}
+                              style={{
+                                padding: '10px 14px',
+                                cursor: 'pointer',
+                                borderBottom: '1px solid var(--border-soft)',
+                                fontSize: '13px',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: '2px',
+                              }}
+                              onMouseDown={() => {
+                                setAgentForm(prev => ({ ...prev, model: m.id }));
+                                setShowModelsDropdown(false);
+                              }}
+                              className="model-option-item"
+                            >
+                              <span style={{ fontWeight: 500, color: 'var(--text)' }}>{m.id}</span>
+                              {m.contextWindow > 0 && (
+                                <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                                  Context: {(m.contextWindow / 1000).toFixed(0)}k tokens
+                                </span>
+                              )}
+                            </div>
+                          ))}
+
+                          {agentForm.model.trim() !== '' && !isExactMatch && (
+                            <div
+                              style={{
+                                padding: '10px 14px',
+                                cursor: 'pointer',
+                                backgroundColor: 'rgba(255, 255, 255, 0.02)',
+                                fontSize: '13px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                color: 'var(--accent)',
+                                fontWeight: 500,
+                              }}
+                              onMouseDown={() => {
+                                setShowModelsDropdown(false);
+                              }}
+                              className="model-option-item"
+                            >
+                              <span>Use custom: &ldquo;{agentForm.model}&rdquo;</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {isEmbeddingModel(agentForm.model) && (
+                      <div style={{ marginTop: '6px', color: '#EF4444', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <WarningCircle size={14} weight="fill" />
+                        <span>Warning: "{agentForm.model}" is an embedding model and cannot be used as an LLM Chat Model. Please select a chat model (e.g. llama3.2, qwen2.5-coder).</span>
                       </div>
                     )}
-                  </div>
-                )}
-              </div>
+                  </>
+                );
+              })()}
               {modelsWarning && (
                 <span className="form-hint" style={{ color: 'var(--warning)', marginTop: '4px', display: 'block' }}>
                   ⚠️ {modelsWarning}
@@ -942,35 +927,159 @@ export default function AgentDetailPage({
               <div className="form-group">
                 <label className="form-label" htmlFor="embedding-provider">
                   Embedding Provider
-                  <Tooltip content="Provider for generating vector embeddings (e.g. openai, cohere, ollama)." position="bottom" align="left" />
+                  <Tooltip content="Provider profile for generating vector embeddings." position="bottom" align="left" />
                 </label>
                 <select
                   id="embedding-provider"
                   className="form-select"
                   value={memConfig.embedding_provider}
-                  onChange={(e) => setMemConfig({ ...memConfig, embedding_provider: e.target.value })}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setMemConfig({
+                      ...memConfig,
+                      embedding_provider: val,
+                      embedding_model: val === '' ? '' : memConfig.embedding_model,
+                    });
+                  }}
                 >
                   <option value="">Default (from configuration)</option>
-                  <option value="openai">OpenAI</option>
-                  <option value="ollama">Ollama</option>
-                  <option value="cohere">Cohere</option>
+                  {providers.map((p) => (
+                    <option key={p.name} value={p.name}>
+                      {p.name} ({p.provider_type})
+                    </option>
+                  ))}
                 </select>
               </div>
 
-              <div className="form-group">
-                <label className="form-label" htmlFor="embedding-model">
-                  Embedding Model Override
-                  <Tooltip content="Override model name for generating vector embeddings." position="bottom" align="left" />
-                </label>
-                <input
-                  id="embedding-model"
-                  type="text"
-                  className="form-input"
-                  value={memConfig.embedding_model}
-                  onChange={(e) => setMemConfig({ ...memConfig, embedding_model: e.target.value })}
-                  placeholder="e.g. text-embedding-3-small, nomic-embed-text"
-                />
-              </div>
+              {memConfig.embedding_provider !== '' && (() => {
+                const isEmbeddingModel = (id: string) => {
+                  const lower = id.toLowerCase();
+                  return (
+                    lower.includes('embed') ||
+                    lower.includes('bge') ||
+                    lower.includes('e5') ||
+                    lower.includes('gte') ||
+                    lower.includes('minilm') ||
+                    lower.includes('ada') ||
+                    lower.includes('voyage') ||
+                    lower.includes('nomic') ||
+                    lower.includes('mxbai') ||
+                    lower.includes('snowflake')
+                  );
+                };
+
+                const embeddingModels = embedModels.filter((m) => isEmbeddingModel(m.id));
+                const filteredEmbedModels = embeddingModels.filter((m) =>
+                  m.id.toLowerCase().includes(memConfig.embedding_model.toLowerCase())
+                );
+                const isExactEmbedMatch = embeddingModels.some(
+                  (m) => m.id.toLowerCase() === memConfig.embedding_model.trim().toLowerCase()
+                );
+
+                return (
+                  <div className="form-group" style={{ position: 'relative' }}>
+                    <label className="form-label" htmlFor="embedding-model">
+                      Embedding Model
+                      <Tooltip content="Select or type vector embedding model name for this provider." position="bottom" align="left" />
+                    </label>
+                    <div style={{ position: 'relative' }}>
+                      <input
+                        id="embedding-model"
+                        type="text"
+                        className="form-input"
+                        value={memConfig.embedding_model}
+                        onChange={(e) => setMemConfig({ ...memConfig, embedding_model: e.target.value })}
+                        onFocus={() => setShowEmbedModelsDropdown(true)}
+                        onBlur={() => setTimeout(() => setShowEmbedModelsDropdown(false), 200)}
+                        placeholder={loadingEmbedModels ? "Loading provider models..." : "e.g. text-embedding-3-small"}
+                        style={{ paddingRight: embeddingModels.length > 0 ? '36px' : '12px' }}
+                      />
+                      {embeddingModels.length > 0 && (
+                        <button
+                          type="button"
+                          style={{
+                            position: 'absolute',
+                            right: '4px',
+                            top: '50%',
+                            transform: 'translateY(-50%)',
+                            background: 'none',
+                            border: 'none',
+                            color: 'var(--text-muted)',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            padding: '8px',
+                          }}
+                          onClick={() => setShowEmbedModelsDropdown(!showEmbedModelsDropdown)}
+                          onFocus={(e) => e.stopPropagation()}
+                          aria-label="Toggle embedding models list"
+                        >
+                          <span style={{ fontSize: '9px', opacity: 0.6 }}>▼</span>
+                        </button>
+                      )}
+                    </div>
+
+                    {showEmbedModelsDropdown && (filteredEmbedModels.length > 0 || (memConfig.embedding_model.trim() !== '' && !isExactEmbedMatch)) && (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          top: '100%',
+                          left: 0,
+                          right: 0,
+                          marginTop: '6px',
+                          maxHeight: '220px',
+                          overflowY: 'auto',
+                          backgroundColor: '#161d31',
+                          border: '1px solid var(--border-soft)',
+                          borderRadius: '6px',
+                          boxShadow: '0 8px 24px rgba(0, 0, 0, 0.4)',
+                          zIndex: 100,
+                        }}
+                      >
+                        {filteredEmbedModels.length === 0 ? (
+                          <div style={{ padding: '10px 14px', fontSize: '12px', color: 'var(--text-muted)' }}>
+                            No matching embedding models found. Type a custom model name above.
+                          </div>
+                        ) : (
+                          filteredEmbedModels.map((m) => (
+                            <div
+                              key={m.id}
+                              style={{
+                                padding: '10px 14px',
+                                cursor: 'pointer',
+                                borderBottom: '1px solid var(--border-soft)',
+                                fontSize: '13px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                              }}
+                              onMouseDown={() => {
+                                setMemConfig({ ...memConfig, embedding_model: m.id });
+                                setShowEmbedModelsDropdown(false);
+                              }}
+                              className="model-option-item"
+                            >
+                              <span style={{ fontWeight: 500, color: 'var(--text)' }}>{m.id}</span>
+                              <span
+                                style={{
+                                  fontSize: '10px',
+                                  padding: '2px 6px',
+                                  borderRadius: '4px',
+                                  backgroundColor: 'rgba(34, 197, 94, 0.15)',
+                                  color: '#22C55E',
+                                  fontWeight: 500,
+                                }}
+                              >
+                                Embedding
+                              </span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               <div style={{ marginBottom: '16px' }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
@@ -1115,9 +1224,9 @@ export default function AgentDetailPage({
             showToast={showToast}
             variant="agent"
             agentName={mode === 'create' ? undefined : name}
-            agentTools={agentForm.tools}
+            agentDisabledTools={agentForm.disabled_tools}
             onAgentToolsChange={(newTools) => {
-              setAgentForm(prev => ({ ...prev, tools: newTools }));
+              setAgentForm(prev => ({ ...prev, disabled_tools: newTools }));
               if (mode === 'edit') {
                 loadAgents();
               }

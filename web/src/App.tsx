@@ -13,6 +13,7 @@ import {
   Brain,
   Plug,
   Wrench,
+  Cpu,
 } from '@phosphor-icons/react';
 
 import Login from './components/Login';
@@ -30,8 +31,9 @@ import MemoryPage from './pages/MemoryPage';
 import McpPage from './pages/McpPage';
 import ToolsPage from './pages/ToolsPage';
 import AgentDetailPage from './pages/AgentDetailPage';
+import EmbeddingsPage from './pages/EmbeddingsPage';
 
-type Tab = 'chat' | 'providers' | 'agents' | 'skills' | 'hooks' | 'mcp' | 'tools' | 'memory';
+type Tab = 'chat' | 'providers' | 'agents' | 'skills' | 'hooks' | 'mcp' | 'tools' | 'memory' | 'embeddings';
 
 interface NavItem {
   id: Tab;
@@ -209,6 +211,7 @@ export default function App() {
       label: 'Configuration',
       items: [
         { id: 'providers', label: 'Providers', icon: <Key weight="duotone" size={18} /> },
+        { id: 'embeddings', label: 'Embeddings', icon: <Cpu weight="duotone" size={18} /> },
       ],
     },
   ];
@@ -216,6 +219,7 @@ export default function App() {
   const HEADER_TITLES: Record<Tab, string> = {
     chat: 'Live Agent Session',
     providers: 'LLM Providers',
+    embeddings: 'Global Embeddings',
     agents: 'AI Agents',
     skills: 'Agent Skills',
     hooks: 'Lifecycle Hooks',
@@ -333,6 +337,15 @@ export default function App() {
               <ProvidersPage
                 providers={providers}
                 loadProviders={loadProviders}
+                showToast={showToast}
+              />
+            }
+          />
+          <Route
+            path="/embeddings"
+            element={
+              <EmbeddingsPage
+                providers={providers}
                 showToast={showToast}
               />
             }

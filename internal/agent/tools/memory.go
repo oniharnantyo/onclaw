@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,8 +37,10 @@ func (m *memorySearchTool) Build(scope *Scope) tool.InvokableTool {
 			limit = 5
 		}
 		var vector []float32
+		var embeddingModel string
 		if scope.Embedder != nil {
 			vector, _ = scope.Embedder.Embed(ctx, input.Query)
+			embeddingModel = scope.Embedder.ModelName
 		}
 		ftsW := 0.3
 		vecW := 0.7
@@ -59,13 +62,14 @@ func (m *memorySearchTool) Build(scope *Scope) tool.InvokableTool {
 		}
 
 		hits, err := scope.MemoryStore.SearchArchive(ctx, &memory.ArchiveQuery{
-			Query:        input.Query,
-			Agent:        scope.AgentName,
-			Scope:        "global",
-			Vector:       vector,
-			Limit:        limit,
-			FtsWeight:    ftsW,
-			VectorWeight: vecW,
+			Query:          input.Query,
+			Agent:          scope.AgentName,
+			Scope:          "global",
+			Vector:         vector,
+			EmbeddingModel: embeddingModel,
+			Limit:          limit,
+			FtsWeight:      ftsW,
+			VectorWeight:   vecW,
 		})
 		if err != nil {
 			return "", fmt.Errorf("failed to search memory archive: %w", err)
@@ -76,7 +80,7 @@ func (m *memorySearchTool) Build(scope *Scope) tool.InvokableTool {
 		var sb strings.Builder
 		sb.WriteString("Matching long-term memories:\n")
 		for _, hit := range hits {
-			sb.WriteString(fmt.Sprintf("- %s (relevance: %.2f)\n", hit.Document.Content, hit.Score))
+			sb.WriteString(fmt.Sprintf("- [id %d] %s (relevance: %.2f)\n", hit.Document.ID, hit.Document.Content, hit.Score))
 		}
 		return sb.String(), nil
 	})
@@ -234,6 +238,185 @@ func (m *memoryTool) Build(scope *Scope) tool.InvokableTool {
 	return t
 }
 
+type memoryRememberTool struct{}
+
+func (m *memoryRememberTool) Name() string { return "memory_remember" }
+func (m *memoryRememberTool) Desc() string {
+	return "Store a new fact or piece of context in the searchable memory archive."
+}
+func (m *memoryRememberTool) Category() string { return "Memory" }
+
+type MemoryRememberInput struct {
+	Content string `json:"content" jsonschema_description:"The fact or context content to store in long-term memory"`
+	Kind    string `json:"kind,omitempty" jsonschema_description:"Optional category or kind (default 'curated')"`
+}
+
+func (m *memoryRememberTool) Build(scope *Scope) tool.InvokableTool {
+	t, err := utils.InferTool(m.Name(), m.Desc(), func(ctx context.Context, input *MemoryRememberInput) (string, error) {
+		if scope.MemoryStore == nil {
+			return "Memory archive is not available.", nil
+		}
+		content := strings.TrimSpace(input.Content)
+		if content == "" {
+			return "Content cannot be empty.", nil
+		}
+		if err := memory.ScanContent(content); err != nil {
+			return err.Error(), nil
+		}
+
+		var modelName string
+		if scope.Embedder != nil {
+			modelName = scope.Embedder.ModelName
+		}
+
+		// Dedup check: check if identical content already exists for agent
+		hits, err := scope.MemoryStore.SearchArchive(ctx, &memory.ArchiveQuery{
+			Query:          content,
+			Agent:          scope.AgentName,
+			Scope:          "global",
+			EmbeddingModel: modelName,
+			Limit:          10,
+		})
+		if err == nil {
+			for _, hit := range hits {
+				if hit.Document != nil && strings.TrimSpace(hit.Document.Content) == content {
+					return fmt.Sprintf("Memory already exists (id %d): %s", hit.Document.ID, content), nil
+				}
+			}
+		}
+
+		kind := strings.TrimSpace(input.Kind)
+		if kind == "" {
+			kind = "curated"
+		}
+
+		var vector []float32
+		if scope.Embedder != nil {
+			v, err := scope.Embedder.Embed(ctx, content)
+			if err != nil {
+				return "", fmt.Errorf("failed to generate embedding: %w", err)
+			}
+			vector = v
+		}
+
+		doc := &memory.MemoryDocument{
+			Agent:          scope.AgentName,
+			Scope:          "global",
+			Kind:           kind,
+			Content:        content,
+			Source:         "remember",
+			EmbeddingModel: modelName,
+		}
+
+		id, err := scope.MemoryStore.IndexDocument(ctx, doc, vector)
+		if err != nil {
+			return "", fmt.Errorf("failed to index memory: %w", err)
+		}
+
+		return fmt.Sprintf("Remembered (id %d): %s", id, content), nil
+	})
+	if err != nil {
+		panic(err)
+	}
+	return t
+}
+
+type memoryUpdateTool struct{}
+
+func (m *memoryUpdateTool) Name() string { return "memory_update" }
+func (m *memoryUpdateTool) Desc() string {
+	return "Update an existing memory archive entry in place by its document id."
+}
+func (m *memoryUpdateTool) Category() string { return "Memory" }
+
+type MemoryUpdateInput struct {
+	ID      int64  `json:"id" jsonschema_description:"The numeric document ID of the memory to update"`
+	Content string `json:"content" jsonschema_description:"The updated memory content"`
+}
+
+func (m *memoryUpdateTool) Build(scope *Scope) tool.InvokableTool {
+	t, err := utils.InferTool(m.Name(), m.Desc(), func(ctx context.Context, input *MemoryUpdateInput) (string, error) {
+		if scope.MemoryStore == nil {
+			return "Memory archive is not available.", nil
+		}
+		content := strings.TrimSpace(input.Content)
+		if content == "" {
+			return "Content cannot be empty.", nil
+		}
+		if err := memory.ScanContent(content); err != nil {
+			return err.Error(), nil
+		}
+
+		doc, err := scope.MemoryStore.GetDocument(ctx, input.ID)
+		if err != nil {
+			return "", fmt.Errorf("failed to fetch document: %w", err)
+		}
+		if doc == nil {
+			return fmt.Sprintf("No memory found with id %d.", input.ID), nil
+		}
+
+		var vector []float32
+		if scope.Embedder != nil {
+			v, err := scope.Embedder.Embed(ctx, content)
+			if err != nil {
+				return "", fmt.Errorf("failed to generate embedding: %w", err)
+			}
+			vector = v
+		}
+
+		if err := scope.MemoryStore.UpdateDocument(ctx, input.ID, content, vector); err != nil {
+			if errors.Is(err, sql.ErrNoRows) || strings.Contains(err.Error(), "not found") {
+				return fmt.Sprintf("No memory found with id %d.", input.ID), nil
+			}
+			return "", fmt.Errorf("failed to update memory: %w", err)
+		}
+
+		return fmt.Sprintf("Updated memory (id %d): %s", input.ID, content), nil
+	})
+	if err != nil {
+		panic(err)
+	}
+	return t
+}
+
+type memoryForgetTool struct{}
+
+func (m *memoryForgetTool) Name() string { return "memory_forget" }
+func (m *memoryForgetTool) Desc() string {
+	return "Delete a memory archive entry by its document id."
+}
+func (m *memoryForgetTool) Category() string { return "Memory" }
+
+type MemoryForgetInput struct {
+	ID int64 `json:"id" jsonschema_description:"The numeric document ID of the memory to forget"`
+}
+
+func (m *memoryForgetTool) Build(scope *Scope) tool.InvokableTool {
+	t, err := utils.InferTool(m.Name(), m.Desc(), func(ctx context.Context, input *MemoryForgetInput) (string, error) {
+		if scope.MemoryStore == nil {
+			return "Memory archive is not available.", nil
+		}
+		doc, err := scope.MemoryStore.GetDocument(ctx, input.ID)
+		if err != nil {
+			return "", fmt.Errorf("failed to fetch document: %w", err)
+		}
+		if doc == nil {
+			return fmt.Sprintf("No memory found with id %d.", input.ID), nil
+		}
+
+		content := doc.Content
+		if err := scope.MemoryStore.DeleteDocument(ctx, input.ID); err != nil {
+			return "", fmt.Errorf("failed to delete memory: %w", err)
+		}
+
+		return fmt.Sprintf("Deleted memory (id %d): %s", input.ID, content), nil
+	})
+	if err != nil {
+		panic(err)
+	}
+	return t
+}
+
 const jsonSchema = `{
   "type": "object",
   "properties": {
@@ -294,6 +477,9 @@ func init() {
 	Register(&memorySearchTool{})
 	Register(&sessionSearchTool{})
 	Register(&memoryTool{})
+	Register(&memoryRememberTool{})
+	Register(&memoryUpdateTool{})
+	Register(&memoryForgetTool{})
 
 	RegisterConfig("Memory", jsonSchema, func(ctx context.Context, cfg string) error {
 		configMu.Lock()

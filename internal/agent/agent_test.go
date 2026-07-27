@@ -124,7 +124,6 @@ func TestAssembleAndRunAgent_ReActLoop(t *testing.T) {
 	agentConf := &store.Agent{
 		Name:          "test-react-agent",
 		Provider:      "fake-prov",
-		Tools:         "read_file,write_file", // test subset filtering
 		MaxIterations: 5,
 	}
 
@@ -291,7 +290,6 @@ func TestAssembleAgent_ContextWindowTrigger(t *testing.T) {
 	}
 }
 
-
 type mockToolRegistryStore struct {
 	list []*store.ToolRegistry
 }
@@ -413,30 +411,51 @@ func TestAssembleAgent_GlobalToolEnable(t *testing.T) {
 		t.Error("expected web_fetch to be present")
 	}
 
-	// 3. Intersection with per-agent allowlist
-	agentConf.Tools = "web_search,web_fetch" // agent only allows these two factory tools
-	optsMockAllow := agent.NewTestAssembleOpts(t, func(o *agent.AssembleAgentOpts) {
-		o.AgentConf = agentConf
+	// 3. Denylist with per-agent DisabledTools
+	agentConfDeny := &store.Agent{
+		Name:          "test-denylist",
+		DisabledTools: "web_search", // agent disables web_search
+	}
+	mockStoreDeny := &mockToolRegistryStore{
+		list: []*store.ToolRegistry{
+			{Name: "web_search", Enabled: 1},
+			{Name: "web_fetch", Enabled: 1},
+		},
+	}
+	optsMockDeny := agent.NewTestAssembleOpts(t, func(o *agent.AssembleAgentOpts) {
+		o.AgentConf = agentConfDeny
 		o.ChatModel = fm
 		o.ReviewModel = fm
 		o.Workspace = workspace
 		o.UserConfigDir = userConfigDir
-		o.ToolRegistryStore = mockStore
+		o.ToolRegistryStore = mockStoreDeny
 	})
-	ag, err = agent.AssembleAgent(ctx, optsMockAllow)
+	agDeny, err := agent.AssembleAgent(ctx, optsMockDeny)
 	if err != nil {
 		t.Fatalf("failed to assemble agent: %v", err)
 	}
 	var activeTools []string
-	for _, tl := range ag.Tools {
+	for _, tl := range agDeny.Tools {
 		info, _ := tl.Info(ctx)
 		activeTools = append(activeTools, info.Name)
 	}
-	// web_search is disabled globally, so the allowlist resolves to [web_fetch].
-	if len(activeTools) != 1 || activeTools[0] != "web_fetch" {
-		t.Errorf("expected effective tools to be exactly [web_fetch], got %v", activeTools)
+	// web_search is disabled on the agent denylist, so only web_fetch remains from registry tools.
+	hasSearch := false
+	hasFetch := false
+	for _, name := range activeTools {
+		if name == "web_search" {
+			hasSearch = true
+		}
+		if name == "web_fetch" {
+			hasFetch = true
+		}
 	}
-
+	if hasSearch {
+		t.Errorf("expected web_search to be excluded by denylist, but it was present")
+	}
+	if !hasFetch {
+		t.Errorf("expected web_fetch to be present")
+	}
 }
 
 type mockToolGroupConfigStore struct {
@@ -786,7 +805,6 @@ func TestAssembleAndRunAgent_ToolResultInEventStream(t *testing.T) {
 	agentConf := &store.Agent{
 		Name:          "test-react-agent",
 		Provider:      "fake-prov",
-		Tools:         "read_file,write_file",
 		MaxIterations: 5,
 	}
 
