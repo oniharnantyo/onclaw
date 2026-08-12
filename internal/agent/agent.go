@@ -26,6 +26,7 @@ import (
 	_ "github.com/oniharnantyo/onclaw/internal/agent/tools/browser"
 	_ "github.com/oniharnantyo/onclaw/internal/agent/tools/web"
 	"github.com/oniharnantyo/onclaw/internal/hooks"
+	"github.com/oniharnantyo/onclaw/internal/membus"
 	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/secrets"
 	"github.com/oniharnantyo/onclaw/internal/store"
@@ -43,7 +44,9 @@ type Agent struct {
 	Tools            []tool.BaseTool
 	// memoryMiddleware is non-nil when memory is enabled; used for EventStop flush.
 	memoryMiddleware *middlewares.MemoryMiddleware
-	// Pruner periodically prunes expired episodic summaries.
+	// Bus is the in-process memory event bus for async background processing.
+	Bus *membus.Bus
+	// Pruner periodically prunes expired episodic summaries (legacy; replaced by bus PrunerWorker).
 	Pruner        *memory.PeriodicPruner
 	contextWindow int
 }
@@ -394,6 +397,13 @@ func (b *agentBuilder) buildMiddleware(ctx context.Context) error {
 		},
 		TranscriptFilePath: transcriptPath,
 		Finalize: func(ctx context.Context, originalMessages []*schema.AgenticMessage, summary *schema.AgenticMessage) ([]*schema.AgenticMessage, error) {
+			// Wire CompactionSummary so episodic summarization can reuse it.
+			if b.memoryMiddleware != nil && summary != nil {
+				text := getAgenticSummaryText(summary)
+				if text != "" {
+					b.memoryMiddleware.CompactionSummary = text
+				}
+			}
 			return reconstructMessages(ctx, originalMessages, summary, b.opts.SummarizationOpts.PreviousMessagesKeep)
 		},
 	})
@@ -478,9 +488,41 @@ func (b *agentBuilder) assemble(ctx context.Context) (*Agent, error) {
 		contextWindow:    b.opts.ContextWindow,
 	}
 
-	if b.opts.EpisodicStore != nil {
-		agent.Pruner = memory.NewPeriodicPruner(b.opts.EpisodicStore, 1*time.Hour)
-		agent.Pruner.Start(ctx)
+	// Wire memory bus: register workers and start the bus.
+	if b.memoryMiddleware != nil {
+		bus := membus.New(membus.DefaultBufferSize)
+
+		// KG extraction worker
+		if b.opts.KGStore != nil {
+			bus.Register(&membus.KGExtractionWorker{
+				KGStore:          b.opts.KGStore,
+				ChatModel:        b.opts.ChatModel,
+				ReviewModel:      b.opts.ReviewModel,
+				AgentName:        b.opts.AgentConf.Name,
+				SkipSecurityScan: !b.resolvedMemory.SecurityScanEnabled,
+			})
+		}
+
+		// Dreamer worker
+		if b.opts.Dreamer != nil && b.resolvedMemory.DreamingEnabled {
+			bus.Register(&membus.DreamerWorker{
+				Dreamer: b.opts.Dreamer,
+			})
+		}
+
+		// Pruner worker (replaces standalone PeriodicPruner goroutine)
+		if b.opts.EpisodicStore != nil {
+			bus.Register(&membus.PrunerWorker{
+				EpisodicStore: b.opts.EpisodicStore,
+			})
+			// Timer fires prune_tick events every hour.
+			timer := membus.NewTimerWorker(bus, 1*time.Hour, membus.PruneTick{})
+			timer.Start(ctx)
+		}
+
+		bus.Start(ctx)
+		agent.Bus = bus
+		b.memoryMiddleware.Bus = bus
 	}
 
 	return agent, nil
@@ -540,6 +582,17 @@ func (a *Agent) Run(ctx context.Context, messages []*schema.AgenticMessage) Even
 // ContextWindow returns the resolved context window limit for the agent.
 func (a *Agent) ContextWindow() int {
 	return a.contextWindow
+}
+
+// Stop performs graceful shutdown of background resources (memory bus, pruner).
+// It drains pending events before returning. Safe to call multiple times.
+func (a *Agent) Stop() {
+	if a.Bus != nil {
+		a.Bus.Stop()
+	}
+	if a.Pruner != nil {
+		a.Pruner.Stop()
+	}
 }
 
 // AgentName returns the name of the agent.
@@ -607,6 +660,25 @@ func reconstructMessages(_ context.Context, originalMessages []*schema.AgenticMe
 
 func buildTranscriptPath(homeDir, agentName string) string {
 	return fmt.Sprintf("%s/.onclaw/workspace/agents/%s/summary_transcript", homeDir, agentName)
+}
+
+// getAgenticSummaryText extracts the text content from an AgenticMessage (used for compaction summary).
+func getAgenticSummaryText(msg *schema.AgenticMessage) string {
+	if msg == nil {
+		return ""
+	}
+	var sb strings.Builder
+	for _, block := range msg.ContentBlocks {
+		if block == nil {
+			continue
+		}
+		if block.UserInputText != nil {
+			sb.WriteString(block.UserInputText.Text)
+		} else if block.AssistantGenText != nil {
+			sb.WriteString(block.AssistantGenText.Text)
+		}
+	}
+	return sb.String()
 }
 
 // ToolGroupCfgWrapper wraps a store.ToolGroupConfigStore to implement tools.ToolGroupCfg.

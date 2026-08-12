@@ -44,6 +44,11 @@ func RankCandidates(candidates []*Candidate, query *ArchiveQuery) ([]*MemoryHit,
 				maxCos = cosines[i]
 			}
 		}
+		// FTS rank min/max spans only FTS-matched candidates; vector-only recall
+		// candidates have no meaningful FTS rank and must not distort normalization.
+		if !c.MatchedFTS {
+			continue
+		}
 		if c.FTSRank < minFts {
 			minFts = c.FTSRank
 		}
@@ -55,10 +60,16 @@ func RankCandidates(candidates []*Candidate, query *ArchiveQuery) ([]*MemoryHit,
 	// 2. Score and normalize
 	hits := make([]*MemoryHit, 0, len(candidates))
 	for i, c := range candidates {
-		// FTS norm: BM25 rank (smaller is better)
-		var ftsNorm float64 = 1.0
-		if maxFts > minFts {
-			ftsNorm = (maxFts - c.FTSRank) / (maxFts - minFts)
+		// FTS norm: BM25 rank (smaller is better). Only FTS-matched candidates
+		// carry an FTS rank; vector-only recall candidates get ftsNorm=0 so FTS
+		// contributes nothing to their score and they rank on vector similarity.
+		var ftsNorm float64
+		if c.MatchedFTS {
+			if maxFts > minFts {
+				ftsNorm = (maxFts - c.FTSRank) / (maxFts - minFts)
+			} else {
+				ftsNorm = 1.0
+			}
 		}
 
 		// Cosine norm

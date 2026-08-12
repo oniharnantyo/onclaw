@@ -243,3 +243,122 @@ func TestMemoryStore_EmbeddingModelFilter(t *testing.T) {
 		t.Fatalf("expected 0 matches for model 'text-embedding-004', got %d", len(resMismatch))
 	}
 }
+
+// TestMemoryStore_VectorRecallSurfacesLexicallyDisjointDoc is the regression test for the
+// empty-result bug from Langfuse trace 3e8dea42: a document exists and is near-identical by
+// vector, but the query shares no lexemes with it. Before the vector-recall union,
+// SearchArchive's FTS conjunctive gate starved RankCandidates and returned nothing. Now the
+// union surfaces the doc.
+func TestMemoryStore_VectorRecallSurfacesLexicallyDisjointDoc(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	ms := sqlite.NewMemoryStore(db)
+
+	docVec := []float32{0.9, 0.1, 0.0}
+	id, err := ms.IndexDocument(ctx, &memory.MemoryDocument{
+		Agent:          "test-agent",
+		Scope:          "global",
+		Kind:           "curated",
+		Content:        "Drank two cups of coffee.",
+		Source:         "remember",
+		EmbeddingModel: "test-model",
+	}, docVec)
+	if err != nil {
+		t.Fatalf("IndexDocument failed: %v", err)
+	}
+
+	// Query tokens ("activity schedule tasks") appear nowhere in the content; the query
+	// vector is deliberately close to the doc vector (cosine ~= 1.0).
+	queryVec := []float32{0.88, 0.12, 0.01}
+	res, err := ms.SearchArchive(ctx, &memory.ArchiveQuery{
+		Query:          "activity schedule tasks",
+		Agent:          "test-agent",
+		Scope:          "global",
+		EmbeddingModel: "test-model",
+		Vector:         queryVec,
+		Limit:          5,
+		FtsWeight:      0.3,
+		VectorWeight:   0.7,
+	})
+	if err != nil {
+		t.Fatalf("SearchArchive failed: %v", err)
+	}
+
+	// Fixed: vector recall surfaces the doc even though FTS matched nothing.
+	if len(res) != 1 || res[0].Document.ID != id {
+		t.Fatalf("expected 1 hit with doc %d (vector recall), got %d: %+v", id, len(res), res)
+	}
+
+	// The vector recall scan independently confirms the doc is the top match.
+	top, err := sqlite.VectorScanCandidatesFromStore(ms, ctx, &memory.ArchiveQuery{
+		Agent:          "test-agent",
+		Scope:          "global",
+		EmbeddingModel: "test-model",
+		Vector:         queryVec,
+	}, 3)
+	if err != nil {
+		t.Fatalf("vector scan failed: %v", err)
+	}
+	if len(top) != 1 || top[0].Document == nil || top[0].Document.ID != id {
+		t.Fatalf("expected vector scan to return doc %d, got %+v", id, top)
+	}
+	if cos := memory.CosineSimilarity(queryVec, top[0].Vector); cos < 0.6 {
+		t.Errorf("expected high cosine similarity, got %f", cos)
+	}
+}
+
+// TestMemoryStore_FTSOnlyQueryStillGatedByMatch confirms the vector-recall union only
+// runs when a query vector is present. Without one (e.g. the memory_remember dedup path),
+// SearchArchive keeps its original FTS-gated behavior: a disjoint query returns nothing,
+// a matching query still returns the doc.
+func TestMemoryStore_FTSOnlyQueryStillGatedByMatch(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	ms := sqlite.NewMemoryStore(db)
+
+	_, err := ms.IndexDocument(ctx, &memory.MemoryDocument{
+		Agent:          "test-agent",
+		Scope:          "global",
+		Kind:           "curated",
+		Content:        "Drank two cups of coffee.",
+		Source:         "remember",
+		EmbeddingModel: "test-model",
+	}, []float32{0.9, 0.1, 0.0})
+	if err != nil {
+		t.Fatalf("IndexDocument failed: %v", err)
+	}
+
+	// No Vector: pure FTS path. Disjoint query -> no match (unchanged behavior).
+	res, err := ms.SearchArchive(ctx, &memory.ArchiveQuery{
+		Query:          "activity schedule tasks",
+		Agent:          "test-agent",
+		Scope:          "global",
+		EmbeddingModel: "test-model",
+		Limit:          5,
+	})
+	if err != nil {
+		t.Fatalf("SearchArchive failed: %v", err)
+	}
+	if len(res) != 0 {
+		t.Fatalf("expected 0 hits for FTS-only disjoint query, got %d: %+v", len(res), res)
+	}
+
+	// A matching FTS query still returns the doc.
+	res, err = ms.SearchArchive(ctx, &memory.ArchiveQuery{
+		Query:          "coffee",
+		Agent:          "test-agent",
+		Scope:          "global",
+		EmbeddingModel: "test-model",
+		Limit:          5,
+	})
+	if err != nil {
+		t.Fatalf("SearchArchive failed: %v", err)
+	}
+	if len(res) != 1 {
+		t.Fatalf("expected 1 hit for matching FTS query 'coffee', got %d", len(res))
+	}
+}

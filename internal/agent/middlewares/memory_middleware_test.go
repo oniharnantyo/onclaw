@@ -5,8 +5,10 @@ import (
 	"testing"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	"github.com/oniharnantyo/onclaw/internal/agent/middlewares"
+	"github.com/oniharnantyo/onclaw/internal/membus"
 	"github.com/oniharnantyo/onclaw/internal/memory"
 )
 
@@ -274,4 +276,215 @@ func TestMemoryMiddleware_BeforeAgent_RetrievalDisabled(t *testing.T) {
 	if len(newCtx.AgentInput.Messages) != 1 {
 		t.Errorf("expected 1 message (auto-injection skipped), got %d", len(newCtx.AgentInput.Messages))
 	}
+}
+
+
+// --- Integration tests for CompactionSummary wiring and Bus ---
+
+type mockEpisodicStore struct {
+	appended []episodicRow
+}
+
+type episodicRow struct {
+	Agent      string
+	Summary    string
+	L0Abstract string
+	KeyTopics  string
+	SourceID   string
+	ExpiresAt  string
+}
+
+func (m *mockEpisodicStore) AppendEpisodic(ctx context.Context, agent, summary, l0Abstract, keyTopics, sourceID, expiresAt string) (int64, error) {
+	m.appended = append(m.appended, episodicRow{
+		Agent:      agent,
+		Summary:    summary,
+		L0Abstract: l0Abstract,
+		KeyTopics:  keyTopics,
+		SourceID:   sourceID,
+		ExpiresAt:  expiresAt,
+	})
+	return int64(len(m.appended)), nil
+}
+
+func (m *mockEpisodicStore) ListUnpromoted(ctx context.Context, agent string) ([]*memory.EpisodicSummary, error) {
+	return nil, nil
+}
+
+func (m *mockEpisodicStore) CountUnpromoted(ctx context.Context, agent string) (int, error) {
+	return 0, nil
+}
+
+func (m *mockEpisodicStore) MarkPromoted(ctx context.Context, id int64) error { return nil }
+
+func (m *mockEpisodicStore) PruneExpired(ctx context.Context) (int64, error) { return 0, nil }
+
+func (m *mockEpisodicStore) GetEpisodic(ctx context.Context, id int64) (*memory.EpisodicSummary, error) {
+	return nil, nil
+}
+
+type mockChatModel struct {
+	calls    int
+	response string
+}
+
+func (m *mockChatModel) Generate(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.AgenticMessage, error) {
+	m.calls++
+	return &schema.AgenticMessage{
+		Role: schema.AgenticRoleTypeAssistant,
+		ContentBlocks: []*schema.ContentBlock{
+			schema.NewContentBlock(&schema.AssistantGenText{Text: m.response}),
+		},
+	}, nil
+}
+
+func (m *mockChatModel) Stream(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.StreamReader[*schema.AgenticMessage], error) {
+	return nil, nil
+}
+
+func TestFlushMessages_CompactionSummary_SkipsLLMCall(t *testing.T) {
+	ctx := context.Background()
+	episodicStore := &mockEpisodicStore{}
+	chatModel := &mockChatModel{response: "LLM-generated summary"}
+	kvStore := &mockKVStore{}
+
+	mw := middlewares.NewMemoryMiddleware(
+		nil,           // coreStore
+		&mockMemoryStore{}, // memoryStore (non-nil to pass nil check)
+		nil,           // embedder
+		kvStore,
+		chatModel,
+		nil, // reviewModel
+		"workspace", "agent-1", 123, 100,
+		episodicStore,
+		nil, // dreamer
+		90,
+		nil, // kgStore
+	)
+	mw.ExtractionEnabled = false // skip ExtractAndFlush to isolate episodic path
+
+	// Call with a non-empty compaction summary — should reuse it instead of calling LLM.
+	msgs := []*schema.AgenticMessage{
+		schema.UserAgenticMessage("Remember that I prefer dark mode for all editors."),
+	}
+	mw.FlushMessages(ctx, msgs, "Compacted: user discussed editor preferences and dark mode setup.")
+
+	// Verify episodic row was written with the compaction summary, not an LLM-generated one.
+	if len(episodicStore.appended) != 1 {
+		t.Fatalf("expected 1 episodic row, got %d", len(episodicStore.appended))
+	}
+	row := episodicStore.appended[0]
+	if row.Summary != "Compacted: user discussed editor preferences and dark mode setup." {
+		t.Errorf("expected compaction summary to be reused, got %q", row.Summary)
+	}
+
+	// The chat model should NOT have been called (0 calls since compaction summary was reused).
+	if chatModel.calls != 0 {
+		t.Errorf("expected 0 LLM calls (compaction summary reused), got %d", chatModel.calls)
+	}
+}
+
+func TestFlushMessages_CompactionSummary_NonEmpty(t *testing.T) {
+	ctx := context.Background()
+	episodicStore := &mockEpisodicStore{}
+	kvStore := &mockKVStore{}
+
+	mw := middlewares.NewMemoryMiddleware(
+		nil,
+		&mockMemoryStore{},
+		nil,
+		kvStore,
+		nil, // no chatModel — compaction summary should be enough
+		nil,
+		"workspace", "agent-1", 456, 100,
+		episodicStore,
+		nil,
+		90,
+		nil,
+	)
+	mw.ExtractionEnabled = false
+
+	// Assign CompactionSummary (simulating what the Finalize callback does).
+	mw.CompactionSummary = "The user refactored the authentication module."
+
+	msgs := []*schema.AgenticMessage{
+		schema.UserAgenticMessage("Let's refactor the auth module to use JWT tokens exclusively."),
+	}
+	mw.FlushMessages(ctx, msgs, mw.CompactionSummary)
+
+	if len(episodicStore.appended) != 1 {
+		t.Fatalf("expected 1 episodic row, got %d", len(episodicStore.appended))
+	}
+	if episodicStore.appended[0].Summary != "The user refactored the authentication module." {
+		t.Errorf("expected CompactionSummary to be stored, got %q", episodicStore.appended[0].Summary)
+	}
+}
+
+func TestFlushMessages_BusReceivesEpisodeCreated(t *testing.T) {
+	ctx := context.Background()
+	episodicStore := &mockEpisodicStore{}
+	kvStore := &mockKVStore{}
+
+	mw := middlewares.NewMemoryMiddleware(
+		nil,
+		&mockMemoryStore{},
+		nil,
+		kvStore,
+		nil, // no chatModel — compaction summary is enough
+		nil,
+		"workspace", "agent-1", 789, 100,
+		episodicStore,
+		nil,
+		90,
+		nil,
+	)
+	mw.ExtractionEnabled = false
+
+	// Create a bus with a counting worker to verify event delivery.
+	bus := membus.New(64)
+	worker := &episodeCountingWorker{}
+	bus.Register(worker)
+	bus.Start(ctx)
+
+	mw.Bus = bus
+
+	msgs := []*schema.AgenticMessage{
+		schema.UserAgenticMessage("Remember that I always use Go modules for dependency management."),
+	}
+	mw.FlushMessages(ctx, msgs, "Compacted: user configured Go modules.")
+
+	// Stop bus to drain events.
+	bus.Stop()
+
+	if worker.count != 1 {
+		t.Errorf("expected 1 EpisodeCreated event on bus, got %d", worker.count)
+	}
+	if worker.lastEvent.AgentName != "agent-1" {
+		t.Errorf("expected AgentName 'agent-1', got %q", worker.lastEvent.AgentName)
+	}
+	if worker.lastEvent.EpisodeID != 1 {
+		t.Errorf("expected EpisodeID 1, got %d", worker.lastEvent.EpisodeID)
+	}
+	if worker.lastEvent.Summary != "Compacted: user configured Go modules." {
+		t.Errorf("expected summary to match, got %q", worker.lastEvent.Summary)
+	}
+}
+
+// episodeCountingWorker counts EpisodeCreated events received via the bus.
+type episodeCountingWorker struct {
+	count     int
+	lastEvent membus.EpisodeCreated
+}
+
+func (w *episodeCountingWorker) Subscribes() []string {
+	return []string{"episode_created"}
+}
+
+func (w *episodeCountingWorker) Handle(ctx context.Context, event membus.Event) error {
+	ep, ok := event.(membus.EpisodeCreated)
+	if !ok {
+		return nil
+	}
+	w.count++
+	w.lastEvent = ep
+	return nil
 }

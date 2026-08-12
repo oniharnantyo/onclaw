@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 
 	"github.com/oniharnantyo/onclaw/internal/memory"
@@ -217,16 +218,130 @@ func (s *sqliteMemoryStore) SearchArchive(ctx context.Context, query *memory.Arc
 			vec = blobToVector(vecBlob)
 		}
 		candidates = append(candidates, &memory.Candidate{
-			Document: &doc,
-			Vector:   vec,
-			FTSRank:  rank,
+			Document:   &doc,
+			Vector:     vec,
+			FTSRank:    rank,
+			MatchedFTS: true,
 		})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("candidates rows error: %w", err)
 	}
 
+	// Vector recall: union top-K vector-similar docs with the FTS candidates so a
+	// semantically-relevant doc that FTS's conjunctive gate excluded still reaches
+	// RankCandidates. Dedup by id preserves the FTS rank for docs matched both ways.
+	if len(query.Vector) > 0 {
+		vecCandidates, verr := s.vectorScanCandidates(ctx, query, vectorRecallTopK(query.Limit))
+		if verr != nil {
+			return nil, fmt.Errorf("vector recall: %w", verr)
+		}
+		candidates = unionCandidates(candidates, vecCandidates)
+	}
+
 	return memory.RankCandidates(candidates, query)
+}
+
+// vectorRecallTopK picks how many vector-similar docs to union into the candidate
+// set. Scaled with the requested limit so RankCandidates has room to re-rank.
+func vectorRecallTopK(limit int) int {
+	k := 3 * limit
+	if k < 20 {
+		k = 20
+	}
+	if k > 100 {
+		k = 100
+	}
+	return k
+}
+
+// vectorScanCandidates returns up to limit candidates (Document + Vector,
+// MatchedFTS=false) most cosine-similar to query.Vector, filtered by the query's
+// agent/scope/embedding_model. Linear scan (no ANN index) per the pure-Go driver
+// constraint; acceptable for on-device corpus sizes.
+func (s *sqliteMemoryStore) vectorScanCandidates(ctx context.Context, query *memory.ArchiveQuery, limit int) ([]*memory.Candidate, error) {
+	if len(query.Vector) == 0 {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	q := `
+		SELECT d.id, d.agent, d.scope, d.kind, d.content, d.source, d.embedding_model, d.created_at, e.vector
+		FROM memory_documents d
+		JOIN memory_embeddings e ON d.id = e.document_id
+		WHERE d.agent = ? AND (d.scope = ? OR d.scope = 'global') AND d.embedding_model = ?
+	`
+	rows, err := s.db.QueryContext(ctx, q, query.Agent, query.Scope, query.EmbeddingModel)
+	if err != nil {
+		return nil, fmt.Errorf("vector scan query: %w", err)
+	}
+	defer rows.Close()
+
+	type scored struct {
+		candidate *memory.Candidate
+		cosine    float32
+	}
+	var all []scored
+	for rows.Next() {
+		var doc memory.MemoryDocument
+		var blob []byte
+		if err := rows.Scan(&doc.ID, &doc.Agent, &doc.Scope, &doc.Kind, &doc.Content, &doc.Source, &doc.EmbeddingModel, &doc.CreatedAt, &blob); err != nil {
+			return nil, fmt.Errorf("vector scan scan: %w", err)
+		}
+		vec := blobToVector(blob)
+		if len(vec) == 0 {
+			continue
+		}
+		all = append(all, scored{
+			candidate: &memory.Candidate{Document: &doc, Vector: vec},
+			cosine:    memory.CosineSimilarity(query.Vector, vec),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("vector scan rows: %w", err)
+	}
+
+	sort.Slice(all, func(i, j int) bool { return all[i].cosine > all[j].cosine })
+	if len(all) > limit {
+		all = all[:limit]
+	}
+	out := make([]*memory.Candidate, len(all))
+	for i, a := range all {
+		out[i] = a.candidate
+	}
+	return out, nil
+}
+
+// unionCandidates merges FTS-matched candidates with vector-recall candidates,
+// deduplicating by document id. A doc present in both keeps its FTS rank
+// (MatchedFTS=true) and gains a vector if it lacked one; a vector-only doc is
+// added with MatchedFTS=false.
+func unionCandidates(fts, vec []*memory.Candidate) []*memory.Candidate {
+	byID := make(map[int64]*memory.Candidate, len(fts)+len(vec))
+	for _, c := range fts {
+		if c.Document == nil {
+			continue
+		}
+		byID[c.Document.ID] = c
+	}
+	for _, c := range vec {
+		if c.Document == nil {
+			continue
+		}
+		if existing, ok := byID[c.Document.ID]; ok {
+			if len(existing.Vector) == 0 {
+				existing.Vector = c.Vector
+			}
+			continue
+		}
+		byID[c.Document.ID] = c
+	}
+	out := make([]*memory.Candidate, 0, len(byID))
+	for _, c := range byID {
+		out = append(out, c)
+	}
+	return out
 }
 
 func (s *sqliteMemoryStore) GetCachedEmbedding(ctx context.Context, embeddingModel string, contentHash string) ([]float32, error) {

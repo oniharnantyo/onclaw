@@ -36,8 +36,9 @@ func TestRankCandidates(t *testing.T) {
 				Content: "First unique memory content",
 				Scope:   "agent-1",
 			},
-			Vector:  []float32{1, 0, 0},
-			FTSRank: -10.0, // Best FTS rank
+			Vector:     []float32{1, 0, 0},
+			FTSRank:    -10.0, // Best FTS rank
+			MatchedFTS: true,
 		},
 		{
 			Document: &memory.MemoryDocument{
@@ -45,8 +46,9 @@ func TestRankCandidates(t *testing.T) {
 				Content: "Second unique memory content",
 				Scope:   "global",
 			},
-			Vector:  []float32{0, 1, 0},
-			FTSRank: -5.0,
+			Vector:     []float32{0, 1, 0},
+			FTSRank:    -5.0,
+			MatchedFTS: true,
 		},
 		{
 			Document: &memory.MemoryDocument{
@@ -54,8 +56,9 @@ func TestRankCandidates(t *testing.T) {
 				Content: "First unique memory content", // Duplicate content
 				Scope:   "global",
 			},
-			Vector:  []float32{1, 0, 0},
-			FTSRank: -2.0,
+			Vector:     []float32{1, 0, 0},
+			FTSRank:    -2.0,
+			MatchedFTS: true,
 		},
 	}
 

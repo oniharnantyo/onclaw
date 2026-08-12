@@ -55,6 +55,50 @@ func TestSummarizeSession_NoCompactionNoMessages(t *testing.T) {
 	}
 }
 
+func TestShouldExtractEpisodic(t *testing.T) {
+	tests := []struct {
+		name              string
+		compactionSummary string
+		messages          []*schema.AgenticMessage
+		want              bool
+	}{
+		{
+			name: "skips routine exchange",
+			messages: []*schema.AgenticMessage{
+				schema.UserAgenticMessage("Hello"),
+				makeAssistantAgenticMsg("Hi! How can I help?"),
+			},
+		},
+		{
+			name: "captures explicit durable memory",
+			messages: []*schema.AgenticMessage{
+				schema.UserAgenticMessage("Remember that I prefer tabs over spaces."),
+			},
+			want: true,
+		},
+		{
+			name: "captures completed work",
+			messages: []*schema.AgenticMessage{
+				makeAssistantAgenticMsg("Implemented the episodic-memory signal gate and added regression tests."),
+			},
+			want: true,
+		},
+		{
+			name:              "captures compaction",
+			compactionSummary: "The agent implemented the requested change.",
+			want:              true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := memory.ShouldExtractEpisodic(tt.compactionSummary, tt.messages); got != tt.want {
+				t.Errorf("ShouldExtractEpisodic() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestComputeEpisodicTTL_Default(t *testing.T) {
 	got := memory.ComputeEpisodicTTL(0)
 	if got == "" {

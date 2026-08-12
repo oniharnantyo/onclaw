@@ -8,6 +8,7 @@ import (
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+	"github.com/oniharnantyo/onclaw/internal/membus"
 	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
@@ -37,6 +38,9 @@ type MemoryMiddleware struct {
 	// CompactionSummary holds the text of the most recent conversation compaction
 	// summary so that episodic summarization can reuse it instead of a second LLM call.
 	CompactionSummary string
+	// Bus is the memory event bus for publishing async events (KG extraction, dreaming).
+	// When nil, workers are called inline (legacy fallback).
+	Bus *membus.Bus
 
 	mu         sync.Mutex
 	frozenCore string
@@ -131,21 +135,29 @@ func (m *MemoryMiddleware) FlushMessages(ctx context.Context, messages []*schema
 	}
 
 	if m.EpisodicStore != nil && len(messages) > 0 {
+		// Signal gate: skip trivial sessions.
+		if !memory.ShouldExtractEpisodic(compactionSummary, messages) {
+			return
+		}
+
 		summary, l0Abstract, keyTopics, err := memory.SummarizeSession(ctx, m.ChatModel, compactionSummary, messages)
 		if err == nil && summary != "" {
 			sourceID := fmt.Sprintf("conversation_%d", m.ConversationID)
 			expiresAt := memory.ComputeEpisodicTTL(m.EpisodicTTLDays)
 			episodeID, err := m.EpisodicStore.AppendEpisodic(ctx, m.AgentName, summary, l0Abstract, keyTopics, sourceID, expiresAt)
 
-			// Trigger knowledge graph extraction after episodic write
-			if err == nil && m.KGStore != nil && m.ChatModel != nil {
-				m.extractAndIngestEntities(ctx, summary, episodeID)
+			if err == nil {
+				// Publish EpisodeCreated event to bus for async processing.
+				if m.Bus != nil {
+					m.Bus.Publish(membus.EpisodeCreated{
+						AgentName: m.AgentName,
+						EpisodeID: episodeID,
+						Summary:   summary,
+						SourceID:  sourceID,
+					})
+				}
 			}
 		}
-	}
-
-	if m.Dreamer != nil {
-		_ = m.Dreamer.MaybeDream(ctx)
 	}
 }
 

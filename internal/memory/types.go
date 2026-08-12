@@ -37,9 +37,10 @@ type ArchiveQuery struct {
 
 // Candidate represents a raw candidate retrieved from the database.
 type Candidate struct {
-	Document *MemoryDocument
-	Vector   []float32
-	FTSRank  float64
+	Document   *MemoryDocument
+	Vector     []float32
+	FTSRank    float64
+	MatchedFTS bool // true when surfaced by an FTS match; false for vector-only recall
 }
 
 // EpisodicSummary represents an episodic memory row — a summary of a completed session.

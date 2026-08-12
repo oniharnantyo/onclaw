@@ -6,12 +6,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **onclaw** is an on-device AI coding agent CLI built for **low-resource single-board computers (~2 GB RAM, 8 GB storage)** — Raspberry Pi / Orange Pi class. Every design choice optimizes for that: a single statically-linked binary (`CGO_ENABLED=0`), a pure-Go SQLite (no CGO/libc dependency so it cross-compiles to ARM), and conservative defaults (`concurrency: 1`, `max_context_tokens: 64000`). Keep memory footprint in mind when adding features.
 
-> **Status:** CLI shell + provider/secrets storage layer are implemented. The agent itself is **not** — `onclaw run` is a placeholder, `internal/agent/` is a stub, and only a stub LLM adapter is registered.
+> **Status:** CLI, provider/secrets storage, the agent core, and the HTTP API + Web UI are all implemented. The agent runs on `cloudwego/eino`'s ADK with real adapters for OpenAI, Anthropic, Gemini, DeepSeek, Qwen, and Volcengine Ark.
 
 ## Commands
 
 ```bash
-make build            # static, stripped binary -> bin/onclaw
+make build            # static, stripped binary -> bin/onclaw (also builds web assets via `make ui`)
+make ui               # build the React app in web/ (embedded into the binary)
 make run ARGS='version'           # build then run
 make test             # go test ./...
 make vet              # go vet ./...
@@ -29,17 +30,21 @@ go test -run TestName ./internal/cli/...
 
 `main.go` is trivial — it calls `internal/cli.New().Run(...)`. All command wiring lives in `internal/cli/` (urfave/cli v3).
 
-**Assembly root:** `internal/cli/context.go` `getProviderManager()` is the spine of the app. It opens the SQLite DB (`sqlite.ResolveDbPath` → `sqlite.Open` → `sqlite.Migrate`), then either initializes a fresh DEK in **keyfile mode** (first run) or decrypts the wrapped DEK via keyfile or Argon2id passphrase, and finally assembles the `llm.Service`. Read this function first when orienting.
+**Assembly root:** `internal/cli/context.go` `getProviderManager()` is the spine of the app. It opens the SQLite DB (`sqlite.ResolveDbPath` → `sqlite.Open` → `sqlite.Migrate`), then either initializes a fresh DEK in **keyfile mode** (first run) or decrypts the wrapped DEK via keyfile or Argon2id passphrase, and finally assembles the `llm.Service`. Read this function first when orienting. Agent assembly (`agent.AssembleAgent`) and the HTTP server (`onclaw serve`) are layered on top of the `llm.Service` + stores produced here.
 
 **Config** (`internal/config/`, Viper-backed): layered `defaults < config file < ONCLAW_* env < CLI flags`. `onclaw config show` prints the merged result. The root command's `Before` hook applies config + logging so global flags work everywhere.
 
-**LLM** (`internal/llm/`): `Service` is a facade over four injected collaborators — `store.ProfileStore`, `store.SecretStore`, `secrets.KeyManager`, and `adapter.Registry`. It caches profiles + decrypted API keys in memory behind an `atomic` reload-pending flag. `Service.Build(name)` resolves the secret (env `ONCLAW_PROVIDER_<NAME>_API_KEY` > DB) and dispatches to the registered adapter, which returns a `cloudwego/eino` `model.ChatModel`. **Only a stub adapter is registered today** (`internal/llm/adapter/stub.go`).
+**LLM** (`internal/llm/`): `Service` is a facade over its injected collaborators — `store.ProfileStore`, `store.SecretStore`, `store.AgentStore`, `secrets.KeyManager`, and `adapter.Registry`. It caches profiles + decrypted API keys in memory behind an `atomic` reload-pending flag. `Service.Build(name)` resolves the secret (env `ONCLAW_PROVIDER_<NAME>_API_KEY` > DB) and dispatches to the registered adapter, which returns a `cloudwego/eino` `model.ChatModel`. `adapter.DefaultAdapters` registers real adapters (OpenAI, Anthropic/Claude with prompt caching, Gemini, DeepSeek, Qwen, Volcengine Ark); `stub.go` is kept only for tests.
+
+**Agent** (`internal/agent/`): `Agent` wraps an eino ADK `TypedChatModelAgent` (ReAct loop). `AssembleAgent` wires the chat model, tool set, hooks `Dispatcher` (`internal/hooks/`), and ADK middlewares — `filesystem` (workspace sandboxing), `summarization` (context compaction), and the in-package `MemoryMiddleware` (episodic memory via `internal/memory/` on the async bus `internal/membus/`). Tools live in `internal/agent/tools/` (bash, file ops, browser, web, plus MCP-backed tools); the streaming turn loop is driven by `event_iterator.go`. Turns are persisted by `internal/conversation/session_manager.go`.
 
 **Secrets** (`internal/secrets/`): AES-256-GCM with a DEK/KEK split. Default is **keyfile mode** — DEK wrapped under a `master.key` (0600) for unattended operation. `onclaw unlock` re-wraps the DEK under an Argon2id-derived passphrase KEK (`SwitchToPassphrase`). Never log/return decrypted secrets in the clear; `internal/logging/` redacts known credential fields.
 
 **Store** (`internal/store/`): interfaces (`store.go`) + DTOs (`types.go`) kept separate from the `internal/store/sqlite/` implementation (`db.go` lifecycle/migrations; one file per entity: `profile.go`, `secret.go`, `kv.go`). Follow this contract/types/impl separation for new entities.
 
 **Hot-reload:** provider profile edits made by `onclaw provider …` write a PID file and `SIGHUP` the running process; a `fsnotify` watcher is the in-process fallback. Both set `Service.reloadPending`, so the next turn re-reads from SQLite.
+
+**HTTP API** (`internal/api/`): `onclaw serve` runs a `net/http` server (see `server.go`, routes in `routes.go`) with session auth (`internal/api/auth/`) exposing `/api/...` endpoints for providers, agents, conversations, memory, MCP, skills, hooks, and tools. It embeds the built React app as static assets and is what the Web UI talks to (see **Web UI** below).
 
 ## Web UI
 
@@ -69,13 +74,3 @@ Frontend routing is managed via `react-router-dom` in `web/src/pages/` and `App.
 - `/agents/:name`: Detailed agent configuration page (tabbed sections: Overview, Hooks, Skills, Memory, MCP, Tools, Persona).
 - `/memory`, `/mcp`, `/tools`, `/hooks`, `/skills`: Aggregate top-level pages displaying resources across all scopes (global + all agents).
 - `/providers`: LLM providers configuration page.
-
-<!-- OPENWIKI:START -->
-
-## OpenWiki
-
-This repository uses OpenWiki for recurring code documentation. Start with `openwiki/quickstart.md`, then follow its links to architecture, workflows, domain concepts, operations, integrations, testing guidance, and source maps.
-
-The scheduled OpenWiki GitHub Actions workflow refreshes the repository wiki. Do not hand-edit generated OpenWiki pages unless explicitly asked; prefer updating source code/docs and letting OpenWiki regenerate.
-
-<!-- OPENWIKI:END -->

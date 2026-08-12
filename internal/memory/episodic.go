@@ -150,6 +150,74 @@ func looksLikeStopWord(w string) bool {
 	return false
 }
 
+// ShouldExtractEpisodic determines whether a session produced enough signal to
+// warrant creating an episodic memory entry. This prevents trivial sessions
+// (e.g., "Hello" / "Hi") from polluting the episodic store.
+//
+// Rules:
+//   - If compactionSummary is non-empty, always extract (session was substantive).
+//   - If messages contain tool calls, always extract.
+//   - If messages contain durable-signal keywords ("remember", "prefer", "always",
+//     "never forget"), always extract.
+//   - If message count <= 2 and all user messages are short (< 50 chars), skip.
+//   - Otherwise, if any message has substantial content (>= 50 chars), extract.
+func ShouldExtractEpisodic(compactionSummary string, messages []*schema.AgenticMessage) bool {
+	// Compacted sessions always qualify.
+	if compactionSummary != "" {
+		return true
+	}
+
+	if len(messages) == 0 {
+		return false
+	}
+
+	durableKeywords := []string{"remember", "prefer", "always", "never forget"}
+
+	hasToolCall := false
+	hasDurableSignal := false
+	hasSubstantiveContent := false
+
+	for _, msg := range messages {
+		if msg == nil {
+			continue
+		}
+		text := getAgenticMessageText(msg)
+
+		// Check for tool calls in the message content blocks.
+		for _, block := range msg.ContentBlocks {
+			if block != nil && block.FunctionToolCall != nil {
+				hasToolCall = true
+				break
+			}
+		}
+
+		// Check for durable-signal keywords.
+		lower := strings.ToLower(text)
+		for _, kw := range durableKeywords {
+			if strings.Contains(lower, kw) {
+				hasDurableSignal = true
+				break
+			}
+		}
+
+		// Check for substantive content (non-trivial message).
+		if len(strings.TrimSpace(text)) >= 50 {
+			hasSubstantiveContent = true
+		}
+	}
+
+	if hasToolCall || hasDurableSignal {
+		return true
+	}
+
+	// Short exchange: 1-2 short messages with no signal → skip.
+	if len(messages) <= 2 && !hasSubstantiveContent {
+		return false
+	}
+
+	return hasSubstantiveContent
+}
+
 // ComputeEpisodicTTL returns the expiry time string based on a TTL in days.
 func ComputeEpisodicTTL(ttlDays int) string {
 	if ttlDays <= 0 {
