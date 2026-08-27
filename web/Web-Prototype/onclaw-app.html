@@ -1,0 +1,3003 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>OnClaw — Agent Workspace</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      colors: {
+        bg: 'var(--bg)',
+        surface: 'var(--surface)',
+        warm: 'var(--surface-warm)',
+        fg: 'var(--fg)',
+        fg2: 'var(--fg-2)',
+        muted: 'var(--muted)',
+        meta: 'var(--meta)',
+        line: 'var(--border)',
+        linesoft: 'var(--border-soft)',
+        accent: 'var(--accent)',
+        accenton: 'var(--accent-on)',
+        success: 'var(--success)',
+        warn: 'var(--warn)',
+        danger: 'var(--danger)'
+      },
+      fontFamily: {
+        sans: ['Inter', 'system-ui', 'sans-serif'],
+        mono: ['JetBrains Mono', 'ui-monospace', 'Menlo', 'monospace']
+      },
+      borderRadius: { sm: 'var(--radius-sm)', md: 'var(--radius-md)', lg: 'var(--radius-lg)' }
+    }
+  }
+};
+</script>
+<style>
+/* design-systems/default/tokens.css — Neutral Modern, pasted verbatim */
+:root {
+  --bg: #fafafa;
+  --surface: #ffffff;
+  --surface-warm: var(--surface);   /* alias — default has no warm tier */
+  --fg: #111111;
+  --fg-2: var(--fg);                /* alias — default has no secondary tier */
+  --muted: #6b6b6b;
+  --meta: var(--muted);             /* alias — default has no metadata tier */
+  --border: #e5e5e5;
+  --border-soft: var(--border);     /* alias — default has no soft tier */
+  --accent: #2f6feb;
+  --accent-on: #ffffff; /* fg when accent is the bg (e.g. button label) */
+  --accent-hover: color-mix(in oklab, var(--accent), black 8%);
+  --accent-active: color-mix(in oklab, var(--accent), black 14%);
+  --success: #17a34a;
+  --warn: #eab308;
+  --danger: #dc2626;
+  --font-display: "Inter", -apple-system, system-ui, sans-serif;
+  --font-body: "Inter", -apple-system, system-ui, sans-serif;
+  --font-mono: ui-monospace, "JetBrains Mono", monospace;
+  --text-xs: 12px;
+  --text-sm: 14px;
+  --text-base: 16px;
+  --text-lg: 20px;
+  --text-xl: 24px;
+  --text-2xl: 32px;
+  --text-3xl: 48px;
+  --text-4xl: 64px;
+  --leading-body: 1.5;
+  --leading-tight: 1.2;
+  --tracking-display: -0.01em; /* applied to display sizes ≥32px */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --space-20: 80px;
+  --section-y-desktop: 80px;
+  --section-y-tablet: 48px;
+  --section-y-phone: 32px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-pill: 9999px;
+  --elev-flat: none;
+  --elev-ring: 0 0 0 1px var(--border);
+  --elev-raised: 0 2px 8px color-mix(in oklab, var(--fg), transparent 92%);
+  --focus-ring: 0 0 0 3px color-mix(in oklab, var(--accent), transparent 70%);
+  --motion-fast: 150ms;            /* hover, focus, micro-states */
+  --motion-base: 200ms;            /* general state changes */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --container-max: 1200px;
+  --container-gutter-desktop: 24px;
+  --container-gutter-tablet: 16px;
+  --container-gutter-phone: 12px;
+}
+
+/* app base */
+html, body, #root { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: var(--text-base); }
+::selection { background: color-mix(in oklab, var(--accent) 34%, transparent); }
+:focus { outline: none; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.od-scroll { scrollbar-width: thin; scrollbar-color: color-mix(in oklab, var(--fg) 18%, transparent) transparent; }
+.od-scroll::-webkit-scrollbar { width: 9px; height: 9px; }
+.od-scroll::-webkit-scrollbar-thumb { background: color-mix(in oklab, var(--fg) 16%, transparent); border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
+.od-scroll::-webkit-scrollbar-track { background: transparent; }
+@keyframes od-pop { from { opacity: 0; transform: translateY(8px) scale(0.985); } to { opacity: 1; transform: none; } }
+.od-pop { animation: od-pop var(--motion-base) var(--ease-standard); }
+@keyframes od-fade { from { opacity: 0; } to { opacity: 1; } }
+.od-fade { animation: od-fade var(--motion-base) ease-out; }
+@keyframes od-blink { 50% { opacity: 0; } }
+.od-caret { display: inline-block; width: 7px; height: 14px; margin-left: 2px; border-radius: 1px; background: var(--accent); vertical-align: -2px; animation: od-blink 900ms step-end infinite; }
+@keyframes od-bounce { 0%, 80%, 100% { transform: translateY(0); opacity: 0.45; } 40% { transform: translateY(-4px); opacity: 1; } }
+.od-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--fg-2); animation: od-bounce 1.2s infinite; }
+.od-dot:nth-child(2) { animation-delay: 0.15s; }
+.od-dot:nth-child(3) { animation-delay: 0.3s; }
+@keyframes od-pulse { 0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--success) 45%, transparent); } 70% { box-shadow: 0 0 0 5px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+.od-live { animation: od-pulse 2s infinite; }
+input[type="range"] { accent-color: var(--accent); }
+</style>
+</head>
+<body>
+<div id="root" class="od-app"></div>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin></script>
+<script type="text/babel" data-presets="react">
+/* ============================== helpers ============================== */
+const { useState, useEffect, useRef, useMemo } = React;
+const cx = (...a) => a.filter(Boolean).join(' ');
+let _uid = 100;
+const uid = (p) => p + '_' + (++_uid);
+const clone = (o) => JSON.parse(JSON.stringify(o));
+const nowTime = () => new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
+const MODELS = ['claude-sonnet-5', 'claude-opus-5', 'claude-haiku-4-5', 'llama-4-maverick', 'llama-4-scout'];
+const PROVIDERS = [
+  { id: 'anthropic', label: 'Anthropic', models: ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5'] },
+  { id: 'meta', label: 'Meta', models: ['llama-4-maverick', 'llama-4-scout'] }
+];
+const providerOf = (model) => (PROVIDERS.find((p) => p.models.includes(model)) || PROVIDERS[0]).id;
+const SKILLS = [
+  { id: 'research', label: 'Deep research' },
+  { id: 'code', label: 'Code execution' },
+  { id: 'data', label: 'Data analysis' },
+  { id: 'writing', label: 'Writing & editing' },
+  { id: 'vision', label: 'Vision' },
+  { id: 'summarize', label: 'Summarization' },
+  { id: 'postmortem', label: 'Postmortem writer' }
+];
+const MCP_SERVERS = [
+  { id: 'github', label: 'GitHub MCP', detail: 'repos, issues, pull requests' },
+  { id: 'postgres', label: 'Postgres MCP', detail: 'read-only SQL' },
+  { id: 'slack', label: 'Slack MCP', detail: 'channels & messages' },
+  { id: 'filesystem', label: 'Filesystem MCP', detail: 'workspace files' },
+  { id: 'memory', label: 'Memory MCP', detail: 'persistent notes' },
+  { id: 'browser', label: 'Browser MCP', detail: 'headless browsing' }
+];
+const TOOLS = [
+  { id: 'web', label: 'Web search' },
+  { id: 'files', label: 'Files' },
+  { id: 'shell', label: 'Shell' },
+  { id: 'api', label: 'HTTP APIs' },
+  { id: 'db', label: 'Database' }
+];
+const STATUS = {
+  running: { dot: 'bg-success', label: 'Running', live: true },
+  idle: { dot: 'bg-muted', label: 'Idle' },
+  error: { dot: 'bg-danger', label: 'Needs attention' }
+};
+const REPLY_TEMPLATES = [
+  'Working on it. I\'ll pull the freshest data first and report back in this thread — anything that needs a decision gets flagged to you.',
+  'Got it. Scoping it against my playbook now. If it stays under the autonomy threshold I\'ll just do it and summarize the diff.',
+  'Queued. Runs like this usually land in under a minute. I\'ll post the result here and mirror a digest to the bound channel.'
+];
+const MENTION_REPLIES = [
+  'On it — pulling the relevant data now and I\'ll report back in this thread.',
+  'Taking this. I\'ll correlate with the latest runs and post findings here.',
+  'Got the ping — digging in now. If anything needs a decision I\'ll flag it with context.'
+];
+
+function seedAcme() {
+  return {
+    id: 'acme', name: 'Acme Corp', plan: 'Pro', sub: 'acme', tz: 'America/Los_Angeles',
+    defaultModel: 'claude-sonnet-5', retention: '90 days',
+    agents: [
+      { id: 'a-atlas', name: 'Atlas', model: 'claude-sonnet-5', temp: 0.3, autonomy: 'approval', channelPost: true,
+        role: 'Ops coordinator — triages alerts, runs playbooks, writes postmortems',
+        status: 'running', tools: ['web', 'shell', 'api', 'db'], lastActive: '2m ago',
+        skills: ['research', 'summarize', 'postmortem'], mcp: ['github', 'postgres', 'slack'],
+        prompt: 'You are Atlas, on-call ops coordinator for Acme. Triage alerts, correlate with deploys, page only when SLO burn demands it. Always end with a proposed next action.' },
+      { id: 'a-beacon', name: 'Beacon', model: 'claude-opus-5', temp: 0.5, autonomy: 'approval', channelPost: false,
+        role: 'Research analyst — deep briefs with citations',
+        status: 'idle', tools: ['web', 'files'], lastActive: '1h ago',
+        skills: ['research', 'writing', 'summarize'], mcp: ['browser'],
+        prompt: 'You are Beacon. Produce research briefs with sources, clear tradeoffs, and a recommendation. Never pad.' },
+      { id: 'a-warden', name: 'Warden', model: 'claude-sonnet-5', temp: 0.2, autonomy: 'approval', channelPost: true,
+        role: 'SRE — incident response and error budgets',
+        status: 'error', tools: ['shell', 'api', 'db'], lastActive: '3h ago',
+        skills: ['postmortem', 'summarize'], mcp: ['postgres'],
+        prompt: 'You are Warden. Own incident timeline hygiene, error budgets, and on-call handoffs. Escalate stalled acks.' },
+      { id: 'a-quill', name: 'Quill', model: 'claude-haiku-4-5', temp: 0.6, autonomy: 'approval', channelPost: true,
+        role: 'Writer — release notes, changelogs, docs polish',
+        status: 'idle', tools: ['files', 'web'], lastActive: 'Yesterday',
+        skills: ['writing', 'summarize'], mcp: ['github'],
+        prompt: 'You are Quill. Turn commit history into human release notes. Flag breaking changes first.' },
+      { id: 'a-ledger', name: 'Ledger', model: 'llama-4-maverick', temp: 0.1, autonomy: 'suggest', channelPost: false,
+        role: 'Finance analyst — spend summaries, invoice extraction',
+        status: 'idle', tools: ['files', 'db'], lastActive: '2d ago',
+        skills: ['data', 'summarize'], mcp: ['postgres'],
+        prompt: 'You are Ledger. Extract structure from invoices, reconcile against the ledger, surface variance over 2%.' },
+      { id: 'a-scout', name: 'Scout', model: 'claude-haiku-4-5', temp: 0.3, autonomy: 'full', channelPost: true,
+        role: 'Support triage — classifies tickets, drafts replies',
+        status: 'running', tools: ['api', 'web'], lastActive: 'just now',
+        skills: ['summarize'], mcp: ['slack'],
+        prompt: 'You are Scout. Classify inbound tickets, auto-reply to known issues, escalate angry or billing-related ones to a human.' }
+    ],
+    channels: [
+      { id: 'c-ops', name: 'ops', purpose: 'Production ops & alerting', agentId: 'a-atlas', unread: 3, members: ['a-atlas', 'a-warden', 'p-dana'] },
+      { id: 'c-incidents', name: 'incidents', purpose: 'Incident channels & postmortems', agentId: 'a-warden', unread: 0, members: ['a-warden', 'a-atlas', 'p-milo'] },
+      { id: 'c-engineering', name: 'engineering', purpose: 'Platform engineering', agentId: 'a-beacon', unread: 0, members: ['a-beacon', 'p-milo', 'p-sasha'] },
+      { id: 'c-release', name: 'release', purpose: 'Deploys & release notes', agentId: 'a-quill', unread: 0, members: ['a-quill', 'p-dana'] },
+      { id: 'c-general', name: 'general', purpose: 'Company-wide', agentId: 'a-scout', unread: 12, members: ['a-scout', 'a-atlas', 'a-beacon', 'p-dana', 'p-milo', 'p-sasha'] }
+    ],
+    people: [
+      { id: 'p-dana', name: 'Dana Kwan', presence: 'online' },
+      { id: 'p-milo', name: 'Milo Park', presence: 'online' },
+      { id: 'p-sasha', name: 'Sasha Reyes', presence: 'away' }
+    ],
+    threads: {
+      'a-atlas': [
+        { id: 'm1', author: 'agent', ts: '7:00 AM', cron: 'morning-digest', text: 'Morning digest — 14 alerts overnight (13 auto-resolved, 1 paged), 3 deploys (1 rolled back), 22 tickets closed. The full report is pinned in #ops.' },
+        { id: 'm2', author: 'you', ts: '9:12 AM', text: 'Atlas, summarize anything that happened overnight in #incidents' },
+        { id: 'm3', author: 'agent', ts: '9:12 AM',
+          tools: [
+            { name: 'grafana.query', args: 'alert: rate_5xx > 1%', ms: 820 },
+            { name: 'pagerduty.incidents', args: 'window: 12h', ms: 410 }
+          ],
+          text: 'One incident: api-gateway-5xx fired at 02:14 and auto-resolved by 02:51. The trigger lines up with the deploys in #release at 01:58 — the rollback landed at 02:40, which likely resolved it. No pages were issued. Want me to draft a postmortem stub in #incidents?' },
+        { id: 'm4', author: 'you', ts: '9:14 AM', text: 'Yes — draft it and ask Dana to review' },
+        { id: 'm5', author: 'agent', ts: '9:14 AM',
+          tools: [{ name: 'files.write', args: 'postmortems/2026-08-25-api-5xx.md', ms: 350 }],
+          text: 'Done. Stub posted to #incidents with the timeline pre-filled from logs, and Dana was asked to review. I\'ll nudge her again in 4 hours if it\'s still untouched.' }
+      ],
+      'a-beacon': [
+        { id: 'm6', author: 'you', ts: 'Yesterday 4:20 PM', text: 'Brief me on embedded vector DBs for under 50 GB with strong metadata filtering' },
+        { id: 'm7', author: 'agent', ts: 'Yesterday 4:23 PM',
+          tools: [
+            { name: 'web.search', args: 'q: filtered ANN benchmark 2026', ms: 1240 },
+            { name: 'web.search', args: 'q: pgvector vs qdrant metadata filters', ms: 980 }
+          ],
+          text: 'Short version: pgvector is the pragmatic default at this scale — filtering stays in Postgres where the data already lives. Qdrant wins the filtered-ANN benchmarks; LanceDB is the lean local option. Weaviate and Milvus pay off closer to the 100 GB+ range. I have benchmarks and pricing in a 6-page brief — want it posted to #engineering?' }
+      ],
+      'a-warden': [
+        { id: 'm8', author: 'agent', ts: '3:02 AM',
+          tools: [{ name: 'pagerduty.ack', args: 'INC-2291', ms: 0, error: '401 — token expired' }],
+          text: 'Failed to acknowledge INC-2291: the PagerDuty token expired. I\'ve paused the on-call handoff job until the credential is rotated in Settings → Integrations.' }
+      ],
+      'a-quill': [
+        { id: 'm9', author: 'you', ts: 'Friday 5:31 PM', text: 'Sweep the week and cut v2.14 release notes' },
+        { id: 'm10', author: 'agent', ts: 'Friday 5:33 PM',
+          tools: [{ name: 'github.commits', args: 'repo: acme/platform since: 7d', ms: 640 }],
+          text: 'v2.14 notes drafted — 41 commits: 3 features, 9 fixes, 2 breaking (both flagged at the top). Posted to #release and tagged for review.' }
+      ],
+      'a-ledger': [],
+      'a-scout': [
+        { id: 'm11', author: 'agent', ts: '9:26 AM', cron: 'inbox-triage', text: 'Triage pass: 31 new tickets — 18 routed to Billing (auto-replied), 9 to Bugs, 4 escalated to a human. Three replies are drafted and waiting in the approval queue.' }
+      ],
+      'c-ops': [
+        { id: 'm12', author: 'agent', agentId: 'a-atlas', ts: '7:00 AM', text: 'Morning digest pinned. Highlight: deploys 3 / rollback 1 — timeline in #incidents.' },
+        { id: 'm13', author: 'you', ts: '9:10 AM', text: '@Warden can you take the 5xx spike? Atlas is already on the deploy correlation' },
+        { id: 'm14', author: 'agent', agentId: 'a-warden', ts: '9:11 AM',
+          tools: [{ name: 'grafana.query', args: 'alert: rate_5xx window 3h', ms: 640 }],
+          text: 'On it — pulling the 5xx timeline now. @Atlas flag me if the rollback window shifts and I\'ll re-check the burn rate.' }
+      ],
+      'c-general': [],
+      'c-incidents': [],
+      'c-engineering': [],
+      'c-release': [],
+      'p-dana': [
+        { id: 'm15', author: 'other', name: 'Dana Kwan', ts: '9:15 AM', text: 'Saw the postmortem stub — nice. I\'ll review after standup.' }
+      ],
+      'p-milo': [],
+      'p-sasha': []
+    },
+    cron: [
+      { id: 'morning-digest', name: 'Morning ops digest', agentId: 'a-atlas', expr: '0 7 * * 1-5', human: 'Weekdays · 7:00 AM', next: 'Tue 7:00 AM', enabled: true, last: { status: 'success', when: '2h ago', dur: '42s' } },
+      { id: 'inbox-triage', name: 'Inbox triage', agentId: 'a-scout', expr: '*/30 * * * *', human: 'Every 30 minutes', next: '9:30 AM', enabled: true, last: { status: 'success', when: '12m ago', dur: '8s' } },
+      { id: 'spend-report', name: 'Weekly spend report', agentId: 'a-ledger', expr: '0 8 * * 1', human: 'Mondays · 8:00 AM', next: 'Mon 8:00 AM', enabled: true, last: { status: 'success', when: '6d ago', dur: '51s' } },
+      { id: 'postmortem-reminder', name: 'Postmortem follow-ups', agentId: 'a-warden', expr: '0 9 * * 1-5', human: 'Weekdays · 9:00 AM', next: 'Tue 9:00 AM', enabled: false, last: { status: 'skipped', when: '3d ago', dur: '—' } },
+      { id: 'changelog-sweep', name: 'Changelog sweep', agentId: 'a-quill', expr: '30 17 * * 5', human: 'Fridays · 5:30 PM', next: 'Fri 5:30 PM', enabled: true, last: { status: 'success', when: '4d ago', dur: '2m 10s' } }
+    ],
+    runs: [
+      { id: 'run_9f27', agentId: 'a-atlas', trigger: 'cron', when: '7:00 AM', dur: '42s', tokens: '18.2k', status: 'success' },
+      { id: 'run_9f26', agentId: 'a-scout', trigger: 'chat', when: '9:12 AM', dur: '8s', tokens: '2.1k', status: 'success' },
+      { id: 'run_9f25', agentId: 'a-beacon', trigger: 'chat', when: 'Yesterday', dur: '3m 12s', tokens: '96.4k', status: 'success' },
+      { id: 'run_9f24', agentId: 'a-warden', trigger: 'api', when: 'Yesterday', dur: '21s', tokens: '9.4k', status: 'failed' },
+      { id: 'run_9f23', agentId: 'a-atlas', trigger: 'cron', when: 'Yesterday', dur: '39s', tokens: '17.8k', status: 'success' },
+      { id: 'run_9f22', agentId: 'a-quill', trigger: 'cron', when: 'Friday', dur: '2m 10s', tokens: '44.0k', status: 'success' }
+    ],
+    members: [
+      { id: 'me', name: 'You', email: 'you@acme.dev', role: 'Owner' },
+      { id: 'p-dana', name: 'Dana Kwan', email: 'dana@acme.dev', role: 'Admin' },
+      { id: 'p-milo', name: 'Milo Park', email: 'milo@acme.dev', role: 'Member' },
+      { id: 'p-sasha', name: 'Sasha Reyes', email: 'sasha@acme.dev', role: 'Member' }
+    ],
+    integrations: [
+      { id: 'slack', name: 'Slack', detail: '#ops · 4 channels', connected: true },
+      { id: 'github', name: 'GitHub', detail: 'acme/platform · 3 repos', connected: true },
+      { id: 'pagerduty', name: 'PagerDuty', detail: 'Escalation: Platform — token expired', connected: true },
+      { id: 'postgres', name: 'Postgres', detail: 'prod read replica', connected: true },
+      { id: 'linear', name: 'Linear', detail: 'Sync issues to agent tasks', connected: false },
+      { id: 'notion', name: 'Notion', detail: 'Publish briefs to docs', connected: false }
+    ],
+    mcpServers: [
+      { id: 'github', name: 'GitHub', transport: 'stdio · gh-mcp serve --read-only', auth: 'OAuth · acme/platform', tools: 24, status: 'connected',
+        sample: ['repo.list', 'repo.read_file', 'issues.search', 'issues.create', 'pulls.list', 'pulls.review', 'commits.range', 'actions.runs'] },
+      { id: 'postgres', name: 'Postgres', transport: 'stdio · postgres-mcp --replica prod-ro', auth: 'Service account · read-only', tools: 6, status: 'connected',
+        sample: ['db.schema', 'db.tables', 'db.query_ro', 'db.explain'] },
+      { id: 'slack', name: 'Slack', transport: 'http · slack-mcp.internal:8787/sse', auth: 'Bot token · 4 channels', tools: 12, status: 'connected',
+        sample: ['channels.list', 'history.read', 'message.post', 'users.lookup'] },
+      { id: 'browser', name: 'Browser', transport: 'stdio · browser-mcp --headless', auth: 'No auth · sandboxed profile', tools: 8, status: 'error',
+        error: 'Handshake failed — headless Chromium missing on runner-2', sample: ['page.open', 'page.click', 'page.extract', 'screenshot.capture'] },
+      { id: 'filesystem', name: 'Filesystem', transport: 'stdio · fs-mcp --root /docs', auth: 'Workspace scope · /docs', tools: 5, status: 'disabled',
+        sample: ['fs.list', 'fs.read', 'fs.write', 'fs.glob'] },
+      { id: 'memory', name: 'Memory', transport: 'stdio · memory-mcp', auth: 'Workspace scope · shared', tools: 4, status: 'disabled',
+        sample: ['memory.save', 'memory.recall', 'memory.forget'] }
+    ],
+    skillLib: [
+      { id: 'research', name: 'Deep research', version: '2.4.1', uses: 312, enabled: true, source: 'registry',
+        desc: 'Multi-source research briefs with citation tracking and a structured summary template.' },
+      { id: 'code', name: 'Code execution', version: '1.9.0', uses: 87, enabled: true, source: 'registry',
+        desc: 'Sandboxed Python for transforms, one-off scripts and quick calculations.' },
+      { id: 'data', name: 'Data analysis', version: '2.1.3', uses: 214, enabled: true, source: 'registry',
+        desc: 'DataFrame workflows over CSV and query results — joins, rollups, drift checks.' },
+      { id: 'writing', name: 'Writing & editing', version: '3.0.0', uses: 458, enabled: true, source: 'registry',
+        desc: 'Drafting and line-editing with house style rules applied on top of the base model.' },
+      { id: 'summarize', name: 'Summarization', version: '1.4.2', uses: 1204, enabled: true, source: 'registry',
+        desc: 'Thread and document summaries with action-item extraction.' },
+      { id: 'vision', name: 'Vision', version: '1.2.0', uses: 0, enabled: false, source: 'registry',
+        desc: 'Chart, screenshot and diagram reading for agents that handle images.' },
+      { id: 'postmortem', name: 'Postmortem writer', version: '0.3.1', uses: 23, enabled: true, source: 'workspace',
+        desc: 'Turns an incident timeline into a review-ready postmortem with contributing factors.' }
+    ],
+    keys: [
+      { id: 'k1', name: 'production-gateway', masked: 'oc_live_••••••••7f3a', full: 'oc_live_9t2mKc7QwZr4LpHx7f3a', created: 'Mar 2026' },
+      { id: 'k2', name: 'ci-deploy', masked: 'oc_live_••••••••a21b', full: 'oc_live_3bVn8sYqTfE2mJdRa21b', created: 'Jun 2026' }
+    ]
+  };
+}
+
+function seedGlobex() {
+  return {
+    id: 'globex', name: 'Globex Inc', plan: 'Free', sub: 'globex', tz: 'Europe/Berlin',
+    defaultModel: 'claude-haiku-4-5', retention: '30 days',
+    agents: [
+      { id: 'a-herald', name: 'Herald', model: 'claude-sonnet-5', temp: 0.4, autonomy: 'approval', channelPost: true,
+        role: 'Comms coordinator — standup notes and announcements',
+        status: 'idle', tools: ['files', 'api'], lastActive: '1d ago',
+        skills: ['writing', 'summarize'], mcp: ['slack'],
+        prompt: 'You are Herald. Turn ticket activity into crisp standup notes. Never invent status.' },
+      { id: 'a-tally', name: 'Tally', model: 'llama-4-scout', temp: 0.1, autonomy: 'full', channelPost: true,
+        role: 'Data analyst — ETL checks and weekly metrics',
+        status: 'running', tools: ['db', 'api'], lastActive: 'just now',
+        skills: ['data', 'summarize'], mcp: ['postgres'],
+        prompt: 'You are Tally. Verify pipeline freshness and row counts against a 7-day baseline. Alert on drift over 5%.' },
+      { id: 'a-forge', name: 'Forge', model: 'claude-sonnet-5', temp: 0.3, autonomy: 'approval', channelPost: false,
+        role: 'Dev agent — PR review and test triage',
+        status: 'idle', tools: ['shell', 'api'], lastActive: '6h ago',
+        skills: ['code', 'summarize'], mcp: ['github'],
+        prompt: 'You are Forge. Review PRs for correctness first, style second. Run the test suite before commenting.' }
+    ],
+    channels: [
+      { id: 'g-general', name: 'general', purpose: 'Company-wide', agentId: 'a-herald', unread: 4, members: ['a-herald', 'a-tally', 'p-ravi'] },
+      { id: 'g-data', name: 'data', purpose: 'Pipelines & metrics', agentId: 'a-tally', unread: 0, members: ['a-tally', 'a-forge', 'p-ravi'] }
+    ],
+    people: [{ id: 'p-ravi', name: 'Ravi Shah', presence: 'online' }],
+    threads: {
+      'a-herald': [],
+      'a-tally': [
+        { id: 'g1', author: 'agent', ts: '2:00 AM', cron: 'nightly-etl', text: 'ETL check: 12/12 pipelines green. Row counts within 2% of the 7-day average. No action needed.' }
+      ],
+      'a-forge': [
+        { id: 'g2', author: 'you', ts: 'Yesterday', text: 'Review the auth refactor PR when tests go green' },
+        { id: 'g3', author: 'agent', ts: 'Yesterday', tools: [{ name: 'shell.run', args: 'pnpm test auth/', ms: 15800 }], text: 'Reviewed. Two real findings: a missing token-expiry test and a race in refresh. Left comments on the diff — rest looks clean.' }
+      ],
+      'g-general': [],
+      'g-data': [],
+      'p-ravi': []
+    },
+    cron: [
+      { id: 'nightly-etl', name: 'Nightly ETL check', agentId: 'a-tally', expr: '0 2 * * *', human: 'Daily · 2:00 AM', next: '2:00 AM', enabled: true, last: { status: 'success', when: '7h ago', dur: '26s' } },
+      { id: 'standup-notes', name: 'Standup notes', agentId: 'a-herald', expr: '0 9 * * 1-5', human: 'Weekdays · 9:00 AM', next: 'Tue 9:00 AM', enabled: false, last: { status: 'skipped', when: '5d ago', dur: '—' } }
+    ],
+    runs: [
+      { id: 'run_g07', agentId: 'a-tally', trigger: 'cron', when: '2:00 AM', dur: '26s', tokens: '6.8k', status: 'success' },
+      { id: 'run_g06', agentId: 'a-forge', trigger: 'chat', when: 'Yesterday', dur: '19m 04s', tokens: '210k', status: 'success' },
+      { id: 'run_g05', agentId: 'a-herald', trigger: 'cron', when: 'Yesterday', dur: '12s', tokens: '3.2k', status: 'success' }
+    ],
+    members: [
+      { id: 'me', name: 'You', email: 'you@globex.io', role: 'Owner' },
+      { id: 'p-ravi', name: 'Ravi Shah', email: 'ravi@globex.io', role: 'Member' }
+    ],
+    integrations: [
+      { id: 'slack', name: 'Slack', detail: '#general · 1 channel', connected: true },
+      { id: 'github', name: 'GitHub', detail: 'globex/etl', connected: true },
+      { id: 'linear', name: 'Linear', detail: 'Sync issues to agent tasks', connected: false },
+      { id: 'postgres', name: 'Postgres', detail: 'warehouse read replica', connected: false }
+    ],
+    mcpServers: [
+      { id: 'github', name: 'GitHub', transport: 'stdio · gh-mcp serve --read-only', auth: 'OAuth · globex/etl', tools: 24, status: 'connected',
+        sample: ['repo.list', 'issues.search', 'pulls.list', 'pulls.review', 'commits.range'] },
+      { id: 'slack', name: 'Slack', transport: 'http · slack-mcp.internal:8787/sse', auth: 'Bot token · 2 channels', tools: 12, status: 'connected',
+        sample: ['channels.list', 'history.read', 'message.post'] },
+      { id: 'postgres', name: 'Postgres', transport: 'stdio · postgres-mcp --replica warehouse-ro', auth: 'Service account · read-only', tools: 6, status: 'error',
+        error: 'Connect failed — warehouse replica unreachable', sample: ['db.schema', 'db.query_ro'] },
+      { id: 'filesystem', name: 'Filesystem', transport: 'stdio · fs-mcp --root /docs', auth: 'Workspace scope · /docs', tools: 5, status: 'disabled',
+        sample: ['fs.list', 'fs.read'] },
+      { id: 'browser', name: 'Browser', transport: 'stdio · browser-mcp --headless', auth: 'No auth · sandboxed profile', tools: 8, status: 'disabled',
+        sample: ['page.open', 'page.extract'] },
+      { id: 'memory', name: 'Memory', transport: 'stdio · memory-mcp', auth: 'Workspace scope · shared', tools: 4, status: 'disabled',
+        sample: ['memory.save', 'memory.recall'] }
+    ],
+    skillLib: [
+      { id: 'research', name: 'Deep research', version: '2.4.1', uses: 12, enabled: true, source: 'registry',
+        desc: 'Multi-source research briefs with citation tracking and a structured summary template.' },
+      { id: 'code', name: 'Code execution', version: '1.9.0', uses: 141, enabled: true, source: 'registry',
+        desc: 'Sandboxed Python for transforms, one-off scripts and quick calculations.' },
+      { id: 'data', name: 'Data analysis', version: '2.1.3', uses: 96, enabled: true, source: 'registry',
+        desc: 'DataFrame workflows over CSV and query results — joins, rollups, drift checks.' },
+      { id: 'writing', name: 'Writing & editing', version: '3.0.0', uses: 64, enabled: true, source: 'registry',
+        desc: 'Drafting and line-editing with house style rules applied on top of the base model.' },
+      { id: 'summarize', name: 'Summarization', version: '1.4.2', uses: 388, enabled: true, source: 'registry',
+        desc: 'Thread and document summaries with action-item extraction.' },
+      { id: 'vision', name: 'Vision', version: '1.2.0', uses: 0, enabled: false, source: 'registry',
+        desc: 'Chart, screenshot and diagram reading for agents that handle images.' }
+    ],
+    keys: [
+      { id: 'gk1', name: 'default', masked: 'oc_live_••••••••e5c9', full: 'oc_live_7dXk2pQmZn8vLtEe5c9', created: 'Jul 2026' }
+    ]
+  };
+}
+
+/* ---- session model: threads[cid] = { active, list: [{ id, title, updated, messages }] } ---- */
+const EXTRA_SESSIONS = {
+  'a-atlas': [
+    { title: 'Deploy correlation — 5xx spike', updated: 'Yesterday', messages: [
+      { id: 'x1', author: 'you', ts: 'Yesterday 11:20 AM', text: 'Correlate this week\'s 5xx spikes with deploys' },
+      { id: 'x2', author: 'agent', ts: 'Yesterday 11:22 AM',
+        tools: [{ name: 'grafana.query', args: 'alert: rate_5xx window 7d', ms: 760 }],
+        text: 'Two spikes this week. Tuesday\'s lines up with the v2.12 rollout (reverted 20:41); today\'s with the v2.14 rollback. Both resolved within 40 minutes of the revert.' }
+    ] }
+  ],
+  'a-beacon': [
+    { title: 'Filtered-ANN benchmark sources', updated: 'Monday', messages: [
+      { id: 'x3', author: 'you', ts: 'Monday 10:05 AM', text: 'Pull the benchmark papers cited in your vector DB brief' },
+      { id: 'x4', author: 'agent', ts: 'Monday 10:09 AM',
+        tools: [{ name: 'web.search', args: 'q: filtered ANN benchmark 2026', ms: 1100 }],
+        text: 'Three primary sources: the Qdrant filtered-search benchmark (Feb 2026), pgvector HNSW filter tests, and the LanceDB TPC-H annex — linked in the brief appendix with repro notes.' }
+    ] }
+  ],
+  'a-ledger': Array.from({ length: 100 }, (_, i) => ({
+    title: 'Reconciliation run #' + String(100 - i).padStart(3, '0'),
+    updated: i === 0 ? 'Today' : (i === 1 ? 'Yesterday' : i + 'd ago'),
+    messages: [
+      { id: 'lgu' + i, author: 'you', ts: i === 0 ? 'Today 6:00 AM' : (i === 1 ? 'Yesterday 6:00 AM' : i + 'd ago'), text: 'Run the daily reconciliation sweep' },
+      { id: 'lga' + i, author: 'agent', ts: i === 0 ? 'Today 6:00 AM' : (i === 1 ? 'Yesterday 6:00 AM' : i + 'd ago'),
+        tools: [{ name: 'db.query', args: 'ledger unreconciled > $50', ms: 380 + (i % 7) * 25 }],
+        text: 'Sweep complete — ' + (i % 3) + ' exceptions flagged, all under the $50 threshold. Variance ' + (0.1 + (i % 5) * 0.1).toFixed(1) + '%, within tolerance.' }
+    ]
+  }))
+};
+
+function withSessions(t) {
+  const threads = {};
+  Object.entries(t.threads).forEach(([cid, msgs]) => {
+    if (!msgs || msgs.length === 0) {
+      const extras0 = (EXTRA_SESSIONS[cid] || []).map((s) => ({ ...s, id: uid('s'), messages: s.messages.slice() }));
+      threads[cid] = { active: extras0.length ? extras0[0].id : null, list: extras0 };
+      return;
+    }
+    const firstYou = msgs.find((m) => m.author === 'you');
+    const title = firstYou
+      ? (firstYou.text.length > 42 ? firstYou.text.slice(0, 42) + '…' : firstYou.text)
+      : ('Scheduled · ' + (msgs[0].cron || 'digest')).slice(0, 48);
+    const main = { id: uid('s'), title, updated: (msgs[msgs.length - 1] || {}).ts || '', messages: msgs };
+    const extras = (EXTRA_SESSIONS[cid] || []).map((s) => ({ ...s, id: uid('s'), messages: s.messages.slice() }));
+    threads[cid] = { active: main.id, list: [main].concat(extras) };
+  });
+  return {
+    ...t,
+    agents: (t.agents || []).map((a) => ({
+      ...a,
+      provider: a.provider || providerOf(a.model),
+      skills: a.skills || ['research', 'summarize'],
+      mcp: a.mcp || []
+    })),
+    threads
+  };
+}
+
+function getThreadState(t, cid) {
+  const th = t && t.threads ? t.threads[cid] : null;
+  if (!th) return { active: null, list: [] };
+  if (Array.isArray(th)) {
+    return th.length ? { active: 's0', list: [{ id: 's0', title: 'Chat', updated: '', messages: th }] } : { active: null, list: [] };
+  }
+  return th;
+}
+
+const seedDb = () => ({ acme: withSessions(seedAcme()), globex: withSessions(seedGlobex()) });
+const POS_KEY = 'od-onclaw-pos';
+const loadPos = () => { try { return JSON.parse(localStorage.getItem(POS_KEY)) || null; } catch (e) { return null; } };
+const savePos = (p) => { try { localStorage.setItem(POS_KEY, JSON.stringify(p)); } catch (e) {} };
+
+/* ============================== icons & primitives ============================== */
+const ICONS = {
+  search: [<circle key="a" cx="11" cy="11" r="7"/>, <path key="b" d="m21 21-4.35-4.35"/>],
+  plus: [<path key="a" d="M12 5v14M5 12h14"/>],
+  up: [<path key="a" d="M12 19V5M5 12l7-7 7 7"/>],
+  bot: [<rect key="a" x="4" y="8" width="16" height="12" rx="3"/>, <path key="b" d="M12 8V5M9 13.5v2M15 13.5v2"/>, <circle key="c" cx="12" cy="3.5" r="1.5"/>],
+  chat: [<path key="a" d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>],
+  clock: [<circle key="a" cx="12" cy="12" r="9"/>, <path key="b" d="M12 7v5l3 2"/>],
+  activity: [<path key="a" d="M22 12h-4l-3 8-6-16-3 8H2"/>],
+  sliders: [<path key="a" d="M4 7h9M18 7h2M4 17h3M11 17h9"/>, <circle key="b" cx="15" cy="7" r="2"/>, <circle key="c" cx="8" cy="17" r="2"/>],
+  users: [<path key="a" d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>, <circle key="b" cx="9" cy="7" r="4"/>, <path key="c" d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>],
+  key: [<circle key="a" cx="8" cy="15" r="4"/>, <path key="b" d="m10.8 12.2 9-9M18 5l2 2M15 8l2 2"/>],
+  link: [<path key="a" d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>, <path key="b" d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>],
+  bell: [<path key="a" d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/>, <path key="b" d="M13.73 21a2 2 0 0 1-3.46 0"/>],
+  clip: [<path key="a" d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>],
+  hash: [<path key="a" d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/>],
+  chevdown: [<path key="a" d="m6 9 6 6 6-6"/>],
+  chevright: [<path key="a" d="m9 6 6 6-6 6"/>],
+  x: [<path key="a" d="M18 6 6 18M6 6l12 12"/>],
+  check: [<path key="a" d="M20 6 9 17l-5-5"/>],
+  play: [<path key="a" d="m7 4 13 8-13 8z"/>],
+  dots: [<path key="a" d="M5 12h.01M12 12h.01M19 12h.01"/>],
+  zap: [<path key="a" d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>],
+  globe: [<circle key="a" cx="12" cy="12" r="9"/>, <path key="b" d="M3 12h18M12 3a15 15 0 0 1 0 18 15 15 0 0 1 0-18z"/>],
+  terminal: [<path key="a" d="m4 17 5-5-5-5M12 19h8"/>],
+  db: [<ellipse key="a" cx="12" cy="5" rx="8" ry="3"/>, <path key="b" d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/>, <path key="c" d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/>],
+  calendar: [<rect key="a" x="3" y="5" width="18" height="16" rx="2"/>, <path key="b" d="M8 3v4M16 3v4M3 11h18"/>],
+  refresh: [<path key="a" d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/>],
+  panel: [<rect key="a" x="3" y="4" width="18" height="16" rx="2"/>, <path key="b" d="M15 4v16"/>],
+  pin: [<path key="a" d="M12 17v5M9 3h6l-1 8 4 3H6l4-3-1-8z"/>],
+  shield: [<path key="a" d="M12 22s8-3 8-10V5l-8-3-8 3v7c0 7 8 10 8 10z"/>],
+  help: [<circle key="a" cx="12" cy="12" r="9"/>, <path key="b" d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3M12 17h.01"/>],
+  file: [<path key="a" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>, <path key="b" d="M14 2v6h6M9 13h6M9 17h6"/>],
+  copy: [<rect key="a" x="9" y="9" width="12" height="12" rx="2"/>, <path key="b" d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>],
+  eye: [<path key="a" d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/>, <circle key="b" cx="12" cy="12" r="3"/>],
+  alert: [<path key="a" d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>, <path key="b" d="M12 9v4M12 17h.01"/>],
+  at: [<circle key="a" cx="12" cy="12" r="4"/>, <path key="b" d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/>],
+  edit: [<path key="a" d="M12 20h9"/>, <path key="b" d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/>],
+  down: [<path key="a" d="M12 5v14M19 12l-7 7-7-7"/>],
+  chevleft: [<path key="a" d="m15 18-6-6 6-6"/>],
+  stop: [<rect key="a" x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor" stroke="none"/>],
+  plug: [<path key="a" d="M9 2v5M15 2v5"/>, <path key="b" d="M6 7h12v4a6 6 0 0 1-12 0z"/>, <path key="c" d="M12 17v5"/>],
+  spark: [<path key="a" d="M12 3l3.2 5.8L21 12l-5.8 3.2L12 21l-3.2-5.8L3 12l5.8-3.2z"/>]
+};
+function Icon({ name, size = 16, className = '', sw = 1.8 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      {ICONS[name]}
+    </svg>
+  );
+}
+
+function Avatar({ name, kind = 'other', size = 28 }) {
+  const words = String(name || '?').trim().split(/\s+/);
+  const init = (words.length > 1 ? words[0][0] + words[1][0] : words[0].slice(0, 2)).toUpperCase();
+  const tone = kind === 'agent'
+    ? 'bg-[color-mix(in_oklab,var(--accent)_16%,transparent)] text-accent'
+    : kind === 'you'
+      ? 'bg-[color-mix(in_oklab,var(--fg)_88%,transparent)] text-[var(--accent-on)]'
+      : 'bg-[color-mix(in_oklab,var(--fg)_9%,transparent)] text-fg';
+  return (
+    <div className={cx('flex shrink-0 items-center justify-center rounded-md font-semibold', tone)}
+      style={{ width: size, height: size, fontSize: size <= 24 ? 10 : 11 }}>
+      {init}
+    </div>
+  );
+}
+
+function StatusDot({ status, live }) {
+  const s = STATUS[status] || STATUS.idle;
+  return <span className={cx('inline-block h-2 w-2 shrink-0 rounded-full', s.dot, live && s.live && 'od-live')} title={s.label}/>;
+}
+
+function Chip({ children, className = '', mono = false }) {
+  return (
+    <span className={cx('inline-flex items-center gap-1 rounded-[6px] border border-line bg-[color-mix(in_oklab,var(--fg),5%,transparent)] px-1.5 py-0.5 text-[11px] leading-4 text-fg2', mono && 'font-mono', className)}>
+      {children}
+    </span>
+  );
+}
+
+/* ---- channel members & @ mentions ---- */
+const memberHandle = (m) => (m.kind === 'agent' ? m.name : m.name.split(' ')[0]).toLowerCase();
+const parseMentions = (text, members) => {
+  const tokens = (text.match(/@([A-Za-z]+)/g) || []).map((t) => t.slice(1).toLowerCase());
+  return (members || []).filter((m) => tokens.includes(memberHandle(m)));
+};
+
+function MentionText({ text, members }) {
+  if (!text || text.indexOf('@') === -1) return <>{text}</>;
+  const handles = {};
+  (members || []).forEach((m) => { handles[memberHandle(m)] = m; });
+  const parts = text.split(/(@[A-Za-z]+)/g);
+  return (
+    <>
+      {parts.map((p, i) => (
+        p.charAt(0) === '@' && handles[p.slice(1).toLowerCase()]
+          ? <span key={i} className="rounded-[4px] bg-[color-mix(in_oklab,var(--accent),13%,transparent)] px-1 font-medium text-accent">{p}</span>
+          : <span key={i}>{p}</span>
+      ))}
+    </>
+  );
+}
+
+function Toggle({ on, onChange, label }) {
+  return (
+    <button type="button" role="switch" aria-checked={on} aria-label={label} title={label}
+      onClick={() => onChange(!on)}
+      className={cx('relative h-5 w-9 shrink-0 rounded-full transition-colors duration-150',
+        on ? 'bg-accent' : 'bg-[color-mix(in_oklab,var(--fg)_22%,transparent)]')}>
+      <span className={cx('absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-surface transition-transform duration-150', on && 'translate-x-4')}/>
+    </button>
+  );
+}
+
+function Toasts({ toasts }) {
+  return (
+    <div className="pointer-events-none fixed bottom-5 right-5 z-[70] flex w-80 flex-col gap-2" role="status" aria-live="polite">
+      {toasts.map((t) => (
+        <div key={t.id} className="od-pop pointer-events-auto flex items-start gap-2.5 rounded-md border border-line bg-warm px-3.5 py-2.5 shadow-[var(--elev-raised)]">
+          <span className={cx('mt-0.5', t.kind === 'danger' ? 'text-danger' : 'text-accent')}>
+            <Icon name={t.kind === 'danger' ? 'alert' : 'check'} size={15}/>
+          </span>
+          <p className="text-[13px] leading-5 text-fg2">{t.text}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Modal({ title, onClose, children, footer, wide, odId }) {
+  useEffect(() => {
+    const h = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [onClose]);
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-6" role="dialog" aria-modal="true" aria-label={title} data-od-id={odId}>
+      <div className="od-fade absolute inset-0 bg-[color-mix(in_oklab,var(--fg)_32%,transparent)]" onClick={onClose}/>
+      <div className={cx('od-pop relative flex max-h-[86vh] w-full flex-col overflow-hidden rounded-lg border border-line bg-surface shadow-[var(--elev-raised)]',
+        wide ? 'max-w-4xl' : 'max-w-lg')}>
+        <div className="flex h-14 shrink-0 items-center justify-between border-b border-linesoft px-5">
+          <h2 className="text-[17px] font-semibold text-fg">{title}</h2>
+          <button type="button" onClick={onClose} aria-label="Close dialog"
+            className="flex h-8 w-8 items-center justify-center rounded-md text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg">
+            <Icon name="x" size={16}/>
+          </button>
+        </div>
+        <div className="od-scroll flex-1 overflow-y-auto">{children}</div>
+        {footer && <div className="flex shrink-0 items-center justify-end gap-2.5 border-t border-linesoft bg-[color-mix(in_oklab,var(--fg)_3%,transparent)] px-5 py-3.5">{footer}</div>}
+      </div>
+    </div>
+  );
+}
+
+/* ============================== workspace switcher + rail ============================== */
+function WorkspaceSwitcher({ open, db, currentId, onPick, onClose, onCreate }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const h = (e) => { if (ref.current && !ref.current.contains(e.target)) onClose(); };
+    window.addEventListener('mousedown', h);
+    return () => window.removeEventListener('mousedown', h);
+  }, [open, onClose]);
+  if (!open) return null;
+  return (
+    <div ref={ref} data-od-id="ws-switcher-popover"
+      className="od-pop fixed left-[76px] top-[14px] z-40 w-64 overflow-hidden rounded-md border border-line bg-surface shadow-[var(--elev-raised)]">
+      <div className="border-b border-linesoft px-3.5 pt-3 pb-2 text-[11px] font-semibold uppercase tracking-wider text-muted">Workspaces</div>
+      <ul className="py-1.5">
+        {Object.values(db).map((t) => (
+          <li key={t.id}>
+            <button type="button" onClick={() => onPick(t.id)} data-od-id={'ws-option-' + t.id}
+              className={cx('flex w-full items-center gap-2.5 px-3.5 py-2 text-left transition-colors',
+                t.id === currentId ? 'bg-[color-mix(in_oklab,var(--accent)_13%,transparent)]' : 'hover:bg-[color-mix(in_oklab,var(--fg)_6%,transparent)]')}>
+              <span className={cx('flex h-7 w-7 items-center justify-center rounded-md text-[11px] font-semibold',
+                t.id === currentId ? 'bg-accent text-accenton' : 'bg-warm text-fg2')}>
+                {t.name.split(' ').map((w) => w[0]).join('')}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[13px] font-medium text-fg">{t.name}</span>
+                <span className="block font-mono text-[10px] text-muted">{t.agents.length} agents · {t.cron.filter((c) => c.enabled).length} schedules</span>
+              </span>
+              {t.id === currentId && <Icon name="check" size={14} className="shrink-0 text-accent"/>}
+              <span className={cx('rounded-[5px] px-1.5 py-0.5 text-[10px] font-semibold',
+                t.plan === 'Pro' ? 'bg-[color-mix(in_oklab,var(--accent)_18%,transparent)] text-accent' : 'bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] text-muted')}>
+                {t.plan}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+      <div className="border-t border-linesoft p-2">
+        <button type="button" onClick={onCreate} data-od-id="ws-create"
+          className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-[13px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_6%,transparent)] hover:text-fg">
+          <Icon name="plus" size={14}/> Create workspace
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Rail({ view, onNav, tenant, unread, onOpenSwitcher, onSettings }) {
+  const items = [
+    { id: 'chats', icon: 'chat', label: 'Chats', badge: unread },
+    { id: 'agents', icon: 'bot', label: 'Agents' },
+    { id: 'cron', icon: 'clock', label: 'Cron' },
+    { id: 'runs', icon: 'activity', label: 'Runs' }
+  ];
+  return (
+    <nav data-od-id="rail" aria-label="Primary"
+      className="relative z-30 flex w-[68px] shrink-0 flex-col items-center gap-1 border-r border-linesoft bg-[color-mix(in_oklab,var(--fg)_6%,var(--bg))] py-3">
+      <button type="button" onClick={onOpenSwitcher} data-od-id="ws-switcher" aria-label={'Switch workspace, current: ' + tenant.name}
+        title={'Switch workspace — ' + tenant.name}
+        className="mb-2 flex h-11 w-11 items-center justify-center rounded-[12px] bg-accent text-[13px] font-bold text-accenton transition-transform hover:scale-[1.04]">
+        {tenant.name.split(' ').map((w) => w[0]).join('')}
+      </button>
+      {items.map((it) => (
+        <button key={it.id} type="button" onClick={() => onNav(it.id)} data-od-id={'rail-' + it.id} title={it.label} aria-label={it.label}
+          className={cx('relative flex h-11 w-11 items-center justify-center rounded-[12px] transition-colors',
+            view === it.id
+              ? 'bg-[color-mix(in_oklab,var(--accent)_16%,transparent)] text-accent'
+              : 'text-muted hover:bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] hover:text-fg2')}>
+          <Icon name={it.icon} size={19} sw={1.7}/>
+          {it.badge > 0 && (
+            <span className="absolute right-1.5 top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-accent px-1 text-[9px] font-bold text-accenton">{it.badge}</span>
+          )}
+        </button>
+      ))}
+      <div className="flex-1"/>
+      <button type="button" onClick={onSettings} data-od-id="rail-settings" title="Workspace settings" aria-label="Workspace settings"
+        className="flex h-11 w-11 items-center justify-center rounded-[12px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] hover:text-fg2">
+        <Icon name="sliders" size={19} sw={1.7}/>
+      </button>
+      <div className="mt-1 flex h-9 w-9 items-center justify-center rounded-full border border-line" title="You">
+        <Avatar name="You" kind="you" size={26}/>
+      </div>
+    </nav>
+  );
+}
+
+/* ============================== sidebar ============================== */
+function SideRow({ active, icon, label, sub, right, onClick, odId, title }) {
+  return (
+    <button type="button" onClick={onClick} data-od-id={odId} title={title || label}
+      className={cx('flex h-[30px] w-full items-center gap-2 rounded-md px-2.5 text-left transition-colors',
+        active
+          ? 'bg-[color-mix(in_oklab,var(--accent)_15%,transparent)] text-fg'
+          : 'text-fg2 hover:bg-[color-mix(in_oklab,var(--fg)_6%,transparent)] hover:text-fg')}>
+      {icon}
+      <span className="min-w-0 flex-1 truncate text-[13px]">{label}</span>
+      {sub}
+      {right}
+    </button>
+  );
+}
+
+function SectionLabel({ children, action }) {
+  return (
+    <div className="mt-4 mb-1 flex items-center justify-between px-2.5">
+      <span className="font-mono text-[10px] font-medium uppercase tracking-[0.14em] text-muted">{children}</span>
+      {action}
+    </div>
+  );
+}
+
+function Sidebar({ view, tenant, chatId, onSelect, onDeploy, onNewSchedule, onEditCron, onOpenSwitcher, search, setSearch,
+  activeIsAgent, session, sessions, onSwitchSession, onNewSession, onDeleteSession }) {
+  const [showAllSessions, setShowAllSessions] = useState(false);
+  useEffect(() => { setShowAllSessions(false); }, [chatId]);
+  const q = search.trim().toLowerCase();
+  const match = (s) => !q || s.toLowerCase().includes(q);
+  const agents = tenant.agents.filter((a) => match(a.name) || match(a.role));
+  const channels = tenant.channels.filter((c) => match(c.name) || match(c.purpose));
+  const people = tenant.people.filter((p) => match(p.name));
+  const nextUp = tenant.cron.filter((c) => c.enabled).slice(0, 4);
+  const today = tenant.runs;
+  const okCount = today.filter((r) => r.status === 'success').length;
+  const failCount = today.filter((r) => r.status === 'failed').length;
+  const agentRowIcon = (a) => (
+    <span className="relative inline-flex shrink-0 items-center justify-center">
+      <Avatar name={a.name} kind="agent" size={18}/>
+      <span title={STATUS[a.status].label}
+        className={cx('absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full ring-2 ring-[var(--bg)]', STATUS[a.status].dot, a.status === 'running' && view === 'agents' && 'od-live')}/>
+    </span>
+  );
+
+  return (
+    <aside data-od-id="sidebar" aria-label="Conversation list"
+      className="flex w-[264px] shrink-0 flex-col border-r border-linesoft bg-bg">
+      <button type="button" onClick={onOpenSwitcher} data-od-id="ws-header" title="Switch workspace" aria-haspopup="menu"
+        className="mx-3 mt-3 flex h-11 items-center gap-2.5 rounded-md px-1.5 text-left transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_6%,transparent)]">
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] bg-accent text-[11px] font-bold text-accenton">
+          {tenant.name.split(' ').map((w) => w[0]).join('')}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[13px] font-semibold text-fg">{tenant.name}</span>
+          <span className="block truncate font-mono text-[10px] text-muted">{tenant.plan} · {tenant.agents.length} agents</span>
+        </span>
+        <Icon name="chevdown" size={14} className="shrink-0 text-muted"/>
+      </button>
+      <div className="px-3 pt-2">
+        <label className="relative block">
+          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted"><Icon name="search" size={14}/></span>
+          <input id="od-search" value={search} onChange={(e) => setSearch(e.target.value)} data-od-id="sidebar-search"
+            placeholder="Search OnClaw  ⌘K" aria-label="Search agents, channels and people"
+            className="h-8 w-full rounded-md border border-line bg-surface pl-8 pr-2.5 text-[13px] text-fg2 placeholder:text-muted focus:border-accent"/>
+        </label>
+      </div>
+
+      {(view === 'chats' || view === 'agents') && (
+        <div className="od-scroll mt-1 flex-1 overflow-y-auto pb-4">
+          <SectionLabel action={
+            <button type="button" onClick={onDeploy} data-od-id="sidebar-deploy" title="Deploy a new agent"
+              className="flex h-5 w-5 items-center justify-center rounded-[6px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg"
+              aria-label="Deploy a new agent">
+              <Icon name="plus" size={13}/>
+            </button>
+          }>Agents</SectionLabel>
+          <div className="px-1.5">
+            {agents.map((a) => (
+              <React.Fragment key={a.id}>
+                <SideRow odId={'side-agent-' + a.id} active={chatId === a.id} onClick={() => onSelect(a.id)}
+                  icon={agentRowIcon(a)} label={a.name}
+                  sub={view === 'agents' ? <span className="font-mono text-[10px] text-muted">{a.model.replace('claude-', '').replace('llama-', '')}</span> : null}/>
+                {view === 'chats' && activeIsAgent && chatId === a.id && (() => {
+                  const list = sessions || [];
+                  const activeIdx = list.findIndex((s) => session && s.id === session.id);
+                  const capped = !showAllSessions && list.length > 4;
+                  let visible = list;
+                  if (capped) {
+                    visible = activeIdx >= 4 ? list.slice(0, 3).concat([list[activeIdx]]) : list.slice(0, 4);
+                  }
+                  const olderCount = Math.max(0, list.length - 4);
+                  return (
+                    <div className="ml-[30px] mb-1 border-l border-line pl-1.5" data-od-id="agent-sessions">
+                      <div className={cx(showAllSessions && list.length > 8 && 'od-scroll max-h-56 overflow-y-auto')}>
+                        {visible.map((s) => {
+                          const activeS = session && s.id === session.id;
+                          return (
+                            <div key={s.id} className="group relative">
+                              <button type="button" onClick={() => onSwitchSession(s.id)} data-od-id={'sidebar-session-' + s.id}
+                                title={s.title}
+                                className={cx('flex h-[26px] w-full items-center rounded-md px-2 pr-7 text-left transition-colors',
+                                  activeS ? 'bg-[color-mix(in_oklab,var(--accent),12%,transparent)] text-fg' : 'text-muted hover:bg-[color-mix(in_oklab,var(--fg),5%,transparent)] hover:text-fg2')}>
+                                <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">{s.title}</span>
+                              </button>
+                              <button type="button" onClick={() => onDeleteSession(s.id)} data-od-id={'sidebar-session-del-' + s.id}
+                                aria-label={'Delete ' + s.title} title="Delete session"
+                                className="absolute right-1 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-[5px] text-muted opacity-0 transition-opacity hover:bg-[color-mix(in_oklab,var(--danger),12%,transparent)] hover:text-danger focus-visible:opacity-100 group-hover:opacity-100">
+                                <Icon name="x" size={11}/>
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {capped && olderCount > 0 && (
+                        <button type="button" onClick={() => setShowAllSessions(true)} data-od-id="sidebar-sessions-expand"
+                          className="flex h-[26px] w-full items-center gap-1.5 rounded-md px-2 text-[12px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg),5%,transparent)] hover:text-fg2">
+                          <Icon name="chevdown" size={11}/> Show {olderCount} older sessions
+                        </button>
+                      )}
+                      {!capped && list.length > 4 && (
+                        <button type="button" onClick={() => setShowAllSessions(false)} data-od-id="sidebar-sessions-collapse"
+                          className="flex h-[26px] w-full items-center gap-1.5 rounded-md px-2 text-[12px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg),5%,transparent)] hover:text-fg2">
+                          <Icon name="up" size={11}/> Show recent only
+                        </button>
+                      )}
+                      <button type="button" onClick={onNewSession} data-od-id="sidebar-new-session" title="Start a new chat"
+                        className="flex h-[26px] w-full items-center gap-1.5 rounded-md px-2 text-[12px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg),5%,transparent)] hover:text-fg2">
+                        <Icon name="plus" size={11} sw={2.2}/> New chat
+                      </button>
+                    </div>
+                  );
+                })()}
+              </React.Fragment>
+            ))}
+            {agents.length === 0 && (
+              <p className="px-2.5 py-1.5 text-[12px] text-muted">{q ? 'No agents match “' + search + '”.' : 'No agents yet — deploy one from the Agents view.'}</p>
+            )}
+          </div>
+
+          {view === 'chats' && (
+            <>
+              <SectionLabel>Channels</SectionLabel>
+              <div className="px-1.5">
+                {channels.map((c) => (
+                  <SideRow key={c.id} odId={'side-channel-' + c.id} active={chatId === c.id} onClick={() => onSelect(c.id)}
+                    icon={<Icon name="hash" size={13} className="text-muted"/>} label={c.name}
+                    right={c.unread > 0 ? (
+                      <span className="flex h-[17px] min-w-[17px] items-center justify-center rounded-full bg-accent px-1 text-[10px] font-bold text-accenton">{c.unread}</span>
+                    ) : null}/>
+                ))}
+              </div>
+              {channels.length === 0 && <p className="px-2.5 py-1.5 text-[12px] text-muted">No channels in this workspace yet.</p>}
+              <SectionLabel>Team</SectionLabel>
+              <div className="px-1.5">
+                {people.map((p) => (
+                  <SideRow key={p.id} odId={'side-person-' + p.id} active={chatId === p.id} onClick={() => onSelect(p.id)}
+                    icon={(
+                      <span className="relative inline-flex shrink-0 items-center justify-center">
+                        <Avatar name={p.name} size={18}/>
+                        <span title={p.presence === 'online' ? 'Online' : 'Away'}
+                          className={cx('absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full ring-2 ring-[var(--bg)]', p.presence === 'online' ? 'bg-success' : 'bg-muted')}/>
+                      </span>
+                    )}
+                    label={p.name}/>
+                ))}
+                {people.length === 0 && <p className="px-2.5 py-1.5 text-[12px] text-muted">Invite teammates in Settings → Members.</p>}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {view === 'cron' && (
+        <div className="od-scroll flex-1 overflow-y-auto pb-4">
+          <SectionLabel action={
+            <button type="button" onClick={onNewSchedule} data-od-id="sidebar-new-schedule" title="New schedule"
+              className="flex h-5 w-5 items-center justify-center rounded-[6px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg"
+              aria-label="New schedule">
+              <Icon name="plus" size={13}/>
+            </button>
+          }>Next up</SectionLabel>
+          <div className="px-1.5">
+            {nextUp.map((j) => (
+              <SideRow key={j.id} odId={'side-cron-' + j.id} active={false} onClick={() => onEditCron(j)}
+                icon={<Icon name="clock" size={13} className="text-muted"/>} label={j.name}
+                sub={<span className="font-mono text-[10px] text-muted">{j.next}</span>}/>
+            ))}
+          </div>
+          <SectionLabel>Schedules</SectionLabel>
+          <p className="px-3.5 text-[12px] leading-5 text-muted">
+            {tenant.cron.filter((c) => c.enabled).length} active · {tenant.cron.filter((c) => !c.enabled).length} paused.
+            Open the Cron view to edit expressions, agents and history.
+          </p>
+        </div>
+      )}
+
+      {view === 'runs' && (
+        <div className="od-scroll flex-1 overflow-y-auto pb-4">
+          <SectionLabel>Latest window</SectionLabel>
+          <div className="px-3.5">
+            <div className="rounded-md border border-line bg-surface p-3">
+              <div className="flex items-baseline justify-between">
+                <span className="font-mono text-[22px] font-medium text-fg">{okCount + failCount}</span>
+                <span className="font-mono text-[10px] uppercase tracking-wider text-muted">runs logged</span>
+              </div>
+              <div className="mt-2.5 flex h-1.5 overflow-hidden rounded-full bg-[color-mix(in_oklab,var(--fg)_10%,transparent)]">
+                <div className="bg-success" style={{ width: (okCount / Math.max(1, okCount + failCount)) * 100 + '%' }}/>
+                <div className="bg-danger" style={{ width: (failCount / Math.max(1, okCount + failCount)) * 100 + '%' }}/>
+              </div>
+              <p className="mt-2.5 text-[12px] leading-5 text-muted">
+                <span className="text-fg2">{okCount} succeeded</span> · <span className="text-fg2">{failCount} failed</span>
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+    </aside>
+  );
+}
+
+/* ============================== chat view ============================== */
+const COMMANDS = [
+  { cmd: '/tools', desc: 'List this agent’s tools' },
+  { cmd: '/model', desc: 'Show the model this agent runs on' },
+  { cmd: '/schedule', desc: 'Open the cron editor' },
+  { cmd: '/reset', desc: 'Clear this thread' },
+  { cmd: '/help', desc: 'Show commands' }
+];
+
+function ToolCall({ t }) {
+  const [open, setOpen] = useState(false);
+  const bad = !!t.error;
+  return (
+    <div className="mb-2 overflow-hidden rounded-md border border-line bg-[color-mix(in_oklab,var(--fg)_4%,transparent)]">
+      <button type="button" onClick={() => setOpen(!open)} data-od-id={'tool-' + t.name}
+        className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_4%,transparent)]">
+        <Icon name="terminal" size={13} className={bad ? 'text-danger' : 'text-meta'}/>
+        <span className={cx('font-mono text-[12px]', bad ? 'text-danger' : 'text-fg2')}>{t.name}</span>
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted">{t.args}</span>
+        {bad
+          ? <span className="font-mono text-[10px] text-danger">error · {t.ms}ms</span>
+          : <span className="font-mono text-[10px] text-muted">{t.ms}ms</span>}
+        <Icon name="chevright" size={13} className={cx('text-muted transition-transform', open && 'rotate-90')}/>
+      </button>
+      {open && (
+        <div className="border-t border-linesoft px-2.5 py-2 font-mono text-[11px] leading-5">
+          <p className="text-muted">args</p>
+          <p className="mb-1.5 text-fg2">{t.args}</p>
+          <p className="text-muted">{bad ? 'error' : 'result'}</p>
+          <p className={bad ? 'text-danger' : 'text-fg2'}>{bad ? t.error : 'ok — ' + (t.ms + 40) + 'ms, ' + Math.max(1, Math.round(t.ms / 90)) + ' rows'}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CronChip({ id }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-[5px] bg-[color-mix(in_oklab,var(--fg)_6%,transparent)] px-1.5 py-0.5 font-mono text-[10px] text-muted" title={'Generated by the “' + id + '” schedule'}>
+      <Icon name="clock" size={10}/> cron · {id}
+    </span>
+  );
+}
+
+const variantsOf = (m) => m.branches || [{ text: m.text, tools: m.tools }];
+
+function BranchPicker({ index, count, onPrev, onNext }) {
+  const btn = 'flex h-6 w-6 items-center justify-center rounded-full text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg disabled:pointer-events-none disabled:opacity-30';
+  return (
+    <div className="inline-flex items-center gap-0.5 text-[11px] text-muted" data-od-id="branch-picker">
+      <button type="button" className={btn} onClick={onPrev} disabled={index <= 0} aria-label="Previous response" title="Previous response">
+        <Icon name="chevleft" size={13}/>
+      </button>
+      <span className="min-w-9 text-center font-medium tabular-nums">{index + 1} / {count}</span>
+      <button type="button" className={btn} onClick={onNext} disabled={index >= count - 1} aria-label="Next response" title="Next response">
+        <Icon name="chevright" size={13}/>
+      </button>
+    </div>
+  );
+}
+
+function AgentMessage({ m, agent, inChannel, streaming, busy, isLast, onDone, onCopy, onGrow, onRefresh, onBranch, members }) {
+  const variants = variantsOf(m);
+  const v = variants[m.branch || 0] || variants[0];
+  const [n, setN] = useState(streaming ? 0 : v.text.length);
+  const doneRef = useRef(false);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!streaming) { setN(v.text.length); doneRef.current = false; return; }
+    setN(0); doneRef.current = false;
+    const iv = setInterval(() => {
+      if (onGrow) onGrow();
+      setN((x) => {
+        if (x + 3 >= v.text.length) {
+          clearInterval(iv);
+          if (!doneRef.current) { doneRef.current = true; setTimeout(onDone, 0); }
+          return v.text.length;
+        }
+        return x + 3;
+      });
+    }, 22);
+    return () => clearInterval(iv);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streaming, m.id]);
+
+  useEffect(() => {
+    if (!streaming) setN(variantsOf(m)[m.branch || 0].text.length);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [m.branch]);
+
+  const shown = v.text.slice(0, n);
+  const doCopy = () => { setCopied(true); onCopy(v.text); setTimeout(() => setCopied(false), 1400); };
+  const actBtn = 'flex h-7 w-7 items-center justify-center rounded-full text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg';
+
+  return (
+    <div className="group flex gap-3 px-2" data-od-id={'msg-' + m.id} data-role="assistant">
+      <Avatar name={agent ? agent.name : 'Agent'} kind="agent" size={26}/>
+      <div className="min-w-0 flex-1">
+        {inChannel && (
+          <div className="mb-0.5 flex items-center gap-2">
+            <span className="text-[13px] font-semibold text-fg">{agent ? agent.name : 'Agent'}</span>
+            {m.cron && <CronChip id={m.cron}/>}
+          </div>
+        )}
+        {!inChannel && m.cron && <div className="mb-1"><CronChip id={m.cron}/></div>}
+        {v.tools && v.tools.map((t, i) => <ToolCall key={i} t={t}/>)}
+        <div className="whitespace-pre-wrap text-[15px] leading-relaxed text-fg">
+          {streaming || n > 0 ? (
+            <>
+              <MentionText text={shown} members={members}/>
+              {streaming && n < v.text.length && <span className="od-caret"/>}
+            </>
+          ) : (
+            <span className="inline-flex items-center gap-1 py-1"><span className="od-dot"/><span className="od-dot"/><span className="od-dot"/></span>
+          )}
+        </div>
+        {!busy && (
+          <div className="-ms-1.5 mt-1 flex items-center gap-2">
+            {variants.length > 1 && (
+              <BranchPicker index={m.branch || 0} count={variants.length}
+                onPrev={() => onBranch(m.id, -1)} onNext={() => onBranch(m.id, 1)}/>
+            )}
+            <div className={cx('flex items-center gap-0.5', !isLast && 'opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100')}>
+              <button type="button" onClick={doCopy} data-od-id={'msg-copy-' + m.id} aria-label="Copy message" title="Copy"
+                className={actBtn}>
+                <Icon name={copied ? 'check' : 'copy'} size={13}/>
+              </button>
+              <button type="button" onClick={() => onRefresh(m.id)} data-od-id={'msg-refresh-' + m.id} aria-label="Refresh — generate a new response" title="Refresh"
+                className={actBtn}>
+                <Icon name="refresh" size={13}/>
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function UserMessage({ m, onEdit, members }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(m.text);
+  const startEdit = () => { setVal(m.text); setEditing(true); };
+  const submitEdit = () => {
+    const t = val.trim();
+    setEditing(false);
+    if (t && t !== m.text) onEdit(m.id, t);
+  };
+  if (editing) {
+    return (
+      <div className="flex flex-col px-2" data-od-id={'msg-' + m.id}>
+        <div className="ms-auto flex w-full max-w-[85%] flex-col rounded-[24px] border border-line bg-surface p-2 transition-colors focus-within:border-accent">
+          <textarea autoFocus rows={Math.min(6, val.split('\n').length + 1)} value={val} aria-label="Edit message"
+            onChange={(e) => setVal(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') { e.preventDefault(); setEditing(false); }
+              if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitEdit(); }
+            }}
+            className="w-full resize-none bg-transparent px-2.5 py-1.5 text-[15px] leading-6 text-fg outline-none"/>
+          <div className="mx-1 mb-1 flex items-center justify-end gap-1.5">
+            <button type="button" onClick={() => setEditing(false)}
+              className="h-8 rounded-full px-3.5 text-[13px] font-medium text-fg2 transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_6%,transparent)] hover:text-fg">
+              Cancel
+            </button>
+            <button type="button" onClick={submitEdit} data-od-id="btn-update-message"
+              className="h-8 rounded-full bg-accent px-3.5 text-[13px] font-semibold text-accenton transition-colors hover:bg-[var(--accent-hover)] active:bg-[var(--accent-active)]">
+              Update
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="group flex justify-end px-2" data-od-id={'msg-' + m.id} data-role="user">
+      <div className="relative max-w-[85%]">
+        <button type="button" onClick={startEdit} aria-label="Edit message" title="Edit"
+          className="absolute right-full top-1/2 mr-2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-muted opacity-0 transition-opacity hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg focus-visible:opacity-100 group-hover:opacity-100">
+          <Icon name="edit" size={13}/>
+        </button>
+        <div className="whitespace-pre-wrap rounded-xl bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] px-4 py-2 text-[15px] leading-relaxed text-fg">
+          <MentionText text={m.text} members={members}/>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function OtherMessage({ m, members }) {
+  return (
+    <div className="flex flex-col px-2" data-od-id={'msg-' + m.id} data-role="member">
+      <div className="mb-1 flex items-center gap-2">
+        <Avatar name={m.name || 'Member'} size={20}/>
+        <span className="text-[13px] font-semibold text-fg">{m.name || 'Member'}</span>
+      </div>
+      <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-fg"><MentionText text={m.text} members={members}/></p>
+    </div>
+  );
+}
+
+function ThinkingRow({ agent }) {
+  return (
+    <div className="flex gap-3 px-2 py-1" data-od-id="msg-thinking" role="status" aria-label="Assistant is thinking">
+      <Avatar name={agent ? agent.name : 'Agent'} kind="agent" size={26}/>
+      <span className="inline-block h-2 w-2 animate-pulse self-center rounded-full bg-fg"/>
+    </div>
+  );
+}
+
+function ChatHeader({ target, agent, channelMembers, onToggleMembers, onConfigure }) {
+  const t = target;
+  return (
+    <header data-od-id="chat-header"
+      className="flex h-14 shrink-0 items-center gap-3 border-b border-linesoft bg-bg px-5">
+      {t.kind === 'channel' && <Icon name="hash" size={17} className="text-muted"/>}
+      {t.kind === 'person' && <Icon name="at" size={16} className="text-muted"/>}
+      {t.kind === 'agent' && (
+        <span className="relative inline-flex shrink-0">
+          <Avatar name={agent.name} kind="agent" size={26}/>
+          <span title={STATUS[agent.status].label}
+            className={cx('absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-[var(--bg)]', STATUS[agent.status].dot, agent.status === 'running' && 'od-live')}/>
+        </span>
+      )}
+      <div className="min-w-0">
+        <h1 className="flex items-center gap-2 truncate text-[16px] font-semibold text-fg">
+          {t.kind === 'channel' ? '#' + t.obj.name : t.obj.name}
+          {t.kind === 'agent' && <Chip mono>{agent.model}</Chip>}
+        </h1>
+        <p className="truncate text-[12px] text-muted">
+          {t.kind === 'agent' && (STATUS[agent.status].label + ' · last active ' + agent.lastActive)}
+          {t.kind === 'channel' && (t.obj.purpose + ' · ' + (channelMembers && channelMembers.length ? channelMembers.length + ' members' : 'no members yet'))}
+          {t.kind === 'person' && (t.obj.presence === 'online' ? 'Online' : 'Away') + ' · direct message'}
+        </p>
+      </div>
+      <div className="ml-auto flex items-center gap-3">
+        {channelMembers && channelMembers.length > 0 && (
+          <button type="button" onClick={onToggleMembers} data-od-id="btn-channel-members"
+            title="Show members"
+            className="flex items-center -space-x-1.5 rounded-md transition-transform hover:scale-[1.04]">
+            {channelMembers.slice(0, 4).map((m) => (
+              <span key={m.id} className="rounded-md ring-2 ring-[var(--bg)]">
+                <Avatar name={m.name} kind={m.kind === 'agent' ? 'agent' : 'other'} size={22}/>
+              </span>
+            ))}
+            {channelMembers.length > 4 && (
+              <span className="flex h-[22px] items-center rounded-md bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] px-1.5 font-mono text-[10px] font-semibold text-fg2 ring-2 ring-[var(--bg)]">
+                +{channelMembers.length - 4}
+              </span>
+            )}
+          </button>
+        )}
+        {t.kind === 'agent' && (
+          <button type="button" onClick={onConfigure} data-od-id="btn-configure-agent" title={'Configure ' + agent.name}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg2">
+            <Icon name="sliders" size={16}/>
+          </button>
+        )}
+      </div>
+    </header>
+  );
+}
+
+function SlashMenu({ q, idx, onPick }) {
+  const list = COMMANDS.filter((c) => c.cmd.startsWith(q.toLowerCase()));
+  if (!list.length || q === '') return null;
+  return (
+    <div className="od-pop absolute bottom-full left-0 right-0 mb-2 overflow-hidden rounded-md border border-line bg-warm shadow-[var(--elev-raised)]" data-od-id="slash-menu">
+      <div className="border-b border-linesoft px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-muted">Slash commands</div>
+      {list.map((c, i) => (
+        <button key={c.cmd} type="button" onMouseDown={(e) => { e.preventDefault(); onPick(c.cmd); }}
+          className={cx('flex w-full items-center gap-3 px-3 py-2 text-left',
+            i === idx ? 'bg-[color-mix(in_oklab,var(--accent)_15%,transparent)]' : 'hover:bg-[color-mix(in_oklab,var(--fg)_6%,transparent)]')}>
+          <span className="font-mono text-[13px] text-accent">{c.cmd}</span>
+          <span className="text-[12px] text-muted">{c.desc}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function MentionMenu({ options, idx, onPick }) {
+  if (!options.length) return null;
+  return (
+    <div className="od-pop absolute bottom-full left-0 right-0 mb-2 overflow-hidden rounded-md border border-line bg-warm shadow-[var(--elev-raised)]" data-od-id="mention-menu">
+      <div className="border-b border-linesoft px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-muted">Mention — agents respond in thread</div>
+      {options.map((m, i) => (
+        <button key={m.id} type="button" onMouseDown={(e) => { e.preventDefault(); onPick(m); }}
+          className={cx('flex w-full items-center gap-2.5 px-3 py-2 text-left',
+            i === idx ? 'bg-[color-mix(in_oklab,var(--accent),15%,transparent)]' : 'hover:bg-[color-mix(in_oklab,var(--fg)_6%,transparent)]')}>
+          <Avatar name={m.name} kind={m.kind === 'agent' ? 'agent' : 'other'} size={20}/>
+          <span className="text-[13px] font-medium text-fg">{m.name}</span>
+          <span className="ml-auto font-mono text-[10px] text-muted">{m.kind === 'agent' ? 'Agent' : 'Member'}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Composer({ agent, running, onSend, onCancel, onAttach, mentionOptions }) {
+  const [text, setText] = useState('');
+  const [idx, setIdx] = useState(0);
+  const ta = useRef(null);
+  const slashQ = text.startsWith('/') ? text.split(' ')[0] : '';
+  const slashOpen = !!slashQ && COMMANDS.some((c) => c.cmd.startsWith(slashQ.toLowerCase()));
+  const slashList = slashOpen ? COMMANDS.filter((c) => c.cmd.startsWith(slashQ.toLowerCase())) : [];
+  const mentionMatch = mentionOptions ? (text.match(/@([A-Za-z]*)$/) || null) : null;
+  const mentionList = mentionMatch
+    ? mentionOptions.filter((m) => memberHandle(m).startsWith(mentionMatch[1].toLowerCase()))
+    : [];
+  const menu = slashOpen ? 'slash' : (mentionMatch && mentionList.length ? 'mention' : null);
+  useEffect(() => { setIdx(0); }, [menu]);
+
+  const grow = () => { const el = ta.current; if (el) { el.style.height = 'auto'; el.style.height = Math.min(192, el.scrollHeight) + 'px'; } };
+  const submit = (raw) => {
+    if (running) return;
+    const val = (raw !== undefined ? raw : text).trim();
+    if (!val) return;
+    onSend(val);
+    setText('');
+    requestAnimationFrame(grow);
+  };
+
+  const pickMention = (m) => {
+    const handle = m.kind === 'agent' ? m.name : m.name.split(' ')[0];
+    setText(text.replace(/@[A-Za-z]*$/, '@' + handle + ' '));
+    requestAnimationFrame(() => ta.current && ta.current.focus());
+  };
+
+  const onKeyDown = (e) => {
+    if (menu && e.key === 'ArrowDown') { e.preventDefault(); const n = menu === 'slash' ? slashList.length : mentionList.length; setIdx((i) => Math.min(n - 1, i + 1)); return; }
+    if (menu && e.key === 'ArrowUp') { e.preventDefault(); setIdx((i) => Math.max(0, i - 1)); return; }
+    if (e.key === 'Escape' && menu) { e.preventDefault(); setText(''); return; }
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (menu === 'slash' && slashList[idx]) { setText(slashList[idx].cmd + ' '); setIdx(0); return; }
+      if (menu === 'mention' && mentionList[idx]) { pickMention(mentionList[idx]); setIdx(0); return; }
+      submit();
+    }
+  };
+
+  return (
+    <div className="relative" data-od-id="composer">
+      {menu === 'slash' && <SlashMenu q={slashQ} idx={idx} onPick={(cmd) => { setText(cmd + ' '); setIdx(0); ta.current && ta.current.focus(); }}/>}
+      {menu === 'mention' && <MentionMenu options={mentionList} idx={idx} onPick={pickMention}/>}
+      <div role="presentation" onClick={() => ta.current && ta.current.focus()}
+        className="cursor-text rounded-[24px] border border-line bg-surface p-2 transition-colors focus-within:border-accent">
+        <textarea ref={ta} rows={1} value={text} autoFocus aria-label={'Message input'}
+          onChange={(e) => { setText(e.target.value); grow(); }} onKeyDown={onKeyDown}
+          placeholder={mentionOptions ? 'Message the channel — @ to mention' : agent ? 'Message ' + agent.name + '…' : 'Send a message…'}
+          enterKeyHint="send"
+          className="max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-1.5 text-[15px] leading-6 text-fg outline-none placeholder:text-muted"/>
+        <div className="flex items-center justify-between pt-0.5">
+          <button type="button" onClick={(e) => { e.stopPropagation(); onAttach(); }} aria-label="Attach a file" title="Attach a file"
+            className="flex h-7 w-7 items-center justify-center rounded-full text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg">
+            <Icon name="clip" size={14}/>
+          </button>
+          {!running ? (
+            <button type="button" onClick={(e) => { e.stopPropagation(); submit(); }} disabled={!text.trim()} data-od-id="btn-send"
+              aria-label="Send message" title="Send message"
+              className="flex h-8 w-8 items-center justify-center rounded-full bg-accent text-accenton transition-colors hover:bg-[var(--accent-hover)] active:bg-[var(--accent-active)] disabled:opacity-35 disabled:hover:bg-accent">
+              <Icon name="up" size={15} sw={2.4}/>
+            </button>
+          ) : (
+            <button type="button" onClick={(e) => { e.stopPropagation(); onCancel(); }} data-od-id="btn-cancel"
+              aria-label="Stop generating" title="Stop generating"
+              className="flex h-8 w-8 items-center justify-center rounded-full bg-accent text-accenton transition-colors hover:bg-[var(--accent-hover)] active:bg-[var(--accent-active)]">
+              <Icon name="stop" size={12}/>
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ContextPanel({ channelMembers, candidates, primaryAgentId, onAddMember, onRemoveMember, onClose, onOpenMember }) {
+  const [adding, setAdding] = useState(false);
+  return (
+    <aside data-od-id="context-panel" aria-label="Channel members"
+      className="od-scroll w-[300px] shrink-0 overflow-y-auto border-l border-linesoft bg-bg">
+      <div className="flex h-14 items-center justify-between border-b border-linesoft px-4">
+        <h2 className="text-[13px] font-semibold text-fg">Members</h2>
+        <button type="button" onClick={onClose} aria-label="Close members panel"
+          className="flex h-7 w-7 items-center justify-center rounded-md text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg">
+          <Icon name="x" size={14}/>
+        </button>
+      </div>
+      <div className="p-4">
+        <div className="space-y-1">
+          {(channelMembers || []).map((m) => (
+            <div key={m.id} className="group relative">
+              <button type="button" onClick={() => onOpenMember(m.id)} data-od-id={'drawer-member-' + m.id}
+                title={'Open chat with ' + m.name}
+                className="flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-left transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_5%,transparent)]">
+                <Avatar name={m.name} kind={m.kind === 'agent' ? 'agent' : 'other'} size={28}/>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[13px] font-medium text-fg">{m.name}</span>
+                  <span className="block font-mono text-[10px] text-muted">
+                    {m.kind === 'agent' ? 'Agent' : 'Member · ' + (m.presence === 'online' ? 'online' : 'away')}
+                  </span>
+                </span>
+                {m.kind === 'agent' && m.agent && <StatusDot status={m.agent.status}/>}
+              </button>
+              {m.id !== primaryAgentId && (
+                <button type="button" onClick={() => onRemoveMember(m.id)} data-od-id={'drawer-member-remove-' + m.id}
+                  aria-label={'Remove ' + m.name + ' from channel'} title="Remove from channel"
+                  className="absolute right-1.5 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-[5px] text-muted opacity-0 transition-opacity hover:bg-[color-mix(in_oklab,var(--danger),12%,transparent)] hover:text-danger focus-visible:opacity-100 group-hover:opacity-100">
+                  <Icon name="x" size={11}/>
+                </button>
+              )}
+            </div>
+          ))}
+          {(channelMembers || []).length === 0 && <p className="px-2 py-1 text-[12px] text-muted">No members yet.</p>}
+        </div>
+
+        {adding ? (
+          <div className="mt-3 rounded-md border border-line bg-surface p-2" data-od-id="add-member-list">
+            <p className="px-1 pb-1.5 pt-0.5 font-mono text-[9px] font-semibold uppercase tracking-[0.14em] text-muted">Add to channel</p>
+            <div className="od-scroll max-h-56 overflow-y-auto">
+              {(candidates || []).map((m) => (
+                <button key={m.id} type="button" onClick={() => onAddMember(m.id)} data-od-id={'add-member-' + m.id}
+                  className="flex w-full items-center gap-2.5 rounded-md px-1.5 py-1.5 text-left transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_5%,transparent)]">
+                  <Avatar name={m.name} kind={m.kind === 'agent' ? 'agent' : 'other'} size={22}/>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[12.5px] font-medium text-fg">{m.name}</span>
+                    <span className="block font-mono text-[9px] text-muted">{m.kind === 'agent' ? 'Agent' : 'Member'}</span>
+                  </span>
+                  <Icon name="plus" size={12} className="text-muted"/>
+                </button>
+              ))}
+              {(candidates || []).length === 0 && <p className="px-1.5 py-2 text-[12px] text-muted">Everyone here is already a member.</p>}
+            </div>
+            <button type="button" onClick={() => setAdding(false)}
+              className="mt-1.5 flex h-7 w-full items-center justify-center rounded-md text-[12px] font-medium text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_5%,transparent)] hover:text-fg2">
+              Done
+            </button>
+          </div>
+        ) : (
+          <button type="button" onClick={() => setAdding(true)} data-od-id="btn-add-member"
+            className="mt-3 flex h-8 w-full items-center justify-center gap-1.5 rounded-md border border-dashed border-line text-[12px] font-medium text-muted transition-colors hover:border-accent hover:text-fg">
+            <Icon name="plus" size={12} sw={2.2}/> Add member
+          </button>
+        )}
+
+        <p className="mt-4 text-[12px] leading-5 text-muted">Type @ in the composer to mention anyone here — mentioned agents respond in the thread.</p>
+      </div>
+    </aside>
+  );
+}
+
+function ChatView({ tenant, target, agent, thread, session, channelMembers, onToggleMembers,
+  typing, streamingId, busy, onConfigure,
+  onSend, onCancel, onDoneStream, onAttach, onCopy, onRefresh, onBranch, onEditSubmit }) {
+  const listRef = useRef(null);
+  const atBottomRef = useRef(true);
+  const [atBottom, setAtBottom] = useState(true);
+  const prevLen = useRef(thread.length);
+  const prevChat = useRef(target.obj.id);
+  const prevSession = useRef(session && session.id);
+
+  // long-history guard: render the latest window, load older on demand
+  const [msgLimit, setMsgLimit] = useState(80);
+  useEffect(() => { setMsgLimit(80); }, [session && session.id]);
+  const visibleMsgs = thread.length > msgLimit ? thread.slice(thread.length - msgLimit) : thread;
+  const hiddenMsgs = thread.length - visibleMsgs.length;
+
+  const pinBottom = () => {
+    const el = listRef.current;
+    if (el && atBottomRef.current) el.scrollTop = el.scrollHeight;
+  };
+
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const sameChat = target.obj.id === prevChat.current;
+    const sameSession = (session && session.id) === prevSession.current;
+    const lastMsg = thread[thread.length - 1];
+    const grewUser = sameChat && sameSession && thread.length > prevLen.current && lastMsg && lastMsg.author === 'you';
+    prevLen.current = thread.length;
+    prevChat.current = target.obj.id;
+    prevSession.current = session && session.id;
+    if (grewUser) {
+      // assistant-ui turnAnchor="top" — a fresh user message pins to the top of the viewport
+      const nodes = el.querySelectorAll('[data-role="user"]');
+      const node = nodes[nodes.length - 1];
+      if (node) el.scrollTop = Math.max(0, node.offsetTop - 16);
+      else el.scrollTop = el.scrollHeight;
+    } else {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [thread.length, typing, streamingId, target.obj.id, session && session.id]);
+
+  const onScroll = (e) => {
+    const el = e.currentTarget;
+    const b = el.scrollHeight - el.scrollTop - el.clientHeight < 36;
+    atBottomRef.current = b;
+    setAtBottom(b);
+  };
+  const scrollToBottom = () => {
+    const el = listRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+  };
+
+  const isEmpty = thread.length === 0 && !typing;
+  const suggestions = agent ? [
+    'Summarize the latest activity for me',
+    'What are you working on right now?',
+    'Draft a status update for the team',
+    'What should I know about ' + tenant.name + ' today?'
+  ] : [];
+
+  return (
+    <section data-od-id="chat-view" className="flex min-w-0 flex-1 flex-col bg-bg" aria-label={'Conversation with ' + (target.kind === 'channel' ? '#' + target.obj.name : target.obj.name)}>
+      <ChatHeader target={target} agent={agent} channelMembers={channelMembers} onToggleMembers={onToggleMembers} onConfigure={onConfigure}/>
+      <div ref={listRef} onScroll={onScroll} className="od-scroll relative flex-1 overflow-y-auto" data-od-id="message-list">
+        {isEmpty ? (
+          <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center">
+            {agent && <Avatar name={agent.name} kind="agent" size={44}/>}
+            <h2 className="text-[22px] font-medium tracking-tight text-fg" data-od-id="welcome-title">
+              {agent ? 'This is ' + agent.name : target.kind === 'channel' ? '#' + target.obj.name : target.obj.name}
+            </h2>
+            <p className="max-w-md text-[13px] leading-5 text-muted">
+              {agent ? agent.role + '.'
+                : target.kind === 'channel' ? target.obj.purpose + '.'
+                : 'No messages yet — say hello.'}
+            </p>
+          </div>
+        ) : (
+          <div className="mx-auto flex w-full max-w-[44rem] flex-col gap-6 px-4 pb-6 pt-5">
+            {hiddenMsgs > 0 && (
+              <div className="flex justify-center px-2" data-od-id="load-earlier">
+                <button type="button" onClick={() => setMsgLimit((l) => l + 400)}
+                  className="rounded-full border border-line bg-surface px-3 py-1 text-[11px] text-muted transition-colors hover:text-fg">
+                  Load earlier messages · {hiddenMsgs} hidden
+                </button>
+              </div>
+            )}
+            {hiddenMsgs === 0 && thread.length > 80 && session && (
+              <p className="text-center text-[11px] text-muted">Beginning of “{session.title}”</p>
+            )}
+            {visibleMsgs.map((m) => {
+              const isLast = m.id === (thread[thread.length - 1] || {}).id;
+              const msgAgent = (m.agentId && tenant.agents.find((a) => a.id === m.agentId)) || agent;
+              if (m.author === 'you') return <UserMessage key={m.id} m={m} onEdit={onEditSubmit} members={channelMembers}/>;
+              if (m.author === 'other') return <OtherMessage key={m.id} m={m} members={channelMembers}/>;
+              return (
+                <AgentMessage key={m.id} m={m} agent={msgAgent} inChannel={target.kind === 'channel'}
+                  streaming={streamingId === m.id} busy={busy} isLast={isLast}
+                  onDone={onDoneStream} onCopy={onCopy} onGrow={pinBottom}
+                  onRefresh={onRefresh} onBranch={onBranch} members={channelMembers}/>
+              );
+            })}
+            {typing && <ThinkingRow agent={agent}/>}
+          </div>
+        )}
+      </div>
+      <div className="relative shrink-0">
+        <button type="button" onClick={scrollToBottom} data-od-id="btn-scroll-bottom"
+          aria-label="Scroll to bottom" title="Scroll to bottom"
+          className={cx('absolute -top-11 left-1/2 z-10 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full border border-line bg-surface text-fg2 shadow-[var(--elev-raised)] transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_5%,transparent)] hover:text-fg', (atBottom || isEmpty) && 'invisible')}>
+          <Icon name="down" size={15}/>
+        </button>
+        <div className="mx-auto w-full max-w-[44rem] px-4 pb-4">
+          <Composer agent={agent} running={busy} onSend={onSend} onCancel={onCancel} onAttach={onAttach}
+            mentionOptions={target.kind === 'channel' ? channelMembers : null}/>
+          {isEmpty && agent && suggestions.length > 0 && (
+            <div className="mt-3 flex flex-wrap items-center justify-center gap-2 px-1" data-od-id="welcome-suggestions">
+              {suggestions.map((s) => (
+                <button key={s} type="button" onClick={() => onSend(s)}
+                  className="rounded-full border border-line bg-surface px-3.5 py-1.5 text-[13px] font-normal text-fg2 transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_5%,transparent)] hover:text-fg">
+                  {s}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* ============================== agents view ============================== */
+function ViewShell({ title, sub, action, children, odId }) {
+  return (
+    <section data-od-id={odId} className="od-scroll flex-1 overflow-y-auto bg-surface">
+      <div className="mx-auto max-w-5xl px-8 py-8">
+        <div className="mb-6 flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-[24px] font-semibold tracking-[-0.01em] text-fg">{title}</h1>
+            {sub && <p className="mt-1 text-[13px] text-muted">{sub}</p>}
+          </div>
+          {action}
+        </div>
+        {children}
+      </div>
+    </section>
+  );
+}
+
+const inputCls = 'h-9 w-full rounded-md border border-line bg-[color-mix(in_oklab,var(--bg)_55%,var(--surface))] px-3 text-[14px] text-fg2 placeholder:text-muted focus:border-accent';
+const labelCls = 'mb-1.5 block text-[12px] font-medium text-fg2';
+
+function AgentCard({ a, onChat, onConfigure }) {
+  return (
+    <article data-od-id={'agent-card-' + a.id}
+      className="flex flex-col rounded-lg border border-line bg-[color-mix(in_oklab,var(--bg)_35%,var(--surface))] p-4 transition-colors hover:border-[color-mix(in_oklab,var(--fg)_24%,transparent)]">
+      <div className="flex items-start gap-3">
+        <Avatar name={a.name} kind="agent" size={36}/>
+        <div className="min-w-0 flex-1">
+          <h3 className="flex items-center gap-2 text-[15px] font-semibold text-fg">
+            <span className="truncate">{a.name}</span>
+            <StatusDot status={a.status}/>
+          </h3>
+          <p className="mt-0.5 font-mono text-[11px] text-muted">{a.model} · temp {a.temp.toFixed(1)}</p>
+        </div>
+      </div>
+      <p className="mt-3 min-h-10 flex-1 text-[13px] leading-5 text-fg2">{a.role}</p>
+      {a.status === 'error' && (
+        <p className="mb-3 flex items-center gap-1.5 text-[12px] text-danger">
+          <Icon name="alert" size={13}/> Needs attention — see latest run
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-1.5">
+        {a.tools.slice(0, 4).map((t) => <Chip key={t} mono>{t}</Chip>)}
+      </div>
+      <div className="mt-4 flex items-center gap-2">
+        <button type="button" onClick={onChat} data-od-id={'agent-chat-' + a.id}
+          className="flex h-8 flex-1 items-center justify-center gap-1.5 rounded-md border border-line text-[13px] font-medium text-fg2 transition-colors hover:border-accent hover:text-fg">
+          <Icon name="chat" size={14}/> Open chat
+        </button>
+        <button type="button" onClick={onConfigure} data-od-id={'agent-configure-' + a.id}
+          className="flex h-8 items-center justify-center gap-1.5 rounded-md px-3 text-[13px] font-medium text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] hover:text-fg2">
+          <Icon name="sliders" size={14}/> Configure
+        </button>
+      </div>
+      <p className="mt-3 font-mono text-[10px] text-muted">last active {a.lastActive}</p>
+    </article>
+  );
+}
+
+function AgentsView({ tenant, onChat, onConfigure, onDeploy }) {
+  const running = tenant.agents.filter((a) => a.status === 'running').length;
+  return (
+    <ViewShell odId="agents-view" title="Agents"
+      sub={tenant.agents.length + ' agents in ' + tenant.name + ' — ' + running + ' running right now. Configuration lives in Settings → Agents.'}
+      action={
+        <button type="button" onClick={onDeploy} data-od-id="btn-deploy-agent"
+          className="flex h-9 items-center gap-2 rounded-md bg-accent px-3.5 text-[13px] font-semibold text-accenton transition-colors hover:bg-[var(--accent-hover)] active:bg-[var(--accent-active)]">
+          <Icon name="plus" size={15} sw={2.2}/> Deploy agent
+        </button>
+      }>
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        {tenant.agents.map((a) => (
+          <AgentCard key={a.id} a={a} onChat={() => onChat(a.id)} onConfigure={() => onConfigure(a.id)}/>
+        ))}
+        {tenant.agents.length === 0 && (
+          <div className="rounded-lg border border-dashed border-line px-6 py-12 text-center sm:col-span-2 xl:col-span-3" data-od-id="agents-empty">
+            <p className="text-[15px] font-medium text-fg">No agents in {tenant.name} yet</p>
+            <p className="mt-1 text-[13px] text-muted">Deploy one and it lands in the sidebar, ready to chat.</p>
+          </div>
+        )}
+      </div>
+    </ViewShell>
+  );
+}
+
+function Segmented({ value, options, onChange }) {
+  return (
+    <div className="flex rounded-md border border-line bg-[color-mix(in_oklab,var(--fg)_6%,transparent)] p-0.5" role="radiogroup">
+      {options.map((o) => (
+        <button key={o.id} type="button" role="radio" aria-checked={value === o.id} onClick={() => onChange(o.id)}
+          className={cx('flex-1 rounded-[9px] px-2 py-1.5 text-[12px] font-medium transition-colors',
+            value === o.id ? 'bg-surface text-fg shadow-[var(--elev-raised)]' : 'text-muted hover:text-fg')}>
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function OptionChips({ options, value, onChange, iconOf }) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      {options.map((o) => {
+        const on = value.includes(o.id);
+        return (
+          <button key={o.id} type="button" aria-pressed={on} title={o.detail || o.label}
+            onClick={() => onChange(on ? value.filter((x) => x !== o.id) : [...value, o.id])}
+            className={cx('flex h-8 items-center gap-1.5 rounded-md border px-3 text-[12px] font-medium transition-colors',
+              on ? 'border-accent bg-[color-mix(in_oklab,var(--accent),14%,transparent)] text-fg' : 'border-line text-muted hover:border-[color-mix(in_oklab,var(--fg),26%,transparent)] hover:text-fg2')}>
+            {iconOf && <Icon name={iconOf(o)} size={13}/>}
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function MicroLabel({ children }) {
+  return <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">{children}</p>;
+}
+
+function AgentConfigModal({ draft, onClose, onSave, skillOptions }) {
+  const isEdit = !!draft;
+  const [name, setName] = useState(draft ? draft.name : '');
+  const [provider, setProvider] = useState(draft ? providerOf(draft.model) : PROVIDERS[0].id);
+  const [model, setModel] = useState(draft ? draft.model : PROVIDERS[0].models[0]);
+  const [temp, setTemp] = useState(draft ? draft.temp : 0.4);
+  const [role, setRole] = useState(draft ? draft.role : '');
+  const [tools, setTools] = useState(draft ? [...draft.tools] : ['web']);
+  const [skills, setSkills] = useState(draft ? [...(draft.skills || ['research'])] : ['research']);
+  const [mcp, setMcp] = useState(draft ? [...(draft.mcp || [])] : []);
+  const [autonomy, setAutonomy] = useState(draft ? draft.autonomy : 'approval');
+  const [prompt, setPrompt] = useState(draft ? draft.prompt : '');
+  const [channelPost, setChannelPost] = useState(draft ? draft.channelPost : false);
+  const providerObj = PROVIDERS.find((p) => p.id === provider) || PROVIDERS[0];
+  const valid = name.trim().length > 1;
+  return (
+    <Modal title={isEdit ? 'Configure ' + draft.name : 'Deploy a new agent'} onClose={onClose} wide odId="agent-config-modal"
+      footer={<>
+        <button type="button" onClick={onClose} className="flex h-9 items-center rounded-md px-3.5 text-[13px] font-medium text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg),7%,transparent)] hover:text-fg2">Cancel</button>
+        <button type="button" disabled={!valid} data-od-id="btn-agent-save-modal"
+          onClick={() => onSave({ name: name.trim(), role: role.trim() || 'General-purpose agent', provider, model, temp, autonomy, tools, skills, mcp, prompt: prompt.trim(), channelPost })}
+          className="flex h-9 items-center rounded-md bg-accent px-3.5 text-[13px] font-semibold text-accenton transition-colors hover:bg-[var(--accent-hover)] active:bg-[var(--accent-active)] disabled:opacity-40 disabled:hover:bg-accent">
+          {isEdit ? 'Save changes' : 'Deploy agent'}
+        </button>
+      </>}>
+      <div className="grid gap-6 p-5 md:grid-cols-2">
+        <div className="space-y-5">
+          <MicroLabel>Identity &amp; behavior</MicroLabel>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className={labelCls} htmlFor="ac-name">Agent name</label>
+              <input id="ac-name" className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Radar" autoFocus/>
+            </div>
+            <div>
+              <label className={labelCls} htmlFor="ac-provider">Provider</label>
+              <select id="ac-provider" className={inputCls} value={provider}
+                onChange={(e) => {
+                  const pid = e.target.value;
+                  setProvider(pid);
+                  const p = PROVIDERS.find((x) => x.id === pid);
+                  if (!p.models.includes(model)) setModel(p.models[0]);
+                }}>
+                {PROVIDERS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className={labelCls} htmlFor="ac-model">Model</label>
+              <select id="ac-model" className={inputCls} value={model} onChange={(e) => setModel(e.target.value)}>
+                {providerObj.models.map((m) => <option key={m} value={m}>{m}</option>)}
+              </select>
+            </div>
+            <div>
+              <div className="mb-1.5 flex items-baseline justify-between">
+                <label className={cx(labelCls, 'mb-0')} htmlFor="ac-temp">Temperature</label>
+                <span className="font-mono text-[12px] text-fg2">{Number(temp).toFixed(1)}</span>
+              </div>
+              <input id="ac-temp" type="range" min="0" max="1" step="0.1" value={temp} onChange={(e) => setTemp(Number(e.target.value))} className="h-1.5 w-full cursor-pointer"/>
+              <div className="mt-1 flex justify-between font-mono text-[10px] text-muted"><span>precise</span><span>balanced</span><span>loose</span></div>
+            </div>
+          </div>
+          <div>
+            <label className={labelCls} htmlFor="ac-role">Role in one line</label>
+            <input id="ac-role" className={inputCls} value={role} onChange={(e) => setRole(e.target.value)} placeholder="e.g. watches competitor pricing and flags moves over 5%"/>
+          </div>
+          <div>
+            <label className={labelCls} htmlFor="ac-prompt">System prompt</label>
+            <textarea id="ac-prompt" rows={7} className={cx(inputCls, 'h-auto py-2.5 leading-6')} value={prompt} onChange={(e) => setPrompt(e.target.value)}
+              placeholder="Leave empty to start from the base template — refine it anytime."/>
+          </div>
+        </div>
+        <div className="space-y-5">
+          <MicroLabel>Capabilities</MicroLabel>
+          <div>
+            <span className={labelCls}>Tools</span>
+            <OptionChips options={TOOLS} value={tools} onChange={setTools} iconOf={(o) => TOOL_ICON[o.id]}/>
+          </div>
+          <div>
+            <span className={labelCls}>Skills</span>
+            <OptionChips options={skillOptions || SKILLS} value={skills} onChange={setSkills}/>
+            <p className="mt-1.5 text-[11px] leading-4 text-muted">Installed and versioned in Settings → Skills.</p>
+          </div>
+          <div>
+            <span className={labelCls}>MCP servers</span>
+            <OptionChips options={MCP_SERVERS} value={mcp} onChange={setMcp}/>
+            <p className="mt-1.5 text-[11px] leading-4 text-muted">Connectors are managed in Settings → MCP servers and exposed to the agent over the Model Context Protocol.</p>
+          </div>
+          <div>
+            <span className={labelCls}>Autonomy</span>
+            <Segmented value={autonomy} onChange={setAutonomy}
+              options={[{ id: 'suggest', label: 'Suggest only' }, { id: 'approval', label: 'Act with approval' }, { id: 'full', label: 'Fully autonomous' }]}/>
+          </div>
+          <div className="flex items-center justify-between rounded-md border border-line bg-[color-mix(in_oklab,var(--bg),35%,var(--surface))] px-4 py-3">
+            <div>
+              <p className="text-[13px] font-medium text-fg">Post to channels on my behalf</p>
+              <p className="text-[12px] text-muted">Lets this agent publish into its bound channels.</p>
+            </div>
+            <Toggle on={channelPost} onChange={setChannelPost} label="Post to channels on my behalf"/>
+          </div>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============================== cron + runs ============================== */
+function LastRunCell({ last }) {
+  if (!last) return <span className="text-[12px] text-muted">never</span>;
+  const icon = last.status === 'success' ? <Icon name="check" size={13} className="text-[color-mix(in_oklab,var(--success),black_25%)]"/>
+    : last.status === 'failed' ? <Icon name="x" size={13} className="text-danger"/>
+    : <Icon name="clock" size={13} className="text-muted"/>;
+  return <span className="flex items-center gap-1.5 text-[12px] text-fg2">{icon}<span className="font-mono text-[11px] text-muted">{last.when} · {last.dur}</span></span>;
+}
+
+function CronView({ tenant, onEdit, onToggle, onRunNow, onNew }) {
+  return (
+    <ViewShell odId="cron-view" title="Cron schedules"
+      sub={'Recurring agent runs for ' + tenant.name + '. Expressions use standard 5-field cron in ' + tenant.tz + '.'}
+      action={
+        <button type="button" onClick={onNew} data-od-id="btn-new-schedule"
+          className="flex h-9 items-center gap-2 rounded-md bg-accent px-3.5 text-[13px] font-semibold text-accenton transition-colors hover:bg-[var(--accent-hover)] active:bg-[var(--accent-active)]">
+          <Icon name="plus" size={15} sw={2.2}/> New schedule
+        </button>
+      }>
+      <div className="overflow-hidden rounded-lg border border-line" data-od-id="cron-table">
+        <div className="grid grid-cols-[1.4fr_1.1fr_0.7fr_1fr_84px] gap-3 border-b border-linesoft bg-[color-mix(in_oklab,var(--fg)_4%,transparent)] px-4 py-2.5 font-mono text-[10px] uppercase tracking-[0.14em] text-muted">
+          <span>Schedule</span><span>Expression</span><span>Next run</span><span>Last run</span><span className="text-right">State</span>
+        </div>
+        {tenant.cron.map((j) => {
+          const agent = tenant.agents.find((a) => a.id === j.agentId);
+          return (
+            <div key={j.id} data-od-id={'cron-row-' + j.id}
+              className="group grid grid-cols-[1.4fr_1.1fr_0.7fr_1fr_84px] items-center gap-3 border-b border-linesoft px-4 py-3 transition-colors last:border-b-0 hover:bg-[color-mix(in_oklab,var(--fg)_3%,transparent)]">
+              <div className="min-w-0">
+                <button type="button" onClick={() => onEdit(j)} className="truncate text-left text-[14px] font-medium text-fg hover:text-accent">{j.name}</button>
+                <p className="truncate text-[12px] text-muted">runs {agent ? agent.name : '—'}</p>
+              </div>
+              <div>
+                <p className="font-mono text-[12px] text-fg2">{j.expr}</p>
+                <p className="text-[11px] text-muted">{j.human}</p>
+              </div>
+              <span className="font-mono text-[12px] text-fg2">{j.enabled ? j.next : '—'}</span>
+              <LastRunCell last={j.last}/>
+              <div className="flex items-center justify-end gap-1">
+                <button type="button" onClick={() => onRunNow(j)} data-od-id={'cron-run-' + j.id} title="Run now" aria-label={'Run ' + j.name + ' now'}
+                  className="flex h-7 w-7 items-center justify-center rounded-[6px] text-muted opacity-0 transition-opacity hover:bg-[color-mix(in_oklab,var(--fg)_9%,transparent)] hover:text-fg focus-visible:opacity-100 group-hover:opacity-100">
+                  <Icon name="play" size={13}/>
+                </button>
+                <Toggle on={j.enabled} onChange={() => onToggle(j)} label={(j.enabled ? 'Pause ' : 'Resume ') + j.name}/>
+              </div>
+            </div>
+          );
+        })}
+        {tenant.cron.length === 0 && (
+          <div className="px-4 py-10 text-center" data-od-id="cron-empty">
+            <p className="text-[14px] font-medium text-fg">No schedules yet</p>
+            <p className="mt-1 text-[13px] text-muted">Give an agent a recurring job — digests, sweeps, pipeline checks.</p>
+          </div>
+        )}
+      </div>
+      <p className="mt-4 text-[12px] leading-5 text-muted">
+        Paused schedules keep their expression and history — flip the toggle to resume exactly where they left off.
+      </p>
+    </ViewShell>
+  );
+}
+
+function CronEditorModal({ job, tenant, onClose, onSave, onDelete }) {
+  const isNew = !job.id;
+  const [name, setName] = useState(job.name);
+  const [agentId, setAgentId] = useState(job.agentId || tenant.agents[0].id);
+  const [expr, setExpr] = useState(job.expr);
+  const [human, setHuman] = useState(job.human);
+  const [enabled, setEnabled] = useState(job.enabled !== false);
+  const valid = name.trim().length > 1 && /^[0-9*/,-\s]+$/.test(expr.trim());
+  return (
+    <Modal title={isNew ? 'New schedule' : 'Edit schedule'} onClose={onClose} odId="cron-editor-modal"
+      footer={<>
+        {!isNew && (
+          <button type="button" onClick={() => onDelete(job)} data-od-id="btn-cron-delete"
+            className="mr-auto flex h-9 items-center gap-1.5 rounded-md px-3 text-[13px] font-medium text-danger transition-colors hover:bg-[color-mix(in_oklab,var(--danger)_12%,transparent)]">
+            <Icon name="x" size={14}/> Delete
+          </button>
+        )}
+        <button type="button" onClick={onClose} className="flex h-9 items-center rounded-md px-3.5 text-[13px] font-medium text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] hover:text-fg2">Cancel</button>
+        <button type="button" disabled={!valid} data-od-id="btn-cron-save" onClick={() => onSave({ ...job, name: name.trim(), agentId, expr: expr.trim(), human: human.trim() || expr.trim(), enabled })}
+          className="flex h-9 items-center rounded-md bg-accent px-3.5 text-[13px] font-semibold text-accenton transition-colors hover:bg-[var(--accent-hover)] active:bg-[var(--accent-active)] disabled:opacity-40 disabled:hover:bg-accent">
+          {isNew ? 'Create schedule' : 'Save changes'}
+        </button>
+      </>}>
+      <div className="space-y-5 p-5">
+        <div>
+          <label className={labelCls} htmlFor="cr-name">Schedule name</label>
+          <input id="cr-name" className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Nightly ETL check" autoFocus/>
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className={labelCls} htmlFor="cr-agent">Agent</label>
+            <select id="cr-agent" className={inputCls} value={agentId} onChange={(e) => setAgentId(e.target.value)}>
+              {tenant.agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className={labelCls} htmlFor="cr-tz">Timezone</label>
+            <input id="cr-tz" className={cx(inputCls, 'font-mono text-[13px]')} value={tenant.tz} disabled title="Workspace timezone — change it in Settings → Workspace"/>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className={labelCls} htmlFor="cr-expr">Cron expression</label>
+            <input id="cr-expr" className={cx(inputCls, 'font-mono text-[13px]')} value={expr} onChange={(e) => setExpr(e.target.value)} placeholder="0 9 * * 1-5"/>
+            {!valid && expr.trim() && <p className="mt-1.5 text-[11px] text-danger">Digits, spaces, * / , - only.</p>}
+          </div>
+          <div>
+            <label className={labelCls} htmlFor="cr-human">Human label</label>
+            <input id="cr-human" className={inputCls} value={human} onChange={(e) => setHuman(e.target.value)} placeholder="Weekdays · 9:00 AM"/>
+          </div>
+        </div>
+        <div className="flex items-center justify-between rounded-md border border-line bg-[color-mix(in_oklab,var(--bg)_35%,var(--surface))] px-4 py-3">
+          <div>
+            <p className="text-[13px] font-medium text-fg">Enabled</p>
+            <p className="text-[12px] text-muted">Disabled schedules keep their history and fire nothing.</p>
+          </div>
+          <Toggle on={enabled} onChange={setEnabled} label="Enable this schedule"/>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function RunsView({ tenant }) {
+  const [filter, setFilter] = useState('all');
+  const runs = tenant.runs.filter((r) => filter === 'all' || r.status === filter);
+  return (
+    <ViewShell odId="runs-view" title="Run history"
+      sub={'Every agent execution in ' + tenant.name + ' — chat turns, cron fires and API calls.'}>
+      <div className="mb-4 flex gap-2" data-od-id="runs-filters">
+        {[{ id: 'all', label: 'All' }, { id: 'success', label: 'Succeeded' }, { id: 'failed', label: 'Failed' }].map((f) => (
+          <button key={f.id} type="button" onClick={() => setFilter(f.id)}
+            className={cx('flex h-8 items-center rounded-md border px-3 text-[12px] font-medium transition-colors',
+              filter === f.id ? 'border-accent bg-[color-mix(in_oklab,var(--accent)_14%,transparent)] text-fg' : 'border-line text-muted hover:border-[color-mix(in_oklab,var(--fg)_26%,transparent)] hover:text-fg2')}>
+            {f.label}
+          </button>
+        ))}
+      </div>
+      <div className="overflow-hidden rounded-lg border border-line" data-od-id="runs-table">
+        <div className="grid grid-cols-[110px_1fr_90px_110px_90px_80px_90px] gap-3 border-b border-linesoft bg-[color-mix(in_oklab,var(--fg)_4%,transparent)] px-4 py-2.5 font-mono text-[10px] uppercase tracking-[0.14em] text-muted">
+          <span>Run</span><span>Agent</span><span>Trigger</span><span>Started</span><span>Duration</span><span>Tokens</span><span>Status</span>
+        </div>
+        {runs.map((r) => {
+          const agent = tenant.agents.find((a) => a.id === r.agentId);
+          return (
+            <div key={r.id} data-od-id={'run-row-' + r.id}
+              className="grid grid-cols-[110px_1fr_90px_110px_90px_80px_90px] items-center gap-3 border-b border-linesoft px-4 py-2.5 transition-colors last:border-b-0 hover:bg-[color-mix(in_oklab,var(--fg)_3%,transparent)]">
+              <span className="font-mono text-[12px] text-fg2">{r.id}</span>
+              <span className="truncate text-[13px] text-fg">{agent ? agent.name : '—'}</span>
+              <Chip mono className="justify-self-start">{r.trigger}</Chip>
+              <span className="font-mono text-[12px] text-fg2">{r.when}</span>
+              <span className="font-mono text-[12px] text-fg2">{r.dur}</span>
+              <span className="font-mono text-[12px] text-fg2">{r.tokens}</span>
+              <span className={cx('flex items-center gap-1.5 font-mono text-[11px]', r.status === 'success' ? 'text-[color-mix(in_oklab,var(--success),black_25%)]' : 'text-danger')}>
+                <Icon name={r.status === 'success' ? 'check' : 'x'} size={12}/>{r.status}
+              </span>
+            </div>
+          );
+        })}
+        {tenant.runs.length === 0
+          ? <p className="px-4 py-6 text-center text-[13px] text-muted">No runs yet — chat with an agent or fire a schedule.</p>
+          : runs.length === 0 && <p className="px-4 py-6 text-center text-[13px] text-muted">No runs match this filter.</p>}
+      </div>
+    </ViewShell>
+  );
+}
+
+/* ============================== tenant lifecycle ============================== */
+function blankTenant({ name, sub, plan, tz, starter }) {
+  const aid = uid('a');
+  return {
+    id: 'ws_' + sub.replace(/-/g, '_'),
+    name, sub, plan, tz, defaultModel: MODELS[0], retention: '90 days',
+    agents: starter ? [{
+      id: aid, name: 'Guide', model: 'claude-haiku-4-5', temp: 0.4, autonomy: 'suggest', channelPost: true,
+      role: 'Starter agent — answers questions, searches the web, shows the ropes',
+      status: 'idle', tools: ['web'], lastActive: 'just now',
+      prompt: 'You are Guide, the starter agent for a brand-new OnClaw workspace. Answer questions about the workspace, demonstrate tool use, and suggest what to deploy next.'
+    }] : [],
+    channels: starter ? [{ id: uid('c'), name: 'general', purpose: 'Company-wide', agentId: aid, unread: 0, members: [aid] }] : [],
+    people: [],
+    threads: starter ? {
+      [aid]: [{ id: uid('m'), author: 'agent', ts: 'just now', text: 'Welcome to ' + name + '. I\'m Guide, your starter agent — ask me anything or put me to work with a web search. When you\'re ready, deploy specialists from the Agents view; everything about me lives in Settings → Agents.' }]
+    } : {},
+    cron: [], runs: [],
+    members: [{ id: 'me', name: 'You', email: 'you@' + sub + '.dev', role: 'Owner' }],
+    integrations: [
+      { id: 'slack', name: 'Slack', detail: 'Route digests to a channel', connected: false },
+      { id: 'github', name: 'GitHub', detail: 'Watch repos and review PRs', connected: false },
+      { id: 'pagerduty', name: 'PagerDuty', detail: 'Page on SLO burn', connected: false },
+      { id: 'linear', name: 'Linear', detail: 'Sync issues to agent tasks', connected: false },
+      { id: 'notion', name: 'Notion', detail: 'Publish briefs to docs', connected: false },
+      { id: 'postgres', name: 'Postgres', detail: 'Query a read replica', connected: false }
+    ],
+    mcpServers: [
+      { id: 'github', name: 'GitHub', transport: 'stdio · gh-mcp serve --read-only', auth: 'Not configured', tools: 24, status: 'disabled', sample: ['repo.list', 'issues.search', 'pulls.list', 'commits.range'] },
+      { id: 'postgres', name: 'Postgres', transport: 'stdio · postgres-mcp --replica', auth: 'Not configured', tools: 6, status: 'disabled', sample: ['db.schema', 'db.query_ro'] },
+      { id: 'slack', name: 'Slack', transport: 'http · slack-mcp.internal:8787/sse', auth: 'Not configured', tools: 12, status: 'disabled', sample: ['channels.list', 'message.post'] },
+      { id: 'filesystem', name: 'Filesystem', transport: 'stdio · fs-mcp --root /docs', auth: 'Not configured', tools: 5, status: 'disabled', sample: ['fs.list', 'fs.read'] },
+      { id: 'memory', name: 'Memory', transport: 'stdio · memory-mcp', auth: 'Not configured', tools: 4, status: 'disabled', sample: ['memory.save', 'memory.recall'] },
+      { id: 'browser', name: 'Browser', transport: 'stdio · browser-mcp --headless', auth: 'Not configured', tools: 8, status: 'disabled', sample: ['page.open', 'page.extract'] }
+    ],
+    skillLib: [
+      { id: 'research', name: 'Deep research', version: '2.4.1', uses: 0, enabled: true, source: 'registry',
+        desc: 'Multi-source research briefs with citation tracking and a structured summary template.' },
+      { id: 'summarize', name: 'Summarization', version: '1.4.2', uses: 0, enabled: true, source: 'registry',
+        desc: 'Thread and document summaries with action-item extraction.' },
+      { id: 'code', name: 'Code execution', version: '1.9.0', uses: 0, enabled: false, source: 'registry',
+        desc: 'Sandboxed Python for transforms, one-off scripts and quick calculations.' },
+      { id: 'data', name: 'Data analysis', version: '2.1.3', uses: 0, enabled: false, source: 'registry',
+        desc: 'DataFrame workflows over CSV and query results — joins, rollups, drift checks.' },
+      { id: 'writing', name: 'Writing & editing', version: '3.0.0', uses: 0, enabled: false, source: 'registry',
+        desc: 'Drafting and line-editing with house style rules applied on top of the base model.' },
+      { id: 'vision', name: 'Vision', version: '1.2.0', uses: 0, enabled: false, source: 'registry',
+        desc: 'Chart, screenshot and diagram reading for agents that handle images.' }
+    ],
+    keys: []
+  };
+}
+
+function CreateWorkspaceModal({ onClose, onCreate, existingSubs }) {
+  const [name, setName] = useState('');
+  const [sub, setSub] = useState('');
+  const [slugTouched, setSlugTouched] = useState(false);
+  const [plan, setPlan] = useState('Free');
+  const [tz, setTz] = useState('America/Los_Angeles');
+  const [starter, setStarter] = useState(true);
+  const derived = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24);
+  const slug = slugTouched ? sub : derived;
+  const taken = existingSubs.includes(slug);
+  const patternOk = /^[a-z0-9-]*$/.test(slug);
+  const valid = name.trim().length > 1 && slug.length > 1 && patternOk && !taken;
+  return (
+    <Modal title="Create a workspace" onClose={onClose} odId="ws-create-modal"
+      footer={<>
+        <button type="button" onClick={onClose} className="flex h-9 items-center rounded-md px-3.5 text-[13px] font-medium text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] hover:text-fg2">Cancel</button>
+        <button type="button" disabled={!valid} data-od-id="btn-ws-create" onClick={() => onCreate(blankTenant({ name: name.trim(), sub: slug, plan, tz, starter }))}
+          className="flex h-9 items-center rounded-md bg-accent px-3.5 text-[13px] font-semibold text-accenton transition-colors hover:bg-[var(--accent-hover)] active:bg-[var(--accent-active)] disabled:opacity-40 disabled:hover:bg-accent">
+          Create workspace
+        </button>
+      </>}>
+      <div className="space-y-5 p-5">
+        <div>
+          <label className={labelCls} htmlFor="cw-name">Workspace name</label>
+          <input id="cw-name" className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Initech" autoFocus/>
+        </div>
+        <div>
+          <label className={labelCls} htmlFor="cw-sub">Workspace URL</label>
+          <div className="flex items-center gap-2">
+            <input id="cw-sub" className={cx(inputCls, 'font-mono text-[13px]')} value={slug}
+              onChange={(e) => { setSub(e.target.value); setSlugTouched(true); }} placeholder="initech"/>
+            <span className="shrink-0 font-mono text-[13px] text-muted">.onclaw.app</span>
+          </div>
+          {taken && <p className="mt-1.5 text-[11px] text-danger">That URL is taken — pick another.</p>}
+          {!patternOk && <p className="mt-1.5 text-[11px] text-danger">Lowercase letters, digits and hyphens only.</p>}
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <span className={labelCls}>Plan</span>
+            <Segmented value={plan.toLowerCase()} onChange={(v) => setPlan(v === 'pro' ? 'Pro' : 'Free')}
+              options={[{ id: 'free', label: 'Free' }, { id: 'pro', label: 'Pro' }]}/>
+          </div>
+          <div>
+            <label className={labelCls} htmlFor="cw-tz">Timezone</label>
+            <select id="cw-tz" className={inputCls} value={tz} onChange={(e) => setTz(e.target.value)}>
+              {['America/Los_Angeles', 'America/New_York', 'Europe/London', 'Europe/Berlin', 'Asia/Singapore'].map((z) => <option key={z}>{z}</option>)}
+            </select>
+          </div>
+        </div>
+        <div className="flex items-center justify-between rounded-md border border-line bg-[color-mix(in_oklab,var(--fg)_3%,transparent)] px-4 py-3">
+          <div>
+            <p className="text-[13px] font-medium text-fg">Include a starter agent</p>
+            <p className="text-[12px] text-muted">Adds “Guide” and a #general channel so the workspace is usable immediately.</p>
+          </div>
+          <Toggle on={starter} onChange={setStarter} label="Include a starter agent"/>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function OnboardingPane({ tenant, onDeploy, onSettings }) {
+  return (
+    <section data-od-id="onboarding-pane" aria-label="Getting started"
+      className="flex min-w-0 flex-1 flex-col items-center justify-center gap-4 bg-surface px-6 text-center">
+      <div className="flex h-14 w-14 items-center justify-center rounded-[16px] bg-[color-mix(in_oklab,var(--accent)_14%,transparent)] text-accent">
+        <Icon name="bot" size={26}/>
+      </div>
+      <div>
+        <h1 className="text-[24px] font-semibold tracking-[-0.01em] text-fg">{tenant.name} is ready</h1>
+        <p className="mx-auto mt-2 max-w-md text-[14px] leading-6 text-muted">A workspace is a container until it has agents. Deploy the first one — pick a model, grant tools, and it appears in the sidebar ready to chat.</p>
+      </div>
+      <div className="mt-1 flex items-center gap-2.5">
+        <button type="button" onClick={onDeploy} data-od-id="btn-onboarding-deploy"
+          className="flex h-9 items-center gap-2 rounded-md bg-accent px-3.5 text-[13px] font-semibold text-accenton transition-colors hover:bg-[var(--accent-hover)] active:bg-[var(--accent-active)]">
+          <Icon name="plus" size={15} sw={2.2}/> Deploy your first agent
+        </button>
+        <button type="button" onClick={onSettings} data-od-id="btn-onboarding-settings"
+          className="flex h-9 items-center rounded-md border border-line px-3.5 text-[13px] font-medium text-fg2 transition-colors hover:border-accent hover:text-fg">
+          Workspace settings
+        </button>
+      </div>
+      <p className="mt-2 font-mono text-[11px] text-muted">{tenant.plan} plan · {tenant.tz}</p>
+    </section>
+  );
+}
+
+/* ============================== settings hub ============================== */
+const SETTINGS_TABS = [
+  { id: 'workspace', label: 'Workspace', icon: 'shield' },
+  { id: 'members', label: 'Members & roles', icon: 'users' },
+  { id: 'integrations', label: 'Integrations', icon: 'link' },
+  { id: 'mcp', label: 'MCP servers', icon: 'plug' },
+  { id: 'skills', label: 'Skills', icon: 'spark' },
+  { id: 'keys', label: 'API keys', icon: 'key' },
+  { id: 'notifications', label: 'Notifications', icon: 'bell' }
+];
+const TOOL_ICON = { web: 'globe', files: 'file', shell: 'terminal', api: 'link', db: 'db' };
+const MCP_STATUS = {
+  connected: { dot: 'bg-success', label: 'Connected' },
+  disabled: { dot: 'bg-muted', label: 'Paused' },
+  error: { dot: 'bg-danger', label: 'Error' }
+};
+const slugify = (name) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+const fmtUses = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n));
+
+function SettingsModal({ tenant, tab, onTab, onClose, onUpdate, onToast, onDeleteWorkspace }) {
+  const [ws, setWs] = useState({ name: tenant.name, tz: tenant.tz, defaultModel: tenant.defaultModel, retention: tenant.retention });
+  const [invite, setInvite] = useState({ email: '', role: 'Member' });
+  const [notif, setNotif] = useState(tenant.notifications || { cronFail: true, agentErrors: true, digest: false, email: 'ops@' + tenant.sub + '.dev' });
+  const [confirmDel, setConfirmDel] = useState(false);
+
+  const saveWorkspace = () => {
+    onUpdate((t) => ({ ...t, ...ws }));
+    onToast('Workspace settings saved');
+  };
+  const saveAgent = (id, s) => {
+    onUpdate((t) => ({ ...t, agents: t.agents.map((a) => (a.id === id ? { ...a, ...s } : a)) }));
+    onToast(s.name + ' updated — new settings apply to the next run');
+  };
+
+  return (
+    <Modal title={tenant.name + ' settings'} onClose={onClose} wide odId="settings-modal">
+      <div className="flex min-h-[480px]">
+        <div className="od-scroll w-56 shrink-0 overflow-y-auto border-r border-linesoft py-3" role="tablist" aria-label="Settings sections">
+          {SETTINGS_TABS.map((t) => (
+            <button key={t.id} type="button" role="tab" aria-selected={tab === t.id} onClick={() => onTab(t.id)} data-od-id={'settings-tab-' + t.id}
+              className={cx('mx-2 flex h-9 w-[calc(100%-16px)] items-center gap-2.5 rounded-md px-3 text-left text-[13px] transition-colors',
+                tab === t.id ? 'bg-[color-mix(in_oklab,var(--accent)_14%,transparent)] font-medium text-fg' : 'text-fg2 hover:bg-[color-mix(in_oklab,var(--fg)_6%,transparent)] hover:text-fg')}>
+              <Icon name={t.icon} size={15} className={tab === t.id ? 'text-accent' : 'text-muted'}/>{t.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="od-scroll flex-1 overflow-y-auto p-6">
+          {tab === 'workspace' && (
+            <div className="max-w-md space-y-5" data-od-id="pane-workspace">
+              <div>
+                <label className={labelCls} htmlFor="ws-name">Workspace name</label>
+                <input id="ws-name" className={inputCls} value={ws.name} onChange={(e) => setWs({ ...ws, name: e.target.value })}/>
+              </div>
+              <div>
+                <label className={labelCls} htmlFor="ws-sub">Workspace URL</label>
+                <div className="flex items-center gap-2">
+                  <input id="ws-sub" disabled className={cx(inputCls, 'font-mono text-[13px]')} value={tenant.sub + '.onclaw.app'}/>
+                  <Chip>{tenant.plan} plan</Chip>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className={labelCls} htmlFor="ws-tz">Timezone</label>
+                  <select id="ws-tz" className={inputCls} value={ws.tz} onChange={(e) => setWs({ ...ws, tz: e.target.value })}>
+                    {['America/Los_Angeles', 'America/New_York', 'Europe/London', 'Europe/Berlin', 'Asia/Singapore'].map((z) => <option key={z}>{z}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className={labelCls} htmlFor="ws-model">Default model</label>
+                  <select id="ws-model" className={inputCls} value={ws.defaultModel} onChange={(e) => setWs({ ...ws, defaultModel: e.target.value })}>
+                    {MODELS.map((m) => <option key={m}>{m}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className={labelCls} htmlFor="ws-ret">Thread retention</label>
+                <select id="ws-ret" className={inputCls} value={ws.retention} onChange={(e) => setWs({ ...ws, retention: e.target.value })}>
+                  {['30 days', '90 days', '1 year', 'Forever'].map((r) => <option key={r}>{r}</option>)}
+                </select>
+              </div>
+              <div className="flex justify-end pt-1">
+                <button type="button" onClick={saveWorkspace} data-od-id="btn-workspace-save"
+                  className="flex h-9 items-center rounded-md bg-accent px-4 text-[13px] font-semibold text-accenton transition-colors hover:bg-[var(--accent-hover)] active:bg-[var(--accent-active)]">
+                  Save workspace
+                </button>
+              </div>
+              <div className="mt-8 rounded-md border border-[color-mix(in_oklab,var(--danger)_35%,transparent)] p-4">
+                <p className="text-[13px] font-semibold text-fg">Danger zone</p>
+                <p className="mt-1 text-[12px] leading-5 text-muted">Deleting a workspace removes its agents, schedules, threads and keys. This cannot be undone.</p>
+                <button type="button" data-od-id="btn-workspace-delete"
+                  onClick={() => { if (confirmDel) onDeleteWorkspace(); else { setConfirmDel(true); setTimeout(() => setConfirmDel(false), 4000); } }}
+                  className="mt-3 flex h-8 items-center rounded-md border border-[color-mix(in_oklab,var(--danger)_45%,transparent)] px-3 text-[12px] font-medium text-danger transition-colors hover:bg-[color-mix(in_oklab,var(--danger)_10%,transparent)]">
+                  {confirmDel ? 'Click again to confirm' : 'Delete workspace'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {tab === 'members' && (
+            <div className="max-w-xl" data-od-id="pane-members">
+              <div className="mb-5 flex gap-2">
+                <input className={inputCls} placeholder={'teammate@' + tenant.sub + '.dev'} value={invite.email} aria-label="Invite email"
+                  onChange={(e) => setInvite({ ...invite, email: e.target.value })}/>
+                <select className={cx(inputCls, 'w-32')} value={invite.role} onChange={(e) => setInvite({ ...invite, role: e.target.value })} aria-label="Role for invite">
+                  <option>Admin</option><option>Member</option>
+                </select>
+                <button type="button" data-od-id="btn-invite" disabled={!invite.email.includes('@')}
+                  onClick={() => {
+                    onUpdate((t) => ({ ...t, members: [...t.members, { id: uid('mb'), name: invite.email.split('@')[0], email: invite.email, role: invite.role }] }));
+                    onToast('Invite sent to ' + invite.email);
+                    setInvite({ email: '', role: 'Member' });
+                  }}
+                  className="h-9 shrink-0 rounded-md border border-line px-3.5 text-[13px] font-medium text-fg2 transition-colors hover:border-accent hover:text-fg disabled:opacity-40 disabled:hover:border-line">
+                  Invite
+                </button>
+              </div>
+              <ul className="divide-y divide-[var(--border-soft)]">
+                {tenant.members.map((m) => (
+                  <li key={m.id} className="flex items-center gap-3 py-3" data-od-id={'member-' + m.id}>
+                    <Avatar name={m.name} kind={m.id === 'me' ? 'you' : 'other'}/>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-[14px] font-medium text-fg">{m.name}</p>
+                      <p className="truncate font-mono text-[11px] text-muted">{m.email}</p>
+                    </div>
+                    {m.role === 'Owner' ? <Chip>You are the owner</Chip> : (
+                      <div className="flex items-center gap-2">
+                        <select className="h-8 rounded-md border border-line bg-[color-mix(in_oklab,var(--bg)_55%,var(--surface))] px-2 text-[12px] text-fg2 focus:border-accent" value={m.role}
+                          onChange={(e) => { const role = e.target.value; onUpdate((t) => ({ ...t, members: t.members.map((x) => (x.id === m.id ? { ...x, role } : x)) })); onToast(m.name + ' is now ' + role.toLowerCase()); }}
+                          aria-label={'Role for ' + m.name}>
+                          <option>Admin</option><option>Member</option>
+                        </select>
+                        <button type="button" aria-label={'Remove ' + m.name} onClick={() => { onUpdate((t) => ({ ...t, members: t.members.filter((x) => x.id !== m.id) })); onToast(m.name + ' removed from ' + tenant.name); }}
+                          className="flex h-7 w-7 items-center justify-center rounded-[6px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--danger)_12%,transparent)] hover:text-danger">
+                          <Icon name="x" size={13}/>
+                        </button>
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {tab === 'integrations' && (
+            <div className="max-w-lg space-y-3" data-od-id="pane-integrations">
+              <p className="mb-4 text-[13px] leading-5 text-muted">Connections are shared across every agent in {tenant.name}. Credentials never appear in threads.</p>
+              {tenant.integrations.map((it) => (
+                <div key={it.id} className="flex items-center gap-3 rounded-md border border-line bg-[color-mix(in_oklab,var(--bg)_30%,var(--surface))] px-4 py-3" data-od-id={'integration-' + it.id}>
+                  <span className={cx('flex h-9 w-9 items-center justify-center rounded-md',
+                    it.connected ? 'bg-[color-mix(in_oklab,var(--accent)_15%,transparent)] text-accent' : 'bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] text-muted')}>
+                    <Icon name={it.id === 'slack' ? 'chat' : it.id === 'github' ? 'terminal' : it.id === 'pagerduty' ? 'bell' : it.id === 'postgres' ? 'db' : it.id === 'linear' ? 'zap' : 'file'} size={16}/>
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[14px] font-medium text-fg">{it.name}</p>
+                    <p className={cx('truncate font-mono text-[11px]', it.id === 'pagerduty' && it.connected ? 'text-[color-mix(in_oklab,var(--warn),black_38%)]' : 'text-muted')}>{it.detail}</p>
+                  </div>
+                  {it.connected ? (
+                    <div className="flex items-center gap-2.5">
+                      <span className="flex items-center gap-1.5 text-[12px] text-[color-mix(in_oklab,var(--success),black_25%)]"><Icon name="check" size={13}/> Connected</span>
+                      <button type="button" onClick={() => { onUpdate((t) => ({ ...t, integrations: t.integrations.map((x) => (x.id === it.id ? { ...x, connected: false } : x)) })); onToast(it.name + ' disconnected'); }}
+                        className="h-8 rounded-md px-2.5 text-[12px] font-medium text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] hover:text-fg2">
+                        Disconnect
+                      </button>
+                    </div>
+                  ) : (
+                    <button type="button" data-od-id={'connect-' + it.id} onClick={() => { onUpdate((t) => ({ ...t, integrations: t.integrations.map((x) => (x.id === it.id ? { ...x, connected: true, detail: x.detail + ' · connected just now' } : x)) })); onToast(it.name + ' connected'); }}
+                      className="h-8 rounded-md border border-line px-3 text-[12px] font-medium text-fg2 transition-colors hover:border-accent hover:text-fg">
+                      Connect
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {tab === 'mcp' && <McpPane tenant={tenant} onUpdate={onUpdate} onToast={onToast}/>}
+
+          {tab === 'skills' && <SkillsPane tenant={tenant} onUpdate={onUpdate} onToast={onToast}/>}
+
+          {tab === 'keys' && (
+            <div className="max-w-xl" data-od-id="pane-keys">
+              <div className="mb-4 flex items-center justify-between gap-4">
+                <p className="text-[13px] leading-5 text-muted">Keys authenticate API calls that trigger agents. Scope them per service and rotate often.</p>
+                <button type="button" data-od-id="btn-new-key"
+                  onClick={() => {
+                    const suffix = Math.random().toString(36).slice(2, 6);
+                    onUpdate((t) => ({ ...t, keys: [...t.keys, { id: uid('k'), name: 'key-' + suffix, masked: 'oc_live_••••••••' + suffix, full: 'oc_live_' + Math.random().toString(36).slice(2, 10) + suffix, created: 'Aug 2026' }] }));
+                    onToast('API key created — copy it now, it won\'t be shown again');
+                  }}
+                  className="h-9 shrink-0 rounded-md border border-line px-3.5 text-[13px] font-medium text-fg2 transition-colors hover:border-accent hover:text-fg">
+                  Create key
+                </button>
+              </div>
+              <ul className="divide-y divide-[var(--border-soft)]">
+                {tenant.keys.map((k) => <KeyRow key={k.id} k={k} onUpdate={onUpdate} onToast={onToast}/>)}
+                {tenant.keys.length === 0 && <li className="py-6 text-center text-[13px] text-muted">No keys yet — create the first one above.</li>}
+              </ul>
+            </div>
+          )}
+
+          {tab === 'notifications' && (
+            <div className="max-w-md space-y-1" data-od-id="pane-notifications">
+              {[
+                { id: 'cronFail', label: 'Cron failures', desc: 'A scheduled run fails or misses its window' },
+                { id: 'agentErrors', label: 'Agent errors', desc: 'Tool failures, auth expiry, budget thresholds' },
+                { id: 'digest', label: 'Weekly digest', desc: 'Monday summary of runs, spend and failures' }
+              ].map((row) => (
+                <div key={row.id} className="flex items-center justify-between gap-4 rounded-md px-1 py-3">
+                  <div>
+                    <p className="text-[14px] font-medium text-fg">{row.label}</p>
+                    <p className="text-[12px] text-muted">{row.desc}</p>
+                  </div>
+                  <Toggle on={notif[row.id]} onChange={(v) => setNotif({ ...notif, [row.id]: v })} label={row.label}/>
+                </div>
+              ))}
+              <div className="pt-2">
+                <label className={labelCls} htmlFor="nf-email">Route email</label>
+                <input id="nf-email" className={cx(inputCls, 'font-mono text-[13px]')} value={notif.email} onChange={(e) => setNotif({ ...notif, email: e.target.value })}/>
+              </div>
+              <div className="flex justify-end pt-3">
+                <button type="button" data-od-id="btn-notif-save"
+                  onClick={() => { onUpdate((t) => ({ ...t, notifications: notif })); onToast('Notification settings saved'); }}
+                  className="flex h-9 items-center rounded-md bg-accent px-4 text-[13px] font-semibold text-accenton transition-colors hover:bg-[var(--accent-hover)] active:bg-[var(--accent-active)]">
+                  Save preferences
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function McpPane({ tenant, onUpdate, onToast }) {
+  const [open, setOpen] = useState([]);
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({ name: '', transport: '' });
+  const servers = tenant.mcpServers || [];
+  const usersOf = (id) => tenant.agents.filter((a) => (a.mcp || []).includes(id));
+  const expanded = (id) => open.includes(id);
+  const setStatus = (id, status) => onUpdate((t) => ({ ...t, mcpServers: t.mcpServers.map((s) => (s.id === id ? { ...s, status } : s)) }));
+  const addServer = () => {
+    const name = form.name.trim();
+    let slug = slugify(name) || uid('mcp');
+    while (servers.some((x) => x.id === slug)) slug += '-2';
+    onUpdate((t) => ({ ...t, mcpServers: [...(t.mcpServers || []),
+      { id: slug, name, transport: form.transport.trim(), auth: 'No credentials yet — configured on first launch', tools: 0, status: 'connected', sample: [] }] }));
+    onToast(name + ' added — tools sync on the first handshake');
+    setForm({ name: '', transport: '' });
+    setAdding(false);
+  };
+
+  return (
+    <div className="max-w-xl" data-od-id="pane-mcp">
+      <div className="mb-4 flex items-start justify-between gap-4">
+        <p className="text-[13px] leading-5 text-muted">Model Context Protocol servers expose tools to every agent that references them. Pausing a server revokes access on the next run.</p>
+        <button type="button" data-od-id="btn-mcp-add" onClick={() => setAdding(!adding)}
+          className="h-9 shrink-0 rounded-md border border-line px-3.5 text-[13px] font-medium text-fg2 transition-colors hover:border-accent hover:text-fg">
+          {adding ? 'Cancel' : 'Add server'}
+        </button>
+      </div>
+
+      {adding && (
+        <div className="od-pop mb-4 flex gap-2 rounded-md border border-line bg-[color-mix(in_oklab,var(--bg)_30%,var(--surface))] p-3" data-od-id="mcp-add-form">
+          <input className={inputCls} placeholder="Server name — e.g. Sentry" value={form.name} aria-label="Server name"
+            onChange={(e) => setForm({ ...form, name: e.target.value })}/>
+          <input className={cx(inputCls, 'font-mono text-[13px]')} placeholder="stdio · sentry-mcp serve" value={form.transport} aria-label="Transport command"
+            onChange={(e) => setForm({ ...form, transport: e.target.value })}/>
+          <button type="button" data-od-id="btn-mcp-add-confirm" disabled={!(form.name.trim() && form.transport.trim())} onClick={addServer}
+            className="h-9 shrink-0 rounded-md border border-line px-3.5 text-[13px] font-medium text-fg2 transition-colors hover:border-accent hover:text-fg disabled:opacity-40 disabled:hover:border-line">
+            Add
+          </button>
+        </div>
+      )}
+
+      <div className="space-y-2.5">
+        {servers.map((s) => {
+          const st = MCP_STATUS[s.status] || MCP_STATUS.connected;
+          const users = usersOf(s.id);
+          const shown = s.sample || [];
+          const inactive = s.status !== 'connected' && users.length > 0;
+          return (
+            <div key={s.id} className={cx('rounded-md border border-line bg-[color-mix(in_oklab,var(--bg)_30%,var(--surface))]', s.status === 'disabled' && 'opacity-70')}
+              data-od-id={'mcp-' + s.id}>
+              <div className="flex items-center gap-3 px-4 py-3">
+                <span className={cx('flex h-9 w-9 shrink-0 items-center justify-center rounded-md',
+                  s.status === 'connected' ? 'bg-[color-mix(in_oklab,var(--accent)_15%,transparent)] text-accent'
+                    : s.status === 'error' ? 'bg-[color-mix(in_oklab,var(--danger)_12%,transparent)] text-danger'
+                    : 'bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] text-muted')}>
+                  <Icon name="plug" size={16}/>
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <p className="text-[14px] font-medium text-fg">{s.name}</p>
+                    <span className={cx('inline-flex items-center gap-1.5 text-[11px]',
+                      s.status === 'connected' ? 'text-[color-mix(in_oklab,var(--success),black_25%)]' : s.status === 'error' ? 'text-danger' : 'text-muted')}>
+                      <span className={cx('h-1.5 w-1.5 rounded-full', st.dot)}/>{st.label}
+                    </span>
+                  </div>
+                  <p className="truncate font-mono text-[11px] text-muted">{s.transport}</p>
+                  {s.status === 'error' && <p className="truncate text-[11px] text-danger">{s.error}</p>}
+                </div>
+                <div className="shrink-0 text-right" title={users.map((u) => u.name).join(', ') || undefined}>
+                  <p className="font-mono text-[11px] text-fg2">{s.tools} {s.tools === 1 ? 'tool' : 'tools'}</p>
+                  <p className={cx('font-mono text-[11px]', inactive ? 'text-[color-mix(in_oklab,var(--warn),black_38%)]' : 'text-muted')}>
+                    {users.length === 0 ? 'no agents' : users.length + (users.length === 1 ? ' agent' : ' agents') + (inactive ? ' · inactive' : '')}
+                  </p>
+                </div>
+                {s.status === 'error' ? (
+                  <button type="button" data-od-id={'mcp-retry-' + s.id}
+                    onClick={() => { setStatus(s.id, 'connected'); onToast(s.name + ' reconnected — ' + s.tools + ' tools available'); }}
+                    className="h-8 shrink-0 rounded-md border border-[color-mix(in_oklab,var(--danger)_45%,transparent)] px-2.5 text-[12px] font-medium text-danger transition-colors hover:bg-[color-mix(in_oklab,var(--danger)_10%,transparent)]">
+                    Retry
+                  </button>
+                ) : (
+                  <Toggle on={s.status === 'connected'} label={'Enable ' + s.name}
+                    onChange={(v) => {
+                      setStatus(s.id, v ? 'connected' : 'disabled');
+                      onToast(v ? s.name + ' connected — ' + s.tools + ' tools exposed' : s.name + ' paused — agents lose access on the next run');
+                    }}/>
+                )}
+                <button type="button" onClick={() => setOpen((o) => (o.includes(s.id) ? o.filter((x) => x !== s.id) : [...o, s.id]))}
+                  aria-expanded={expanded(s.id)} aria-label={'Tools exposed by ' + s.name}
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] hover:text-fg2">
+                  <Icon name="chevright" size={13} className={cx('transition-transform', expanded(s.id) && 'rotate-90')}/>
+                </button>
+              </div>
+              {expanded(s.id) && (
+                <div className="border-t border-[var(--border-soft)] px-4 py-3">
+                  <p className="mb-2 font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">Tools exposed</p>
+                  {shown.length ? (
+                    <div className="flex flex-wrap gap-1.5">
+                      {shown.map((t) => <Chip key={t} mono>{t}</Chip>)}
+                      {s.tools > shown.length && <span className="self-center font-mono text-[11px] text-muted">+{s.tools - shown.length} more</span>}
+                    </div>
+                  ) : (
+                    <p className="text-[12px] text-muted">No tools yet — the manifest syncs on the first handshake.</p>
+                  )}
+                  <p className="mt-2.5 font-mono text-[11px] text-muted">{s.auth}</p>
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {servers.length === 0 && <p className="py-6 text-center text-[13px] text-muted">No MCP servers yet — add the first one above.</p>}
+      </div>
+    </div>
+  );
+}
+
+function SkillsPane({ tenant, onUpdate, onToast }) {
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({ name: '', desc: '' });
+  const lib = tenant.skillLib || [];
+  const usersOf = (id) => tenant.agents.filter((a) => (a.skills || []).includes(id));
+  const install = () => {
+    const name = form.name.trim();
+    let slug = slugify(name) || uid('sk');
+    while (lib.some((x) => x.id === slug)) slug += '-2';
+    onUpdate((t) => ({ ...t, skillLib: [...(t.skillLib || []),
+      { id: slug, name, version: '0.1.0', desc: form.desc.trim() || 'Custom workspace skill — no description yet.', uses: 0, enabled: true, source: 'workspace' }] }));
+    onToast(name + ' installed — assign it from any agent\'s capabilities');
+    setForm({ name: '', desc: '' });
+    setAdding(false);
+  };
+
+  return (
+    <div className="max-w-xl" data-od-id="pane-skills">
+      <div className="mb-4 flex items-start justify-between gap-4">
+        <p className="text-[13px] leading-5 text-muted">Skills are versioned capability packages agents load at run time. Disabling one suspends it for every agent that references it.</p>
+        <button type="button" data-od-id="btn-skill-add" onClick={() => setAdding(!adding)}
+          className="h-9 shrink-0 rounded-md border border-line px-3.5 text-[13px] font-medium text-fg2 transition-colors hover:border-accent hover:text-fg">
+          {adding ? 'Cancel' : 'Install skill'}
+        </button>
+      </div>
+
+      {adding && (
+        <div className="od-pop mb-4 space-y-2 rounded-md border border-line bg-[color-mix(in_oklab,var(--bg)_30%,var(--surface))] p-3" data-od-id="skill-add-form">
+          <div className="flex gap-2">
+            <input className={inputCls} placeholder="Skill name — e.g. Changelog sweeper" value={form.name} aria-label="Skill name"
+              onChange={(e) => setForm({ ...form, name: e.target.value })}/>
+            <button type="button" data-od-id="btn-skill-add-confirm" disabled={!form.name.trim()} onClick={install}
+              className="h-9 shrink-0 rounded-md border border-line px-3.5 text-[13px] font-medium text-fg2 transition-colors hover:border-accent hover:text-fg disabled:opacity-40 disabled:hover:border-line">
+              Install
+            </button>
+          </div>
+          <input className={cx(inputCls, 'text-[13px]')} placeholder="One-line description (optional)" value={form.desc} aria-label="Skill description"
+            onChange={(e) => setForm({ ...form, desc: e.target.value })}/>
+        </div>
+      )}
+
+      <ul className="divide-y divide-[var(--border-soft)]">
+        {lib.map((s) => {
+          const users = usersOf(s.id);
+          return (
+            <li key={s.id} className={cx('flex items-center gap-3 py-3', !s.enabled && 'opacity-70')} data-od-id={'skill-' + s.id}>
+              <span className={cx('flex h-9 w-9 shrink-0 items-center justify-center rounded-md',
+                s.enabled ? 'bg-[color-mix(in_oklab,var(--accent)_15%,transparent)] text-accent' : 'bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] text-muted')}>
+                <Icon name="spark" size={16}/>
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-[14px] font-medium text-fg">{s.name}</p>
+                  <Chip mono>v{s.version}</Chip>
+                  {s.source === 'workspace' && <Chip>custom</Chip>}
+                </div>
+                <p className="mt-0.5 text-[12px] leading-4 text-muted">{s.desc}</p>
+              </div>
+              <div className="shrink-0 text-right" title={users.map((u) => u.name).join(', ') || undefined}>
+                <p className="font-mono text-[11px] text-fg2">{fmtUses(s.uses)} {s.uses === 1 ? 'run' : 'runs'}</p>
+                <p className="font-mono text-[11px] text-muted">{users.length === 0 ? 'no agents' : users.length + (users.length === 1 ? ' agent' : ' agents')}</p>
+              </div>
+              <Toggle on={s.enabled} label={'Enable ' + s.name}
+                onChange={(v) => {
+                  onUpdate((t) => ({ ...t, skillLib: t.skillLib.map((x) => (x.id === s.id ? { ...x, enabled: v } : x)) }));
+                  onToast(v ? s.name + ' enabled' : s.name + ' disabled — agents fall back to base behavior');
+                }}/>
+            </li>
+          );
+        })}
+        {lib.length === 0 && <li className="py-6 text-center text-[13px] text-muted">No skills installed yet — install the first one above.</li>}
+      </ul>
+    </div>
+  );
+}
+
+function KeyRow({ k, onUpdate, onToast }) {
+  const [shown, setShown] = useState(false);
+  return (
+    <li className="flex items-center gap-3 py-3" data-od-id={'key-' + k.id}>
+      <div className="min-w-0 flex-1">
+        <p className="text-[14px] font-medium text-fg">{k.name}</p>
+        <p className="font-mono text-[12px] text-muted">{shown ? k.full : k.masked} · created {k.created}</p>
+      </div>
+      <button type="button" onClick={() => setShown(!shown)} aria-label={shown ? 'Hide key' : 'Reveal key'}
+        className="flex h-8 w-8 items-center justify-center rounded-md text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] hover:text-fg2">
+        <Icon name="eye" size={14}/>
+      </button>
+      <button type="button" aria-label="Copy key" onClick={() => { navigator.clipboard && navigator.clipboard.writeText(k.full).then(() => onToast('Key copied to clipboard'), () => onToast('Clipboard blocked by the browser', 'danger')); }}
+        className="flex h-8 w-8 items-center justify-center rounded-md text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] hover:text-fg2">
+        <Icon name="copy" size={14}/>
+      </button>
+      <button type="button" onClick={() => { onUpdate((t) => ({ ...t, keys: t.keys.filter((x) => x.id !== k.id) })); onToast(k.name + ' revoked', 'danger'); }}
+        className="h-8 rounded-md px-2.5 text-[12px] font-medium text-danger transition-colors hover:bg-[color-mix(in_oklab,var(--danger)_12%,transparent)]">
+        Revoke
+      </button>
+    </li>
+  );
+}
+
+/* ============================== app root ============================== */
+function craftReply(agent, text) {
+  const c = text.trim().toLowerCase();
+  if (c.startsWith('/tools')) return 'Tools granted to me: ' + (agent.tools.join(', ') || 'none yet') + '. Grant or revoke them in Settings → Agents → ' + agent.name + '.';
+  if (c.startsWith('/model')) return 'I run on ' + agent.model + ' at temperature ' + agent.temp.toFixed(1) + '. Switch models in Settings → Agents.';
+  if (c.startsWith('/help')) return 'Commands: /tools — list my tools · /model — current model · /schedule — open the cron editor · /reset — clear this thread. Everything else you type goes straight to me.';
+  if (c.startsWith('/schedule')) return 'Schedules live in the Cron view — opening the editor for you now.';
+  return REPLY_TEMPLATES[Math.floor(Math.random() * REPLY_TEMPLATES.length)];
+}
+
+function App() {
+  const [pos, setPos] = useState(() => {
+    const p = loadPos();
+    return p && p.tenantId && p.view ? p : { tenantId: 'acme', view: 'chats', chatId: 'a-atlas', showContext: false };
+  });
+  const [db, setDb] = useState(seedDb);
+  const [search, setSearch] = useState('');
+  const [ui, setUi] = useState({ settingsOpen: false, settingsTab: 'workspace', configAgent: null, cronEdit: null, wsOpen: false, createWsOpen: false, toasts: [], typing: false, streamId: null });
+  const patch = (p) => setUi((u) => ({ ...u, ...p }));
+  const go = (p) => setPos((prev) => ({ ...prev, ...p }));
+
+  useEffect(() => { savePos(pos); }, [pos]);
+  useEffect(() => {
+    const h = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        const el = document.getElementById('od-search');
+        if (el) el.focus();
+      }
+    };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, []);
+
+  const tenant = db[pos.tenantId] || db.acme;
+  const goChat = (id, extra) => go({ view: 'chats', chatId: id, ...(extra || {}) });
+  const chatId = tenant.agents.some((a) => a.id === pos.chatId) || tenant.channels.some((c) => c.id === pos.chatId) || tenant.people.some((p) => p.id === pos.chatId)
+    ? pos.chatId : tenant.agents[0].id;
+  const agent = tenant.agents.find((a) => a.id === chatId) || null;
+  const channel = tenant.channels.find((c) => c.id === chatId) || null;
+  const person = tenant.people.find((p) => p.id === chatId) || null;
+  const chatAgent = agent || (channel ? tenant.agents.find((a) => a.id === channel.agentId) || null : null);
+  const channelMembers = channel ? (() => {
+    const ids = channel.members && channel.members.length ? channel.members : (channel.agentId ? [channel.agentId] : []);
+    const out = [];
+    ids.forEach((id) => {
+      if (out.some((m) => m.id === id)) return;
+      const a = tenant.agents.find((x) => x.id === id);
+      if (a) { out.push({ id, kind: 'agent', name: a.name, agent: a }); return; }
+      const p = tenant.people.find((x) => x.id === id);
+      if (p) out.push({ id, kind: 'person', name: p.name, presence: p.presence });
+    });
+    return out;
+  })() : null;
+  const memberCandidates = channel ? (() => {
+    const inCh = new Set([...(channel.members || []), channel.agentId].filter(Boolean));
+    const out = [];
+    tenant.agents.forEach((a) => { if (!inCh.has(a.id)) out.push({ id: a.id, kind: 'agent', name: a.name, agent: a }); });
+    tenant.people.forEach((p) => { if (!inCh.has(p.id)) out.push({ id: p.id, kind: 'person', name: p.name, presence: p.presence }); });
+    return out;
+  })() : [];
+  const target = agent ? { kind: 'agent', obj: agent }
+    : channel ? { kind: 'channel', obj: channel }
+    : { kind: 'person', obj: person || { name: 'Thread', presence: 'away' } };
+  const threadState = getThreadState(tenant, chatId);
+  const session = threadState.list.find((s) => s.id === threadState.active) || null;
+  const thread = session ? session.messages : [];
+  const hasTarget = !!(agent || channel || person);
+  const unread = tenant.channels.reduce((n, c) => n + (c.unread || 0), 0);
+
+  const toast = (text, kind) => {
+    const id = uid('t');
+    setUi((u) => ({ ...u, toasts: [...u.toasts, { id, text, kind }] }));
+    setTimeout(() => setUi((u) => ({ ...u, toasts: u.toasts.filter((t) => t.id !== id) })), 3200);
+  };
+  const updateTenant = (fn) => setDb((prev) => ({ ...prev, [tenant.id]: fn(clone(prev[tenant.id])) }));
+  const pushMsg = (tid, cid, msg) => setDb((prev) => {
+    const d = clone(prev);
+    const t = d[tid];
+    const th = t.threads[cid] = t.threads[cid] || { active: null, list: [] };
+    if (Array.isArray(th)) { t.threads[cid] = { active: null, list: th.length ? [{ id: uid('s'), title: 'Chat', updated: '', messages: th }] : [] }; }
+    const state = t.threads[cid];
+    let s = state.list.find((x) => x.id === state.active);
+    if (!s) {
+      s = { id: uid('s'), title: 'New chat', updated: nowTime(), messages: [] };
+      state.list.unshift(s);
+      state.active = s.id;
+    }
+    s.messages.push(msg);
+    if (msg.author === 'you' && (s.title === 'New chat' || !s.title)) {
+      s.title = msg.text.length > 42 ? msg.text.slice(0, 42) + '…' : msg.text;
+    }
+    s.updated = 'just now';
+    return d;
+  });
+
+  const selectChat = (id) => {
+    goChat(id);
+    const ch = tenant.channels.find((c) => c.id === id);
+    if (ch) go({ showContext: true }); // channels open with the members drawer
+    else go({ showContext: false });
+    if (ch && ch.unread) updateTenant((t) => ({ ...t, channels: t.channels.map((c) => (c.id === id ? { ...c, unread: 0 } : c)) }));
+  };
+
+  // open an agent or teammate from a channel member list
+  const openMember = (id) => { if (id) goChat(id); };
+
+  const addChannelMember = (id) => {
+    if (!id) return;
+    updateTenant((t) => ({ ...t, channels: t.channels.map((c) => (c.id === chatId && !(c.members || []).includes(id) ? { ...c, members: [...(c.members || (c.agentId ? [c.agentId] : [])), id] } : c)) }));
+    const m = tenant.agents.find((x) => x.id === id) || tenant.people.find((x) => x.id === id);
+    toast((m ? m.name : 'Member') + ' added to #' + channel.name);
+  };
+  const removeChannelMember = (id) => {
+    if (!id || (channel && id === channel.agentId)) return;
+    updateTenant((t) => ({ ...t, channels: t.channels.map((c) => (c.id === chatId ? { ...c, members: (c.members || []).filter((x) => x !== id) } : c)) }));
+    const m = tenant.agents.find((x) => x.id === id) || tenant.people.find((x) => x.id === id);
+    toast((m ? m.name : 'Member') + ' removed from #' + channel.name);
+  };
+
+  const respondFor = (ag, origText, cid, opts) => {
+    const delay = opts && opts.delay;
+    const mentioned = opts && opts.mentioned;
+    patch({ typing: true });
+    setTimeout(() => {
+      const isSlash = origText.trim().startsWith('/');
+      const mid = uid('m');
+      pushMsg(tenant.id, cid, {
+        id: mid, author: 'agent', agentId: ag.id, ts: nowTime(),
+        text: mentioned ? MENTION_REPLIES[Math.floor(Math.random() * MENTION_REPLIES.length)] : craftReply(ag, origText),
+        tools: isSlash || ag.tools.length === 0 ? undefined
+          : [{ name: ag.tools[0] + '.query', args: 'q: ' + origText.slice(0, 48), ms: 600 + Math.floor(Math.random() * 900) }]
+      });
+      patch({ typing: false, streamId: mid });
+      if (!mentioned && origText.trim().toLowerCase().startsWith('/schedule')) {
+        setTimeout(() => patch({ cronEdit: { id: null, name: '', agentId: ag.id, expr: '0 9 * * 1-5', human: '', enabled: true } }), 700);
+      }
+    }, delay || 850 + Math.random() * 550);
+  };
+
+  const send = (text) => {
+    const tid = tenant.id;
+    pushMsg(tid, chatId, { id: uid('m'), author: 'you', ts: nowTime(), text });
+    if (target.kind === 'person' || !chatAgent) return;
+    if (text.trim().toLowerCase().startsWith('/reset')) {
+      setDb((prev) => {
+        const d = clone(prev);
+        const th = d[tid].threads[chatId];
+        const s = th && th.list.find((x) => x.id === th.active);
+        if (s) { s.messages = []; s.title = 'New chat'; s.updated = nowTime(); }
+        return d;
+      });
+      toast('Thread cleared');
+      return;
+    }
+    if (target.kind === 'channel' && channelMembers) {
+      // mentioned agents respond as themselves; unmentioned messages fall to the primary agent
+      const mentionedAgents = parseMentions(text, channelMembers)
+        .filter((m) => m.kind === 'agent')
+        .map((m) => tenant.agents.find((a) => a.id === m.id))
+        .filter(Boolean);
+      if (mentionedAgents.length) {
+        mentionedAgents.forEach((ag, i) => respondFor(ag, text, chatId, { delay: 850 + i * 1200 + Math.random() * 400, mentioned: true }));
+        return;
+      }
+    }
+    respondFor(chatAgent, text, chatId);
+  };
+
+  // assistant-ui ActionBar Reload — regenerate produces an alternate branch
+  const refreshMessage = (mid) => {
+    if (target.kind === 'person' || !chatAgent) return;
+    const tid = tenant.id, cid = chatId;
+    const thState = getThreadState(db[tid], cid);
+    const s = thState.list.find((x) => x.id === thState.active);
+    const m = s && s.messages.find((x) => x.id === mid);
+    if (!m || m.author !== 'agent') return;
+    const cur = ((m.branches && (m.branches[m.branch || 0] || {}).text) || m.text) || '';
+    let next = cur;
+    for (let k = 0; k < 6 && next === cur; k++) next = REPLY_TEMPLATES[Math.floor(Math.random() * REPLY_TEMPLATES.length)];
+    patch({ typing: true });
+    setTimeout(() => {
+      setDb((prev) => {
+        const d = clone(prev);
+        const th = d[tid].threads[cid];
+        const sess = th && th.list.find((x) => x.id === th.active);
+        const mm = sess && sess.messages.find((x) => x.id === mid);
+        if (!mm) return prev;
+        mm.branches = [...variantsOf(mm), { text: next }];
+        mm.branch = mm.branches.length - 1;
+        return d;
+      });
+      patch({ typing: false, streamId: mid });
+    }, 650 + Math.random() * 450);
+  };
+
+  const branchNav = (mid, dir) => {
+    const tid = tenant.id, cid = chatId;
+    setDb((prev) => {
+      const d = clone(prev);
+      const th = d[tid].threads[cid];
+      const sess = th && th.list.find((x) => x.id === th.active);
+      const mm = sess && sess.messages.find((x) => x.id === mid);
+      if (!mm) return prev;
+      const count = (mm.branches || []).length || 1;
+      mm.branch = Math.min(count - 1, Math.max(0, (mm.branch || 0) + dir));
+      return d;
+    });
+    patch({ streamId: null });
+  };
+
+  // assistant-ui edit-and-resubmit — editing truncates the fork and re-runs
+  const editSubmit = (mid, newText) => {
+    const tid = tenant.id, cid = chatId;
+    setDb((prev) => {
+      const d = clone(prev);
+      const th = d[tid].threads[cid];
+      const sess = th && th.list.find((x) => x.id === th.active);
+      if (!sess) return prev;
+      const i = sess.messages.findIndex((x) => x.id === mid);
+      if (i < 0) return prev;
+      sess.messages[i] = { ...sess.messages[i], text: newText };
+      sess.messages = sess.messages.slice(0, i + 1);
+      return d;
+    });
+    if (target.kind === 'person' || !chatAgent) return;
+    respondFor(chatAgent, newText, cid);
+  };
+
+  // per-agent chat sessions (assistant-ui ThreadList semantics)
+  const newSession = () => {
+    if (target.kind !== 'agent') return;
+    const tid = tenant.id, cid = chatId;
+    setDb((prev) => {
+      const d = clone(prev);
+      const th = d[tid].threads[cid] = d[tid].threads[cid] || { active: null, list: [] };
+      const cur = th.list.find((x) => x.id === th.active);
+      if (cur && cur.messages.length === 0) return prev; // already on an empty session
+      const s = { id: uid('s'), title: 'New chat', updated: nowTime(), messages: [] };
+      th.list.unshift(s);
+      th.active = s.id;
+      return d;
+    });
+    patch({ typing: false, streamId: null });
+  };
+
+  const switchSession = (sid) => {
+    const tid = tenant.id, cid = chatId;
+    setDb((prev) => {
+      const d = clone(prev);
+      const th = d[tid].threads[cid];
+      if (th && !Array.isArray(th)) th.active = sid;
+      return d;
+    });
+    patch({ typing: false, streamId: null });
+  };
+
+  const deleteSession = (sid) => {
+    const tid = tenant.id, cid = chatId;
+    setDb((prev) => {
+      const d = clone(prev);
+      const th = d[tid].threads[cid];
+      if (!th || Array.isArray(th)) return prev;
+      th.list = th.list.filter((x) => x.id !== sid);
+      if (th.list.length === 0) {
+        const s = { id: uid('s'), title: 'New chat', updated: nowTime(), messages: [] };
+        th.list.push(s);
+        th.active = s.id;
+      } else if (th.active === sid) {
+        th.active = th.list[0].id;
+      }
+      return d;
+    });
+    patch({ typing: false, streamId: null });
+    toast('Session deleted');
+  };
+
+  const switchTenant = (id) => {
+    patch({ wsOpen: false });
+    go({ tenantId: id, view: 'chats', chatId: db[id].agents[0].id });
+    toast('Switched to ' + db[id].name);
+  };
+
+  // create ('new') or update an existing agent from the enriched config dialog
+  const upsertAgent = (values) => {
+    if (ui.configAgent === 'new') {
+      const id = uid('a');
+      updateTenant((t) => ({
+        ...t,
+        agents: [...t.agents, { id, ...values, status: 'idle', lastActive: 'just now' }],
+        threads: { ...t.threads, [id]: { active: null, list: [] } }
+      }));
+      patch({ configAgent: null });
+      goChat(id);
+      toast(values.name + ' deployed — it idles until its first message');
+    } else {
+      const aid = ui.configAgent;
+      updateTenant((t) => ({ ...t, agents: t.agents.map((a) => (a.id === aid ? { ...a, ...values } : a)) }));
+      patch({ configAgent: null });
+      toast(values.name + ' updated — new settings apply to the next run');
+    }
+  };
+
+  const createTenant = (t) => {
+    const norm = withSessions(t);
+    setDb((prev) => ({ ...prev, [norm.id]: norm }));
+    patch({ createWsOpen: false });
+    go({ tenantId: t.id, view: 'chats', chatId: t.agents.length ? t.agents[0].id : '' });
+    toast(t.name + ' created — you are its owner');
+  };
+  const deleteTenant = (id) => {
+    const rest = Object.keys(db).filter((k) => k !== id);
+    if (rest.length === 0) { toast('OnClaw keeps at least one workspace active', 'danger'); return; }
+    const nextId = rest[0];
+    const next = db[nextId];
+    setDb((prev) => { const nd = { ...prev }; delete nd[id]; return nd; });
+    patch({ settingsOpen: false });
+    go({ tenantId: nextId, view: 'chats', chatId: next.agents.length ? next.agents[0].id : '' });
+    toast('Workspace deleted — switched to ' + next.name);
+  };
+
+  const saveCron = (draft) => {
+    if (draft.id) {
+      updateTenant((t) => ({ ...t, cron: t.cron.map((j) => (j.id === draft.id ? { ...j, ...draft } : j)) }));
+      toast('“' + draft.name + '” saved — fires ' + draft.human.toLowerCase());
+    } else {
+      updateTenant((t) => ({ ...t, cron: [...t.cron, { ...draft, id: uid('cron'), next: 'per expression', last: null }] }));
+      toast('Schedule “' + draft.name + '” created');
+    }
+    patch({ cronEdit: null });
+  };
+  const toggleCron = (job) => {
+    updateTenant((t) => ({ ...t, cron: t.cron.map((j) => (j.id === job.id ? { ...j, enabled: !j.enabled } : j)) }));
+    toast((job.enabled ? 'Paused “' : 'Resumed “') + job.name + '”');
+  };
+  const deleteCron = (job) => {
+    updateTenant((t) => ({ ...t, cron: t.cron.filter((j) => j.id !== job.id) }));
+    patch({ cronEdit: null });
+    toast('Schedule “' + job.name + '” deleted');
+  };
+  const runNow = (job) => {
+    const rid = 'run_' + Math.floor(1000 + Math.random() * 8999);
+    updateTenant((t) => ({ ...t, runs: [{ id: rid, agentId: job.agentId, trigger: 'manual', when: nowTime(), dur: '—', tokens: '—', status: 'running' }, ...t.runs] }));
+    toast('Triggered “' + job.name + '”');
+    setTimeout(() => {
+      setDb((prev) => {
+        const t = clone(prev[tenant.id]);
+        t.runs = t.runs.map((r) => (r.id === rid ? { ...r, status: 'success', dur: '7s', tokens: '1.8k' } : r));
+        return { ...prev, [tenant.id]: t };
+      });
+    }, 1600);
+  };
+
+  const configureAgent = (id) => {
+    const aid = id || (chatAgent && chatAgent.id);
+    if (aid) patch({ configAgent: aid });
+  };
+  const newSchedule = () => patch({ cronEdit: { id: null, name: '', agentId: tenant.agents[0].id, expr: '0 9 * * 1-5', human: '', enabled: true } });
+  const copyText = (text) => {
+    if (navigator.clipboard) navigator.clipboard.writeText(text).then(() => toast('Copied to clipboard'), () => toast('Clipboard blocked by the browser', 'danger'));
+    else toast('Clipboard unavailable in this frame', 'danger');
+  };
+
+  return (
+    <div className="flex h-screen overflow-hidden font-sans antialiased">
+      <Rail view={pos.view} onNav={(v) => go({ view: v })} tenant={tenant} unread={unread}
+        onOpenSwitcher={() => patch({ wsOpen: !ui.wsOpen })}
+        onSettings={() => patch({ settingsOpen: true })}/>
+      <WorkspaceSwitcher open={ui.wsOpen} db={db} currentId={tenant.id}
+        onPick={switchTenant} onClose={() => patch({ wsOpen: false })}
+        onCreate={() => patch({ wsOpen: false, createWsOpen: true })}/>
+      {pos.view !== 'agents' && (
+        <div className="hidden shrink-0 md:flex">
+          <Sidebar view={pos.view} tenant={tenant} chatId={chatId} onSelect={selectChat}
+            activeIsAgent={!!agent} session={session} sessions={threadState.list}
+            onSwitchSession={switchSession} onNewSession={newSession} onDeleteSession={deleteSession}
+            onDeploy={() => patch({ configAgent: 'new' })} onNewSchedule={newSchedule}
+            onEditCron={(j) => patch({ cronEdit: j })}
+            onOpenSwitcher={() => patch({ wsOpen: !ui.wsOpen })}
+            search={search} setSearch={setSearch}/>
+        </div>
+      )}
+
+      {pos.view === 'chats' && (hasTarget ? (
+        <>
+          <ChatView tenant={tenant} target={target} agent={chatAgent} thread={thread}
+            session={session} channelMembers={channelMembers} onToggleMembers={() => go({ showContext: !pos.showContext })}
+            typing={ui.typing} streamingId={ui.streamId} busy={ui.typing || !!ui.streamId}
+            onSend={send} onCancel={() => patch({ typing: false, streamId: null })}
+            onDoneStream={() => patch({ streamId: null })}
+            onConfigure={() => configureAgent(chatAgent && chatAgent.id)}
+            onCopy={copyText} onRefresh={refreshMessage} onBranch={branchNav} onEditSubmit={editSubmit}
+            onAttach={() => toast('Attachments arrive with the storage integration — connect it in Settings → Integrations')}/>
+          {pos.showContext && target.kind === 'channel' && (
+            <div className="hidden xl:flex">
+              <ContextPanel channelMembers={channelMembers} candidates={memberCandidates}
+                primaryAgentId={channel ? channel.agentId : null}
+                onAddMember={addChannelMember} onRemoveMember={removeChannelMember}
+                onClose={() => go({ showContext: false })} onOpenMember={openMember}/>
+            </div>
+          )}
+        </>
+      ) : (
+        <OnboardingPane tenant={tenant}
+          onDeploy={() => patch({ configAgent: 'new' })}
+          onSettings={() => patch({ settingsOpen: true, settingsTab: 'workspace' })}/>
+      ))}
+      {pos.view === 'agents' && (
+        <AgentsView tenant={tenant}
+          onChat={(id) => goChat(id)}
+          onConfigure={configureAgent}
+          onDeploy={() => patch({ configAgent: 'new' })}/>
+      )}
+      {pos.view === 'cron' && (
+        <CronView tenant={tenant}
+          onEdit={(j) => patch({ cronEdit: j })}
+          onToggle={toggleCron} onRunNow={runNow} onNew={newSchedule}/>
+      )}
+      {pos.view === 'runs' && <RunsView tenant={tenant}/>}
+
+      {ui.settingsOpen && (
+        <SettingsModal tenant={tenant} tab={ui.settingsTab} onTab={(t) => patch({ settingsTab: t })}
+          onClose={() => patch({ settingsOpen: false })}
+          onUpdate={updateTenant} onToast={toast} onDeleteWorkspace={() => deleteTenant(tenant.id)}/>
+      )}
+      {ui.configAgent && (
+        <AgentConfigModal key={ui.configAgent}
+          draft={ui.configAgent === 'new' ? null : (tenant.agents.find((a) => a.id === ui.configAgent) || null)}
+          skillOptions={SKILLS.concat((tenant.skillLib || []).filter((s) => !SKILLS.some((r) => r.id === s.id)).map((s) => ({ id: s.id, label: s.name })))}
+          onClose={() => patch({ configAgent: null })} onSave={upsertAgent}/>
+      )}
+      {ui.cronEdit && (
+        <CronEditorModal job={ui.cronEdit} tenant={tenant}
+          onClose={() => patch({ cronEdit: null })} onSave={saveCron} onDelete={deleteCron}/>
+      )}
+      {ui.createWsOpen && (
+        <CreateWorkspaceModal onClose={() => patch({ createWsOpen: false })} onCreate={createTenant}
+          existingSubs={Object.values(db).map((t) => t.sub)}/>
+      )}
+      <Toasts toasts={ui.toasts}/>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>

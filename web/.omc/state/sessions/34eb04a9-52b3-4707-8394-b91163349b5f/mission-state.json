@@ -1,0 +1,53 @@
+{
+  "updatedAt": "2026-08-27T02:28:01.484Z",
+  "missions": [
+    {
+      "id": "session:34eb04a9-52b3-4707-8394-b91163349b5f:none",
+      "source": "session",
+      "name": "none",
+      "objective": "Session mission",
+      "createdAt": "2026-08-27T02:26:40.845Z",
+      "updatedAt": "2026-08-27T02:28:01.484Z",
+      "status": "done",
+      "workerCount": 1,
+      "taskCounts": {
+        "total": 1,
+        "pending": 0,
+        "blocked": 0,
+        "inProgress": 0,
+        "completed": 1,
+        "failed": 0
+      },
+      "agents": [
+        {
+          "name": "verify-shell:averify",
+          "role": "verify-shell",
+          "ownership": "averify-shell-1c46015c5a633dfe",
+          "status": "done",
+          "currentStep": null,
+          "latestUpdate": "completed",
+          "completedSummary": null,
+          "updatedAt": "2026-08-27T02:28:01.484Z"
+        }
+      ],
+      "timeline": [
+        {
+          "id": "session-start:averify-shell-1c46015c5a633dfe:2026-08-27T02:26:40.845Z",
+          "at": "2026-08-27T02:26:40.845Z",
+          "kind": "update",
+          "agent": "verify-shell:averify",
+          "detail": "started verify-shell:averify",
+          "sourceKey": "session-start:averify-shell-1c46015c5a633dfe"
+        },
+        {
+          "id": "session-stop:averify-shell-1c46015c5a633dfe:2026-08-27T02:28:01.484Z",
+          "at": "2026-08-27T02:28:01.484Z",
+          "kind": "completion",
+          "agent": "verify-shell:averify",
+          "detail": "completed",
+          "sourceKey": "session-stop:averify-shell-1c46015c5a633dfe"
+        }
+      ]
+    }
+  ]
+}

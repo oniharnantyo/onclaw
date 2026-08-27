@@ -1,0 +1,42 @@
+{
+  "agents": [
+    {
+      "agent_id": "averify-chat-cdf27240d5b06f3b",
+      "agent_type": "verify-chat",
+      "started_at": "2026-08-27T00:19:58.839Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-08-27T00:19:58.839Z",
+      "synthetic": true,
+      "telemetry_status": "unmatched_stop",
+      "telemetry_note": "SubagentStop arrived without a matching SubagentStart; native Agent/Task start telemetry was not observed."
+    },
+    {
+      "agent_id": "a8bc6632419bf7b8a",
+      "agent_type": "untracked-native-fork",
+      "started_at": "2026-08-27T01:32:26.958Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-08-27T01:32:26.958Z",
+      "synthetic": true,
+      "telemetry_status": "unmatched_stop",
+      "telemetry_note": "SubagentStop arrived without a matching SubagentStart; native Agent/Task start telemetry was not observed."
+    },
+    {
+      "agent_id": "averify-shell-1c46015c5a633dfe",
+      "agent_type": "verify-shell",
+      "started_at": "2026-08-27T02:26:40.845Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "synthetic": true,
+      "telemetry_status": "unmatched_stop",
+      "telemetry_note": "SubagentStop arrived without a matching SubagentStart; native Agent/Task start telemetry was not observed.",
+      "completed_at": "2026-08-27T02:28:01.484Z",
+      "duration_ms": 80639
+    }
+  ],
+  "total_spawned": 1,
+  "total_completed": 4,
+  "total_failed": 0,
+  "last_updated": "2026-08-27T02:28:01.488Z"
+}

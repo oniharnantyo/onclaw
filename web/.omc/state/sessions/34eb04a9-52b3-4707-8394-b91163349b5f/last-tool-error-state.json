@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"cat > /tmp/p6.js <<'ZZ'\\nimport { chromium } from '/Users/oniharnantyo/projects/onclaw-v2/web/node_modules/playwright/index.mjs';\\nconst B = 'http://localhost:5173';\\nconst browser = await...",
+  "error": "Exit code 1\nSYNTAX_OK\nPAGE-ERR: SyntaxError: The requested module '/node_modules/.vite/deps/react_jsx-runtime.js' does not provide an export named 'Fragment'\nPAGE-ERR: SyntaxError: The requested module '/node_modules/.vite/deps/react_jsx-runtime.js' does not provide an export named 'Fragment'\nPAGE-ERR: SyntaxError: The requested module '/node_modules/.vite/deps/react_jsx-runtime.js' does not provide an export named 'Fragment'\nBOOT sidebar: 0 rail: 0\nnode:internal/modules/run_main:123\n    trigger...",
+  "timestamp": "2026-08-27T01:56:21.615Z",
+  "retry_count": 1
+}
