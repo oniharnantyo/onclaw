@@ -1,7 +1,6 @@
-// @ts-nocheck
 import { cx } from "../../lib/helpers";
 
-export function Toggle({ on, onChange, label }) {
+export function Toggle({ on, onChange, label  }: any) {
   return (
     <button type="button" role="switch" aria-checked={on} aria-label={label} title={label}
       onClick={() => onChange(!on)}

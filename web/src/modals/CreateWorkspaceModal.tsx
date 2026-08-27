@@ -1,18 +1,14 @@
-// @ts-nocheck
 import { useState } from "react";
 import { cx, uid, slugify, fmtUses, providerOf } from "../lib/helpers";
-import { Icon } from "../components/ui/Icon";
 import { Modal } from "../components/ui/Modal";
 import { Toggle } from "../components/ui/Toggle";
-import { Avatar } from "../components/ui/Avatar";
-import { Chip } from "../components/ui/Chip";
 import { inputCls, labelCls } from "../components/ui/constants";
-import { PROVIDERS, MODELS, TOOLS, SKILLS, MCP_SERVERS } from "../data/seed";
+import { PROVIDERS, MODELS, TOOLS, SKILLS, MCP_SERVERS } from "../lib/constants";
 
 import { Segmented } from "../components/ui/Segmented";
 import { blankTenant } from "../data/seed";
 
-export function CreateWorkspaceModal({ onClose, onCreate, existingSubs }) {
+export function CreateWorkspaceModal({ onClose, onCreate, existingSubs  }: any) {
   const [name, setName] = useState('');
   const [sub, setSub] = useState('');
   const [slugTouched, setSlugTouched] = useState(false);

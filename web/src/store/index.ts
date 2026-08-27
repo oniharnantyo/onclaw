@@ -1,8 +1,8 @@
-// @ts-nocheck
 import { create } from 'zustand';
 import { useEffect } from 'react';
 import type { Workspace, Agent, Message, CronJob, Channel } from '../data/types';
-import { seedDb, MENTION_REPLIES, REPLY_TEMPLATES } from '../data/seed';
+import { seedDb } from "../data/seed";
+import { MENTION_REPLIES, REPLY_TEMPLATES } from "../lib/constants";
 import { uid, nowTime, parseMentions, craftReply } from '../lib/helpers';
 
 export const useSearchShortcut = () => {
@@ -57,7 +57,7 @@ export interface AppState {
   toast: (text: string, kind?: string) => void;
   
   updateTenant: (tenantId: string, fn: (t: Workspace) => Workspace) => void;
-  pushMsg: (tid: string, cid: string, msg: Message) => void;
+  pushMsg: (tid: string, cid: string, msg: ChatMessage) => void;
   
   selectChat: (id: string) => void;
   openMember: (id: string) => void;
@@ -75,6 +75,7 @@ export interface AppState {
   deleteSession: (sid: string) => void;
   switchTenant: (id: string) => void;
   upsertAgent: (values: Partial<Agent>) => void;
+  cancelReply: () => void;
   
   runNow: (job: CronJob) => void;
   toggleCron: (job: CronJob) => void;
@@ -109,8 +110,8 @@ export const useStore = create<AppState>((set, get) => ({
   },
   search: '',
 
-  patchUi: (p) => set((s) => ({ ui: { ...s.ui, ...p } })),
-  goPos: (p) => set((s) => {
+  patchUi: (p) => set((s: any) => ({ ui: { ...s.ui, ...p } })),
+  goPos: (p) => set((s: any) => {
     const newPos = { ...s.pos, ...p };
     savePos(newPos);
     return { pos: newPos };
@@ -119,19 +120,19 @@ export const useStore = create<AppState>((set, get) => ({
   
   toast: (text, kind) => {
     const id = uid('t');
-    set((s) => ({ ui: { ...s.ui, toasts: [...s.ui.toasts, { id, text, kind }] } }));
+    set((s: any) => ({ ui: { ...s.ui, toasts: [...s.ui.toasts, { id, text, kind }] } }));
     setSafeTimer(`toast-${id}`, () => {
-      set((s) => ({ ui: { ...s.ui, toasts: s.ui.toasts.filter((t) => t.id !== id) } }));
+      set((s: any) => ({ ui: { ...s.ui, toasts: s.ui.toasts.filter((t: any) => t.id !== id) } }));
     }, 3200);
   },
 
-  updateTenant: (tenantId, fn) => set((s) => {
+  updateTenant: (tenantId, fn) => set((s: any) => {
     const t = s.db[tenantId];
     if (!t) return s;
     return { db: { ...s.db, [tenantId]: fn(JSON.parse(JSON.stringify(t))) } };
   }),
 
-  pushMsg: (tid, cid, msg) => set((s) => {
+  pushMsg: (tid, cid, msg) => set((s: any) => {
     const d = JSON.parse(JSON.stringify(s.db));
     const t = d[tid];
     if (!t) return s;
@@ -159,13 +160,13 @@ export const useStore = create<AppState>((set, get) => ({
     state.goPos({ view: 'chats', chatId: id });
     const t = state.db[state.pos.tenantId];
     if (!t) return;
-    const ch = t.channels.find((c) => c.id === id);
+    const ch = t.channels.find((c: any) => c.id === id);
     if (ch) state.goPos({ showContext: true });
     else state.goPos({ showContext: false });
     if (ch && ch.unread) {
       state.updateTenant(state.pos.tenantId, (tenant) => ({
         ...tenant,
-        channels: tenant.channels.map((c) => (c.id === id ? { ...c, unread: 0 } : c))
+        channels: tenant.channels.map((c: any) => (c.id === id ? { ...c, unread: 0 } : c))
       }));
     }
   },
@@ -180,11 +181,11 @@ export const useStore = create<AppState>((set, get) => ({
     const tid = state.pos.tenantId;
     state.updateTenant(tid, (t) => ({
       ...t,
-      channels: t.channels.map((c) => (c.id === chatId && !(c.members || []).includes(id) ? { ...c, members: [...(c.members || (c.agentId ? [c.agentId] : [])), id] } : c))
+      channels: t.channels.map((c: any) => (c.id === chatId && !(c.members || []).includes(id) ? { ...c, members: [...(c.members || (c.agentId ? [c.agentId] : [])), id] } : c))
     }));
     const t = state.db[tid];
-    const channel = t.channels.find((c) => c.id === chatId);
-    const m = t.agents.find((x) => x.id === id) || t.people.find((x) => x.id === id);
+    const channel = t.channels.find((c: any) => c.id === chatId);
+    const m = t.agents.find((x: any) => x.id === id) || t.people.find((x: any) => x.id === id);
     if (channel) state.toast((m ? m.name : 'Member') + ' added to #' + channel.name);
   },
 
@@ -192,13 +193,13 @@ export const useStore = create<AppState>((set, get) => ({
     const state = get();
     const tid = state.pos.tenantId;
     const t = state.db[tid];
-    const channel = t.channels.find((c) => c.id === chatId);
+    const channel = t.channels.find((c: any) => c.id === chatId);
     if (!id || (channel && id === channel.agentId)) return;
     state.updateTenant(tid, (tenant) => ({
       ...tenant,
-      channels: tenant.channels.map((c) => (c.id === chatId ? { ...c, members: (c.members || []).filter((x) => x !== id) } : c))
+      channels: tenant.channels.map((c: any) => (c.id === chatId ? { ...c, members: (c.members || []).filter((x: any) => x !== id) } : c))
     }));
-    const m = t.agents.find((x) => x.id === id) || t.people.find((x) => x.id === id);
+    const m = t.agents.find((x: any) => x.id === id) || t.people.find((x: any) => x.id === id);
     if (channel) state.toast((m ? m.name : 'Member') + ' removed from #' + channel.name);
   },
 
@@ -242,10 +243,10 @@ export const useStore = create<AppState>((set, get) => ({
     const t = state.db[tid];
     
     // get targets
-    const agent = t.agents.find((a) => a.id === cid) || null;
-    const channel = t.channels.find((c) => c.id === cid) || null;
-    const person = t.people.find((p) => p.id === cid) || null;
-    const chatAgent = agent || (channel ? t.agents.find((a) => a.id === channel.agentId) || null : null);
+    const agent = t.agents.find((a: any) => a.id === cid) || null;
+    const channel = t.channels.find((c: any) => c.id === cid) || null;
+    const person = t.people.find((p: any) => p.id === cid) || null;
+    const chatAgent = agent || (channel ? t.agents.find((a: any) => a.id === channel.agentId) || null : null);
     const target = agent ? { kind: 'agent', obj: agent } : channel ? { kind: 'channel', obj: channel } : { kind: 'person', obj: person };
 
     state.pushMsg(tid, cid, { id: uid('m'), author: 'you', ts: nowTime(), text });
@@ -255,7 +256,7 @@ export const useStore = create<AppState>((set, get) => ({
     if (text.trim().toLowerCase().startsWith('/reset')) {
       state.updateTenant(tid, (tenant) => {
         const th = tenant.threads[cid];
-        const s = th && th.list.find((x) => x.id === th.active);
+        const s = th && th.list.find((x: any) => x.id === th.active);
         if (s) { s.messages = []; s.title = 'New chat'; s.updated = nowTime(); }
         return tenant;
       });
@@ -275,7 +276,7 @@ export const useStore = create<AppState>((set, get) => ({
       
       const mentionedAgents = parseMentions(text, channelMembers)
         .filter((m: any) => m.kind === 'agent')
-        .map((m: any) => t.agents.find((a) => a.id === m.id))
+        .map((m: any) => t.agents.find((a: any) => a.id === m.id))
         .filter(Boolean) as Agent[];
         
       if (mentionedAgents.length > 0) {
@@ -293,19 +294,19 @@ export const useStore = create<AppState>((set, get) => ({
     const cid = state.pos.chatId;
     const t = state.db[tid];
     
-    const agent = t.agents.find((a) => a.id === cid) || null;
-    const channel = t.channels.find((c) => c.id === cid) || null;
-    const chatAgent = agent || (channel ? t.agents.find((a) => a.id === channel.agentId) || null : null);
+    const agent = t.agents.find((a: any) => a.id === cid) || null;
+    const channel = t.channels.find((c: any) => c.id === cid) || null;
+    const chatAgent = agent || (channel ? t.agents.find((a: any) => a.id === channel.agentId) || null : null);
     
     if (!chatAgent) return;
     
     const th = t.threads[cid];
-    const s = th && th.list.find((x) => x.id === th.active);
-    const m = s && s.messages.find((x) => x.id === mid);
+    const s = th && th.list.find((x: any) => x.id === th.active);
+    const m = s && s.messages.find((x: any) => x.id === mid);
     if (!m || m.author !== 'agent') return;
     
-    const branches = m.branches || [];
-    const curBranch = branches[m.branch || 0];
+    const branches = (m as any).branches || [];
+    const curBranch = branches[(m as any).branch || 0];
     const cur = (curBranch && curBranch.text) ? curBranch.text : m.text || '';
     
     let next = cur;
@@ -315,12 +316,12 @@ export const useStore = create<AppState>((set, get) => ({
     setSafeTimer(`refresh-${mid}`, () => {
       get().updateTenant(tid, (tenant) => {
         const _th = tenant.threads[cid];
-        const _sess = _th && _th.list.find((x) => x.id === _th.active);
-        const _mm = _sess && _sess.messages.find((x) => x.id === mid);
+        const _sess = _th && _th.list.find((x: any) => x.id === _th.active);
+        const _mm = _sess && _sess.messages.find((x: any) => x.id === mid);
         if (_mm) {
-           const existingBranches = _mm.branches || [{ text: _mm.text } as Message];
-           _mm.branches = [...existingBranches, { text: next } as Message];
-           _mm.branch = _mm.branches.length - 1;
+           const existingBranches = (_mm as any).branches || [{ text: _mm.text } as ChatMessage];
+           (_mm as any).branches = [...existingBranches, { text: next } as ChatMessage];
+           (_mm as any).branch = _mm.branches.length - 1;
         }
         return tenant;
       });
@@ -335,11 +336,11 @@ export const useStore = create<AppState>((set, get) => ({
     
     state.updateTenant(tid, (tenant) => {
       const th = tenant.threads[cid];
-      const sess = th && th.list.find((x) => x.id === th.active);
-      const mm = sess && sess.messages.find((x) => x.id === mid);
+      const sess = th && th.list.find((x: any) => x.id === th.active);
+      const mm = sess && sess.messages.find((x: any) => x.id === mid);
       if (mm) {
-        const count = (mm.branches || []).length || 1;
-        mm.branch = Math.min(count - 1, Math.max(0, (mm.branch || 0) + dir));
+        const count = ((mm as any).branches || []).length || 1;
+        (mm as any).branch = Math.min(count - 1, Math.max(0, ((mm as any).branch || 0) + dir));
       }
       return tenant;
     });
@@ -353,9 +354,9 @@ export const useStore = create<AppState>((set, get) => ({
     
     state.updateTenant(tid, (tenant) => {
       const th = tenant.threads[cid];
-      const sess = th && th.list.find((x) => x.id === th.active);
+      const sess = th && th.list.find((x: any) => x.id === th.active);
       if (sess) {
-        const i = sess.messages.findIndex((x) => x.id === mid);
+        const i = sess.messages.findIndex((x: any) => x.id === mid);
         if (i >= 0) {
           sess.messages[i] = { ...sess.messages[i], text: newText };
           sess.messages = sess.messages.slice(0, i + 1);
@@ -365,10 +366,10 @@ export const useStore = create<AppState>((set, get) => ({
     });
     
     const t = get().db[tid];
-    const agent = t.agents.find((a) => a.id === cid) || null;
-    const channel = t.channels.find((c) => c.id === cid) || null;
-    const person = t.people.find((p) => p.id === cid) || null;
-    const chatAgent = agent || (channel ? t.agents.find((a) => a.id === channel.agentId) || null : null);
+    const agent = t.agents.find((a: any) => a.id === cid) || null;
+    const channel = t.channels.find((c: any) => c.id === cid) || null;
+    const person = t.people.find((p: any) => p.id === cid) || null;
+    const chatAgent = agent || (channel ? t.agents.find((a: any) => a.id === channel.agentId) || null : null);
     
     if (person || !chatAgent) return;
     get().respondFor(tid, cid, chatAgent, newText);
@@ -379,12 +380,12 @@ export const useStore = create<AppState>((set, get) => ({
     const tid = state.pos.tenantId;
     const cid = state.pos.chatId;
     const t = state.db[tid];
-    const target = t.agents.find((a) => a.id === cid) ? 'agent' : null;
+    const target = t.agents.find((a: any) => a.id === cid) ? 'agent' : null;
     if (target !== 'agent') return;
     
     state.updateTenant(tid, (tenant) => {
       const th = tenant.threads[cid] = tenant.threads[cid] || { active: null, list: [] };
-      const cur = th.list.find((x) => x.id === th.active);
+      const cur = th.list.find((x: any) => x.id === th.active);
       if (cur && cur.messages.length === 0) return tenant;
       const s = { id: uid('s'), title: 'New chat', updated: nowTime(), messages: [] };
       th.list.unshift(s);
@@ -413,7 +414,7 @@ export const useStore = create<AppState>((set, get) => ({
     state.updateTenant(tid, (tenant) => {
       const th = tenant.threads[cid];
       if (!th || Array.isArray(th)) return tenant;
-      th.list = th.list.filter((x) => x.id !== sid);
+      th.list = th.list.filter((x: any) => x.id !== sid);
       if (th.list.length === 0) {
         const s = { id: uid('s'), title: 'New chat', updated: nowTime(), messages: [] };
         th.list.push(s);
@@ -453,7 +454,7 @@ export const useStore = create<AppState>((set, get) => ({
       const aid = ui.configAgent;
       state.updateTenant(tid, (t) => ({
         ...t,
-        agents: t.agents.map((a) => (a.id === aid ? { ...a, ...values } as Agent : a))
+        agents: t.agents.map((a: any) => (a.id === aid ? { ...a, ...values } as Agent : a))
       }));
       state.patchUi({ configAgent: null });
       state.toast(values.name + ' updated — new settings apply to the next run');
@@ -463,17 +464,26 @@ export const useStore = create<AppState>((set, get) => ({
   runNow: (job) => {
     const state = get();
     const rid = 'run_' + Math.floor(1000 + Math.random() * 8999);
-    state.updateTenant(state.pos.tenantId, (t) => ({
+    const tid = state.pos.tenantId;
+    state.updateTenant(tid, (t) => ({
       ...t,
       runs: [{ id: rid, agentId: job.agentId, trigger: 'manual', when: nowTime(), dur: '—', tokens: '—', status: 'running' } as any, ...t.runs]
     }));
     state.toast('Triggered “' + job.name + '”');
     
     setSafeTimer(`run-${rid}`, () => {
-      get().updateTenant(get().pos.tenantId, (t) => ({
+      get().updateTenant(tid, (t) => ({
         ...t,
-        runs: t.runs.map((r) => (r.id === rid ? { ...r, status: 'success', dur: '7s', tokens: '1.8k' } : r))
+        runs: t.runs.map((r: any) => (r.id === rid ? { ...r, status: 'success', dur: '7s', tokens: '1.8k' } : r))
       }));
+      get().pushMsg(tid, job.agentId, {
+        id: uid('m'),
+        author: 'agent',
+        agentId: job.agentId,
+        ts: nowTime(),
+        text: 'Scheduled execution for “' + job.name + '” completed successfully.',
+        cron: job.id
+      });
     }, 1600);
   },
 
@@ -481,7 +491,7 @@ export const useStore = create<AppState>((set, get) => ({
     const state = get();
     state.updateTenant(state.pos.tenantId, (t) => ({
       ...t,
-      cron: t.cron.map((j) => (j.id === job.id ? { ...j, enabled: !j.enabled } : j))
+      cron: t.cron.map((j: any) => (j.id === job.id ? { ...j, enabled: !j.enabled } : j))
     }));
     state.toast((job.enabled ? 'Paused “' : 'Resumed “') + job.name + '”');
   },
@@ -490,7 +500,7 @@ export const useStore = create<AppState>((set, get) => ({
     const state = get();
     state.updateTenant(state.pos.tenantId, (t) => ({
       ...t,
-      cron: t.cron.filter((j) => j.id !== job.id)
+      cron: t.cron.filter((j: any) => j.id !== job.id)
     }));
     state.patchUi({ cronEdit: null });
     state.toast('Schedule “' + job.name + '” deleted');
@@ -501,7 +511,7 @@ export const useStore = create<AppState>((set, get) => ({
     if (draft.id) {
       state.updateTenant(state.pos.tenantId, (t) => ({
         ...t,
-        cron: t.cron.map((j) => (j.id === draft.id ? { ...j, ...draft } as CronJob : j))
+        cron: t.cron.map((j: any) => (j.id === draft.id ? { ...j, ...draft } as CronJob : j))
       }));
       state.toast('“' + draft.name + '” saved — fires ' + (draft.human || '').toLowerCase());
     } else {
@@ -518,7 +528,7 @@ export const useStore = create<AppState>((set, get) => ({
     const state = get();
     // the actual normalization using `withSessions` shouldn't modify the argument, 
     // but we trust `ws` is valid since it's already normalized by `blankTenant`
-    set((s) => ({ db: { ...s.db, [ws.id]: ws } }));
+    set((s: any) => ({ db: { ...s.db, [ws.id]: ws } }));
     state.patchUi({ createWsOpen: false });
     state.goPos({ tenantId: ws.id, view: 'chats', chatId: ws.agents.length ? ws.agents[0].id : '' });
     state.toast(ws.name + ' created — you are its owner');
@@ -526,14 +536,14 @@ export const useStore = create<AppState>((set, get) => ({
 
   deleteWorkspace: (id) => {
     const state = get();
-    const rest = Object.keys(state.db).filter((k) => k !== id);
+    const rest = Object.keys(state.db).filter((k: any) => k !== id);
     if (rest.length === 0) {
       state.toast('OnClaw keeps at least one workspace active', 'danger');
       return;
     }
     const nextId = rest[0];
     const next = state.db[nextId];
-    set((s) => {
+    set((s: any) => {
       const nd = { ...s.db };
       delete nd[id];
       return { db: nd };
@@ -545,17 +555,17 @@ export const useStore = create<AppState>((set, get) => ({
 }));
 
 // Export selectors
-export const useWorkspace = () => useStore((s) => s.db[s.pos.tenantId]);
+export const useWorkspace = () => useStore((s: any) => s.db[s.pos.tenantId]);
 export const useTenant = useWorkspace;
-export const useThread = (chatId: string) => useStore((s) => {
+export const useThread = (chatId: string) => useStore((s: any) => {
   const t = s.db[s.pos.tenantId];
   if (!t || !t.threads[chatId]) return { active: null, list: [] };
   const th = t.threads[chatId];
   if (Array.isArray(th)) return th.length ? { active: 's0', list: [{ id: 's0', title: 'Chat', updated: '', messages: th }] } : { active: null, list: [] };
   return th;
 });
-export const useSessions = (chatId: string) => useStore((s) => {
+export const useSessions = (chatId: string) => useStore((s: any) => {
   const th = s.db[s.pos.tenantId]?.threads[chatId];
   return th && !Array.isArray(th) ? th.list : [];
 });
-export const useRuns = () => useStore((s) => s.db[s.pos.tenantId]?.runs || []);
+export const useRuns = () => useStore((s: any) => s.db[s.pos.tenantId]?.runs || []);

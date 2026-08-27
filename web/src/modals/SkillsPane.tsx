@@ -1,24 +1,21 @@
-// @ts-nocheck
 import { useState } from "react";
 import { cx, uid, slugify, fmtUses, providerOf } from "../lib/helpers";
 import { Icon } from "../components/ui/Icon";
-import { Modal } from "../components/ui/Modal";
 import { Toggle } from "../components/ui/Toggle";
-import { Avatar } from "../components/ui/Avatar";
 import { Chip } from "../components/ui/Chip";
 import { inputCls, labelCls } from "../components/ui/constants";
-import { PROVIDERS, MODELS, TOOLS, SKILLS, MCP_SERVERS } from "../data/seed";
+import { PROVIDERS, MODELS, TOOLS, SKILLS, MCP_SERVERS } from "../lib/constants";
 
-export function SkillsPane({ tenant, onUpdate, onToast }) {
+export function SkillsPane({ tenant, onUpdate, onToast }: { tenant: Workspace, onUpdate: (fn: (t: Workspace) => Workspace) => void, onToast: (msg: string, type?: string) => void }) {
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ name: '', desc: '' });
   const lib = tenant.skillLib || [];
-  const usersOf = (id) => tenant.agents.filter((a) => (a.skills || []).includes(id));
+  const usersOf = (id) => tenant.agents.filter((a: any) => (a.skills || []).includes(id));
   const install = () => {
     const name = form.name.trim();
     let slug = slugify(name) || uid('sk');
-    while (lib.some((x) => x.id === slug)) slug += '-2';
-    onUpdate((t) => ({ ...t, skillLib: [...(t.skillLib || []),
+    while (lib.some((x: any) => x.id === slug)) slug += '-2';
+    onUpdate((t: any) => ({ ...t, skillLib: [...(t.skillLib || []),
       { id: slug, name, version: '0.1.0', desc: form.desc.trim() || 'Custom workspace skill — no description yet.', uses: 0, enabled: true, source: 'workspace' }] }));
     onToast(name + ' installed — assign it from any agent\'s capabilities');
     setForm({ name: '', desc: '' });
@@ -51,7 +48,7 @@ export function SkillsPane({ tenant, onUpdate, onToast }) {
       )}
 
       <ul className="divide-y divide-[var(--border-soft)]">
-        {lib.map((s) => {
+        {lib.map((s: any) => {
           const users = usersOf(s.id);
           return (
             <li key={s.id} className={cx('flex items-center gap-3 py-3', !s.enabled && 'opacity-70')} data-od-id={'skill-' + s.id}>
@@ -67,13 +64,13 @@ export function SkillsPane({ tenant, onUpdate, onToast }) {
                 </div>
                 <p className="mt-0.5 text-[12px] leading-4 text-muted">{s.desc}</p>
               </div>
-              <div className="shrink-0 text-right" title={users.map((u) => u.name).join(', ') || undefined}>
+              <div className="shrink-0 text-right" title={users.map((u: any) => u.name).join(', ') || undefined}>
                 <p className="font-mono text-[11px] text-fg2">{fmtUses(s.uses)} {s.uses === 1 ? 'run' : 'runs'}</p>
                 <p className="font-mono text-[11px] text-muted">{users.length === 0 ? 'no agents' : users.length + (users.length === 1 ? ' agent' : ' agents')}</p>
               </div>
               <Toggle on={s.enabled} label={'Enable ' + s.name}
-                onChange={(v) => {
-                  onUpdate((t) => ({ ...t, skillLib: t.skillLib.map((x) => (x.id === s.id ? { ...x, enabled: v } : x)) }));
+                onChange={(v: boolean) => {
+                  onUpdate((t: any) => ({ ...t, skillLib: t.skillLib.map((x: Skill) => (x.id === s.id ? { ...x, enabled: v } : x)) }));
                   onToast(v ? s.name + ' enabled' : s.name + ' disabled — agents fall back to base behavior');
                 }}/>
             </li>

@@ -1,12 +1,9 @@
-// @ts-nocheck
-import React from "react";
-import { cx } from "../lib/helpers";
 import { Icon } from "../components/ui/Icon";
 import { ViewShell } from "../components/ui/ViewShell";
 import { AgentCard } from "./AgentCard";
 
-export function AgentsView({ tenant, onChat, onConfigure, onDeploy }) {
-  const running = tenant.agents.filter((a) => a.status === 'running').length;
+export function AgentsView({ tenant, onChat, onConfigure, onDeploy }: { tenant: Workspace, onChat: (id: string) => void, onConfigure: (id: string) => void, onDeploy: () => void }) {
+  const running = tenant.agents.filter((a: any) => a.status === 'running').length;
   return (
     <ViewShell odId="agents-view" title="Agents"
       sub={tenant.agents.length + ' agents in ' + tenant.name + ' — ' + running + ' running right now. Configuration lives in Settings → Agents.'}
@@ -17,7 +14,7 @@ export function AgentsView({ tenant, onChat, onConfigure, onDeploy }) {
         </button>
       }>
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        {tenant.agents.map((a) => (
+        {tenant.agents.map((a: Agent) => (
           <AgentCard key={a.id} a={a} onChat={() => onChat(a.id)} onConfigure={() => onConfigure(a.id)}/>
         ))}
         {tenant.agents.length === 0 && (

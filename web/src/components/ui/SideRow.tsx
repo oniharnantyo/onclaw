@@ -1,7 +1,6 @@
-// @ts-nocheck
 import { cx } from "../../lib/helpers";
 
-export function SideRow({ active, icon, label, sub, right, onClick, odId, title }) {
+export function SideRow({ active, icon, label, sub, right, onClick, odId, title  }: any) {
   return (
     <button type="button" onClick={onClick} data-od-id={odId} title={title || label}
       className={cx('flex h-[30px] w-full items-center gap-2 rounded-md px-2.5 text-left transition-colors',

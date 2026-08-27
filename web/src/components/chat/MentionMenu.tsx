@@ -1,4 +1,3 @@
-// @ts-nocheck
 import React from "react";
 import { cx, memberHandle } from "../../lib/helpers";
 import { Icon } from "../ui/Icon";
@@ -6,9 +5,9 @@ import { Avatar } from "../ui/Avatar";
 import { StatusDot } from "../ui/StatusDot";
 import { MentionText } from "../ui/MentionText";
 import { Chip } from "../ui/Chip";
-import { STATUS, COMMANDS } from "../../data/seed";
+import { STATUS, COMMANDS } from "../../lib/constants";
 
-export function MentionMenu({ options, idx, onPick }) {
+export function MentionMenu({ options, idx, onPick  }: any) {
   if (!options.length) return null;
   return (
     <div className="od-pop absolute bottom-full left-0 right-0 mb-2 overflow-hidden rounded-md border border-line bg-warm shadow-[var(--elev-raised)]" data-od-id="mention-menu">

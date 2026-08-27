@@ -1,9 +1,8 @@
-// @ts-nocheck
 import { useEffect } from "react";
 import { cx } from "../../lib/helpers";
 import { Icon } from "./Icon";
 
-export function Modal({ title, onClose, children, footer, wide, odId }) {
+export function Modal({ title, onClose, children, footer, wide, odId  }: any) {
   useEffect(() => {
     const h = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', h);

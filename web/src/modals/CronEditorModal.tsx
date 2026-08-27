@@ -1,15 +1,12 @@
-// @ts-nocheck
 import { useState } from "react";
 import { cx, uid, slugify, fmtUses, providerOf } from "../lib/helpers";
 import { Icon } from "../components/ui/Icon";
 import { Modal } from "../components/ui/Modal";
 import { Toggle } from "../components/ui/Toggle";
-import { Avatar } from "../components/ui/Avatar";
-import { Chip } from "../components/ui/Chip";
 import { inputCls, labelCls } from "../components/ui/constants";
-import { PROVIDERS, MODELS, TOOLS, SKILLS, MCP_SERVERS } from "../data/seed";
+import { PROVIDERS, MODELS, TOOLS, SKILLS, MCP_SERVERS } from "../lib/constants";
 
-export function CronEditorModal({ job, tenant, onClose, onSave, onDelete }) {
+export function CronEditorModal({ job, tenant, onClose, onSave, onDelete  }: any) {
   const isNew = !job.id;
   const [name, setName] = useState(job.name);
   const [agentId, setAgentId] = useState(job.agentId || tenant.agents[0].id);
@@ -41,7 +38,7 @@ export function CronEditorModal({ job, tenant, onClose, onSave, onDelete }) {
           <div>
             <label className={labelCls} htmlFor="cr-agent">Agent</label>
             <select id="cr-agent" className={inputCls} value={agentId} onChange={(e) => setAgentId(e.target.value)}>
-              {tenant.agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+              {tenant.agents.map((a: any) => <option key={a.id} value={a.id}>{a.name}</option>)}
             </select>
           </div>
           <div>

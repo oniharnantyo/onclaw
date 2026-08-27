@@ -1,15 +1,7 @@
-// @ts-nocheck
 import { useState } from "react";
-import { cx, uid, slugify, fmtUses, providerOf } from "../lib/helpers";
 import { Icon } from "../components/ui/Icon";
-import { Modal } from "../components/ui/Modal";
-import { Toggle } from "../components/ui/Toggle";
-import { Avatar } from "../components/ui/Avatar";
-import { Chip } from "../components/ui/Chip";
-import { inputCls, labelCls } from "../components/ui/constants";
-import { PROVIDERS, MODELS, TOOLS, SKILLS, MCP_SERVERS } from "../data/seed";
 
-export function KeyRow({ k, onUpdate, onToast }) {
+export function KeyRow({ k, onUpdate, onToast  }: any) {
   const [shown, setShown] = useState(false);
   return (
     <li className="flex items-center gap-3 py-3" data-od-id={'key-' + k.id}>
@@ -21,11 +13,17 @@ export function KeyRow({ k, onUpdate, onToast }) {
         className="flex h-8 w-8 items-center justify-center rounded-md text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] hover:text-fg2">
         <Icon name="eye" size={14}/>
       </button>
-      <button type="button" aria-label="Copy key" onClick={() => { navigator.clipboard && navigator.clipboard.writeText(k.full).then(() => onToast('Key copied to clipboard'), () => onToast('Clipboard blocked by the browser', 'danger')); }}
+      <button type="button" aria-label="Copy key" onClick={() => { 
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(k.full).then(() => onToast('Key copied to clipboard'), () => onToast('Clipboard blocked by the browser', 'danger'));
+        } else {
+          onToast('Clipboard API not available', 'danger');
+        }
+      }}
         className="flex h-8 w-8 items-center justify-center rounded-md text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] hover:text-fg2">
         <Icon name="copy" size={14}/>
       </button>
-      <button type="button" onClick={() => { onUpdate((t) => ({ ...t, keys: t.keys.filter((x) => x.id !== k.id) })); onToast(k.name + ' revoked', 'danger'); }}
+      <button type="button" onClick={() => { onUpdate((t: any) => ({ ...t, keys: t.keys.filter((x: any) => x.id !== k.id) })); onToast(k.name + ' revoked', 'danger'); }}
         className="h-8 rounded-md px-2.5 text-[12px] font-medium text-danger transition-colors hover:bg-[color-mix(in_oklab,var(--danger)_12%,transparent)]">
         Revoke
       </button>

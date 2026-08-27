@@ -1,4 +1,3 @@
-// @ts-nocheck
 import React from "react";
 import { cx, memberHandle } from "../../lib/helpers";
 import { Icon } from "../ui/Icon";
@@ -6,9 +5,9 @@ import { Avatar } from "../ui/Avatar";
 import { StatusDot } from "../ui/StatusDot";
 import { MentionText } from "../ui/MentionText";
 import { Chip } from "../ui/Chip";
-import { STATUS, COMMANDS } from "../../data/seed";
+import { STATUS, COMMANDS } from "../../lib/constants";
 
-export function ChatHeader({ target, agent, channelMembers, onToggleMembers, onConfigure }) {
+export function ChatHeader({ target, agent, channelMembers, onToggleMembers, onConfigure  }: any) {
   const t = target;
   return (
     <header data-od-id="chat-header"
@@ -38,7 +37,7 @@ export function ChatHeader({ target, agent, channelMembers, onToggleMembers, onC
           <button type="button" onClick={onToggleMembers} data-od-id="btn-channel-members"
             title="Show members"
             className="flex items-center -space-x-1.5 rounded-md transition-transform hover:scale-[1.04]">
-            {channelMembers.slice(0, 4).map((m) => (
+            {channelMembers.slice(0, 4).map((m: any) => (
               <span key={m.id} className="rounded-md ring-2 ring-[var(--bg)]">
                 <Avatar name={m.name} kind={m.kind === 'agent' ? 'agent' : 'other'} size={22}/>
               </span>

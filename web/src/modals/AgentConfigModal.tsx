@@ -1,20 +1,17 @@
-// @ts-nocheck
 import { useState } from "react";
 import { cx, uid, slugify, fmtUses, providerOf } from "../lib/helpers";
 import { Icon } from "../components/ui/Icon";
 import { Modal } from "../components/ui/Modal";
 import { Toggle } from "../components/ui/Toggle";
-import { Avatar } from "../components/ui/Avatar";
-import { Chip } from "../components/ui/Chip";
 import { inputCls, labelCls } from "../components/ui/constants";
-import { PROVIDERS, MODELS, TOOLS, SKILLS, MCP_SERVERS } from "../data/seed";
+import { PROVIDERS, MODELS, TOOLS, SKILLS, MCP_SERVERS } from "../lib/constants";
 
 import { Segmented } from "../components/ui/Segmented";
 import { OptionChips } from "../components/ui/OptionChips";
 import { MicroLabel } from "../components/ui/MicroLabel";
 const TOOL_ICON = { web: "globe", files: "file", shell: "terminal", api: "link", db: "db" };
 
-export function AgentConfigModal({ draft, onClose, onSave, skillOptions }) {
+export function AgentConfigModal({ draft, onClose, onSave, skillOptions  }: any) {
   const isEdit = !!draft;
   const [name, setName] = useState(draft ? draft.name : '');
   const [provider, setProvider] = useState(draft ? providerOf(draft.model) : PROVIDERS[0].id);
@@ -27,7 +24,7 @@ export function AgentConfigModal({ draft, onClose, onSave, skillOptions }) {
   const [autonomy, setAutonomy] = useState(draft ? draft.autonomy : 'approval');
   const [prompt, setPrompt] = useState(draft ? draft.prompt : '');
   const [channelPost, setChannelPost] = useState(draft ? draft.channelPost : false);
-  const providerObj = PROVIDERS.find((p) => p.id === provider) || PROVIDERS[0];
+  const providerObj = PROVIDERS.find((p: any) => p.id === provider) || PROVIDERS[0];
   const valid = name.trim().length > 1;
   return (
     <Modal title={isEdit ? 'Configure ' + draft.name : 'Deploy a new agent'} onClose={onClose} wide odId="agent-config-modal"
@@ -53,10 +50,10 @@ export function AgentConfigModal({ draft, onClose, onSave, skillOptions }) {
                 onChange={(e) => {
                   const pid = e.target.value;
                   setProvider(pid);
-                  const p = PROVIDERS.find((x) => x.id === pid);
+                  const p = PROVIDERS.find((x: any) => x.id === pid);
                   if (!p.models.includes(model)) setModel(p.models[0]);
                 }}>
-                {PROVIDERS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+                {PROVIDERS.map((p: any) => <option key={p.id} value={p.id}>{p.label}</option>)}
               </select>
             </div>
           </div>
@@ -64,7 +61,7 @@ export function AgentConfigModal({ draft, onClose, onSave, skillOptions }) {
             <div>
               <label className={labelCls} htmlFor="ac-model">Model</label>
               <select id="ac-model" className={inputCls} value={model} onChange={(e) => setModel(e.target.value)}>
-                {providerObj.models.map((m) => <option key={m} value={m}>{m}</option>)}
+                {providerObj.models.map((m: any) => <option key={m} value={m}>{m}</option>)}
               </select>
             </div>
             <div>

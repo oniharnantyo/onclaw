@@ -1,10 +1,9 @@
-// @ts-nocheck
 import { cx, memberHandle } from "../../lib/helpers";
 
-export function MentionText({ text, members }) {
+export function MentionText({ text, members  }: any) {
   if (!text || text.indexOf('@') === -1) return <>{text}</>;
   const handles = {};
-  (members || []).forEach((m) => { handles[memberHandle(m)] = m; });
+  (members || []).forEach((m: any) => { handles[memberHandle(m)] = m; });
   const parts = text.split(/(@[A-Za-z]+)/g);
   return (
     <>

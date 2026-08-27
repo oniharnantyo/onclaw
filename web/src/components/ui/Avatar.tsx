@@ -1,7 +1,6 @@
-// @ts-nocheck
 import { cx } from "../../lib/helpers";
 
-export function Avatar({ name, kind = 'other', size = 28 }) {
+export function Avatar({ name, kind = 'other', size = 28  }: any) {
   const words = String(name || '?').trim().split(/\s+/);
   const init = (words.length > 1 ? words[0][0] + words[1][0] : words[0].slice(0, 2)).toUpperCase();
   const tone = kind === 'agent'

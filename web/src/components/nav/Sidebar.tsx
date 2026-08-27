@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { useState, useEffect, Fragment } from "react";
 import { cx } from "../../lib/helpers";
 import { Icon } from "../ui/Icon";
@@ -6,26 +5,26 @@ import { Avatar } from "../ui/Avatar";
 import { StatusDot } from "../ui/StatusDot";
 import { SideRow } from "../ui/SideRow";
 import { SectionLabel } from "../ui/SectionLabel";
-import { STATUS } from "../../data/seed";
+import { STATUS } from "../../lib/constants";
 
 export function Sidebar({ view, tenant, chatId, onSelect, onDeploy, onNewSchedule, onEditCron, onOpenSwitcher, search, setSearch,
-  activeIsAgent, session, sessions, onSwitchSession, onNewSession, onDeleteSession }) {
+  activeIsAgent, session, sessions, onSwitchSession, onNewSession, onDeleteSession  }: any) {
   const [showAllSessions, setShowAllSessions] = useState(false);
   useEffect(() => { setShowAllSessions(false); }, [chatId]);
   const q = search.trim().toLowerCase();
   const match = (s) => !q || s.toLowerCase().includes(q);
-  const agents = tenant.agents.filter((a) => match(a.name) || match(a.role));
-  const channels = tenant.channels.filter((c) => match(c.name) || match(c.purpose));
-  const people = tenant.people.filter((p) => match(p.name));
-  const nextUp = tenant.cron.filter((c) => c.enabled).slice(0, 4);
+  const agents = tenant.agents.filter((a: any) => match(a.name) || match(a.role));
+  const channels = tenant.channels.filter((c: any) => match(c.name) || match(c.purpose));
+  const people = tenant.people.filter((p: any) => match(p.name));
+  const nextUp = tenant.cron.filter((c: any) => c.enabled).slice(0, 4);
   const today = tenant.runs;
-  const okCount = today.filter((r) => r.status === 'success').length;
-  const failCount = today.filter((r) => r.status === 'failed').length;
+  const okCount = today.filter((r: any) => r.status === 'success').length;
+  const failCount = today.filter((r: any) => r.status === 'failed').length;
   const agentRowIcon = (a) => (
     <span className="relative inline-flex shrink-0 items-center justify-center">
       <Avatar name={a.name} kind="agent" size={18}/>
-      <span title={STATUS[a.status].label}
-        className={cx('absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full ring-2 ring-[var(--bg)]', STATUS[a.status].dot, a.status === 'running' && view === 'agents' && 'od-live')}/>
+      <span title={(STATUS as any)[a.status].label}
+        className={cx('absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full ring-2 ring-[var(--bg)]', (STATUS as any)[a.status].dot, a.status === 'running' && 'od-live')}/>
     </span>
   );
 
@@ -35,7 +34,7 @@ export function Sidebar({ view, tenant, chatId, onSelect, onDeploy, onNewSchedul
       <button type="button" onClick={onOpenSwitcher} data-od-id="ws-header" title="Switch workspace" aria-haspopup="menu"
         className="mx-3 mt-3 flex h-11 items-center gap-2.5 rounded-md px-1.5 text-left transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_6%,transparent)]">
         <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] bg-accent text-[11px] font-bold text-accenton">
-          {tenant.name.split(' ').map((w) => w[0]).join('')}
+          {tenant.name.split(' ').map((w: any) => w[0]).join('')}
         </span>
         <span className="min-w-0 flex-1">
           <span className="block truncate text-[13px] font-semibold text-fg">{tenant.name}</span>
@@ -62,14 +61,14 @@ export function Sidebar({ view, tenant, chatId, onSelect, onDeploy, onNewSchedul
             </button>
           }>Agents</SectionLabel>
           <div className="px-1.5">
-            {agents.map((a) => (
+            {agents.map((a: any) => (
               <Fragment key={a.id}>
                 <SideRow odId={'side-agent-' + a.id} active={chatId === a.id} onClick={() => onSelect(a.id)}
                   icon={agentRowIcon(a)} label={a.name}
                   sub={view === 'agents' ? <span className="font-mono text-[10px] text-muted">{a.model.replace('claude-', '').replace('llama-', '')}</span> : null}/>
                 {view === 'chats' && activeIsAgent && chatId === a.id && (() => {
                   const list = sessions || [];
-                  const activeIdx = list.findIndex((s) => session && s.id === session.id);
+                  const activeIdx = list.findIndex((s: any) => session && s.id === session.id);
                   const capped = !showAllSessions && list.length > 4;
                   let visible = list;
                   if (capped) {
@@ -79,7 +78,7 @@ export function Sidebar({ view, tenant, chatId, onSelect, onDeploy, onNewSchedul
                   return (
                     <div className="ml-[30px] mb-1 border-l border-line pl-1.5" data-od-id="agent-sessions">
                       <div className={cx(showAllSessions && list.length > 8 && 'od-scroll max-h-56 overflow-y-auto')}>
-                        {visible.map((s) => {
+                        {visible.map((s: any) => {
                           const activeS = session && s.id === session.id;
                           return (
                             <div key={s.id} className="group relative">
@@ -128,7 +127,7 @@ export function Sidebar({ view, tenant, chatId, onSelect, onDeploy, onNewSchedul
             <>
               <SectionLabel>Channels</SectionLabel>
               <div className="px-1.5">
-                {channels.map((c) => (
+                {channels.map((c: any) => (
                   <SideRow key={c.id} odId={'side-channel-' + c.id} active={chatId === c.id} onClick={() => onSelect(c.id)}
                     icon={<Icon name="hash" size={13} className="text-muted"/>} label={c.name}
                     right={c.unread > 0 ? (
@@ -139,7 +138,7 @@ export function Sidebar({ view, tenant, chatId, onSelect, onDeploy, onNewSchedul
               {channels.length === 0 && <p className="px-2.5 py-1.5 text-[12px] text-muted">No channels in this workspace yet.</p>}
               <SectionLabel>Team</SectionLabel>
               <div className="px-1.5">
-                {people.map((p) => (
+                {people.map((p: any) => (
                   <SideRow key={p.id} odId={'side-person-' + p.id} active={chatId === p.id} onClick={() => onSelect(p.id)}
                     icon={(
                       <span className="relative inline-flex shrink-0 items-center justify-center">
@@ -167,7 +166,7 @@ export function Sidebar({ view, tenant, chatId, onSelect, onDeploy, onNewSchedul
             </button>
           }>Next up</SectionLabel>
           <div className="px-1.5">
-            {nextUp.map((j) => (
+            {nextUp.map((j: any) => (
               <SideRow key={j.id} odId={'side-cron-' + j.id} active={false} onClick={() => onEditCron(j)}
                 icon={<Icon name="clock" size={13} className="text-muted"/>} label={j.name}
                 sub={<span className="font-mono text-[10px] text-muted">{j.next}</span>}/>
@@ -175,7 +174,7 @@ export function Sidebar({ view, tenant, chatId, onSelect, onDeploy, onNewSchedul
           </div>
           <SectionLabel>Schedules</SectionLabel>
           <p className="px-3.5 text-[12px] leading-5 text-muted">
-            {tenant.cron.filter((c) => c.enabled).length} active · {tenant.cron.filter((c) => !c.enabled).length} paused.
+            {tenant.cron.filter((c: any) => c.enabled).length} active · {tenant.cron.filter((c: any) => !c.enabled).length} paused.
             Open the Cron view to edit expressions, agents and history.
           </p>
         </div>

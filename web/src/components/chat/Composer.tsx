@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { useState, useEffect, useRef } from "react";
 import { cx, memberHandle } from "../../lib/helpers";
 import { Icon } from "../ui/Icon";
@@ -6,12 +5,12 @@ import { Avatar } from "../ui/Avatar";
 import { StatusDot } from "../ui/StatusDot";
 import { MentionText } from "../ui/MentionText";
 import { Chip } from "../ui/Chip";
-import { STATUS, COMMANDS } from "../../data/seed";
+import { STATUS, COMMANDS } from "../../lib/constants";
 
 import { SlashMenu } from "./SlashMenu";
 import { MentionMenu } from "./MentionMenu";
 
-export function Composer({ agent, running, onSend, onCancel, onAttach, mentionOptions }) {
+export function Composer({ agent, running, onSend, onCancel, onAttach, mentionOptions  }: any) {
   const [text, setText] = useState('');
   const [idx, setIdx] = useState(0);
   const ta = useRef(null);
@@ -20,13 +19,13 @@ export function Composer({ agent, running, onSend, onCancel, onAttach, mentionOp
   const slashList = slashOpen ? COMMANDS.filter((c) => c.cmd.startsWith(slashQ.toLowerCase())) : [];
   const mentionMatch = mentionOptions ? (text.match(/@([A-Za-z]*)$/) || null) : null;
   const mentionList = mentionMatch
-    ? mentionOptions.filter((m) => memberHandle(m).startsWith(mentionMatch[1].toLowerCase()))
+    ? mentionOptions.filter((m: any) => memberHandle(m).startsWith(mentionMatch[1].toLowerCase()))
     : [];
   const menu = slashOpen ? 'slash' : (mentionMatch && mentionList.length ? 'mention' : null);
   useEffect(() => { setIdx(0); }, [menu]);
 
   const grow = () => { const el = ta.current; if (el) { el.style.height = 'auto'; el.style.height = Math.min(192, el.scrollHeight) + 'px'; } };
-  const submit = (raw) => {
+  const submit = (raw?: any) => {
     if (running) return;
     const val = (raw !== undefined ? raw : text).trim();
     if (!val) return;
@@ -49,7 +48,7 @@ export function Composer({ agent, running, onSend, onCancel, onAttach, mentionOp
       e.preventDefault();
       if (menu === 'slash' && slashList[idx]) { setText(slashList[idx].cmd + ' '); setIdx(0); return; }
       if (menu === 'mention' && mentionList[idx]) { pickMention(mentionList[idx]); setIdx(0); return; }
-      submit();
+      submit(undefined as any);
     }
   };
 
@@ -70,13 +69,13 @@ export function Composer({ agent, running, onSend, onCancel, onAttach, mentionOp
             <Icon name="clip" size={14}/>
           </button>
           {!running ? (
-            <button type="button" onClick={(e) => { e.stopPropagation(); submit(); }} disabled={!text.trim()} data-od-id="btn-send"
+            <button type="button" onClick={(e) => { e.stopPropagation(); submit(undefined as any); }} disabled={!text.trim()} data-od-id="btn-send"
               aria-label="Send message" title="Send message"
               className="flex h-8 w-8 items-center justify-center rounded-full bg-accent text-accenton transition-colors hover:bg-[var(--accent-hover)] active:bg-[var(--accent-active)] disabled:opacity-35 disabled:hover:bg-accent">
               <Icon name="up" size={15} sw={2.4}/>
             </button>
           ) : (
-            <button type="button" onClick={(e) => { e.stopPropagation(); onCancel(); }} data-od-id="btn-cancel"
+            <button type="button" onClick={(e) => { e.stopPropagation(); onCancel(null as any); }} data-od-id="btn-cancel"
               aria-label="Stop generating" title="Stop generating"
               className="flex h-8 w-8 items-center justify-center rounded-full bg-accent text-accenton transition-colors hover:bg-[var(--accent-hover)] active:bg-[var(--accent-active)]">
               <Icon name="stop" size={12}/>

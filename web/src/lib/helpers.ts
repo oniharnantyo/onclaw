@@ -1,5 +1,5 @@
 
-import { PROVIDERS, REPLY_TEMPLATES } from '../data/seed';
+import { PROVIDERS, REPLY_TEMPLATES } from "../lib/constants";
 
 export const cx = (...a: any[]) => a.filter(Boolean).join(' ');
 
@@ -12,8 +12,8 @@ export const nowTime = () => new Date().toLocaleTimeString([], { hour: 'numeric'
 
 export const memberHandle = (m: any) => (m.kind === 'agent' ? m.name : m.name.split(' ')[0]).toLowerCase();
 export const parseMentions = (text: string, members: any[]) => {
-  const tokens = (text.match(/@([A-Za-z]+)/g) || []).map((t) => t.slice(1).toLowerCase());
-  return (members || []).filter((m) => tokens.includes(memberHandle(m)));
+  const tokens = (text.match(/@([A-Za-z]+)/g) || []).map((t: any) => t.slice(1).toLowerCase());
+  return (members || []).filter((m: any) => tokens.includes(memberHandle(m)));
 };
 
 export const providerOf = (model: string) => (PROVIDERS.find((p: any) => p.models.includes(model)) || PROVIDERS[0]).id;

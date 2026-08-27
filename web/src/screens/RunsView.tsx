@@ -1,13 +1,12 @@
-// @ts-nocheck
 import { useState } from "react";
 import { cx } from "../lib/helpers";
 import { Icon } from "../components/ui/Icon";
 import { ViewShell } from "../components/ui/ViewShell";
 import { Chip } from "../components/ui/Chip";
 
-export function RunsView({ tenant }) {
+export function RunsView({ tenant }: { tenant: Workspace }) {
   const [filter, setFilter] = useState('all');
-  const runs = tenant.runs.filter((r) => filter === 'all' || r.status === filter);
+  const runs = tenant.runs.filter((r: any) => filter === 'all' || r.status === filter);
   return (
     <ViewShell odId="runs-view" title="Run history"
       sub={'Every agent execution in ' + tenant.name + ' — chat turns, cron fires and API calls.'}>
@@ -24,8 +23,8 @@ export function RunsView({ tenant }) {
         <div className="hidden md:grid grid-cols-[110px_1fr_90px_110px_90px_80px_90px] gap-3 border-b border-linesoft bg-[color-mix(in_oklab,var(--fg)_4%,transparent)] px-4 py-2.5 font-mono text-[10px] uppercase tracking-[0.14em] text-muted">
           <span>Run</span><span>Agent</span><span>Trigger</span><span>Started</span><span>Duration</span><span>Tokens</span><span>Status</span>
         </div>
-        {runs.map((r) => {
-          const agent = tenant.agents.find((a) => a.id === r.agentId);
+        {runs.map((r: any) => {
+          const agent = tenant.agents.find((a: Agent) => a.id === r.agentId);
           return (
             <div key={r.id} data-od-id={'run-row-' + r.id}
               className="flex flex-col gap-2 md:grid md:grid-cols-[110px_1fr_90px_110px_90px_80px_90px] md:items-center md:gap-3 border-b border-linesoft px-4 py-3 md:py-2.5 transition-colors last:border-b-0 hover:bg-[color-mix(in_oklab,var(--fg)_3%,transparent)]">

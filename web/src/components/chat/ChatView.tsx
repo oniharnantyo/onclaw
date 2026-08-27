@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { useState, useRef, useEffect } from "react";
 import { cx, memberHandle } from "../../lib/helpers";
 import { Icon } from "../ui/Icon";
@@ -6,7 +5,7 @@ import { Avatar } from "../ui/Avatar";
 import { StatusDot } from "../ui/StatusDot";
 import { MentionText } from "../ui/MentionText";
 import { Chip } from "../ui/Chip";
-import { STATUS, COMMANDS } from "../../data/seed";
+import { STATUS, COMMANDS } from "../../lib/constants";
 
 import { ChatHeader } from "./ChatHeader";
 import { Composer } from "./Composer";
@@ -17,7 +16,7 @@ import { ThinkingRow } from "./ThinkingRow";
 
 export function ChatView({ tenant, target, agent, thread, session, channelMembers, onToggleMembers,
   typing, streamingId, busy, onConfigure,
-  onSend, onCancel, onDoneStream, onAttach, onCopy, onRefresh, onBranch, onEditSubmit }) {
+  onSend, onCancel, onDoneStream, onAttach, onCopy, onRefresh, onBranch, onEditSubmit  }: any) {
   const listRef = useRef(null);
   const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
@@ -105,9 +104,9 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
             {hiddenMsgs === 0 && thread.length > 80 && session && (
               <p className="text-center text-[11px] text-muted">Beginning of “{session.title}”</p>
             )}
-            {visibleMsgs.map((m) => {
+            {visibleMsgs.map((m: any) => {
               const isLast = m.id === (thread[thread.length - 1] || {}).id;
-              const msgAgent = (m.agentId && tenant.agents.find((a) => a.id === m.agentId)) || agent;
+              const msgAgent = (m.agentId && tenant.agents.find((a: any) => a.id === m.agentId)) || agent;
               if (m.author === 'you') return <UserMessage key={m.id} m={m} onEdit={onEditSubmit} members={channelMembers}/>;
               if (m.author === 'other') return <OtherMessage key={m.id} m={m} members={channelMembers}/>;
               return (
@@ -132,7 +131,7 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
             mentionOptions={target.kind === 'channel' ? channelMembers : null}/>
           {isEmpty && agent && suggestions.length > 0 && (
             <div className="mt-3 flex flex-wrap items-center justify-center gap-2 px-1" data-od-id="welcome-suggestions">
-              {suggestions.map((s) => (
+              {suggestions.map((s: any) => (
                 <button key={s} type="button" onClick={() => onSend(s)}
                   className="rounded-full border border-line bg-surface px-3.5 py-1.5 text-[13px] font-normal text-fg2 transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_5%,transparent)] hover:text-fg">
                   {s}

@@ -1,13 +1,10 @@
-// @ts-nocheck
 import { useState } from "react";
 import { cx, uid, slugify, fmtUses, providerOf } from "../lib/helpers";
 import { Icon } from "../components/ui/Icon";
-import { Modal } from "../components/ui/Modal";
 import { Toggle } from "../components/ui/Toggle";
-import { Avatar } from "../components/ui/Avatar";
 import { Chip } from "../components/ui/Chip";
 import { inputCls, labelCls } from "../components/ui/constants";
-import { PROVIDERS, MODELS, TOOLS, SKILLS, MCP_SERVERS } from "../data/seed";
+import { PROVIDERS, MODELS, TOOLS, SKILLS, MCP_SERVERS } from "../lib/constants";
 
 const MCP_STATUS = {
   connected: { dot: 'bg-success', label: 'Connected' },
@@ -15,19 +12,19 @@ const MCP_STATUS = {
   error: { dot: 'bg-danger', label: 'Error' }
 };
 
-export function McpPane({ tenant, onUpdate, onToast }) {
+export function McpPane({ tenant, onUpdate, onToast  }: any) {
   const [open, setOpen] = useState([]);
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ name: '', transport: '' });
   const servers = tenant.mcpServers || [];
-  const usersOf = (id) => tenant.agents.filter((a) => (a.mcp || []).includes(id));
+  const usersOf = (id) => tenant.agents.filter((a: any) => (a.mcp || []).includes(id));
   const expanded = (id) => open.includes(id);
-  const setStatus = (id, status) => onUpdate((t) => ({ ...t, mcpServers: t.mcpServers.map((s) => (s.id === id ? { ...s, status } : s)) }));
+  const setStatus = (id, status) => onUpdate((t: any) => ({ ...t, mcpServers: t.mcpServers.map((s: any) => (s.id === id ? { ...s, status } : s)) }));
   const addServer = () => {
     const name = form.name.trim();
     let slug = slugify(name) || uid('mcp');
-    while (servers.some((x) => x.id === slug)) slug += '-2';
-    onUpdate((t) => ({ ...t, mcpServers: [...(t.mcpServers || []),
+    while (servers.some((x: any) => x.id === slug)) slug += '-2';
+    onUpdate((t: any) => ({ ...t, mcpServers: [...(t.mcpServers || []),
       { id: slug, name, transport: form.transport.trim(), auth: 'No credentials yet — configured on first launch', tools: 0, status: 'connected', sample: [] }] }));
     onToast(name + ' added — tools sync on the first handshake');
     setForm({ name: '', transport: '' });
@@ -58,8 +55,8 @@ export function McpPane({ tenant, onUpdate, onToast }) {
       )}
 
       <div className="space-y-2.5">
-        {servers.map((s) => {
-          const st = MCP_STATUS[s.status] || MCP_STATUS.connected;
+        {servers.map((s: any) => {
+          const st = (MCP_STATUS as any)[s.status] || MCP_STATUS.connected;
           const users = usersOf(s.id);
           const shown = s.sample || [];
           const inactive = s.status !== 'connected' && users.length > 0;
@@ -84,7 +81,7 @@ export function McpPane({ tenant, onUpdate, onToast }) {
                   <p className="truncate font-mono text-[11px] text-muted">{s.transport}</p>
                   {s.status === 'error' && <p className="truncate text-[11px] text-danger">{s.error}</p>}
                 </div>
-                <div className="shrink-0 text-right" title={users.map((u) => u.name).join(', ') || undefined}>
+                <div className="shrink-0 text-right" title={users.map((u: any) => u.name).join(', ') || undefined}>
                   <p className="font-mono text-[11px] text-fg2">{s.tools} {s.tools === 1 ? 'tool' : 'tools'}</p>
                   <p className={cx('font-mono text-[11px]', inactive ? 'text-[color-mix(in_oklab,var(--warn),black_38%)]' : 'text-muted')}>
                     {users.length === 0 ? 'no agents' : users.length + (users.length === 1 ? ' agent' : ' agents') + (inactive ? ' · inactive' : '')}
@@ -103,7 +100,7 @@ export function McpPane({ tenant, onUpdate, onToast }) {
                       onToast(v ? s.name + ' connected — ' + s.tools + ' tools exposed' : s.name + ' paused — agents lose access on the next run');
                     }}/>
                 )}
-                <button type="button" onClick={() => setOpen((o) => (o.includes(s.id) ? o.filter((x) => x !== s.id) : [...o, s.id]))}
+                <button type="button" onClick={() => setOpen((o) => (o.includes(s.id) ? o.filter((x: any) => x !== s.id) : [...o, s.id]))}
                   aria-expanded={expanded(s.id)} aria-label={'Tools exposed by ' + s.name}
                   className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] hover:text-fg2">
                   <Icon name="chevright" size={13} className={cx('transition-transform', expanded(s.id) && 'rotate-90')}/>
@@ -114,7 +111,7 @@ export function McpPane({ tenant, onUpdate, onToast }) {
                   <p className="mb-2 font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">Tools exposed</p>
                   {shown.length ? (
                     <div className="flex flex-wrap gap-1.5">
-                      {shown.map((t) => <Chip key={t} mono>{t}</Chip>)}
+                      {shown.map((t: any) => <Chip key={t} mono>{t}</Chip>)}
                       {s.tools > shown.length && <span className="self-center font-mono text-[11px] text-muted">+{s.tools - shown.length} more</span>}
                     </div>
                   ) : (

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import React from "react";
 import { cx, memberHandle } from "../../lib/helpers";
 import { Icon } from "../ui/Icon";
@@ -6,9 +5,9 @@ import { Avatar } from "../ui/Avatar";
 import { StatusDot } from "../ui/StatusDot";
 import { MentionText } from "../ui/MentionText";
 import { Chip } from "../ui/Chip";
-import { STATUS, COMMANDS } from "../../data/seed";
+import { STATUS, COMMANDS } from "../../lib/constants";
 
-export function ThinkingRow({ agent }) {
+export function ThinkingRow({ agent  }: any) {
   return (
     <div className="flex gap-3 px-2 py-1" data-od-id="msg-thinking" role="status" aria-label="Assistant is thinking">
       <Avatar name={agent ? agent.name : 'Agent'} kind="agent" size={26}/>

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { useEffect, useRef } from 'react';
 import { cx } from '../../lib/helpers';
 import { Icon } from '../ui/Icon';

@@ -1,8 +1,7 @@
-// @ts-nocheck
 import { cx } from "../../lib/helpers";
 import { Icon } from "./Icon";
 
-export function LastRunCell({ last }) {
+export function LastRunCell({ last  }: any) {
   if (!last) return <span className="text-[12px] text-muted">never</span>;
   const icon = last.status === 'success' ? <Icon name="check" size={13} className="text-[color-mix(in_oklab,var(--success),black_25%)]"/>
     : last.status === 'failed' ? <Icon name="x" size={13} className="text-danger"/>

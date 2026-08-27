@@ -1,4 +1,3 @@
-// @ts-nocheck
 import React from "react";
 
 const ICONS = {
@@ -46,7 +45,7 @@ const ICONS = {
 };
 
 
-export function Icon({ name, size = 16, className = '', sw = 1.8 }) {
+export function Icon({ name, size = 16, className = '', sw = 1.8  }: any) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
       strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">

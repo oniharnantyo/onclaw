@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation, useParams } from 'react-router-dom';
 import { useStore, useWorkspace, useSearchShortcut } from './store';
@@ -17,7 +16,7 @@ import { SettingsModal } from './modals/SettingsModal';
 import { AgentConfigModal } from './modals/AgentConfigModal';
 import { CronEditorModal } from './modals/CronEditorModal';
 import { CreateWorkspaceModal } from './modals/CreateWorkspaceModal';
-import { SKILLS } from './data/seed';
+import { SKILLS } from "./lib/constants";
 
 function Layout() {
   useSearchShortcut();
@@ -25,10 +24,10 @@ function Layout() {
   const location = useLocation();
   const tenant = useWorkspace();
   
-  const ui = useStore((s) => s.ui);
-  const patchUi = useStore((s) => s.patchUi);
-  const search = useStore((s) => s.search);
-  const setSearch = useStore((s) => s.setSearch);
+  const ui = useStore((s: any) => s.ui);
+  const patchUi = useStore((s: any) => s.patchUi);
+  const search = useStore((s: any) => s.search);
+  const setSearch = useStore((s: any) => s.setSearch);
   const unread = tenant.channels.reduce((n, c) => n + (c.unread || 0), 0);
 
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -46,11 +45,9 @@ function Layout() {
   };
 
   const activeChatId = useStore(s => s.pos.chatId) || tenant.agents[0]?.id;
-  const threadState = useStore(s => {
-    const th = s.db[s.pos.tenantId]?.threads[activeChatId as string];
-    if (Array.isArray(th)) return th.length ? { active: 's0', list: [{ id: 's0', title: 'Chat', updated: '', messages: th }] } : { active: null, list: [] };
-    return th || { active: null, list: [] };
-  });
+  const EMPTY_THREAD_STATE = { active: null, list: [] };
+  const rawTh = useStore(s => s.db[s.pos.tenantId]?.threads[activeChatId as string]);
+  const threadState = Array.isArray(rawTh) ? (rawTh.length ? { active: 's0', list: [{ id: 's0', title: 'Chat', updated: '', messages: rawTh }] } : EMPTY_THREAD_STATE) : (rawTh || EMPTY_THREAD_STATE);
   const session = threadState.list.find((x: any) => x.id === threadState.active) || null;
   const sessions = threadState.list;
   const { switchSession, newSession, deleteSession } = useStore.getState();
@@ -125,12 +122,7 @@ function Layout() {
 
       {/* Main Content Area */}
       <main className="flex-1 relative flex overflow-hidden bg-surface">
-        <button 
-          onClick={() => setDrawerOpen(true)}
-          className="absolute top-3 right-3 z-20 flex h-8 w-8 items-center justify-center rounded-md md:hidden bg-[color-mix(in_oklab,var(--fg)_6%,transparent)] hover:bg-[color-mix(in_oklab,var(--fg)_12%,transparent)]"
-        >
-          <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
-        </button>
+        
 
         <Routes>
           <Route path="/c/:chatId" element={<ChatRoute />} />
@@ -163,8 +155,8 @@ function Layout() {
       {ui.configAgent && (
         <AgentConfigModal 
           key={ui.configAgent}
-          draft={ui.configAgent === 'new' ? null : (tenant.agents.find((a) => a.id === ui.configAgent) || null)}
-          skillOptions={SKILLS.concat((tenant.skillLib || []).filter((s) => !SKILLS.some((r) => r.id === s.id)).map((s) => ({ id: s.id, label: s.name })))}
+          draft={ui.configAgent === 'new' ? null : (tenant.agents.find((a: any) => a.id === ui.configAgent) || null)}
+          skillOptions={SKILLS.concat((tenant.skillLib || []).filter((s: any) => !SKILLS.some((r: any) => r.id === s.id)).map((s: any) => ({ id: s.id, label: s.name })))}
           onClose={() => patchUi({ configAgent: null })} 
           onSave={(values: any) => useStore.getState().upsertAgent(values)}
         />
@@ -187,7 +179,7 @@ function Layout() {
             useStore.getState().createWorkspace(ws);
             navigate(ws.agents.length ? `/c/${ws.agents[0].id}` : '/welcome');
           }}
-          existingSubs={Object.values(useStore.getState().db).map((t) => t.sub)}
+          existingSubs={Object.values(useStore.getState().db).map((t: any) => t.sub)}
         />
       )}
 
@@ -200,11 +192,11 @@ function ChatRoute() {
   const { chatId } = useParams();
   const navigate = useNavigate();
   const tenant = useWorkspace();
-  const pos = useStore((s) => s.pos);
-  const goPos = useStore((s) => s.goPos);
-  const ui = useStore((s) => s.ui);
-  const patchUi = useStore((s) => s.patchUi);
-  const toast = useStore((s) => s.toast);
+  const pos = useStore((s: any) => s.pos);
+  const goPos = useStore((s: any) => s.goPos);
+  const ui = useStore((s: any) => s.ui);
+  const patchUi = useStore((s: any) => s.patchUi);
+  const toast = useStore((s: any) => s.toast);
 
   useEffect(() => {
     if (chatId && chatId !== pos.chatId) {
@@ -213,18 +205,18 @@ function ChatRoute() {
   }, [chatId, pos.chatId]);
 
   // Actions
-  const send = useStore((s) => s.send);
-  const refreshMessage = useStore((s) => s.refreshMessage);
-  const branchNav = useStore((s) => s.branchNav);
-  const editSubmit = useStore((s) => s.editSubmit);
+  const send = useStore((s: any) => s.send);
+  const refreshMessage = useStore((s: any) => s.refreshMessage);
+  const branchNav = useStore((s: any) => s.branchNav);
+  const editSubmit = useStore((s: any) => s.editSubmit);
   const addChannelMember = (id: string) => useStore.getState().addChannelMember(chatId!, id);
   const removeChannelMember = (id: string) => useStore.getState().removeChannelMember(chatId!, id);
   const openMember = (id: string) => navigate(`/c/${id}`);
 
-  const agent = tenant.agents.find((a) => a.id === chatId) || null;
+  const agent = tenant.agents.find((a: any) => a.id === chatId) || null;
   const channel = tenant.channels.find((c) => c.id === chatId) || null;
   const person = tenant.people.find((p) => p.id === chatId) || null;
-  const chatAgent = agent || (channel ? tenant.agents.find((a) => a.id === channel.agentId) || null : null);
+  const chatAgent = agent || (channel ? tenant.agents.find((a: any) => a.id === channel.agentId) || null : null);
   
   const valid = !!(agent || channel || person);
   if (!valid && tenant.agents.length > 0) {
@@ -232,11 +224,8 @@ function ChatRoute() {
   }
   const target = agent ? { kind: 'agent', obj: agent } : channel ? { kind: 'channel', obj: channel } : { kind: 'person', obj: person };
 
-  const threadState = useStore((s) => {
-    const th = s.db[s.pos.tenantId]?.threads[chatId as string];
-    if (Array.isArray(th)) return th.length ? { active: 's0', list: [{ id: 's0', title: 'Chat', updated: '', messages: th }] } : { active: null, list: [] };
-    return th || { active: null, list: [] };
-  });
+  const rawThChat = useStore((s: any) => s.db[s.pos.tenantId]?.threads[chatId as string]);
+  const threadState = Array.isArray(rawThChat) ? (rawThChat.length ? { active: 's0', list: [{ id: 's0', title: 'Chat', updated: '', messages: rawThChat }] } : { active: null, list: [] }) : (rawThChat || { active: null, list: [] });
   const session = threadState.list.find((x: any) => x.id === threadState.active) || null;
   const thread = session ? session.messages : [];
 
@@ -244,10 +233,10 @@ function ChatRoute() {
     const ids = channel.members && channel.members.length ? channel.members : (channel.agentId ? [channel.agentId] : []);
     const out: any[] = [];
     ids.forEach((id: string) => {
-      if (out.some((m) => m.id === id)) return;
-      const a = tenant.agents.find((x) => x.id === id);
+      if (out.some((m: any) => m.id === id)) return;
+      const a = tenant.agents.find((x: any) => x.id === id);
       if (a) { out.push({ id, kind: 'agent', name: a.name, agent: a }); return; }
-      const p = tenant.people.find((x) => x.id === id);
+      const p = tenant.people.find((x: any) => x.id === id);
       if (p) out.push({ id, kind: 'person', name: p.name, presence: p.presence });
     });
     return out;
@@ -256,7 +245,7 @@ function ChatRoute() {
   const memberCandidates = channel ? (() => {
     const inCh = new Set([...(channel.members || []), channel.agentId].filter(Boolean));
     const out: any[] = [];
-    tenant.agents.forEach((a) => { if (!inCh.has(a.id)) out.push({ id: a.id, kind: 'agent', name: a.name, agent: a }); });
+    tenant.agents.forEach((a: any) => { if (!inCh.has(a.id)) out.push({ id: a.id, kind: 'agent', name: a.name, agent: a }); });
     tenant.people.forEach((p) => { if (!inCh.has(p.id)) out.push({ id: p.id, kind: 'person', name: p.name, presence: p.presence }); });
     return out;
   })() : [];

@@ -1,9 +1,8 @@
-// @ts-nocheck
 import { cx } from "../../lib/helpers";
 import { Icon } from "../ui/Icon";
 import { Avatar } from "../ui/Avatar";
 
-export function Rail({ view, onNav, tenant, unread, onOpenSwitcher, onSettings }) {
+export function Rail({ view, onNav, tenant, unread, onOpenSwitcher, onSettings, onMenuToggle  }: any) {
   const items = [
     { id: 'chats', icon: 'chat', label: 'Chats', badge: unread },
     { id: 'agents', icon: 'bot', label: 'Agents' },
@@ -18,7 +17,7 @@ export function Rail({ view, onNav, tenant, unread, onOpenSwitcher, onSettings }
         className="mb-2 flex h-11 w-11 items-center justify-center rounded-[12px] bg-accent text-[13px] font-bold text-accenton transition-transform hover:scale-[1.04]">
         {tenant.name.split(' ').map((w) => w[0]).join('')}
       </button>
-      {items.map((it) => (
+      {items.map((it: any) => (
         <button key={it.id} type="button" onClick={() => onNav(it.id)} data-od-id={'rail-' + it.id} title={it.label} aria-label={it.label}
           className={cx('relative flex h-11 w-11 items-center justify-center rounded-[12px] transition-colors',
             view === it.id
@@ -31,6 +30,9 @@ export function Rail({ view, onNav, tenant, unread, onOpenSwitcher, onSettings }
         </button>
       ))}
       <div className="flex-1"/>
+      <button type="button" onClick={onMenuToggle} className="mb-1 flex h-11 w-11 items-center justify-center rounded-[12px] md:hidden text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] hover:text-fg2" aria-label="Menu">
+        <Icon name="menu" size={20}/>
+      </button>
       <button type="button" onClick={onSettings} data-od-id="rail-settings" title="Workspace settings" aria-label="Workspace settings"
         className="flex h-11 w-11 items-center justify-center rounded-[12px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] hover:text-fg2">
         <Icon name="sliders" size={19} sw={1.7}/>

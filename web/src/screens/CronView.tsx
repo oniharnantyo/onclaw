@@ -1,12 +1,9 @@
-// @ts-nocheck
-import React from "react";
-import { cx } from "../lib/helpers";
 import { Icon } from "../components/ui/Icon";
 import { ViewShell } from "../components/ui/ViewShell";
 import { LastRunCell } from "../components/ui/LastRunCell";
 import { Toggle } from "../components/ui/Toggle";
 
-export function CronView({ tenant, onEdit, onToggle, onRunNow, onNew }) {
+export function CronView({ tenant, onEdit, onToggle, onRunNow, onNew }: { tenant: Workspace, onEdit: (j: CronJob) => void, onToggle: (j: CronJob) => void, onRunNow: (j: CronJob) => void, onNew: () => void }) {
   return (
     <ViewShell odId="cron-view" title="Cron schedules"
       sub={'Recurring agent runs for ' + tenant.name + '. Expressions use standard 5-field cron in ' + tenant.tz + '.'}
@@ -20,8 +17,8 @@ export function CronView({ tenant, onEdit, onToggle, onRunNow, onNew }) {
         <div className="hidden md:grid grid-cols-[1.4fr_1.1fr_0.7fr_1fr_84px] gap-3 border-b border-linesoft bg-[color-mix(in_oklab,var(--fg)_4%,transparent)] px-4 py-2.5 font-mono text-[10px] uppercase tracking-[0.14em] text-muted">
           <span>Schedule</span><span>Expression</span><span>Next run</span><span>Last run</span><span className="text-right">State</span>
         </div>
-        {tenant.cron.map((j) => {
-          const agent = tenant.agents.find((a) => a.id === j.agentId);
+        {tenant.cron.map((j: CronJob) => {
+          const agent = tenant.agents.find((a: Agent) => a.id === j.agentId);
           return (
             <div key={j.id} data-od-id={'cron-row-' + j.id}
               className="group flex flex-col gap-3 md:grid md:grid-cols-[1.4fr_1.1fr_0.7fr_1fr_84px] md:items-center md:gap-3 border-b border-linesoft px-4 py-3 transition-colors last:border-b-0 hover:bg-[color-mix(in_oklab,var(--fg)_3%,transparent)]">

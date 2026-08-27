@@ -1,4 +1,3 @@
-// @ts-nocheck
 import React from "react";
 import { cx, memberHandle } from "../../lib/helpers";
 import { Icon } from "../ui/Icon";
@@ -6,9 +5,9 @@ import { Avatar } from "../ui/Avatar";
 import { StatusDot } from "../ui/StatusDot";
 import { MentionText } from "../ui/MentionText";
 import { Chip } from "../ui/Chip";
-import { STATUS, COMMANDS } from "../../data/seed";
+import { STATUS, COMMANDS } from "../../lib/constants";
 
-export function SlashMenu({ q, idx, onPick }) {
+export function SlashMenu({ q, idx, onPick  }: any) {
   const list = COMMANDS.filter((c) => c.cmd.startsWith(q.toLowerCase()));
   if (!list.length || q === '') return null;
   return (

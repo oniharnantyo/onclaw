@@ -1,4 +1,3 @@
-// @ts-nocheck
 import React from "react";
 import { cx, memberHandle } from "../../lib/helpers";
 import { Icon } from "../ui/Icon";
@@ -6,9 +5,9 @@ import { Avatar } from "../ui/Avatar";
 import { StatusDot } from "../ui/StatusDot";
 import { MentionText } from "../ui/MentionText";
 import { Chip } from "../ui/Chip";
-import { STATUS, COMMANDS } from "../../data/seed";
+import { STATUS, COMMANDS } from "../../lib/constants";
 
-export function OtherMessage({ m, members }) {
+export function OtherMessage({ m, members  }: any) {
   return (
     <div className="flex flex-col px-2" data-od-id={'msg-' + m.id} data-role="member">
       <div className="mb-1 flex items-center gap-2">

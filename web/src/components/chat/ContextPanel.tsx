@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { useState, useRef, useEffect } from "react";
 import { cx, memberHandle } from "../../lib/helpers";
 import { Icon } from "../ui/Icon";
@@ -6,9 +5,9 @@ import { Avatar } from "../ui/Avatar";
 import { StatusDot } from "../ui/StatusDot";
 import { MentionText } from "../ui/MentionText";
 import { Chip } from "../ui/Chip";
-import { STATUS, COMMANDS } from "../../data/seed";
+import { STATUS, COMMANDS } from "../../lib/constants";
 
-export function ContextPanel({ channelMembers, candidates, primaryAgentId, onAddMember, onRemoveMember, onClose, onOpenMember }) {
+export function ContextPanel({ channelMembers, candidates, primaryAgentId, onAddMember, onRemoveMember, onClose, onOpenMember  }: any) {
   const [adding, setAdding] = useState(false);
   return (
     <aside data-od-id="context-panel" aria-label="Channel members"
@@ -22,7 +21,7 @@ export function ContextPanel({ channelMembers, candidates, primaryAgentId, onAdd
       </div>
       <div className="p-4">
         <div className="space-y-1">
-          {(channelMembers || []).map((m) => (
+          {(channelMembers || []).map((m: any) => (
             <div key={m.id} className="group relative">
               <button type="button" onClick={() => onOpenMember(m.id)} data-od-id={'drawer-member-' + m.id}
                 title={'Open chat with ' + m.name}
@@ -52,7 +51,7 @@ export function ContextPanel({ channelMembers, candidates, primaryAgentId, onAdd
           <div className="mt-3 rounded-md border border-line bg-surface p-2" data-od-id="add-member-list">
             <p className="px-1 pb-1.5 pt-0.5 font-mono text-[9px] font-semibold uppercase tracking-[0.14em] text-muted">Add to channel</p>
             <div className="od-scroll max-h-56 overflow-y-auto">
-              {(candidates || []).map((m) => (
+              {(candidates || []).map((m: any) => (
                 <button key={m.id} type="button" onClick={() => onAddMember(m.id)} data-od-id={'add-member-' + m.id}
                   className="flex w-full items-center gap-2.5 rounded-md px-1.5 py-1.5 text-left transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_5%,transparent)]">
                   <Avatar name={m.name} kind={m.kind === 'agent' ? 'agent' : 'other'} size={22}/>

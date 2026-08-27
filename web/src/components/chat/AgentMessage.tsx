@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { useState, useEffect, useRef } from "react";
 import { cx, memberHandle } from "../../lib/helpers";
 import { Icon } from "../ui/Icon";
@@ -6,14 +5,14 @@ import { Avatar } from "../ui/Avatar";
 import { StatusDot } from "../ui/StatusDot";
 import { MentionText } from "../ui/MentionText";
 import { Chip } from "../ui/Chip";
-import { STATUS, COMMANDS } from "../../data/seed";
+import { STATUS, COMMANDS } from "../../lib/constants";
 
 import { ToolCall } from "./ToolCall";
 import { CronChip } from "./CronChip";
 import { BranchPicker } from "./BranchPicker";
 export const variantsOf = (m) => m.branches || [{ text: m.text, tools: m.tools }];
 
-export function AgentMessage({ m, agent, inChannel, streaming, busy, isLast, onDone, onCopy, onGrow, onRefresh, onBranch, members }) {
+export function AgentMessage({ m, agent, inChannel, streaming, busy, isLast, onDone, onCopy, onGrow, onRefresh, onBranch, members  }: any) {
   const variants = variantsOf(m);
   const v = variants[m.branch || 0] || variants[0];
   const [n, setN] = useState(streaming ? 0 : v.text.length);
@@ -25,7 +24,7 @@ export function AgentMessage({ m, agent, inChannel, streaming, busy, isLast, onD
     setN(0); doneRef.current = false;
     const iv = setInterval(() => {
       if (onGrow) onGrow();
-      setN((x) => {
+      setN((x: any) => {
         if (x + 3 >= v.text.length) {
           clearInterval(iv);
           if (!doneRef.current) { doneRef.current = true; setTimeout(onDone, 0); }

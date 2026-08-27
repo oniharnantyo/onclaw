@@ -1,50 +1,6 @@
-// @ts-nocheck
 import { uid, providerOf } from '../lib/helpers';
+import { MODELS } from '../lib/constants';
 
-export const MODELS = ['claude-sonnet-5', 'claude-opus-5', 'claude-haiku-4-5', 'llama-4-maverick', 'llama-4-scout'];
-export const PROVIDERS = [
-  { id: 'anthropic', label: 'Anthropic', models: ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5'] },
-  { id: 'meta', label: 'Meta', models: ['llama-4-maverick', 'llama-4-scout'] }
-];
-export const SKILLS = [
-  { id: 'research', label: 'Deep research' },
-  { id: 'code', label: 'Code execution' },
-  { id: 'data', label: 'Data analysis' },
-  { id: 'writing', label: 'Writing & editing' },
-  { id: 'vision', label: 'Vision' },
-  { id: 'summarize', label: 'Summarization' },
-  { id: 'postmortem', label: 'Postmortem writer' }
-];
-export const MCP_SERVERS = [
-  { id: 'github', label: 'GitHub MCP', detail: 'repos, issues, pull requests' },
-  { id: 'postgres', label: 'Postgres MCP', detail: 'read-only SQL' },
-  { id: 'slack', label: 'Slack MCP', detail: 'channels & messages' },
-  { id: 'filesystem', label: 'Filesystem MCP', detail: 'workspace files' },
-  { id: 'memory', label: 'Memory MCP', detail: 'persistent notes' },
-  { id: 'browser', label: 'Browser MCP', detail: 'headless browsing' }
-];
-export const TOOLS = [
-  { id: 'web', label: 'Web search' },
-  { id: 'files', label: 'Files' },
-  { id: 'shell', label: 'Shell' },
-  { id: 'api', label: 'HTTP APIs' },
-  { id: 'db', label: 'Database' }
-];
-export const STATUS = {
-  running: { dot: 'bg-success', label: 'Running', live: true },
-  idle: { dot: 'bg-muted', label: 'Idle' },
-  error: { dot: 'bg-danger', label: 'Needs attention' }
-};
-export const REPLY_TEMPLATES = [
-  'Working on it. I\'ll pull the freshest data first and report back in this thread — anything that needs a decision gets flagged to you.',
-  'Got it. Scoping it against my playbook now. If it stays under the autonomy threshold I\'ll just do it and summarize the diff.',
-  'Queued. Runs like this usually land in under a minute. I\'ll post the result here and mirror a digest to the bound channel.'
-];
-export const MENTION_REPLIES = [
-  'On it — pulling the relevant data now and I\'ll report back in this thread.',
-  'Taking this. I\'ll correlate with the latest runs and post findings here.',
-  'Got the ping — digging in now. If anything needs a decision I\'ll flag it with context.'
-];
 
 export function seedAcme() {
   return {
@@ -338,25 +294,25 @@ export const EXTRA_SESSIONS = {
   }))
 };
 
-export function withSessions(t) {
+export function withSessions(t: any) {
   const threads = {};
-  Object.entries(t.threads).forEach(([cid, msgs]) => {
+  Object.entries((t as any).threads || {}).forEach(([cid, msgs]: any) => {
     if (!msgs || msgs.length === 0) {
-      const extras0 = (EXTRA_SESSIONS[cid] || []).map((s) => ({ ...s, id: uid('s'), messages: s.messages.slice() }));
+      const extras0 = (EXTRA_SESSIONS[cid] || []).map((s: any) => ({ ...s, id: uid('s'), messages: s.messages.slice() }));
       threads[cid] = { active: extras0.length ? extras0[0].id : null, list: extras0 };
       return;
     }
-    const firstYou = msgs.find((m) => m.author === 'you');
+    const firstYou = msgs.find((m: any) => m.author === 'you');
     const title = firstYou
       ? (firstYou.text.length > 42 ? firstYou.text.slice(0, 42) + '…' : firstYou.text)
       : ('Scheduled · ' + (msgs[0].cron || 'digest')).slice(0, 48);
     const main = { id: uid('s'), title, updated: (msgs[msgs.length - 1] || {}).ts || '', messages: msgs };
-    const extras = (EXTRA_SESSIONS[cid] || []).map((s) => ({ ...s, id: uid('s'), messages: s.messages.slice() }));
+    const extras = (EXTRA_SESSIONS[cid] || []).map((s: any) => ({ ...s, id: uid('s'), messages: s.messages.slice() }));
     threads[cid] = { active: main.id, list: [main].concat(extras) };
   });
   return {
     ...t,
-    agents: (t.agents || []).map((a) => ({
+    agents: (t.agents || []).map((a: any) => ({
       ...a,
       provider: a.provider || providerOf(a.model),
       skills: a.skills || ['research', 'summarize'],
@@ -366,18 +322,18 @@ export function withSessions(t) {
   };
 }
 
-function getThreadState(t, cid) {
-  const th = t && t.threads ? t.threads[cid] : null;
+function getThreadState(t: any, cid: any) {
+  const th = t && (t as any).threads ? (t as any).threads[cid] : null;
   if (!th) return { active: null, list: [] };
   if (Array.isArray(th)) {
-    return th.length ? { active: 's0', list: [{ id: 's0', title: 'Chat', updated: '', messages: th }] } : { active: null, list: [] };
+    return (th as any)?.length ? { active: 's0', list: [{ id: 's0', title: 'Chat', updated: '', messages: th }] } : { active: null, list: [] };
   }
   return th;
 }
 
 export const seedDb = () => ({ acme: withSessions(seedAcme()), globex: withSessions(seedGlobex()) });
 
-export function blankTenant({ name, sub, plan, tz, starter }) {
+export function blankTenant({ name, sub, plan, tz, starter  }: any) {
   const aid = uid('a');
   return {
     id: 'ws_' + sub.replace(/-/g, '_'),
@@ -429,10 +385,3 @@ export function blankTenant({ name, sub, plan, tz, starter }) {
   };
 }
 
-export const COMMANDS = [
-  { cmd: '/tools', desc: 'List this agent’s tools' },
-  { cmd: '/model', desc: 'Show the model this agent runs on' },
-  { cmd: '/schedule', desc: 'Open the cron editor' },
-  { cmd: '/reset', desc: 'Clear this thread' },
-  { cmd: '/help', desc: 'Show commands' }
-];

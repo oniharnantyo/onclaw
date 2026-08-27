@@ -1,9 +1,6 @@
-// @ts-nocheck
-import React from "react";
-import { cx } from "../lib/helpers";
 import { Icon } from "../components/ui/Icon";
 
-export function OnboardingPane({ tenant, onDeploy, onSettings }) {
+export function OnboardingPane({ tenant, onDeploy, onSettings }: { tenant: Workspace, onDeploy: () => void, onSettings: () => void }) {
   return (
     <section data-od-id="onboarding-pane" aria-label="Getting started"
       className="flex min-w-0 flex-1 flex-col items-center justify-center gap-4 bg-surface px-6 text-center">
