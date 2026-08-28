@@ -1,4 +1,3 @@
-import { cx } from "../../lib/helpers";
 import { Icon } from "./Icon";
 
 export function LastRunCell({ last  }: any) {

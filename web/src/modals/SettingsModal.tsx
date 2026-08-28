@@ -1,12 +1,12 @@
 import { useState } from "react";
-import { cx, uid, slugify, fmtUses, providerOf } from "../lib/helpers";
+import { cx, uid } from "../lib/helpers";
 import { Icon } from "../components/ui/Icon";
 import { Modal } from "../components/ui/Modal";
 import { Toggle } from "../components/ui/Toggle";
 import { Avatar } from "../components/ui/Avatar";
 import { Chip } from "../components/ui/Chip";
 import { inputCls, labelCls } from "../components/ui/constants";
-import { PROVIDERS, MODELS, TOOLS, SKILLS, MCP_SERVERS } from "../lib/constants";
+import { MODELS } from "../lib/constants";
 
 import { McpPane } from "./McpPane";
 import { SkillsPane } from "./SkillsPane";
@@ -31,10 +31,7 @@ export function SettingsModal({ tenant, tab, onTab, onClose, onUpdate, onToast, 
     onUpdate((t: any) => ({ ...t, ...ws }));
     onToast('Workspace settings saved');
   };
-  const saveAgent = (id: any, s: any) => {
-    onUpdate((t: any) => ({ ...t, agents: t.agents.map((a: any) => (a.id === id ? { ...a, ...s } : a)) }));
-    onToast(s.name + ' updated — new settings apply to the next run');
-  };
+
 
   return (
     <Modal title={tenant.name + ' settings'} onClose={onClose} wide odId="settings-modal">

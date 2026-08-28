@@ -1,13 +1,8 @@
-import { useState, useRef, useEffect } from "react";
-import { cx, memberHandle } from "../../lib/helpers";
+import { useState } from "react";
+import { cx } from "../../lib/helpers";
 import { Icon } from "../ui/Icon";
-import { Avatar } from "../ui/Avatar";
-import { StatusDot } from "../ui/StatusDot";
-import { MentionText } from "../ui/MentionText";
-import { Chip } from "../ui/Chip";
-import { STATUS, COMMANDS } from "../../lib/constants";
 
-export function ToolCall({ t  }: any) {
+export function ToolCall({ t, running  }: any) {
   const [open, setOpen] = useState(false);
   const bad = !!t.error;
   return (
@@ -17,9 +12,15 @@ export function ToolCall({ t  }: any) {
         <Icon name="terminal" size={13} className={bad ? 'text-danger' : 'text-meta'}/>
         <span className={cx('font-mono text-[12px]', bad ? 'text-danger' : 'text-fg2')}>{t.name}</span>
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted">{t.args}</span>
-        {bad
-          ? <span className="font-mono text-[10px] text-danger">error · {t.ms}ms</span>
-          : <span className="font-mono text-[10px] text-muted">{t.ms}ms</span>}
+        {running ? (
+          <span className="flex items-center gap-1.5 font-mono text-[10px] text-muted">
+            <span className="od-dot"/><span className="od-dot"/><span className="od-dot"/>
+          </span>
+        ) : bad ? (
+          <span className="font-mono text-[10px] text-danger">error · {t.ms}ms</span>
+        ) : (
+          <span className="font-mono text-[10px] text-muted">{t.ms}ms</span>
+        )}
         <Icon name="chevright" size={13} className={cx('text-muted transition-transform', open && 'rotate-90')}/>
       </button>
       {open && (
@@ -27,7 +28,7 @@ export function ToolCall({ t  }: any) {
           <p className="text-muted">args</p>
           <p className="mb-1.5 text-fg2">{t.args}</p>
           <p className="text-muted">{bad ? 'error' : 'result'}</p>
-          <p className={bad ? 'text-danger' : 'text-fg2'}>{bad ? t.error : 'ok — ' + (t.ms + 40) + 'ms, ' + Math.max(1, Math.round(t.ms / 90)) + ' rows'}</p>
+          <p className={bad ? 'text-danger' : 'text-fg2'}>{bad ? t.error : (t.res || ('ok — ' + (t.ms + 40) + 'ms, ' + Math.max(1, Math.round(t.ms / 90)) + ' rows'))}</p>
         </div>
       )}
     </div>

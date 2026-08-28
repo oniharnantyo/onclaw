@@ -1,5 +1,4 @@
 import { useEffect, useRef } from 'react';
-import { cx } from '../../lib/helpers';
 import { Icon } from '../ui/Icon';
 
 export function NavDrawer({ open, onClose, children }: { open: boolean, onClose: () => void, children: React.ReactNode }) {
@@ -7,6 +6,8 @@ export function NavDrawer({ open, onClose, children }: { open: boolean, onClose:
 
   useEffect(() => {
     if (!open) return;
+    const prev = document.activeElement as HTMLElement | null;
+    ref.current?.focus();
     const h = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) {
         onClose();
@@ -20,6 +21,7 @@ export function NavDrawer({ open, onClose, children }: { open: boolean, onClose:
     return () => {
       window.removeEventListener('mousedown', h);
       window.removeEventListener('keydown', keyHandler);
+      prev?.focus?.();
     };
   }, [open, onClose]);
 
@@ -28,9 +30,10 @@ export function NavDrawer({ open, onClose, children }: { open: boolean, onClose:
   return (
     <div className="fixed inset-0 z-40 flex md:hidden" aria-modal="true" role="dialog">
       <div className="od-fade absolute inset-0 bg-[color-mix(in_oklab,var(--fg)_32%,transparent)]" onClick={onClose} />
-      <div 
+      <div
         ref={ref}
-        className="od-pop relative flex w-[264px] max-w-[80vw] flex-col bg-bg shadow-[var(--elev-raised)]"
+        tabIndex={-1}
+        className="od-pop relative flex w-[264px] max-w-[80vw] flex-col bg-bg shadow-[var(--elev-raised)] outline-none"
       >
         <button 
           onClick={onClose} 

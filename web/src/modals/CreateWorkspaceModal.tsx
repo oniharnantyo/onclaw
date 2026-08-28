@@ -1,9 +1,8 @@
 import { useState } from "react";
-import { cx, uid, slugify, fmtUses, providerOf } from "../lib/helpers";
+import { cx } from "../lib/helpers";
 import { Modal } from "../components/ui/Modal";
 import { Toggle } from "../components/ui/Toggle";
 import { inputCls, labelCls } from "../components/ui/constants";
-import { PROVIDERS, MODELS, TOOLS, SKILLS, MCP_SERVERS } from "../lib/constants";
 
 import { Segmented } from "../components/ui/Segmented";
 import { blankTenant } from "../data/seed";

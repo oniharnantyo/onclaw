@@ -1,5 +1,3 @@
-import { cx } from "../../lib/helpers";
-
 export function SectionLabel({ children, action  }: any) {
   return (
     <div className="mt-4 mb-1 flex items-center justify-between px-2.5">

@@ -1,3 +1,13 @@
+/* Mapping of OnClaw's raw design tokens (styles/tokens.css) onto Tailwind v4
+ * theme variables, so utilities like `bg-bg` / `font-mono` / `rounded-md`
+ * resolve to the contract tokens.
+ *
+ * NOTE on same-name mappings: --font-mono and --radius-* map to raw tokens of
+ * the same name. A plain @theme emits `--font-mono: var(--font-mono)` into
+ * :root — a self-referential declaration that is only valid because the raw
+ * value in tokens.css is imported after `@import "tailwindcss"` (see
+ * index.css) and therefore wins the cascade. Do not reorder those imports
+ * without giving the raw tokens distinct names. */
 @theme {
   --color-bg: var(--bg);
   --color-surface: var(--surface);
@@ -16,7 +26,6 @@
 
   --font-sans: var(--font-body);
   --font-mono: var(--font-mono);
-
   --radius-sm: var(--radius-sm);
   --radius-md: var(--radius-md);
   --radius-lg: var(--radius-lg);

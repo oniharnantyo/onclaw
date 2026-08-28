@@ -1,11 +1,6 @@
-import { useState, useEffect, useRef } from "react";
-import { cx, memberHandle } from "../../lib/helpers";
+import { useState } from "react";
 import { Icon } from "../ui/Icon";
-import { Avatar } from "../ui/Avatar";
-import { StatusDot } from "../ui/StatusDot";
 import { MentionText } from "../ui/MentionText";
-import { Chip } from "../ui/Chip";
-import { STATUS, COMMANDS } from "../../lib/constants";
 
 export function UserMessage({ m, onEdit, members  }: any) {
   const [editing, setEditing] = useState(false);

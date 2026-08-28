@@ -322,15 +322,6 @@ export function withSessions(t: any) {
   };
 }
 
-function getThreadState(t: any, cid: any) {
-  const th = t && (t as any).threads ? (t as any).threads[cid] : null;
-  if (!th) return { active: null, list: [] };
-  if (Array.isArray(th)) {
-    return (th as any)?.length ? { active: 's0', list: [{ id: 's0', title: 'Chat', updated: '', messages: th }] } : { active: null, list: [] };
-  }
-  return th;
-}
-
 export const seedDb = () => ({ acme: withSessions(seedAcme()), globex: withSessions(seedGlobex()) });
 
 export function blankTenant({ name, sub, plan, tz, starter  }: any) {

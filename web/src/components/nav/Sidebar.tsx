@@ -1,8 +1,7 @@
-import { useState, useEffect, Fragment } from "react";
+import { useState, Fragment } from "react";
 import { cx } from "../../lib/helpers";
 import { Icon } from "../ui/Icon";
 import { Avatar } from "../ui/Avatar";
-import { StatusDot } from "../ui/StatusDot";
 import { SideRow } from "../ui/SideRow";
 import { SectionLabel } from "../ui/SectionLabel";
 import { STATUS } from "../../lib/constants";
@@ -10,7 +9,8 @@ import { STATUS } from "../../lib/constants";
 export function Sidebar({ view, tenant, chatId, onSelect, onDeploy, onNewSchedule, onEditCron, onOpenSwitcher, search, setSearch,
   activeIsAgent, session, sessions, onSwitchSession, onNewSession, onDeleteSession  }: any) {
   const [showAllSessions, setShowAllSessions] = useState(false);
-  useEffect(() => { setShowAllSessions(false); }, [chatId]);
+  const [prevChatId, setPrevChatId] = useState(chatId);
+  if (chatId !== prevChatId) { setPrevChatId(chatId); setShowAllSessions(false); }
   const q = search.trim().toLowerCase();
   const match = (s) => !q || s.toLowerCase().includes(q);
   const agents = tenant.agents.filter((a: any) => match(a.name) || match(a.role));
@@ -85,12 +85,12 @@ export function Sidebar({ view, tenant, chatId, onSelect, onDeploy, onNewSchedul
                               <button type="button" onClick={() => onSwitchSession(s.id)} data-od-id={'sidebar-session-' + s.id}
                                 title={s.title}
                                 className={cx('flex h-[26px] w-full items-center rounded-md px-2 pr-7 text-left transition-colors',
-                                  activeS ? 'bg-[color-mix(in_oklab,var(--accent),12%,transparent)] text-fg' : 'text-muted hover:bg-[color-mix(in_oklab,var(--fg),5%,transparent)] hover:text-fg2')}>
+                                  activeS ? 'bg-[color-mix(in_oklab,var(--accent)_12%,transparent)] text-fg' : 'text-muted hover:bg-[color-mix(in_oklab,var(--fg)_5%,transparent)] hover:text-fg2')}>
                                 <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">{s.title}</span>
                               </button>
                               <button type="button" onClick={() => onDeleteSession(s.id)} data-od-id={'sidebar-session-del-' + s.id}
                                 aria-label={'Delete ' + s.title} title="Delete session"
-                                className="absolute right-1 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-[5px] text-muted opacity-0 transition-opacity hover:bg-[color-mix(in_oklab,var(--danger),12%,transparent)] hover:text-danger focus-visible:opacity-100 group-hover:opacity-100">
+                                className="absolute right-1 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-[5px] text-muted opacity-0 transition-opacity hover:bg-[color-mix(in_oklab,var(--danger)_12%,transparent)] hover:text-danger focus-visible:opacity-100 group-hover:opacity-100">
                                 <Icon name="x" size={11}/>
                               </button>
                             </div>
@@ -99,18 +99,18 @@ export function Sidebar({ view, tenant, chatId, onSelect, onDeploy, onNewSchedul
                       </div>
                       {capped && olderCount > 0 && (
                         <button type="button" onClick={() => setShowAllSessions(true)} data-od-id="sidebar-sessions-expand"
-                          className="flex h-[26px] w-full items-center gap-1.5 rounded-md px-2 text-[12px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg),5%,transparent)] hover:text-fg2">
+                          className="flex h-[26px] w-full items-center gap-1.5 rounded-md px-2 text-[12px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_5%,transparent)] hover:text-fg2">
                           <Icon name="chevdown" size={11}/> Show {olderCount} older sessions
                         </button>
                       )}
                       {!capped && list.length > 4 && (
                         <button type="button" onClick={() => setShowAllSessions(false)} data-od-id="sidebar-sessions-collapse"
-                          className="flex h-[26px] w-full items-center gap-1.5 rounded-md px-2 text-[12px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg),5%,transparent)] hover:text-fg2">
+                          className="flex h-[26px] w-full items-center gap-1.5 rounded-md px-2 text-[12px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_5%,transparent)] hover:text-fg2">
                           <Icon name="up" size={11}/> Show recent only
                         </button>
                       )}
                       <button type="button" onClick={onNewSession} data-od-id="sidebar-new-session" title="Start a new chat"
-                        className="flex h-[26px] w-full items-center gap-1.5 rounded-md px-2 text-[12px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg),5%,transparent)] hover:text-fg2">
+                        className="flex h-[26px] w-full items-center gap-1.5 rounded-md px-2 text-[12px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_5%,transparent)] hover:text-fg2">
                         <Icon name="plus" size={11} sw={2.2}/> New chat
                       </button>
                     </div>

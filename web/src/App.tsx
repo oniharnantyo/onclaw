@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation, useParams } from 'react-router-dom';
 import { useStore, useWorkspace, useSearchShortcut } from './store';
+import { AssistantRuntimeProvider } from '@assistant-ui/react';
+import { useChatRuntime } from './chat/runtime';
 import { Rail } from './components/nav/Rail';
 import { Sidebar } from './components/nav/Sidebar';
 import { WorkspaceSwitcher } from './components/nav/WorkspaceSwitcher';
@@ -86,11 +88,12 @@ function Layout() {
   
   return (
     <div className="flex h-[100dvh] overflow-hidden font-sans antialiased">
-      <Rail 
-        view={view} 
-        onNav={onNav} 
-        tenant={tenant} 
+      <Rail
+        view={view}
+        onNav={onNav}
+        tenant={tenant}
         unread={unread}
+        onMenuToggle={() => setDrawerOpen(true)}
         onOpenSwitcher={() => patchUi({ wsOpen: !ui.wsOpen })}
         onSettings={() => patchUi({ settingsOpen: true, settingsTab: 'workspace' })}
       />
@@ -195,8 +198,9 @@ function ChatRoute() {
   const pos = useStore((s: any) => s.pos);
   const goPos = useStore((s: any) => s.goPos);
   const ui = useStore((s: any) => s.ui);
-  const patchUi = useStore((s: any) => s.patchUi);
+
   const toast = useStore((s: any) => s.toast);
+  const chatRuntime = useChatRuntime(chatId!);
 
   useEffect(() => {
     if (chatId && chatId !== pos.chatId) {
@@ -205,11 +209,7 @@ function ChatRoute() {
   }, [chatId, pos.chatId]);
 
   // Actions
-  const send = useStore((s: any) => s.send);
-  const refreshMessage = useStore((s: any) => s.refreshMessage);
-  const branchNav = useStore((s: any) => s.branchNav);
-  const editSubmit = useStore((s: any) => s.editSubmit);
-  const addChannelMember = (id: string) => useStore.getState().addChannelMember(chatId!, id);
+          const addChannelMember = (id: string) => useStore.getState().addChannelMember(chatId!, id);
   const removeChannelMember = (id: string) => useStore.getState().removeChannelMember(chatId!, id);
   const openMember = (id: string) => navigate(`/c/${id}`);
 
@@ -218,13 +218,14 @@ function ChatRoute() {
   const person = tenant.people.find((p) => p.id === chatId) || null;
   const chatAgent = agent || (channel ? tenant.agents.find((a: any) => a.id === channel.agentId) || null : null);
   
+  const rawThChat = useStore((s: any) => s.db[s.pos.tenantId]?.threads[chatId as string]);
+  
   const valid = !!(agent || channel || person);
   if (!valid && tenant.agents.length > 0) {
     return <Navigate to={`/c/${tenant.agents[0].id}`} replace />;
   }
   const target = agent ? { kind: 'agent', obj: agent } : channel ? { kind: 'channel', obj: channel } : { kind: 'person', obj: person };
 
-  const rawThChat = useStore((s: any) => s.db[s.pos.tenantId]?.threads[chatId as string]);
   const threadState = Array.isArray(rawThChat) ? (rawThChat.length ? { active: 's0', list: [{ id: 's0', title: 'Chat', updated: '', messages: rawThChat }] } : { active: null, list: [] }) : (rawThChat || { active: null, list: [] });
   const session = threadState.list.find((x: any) => x.id === threadState.active) || null;
   const thread = session ? session.messages : [];
@@ -255,29 +256,30 @@ function ChatRoute() {
     else toast('Clipboard unavailable in this frame', 'danger');
   };
 
+  
   return (
     <>
-      <ChatView 
-        tenant={tenant} 
-        target={target} 
-        agent={chatAgent} 
-        thread={thread}
-        session={session} 
-        channelMembers={channelMembers} 
-        onToggleMembers={() => goPos({ showContext: !pos.showContext })}
-        typing={ui.typing} 
-        streamingId={ui.streamId} 
-        busy={ui.typing || !!ui.streamId}
-        onSend={send} 
-        onCancel={() => useStore.getState().cancelReply()}
-        onDoneStream={() => patchUi({ streamId: null })}
-        onConfigure={() => patchUi({ configAgent: chatAgent?.id })}
-        onCopy={copyText} 
-        onRefresh={refreshMessage} 
-        onBranch={branchNav} 
-        onEditSubmit={editSubmit}
-        onAttach={() => toast('Attachments arrive with the storage integration — connect it in Settings → Integrations')}
-      />
+      <AssistantRuntimeProvider runtime={chatRuntime.runtime}>
+        <ChatView 
+          tenant={tenant} 
+          target={target} 
+          agent={chatAgent} 
+          thread={thread} 
+          session={session} 
+          channelMembers={channelMembers} 
+          onToggleMembers={() => goPos({ showContext: !pos.showContext })}
+          typing={ui.running} 
+          busy={ui.running}
+          onSend={(text: string) => chatRuntime.onNew({ role: 'user', content: [{ type: 'text', text }] } as unknown as import('@assistant-ui/react').AppendMessage)} 
+          onCancel={chatRuntime.onCancel}
+          onConfigure={() => useStore.getState().patchUi({ configAgent: chatAgent?.id })}
+          onCopy={copyText} 
+          onRefresh={chatRuntime.onReload} 
+          onBranch={chatRuntime.branchNav} 
+          onEditSubmit={(mid: string, text: string) => chatRuntime.onEdit({ sourceId: mid, role: 'user', content: [{ type: 'text', text }] } as unknown as import('@assistant-ui/react').AppendMessage)}
+          onAttach={() => useStore.getState().toast('Attachments arrive with the storage integration — connect it in Settings → Integrations')}
+        />
+      </AssistantRuntimeProvider>
       {pos.showContext && target.kind === 'channel' && (
         <>
           {/* Static column >= 1280px (xl in Tailwind v3, but we might just use xl:flex) */}

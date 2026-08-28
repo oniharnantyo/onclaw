@@ -1,10 +1,9 @@
 import { useState } from "react";
-import { cx, uid, slugify, fmtUses, providerOf } from "../lib/helpers";
-import { Icon } from "../components/ui/Icon";
+import { cx, providerOf } from "../lib/helpers";
 import { Modal } from "../components/ui/Modal";
 import { Toggle } from "../components/ui/Toggle";
 import { inputCls, labelCls } from "../components/ui/constants";
-import { PROVIDERS, MODELS, TOOLS, SKILLS, MCP_SERVERS } from "../lib/constants";
+import { PROVIDERS, TOOLS, SKILLS, MCP_SERVERS } from "../lib/constants";
 
 import { Segmented } from "../components/ui/Segmented";
 import { OptionChips } from "../components/ui/OptionChips";
@@ -104,7 +103,7 @@ export function AgentConfigModal({ draft, onClose, onSave, skillOptions  }: any)
             <Segmented value={autonomy} onChange={setAutonomy}
               options={[{ id: 'suggest', label: 'Suggest only' }, { id: 'approval', label: 'Act with approval' }, { id: 'full', label: 'Fully autonomous' }]}/>
           </div>
-          <div className="flex items-center justify-between rounded-md border border-line bg-[color-mix(in_oklab,var(--bg),35%,var(--surface))] px-4 py-3">
+          <div className="flex items-center justify-between rounded-md border border-line bg-[color-mix(in_oklab,var(--bg)_35%,var(--surface))] px-4 py-3">
             <div>
               <p className="text-[13px] font-medium text-fg">Post to channels on my behalf</p>
               <p className="text-[12px] text-muted">Lets this agent publish into its bound channels.</p>

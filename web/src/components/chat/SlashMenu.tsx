@@ -1,11 +1,6 @@
 import React from "react";
-import { cx, memberHandle } from "../../lib/helpers";
-import { Icon } from "../ui/Icon";
-import { Avatar } from "../ui/Avatar";
-import { StatusDot } from "../ui/StatusDot";
-import { MentionText } from "../ui/MentionText";
-import { Chip } from "../ui/Chip";
-import { STATUS, COMMANDS } from "../../lib/constants";
+import { cx } from "../../lib/helpers";
+import { COMMANDS } from "../../lib/constants";
 
 export function SlashMenu({ q, idx, onPick  }: any) {
   const list = COMMANDS.filter((c) => c.cmd.startsWith(q.toLowerCase()));

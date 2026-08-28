@@ -1,10 +1,9 @@
 import { useState } from "react";
-import { cx, uid, slugify, fmtUses, providerOf } from "../lib/helpers";
+import { cx } from "../lib/helpers";
 import { Icon } from "../components/ui/Icon";
 import { Modal } from "../components/ui/Modal";
 import { Toggle } from "../components/ui/Toggle";
 import { inputCls, labelCls } from "../components/ui/constants";
-import { PROVIDERS, MODELS, TOOLS, SKILLS, MCP_SERVERS } from "../lib/constants";
 
 export function CronEditorModal({ job, tenant, onClose, onSave, onDelete  }: any) {
   const isNew = !job.id;

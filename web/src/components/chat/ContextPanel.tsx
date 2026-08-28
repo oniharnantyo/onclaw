@@ -1,11 +1,7 @@
-import { useState, useRef, useEffect } from "react";
-import { cx, memberHandle } from "../../lib/helpers";
+import { useState } from "react";
 import { Icon } from "../ui/Icon";
 import { Avatar } from "../ui/Avatar";
 import { StatusDot } from "../ui/StatusDot";
-import { MentionText } from "../ui/MentionText";
-import { Chip } from "../ui/Chip";
-import { STATUS, COMMANDS } from "../../lib/constants";
 
 export function ContextPanel({ channelMembers, candidates, primaryAgentId, onAddMember, onRemoveMember, onClose, onOpenMember  }: any) {
   const [adding, setAdding] = useState(false);
@@ -38,7 +34,7 @@ export function ContextPanel({ channelMembers, candidates, primaryAgentId, onAdd
               {m.id !== primaryAgentId && (
                 <button type="button" onClick={() => onRemoveMember(m.id)} data-od-id={'drawer-member-remove-' + m.id}
                   aria-label={'Remove ' + m.name + ' from channel'} title="Remove from channel"
-                  className="absolute right-1.5 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-[5px] text-muted opacity-0 transition-opacity hover:bg-[color-mix(in_oklab,var(--danger),12%,transparent)] hover:text-danger focus-visible:opacity-100 group-hover:opacity-100">
+                  className="absolute right-1.5 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-[5px] text-muted opacity-0 transition-opacity hover:bg-[color-mix(in_oklab,var(--danger)_12%,transparent)] hover:text-danger focus-visible:opacity-100 group-hover:opacity-100">
                   <Icon name="x" size={11}/>
                 </button>
               )}

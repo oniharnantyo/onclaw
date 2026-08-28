@@ -1,11 +1,7 @@
 import { useState, useRef, useEffect } from "react";
-import { cx, memberHandle } from "../../lib/helpers";
+import { cx } from "../../lib/helpers";
 import { Icon } from "../ui/Icon";
 import { Avatar } from "../ui/Avatar";
-import { StatusDot } from "../ui/StatusDot";
-import { MentionText } from "../ui/MentionText";
-import { Chip } from "../ui/Chip";
-import { STATUS, COMMANDS } from "../../lib/constants";
 
 import { ChatHeader } from "./ChatHeader";
 import { Composer } from "./Composer";
@@ -15,8 +11,8 @@ import { AgentMessage } from "./AgentMessage";
 import { ThinkingRow } from "./ThinkingRow";
 
 export function ChatView({ tenant, target, agent, thread, session, channelMembers, onToggleMembers,
-  typing, streamingId, busy, onConfigure,
-  onSend, onCancel, onDoneStream, onAttach, onCopy, onRefresh, onBranch, onEditSubmit  }: any) {
+  typing, busy, onConfigure,
+  onSend, onCancel, onAttach, onCopy, onRefresh, onBranch, onEditSubmit  }: any) {
   const listRef = useRef(null);
   const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
@@ -26,7 +22,9 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
 
   // long-history guard: render the latest window, load older on demand
   const [msgLimit, setMsgLimit] = useState(80);
-  useEffect(() => { setMsgLimit(80); }, [session && session.id]);
+  const sessionId = session && session.id;
+  const [limitSession, setLimitSession] = useState(sessionId);
+  if (sessionId !== limitSession) { setLimitSession(sessionId); setMsgLimit(80); }
   const visibleMsgs = thread.length > msgLimit ? thread.slice(thread.length - msgLimit) : thread;
   const hiddenMsgs = thread.length - visibleMsgs.length;
 
@@ -44,7 +42,7 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
     const grewUser = sameChat && sameSession && thread.length > prevLen.current && lastMsg && lastMsg.author === 'you';
     prevLen.current = thread.length;
     prevChat.current = target.obj.id;
-    prevSession.current = session && session.id;
+    prevSession.current = sessionId;
     if (grewUser) {
       // assistant-ui turnAnchor="top" — a fresh user message pins to the top of the viewport
       const nodes = el.querySelectorAll('[data-role="user"]');
@@ -54,7 +52,7 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
     } else {
       el.scrollTop = el.scrollHeight;
     }
-  }, [thread.length, typing, streamingId, target.obj.id, session && session.id]);
+  }, [thread.length, typing, target.obj.id, sessionId]); // eslint-disable-line react-hooks/exhaustive-deps -- scroll tracks thread.length only; full deps would re-run on every store update and jump the viewport
 
   const onScroll = (e) => {
     const el = e.currentTarget;
@@ -78,7 +76,7 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
   return (
     <section data-od-id="chat-view" className="flex min-w-0 flex-1 flex-col bg-bg" aria-label={'Conversation with ' + (target.kind === 'channel' ? '#' + target.obj.name : target.obj.name)}>
       <ChatHeader target={target} agent={agent} channelMembers={channelMembers} onToggleMembers={onToggleMembers} onConfigure={onConfigure}/>
-      <div ref={listRef} onScroll={onScroll} className="od-scroll relative flex-1 overflow-y-auto" data-od-id="message-list">
+      <div ref={listRef} onScroll={onScroll} role="log" aria-label="Messages" className="od-scroll relative flex-1 overflow-y-auto" data-od-id="message-list">
         {isEmpty ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center">
             {agent && <Avatar name={agent.name} kind="agent" size={44}/>}
@@ -111,8 +109,8 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
               if (m.author === 'other') return <OtherMessage key={m.id} m={m} members={channelMembers}/>;
               return (
                 <AgentMessage key={m.id} m={m} agent={msgAgent} inChannel={target.kind === 'channel'}
-                  streaming={streamingId === m.id} busy={busy} isLast={isLast}
-                  onDone={onDoneStream} onCopy={onCopy} onGrow={pinBottom}
+                  busy={busy} isLast={isLast}
+                  onCopy={onCopy} onGrow={pinBottom}
                   onRefresh={onRefresh} onBranch={onBranch} members={channelMembers}/>
               );
             })}

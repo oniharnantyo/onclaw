@@ -1,10 +1,9 @@
 import { useState } from "react";
-import { cx, uid, slugify, fmtUses, providerOf } from "../lib/helpers";
+import { cx, uid, slugify, fmtUses } from "../lib/helpers";
 import { Icon } from "../components/ui/Icon";
 import { Toggle } from "../components/ui/Toggle";
 import { Chip } from "../components/ui/Chip";
-import { inputCls, labelCls } from "../components/ui/constants";
-import { PROVIDERS, MODELS, TOOLS, SKILLS, MCP_SERVERS } from "../lib/constants";
+import { inputCls } from "../components/ui/constants";
 
 export function SkillsPane({ tenant, onUpdate, onToast }: { tenant: Workspace, onUpdate: (fn: (t: Workspace) => Workspace) => void, onToast: (msg: string, type?: string) => void }) {
   const [adding, setAdding] = useState(false);

@@ -1,9 +1,8 @@
 import { create } from 'zustand';
 import { useEffect } from 'react';
-import type { Workspace, Agent, Message, CronJob, Channel } from '../data/types';
+import type { Workspace, Agent, CronJob } from '../data/types';
 import { seedDb } from "../data/seed";
-import { MENTION_REPLIES, REPLY_TEMPLATES } from "../lib/constants";
-import { uid, nowTime, parseMentions, craftReply } from '../lib/helpers';
+import { uid, nowTime } from '../lib/helpers';
 
 export const useSearchShortcut = () => {
   useEffect(() => {
@@ -22,11 +21,11 @@ export const useSearchShortcut = () => {
 const POS_KEY = 'od-onclaw-pos';
 const loadPos = () => {
   try { return JSON.parse(localStorage.getItem(POS_KEY) || 'null') || null; }
-  catch (e) { return null; }
+  catch { return null; }
 };
 const savePos = (p: any) => {
   try { localStorage.setItem(POS_KEY, JSON.stringify(p)); }
-  catch (e) {}
+  catch { /* storage unavailable (private mode) — position just won't persist */ }
 };
 
 export interface AppState {
@@ -45,8 +44,7 @@ export interface AppState {
     wsOpen: boolean;
     createWsOpen: boolean;
     toasts: any[];
-    typing: boolean;
-    streamId: string | null;
+    running: boolean;
   };
   search: string;
 
@@ -64,18 +62,11 @@ export interface AppState {
   addChannelMember: (chatId: string, id: string) => void;
   removeChannelMember: (chatId: string, id: string) => void;
   
-  send: (text: string) => void;
-  respondFor: (tid: string, cid: string, ag: Agent, origText: string, opts?: { delay?: number, mentioned?: boolean }) => void;
-  refreshMessage: (mid: string) => void;
-  branchNav: (mid: string, dir: number) => void;
-  editSubmit: (mid: string, newText: string) => void;
-  
   newSession: () => void;
   switchSession: (sid: string) => void;
   deleteSession: (sid: string) => void;
   switchTenant: (id: string) => void;
   upsertAgent: (values: Partial<Agent>) => void;
-  cancelReply: () => void;
   
   runNow: (job: CronJob) => void;
   toggleCron: (job: CronJob) => void;
@@ -106,7 +97,7 @@ export const useStore = create<AppState>((set, get) => ({
   pos: initialPos,
   ui: {
     settingsOpen: false, settingsTab: 'workspace', configAgent: null, cronEdit: null,
-    wsOpen: false, createWsOpen: false, toasts: [], typing: false, streamId: null
+    wsOpen: false, createWsOpen: false, toasts: [], running: false
   },
   search: '',
 
@@ -203,178 +194,6 @@ export const useStore = create<AppState>((set, get) => ({
     if (channel) state.toast((m ? m.name : 'Member') + ' removed from #' + channel.name);
   },
 
-  respondFor: (tid, cid, ag, origText, opts) => {
-    const state = get();
-    const delay = opts?.delay;
-    const mentioned = opts?.mentioned;
-    state.patchUi({ typing: true });
-    setSafeTimer(`respond-${ag.id}`, () => {
-      const isSlash = origText.trim().startsWith('/');
-      const mid = uid('m');
-      get().pushMsg(tid, cid, {
-        id: mid, author: 'agent', agentId: ag.id, ts: nowTime(),
-        text: mentioned ? MENTION_REPLIES[Math.floor(Math.random() * MENTION_REPLIES.length)] : craftReply(ag, origText),
-        tools: isSlash || ag.tools.length === 0 ? undefined
-          : [{ name: ag.tools[0] + '.query', args: 'q: ' + origText.slice(0, 48), ms: 600 + Math.floor(Math.random() * 900) }]
-      });
-      get().patchUi({ typing: false, streamId: mid });
-      if (!mentioned && origText.trim().toLowerCase().startsWith('/schedule')) {
-        setSafeTimer(`cron-edit-${mid}`, () => {
-          get().patchUi({ cronEdit: { id: null, name: '', agentId: ag.id, expr: '0 9 * * 1-5', human: '', enabled: true } });
-        }, 700);
-      }
-    }, delay || 850 + Math.random() * 550);
-  },
-
-  cancelReply: () => {
-    get().patchUi({ typing: false, streamId: null });
-    for (const k in activeTimers) {
-      if (k.startsWith('respond-')) {
-        clearTimeout(activeTimers[k]);
-        delete activeTimers[k];
-      }
-    }
-  },
-
-  send: (text) => {
-    const state = get();
-    const tid = state.pos.tenantId;
-    const cid = state.pos.chatId;
-    const t = state.db[tid];
-    
-    // get targets
-    const agent = t.agents.find((a: any) => a.id === cid) || null;
-    const channel = t.channels.find((c: any) => c.id === cid) || null;
-    const person = t.people.find((p: any) => p.id === cid) || null;
-    const chatAgent = agent || (channel ? t.agents.find((a: any) => a.id === channel.agentId) || null : null);
-    const target = agent ? { kind: 'agent', obj: agent } : channel ? { kind: 'channel', obj: channel } : { kind: 'person', obj: person };
-
-    state.pushMsg(tid, cid, { id: uid('m'), author: 'you', ts: nowTime(), text });
-    
-    if (target.kind === 'person' || !chatAgent) return;
-    
-    if (text.trim().toLowerCase().startsWith('/reset')) {
-      state.updateTenant(tid, (tenant) => {
-        const th = tenant.threads[cid];
-        const s = th && th.list.find((x: any) => x.id === th.active);
-        if (s) { s.messages = []; s.title = 'New chat'; s.updated = nowTime(); }
-        return tenant;
-      });
-      state.toast('Thread cleared');
-      return;
-    }
-    
-    if (target.kind === 'channel' && channel) {
-      const ids = channel.members && channel.members.length ? channel.members : (channel.agentId ? [channel.agentId] : []);
-      const channelMembers = ids.map(id => {
-        const a = t.agents.find(x => x.id === id);
-        if (a) return { id, kind: 'agent', name: a.name, agent: a };
-        const p = t.people.find(x => x.id === id);
-        if (p) return { id, kind: 'person', name: p.name, presence: p.presence };
-        return null;
-      }).filter(Boolean);
-      
-      const mentionedAgents = parseMentions(text, channelMembers)
-        .filter((m: any) => m.kind === 'agent')
-        .map((m: any) => t.agents.find((a: any) => a.id === m.id))
-        .filter(Boolean) as Agent[];
-        
-      if (mentionedAgents.length > 0) {
-        mentionedAgents.forEach((ag, i) => state.respondFor(tid, cid, ag, text, { delay: 850 + i * 1200 + Math.random() * 400, mentioned: true }));
-        return;
-      }
-    }
-    
-    state.respondFor(tid, cid, chatAgent, text);
-  },
-
-  refreshMessage: (mid) => {
-    const state = get();
-    const tid = state.pos.tenantId;
-    const cid = state.pos.chatId;
-    const t = state.db[tid];
-    
-    const agent = t.agents.find((a: any) => a.id === cid) || null;
-    const channel = t.channels.find((c: any) => c.id === cid) || null;
-    const chatAgent = agent || (channel ? t.agents.find((a: any) => a.id === channel.agentId) || null : null);
-    
-    if (!chatAgent) return;
-    
-    const th = t.threads[cid];
-    const s = th && th.list.find((x: any) => x.id === th.active);
-    const m = s && s.messages.find((x: any) => x.id === mid);
-    if (!m || m.author !== 'agent') return;
-    
-    const branches = (m as any).branches || [];
-    const curBranch = branches[(m as any).branch || 0];
-    const cur = (curBranch && curBranch.text) ? curBranch.text : m.text || '';
-    
-    let next = cur;
-    for (let k = 0; k < 6 && next === cur; k++) next = REPLY_TEMPLATES[Math.floor(Math.random() * REPLY_TEMPLATES.length)];
-    
-    state.patchUi({ typing: true });
-    setSafeTimer(`refresh-${mid}`, () => {
-      get().updateTenant(tid, (tenant) => {
-        const _th = tenant.threads[cid];
-        const _sess = _th && _th.list.find((x: any) => x.id === _th.active);
-        const _mm = _sess && _sess.messages.find((x: any) => x.id === mid);
-        if (_mm) {
-           const existingBranches = (_mm as any).branches || [{ text: _mm.text } as ChatMessage];
-           (_mm as any).branches = [...existingBranches, { text: next } as ChatMessage];
-           (_mm as any).branch = _mm.branches.length - 1;
-        }
-        return tenant;
-      });
-      get().patchUi({ typing: false, streamId: mid });
-    }, 650 + Math.random() * 450);
-  },
-
-  branchNav: (mid, dir) => {
-    const state = get();
-    const tid = state.pos.tenantId;
-    const cid = state.pos.chatId;
-    
-    state.updateTenant(tid, (tenant) => {
-      const th = tenant.threads[cid];
-      const sess = th && th.list.find((x: any) => x.id === th.active);
-      const mm = sess && sess.messages.find((x: any) => x.id === mid);
-      if (mm) {
-        const count = ((mm as any).branches || []).length || 1;
-        (mm as any).branch = Math.min(count - 1, Math.max(0, ((mm as any).branch || 0) + dir));
-      }
-      return tenant;
-    });
-    state.patchUi({ streamId: null });
-  },
-
-  editSubmit: (mid, newText) => {
-    const state = get();
-    const tid = state.pos.tenantId;
-    const cid = state.pos.chatId;
-    
-    state.updateTenant(tid, (tenant) => {
-      const th = tenant.threads[cid];
-      const sess = th && th.list.find((x: any) => x.id === th.active);
-      if (sess) {
-        const i = sess.messages.findIndex((x: any) => x.id === mid);
-        if (i >= 0) {
-          sess.messages[i] = { ...sess.messages[i], text: newText };
-          sess.messages = sess.messages.slice(0, i + 1);
-        }
-      }
-      return tenant;
-    });
-    
-    const t = get().db[tid];
-    const agent = t.agents.find((a: any) => a.id === cid) || null;
-    const channel = t.channels.find((c: any) => c.id === cid) || null;
-    const person = t.people.find((p: any) => p.id === cid) || null;
-    const chatAgent = agent || (channel ? t.agents.find((a: any) => a.id === channel.agentId) || null : null);
-    
-    if (person || !chatAgent) return;
-    get().respondFor(tid, cid, chatAgent, newText);
-  },
-
   newSession: () => {
     const state = get();
     const tid = state.pos.tenantId;
@@ -392,7 +211,7 @@ export const useStore = create<AppState>((set, get) => ({
       th.active = s.id;
       return tenant;
     });
-    state.patchUi({ typing: false, streamId: null });
+    state.patchUi({ running: false });
   },
 
   switchSession: (sid) => {
@@ -404,7 +223,7 @@ export const useStore = create<AppState>((set, get) => ({
       if (th && !Array.isArray(th)) th.active = sid;
       return tenant;
     });
-    state.patchUi({ typing: false, streamId: null });
+    state.patchUi({ running: false });
   },
 
   deleteSession: (sid) => {
@@ -424,7 +243,7 @@ export const useStore = create<AppState>((set, get) => ({
       }
       return tenant;
     });
-    state.patchUi({ typing: false, streamId: null });
+    state.patchUi({ running: false });
     state.toast('Session deleted');
   },
 

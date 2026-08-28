@@ -1,11 +1,5 @@
 import React from "react";
-import { cx, memberHandle } from "../../lib/helpers";
 import { Icon } from "../ui/Icon";
-import { Avatar } from "../ui/Avatar";
-import { StatusDot } from "../ui/StatusDot";
-import { MentionText } from "../ui/MentionText";
-import { Chip } from "../ui/Chip";
-import { STATUS, COMMANDS } from "../../lib/constants";
 
 export function BranchPicker({ index, count, onPrev, onNext  }: any) {
   const btn = 'flex h-6 w-6 items-center justify-center rounded-full text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg disabled:pointer-events-none disabled:opacity-30';
