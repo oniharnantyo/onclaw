@@ -17,25 +17,74 @@ OnClaw is a multi-tenant, self-hosted **AI agent workspace** — an OpenClaw / H
 
 ## Repository State
 
-Greenfield — **not yet a git repository**. `go.mod` exists with no dependencies; there is no backend code, no Vite scaffold, and no migrations yet. When scaffolding lands, update Commands below and `git init` if still missing.
+Backend scaffolded — Go service implementing identity, multi-tenancy, and master-tenant control plane using `gin` (HTTP), `pgx/v5` (PostgreSQL), `urfave/cli/v3` (CLI), `golang-migrate` (embedded SQL schema migrations), and `golang-jwt/v5` (JWT HS256 auth). Local storage adapter supports atomic file capability key serving.
+
+### Codebase Layout
+
+```
+main.go             Root entrypoint: builds root command via internal/cli, runs, and exits
+internal/
+  cli/              Composition root: command definitions (server, migrate, user, superadmin) & driver blank imports (drivers.go)
+  config/           Configuration struct & per-command assembly (flags > environment variables > defaults)
+  domain/           Entities (User, Workspace, Role, Member), validation rules, error sentinels, permission catalog & algebra
+  auth/             Authentication ports & registry, password provider (argon2id), TokenIssuer (JWT HS256), auth Service
+  server/           HTTP router, error translation envelopes, middleware (auth, workspace context, permission guards, master tenant context), REST API handlers
+  server/handlers/  Endpoint handlers (auth, workspaces, members, roles, users, capability file serving, instance admin)
+  store/            Data storage ports (Users, Workspaces, Roles, Members) & in-memory test fake
+  store/postgres/   PostgreSQL store adapter using pgxpool & embedded SQL migrations
+  storage/          File/blob storage port & in-memory test fake
+  storage/local/    Local filesystem storage driver under data-dir with atomic writes & capability URLs
+  bootstrap/        Fresh-instance lifecycle: EnsureMaster (master tenant) + SeedSuperadmin (initial superadmin account)
+migrations/         000001_users … 000006_workspace_master (up/down SQL migration pairs)
+scripts/
+  smoke.sh          End-to-end curl-based smoke test suite
+```
 
 ### Commands
 
 ```bash
-go build ./...                      # build backend (works once packages exist)
-go test ./...                       # all tests
-go test -run TestName ./internal/foo/...   # single test
-go vet ./...
+# Build & Verification
+go build ./...                                      # build all backend packages
+go vet ./...                                        # vet code
+go test ./...                                       # run unit and fake-based tests
+go test -tags=integration ./...                    # run PostgreSQL integration tests
+./scripts/smoke.sh                                  # run full end-to-end curl smoke test suite
+
+# Database Migrations
+go run . migrate up [--database-url <dsn>]          # apply all pending migrations
+go run . migrate down [--steps N] [--all]           # rollback migrations
+go run . migrate status                             # check current migration version
+go run . migrate version                            # print migration version
+
+# Server
+go run . server [--listen-addr :8080]               # start HTTP API server
+# Environment variables for server:
+#   DATABASE_URL (required)
+#   ONCLAW_LISTEN_ADDR (default :8080)
+#   ONCLAW_JWT_SECRET (HS256 key; ephemeral if unset)
+#   ONCLAW_DATA_DIR (default ./data)
+#   ONCLAW_SUPERADMIN_EMAIL (initial seed email)
+#   ONCLAW_SUPERADMIN_PASSWORD (initial seed password)
+#   .env in the working directory is auto-loaded before flags resolve; real env vars win over .env
+
+# User & Superadmin Management
+go run . superadmin create --email <e> --name <n> --password <p>  # create or seed superadmin in master tenant
+go run . user create --email <e> --name <n> --password <p>        # create user account [--avatar-file <path>]
+go run . user list                                                # list all user accounts
+go run . user disable --email <e>                                 # disable a user account
 
 # Web Frontend Commands
 cd web
-npm run dev                         # start Vite dev server
-npm run build                       # typecheck and build for production
-npm run preview                     # preview production build
-npm run test:e2e                    # run Playwright visual parity tests
+pnpm install                        # install dependencies
+pnpm dev                            # start Vite dev server (proxies /api to the backend)
+pnpm build                          # typecheck and build for production
+pnpm preview                        # preview production build
+pnpm test                           # run vitest unit tests
+pnpm test:e2e                       # run Playwright visual parity tests
 ```
 
-Integration tests will need PostgreSQL — prefer a dockerized instance for local dev.
+Integration tests require PostgreSQL — set `DATABASE_URL` or `TEST_DATABASE_URL` (e.g. `postgres://localhost:5432/postgres?sslmode=disable`).
+
 
 ## Frontend Design Contract
 
@@ -51,7 +100,7 @@ Integration tests will need PostgreSQL — prefer a dockerized instance for loca
 
 Use these names consistently across schema, API, and UI (they come from the prototype):
 
-- **Workspace** — the tenant: name, URL slug, plan, timezone. Switchable via the workspace switcher; created through onboarding (optionally with a starter agent).
+- **Workspace** — the tenant: name, URL slug, timezone. Switchable via the workspace switcher; created through onboarding (optionally with a starter agent).
 - **Member** — workspace user with role Owner / Admin / Member.
 - **Agent** — persona + config: system prompt, provider, model, temperature, tools exposed, skills, slash commands, MCP servers, thread retention.
 - **Chat / Thread** — conversation with an agent; transcript includes tool-call cards and cron-origin markers.

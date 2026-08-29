@@ -7,12 +7,12 @@ import { SectionLabel } from "../ui/SectionLabel";
 import { STATUS } from "../../lib/constants";
 
 export function Sidebar({ view, tenant, chatId, onSelect, onDeploy, onNewSchedule, onEditCron, onOpenSwitcher, search, setSearch,
-  activeIsAgent, session, sessions, onSwitchSession, onNewSession, onDeleteSession  }: any) {
+  activeIsAgent, session, sessions, onSwitchSession, onNewSession, onDeleteSession }: any) {
   const [showAllSessions, setShowAllSessions] = useState(false);
   const [prevChatId, setPrevChatId] = useState(chatId);
   if (chatId !== prevChatId) { setPrevChatId(chatId); setShowAllSessions(false); }
   const q = search.trim().toLowerCase();
-  const match = (s) => !q || s.toLowerCase().includes(q);
+  const match = (s?: string) => !q || (s ? s.toLowerCase().includes(q) : false);
   const agents = tenant.agents.filter((a: any) => match(a.name) || match(a.role));
   const channels = tenant.channels.filter((c: any) => match(c.name) || match(c.purpose));
   const people = tenant.people.filter((p: any) => match(p.name));
@@ -38,7 +38,7 @@ export function Sidebar({ view, tenant, chatId, onSelect, onDeploy, onNewSchedul
         </span>
         <span className="min-w-0 flex-1">
           <span className="block truncate text-[13px] font-semibold text-fg">{tenant.name}</span>
-          <span className="block truncate font-mono text-[10px] text-muted">{tenant.plan} · {tenant.agents.length} agents</span>
+          <span className="block truncate font-mono text-[10px] text-muted">{tenant.agents.length} agents</span>
         </span>
         <Icon name="chevdown" size={14} className="shrink-0 text-muted"/>
       </button>
@@ -200,6 +200,7 @@ export function Sidebar({ view, tenant, chatId, onSelect, onDeploy, onNewSchedul
           </div>
         </div>
       )}
+
     </aside>
   );
 }

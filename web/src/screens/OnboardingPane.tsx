@@ -2,14 +2,14 @@ import { Icon } from "../components/ui/Icon";
 
 export function OnboardingPane({ tenant, onDeploy, onSettings }: { tenant: Workspace, onDeploy: () => void, onSettings: () => void }) {
   return (
-    <section data-od-id="onboarding-pane" aria-label="Getting started"
+    <section data-od-id="onboarding-pane" data-testid="onboarding-pane" aria-label="Getting started"
       className="flex min-w-0 flex-1 flex-col items-center justify-center gap-4 bg-surface px-6 text-center">
       <div className="flex h-14 w-14 items-center justify-center rounded-[16px] bg-[color-mix(in_oklab,var(--accent)_14%,transparent)] text-accent">
         <Icon name="bot" size={26}/>
       </div>
       <div>
         <h1 className="text-[24px] font-semibold tracking-[-0.01em] text-fg">{tenant.name} is ready</h1>
-        <p className="mx-auto mt-2 max-w-md text-[14px] leading-6 text-muted">A workspace is a container until it has agents. Deploy the first one — pick a model, grant tools, and it appears in the sidebar ready to chat.</p>
+        <p className="mx-auto mt-2 max-w-md text-[14px] leading-6 text-muted">A workspace is an API-backed container until it has agents. Deploy the first one — pick a model, grant tools, and it appears in the sidebar ready to chat.</p>
       </div>
       <div className="mt-1 flex items-center gap-2.5">
         <button type="button" onClick={onDeploy} data-od-id="btn-onboarding-deploy"
@@ -21,7 +21,7 @@ export function OnboardingPane({ tenant, onDeploy, onSettings }: { tenant: Works
           Workspace settings
         </button>
       </div>
-      <p className="mt-2 font-mono text-[11px] text-muted">{tenant.plan} plan · {tenant.tz}</p>
+      <p className="mt-2 font-mono text-[11px] text-muted">{tenant.tz}</p>
     </section>
   );
 }

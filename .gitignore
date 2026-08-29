@@ -39,6 +39,9 @@ lerna-debug.log*
 .env.test.local
 .env.production.local
 
+# Runtime data (local storage driver's default data dir)
+/data/
+
 # Editor / OS
 .DS_Store
 .DS_Store?

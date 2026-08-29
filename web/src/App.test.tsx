@@ -1,0 +1,271 @@
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
+import App from './App';
+import { useAuthStore } from './store/auth';
+
+vi.mock('@assistant-ui/react', () => ({
+  useExternalStoreRuntime: vi.fn((opts) => opts),
+  AssistantRuntimeProvider: ({ children }: any) => <div>{children}</div>,
+}));
+
+describe('App & Route Guard', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    useAuthStore.setState({
+      user: null,
+      memberships: [],
+      status: 'loading',
+      boot: vi.fn(),
+    });
+    vi.restoreAllMocks();
+  });
+
+  it('renders boot loader while session is loading', () => {
+    useAuthStore.setState({ status: 'loading', boot: vi.fn() });
+
+    render(<App />);
+
+    expect(screen.getByText(/loading onclaw…/i)).not.toBeNull();
+  });
+
+  it('redirects unauthenticated users to /login', async () => {
+    useAuthStore.setState({
+      status: 'unauthenticated',
+      boot: vi.fn(),
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/welcome to onclaw/i)).not.toBeNull();
+      expect(screen.getByRole('button', { name: /sign in/i })).not.toBeNull();
+    });
+  });
+
+  it('renders authenticated layout and navigation rail when authenticated', async () => {
+    useAuthStore.setState({
+      status: 'authenticated',
+      user: { id: 'u1', email: 'alice@example.com', name: 'Alice', created_at: '', updated_at: '' },
+      memberships: [],
+      boot: vi.fn(),
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/primary/i)).not.toBeNull();
+      expect(screen.getByRole('button', { name: /user menu for alice/i })).not.toBeNull();
+    });
+  });
+
+  it('renders suspended workspace screen when active workspace is suspended', async () => {
+    useAuthStore.setState({
+      status: 'authenticated',
+      user: { id: 'u1', email: 'alice@example.com', name: 'Alice', created_at: '', updated_at: '' },
+      memberships: [
+        {
+          workspace_id: 'acme',
+          workspace_slug: 'acme',
+          workspace_name: 'Acme Corp',
+          user_id: 'u1',
+          email: 'alice@example.com',
+          name: 'Alice',
+          role_id: 'r1',
+          role_name: 'Owner',
+          workspace: {
+            id: 'acme',
+            slug: 'acme',
+            name: 'Acme Corp',
+            timezone: 'UTC',
+            is_master: false,
+            disabled_at: '2026-08-28T12:00:00Z',
+            created_at: '',
+            updated_at: '',
+          },
+          joined_at: '',
+        },
+      ],
+      boot: vi.fn(),
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/workspace suspended/i)).not.toBeNull();
+      expect(screen.getByText(/this workspace has been suspended by an administrator/i)).not.toBeNull();
+      expect(screen.getByRole('button', { name: 'Switch workspace' })).not.toBeNull();
+    });
+  });
+
+  it('allows access to /agents, /cron, and /runs in a zero-agent workspace, while chat routes redirect to /welcome', async () => {
+    const zeroAgentWorkspace = {
+      id: 'empty_ws',
+      sub: 'empty_ws',
+      name: 'Empty WS',
+      plan: 'Free',
+      tz: 'UTC',
+      agents: [],
+      channels: [],
+      people: [],
+      cron: [],
+      runs: [],
+      threads: {},
+    };
+
+    useAuthStore.setState({
+      status: 'authenticated',
+      user: { id: 'u1', email: 'alice@example.com', name: 'Alice', created_at: '', updated_at: '' },
+      memberships: [
+        {
+          workspace_id: 'empty_ws',
+          workspace_slug: 'empty_ws',
+          workspace_name: 'Empty WS',
+          user_id: 'u1',
+          email: 'alice@example.com',
+          name: 'Alice',
+          role_id: 'r1',
+          role_name: 'Owner',
+          workspace: {
+            id: 'empty_ws',
+            slug: 'empty_ws',
+            name: 'Empty WS',
+            timezone: 'UTC',
+            is_master: false,
+            created_at: '',
+            updated_at: '',
+          },
+          joined_at: '',
+        },
+      ],
+      boot: vi.fn(),
+    });
+
+    const { useStore } = await import('./store');
+    useStore.setState({
+      pos: { tenantId: 'empty_ws', view: 'agents', chatId: '', showContext: false, railExpanded: false },
+      db: { empty_ws: zeroAgentWorkspace as any },
+    });
+
+    window.history.pushState({}, '', '/agents');
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('agents-view')).not.toBeNull();
+      expect(screen.getByText(/no agents in empty ws yet/i)).not.toBeNull();
+    });
+  });
+
+  it('renders /welcome with nothing highlighted in the rail', async () => {
+    const zeroAgentWorkspace = {
+      id: 'empty_ws',
+      sub: 'empty_ws',
+      name: 'Empty WS',
+      plan: 'Free',
+      tz: 'UTC',
+      agents: [],
+      channels: [],
+      people: [],
+      cron: [],
+      runs: [],
+      threads: {},
+    };
+
+    useAuthStore.setState({
+      status: 'authenticated',
+      user: { id: 'u1', email: 'alice@example.com', name: 'Alice', created_at: '', updated_at: '' },
+      memberships: [],
+      boot: vi.fn(),
+    });
+
+    const { useStore } = await import('./store');
+    useStore.setState({
+      pos: { tenantId: 'empty_ws', view: '', chatId: '', showContext: false, railExpanded: false },
+      db: { empty_ws: zeroAgentWorkspace as any },
+    });
+
+    window.history.pushState({}, '', '/welcome');
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-pane')).not.toBeNull();
+      // Verify no rail item is active
+      const navButtons = screen.getByRole('navigation', { name: /primary/i }).querySelectorAll('button[data-od-id^="rail-"]');
+      navButtons.forEach((btn) => {
+        expect(btn.className).not.toContain('text-accent font-semibold');
+      });
+    });
+  });
+
+  it('renders Workspaces and Accounts admin routes for qualified superadmin in master tenant', async () => {
+    const masterWorkspace = {
+      id: 'master',
+      sub: 'master',
+      name: 'Master Control',
+      plan: 'Enterprise',
+      tz: 'UTC',
+      is_master: true,
+      agents: [{ id: 'a1', name: 'Atlas' }],
+      channels: [],
+      people: [],
+      cron: [],
+      runs: [],
+      threads: {},
+    };
+
+    const { api } = await import('./lib/api');
+    vi.spyOn(api.admin.workspaces, 'list').mockResolvedValue({ workspaces: [] });
+    vi.spyOn(api.admin.users, 'list').mockResolvedValue({ users: [] });
+
+    useAuthStore.setState({
+      status: 'authenticated',
+      user: { id: 'u_super', email: 'super@onclaw.local', name: 'Super Admin', created_at: '', updated_at: '' },
+      memberships: [
+        {
+          workspace_id: 'master',
+          workspace_slug: 'master',
+          workspace_name: 'Master Control',
+          user_id: 'u_super',
+          email: 'super@onclaw.local',
+          name: 'Super Admin',
+          role_id: 'r_superadmin',
+          role_name: 'Superadmin',
+          role: {
+            id: 'r_superadmin',
+            workspace_id: 'master',
+            name: 'Superadmin',
+            is_owner: true,
+            permissions: ['*'],
+            built_in: true,
+            created_at: '',
+          },
+          workspace: {
+            id: 'master',
+            slug: 'master',
+            name: 'Master Control',
+            timezone: 'UTC',
+            is_master: true,
+            created_at: '',
+            updated_at: '',
+          },
+          joined_at: '',
+        },
+      ],
+      boot: vi.fn(),
+    });
+
+    const { useStore } = await import('./store');
+    useStore.setState({
+      pos: { tenantId: 'master', view: 'admin-workspaces', chatId: 'a1', showContext: false, railExpanded: false },
+      db: { master: masterWorkspace as any },
+    });
+
+    window.history.pushState({}, '', '/admin/workspaces');
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('rail-admin-workspaces')).not.toBeNull();
+      expect(screen.getByTestId('rail-admin-accounts')).not.toBeNull();
+      expect(screen.getByTestId('admin-view')).not.toBeNull();
+    });
+  });
+});

@@ -1,0 +1,313 @@
+package domain_test
+
+import (
+	"errors"
+	"testing"
+
+	"github.com/oniharnantyo/onclaw/internal/domain"
+)
+
+func TestCanEdit(t *testing.T) {
+	tests := []struct {
+		name        string
+		actorPerms  []string
+		targetPerms []string
+		expected    bool
+	}{
+		{
+			name:        "Owner can edit Admin (strict subset)",
+			actorPerms:  domain.OwnerPermissions,
+			targetPerms: domain.AdminPermissions,
+			expected:    true,
+		},
+		{
+			name:        "Owner can edit Member (strict subset)",
+			actorPerms:  domain.OwnerPermissions,
+			targetPerms: domain.MemberPermissions,
+			expected:    true,
+		},
+		{
+			name:        "Owner cannot edit Owner (peers / equal sets)",
+			actorPerms:  domain.OwnerPermissions,
+			targetPerms: domain.OwnerPermissions,
+			expected:    false,
+		},
+		{
+			name:        "Admin can edit Member (strict subset)",
+			actorPerms:  domain.AdminPermissions,
+			targetPerms: domain.MemberPermissions,
+			expected:    true,
+		},
+		{
+			name:        "Admin cannot edit Admin (peers / equal sets)",
+			actorPerms:  domain.AdminPermissions,
+			targetPerms: domain.AdminPermissions,
+			expected:    false,
+		},
+		{
+			name:        "Admin cannot edit Owner (target has perms actor lacks)",
+			actorPerms:  domain.AdminPermissions,
+			targetPerms: domain.OwnerPermissions,
+			expected:    false,
+		},
+		{
+			name:        "Member cannot edit Member (peers / equal sets)",
+			actorPerms:  domain.MemberPermissions,
+			targetPerms: domain.MemberPermissions,
+			expected:    false,
+		},
+		{
+			name:        "Member cannot edit Admin (target has perms actor lacks)",
+			actorPerms:  domain.MemberPermissions,
+			targetPerms: domain.AdminPermissions,
+			expected:    false,
+		},
+		{
+			name:        "Member cannot edit Owner (target has perms actor lacks)",
+			actorPerms:  domain.MemberPermissions,
+			targetPerms: domain.OwnerPermissions,
+			expected:    false,
+		},
+		{
+			name:        "Superadmin can edit Owner (strict subset)",
+			actorPerms:  domain.SuperadminPermissions,
+			targetPerms: domain.OwnerPermissions,
+			expected:    true,
+		},
+		{
+			name:        "Superadmin cannot edit Superadmin (peers)",
+			actorPerms:  domain.SuperadminPermissions,
+			targetPerms: domain.SuperadminPermissions,
+			expected:    false,
+		},
+		{
+			name:        "Disjoint sets cannot edit",
+			actorPerms:  []string{domain.WorkspaceRead, domain.WorkspaceWrite},
+			targetPerms: []string{domain.MembersRead, domain.MembersWrite},
+			expected:    false,
+		},
+		{
+			name:        "Overlapping non-subset sets cannot edit",
+			actorPerms:  []string{domain.WorkspaceRead, domain.WorkspaceWrite, domain.MembersRead},
+			targetPerms: []string{domain.WorkspaceRead, domain.RolesRead},
+			expected:    false,
+		},
+		{
+			name:        "Empty target perms is editable by non-empty actor",
+			actorPerms:  domain.MemberPermissions,
+			targetPerms: []string{},
+			expected:    true,
+		},
+		{
+			name:        "Empty actor perms cannot edit empty target perms",
+			actorPerms:  []string{},
+			targetPerms: []string{},
+			expected:    false,
+		},
+		{
+			name:        "Duplicates in actor and target are normalized",
+			actorPerms:  []string{domain.WorkspaceRead, domain.WorkspaceWrite, domain.WorkspaceRead},
+			targetPerms: []string{domain.WorkspaceRead},
+			expected:    true,
+		},
+		{
+			name:        "Duplicates resulting in same set cannot edit",
+			actorPerms:  []string{domain.WorkspaceRead, domain.WorkspaceRead},
+			targetPerms: []string{domain.WorkspaceRead},
+			expected:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := domain.CanEdit(tt.actorPerms, tt.targetPerms)
+			if got != tt.expected {
+				t.Errorf("CanEdit() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestCanAssign(t *testing.T) {
+	tests := []struct {
+		name       string
+		actorPerms []string
+		rolePerms  []string
+		expected   bool
+	}{
+		{
+			name:       "Owner can assign Owner (subset)",
+			actorPerms: domain.OwnerPermissions,
+			rolePerms:  domain.OwnerPermissions,
+			expected:   true,
+		},
+		{
+			name:       "Owner can assign Admin (subset)",
+			actorPerms: domain.OwnerPermissions,
+			rolePerms:  domain.AdminPermissions,
+			expected:   true,
+		},
+		{
+			name:       "Owner can assign Member (subset)",
+			actorPerms: domain.OwnerPermissions,
+			rolePerms:  domain.MemberPermissions,
+			expected:   true,
+		},
+		{
+			name:       "Admin can assign Admin (subset of itself)",
+			actorPerms: domain.AdminPermissions,
+			rolePerms:  domain.AdminPermissions,
+			expected:   true,
+		},
+		{
+			name:       "Admin can assign Member (subset)",
+			actorPerms: domain.AdminPermissions,
+			rolePerms:  domain.MemberPermissions,
+			expected:   true,
+		},
+		{
+			name:       "Admin cannot assign Owner (role has roles.write which admin lacks)",
+			actorPerms: domain.AdminPermissions,
+			rolePerms:  domain.OwnerPermissions,
+			expected:   false,
+		},
+		{
+			name:       "Member can assign Member (subset of itself)",
+			actorPerms: domain.MemberPermissions,
+			rolePerms:  domain.MemberPermissions,
+			expected:   true,
+		},
+		{
+			name:       "Member cannot assign Admin (role has perms member lacks)",
+			actorPerms: domain.MemberPermissions,
+			rolePerms:  domain.AdminPermissions,
+			expected:   false,
+		},
+		{
+			name:       "Member cannot assign Owner (role has perms member lacks)",
+			actorPerms: domain.MemberPermissions,
+			rolePerms:  domain.OwnerPermissions,
+			expected:   false,
+		},
+		{
+			name:       "Superadmin can assign Superadmin role",
+			actorPerms: domain.SuperadminPermissions,
+			rolePerms:  domain.SuperadminPermissions,
+			expected:   true,
+		},
+		{
+			name:       "Superadmin can assign Owner role",
+			actorPerms: domain.SuperadminPermissions,
+			rolePerms:  domain.OwnerPermissions,
+			expected:   true,
+		},
+		{
+			name:       "Empty role permissions is always assignable",
+			actorPerms: []string{},
+			rolePerms:  []string{},
+			expected:   true,
+		},
+		{
+			name:       "Non-empty role is not assignable by actor with empty perms",
+			actorPerms: []string{},
+			rolePerms:  domain.MemberPermissions,
+			expected:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := domain.CanAssign(tt.actorPerms, tt.rolePerms)
+			if got != tt.expected {
+				t.Errorf("CanAssign() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestLastOwnerGuard(t *testing.T) {
+	tests := []struct {
+		name            string
+		isTargetOwner   bool
+		totalOwnerCount int
+		expectedLast    bool
+		expectedErr     error
+	}{
+		{
+			name:            "Target is only owner in workspace",
+			isTargetOwner:   true,
+			totalOwnerCount: 1,
+			expectedLast:    true,
+			expectedErr:     domain.ErrLastOwnerProtected,
+		},
+		{
+			name:            "Target is owner with other owners present",
+			isTargetOwner:   true,
+			totalOwnerCount: 2,
+			expectedLast:    false,
+			expectedErr:     nil,
+		},
+		{
+			name:            "Target is owner with 0 total count (edge/corrupted state)",
+			isTargetOwner:   true,
+			totalOwnerCount: 0,
+			expectedLast:    true,
+			expectedErr:     domain.ErrLastOwnerProtected,
+		},
+		{
+			name:            "Target is not owner with 1 total owner",
+			isTargetOwner:   false,
+			totalOwnerCount: 1,
+			expectedLast:    false,
+			expectedErr:     nil,
+		},
+		{
+			name:            "Target is not owner with multiple owners",
+			isTargetOwner:   false,
+			totalOwnerCount: 3,
+			expectedLast:    false,
+			expectedErr:     nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := domain.IsLastOwner(tt.isTargetOwner, tt.totalOwnerCount)
+			if got != tt.expectedLast {
+				t.Errorf("IsLastOwner() = %v, want %v", got, tt.expectedLast)
+			}
+
+			err := domain.ValidateLastOwner(tt.isTargetOwner, tt.totalOwnerCount)
+			if !errors.Is(err, tt.expectedErr) {
+				t.Errorf("ValidateLastOwner() error = %v, want %v", err, tt.expectedErr)
+			}
+		})
+	}
+}
+
+func TestHasPermission(t *testing.T) {
+	perms := []string{domain.WorkspaceRead, domain.MembersRead}
+
+	if !domain.HasPermission(perms, domain.WorkspaceRead) {
+		t.Errorf("expected HasPermission to return true for WorkspaceRead")
+	}
+	if domain.HasPermission(perms, domain.WorkspaceWrite) {
+		t.Errorf("expected HasPermission to return false for WorkspaceWrite")
+	}
+}
+
+func TestIsValidPermission(t *testing.T) {
+	catalog := domain.AllPermissions()
+	for _, p := range catalog {
+		if !domain.IsValidPermission(p) {
+			t.Errorf("expected %q to be a valid permission", p)
+		}
+	}
+
+	invalid := []string{"", "workspace.delete", "admin.*", "members.view", "unknown"}
+	for _, p := range invalid {
+		if domain.IsValidPermission(p) {
+			t.Errorf("expected %q to be invalid permission", p)
+		}
+	}
+}

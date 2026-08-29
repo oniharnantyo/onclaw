@@ -14,7 +14,7 @@ The app SHALL render all surfaces using the prototype's frozen token values — 
 - **THEN** background, surface, text, border, and accent colors resolve to the token values above (or OKLAB color-mixes of them), and no other font families are used
 
 ### Requirement: Screen routing
-Each user-facing screen SHALL be its own route: `/c/:chatId` (agent chat, channel chat, or teammate direct message), `/agents`, `/cron`, `/runs`, and `/welcome` for a zero-agent workspace. The active workspace (tenant) SHALL NOT be part of the URL.
+Each user-facing screen SHALL be its own route: `/login` (session), `/c/:chatId` (agent chat, channel chat, or teammate direct message), `/agents`, `/cron`, `/runs`, `/welcome` for a zero-agent workspace, and `/admin` (instance administration, tenant management for qualified master-tenant members). The active workspace (tenant) SHALL NOT be part of the URL.
 
 #### Scenario: Unknown chat identifier
 - **WHEN** a visitor opens `/c/` with an identifier that does not exist in the active workspace
@@ -22,7 +22,11 @@ Each user-facing screen SHALL be its own route: `/c/:chatId` (agent chat, channe
 
 #### Scenario: Zero-agent workspace
 - **WHEN** the active workspace has no agents and the visitor opens any chat route
-- **THEN** the app routes to `/welcome` instead
+- **THEN** the app routes to /welcome instead
+
+#### Scenario: Unauthenticated access
+- **WHEN** a logged-out visitor opens any route other than /login
+- **THEN** the app redirects to /login
 
 ### Requirement: Responsive navigation
 The icon rail SHALL remain visible at every viewport width. The sidebar SHALL render as a static column at viewport widths ≥768px and as an off-canvas drawer below 768px, opened from a control in the rail and dismissible. The channel members panel SHALL render as a static column at widths ≥1280px and as a slide-over sheet below 1280px. At every width in the contract viewport matrix (360×800 through 1920×1080) the app MUST NOT scroll horizontally.

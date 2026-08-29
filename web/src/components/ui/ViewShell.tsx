@@ -1,6 +1,6 @@
 export function ViewShell({ title, sub, action, children, odId  }: any) {
   return (
-    <section data-od-id={odId} className="od-scroll flex-1 overflow-y-auto bg-surface">
+    <section data-od-id={odId} data-testid={odId} className="od-scroll flex-1 overflow-y-auto bg-surface">
       <div className="mx-auto max-w-5xl px-8 py-8">
         <div className="mb-6 flex items-start justify-between gap-4">
           <div>

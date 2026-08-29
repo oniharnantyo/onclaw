@@ -120,7 +120,6 @@ declare global {
     id: string;
     name: string;
     sub: string;
-    plan: string;
     tz: string;
     defaultModel: string;
     retention: string;

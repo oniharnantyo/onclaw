@@ -39,9 +39,12 @@ const ICONS = {
   edit: [<path key="a" d="M12 20h9"/>, <path key="b" d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/>],
   down: [<path key="a" d="M12 5v14M19 12l-7 7-7-7"/>],
   chevleft: [<path key="a" d="m15 18-6-6 6-6"/>],
+  panelclose: [<rect key="a" x="3" y="3" width="18" height="18" rx="2"/>, <path key="b" d="M9 3v18"/>, <path key="c" d="m16 15-3-3 3-3"/>],
+  panelopen: [<rect key="a" x="3" y="3" width="18" height="18" rx="2"/>, <path key="b" d="M9 3v18"/>, <path key="c" d="m14 9 3 3-3 3"/>],
   stop: [<rect key="a" x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor" stroke="none"/>],
   plug: [<path key="a" d="M9 2v5M15 2v5"/>, <path key="b" d="M6 7h12v4a6 6 0 0 1-12 0z"/>, <path key="c" d="M12 17v5"/>],
-  spark: [<path key="a" d="M12 3l3.2 5.8L21 12l-5.8 3.2L12 21l-3.2-5.8L3 12l5.8-3.2z"/>]
+  spark: [<path key="a" d="M12 3l3.2 5.8L21 12l-5.8 3.2L12 21l-3.2-5.8L3 12l5.8-3.2z"/>],
+  logout: [<path key="a" d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>, <polyline key="b" points="16 17 21 12 16 7"/>, <line key="c" x1="21" y1="12" x2="9" y2="12"/>]
 };
 
 

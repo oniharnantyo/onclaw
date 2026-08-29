@@ -4,7 +4,7 @@ import { Icon } from "./Icon";
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-export function Modal({ title, onClose, children, footer, wide, odId  }: any) {
+export function Modal({ title, onClose, children, footer, wide, odId, 'data-testid': dataTestId }: any) {
   const boxRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null;
@@ -33,7 +33,7 @@ export function Modal({ title, onClose, children, footer, wide, odId  }: any) {
     };
   }, [onClose]);
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-0 md:p-6" role="dialog" aria-modal="true" aria-label={title} data-od-id={odId}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-0 md:p-6" role="dialog" aria-modal="true" aria-label={title} data-od-id={odId} data-testid={dataTestId || odId}>
       <div className="od-fade absolute inset-0 bg-[color-mix(in_oklab,var(--fg)_32%,transparent)]" onClick={onClose}/>
       <div ref={boxRef} tabIndex={-1} className={cx('od-pop relative flex h-[100dvh] md:h-auto max-h-[100dvh] md:max-h-[86vh] w-full flex-col overflow-hidden rounded-none md:rounded-lg border border-line bg-surface shadow-[var(--elev-raised)] outline-none',
         wide ? 'max-w-4xl' : 'max-w-lg')}>

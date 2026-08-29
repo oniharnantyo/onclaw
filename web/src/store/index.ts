@@ -1,8 +1,10 @@
 import { create } from 'zustand';
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import type { Workspace, Agent, CronJob } from '../data/types';
-import { seedDb } from "../data/seed";
+import { seedDb, blankTenant } from "../data/seed";
 import { uid, nowTime } from '../lib/helpers';
+import { useAuthStore } from './auth';
+import type { ApiMemberView } from '../lib/api';
 
 export const useSearchShortcut = () => {
   useEffect(() => {
@@ -35,6 +37,7 @@ export interface AppState {
     view: string;
     chatId: string;
     showContext: boolean;
+    railExpanded?: boolean;
   };
   ui: {
     settingsOpen: boolean;
@@ -42,7 +45,6 @@ export interface AppState {
     configAgent: string | null;
     cronEdit: any | null;
     wsOpen: boolean;
-    createWsOpen: boolean;
     toasts: any[];
     running: boolean;
   };
@@ -66,20 +68,19 @@ export interface AppState {
   switchSession: (sid: string) => void;
   deleteSession: (sid: string) => void;
   switchTenant: (id: string) => void;
-  upsertAgent: (values: Partial<Agent>) => void;
+  upsertAgent: (values: Partial<Agent>) => string;
   
   runNow: (job: CronJob) => void;
   toggleCron: (job: CronJob) => void;
   deleteCron: (job: CronJob) => void;
   saveCron: (draft: Partial<CronJob>) => void;
-  
-  createWorkspace: (ws: Workspace) => void;
-  deleteWorkspace: (id: string) => void;
 }
 
 const initialPos = (() => {
   const p = loadPos();
-  return p && p.tenantId && p.view ? p : { tenantId: 'acme', view: 'chats', chatId: 'a-atlas', showContext: false };
+  return p && p.tenantId && p.view
+    ? { railExpanded: false, ...p }
+    : { tenantId: 'acme', view: 'chats', chatId: 'a-atlas', showContext: false, railExpanded: false };
 })();
 
 // cleanup-safe timers
@@ -97,7 +98,7 @@ export const useStore = create<AppState>((set, get) => ({
   pos: initialPos,
   ui: {
     settingsOpen: false, settingsTab: 'workspace', configAgent: null, cronEdit: null,
-    wsOpen: false, createWsOpen: false, toasts: [], running: false
+    wsOpen: false, toasts: [], running: false
   },
   search: '',
 
@@ -250,8 +251,32 @@ export const useStore = create<AppState>((set, get) => ({
   switchTenant: (id) => {
     const state = get();
     state.patchUi({ wsOpen: false });
-    state.goPos({ tenantId: id, view: 'chats', chatId: state.db[id].agents[0].id });
-    state.toast('Switched to ' + state.db[id].name);
+    if (!state.db[id]) {
+      const authMemberships = useAuthStore.getState().memberships;
+      const mem = authMemberships.find((m) => m.workspace_id === id || m.workspace_slug === id);
+      const wsName = mem?.workspace_name || mem?.workspace?.name || id;
+      const wsTz = mem?.workspace?.timezone || 'America/Los_Angeles';
+      const newWs = blankTenant({ name: wsName, sub: id, tz: wsTz, starter: false });
+      newWs.id = id;
+      set((s: any) => ({
+        db: {
+          ...s.db,
+          [id]: newWs,
+        },
+      }));
+    }
+    const targetWs = get().db[id];
+    const firstAgent = targetWs?.agents?.[0]?.id || '';
+    state.goPos({ tenantId: id, view: 'chats', chatId: firstAgent });
+    if (targetWs?.channels) {
+      state.updateTenant(id, (tenant) => ({
+        ...tenant,
+        channels: tenant.channels.map((c: any) =>
+          c.id === firstAgent || c.agentId === firstAgent ? { ...c, unread: 0 } : c
+        ),
+      }));
+    }
+    state.toast('Switched to ' + (targetWs?.name || id));
   },
 
   upsertAgent: (values) => {
@@ -269,6 +294,7 @@ export const useStore = create<AppState>((set, get) => ({
       state.patchUi({ configAgent: null });
       state.goPos({ view: 'chats', chatId: id });
       state.toast(values.name + ' deployed — it idles until its first message');
+      return id;
     } else {
       const aid = ui.configAgent;
       state.updateTenant(tid, (t) => ({
@@ -277,6 +303,7 @@ export const useStore = create<AppState>((set, get) => ({
       }));
       state.patchUi({ configAgent: null });
       state.toast(values.name + ' updated — new settings apply to the next run');
+      return aid || '';
     }
   },
 
@@ -341,50 +368,72 @@ export const useStore = create<AppState>((set, get) => ({
       state.toast('Schedule “' + draft.name + '” created');
     }
     state.patchUi({ cronEdit: null });
-  },
-
-  createWorkspace: (ws) => {
-    const state = get();
-    // the actual normalization using `withSessions` shouldn't modify the argument, 
-    // but we trust `ws` is valid since it's already normalized by `blankTenant`
-    set((s: any) => ({ db: { ...s.db, [ws.id]: ws } }));
-    state.patchUi({ createWsOpen: false });
-    state.goPos({ tenantId: ws.id, view: 'chats', chatId: ws.agents.length ? ws.agents[0].id : '' });
-    state.toast(ws.name + ' created — you are its owner');
-  },
-
-  deleteWorkspace: (id) => {
-    const state = get();
-    const rest = Object.keys(state.db).filter((k: any) => k !== id);
-    if (rest.length === 0) {
-      state.toast('OnClaw keeps at least one workspace active', 'danger');
-      return;
-    }
-    const nextId = rest[0];
-    const next = state.db[nextId];
-    set((s: any) => {
-      const nd = { ...s.db };
-      delete nd[id];
-      return { db: nd };
-    });
-    state.patchUi({ settingsOpen: false });
-    state.goPos({ tenantId: nextId, view: 'chats', chatId: next.agents.length ? next.agents[0].id : '' });
-    state.toast('Workspace deleted — switched to ' + next.name);
   }
 }));
 
 // Export selectors
-export const useWorkspace = () => useStore((s: any) => s.db[s.pos.tenantId]);
-export const useTenant = useWorkspace;
-export const useThread = (chatId: string) => useStore((s: any) => {
-  const t = s.db[s.pos.tenantId];
-  if (!t || !t.threads[chatId]) return { active: null, list: [] };
-  const th = t.threads[chatId];
-  if (Array.isArray(th)) return th.length ? { active: 's0', list: [{ id: 's0', title: 'Chat', updated: '', messages: th }] } : { active: null, list: [] };
-  return th;
-});
+//
+// zustand v5 reads state through useSyncExternalStore, which requires every
+// selector to return a referentially stable value — a selector that builds a
+// fresh object/array per call makes React re-render forever ("The result of
+// getSnapshot should be cached" → "Maximum update depth exceeded"). So these
+// derived hooks select stable references only and build any derived object
+// inside useMemo.
+
+type ThreadState = Workspace['threads'][string];
+
+const EMPTY_THREADS: ThreadState = { active: null, list: [] };
+const EMPTY_LIST: never[] = [];
+
+// Stable placeholder for a dangling workspace pointer (never a member, db empty).
+const DEFAULT_WORKSPACE: Workspace = (() => {
+  const w = blankTenant({ name: 'Workspace', sub: 'default', tz: 'America/Los_Angeles', starter: false });
+  w.id = 'default';
+  return w;
+})();
+
+// Placeholder workspace for an id we only know from a membership row (the real
+// workspace has not been loaded into the local db cache yet).
+const workspaceFromMembership = (tenantId: string, memberships: ApiMemberView[]): Workspace | null => {
+  const mem = memberships.find((m) => m.workspace_id === tenantId || m.workspace_slug === tenantId);
+  if (!mem) return null;
+  const fallback = blankTenant({
+    name: mem.workspace_name || mem.workspace?.name || tenantId,
+    sub: mem.workspace_slug || tenantId,
+    tz: mem.workspace?.timezone || 'America/Los_Angeles',
+    starter: false,
+  });
+  fallback.id = mem.workspace_slug || tenantId;
+  return fallback;
+};
+
+// Legacy threads were persisted as a bare message array; normalize to session shape.
+const normalizeThread = (raw: unknown): ThreadState => {
+  if (Array.isArray(raw)) {
+    return raw.length ? { active: 's0', list: [{ id: 's0', title: 'Chat', updated: '', messages: raw }] } : EMPTY_THREADS;
+  }
+  return (raw as ThreadState) || EMPTY_THREADS;
+};
+
+export const useWorkspace = () => {
+  const tenantId = useStore((s) => s.pos.tenantId);
+  const ws = useStore((s: any) => s.db[tenantId]);
+  const firstWs = useStore((s: any) => Object.values(s.db)[0]);
+  const memberships = useAuthStore((s) => s.memberships);
+  return useMemo(
+    () => ws || workspaceFromMembership(tenantId, memberships) || firstWs || DEFAULT_WORKSPACE,
+    [ws, tenantId, memberships, firstWs]
+  );
+};
+
+export const useThread = (chatId: string) => {
+  const raw = useStore((s: any) => s.db[s.pos.tenantId]?.threads[chatId]);
+  return useMemo(() => normalizeThread(raw), [raw]);
+};
+
 export const useSessions = (chatId: string) => useStore((s: any) => {
   const th = s.db[s.pos.tenantId]?.threads[chatId];
-  return th && !Array.isArray(th) ? th.list : [];
+  return th && !Array.isArray(th) ? th.list : EMPTY_LIST;
 });
-export const useRuns = () => useStore((s: any) => s.db[s.pos.tenantId]?.runs || []);
+
+export const useRuns = () => useStore((s: any) => s.db[s.pos.tenantId]?.runs || EMPTY_LIST);

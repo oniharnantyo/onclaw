@@ -19,11 +19,11 @@ describe('useChatRuntime', () => {
       });
       useStore.setState({
         pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
-        ui: { settingsOpen: false, settingsTab: 'workspace', configAgent: null, cronEdit: null, wsOpen: false, createWsOpen: false, running: false, toasts: [] },
+        ui: { settingsOpen: false, settingsTab: 'workspace', configAgent: null, cronEdit: null, wsOpen: false, running: false, toasts: [] },
         db: {
           t1: {
             id: 't1',
-            name: 'T1', sub: 't1', plan: 'Free', tz: 'America/Los_Angeles',
+            name: 'T1', sub: 't1', tz: 'America/Los_Angeles',
             defaultModel: 'claude-sonnet-5', retention: '90 days',
             people: [], cron: [], runs: [], members: [], integrations: [], mcpServers: [], skillLib: [], keys: [],
             agents: [mkAgent('a1', 'Alice', ['search']), mkAgent('a2', 'Bob', [])],

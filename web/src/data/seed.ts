@@ -1,10 +1,11 @@
 import { uid, providerOf } from '../lib/helpers';
 import { MODELS } from '../lib/constants';
+import type { Workspace } from './types';
 
 
 export function seedAcme() {
   return {
-    id: 'acme', name: 'Acme Corp', plan: 'Pro', sub: 'acme', tz: 'America/Los_Angeles',
+    id: 'acme', name: 'Acme Corp', sub: 'acme', tz: 'America/Los_Angeles',
     defaultModel: 'claude-sonnet-5', retention: '90 days',
     agents: [
       { id: 'a-atlas', name: 'Atlas', model: 'claude-sonnet-5', temp: 0.3, autonomy: 'approval', channelPost: true,
@@ -174,7 +175,7 @@ export function seedAcme() {
 
 export function seedGlobex() {
   return {
-    id: 'globex', name: 'Globex Inc', plan: 'Free', sub: 'globex', tz: 'Europe/Berlin',
+    id: 'globex', name: 'Globex Inc', sub: 'globex', tz: 'Europe/Berlin',
     defaultModel: 'claude-haiku-4-5', retention: '30 days',
     agents: [
       { id: 'a-herald', name: 'Herald', model: 'claude-sonnet-5', temp: 0.4, autonomy: 'approval', channelPost: true,
@@ -324,21 +325,23 @@ export function withSessions(t: any) {
 
 export const seedDb = () => ({ acme: withSessions(seedAcme()), globex: withSessions(seedGlobex()) });
 
-export function blankTenant({ name, sub, plan, tz, starter  }: any) {
+export function blankTenant({ name, sub, tz, starter  }: any): Workspace {
   const aid = uid('a');
   return {
     id: 'ws_' + sub.replace(/-/g, '_'),
-    name, sub, plan, tz, defaultModel: MODELS[0], retention: '90 days',
+    name, sub, tz, defaultModel: MODELS[0], retention: '90 days',
     agents: starter ? [{
       id: aid, name: 'Guide', model: 'claude-haiku-4-5', temp: 0.4, autonomy: 'suggest', channelPost: true,
       role: 'Starter agent — answers questions, searches the web, shows the ropes',
-      status: 'idle', tools: ['web'], lastActive: 'just now',
+      status: 'idle', tools: ['web'], lastActive: 'just now', skills: [], mcp: [],
       prompt: 'You are Guide, the starter agent for a brand-new OnClaw workspace. Answer questions about the workspace, demonstrate tool use, and suggest what to deploy next.'
     }] : [],
     channels: starter ? [{ id: uid('c'), name: 'general', purpose: 'Company-wide', agentId: aid, unread: 0, members: [aid] }] : [],
     people: [],
     threads: starter ? {
-      [aid]: [{ id: uid('m'), author: 'agent', ts: 'just now', text: 'Welcome to ' + name + '. I\'m Guide, your starter agent — ask me anything or put me to work with a web search. When you\'re ready, deploy specialists from the Agents view; everything about me lives in Settings → Agents.' }]
+      [aid]: { active: 's0', list: [{ id: 's0', title: 'Chat', updated: 'just now', messages: [
+        { id: uid('m'), author: 'agent', ts: 'just now', text: 'Welcome to ' + name + '. I\'m Guide, your starter agent — ask me anything or put me to work with a web search. When you\'re ready, deploy specialists from the Agents view; everything about me lives in Settings → Agents.' }
+      ] }] }
     } : {},
     cron: [], runs: [],
     members: [{ id: 'me', name: 'You', email: 'you@' + sub + '.dev', role: 'Owner' }],

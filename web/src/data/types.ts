@@ -86,6 +86,7 @@ export interface Member {
   name: string;
   email: string;
   role: string;
+  invited?: boolean;
 }
 
 export interface Integration {
@@ -127,8 +128,10 @@ export interface ApiKey {
 export interface Workspace {
   id: string;
   name: string;
-  plan: string;
   sub: string;
+  slug?: string;
+  is_master?: boolean;
+  disabled_at?: string | null;
   tz: string;
   defaultModel: string;
   retention: string;
