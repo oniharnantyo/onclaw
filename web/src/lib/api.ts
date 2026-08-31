@@ -1,3 +1,5 @@
+import { useConnectionStore } from '../store/connection';
+
 export const TOKEN_STORAGE_KEY = 'od_token';
 
 export function getToken(): string | null {
@@ -33,13 +35,21 @@ export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
   readonly details: ApiErrorDetail[];
+  readonly requestId?: string;
 
-  constructor(status: number, code: string, message: string, details: ApiErrorDetail[] = []) {
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    details: ApiErrorDetail[] = [],
+    requestId?: string
+  ) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.code = code;
     this.details = details;
+    this.requestId = requestId;
   }
 }
 
@@ -160,6 +170,25 @@ export interface ApiAdminWorkspaceItem {
   member_count: number;
 }
 
+export interface ApiProviderConfig {
+  id: string;
+  workspace_id: string;
+  type: string;
+  name: string;
+  base_url?: string;
+  key_set: boolean;
+  key_hint: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ApiProviderVerifyResult {
+  ok: boolean;
+  error?: string;
+}
+
+
 type UnauthorizedHandler = () => void;
 const unauthorizedHandlers = new Set<UnauthorizedHandler>();
 
@@ -223,8 +252,16 @@ export async function request<T = any>(endpoint: string, options: RequestOptions
       body,
     });
   } catch {
+    useConnectionStore.getState().reportFailure();
     throw new ApiError(0, 'network', 'Network connection failed. Please check your connection.');
   }
+
+  if (response.status === 0) {
+    useConnectionStore.getState().reportFailure();
+    throw new ApiError(0, 'network', 'Network connection failed. Please check your connection.');
+  }
+
+  useConnectionStore.getState().reportSuccess();
 
   if (response.status === 204) {
     return undefined as unknown as T;
@@ -245,12 +282,13 @@ export async function request<T = any>(endpoint: string, options: RequestOptions
     const code = errorPayload?.code || (response.status === 401 ? 'unauthenticated' : response.status === 403 ? 'forbidden' : response.status === 404 ? 'not_found' : response.status === 409 ? 'conflict' : 'error');
     const message = errorPayload?.message || response.statusText || 'Request failed';
     const details = errorPayload?.details || [];
+    const requestId = errorPayload?.request_id || response.headers.get('X-Request-ID') || undefined;
 
     if (response.status === 401 && !endpoint.includes('/auth/login')) {
       notifyUnauthorized();
     }
 
-    throw new ApiError(response.status, code, message, details);
+    throw new ApiError(response.status, code, message, details, requestId);
   }
 
   return data as T;
@@ -321,6 +359,38 @@ export const api = {
         method: 'GET',
       }),
   },
+  providers: {
+    list: (ws: string) =>
+      request<{ providers: ApiProviderConfig[] }>(`/workspaces/${encodeURIComponent(ws)}/providers`, {
+        method: 'GET',
+      }),
+    create: (
+      ws: string,
+      body: { type: string; name: string; base_url?: string; key?: string; enabled?: boolean }
+    ) =>
+      request<{ provider: ApiProviderConfig }>(`/workspaces/${encodeURIComponent(ws)}/providers`, {
+        method: 'POST',
+        body,
+      }),
+    patch: (
+      ws: string,
+      id: string,
+      body: { name?: string; base_url?: string; key?: string; enabled?: boolean }
+    ) =>
+      request<{ provider: ApiProviderConfig }>(`/workspaces/${encodeURIComponent(ws)}/providers/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body,
+      }),
+    delete: (ws: string, id: string) =>
+      request<void>(`/workspaces/${encodeURIComponent(ws)}/providers/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      }),
+    verify: (ws: string, id: string) =>
+      request<ApiProviderVerifyResult>(`/workspaces/${encodeURIComponent(ws)}/providers/${encodeURIComponent(id)}/verify`, {
+        method: 'POST',
+      }),
+  },
+
   users: {
     patchMe: (body: { name?: string; avatar_url?: string; avatar_key?: string; clear_avatar?: boolean }) =>
       request<{ user: ApiUser }>('/users/me', {

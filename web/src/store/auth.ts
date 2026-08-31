@@ -1,13 +1,14 @@
 import { create } from 'zustand';
-import { api, getToken, setToken, clearToken, ApiError, type ApiUser, type ApiMemberView } from '../lib/api';
+import { api, getToken, setToken, clearToken, ApiError, formatApiError, type ApiUser, type ApiMemberView } from '../lib/api';
 import { useStore } from './index';
 
-export type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated';
+export type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated' | 'error';
 
 export interface AuthState {
   user: ApiUser | null;
   memberships: ApiMemberView[];
   status: AuthStatus;
+  bootError: string | null;
 
   // Actions
   boot: () => Promise<void>;
@@ -21,21 +22,23 @@ export const useAuthStore = create<AuthState>((set) => ({
   user: null,
   memberships: [],
   status: 'loading',
+  bootError: null,
 
   boot: async () => {
     const token = getToken();
     if (!token) {
-      set({ user: null, memberships: [], status: 'unauthenticated' });
+      set({ user: null, memberships: [], status: 'unauthenticated', bootError: null });
       return;
     }
 
-    set({ status: 'loading' });
+    set({ status: 'loading', bootError: null });
     try {
       const res = await api.auth.me();
       set({
         user: res.user,
         memberships: res.memberships || [],
         status: 'authenticated',
+        bootError: null,
       });
 
       // Synchronize workspace position
@@ -58,9 +61,9 @@ export const useAuthStore = create<AuthState>((set) => ({
 
       if (isUnauth) {
         clearToken();
-        set({ user: null, memberships: [], status: 'unauthenticated' });
+        set({ user: null, memberships: [], status: 'unauthenticated', bootError: null });
       } else {
-        set({ status: 'authenticated' });
+        set({ status: 'error', bootError: formatApiError(err) });
       }
     }
   },
@@ -76,6 +79,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         user: meRes.user,
         memberships,
         status: 'authenticated',
+        bootError: null,
       });
 
       // Select first membership or remembered workspace
@@ -105,7 +109,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       // Ignore logout request errors
     } finally {
       clearToken();
-      set({ user: null, memberships: [], status: 'unauthenticated' });
+      set({ user: null, memberships: [], status: 'unauthenticated', bootError: null });
     }
   },
 
@@ -114,12 +118,13 @@ export const useAuthStore = create<AuthState>((set) => ({
       user,
       memberships,
       status: user ? 'authenticated' : 'unauthenticated',
+      bootError: null,
     });
   },
 
   clearSession: () => {
     clearToken();
-    set({ user: null, memberships: [], status: 'unauthenticated' });
+    set({ user: null, memberships: [], status: 'unauthenticated', bootError: null });
   },
 }));
 
@@ -132,6 +137,7 @@ export function useAuth() {
   const user = useAuthStore((s) => s.user);
   const memberships = useAuthStore((s) => s.memberships);
   const status = useAuthStore((s) => s.status);
+  const bootError = useAuthStore((s) => s.bootError);
   const boot = useAuthStore((s) => s.boot);
   const login = useAuthStore((s) => s.login);
   const logout = useAuthStore((s) => s.logout);
@@ -140,6 +146,7 @@ export function useAuth() {
     user,
     memberships,
     status,
+    bootError,
     boot,
     login,
     logout,

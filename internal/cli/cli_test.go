@@ -58,3 +58,42 @@ func TestMissingDatabaseURL(t *testing.T) {
 		})
 	}
 }
+
+func TestServerEncryptionKeyRequirement(t *testing.T) {
+	tests := []struct {
+		name      string
+		args      []string
+		wantSubstr []string
+	}{
+		{
+			name: "server without encryption key",
+			args: []string{"onclaw", "server", "--database-url", "postgres://localhost:5432/test"},
+			wantSubstr: []string{"ONCLAW_ENCRYPTION_KEY", "openssl rand -hex 32"},
+		},
+		{
+			name: "server with short encryption key",
+			args: []string{"onclaw", "server", "--database-url", "postgres://localhost:5432/test", "--encryption-key", "short"},
+			wantSubstr: []string{"ONCLAW_ENCRYPTION_KEY", "openssl rand -hex 32"},
+		},
+		{
+			name: "server with invalid hex encryption key",
+			args: []string{"onclaw", "server", "--database-url", "postgres://localhost:5432/test", "--encryption-key", "not-a-valid-key"},
+			wantSubstr: []string{"ONCLAW_ENCRYPTION_KEY", "openssl rand -hex 32"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := cli.NewRootCommand()
+			err := cmd.Run(context.Background(), tt.args)
+			if err == nil {
+				t.Fatalf("expected error for %v, got nil", tt.args)
+			}
+			for _, sub := range tt.wantSubstr {
+				if !strings.Contains(err.Error(), sub) {
+					t.Errorf("error %q does not contain expected substring %q", err.Error(), sub)
+				}
+			}
+		})
+	}
+}

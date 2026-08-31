@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Icon } from "../components/ui/Icon";
+import { Icon } from "../../components/ui/Icon";
 
 export function KeyRow({ k, onUpdate, onToast  }: any) {
   const [shown, setShown] = useState(false);

@@ -169,9 +169,36 @@ export function seedAcme() {
     keys: [
       { id: 'k1', name: 'production-gateway', masked: 'oc_live_••••••••7f3a', full: 'oc_live_9t2mKc7QwZr4LpHx7f3a', created: 'Mar 2026' },
       { id: 'k2', name: 'ci-deploy', masked: 'oc_live_••••••••a21b', full: 'oc_live_3bVn8sYqTfE2mJdRa21b', created: 'Jun 2026' }
+    ],
+    providers: [
+      {
+        id: 'prov_acme_anthropic',
+        workspace_id: 'acme',
+        type: 'anthropic',
+        name: 'Anthropic Production',
+        base_url: '',
+        key_set: true,
+        key_hint: '7f3a',
+        enabled: true,
+        created_at: '2026-08-01T00:00:00Z',
+        updated_at: '2026-08-01T00:00:00Z',
+      },
+      {
+        id: 'prov_acme_openai',
+        workspace_id: 'acme',
+        type: 'openai',
+        name: 'OpenAI Primary',
+        base_url: '',
+        key_set: true,
+        key_hint: '9k2b',
+        enabled: true,
+        created_at: '2026-08-01T00:00:00Z',
+        updated_at: '2026-08-01T00:00:00Z',
+      }
     ]
   };
 }
+
 
 export function seedGlobex() {
   return {
@@ -261,6 +288,20 @@ export function seedGlobex() {
     ],
     keys: [
       { id: 'gk1', name: 'default', masked: 'oc_live_••••••••e5c9', full: 'oc_live_7dXk2pQmZn8vLtEe5c9', created: 'Jul 2026' }
+    ],
+    providers: [
+      {
+        id: 'prov_globex_anthropic',
+        workspace_id: 'globex',
+        type: 'anthropic',
+        name: 'Anthropic Main',
+        base_url: '',
+        key_set: true,
+        key_hint: 'e5c9',
+        enabled: true,
+        created_at: '2026-08-01T00:00:00Z',
+        updated_at: '2026-08-01T00:00:00Z',
+      }
     ]
   };
 }
@@ -319,6 +360,7 @@ export function withSessions(t: any) {
       skills: a.skills || ['research', 'summarize'],
       mcp: a.mcp || []
     })),
+    providers: t.providers || [],
     threads
   };
 }
@@ -375,7 +417,9 @@ export function blankTenant({ name, sub, tz, starter  }: any): Workspace {
       { id: 'vision', name: 'Vision', version: '1.2.0', uses: 0, enabled: false, source: 'registry',
         desc: 'Chart, screenshot and diagram reading for agents that handle images.' }
     ],
-    keys: []
+    keys: [],
+    providers: []
   };
 }
+
 

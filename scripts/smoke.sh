@@ -14,6 +14,7 @@
 #   9. Avatar image upload, sniffing, and capability URL public serving
 #  10. Last-owner & last-superadmin protection guards
 #  11. CLI user provisioning & authentication verification
+#  12. Workspace provider configuration CRUD & verify scenarios
 #
 # Usage:
 #   ./scripts/smoke.sh
@@ -31,6 +32,7 @@ DATABASE_URL="${DATABASE_URL:-postgres://postgres@127.0.0.1:5432/onclaw_smoke?ss
 SUPERADMIN_EMAIL="${SUPERADMIN_EMAIL:-admin@onclaw.local}"
 SUPERADMIN_PASSWORD="${SUPERADMIN_PASSWORD:-SmokeSuperAdminSecret123!}"
 JWT_SECRET="${JWT_SECRET:-smoke-test-jwt-secret-at-least-32-chars-long!}"
+ENCRYPTION_KEY="${ONCLAW_ENCRYPTION_KEY:-$(openssl rand -hex 32 2>/dev/null || echo "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")}"
 
 # Colors
 C_RESET="\033[0m"
@@ -187,14 +189,15 @@ else
         log_fail "Failed to apply database migrations against ${DATABASE_URL}. Ensure PostgreSQL is accessible."
     }
 
-    # Start server with env-seeded superadmin
+    # Start server with env-seeded superadmin and encryption key
     DATABASE_URL="${DATABASE_URL}" \
+    ONCLAW_ENCRYPTION_KEY="${ENCRYPTION_KEY}" \
     ONCLAW_SUPERADMIN_EMAIL="${SUPERADMIN_EMAIL}" \
     ONCLAW_SUPERADMIN_PASSWORD="${SUPERADMIN_PASSWORD}" \
     ONCLAW_JWT_SECRET="${JWT_SECRET}" \
     ONCLAW_DATA_DIR="${DATA_DIR}" \
     ONCLAW_LISTEN_ADDR="${SERVER_HOST}:${SERVER_PORT}" \
-    go run . server --database-url "${DATABASE_URL}" --listen-addr "${SERVER_HOST}:${SERVER_PORT}" >"${TMP_DIR}/server.log" 2>&1 &
+    go run . server --database-url "${DATABASE_URL}" --listen-addr "${SERVER_HOST}:${SERVER_PORT}" --encryption-key "${ENCRYPTION_KEY}" >"${TMP_DIR}/server.log" 2>&1 &
 
     SERVER_PID=$!
     log_info "Server started with PID ${SERVER_PID}. Waiting for healthz..."
@@ -556,6 +559,100 @@ assert_status "409" "Admin adding already-member is rejected"
 # 11.4 Admin transfers ownership (Alice -> Charlie)
 api_req "PATCH" "/api/v1/admin/workspaces/${TENANT_SLUG}/owner" "${SUPERADMIN_TOKEN}" "{\"user_id\":\"${CHARLIE_UID}\"}"
 assert_status "200" "Admin transfers ownership to Charlie"
+
+# Add CLI user to tenant as Member for provider permission tests
+api_req "POST" "/api/v1/admin/workspaces/${TENANT_SLUG}/members" "${SUPERADMIN_TOKEN}" "{\"email\":\"${CLI_USER_EMAIL}\",\"role_id\":\"${MEMBER_ROLE_ID}\"}"
+assert_status "201" "Admin adds CLI user to tenant as Member"
+
+# -----------------------------------------------------------------------------
+# 12. Workspace Provider Configuration CRUD & Verify Scenarios
+# -----------------------------------------------------------------------------
+log_step "12. Workspace Provider Configuration CRUD & Verify"
+
+# 12.1 CLI User (Member) lists providers -> 200 OK (empty list)
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/providers" "${CLI_USER_TOKEN}"
+assert_status "200" "Member lists provider configurations"
+assert_json_expr "(.providers | length) == 0" "Providers list is initially empty"
+
+# 12.2 Member attempts to create a provider -> 403 Forbidden
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/providers" "${CLI_USER_TOKEN}" '{"type":"openai","name":"Unauthorized Provider"}'
+assert_status "403" "Member cannot create provider (403 Forbidden)"
+assert_json_expr '.error.code == "forbidden"' "Error code is forbidden"
+
+# 12.3 Charlie (Owner) creates an OpenAI provider with key
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/providers" "${CHARLIE_TOKEN}" '{"type":"openai","name":"OpenAI Prod","key":"sk-smoke-secret-key-12345678"}'
+assert_status "201" "Owner creates OpenAI provider with key"
+assert_json_expr '.provider.type == "openai"' "Provider type is openai"
+assert_json_expr '.provider.name == "OpenAI Prod"' "Provider name is OpenAI Prod"
+assert_json_expr '.provider.key_set == true' "Provider has key_set: true"
+assert_json_expr '.provider.key_hint == "5678"' "Provider key_hint is 5678"
+assert_json_expr '.provider.enabled == true' "Provider defaults to enabled: true"
+OPENAI_PROV_ID=$(json_get '.provider.id')
+
+# Verify key secrecy: no plaintext key or ciphertext in response
+if echo "${HTTP_BODY}" | grep -q "sk-smoke-secret-key-12345678"; then
+    log_fail "Plaintext API key leaked in create provider response!"
+fi
+if echo "${HTTP_BODY}" | grep -q "v1:"; then
+    log_fail "Ciphertext envelope leaked in create provider response!"
+fi
+log_pass "Key secrecy verified: no key material in response body"
+
+# 12.4 Validation: Compatible type requires base_url -> 400
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/providers" "${CHARLIE_TOKEN}" '{"type":"openai-compatible","name":"Local vLLM"}'
+assert_status "400" "Compatible provider without base_url is rejected (400)"
+assert_json_expr '.error.code == "invalid_request"' "Error code is invalid_request"
+
+# 12.4a Validation: Unknown provider type -> 400
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/providers" "${CHARLIE_TOKEN}" '{"type":"azure-openai","name":"Azure"}'
+assert_status "400" "Unknown provider type is rejected (400)"
+assert_json_expr '.error.code == "invalid_request"' "Error code is invalid_request"
+
+# 12.4b Validation: Invalid URL scheme -> 400
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/providers" "${CHARLIE_TOKEN}" '{"type":"openai-compatible","name":"FTP API","base_url":"ftp://127.0.0.1:8000/v1"}'
+assert_status "400" "Provider base_url with non-http(s) scheme is rejected (400)"
+assert_json_expr '.error.code == "invalid_request"' "Error code is invalid_request"
+
+# 12.5 Owner creates compatible provider with valid base_url
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/providers" "${CHARLIE_TOKEN}" '{"type":"openai-compatible","name":"Local vLLM","base_url":"http://127.0.0.1:8000/v1"}'
+assert_status "201" "Owner creates openai-compatible provider with base_url"
+assert_json_expr '.provider.base_url == "http://127.0.0.1:8000/v1"' "Provider base_url is set"
+COMPAT_PROV_ID=$(json_get '.provider.id')
+
+# 12.6 Verify keyless provider -> 400 invalid_request
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/providers/${COMPAT_PROV_ID}/verify" "${CHARLIE_TOKEN}"
+assert_status "400" "Verifying keyless provider returns 400 invalid_request"
+assert_json_expr '.error.code == "invalid_request"' "Error code is invalid_request"
+
+# 12.7 Verify with key: returns 200 {ok: bool, error?: string}
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/providers/${OPENAI_PROV_ID}/verify" "${CHARLIE_TOKEN}"
+assert_status "200" "Verifying configured provider returns 200 OK"
+assert_json_expr 'has("ok")' "Verify response contains ok field"
+
+# 12.8 Member attempts to verify provider -> 403 Forbidden
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/providers/${OPENAI_PROV_ID}/verify" "${CLI_USER_TOKEN}"
+assert_status "403" "Member cannot verify provider (403 Forbidden)"
+
+# 12.9 Patch provider: update name, toggle enabled, key omitted (preserves key)
+api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/providers/${OPENAI_PROV_ID}" "${CHARLIE_TOKEN}" '{"name":"Renamed OpenAI Prod","enabled":false}'
+assert_status "200" "Owner patches provider name and enabled"
+assert_json_expr '.provider.name == "Renamed OpenAI Prod"' "Provider name updated"
+assert_json_expr '.provider.enabled == false' "Provider enabled toggled to false"
+assert_json_expr '.provider.key_set == true' "Key remains set"
+assert_json_expr '.provider.key_hint == "5678"' "Key hint preserved"
+
+# 12.10 Patch provider with empty key -> 400 invalid_request
+api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/providers/${OPENAI_PROV_ID}" "${CHARLIE_TOKEN}" '{"key":""}'
+assert_status "400" "Patching provider with empty key is rejected (400)"
+assert_json_expr '.error.code == "invalid_request"' "Error code is invalid_request"
+
+# 12.11 Delete provider -> 204 No Content
+api_req "DELETE" "/api/v1/workspaces/${TENANT_SLUG}/providers/${COMPAT_PROV_ID}" "${CHARLIE_TOKEN}"
+assert_status "204" "Owner deletes provider (204 No Content)"
+
+# 12.12 Subsequent GET/PATCH of deleted provider -> 404
+api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/providers/${COMPAT_PROV_ID}" "${CHARLIE_TOKEN}" '{"name":"Should Fail"}'
+assert_status "404" "Accessing deleted provider returns 404 Not Found"
 
 log_step "Smoke Test Suite Completed Successfully"
 

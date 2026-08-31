@@ -4,6 +4,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/oniharnantyo/onclaw/internal/auth"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/server/handlers"
 	"github.com/oniharnantyo/onclaw/internal/storage"
 	"github.com/oniharnantyo/onclaw/internal/store"
@@ -11,10 +12,12 @@ import (
 
 // RouterOptions holds dependencies required by the HTTP API router.
 type RouterOptions struct {
-	Store   store.Store
-	Storage storage.Storage
-	Issuer  auth.TokenIssuer
-	Auth    auth.Service
+	Store         store.Store
+	Storage       storage.Storage
+	Issuer        auth.TokenIssuer
+	Auth          auth.Service
+	EncryptionKey []byte
+	Providers     *providers.Registry
 }
 
 // router configures and builds the HTTP API routes and handlers.
@@ -40,6 +43,11 @@ func (rt *router) Engine() *gin.Engine {
 		authService = auth.NewService(rt.opts.Store, rt.opts.Issuer, reg)
 	}
 
+	providerRegistry := rt.opts.Providers
+	if providerRegistry == nil {
+		providerRegistry = providers.NewRegistry()
+	}
+
 	authHandlers := handlers.NewAuthHandlers(authService, rt.opts.Storage)
 	workspaceHandlers := handlers.NewWorkspaceHandlers(rt.opts.Store)
 	memberHandlers := handlers.NewMemberHandlers(rt.opts.Store, rt.opts.Storage)
@@ -49,8 +57,10 @@ func (rt *router) Engine() *gin.Engine {
 	adminWorkspaceHandlers := handlers.NewAdminWorkspaceHandlers(rt.opts.Store, rt.opts.Storage)
 	adminUserHandlers := handlers.NewAdminUserHandlers(rt.opts.Store)
 	adminSuperadminHandlers := handlers.NewAdminSuperadminHandlers(rt.opts.Store)
+	providerHandlers := handlers.NewProviderHandlers(rt.opts.Store, rt.opts.EncryptionKey, providerRegistry)
 
 	r := gin.New()
+	r.Use(RequestIDMiddleware())
 	r.Use(gin.Recovery())
 	r.Use(gin.Logger())
 
@@ -112,6 +122,13 @@ func (rt *router) Engine() *gin.Engine {
 				wsGroup.POST("/members", rt.mw.RequirePermission(domain.MembersWrite), memberHandlers.AddMember)
 				wsGroup.PATCH("/members/:uid", rt.mw.RequirePermission(domain.MembersWrite), memberHandlers.PatchMember)
 				wsGroup.DELETE("/members/:uid", memberHandlers.DeleteMember)
+
+				// Providers management
+				wsGroup.GET("/providers", rt.mw.RequirePermission(domain.ProvidersRead), providerHandlers.ListProviders)
+				wsGroup.POST("/providers", rt.mw.RequirePermission(domain.ProvidersWrite), providerHandlers.CreateProvider)
+				wsGroup.PATCH("/providers/:id", rt.mw.RequirePermission(domain.ProvidersWrite), providerHandlers.PatchProvider)
+				wsGroup.DELETE("/providers/:id", rt.mw.RequirePermission(domain.ProvidersWrite), providerHandlers.DeleteProvider)
+				wsGroup.POST("/providers/:id/verify", rt.mw.RequirePermission(domain.ProvidersWrite), providerHandlers.VerifyProvider)
 			}
 
 			// Instance Admin route group (master tenant control plane)

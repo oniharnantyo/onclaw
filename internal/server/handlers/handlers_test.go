@@ -69,6 +69,11 @@ func TestHandlers_New(t *testing.T) {
 		t.Fatal("expected non-nil AdminSuperadminHandlers instance")
 	}
 
+	provH := handlers.NewProviderHandlers(st, []byte("01234567890123456789012345678901"), nil)
+	if provH == nil {
+		t.Fatal("expected non-nil ProviderHandlers instance")
+	}
+
 	r := gin.New()
 	r.POST("/logout", authH.Logout)
 

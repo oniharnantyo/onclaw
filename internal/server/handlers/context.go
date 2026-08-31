@@ -6,6 +6,9 @@ import (
 )
 
 const (
+	// RequestIDContextKey is the gin context key for the request ID (string).
+	RequestIDContextKey = "request_id"
+
 	// UserContextKey is the gin context key for the authenticated user (*domain.User).
 	UserContextKey = "current_user"
 
@@ -18,6 +21,25 @@ const (
 	// RoleContextKey is the gin context key for the member's role (*domain.Role).
 	RoleContextKey = "current_role"
 )
+
+// RequestID retrieves the request ID from the Gin context.
+func RequestID(c *gin.Context) (string, bool) {
+	if c == nil {
+		return "", false
+	}
+	val, exists := c.Get(RequestIDContextKey)
+	if !exists {
+		return "", false
+	}
+	id, ok := val.(string)
+	return id, ok && id != ""
+}
+
+// CurrentRequestID retrieves the request ID from the Gin context or returns empty string if missing.
+func CurrentRequestID(c *gin.Context) string {
+	id, _ := RequestID(c)
+	return id
+}
 
 // CurrentUser retrieves the authenticated *domain.User from the Gin context.
 func CurrentUser(c *gin.Context) (*domain.User, bool) {

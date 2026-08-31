@@ -455,3 +455,231 @@ func TestWithTx_Nested(t *testing.T) {
 		t.Fatalf("expected inner user to exist: %v", err)
 	}
 }
+
+func TestProviderStore_CRUD(t *testing.T) {
+	ctx := context.Background()
+	s := fake.New()
+
+	ws1 := &domain.Workspace{Slug: "ws-1", Name: "Workspace 1"}
+	_ = s.Workspaces().Create(ctx, ws1)
+	ws2 := &domain.Workspace{Slug: "ws-2", Name: "Workspace 2"}
+	_ = s.Workspaces().Create(ctx, ws2)
+
+	// 1. Create provider
+	p1 := &domain.ProviderConfig{
+		WorkspaceID:   ws1.ID,
+		Type:          "openai",
+		Name:          "OpenAI Prod",
+		BaseURL:       "https://api.openai.com",
+		KeyCiphertext: "v1:nonce1:cipher1",
+		KeyHint:       "1234",
+		Enabled:       true,
+	}
+	if err := s.Providers().Create(ctx, p1); err != nil {
+		t.Fatalf("unexpected create provider error: %v", err)
+	}
+	if p1.ID == "" {
+		t.Fatal("expected provider ID to be generated")
+	}
+	if p1.CreatedAt.IsZero() || p1.UpdatedAt.IsZero() {
+		t.Fatal("expected timestamps to be set")
+	}
+
+	// 2. Validation on create
+	if err := s.Providers().Create(ctx, nil); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for nil, got %v", err)
+	}
+	if err := s.Providers().Create(ctx, &domain.ProviderConfig{WorkspaceID: "", Type: "openai", Name: "No WS"}); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for missing workspace_id, got %v", err)
+	}
+	if err := s.Providers().Create(ctx, &domain.ProviderConfig{WorkspaceID: ws1.ID, Type: "", Name: "No Type"}); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for missing type, got %v", err)
+	}
+	if err := s.Providers().Create(ctx, &domain.ProviderConfig{WorkspaceID: ws1.ID, Type: "openai", Name: ""}); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for missing name, got %v", err)
+	}
+
+	// Duplicate ID rejected
+	pDup := &domain.ProviderConfig{
+		ID:          p1.ID,
+		WorkspaceID: ws1.ID,
+		Type:        "openai",
+		Name:        "Duplicate ID",
+	}
+	if err := s.Providers().Create(ctx, pDup); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("expected ErrConflict for duplicate provider ID, got %v", err)
+	}
+
+	// 3. ByID lookup
+	found, err := s.Providers().ByID(ctx, ws1.ID, p1.ID)
+	if err != nil {
+		t.Fatalf("unexpected ByID error: %v", err)
+	}
+	if found.ID != p1.ID || found.Name != "OpenAI Prod" || found.KeyCiphertext != "v1:nonce1:cipher1" || found.KeyHint != "1234" {
+		t.Fatalf("unexpected provider found: %+v", found)
+	}
+
+	// ByID cross-tenant lookup returns ErrNotFound
+	_, err = s.Providers().ByID(ctx, ws2.ID, p1.ID)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for cross-tenant ByID, got %v", err)
+	}
+
+	// ByID empty / nonexistent
+	_, err = s.Providers().ByID(ctx, "", p1.ID)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for empty workspaceID, got %v", err)
+	}
+	_, err = s.Providers().ByID(ctx, ws1.ID, "nonexistent")
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for nonexistent ID, got %v", err)
+	}
+
+	// 4. ListForWorkspace
+	p2 := &domain.ProviderConfig{
+		WorkspaceID: ws1.ID,
+		Type:        "openai",
+		Name:        "OpenAI Sandbox",
+		Enabled:     true,
+	}
+	_ = s.Providers().Create(ctx, p2)
+
+	p3 := &domain.ProviderConfig{
+		WorkspaceID: ws2.ID,
+		Type:        "anthropic",
+		Name:        "Anthropic Main",
+		Enabled:     true,
+	}
+	_ = s.Providers().Create(ctx, p3)
+
+	listWS1, err := s.Providers().ListForWorkspace(ctx, ws1.ID)
+	if err != nil {
+		t.Fatalf("unexpected ListForWorkspace error: %v", err)
+	}
+	if len(listWS1) != 2 {
+		t.Fatalf("expected 2 providers for ws1, got %d", len(listWS1))
+	}
+
+	listWS2, err := s.Providers().ListForWorkspace(ctx, ws2.ID)
+	if err != nil {
+		t.Fatalf("unexpected ListForWorkspace error: %v", err)
+	}
+	if len(listWS2) != 1 {
+		t.Fatalf("expected 1 provider for ws2, got %d", len(listWS2))
+	}
+
+	listEmpty, err := s.Providers().ListForWorkspace(ctx, "nonexistent-ws")
+	if err != nil {
+		t.Fatalf("unexpected ListForWorkspace error: %v", err)
+	}
+	if len(listEmpty) != 0 {
+		t.Fatalf("expected 0 providers for nonexistent workspace, got %d", len(listEmpty))
+	}
+
+	// 5. Update
+	p1.Name = "OpenAI Prod V2"
+	p1.BaseURL = "https://custom.openai.proxy"
+	p1.KeyCiphertext = "v1:nonce2:cipher2"
+	p1.KeyHint = "5678"
+	p1.Enabled = false
+	if err := s.Providers().Update(ctx, p1); err != nil {
+		t.Fatalf("unexpected Update error: %v", err)
+	}
+
+	reloaded, err := s.Providers().ByID(ctx, ws1.ID, p1.ID)
+	if err != nil {
+		t.Fatalf("unexpected ByID after update: %v", err)
+	}
+	if reloaded.Name != "OpenAI Prod V2" || reloaded.BaseURL != "https://custom.openai.proxy" ||
+		reloaded.KeyCiphertext != "v1:nonce2:cipher2" || reloaded.KeyHint != "5678" || reloaded.Enabled {
+		t.Fatalf("unexpected provider after update: %+v", reloaded)
+	}
+
+	// Update validation
+	if err := s.Providers().Update(ctx, nil); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for nil update, got %v", err)
+	}
+	if err := s.Providers().Update(ctx, &domain.ProviderConfig{ID: "", WorkspaceID: ws1.ID}); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for update without ID, got %v", err)
+	}
+	if err := s.Providers().Update(ctx, &domain.ProviderConfig{ID: p1.ID, WorkspaceID: ""}); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for update without WorkspaceID, got %v", err)
+	}
+	// Update cross-tenant
+	if err := s.Providers().Update(ctx, &domain.ProviderConfig{ID: p1.ID, WorkspaceID: ws2.ID, Name: "Hack"}); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for cross-tenant update, got %v", err)
+	}
+
+	// 6. Delete
+	// Cross-tenant delete returns ErrNotFound
+	if err := s.Providers().Delete(ctx, ws2.ID, p1.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for cross-tenant delete, got %v", err)
+	}
+	// Correct delete
+	if err := s.Providers().Delete(ctx, ws1.ID, p1.ID); err != nil {
+		t.Fatalf("unexpected Delete error: %v", err)
+	}
+	// Subsequent ByID returns ErrNotFound
+	if _, err := s.Providers().ByID(ctx, ws1.ID, p1.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound after delete, got %v", err)
+	}
+	// Subsequent Delete returns ErrNotFound
+	if err := s.Providers().Delete(ctx, ws1.ID, p1.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for repeated delete, got %v", err)
+	}
+}
+
+func TestWithTx_ProviderStore(t *testing.T) {
+	ctx := context.Background()
+	s := fake.New()
+
+	ws := &domain.Workspace{Slug: "tx-prov-ws", Name: "Tx Providers WS"}
+	_ = s.Workspaces().Create(ctx, ws)
+
+	// Commit test
+	err := s.WithTx(ctx, func(txStore store.Store) error {
+		p := &domain.ProviderConfig{
+			WorkspaceID:   ws.ID,
+			Type:          "openai",
+			Name:          "Committed Provider",
+			KeyCiphertext: "v1:nonce:key",
+			KeyHint:       "9999",
+			Enabled:       true,
+		}
+		return txStore.Providers().Create(ctx, p)
+	})
+	if err != nil {
+		t.Fatalf("unexpected WithTx error: %v", err)
+	}
+
+	list, err := s.Providers().ListForWorkspace(ctx, ws.ID)
+	if err != nil || len(list) != 1 {
+		t.Fatalf("expected 1 provider after commit, got %d (err: %v)", len(list), err)
+	}
+	if list[0].Name != "Committed Provider" {
+		t.Fatalf("unexpected provider: %+v", list[0])
+	}
+
+	// Rollback test
+	rollbackErr := errors.New("rollback this tx")
+	err = s.WithTx(ctx, func(txStore store.Store) error {
+		p := &domain.ProviderConfig{
+			WorkspaceID: ws.ID,
+			Type:        "anthropic",
+			Name:        "Rolled Back Provider",
+			Enabled:     true,
+		}
+		if err := txStore.Providers().Create(ctx, p); err != nil {
+			return err
+		}
+		return rollbackErr
+	})
+	if !errors.Is(err, rollbackErr) {
+		t.Fatalf("expected rollback error, got %v", err)
+	}
+
+	listAfterRollback, err := s.Providers().ListForWorkspace(ctx, ws.ID)
+	if err != nil || len(listAfterRollback) != 1 {
+		t.Fatalf("expected still 1 provider after rollback, got %d (err: %v)", len(listAfterRollback), err)
+	}
+}

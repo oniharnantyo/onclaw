@@ -24,11 +24,12 @@ import (
 )
 
 type testEnv struct {
-	store   store.Store
-	storage storage.Storage
-	issuer  auth.TokenIssuer
-	service auth.Service
-	router  *gin.Engine
+	store         store.Store
+	storage       storage.Storage
+	issuer        auth.TokenIssuer
+	service       auth.Service
+	encryptionKey []byte
+	router        *gin.Engine
 }
 
 func setupTestEnv(t *testing.T) *testEnv {
@@ -42,20 +43,23 @@ func setupTestEnv(t *testing.T) *testEnv {
 		TTL:    time.Hour * 24,
 	})
 	authSvc := auth.NewService(st, issuer, nil)
+	encKey := []byte("01234567890123456789012345678901")
 
 	r := server.NewRouter(server.RouterOptions{
-		Store:   st,
-		Storage: stor,
-		Issuer:  issuer,
-		Auth:    authSvc,
+		Store:         st,
+		Storage:       stor,
+		Issuer:        issuer,
+		Auth:          authSvc,
+		EncryptionKey: encKey,
 	})
 
 	return &testEnv{
-		store:   st,
-		storage: stor,
-		issuer:  issuer,
-		service: authSvc,
-		router:  r,
+		store:         st,
+		storage:       stor,
+		issuer:        issuer,
+		service:       authSvc,
+		encryptionKey: encKey,
+		router:        r,
 	}
 }
 

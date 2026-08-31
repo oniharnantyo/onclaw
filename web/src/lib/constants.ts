@@ -1,8 +1,38 @@
-export const MODELS = ['claude-sonnet-5', 'claude-opus-5', 'claude-haiku-4-5', 'llama-4-maverick', 'llama-4-scout'];
-export const PROVIDERS = [
-  { id: 'anthropic', label: 'Anthropic', models: ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5'] },
-  { id: 'meta', label: 'Meta', models: ['llama-4-maverick', 'llama-4-scout'] }
+export const PROVIDER_TYPES = [
+  { id: 'openai', label: 'OpenAI' },
+  { id: 'anthropic', label: 'Anthropic' },
+  { id: 'gemini', label: 'Gemini' },
+  { id: 'openrouter', label: 'OpenRouter' },
+  { id: 'openai-compatible', label: 'OpenAI-compatible' },
+  { id: 'anthropic-compatible', label: 'Anthropic-compatible' },
+] as const;
+
+export const PROVIDER_MODELS: Record<string, string[]> = {
+  openai: ['gpt-4o', 'gpt-4o-mini', 'o1', 'o3-mini', 'gpt-4-turbo'],
+  anthropic: ['claude-sonnet-5', 'claude-opus-5', 'claude-haiku-4-5', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022'],
+  gemini: ['gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash'],
+  openrouter: [
+    'anthropic/claude-3.5-sonnet',
+    'openai/gpt-4o',
+    'meta-llama/llama-3.3-70b-instruct',
+    'google/gemini-2.0-flash-001',
+    'deepseek/deepseek-r1',
+  ],
+  'openai-compatible': [],
+  'anthropic-compatible': [],
+};
+
+export const MODELS = [
+  'claude-sonnet-5',
+  'claude-opus-5',
+  'claude-haiku-4-5',
+  'gpt-4o',
+  'gpt-4o-mini',
+  'gemini-2.0-flash',
+  'llama-4-maverick',
+  'llama-4-scout',
 ];
+
 export const SKILLS = [
   { id: 'research', label: 'Deep research' },
   { id: 'code', label: 'Code execution' },

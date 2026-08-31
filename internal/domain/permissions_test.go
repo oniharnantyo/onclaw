@@ -304,10 +304,44 @@ func TestIsValidPermission(t *testing.T) {
 		}
 	}
 
-	invalid := []string{"", "workspace.delete", "admin.*", "members.view", "unknown"}
+	invalid := []string{"", "workspace.delete", "admin.*", "members.view", "unknown", "providers.delete", "providers.*"}
 	for _, p := range invalid {
 		if domain.IsValidPermission(p) {
 			t.Errorf("expected %q to be invalid permission", p)
 		}
+	}
+}
+
+func TestProviderPermissions(t *testing.T) {
+	// Owner has both providers.read and providers.write
+	if !domain.HasPermission(domain.OwnerPermissions, domain.ProvidersRead) {
+		t.Errorf("expected OwnerPermissions to have %s", domain.ProvidersRead)
+	}
+	if !domain.HasPermission(domain.OwnerPermissions, domain.ProvidersWrite) {
+		t.Errorf("expected OwnerPermissions to have %s", domain.ProvidersWrite)
+	}
+
+	// Admin has both providers.read and providers.write
+	if !domain.HasPermission(domain.AdminPermissions, domain.ProvidersRead) {
+		t.Errorf("expected AdminPermissions to have %s", domain.ProvidersRead)
+	}
+	if !domain.HasPermission(domain.AdminPermissions, domain.ProvidersWrite) {
+		t.Errorf("expected AdminPermissions to have %s", domain.ProvidersWrite)
+	}
+
+	// Member has providers.read but NOT providers.write
+	if !domain.HasPermission(domain.MemberPermissions, domain.ProvidersRead) {
+		t.Errorf("expected MemberPermissions to have %s", domain.ProvidersRead)
+	}
+	if domain.HasPermission(domain.MemberPermissions, domain.ProvidersWrite) {
+		t.Errorf("expected MemberPermissions NOT to have %s", domain.ProvidersWrite)
+	}
+
+	// Superadmin inherits both providers.read and providers.write
+	if !domain.HasPermission(domain.SuperadminPermissions, domain.ProvidersRead) {
+		t.Errorf("expected SuperadminPermissions to have %s", domain.ProvidersRead)
+	}
+	if !domain.HasPermission(domain.SuperadminPermissions, domain.ProvidersWrite) {
+		t.Errorf("expected SuperadminPermissions to have %s", domain.ProvidersWrite)
 	}
 }

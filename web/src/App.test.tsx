@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import App from './App';
 import { useAuthStore } from './store/auth';
+import { useStore } from './store';
+import { seedDb } from './data/seed';
 
 vi.mock('@assistant-ui/react', () => ({
   useExternalStoreRuntime: vi.fn((opts) => opts),
@@ -17,6 +19,10 @@ describe('App & Route Guard', () => {
       status: 'loading',
       boot: vi.fn(),
     });
+    useStore.setState({
+      db: seedDb(),
+      pos: { tenantId: 'acme', view: 'chats', chatId: 'a-atlas', showContext: false, railExpanded: false },
+    });
     vi.restoreAllMocks();
   });
 
@@ -26,6 +32,23 @@ describe('App & Route Guard', () => {
     render(<App />);
 
     expect(screen.getByText(/loading onclaw…/i)).not.toBeNull();
+  });
+
+  it('renders BootError page when auth status is error', async () => {
+    useAuthStore.setState({
+      status: 'error',
+      bootError: 'Network connection failed',
+      boot: vi.fn(),
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Couldn't reach OnClaw")).not.toBeNull();
+      expect(screen.getByText("Network connection failed")).not.toBeNull();
+      expect(screen.getByRole('button', { name: 'Retry' })).not.toBeNull();
+      expect(screen.getByRole('button', { name: 'Log in instead' })).not.toBeNull();
+    });
   });
 
   it('redirects unauthenticated users to /login', async () => {
@@ -268,4 +291,156 @@ describe('App & Route Guard', () => {
       expect(screen.getByTestId('admin-view')).not.toBeNull();
     });
   });
+
+  it('navigates to /settings/workspace when /settings is requested, hiding the sidebar', async () => {
+    useAuthStore.setState({
+      status: 'authenticated',
+      user: { id: 'u1', email: 'alice@example.com', name: 'Alice', created_at: '', updated_at: '' },
+      memberships: [],
+      boot: vi.fn(),
+    });
+
+    window.history.pushState({}, '', '/settings');
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('settings-page')).not.toBeNull();
+      expect(screen.getByTestId('pane-workspace')).not.toBeNull();
+      expect(screen.queryByTestId('sidebar')).toBeNull();
+      expect(window.location.pathname).toBe('/settings/workspace');
+    });
+  });
+
+  it('deep links directly to /settings/keys and redirects unknown section to /settings/workspace', async () => {
+    useAuthStore.setState({
+      status: 'authenticated',
+      user: { id: 'u1', email: 'alice@example.com', name: 'Alice', created_at: '', updated_at: '' },
+      memberships: [],
+      boot: vi.fn(),
+    });
+
+    window.history.pushState({}, '', '/settings/keys');
+    const { unmount } = render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('pane-keys')).not.toBeNull();
+    });
+
+    unmount();
+
+    window.history.pushState({}, '', '/settings/nonexistent');
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('pane-workspace')).not.toBeNull();
+      expect(window.location.pathname).toBe('/settings/workspace');
+    });
+  });
+
+  it('navigates to /settings when Rail settings button is clicked', async () => {
+    useAuthStore.setState({
+      status: 'authenticated',
+      user: { id: 'u1', email: 'alice@example.com', name: 'Alice', created_at: '', updated_at: '' },
+      memberships: [],
+      boot: vi.fn(),
+    });
+
+    window.history.pushState({}, '', '/agents');
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('rail-settings')).not.toBeNull();
+    });
+
+    fireEvent.click(screen.getByTestId('rail-settings'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('settings-page')).not.toBeNull();
+      expect(window.location.pathname).toBe('/settings/workspace');
+    });
+  });
+
+  it('navigates to /settings when onboarding Workspace settings button is clicked', async () => {
+    const zeroAgentWorkspace = {
+      id: 'empty_ws',
+      sub: 'empty_ws',
+      name: 'Empty WS',
+      plan: 'Free',
+      tz: 'UTC',
+      agents: [],
+      channels: [],
+      people: [],
+      cron: [],
+      runs: [],
+      threads: {},
+    };
+
+    useAuthStore.setState({
+      status: 'authenticated',
+      user: { id: 'u1', email: 'alice@example.com', name: 'Alice', created_at: '', updated_at: '' },
+      memberships: [],
+      boot: vi.fn(),
+    });
+
+    const { useStore } = await import('./store');
+    useStore.setState({
+      pos: { tenantId: 'empty_ws', view: '', chatId: '', showContext: false, railExpanded: false },
+      db: { empty_ws: zeroAgentWorkspace as any },
+    });
+
+    window.history.pushState({}, '', '/welcome');
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('btn-onboarding-settings')).not.toBeNull();
+    });
+
+    fireEvent.click(screen.getByTestId('btn-onboarding-settings'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('settings-page')).not.toBeNull();
+      expect(window.location.pathname).toBe('/settings/workspace');
+    });
+  });
+
+  it('renders in-shell 404 ErrorState for non-existent routes', async () => {
+    useAuthStore.setState({
+      status: 'authenticated',
+      user: { id: 'u1', email: 'alice@example.com', name: 'Alice', created_at: '', updated_at: '' },
+      memberships: [],
+      boot: vi.fn(),
+    });
+
+    window.history.pushState({}, '', '/nonexistent-route-path');
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Page not found')).not.toBeNull();
+      expect(screen.getByText(/the page you are looking for does not exist/i)).not.toBeNull();
+      expect(screen.getByRole('button', { name: 'Back to chats' })).not.toBeNull();
+      expect(screen.getByRole('button', { name: 'View agents' })).not.toBeNull();
+    });
+  });
+
+  it('renders ConnectionBanner in Layout when connection is degraded', async () => {
+    useAuthStore.setState({
+      status: 'authenticated',
+      user: { id: 'u1', email: 'alice@example.com', name: 'Alice', created_at: '', updated_at: '' },
+      memberships: [],
+      boot: vi.fn(),
+    });
+
+    const { useConnectionStore } = await import('./store/connection');
+    useConnectionStore.getState().reportFailure();
+
+    window.history.pushState({}, '', '/agents');
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('connection-banner')).not.toBeNull();
+      expect(screen.getByText(/connection lost/i)).not.toBeNull();
+    });
+  });
 });
+
+

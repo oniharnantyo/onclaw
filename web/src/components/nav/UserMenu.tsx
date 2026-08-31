@@ -43,7 +43,7 @@ export function UserMenu({ onLogout, expanded = false }: UserMenuProps) {
     }
   };
 
-  const displayName = user?.name || 'You';
+  const displayName = user?.name ?? '';
   const displayEmail = user?.email || '';
 
   return (

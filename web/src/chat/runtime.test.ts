@@ -19,7 +19,7 @@ describe('useChatRuntime', () => {
       });
       useStore.setState({
         pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
-        ui: { settingsOpen: false, settingsTab: 'workspace', configAgent: null, cronEdit: null, wsOpen: false, running: false, toasts: [] },
+        ui: { configAgent: null, cronEdit: null, wsOpen: false, running: false, toasts: [] },
         db: {
           t1: {
             id: 't1',

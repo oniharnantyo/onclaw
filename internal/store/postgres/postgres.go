@@ -86,6 +86,11 @@ func (s *store) Members() storeport.MemberStore {
 	return NewMemberStore(s.db)
 }
 
+// Providers returns the ProviderStore sub-port.
+func (s *store) Providers() storeport.ProviderStore {
+	return NewProviderStore(s.db)
+}
+
 // WithTx executes the provided function within a database transaction.
 // If the store is already in a transaction, a SAVEPOINT is used for nested isolation.
 func (s *store) WithTx(ctx context.Context, fn func(storeport.Store) error) error {

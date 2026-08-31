@@ -23,4 +23,7 @@ var (
 
 	// ErrPayloadTooLarge indicates that a request payload exceeds the allowed size limit.
 	ErrPayloadTooLarge = errors.New("payload too large")
+
+	// ErrUndecryptable indicates that stored ciphertext could not be decrypted.
+	ErrUndecryptable = errors.New("undecryptable")
 )

@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 350" width="100%" height="100%" fill="none">
+  <!-- Background Accents -->
+  <circle cx="250" cy="175" r="140" fill="#f1f5f9" />
+  <circle cx="110" cy="90" r="10" fill="#2f6feb" opacity="0.15" />
+  <circle cx="390" cy="220" r="8" fill="#2f6feb" opacity="0.2" />
+  <circle cx="130" cy="250" r="6" fill="#94a3b8" opacity="0.4" />
+
+  <!-- Ground Plane Shadow -->
+  <ellipse cx="250" cy="290" rx="160" ry="14" fill="#e2e8f0" />
+
+  <!-- Server Tower Rack -->
+  <!-- Bottom Unit -->
+  <rect x="170" y="205" width="160" height="50" rx="8" fill="#ffffff" stroke="#cbd5e1" stroke-width="2" />
+  <rect x="185" y="222" width="60" height="6" rx="3" fill="#e2e8f0" />
+  <rect x="185" y="234" width="40" height="6" rx="3" fill="#f1f5f9" />
+  <circle cx="295" cy="230" r="4" fill="#2f6feb" />
+  <circle cx="310" cy="230" r="4" fill="#10b981" />
+
+  <!-- Middle Unit -->
+  <rect x="170" y="145" width="160" height="50" rx="8" fill="#ffffff" stroke="#cbd5e1" stroke-width="2" />
+  <rect x="185" y="162" width="70" height="6" rx="3" fill="#e2e8f0" />
+  <rect x="185" y="174" width="45" height="6" rx="3" fill="#f1f5f9" />
+  <circle cx="295" cy="170" r="4" fill="#2f6feb" />
+  <circle cx="310" cy="170" r="4" fill="#10b981" />
+
+  <!-- Top Unit (Erroring) -->
+  <rect x="170" y="85" width="160" height="50" rx="8" fill="#ffffff" stroke="#2f6feb" stroke-width="2" />
+  <rect x="185" y="102" width="50" height="6" rx="3" fill="#e2e8f0" />
+  <rect x="185" y="114" width="35" height="6" rx="3" fill="#f1f5f9" />
+  <circle cx="295" cy="110" r="4" fill="#ef4444" />
+  <circle cx="310" cy="110" r="4" fill="#cbd5e1" />
+
+  <!-- Floating Warning Badge -->
+  <g transform="translate(305, 60)">
+    <circle cx="30" cy="30" r="28" fill="#eff6ff" stroke="#2f6feb" stroke-width="3" />
+    <path d="M30 18 L43 40 L17 40 Z" fill="#2f6feb" stroke="#2f6feb" stroke-width="2" stroke-linejoin="round" />
+    <line x1="30" y1="26" x2="30" y2="33" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" />
+    <circle cx="30" cy="37" r="1.5" fill="#ffffff" />
+  </g>
+
+  <!-- Sparks / Alert accents -->
+  <path d="M140 120 L155 125 L145 135" stroke="#2f6feb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M350 160 L360 170 L345 175" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+</svg>

@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 350" width="100%" height="100%" fill="none">
+  <!-- Background Accents -->
+  <circle cx="250" cy="175" r="140" fill="#f1f5f9" />
+  <circle cx="380" cy="100" r="10" fill="#2f6feb" opacity="0.15" />
+  <circle cx="120" cy="220" r="8" fill="#2f6feb" opacity="0.2" />
+
+  <!-- Ground Plane Shadow -->
+  <ellipse cx="250" cy="290" rx="160" ry="14" fill="#e2e8f0" />
+
+  <!-- Left Plug & Cable -->
+  <path d="M90 175 C130 175, 140 175, 160 175" stroke="#94a3b8" stroke-width="6" stroke-linecap="round" />
+  <rect x="160" y="155" width="40" height="40" rx="6" fill="#ffffff" stroke="#2f6feb" stroke-width="3" />
+  <rect x="200" y="163" width="14" height="6" rx="2" fill="#2f6feb" />
+  <rect x="200" y="181" width="14" height="6" rx="2" fill="#2f6feb" />
+
+  <!-- Right Socket & Cable -->
+  <path d="M410 175 C370 175, 360 175, 340 175" stroke="#94a3b8" stroke-width="6" stroke-linecap="round" />
+  <rect x="300" y="155" width="40" height="40" rx="6" fill="#ffffff" stroke="#2f6feb" stroke-width="3" />
+  <rect x="286" y="160" width="14" height="30" rx="4" fill="#eff6ff" stroke="#2f6feb" stroke-width="2" />
+  <rect x="286" y="165" width="4" height="6" rx="1" fill="#2f6feb" />
+  <rect x="286" y="179" width="4" height="6" rx="1" fill="#2f6feb" />
+
+  <!-- Disconnected Gap Waves / Broken Signal Graphic -->
+  <g transform="translate(225, 120)">
+    <!-- Broken WiFi / Signal symbol -->
+    <path d="M10 25 C18 15, 32 15, 40 25" stroke="#cbd5e1" stroke-width="3" stroke-linecap="round" fill="none" />
+    <path d="M16 33 C21 27, 29 27, 34 33" stroke="#cbd5e1" stroke-width="3" stroke-linecap="round" fill="none" />
+    <circle cx="25" cy="42" r="3" fill="#cbd5e1" />
+    <!-- Disconnect / Slash Line -->
+    <line x1="8" y1="48" x2="42" y2="14" stroke="#2f6feb" stroke-width="3.5" stroke-linecap="round" />
+  </g>
+
+  <!-- Floating Spark Dots -->
+  <circle cx="230" cy="195" r="3" fill="#2f6feb" opacity="0.6" />
+  <circle cx="270" cy="195" r="3" fill="#2f6feb" opacity="0.6" />
+  <circle cx="250" cy="210" r="2.5" fill="#94a3b8" />
+</svg>

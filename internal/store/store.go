@@ -36,8 +36,18 @@ type Store interface {
 	Workspaces() WorkspaceStore
 	Roles() RoleStore
 	Members() MemberStore
+	Providers() ProviderStore
 	WithTx(ctx context.Context, fn func(Store) error) error
 	Close() error
+}
+
+// ProviderStore manages workspace-scoped provider configurations.
+type ProviderStore interface {
+	Create(ctx context.Context, p *domain.ProviderConfig) error
+	ByID(ctx context.Context, workspaceID, id string) (*domain.ProviderConfig, error)
+	ListForWorkspace(ctx context.Context, workspaceID string) ([]domain.ProviderConfig, error)
+	Update(ctx context.Context, p *domain.ProviderConfig) error
+	Delete(ctx context.Context, workspaceID, id string) error
 }
 
 // UserStore manages user identities.

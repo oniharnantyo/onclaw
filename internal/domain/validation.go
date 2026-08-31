@@ -3,6 +3,7 @@ package domain
 import (
 	"fmt"
 	"net/mail"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -92,3 +93,27 @@ func ValidateTimezone(tz string) error {
 
 	return nil
 }
+
+// ValidateProviderBaseURL validates that a provider base_url is well-formed with http or https scheme.
+func ValidateProviderBaseURL(baseURL string, required bool) error {
+	trimmed := strings.TrimSpace(baseURL)
+	if trimmed == "" {
+		if required {
+			return fmt.Errorf("%w: base_url is required", ErrInvalid)
+		}
+		return nil
+	}
+
+	u, err := url.Parse(trimmed)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("%w: invalid base_url %q", ErrInvalid, baseURL)
+	}
+
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("%w: base_url scheme must be http or https", ErrInvalid)
+	}
+
+	return nil
+}
+

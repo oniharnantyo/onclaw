@@ -60,6 +60,7 @@ go run . migrate version                            # print migration version
 go run . server [--listen-addr :8080]               # start HTTP API server
 # Environment variables for server:
 #   DATABASE_URL (required)
+#   ONCLAW_ENCRYPTION_KEY (required; 32-byte hex or base64, generate with openssl rand -hex 32; key rotation requires re-entering keys)
 #   ONCLAW_LISTEN_ADDR (default :8080)
 #   ONCLAW_JWT_SECRET (HS256 key; ephemeral if unset)
 #   ONCLAW_DATA_DIR (default ./data)

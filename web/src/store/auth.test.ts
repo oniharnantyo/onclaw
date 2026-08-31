@@ -11,6 +11,7 @@ describe('store/auth', () => {
       user: null,
       memberships: [],
       status: 'loading',
+      bootError: null,
     });
     vi.restoreAllMocks();
   });
@@ -22,6 +23,7 @@ describe('store/auth', () => {
     expect(state.status).toBe('unauthenticated');
     expect(state.user).toBeNull();
     expect(state.memberships).toEqual([]);
+    expect(state.bootError).toBeNull();
   });
 
   it('boot() with valid token hydrates session and sets authenticated', async () => {
@@ -52,6 +54,7 @@ describe('store/auth', () => {
     expect(state.status).toBe('authenticated');
     expect(state.user).toEqual(mockUser);
     expect(state.memberships).toEqual(mockMemberships);
+    expect(state.bootError).toBeNull();
   });
 
   it('boot() with invalid/expired token clears token and transitions to unauthenticated', async () => {
@@ -64,16 +67,67 @@ describe('store/auth', () => {
     expect(state.status).toBe('unauthenticated');
     expect(state.user).toBeNull();
     expect(getToken()).toBeNull();
+    expect(state.bootError).toBeNull();
   });
 
-  it('boot() with network error preserves token and sets authenticated status', async () => {
+  it('boot() with network error preserves token and sets error status', async () => {
     setToken('saved-token');
     vi.spyOn(api.auth, 'me').mockRejectedValue(new ApiError(0, 'network', 'Network connection failed'));
 
     await useAuthStore.getState().boot();
 
     const state = useAuthStore.getState();
+    expect(state.status).toBe('error');
+    expect(state.bootError).toBe('Network connection failed. Please check your connection.');
+    expect(getToken()).toBe('saved-token');
+  });
+
+  it('boot() with 5xx server error preserves token and sets error status', async () => {
+    setToken('saved-token');
+    vi.spyOn(api.auth, 'me').mockRejectedValue(new ApiError(500, 'server_error', 'Internal Server Error'));
+
+    await useAuthStore.getState().boot();
+
+    const state = useAuthStore.getState();
+    expect(state.status).toBe('error');
+    expect(state.bootError).toBe('Internal Server Error');
+    expect(getToken()).toBe('saved-token');
+  });
+
+  it('retry: calling boot() again resolves to authenticated when API recovers', async () => {
+    setToken('saved-token');
+    const meSpy = vi.spyOn(api.auth, 'me').mockRejectedValueOnce(new ApiError(0, 'network', 'Network connection failed'));
+
+    await useAuthStore.getState().boot();
+    expect(useAuthStore.getState().status).toBe('error');
+    expect(useAuthStore.getState().bootError).toBe('Network connection failed. Please check your connection.');
+    expect(getToken()).toBe('saved-token');
+
+    const mockUser = { id: 'u1', email: 'test@example.com', name: 'Test User', created_at: '', updated_at: '' };
+    const mockMemberships = [
+      {
+        workspace_id: 'ws1',
+        workspace_slug: 'acme',
+        workspace_name: 'Acme',
+        user_id: 'u1',
+        email: 'test@example.com',
+        name: 'Test User',
+        role_id: 'r1',
+        role_name: 'Owner',
+        joined_at: '',
+      },
+    ];
+    meSpy.mockResolvedValueOnce({
+      user: mockUser,
+      memberships: mockMemberships,
+    });
+
+    await useAuthStore.getState().boot();
+    const state = useAuthStore.getState();
     expect(state.status).toBe('authenticated');
+    expect(state.user).toEqual(mockUser);
+    expect(state.memberships).toEqual(mockMemberships);
+    expect(state.bootError).toBeNull();
     expect(getToken()).toBe('saved-token');
   });
 

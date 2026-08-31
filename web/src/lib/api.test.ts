@@ -8,6 +8,8 @@ import {
   formatApiError,
   TOKEN_STORAGE_KEY,
 } from './api';
+import { useConnectionStore } from '../store/connection';
+import { useStore } from '../store';
 
 describe('lib/api', () => {
   const originalFetch = globalThis.fetch;
@@ -189,6 +191,119 @@ describe('lib/api', () => {
       expect(unauthorizedCallback).not.toHaveBeenCalled();
       unsubscribe();
     });
+
+    it('captures request_id from error envelope into ApiError.requestId', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        headers: new Headers({ 'Content-Type': 'application/json' }),
+        json: async () => ({
+          error: {
+            code: 'internal',
+            message: 'Database failure',
+            request_id: 'req_envelope_12345',
+          },
+        }),
+      } as any);
+
+      await expect(api.request('/test')).rejects.toSatisfy((err: any) => {
+        expect(err).toBeInstanceOf(ApiError);
+        expect(err.status).toBe(500);
+        expect(err.code).toBe('internal');
+        expect(err.requestId).toBe('req_envelope_12345');
+        return true;
+      });
+    });
+
+    it('captures request_id from X-Request-ID response header if omitted from error envelope', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        headers: new Headers({
+          'Content-Type': 'application/json',
+          'X-Request-ID': 'req_header_67890',
+        }),
+        json: async () => ({
+          error: {
+            code: 'internal',
+            message: 'Server error',
+          },
+        }),
+      } as any);
+
+      await expect(api.request('/test')).rejects.toSatisfy((err: any) => {
+        expect(err).toBeInstanceOf(ApiError);
+        expect(err.status).toBe(500);
+        expect(err.requestId).toBe('req_header_67890');
+        return true;
+      });
+    });
+
+    it('sets connection store degraded to true on network failure and false on success', async () => {
+      useConnectionStore.getState().reset();
+      expect(useConnectionStore.getState().degraded).toBe(false);
+
+      globalThis.fetch = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+
+      await expect(api.request('/test')).rejects.toThrow();
+      expect(useConnectionStore.getState().degraded).toBe(true);
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'Content-Type': 'application/json' }),
+        json: async () => ({ ok: true }),
+      } as any);
+
+      await api.request('/test');
+      expect(useConnectionStore.getState().degraded).toBe(false);
+    });
+
+    it('classifies status 0 as network error and sets connection degraded', async () => {
+      useConnectionStore.getState().reset();
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 0,
+        statusText: '',
+        headers: new Headers(),
+      } as any);
+
+      await expect(api.request('/test')).rejects.toSatisfy((err: any) => {
+        expect(err).toBeInstanceOf(ApiError);
+        expect(err.status).toBe(0);
+        expect(err.code).toBe('network');
+        return true;
+      });
+
+      expect(useConnectionStore.getState().degraded).toBe(true);
+    });
+
+    it('suppresses network toasts while connection store is degraded', () => {
+      useStore.setState({ ui: { ...useStore.getState().ui, toasts: [] } });
+
+      // When healthy, network toast is accepted
+      useConnectionStore.getState().reset();
+      useStore.getState().toast('Network connection failed. Please check your connection.', 'danger');
+      expect(useStore.getState().ui.toasts.length).toBe(1);
+
+      // Clear toasts and degrade connection
+      useStore.setState({ ui: { ...useStore.getState().ui, toasts: [] } });
+      useConnectionStore.getState().reportFailure();
+
+      // Now network toasts should be suppressed
+      useStore.getState().toast('Network connection failed. Please check your connection.', 'danger');
+      expect(useStore.getState().ui.toasts.length).toBe(0);
+
+      useStore.getState().toast('Network error occurred', 'network');
+      expect(useStore.getState().ui.toasts.length).toBe(0);
+
+      // Non-network toast is still displayed
+      useStore.getState().toast('Settings saved', 'success');
+      expect(useStore.getState().ui.toasts.length).toBe(1);
+    });
   });
 
   describe('formatApiError', () => {
@@ -331,5 +446,59 @@ describe('lib/api', () => {
       expect((globalThis.fetch as any).mock.calls[7][0]).toBe('/api/v1/admin/superadmins');
       expect((globalThis.fetch as any).mock.calls[7][1].method).toBe('POST');
     });
+
+    it('calls providers endpoints correctly', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'Content-Type': 'application/json' }),
+        json: async () => ({ providers: [] }),
+      } as any);
+
+      await api.providers.list('acme');
+      expect((globalThis.fetch as any).mock.calls[0][0]).toBe('/api/v1/workspaces/acme/providers');
+      expect((globalThis.fetch as any).mock.calls[0][1].method).toBe('GET');
+
+      await api.providers.create('acme', {
+        type: 'openai',
+        name: 'OpenAI Main',
+        key: 'sk-test',
+      });
+      expect((globalThis.fetch as any).mock.calls[1][0]).toBe('/api/v1/workspaces/acme/providers');
+      expect((globalThis.fetch as any).mock.calls[1][1].method).toBe('POST');
+      expect(JSON.parse((globalThis.fetch as any).mock.calls[1][1].body)).toEqual({
+        type: 'openai',
+        name: 'OpenAI Main',
+        key: 'sk-test',
+      });
+
+      await api.providers.patch('acme', 'prov-1', {
+        name: 'OpenAI Updated',
+        enabled: false,
+      });
+      expect((globalThis.fetch as any).mock.calls[2][0]).toBe('/api/v1/workspaces/acme/providers/prov-1');
+      expect((globalThis.fetch as any).mock.calls[2][1].method).toBe('PATCH');
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 204,
+        headers: new Headers(),
+      } as any);
+      await api.providers.delete('acme', 'prov-1');
+      expect((globalThis.fetch as any).mock.calls[0][0]).toBe('/api/v1/workspaces/acme/providers/prov-1');
+      expect((globalThis.fetch as any).mock.calls[0][1].method).toBe('DELETE');
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'Content-Type': 'application/json' }),
+        json: async () => ({ ok: true }),
+      } as any);
+      const verifyRes = await api.providers.verify('acme', 'prov-1');
+      expect((globalThis.fetch as any).mock.calls[0][0]).toBe('/api/v1/workspaces/acme/providers/prov-1/verify');
+      expect((globalThis.fetch as any).mock.calls[0][1].method).toBe('POST');
+      expect(verifyRes).toEqual({ ok: true });
+    });
   });
 });
+

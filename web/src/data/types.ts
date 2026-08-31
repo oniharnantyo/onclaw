@@ -125,6 +125,27 @@ export interface ApiKey {
   created: string;
 }
 
+export type ProviderType =
+  | 'openai'
+  | 'anthropic'
+  | 'gemini'
+  | 'openrouter'
+  | 'openai-compatible'
+  | 'anthropic-compatible';
+
+export interface ProviderConfig {
+  id: string;
+  workspace_id: string;
+  type: ProviderType | string;
+  name: string;
+  base_url?: string;
+  key_set: boolean;
+  key_hint: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Workspace {
   id: string;
   name: string;
@@ -146,4 +167,6 @@ export interface Workspace {
   mcpServers: McpServer[];
   skillLib: Skill[];
   keys: ApiKey[];
+  providers?: ProviderConfig[];
 }
+

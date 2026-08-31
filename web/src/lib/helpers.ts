@@ -1,5 +1,5 @@
 
-import { PROVIDERS, REPLY_TEMPLATES } from "../lib/constants";
+import { PROVIDER_MODELS, REPLY_TEMPLATES } from "../lib/constants";
 
 export const cx = (...a: any[]) => a.filter(Boolean).join(' ');
 
@@ -16,7 +16,17 @@ export const parseMentions = (text: string, members: any[]) => {
   return (members || []).filter((m: any) => tokens.includes(memberHandle(m)));
 };
 
-export const providerOf = (model: string) => (PROVIDERS.find((p: any) => p.models.includes(model)) || PROVIDERS[0]).id;
+export const providerOf = (model: string): string => {
+  for (const [type, models] of Object.entries(PROVIDER_MODELS)) {
+    if (models.includes(model)) return type;
+  }
+  if (model.startsWith('claude')) return 'anthropic';
+  if (model.startsWith('gpt') || model.startsWith('o1') || model.startsWith('o3')) return 'openai';
+  if (model.startsWith('gemini')) return 'gemini';
+  if (model.startsWith('llama')) return 'openai-compatible';
+  return 'anthropic';
+};
+
 
 export function craftReply(agent: any, text: string) {
   const c = text.trim().toLowerCase();

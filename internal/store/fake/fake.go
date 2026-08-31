@@ -21,9 +21,10 @@ type fakeStore struct {
 	usersByEmail     map[string]string            // key: normalized email -> ID
 	workspaces       map[string]*domain.Workspace // key: ID
 	workspacesBySlug map[string]string            // key: slug -> ID
-	roles            map[string]*domain.Role      // key: ID
-	rolesByName      map[string]string            // key: workspaceID + ":" + name -> ID
-	members          map[string]*domain.Member    // key: workspaceID + ":" + userID -> Member
+	roles            map[string]*domain.Role           // key: ID
+	rolesByName      map[string]string                 // key: workspaceID + ":" + name -> ID
+	members          map[string]*domain.Member         // key: workspaceID + ":" + userID -> Member
+	providers        map[string]*domain.ProviderConfig // key: ID
 }
 
 // New creates a new in-memory fake store.
@@ -40,6 +41,7 @@ func newStore() *fakeStore {
 		roles:            make(map[string]*domain.Role),
 		rolesByName:      make(map[string]string),
 		members:          make(map[string]*domain.Member),
+		providers:        make(map[string]*domain.ProviderConfig),
 	}
 }
 
@@ -61,6 +63,11 @@ func (s *fakeStore) Roles() store.RoleStore {
 // Members returns the MemberStore sub-port.
 func (s *fakeStore) Members() store.MemberStore {
 	return &memberStore{s: s}
+}
+
+// Providers returns the ProviderStore sub-port.
+func (s *fakeStore) Providers() store.ProviderStore {
+	return &providerStore{s: s}
 }
 
 // WithTx executes the given function in an isolated transaction.
@@ -106,6 +113,9 @@ func (s *fakeStore) clone() *fakeStore {
 	for key, m := range s.members {
 		cp.members[key] = cloneMember(m)
 	}
+	for id, p := range s.providers {
+		cp.providers[id] = cloneProvider(p)
+	}
 	return cp
 }
 
@@ -117,6 +127,7 @@ func (s *fakeStore) apply(other *fakeStore) {
 	s.roles = other.roles
 	s.rolesByName = other.rolesByName
 	s.members = other.members
+	s.providers = other.providers
 }
 
 func cloneUser(u *domain.User) *domain.User {
@@ -175,6 +186,14 @@ func cloneMember(m *domain.Member) *domain.Member {
 	if m.Role != nil {
 		cp.Role = cloneRole(m.Role)
 	}
+	return &cp
+}
+
+func cloneProvider(p *domain.ProviderConfig) *domain.ProviderConfig {
+	if p == nil {
+		return nil
+	}
+	cp := *p
 	return &cp
 }
 
@@ -760,5 +779,125 @@ func (ms *memberStore) Remove(ctx context.Context, workspaceID, userID string) e
 	}
 
 	delete(ms.s.members, memberKey)
+	return nil
+}
+
+// -------------------------------------------------------------------------
+// ProviderStore implementation
+// -------------------------------------------------------------------------
+
+type providerStore struct {
+	s *fakeStore
+}
+
+func (ps *providerStore) Create(ctx context.Context, p *domain.ProviderConfig) error {
+	if p == nil || p.WorkspaceID == "" || p.Type == "" || p.Name == "" {
+		return domain.ErrInvalid
+	}
+
+	ps.s.mu.Lock()
+	defer ps.s.mu.Unlock()
+
+	if p.ID != "" {
+		if _, exists := ps.s.providers[p.ID]; exists {
+			return fmt.Errorf("%w: provider with id %q already exists", domain.ErrConflict, p.ID)
+		}
+	} else {
+		p.ID = uuid.NewString()
+	}
+
+	now := time.Now().UTC()
+	if p.CreatedAt.IsZero() {
+		p.CreatedAt = now
+	}
+	if p.UpdatedAt.IsZero() {
+		p.UpdatedAt = now
+	}
+
+	ps.s.providers[p.ID] = cloneProvider(p)
+	return nil
+}
+
+func (ps *providerStore) ByID(ctx context.Context, workspaceID, id string) (*domain.ProviderConfig, error) {
+	if workspaceID == "" || id == "" {
+		return nil, domain.ErrNotFound
+	}
+
+	ps.s.mu.RLock()
+	defer ps.s.mu.RUnlock()
+
+	p, exists := ps.s.providers[id]
+	if !exists || p.WorkspaceID != workspaceID {
+		return nil, domain.ErrNotFound
+	}
+	return cloneProvider(p), nil
+}
+
+func (ps *providerStore) ListForWorkspace(ctx context.Context, workspaceID string) ([]domain.ProviderConfig, error) {
+	if workspaceID == "" {
+		return []domain.ProviderConfig{}, nil
+	}
+
+	ps.s.mu.RLock()
+	defer ps.s.mu.RUnlock()
+
+	providers := make([]domain.ProviderConfig, 0)
+	for _, p := range ps.s.providers {
+		if p.WorkspaceID == workspaceID {
+			providers = append(providers, *cloneProvider(p))
+		}
+	}
+	sort.Slice(providers, func(i, j int) bool {
+		if providers[i].CreatedAt.Equal(providers[j].CreatedAt) {
+			return providers[i].ID < providers[j].ID
+		}
+		return providers[i].CreatedAt.Before(providers[j].CreatedAt)
+	})
+	return providers, nil
+}
+
+func (ps *providerStore) Update(ctx context.Context, p *domain.ProviderConfig) error {
+	if p == nil || p.ID == "" || p.WorkspaceID == "" {
+		return domain.ErrInvalid
+	}
+
+	ps.s.mu.Lock()
+	defer ps.s.mu.Unlock()
+
+	existing, exists := ps.s.providers[p.ID]
+	if !exists || existing.WorkspaceID != p.WorkspaceID {
+		return domain.ErrNotFound
+	}
+
+	if p.Type != "" {
+		existing.Type = p.Type
+	}
+	if p.Name != "" {
+		existing.Name = p.Name
+	}
+	existing.BaseURL = p.BaseURL
+	existing.KeyCiphertext = p.KeyCiphertext
+	existing.KeyHint = p.KeyHint
+	existing.Enabled = p.Enabled
+	existing.UpdatedAt = time.Now().UTC()
+
+	*p = *cloneProvider(existing)
+	return nil
+}
+
+func (ps *providerStore) Delete(ctx context.Context, workspaceID, id string) error {
+	if workspaceID == "" || id == "" {
+		return domain.ErrNotFound
+	}
+
+	ps.s.mu.Lock()
+	defer ps.s.mu.Unlock()
+
+	existing, exists := ps.s.providers[id]
+	if !exists || existing.WorkspaceID != workspaceID {
+		return domain.ErrNotFound
+	}
+
+	delete(ps.s.providers, id)
 	return nil
 }

@@ -132,8 +132,8 @@ func TestIntegration_Migration_IdempotenceAndRollback(t *testing.T) {
 		t.Fatalf("unexpected MigrateUp error: %v", err)
 	}
 	v, dirty, err = mig.Status()
-	if err != nil || v != 6 || dirty {
-		t.Fatalf("expected version 6 not dirty, got v=%d, dirty=%v, err=%v", v, dirty, err)
+	if err != nil || v != 8 || dirty {
+		t.Fatalf("expected version 8 not dirty, got v=%d, dirty=%v, err=%v", v, dirty, err)
 	}
 
 	// 3. MigrateUp again is idempotent
@@ -141,8 +141,8 @@ func TestIntegration_Migration_IdempotenceAndRollback(t *testing.T) {
 		t.Fatalf("expected MigrateUp to be idempotent, got %v", err)
 	}
 	v, dirty, err = mig.Status()
-	if err != nil || v != 6 || dirty {
-		t.Fatalf("expected version 6 not dirty, got v=%d, dirty=%v, err=%v", v, dirty, err)
+	if err != nil || v != 8 || dirty {
+		t.Fatalf("expected version 8 not dirty, got v=%d, dirty=%v, err=%v", v, dirty, err)
 	}
 
 	// 4. MigrateDown 1 step
@@ -150,8 +150,8 @@ func TestIntegration_Migration_IdempotenceAndRollback(t *testing.T) {
 		t.Fatalf("unexpected MigrateDown step error: %v", err)
 	}
 	v, dirty, err = mig.Status()
-	if err != nil || v != 5 || dirty {
-		t.Fatalf("expected version 5, got v=%d, dirty=%v, err=%v", v, dirty, err)
+	if err != nil || v != 7 || dirty {
+		t.Fatalf("expected version 7, got v=%d, dirty=%v, err=%v", v, dirty, err)
 	}
 
 	// 5. MigrateDown all
@@ -163,13 +163,13 @@ func TestIntegration_Migration_IdempotenceAndRollback(t *testing.T) {
 		t.Fatalf("expected version 0, got v=%d, dirty=%v, err=%v", v, dirty, err)
 	}
 
-	// 6. MigrateUp again back to 6
+	// 6. MigrateUp again back to 8
 	if err := mig.Up(); err != nil {
 		t.Fatalf("unexpected MigrateUp error: %v", err)
 	}
 	v, dirty, err = mig.Status()
-	if err != nil || v != 6 || dirty {
-		t.Fatalf("expected version 6, got v=%d, dirty=%v, err=%v", v, dirty, err)
+	if err != nil || v != 8 || dirty {
+		t.Fatalf("expected version 8, got v=%d, dirty=%v, err=%v", v, dirty, err)
 	}
 }
 

@@ -18,6 +18,7 @@ const (
 	CodeConflict           = "conflict"
 	CodeLastOwnerProtected = "last_owner_protected"
 	CodePayloadTooLarge    = "payload_too_large"
+	CodeUndecryptable       = "undecryptable"
 	CodeInternal           = "internal"
 )
 
@@ -29,9 +30,10 @@ type ErrorDetail struct {
 
 // APIError represents the error object in the API response.
 type APIError struct {
-	Code    string        `json:"code"`
-	Message string        `json:"message"`
-	Details []ErrorDetail `json:"details,omitempty"`
+	Code      string        `json:"code"`
+	Message   string        `json:"message"`
+	RequestID string        `json:"request_id,omitempty"`
+	Details   []ErrorDetail `json:"details,omitempty"`
 }
 
 func (e *APIError) Error() string {
@@ -44,12 +46,13 @@ type ErrorEnvelope struct {
 }
 
 // NewErrorEnvelope creates a new ErrorEnvelope.
-func NewErrorEnvelope(code, message string, details ...ErrorDetail) ErrorEnvelope {
+func NewErrorEnvelope(code, message, requestID string, details ...ErrorDetail) ErrorEnvelope {
 	return ErrorEnvelope{
 		Error: APIError{
-			Code:    code,
-			Message: message,
-			Details: details,
+			Code:      code,
+			Message:   message,
+			RequestID: requestID,
+			Details:   details,
 		},
 	}
 }
@@ -69,6 +72,8 @@ func ErrorToStatus(err error) (int, string, string) {
 	switch {
 	case errors.Is(err, domain.ErrLastOwnerProtected):
 		return http.StatusConflict, CodeLastOwnerProtected, err.Error()
+	case errors.Is(err, domain.ErrUndecryptable):
+		return http.StatusBadRequest, CodeUndecryptable, err.Error()
 	case errors.Is(err, domain.ErrInvalid):
 		return http.StatusBadRequest, CodeInvalidRequest, err.Error()
 	case errors.Is(err, domain.ErrUnauthenticated):
@@ -82,7 +87,6 @@ func ErrorToStatus(err error) (int, string, string) {
 	case errors.Is(err, domain.ErrPayloadTooLarge):
 		return http.StatusRequestEntityTooLarge, CodePayloadTooLarge, err.Error()
 	default:
-		slog.Error("internal server error", "error", err)
 		return http.StatusInternalServerError, CodeInternal, "internal server error"
 	}
 }
@@ -90,7 +94,7 @@ func ErrorToStatus(err error) (int, string, string) {
 // CodeToStatus maps a string error code to an HTTP status code.
 func CodeToStatus(code string) int {
 	switch code {
-	case CodeInvalidRequest:
+	case CodeInvalidRequest, CodeUndecryptable:
 		return http.StatusBadRequest
 	case CodeUnauthenticated:
 		return http.StatusUnauthorized
@@ -115,12 +119,23 @@ func RespondError(c *gin.Context, err error) {
 	if errors.As(err, &apiErr) {
 		details = apiErr.Details
 	}
-	c.AbortWithStatusJSON(status, NewErrorEnvelope(code, message, details...))
+	reqID := CurrentRequestID(c)
+	if reqID == "" && apiErr != nil && apiErr.RequestID != "" {
+		reqID = apiErr.RequestID
+	}
+	if status >= 500 {
+		slog.Error("internal server error", "error", err, "request_id", reqID)
+	}
+	c.AbortWithStatusJSON(status, NewErrorEnvelope(code, message, reqID, details...))
 }
 
 // AbortWithError sends a specific error envelope and aborts the Gin handler chain.
 func AbortWithError(c *gin.Context, status int, code, message string, details ...ErrorDetail) {
-	c.AbortWithStatusJSON(status, NewErrorEnvelope(code, message, details...))
+	reqID := CurrentRequestID(c)
+	if status >= 500 {
+		slog.Error("internal server error", "code", code, "message", message, "request_id", reqID)
+	}
+	c.AbortWithStatusJSON(status, NewErrorEnvelope(code, message, reqID, details...))
 }
 
 // AbortNotFound responds with a standard 404 not_found error.

@@ -2,8 +2,11 @@ package config
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"time"
 
+	"github.com/oniharnantyo/onclaw/internal/secrets"
 	"github.com/urfave/cli/v3"
 )
 
@@ -20,6 +23,7 @@ type Config struct {
 	DatabaseURL            string        `json:"database_url"`
 	ListenAddr             string        `json:"listen_addr"`
 	JWTSecret              string        `json:"-"`
+	EncryptionKey          string        `json:"-"`
 	TokenTTL               time.Duration `json:"token_ttl"`
 	DataDir                string        `json:"data_dir"`
 	StorageDriver          string        `json:"storage_driver"`
@@ -41,6 +45,11 @@ func ServerFlags() []cli.Flag {
 			Name:    "database-url",
 			Usage:   "PostgreSQL connection DSN",
 			Sources: cli.EnvVars("DATABASE_URL"),
+		},
+		&cli.StringFlag{
+			Name:    "encryption-key",
+			Usage:   "Instance master encryption key (32-byte hex or base64)",
+			Sources: cli.EnvVars("ONCLAW_ENCRYPTION_KEY"),
 		},
 		&cli.StringFlag{
 			Name:    "jwt-secret",
@@ -134,6 +143,7 @@ func FromServerContext(ctx context.Context, cmd *cli.Command) *Config {
 		ListenAddr:             cmd.String("listen-addr"),
 		DatabaseURL:            cmd.String("database-url"),
 		JWTSecret:              cmd.String("jwt-secret"),
+		EncryptionKey:          cmd.String("encryption-key"),
 		TokenTTL:               cmd.Duration("token-ttl"),
 		DataDir:                cmd.String("data-dir"),
 		StorageDriver:          cmd.String("storage-driver"),
@@ -164,4 +174,24 @@ func FromSuperadminContext(ctx context.Context, cmd *cli.Command) *Config {
 	return &Config{
 		DatabaseURL: cmd.String("database-url"),
 	}
+}
+
+// ParseEncryptionKey decodes and validates a 32-byte encryption key from a hex or base64 string.
+// If the key is missing or invalid, it returns an error naming ONCLAW_ENCRYPTION_KEY and openssl rand -hex 32.
+func ParseEncryptionKey(raw string) ([]byte, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, errors.New("ONCLAW_ENCRYPTION_KEY is required (generate with: openssl rand -hex 32)")
+	}
+
+	key, err := secrets.ParseKey(raw)
+	if err != nil {
+		return nil, errors.New("invalid ONCLAW_ENCRYPTION_KEY: must decode to exactly 32 bytes as hex or base64 (generate with: openssl rand -hex 32)")
+	}
+	return key, nil
+}
+
+// ParsedEncryptionKey decodes and returns the configured 32-byte encryption key.
+func (c *Config) ParsedEncryptionKey() ([]byte, error) {
+	return ParseEncryptionKey(c.EncryptionKey)
 }

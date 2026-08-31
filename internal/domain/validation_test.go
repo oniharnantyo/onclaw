@@ -154,3 +154,39 @@ func TestValidateTimezone(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateProviderBaseURL(t *testing.T) {
+	tests := []struct {
+		name        string
+		baseURL     string
+		required    bool
+		expectError bool
+	}{
+		{name: "empty not required", baseURL: "", required: false, expectError: false},
+		{name: "empty required", baseURL: "", required: true, expectError: true},
+		{name: "valid https origin", baseURL: "https://api.openai.com", required: false, expectError: false},
+		{name: "valid https with path", baseURL: "https://proxy.example.com/v1", required: false, expectError: false},
+		{name: "valid http localhost", baseURL: "http://localhost:8000", required: true, expectError: false},
+		{name: "invalid ftp scheme", baseURL: "ftp://example.com", required: false, expectError: true},
+		{name: "invalid file scheme", baseURL: "file:///etc/passwd", required: false, expectError: true},
+		{name: "missing host", baseURL: "https://", required: false, expectError: true},
+		{name: "relative path only", baseURL: "/api/v1", required: false, expectError: true},
+		{name: "invalid URL format", baseURL: "://bad", required: false, expectError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := domain.ValidateProviderBaseURL(tt.baseURL, tt.required)
+			if tt.expectError && err == nil {
+				t.Errorf("ValidateProviderBaseURL(%q, %v) expected error, got nil", tt.baseURL, tt.required)
+			}
+			if !tt.expectError && err != nil {
+				t.Errorf("ValidateProviderBaseURL(%q, %v) unexpected error: %v", tt.baseURL, tt.required, err)
+			}
+			if tt.expectError && err != nil && !errors.Is(err, domain.ErrInvalid) {
+				t.Errorf("ValidateProviderBaseURL(%q, %v) error = %v, want ErrInvalid sentinel wrapped", tt.baseURL, tt.required, err)
+			}
+		})
+	}
+}
+

@@ -15,6 +15,10 @@ const (
 	RolesRead  = "roles.read"
 	RolesWrite = "roles.write"
 
+	// Providers permissions
+	ProvidersRead  = "providers.read"
+	ProvidersWrite = "providers.write"
+
 	// Admin permissions (master tenant control plane)
 	AdminWorkspacesRead   = "admin.workspaces.read"
 	AdminWorkspacesWrite  = "admin.workspaces.write"
@@ -24,7 +28,7 @@ const (
 )
 
 var (
-	// OwnerPermissions contains all standard workspace permissions (7 permissions).
+	// OwnerPermissions contains all standard workspace permissions (9 permissions).
 	OwnerPermissions = []string{
 		WorkspaceRead,
 		WorkspaceWrite,
@@ -33,9 +37,11 @@ var (
 		MembersRemove,
 		RolesRead,
 		RolesWrite,
+		ProvidersRead,
+		ProvidersWrite,
 	}
 
-	// AdminPermissions contains all standard workspace permissions except roles.write (6 permissions).
+	// AdminPermissions contains all standard workspace permissions except roles.write (8 permissions).
 	AdminPermissions = []string{
 		WorkspaceRead,
 		WorkspaceWrite,
@@ -43,13 +49,16 @@ var (
 		MembersWrite,
 		MembersRemove,
 		RolesRead,
+		ProvidersRead,
+		ProvidersWrite,
 	}
 
-	// MemberPermissions contains only read permissions (3 permissions).
+	// MemberPermissions contains only read permissions (4 permissions).
 	MemberPermissions = []string{
 		WorkspaceRead,
 		MembersRead,
 		RolesRead,
+		ProvidersRead,
 	}
 
 	// SuperadminPermissions contains all workspace permissions plus all instance-admin permissions.
@@ -61,6 +70,8 @@ var (
 		MembersRemove,
 		RolesRead,
 		RolesWrite,
+		ProvidersRead,
+		ProvidersWrite,
 		AdminWorkspacesRead,
 		AdminWorkspacesWrite,
 		AdminUsersRead,
@@ -79,6 +90,8 @@ func AllPermissions() []string {
 		MembersRemove,
 		RolesRead,
 		RolesWrite,
+		ProvidersRead,
+		ProvidersWrite,
 		AdminWorkspacesRead,
 		AdminWorkspacesWrite,
 		AdminUsersRead,
@@ -93,6 +106,7 @@ func IsValidPermission(p string) bool {
 	case WorkspaceRead, WorkspaceWrite,
 		MembersRead, MembersWrite, MembersRemove,
 		RolesRead, RolesWrite,
+		ProvidersRead, ProvidersWrite,
 		AdminWorkspacesRead, AdminWorkspacesWrite,
 		AdminUsersRead, AdminUsersWrite,
 		AdminSuperadminsWrite:

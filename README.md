@@ -41,7 +41,7 @@ createdb onclaw   # or: psql -c 'CREATE DATABASE onclaw;'
 
 # 3. Configure via .env
 cp .env.example .env
-# edit .env: set DATABASE_URL (required) and ONCLAW_JWT_SECRET (stable sessions)
+# edit .env: set DATABASE_URL (required), ONCLAW_ENCRYPTION_KEY (required for server: openssl rand -hex 32), and ONCLAW_JWT_SECRET (stable sessions)
 
 # 4. Apply migrations
 go run . migrate up
@@ -81,6 +81,7 @@ Notes:
 | Variable | Default | Flag | Description |
 |---|---|---|---|
 | `DATABASE_URL` | — | `--database-url` | PostgreSQL DSN. **Required** for `server`, `migrate`, `user`, `superadmin`. |
+| `ONCLAW_ENCRYPTION_KEY` | — | `--encryption-key` | Instance master encryption key (32-byte hex or base64). **Required** for `server` (generate with `openssl rand -hex 32`). Key rotation requires re-entering provider keys. |
 | `ONCLAW_LISTEN_ADDR` | `:8080` | `--listen-addr` | HTTP listen address. |
 | `ONCLAW_JWT_SECRET` | ephemeral | `--jwt-secret` | JWT signing secret (HS256). Unset → ephemeral secret, sessions invalidated on restart. |
 | `ONCLAW_TOKEN_TTL` | `24h` | `--token-ttl` | Access token lifetime (Go duration string). |
@@ -134,6 +135,7 @@ pnpm test:e2e      # Playwright tests
 ## Troubleshooting
 
 - **`database URL is required`** — `DATABASE_URL` is neither set in the environment, `.env` (in the current working directory), nor via `--database-url`.
+- **`ONCLAW_ENCRYPTION_KEY is required`** — the server refuses to start without a valid 32-byte encryption key. Generate one with `openssl rand -hex 32` and set `ONCLAW_ENCRYPTION_KEY` in `.env` or pass `--encryption-key`. Key rotation requires re-entering stored provider keys.
 - **`jwt secret is not configured` warning** — the server uses an ephemeral secret; users are logged out whenever the server restarts. Set `ONCLAW_JWT_SECRET` in `.env` for stable sessions.
 - **Address already in use** — another process holds the port; change `ONCLAW_LISTEN_ADDR` or stop the other process.
 - **`.env` changes are not picked up** — `.env` is read from the **current working directory** at process start; restart the command (and the Vite dev server for frontend vars).

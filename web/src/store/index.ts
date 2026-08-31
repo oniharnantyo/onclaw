@@ -4,7 +4,10 @@ import type { Workspace, Agent, CronJob } from '../data/types';
 import { seedDb, blankTenant } from "../data/seed";
 import { uid, nowTime } from '../lib/helpers';
 import { useAuthStore } from './auth';
+import { useConnectionStore } from './connection';
 import type { ApiMemberView } from '../lib/api';
+
+export { useConnectionStore, type ConnectionState } from './connection';
 
 export const useSearchShortcut = () => {
   useEffect(() => {
@@ -40,8 +43,6 @@ export interface AppState {
     railExpanded?: boolean;
   };
   ui: {
-    settingsOpen: boolean;
-    settingsTab: string;
     configAgent: string | null;
     cronEdit: any | null;
     wsOpen: boolean;
@@ -97,7 +98,7 @@ export const useStore = create<AppState>((set, get) => ({
   db: seedDb(),
   pos: initialPos,
   ui: {
-    settingsOpen: false, settingsTab: 'workspace', configAgent: null, cronEdit: null,
+    configAgent: null, cronEdit: null,
     wsOpen: false, toasts: [], running: false
   },
   search: '',
@@ -111,6 +112,13 @@ export const useStore = create<AppState>((set, get) => ({
   setSearch: (q) => set({ search: q }),
   
   toast: (text, kind) => {
+    const isNetworkToast =
+      kind === 'network' ||
+      text === 'Network connection failed. Please check your connection.' ||
+      (kind === 'danger' && text.toLowerCase().includes('network connection failed'));
+    if (isNetworkToast && useConnectionStore.getState().degraded) {
+      return;
+    }
     const id = uid('t');
     set((s: any) => ({ ui: { ...s.ui, toasts: [...s.ui.toasts, { id, text, kind }] } }));
     setSafeTimer(`toast-${id}`, () => {

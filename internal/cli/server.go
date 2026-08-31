@@ -46,6 +46,11 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		return errors.New("database URL is required (specify --database-url or DATABASE_URL)")
 	}
 
+	encKey, err := config.ParseEncryptionKey(cfg.EncryptionKey)
+	if err != nil {
+		return err
+	}
+
 	if cfg.JWTSecret == "" {
 		slog.Warn("no JWT secret configured; using ephemeral secret (sessions will be invalidated on restart)")
 	}
@@ -97,9 +102,10 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	})
 
 	router := server.NewRouter(server.RouterOptions{
-		Store:   st,
-		Storage: stor,
-		Issuer:  issuer,
+		Store:         st,
+		Storage:       stor,
+		Issuer:        issuer,
+		EncryptionKey: encKey,
 	})
 
 	listenAddr := cfg.ListenAddr

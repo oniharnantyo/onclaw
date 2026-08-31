@@ -2,9 +2,11 @@ import { useState, useEffect } from 'react';
 import { cx } from '../../lib/helpers';
 import { Icon } from '../../components/ui/Icon';
 import { Avatar } from '../../components/ui/Avatar';
-import { api, formatApiError, type ApiUser } from '../../lib/api';
+import { ErrorState } from '../../components/ErrorState';
+import { api, formatApiError, ApiError, type ApiUser } from '../../lib/api';
 import { useAuthStore } from '../../store/auth';
 import { CreateUserModal } from './CreateUserModal';
+import serverErrorSvg from '../../assets/server-error.svg';
 
 interface UsersPaneProps {
   onToast: (text: string, kind?: string) => void;
@@ -13,7 +15,7 @@ interface UsersPaneProps {
 export function UsersPane({ onToast }: UsersPaneProps) {
   const [users, setUsers] = useState<ApiUser[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<ApiError | Error | null>(null);
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [confirmDisableId, setConfirmDisableId] = useState<string | null>(null);
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
@@ -22,14 +24,17 @@ export function UsersPane({ onToast }: UsersPaneProps) {
 
   const fetchUsers = async () => {
     setLoading(true);
-    setError(null);
+    setLoadError(null);
     try {
       const res = await api.admin.users.list();
       setUsers(res.users || []);
     } catch (err: unknown) {
-      const msg = formatApiError(err, 'Failed to load users');
-      setError(msg);
-      onToast(msg, 'danger');
+      if (err instanceof ApiError && err.status === 0) {
+        // Status 0 keeps the loading/empty state (handled by ConnectionBanner)
+        return;
+      }
+      const apiErr = err instanceof Error ? err : new Error(String(err));
+      setLoadError(apiErr);
     } finally {
       setLoading(false);
     }
@@ -155,16 +160,20 @@ export function UsersPane({ onToast }: UsersPaneProps) {
             Loading users…
           </div>
         </div>
-      ) : error ? (
-        <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-line bg-surface p-8 text-center">
-          <p className="text-[13px] text-danger">{error}</p>
-          <button
-            type="button"
-            onClick={fetchUsers}
-            className="flex h-8 items-center rounded-md border border-line px-3 text-[12px] font-medium text-fg2 hover:bg-[color-mix(in_oklab,var(--fg)_6%,transparent)]"
-          >
-            Retry
-          </button>
+      ) : loadError ? (
+        <div className="flex min-h-[320px] items-center justify-center rounded-lg border border-line bg-surface p-6">
+          <ErrorState
+            variant="full"
+            illustration={serverErrorSvg}
+            title="Couldn't load users"
+            description="A server error occurred while loading users."
+            status={loadError instanceof ApiError ? loadError.status : 500}
+            detail={loadError.message}
+            primaryAction={{
+              label: 'Retry',
+              onClick: fetchUsers,
+            }}
+          />
         </div>
       ) : (
         <div className="overflow-hidden rounded-lg border border-line" data-od-id="users-table" data-testid="users-table">
