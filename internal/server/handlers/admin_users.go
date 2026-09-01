@@ -20,17 +20,9 @@ type adminUserHandlers struct {
 
 // NewAdminUserHandlers creates a new adminUserHandlers instance with injected dependencies.
 func NewAdminUserHandlers(st store.Store) *adminUserHandlers {
-	return NewAdminUserHandlersWithHasher(st, auth.NewPasswordHasher())
-}
-
-// NewAdminUserHandlersWithHasher creates a new adminUserHandlers instance with custom hasher.
-func NewAdminUserHandlersWithHasher(st store.Store, hasher auth.PasswordHasher) *adminUserHandlers {
-	if hasher == nil {
-		hasher = auth.NewPasswordHasher()
-	}
 	return &adminUserHandlers{
 		store:  st,
-		hasher: hasher,
+		hasher: auth.NewPasswordHasher(),
 	}
 }
 

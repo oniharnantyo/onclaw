@@ -189,4 +189,3 @@ func TestValidateProviderBaseURL(t *testing.T) {
 		})
 	}
 }
-

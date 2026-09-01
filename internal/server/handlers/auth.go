@@ -55,11 +55,6 @@ func (h *authHandlers) Login(c *gin.Context) {
 		provider = auth.ProviderPassword
 	}
 
-	if h == nil || h.auth == nil {
-		RespondError(c, domain.ErrInvalid)
-		return
-	}
-
 	result, err := h.auth.Login(c.Request.Context(), auth.LoginRequest{
 		Provider:    provider,
 		Credentials: creds,
@@ -85,11 +80,6 @@ func (h *authHandlers) Logout(c *gin.Context) {
 // Me returns the current authenticated user profile and all workspace memberships.
 func (h *authHandlers) Me(c *gin.Context) {
 	user := MustCurrentUser(c)
-
-	if h == nil || h.auth == nil {
-		RespondError(c, domain.ErrInvalid)
-		return
-	}
 
 	result, err := h.auth.Me(c.Request.Context(), user.ID)
 	if err != nil {

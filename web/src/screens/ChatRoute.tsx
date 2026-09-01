@@ -56,7 +56,7 @@ function ChatRouteActive({
           if (out.some((m: any) => m.id === id)) return;
           const a = (tenant?.agents || []).find((x: any) => x.id === id);
           if (a) {
-            out.push({ id, kind: 'agent', name: a.name, agent: a });
+            out.push({ id, kind: 'agent', name: a.name, avatar: a.avatar, agent: a });
             return;
           }
           const p = (tenant?.people || []).find((x: any) => x.id === id);
@@ -71,7 +71,7 @@ function ChatRouteActive({
         const inCh = new Set([...(channel.members || []), channel.agentId].filter(Boolean));
         const out: any[] = [];
         (tenant?.agents || []).forEach((a: any) => {
-          if (!inCh.has(a.id)) out.push({ id: a.id, kind: 'agent', name: a.name, agent: a });
+          if (!inCh.has(a.id)) out.push({ id: a.id, kind: 'agent', name: a.name, avatar: a.avatar, agent: a });
         });
         (tenant?.people || []).forEach((p: any) => {
           if (!inCh.has(p.id)) out.push({ id: p.id, kind: 'person', name: p.name, presence: p.presence });

@@ -498,7 +498,138 @@ describe('lib/api', () => {
       expect((globalThis.fetch as any).mock.calls[0][0]).toBe('/api/v1/workspaces/acme/providers/prov-1/verify');
       expect((globalThis.fetch as any).mock.calls[0][1].method).toBe('POST');
       expect(verifyRes).toEqual({ ok: true });
+
+      // models endpoint
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'Content-Type': 'application/json' }),
+        json: async () => ({ source: 'live', models: [{ id: 'claude-3-7-sonnet', name: 'Claude 3.7 Sonnet' }] }),
+      } as any);
+      const modelsRes = await api.providers.models('acme', 'prov-1');
+      expect((globalThis.fetch as any).mock.calls[0][0]).toBe('/api/v1/workspaces/acme/providers/prov-1/models');
+      expect(modelsRes.source).toBe('live');
+
+      // modelsPreview endpoint
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'Content-Type': 'application/json' }),
+        json: async () => ({ source: 'catalog', models: [{ id: 'gpt-4o', name: 'GPT-4o' }] }),
+      } as any);
+      const previewRes = await api.providers.modelsPreview({ type: 'openai', key: 'sk-test' });
+      expect((globalThis.fetch as any).mock.calls[0][0]).toBe('/api/v1/providers/models-preview');
+      expect(previewRes.source).toBe('catalog');
+    });
+
+    it('calls agents endpoints correctly', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'Content-Type': 'application/json' }),
+        json: async () => ({ agents: [] }),
+      } as any);
+
+      await api.agents.list('acme');
+      expect((globalThis.fetch as any).mock.calls[0][0]).toBe('/api/v1/workspaces/acme/agents');
+
+      await api.agents.get('acme', 'radar');
+      expect((globalThis.fetch as any).mock.calls[1][0]).toBe('/api/v1/workspaces/acme/agents/radar');
+
+      await api.agents.create('acme', {
+        name: 'Radar',
+        slug: 'radar',
+        role: 'Research',
+        brief: 'Do research',
+        model: 'gpt-4o',
+      });
+      expect((globalThis.fetch as any).mock.calls[2][0]).toBe('/api/v1/workspaces/acme/agents');
+      expect((globalThis.fetch as any).mock.calls[2][1].method).toBe('POST');
+
+      await api.agents.patch('acme', 'radar', { name: 'Radar 2' });
+      expect((globalThis.fetch as any).mock.calls[3][0]).toBe('/api/v1/workspaces/acme/agents/radar');
+      expect((globalThis.fetch as any).mock.calls[3][1].method).toBe('PATCH');
+
+      await api.agents.regenerate('acme', 'radar');
+      expect((globalThis.fetch as any).mock.calls[4][0]).toBe('/api/v1/workspaces/acme/agents/radar/regenerate');
+      expect((globalThis.fetch as any).mock.calls[4][1].method).toBe('POST');
+
+      await api.agents.getMemory('acme', 'radar');
+      expect((globalThis.fetch as any).mock.calls[5][0]).toBe('/api/v1/workspaces/acme/agents/radar/memory');
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 204,
+        headers: new Headers(),
+      } as any);
+      await api.agents.deleteMemory('acme', 'radar');
+      expect((globalThis.fetch as any).mock.calls[0][0]).toBe('/api/v1/workspaces/acme/agents/radar/memory');
+      expect((globalThis.fetch as any).mock.calls[0][1].method).toBe('DELETE');
+
+      await api.agents.delete('acme', 'radar');
+      expect((globalThis.fetch as any).mock.calls[1][0]).toBe('/api/v1/workspaces/acme/agents/radar');
+      expect((globalThis.fetch as any).mock.calls[1][1].method).toBe('DELETE');
+    });
+
+    it('calls skills endpoints correctly', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'Content-Type': 'application/json' }),
+        json: async () => ({ skills: [] }),
+      } as any);
+
+      await api.skills.list('acme');
+      expect((globalThis.fetch as any).mock.calls[0][0]).toBe('/api/v1/workspaces/acme/skills');
+
+      await api.skills.get('acme', 'sk-1');
+      expect((globalThis.fetch as any).mock.calls[1][0]).toBe('/api/v1/workspaces/acme/skills/sk-1');
+
+      await api.skills.create('acme', { name: 'Search', body: '...' });
+      expect((globalThis.fetch as any).mock.calls[2][0]).toBe('/api/v1/workspaces/acme/skills');
+      expect((globalThis.fetch as any).mock.calls[2][1].method).toBe('POST');
+
+      await api.skills.patch('acme', 'sk-1', { enabled: false });
+      expect((globalThis.fetch as any).mock.calls[3][0]).toBe('/api/v1/workspaces/acme/skills/sk-1');
+      expect((globalThis.fetch as any).mock.calls[3][1].method).toBe('PATCH');
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 204,
+        headers: new Headers(),
+      } as any);
+      await api.skills.delete('acme', 'sk-1');
+      expect((globalThis.fetch as any).mock.calls[0][0]).toBe('/api/v1/workspaces/acme/skills/sk-1');
+      expect((globalThis.fetch as any).mock.calls[0][1].method).toBe('DELETE');
+    });
+
+    it('polls prompt status until ready or failed', async () => {
+      const responses = [
+        { agent: { id: 'a1', slug: 'a1', prompts_status: 'generating' } },
+        { agent: { id: 'a1', slug: 'a1', prompts_status: 'generating' } },
+        { agent: { id: 'a1', slug: 'a1', prompts_status: 'ready', identity: 'I am ready' } },
+      ];
+      let callCount = 0;
+      globalThis.fetch = vi.fn().mockImplementation(async () => ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'Content-Type': 'application/json' }),
+        json: async () => responses[Math.min(callCount++, responses.length - 1)],
+      }));
+
+      const { pollAgentPromptsStatus } = await import('./api');
+      const onUpdate = vi.fn();
+
+      const finalAgent = await pollAgentPromptsStatus('acme', 'a1', {
+        intervalMs: 10,
+        maxAttempts: 10,
+        onUpdate,
+      });
+
+      expect(finalAgent.prompts_status).toBe('ready');
+      expect(onUpdate).toHaveBeenCalledTimes(3);
     });
   });
 });
+
 

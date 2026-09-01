@@ -1,0 +1,2 @@
+ALTER TABLE agents ADD COLUMN identity text NOT NULL DEFAULT '';
+ALTER TABLE agents ADD COLUMN soul text NOT NULL DEFAULT '';

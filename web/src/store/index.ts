@@ -5,7 +5,7 @@ import { seedDb, blankTenant } from "../data/seed";
 import { uid, nowTime } from '../lib/helpers';
 import { useAuthStore } from './auth';
 import { useConnectionStore } from './connection';
-import type { ApiMemberView } from '../lib/api';
+import { api, pollAgentPromptsStatus, formatApiError, type ApiMemberView } from '../lib/api';
 
 export { useConnectionStore, type ConnectionState } from './connection';
 
@@ -70,6 +70,15 @@ export interface AppState {
   deleteSession: (sid: string) => void;
   switchTenant: (id: string) => void;
   upsertAgent: (values: Partial<Agent>) => string;
+  loadAgents: (tenantId: string) => Promise<void>;
+  pollAgent: (tenantId: string, agentId: string) => void;
+  regenerateAgent: (tenantId: string, agentId: string, instruction?: string) => Promise<void>;
+  setAgentPromptStatus: (
+    tenantId: string,
+    agentId: string,
+    status: 'generating' | 'ready' | 'failed',
+    error?: string | null
+  ) => void;
   
   runNow: (job: CronJob) => void;
   toggleCron: (job: CronJob) => void;
@@ -127,8 +136,15 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   updateTenant: (tenantId, fn) => set((s: any) => {
-    const t = s.db[tenantId];
-    if (!t) return s;
+    let t = s.db[tenantId];
+    if (!t) {
+      const authMemberships = useAuthStore.getState().memberships;
+      const mem = authMemberships.find((m) => m.workspace_id === tenantId || m.workspace_slug === tenantId);
+      const wsName = mem?.workspace_name || mem?.workspace?.name || tenantId;
+      const wsTz = mem?.workspace?.timezone || 'America/Los_Angeles';
+      t = blankTenant({ name: wsName, sub: tenantId, tz: wsTz, starter: false });
+      t.id = tenantId;
+    }
     return { db: { ...s.db, [tenantId]: fn(JSON.parse(JSON.stringify(t))) } };
   }),
 
@@ -285,6 +301,119 @@ export const useStore = create<AppState>((set, get) => ({
       }));
     }
     state.toast('Switched to ' + (targetWs?.name || id));
+    get().loadAgents(id);
+  },
+
+  loadAgents: async (tenantId) => {
+    try {
+      const res = await api.agents.list(tenantId);
+      if (res?.agents) {
+        get().updateTenant(tenantId, (t) => {
+          const existingMap = new Map((t.agents || []).map((a) => [a.id, a]));
+          const mergedAgents: Agent[] = res.agents.map((apiAgent) => {
+            const existing = existingMap.get(apiAgent.id) || existingMap.get(apiAgent.slug);
+            return {
+              id: apiAgent.id,
+              workspace_id: apiAgent.workspace_id,
+              slug: apiAgent.slug,
+              name: apiAgent.name,
+              role: apiAgent.role,
+              description: apiAgent.description,
+              brief: apiAgent.brief,
+              identity: apiAgent.identity,
+              soul: apiAgent.soul,
+              bootstrap: apiAgent.bootstrap,
+              provider_id: apiAgent.provider_id,
+              provider: apiAgent.provider_id,
+              model: apiAgent.model,
+              temp: apiAgent.temperature ?? 1.0,
+              temperature: apiAgent.temperature ?? 1.0,
+              max_tokens: apiAgent.max_tokens,
+              effort: apiAgent.effort,
+              autonomy: apiAgent.autonomy,
+              tools: apiAgent.tools || [],
+              skills: apiAgent.skills || [],
+              mcp: apiAgent.mcp || [],
+              avatar: apiAgent.avatar || {},
+              prompts_status: apiAgent.prompts_status,
+              prompts_error: apiAgent.prompts_error,
+              status: existing?.status || 'idle',
+              lastActive: existing?.lastActive || 'just now',
+              channelPost: existing?.channelPost ?? false,
+              created_by: apiAgent.created_by,
+              updated_by: apiAgent.updated_by,
+              created_at: apiAgent.created_at,
+              updated_at: apiAgent.updated_at,
+            };
+          });
+          return {
+            ...t,
+            agents: mergedAgents,
+          };
+        });
+
+        res.agents.forEach((apiAgent) => {
+          if (apiAgent.prompts_status === 'generating') {
+            get().pollAgent(tenantId, apiAgent.id);
+          }
+        });
+      }
+    } catch {
+      // offline / fallback
+    }
+  },
+
+  pollAgent: (tenantId, agentId) => {
+    pollAgentPromptsStatus(tenantId, agentId, {
+      onUpdate: (updated) => {
+        get().updateTenant(tenantId, (t) => ({
+          ...t,
+          agents: (t.agents || []).map((a) =>
+            a.id === updated.id || a.slug === updated.slug
+              ? {
+                  ...a,
+                  prompts_status: updated.prompts_status,
+                  prompts_error: updated.prompts_error,
+                  identity: updated.identity || a.identity,
+                  soul: updated.soul || a.soul,
+                  bootstrap: updated.bootstrap || a.bootstrap,
+                }
+              : a
+          ),
+        }));
+      },
+    }).catch(() => {});
+  },
+
+  regenerateAgent: async (tenantId, agentId, instruction) => {
+    try {
+      get().updateTenant(tenantId, (t) => ({
+        ...t,
+        agents: (t.agents || []).map((a) =>
+          a.id === agentId || a.slug === agentId
+            ? { ...a, prompts_status: 'generating', prompts_error: null }
+            : a
+        ),
+      }));
+      const res = await api.agents.regenerate(tenantId, agentId, instruction);
+      if (res?.agent) {
+        get().pollAgent(tenantId, res.agent.id || agentId);
+      }
+      get().toast('Regenerating prompts for agent…');
+    } catch (err: unknown) {
+      get().toast(formatApiError(err, 'Failed to regenerate prompt'), 'danger');
+    }
+  },
+
+  setAgentPromptStatus: (tenantId, agentId, status, error) => {
+    get().updateTenant(tenantId, (t) => ({
+      ...t,
+      agents: (t.agents || []).map((a) =>
+        a.id === agentId || a.slug === agentId
+          ? { ...a, prompts_status: status, prompts_error: error ?? null }
+          : a
+      ),
+    }));
   },
 
   upsertAgent: (values) => {
@@ -293,15 +422,27 @@ export const useStore = create<AppState>((set, get) => ({
     const tid = state.pos.tenantId;
     
     if (ui.configAgent === 'new') {
-      const id = uid('a');
+      const id = values.id || uid('a');
       state.updateTenant(tid, (t) => ({
         ...t,
-        agents: [...t.agents, { id, ...values, status: 'idle', lastActive: 'just now' } as Agent],
+        agents: [
+          ...t.agents,
+          {
+            id,
+            status: 'idle',
+            lastActive: 'just now',
+            prompts_status: values.prompts_status || 'generating',
+            ...values,
+          } as Agent,
+        ],
         threads: { ...t.threads, [id]: { active: null, list: [] } }
       }));
       state.patchUi({ configAgent: null });
       state.goPos({ view: 'chats', chatId: id });
       state.toast(values.name + ' deployed — it idles until its first message');
+      if (values.prompts_status === 'generating') {
+        get().pollAgent(tid, id);
+      }
       return id;
     } else {
       const aid = ui.configAgent;
@@ -311,6 +452,9 @@ export const useStore = create<AppState>((set, get) => ({
       }));
       state.patchUi({ configAgent: null });
       state.toast(values.name + ' updated — new settings apply to the next run');
+      if (values.prompts_status === 'generating') {
+        get().pollAgent(tid, aid || '');
+      }
       return aid || '';
     }
   },

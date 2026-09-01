@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/secrets"
 	"github.com/urfave/cli/v3"
 )
@@ -15,6 +16,7 @@ const (
 	DefaultListenAddr    = ":8080"
 	DefaultTokenTTL      = 24 * time.Hour
 	DefaultDataDir       = "./data"
+	DefaultCacheDir      = ".onclaw/cache"
 	DefaultStorageDriver = "local"
 )
 
@@ -26,6 +28,8 @@ type Config struct {
 	EncryptionKey          string        `json:"-"`
 	TokenTTL               time.Duration `json:"token_ttl"`
 	DataDir                string        `json:"data_dir"`
+	CacheDir               string        `json:"cache_dir"`
+	WorkspaceDir           string        `json:"workspace_dir"`
 	StorageDriver          string        `json:"storage_driver"`
 	SuperadminEmail        string        `json:"superadmin_email,omitempty"`
 	SuperadminPassword     string        `json:"-"`
@@ -67,6 +71,18 @@ func ServerFlags() []cli.Flag {
 			Value:   DefaultDataDir,
 			Usage:   "Path to data directory for local storage",
 			Sources: cli.EnvVars("ONCLAW_DATA_DIR"),
+		},
+		&cli.StringFlag{
+			Name:    "cache-dir",
+			Value:   DefaultCacheDir,
+			Usage:   "Path to cache directory for model catalog and temporary files",
+			Sources: cli.EnvVars("ONCLAW_CACHE_DIR"),
+		},
+		&cli.StringFlag{
+			Name:    "workspace-dir",
+			Value:   domain.DefaultWorkspaceDir(),
+			Usage:   "Root directory for per-agent workspace directories",
+			Sources: cli.EnvVars("ONCLAW_WORKSPACE_DIR"),
 		},
 		&cli.StringFlag{
 			Name:    "storage-driver",
@@ -146,6 +162,8 @@ func FromServerContext(ctx context.Context, cmd *cli.Command) *Config {
 		EncryptionKey:          cmd.String("encryption-key"),
 		TokenTTL:               cmd.Duration("token-ttl"),
 		DataDir:                cmd.String("data-dir"),
+		CacheDir:               cmd.String("cache-dir"),
+		WorkspaceDir:           cmd.String("workspace-dir"),
 		StorageDriver:          cmd.String("storage-driver"),
 		SuperadminEmail:        cmd.String("superadmin-email"),
 		SuperadminPassword:     cmd.String("superadmin-password"),

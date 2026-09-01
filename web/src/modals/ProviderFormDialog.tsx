@@ -5,12 +5,12 @@ import { cx } from "../lib/helpers";
 import { api, formatApiError, type ApiProviderConfig } from "../lib/api";
 
 export const PROVIDER_CATALOG_TYPES = [
-  { id: 'openai', label: 'OpenAI', placeholder: 'https://api.openai.com (optional override)', requiresBaseUrl: false },
-  { id: 'anthropic', label: 'Anthropic', placeholder: 'https://api.anthropic.com (optional override)', requiresBaseUrl: false },
-  { id: 'gemini', label: 'Gemini', placeholder: 'https://generativelanguage.googleapis.com (optional override)', requiresBaseUrl: false },
-  { id: 'openrouter', label: 'OpenRouter', placeholder: 'https://openrouter.ai (optional override)', requiresBaseUrl: false },
-  { id: 'openai-compatible', label: 'OpenAI-compatible', placeholder: 'https://api.together.xyz', requiresBaseUrl: true },
-  { id: 'anthropic-compatible', label: 'Anthropic-compatible', placeholder: 'https://api.anthropic-proxy.com', requiresBaseUrl: true },
+  { id: 'openai', label: 'OpenAI', placeholder: 'https://api.openai.com/v1 (optional override)', requiresBaseUrl: false },
+  { id: 'anthropic', label: 'Anthropic', placeholder: 'https://api.anthropic.com/v1 (optional override)', requiresBaseUrl: false },
+  { id: 'gemini', label: 'Gemini', placeholder: 'https://generativelanguage.googleapis.com/v1beta (optional override)', requiresBaseUrl: false },
+  { id: 'openrouter', label: 'OpenRouter', placeholder: 'https://openrouter.ai/api/v1 (optional override)', requiresBaseUrl: false },
+  { id: 'openai-compatible', label: 'OpenAI-compatible', placeholder: 'https://api.together.xyz/v1', requiresBaseUrl: true },
+  { id: 'anthropic-compatible', label: 'Anthropic-compatible', placeholder: 'https://api.anthropic-proxy.com/v1', requiresBaseUrl: true },
 ] as const;
 
 export function getProviderTypeLabel(type: string): string {
@@ -188,7 +188,7 @@ export function ProviderFormDialog({
             onChange={(e) => setBaseUrl(e.target.value)}
           />
           <p className="mt-1 text-[11px] leading-4 text-muted">
-            Origin + optional prefix only (e.g. https://api.example.com). Do not include version paths like /v1 — the server appends canonical paths automatically.
+            Full API base including the version path (e.g. https://api.example.com/v1) — the server appends resource paths like /models or /chat/completions on top.
           </p>
         </div>
 

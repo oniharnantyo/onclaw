@@ -14,6 +14,7 @@ OnClaw is a multi-tenant, self-hosted **AI agent workspace** — an OpenClaw / H
 - **Multi-tenant:** workspaces are the tenant boundary; members have Owner/Admin/Member roles. Tenant isolation is enforced at the data layer — no query runs without a workspace scope.
 - **Extensibility via interfaces:** backend extension points (providers, tools, channels, storage, …) are Go interfaces; implementations register into a registry. Built-ins ship as ordinary registrations, not special cases.
 - **Plugins are first-class:** plugins target the _same_ interface contracts as built-ins. If a feature cannot be added without editing core code, the interface is wrong — fix the interface.
+- **Injected dependencies are never nil:** the composition root (`internal/cli` → `internal/server/router.go`) resolves every dependency — including built-in defaults — before constructing services and handlers. Code at the point of use assumes non-nil and MUST NOT add `if x != nil` defensive guards on injected dependencies; nil checks are reserved for optional request payloads, optional response data, and errors.
 
 ## Repository State
 

@@ -8,12 +8,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/oniharnantyo/onclaw/internal/agents"
 	"github.com/oniharnantyo/onclaw/internal/auth"
 	"github.com/oniharnantyo/onclaw/internal/bootstrap"
 	"github.com/oniharnantyo/onclaw/internal/config"
+	"github.com/oniharnantyo/onclaw/internal/modelcatalog"
 	"github.com/oniharnantyo/onclaw/internal/server"
 	"github.com/oniharnantyo/onclaw/internal/storage"
 	"github.com/oniharnantyo/onclaw/internal/store"
@@ -44,6 +47,12 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 
 	if cfg.DatabaseURL == "" {
 		return errors.New("database URL is required (specify --database-url or DATABASE_URL)")
+	}
+
+	// Agent workspace paths derive from this root at every use; a relative
+	// root would make them depend on the server's working directory.
+	if !filepath.IsAbs(cfg.WorkspaceDir) {
+		return fmt.Errorf("workspace dir must be an absolute path (got %q; specify --workspace-dir or ONCLAW_WORKSPACE_DIR)", cfg.WorkspaceDir)
 	}
 
 	encKey, err := config.ParseEncryptionKey(cfg.EncryptionKey)
@@ -101,11 +110,27 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		TTL:    cfg.TokenTTL,
 	})
 
+	cacheDir := cfg.CacheDir
+	if cacheDir == "" {
+		cacheDir = config.DefaultCacheDir
+	}
+	modelCatalog := modelcatalog.NewService(modelcatalog.Options{
+		CacheDir: cacheDir,
+	})
+
+	agentService := agents.NewService(st, encKey)
+	if swept, err := agentService.Sweep(ctx); err == nil && swept > 0 {
+		slog.Info("swept stale generating agents on startup", "count", swept)
+	}
+
 	router := server.NewRouter(server.RouterOptions{
 		Store:         st,
 		Storage:       stor,
 		Issuer:        issuer,
 		EncryptionKey: encKey,
+		ModelCatalog:  modelCatalog,
+		AgentService:  agentService,
+		WorkspaceDir:  cfg.WorkspaceDir,
 	})
 
 	listenAddr := cfg.ListenAddr

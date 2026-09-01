@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/modelcatalog"
 	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/secrets"
 	"github.com/oniharnantyo/onclaw/internal/store"
@@ -48,10 +49,11 @@ type providerHandlers struct {
 	store         store.Store
 	encryptionKey []byte
 	registry      *providers.Registry
+	modelCatalog  *modelcatalog.Service
 }
 
 // NewProviderHandlers creates a new providerHandlers instance with injected dependencies.
-func NewProviderHandlers(st store.Store, encryptionKey []byte, registry *providers.Registry) *providerHandlers {
+func NewProviderHandlers(st store.Store, encryptionKey []byte, registry *providers.Registry, modelCatalog *modelcatalog.Service) *providerHandlers {
 	if registry == nil {
 		registry = providers.NewRegistry()
 	}
@@ -59,6 +61,7 @@ func NewProviderHandlers(st store.Store, encryptionKey []byte, registry *provide
 		store:         st,
 		encryptionKey: encryptionKey,
 		registry:      registry,
+		modelCatalog:  modelCatalog,
 	}
 }
 
@@ -242,10 +245,20 @@ func (h *providerHandlers) PatchProvider(c *gin.Context) {
 	RespondOK(c, gin.H{"provider": toProviderResponse(existing)})
 }
 
-// DeleteProvider deletes a provider configuration unconditionally.
+// DeleteProvider deletes a provider configuration if it is not referenced by any agent.
 func (h *providerHandlers) DeleteProvider(c *gin.Context) {
 	ws := MustCurrentWorkspace(c)
 	id := c.Param("id")
+
+	count, err := h.store.Agents().CountByProvider(c.Request.Context(), ws.ID, id)
+	if err != nil {
+		RespondError(c, err)
+		return
+	}
+	if count > 0 {
+		RespondError(c, fmt.Errorf("%w: cannot delete provider in use by %d agent(s)", domain.ErrConflict, count))
+		return
+	}
 
 	if err := h.store.Providers().Delete(c.Request.Context(), ws.ID, id); err != nil {
 		RespondError(c, err)
@@ -253,6 +266,138 @@ func (h *providerHandlers) DeleteProvider(c *gin.Context) {
 	}
 
 	RespondNoContent(c)
+}
+
+// GetProviderModels resolves models for a workspace provider config using stored decrypted credentials.
+func (h *providerHandlers) GetProviderModels(c *gin.Context) {
+	ws := MustCurrentWorkspace(c)
+	id := c.Param("id")
+
+	existing, err := h.store.Providers().ByID(c.Request.Context(), ws.ID, id)
+	if err != nil {
+		RespondError(c, err)
+		return
+	}
+
+	var apiKey string
+	if existing.HasKey() {
+		plaintextKeyBytes, err := secrets.Decrypt(h.encryptionKey, []byte(ws.ID), existing.KeyCiphertext)
+		if err == nil {
+			apiKey = string(plaintextKeyBytes)
+		}
+	}
+
+	cred := providers.Credential{
+		Type:    existing.Type,
+		BaseURL: existing.BaseURL,
+		APIKey:  apiKey,
+	}
+
+	if h.modelCatalog != nil {
+		res, err := h.modelCatalog.ResolveModels(c.Request.Context(), cred)
+		if err != nil {
+			RespondError(c, err)
+			return
+		}
+		RespondOK(c, res)
+		return
+	}
+
+	// Fallback if model catalog is not initialized
+	providerImpl, err := h.registry.Get(existing.Type)
+	if err != nil {
+		RespondError(c, err)
+		return
+	}
+
+	models, err := providerImpl.ListModels(c.Request.Context(), cred)
+	if err != nil {
+		RespondOK(c, domain.ModelsResult{Source: domain.ModelSourceNone, Models: []domain.Model{}})
+		return
+	}
+
+	resModels := make([]domain.Model, len(models))
+	for i, m := range models {
+		resModels[i] = domain.Model{
+			ID:                  m.ID,
+			Name:                m.Name,
+			Efforts:             m.Efforts,
+			SupportsTemperature: m.SupportsTemperature,
+		}
+	}
+	RespondOK(c, domain.ModelsResult{Source: domain.ModelSourceLive, Models: resModels})
+}
+
+// ModelsPreviewRequest holds parameters for the unauthenticated/preview model resolution endpoint.
+type ModelsPreviewRequest struct {
+	Type    string `json:"type"`
+	BaseURL string `json:"base_url,omitempty"`
+	Key     string `json:"key,omitempty"`
+	APIKey  string `json:"api_key,omitempty"`
+}
+
+// ModelsPreview resolves models using ephemeral credentials provided in the request body without storing them.
+func (h *providerHandlers) ModelsPreview(c *gin.Context) {
+	var req ModelsPreviewRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		RespondError(c, domain.ErrInvalid)
+		return
+	}
+
+	pType := strings.TrimSpace(req.Type)
+	if pType == "" {
+		RespondError(c, fmt.Errorf("%w: provider type is required", domain.ErrInvalid))
+		return
+	}
+
+	if _, err := h.registry.Get(pType); err != nil {
+		RespondError(c, err)
+		return
+	}
+
+	apiKey := strings.TrimSpace(req.APIKey)
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(req.Key)
+	}
+
+	cred := providers.Credential{
+		Type:    pType,
+		BaseURL: strings.TrimSpace(req.BaseURL),
+		APIKey:  apiKey,
+	}
+
+	if h.modelCatalog != nil {
+		res, err := h.modelCatalog.ResolveModels(c.Request.Context(), cred)
+		if err != nil {
+			RespondError(c, err)
+			return
+		}
+		RespondOK(c, res)
+		return
+	}
+
+	providerImpl, err := h.registry.Get(pType)
+	if err != nil {
+		RespondError(c, err)
+		return
+	}
+
+	models, err := providerImpl.ListModels(c.Request.Context(), cred)
+	if err != nil {
+		RespondOK(c, domain.ModelsResult{Source: domain.ModelSourceNone, Models: []domain.Model{}})
+		return
+	}
+
+	resModels := make([]domain.Model, len(models))
+	for i, m := range models {
+		resModels[i] = domain.Model{
+			ID:                  m.ID,
+			Name:                m.Name,
+			Efforts:             m.Efforts,
+			SupportsTemperature: m.SupportsTemperature,
+		}
+	}
+	RespondOK(c, domain.ModelsResult{Source: domain.ModelSourceLive, Models: resModels})
 }
 
 // VerifyProvider tests connectivity and authentication with the provider using the stored encrypted key.

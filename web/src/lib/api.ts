@@ -188,6 +188,130 @@ export interface ApiProviderVerifyResult {
   error?: string;
 }
 
+export type AgentAutonomy = 'approval' | 'suggest' | 'full';
+export type PromptsStatus = 'generating' | 'ready' | 'failed';
+
+export interface ApiAgent {
+  id: string;
+  workspace_id: string;
+  slug: string;
+  name: string;
+  role: string;
+  description: string;
+  brief: string;
+  identity: string;
+  soul: string;
+  bootstrap: string;
+  provider_id: string;
+  model: string;
+  temperature: number;
+  max_tokens?: number | null;
+  effort?: string | null;
+  autonomy: AgentAutonomy;
+  tools: string[];
+  skills: string[];
+  mcp: string[];
+  avatar: Record<string, any>;
+  prompts_status: PromptsStatus;
+  prompts_error?: string | null;
+  created_by?: string | null;
+  updated_by?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateAgentPayload {
+  name: string;
+  slug: string;
+  role: string;
+  description?: string;
+  brief: string;
+  provider_id?: string;
+  model: string;
+  temperature?: number;
+  max_tokens?: number;
+  effort?: string;
+  autonomy?: AgentAutonomy;
+  tools?: string[];
+  skills?: string[];
+  mcp?: string[];
+  avatar?: Record<string, any>;
+}
+
+export interface PatchAgentPayload {
+  name?: string;
+  slug?: string;
+  role?: string;
+  description?: string;
+  brief?: string;
+  identity?: string;
+  soul?: string;
+  provider_id?: string;
+  model?: string;
+  temperature?: number;
+  max_tokens?: number;
+  effort?: string;
+  autonomy?: AgentAutonomy;
+  tools?: string[];
+  skills?: string[];
+  mcp?: string[];
+  avatar?: Record<string, any>;
+}
+
+export interface ApiWorkspaceSkill {
+  id: string;
+  workspace_id: string;
+  name: string;
+  description?: string;
+  body?: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ApiAgentMemory {
+  agent_id: string;
+  user_id: string;
+  workspace_id: string;
+  content: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface ApiModel {
+  id: string;
+  name: string;
+  efforts?: string[];
+  supports_temperature?: boolean;
+}
+
+export interface ApiModelsResult {
+  source: 'live' | 'catalog' | 'none';
+  models: ApiModel[];
+}
+
+export interface CreateWorkspacePayload {
+  name: string;
+  slug: string;
+  timezone?: string;
+  provider?: {
+    type: string;
+    name: string;
+    base_url?: string;
+    key?: string;
+    enabled?: boolean;
+  };
+  starter_agent?: CreateAgentPayload;
+}
+
+export interface CreateWorkspaceResult {
+  workspace: ApiWorkspace;
+  role: ApiRole;
+  member: ApiMember;
+  provider?: ApiProviderConfig;
+  starter_agent?: ApiAgent;
+}
+
 
 type UnauthorizedHandler = () => void;
 const unauthorizedHandlers = new Set<UnauthorizedHandler>();
@@ -318,8 +442,8 @@ export const api = {
       request<{ workspaces: ApiMemberView[] }>('/workspaces', {
         method: 'GET',
       }),
-    create: (body: { name: string; slug: string; timezone?: string }) =>
-      request<{ workspace: ApiWorkspace; role: ApiRole; member: ApiMember }>('/workspaces', {
+    create: (body: CreateWorkspacePayload) =>
+      request<CreateWorkspaceResult>('/workspaces', {
         method: 'POST',
         body,
       }),
@@ -388,6 +512,78 @@ export const api = {
     verify: (ws: string, id: string) =>
       request<ApiProviderVerifyResult>(`/workspaces/${encodeURIComponent(ws)}/providers/${encodeURIComponent(id)}/verify`, {
         method: 'POST',
+      }),
+    models: (ws: string, id: string) =>
+      request<ApiModelsResult>(`/workspaces/${encodeURIComponent(ws)}/providers/${encodeURIComponent(id)}/models`, {
+        method: 'GET',
+      }),
+    modelsPreview: (body: { type: string; base_url?: string; key?: string; api_key?: string }) =>
+      request<ApiModelsResult>('/providers/models-preview', {
+        method: 'POST',
+        body,
+      }),
+  },
+  agents: {
+    list: (ws: string) =>
+      request<{ agents: ApiAgent[] }>(`/workspaces/${encodeURIComponent(ws)}/agents`, {
+        method: 'GET',
+      }),
+    get: (ws: string, agent: string) =>
+      request<{ agent: ApiAgent }>(`/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}`, {
+        method: 'GET',
+      }),
+    create: (ws: string, body: CreateAgentPayload) =>
+      request<{ agent: ApiAgent }>(`/workspaces/${encodeURIComponent(ws)}/agents`, {
+        method: 'POST',
+        body,
+      }),
+    patch: (ws: string, agent: string, body: PatchAgentPayload) =>
+      request<{ agent: ApiAgent }>(`/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}`, {
+        method: 'PATCH',
+        body,
+      }),
+    delete: (ws: string, agent: string) =>
+      request<void>(`/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}`, {
+        method: 'DELETE',
+      }),
+    regenerate: (ws: string, agent: string, instruction?: string) => {
+      const trimmed = instruction?.trim();
+      return request<{ agent: ApiAgent }>(`/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/regenerate`, {
+        method: 'POST',
+        ...(trimmed ? { body: { instruction: trimmed } } : {}),
+      });
+    },
+    getMemory: (ws: string, agent: string) =>
+      request<ApiAgentMemory>(`/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/memory`, {
+        method: 'GET',
+      }),
+    deleteMemory: (ws: string, agent: string) =>
+      request<void>(`/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/memory`, {
+        method: 'DELETE',
+      }),
+  },
+  skills: {
+    list: (ws: string) =>
+      request<{ skills: ApiWorkspaceSkill[] }>(`/workspaces/${encodeURIComponent(ws)}/skills`, {
+        method: 'GET',
+      }),
+    get: (ws: string, id: string) =>
+      request<{ skill: ApiWorkspaceSkill }>(`/workspaces/${encodeURIComponent(ws)}/skills/${encodeURIComponent(id)}`, {
+        method: 'GET',
+      }),
+    create: (ws: string, body: { name: string; body?: string; description?: string; enabled?: boolean }) =>
+      request<{ skill: ApiWorkspaceSkill }>(`/workspaces/${encodeURIComponent(ws)}/skills`, {
+        method: 'POST',
+        body,
+      }),
+    patch: (ws: string, id: string, body: { name?: string; body?: string; description?: string; enabled?: boolean }) =>
+      request<{ skill: ApiWorkspaceSkill }>(`/workspaces/${encodeURIComponent(ws)}/skills/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body,
+      }),
+    delete: (ws: string, id: string) =>
+      request<void>(`/workspaces/${encodeURIComponent(ws)}/skills/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
       }),
   },
 
@@ -477,3 +673,37 @@ export const api = {
     },
   },
 };
+
+export async function pollAgentPromptsStatus(
+  workspaceId: string,
+  agentIdOrSlug: string,
+  options?: {
+    intervalMs?: number;
+    maxAttempts?: number;
+    signal?: AbortSignal;
+    onUpdate?: (agent: ApiAgent) => void;
+  }
+): Promise<ApiAgent> {
+  const intervalMs = options?.intervalMs ?? 1000;
+  const maxAttempts = options?.maxAttempts ?? 60;
+  let attempts = 0;
+
+  while (attempts < maxAttempts) {
+    if (options?.signal?.aborted) {
+      throw new Error('Polling aborted');
+    }
+    const res = await api.agents.get(workspaceId, agentIdOrSlug);
+    const agent = res.agent;
+    if (options?.onUpdate) {
+      options.onUpdate(agent);
+    }
+    if (agent.prompts_status !== 'generating') {
+      return agent;
+    }
+    attempts++;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  const finalRes = await api.agents.get(workspaceId, agentIdOrSlug);
+  return finalRes.agent;
+}
+

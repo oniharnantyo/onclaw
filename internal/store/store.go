@@ -37,8 +37,41 @@ type Store interface {
 	Roles() RoleStore
 	Members() MemberStore
 	Providers() ProviderStore
+	Agents() AgentStore
+	WorkspaceSkills() WorkspaceSkillStore
+	AgentUserMemories() AgentUserMemoryStore
 	WithTx(ctx context.Context, fn func(Store) error) error
 	Close() error
+}
+
+// AgentStore manages workspace-scoped agents.
+type AgentStore interface {
+	Create(ctx context.Context, agent *domain.Agent) error
+	ByID(ctx context.Context, workspaceID, id string) (*domain.Agent, error)
+	BySlug(ctx context.Context, workspaceID, slug string) (*domain.Agent, error)
+	ListForWorkspace(ctx context.Context, workspaceID string) ([]domain.Agent, error)
+	Update(ctx context.Context, agent *domain.Agent) error
+	Delete(ctx context.Context, workspaceID, id string) error
+	CountByProvider(ctx context.Context, workspaceID, providerID string) (int, error)
+	SetPromptState(ctx context.Context, workspaceID, id string, status domain.PromptsStatus, promptsErr *string) error
+	SweepGenerating(ctx context.Context, errMsg string) (int64, error)
+}
+
+// WorkspaceSkillStore manages workspace-level skills.
+type WorkspaceSkillStore interface {
+	Create(ctx context.Context, skill *domain.WorkspaceSkill) error
+	ByID(ctx context.Context, workspaceID, id string) (*domain.WorkspaceSkill, error)
+	FindByName(ctx context.Context, workspaceID, name string) (*domain.WorkspaceSkill, error)
+	ListForWorkspace(ctx context.Context, workspaceID string) ([]domain.WorkspaceSkill, error)
+	Update(ctx context.Context, skill *domain.WorkspaceSkill) error
+	Delete(ctx context.Context, workspaceID, id string) error
+}
+
+// AgentUserMemoryStore manages per-user persistent memory for agents.
+type AgentUserMemoryStore interface {
+	Get(ctx context.Context, workspaceID, agentID, userID string) (*domain.AgentUserMemory, error)
+	Upsert(ctx context.Context, memory *domain.AgentUserMemory) error
+	Delete(ctx context.Context, workspaceID, agentID, userID string) error
 }
 
 // ProviderStore manages workspace-scoped provider configurations.

@@ -2,8 +2,10 @@ package server
 
 import (
 	"github.com/gin-gonic/gin"
+	"github.com/oniharnantyo/onclaw/internal/agents"
 	"github.com/oniharnantyo/onclaw/internal/auth"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/modelcatalog"
 	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/server/handlers"
 	"github.com/oniharnantyo/onclaw/internal/storage"
@@ -18,6 +20,9 @@ type RouterOptions struct {
 	Auth          auth.Service
 	EncryptionKey []byte
 	Providers     *providers.Registry
+	ModelCatalog  *modelcatalog.Service
+	AgentService  *agents.Service
+	WorkspaceDir  string
 }
 
 // router configures and builds the HTTP API routes and handlers.
@@ -48,8 +53,23 @@ func (rt *router) Engine() *gin.Engine {
 		providerRegistry = providers.NewRegistry()
 	}
 
+	modelCatalog := rt.opts.ModelCatalog
+	if modelCatalog == nil {
+		modelCatalog = modelcatalog.NewService(modelcatalog.Options{Registry: providerRegistry})
+	}
+
+	agentService := rt.opts.AgentService
+	if agentService == nil && rt.opts.Store != nil {
+		agentService = agents.NewService(rt.opts.Store, rt.opts.EncryptionKey)
+	}
+
+	workspaceDir := rt.opts.WorkspaceDir
+	if workspaceDir == "" {
+		workspaceDir = domain.DefaultWorkspaceDir()
+	}
+
 	authHandlers := handlers.NewAuthHandlers(authService, rt.opts.Storage)
-	workspaceHandlers := handlers.NewWorkspaceHandlers(rt.opts.Store)
+	workspaceHandlers := handlers.NewWorkspaceHandlers(rt.opts.Store, rt.opts.EncryptionKey, providerRegistry, modelCatalog, agentService, workspaceDir)
 	memberHandlers := handlers.NewMemberHandlers(rt.opts.Store, rt.opts.Storage)
 	roleHandlers := handlers.NewRoleHandlers(rt.opts.Store)
 	userHandlers := handlers.NewUserHandlers(rt.opts.Store, rt.opts.Storage)
@@ -57,7 +77,9 @@ func (rt *router) Engine() *gin.Engine {
 	adminWorkspaceHandlers := handlers.NewAdminWorkspaceHandlers(rt.opts.Store, rt.opts.Storage)
 	adminUserHandlers := handlers.NewAdminUserHandlers(rt.opts.Store)
 	adminSuperadminHandlers := handlers.NewAdminSuperadminHandlers(rt.opts.Store)
-	providerHandlers := handlers.NewProviderHandlers(rt.opts.Store, rt.opts.EncryptionKey, providerRegistry)
+	providerHandlers := handlers.NewProviderHandlers(rt.opts.Store, rt.opts.EncryptionKey, providerRegistry, modelCatalog)
+	agentHandlers := handlers.NewAgentHandlers(rt.opts.Store, rt.opts.EncryptionKey, providerRegistry, modelCatalog, agentService, workspaceDir)
+	skillHandlers := handlers.NewSkillHandlers(rt.opts.Store)
 
 	r := gin.New()
 	r.Use(RequestIDMiddleware())
@@ -103,6 +125,9 @@ func (rt *router) Engine() *gin.Engine {
 			authed.GET("/workspaces", workspaceHandlers.ListWorkspaces)
 			authed.POST("/workspaces", workspaceHandlers.CreateWorkspace)
 
+			// Credential preview for onboarding
+			authed.POST("/providers/models-preview", providerHandlers.ModelsPreview)
+
 			// Users self-profile & avatar management
 			authed.PATCH("/users/me", userHandlers.PatchMe)
 			authed.POST("/users/me/avatar", userHandlers.UploadAvatar)
@@ -129,6 +154,24 @@ func (rt *router) Engine() *gin.Engine {
 				wsGroup.PATCH("/providers/:id", rt.mw.RequirePermission(domain.ProvidersWrite), providerHandlers.PatchProvider)
 				wsGroup.DELETE("/providers/:id", rt.mw.RequirePermission(domain.ProvidersWrite), providerHandlers.DeleteProvider)
 				wsGroup.POST("/providers/:id/verify", rt.mw.RequirePermission(domain.ProvidersWrite), providerHandlers.VerifyProvider)
+				wsGroup.GET("/providers/:id/models", rt.mw.RequirePermission(domain.ProvidersRead), providerHandlers.GetProviderModels)
+
+				// Agents management
+				wsGroup.GET("/agents", rt.mw.RequirePermission(domain.AgentsRead), agentHandlers.ListAgents)
+				wsGroup.POST("/agents", rt.mw.RequirePermission(domain.AgentsWrite), agentHandlers.CreateAgent)
+				wsGroup.GET("/agents/:agent", rt.mw.RequirePermission(domain.AgentsRead), agentHandlers.GetAgent)
+				wsGroup.PATCH("/agents/:agent", rt.mw.RequirePermission(domain.AgentsWrite), agentHandlers.PatchAgent)
+				wsGroup.DELETE("/agents/:agent", rt.mw.RequirePermission(domain.AgentsWrite), agentHandlers.DeleteAgent)
+				wsGroup.POST("/agents/:agent/regenerate", rt.mw.RequirePermission(domain.AgentsWrite), agentHandlers.RegenerateAgent)
+				wsGroup.GET("/agents/:agent/memory", agentHandlers.GetAgentMemory)
+				wsGroup.DELETE("/agents/:agent/memory", agentHandlers.DeleteAgentMemory)
+
+				// Workspace skills management
+				wsGroup.GET("/skills", rt.mw.RequirePermission(domain.SkillsRead), skillHandlers.ListSkills)
+				wsGroup.POST("/skills", rt.mw.RequirePermission(domain.SkillsWrite), skillHandlers.CreateSkill)
+				wsGroup.GET("/skills/:id", rt.mw.RequirePermission(domain.SkillsRead), skillHandlers.GetSkill)
+				wsGroup.PATCH("/skills/:id", rt.mw.RequirePermission(domain.SkillsWrite), skillHandlers.PatchSkill)
+				wsGroup.DELETE("/skills/:id", rt.mw.RequirePermission(domain.SkillsWrite), skillHandlers.DeleteSkill)
 			}
 
 			// Instance Admin route group (master tenant control plane)

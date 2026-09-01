@@ -14,7 +14,7 @@ export function ChatHeader({ target, agent, channelMembers, onToggleMembers, onC
       {t.kind === 'person' && <Icon name="at" size={16} className="text-muted"/>}
       {t.kind === 'agent' && (
         <span className="relative inline-flex shrink-0">
-          <Avatar name={agent.name} kind="agent" size={26}/>
+          <Avatar name={agent.name} avatar={agent.avatar} kind="agent" size={26}/>
           <span title={STATUS[agent.status].label}
             className={cx('absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-[var(--bg)]', STATUS[agent.status].dot, agent.status === 'running' && 'od-live')}/>
         </span>
@@ -37,7 +37,7 @@ export function ChatHeader({ target, agent, channelMembers, onToggleMembers, onC
             className="flex items-center -space-x-1.5 rounded-md transition-transform hover:scale-[1.04]">
             {channelMembers.slice(0, 4).map((m: any) => (
               <span key={m.id} className="rounded-md ring-2 ring-[var(--bg)]">
-                <Avatar name={m.name} kind={m.kind === 'agent' ? 'agent' : 'other'} size={22}/>
+                <Avatar name={m.name} avatar={m.avatar || m.agent?.avatar} kind={m.kind === 'agent' ? 'agent' : 'other'} size={22}/>
               </span>
             ))}
             {channelMembers.length > 4 && (

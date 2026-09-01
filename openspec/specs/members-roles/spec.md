@@ -18,7 +18,7 @@ Every workspace SHALL be created with three immutable built-in roles: Owner (all
 - **THEN** rejected (no role-write endpoint exists in this change)
 
 ### Requirement: Permission catalog
-Access SHALL be governed by permission strings from a closed catalog (workspace.read/write, members.read/write/remove, roles.read/write, providers.read/write). Read access SHALL be a permission, not implied by membership.
+Access SHALL be governed by permission strings from a closed catalog (workspace.read/write, members.read/write/remove, roles.read/write, providers.read/write, agents.read/write, skills.read/write). Read access SHALL be a permission, not implied by membership. `agents.read` and `skills.read` SHALL join the read family granted to every built-in role; `agents.write` and `skills.write` SHALL be granted to Owner and Admin (and Superadmin, which holds all workspace permissions).
 
 #### Scenario: Member role reads only
 - **WHEN** a Member-role holder requests a write endpoint
@@ -27,6 +27,10 @@ Access SHALL be governed by permission strings from a closed catalog (workspace.
 #### Scenario: Providers joins the read family
 - **WHEN** a Member-role holder lists providers
 - **THEN** 200 (providers.read is granted to every built-in role, like workspace.read/members.read/roles.read)
+
+#### Scenario: Agents and skills join the read family
+- **WHEN** a Member-role holder lists agents and lists skills
+- **THEN** both return 200 (agents.read and skills.read are granted to every built-in role)
 
 ### Requirement: Permission-set guards
 Member management SHALL enforce the permission-set algebra: edit requires the target's permission set to be a strict subset of the actor's; assigning a role requires its set to be a subset of the actor's; equal sets (peers) SHALL NOT be manageable.

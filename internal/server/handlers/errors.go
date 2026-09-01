@@ -18,7 +18,7 @@ const (
 	CodeConflict           = "conflict"
 	CodeLastOwnerProtected = "last_owner_protected"
 	CodePayloadTooLarge    = "payload_too_large"
-	CodeUndecryptable       = "undecryptable"
+	CodeUndecryptable      = "undecryptable"
 	CodeInternal           = "internal"
 )
 

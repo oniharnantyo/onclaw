@@ -17,6 +17,7 @@ import { SettingsPage } from './screens/settings';
 import { ChatRoute } from './screens/ChatRoute';
 import { AgentConfigModal } from './modals/AgentConfigModal';
 import { CronEditorModal } from './modals/CronEditorModal';
+import { CreateWorkspaceModal } from './modals/CreateWorkspaceModal';
 import { BootError } from './components/BootError';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ErrorState } from './components/ErrorState';
@@ -101,6 +102,7 @@ function Layout() {
   const unread = (tenant?.channels || []).reduce((n, c) => n + (c.unread || 0), 0);
 
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [createWsOpen, setCreateWsOpen] = useState(false);
 
   const handleLogout = async () => {
     await logout();
@@ -236,6 +238,7 @@ function Layout() {
             navigate(next?.agents?.length ? `/c/${next.agents[0].id}` : '/welcome');
           }} 
           onClose={() => patchUi({ wsOpen: false })}
+          onCreateWorkspace={() => setCreateWsOpen(true)}
         />
 
         {/* Desktop Sidebar */}
@@ -329,6 +332,21 @@ function Layout() {
           onClose={() => patchUi({ cronEdit: null })} 
           onSave={(draft: any) => useStore.getState().saveCron(draft)} 
           onDelete={(job: any) => useStore.getState().deleteCron(job)}
+        />
+      )}
+
+      {createWsOpen && (
+        <CreateWorkspaceModal
+          onClose={() => setCreateWsOpen(false)}
+          onCreateSuccess={(res) => {
+            const nextId = res.workspace.slug || res.workspace.id;
+            useStore.getState().switchTenant(nextId);
+            if (res.starter_agent?.id) {
+              navigate(`/c/${res.starter_agent.id}`);
+            } else {
+              navigate('/welcome');
+            }
+          }}
         />
       )}
 

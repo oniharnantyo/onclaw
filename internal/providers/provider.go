@@ -51,7 +51,11 @@ type Provider interface {
 	Type() string
 	RequiresBaseURL() bool
 	CanonicalOrigin() string
+	RequiresMaxTokens() bool
+	ValidEfforts() []string
+	SupportsTemperature() bool
 	Verify(ctx context.Context, cred Credential) error
+	ListModels(ctx context.Context, cred Credential) ([]domain.Model, error)
 }
 
 // Registry manages registered provider implementations.

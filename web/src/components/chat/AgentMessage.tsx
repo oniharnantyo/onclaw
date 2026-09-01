@@ -21,7 +21,7 @@ export function AgentMessage({ m, agent, inChannel, busy, isLast, onCopy, onRefr
 
   return (
     <div className="group flex gap-3 px-2" data-od-id={'msg-' + m.id} data-role="assistant">
-      <Avatar name={agent ? agent.name : 'Agent'} kind="agent" size={26}/>
+      <Avatar name={agent ? agent.name : 'Agent'} avatar={agent?.avatar} kind="agent" size={26}/>
       <div className="min-w-0 flex-1">
         {inChannel && (
           <div className="mb-0.5 flex items-center gap-2">

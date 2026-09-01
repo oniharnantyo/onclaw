@@ -40,6 +40,9 @@ func TestFromServerContextDefaults(t *testing.T) {
 	if parsedCfg.DataDir != config.DefaultDataDir {
 		t.Errorf("DataDir = %q, want %q", parsedCfg.DataDir, config.DefaultDataDir)
 	}
+	if parsedCfg.CacheDir != config.DefaultCacheDir {
+		t.Errorf("CacheDir = %q, want %q", parsedCfg.CacheDir, config.DefaultCacheDir)
+	}
 	if parsedCfg.StorageDriver != config.DefaultStorageDriver {
 		t.Errorf("StorageDriver = %q, want %q", parsedCfg.StorageDriver, config.DefaultStorageDriver)
 	}
@@ -67,6 +70,7 @@ func TestFromServerContextCustomFlags(t *testing.T) {
 		"--jwt-secret", "supersecretkey",
 		"--token-ttl", "12h",
 		"--data-dir", "/tmp/data",
+		"--cache-dir", "/tmp/cache",
 		"--storage-driver", "local",
 		"--superadmin-email", "admin@example.com",
 		"--superadmin-password", "adminpass123",
@@ -91,6 +95,9 @@ func TestFromServerContextCustomFlags(t *testing.T) {
 	}
 	if parsedCfg.DataDir != "/tmp/data" {
 		t.Errorf("DataDir = %q, want %q", parsedCfg.DataDir, "/tmp/data")
+	}
+	if parsedCfg.CacheDir != "/tmp/cache" {
+		t.Errorf("CacheDir = %q, want %q", parsedCfg.CacheDir, "/tmp/cache")
 	}
 	if parsedCfg.SuperadminEmail != "admin@example.com" {
 		t.Errorf("SuperadminEmail = %q, want %q", parsedCfg.SuperadminEmail, "admin@example.com")

@@ -19,6 +19,30 @@
       "skillPath": "assistant-ui/skills/copilots/SKILL.md",
       "computedHash": "ba7eeef102cedea56d6444704cdfc7911a39d8b4bdfa8544b330af054fe5d9dd"
     },
+    "eino-agent": {
+      "source": "cloudwego/eino-ext",
+      "sourceType": "github",
+      "skillPath": "skills/eino-agent/SKILL.md",
+      "computedHash": "ea4ebd4242b835648b6f159356faa0015f97bce3320636b840ae5aacdbe0140e"
+    },
+    "eino-component": {
+      "source": "cloudwego/eino-ext",
+      "sourceType": "github",
+      "skillPath": "skills/eino-component/SKILL.md",
+      "computedHash": "ddf2e2051e80bb265a2ab8bc33ecdaacf0982ec33e0b9a5338890f1d948a95b8"
+    },
+    "eino-compose": {
+      "source": "cloudwego/eino-ext",
+      "sourceType": "github",
+      "skillPath": "skills/eino-compose/SKILL.md",
+      "computedHash": "b30f7c066f317cf22a4aaf38b5f167a35db76ee642e165ff7a57aa29ba8882cc"
+    },
+    "eino-guide": {
+      "source": "cloudwego/eino-ext",
+      "sourceType": "github",
+      "skillPath": "skills/eino-guide/SKILL.md",
+      "computedHash": "952ff1a732e734e6412d9c48256f17a4e37ac4e84f5e44195c70cdb3a9e0b941"
+    },
     "hallmark": {
       "source": "nutlope/hallmark",
       "sourceType": "github",

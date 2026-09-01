@@ -22,7 +22,7 @@ export function Sidebar({ view, tenant, chatId, onSelect, onDeploy, onNewSchedul
   const failCount = today.filter((r: any) => r.status === 'failed').length;
   const agentRowIcon = (a) => (
     <span className="relative inline-flex shrink-0 items-center justify-center">
-      <Avatar name={a.name} kind="agent" size={18}/>
+      <Avatar name={a.name} avatar={a.avatar} kind="agent" size={18}/>
       <span title={(STATUS as any)[a.status].label}
         className={cx('absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full ring-2 ring-[var(--bg)]', (STATUS as any)[a.status].dot, a.status === 'running' && 'od-live')}/>
     </span>

@@ -79,7 +79,7 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
       <div ref={listRef} onScroll={onScroll} role="log" aria-label="Messages" className="od-scroll relative flex-1 overflow-y-auto" data-od-id="message-list">
         {isEmpty ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center">
-            {agent && <Avatar name={agent.name} kind="agent" size={44}/>}
+            {agent && <Avatar name={agent.name} avatar={agent.avatar} kind="agent" size={44}/>}
             <h2 className="text-[22px] font-medium tracking-tight text-fg" data-od-id="welcome-title">
               {agent ? 'This is ' + agent.name : target.kind === 'channel' ? '#' + target.obj.name : target.obj.name}
             </h2>

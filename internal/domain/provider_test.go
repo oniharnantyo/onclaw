@@ -82,3 +82,46 @@ func TestKeyHint(t *testing.T) {
 		})
 	}
 }
+
+func TestModelAndResult_JSON(t *testing.T) {
+	result := domain.ModelsResult{
+		Source: domain.ModelSourceLive,
+		Models: []domain.Model{
+			{
+				ID:                  "gpt-4o",
+				Name:                "GPT-4o",
+				Efforts:             []string{"low", "medium", "high"},
+				SupportsTemperature: true,
+			},
+		},
+	}
+
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+
+	var parsed domain.ModelsResult
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
+
+	if parsed.Source != domain.ModelSourceLive {
+		t.Errorf("parsed Source = %q, want %q", parsed.Source, domain.ModelSourceLive)
+	}
+	if len(parsed.Models) != 1 {
+		t.Fatalf("parsed Models len = %d, want 1", len(parsed.Models))
+	}
+	if parsed.Models[0].ID != "gpt-4o" {
+		t.Errorf("parsed Models[0].ID = %q, want 'gpt-4o'", parsed.Models[0].ID)
+	}
+	if parsed.Models[0].Name != "GPT-4o" {
+		t.Errorf("parsed Models[0].Name = %q, want 'GPT-4o'", parsed.Models[0].Name)
+	}
+	if len(parsed.Models[0].Efforts) != 3 {
+		t.Errorf("parsed Models[0].Efforts len = %d, want 3", len(parsed.Models[0].Efforts))
+	}
+	if !parsed.Models[0].SupportsTemperature {
+		t.Errorf("parsed Models[0].SupportsTemperature = false, want true")
+	}
+}

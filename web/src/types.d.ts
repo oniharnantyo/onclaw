@@ -1,19 +1,36 @@
 declare global {
   interface Agent {
     id: string;
+    workspace_id?: string;
+    slug?: string;
     name: string;
     model: string;
     temp: number;
+    temperature?: number;
+    max_tokens?: number | null;
+    effort?: string | null;
     autonomy: string;
-    channelPost: boolean;
+    channelPost?: boolean;
     role: string;
+    description?: string;
+    brief?: string;
+    identity?: string;
+    soul?: string;
     status: string;
     tools: string[];
     skills?: string[];
     mcp?: string[];
+    avatar?: Record<string, any>;
+    prompts_status?: 'generating' | 'ready' | 'failed' | string;
+    prompts_error?: string | null;
     lastActive: string;
-    prompt: string;
+    prompt?: string;
     provider?: string;
+    provider_id?: string;
+    created_by?: string | null;
+    updated_by?: string | null;
+    created_at?: string;
+    updated_at?: string;
   }
 
   interface ChatMessage {

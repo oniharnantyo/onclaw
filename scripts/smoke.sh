@@ -24,6 +24,10 @@
 
 set -euo pipefail
 
+# Anchor to the repo root so the `go run` / `go build` calls below work
+# regardless of the caller's working directory.
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
 # Configuration with sensible defaults
 SERVER_PORT="${SERVER_PORT:-8088}"
 SERVER_HOST="${SERVER_HOST:-127.0.0.1}"
@@ -64,8 +68,13 @@ log_fail() {
 TMP_DIR=$(mktemp -d "/tmp/onclaw-smoke.XXXXXX")
 DATA_DIR="${TMP_DIR}/data"
 mkdir -p "${DATA_DIR}"
+# Root for on-disk agent workspace prompt documents. The server started below
+# is pointed at this root; when the script attaches to an already-running
+# server, a caller-set ONCLAW_WORKSPACE_DIR is honored instead.
+WS_ROOT="${ONCLAW_WORKSPACE_DIR:-${TMP_DIR}/workspaces}"
 
 SERVER_PID=""
+MOCK_PID=""
 
 cleanup() {
     local exit_code=$?
@@ -73,6 +82,10 @@ cleanup() {
         log_info "Stopping background server (PID: ${SERVER_PID})..."
         kill "${SERVER_PID}" 2>/dev/null || true
         wait "${SERVER_PID}" 2>/dev/null || true
+    fi
+    if [[ -n "${MOCK_PID}" ]]; then
+        kill "${MOCK_PID}" 2>/dev/null || true
+        wait "${MOCK_PID}" 2>/dev/null || true
     fi
     rm -rf "${TMP_DIR}"
     if [[ $exit_code -eq 0 ]]; then
@@ -189,15 +202,18 @@ else
         log_fail "Failed to apply database migrations against ${DATABASE_URL}. Ensure PostgreSQL is accessible."
     }
 
-    # Start server with env-seeded superadmin and encryption key
+    # Build and run the server binary directly: `go run` would spawn a child
+    # binary that outlives the killed wrapper PID and orphan the server.
+    go build -o "${TMP_DIR}/onclaw-smoke-bin" . || log_fail "Failed to build the server binary"
     DATABASE_URL="${DATABASE_URL}" \
     ONCLAW_ENCRYPTION_KEY="${ENCRYPTION_KEY}" \
     ONCLAW_SUPERADMIN_EMAIL="${SUPERADMIN_EMAIL}" \
     ONCLAW_SUPERADMIN_PASSWORD="${SUPERADMIN_PASSWORD}" \
     ONCLAW_JWT_SECRET="${JWT_SECRET}" \
     ONCLAW_DATA_DIR="${DATA_DIR}" \
+    ONCLAW_WORKSPACE_DIR="${WS_ROOT}" \
     ONCLAW_LISTEN_ADDR="${SERVER_HOST}:${SERVER_PORT}" \
-    go run . server --database-url "${DATABASE_URL}" --listen-addr "${SERVER_HOST}:${SERVER_PORT}" --encryption-key "${ENCRYPTION_KEY}" >"${TMP_DIR}/server.log" 2>&1 &
+    "${TMP_DIR}/onclaw-smoke-bin" server --database-url "${DATABASE_URL}" --listen-addr "${SERVER_HOST}:${SERVER_PORT}" --encryption-key "${ENCRYPTION_KEY}" >"${TMP_DIR}/server.log" 2>&1 &
 
     SERVER_PID=$!
     log_info "Server started with PID ${SERVER_PID}. Waiting for healthz..."
@@ -654,5 +670,194 @@ assert_status "204" "Owner deletes provider (204 No Content)"
 api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/providers/${COMPAT_PROV_ID}" "${CHARLIE_TOKEN}" '{"name":"Should Fail"}'
 assert_status "404" "Accessing deleted provider returns 404 Not Found"
 
+
+
+# -----------------------------------------------------------------------------
+
 log_step "Smoke Test Suite Completed Successfully"
+
+# 13. Agents & Skills CRUD, Memory, Models, and Birth Flow
+# -----------------------------------------------------------------------------
+log_step "13. Agents, Skills, Models, and Workspace Birth Flow"
+
+# 13.0 Mock OpenAI-compatible provider server. Create-time prompt generation
+# gates agent persistence, so the create assertions need a provider whose
+# /v1/chat/completions actually succeeds; a python one-liner plays the part.
+MOCK_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+cat > "${TMP_DIR}/mock_provider.py" <<'PY'
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+PORT = int(sys.argv[1])
+
+ARGS = json.dumps({
+    "identity": "# IDENTITY.md - Who Am I?\n**Name:** Smoke Agent\n**Creature:** test fixture\n**Purpose:** smoke the create path\n**Vibe:** deterministic\n**Emoji:** checkmark\n",
+    "soul": "# SOUL.md\nShort beats long. Deterministic beats flaky.\nBe the assistant you'd actually want to talk to at 2am. Not a corporate drone. Not a sycophant. Just... good.\n",
+    "bootstrap": "# BOOTSTRAP.md - Birth Sequence\n_You just woke up. Keep this first conversation short and make it yours._\n",
+})
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def _send(self, code, payload):
+        body = json.dumps(payload).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path.startswith("/v1/models"):
+            self._send(200, {"data": [{"id": "gpt-4"}, {"id": "gpt-4o"}]})
+        else:
+            self._send(401, {"error": {"message": "Invalid API key"}})
+
+    def do_POST(self):
+        if self.path.startswith("/v1/chat/completions"):
+            payload = {
+                "id": "chatcmpl-smoke",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "gpt-4",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "", "tool_calls": [{
+                        "id": "call_smoke",
+                        "type": "function",
+                        "function": {"name": "submit_prompts", "arguments": ARGS},
+                    }]},
+                    "finish_reason": "tool_calls",
+                }],
+            }
+            self._send(200, payload)
+        else:
+            self._send(401, {"error": {"message": "Invalid API key"}})
+
+HTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+PY
+python3 "${TMP_DIR}/mock_provider.py" "${MOCK_PORT}" &
+MOCK_PID=$!
+sleep 0.5
+log_pass "Mock provider server listening on 127.0.0.1:${MOCK_PORT}"
+
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/providers" "${CHARLIE_TOKEN}" '{"type":"openai-compatible","name":"Smoke Mock Provider","base_url":"http://127.0.0.1:'"${MOCK_PORT}"'/v1","key":"sk-mock-key"}'
+assert_status "201" "Owner creates openai-compatible provider against the mock server"
+MOCK_PROV_ID=$(json_get '.provider.id')
+
+# 13.1 Skills CRUD
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/skills" "${CHARLIE_TOKEN}" '{"name":"search_web","description":"Search the web","enabled":true}'
+assert_status "201" "Owner creates a skill"
+SKILL_ID=$(json_get '.skill.id')
+
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/skills" "${CHARLIE_TOKEN}" '{"name":"search_web","description":"Duplicate"}'
+assert_status "409" "Duplicate skill name returns 409"
+
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/skills" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists skills"
+assert_json_expr "(.skills | length) >= 1" "Skills list contains the created skill"
+
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/skills/${SKILL_ID}" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner gets skill by ID"
+
+api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/skills/${SKILL_ID}" "${CHARLIE_TOKEN}" '{"description":"Updated description"}'
+assert_status "200" "Owner updates a skill"
+assert_json_expr '.skill.description == "Updated description"' "Skill description updated"
+
+# 13.2 Agents CRUD & Models Endpoint
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/agents" "${CHARLIE_TOKEN}" '{"name":"Test Agent","slug":"test-agent","role":"Tester","description":"Tests things","brief":"A short brief","provider_id":"'"${MOCK_PROV_ID}"'","model":"gpt-4","skills":["search_web"]}'
+assert_status "201" "Owner creates an agent (generation gates persistence)"
+assert_json_expr '.agent.prompts_status == "ready"' "Create returns the agent with prompts ready (generation ran against the mock provider)"
+AGENT_ID=$(json_get '.agent.id')
+
+# The agent workspace directory is created and seeded with the L1 base prompt
+# at create time; generated documents (IDENTITY/SOUL/BOOTSTRAP.md) land in the
+# same directory once generation succeeds against a live provider.
+AGENT_WS_DIR="${WS_ROOT}/${TENANT_SLUG}/agents/test-agent"
+if [[ -d "${AGENT_WS_DIR}" ]]; then
+    log_pass "Agent workspace directory exists (${AGENT_WS_DIR})"
+else
+    log_fail "Agent workspace directory missing: ${AGENT_WS_DIR}"
+fi
+if [[ -f "${AGENT_WS_DIR}/AGENTS.md" ]]; then
+    log_pass "Agent workspace seeded with AGENTS.md base prompt"
+else
+    log_fail "Agent workspace missing AGENTS.md base prompt"
+fi
+GENERATED_STATUS=$(json_get '.agent.prompts_status')
+if [[ "${GENERATED_STATUS}" == "ready" ]]; then
+    for doc in IDENTITY.md SOUL.md BOOTSTRAP.md; do
+        if [[ -f "${AGENT_WS_DIR}/${doc}" ]]; then
+            log_pass "Generated prompt document present: ${doc}"
+        else
+            log_fail "Generated prompt document missing: ${AGENT_WS_DIR}/${doc}"
+        fi
+    done
+else
+    log_info "Prompt generation status '${GENERATED_STATUS}' — skipping generated-document assertions (needs a live provider)"
+fi
+
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/agents" "${CHARLIE_TOKEN}" '{"name":"Test Agent 2","slug":"test-agent","role":"Tester 2","description":"Duplicate slug","brief":"A short brief","provider_id":"'"${MOCK_PROV_ID}"'","model":"gpt-4"}'
+assert_status "409" "Duplicate agent slug returns 409"
+
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/agents" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists agents"
+
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/agents/test-agent" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner gets agent by slug"
+assert_json_expr '.agent.id == "'"${AGENT_ID}"'"' "Agent ID matches"
+
+api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/agents/${AGENT_ID}" "${CHARLIE_TOKEN}" '{"name":"Updated Agent"}'
+assert_status "200" "Owner updates agent"
+assert_json_expr '.agent.name == "Updated Agent"' "Agent name updated"
+
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/providers/${OPENAI_PROV_ID}/models" "${CHARLIE_TOKEN}"
+assert_status "200" "List models from provider"
+assert_json_expr 'has("models")' "Models endpoint returns models list"
+
+api_req "POST" "/api/v1/providers/models-preview" "${CHARLIE_TOKEN}" '{"type":"openai","key":"sk-fake"}'
+assert_status "200" "Models preview endpoint returns 200"
+
+# 13.3 Delete in-use provider 409 (the agent references the mock provider)
+api_req "DELETE" "/api/v1/workspaces/${TENANT_SLUG}/providers/${MOCK_PROV_ID}" "${CHARLIE_TOKEN}"
+assert_status "409" "Deleting in-use provider returns 409"
+
+# 13.4 Memory view/reset
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/agents/${AGENT_ID}/memory" "${CHARLIE_TOKEN}"
+assert_status "200" "View agent memory"
+
+api_req "DELETE" "/api/v1/workspaces/${TENANT_SLUG}/agents/${AGENT_ID}/memory" "${CHARLIE_TOKEN}"
+assert_status "204" "Reset agent memory"
+
+# 13.5 Regenerate: enhance mode against the mock provider. On success the
+# previous documents must survive as .bak beside the enhanced files.
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/agents/${AGENT_ID}/regenerate" "${CHARLIE_TOKEN}"
+assert_status "200" "Regenerate returns 200"
+assert_json_expr '.agent.prompts_status == "ready"' "Regenerate completes with ready status"
+for doc in IDENTITY.md SOUL.md BOOTSTRAP.md; do
+    if [[ -f "${AGENT_WS_DIR}/${doc}" ]]; then
+        log_pass "Regenerated document present: ${doc}"
+    else
+        log_fail "Regenerated document missing: ${AGENT_WS_DIR}/${doc}"
+    fi
+done
+if [[ -f "${AGENT_WS_DIR}/IDENTITY.md.bak" ]]; then
+    log_pass "Previous generation preserved as IDENTITY.md.bak"
+else
+    log_fail "Backup IDENTITY.md.bak missing after regeneration"
+fi
+
+# 13.5b Regenerate with a change instruction — the current documents ride along
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/agents/${AGENT_ID}/regenerate" "${CHARLIE_TOKEN}" '{"instruction":"make every section terser"}'
+assert_status "200" "Regenerate with change instruction returns 200"
+assert_json_expr '.agent.prompts_status == "ready"' "Instruction regeneration completes ready"
+
+# 13.6 Atomic Workspace Birth Flow
+NEW_TENANT_SLUG="birth-tenant-${RUN_ID}"
+api_req "POST" "/api/v1/workspaces" "${CHARLIE_TOKEN}" '{"name":"Birth Tenant","slug":"'"${NEW_TENANT_SLUG}"'","provider":{"type":"openai","name":"OpenAI","key":"sk-smoke-secret-key-1234"},"starter_agent":{"name":"Starter Agent","slug":"starter","role":"Helper","description":"Helps out","brief":"A short brief","model":"gpt-4"}}'
+assert_status "201" "Atomic workspace birth with provider and agent"
+assert_json_expr 'has("workspace")' "Response has workspace"
+assert_json_expr 'has("provider")' "Response has provider"
+assert_json_expr 'has("agent")' "Response has agent"
 

@@ -11,7 +11,7 @@ export function MentionMenu({ options, idx, onPick  }: any) {
         <button key={m.id} type="button" onMouseDown={(e) => { e.preventDefault(); onPick(m); }}
           className={cx('flex w-full items-center gap-2.5 px-3 py-2 text-left',
             i === idx ? 'bg-[color-mix(in_oklab,var(--accent)_15%,transparent)]' : 'hover:bg-[color-mix(in_oklab,var(--fg)_6%,transparent)]')}>
-          <Avatar name={m.name} kind={m.kind === 'agent' ? 'agent' : 'other'} size={20}/>
+          <Avatar name={m.name} avatar={m.avatar || m.agent?.avatar} kind={m.kind === 'agent' ? 'agent' : 'other'} size={20}/>
           <span className="text-[13px] font-medium text-fg">{m.name}</span>
           <span className="ml-auto font-mono text-[10px] text-muted">{m.kind === 'agent' ? 'Agent' : 'Member'}</span>
         </button>

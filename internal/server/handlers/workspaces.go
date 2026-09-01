@@ -1,23 +1,43 @@
 package handlers
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/oniharnantyo/onclaw/internal/agents"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/modelcatalog"
+	"github.com/oniharnantyo/onclaw/internal/providers"
+	"github.com/oniharnantyo/onclaw/internal/secrets"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
 // workspaceHandlers handles workspace lifecycle and retrieval endpoints.
 type workspaceHandlers struct {
-	store store.Store
+	store         store.Store
+	encryptionKey []byte
+	registry      *providers.Registry
+	modelCatalog  *modelcatalog.Service
+	agentService  *agents.Service
+	workspaceDir  string
 }
 
 // NewWorkspaceHandlers creates a new workspaceHandlers instance with injected dependencies.
-func NewWorkspaceHandlers(st store.Store) *workspaceHandlers {
+func NewWorkspaceHandlers(st store.Store, encryptionKey []byte, reg *providers.Registry, mc *modelcatalog.Service, as *agents.Service, workspaceDir string) *workspaceHandlers {
+	if reg == nil {
+		reg = providers.NewRegistry()
+	}
 	return &workspaceHandlers{
-		store: st,
+		store:         st,
+		encryptionKey: encryptionKey,
+		registry:      reg,
+		modelCatalog:  mc,
+		agentService:  as,
+		workspaceDir:  workspaceDir,
 	}
 }
 
@@ -34,15 +54,19 @@ func (h *workspaceHandlers) ListWorkspaces(c *gin.Context) {
 	RespondOK(c, gin.H{"workspaces": memberships})
 }
 
-// CreateWorkspaceRequest holds the payload for creating a new workspace.
+// CreateWorkspaceRequest holds the payload for creating a new workspace,
+// optionally including a provider configuration and starter agent for atomic birth.
 type CreateWorkspaceRequest struct {
-	Name     string `json:"name"`
-	Slug     string `json:"slug"`
-	Timezone string `json:"timezone"`
+	Name         string                 `json:"name"`
+	Slug         string                 `json:"slug"`
+	Timezone     string                 `json:"timezone"`
+	Provider     *CreateProviderRequest `json:"provider,omitempty"`
+	StarterAgent *CreateAgentRequest    `json:"starter_agent,omitempty"`
 }
 
 // CreateWorkspace creates a new workspace, seeds the three built-in roles,
-// and assigns the authenticated creator as the Owner within a single transaction.
+// assigns the authenticated creator as the Owner, and optionally creates the provider
+// and starter agent within a single transaction (atomic birth).
 func (h *workspaceHandlers) CreateWorkspace(c *gin.Context) {
 	user := MustCurrentUser(c)
 
@@ -74,9 +98,160 @@ func (h *workspaceHandlers) CreateWorkspace(c *gin.Context) {
 		tz = "UTC"
 	}
 
+	if req.StarterAgent != nil && req.Provider == nil {
+		RespondError(c, fmt.Errorf("%w: provider is required when starter_agent is provided", domain.ErrInvalid))
+		return
+	}
+
+	var pType, pName, baseURL string
+	var pEnabled bool = true
+	var providerImpl providers.Provider
+
+	if req.Provider != nil {
+		pType = strings.TrimSpace(req.Provider.Type)
+		var err error
+		providerImpl, err = h.registry.Get(pType)
+		if err != nil {
+			RespondError(c, err)
+			return
+		}
+
+		pName = strings.TrimSpace(req.Provider.Name)
+		if pName == "" {
+			RespondError(c, fmt.Errorf("%w: provider name is required", domain.ErrInvalid))
+			return
+		}
+
+		if req.Provider.BaseURL != nil {
+			baseURL = strings.TrimSpace(*req.Provider.BaseURL)
+		}
+
+		if providerImpl.RequiresBaseURL() && baseURL == "" {
+			RespondError(c, fmt.Errorf("%w: base_url is required for provider type %q", domain.ErrInvalid, pType))
+			return
+		}
+
+		if baseURL != "" {
+			if err := validateBaseURL(baseURL); err != nil {
+				RespondError(c, err)
+				return
+			}
+		}
+
+		if req.Provider.Enabled != nil {
+			pEnabled = *req.Provider.Enabled
+		}
+	}
+
+	var agentSlug, agentName, agentRole, agentBrief, agentModel string
+	var temp float64 = 1.0
+	var autonomy domain.AgentAutonomy = domain.AutonomyApproval
+	var avatar json.RawMessage = json.RawMessage("{}")
+
+	if req.StarterAgent != nil {
+		agentName = strings.TrimSpace(req.StarterAgent.Name)
+		if agentName == "" {
+			RespondError(c, fmt.Errorf("%w: starter agent name is required", domain.ErrInvalid))
+			return
+		}
+
+		agentSlug = strings.TrimSpace(req.StarterAgent.Slug)
+		if agentSlug == "" {
+			RespondError(c, fmt.Errorf("%w: starter agent slug is required", domain.ErrInvalid))
+			return
+		}
+		if err := domain.ValidateAgentSlug(agentSlug); err != nil {
+			RespondError(c, err)
+			return
+		}
+
+		agentRole = strings.TrimSpace(req.StarterAgent.Role)
+		if agentRole == "" {
+			RespondError(c, fmt.Errorf("%w: starter agent role is required", domain.ErrInvalid))
+			return
+		}
+
+		agentBrief = strings.TrimSpace(req.StarterAgent.Brief)
+		if agentBrief == "" {
+			RespondError(c, fmt.Errorf("%w: starter agent brief is required", domain.ErrInvalid))
+			return
+		}
+
+		agentModel = strings.TrimSpace(req.StarterAgent.Model)
+		if agentModel == "" {
+			RespondError(c, fmt.Errorf("%w: starter agent model is required", domain.ErrInvalid))
+			return
+		}
+
+		if providerImpl != nil && providerImpl.RequiresMaxTokens() {
+			if req.StarterAgent.MaxTokens == nil || *req.StarterAgent.MaxTokens <= 0 {
+				RespondError(c, fmt.Errorf("%w: max_tokens is required for provider type %q", domain.ErrInvalid, pType))
+				return
+			}
+		}
+		if req.StarterAgent.MaxTokens != nil && *req.StarterAgent.MaxTokens <= 0 {
+			RespondError(c, fmt.Errorf("%w: max_tokens must be positive", domain.ErrInvalid))
+			return
+		}
+
+		if req.StarterAgent.Effort != nil && strings.TrimSpace(*req.StarterAgent.Effort) != "" {
+			if err := validateEffort(c.Request.Context(), h.modelCatalog, pType, agentModel, *req.StarterAgent.Effort); err != nil {
+				RespondError(c, err)
+				return
+			}
+		}
+
+		if req.StarterAgent.Temperature != nil {
+			if err := domain.ValidateAgentTemperature(*req.StarterAgent.Temperature); err != nil {
+				RespondError(c, err)
+				return
+			}
+			temp = *req.StarterAgent.Temperature
+		}
+
+		if req.StarterAgent.Autonomy != nil && *req.StarterAgent.Autonomy != "" {
+			if err := domain.ValidateAgentAutonomy(*req.StarterAgent.Autonomy); err != nil {
+				RespondError(c, err)
+				return
+			}
+			autonomy = *req.StarterAgent.Autonomy
+		}
+
+		if len(req.StarterAgent.Avatar) > 0 {
+			if err := domain.ValidateAgentAvatar(req.StarterAgent.Avatar); err != nil {
+				RespondError(c, err)
+				return
+			}
+			avatar = req.StarterAgent.Avatar
+		}
+
+		if len(req.StarterAgent.Skills) > 0 {
+			for _, s := range req.StarterAgent.Skills {
+				trimmed := strings.TrimSpace(s)
+				if trimmed != "" {
+					RespondError(c, fmt.Errorf("%w: unknown skill %q in workspace", domain.ErrInvalid, trimmed))
+					return
+				}
+			}
+		}
+	}
+
 	var createdWs *domain.Workspace
 	var ownerRole *domain.Role
 	var creatorMember *domain.Member
+	var createdProvider *domain.ProviderConfig
+	var createdAgent *domain.Agent
+
+	// Pre-create the starter agent's on-disk workspace directory with its base
+	// prompt so a failure aborts the birth before any DB write.
+	var starterAgentDir string
+	if req.StarterAgent != nil {
+		starterAgentDir = domain.AgentWorkspaceDir(h.workspaceDir, slug, agentSlug)
+		if err := agents.SeedWorkspace(starterAgentDir); err != nil {
+			RespondError(c, fmt.Errorf("failed to create agent workspace directory: %w", err))
+			return
+		}
+	}
 
 	err := h.store.WithTx(c.Request.Context(), func(txStore store.Store) error {
 		ws := &domain.Workspace{
@@ -139,6 +314,79 @@ func (h *workspaceHandlers) CreateWorkspace(c *gin.Context) {
 		createdWs = ws
 		ownerRole = oRole
 		creatorMember = member
+
+		if req.Provider != nil {
+			var keyCiphertext, keyHint string
+			if req.Provider.Key != nil && strings.TrimSpace(*req.Provider.Key) != "" {
+				trimmedKey := strings.TrimSpace(*req.Provider.Key)
+				envelope, err := secrets.Encrypt(h.encryptionKey, []byte(ws.ID), []byte(trimmedKey))
+				if err != nil {
+					return err
+				}
+				keyCiphertext = envelope
+				keyHint = domain.GenerateKeyHint(trimmedKey)
+			}
+
+			prov := &domain.ProviderConfig{
+				WorkspaceID:   ws.ID,
+				Type:          pType,
+				Name:          pName,
+				BaseURL:       baseURL,
+				KeyCiphertext: keyCiphertext,
+				KeyHint:       keyHint,
+				Enabled:       pEnabled,
+			}
+			if err := txStore.Providers().Create(c.Request.Context(), prov); err != nil {
+				return err
+			}
+			createdProvider = prov
+
+			if req.StarterAgent != nil {
+				tools := req.StarterAgent.Tools
+				if tools == nil {
+					tools = []string{}
+				}
+				skills := req.StarterAgent.Skills
+				if skills == nil {
+					skills = []string{}
+				}
+				mcp := req.StarterAgent.MCP
+				if mcp == nil {
+					mcp = []string{}
+				}
+				var effort *string
+				if req.StarterAgent.Effort != nil && strings.TrimSpace(*req.StarterAgent.Effort) != "" {
+					eff := strings.TrimSpace(*req.StarterAgent.Effort)
+					effort = &eff
+				}
+				agent := &domain.Agent{
+					WorkspaceID:   ws.ID,
+					Slug:          agentSlug,
+					Name:          agentName,
+					Role:          agentRole,
+					Description:   strings.TrimSpace(req.StarterAgent.Description),
+					Brief:         agentBrief,
+					ProviderID:    prov.ID,
+					Model:         agentModel,
+					Temperature:   temp,
+					MaxTokens:     req.StarterAgent.MaxTokens,
+					Effort:        effort,
+					Autonomy:      autonomy,
+					Tools:         tools,
+					Skills:        skills,
+					MCP:           mcp,
+					Avatar:        avatar,
+					PromptsStatus: domain.PromptsStatusGenerating,
+					CreatedBy:     &user.ID,
+					UpdatedBy:     &user.ID,
+				}
+				if err := txStore.Agents().Create(c.Request.Context(), agent); err != nil {
+					return err
+				}
+				createdAgent = agent
+			}
+		}
+
 		return nil
 	})
 
@@ -147,11 +395,38 @@ func (h *workspaceHandlers) CreateWorkspace(c *gin.Context) {
 		return
 	}
 
-	RespondCreated(c, gin.H{
+	// Generate starter-agent prompts synchronously so the birth response carries
+	// the final state; a generation failure still returns 201 with the failed
+	// status for retry.
+	if createdAgent != nil {
+		// Detached context: the generation service owns the budget and records
+		// the final prompt state regardless of this request's lifetime.
+		starterDir := domain.AgentWorkspaceDir(h.workspaceDir, createdWs.Slug, createdAgent.Slug)
+		if err := h.agentService.Generate(context.Background(), starterDir, createdWs.ID, createdAgent.ID, ""); err != nil {
+			log.Printf("[handlers.workspaces] prompt generation failed for starter agent %s/%s: %v", createdWs.ID, createdAgent.ID, err)
+		}
+
+		// Refetch so the response reflects the final prompt state.
+		if refreshed, err := h.store.Agents().ByID(c.Request.Context(), createdWs.ID, createdAgent.ID); err == nil {
+			createdAgent = refreshed
+		}
+		composePromptDocuments(domain.AgentWorkspaceDir(h.workspaceDir, createdWs.Slug, createdAgent.Slug), createdAgent)
+	}
+
+	res := gin.H{
 		"workspace": createdWs,
 		"role":      ownerRole,
 		"member":    creatorMember,
-	})
+	}
+	if createdProvider != nil {
+		res["provider"] = toProviderResponse(createdProvider)
+	}
+	if createdAgent != nil {
+		res["starter_agent"] = createdAgent
+		res["agent"] = createdAgent
+	}
+
+	RespondCreated(c, res)
 }
 
 // GetWorkspace returns details of the currently resolved workspace and current caller's role.

@@ -304,7 +304,7 @@ func TestIsValidPermission(t *testing.T) {
 		}
 	}
 
-	invalid := []string{"", "workspace.delete", "admin.*", "members.view", "unknown", "providers.delete", "providers.*"}
+	invalid := []string{"", "workspace.delete", "admin.*", "members.view", "unknown", "providers.delete", "providers.*", "agents.delete", "skills.delete"}
 	for _, p := range invalid {
 		if domain.IsValidPermission(p) {
 			t.Errorf("expected %q to be invalid permission", p)
@@ -343,5 +343,32 @@ func TestProviderPermissions(t *testing.T) {
 	}
 	if !domain.HasPermission(domain.SuperadminPermissions, domain.ProvidersWrite) {
 		t.Errorf("expected SuperadminPermissions to have %s", domain.ProvidersWrite)
+	}
+}
+
+func TestAgentAndSkillPermissions(t *testing.T) {
+	// Owner has agents.read/write and skills.read/write
+	for _, p := range []string{domain.AgentsRead, domain.AgentsWrite, domain.SkillsRead, domain.SkillsWrite} {
+		if !domain.HasPermission(domain.OwnerPermissions, p) {
+			t.Errorf("expected OwnerPermissions to have %s", p)
+		}
+		if !domain.HasPermission(domain.AdminPermissions, p) {
+			t.Errorf("expected AdminPermissions to have %s", p)
+		}
+		if !domain.HasPermission(domain.SuperadminPermissions, p) {
+			t.Errorf("expected SuperadminPermissions to have %s", p)
+		}
+	}
+
+	// Member has reads but NOT writes
+	for _, p := range []string{domain.AgentsRead, domain.SkillsRead} {
+		if !domain.HasPermission(domain.MemberPermissions, p) {
+			t.Errorf("expected MemberPermissions to have %s", p)
+		}
+	}
+	for _, p := range []string{domain.AgentsWrite, domain.SkillsWrite} {
+		if domain.HasPermission(domain.MemberPermissions, p) {
+			t.Errorf("expected MemberPermissions NOT to have %s", p)
+		}
 	}
 }

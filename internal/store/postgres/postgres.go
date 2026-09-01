@@ -91,6 +91,21 @@ func (s *store) Providers() storeport.ProviderStore {
 	return NewProviderStore(s.db)
 }
 
+// Agents returns the AgentStore sub-port.
+func (s *store) Agents() storeport.AgentStore {
+	return NewAgentStore(s.db)
+}
+
+// WorkspaceSkills returns the WorkspaceSkillStore sub-port.
+func (s *store) WorkspaceSkills() storeport.WorkspaceSkillStore {
+	return NewWorkspaceSkillStore(s.db)
+}
+
+// AgentUserMemories returns the AgentUserMemoryStore sub-port.
+func (s *store) AgentUserMemories() storeport.AgentUserMemoryStore {
+	return NewAgentUserMemoryStore(s.db)
+}
+
 // WithTx executes the provided function within a database transaction.
 // If the store is already in a transaction, a SAVEPOINT is used for nested isolation.
 func (s *store) WithTx(ctx context.Context, fn func(storeport.Store) error) error {

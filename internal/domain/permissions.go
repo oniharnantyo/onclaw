@@ -19,6 +19,14 @@ const (
 	ProvidersRead  = "providers.read"
 	ProvidersWrite = "providers.write"
 
+	// Agents permissions
+	AgentsRead  = "agents.read"
+	AgentsWrite = "agents.write"
+
+	// Skills permissions
+	SkillsRead  = "skills.read"
+	SkillsWrite = "skills.write"
+
 	// Admin permissions (master tenant control plane)
 	AdminWorkspacesRead   = "admin.workspaces.read"
 	AdminWorkspacesWrite  = "admin.workspaces.write"
@@ -28,7 +36,7 @@ const (
 )
 
 var (
-	// OwnerPermissions contains all standard workspace permissions (9 permissions).
+	// OwnerPermissions contains all standard workspace permissions (13 permissions).
 	OwnerPermissions = []string{
 		WorkspaceRead,
 		WorkspaceWrite,
@@ -39,9 +47,13 @@ var (
 		RolesWrite,
 		ProvidersRead,
 		ProvidersWrite,
+		AgentsRead,
+		AgentsWrite,
+		SkillsRead,
+		SkillsWrite,
 	}
 
-	// AdminPermissions contains all standard workspace permissions except roles.write (8 permissions).
+	// AdminPermissions contains all standard workspace permissions except roles.write (12 permissions).
 	AdminPermissions = []string{
 		WorkspaceRead,
 		WorkspaceWrite,
@@ -51,17 +63,23 @@ var (
 		RolesRead,
 		ProvidersRead,
 		ProvidersWrite,
+		AgentsRead,
+		AgentsWrite,
+		SkillsRead,
+		SkillsWrite,
 	}
 
-	// MemberPermissions contains only read permissions (4 permissions).
+	// MemberPermissions contains only read permissions (6 permissions).
 	MemberPermissions = []string{
 		WorkspaceRead,
 		MembersRead,
 		RolesRead,
 		ProvidersRead,
+		AgentsRead,
+		SkillsRead,
 	}
 
-	// SuperadminPermissions contains all workspace permissions plus all instance-admin permissions.
+	// SuperadminPermissions contains all workspace permissions plus all instance-admin permissions (18 permissions).
 	SuperadminPermissions = []string{
 		WorkspaceRead,
 		WorkspaceWrite,
@@ -72,6 +90,10 @@ var (
 		RolesWrite,
 		ProvidersRead,
 		ProvidersWrite,
+		AgentsRead,
+		AgentsWrite,
+		SkillsRead,
+		SkillsWrite,
 		AdminWorkspacesRead,
 		AdminWorkspacesWrite,
 		AdminUsersRead,
@@ -92,6 +114,10 @@ func AllPermissions() []string {
 		RolesWrite,
 		ProvidersRead,
 		ProvidersWrite,
+		AgentsRead,
+		AgentsWrite,
+		SkillsRead,
+		SkillsWrite,
 		AdminWorkspacesRead,
 		AdminWorkspacesWrite,
 		AdminUsersRead,
@@ -107,6 +133,8 @@ func IsValidPermission(p string) bool {
 		MembersRead, MembersWrite, MembersRemove,
 		RolesRead, RolesWrite,
 		ProvidersRead, ProvidersWrite,
+		AgentsRead, AgentsWrite,
+		SkillsRead, SkillsWrite,
 		AdminWorkspacesRead, AdminWorkspacesWrite,
 		AdminUsersRead, AdminUsersWrite,
 		AdminSuperadminsWrite:

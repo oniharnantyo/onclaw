@@ -5,3 +5,5 @@ export * from "./McpServerDialog";
 export * from "./SkillDialog";
 export * from "./ApiKeyDialog";
 export * from "./InviteMemberDialog";
+export * from "./CreateWorkspaceModal";
+

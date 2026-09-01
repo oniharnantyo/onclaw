@@ -4,17 +4,23 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/schema"
 	"github.com/gin-gonic/gin"
+	"github.com/oniharnantyo/onclaw/internal/agents"
 	"github.com/oniharnantyo/onclaw/internal/auth"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/server"
 	"github.com/oniharnantyo/onclaw/internal/server/handlers"
 	"github.com/oniharnantyo/onclaw/internal/storage"
@@ -29,7 +35,21 @@ type testEnv struct {
 	issuer        auth.TokenIssuer
 	service       auth.Service
 	encryptionKey []byte
+	workspaceDir  string
 	router        *gin.Engine
+}
+
+// stubChatModel returns fixed generated prompts without any network call.
+type stubChatModel struct{}
+
+func (stubChatModel) Generate(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	return &schema.Message{
+		Content: `{"identity":"# Identity\nStub identity","soul":"# Soul\nStub soul","bootstrap":"# BOOTSTRAP.md - Birth Sequence\nStub bootstrap"}`,
+	}, nil
+}
+
+func (stubChatModel) Stream(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	return nil, errors.New("stream not implemented in stub")
 }
 
 func setupTestEnv(t *testing.T) *testEnv {
@@ -45,12 +65,24 @@ func setupTestEnv(t *testing.T) *testEnv {
 	authSvc := auth.NewService(st, issuer, nil)
 	encKey := []byte("01234567890123456789012345678901")
 
+	// Deterministic generation: the stub factory never touches the network, so
+	// synchronous generation inside create/birth/regenerate completes instantly.
+	agentSvc := agents.NewService(st, encKey, agents.WithAgentPromptGeneratorModelFactory(func(_ context.Context, _ string, _ providers.Credential, _ string) (model.BaseChatModel, error) {
+		return stubChatModel{}, nil
+	}))
+
+	// Agent workspace directories land in a per-test temp root so tests never
+	// touch the real home directory.
+	workspaceDir := filepath.Join(t.TempDir(), "workspaces")
+
 	r := server.NewRouter(server.RouterOptions{
 		Store:         st,
 		Storage:       stor,
 		Issuer:        issuer,
 		Auth:          authSvc,
 		EncryptionKey: encKey,
+		AgentService:  agentSvc,
+		WorkspaceDir:  workspaceDir,
 	})
 
 	return &testEnv{
@@ -59,6 +91,7 @@ func setupTestEnv(t *testing.T) *testEnv {
 		issuer:        issuer,
 		service:       authSvc,
 		encryptionKey: encKey,
+		workspaceDir:  workspaceDir,
 		router:        r,
 	}
 }

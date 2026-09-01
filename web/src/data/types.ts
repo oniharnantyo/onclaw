@@ -26,19 +26,37 @@ export interface ThreadSession {
 
 export interface Agent {
   id: string;
+  workspace_id?: string;
+  slug?: string;
   name: string;
   model: string;
   temp: number;
+  temperature?: number;
+  max_tokens?: number | null;
+  effort?: string | null;
   autonomy: 'approval' | 'suggest' | 'full' | string;
-  channelPost: boolean;
+  channelPost?: boolean;
   role: string;
+  description?: string;
+  brief?: string;
+  identity?: string;
+  soul?: string;
+  bootstrap?: string;
   status: 'running' | 'idle' | 'error' | string;
   tools: string[];
   lastActive: string;
   skills: string[];
   mcp: string[];
-  prompt: string;
+  avatar?: Record<string, any>;
+  prompts_status?: 'generating' | 'ready' | 'failed';
+  prompts_error?: string | null;
+  prompt?: string;
   provider?: string;
+  provider_id?: string;
+  created_by?: string | null;
+  updated_by?: string | null;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface Channel {

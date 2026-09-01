@@ -11,6 +11,8 @@ type Workspace struct {
 	Slug       string     `json:"slug"`
 	Name       string     `json:"name"`
 	Timezone   string     `json:"timezone"`
+	Policy     string     `json:"policy,omitempty"`
+	Language   *string    `json:"language,omitempty"`
 	IsMaster   bool       `json:"is_master"`
 	DisabledAt *time.Time `json:"disabled_at,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`

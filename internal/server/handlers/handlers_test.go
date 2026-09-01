@@ -29,7 +29,7 @@ func TestHandlers_New(t *testing.T) {
 		t.Fatal("expected non-nil AuthHandlers instance")
 	}
 
-	wsH := handlers.NewWorkspaceHandlers(st)
+	wsH := handlers.NewWorkspaceHandlers(st, []byte("01234567890123456789012345678901"), nil, nil, nil, t.TempDir())
 	if wsH == nil {
 		t.Fatal("expected non-nil WorkspaceHandlers instance")
 	}
@@ -54,7 +54,7 @@ func TestHandlers_New(t *testing.T) {
 		t.Fatal("expected non-nil FileHandlers instance")
 	}
 
-	admWsH := handlers.NewAdminWorkspaceHandlers(st)
+	admWsH := handlers.NewAdminWorkspaceHandlers(st, stor)
 	if admWsH == nil {
 		t.Fatal("expected non-nil AdminWorkspaceHandlers instance")
 	}
@@ -69,9 +69,19 @@ func TestHandlers_New(t *testing.T) {
 		t.Fatal("expected non-nil AdminSuperadminHandlers instance")
 	}
 
-	provH := handlers.NewProviderHandlers(st, []byte("01234567890123456789012345678901"), nil)
+	provH := handlers.NewProviderHandlers(st, []byte("01234567890123456789012345678901"), nil, nil)
 	if provH == nil {
 		t.Fatal("expected non-nil ProviderHandlers instance")
+	}
+
+	agentH := handlers.NewAgentHandlers(st, []byte("01234567890123456789012345678901"), nil, nil, nil, t.TempDir())
+	if agentH == nil {
+		t.Fatal("expected non-nil AgentHandlers instance")
+	}
+
+	skillH := handlers.NewSkillHandlers(st)
+	if skillH == nil {
+		t.Fatal("expected non-nil SkillHandlers instance")
 	}
 
 	r := gin.New()

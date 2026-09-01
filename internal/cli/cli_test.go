@@ -61,23 +61,23 @@ func TestMissingDatabaseURL(t *testing.T) {
 
 func TestServerEncryptionKeyRequirement(t *testing.T) {
 	tests := []struct {
-		name      string
-		args      []string
+		name       string
+		args       []string
 		wantSubstr []string
 	}{
 		{
-			name: "server without encryption key",
-			args: []string{"onclaw", "server", "--database-url", "postgres://localhost:5432/test"},
+			name:       "server without encryption key",
+			args:       []string{"onclaw", "server", "--database-url", "postgres://localhost:5432/test"},
 			wantSubstr: []string{"ONCLAW_ENCRYPTION_KEY", "openssl rand -hex 32"},
 		},
 		{
-			name: "server with short encryption key",
-			args: []string{"onclaw", "server", "--database-url", "postgres://localhost:5432/test", "--encryption-key", "short"},
+			name:       "server with short encryption key",
+			args:       []string{"onclaw", "server", "--database-url", "postgres://localhost:5432/test", "--encryption-key", "short"},
 			wantSubstr: []string{"ONCLAW_ENCRYPTION_KEY", "openssl rand -hex 32"},
 		},
 		{
-			name: "server with invalid hex encryption key",
-			args: []string{"onclaw", "server", "--database-url", "postgres://localhost:5432/test", "--encryption-key", "not-a-valid-key"},
+			name:       "server with invalid hex encryption key",
+			args:       []string{"onclaw", "server", "--database-url", "postgres://localhost:5432/test", "--encryption-key", "not-a-valid-key"},
 			wantSubstr: []string{"ONCLAW_ENCRYPTION_KEY", "openssl rand -hex 32"},
 		},
 	}
@@ -95,5 +95,21 @@ func TestServerEncryptionKeyRequirement(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestServerRelativeWorkspaceDirRejected(t *testing.T) {
+	cmd := cli.NewRootCommand()
+	err := cmd.Run(context.Background(), []string{
+		"onclaw", "server",
+		"--database-url", "postgres://localhost:5432/test",
+		"--encryption-key", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"--workspace-dir", "relative/workspaces",
+	})
+	if err == nil {
+		t.Fatal("expected error for relative workspace dir, got nil")
+	}
+	if !strings.Contains(err.Error(), "workspace dir must be an absolute path") {
+		t.Errorf("error %q does not explain the absolute-path requirement", err.Error())
 	}
 }

@@ -22,7 +22,7 @@ export function ContextPanel({ channelMembers, candidates, primaryAgentId, onAdd
               <button type="button" onClick={() => onOpenMember(m.id)} data-od-id={'drawer-member-' + m.id}
                 title={'Open chat with ' + m.name}
                 className="flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-left transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_5%,transparent)]">
-                <Avatar name={m.name} kind={m.kind === 'agent' ? 'agent' : 'other'} size={28}/>
+                <Avatar name={m.name} avatar={m.avatar || m.agent?.avatar} kind={m.kind === 'agent' ? 'agent' : 'other'} size={28}/>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[13px] font-medium text-fg">{m.name}</span>
                   <span className="block font-mono text-[10px] text-muted">
@@ -50,7 +50,7 @@ export function ContextPanel({ channelMembers, candidates, primaryAgentId, onAdd
               {(candidates || []).map((m: any) => (
                 <button key={m.id} type="button" onClick={() => onAddMember(m.id)} data-od-id={'add-member-' + m.id}
                   className="flex w-full items-center gap-2.5 rounded-md px-1.5 py-1.5 text-left transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_5%,transparent)]">
-                  <Avatar name={m.name} kind={m.kind === 'agent' ? 'agent' : 'other'} size={22}/>
+                  <Avatar name={m.name} avatar={m.avatar || m.agent?.avatar} kind={m.kind === 'agent' ? 'agent' : 'other'} size={22}/>
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-[12.5px] font-medium text-fg">{m.name}</span>
                     <span className="block font-mono text-[9px] text-muted">{m.kind === 'agent' ? 'Agent' : 'Member'}</span>

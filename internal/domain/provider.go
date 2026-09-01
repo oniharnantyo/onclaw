@@ -42,3 +42,26 @@ func GenerateKeyHint(key string) string {
 	}
 	return trimmed[len(trimmed)-4:]
 }
+
+// ModelSource indicates the source of a resolved model list (live, catalog, or none).
+type ModelSource string
+
+const (
+	ModelSourceLive    ModelSource = "live"
+	ModelSourceCatalog ModelSource = "catalog"
+	ModelSourceNone    ModelSource = "none"
+)
+
+// Model represents a resolved model with metadata.
+type Model struct {
+	ID                  string   `json:"id"`
+	Name                string   `json:"name"`
+	Efforts             []string `json:"efforts"`
+	SupportsTemperature bool     `json:"supports_temperature"`
+}
+
+// ModelsResult represents the result of model resolution.
+type ModelsResult struct {
+	Source ModelSource `json:"source"`
+	Models []Model     `json:"models"`
+}

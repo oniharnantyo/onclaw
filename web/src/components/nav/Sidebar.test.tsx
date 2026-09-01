@@ -83,4 +83,38 @@ describe('components/nav/Sidebar', () => {
     fireEvent.click(screen.getByText('general'));
     expect(onSelect).toHaveBeenCalledWith('c1');
   });
+
+  it('renders agent avatar when configured and initials fallback when empty', () => {
+    const tenantWithAvatars = {
+      ...mockTenant,
+      agents: [
+        {
+          id: 'a1',
+          name: 'Atlas',
+          status: 'idle',
+          model: 'claude-3-5-sonnet',
+          avatar: { sex: 'man', faceColor: '#F9C9B6', earSize: 'small' },
+        },
+        {
+          id: 'a2',
+          name: 'Beacon',
+          status: 'running',
+          model: 'llama-3-70b',
+          avatar: {},
+        },
+      ],
+    };
+
+    const { container } = render(<Sidebar {...defaultProps} tenant={tenantWithAvatars} />);
+
+    // Atlas has avatar configured -> renders NiceAvatar container inside its SideRow
+    const atlasRow = container.querySelector('[data-od-id="side-agent-a1"]');
+    expect(atlasRow).not.toBeNull();
+    expect(atlasRow?.querySelector('svg, div[style*="border-radius"]')).not.toBeNull();
+
+    // Beacon has empty avatar -> renders initials fallback "BE"
+    const beaconRow = container.querySelector('[data-od-id="side-agent-a2"]');
+    expect(beaconRow).not.toBeNull();
+    expect(beaconRow?.textContent).toContain('BE');
+  });
 });

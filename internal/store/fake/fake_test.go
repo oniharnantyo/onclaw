@@ -2,6 +2,7 @@ package fake_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -681,5 +682,599 @@ func TestWithTx_ProviderStore(t *testing.T) {
 	listAfterRollback, err := s.Providers().ListForWorkspace(ctx, ws.ID)
 	if err != nil || len(listAfterRollback) != 1 {
 		t.Fatalf("expected still 1 provider after rollback, got %d (err: %v)", len(listAfterRollback), err)
+	}
+}
+
+func TestAgentStore_CRUD(t *testing.T) {
+	ctx := context.Background()
+	s := fake.New()
+
+	ws1 := &domain.Workspace{Slug: "ws-agent-1", Name: "Agent WS 1"}
+	_ = s.Workspaces().Create(ctx, ws1)
+	ws2 := &domain.Workspace{Slug: "ws-agent-2", Name: "Agent WS 2"}
+	_ = s.Workspaces().Create(ctx, ws2)
+
+	p1 := &domain.ProviderConfig{
+		WorkspaceID: ws1.ID,
+		Type:        "openai",
+		Name:        "OpenAI",
+		Enabled:     true,
+	}
+	_ = s.Providers().Create(ctx, p1)
+
+	// 1. Create agent with defaults
+	maxTok := 4096
+	effort := "high"
+	a1 := &domain.Agent{
+		WorkspaceID: ws1.ID,
+		Slug:        "support-bot",
+		Name:        "Support Bot",
+		Role:        "customer-support",
+		Description: "Helps users with questions",
+		Brief:       "Friendly support persona",
+		ProviderID:  p1.ID,
+		Model:       "gpt-4o",
+		Temperature: 0.7,
+		MaxTokens:   &maxTok,
+		Effort:      &effort,
+		Tools:       []string{"search", "calculator"},
+		Skills:      []string{"greeting"},
+		MCP:         []string{"github"},
+		Avatar:      json.RawMessage(`{"shape":"circle","color":"blue"}`),
+	}
+	if err := s.Agents().Create(ctx, a1); err != nil {
+		t.Fatalf("unexpected create agent error: %v", err)
+	}
+	if a1.ID == "" {
+		t.Fatal("expected agent ID to be generated")
+	}
+	if a1.Autonomy != domain.AutonomyApproval {
+		t.Fatalf("expected default autonomy approval, got %q", a1.Autonomy)
+	}
+	if a1.PromptsStatus != domain.PromptsStatusGenerating {
+		t.Fatalf("expected default prompts_status generating, got %q", a1.PromptsStatus)
+	}
+	if a1.CreatedAt.IsZero() || a1.UpdatedAt.IsZero() {
+		t.Fatal("expected timestamps to be set")
+	}
+
+	// 2. Validation on Create
+	if err := s.Agents().Create(ctx, nil); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for nil agent, got %v", err)
+	}
+	if err := s.Agents().Create(ctx, &domain.Agent{WorkspaceID: "", Name: "A", Slug: "a", ProviderID: p1.ID, Model: "m"}); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for missing workspace_id, got %v", err)
+	}
+	if err := s.Agents().Create(ctx, &domain.Agent{WorkspaceID: ws1.ID, Name: "", Slug: "a", ProviderID: p1.ID, Model: "m"}); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for missing name, got %v", err)
+	}
+	if err := s.Agents().Create(ctx, &domain.Agent{WorkspaceID: ws1.ID, Name: "A", Slug: "INVALID_SLUG", ProviderID: p1.ID, Model: "m"}); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for invalid slug, got %v", err)
+	}
+	if err := s.Agents().Create(ctx, &domain.Agent{WorkspaceID: ws1.ID, Name: "A", Slug: "a", ProviderID: "missing-provider", Model: "m"}); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for non-existent provider, got %v", err)
+	}
+	badTok := 0
+	if err := s.Agents().Create(ctx, &domain.Agent{WorkspaceID: ws1.ID, Name: "A", Slug: "a2", ProviderID: p1.ID, Model: "m", MaxTokens: &badTok}); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for max_tokens <= 0, got %v", err)
+	}
+	if err := s.Agents().Create(ctx, &domain.Agent{WorkspaceID: ws1.ID, Name: "A", Slug: "a3", ProviderID: p1.ID, Model: "m", Temperature: 3.0}); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for temp > 2.0, got %v", err)
+	}
+	if err := s.Agents().Create(ctx, &domain.Agent{WorkspaceID: ws1.ID, Name: "A", Slug: "a4", ProviderID: p1.ID, Model: "m", Autonomy: "unlimited"}); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for bad autonomy, got %v", err)
+	}
+
+	// 3. Duplicate slug in same workspace fails with ErrConflict
+	err := s.Agents().Create(ctx, &domain.Agent{
+		WorkspaceID: ws1.ID,
+		Slug:        "support-bot",
+		Name:        "Duplicate Slug Agent",
+		ProviderID:  p1.ID,
+		Model:       "gpt-4o",
+	})
+	if !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("expected ErrConflict for duplicate slug in workspace, got %v", err)
+	}
+
+	// 4. Same slug in different workspace succeeds
+	p2 := &domain.ProviderConfig{
+		WorkspaceID: ws2.ID,
+		Type:        "openai",
+		Name:        "OpenAI WS2",
+		Enabled:     true,
+	}
+	_ = s.Providers().Create(ctx, p2)
+	a2WS2 := &domain.Agent{
+		WorkspaceID: ws2.ID,
+		Slug:        "support-bot",
+		Name:        "Support Bot WS2",
+		ProviderID:  p2.ID,
+		Model:       "gpt-4o",
+	}
+	if err := s.Agents().Create(ctx, a2WS2); err != nil {
+		t.Fatalf("expected same slug in different workspace to succeed, got %v", err)
+	}
+
+	// 5. ByID lookup
+	found, err := s.Agents().ByID(ctx, ws1.ID, a1.ID)
+	if err != nil {
+		t.Fatalf("unexpected ByID error: %v", err)
+	}
+	if found.ID != a1.ID || found.Slug != "support-bot" || found.Name != "Support Bot" || found.Autonomy != domain.AutonomyApproval {
+		t.Fatalf("unexpected agent retrieved: %+v", found)
+	}
+	if len(found.Tools) != 2 || len(found.Skills) != 1 || len(found.MCP) != 1 {
+		t.Fatalf("unexpected capabilities arrays: %+v", found)
+	}
+
+	// Cross-tenant ByID returns ErrNotFound
+	_, err = s.Agents().ByID(ctx, ws2.ID, a1.ID)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for cross-tenant ByID, got %v", err)
+	}
+
+	// 6. BySlug lookup
+	foundSlug, err := s.Agents().BySlug(ctx, ws1.ID, "support-bot")
+	if err != nil {
+		t.Fatalf("unexpected BySlug error: %v", err)
+	}
+	if foundSlug.ID != a1.ID {
+		t.Fatalf("expected ID %s, got %s", a1.ID, foundSlug.ID)
+	}
+
+	// Cross-tenant BySlug returns ErrNotFound
+	_, err = s.Agents().BySlug(ctx, "nonexistent-ws", "support-bot")
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for unknown workspace slug, got %v", err)
+	}
+
+	// 7. ListForWorkspace
+	list1, err := s.Agents().ListForWorkspace(ctx, ws1.ID)
+	if err != nil {
+		t.Fatalf("unexpected ListForWorkspace error: %v", err)
+	}
+	if len(list1) != 1 {
+		t.Fatalf("expected 1 agent in ws1, got %d", len(list1))
+	}
+
+	// 8. CountByProvider
+	cnt, err := s.Agents().CountByProvider(ctx, ws1.ID, p1.ID)
+	if err != nil {
+		t.Fatalf("unexpected CountByProvider error: %v", err)
+	}
+	if cnt != 1 {
+		t.Fatalf("expected provider count 1, got %d", cnt)
+	}
+
+	// 9. Update
+	found.Name = "Support Bot Pro"
+	found.Role = "senior-support"
+	found.Autonomy = domain.AutonomyFull
+	found.Tools = []string{"search", "calculator", "docs"}
+	if err := s.Agents().Update(ctx, found); err != nil {
+		t.Fatalf("unexpected Update error: %v", err)
+	}
+	reloaded, _ := s.Agents().ByID(ctx, ws1.ID, a1.ID)
+	if reloaded.Name != "Support Bot Pro" || reloaded.Autonomy != domain.AutonomyFull || len(reloaded.Tools) != 3 {
+		t.Fatalf("unexpected updated agent: %+v", reloaded)
+	}
+
+	// 10. SetPromptState
+	if err := s.Agents().SetPromptState(ctx, ws1.ID, a1.ID, domain.PromptsStatusReady, nil); err != nil {
+		t.Fatalf("unexpected SetPromptState error: %v", err)
+	}
+	readyAgent, _ := s.Agents().ByID(ctx, ws1.ID, a1.ID)
+	if readyAgent.PromptsStatus != domain.PromptsStatusReady || readyAgent.PromptsError != nil {
+		t.Fatalf("unexpected ready agent: %+v", readyAgent)
+	}
+	if readyAgent.Identity != "" || readyAgent.Soul != "" || readyAgent.Bootstrap != "" {
+		t.Fatalf("expected store to persist no prompt content, got: %+v", readyAgent)
+	}
+
+	// 11. SweepGenerating
+	aStuck := &domain.Agent{
+		WorkspaceID: ws1.ID,
+		Slug:        "stuck-bot",
+		Name:        "Stuck Bot",
+		ProviderID:  p1.ID,
+		Model:       "gpt-4o",
+	}
+	_ = s.Agents().Create(ctx, aStuck)
+
+	swept, err := s.Agents().SweepGenerating(ctx, "prompt generation interrupted — retry")
+	if err != nil {
+		t.Fatalf("unexpected SweepGenerating error: %v", err)
+	}
+	// aStuck and a2WS2 (both generating) should have been swept
+	if swept < 1 {
+		t.Fatalf("expected at least 1 agent swept, got %d", swept)
+	}
+	reloadedStuck, _ := s.Agents().ByID(ctx, ws1.ID, aStuck.ID)
+	if reloadedStuck.PromptsStatus != domain.PromptsStatusFailed || reloadedStuck.PromptsError == nil || *reloadedStuck.PromptsError != "prompt generation interrupted — retry" {
+		t.Fatalf("unexpected swept agent status: %+v", reloadedStuck)
+	}
+	// Ready agent was untouched
+	reloadedReady, _ := s.Agents().ByID(ctx, ws1.ID, a1.ID)
+	if reloadedReady.PromptsStatus != domain.PromptsStatusReady {
+		t.Fatalf("ready agent should not be swept: %+v", reloadedReady)
+	}
+
+	// 12. Delete
+	if err := s.Agents().Delete(ctx, ws1.ID, a1.ID); err != nil {
+		t.Fatalf("unexpected Delete error: %v", err)
+	}
+	if _, err := s.Agents().ByID(ctx, ws1.ID, a1.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound after agent delete, got %v", err)
+	}
+	if _, err := s.Agents().BySlug(ctx, ws1.ID, "support-bot"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for slug after delete, got %v", err)
+	}
+}
+
+func TestAgentStore_ListOrdering(t *testing.T) {
+	ctx := context.Background()
+	s := fake.New()
+
+	ws := &domain.Workspace{Slug: "ws-order", Name: "Order WS"}
+	if err := s.Workspaces().Create(ctx, ws); err != nil {
+		t.Fatalf("unexpected create workspace: %v", err)
+	}
+
+	p := &domain.ProviderConfig{
+		WorkspaceID: ws.ID,
+		Type:        "openai",
+		Name:        "OpenAI",
+		Enabled:     true,
+	}
+	if err := s.Providers().Create(ctx, p); err != nil {
+		t.Fatalf("unexpected create provider: %v", err)
+	}
+
+	now := time.Now().UTC()
+	aA := &domain.Agent{
+		WorkspaceID: ws.ID,
+		Slug:        "agent-a",
+		Name:        "Agent A",
+		ProviderID:  p.ID,
+		Model:       "gpt-4o",
+		CreatedAt:   now.Add(-2 * time.Minute),
+	}
+	if err := s.Agents().Create(ctx, aA); err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+
+	aB := &domain.Agent{
+		WorkspaceID: ws.ID,
+		Slug:        "agent-b",
+		Name:        "Agent B",
+		ProviderID:  p.ID,
+		Model:       "gpt-4o",
+		CreatedAt:   now.Add(-1 * time.Minute),
+	}
+	if err := s.Agents().Create(ctx, aB); err != nil {
+		t.Fatalf("create B: %v", err)
+	}
+
+	aC := &domain.Agent{
+		WorkspaceID: ws.ID,
+		Slug:        "agent-c",
+		Name:        "Agent C",
+		ProviderID:  p.ID,
+		Model:       "gpt-4o",
+		CreatedAt:   now,
+	}
+	if err := s.Agents().Create(ctx, aC); err != nil {
+		t.Fatalf("create C: %v", err)
+	}
+
+	list, err := s.Agents().ListForWorkspace(ctx, ws.ID)
+	if err != nil {
+		t.Fatalf("ListForWorkspace: %v", err)
+	}
+	if len(list) != 3 {
+		t.Fatalf("expected 3 agents, got %d", len(list))
+	}
+	if list[0].ID != aC.ID || list[1].ID != aB.ID || list[2].ID != aA.ID {
+		t.Fatalf("expected newest-first ordering [C, B, A], got [%s, %s, %s]", list[0].Slug, list[1].Slug, list[2].Slug)
+	}
+
+	// Tiebreak by ID DESC when CreatedAt is identical
+	tEqual := now.Add(1 * time.Hour)
+	a1 := &domain.Agent{
+		ID:          "11111111-1111-1111-1111-111111111111",
+		WorkspaceID: ws.ID,
+		Slug:        "agent-id-1",
+		Name:        "Agent ID 1",
+		ProviderID:  p.ID,
+		Model:       "gpt-4o",
+		CreatedAt:   tEqual,
+	}
+	if err := s.Agents().Create(ctx, a1); err != nil {
+		t.Fatalf("create a1: %v", err)
+	}
+	a2 := &domain.Agent{
+		ID:          "22222222-2222-2222-2222-222222222222",
+		WorkspaceID: ws.ID,
+		Slug:        "agent-id-2",
+		Name:        "Agent ID 2",
+		ProviderID:  p.ID,
+		Model:       "gpt-4o",
+		CreatedAt:   tEqual,
+	}
+	if err := s.Agents().Create(ctx, a2); err != nil {
+		t.Fatalf("create a2: %v", err)
+	}
+
+	listWithTiebreak, err := s.Agents().ListForWorkspace(ctx, ws.ID)
+	if err != nil {
+		t.Fatalf("ListForWorkspace with tiebreak: %v", err)
+	}
+	if len(listWithTiebreak) != 5 {
+		t.Fatalf("expected 5 agents, got %d", len(listWithTiebreak))
+	}
+	// a2 has higher ID than a1, both newer than C, B, A
+	if listWithTiebreak[0].ID != a2.ID || listWithTiebreak[1].ID != a1.ID {
+		t.Fatalf("expected tiebreak [a2, a1], got [%s, %s]", listWithTiebreak[0].Slug, listWithTiebreak[1].Slug)
+	}
+}
+
+func TestWorkspaceSkillStore_CRUD(t *testing.T) {
+	ctx := context.Background()
+	s := fake.New()
+
+	ws1 := &domain.Workspace{Slug: "ws-skill-1", Name: "Skill WS 1"}
+	_ = s.Workspaces().Create(ctx, ws1)
+	ws2 := &domain.Workspace{Slug: "ws-skill-2", Name: "Skill WS 2"}
+	_ = s.Workspaces().Create(ctx, ws2)
+
+	// 1. Create skill
+	sk1 := &domain.WorkspaceSkill{
+		WorkspaceID: ws1.ID,
+		Name:        "incident-runbook",
+		Description: "Step-by-step incident management",
+		Body:        "# Runbook\n1. Page on-call\n2. Mitigate",
+		Enabled:     true,
+	}
+	if err := s.WorkspaceSkills().Create(ctx, sk1); err != nil {
+		t.Fatalf("unexpected create skill error: %v", err)
+	}
+	if sk1.ID == "" {
+		t.Fatal("expected skill ID to be assigned")
+	}
+	if sk1.CreatedAt.IsZero() || sk1.UpdatedAt.IsZero() {
+		t.Fatal("expected timestamps to be set")
+	}
+
+	// 2. Duplicate skill name in same workspace fails
+	err := s.WorkspaceSkills().Create(ctx, &domain.WorkspaceSkill{
+		WorkspaceID: ws1.ID,
+		Name:        "incident-runbook",
+		Description: "Duplicate",
+	})
+	if !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("expected ErrConflict for duplicate skill name, got %v", err)
+	}
+
+	// 3. Same skill name in different workspace succeeds
+	sk2 := &domain.WorkspaceSkill{
+		WorkspaceID: ws2.ID,
+		Name:        "incident-runbook",
+		Description: "WS2 runbook",
+		Enabled:     true,
+	}
+	if err := s.WorkspaceSkills().Create(ctx, sk2); err != nil {
+		t.Fatalf("expected same skill name in different workspace to succeed, got %v", err)
+	}
+
+	// 4. ByID includes body
+	found, err := s.WorkspaceSkills().ByID(ctx, ws1.ID, sk1.ID)
+	if err != nil {
+		t.Fatalf("unexpected ByID error: %v", err)
+	}
+	if found.Body != "# Runbook\n1. Page on-call\n2. Mitigate" {
+		t.Fatalf("expected ByID to return body, got %q", found.Body)
+	}
+
+	// 5. FindByName includes body
+	foundName, err := s.WorkspaceSkills().FindByName(ctx, ws1.ID, "incident-runbook")
+	if err != nil {
+		t.Fatalf("unexpected FindByName error: %v", err)
+	}
+	if foundName.ID != sk1.ID || foundName.Body == "" {
+		t.Fatalf("unexpected FindByName result: %+v", foundName)
+	}
+
+	// 6. ListForWorkspace omits body (progressive disclosure)
+	list, err := s.WorkspaceSkills().ListForWorkspace(ctx, ws1.ID)
+	if err != nil {
+		t.Fatalf("unexpected ListForWorkspace error: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(list))
+	}
+	if list[0].Body != "" {
+		t.Fatalf("expected ListForWorkspace to omit body, got %q", list[0].Body)
+	}
+	if list[0].Name != "incident-runbook" || list[0].Description != "Step-by-step incident management" {
+		t.Fatalf("unexpected listed skill: %+v", list[0])
+	}
+
+	// 7. Update skill
+	found.Description = "Updated description"
+	found.Body = "# Updated Runbook"
+	found.Enabled = false
+	if err := s.WorkspaceSkills().Update(ctx, found); err != nil {
+		t.Fatalf("unexpected Update error: %v", err)
+	}
+	reloaded, _ := s.WorkspaceSkills().ByID(ctx, ws1.ID, sk1.ID)
+	if reloaded.Description != "Updated description" || reloaded.Body != "# Updated Runbook" || reloaded.Enabled {
+		t.Fatalf("unexpected updated skill: %+v", reloaded)
+	}
+
+	// 8. Delete skill
+	if err := s.WorkspaceSkills().Delete(ctx, ws1.ID, sk1.ID); err != nil {
+		t.Fatalf("unexpected Delete error: %v", err)
+	}
+	if _, err := s.WorkspaceSkills().ByID(ctx, ws1.ID, sk1.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound after skill delete, got %v", err)
+	}
+}
+
+func TestAgentUserMemoryStore_CRUD(t *testing.T) {
+	ctx := context.Background()
+	s := fake.New()
+
+	u := &domain.User{Email: "user@example.com", Name: "User"}
+	_ = s.Users().Create(ctx, u)
+
+	ws := &domain.Workspace{Slug: "ws-mem", Name: "Mem WS"}
+	_ = s.Workspaces().Create(ctx, ws)
+
+	p := &domain.ProviderConfig{WorkspaceID: ws.ID, Type: "openai", Name: "P", Enabled: true}
+	_ = s.Providers().Create(ctx, p)
+
+	a := &domain.Agent{WorkspaceID: ws.ID, Slug: "atlas", Name: "Atlas", ProviderID: p.ID, Model: "gpt-4o"}
+	_ = s.Agents().Create(ctx, a)
+
+	// 1. Initial Get returns ErrNotFound
+	_, err := s.AgentUserMemories().Get(ctx, ws.ID, a.ID, u.ID)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound before memory write, got %v", err)
+	}
+
+	// 2. Upsert initial memory
+	mem := &domain.AgentUserMemory{
+		AgentID:     a.ID,
+		UserID:      u.ID,
+		WorkspaceID: ws.ID,
+		Content:     "User prefers Python and UTC timestamps.",
+	}
+	if err := s.AgentUserMemories().Upsert(ctx, mem); err != nil {
+		t.Fatalf("unexpected Upsert error: %v", err)
+	}
+	if mem.CreatedAt.IsZero() || mem.UpdatedAt.IsZero() {
+		t.Fatal("expected timestamps to be set")
+	}
+
+	// 3. Get retrieves memory
+	got, err := s.AgentUserMemories().Get(ctx, ws.ID, a.ID, u.ID)
+	if err != nil {
+		t.Fatalf("unexpected Get error: %v", err)
+	}
+	if got.Content != "User prefers Python and UTC timestamps." {
+		t.Fatalf("unexpected content: %q", got.Content)
+	}
+
+	// 4. Upsert update preserves created_at
+	origCreatedAt := got.CreatedAt
+	got.Content = "User prefers Go and UTC timestamps."
+	if err := s.AgentUserMemories().Upsert(ctx, got); err != nil {
+		t.Fatalf("unexpected second Upsert error: %v", err)
+	}
+	updatedMem, _ := s.AgentUserMemories().Get(ctx, ws.ID, a.ID, u.ID)
+	if updatedMem.Content != "User prefers Go and UTC timestamps." {
+		t.Fatalf("unexpected updated content: %q", updatedMem.Content)
+	}
+	if !updatedMem.CreatedAt.Equal(origCreatedAt) {
+		t.Fatalf("expected CreatedAt to be preserved: %v vs %v", origCreatedAt, updatedMem.CreatedAt)
+	}
+
+	// 5. Cascade delete when agent is deleted
+	if err := s.Agents().Delete(ctx, ws.ID, a.ID); err != nil {
+		t.Fatalf("unexpected Delete agent error: %v", err)
+	}
+	_, err = s.AgentUserMemories().Get(ctx, ws.ID, a.ID, u.ID)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound after agent delete cascade, got %v", err)
+	}
+}
+
+func TestWithTx_AgentsSkillsMemories(t *testing.T) {
+	ctx := context.Background()
+	s := fake.New()
+
+	u := &domain.User{Email: "tx-agent-user@example.com", Name: "Tx User"}
+	_ = s.Users().Create(ctx, u)
+
+	ws := &domain.Workspace{Slug: "tx-all-ws", Name: "Tx All WS"}
+	_ = s.Workspaces().Create(ctx, ws)
+
+	p := &domain.ProviderConfig{WorkspaceID: ws.ID, Type: "openai", Name: "P", Enabled: true}
+	_ = s.Providers().Create(ctx, p)
+
+	// Commit test
+	err := s.WithTx(ctx, func(txStore store.Store) error {
+		a := &domain.Agent{
+			WorkspaceID: ws.ID,
+			Slug:        "tx-agent",
+			Name:        "Tx Agent",
+			ProviderID:  p.ID,
+			Model:       "gpt-4o",
+		}
+		if err := txStore.Agents().Create(ctx, a); err != nil {
+			return err
+		}
+
+		sk := &domain.WorkspaceSkill{
+			WorkspaceID: ws.ID,
+			Name:        "tx-skill",
+			Description: "Tx Skill",
+			Body:        "Skill body",
+			Enabled:     true,
+		}
+		if err := txStore.WorkspaceSkills().Create(ctx, sk); err != nil {
+			return err
+		}
+
+		mem := &domain.AgentUserMemory{
+			AgentID:     a.ID,
+			UserID:      u.ID,
+			WorkspaceID: ws.ID,
+			Content:     "Tx memory content",
+		}
+		return txStore.AgentUserMemories().Upsert(ctx, mem)
+	})
+	if err != nil {
+		t.Fatalf("unexpected WithTx error: %v", err)
+	}
+
+	// Verify committed
+	aList, err := s.Agents().ListForWorkspace(ctx, ws.ID)
+	if err != nil || len(aList) != 1 {
+		t.Fatalf("expected 1 agent after commit, got %d (err: %v)", len(aList), err)
+	}
+	sList, err := s.WorkspaceSkills().ListForWorkspace(ctx, ws.ID)
+	if err != nil || len(sList) != 1 {
+		t.Fatalf("expected 1 skill after commit, got %d (err: %v)", len(sList), err)
+	}
+	mem, err := s.AgentUserMemories().Get(ctx, ws.ID, aList[0].ID, u.ID)
+	if err != nil || mem.Content != "Tx memory content" {
+		t.Fatalf("expected memory after commit: %+v, err: %v", mem, err)
+	}
+
+	// Rollback test
+	rollbackErr := errors.New("rollback transaction")
+	err = s.WithTx(ctx, func(txStore store.Store) error {
+		a2 := &domain.Agent{
+			WorkspaceID: ws.ID,
+			Slug:        "rolled-back-agent",
+			Name:        "Rolled Back",
+			ProviderID:  p.ID,
+			Model:       "gpt-4o",
+		}
+		if err := txStore.Agents().Create(ctx, a2); err != nil {
+			return err
+		}
+		return rollbackErr
+	})
+	if !errors.Is(err, rollbackErr) {
+		t.Fatalf("expected rollback error, got %v", err)
+	}
+
+	// Verify not committed
+	_, err = s.Agents().BySlug(ctx, ws.ID, "rolled-back-agent")
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for rolled back agent, got %v", err)
 	}
 }

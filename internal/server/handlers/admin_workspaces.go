@@ -242,9 +242,9 @@ func (h *adminWorkspaceHandlers) AdminCreateWorkspace(c *gin.Context) {
 			UpdatedAt:   createdWs.UpdatedAt,
 			MemberCount: 1,
 		},
-		"role":      ownerRole,
-		"member":    ownerMember,
-		"user":      ownerUser,
+		"role":   ownerRole,
+		"member": ownerMember,
+		"user":   ownerUser,
 	})
 }
 

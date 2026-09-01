@@ -11,6 +11,7 @@ export interface WorkspaceSwitcherProps {
   onPick: (id: string, membership?: ApiMemberView) => void;
   onClose: () => void;
   memberships?: ApiMemberView[];
+  onCreateWorkspace?: () => void;
 }
 
 export function WorkspaceSwitcher({
@@ -20,6 +21,7 @@ export function WorkspaceSwitcher({
   onPick,
   onClose,
   memberships: propMemberships,
+  onCreateWorkspace,
 }: WorkspaceSwitcherProps) {
   const ref = useRef<HTMLDivElement>(null);
   const storeMemberships = useAuthStore((s) => s.memberships);
@@ -44,12 +46,27 @@ export function WorkspaceSwitcher({
     <div
       ref={ref}
       data-od-id="ws-switcher-popover"
+      data-testid="ws-switcher-popover"
       className="od-pop fixed left-[76px] top-[14px] z-40 w-64 overflow-hidden rounded-md border border-line bg-surface shadow-[var(--elev-raised)]"
     >
-      <div className="border-b border-linesoft px-3.5 pt-3 pb-2 text-[11px] font-semibold uppercase tracking-wider text-muted">
-        Workspaces
+      <div className="flex items-center justify-between border-b border-linesoft px-3.5 pt-3 pb-2 text-[11px] font-semibold uppercase tracking-wider text-muted">
+        <span>Workspaces</span>
+        {onCreateWorkspace && (
+          <button
+            type="button"
+            data-testid="btn-switcher-create-ws"
+            onClick={() => {
+              onClose();
+              onCreateWorkspace();
+            }}
+            className="flex items-center gap-1 rounded text-[11px] font-medium text-accent hover:underline lowercase tracking-normal"
+          >
+            <Icon name="plus" size={12} />
+            new
+          </button>
+        )}
       </div>
-      <ul className="py-1.5">
+      <ul className="py-1.5 max-h-72 overflow-y-auto">
         {hasRealMemberships ? (
           authMemberships.map((m: ApiMemberView) => {
             const wsId = m.workspace_slug || m.workspace_id;
@@ -156,8 +173,25 @@ export function WorkspaceSwitcher({
           <li className="px-3.5 py-2 text-[12px] text-muted">No workspaces found</li>
         )}
       </ul>
+      {onCreateWorkspace && (
+        <div className="border-t border-linesoft p-1.5">
+          <button
+            type="button"
+            data-testid="btn-create-workspace-footer"
+            onClick={() => {
+              onClose();
+              onCreateWorkspace();
+            }}
+            className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-[12px] font-medium text-fg2 hover:bg-[color-mix(in_oklab,var(--fg)_6%,transparent)] hover:text-fg"
+          >
+            <Icon name="plus" size={13} className="text-muted" />
+            Create new workspace
+          </button>
+        </div>
+      )}
     </div>
   );
 }
+
 
 
