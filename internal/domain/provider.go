@@ -58,6 +58,7 @@ type Model struct {
 	Name                string   `json:"name"`
 	Efforts             []string `json:"efforts"`
 	SupportsTemperature bool     `json:"supports_temperature"`
+	ContextLimit        *int     `json:"context_limit,omitempty"`
 }
 
 // ModelsResult represents the result of model resolution.

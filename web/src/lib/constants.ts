@@ -50,13 +50,6 @@ export const MCP_SERVERS = [
   { id: 'memory', label: 'Memory MCP', detail: 'persistent notes' },
   { id: 'browser', label: 'Browser MCP', detail: 'headless browsing' }
 ];
-export const TOOLS = [
-  { id: 'web', label: 'Web search' },
-  { id: 'files', label: 'Files' },
-  { id: 'shell', label: 'Shell' },
-  { id: 'api', label: 'HTTP APIs' },
-  { id: 'db', label: 'Database' }
-];
 export const STATUS = {
   running: { dot: 'bg-success', label: 'Running', live: true },
   idle: { dot: 'bg-muted', label: 'Idle' },

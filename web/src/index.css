@@ -39,3 +39,8 @@ input[type="range"] { accent-color: var(--accent); }
   .od-caret, .od-dot, .od-live, .animate-pulse { animation: none; }
   *, ::before, ::after { transition-duration: 0.01ms !important; }
 }
+
+/* Markdown message bodies (design D6): block code inside <pre> drops the
+   inline <code> chip styling — JetBrains Mono carries both, only the chrome
+   differs. */
+.md-body pre code { background: transparent; padding: 0; border-radius: 0; font-size: inherit; }

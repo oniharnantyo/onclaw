@@ -18,19 +18,24 @@ import (
 type fakeStore struct {
 	mu sync.RWMutex
 
-	users            map[string]*domain.User            // key: ID
-	usersByEmail     map[string]string                  // key: normalized email -> ID
-	workspaces       map[string]*domain.Workspace       // key: ID
-	workspacesBySlug map[string]string                  // key: slug -> ID
-	roles            map[string]*domain.Role            // key: ID
-	rolesByName      map[string]string                  // key: workspaceID + ":" + name -> ID
-	members          map[string]*domain.Member          // key: workspaceID + ":" + userID -> Member
-	providers        map[string]*domain.ProviderConfig  // key: ID
-	agents           map[string]*domain.Agent           // key: ID
-	agentsBySlug     map[string]string                  // key: workspaceID + ":" + slug -> ID
-	skills           map[string]*domain.WorkspaceSkill  // key: ID
-	skillsByName     map[string]string                  // key: workspaceID + ":" + name -> ID
-	memories         map[string]*domain.AgentUserMemory // key: workspaceID + ":" + agentID + ":" + userID -> Memory
+	users            map[string]*domain.User                 // key: ID
+	usersByEmail     map[string]string                       // key: normalized email -> ID
+	workspaces       map[string]*domain.Workspace            // key: ID
+	workspacesBySlug map[string]string                       // key: slug -> ID
+	roles            map[string]*domain.Role                 // key: ID
+	rolesByName      map[string]string                       // key: workspaceID + ":" + name -> ID
+	members          map[string]*domain.Member               // key: workspaceID + ":" + userID -> Member
+	providers        map[string]*domain.ProviderConfig       // key: ID
+	agents           map[string]*domain.Agent                // key: ID
+	agentsBySlug     map[string]string                       // key: workspaceID + ":" + slug -> ID
+	memories         map[string]*domain.AgentUserMemory      // key: workspaceID + ":" + agentID + ":" + userID -> Memory
+	sessionEvents    map[string][]domain.SessionEvent        // key: sessionID -> ordered events
+	sessionCPData    map[string][]byte                       // key: checkpointID -> data
+	apiKeys          map[string]*domain.WorkspaceAPIKey      // key: ID
+	apiKeysByHash    map[string]string                       // key: SHA-256 hex hash -> ID
+	toolSettings     map[string]*domain.WorkspaceToolSetting // key: workspaceID + ":" + toolKey -> Setting
+	skills           map[string]*domain.WorkspaceSkill       // key: ID
+	skillsByName     map[string]string                       // key: workspaceID + ":" + name -> ID
 }
 
 // New creates a new in-memory fake store.
@@ -50,9 +55,14 @@ func newStore() *fakeStore {
 		providers:        make(map[string]*domain.ProviderConfig),
 		agents:           make(map[string]*domain.Agent),
 		agentsBySlug:     make(map[string]string),
+		memories:         make(map[string]*domain.AgentUserMemory),
+		sessionEvents:    make(map[string][]domain.SessionEvent),
+		sessionCPData:    make(map[string][]byte),
+		apiKeys:          make(map[string]*domain.WorkspaceAPIKey),
+		apiKeysByHash:    make(map[string]string),
+		toolSettings:     make(map[string]*domain.WorkspaceToolSetting),
 		skills:           make(map[string]*domain.WorkspaceSkill),
 		skillsByName:     make(map[string]string),
-		memories:         make(map[string]*domain.AgentUserMemory),
 	}
 }
 
@@ -86,14 +96,34 @@ func (s *fakeStore) Agents() store.AgentStore {
 	return &agentStore{s: s}
 }
 
+// AgentUserMemories returns the AgentUserMemoryStore sub-port.
+func (s *fakeStore) AgentUserMemories() store.AgentUserMemoryStore {
+	return &agentUserMemoryStore{s: s}
+}
+
+// SessionEvents returns the SessionEventStore sub-port.
+func (s *fakeStore) SessionEvents() store.SessionEventStore {
+	return &sessionEventStore{s: s}
+}
+
+// SessionCheckpoints returns the SessionCheckpointStore sub-port.
+func (s *fakeStore) SessionCheckpoints() store.SessionCheckpointStore {
+	return &sessionCheckpointStore{s: s}
+}
+
+// APIKeys returns the WorkspaceAPIKeyStore sub-port.
+func (s *fakeStore) APIKeys() store.WorkspaceAPIKeyStore {
+	return &apiKeyStore{s: s}
+}
+
 // WorkspaceSkills returns the WorkspaceSkillStore sub-port.
 func (s *fakeStore) WorkspaceSkills() store.WorkspaceSkillStore {
 	return &workspaceSkillStore{s: s}
 }
 
-// AgentUserMemories returns the AgentUserMemoryStore sub-port.
-func (s *fakeStore) AgentUserMemories() store.AgentUserMemoryStore {
-	return &agentUserMemoryStore{s: s}
+// ToolSettings returns the ToolSettingsStore sub-port.
+func (s *fakeStore) ToolSettings() store.ToolSettingsStore {
+	return &toolSettingStore{s: s}
 }
 
 // WithTx executes the given function in an isolated transaction.
@@ -148,14 +178,33 @@ func (s *fakeStore) clone() *fakeStore {
 	for key, id := range s.agentsBySlug {
 		cp.agentsBySlug[key] = id
 	}
+	for key, m := range s.memories {
+		cp.memories[key] = cloneAgentUserMemory(m)
+	}
+	for sid, evts := range s.sessionEvents {
+		copied := make([]domain.SessionEvent, len(evts))
+		copy(copied, evts)
+		cp.sessionEvents[sid] = copied
+	}
+	for cid, data := range s.sessionCPData {
+		copied := make([]byte, len(data))
+		copy(copied, data)
+		cp.sessionCPData[cid] = copied
+	}
+	for id, k := range s.apiKeys {
+		cp.apiKeys[id] = cloneWorkspaceAPIKey(k)
+	}
+	for hash, id := range s.apiKeysByHash {
+		cp.apiKeysByHash[hash] = id
+	}
+	for key, ts := range s.toolSettings {
+		cp.toolSettings[key] = cloneWorkspaceToolSetting(ts)
+	}
 	for id, sk := range s.skills {
 		cp.skills[id] = cloneWorkspaceSkill(sk)
 	}
 	for key, id := range s.skillsByName {
 		cp.skillsByName[key] = id
-	}
-	for key, m := range s.memories {
-		cp.memories[key] = cloneAgentUserMemory(m)
 	}
 	return cp
 }
@@ -171,9 +220,14 @@ func (s *fakeStore) apply(other *fakeStore) {
 	s.providers = other.providers
 	s.agents = other.agents
 	s.agentsBySlug = other.agentsBySlug
+	s.memories = other.memories
+	s.sessionEvents = other.sessionEvents
+	s.sessionCPData = other.sessionCPData
+	s.apiKeys = other.apiKeys
+	s.apiKeysByHash = other.apiKeysByHash
+	s.toolSettings = other.toolSettings
 	s.skills = other.skills
 	s.skillsByName = other.skillsByName
-	s.memories = other.memories
 }
 
 func cloneUser(u *domain.User) *domain.User {
@@ -256,17 +310,17 @@ func cloneAgent(a *domain.Agent) *domain.Agent {
 		e := *a.Effort
 		cp.Effort = &e
 	}
+	if a.ContextWindow != nil {
+		cw := *a.ContextWindow
+		cp.ContextWindow = &cw
+	}
 	if a.Tools != nil {
 		cp.Tools = make([]string, len(a.Tools))
 		copy(cp.Tools, a.Tools)
 	}
-	if a.Skills != nil {
-		cp.Skills = make([]string, len(a.Skills))
-		copy(cp.Skills, a.Skills)
-	}
-	if a.MCP != nil {
-		cp.MCP = make([]string, len(a.MCP))
-		copy(cp.MCP, a.MCP)
+	if a.DisabledMCPs != nil {
+		cp.DisabledMCPs = make([]string, len(a.DisabledMCPs))
+		copy(cp.DisabledMCPs, a.DisabledMCPs)
 	}
 	if a.Avatar != nil {
 		cp.Avatar = make(json.RawMessage, len(a.Avatar))
@@ -287,20 +341,58 @@ func cloneAgent(a *domain.Agent) *domain.Agent {
 	return &cp
 }
 
-func cloneWorkspaceSkill(sk *domain.WorkspaceSkill) *domain.WorkspaceSkill {
-	if sk == nil {
-		return nil
-	}
-	cp := *sk
-	return &cp
-}
-
 func cloneAgentUserMemory(m *domain.AgentUserMemory) *domain.AgentUserMemory {
 	if m == nil {
 		return nil
 	}
 	cp := *m
 	return &cp
+}
+
+func cloneWorkspaceAPIKey(k *domain.WorkspaceAPIKey) *domain.WorkspaceAPIKey {
+	if k == nil {
+		return nil
+	}
+	cp := *k
+	if k.RevokedAt != nil {
+		t := *k.RevokedAt
+		cp.RevokedAt = &t
+	}
+	return &cp
+}
+
+func cloneWorkspaceToolSetting(ts *domain.WorkspaceToolSetting) *domain.WorkspaceToolSetting {
+	if ts == nil {
+		return nil
+	}
+	cp := *ts
+	if ts.Config != nil {
+		cp.Config = make(map[string]any, len(ts.Config))
+		for k, v := range ts.Config {
+			cp.Config[k] = v
+		}
+	}
+	return &cp
+}
+
+func cloneWorkspaceSkill(sk *domain.WorkspaceSkill) *domain.WorkspaceSkill {
+	if sk == nil {
+		return nil
+	}
+	cp := *sk
+	cp.Dependencies.Tools = cloneStringSlice(sk.Dependencies.Tools)
+	cp.Dependencies.Binaries = cloneStringSlice(sk.Dependencies.Binaries)
+	cp.Dependencies.Python = cloneStringSlice(sk.Dependencies.Python)
+	return &cp
+}
+
+func cloneStringSlice(src []string) []string {
+	if src == nil {
+		return nil
+	}
+	cp := make([]string, len(src))
+	copy(cp, src)
+	return cp
 }
 
 // -------------------------------------------------------------------------
@@ -577,6 +669,7 @@ func (ws *workspaceStore) Update(ctx context.Context, w *domain.Workspace) error
 	if w.Name != "" {
 		existing.Name = w.Name
 	}
+	existing.Description = w.Description
 	if w.Timezone != "" {
 		existing.Timezone = w.Timezone
 	}
@@ -1036,6 +1129,9 @@ func (as *agentStore) Create(ctx context.Context, a *domain.Agent) error {
 	if a.MaxTokens != nil && *a.MaxTokens <= 0 {
 		return fmt.Errorf("%w: max_tokens must be positive", domain.ErrInvalid)
 	}
+	if err := domain.ValidateAgentContextWindow(a.ContextWindow); err != nil {
+		return err
+	}
 	if len(a.Avatar) > 0 {
 		if err := domain.ValidateAgentAvatar(a.Avatar); err != nil {
 			return err
@@ -1049,11 +1145,8 @@ func (as *agentStore) Create(ctx context.Context, a *domain.Agent) error {
 	if a.Tools == nil {
 		a.Tools = []string{}
 	}
-	if a.Skills == nil {
-		a.Skills = []string{}
-	}
-	if a.MCP == nil {
-		a.MCP = []string{}
+	if a.DisabledMCPs == nil {
+		a.DisabledMCPs = []string{}
 	}
 
 	as.s.mu.Lock()
@@ -1170,6 +1263,9 @@ func (as *agentStore) Update(ctx context.Context, a *domain.Agent) error {
 	if a.MaxTokens != nil && *a.MaxTokens <= 0 {
 		return fmt.Errorf("%w: max_tokens must be positive", domain.ErrInvalid)
 	}
+	if err := domain.ValidateAgentContextWindow(a.ContextWindow); err != nil {
+		return err
+	}
 	if len(a.Avatar) > 0 {
 		if err := domain.ValidateAgentAvatar(a.Avatar); err != nil {
 			return err
@@ -1213,17 +1309,14 @@ func (as *agentStore) Update(ctx context.Context, a *domain.Agent) error {
 	if a.Autonomy != "" {
 		existing.Autonomy = a.Autonomy
 	}
+	existing.ContextWindow = a.ContextWindow
 	if a.Tools != nil {
 		existing.Tools = make([]string, len(a.Tools))
 		copy(existing.Tools, a.Tools)
 	}
-	if a.Skills != nil {
-		existing.Skills = make([]string, len(a.Skills))
-		copy(existing.Skills, a.Skills)
-	}
-	if a.MCP != nil {
-		existing.MCP = make([]string, len(a.MCP))
-		copy(existing.MCP, a.MCP)
+	if a.DisabledMCPs != nil {
+		existing.DisabledMCPs = make([]string, len(a.DisabledMCPs))
+		copy(existing.DisabledMCPs, a.DisabledMCPs)
 	}
 	if a.Avatar != nil {
 		existing.Avatar = make(json.RawMessage, len(a.Avatar))
@@ -1321,168 +1414,6 @@ func (as *agentStore) SweepGenerating(ctx context.Context, errMsg string) (int64
 }
 
 // -------------------------------------------------------------------------
-// WorkspaceSkillStore implementation
-// -------------------------------------------------------------------------
-
-type workspaceSkillStore struct {
-	s *fakeStore
-}
-
-func (ss *workspaceSkillStore) Create(ctx context.Context, skill *domain.WorkspaceSkill) error {
-	if skill == nil || skill.WorkspaceID == "" {
-		return domain.ErrInvalid
-	}
-	if err := domain.ValidateSkillName(skill.Name); err != nil {
-		return err
-	}
-
-	ss.s.mu.Lock()
-	defer ss.s.mu.Unlock()
-
-	if _, exists := ss.s.workspaces[skill.WorkspaceID]; !exists {
-		return fmt.Errorf("%w: workspace not found", domain.ErrNotFound)
-	}
-
-	nameKey := skill.WorkspaceID + ":" + skill.Name
-	if _, exists := ss.s.skillsByName[nameKey]; exists {
-		return fmt.Errorf("%w: skill %q already exists in workspace", domain.ErrConflict, skill.Name)
-	}
-
-	if skill.ID != "" {
-		if _, exists := ss.s.skills[skill.ID]; exists {
-			return fmt.Errorf("%w: skill with id %q already exists", domain.ErrConflict, skill.ID)
-		}
-	} else {
-		skill.ID = uuid.NewString()
-	}
-
-	now := time.Now().UTC()
-	if skill.CreatedAt.IsZero() {
-		skill.CreatedAt = now
-	}
-	if skill.UpdatedAt.IsZero() {
-		skill.UpdatedAt = now
-	}
-
-	ss.s.skills[skill.ID] = cloneWorkspaceSkill(skill)
-	ss.s.skillsByName[nameKey] = skill.ID
-	return nil
-}
-
-func (ss *workspaceSkillStore) ByID(ctx context.Context, workspaceID, id string) (*domain.WorkspaceSkill, error) {
-	if workspaceID == "" || id == "" {
-		return nil, domain.ErrNotFound
-	}
-
-	ss.s.mu.RLock()
-	defer ss.s.mu.RUnlock()
-
-	sk, exists := ss.s.skills[id]
-	if !exists || sk.WorkspaceID != workspaceID {
-		return nil, domain.ErrNotFound
-	}
-	return cloneWorkspaceSkill(sk), nil
-}
-
-func (ss *workspaceSkillStore) FindByName(ctx context.Context, workspaceID, name string) (*domain.WorkspaceSkill, error) {
-	if workspaceID == "" || name == "" {
-		return nil, domain.ErrNotFound
-	}
-
-	ss.s.mu.RLock()
-	defer ss.s.mu.RUnlock()
-
-	nameKey := workspaceID + ":" + name
-	id, exists := ss.s.skillsByName[nameKey]
-	if !exists {
-		return nil, domain.ErrNotFound
-	}
-	sk, exists := ss.s.skills[id]
-	if !exists || sk.WorkspaceID != workspaceID {
-		return nil, domain.ErrNotFound
-	}
-	return cloneWorkspaceSkill(sk), nil
-}
-
-func (ss *workspaceSkillStore) ListForWorkspace(ctx context.Context, workspaceID string) ([]domain.WorkspaceSkill, error) {
-	if workspaceID == "" {
-		return []domain.WorkspaceSkill{}, nil
-	}
-
-	ss.s.mu.RLock()
-	defer ss.s.mu.RUnlock()
-
-	skills := make([]domain.WorkspaceSkill, 0)
-	for _, sk := range ss.s.skills {
-		if sk.WorkspaceID == workspaceID {
-			cloned := cloneWorkspaceSkill(sk)
-			cloned.Body = "" // progressive disclosure: List omits body
-			skills = append(skills, *cloned)
-		}
-	}
-	sort.Slice(skills, func(i, j int) bool {
-		if skills[i].CreatedAt.Equal(skills[j].CreatedAt) {
-			return skills[i].ID < skills[j].ID
-		}
-		return skills[i].CreatedAt.Before(skills[j].CreatedAt)
-	})
-	return skills, nil
-}
-
-func (ss *workspaceSkillStore) Update(ctx context.Context, skill *domain.WorkspaceSkill) error {
-	if skill == nil || skill.ID == "" || skill.WorkspaceID == "" {
-		return domain.ErrInvalid
-	}
-	if err := domain.ValidateSkillName(skill.Name); err != nil {
-		return err
-	}
-
-	ss.s.mu.Lock()
-	defer ss.s.mu.Unlock()
-
-	existing, exists := ss.s.skills[skill.ID]
-	if !exists || existing.WorkspaceID != skill.WorkspaceID {
-		return domain.ErrNotFound
-	}
-
-	if skill.Name != existing.Name {
-		newNameKey := skill.WorkspaceID + ":" + skill.Name
-		if otherID, exists := ss.s.skillsByName[newNameKey]; exists && otherID != skill.ID {
-			return fmt.Errorf("%w: skill %q already exists in workspace", domain.ErrConflict, skill.Name)
-		}
-		delete(ss.s.skillsByName, existing.WorkspaceID+":"+existing.Name)
-		ss.s.skillsByName[newNameKey] = skill.ID
-		existing.Name = skill.Name
-	}
-
-	existing.Description = skill.Description
-	existing.Body = skill.Body
-	existing.Enabled = skill.Enabled
-	existing.UpdatedAt = time.Now().UTC()
-
-	*skill = *cloneWorkspaceSkill(existing)
-	return nil
-}
-
-func (ss *workspaceSkillStore) Delete(ctx context.Context, workspaceID, id string) error {
-	if workspaceID == "" || id == "" {
-		return domain.ErrNotFound
-	}
-
-	ss.s.mu.Lock()
-	defer ss.s.mu.Unlock()
-
-	existing, exists := ss.s.skills[id]
-	if !exists || existing.WorkspaceID != workspaceID {
-		return domain.ErrNotFound
-	}
-
-	delete(ss.s.skills, id)
-	delete(ss.s.skillsByName, workspaceID+":"+existing.Name)
-	return nil
-}
-
-// -------------------------------------------------------------------------
 // AgentUserMemoryStore implementation
 // -------------------------------------------------------------------------
 
@@ -1558,5 +1489,550 @@ func (ms *agentUserMemoryStore) Delete(ctx context.Context, workspaceID, agentID
 	}
 
 	delete(ms.s.memories, memKey)
+	return nil
+}
+
+// --- sessionEventStore ---
+
+type sessionEventStore struct {
+	s *fakeStore
+}
+
+// AppendEvents idempotently appends events to in-memory session event log.
+func (se *sessionEventStore) AppendEvents(_ context.Context, workspaceID string, events []domain.SessionEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+	se.s.mu.Lock()
+	defer se.s.mu.Unlock()
+
+	for _, e := range events {
+		if e.WorkspaceID == "" {
+			e.WorkspaceID = workspaceID
+		}
+		existing := se.s.sessionEvents[e.SessionID]
+		duplicate := false
+		for _, ex := range existing {
+			if ex.EventID == e.EventID {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			se.s.sessionEvents[e.SessionID] = append(existing, e)
+		}
+	}
+	return nil
+}
+
+// LoadEvents retrieves events from the in-memory event log with cursor and kind filtering.
+func (se *sessionEventStore) LoadEvents(_ context.Context, params store.LoadSessionEventsParams) ([]domain.SessionEvent, error) {
+	if params.WorkspaceID == "" || params.SessionID == "" {
+		return nil, fmt.Errorf("%w: workspace_id and session_id are required", domain.ErrInvalid)
+	}
+	se.s.mu.RLock()
+	defer se.s.mu.RUnlock()
+
+	all := se.s.sessionEvents[params.SessionID]
+
+	// Filter by workspace scoping.
+	var scoped []domain.SessionEvent
+	for _, e := range all {
+		if e.WorkspaceID == params.WorkspaceID {
+			scoped = append(scoped, e)
+		}
+	}
+
+	// Filter by kind.
+	if len(params.Kinds) > 0 {
+		kindSet := make(map[string]struct{}, len(params.Kinds))
+		for _, k := range params.Kinds {
+			kindSet[k] = struct{}{}
+		}
+		var filtered []domain.SessionEvent
+		for _, e := range scoped {
+			if _, ok := kindSet[e.Kind]; ok {
+				filtered = append(filtered, e)
+			}
+		}
+		scoped = filtered
+	}
+
+	// Sort by seq ascending.
+	sort.Slice(scoped, func(i, j int) bool { return scoped[i].Seq < scoped[j].Seq })
+
+	// Apply cursor filter.
+	if params.AfterEventID != "" {
+		var cursorSeq int64
+		found := false
+		for _, e := range scoped {
+			if e.EventID == params.AfterEventID {
+				cursorSeq = e.Seq
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, domain.ErrNotFound
+		}
+		var after []domain.SessionEvent
+		for _, e := range scoped {
+			if params.Reverse && e.Seq < cursorSeq {
+				after = append(after, e)
+			} else if !params.Reverse && e.Seq > cursorSeq {
+				after = append(after, e)
+			}
+		}
+		scoped = after
+	}
+
+	// Reverse if requested.
+	if params.Reverse {
+		for i, j := 0, len(scoped)-1; i < j; i, j = i+1, j-1 {
+			scoped[i], scoped[j] = scoped[j], scoped[i]
+		}
+	}
+
+	// Apply limit.
+	limit := params.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if len(scoped) > limit {
+		scoped = scoped[:limit]
+	}
+	return scoped, nil
+}
+
+// --- sessionCheckpointStore ---
+
+type sessionCheckpointStore struct {
+	s *fakeStore
+}
+
+// Get retrieves a checkpoint by ID. Returns (data, true, nil) or (nil, false, nil).
+func (sc *sessionCheckpointStore) Get(_ context.Context, checkpointID string) ([]byte, bool, error) {
+	if checkpointID == "" {
+		return nil, false, domain.ErrInvalid
+	}
+	sc.s.mu.RLock()
+	defer sc.s.mu.RUnlock()
+
+	data, ok := sc.s.sessionCPData[checkpointID]
+	if !ok {
+		return nil, false, nil
+	}
+	copied := make([]byte, len(data))
+	copy(copied, data)
+	return copied, true, nil
+}
+
+// Set upserts a checkpoint by ID.
+func (sc *sessionCheckpointStore) Set(_ context.Context, checkpointID string, data []byte) error {
+	if checkpointID == "" {
+		return domain.ErrInvalid
+	}
+	sc.s.mu.Lock()
+	defer sc.s.mu.Unlock()
+
+	copied := make([]byte, len(data))
+	copy(copied, data)
+	sc.s.sessionCPData[checkpointID] = copied
+	return nil
+}
+
+// Delete removes a checkpoint by ID. Returns ErrNotFound if absent.
+func (sc *sessionCheckpointStore) Delete(_ context.Context, checkpointID string) error {
+	if checkpointID == "" {
+		return domain.ErrNotFound
+	}
+	sc.s.mu.Lock()
+	defer sc.s.mu.Unlock()
+
+	if _, ok := sc.s.sessionCPData[checkpointID]; !ok {
+		return domain.ErrNotFound
+	}
+	delete(sc.s.sessionCPData, checkpointID)
+	return nil
+}
+
+// -------------------------------------------------------------------------
+// WorkspaceAPIKeyStore implementation
+// -------------------------------------------------------------------------
+
+type apiKeyStore struct {
+	s *fakeStore
+}
+
+func (ks *apiKeyStore) Create(ctx context.Context, k *domain.WorkspaceAPIKey) error {
+	if k == nil || k.WorkspaceID == "" || k.Name == "" || k.KeyHash == "" {
+		return domain.ErrInvalid
+	}
+
+	ks.s.mu.Lock()
+	defer ks.s.mu.Unlock()
+
+	if _, exists := ks.s.workspaces[k.WorkspaceID]; !exists {
+		return fmt.Errorf("%w: workspace not found", domain.ErrNotFound)
+	}
+
+	if _, exists := ks.s.apiKeysByHash[k.KeyHash]; exists {
+		return fmt.Errorf("%w: api key with hash %q already exists", domain.ErrConflict, k.KeyHash)
+	}
+
+	if k.ID != "" {
+		if _, exists := ks.s.apiKeys[k.ID]; exists {
+			return fmt.Errorf("%w: api key with id %q already exists", domain.ErrConflict, k.ID)
+		}
+	} else {
+		k.ID = uuid.NewString()
+	}
+
+	now := time.Now().UTC()
+	if k.CreatedAt.IsZero() {
+		k.CreatedAt = now
+	}
+
+	ks.s.apiKeys[k.ID] = cloneWorkspaceAPIKey(k)
+	ks.s.apiKeysByHash[k.KeyHash] = k.ID
+	return nil
+}
+
+func (ks *apiKeyStore) List(ctx context.Context, workspaceID string) ([]domain.WorkspaceAPIKey, error) {
+	if workspaceID == "" {
+		return []domain.WorkspaceAPIKey{}, nil
+	}
+
+	ks.s.mu.RLock()
+	defer ks.s.mu.RUnlock()
+
+	keys := make([]domain.WorkspaceAPIKey, 0)
+	for _, k := range ks.s.apiKeys {
+		if k.WorkspaceID == workspaceID {
+			keys = append(keys, *cloneWorkspaceAPIKey(k))
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].CreatedAt.Equal(keys[j].CreatedAt) {
+			return keys[i].ID < keys[j].ID
+		}
+		return keys[i].CreatedAt.After(keys[j].CreatedAt)
+	})
+	return keys, nil
+}
+
+func (ks *apiKeyStore) Revoke(ctx context.Context, workspaceID, id string) error {
+	if workspaceID == "" || id == "" {
+		return domain.ErrNotFound
+	}
+
+	ks.s.mu.Lock()
+	defer ks.s.mu.Unlock()
+
+	k, exists := ks.s.apiKeys[id]
+	if !exists || k.WorkspaceID != workspaceID || k.RevokedAt != nil {
+		// Unknown id, a key belonging to another workspace, or already revoked.
+		return domain.ErrNotFound
+	}
+
+	now := time.Now().UTC()
+	k.RevokedAt = &now
+	return nil
+}
+
+func (ks *apiKeyStore) LookupByHash(ctx context.Context, keyHash string) (*domain.WorkspaceAPIKey, error) {
+	if keyHash == "" {
+		return nil, domain.ErrNotFound
+	}
+
+	ks.s.mu.RLock()
+	defer ks.s.mu.RUnlock()
+
+	id, exists := ks.s.apiKeysByHash[keyHash]
+	if !exists {
+		return nil, domain.ErrNotFound
+	}
+	k, exists := ks.s.apiKeys[id]
+	if !exists {
+		return nil, domain.ErrNotFound
+	}
+	return cloneWorkspaceAPIKey(k), nil
+}
+
+// -------------------------------------------------------------------------
+// ToolSettingsStore implementation
+// -------------------------------------------------------------------------
+
+type toolSettingStore struct {
+	s *fakeStore
+}
+
+func (ts *toolSettingStore) Get(ctx context.Context, workspaceID, toolKey string) (*domain.WorkspaceToolSetting, error) {
+	if workspaceID == "" || toolKey == "" {
+		return nil, domain.ErrNotFound
+	}
+
+	ts.s.mu.RLock()
+	defer ts.s.mu.RUnlock()
+
+	setting, exists := ts.s.toolSettings[workspaceID+":"+toolKey]
+	if !exists {
+		return nil, domain.ErrNotFound
+	}
+	return cloneWorkspaceToolSetting(setting), nil
+}
+
+func (ts *toolSettingStore) Upsert(ctx context.Context, setting *domain.WorkspaceToolSetting) error {
+	if setting == nil || setting.WorkspaceID == "" || setting.ToolKey == "" {
+		return domain.ErrInvalid
+	}
+
+	ts.s.mu.Lock()
+	defer ts.s.mu.Unlock()
+
+	if _, exists := ts.s.workspaces[setting.WorkspaceID]; !exists {
+		return fmt.Errorf("%w: workspace not found", domain.ErrNotFound)
+	}
+
+	now := time.Now().UTC()
+	if setting.UpdatedAt.IsZero() {
+		setting.UpdatedAt = now
+	}
+
+	ts.s.toolSettings[setting.WorkspaceID+":"+setting.ToolKey] = cloneWorkspaceToolSetting(setting)
+	return nil
+}
+
+func (ts *toolSettingStore) List(ctx context.Context, workspaceID string) ([]domain.WorkspaceToolSetting, error) {
+	if workspaceID == "" {
+		return []domain.WorkspaceToolSetting{}, nil
+	}
+
+	ts.s.mu.RLock()
+	defer ts.s.mu.RUnlock()
+
+	settings := make([]domain.WorkspaceToolSetting, 0)
+	for _, s := range ts.s.toolSettings {
+		if s.WorkspaceID == workspaceID {
+			settings = append(settings, *cloneWorkspaceToolSetting(s))
+		}
+	}
+	sort.Slice(settings, func(i, j int) bool {
+		return settings[i].ToolKey < settings[j].ToolKey
+	})
+	return settings, nil
+}
+
+// -------------------------------------------------------------------------
+// WorkspaceSkillStore implementation
+// -------------------------------------------------------------------------
+
+type workspaceSkillStore struct {
+	s *fakeStore
+}
+
+func (wss *workspaceSkillStore) Create(ctx context.Context, sk *domain.WorkspaceSkill) error {
+	if sk == nil {
+		return domain.ErrInvalid
+	}
+	if sk.Version == "" {
+		sk.Version = domain.DefaultSkillVersion
+	}
+	if err := sk.Validate(); err != nil {
+		return err
+	}
+
+	wss.s.mu.Lock()
+	defer wss.s.mu.Unlock()
+
+	if _, exists := wss.s.workspaces[sk.WorkspaceID]; !exists {
+		return fmt.Errorf("%w: workspace not found", domain.ErrNotFound)
+	}
+
+	nameKey := sk.WorkspaceID + ":" + sk.Name
+	if _, exists := wss.s.skillsByName[nameKey]; exists {
+		return fmt.Errorf("%w: workspace skill %q already exists in workspace", domain.ErrConflict, sk.Name)
+	}
+
+	if sk.ID != "" {
+		if _, exists := wss.s.skills[sk.ID]; exists {
+			return fmt.Errorf("%w: workspace skill with id %q already exists", domain.ErrConflict, sk.ID)
+		}
+	} else {
+		sk.ID = uuid.NewString()
+	}
+
+	now := time.Now().UTC()
+	if sk.CreatedAt.IsZero() {
+		sk.CreatedAt = now
+	}
+	if sk.UpdatedAt.IsZero() {
+		sk.UpdatedAt = now
+	}
+
+	wss.s.skills[sk.ID] = cloneWorkspaceSkill(sk)
+	wss.s.skillsByName[nameKey] = sk.ID
+	return nil
+}
+
+func (wss *workspaceSkillStore) Get(ctx context.Context, workspaceID, id string) (*domain.WorkspaceSkill, error) {
+	if workspaceID == "" || id == "" {
+		return nil, domain.ErrNotFound
+	}
+
+	wss.s.mu.RLock()
+	defer wss.s.mu.RUnlock()
+
+	sk, exists := wss.s.skills[id]
+	if !exists || sk.WorkspaceID != workspaceID {
+		return nil, domain.ErrNotFound
+	}
+	return cloneWorkspaceSkill(sk), nil
+}
+
+func (wss *workspaceSkillStore) GetByName(ctx context.Context, workspaceID, name string) (*domain.WorkspaceSkill, error) {
+	if workspaceID == "" || name == "" {
+		return nil, domain.ErrNotFound
+	}
+
+	wss.s.mu.RLock()
+	defer wss.s.mu.RUnlock()
+
+	id, exists := wss.s.skillsByName[workspaceID+":"+name]
+	if !exists {
+		return nil, domain.ErrNotFound
+	}
+	sk, exists := wss.s.skills[id]
+	if !exists || sk.WorkspaceID != workspaceID {
+		return nil, domain.ErrNotFound
+	}
+	return cloneWorkspaceSkill(sk), nil
+}
+
+func (wss *workspaceSkillStore) List(ctx context.Context, workspaceID string) ([]domain.WorkspaceSkill, error) {
+	if workspaceID == "" {
+		return []domain.WorkspaceSkill{}, nil
+	}
+
+	wss.s.mu.RLock()
+	defer wss.s.mu.RUnlock()
+
+	skills := make([]domain.WorkspaceSkill, 0)
+	for _, sk := range wss.s.skills {
+		if sk.WorkspaceID == workspaceID {
+			skills = append(skills, *cloneWorkspaceSkill(sk))
+		}
+	}
+	sort.Slice(skills, func(i, j int) bool {
+		return skills[i].Name < skills[j].Name
+	})
+	return skills, nil
+}
+
+func (wss *workspaceSkillStore) ListEnabled(ctx context.Context, workspaceSlug string) ([]string, error) {
+	if workspaceSlug == "" {
+		return nil, domain.ErrNotFound
+	}
+
+	wss.s.mu.RLock()
+	defer wss.s.mu.RUnlock()
+
+	var workspaceID string
+	for id, w := range wss.s.workspaces {
+		if w.Slug == workspaceSlug {
+			workspaceID = id
+			break
+		}
+	}
+	if workspaceID == "" {
+		return nil, domain.ErrNotFound
+	}
+
+	names := make([]string, 0)
+	for _, sk := range wss.s.skills {
+		if sk.WorkspaceID == workspaceID && sk.Enabled {
+			names = append(names, sk.Name)
+		}
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+func (wss *workspaceSkillStore) Update(ctx context.Context, sk *domain.WorkspaceSkill) error {
+	if sk == nil || sk.ID == "" || sk.WorkspaceID == "" {
+		return domain.ErrInvalid
+	}
+	if sk.Version == "" {
+		sk.Version = domain.DefaultSkillVersion
+	}
+	if err := sk.Validate(); err != nil {
+		return err
+	}
+
+	wss.s.mu.Lock()
+	defer wss.s.mu.Unlock()
+
+	existing, exists := wss.s.skills[sk.ID]
+	if !exists || existing.WorkspaceID != sk.WorkspaceID {
+		return domain.ErrNotFound
+	}
+
+	if sk.Name != existing.Name {
+		nameKey := sk.WorkspaceID + ":" + sk.Name
+		if otherID, exists := wss.s.skillsByName[nameKey]; exists && otherID != sk.ID {
+			return fmt.Errorf("%w: workspace skill %q already exists in workspace", domain.ErrConflict, sk.Name)
+		}
+		delete(wss.s.skillsByName, existing.WorkspaceID+":"+existing.Name)
+		wss.s.skillsByName[nameKey] = sk.ID
+	}
+
+	existing.Name = sk.Name
+	existing.Description = sk.Description
+	existing.Version = sk.Version
+	existing.Source = sk.Source
+	existing.Dependencies = domain.SkillDependencies{
+		Tools:    cloneStringSlice(sk.Dependencies.Tools),
+		Binaries: cloneStringSlice(sk.Dependencies.Binaries),
+		Python:   cloneStringSlice(sk.Dependencies.Python),
+	}
+	existing.UpdatedAt = time.Now().UTC()
+
+	*sk = *cloneWorkspaceSkill(existing)
+	return nil
+}
+
+func (wss *workspaceSkillStore) SetEnabled(ctx context.Context, workspaceID, id string, enabled bool) error {
+	if workspaceID == "" || id == "" {
+		return domain.ErrNotFound
+	}
+
+	wss.s.mu.Lock()
+	defer wss.s.mu.Unlock()
+
+	sk, exists := wss.s.skills[id]
+	if !exists || sk.WorkspaceID != workspaceID {
+		return domain.ErrNotFound
+	}
+
+	sk.Enabled = enabled
+	sk.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
+func (wss *workspaceSkillStore) Delete(ctx context.Context, workspaceID, id string) error {
+	if workspaceID == "" || id == "" {
+		return domain.ErrNotFound
+	}
+
+	wss.s.mu.Lock()
+	defer wss.s.mu.Unlock()
+
+	sk, exists := wss.s.skills[id]
+	if !exists || sk.WorkspaceID != workspaceID {
+		return domain.ErrNotFound
+	}
+
+	delete(wss.s.skills, id)
+	delete(wss.s.skillsByName, workspaceID+":"+sk.Name)
 	return nil
 }

@@ -17,12 +17,12 @@ import (
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	"github.com/gin-gonic/gin"
-	"github.com/oniharnantyo/onclaw/internal/agents"
-	"github.com/oniharnantyo/onclaw/internal/auth"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/promptgen"
 	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/server"
 	"github.com/oniharnantyo/onclaw/internal/server/handlers"
+	"github.com/oniharnantyo/onclaw/internal/services"
 	"github.com/oniharnantyo/onclaw/internal/storage"
 	storagefake "github.com/oniharnantyo/onclaw/internal/storage/fake"
 	"github.com/oniharnantyo/onclaw/internal/store"
@@ -32,8 +32,8 @@ import (
 type testEnv struct {
 	store         store.Store
 	storage       storage.Storage
-	issuer        auth.TokenIssuer
-	service       auth.Service
+	issuer        services.TokenIssuer
+	service       services.AuthService
 	encryptionKey []byte
 	workspaceDir  string
 	router        *gin.Engine
@@ -58,16 +58,16 @@ func setupTestEnv(t *testing.T) *testEnv {
 
 	st := storefake.New()
 	stor := storagefake.New()
-	issuer := auth.NewJWTIssuer(auth.JWTConfig{
+	issuer := services.NewJWTIssuer(services.JWTConfig{
 		Secret: "test-secret-key-that-is-at-least-32-chars-long!",
 		TTL:    time.Hour * 24,
 	})
-	authSvc := auth.NewService(st, issuer, nil)
+	authSvc := services.NewAuthService(st.Users(), st.Members(), issuer, nil)
 	encKey := []byte("01234567890123456789012345678901")
 
 	// Deterministic generation: the stub factory never touches the network, so
 	// synchronous generation inside create/birth/regenerate completes instantly.
-	agentSvc := agents.NewService(st, encKey, agents.WithAgentPromptGeneratorModelFactory(func(_ context.Context, _ string, _ providers.Credential, _ string) (model.BaseChatModel, error) {
+	agentSvc := promptgen.NewService(st.Agents(), st.Providers(), encKey, promptgen.WithModelFactory(func(_ context.Context, _ string, _ providers.Credential, _ string) (model.BaseChatModel, error) {
 		return stubChatModel{}, nil
 	}))
 
@@ -102,7 +102,7 @@ func createTestUser(t *testing.T, env *testEnv, email, name, password string) (*
 
 	var hash *string
 	if password != "" {
-		h, err := auth.NewPasswordHasher().Hash(password)
+		h, err := services.NewPasswordHasher().Hash(password)
 		if err != nil {
 			t.Fatalf("failed to hash password: %v", err)
 		}
@@ -225,7 +225,7 @@ func TestAuthLogin(t *testing.T) {
 		Name:       "Disabled",
 		DisabledAt: &disabledAt,
 	}
-	h, _ := auth.NewPasswordHasher().Hash("some-password")
+	h, _ := services.NewPasswordHasher().Hash("some-password")
 	uDisabled.PasswordHash = &h
 	_ = env.store.Users().Create(context.Background(), uDisabled)
 
@@ -522,6 +522,102 @@ func TestWorkspaceGetAndPatch(t *testing.T) {
 			t.Errorf("unexpected updated workspace: %+v", res.Workspace)
 		}
 	})
+}
+
+// TestWorkspaceDescription covers the workspace description round-trip added in
+// the agent-runtime change: a create payload MAY carry a description, and an
+// authorized PATCH updates it while the slug stays untouched.
+func TestWorkspaceDescription(t *testing.T) {
+	env := setupTestEnv(t)
+	ownerUser, ownerToken := createTestUser(t, env, "owner-desc@example.com", "Owner", "pwd")
+	memberUser, memberToken := createTestUser(t, env, "member-desc@example.com", "Member", "pwd")
+
+	t.Run("create workspace carries description and owner membership", func(t *testing.T) {
+		w := doRequest(env.router, http.MethodPost, "/api/v1/workspaces", ownerToken, map[string]any{
+			"name":        "Acme Data",
+			"slug":        "acme-data",
+			"timezone":    "Asia/Jakarta",
+			"description": "Customer data pipelines team",
+		})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("expected 201 Created, got %d: %s", w.Code, w.Body.String())
+		}
+		var res struct {
+			Workspace domain.Workspace `json:"workspace"`
+			Member    domain.Member    `json:"member"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+			t.Fatalf("failed to decode: %v", err)
+		}
+		if res.Workspace.Description != "Customer data pipelines team" {
+			t.Errorf("expected description round-trip, got %q", res.Workspace.Description)
+		}
+		if res.Member.UserID != ownerUser.ID {
+			t.Errorf("expected creator owner membership user %s, got %s", ownerUser.ID, res.Member.UserID)
+		}
+	})
+
+	t.Run("owner PATCHes workspace description, slug untouched", func(t *testing.T) {
+		// Seed the workspace via the same owner so it exists before PATCH.
+		doRequest(env.router, http.MethodPost, "/api/v1/workspaces", ownerToken, map[string]any{
+			"name": "Ops Team",
+			"slug": "ops-team",
+		})
+		w := doRequest(env.router, http.MethodPatch, "/api/v1/workspaces/ops-team", ownerToken, map[string]any{
+			"description": "On-call operations",
+		})
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+		}
+		var res struct {
+			Workspace domain.Workspace `json:"workspace"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+			t.Fatalf("failed to decode: %v", err)
+		}
+		if res.Workspace.Description != "On-call operations" {
+			t.Errorf("expected patched description, got %q", res.Workspace.Description)
+		}
+		if res.Workspace.Slug != "ops-team" {
+			t.Errorf("expected slug untouched on PATCH, got %q", res.Workspace.Slug)
+		}
+	})
+
+	t.Run("member without workspace.write cannot PATCH description (403)", func(t *testing.T) {
+		doRequest(env.router, http.MethodPost, "/api/v1/workspaces", ownerToken, map[string]any{
+			"name": "Guarded",
+			"slug": "guarded-ws",
+		})
+		addMember(t, env, mustWorkspaceID(t, env, "guarded-ws"), memberUser.ID, memberRoleID(t, env, "guarded-ws"))
+		w := doRequest(env.router, http.MethodPatch, "/api/v1/workspaces/guarded-ws", memberToken, map[string]any{
+			"description": "should not apply",
+		})
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 Forbidden, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+}
+
+func mustWorkspaceID(t *testing.T, env *testEnv, slug string) string {
+	t.Helper()
+	ws, err := env.store.Workspaces().BySlug(context.Background(), slug)
+	if err != nil {
+		t.Fatalf("load workspace %s: %v", slug, err)
+	}
+	return ws.ID
+}
+
+func memberRoleID(t *testing.T, env *testEnv, slug string) string {
+	t.Helper()
+	ws, err := env.store.Workspaces().BySlug(context.Background(), slug)
+	if err != nil {
+		t.Fatalf("load workspace %s: %v", slug, err)
+	}
+	role, err := env.store.Roles().FindByName(context.Background(), ws.ID, domain.RoleMember)
+	if err != nil {
+		t.Fatalf("find member role for %s: %v", slug, err)
+	}
+	return role.ID
 }
 
 // -----------------------------------------------------------------------------

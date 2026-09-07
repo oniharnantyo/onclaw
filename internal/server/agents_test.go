@@ -7,9 +7,15 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/schema"
+	"github.com/oniharnantyo/onclaw/internal/agents"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/promptdocs"
 	"github.com/oniharnantyo/onclaw/internal/server/handlers"
 )
 
@@ -73,6 +79,7 @@ func TestAgents_PermissionMatrix_And_404(t *testing.T) {
 			{http.MethodPost, "/api/v1/workspaces/agents-perm-ws/agents/atlas/regenerate", nil},
 			{http.MethodGet, "/api/v1/workspaces/agents-perm-ws/agents/atlas/memory", nil},
 			{http.MethodDelete, "/api/v1/workspaces/agents-perm-ws/agents/atlas/memory", nil},
+			{http.MethodGet, "/api/v1/workspaces/agents-perm-ws/agents/atlas/sessions/sess-1/events", nil},
 		}
 
 		for _, ep := range endpoints {
@@ -94,6 +101,12 @@ func TestAgents_PermissionMatrix_And_404(t *testing.T) {
 		wGet := doRequest(env.router, http.MethodGet, "/api/v1/workspaces/agents-perm-ws/agents/atlas", memberToken, nil)
 		if wGet.Code != http.StatusOK {
 			t.Errorf("expected 200 OK on get agent for member, got %d", wGet.Code)
+		}
+
+		// GET session events -> 200 OK
+		wEvents := doRequest(env.router, http.MethodGet, "/api/v1/workspaces/agents-perm-ws/agents/atlas/sessions/sess-1/events", memberToken, nil)
+		if wEvents.Code != http.StatusOK {
+			t.Errorf("expected 200 OK on get session events for member, got %d: %s", wEvents.Code, wEvents.Body.String())
 		}
 
 		// GET memory -> 200 OK
@@ -218,22 +231,6 @@ func TestAgents_CRUD_And_Validation(t *testing.T) {
 	_ = json.Unmarshal(wProvAnthropic.Body.Bytes(), &provAnthropicRes)
 	anthropicProvID := provAnthropicRes.Provider.ID
 
-	// Create workspace skills
-	_ = env.store.WorkspaceSkills().Create(context.Background(), &domain.WorkspaceSkill{
-		WorkspaceID: ws.ID,
-		Name:        "code-review",
-		Description: "Review pull requests",
-		Body:        "# Code Review Guidelines",
-		Enabled:     true,
-	})
-	_ = env.store.WorkspaceSkills().Create(context.Background(), &domain.WorkspaceSkill{
-		WorkspaceID: ws.ID,
-		Name:        "disabled-skill",
-		Description: "Disabled custom skill",
-		Body:        "# Disabled",
-		Enabled:     false,
-	})
-
 	t.Run("create agent with wizard defaults", func(t *testing.T) {
 		w := doRequest(env.router, http.MethodPost, "/api/v1/workspaces/crud-agents-ws/agents", ownerToken, map[string]any{
 			"name":        "Sherlock",
@@ -281,8 +278,8 @@ func TestAgents_CRUD_And_Validation(t *testing.T) {
 		if agent.PromptsStatus != domain.PromptsStatusReady {
 			t.Errorf("expected prompts_status %q, got %q", domain.PromptsStatusReady, agent.PromptsStatus)
 		}
-		if len(agent.Tools) != 0 || len(agent.Skills) != 0 || len(agent.MCP) != 0 {
-			t.Errorf("expected empty capability arrays, got tools=%v skills=%v mcp=%v", agent.Tools, agent.Skills, agent.MCP)
+		if len(agent.Tools) != 0 || len(agent.DisabledMCPs) != 0 {
+			t.Errorf("expected empty capability arrays, got tools=%v mcps=%v", agent.Tools, agent.DisabledMCPs)
 		}
 	})
 
@@ -298,7 +295,7 @@ func TestAgents_CRUD_And_Validation(t *testing.T) {
 		_ = json.Unmarshal(wSlug.Body.Bytes(), &res)
 		agentID := res.Agent.ID
 		// Read-side responses compose the prompt documents from the files.
-		if res.Agent.Identity != "# Identity\nStub identity" || res.Agent.Soul != "# Soul\nStub soul" || res.Agent.Bootstrap != "# BOOTSTRAP.md - Birth Sequence\nStub bootstrap" {
+		if res.Agent.Identity != "# Identity\nStub identity" || res.Agent.Soul != "# Soul\nStub soul" || res.Agent.Bootstrap != promptdocs.BootstrapTemplate {
 			t.Errorf("expected identity/soul/bootstrap composed from workspace files, got identity=%q soul=%q bootstrap=%q", res.Agent.Identity, res.Agent.Soul, res.Agent.Bootstrap)
 		}
 
@@ -547,33 +544,82 @@ func TestAgents_CRUD_And_Validation(t *testing.T) {
 		}
 	})
 
-	t.Run("skills array validation checks workspace skills", func(t *testing.T) {
-		// Unknown skill name rejected with 400
+	t.Run("disabled capabilities are not referentially validated", func(t *testing.T) {
+		// disabled_skills is ignored by the new server (tier activation
+		// replaced the denylist); the create still succeeds.
 		wUnknownSkill := doRequest(env.router, http.MethodPost, "/api/v1/workspaces/crud-agents-ws/agents", ownerToken, map[string]any{
-			"name":        "Skills Test 1",
-			"slug":        "skills-test-1",
-			"role":        "tester",
-			"brief":       "brief",
-			"provider_id": openAIProvID,
-			"model":       "gpt-4o",
-			"skills":      []string{"code-review", "non-existent-skill"},
+			"name":            "Denylist Test",
+			"slug":            "denylist-test",
+			"role":            "tester",
+			"brief":           "brief",
+			"provider_id":     openAIProvID,
+			"model":           "gpt-4o",
+			"disabled_skills": []string{"code-review", "non-existent-skill"},
+			"tools":           []string{"web.search", "non-existent-tool"},
+			"disabled_mcps":   []string{"non-existent-mcp"},
 		})
-		if wUnknownSkill.Code != http.StatusBadRequest {
-			t.Fatalf("expected 400 Bad Request on unknown skill, got %d: %s", wUnknownSkill.Code, wUnknownSkill.Body.String())
+		if wUnknownSkill.Code != http.StatusCreated {
+			t.Fatalf("expected 201 Created with ignored disabled_skills, got %d: %s", wUnknownSkill.Code, wUnknownSkill.Body.String())
+		}
+		var res struct {
+			Agent domain.Agent `json:"agent"`
+		}
+		_ = json.Unmarshal(wUnknownSkill.Body.Bytes(), &res)
+		if len(res.Agent.Tools) != 2 || len(res.Agent.DisabledMCPs) != 1 {
+			t.Errorf("expected capabilities saved as provided: %+v", res.Agent)
+		}
+		if strings.Contains(wUnknownSkill.Body.String(), "disabled_skills") {
+			t.Error("disabled_skills must not appear in agent responses")
+		}
+	})
+
+	t.Run("context_window validation and auto-fill", func(t *testing.T) {
+		// Zero or negative context_window -> 400
+		wZeroCW := doRequest(env.router, http.MethodPost, "/api/v1/workspaces/crud-agents-ws/agents", ownerToken, map[string]any{
+			"name":           "Zero CW Test",
+			"slug":           "zero-cw-test",
+			"role":           "tester",
+			"brief":          "brief",
+			"provider_id":    openAIProvID,
+			"model":          "gpt-4o",
+			"context_window": 0,
+		})
+		if wZeroCW.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 Bad Request on context_window 0, got %d: %s", wZeroCW.Code, wZeroCW.Body.String())
 		}
 
-		// Disabled skill accepted
-		wDisabledSkill := doRequest(env.router, http.MethodPost, "/api/v1/workspaces/crud-agents-ws/agents", ownerToken, map[string]any{
-			"name":        "Skills Test 2",
-			"slug":        "skills-test-2",
-			"role":        "tester",
-			"brief":       "brief",
-			"provider_id": openAIProvID,
-			"model":       "gpt-4o",
-			"skills":      []string{"code-review", "disabled-skill"},
+		wNegCW := doRequest(env.router, http.MethodPost, "/api/v1/workspaces/crud-agents-ws/agents", ownerToken, map[string]any{
+			"name":           "Neg CW Test",
+			"slug":           "neg-cw-test",
+			"role":           "tester",
+			"brief":          "brief",
+			"provider_id":    openAIProvID,
+			"model":          "gpt-4o",
+			"context_window": -500,
 		})
-		if wDisabledSkill.Code != http.StatusCreated {
-			t.Fatalf("expected 201 Created with disabled skill, got %d: %s", wDisabledSkill.Code, wDisabledSkill.Body.String())
+		if wNegCW.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 Bad Request on negative context_window, got %d: %s", wNegCW.Code, wNegCW.Body.String())
+		}
+
+		// Explicit override wins
+		wOverride := doRequest(env.router, http.MethodPost, "/api/v1/workspaces/crud-agents-ws/agents", ownerToken, map[string]any{
+			"name":           "Override CW Test",
+			"slug":           "override-cw-test",
+			"role":           "tester",
+			"brief":          "brief",
+			"provider_id":    openAIProvID,
+			"model":          "gpt-4o",
+			"context_window": 50000,
+		})
+		if wOverride.Code != http.StatusCreated {
+			t.Fatalf("expected 201 Created on explicit context_window, got %d: %s", wOverride.Code, wOverride.Body.String())
+		}
+		var resOverride struct {
+			Agent domain.Agent `json:"agent"`
+		}
+		_ = json.Unmarshal(wOverride.Body.Bytes(), &resOverride)
+		if resOverride.Agent.ContextWindow == nil || *resOverride.Agent.ContextWindow != 50000 {
+			t.Errorf("expected context_window 50000, got %v", resOverride.Agent.ContextWindow)
 		}
 	})
 
@@ -754,6 +800,546 @@ func TestAgents_Regenerate_And_Memories(t *testing.T) {
 		_, err := env.store.AgentUserMemories().Get(context.Background(), ws.ID, agentID, memberUser.ID)
 		if err == nil {
 			t.Fatalf("expected memory to be cascade deleted")
+		}
+	})
+}
+
+// -----------------------------------------------------------------------------
+// 4. ListSessionEvents Handler Tests
+// -----------------------------------------------------------------------------
+
+func TestAgents_ListSessionEvents(t *testing.T) {
+	env := setupTestEnv(t)
+	ctx := context.Background()
+
+	ownerUser, ownerToken := createTestUser(t, env, "owner-hist@example.com", "Owner", "pwd")
+	_ = ownerToken
+	memberUser, memberToken := createTestUser(t, env, "member-hist@example.com", "Member", "pwd")
+	noPermUser, noPermToken := createTestUser(t, env, "noperm-hist@example.com", "NoPerm", "pwd")
+	otherWsUser, otherWsToken := createTestUser(t, env, "other-hist@example.com", "Other", "pwd")
+
+	ws, ownerRole, _, memberRole := createTestWorkspaceWithRoles(t, env, "hist-ws", "History WS")
+	addMember(t, env, ws.ID, ownerUser.ID, ownerRole.ID)
+	addMember(t, env, ws.ID, memberUser.ID, memberRole.ID)
+
+	// Role without agents.read permission
+	noPermRole := &domain.Role{
+		WorkspaceID: ws.ID,
+		Name:        "no-agents-read",
+		Permissions: []string{domain.WorkspaceRead},
+	}
+	if err := env.store.Roles().Create(ctx, noPermRole); err != nil {
+		t.Fatalf("failed to create no-perm role: %v", err)
+	}
+	addMember(t, env, ws.ID, noPermUser.ID, noPermRole.ID)
+
+	// Second workspace for cross-tenant isolation testing
+	otherWs, otherOwnerRole, _, _ := createTestWorkspaceWithRoles(t, env, "other-ws", "Other WS")
+	addMember(t, env, otherWs.ID, otherWsUser.ID, otherOwnerRole.ID)
+
+	// Create providers
+	prov := &domain.ProviderConfig{
+		WorkspaceID: ws.ID,
+		Type:        "openai",
+		Name:        "OpenAI WS",
+		Enabled:     true,
+	}
+	if err := env.store.Providers().Create(ctx, prov); err != nil {
+		t.Fatalf("failed to create provider: %v", err)
+	}
+
+	otherProv := &domain.ProviderConfig{
+		WorkspaceID: otherWs.ID,
+		Type:        "openai",
+		Name:        "OpenAI Other",
+		Enabled:     true,
+	}
+	if err := env.store.Providers().Create(ctx, otherProv); err != nil {
+		t.Fatalf("failed to create other provider: %v", err)
+	}
+
+	// Create agents
+	ag := &domain.Agent{
+		WorkspaceID: ws.ID,
+		Slug:        "analyst",
+		Name:        "Data Analyst",
+		ProviderID:  prov.ID,
+		Model:       "gpt-4o",
+	}
+	if err := env.store.Agents().Create(ctx, ag); err != nil {
+		t.Fatalf("failed to create agent: %v", err)
+	}
+
+	otherAg := &domain.Agent{
+		WorkspaceID: otherWs.ID,
+		Slug:        "other-analyst",
+		Name:        "Other Analyst",
+		ProviderID:  otherProv.ID,
+		Model:       "gpt-4o",
+	}
+	if err := env.store.Agents().Create(ctx, otherAg); err != nil {
+		t.Fatalf("failed to create other agent: %v", err)
+	}
+
+	// Seed session events via ADKSessionAdapter
+	sessionID := "sess-hist-1"
+	t1 := time.Date(2026, 9, 4, 10, 0, 1, 0, time.UTC)
+	t2 := time.Date(2026, 9, 4, 10, 0, 2, 0, time.UTC)
+	t3 := time.Date(2026, 9, 4, 10, 0, 3, 0, time.UTC)
+	t4 := time.Date(2026, 9, 4, 10, 0, 4, 0, time.UTC)
+	t5 := time.Date(2026, 9, 4, 10, 0, 5, 0, time.UTC)
+
+	seededEvents := []*adk.SessionEvent[*schema.AgenticMessage]{
+		{
+			EventID:   "evt-1",
+			TurnID:    "turn-1",
+			Timestamp: t1,
+			Message:   schema.UserAgenticMessage("Analyze report"),
+		},
+		{
+			EventID:   "evt-2",
+			TurnID:    "turn-1",
+			Timestamp: t2,
+			Kind:      adk.SessionEventSpanToolCallStart,
+			Span: &adk.SpanEvent{
+				Kind:      adk.SpanKindTool,
+				StartedAt: t2,
+				Tool: &adk.ToolSpanMeta{
+					ToolUseID: "call-1",
+					Name:      "web.search",
+				},
+			},
+		},
+		{
+			EventID:   "evt-3",
+			TurnID:    "turn-1",
+			Timestamp: t3,
+			Kind:      adk.SessionEventSpanToolCallEnd,
+			Span: &adk.SpanEvent{
+				Kind:    adk.SpanKindTool,
+				EndedAt: t3,
+				Tool: &adk.ToolSpanMeta{
+					ToolUseID: "call-1",
+					Name:      "web.search",
+				},
+			},
+		},
+		{
+			EventID:          "evt-4",
+			TurnID:           "turn-1",
+			Timestamp:        t4,
+			Kind:             adk.SessionEventMessagesReplaced,
+			MessagesReplaced: &[]*schema.AgenticMessage{},
+		},
+		{
+			EventID:   "evt-5",
+			TurnID:    "turn-1",
+			Timestamp: t5,
+			Message: &schema.AgenticMessage{
+				Role: schema.AgenticRoleTypeAssistant,
+				ContentBlocks: []*schema.ContentBlock{
+					schema.NewContentBlock(&schema.AssistantGenText{Text: "Analysis complete."}),
+				},
+			},
+		},
+	}
+
+	adapter := agents.NewADKSessionAdapter(env.store.SessionEvents(), env.store.SessionCheckpoints(), ws.ID)
+	if err := adapter.AppendEvents(ctx, sessionID, seededEvents); err != nil {
+		t.Fatalf("failed to append seeded events: %v", err)
+	}
+
+	t.Run("200 with translated events", func(t *testing.T) {
+		// Query by agent slug
+		w := doRequest(env.router, http.MethodGet, fmt.Sprintf("/api/v1/workspaces/%s/agents/%s/sessions/%s/events", ws.Slug, ag.Slug, sessionID), memberToken, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+		}
+
+		var res agents.HistoryResult
+		if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+
+		if len(res.Events) != 6 {
+			t.Fatalf("expected 6 events, got %d", len(res.Events))
+		}
+		if res.Next != "" {
+			t.Errorf("expected empty next cursor, got %q", res.Next)
+		}
+
+		// Verify event 1: user message
+		e1 := res.Events[0]
+		if e1.ID != "evt-1" || e1.TurnID != "turn-1" || e1.Kind != agents.TranscriptEventMessageCompleted {
+			t.Errorf("unexpected event 1 metadata: %+v", e1)
+		}
+		if e1.Message == nil || e1.Message.Role != "user" || e1.Message.Content != "Analyze report" {
+			t.Errorf("unexpected event 1 message payload: %+v", e1.Message)
+		}
+
+		// Verify event 2: tool call start
+		e2 := res.Events[1]
+		if e2.ID != "evt-2" || e2.TurnID != "turn-1" || e2.Kind != agents.TranscriptEventToolCallStarted {
+			t.Errorf("unexpected event 2 metadata: %+v", e2)
+		}
+		if e2.ToolCall == nil || e2.ToolCall.CallID != "call-1" || e2.ToolCall.Name != "web.search" {
+			t.Errorf("unexpected event 2 tool call payload: %+v", e2.ToolCall)
+		}
+
+		// Verify event 3: tool call end
+		e3 := res.Events[2]
+		if e3.ID != "evt-3" || e3.TurnID != "turn-1" || e3.Kind != agents.TranscriptEventToolCallFinished {
+			t.Errorf("unexpected event 3 metadata: %+v", e3)
+		}
+		if e3.ToolResult == nil || e3.ToolResult.CallID != "call-1" || e3.ToolResult.Name != "web.search" {
+			t.Errorf("unexpected event 3 tool result payload: %+v", e3.ToolResult)
+		}
+
+		// Verify event 4: compaction
+		e4 := res.Events[3]
+		if e4.ID != "evt-4" || e4.TurnID != "turn-1" || e4.Kind != agents.TranscriptEventContextCompacted {
+			t.Errorf("unexpected event 4 metadata: %+v", e4)
+		}
+		if e4.Compaction == nil {
+			t.Errorf("expected non-nil compaction payload")
+		}
+
+		// Verify event 5: assistant message
+		e5 := res.Events[4]
+		if e5.ID != "evt-5" || e5.TurnID != "turn-1" || e5.Kind != agents.TranscriptEventMessageCompleted {
+			t.Errorf("unexpected event 5 metadata: %+v", e5)
+		}
+		if e5.Message == nil || e5.Message.Role != "assistant" || e5.Message.Content != "Analysis complete." {
+			t.Errorf("unexpected event 5 message payload: %+v", e5.Message)
+		}
+
+		// Query by agent ID also resolves
+		wByID := doRequest(env.router, http.MethodGet, fmt.Sprintf("/api/v1/workspaces/%s/agents/%s/sessions/%s/events", ws.Slug, ag.ID, sessionID), memberToken, nil)
+		if wByID.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK by agent ID, got %d: %s", wByID.Code, wByID.Body.String())
+		}
+		var resByID agents.HistoryResult
+		if err := json.Unmarshal(wByID.Body.Bytes(), &resByID); err != nil {
+			t.Fatalf("failed to unmarshal response by ID: %v", err)
+		}
+		if len(resByID.Events) != 6 {
+			t.Errorf("expected 6 events by ID, got %d", len(resByID.Events))
+		}
+	})
+
+	t.Run("limit and after query parameters honored with pagination cursor", func(t *testing.T) {
+		// Page 1: limit=2
+		w1 := doRequest(env.router, http.MethodGet, fmt.Sprintf("/api/v1/workspaces/%s/agents/%s/sessions/%s/events?limit=2", ws.Slug, ag.Slug, sessionID), memberToken, nil)
+		if w1.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d: %s", w1.Code, w1.Body.String())
+		}
+		var page1 agents.HistoryResult
+		_ = json.Unmarshal(w1.Body.Bytes(), &page1)
+		if len(page1.Events) != 2 {
+			t.Fatalf("expected 2 events on page 1, got %d", len(page1.Events))
+		}
+		if page1.Events[0].ID != "evt-1" || page1.Events[1].ID != "evt-2" {
+			t.Errorf("unexpected events on page 1: %+v", page1.Events)
+		}
+		if page1.Next != "evt-2" {
+			t.Fatalf("expected next cursor 'evt-2', got %q", page1.Next)
+		}
+
+		// Page 2: limit=2&after=evt-2
+		w2 := doRequest(env.router, http.MethodGet, fmt.Sprintf("/api/v1/workspaces/%s/agents/%s/sessions/%s/events?limit=2&after=%s", ws.Slug, ag.Slug, sessionID, page1.Next), memberToken, nil)
+		if w2.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d: %s", w2.Code, w2.Body.String())
+		}
+		var page2 agents.HistoryResult
+		_ = json.Unmarshal(w2.Body.Bytes(), &page2)
+		if len(page2.Events) != 2 {
+			t.Fatalf("expected 2 events on page 2, got %d", len(page2.Events))
+		}
+		if page2.Events[0].ID != "evt-3" || page2.Events[1].ID != "evt-4" {
+			t.Errorf("unexpected events on page 2: %+v", page2.Events)
+		}
+		if page2.Next != "evt-4" {
+			t.Fatalf("expected next cursor 'evt-4', got %q", page2.Next)
+		}
+
+		// Page 3: limit=2&after=evt-4
+		w3 := doRequest(env.router, http.MethodGet, fmt.Sprintf("/api/v1/workspaces/%s/agents/%s/sessions/%s/events?limit=2&after=%s", ws.Slug, ag.Slug, sessionID, page2.Next), memberToken, nil)
+		if w3.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d: %s", w3.Code, w3.Body.String())
+		}
+		var page3 agents.HistoryResult
+		_ = json.Unmarshal(w3.Body.Bytes(), &page3)
+		if len(page3.Events) != 2 {
+			t.Fatalf("expected 2 events on page 3 (evt-5 + terminal turn_completed), got %d", len(page3.Events))
+		}
+		if page3.Events[0].ID != "evt-5" {
+			t.Errorf("unexpected event on page 3: %+v", page3.Events[0])
+		}
+		if page3.Events[1].Kind != agents.TranscriptEventTurnCompleted {
+			t.Errorf("expected terminal turn_completed on page 3: %+v", page3.Events[1])
+		}
+		if page3.Next != "" {
+			t.Errorf("expected empty next cursor on final page, got %q", page3.Next)
+		}
+
+		// Out-of-range cursor yields empty page
+		w4 := doRequest(env.router, http.MethodGet, fmt.Sprintf("/api/v1/workspaces/%s/agents/%s/sessions/%s/events?limit=2&after=evt-5", ws.Slug, ag.Slug, sessionID), memberToken, nil)
+		if w4.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d: %s", w4.Code, w4.Body.String())
+		}
+		var page4 agents.HistoryResult
+		_ = json.Unmarshal(w4.Body.Bytes(), &page4)
+		if len(page4.Events) != 0 {
+			t.Errorf("expected 0 events, got %d", len(page4.Events))
+		}
+		if page4.Next != "" {
+			t.Errorf("expected empty next cursor, got %q", page4.Next)
+		}
+
+		// Invalid non-numeric limit -> 400 Bad Request
+		wInvalid := doRequest(env.router, http.MethodGet, fmt.Sprintf("/api/v1/workspaces/%s/agents/%s/sessions/%s/events?limit=abc", ws.Slug, ag.Slug, sessionID), memberToken, nil)
+		if wInvalid.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 Bad Request for non-numeric limit, got %d: %s", wInvalid.Code, wInvalid.Body.String())
+		}
+
+		// Non-positive limit -> 400 Bad Request
+		wZero := doRequest(env.router, http.MethodGet, fmt.Sprintf("/api/v1/workspaces/%s/agents/%s/sessions/%s/events?limit=0", ws.Slug, ag.Slug, sessionID), memberToken, nil)
+		if wZero.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 Bad Request for limit=0, got %d: %s", wZero.Code, wZero.Body.String())
+		}
+
+		// Limit exceeding 500 is capped at 500 and succeeds
+		wLarge := doRequest(env.router, http.MethodGet, fmt.Sprintf("/api/v1/workspaces/%s/agents/%s/sessions/%s/events?limit=1000", ws.Slug, ag.Slug, sessionID), memberToken, nil)
+		if wLarge.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK for large limit, got %d: %s", wLarge.Code, wLarge.Body.String())
+		}
+	})
+
+	t.Run("403 Forbidden for user without agents.read permission", func(t *testing.T) {
+		w := doRequest(env.router, http.MethodGet, fmt.Sprintf("/api/v1/workspaces/%s/agents/%s/sessions/%s/events", ws.Slug, ag.Slug, sessionID), noPermToken, nil)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 Forbidden, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("404 Not Found for cross-tenant agent access or non-existent agent", func(t *testing.T) {
+		// Non-existent agent slug in workspace
+		wNonExistent := doRequest(env.router, http.MethodGet, fmt.Sprintf("/api/v1/workspaces/%s/agents/non-existent-agent/sessions/%s/events", ws.Slug, sessionID), memberToken, nil)
+		if wNonExistent.Code != http.StatusNotFound {
+			t.Errorf("expected 404 for non-existent agent, got %d: %s", wNonExistent.Code, wNonExistent.Body.String())
+		}
+
+		// Agent from other workspace addressed via ws.Slug
+		wCrossSlug := doRequest(env.router, http.MethodGet, fmt.Sprintf("/api/v1/workspaces/%s/agents/%s/sessions/%s/events", ws.Slug, otherAg.Slug, sessionID), memberToken, nil)
+		if wCrossSlug.Code != http.StatusNotFound {
+			t.Errorf("expected 404 for cross-tenant agent slug, got %d: %s", wCrossSlug.Code, wCrossSlug.Body.String())
+		}
+
+		// Agent from other workspace addressed by ID
+		wCrossID := doRequest(env.router, http.MethodGet, fmt.Sprintf("/api/v1/workspaces/%s/agents/%s/sessions/%s/events", ws.Slug, otherAg.ID, sessionID), memberToken, nil)
+		if wCrossID.Code != http.StatusNotFound {
+			t.Errorf("expected 404 for cross-tenant agent ID, got %d: %s", wCrossID.Code, wCrossID.Body.String())
+		}
+
+		// User in other workspace addressing ws's agent
+		wCrossTenantUser := doRequest(env.router, http.MethodGet, fmt.Sprintf("/api/v1/workspaces/%s/agents/%s/sessions/%s/events", otherWs.Slug, ag.Slug, sessionID), otherWsToken, nil)
+		if wCrossTenantUser.Code != http.StatusNotFound {
+			t.Errorf("expected 404 for other workspace accessing agent, got %d: %s", wCrossTenantUser.Code, wCrossTenantUser.Body.String())
+		}
+	})
+
+	t.Run("200 with empty events for unknown session", func(t *testing.T) {
+		w := doRequest(env.router, http.MethodGet, fmt.Sprintf("/api/v1/workspaces/%s/agents/%s/sessions/unknown-sess-999/events", ws.Slug, ag.Slug), memberToken, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK for unknown session, got %d: %s", w.Code, w.Body.String())
+		}
+
+		var res agents.HistoryResult
+		if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+		if len(res.Events) != 0 {
+			t.Errorf("expected 0 events, got %d", len(res.Events))
+		}
+		if res.Next != "" {
+			t.Errorf("expected empty next cursor, got %q", res.Next)
+		}
+	})
+}
+
+// TestAgents_ComputedContextFields covers the response-only computed context
+// fields (design D4): every agent payload carries the effective context window
+// and the summarization trigger execution would arm, and neither is writable.
+func TestAgents_ComputedContextFields(t *testing.T) {
+	env := setupTestEnv(t)
+	ctx := context.Background()
+	ownerUser, ownerToken := createTestUser(t, env, "owner@example.com", "Owner", "pwd")
+	ws, ownerRole, _, _ := createTestWorkspaceWithRoles(t, env, "ctx-fields-ws", "Ctx Fields WS")
+	addMember(t, env, ws.ID, ownerUser.ID, ownerRole.ID)
+
+	wProv := doRequest(env.router, http.MethodPost, "/api/v1/workspaces/ctx-fields-ws/providers", ownerToken, map[string]any{
+		"type": "openai",
+		"name": "OpenAI",
+		"key":  "sk-test-key",
+	})
+	var provRes struct {
+		Provider handlers.ProviderResponse `json:"provider"`
+	}
+	_ = json.Unmarshal(wProv.Body.Bytes(), &provRes)
+	provID := provRes.Provider.ID
+
+	type computedFields struct {
+		ContextWindow              *int `json:"context_window"`
+		EffectiveContextWindow     int  `json:"effective_context_window"`
+		SummarizationTriggerTokens int  `json:"summarization_trigger_tokens"`
+	}
+
+	t.Run("stored window 50000 computes effective 50000 and trigger 37500", func(t *testing.T) {
+		wCreate := doRequest(env.router, http.MethodPost, "/api/v1/workspaces/ctx-fields-ws/agents", ownerToken, map[string]any{
+			"name":           "Ctx Agent",
+			"slug":           "ctx-agent",
+			"role":           "tester",
+			"brief":          "brief",
+			"provider_id":    provID,
+			"model":          "gpt-4o",
+			"context_window": 50000,
+		})
+		if wCreate.Code != http.StatusCreated {
+			t.Fatalf("expected 201 Created, got %d: %s", wCreate.Code, wCreate.Body.String())
+		}
+		var createRes struct {
+			Agent computedFields `json:"agent"`
+		}
+		_ = json.Unmarshal(wCreate.Body.Bytes(), &createRes)
+		if createRes.Agent.ContextWindow == nil || *createRes.Agent.ContextWindow != 50000 {
+			t.Errorf("expected stored context_window 50000, got %v", createRes.Agent.ContextWindow)
+		}
+		if createRes.Agent.EffectiveContextWindow != 50000 || createRes.Agent.SummarizationTriggerTokens != 37500 {
+			t.Errorf("computed fields = effective %d trigger %d, want 50000/37500",
+				createRes.Agent.EffectiveContextWindow, createRes.Agent.SummarizationTriggerTokens)
+		}
+
+		// Detail and roster responses carry the same computed fields.
+		wGet := doRequest(env.router, http.MethodGet, "/api/v1/workspaces/ctx-fields-ws/agents/ctx-agent", ownerToken, nil)
+		if wGet.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK on get agent, got %d: %s", wGet.Code, wGet.Body.String())
+		}
+		var getRes struct {
+			Agent computedFields `json:"agent"`
+		}
+		_ = json.Unmarshal(wGet.Body.Bytes(), &getRes)
+		if getRes.Agent.EffectiveContextWindow != 50000 || getRes.Agent.SummarizationTriggerTokens != 37500 {
+			t.Errorf("get computed fields = effective %d trigger %d, want 50000/37500",
+				getRes.Agent.EffectiveContextWindow, getRes.Agent.SummarizationTriggerTokens)
+		}
+
+		wList := doRequest(env.router, http.MethodGet, "/api/v1/workspaces/ctx-fields-ws/agents", ownerToken, nil)
+		if wList.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK on list agents, got %d: %s", wList.Code, wList.Body.String())
+		}
+		var listRes struct {
+			Agents []map[string]any `json:"agents"`
+		}
+		_ = json.Unmarshal(wList.Body.Bytes(), &listRes)
+		found := false
+		for _, entry := range listRes.Agents {
+			if entry["slug"] == "ctx-agent" {
+				found = true
+				if entry["effective_context_window"] != float64(50000) || entry["summarization_trigger_tokens"] != float64(37500) {
+					t.Errorf("list entry computed fields = %v/%v, want 50000/37500",
+						entry["effective_context_window"], entry["summarization_trigger_tokens"])
+				}
+			}
+		}
+		if !found {
+			t.Fatal("ctx-agent missing from list response")
+		}
+	})
+
+	t.Run("computed fields on requests are ignored, responses recompute from stored", func(t *testing.T) {
+		wCreate := doRequest(env.router, http.MethodPost, "/api/v1/workspaces/ctx-fields-ws/agents", ownerToken, map[string]any{
+			"name":                         "Ignored Computed",
+			"slug":                         "ignored-computed",
+			"role":                         "tester",
+			"brief":                        "brief",
+			"provider_id":                  provID,
+			"model":                        "gpt-4o",
+			"context_window":               50000,
+			"effective_context_window":     999,
+			"summarization_trigger_tokens": 999,
+		})
+		if wCreate.Code != http.StatusCreated {
+			t.Fatalf("expected 201 Created, got %d: %s", wCreate.Code, wCreate.Body.String())
+		}
+		var createRes struct {
+			Agent computedFields `json:"agent"`
+		}
+		_ = json.Unmarshal(wCreate.Body.Bytes(), &createRes)
+		// The response recomputes from the stored window; 999 is never stored
+		// nor echoed.
+		if createRes.Agent.EffectiveContextWindow != 50000 || createRes.Agent.SummarizationTriggerTokens != 37500 {
+			t.Errorf("create response computed fields = effective %d trigger %d, want recomputed 50000/37500",
+				createRes.Agent.EffectiveContextWindow, createRes.Agent.SummarizationTriggerTokens)
+		}
+		stored, err := env.store.Agents().BySlug(ctx, ws.ID, "ignored-computed")
+		if err != nil {
+			t.Fatalf("load stored agent: %v", err)
+		}
+		if stored.ContextWindow == nil || *stored.ContextWindow != 50000 {
+			t.Errorf("stored context_window = %v, want 50000", stored.ContextWindow)
+		}
+
+		wPatch := doRequest(env.router, http.MethodPatch, "/api/v1/workspaces/ctx-fields-ws/agents/ctx-agent", ownerToken, map[string]any{
+			"description":                  "carries an editable field alongside",
+			"effective_context_window":     999,
+			"summarization_trigger_tokens": 999,
+		})
+		if wPatch.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK on patch, got %d: %s", wPatch.Code, wPatch.Body.String())
+		}
+		var patchRes struct {
+			Agent computedFields `json:"agent"`
+		}
+		_ = json.Unmarshal(wPatch.Body.Bytes(), &patchRes)
+		if patchRes.Agent.EffectiveContextWindow != 50000 || patchRes.Agent.SummarizationTriggerTokens != 37500 {
+			t.Errorf("patch response computed fields = effective %d trigger %d, want recomputed 50000/37500",
+				patchRes.Agent.EffectiveContextWindow, patchRes.Agent.SummarizationTriggerTokens)
+		}
+		storedAfter, err := env.store.Agents().BySlug(ctx, ws.ID, "ctx-agent")
+		if err != nil {
+			t.Fatalf("load stored agent after patch: %v", err)
+		}
+		if storedAfter.ContextWindow == nil || *storedAfter.ContextWindow != 50000 {
+			t.Errorf("stored context_window after patch = %v, want 50000", storedAfter.ContextWindow)
+		}
+	})
+
+	t.Run("unset window falls back to the default budget", func(t *testing.T) {
+		ag := &domain.Agent{
+			WorkspaceID: ws.ID,
+			Slug:        "unset-cw",
+			Name:        "Unset CW",
+			ProviderID:  provID,
+			Model:       "gpt-4o",
+		}
+		if err := env.store.Agents().Create(ctx, ag); err != nil {
+			t.Fatalf("create agent: %v", err)
+		}
+
+		wGet := doRequest(env.router, http.MethodGet, "/api/v1/workspaces/ctx-fields-ws/agents/unset-cw", ownerToken, nil)
+		if wGet.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d: %s", wGet.Code, wGet.Body.String())
+		}
+		var res struct {
+			Agent computedFields `json:"agent"`
+		}
+		_ = json.Unmarshal(wGet.Body.Bytes(), &res)
+		if res.Agent.ContextWindow != nil {
+			t.Errorf("context_window = %v, want unset", res.Agent.ContextWindow)
+		}
+		if res.Agent.EffectiveContextWindow != 200000 || res.Agent.SummarizationTriggerTokens != 150000 {
+			t.Errorf("computed fields = effective %d trigger %d, want 200000/150000",
+				res.Agent.EffectiveContextWindow, res.Agent.SummarizationTriggerTokens)
 		}
 	})
 }

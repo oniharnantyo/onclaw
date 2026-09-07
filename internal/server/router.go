@@ -3,11 +3,12 @@ package server
 import (
 	"github.com/gin-gonic/gin"
 	"github.com/oniharnantyo/onclaw/internal/agents"
-	"github.com/oniharnantyo/onclaw/internal/auth"
 	"github.com/oniharnantyo/onclaw/internal/domain"
-	"github.com/oniharnantyo/onclaw/internal/modelcatalog"
+	"github.com/oniharnantyo/onclaw/internal/promptgen"
 	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/server/handlers"
+	"github.com/oniharnantyo/onclaw/internal/services"
+	"github.com/oniharnantyo/onclaw/internal/skills"
 	"github.com/oniharnantyo/onclaw/internal/storage"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
@@ -16,26 +17,40 @@ import (
 type RouterOptions struct {
 	Store         store.Store
 	Storage       storage.Storage
-	Issuer        auth.TokenIssuer
-	Auth          auth.Service
+	Issuer        services.TokenIssuer
+	Auth          services.AuthService
 	EncryptionKey []byte
 	Providers     *providers.Registry
-	ModelCatalog  *modelcatalog.Service
-	AgentService  *agents.Service
+	ModelCatalog  *services.ModelCatalog
+	AgentService  *promptgen.Service
 	WorkspaceDir  string
+	OnClawDir     string
+	Runner        *agents.Runner
+	ToolSettings  *agents.ToolSettingsService
 }
 
 // router configures and builds the HTTP API routes and handlers.
 type router struct {
 	opts RouterOptions
 	mw   *middlewares
+	v1mw *v1Middlewares
 }
 
 // New creates a new router instance with all handlers and middlewares initialized.
 func New(opts RouterOptions) *router {
+	if opts.Store == nil {
+		return &router{opts: opts}
+	}
 	return &router{
 		opts: opts,
-		mw:   NewMiddlewares(opts.Store, opts.Issuer),
+		mw: NewMiddlewares(
+			opts.Store.Users(),
+			opts.Store.Workspaces(),
+			opts.Store.Members(),
+			opts.Store.Roles(),
+			opts.Issuer,
+		),
+		v1mw: NewV1Middlewares(opts.Store.APIKeys()),
 	}
 }
 
@@ -43,9 +58,9 @@ func New(opts RouterOptions) *router {
 func (rt *router) Engine() *gin.Engine {
 	authService := rt.opts.Auth
 	if authService == nil && rt.opts.Store != nil && rt.opts.Issuer != nil {
-		reg := auth.NewRegistry()
-		reg.Register(auth.NewPasswordProvider(rt.opts.Store.Users()))
-		authService = auth.NewService(rt.opts.Store, rt.opts.Issuer, reg)
+		reg := services.NewRegistry()
+		reg.Register(services.NewPasswordProvider(rt.opts.Store.Users()))
+		authService = services.NewAuthService(rt.opts.Store.Users(), rt.opts.Store.Members(), rt.opts.Issuer, reg)
 	}
 
 	providerRegistry := rt.opts.Providers
@@ -55,36 +70,87 @@ func (rt *router) Engine() *gin.Engine {
 
 	modelCatalog := rt.opts.ModelCatalog
 	if modelCatalog == nil {
-		modelCatalog = modelcatalog.NewService(modelcatalog.Options{Registry: providerRegistry})
+		modelCatalog = services.NewModelCatalog(services.ModelCatalogOptions{Registry: providerRegistry})
 	}
 
 	agentService := rt.opts.AgentService
 	if agentService == nil && rt.opts.Store != nil {
-		agentService = agents.NewService(rt.opts.Store, rt.opts.EncryptionKey)
+		agentService = promptgen.NewService(rt.opts.Store.Agents(), rt.opts.Store.Providers(), rt.opts.EncryptionKey)
 	}
 
 	workspaceDir := rt.opts.WorkspaceDir
 	if workspaceDir == "" {
-		workspaceDir = domain.DefaultWorkspaceDir()
+		workspaceDir = domain.WorkspaceRoot(domain.DefaultOnClawDir())
+	}
+	onClawDir := rt.opts.OnClawDir
+	if onClawDir == "" {
+		onClawDir = domain.DefaultOnClawDir()
 	}
 
 	authHandlers := handlers.NewAuthHandlers(authService, rt.opts.Storage)
 	workspaceHandlers := handlers.NewWorkspaceHandlers(rt.opts.Store, rt.opts.EncryptionKey, providerRegistry, modelCatalog, agentService, workspaceDir)
 	memberHandlers := handlers.NewMemberHandlers(rt.opts.Store, rt.opts.Storage)
-	roleHandlers := handlers.NewRoleHandlers(rt.opts.Store)
-	userHandlers := handlers.NewUserHandlers(rt.opts.Store, rt.opts.Storage)
+	roleHandlers := handlers.NewRoleHandlers(rt.opts.Store.Roles())
+	userHandlers := handlers.NewUserHandlers(rt.opts.Store.Users(), rt.opts.Storage)
 	fileHandlers := handlers.NewFileHandlers(rt.opts.Storage)
 	adminWorkspaceHandlers := handlers.NewAdminWorkspaceHandlers(rt.opts.Store, rt.opts.Storage)
-	adminUserHandlers := handlers.NewAdminUserHandlers(rt.opts.Store)
+	adminUserHandlers := handlers.NewAdminUserHandlers(rt.opts.Store.Users(), rt.opts.Store.Workspaces(), rt.opts.Store.Members(), rt.opts.Store.Roles())
 	adminSuperadminHandlers := handlers.NewAdminSuperadminHandlers(rt.opts.Store)
-	providerHandlers := handlers.NewProviderHandlers(rt.opts.Store, rt.opts.EncryptionKey, providerRegistry, modelCatalog)
-	agentHandlers := handlers.NewAgentHandlers(rt.opts.Store, rt.opts.EncryptionKey, providerRegistry, modelCatalog, agentService, workspaceDir)
-	skillHandlers := handlers.NewSkillHandlers(rt.opts.Store)
+	runner := rt.opts.Runner
+	if runner == nil && rt.opts.Store != nil {
+		runner = agents.NewRunner(
+			rt.opts.Store.Workspaces(),
+			rt.opts.Store.Agents(),
+			rt.opts.Store.Users(),
+			rt.opts.Store.Members(),
+			rt.opts.Store.Roles(),
+			rt.opts.Store.Providers(),
+			rt.opts.Store.SessionEvents(),
+			rt.opts.Store.SessionCheckpoints(),
+			rt.opts.EncryptionKey,
+			onClawDir,
+			agents.WithEnabledSkillReader(WorkspaceSkillReader(rt.opts.Store.WorkspaceSkills())),
+		)
+	}
+
+	providerHandlers := handlers.NewProviderHandlers(rt.opts.Store.Providers(), rt.opts.Store.Agents(), rt.opts.EncryptionKey, providerRegistry, modelCatalog)
+	agentHandlers := handlers.NewAgentHandlers(rt.opts.Store.Agents(), rt.opts.Store.AgentUserMemories(), rt.opts.Store.Providers(), rt.opts.Store.SessionEvents(), rt.opts.EncryptionKey, providerRegistry, modelCatalog, agentService, workspaceDir, runner, runner)
+
+	toolSettings := rt.opts.ToolSettings
+	if toolSettings == nil {
+		toolSettings = agents.NewToolSettingsService(rt.opts.Store.ToolSettings(), rt.opts.EncryptionKey)
+	}
+	toolSettingsHandlers := handlers.NewToolSettingsHandlers(toolSettings)
+
+	// Workspace skill library: the registry store bridges into the install
+	// pipeline's port (skills.Store), the transaction seam binds to
+	// store.WithTx, and the runner reads enabled names through the same
+	// adapter (design D2–D5, D8).
+	skillsAdapter := newWorkspaceSkillStoreAdapter(rt.opts.Store.WorkspaceSkills())
+	installService := skills.NewInstallService(
+		skillsAdapter,
+		rt.opts.Store.Agents(),
+		rt.opts.Store.ToolSettings(),
+		skills.WithTxProvider(workspaceSkillsTxProvider(rt.opts.Store)),
+	)
+	skillHandlers := handlers.NewSkillHandlers(installService, rt.opts.Store.WorkspaceSkills(), rt.opts.Store.Agents(), onClawDir)
+
+	apiKeyService := services.NewAPIKeyService(rt.opts.Store.APIKeys())
+	apiKeyHandlers := handlers.NewAPIKeysHandlers(apiKeyService)
 
 	r := gin.New()
 	r.Use(RequestIDMiddleware())
 	r.Use(gin.Recovery())
 	r.Use(gin.Logger())
+
+	// /v1 (OpenResponses) surface: API-key authenticated only (JWTs rejected).
+	v1Handlers := handlers.NewV1Handlers(runner, rt.opts.Store.Agents(), rt.opts.Store.SessionEvents())
+	v1 := r.Group("/v1")
+	v1.Use(rt.v1mw.APIKeyAuthRequired())
+	{
+		v1.GET("/models", v1Handlers.ListModels)
+		v1.POST("/responses", v1Handlers.CreateResponse)
+	}
 
 	// Basic health check
 	r.GET("/healthz", func(c *gin.Context) {
@@ -165,13 +231,40 @@ func (rt *router) Engine() *gin.Engine {
 				wsGroup.POST("/agents/:agent/regenerate", rt.mw.RequirePermission(domain.AgentsWrite), agentHandlers.RegenerateAgent)
 				wsGroup.GET("/agents/:agent/memory", agentHandlers.GetAgentMemory)
 				wsGroup.DELETE("/agents/:agent/memory", agentHandlers.DeleteAgentMemory)
+				wsGroup.GET("/agents/:agent/sessions/:session/events", rt.mw.RequirePermission(domain.AgentsRead), agentHandlers.ListSessionEvents)
+				wsGroup.POST("/agents/:agent/sessions/:session/approvals/:interruptID", rt.mw.RequirePermission(domain.AgentsWrite), agentHandlers.ResolveApproval)
+				wsGroup.POST("/agents/:agent/sessions/:session/runs/:turn/cancel", rt.mw.RequirePermission(domain.AgentsWrite), agentHandlers.CancelRun)
 
-				// Workspace skills management
+				// Tool settings (workspace settings; read covered by membership,
+				// writes are Owner/Admin via tools.write)
+				wsGroup.GET("/tools", toolSettingsHandlers.ListTools)
+				wsGroup.PATCH("/tools/:key", rt.mw.RequirePermission(domain.ToolsWrite), toolSettingsHandlers.PatchTool)
+
+				// Workspace skill library (registry + system tier; Member reads,
+				// Owner/Admin/Superadmin manage via skills.write)
 				wsGroup.GET("/skills", rt.mw.RequirePermission(domain.SkillsRead), skillHandlers.ListSkills)
 				wsGroup.POST("/skills", rt.mw.RequirePermission(domain.SkillsWrite), skillHandlers.CreateSkill)
-				wsGroup.GET("/skills/:id", rt.mw.RequirePermission(domain.SkillsRead), skillHandlers.GetSkill)
-				wsGroup.PATCH("/skills/:id", rt.mw.RequirePermission(domain.SkillsWrite), skillHandlers.PatchSkill)
-				wsGroup.DELETE("/skills/:id", rt.mw.RequirePermission(domain.SkillsWrite), skillHandlers.DeleteSkill)
+				wsGroup.POST("/skills/inspect", rt.mw.RequirePermission(domain.SkillsWrite), skillHandlers.InspectUpload)
+				wsGroup.POST("/skills/inspect/git", rt.mw.RequirePermission(domain.SkillsWrite), skillHandlers.InspectGit)
+				wsGroup.GET("/skills/:name", rt.mw.RequirePermission(domain.SkillsRead), skillHandlers.GetSkill)
+				wsGroup.PUT("/skills/:name", rt.mw.RequirePermission(domain.SkillsWrite), skillHandlers.UpdateSkill)
+				wsGroup.PATCH("/skills/:name", rt.mw.RequirePermission(domain.SkillsWrite), skillHandlers.PatchSkill)
+				wsGroup.DELETE("/skills/:name", rt.mw.RequirePermission(domain.SkillsWrite), skillHandlers.DeleteSkill)
+				wsGroup.POST("/skills/:name/dependencies/recheck", rt.mw.RequirePermission(domain.SkillsWrite), skillHandlers.RecheckSkill)
+
+				// Agent-tier skills: install/remove under the agent endpoints
+				// (presence on disk is the state)
+				wsGroup.GET("/agents/:agent/skills", rt.mw.RequirePermission(domain.SkillsRead), skillHandlers.ListAgentSkills)
+				wsGroup.POST("/agents/:agent/skills", rt.mw.RequirePermission(domain.SkillsWrite), skillHandlers.InstallAgentSkill)
+				wsGroup.DELETE("/agents/:agent/skills/:name", rt.mw.RequirePermission(domain.SkillsWrite), skillHandlers.RemoveAgentSkill)
+
+				// API keys management (workspace settings; workspace.write is Owner/Admin only)
+				// Exchange is Member-level: membership via RequireWorkspace suffices,
+				// like the other member-readable routes (e.g. GET /tools).
+				wsGroup.POST("/api-keys/exchange", apiKeyHandlers.ExchangeAPIKey)
+				wsGroup.GET("/api-keys", rt.mw.RequirePermission(domain.WorkspaceWrite), apiKeyHandlers.ListAPIKeys)
+				wsGroup.POST("/api-keys", rt.mw.RequirePermission(domain.WorkspaceWrite), apiKeyHandlers.CreateAPIKey)
+				wsGroup.DELETE("/api-keys/:id", rt.mw.RequirePermission(domain.WorkspaceWrite), apiKeyHandlers.RevokeAPIKey)
 			}
 
 			// Instance Admin route group (master tenant control plane)

@@ -5,16 +5,28 @@ export interface ToolCall {
   error?: string;
 }
 
+/** One ordered entry of an agent turn body: a reasoning segment or a tool
+ * card reference (index into Message.tools) — the stream order they occurred. */
+export type MessagePart = { k: 'reasoning'; text: string } | { k: 'tool'; i: number };
+
 export interface Message {
   id: string;
-  author: 'you' | 'agent' | 'other';
+  author: 'you' | 'agent' | 'other' | 'error';
   ts: string;
   text: string;
+  /** Accumulated reasoning trace (distinct from the visible text) — live turns only. */
+  reasoning?: string;
+  /** Ordered turn body: reasoning segments interleaved with tool cards.
+   * Absent on legacy/seed messages, which fall back to tools → reasoning → text. */
+  parts?: MessagePart[];
+  /** Failure text for author:'error' entries (design D8). */
+  error?: string;
   agentId?: string;
   cron?: string;
   name?: string;
   tools?: ToolCall[];
   branches?: Message[]; // Support for branching variants
+  resp?: string; // Minted /v1 response id — the previous_response_id chain link
 }
 
 export interface ThreadSession {
@@ -22,6 +34,8 @@ export interface ThreadSession {
   title: string;
   updated: string;
   messages: Message[];
+  sess?: string; // Bound onclaw_session id (sess_<uuid>) once the thread goes live
+  usage?: { finalInput: number; at: string }; // Latest terminal turn's final-call input (context meter, D5)
 }
 
 export interface Agent {
@@ -34,6 +48,10 @@ export interface Agent {
   temperature?: number;
   max_tokens?: number | null;
   effort?: string | null;
+  /** Server-computed effective window — the meter's denominator. */
+  effective_context_window?: number;
+  /** Token count at which the backend summarizes — the meter's warn threshold. */
+  summarization_trigger_tokens?: number;
   autonomy: 'approval' | 'suggest' | 'full' | string;
   channelPost?: boolean;
   role: string;
@@ -129,10 +147,12 @@ export interface Skill {
   id: string;
   name: string;
   version: string;
-  uses: number;
   enabled: boolean;
-  source: 'registry' | 'workspace' | string;
+  tier: 'system' | 'workspace' | string;
+  source: 'authored' | 'upload' | 'git' | 'fork' | 'system' | string;
+  locked?: boolean;
   desc: string;
+  dependencies?: { tools?: string[]; binaries?: string[]; python?: string[] };
 }
 
 export interface ApiKey {

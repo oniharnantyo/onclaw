@@ -7,11 +7,11 @@ Workspaces as tenants: immutable slugs as external IDs, stateless tenant scoping
 ## Requirements
 
 ### Requirement: Workspace creation
-Creating a workspace SHALL atomically create the workspace, its three built-in roles, and the creator's Owner membership in one transaction. Creation SHALL validate the slug (DNS-label format, not reserved — `master` is instance-reserved) and reject duplicates with 409. The create payload MAY additionally include a `provider` object and a `starter_agent` object; when present, the provider config and starter agent SHALL be created in the same transaction (atomic birth): the starter agent is born configured (its provider_id points at the just-created config) with `prompts_status` `generating`, and its identity/soul prompts generate in the background per the agent-prompts capability. Provider and starter agent are all-or-nothing with the workspace: any validation failure aborts the entire birth.
+Creating a workspace SHALL atomically create the workspace, its three built-in roles, and the creator's Owner membership in one transaction. The create payload MAY include a `description` (free text, display description of the workspace; optional). Creation SHALL validate the slug (DNS-label format, not reserved — `master` is instance-reserved) and reject duplicates with 409. The create payload MAY additionally include a `provider` object and a `starter_agent` object; when present, the provider config and starter agent SHALL be created in the same transaction (atomic birth): the starter agent is born configured (its provider_id points at the just-created config) with `prompts_status` `generating`, and its identity/soul prompts generate in the background per the agent-prompts capability. Provider and starter agent are all-or-nothing with the workspace: any validation failure aborts the entire birth.
 
 #### Scenario: API creation
-- **WHEN** an authenticated user POSTs {name, slug, timezone} to /workspaces
-- **THEN** response is 201 with the workspace and the creator's Owner membership
+- **WHEN** an authenticated user POSTs {name, slug, timezone, description?} to /workspaces
+- **THEN** response is 201 with the workspace (carrying the description when provided) and the creator's Owner membership
 
 #### Scenario: Birth with provider and starter agent
 - **WHEN** the payload includes provider {type, name, base_url?, key} and starter_agent {name, slug, role, brief, model, ...}
@@ -55,10 +55,10 @@ GET /auth/me (and GET /workspaces) SHALL return every workspace the user belongs
 - **THEN** /auth/me lists both, each with the user's role
 
 ### Requirement: Workspace settings
-PATCH /workspaces/:ws SHALL require the `workspace.write` permission for name/timezone updates.
+PATCH /workspaces/:ws SHALL require the `workspace.write` permission for name/timezone/description updates.
 
 #### Scenario: Authorized update
-- **WHEN** a member with workspace.write updates name or timezone
+- **WHEN** a member with workspace.write updates name, timezone, or description
 - **THEN** response is 200, workspace updated, slug untouched
 
 #### Scenario: Unauthorized update

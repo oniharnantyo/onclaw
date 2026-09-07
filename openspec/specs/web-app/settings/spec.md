@@ -2,24 +2,24 @@
 
 ## Purpose
 
-The workspace settings routed page and its eight sections — workspace, providers, members & roles, integrations, MCP servers, skills, API keys, and notifications.
+The workspace settings routed page and its nine sections — workspace, providers, members & roles, integrations, MCP servers, skills, tools, API keys, and notifications.
 
 ## Requirements
 
 ### Requirement: Settings navigation
-Settings SHALL be the routed page surface `/settings/:section` presenting the eight sections — Workspace, Providers, Members & roles, Integrations, MCP servers, Skills, API keys, Notifications — with its own section navigation (a static left column at widths ≥768px, horizontal scroll tabs below) in place of the workspace sidebar. `/settings` SHALL redirect to the Workspace section. The active section SHALL be carried in the URL so sections are deep-linkable and browser back/forward move between sections.
+Settings SHALL be the routed page surface `/settings/:section` presenting the nine sections — Workspace, Providers, Members & roles, Integrations, MCP servers, Skills, Tools, API keys, Notifications — with its own section navigation (a static left column at widths ≥768px, horizontal scroll tabs below) in place of the workspace sidebar. `/settings` SHALL redirect to the Workspace section. The active section SHALL be carried in the URL so sections are deep-linkable and browser back/forward move between sections.
 
 #### Scenario: Switch panes
 - **WHEN** the user selects "API keys" in the section nav
 - **THEN** the keys section renders with its manage controls and the URL reads /settings/keys
 
-#### Scenario: Providers reachable
-- **WHEN** the user selects "Providers" in the section nav
-- **THEN** the providers section renders, listing the workspace's provider configs
+#### Scenario: Tools reachable
+- **WHEN** the user selects "Tools" in the section nav
+- **THEN** the tools section renders and the URL reads /settings/tools
 
 #### Scenario: Deep link
-- **WHEN** a member opens /settings/providers directly
-- **THEN** the providers section renders without passing through any other section
+- **WHEN** a member opens /settings/tools directly
+- **THEN** the tools section renders without passing through any other section
 
 #### Scenario: Unknown section
 - **WHEN** a member opens /settings/nonexistent
@@ -68,15 +68,74 @@ The MCP pane SHALL list servers with transport string, status (Connected/Paused/
 - **THEN** a reconnect is attempted and the status returns to Connected
 
 ### Requirement: Skills pane
-The skills pane SHALL list installed skills with version, source badge for custom ones, run counts, and referencing-agent counts; support installing a custom skill by name and optional description (versioned `0.1.0`) through an install dialog, editing a custom skill's name and description through an edit dialog, and toggling skills — disabled skills SHALL apply to every agent referencing them.
+The skills pane SHALL present the workspace skill library backed by the skills API: each row shows the skill's name, version chip, source badge (`authored` | `upload` | `git` | `fork`), dependency status chip when unmet, an enable master toggle, an edit action, and an uninstall action (confirm dialog). An **Install skill** wizard SHALL walk through source selection (Author / Upload / Git or URL; Fork when entered from a system skill), content (body editor for Author; archive drop with file-tree preview for Upload; URL with ref and optional token plus discovered-skill selection for Git/URL), and a dependency review step listing every declared or inferred dependency with its resolution status — tools (with the pre-checked "enable everywhere" option), binaries (per-platform install command with copy action and re-check), python packages (auto-provision checkbox). Installing with unmet dependencies SHALL be allowed and leave a persistent warning chip on the row. Disabling a skill SHALL toast that it was removed from every agent; enabling SHALL restore it everywhere. A **System skills** section SHALL list embedded skills as read-only locked entries marked always-on with a Fork-to-workspace action. Holders of `skills.read` without `skills.write` (Members) SHALL see the same lists with no action affordances.
 
 #### Scenario: Install custom skill
-- **WHEN** the user installs "Changelog sweeper" through the install dialog
-- **THEN** it appears with version `0.1.0`, a `custom` badge, and zero runs
+- **WHEN** the user authors "Changelog sweeper" with a SKILL.md body and installs through the wizard
+- **THEN** it appears with version `0.1.0`, an `authored` badge, `enabled` on, and a toast that it is live on all agents
 
 #### Scenario: Edit custom skill
 - **WHEN** the user edits "Changelog sweeper" and changes its description
 - **THEN** the new description renders on the row after save
+
+#### Scenario: Dependency review reports a missing binary
+- **WHEN** the wizard's review step evaluates a skill declaring `pdftotext` absent from the server PATH
+- **THEN** the step shows the binary as unmet with the per-platform install command, a copy button, and a re-check action, and install completes with a warning chip on the row
+
+#### Scenario: Enable-everywhere option
+- **WHEN** the user installs a skill declaring the `web.search` tool dependency with the pre-checked enable option left on
+- **THEN** the skill installs and the agent wizard's tool chips show Web Search enabled for every agent
+
+#### Scenario: Master toggle disables everywhere
+- **WHEN** the user toggles "Changelog sweeper" off
+- **THEN** the toast reads the skill was disabled and removed from every agent, and the row renders dimmed until re-enabled
+
+#### Scenario: Upload with entry-point error
+- **WHEN** the user drops a zip without a root SKILL.md
+- **THEN** the content step shows the error state and nothing is installed
+
+#### Scenario: Multi-skill repo selection
+- **WHEN** a git URL resolves to a tree containing three skills
+- **THEN** the wizard lists all three with descriptions and installs only the checked ones
+
+#### Scenario: System skills locked with fork
+- **WHEN** the user opens the System skills section
+- **THEN** each entry renders locked and always-on, and its Fork action creates a workspace copy (`fork` badge) opened for editing
+
+#### Scenario: Member sees read-only inventory
+- **WHEN** a Member-role holder opens the Skills pane
+- **THEN** the library and system lists render with no install, toggle, edit, or uninstall affordances
+
+### Requirement: Tools pane (API-backed)
+The Tools pane SHALL list every tool from the workspace tools endpoint as a flat list — one row per tool with its display name, one-line description, and an enable toggle reflecting (and driving) the workspace-wide tool status; toggling requires the settings-management permission and SHALL surface guard rejections as toasts. Configurable tools SHALL additionally render a gear button opening a structured config dialog rendered from the tool's config-field schema: one labeled control per field — `secret` fields as password-style write-only inputs (existing values shown only as hints, replaced on save), `text` as inputs, `number` as numeric inputs, `boolean` as toggles, `enum` as selects fed by the schema's options — with help text and a Save action. A configurable tool whose required config is missing SHALL show its toggle as unavailable until configured, and the dialog SHALL state what is missing; saving valid config SHALL enable toggling. The pane SHALL NOT offer raw JSON editing for any structured value.
+
+#### Scenario: Flat list with toggles
+- **WHEN** a Member opens the Tools pane
+- **THEN** every catalog tool appears as a row — display name, description, toggle — with no group headings, driven by the workspace tools endpoint
+
+#### Scenario: Gear opens config dialog
+- **WHEN** the user activates the gear on "Web Search"
+- **THEN** a dialog opens with a provider select (registry options with their credential kinds) and an API key field, one labeled control per property
+
+#### Scenario: Browser config dialog
+- **WHEN** the user opens the Browser config dialog
+- **THEN** it exposes headless toggle, remote CDP URL, max pages, idle timeout, and action timeout, one labeled control per property, with help text explaining that a set CDP URL makes headless irrelevant
+
+#### Scenario: Disabled until configured
+- **WHEN** no search provider is configured for the workspace
+- **THEN** the Web Search row shows its toggle as unavailable with an explanatory hint, and saving a valid provider config enables the toggle
+
+#### Scenario: Secret never echoed
+- **WHEN** the user reopens the Web Search dialog after saving an API key
+- **THEN** the key field is empty with the stored hint displayed beside it, and saving without typing preserves the stored key
+
+#### Scenario: Toggle rejection surfaces as toast
+- **WHEN** a Member attempts to toggle a tool
+- **THEN** the request is refused with a 403 and the pane surfaces a toast
+
+#### Scenario: Invalid config reported inline
+- **WHEN** the user saves the Browser dialog with max pages 0
+- **THEN** the dialog shows the validation error on that field and does not close
 
 ### Requirement: API keys pane
 The keys pane SHALL create keys through a create-key dialog requiring a key name (keys keep a random suffix); the newly created key's full value SHALL be presented once with a one-time copy warning. The pane SHALL offer reveal, clipboard copy, and revoke per key. When the browser blocks clipboard access the pane SHALL show a danger toast instead of failing silently.

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/promptdocs"
 	"github.com/oniharnantyo/onclaw/internal/server/handlers"
 )
 
@@ -84,7 +85,7 @@ func TestWorkspaces_AtomicBirth(t *testing.T) {
 		// The birth response composes the prompt documents from those files.
 		if res.StarterAgent.Identity != "# Identity\nStub identity" ||
 			res.StarterAgent.Soul != "# Soul\nStub soul" ||
-			res.StarterAgent.Bootstrap != "# BOOTSTRAP.md - Birth Sequence\nStub bootstrap" {
+			res.StarterAgent.Bootstrap != promptdocs.BootstrapTemplate {
 			t.Errorf("expected identity/soul/bootstrap composed from workspace files, got identity=%q soul=%q bootstrap=%q",
 				res.StarterAgent.Identity, res.StarterAgent.Soul, res.StarterAgent.Bootstrap)
 		}

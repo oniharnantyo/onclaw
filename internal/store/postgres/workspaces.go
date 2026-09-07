@@ -49,13 +49,14 @@ func (ws *workspaceStore) Create(ctx context.Context, w *domain.Workspace) error
 	}
 
 	query := `
-		INSERT INTO workspaces (id, slug, name, timezone, is_master, disabled_at, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO workspaces (id, slug, name, description, timezone, is_master, disabled_at, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 	`
 	_, err := ws.db.Exec(ctx, query,
 		w.ID,
 		w.Slug,
 		w.Name,
+		w.Description,
 		w.Timezone,
 		w.IsMaster,
 		w.DisabledAt,
@@ -74,7 +75,7 @@ func (ws *workspaceStore) BySlug(ctx context.Context, slug string) (*domain.Work
 	}
 
 	query := `
-		SELECT id, slug, name, timezone, is_master, disabled_at, created_at, updated_at
+		SELECT id, slug, name, COALESCE(description, ''), timezone, is_master, disabled_at, created_at, updated_at
 		FROM workspaces
 		WHERE slug = $1
 	`
@@ -83,6 +84,7 @@ func (ws *workspaceStore) BySlug(ctx context.Context, slug string) (*domain.Work
 		&w.ID,
 		&w.Slug,
 		&w.Name,
+		&w.Description,
 		&w.Timezone,
 		&w.IsMaster,
 		&w.DisabledAt,
@@ -101,7 +103,7 @@ func (ws *workspaceStore) ByID(ctx context.Context, id string) (*domain.Workspac
 	}
 
 	query := `
-		SELECT id, slug, name, timezone, is_master, disabled_at, created_at, updated_at
+		SELECT id, slug, name, COALESCE(description, ''), timezone, is_master, disabled_at, created_at, updated_at
 		FROM workspaces
 		WHERE id = $1
 	`
@@ -110,6 +112,7 @@ func (ws *workspaceStore) ByID(ctx context.Context, id string) (*domain.Workspac
 		&w.ID,
 		&w.Slug,
 		&w.Name,
+		&w.Description,
 		&w.Timezone,
 		&w.IsMaster,
 		&w.DisabledAt,
@@ -131,15 +134,17 @@ func (ws *workspaceStore) Update(ctx context.Context, w *domain.Workspace) error
 	query := `
 		UPDATE workspaces
 		SET name = CASE WHEN $1 <> '' THEN $1 ELSE name END,
-		    timezone = CASE WHEN $2 <> '' THEN $2 ELSE timezone END,
-		    is_master = $3,
-		    disabled_at = $4,
-		    updated_at = $5
-		WHERE id = $6
-		RETURNING slug, name, timezone, is_master, disabled_at, created_at, updated_at
+		    description = $2,
+		    timezone = CASE WHEN $3 <> '' THEN $3 ELSE timezone END,
+		    is_master = $4,
+		    disabled_at = $5,
+		    updated_at = $6
+		WHERE id = $7
+		RETURNING slug, name, COALESCE(description, ''), timezone, is_master, disabled_at, created_at, updated_at
 	`
 	err := ws.db.QueryRow(ctx, query,
 		w.Name,
+		w.Description,
 		w.Timezone,
 		w.IsMaster,
 		w.DisabledAt,
@@ -148,6 +153,7 @@ func (ws *workspaceStore) Update(ctx context.Context, w *domain.Workspace) error
 	).Scan(
 		&w.Slug,
 		&w.Name,
+		&w.Description,
 		&w.Timezone,
 		&w.IsMaster,
 		&w.DisabledAt,
@@ -166,7 +172,7 @@ func (ws *workspaceStore) ListForUser(ctx context.Context, userID string) ([]dom
 	}
 
 	query := `
-		SELECT w.id, w.slug, w.name, w.timezone, w.is_master, w.disabled_at, w.created_at, w.updated_at
+		SELECT w.id, w.slug, w.name, COALESCE(w.description, ''), w.timezone, w.is_master, w.disabled_at, w.created_at, w.updated_at
 		FROM workspaces w
 		JOIN workspace_members wm ON w.id = wm.workspace_id
 		WHERE wm.user_id = $1
@@ -185,6 +191,7 @@ func (ws *workspaceStore) ListForUser(ctx context.Context, userID string) ([]dom
 			&w.ID,
 			&w.Slug,
 			&w.Name,
+			&w.Description,
 			&w.Timezone,
 			&w.IsMaster,
 			&w.DisabledAt,
@@ -203,7 +210,7 @@ func (ws *workspaceStore) ListForUser(ctx context.Context, userID string) ([]dom
 
 func (ws *workspaceStore) ListAll(ctx context.Context) ([]domain.Workspace, error) {
 	query := `
-		SELECT id, slug, name, timezone, is_master, disabled_at, created_at, updated_at
+		SELECT id, slug, name, COALESCE(description, ''), timezone, is_master, disabled_at, created_at, updated_at
 		FROM workspaces
 		ORDER BY created_at ASC, id ASC
 	`
@@ -220,6 +227,7 @@ func (ws *workspaceStore) ListAll(ctx context.Context) ([]domain.Workspace, erro
 			&w.ID,
 			&w.Slug,
 			&w.Name,
+			&w.Description,
 			&w.Timezone,
 			&w.IsMaster,
 			&w.DisabledAt,

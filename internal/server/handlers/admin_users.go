@@ -7,42 +7,48 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/oniharnantyo/onclaw/internal/auth"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/services"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
 // adminUserHandlers handles instance-wide user management endpoints.
 type adminUserHandlers struct {
-	store  store.Store
-	hasher auth.PasswordHasher
+	users      store.UserStore
+	workspaces store.WorkspaceStore
+	members    store.MemberStore
+	roles      store.RoleStore
+	hasher     services.PasswordHasher
 }
 
 // NewAdminUserHandlers creates a new adminUserHandlers instance with injected dependencies.
-func NewAdminUserHandlers(st store.Store) *adminUserHandlers {
+func NewAdminUserHandlers(users store.UserStore, workspaces store.WorkspaceStore, members store.MemberStore, roles store.RoleStore) *adminUserHandlers {
 	return &adminUserHandlers{
-		store:  st,
-		hasher: auth.NewPasswordHasher(),
+		users:      users,
+		workspaces: workspaces,
+		members:    members,
+		roles:      roles,
+		hasher:     services.NewPasswordHasher(),
 	}
 }
 
 // AdminListUsers lists all users across the instance, including their superadmin status.
 func (h *adminUserHandlers) AdminListUsers(c *gin.Context) {
-	users, err := h.store.Users().List(c.Request.Context())
+	users, err := h.users.List(c.Request.Context())
 	if err != nil {
 		RespondError(c, err)
 		return
 	}
 
-	master, err := h.store.Workspaces().BySlug(c.Request.Context(), domain.MasterWorkspaceSlug)
+	master, err := h.workspaces.BySlug(c.Request.Context(), domain.MasterWorkspaceSlug)
 	if err == nil && master != nil {
-		masterMembers, err := h.store.Members().ListForWorkspace(c.Request.Context(), master.ID)
+		masterMembers, err := h.members.ListForWorkspace(c.Request.Context(), master.ID)
 		if err == nil {
 			superadminUserIDs := make(map[string]bool)
 			for _, m := range masterMembers {
 				r := m.Role
 				if r == nil {
-					r, _ = h.store.Roles().ByID(c.Request.Context(), m.RoleID)
+					r, _ = h.roles.ByID(c.Request.Context(), m.RoleID)
 				}
 				if r != nil && (r.IsOwner || r.Name == domain.RoleSuperadmin) {
 					superadminUserIDs[m.UserID] = true
@@ -101,7 +107,7 @@ func (h *adminUserHandlers) AdminCreateUser(c *gin.Context) {
 		PasswordHash: hash,
 	}
 
-	if err := h.store.Users().Create(c.Request.Context(), user); err != nil {
+	if err := h.users.Create(c.Request.Context(), user); err != nil {
 		RespondError(c, err)
 		return
 	}
@@ -117,14 +123,14 @@ func (h *adminUserHandlers) AdminDisableUser(c *gin.Context) {
 		return
 	}
 
-	user, err := h.store.Users().ByID(c.Request.Context(), uid)
+	user, err := h.users.ByID(c.Request.Context(), uid)
 	if err != nil {
 		RespondError(c, err)
 		return
 	}
 
 	now := time.Now().UTC()
-	if err := h.store.Users().SetDisabled(c.Request.Context(), user.ID, &now); err != nil {
+	if err := h.users.SetDisabled(c.Request.Context(), user.ID, &now); err != nil {
 		RespondError(c, err)
 		return
 	}
@@ -141,7 +147,7 @@ func (h *adminUserHandlers) AdminEnableUser(c *gin.Context) {
 		return
 	}
 
-	user, err := h.store.Users().ByID(c.Request.Context(), uid)
+	user, err := h.users.ByID(c.Request.Context(), uid)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
 			AbortNotFound(c, "user not found")
@@ -151,7 +157,7 @@ func (h *adminUserHandlers) AdminEnableUser(c *gin.Context) {
 		return
 	}
 
-	if err := h.store.Users().SetDisabled(c.Request.Context(), user.ID, nil); err != nil {
+	if err := h.users.SetDisabled(c.Request.Context(), user.ID, nil); err != nil {
 		RespondError(c, err)
 		return
 	}

@@ -13,11 +13,12 @@ import (
 
 // Default configuration constants.
 const (
-	DefaultListenAddr    = ":8080"
-	DefaultTokenTTL      = 24 * time.Hour
-	DefaultDataDir       = "./data"
-	DefaultCacheDir      = ".onclaw/cache"
-	DefaultStorageDriver = "local"
+	DefaultListenAddr     = ":8080"
+	DefaultTokenTTL       = 24 * time.Hour
+	DefaultDataDir        = "./data"
+	DefaultCacheDir       = ".onclaw/cache"
+	DefaultStorageDriver  = "local"
+	DefaultRunDrainWindow = 30 * time.Second
 )
 
 // Config represents runtime configuration assembled from flags, environment variables, and defaults.
@@ -29,11 +30,17 @@ type Config struct {
 	TokenTTL               time.Duration `json:"token_ttl"`
 	DataDir                string        `json:"data_dir"`
 	CacheDir               string        `json:"cache_dir"`
-	WorkspaceDir           string        `json:"workspace_dir"`
+	OnClawDir              string        `json:"onclaw_dir"`
 	StorageDriver          string        `json:"storage_driver"`
 	SuperadminEmail        string        `json:"superadmin_email,omitempty"`
 	SuperadminPassword     string        `json:"-"`
 	SuperadminPasswordFile string        `json:"superadmin_password_file,omitempty"`
+	RunDrainWindow         time.Duration `json:"run_drain_window"`
+}
+
+// WorkspaceRoot returns the derived workspace root directory: <OnClawDir>/workspaces.
+func (c *Config) WorkspaceRoot() string {
+	return domain.WorkspaceRoot(c.OnClawDir)
 }
 
 // ServerFlags returns flags for the `server` command.
@@ -79,10 +86,10 @@ func ServerFlags() []cli.Flag {
 			Sources: cli.EnvVars("ONCLAW_CACHE_DIR"),
 		},
 		&cli.StringFlag{
-			Name:    "workspace-dir",
-			Value:   domain.DefaultWorkspaceDir(),
-			Usage:   "Root directory for per-agent workspace directories",
-			Sources: cli.EnvVars("ONCLAW_WORKSPACE_DIR"),
+			Name:    "onclaw-dir",
+			Value:   domain.DefaultOnClawDir(),
+			Usage:   "Root directory for OnClaw runtime files",
+			Sources: cli.EnvVars("ONCLAW_DIR"),
 		},
 		&cli.StringFlag{
 			Name:    "storage-driver",
@@ -104,6 +111,12 @@ func ServerFlags() []cli.Flag {
 			Name:    "superadmin-password-file",
 			Usage:   "Path to file containing superadmin password",
 			Sources: cli.EnvVars("ONCLAW_SUPERADMIN_PASSWORD_FILE"),
+		},
+		&cli.DurationFlag{
+			Name:    "run-drain-window",
+			Value:   DefaultRunDrainWindow,
+			Usage:   "Graceful-shutdown window for in-flight agent runs to finish before cancellation",
+			Sources: cli.EnvVars("ONCLAW_RUN_DRAIN_WINDOW"),
 		},
 	}
 }
@@ -163,11 +176,12 @@ func FromServerContext(ctx context.Context, cmd *cli.Command) *Config {
 		TokenTTL:               cmd.Duration("token-ttl"),
 		DataDir:                cmd.String("data-dir"),
 		CacheDir:               cmd.String("cache-dir"),
-		WorkspaceDir:           cmd.String("workspace-dir"),
+		OnClawDir:              cmd.String("onclaw-dir"),
 		StorageDriver:          cmd.String("storage-driver"),
 		SuperadminEmail:        cmd.String("superadmin-email"),
 		SuperadminPassword:     cmd.String("superadmin-password"),
 		SuperadminPasswordFile: cmd.String("superadmin-password-file"),
+		RunDrainWindow:         cmd.Duration("run-drain-window"),
 	}
 }
 

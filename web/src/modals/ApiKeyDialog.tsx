@@ -7,11 +7,14 @@ import { cx } from "../lib/helpers";
 export interface ApiKeyDialogProps {
   onClose: () => void;
   onSave: (key: any) => void;
+  /** Backend create (plaintext returned once); absent falls back to the mock key. */
+  createKey?: (name: string) => Promise<{ id: string; name: string; plaintext: string }>;
   onToast: (text: string, kind?: string) => void;
 }
 
-export function ApiKeyDialog({ onClose, onSave, onToast }: ApiKeyDialogProps) {
+export function ApiKeyDialog({ onClose, onSave, createKey, onToast }: ApiKeyDialogProps) {
   const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
   const [createdKey, setCreatedKey] = useState<{
     id: string;
     name: string;
@@ -22,9 +25,29 @@ export function ApiKeyDialog({ onClose, onSave, onToast }: ApiKeyDialogProps) {
 
   const isValid = name.trim().length > 0;
 
-  const handleCreate = (e?: React.FormEvent) => {
+  const handleCreate = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!isValid) return;
+    if (!isValid || busy) return;
+
+    if (createKey) {
+      setBusy(true);
+      try {
+        const r = await createKey(name.trim());
+        setCreatedKey({
+          id: r.id,
+          name: r.name,
+          masked: r.plaintext.slice(0, 11) + '••••••••' + r.plaintext.slice(-4),
+          full: r.plaintext,
+          created: new Date().toLocaleDateString(undefined, { month: 'short', year: 'numeric' }),
+        });
+        onToast("API key created — copy it now, it won't be shown again");
+      } catch (err: any) {
+        onToast(err?.message || 'Failed to create key', 'danger');
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
 
     const suffix = Math.random().toString(36).slice(2, 6);
     const fullKey = 'oc_live_' + Math.random().toString(36).slice(2, 10) + suffix;
@@ -61,15 +84,17 @@ export function ApiKeyDialog({ onClose, onSave, onToast }: ApiKeyDialogProps) {
         odId="modal-api-key-created"
         data-testid="modal-api-key-created"
         footer={
-          <button
-            type="button"
-            onClick={onClose}
-            data-od-id="btn-key-done"
-            data-testid="btn-key-done"
-            className="flex h-9 items-center rounded-md bg-accent px-4 text-[13px] font-semibold text-accenton transition-colors hover:bg-[var(--accent-hover)] active:bg-[var(--accent-active)]"
-          >
-            Done
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              data-od-id="btn-key-done"
+              data-testid="btn-key-done"
+              className="flex h-9 items-center rounded-md bg-accent px-4 text-[13px] font-semibold text-accenton transition-colors hover:bg-[var(--accent-hover)] active:bg-[var(--accent-active)]"
+            >
+              Done
+            </button>
+          </div>
         }
       >
         <div className="space-y-4 p-5">
@@ -142,10 +167,10 @@ export function ApiKeyDialog({ onClose, onSave, onToast }: ApiKeyDialogProps) {
             form="create-key-form"
             data-od-id="btn-confirm-create-key"
             data-testid="btn-confirm-create-key"
-            disabled={!isValid}
+            disabled={!isValid || busy}
             className="flex h-9 items-center rounded-md bg-accent px-4 text-[13px] font-semibold text-accenton transition-colors hover:bg-[var(--accent-hover)] active:bg-[var(--accent-active)] disabled:opacity-40 disabled:hover:bg-accent"
           >
-            Create key
+            {busy ? 'Creating…' : 'Create key'}
           </button>
         </>
       }

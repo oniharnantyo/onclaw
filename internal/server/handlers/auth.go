@@ -4,19 +4,19 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/oniharnantyo/onclaw/internal/auth"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/services"
 	"github.com/oniharnantyo/onclaw/internal/storage"
 )
 
 // authHandlers handles authentication and current user profile endpoints.
 type authHandlers struct {
-	auth    auth.Service
+	auth    services.AuthService
 	storage storage.Storage
 }
 
 // NewAuthHandlers creates a new authHandlers instance with injected dependencies.
-func NewAuthHandlers(authService auth.Service, strg storage.Storage) *authHandlers {
+func NewAuthHandlers(authService services.AuthService, strg storage.Storage) *authHandlers {
 	return &authHandlers{
 		auth:    authService,
 		storage: strg,
@@ -52,10 +52,10 @@ func (h *authHandlers) Login(c *gin.Context) {
 
 	provider := strings.TrimSpace(req.Provider)
 	if provider == "" {
-		provider = auth.ProviderPassword
+		provider = services.ProviderPassword
 	}
 
-	result, err := h.auth.Login(c.Request.Context(), auth.LoginRequest{
+	result, err := h.auth.Login(c.Request.Context(), services.LoginRequest{
 		Provider:    provider,
 		Credentials: creds,
 	})

@@ -96,14 +96,34 @@ func (s *store) Agents() storeport.AgentStore {
 	return NewAgentStore(s.db)
 }
 
+// AgentUserMemories returns the AgentUserMemoryStore sub-port.
+func (s *store) AgentUserMemories() storeport.AgentUserMemoryStore {
+	return NewAgentUserMemoryStore(s.db)
+}
+
+// SessionEvents returns the SessionEventStore sub-port.
+func (s *store) SessionEvents() storeport.SessionEventStore {
+	return NewSessionEventStore(s.db)
+}
+
+// SessionCheckpoints returns the SessionCheckpointStore sub-port.
+func (s *store) SessionCheckpoints() storeport.SessionCheckpointStore {
+	return NewSessionCheckpointStore(s.db)
+}
+
+// APIKeys returns the WorkspaceAPIKeyStore sub-port.
+func (s *store) APIKeys() storeport.WorkspaceAPIKeyStore {
+	return NewAPIKeyStore(s.db)
+}
+
 // WorkspaceSkills returns the WorkspaceSkillStore sub-port.
 func (s *store) WorkspaceSkills() storeport.WorkspaceSkillStore {
 	return NewWorkspaceSkillStore(s.db)
 }
 
-// AgentUserMemories returns the AgentUserMemoryStore sub-port.
-func (s *store) AgentUserMemories() storeport.AgentUserMemoryStore {
-	return NewAgentUserMemoryStore(s.db)
+// ToolSettings returns the ToolSettingsStore sub-port.
+func (s *store) ToolSettings() storeport.ToolSettingsStore {
+	return NewToolSettingStore(s.db)
 }
 
 // WithTx executes the provided function within a database transaction.

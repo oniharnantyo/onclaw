@@ -57,21 +57,21 @@ export function seedAcme() {
         { id: 'm2', author: 'you', ts: '9:12 AM', text: 'Atlas, summarize anything that happened overnight in #incidents' },
         { id: 'm3', author: 'agent', ts: '9:12 AM',
           tools: [
-            { name: 'grafana.query', args: 'alert: rate_5xx > 1%', ms: 820 },
-            { name: 'pagerduty.incidents', args: 'window: 12h', ms: 410 }
+            { name: 'grafana.query', args: 'alert: rate_5xx > 1%', ms: 820, res: 'series api-gateway 5xx: 1 firing (02:14–02:51), p99 latency nominal' },
+            { name: 'pagerduty.incidents', args: 'window: 12h', ms: 410, res: '1 incident: INC-2291 api-gateway-5xx, auto-resolved, no pages issued' }
           ],
           text: 'One incident: api-gateway-5xx fired at 02:14 and auto-resolved by 02:51. The trigger lines up with the deploys in #release at 01:58 — the rollback landed at 02:40, which likely resolved it. No pages were issued. Want me to draft a postmortem stub in #incidents?' },
         { id: 'm4', author: 'you', ts: '9:14 AM', text: 'Yes — draft it and ask Dana to review' },
         { id: 'm5', author: 'agent', ts: '9:14 AM',
-          tools: [{ name: 'files.write', args: 'postmortems/2026-08-25-api-5xx.md', ms: 350 }],
+          tools: [{ name: 'files.write', args: 'postmortems/2026-08-25-api-5xx.md', ms: 350, res: 'wrote 2.4 KB — postmortems/2026-08-25-api-5xx.md' }],
           text: 'Done. Stub posted to #incidents with the timeline pre-filled from logs, and Dana was asked to review. I\'ll nudge her again in 4 hours if it\'s still untouched.' }
       ],
       'a-beacon': [
         { id: 'm6', author: 'you', ts: 'Yesterday 4:20 PM', text: 'Brief me on embedded vector DBs for under 50 GB with strong metadata filtering' },
         { id: 'm7', author: 'agent', ts: 'Yesterday 4:23 PM',
           tools: [
-            { name: 'web.search', args: 'q: filtered ANN benchmark 2026', ms: 1240 },
-            { name: 'web.search', args: 'q: pgvector vs qdrant metadata filters', ms: 980 }
+            { name: 'web.search', args: 'q: filtered ANN benchmark 2026', ms: 1240, res: '8 results — top: ann-benchmarks/filtered-2026, Qdrant engineering blog' },
+            { name: 'web.search', args: 'q: pgvector vs qdrant metadata filters', ms: 980, res: '6 results — top: pgvector HNSW filtering notes, Supabase comparison' }
           ],
           text: 'Short version: pgvector is the pragmatic default at this scale — filtering stays in Postgres where the data already lives. Qdrant wins the filtered-ANN benchmarks; LanceDB is the lean local option. Weaviate and Milvus pay off closer to the 100 GB+ range. I have benchmarks and pricing in a 6-page brief — want it posted to #engineering?' }
       ],
@@ -83,7 +83,7 @@ export function seedAcme() {
       'a-quill': [
         { id: 'm9', author: 'you', ts: 'Friday 5:31 PM', text: 'Sweep the week and cut v2.14 release notes' },
         { id: 'm10', author: 'agent', ts: 'Friday 5:33 PM',
-          tools: [{ name: 'github.commits', args: 'repo: acme/platform since: 7d', ms: 640 }],
+          tools: [{ name: 'github.commits', args: 'repo: acme/platform since: 7d', ms: 640, res: '41 commits across 19 PRs — 3 features, 9 fixes, 2 breaking' }],
           text: 'v2.14 notes drafted — 41 commits: 3 features, 9 fixes, 2 breaking (both flagged at the top). Posted to #release and tagged for review.' }
       ],
       'a-ledger': [],
@@ -94,7 +94,7 @@ export function seedAcme() {
         { id: 'm12', author: 'agent', agentId: 'a-atlas', ts: '7:00 AM', text: 'Morning digest pinned. Highlight: deploys 3 / rollback 1 — timeline in #incidents.' },
         { id: 'm13', author: 'you', ts: '9:10 AM', text: '@Warden can you take the 5xx spike? Atlas is already on the deploy correlation' },
         { id: 'm14', author: 'agent', agentId: 'a-warden', ts: '9:11 AM',
-          tools: [{ name: 'grafana.query', args: 'alert: rate_5xx window 3h', ms: 640 }],
+          tools: [{ name: 'grafana.query', args: 'alert: rate_5xx window 3h', ms: 640, res: '5xx rate 0.4% now; burn window clear since rollback at 02:40' }],
           text: 'On it — pulling the 5xx timeline now. @Atlas flag me if the rollback window shifts and I\'ll re-check the burn rate.' }
       ],
       'c-general': [],
@@ -151,19 +151,21 @@ export function seedAcme() {
         sample: ['memory.save', 'memory.recall', 'memory.forget'] }
     ],
     skillLib: [
-      { id: 'research', name: 'Deep research', version: '2.4.1', uses: 312, enabled: true, source: 'registry',
+      { id: 'research', name: 'web-research', version: '2.4.1', enabled: true, tier: 'system', source: 'system', locked: true,
         desc: 'Multi-source research briefs with citation tracking and a structured summary template.' },
-      { id: 'code', name: 'Code execution', version: '1.9.0', uses: 87, enabled: true, source: 'registry',
+      { id: 'code', name: 'code-execution', version: '1.9.0', enabled: true, tier: 'system', source: 'system', locked: true,
         desc: 'Sandboxed Python for transforms, one-off scripts and quick calculations.' },
-      { id: 'data', name: 'Data analysis', version: '2.1.3', uses: 214, enabled: true, source: 'registry',
-        desc: 'DataFrame workflows over CSV and query results — joins, rollups, drift checks.' },
-      { id: 'writing', name: 'Writing & editing', version: '3.0.0', uses: 458, enabled: true, source: 'registry',
+      { id: 'data', name: 'data-analysis', version: '2.1.3', enabled: true, tier: 'workspace', source: 'upload',
+        desc: 'DataFrame workflows over CSV and query results — joins, rollups, drift checks.',
+        dependencies: { tools: ['execute'] } },
+      { id: 'writing', name: 'writing-editing', version: '3.0.0', enabled: true, tier: 'workspace', source: 'authored',
         desc: 'Drafting and line-editing with house style rules applied on top of the base model.' },
-      { id: 'summarize', name: 'Summarization', version: '1.4.2', uses: 1204, enabled: true, source: 'registry',
+      { id: 'summarize', name: 'summarization', version: '1.4.2', enabled: true, tier: 'workspace', source: 'fork',
         desc: 'Thread and document summaries with action-item extraction.' },
-      { id: 'vision', name: 'Vision', version: '1.2.0', uses: 0, enabled: false, source: 'registry',
-        desc: 'Chart, screenshot and diagram reading for agents that handle images.' },
-      { id: 'postmortem', name: 'Postmortem writer', version: '0.3.1', uses: 23, enabled: true, source: 'workspace',
+      { id: 'vision', name: 'vision', version: '1.2.0', enabled: false, tier: 'workspace', source: 'upload',
+        desc: 'Chart, screenshot and diagram reading for agents that handle images.',
+        dependencies: { binaries: ['pdftotext'] } },
+      { id: 'postmortem', name: 'postmortem-writer', version: '0.3.1', enabled: true, tier: 'workspace', source: 'authored',
         desc: 'Turns an incident timeline into a review-ready postmortem with contributing factors.' }
     ],
     keys: [
@@ -233,7 +235,7 @@ export function seedGlobex() {
       ],
       'a-forge': [
         { id: 'g2', author: 'you', ts: 'Yesterday', text: 'Review the auth refactor PR when tests go green' },
-        { id: 'g3', author: 'agent', ts: 'Yesterday', tools: [{ name: 'shell.run', args: 'pnpm test auth/', ms: 15800 }], text: 'Reviewed. Two real findings: a missing token-expiry test and a race in refresh. Left comments on the diff — rest looks clean.' }
+        { id: 'g3', author: 'agent', ts: 'Yesterday', tools: [{ name: 'shell.run', args: 'pnpm test auth/', ms: 15800, res: '142 passed, 2 failed — token-expiry and refresh race' }], text: 'Reviewed. Two real findings: a missing token-expiry test and a race in refresh. Left comments on the diff — rest looks clean.' }
       ],
       'g-general': [],
       'g-data': [],
@@ -273,18 +275,20 @@ export function seedGlobex() {
         sample: ['memory.save', 'memory.recall'] }
     ],
     skillLib: [
-      { id: 'research', name: 'Deep research', version: '2.4.1', uses: 12, enabled: true, source: 'registry',
+      { id: 'research', name: 'web-research', version: '2.4.1', enabled: true, tier: 'system', source: 'system', locked: true,
         desc: 'Multi-source research briefs with citation tracking and a structured summary template.' },
-      { id: 'code', name: 'Code execution', version: '1.9.0', uses: 141, enabled: true, source: 'registry',
+      { id: 'code', name: 'code-execution', version: '1.9.0', enabled: true, tier: 'system', source: 'system', locked: true,
         desc: 'Sandboxed Python for transforms, one-off scripts and quick calculations.' },
-      { id: 'data', name: 'Data analysis', version: '2.1.3', uses: 96, enabled: true, source: 'registry',
-        desc: 'DataFrame workflows over CSV and query results — joins, rollups, drift checks.' },
-      { id: 'writing', name: 'Writing & editing', version: '3.0.0', uses: 64, enabled: true, source: 'registry',
+      { id: 'data', name: 'data-analysis', version: '2.1.3', enabled: true, tier: 'workspace', source: 'git',
+        desc: 'DataFrame workflows over CSV and query results — joins, rollups, drift checks.',
+        dependencies: { tools: ['execute'] } },
+      { id: 'writing', name: 'writing-editing', version: '3.0.0', enabled: true, tier: 'workspace', source: 'authored',
         desc: 'Drafting and line-editing with house style rules applied on top of the base model.' },
-      { id: 'summarize', name: 'Summarization', version: '1.4.2', uses: 388, enabled: true, source: 'registry',
+      { id: 'summarize', name: 'summarization', version: '1.4.2', enabled: true, tier: 'workspace', source: 'fork',
         desc: 'Thread and document summaries with action-item extraction.' },
-      { id: 'vision', name: 'Vision', version: '1.2.0', uses: 0, enabled: false, source: 'registry',
-        desc: 'Chart, screenshot and diagram reading for agents that handle images.' }
+      { id: 'vision', name: 'vision', version: '1.2.0', enabled: false, tier: 'workspace', source: 'upload',
+        desc: 'Chart, screenshot and diagram reading for agents that handle images.',
+        dependencies: { binaries: ['pdftotext'] } }
     ],
     keys: [
       { id: 'gk1', name: 'default', masked: 'oc_live_••••••••e5c9', full: 'oc_live_7dXk2pQmZn8vLtEe5c9', created: 'Jul 2026' }
@@ -312,7 +316,7 @@ export const EXTRA_SESSIONS = {
     { title: 'Deploy correlation — 5xx spike', updated: 'Yesterday', messages: [
       { id: 'x1', author: 'you', ts: 'Yesterday 11:20 AM', text: 'Correlate this week\'s 5xx spikes with deploys' },
       { id: 'x2', author: 'agent', ts: 'Yesterday 11:22 AM',
-        tools: [{ name: 'grafana.query', args: 'alert: rate_5xx window 7d', ms: 760 }],
+        tools: [{ name: 'grafana.query', args: 'alert: rate_5xx window 7d', ms: 760, res: '2 firing windows this week, both auto-resolved under 40m' }],
         text: 'Two spikes this week. Tuesday\'s lines up with the v2.12 rollout (reverted 20:41); today\'s with the v2.14 rollback. Both resolved within 40 minutes of the revert.' }
     ] }
   ],
@@ -320,7 +324,7 @@ export const EXTRA_SESSIONS = {
     { title: 'Filtered-ANN benchmark sources', updated: 'Monday', messages: [
       { id: 'x3', author: 'you', ts: 'Monday 10:05 AM', text: 'Pull the benchmark papers cited in your vector DB brief' },
       { id: 'x4', author: 'agent', ts: 'Monday 10:09 AM',
-        tools: [{ name: 'web.search', args: 'q: filtered ANN benchmark 2026', ms: 1100 }],
+        tools: [{ name: 'web.search', args: 'q: filtered ANN benchmark 2026', ms: 1100, res: '8 results — benchmark summary extracted to run notes' }],
         text: 'Three primary sources: the Qdrant filtered-search benchmark (Feb 2026), pgvector HNSW filter tests, and the LanceDB TPC-H annex — linked in the brief appendix with repro notes.' }
     ] }
   ],
@@ -330,7 +334,7 @@ export const EXTRA_SESSIONS = {
     messages: [
       { id: 'lgu' + i, author: 'you', ts: i === 0 ? 'Today 6:00 AM' : (i === 1 ? 'Yesterday 6:00 AM' : i + 'd ago'), text: 'Run the daily reconciliation sweep' },
       { id: 'lga' + i, author: 'agent', ts: i === 0 ? 'Today 6:00 AM' : (i === 1 ? 'Yesterday 6:00 AM' : i + 'd ago'),
-        tools: [{ name: 'db.query', args: 'ledger unreconciled > $50', ms: 380 + (i % 7) * 25 }],
+        tools: [{ name: 'db.query', args: 'ledger unreconciled > $50', ms: 380 + (i % 7) * 25, res: '3 rows — oldest entry 6 days, total $412.80' }],
         text: 'Sweep complete — ' + (i % 3) + ' exceptions flagged, all under the $50 threshold. Variance ' + (0.1 + (i % 5) * 0.1).toFixed(1) + '%, within tolerance.' }
     ]
   }))
@@ -404,18 +408,20 @@ export function blankTenant({ name, sub, tz, starter  }: any): Workspace {
       { id: 'browser', name: 'Browser', transport: 'stdio · browser-mcp --headless', auth: 'Not configured', tools: 8, status: 'disabled', sample: ['page.open', 'page.extract'] }
     ],
     skillLib: [
-      { id: 'research', name: 'Deep research', version: '2.4.1', uses: 0, enabled: true, source: 'registry',
+      { id: 'research', name: 'web-research', version: '2.4.1', enabled: true, tier: 'system', source: 'system', locked: true,
         desc: 'Multi-source research briefs with citation tracking and a structured summary template.' },
-      { id: 'summarize', name: 'Summarization', version: '1.4.2', uses: 0, enabled: true, source: 'registry',
+      { id: 'summarize', name: 'summarization', version: '1.4.2', enabled: true, tier: 'workspace', source: 'authored',
         desc: 'Thread and document summaries with action-item extraction.' },
-      { id: 'code', name: 'Code execution', version: '1.9.0', uses: 0, enabled: false, source: 'registry',
+      { id: 'code', name: 'code-execution', version: '1.9.0', enabled: true, tier: 'system', source: 'system', locked: true,
         desc: 'Sandboxed Python for transforms, one-off scripts and quick calculations.' },
-      { id: 'data', name: 'Data analysis', version: '2.1.3', uses: 0, enabled: false, source: 'registry',
-        desc: 'DataFrame workflows over CSV and query results — joins, rollups, drift checks.' },
-      { id: 'writing', name: 'Writing & editing', version: '3.0.0', uses: 0, enabled: false, source: 'registry',
+      { id: 'data', name: 'data-analysis', version: '2.1.3', enabled: false, tier: 'workspace', source: 'git',
+        desc: 'DataFrame workflows over CSV and query results — joins, rollups, drift checks.',
+        dependencies: { tools: ['execute'] } },
+      { id: 'writing', name: 'writing-editing', version: '3.0.0', enabled: false, tier: 'workspace', source: 'authored',
         desc: 'Drafting and line-editing with house style rules applied on top of the base model.' },
-      { id: 'vision', name: 'Vision', version: '1.2.0', uses: 0, enabled: false, source: 'registry',
-        desc: 'Chart, screenshot and diagram reading for agents that handle images.' }
+      { id: 'vision', name: 'vision', version: '1.2.0', enabled: false, tier: 'workspace', source: 'upload',
+        desc: 'Chart, screenshot and diagram reading for agents that handle images.',
+        dependencies: { binaries: ['pdftotext'] } }
     ],
     keys: [],
     providers: []

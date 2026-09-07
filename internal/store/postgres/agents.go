@@ -41,6 +41,9 @@ func (as *agentStore) Create(ctx context.Context, a *domain.Agent) error {
 	if a.MaxTokens != nil && *a.MaxTokens <= 0 {
 		return fmt.Errorf("%w: max_tokens must be positive", domain.ErrInvalid)
 	}
+	if err := domain.ValidateAgentContextWindow(a.ContextWindow); err != nil {
+		return err
+	}
 	if len(a.Avatar) > 0 {
 		if err := domain.ValidateAgentAvatar(a.Avatar); err != nil {
 			return err
@@ -54,11 +57,8 @@ func (as *agentStore) Create(ctx context.Context, a *domain.Agent) error {
 	if a.Tools == nil {
 		a.Tools = []string{}
 	}
-	if a.Skills == nil {
-		a.Skills = []string{}
-	}
-	if a.MCP == nil {
-		a.MCP = []string{}
+	if a.DisabledMCPs == nil {
+		a.DisabledMCPs = []string{}
 	}
 
 	if a.ID == "" {
@@ -76,11 +76,13 @@ func (as *agentStore) Create(ctx context.Context, a *domain.Agent) error {
 	query := `
 		INSERT INTO agents (
 			id, workspace_id, slug, name, role, description, brief,
-			provider_id, model, temperature, max_tokens, effort, autonomy, tools, skills, mcp,
+			provider_id, model, temperature, max_tokens, effort, autonomy,
+			context_window, tools, disabled_mcps,
 			avatar, prompts_status, prompts_error, created_by, updated_by, created_at, updated_at
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7,
-			$8, $9, $10, $11, $12, $13, $14, $15, $16,
+			$8, $9, $10, $11, $12, $13,
+			$14, $15, $16,
 			$17, $18, $19, $20, $21, $22, $23
 		)
 	`
@@ -98,9 +100,9 @@ func (as *agentStore) Create(ctx context.Context, a *domain.Agent) error {
 		a.MaxTokens,
 		a.Effort,
 		string(a.Autonomy),
+		a.ContextWindow,
 		a.Tools,
-		a.Skills,
-		a.MCP,
+		a.DisabledMCPs,
 		[]byte(a.Avatar),
 		string(a.PromptsStatus),
 		a.PromptsError,
@@ -122,7 +124,8 @@ func (as *agentStore) ByID(ctx context.Context, workspaceID, id string) (*domain
 
 	query := `
 		SELECT id, workspace_id, slug, name, role, description, brief,
-		       provider_id, model, temperature, max_tokens, effort, autonomy, tools, skills, mcp,
+		       provider_id, model, temperature, max_tokens, effort, autonomy,
+		       context_window, tools, disabled_mcps,
 		       avatar, prompts_status, prompts_error, created_by, updated_by, created_at, updated_at
 		FROM agents
 		WHERE workspace_id = $1 AND id = $2
@@ -144,9 +147,9 @@ func (as *agentStore) ByID(ctx context.Context, workspaceID, id string) (*domain
 		&a.MaxTokens,
 		&a.Effort,
 		&autonomyStr,
+		&a.ContextWindow,
 		&a.Tools,
-		&a.Skills,
-		&a.MCP,
+		&a.DisabledMCPs,
 		&avatarBytes,
 		&promptsStatusStr,
 		&a.PromptsError,
@@ -168,11 +171,8 @@ func (as *agentStore) ByID(ctx context.Context, workspaceID, id string) (*domain
 	if a.Tools == nil {
 		a.Tools = []string{}
 	}
-	if a.Skills == nil {
-		a.Skills = []string{}
-	}
-	if a.MCP == nil {
-		a.MCP = []string{}
+	if a.DisabledMCPs == nil {
+		a.DisabledMCPs = []string{}
 	}
 	return &a, nil
 }
@@ -184,7 +184,8 @@ func (as *agentStore) BySlug(ctx context.Context, workspaceID, slug string) (*do
 
 	query := `
 		SELECT id, workspace_id, slug, name, role, description, brief,
-		       provider_id, model, temperature, max_tokens, effort, autonomy, tools, skills, mcp,
+		       provider_id, model, temperature, max_tokens, effort, autonomy,
+		       context_window, tools, disabled_mcps,
 		       avatar, prompts_status, prompts_error, created_by, updated_by, created_at, updated_at
 		FROM agents
 		WHERE workspace_id = $1 AND slug = $2
@@ -206,9 +207,9 @@ func (as *agentStore) BySlug(ctx context.Context, workspaceID, slug string) (*do
 		&a.MaxTokens,
 		&a.Effort,
 		&autonomyStr,
+		&a.ContextWindow,
 		&a.Tools,
-		&a.Skills,
-		&a.MCP,
+		&a.DisabledMCPs,
 		&avatarBytes,
 		&promptsStatusStr,
 		&a.PromptsError,
@@ -230,11 +231,8 @@ func (as *agentStore) BySlug(ctx context.Context, workspaceID, slug string) (*do
 	if a.Tools == nil {
 		a.Tools = []string{}
 	}
-	if a.Skills == nil {
-		a.Skills = []string{}
-	}
-	if a.MCP == nil {
-		a.MCP = []string{}
+	if a.DisabledMCPs == nil {
+		a.DisabledMCPs = []string{}
 	}
 	return &a, nil
 }
@@ -246,7 +244,8 @@ func (as *agentStore) ListForWorkspace(ctx context.Context, workspaceID string) 
 
 	query := `
 		SELECT id, workspace_id, slug, name, role, description, brief,
-		       provider_id, model, temperature, max_tokens, effort, autonomy, tools, skills, mcp,
+		       provider_id, model, temperature, max_tokens, effort, autonomy,
+		       context_window, tools, disabled_mcps,
 		       avatar, prompts_status, prompts_error, created_by, updated_by, created_at, updated_at
 		FROM agents
 		WHERE workspace_id = $1
@@ -277,9 +276,9 @@ func (as *agentStore) ListForWorkspace(ctx context.Context, workspaceID string) 
 			&a.MaxTokens,
 			&a.Effort,
 			&autonomyStr,
+			&a.ContextWindow,
 			&a.Tools,
-			&a.Skills,
-			&a.MCP,
+			&a.DisabledMCPs,
 			&avatarBytes,
 			&promptsStatusStr,
 			&a.PromptsError,
@@ -300,11 +299,8 @@ func (as *agentStore) ListForWorkspace(ctx context.Context, workspaceID string) 
 		if a.Tools == nil {
 			a.Tools = []string{}
 		}
-		if a.Skills == nil {
-			a.Skills = []string{}
-		}
-		if a.MCP == nil {
-			a.MCP = []string{}
+		if a.DisabledMCPs == nil {
+			a.DisabledMCPs = []string{}
 		}
 		agents = append(agents, a)
 	}
@@ -334,6 +330,9 @@ func (as *agentStore) Update(ctx context.Context, a *domain.Agent) error {
 	if a.MaxTokens != nil && *a.MaxTokens <= 0 {
 		return fmt.Errorf("%w: max_tokens must be positive", domain.ErrInvalid)
 	}
+	if err := domain.ValidateAgentContextWindow(a.ContextWindow); err != nil {
+		return err
+	}
 	if len(a.Avatar) > 0 {
 		if err := domain.ValidateAgentAvatar(a.Avatar); err != nil {
 			return err
@@ -344,11 +343,8 @@ func (as *agentStore) Update(ctx context.Context, a *domain.Agent) error {
 	if a.Tools == nil {
 		a.Tools = []string{}
 	}
-	if a.Skills == nil {
-		a.Skills = []string{}
-	}
-	if a.MCP == nil {
-		a.MCP = []string{}
+	if a.DisabledMCPs == nil {
+		a.DisabledMCPs = []string{}
 	}
 
 	now := time.Now().UTC()
@@ -367,13 +363,13 @@ func (as *agentStore) Update(ctx context.Context, a *domain.Agent) error {
 		    max_tokens = $9,
 		    effort = $10,
 		    autonomy = $11,
-		    tools = $12,
-		    skills = $13,
-		    mcp = $14,
-		    avatar = $15,
-		    updated_by = $16,
-		    updated_at = $17
-		WHERE workspace_id = $18 AND id = $19
+		    context_window = $12,
+		    tools = $13,
+			    disabled_mcps = $14,
+			    avatar = $15,
+			    updated_by = $16,
+			    updated_at = $17
+			WHERE workspace_id = $18 AND id = $19
 		RETURNING prompts_status, prompts_error, created_by, created_at
 	`
 	var promptsStatusStr string
@@ -389,9 +385,9 @@ func (as *agentStore) Update(ctx context.Context, a *domain.Agent) error {
 		a.MaxTokens,
 		a.Effort,
 		string(a.Autonomy),
+		a.ContextWindow,
 		a.Tools,
-		a.Skills,
-		a.MCP,
+		a.DisabledMCPs,
 		[]byte(a.Avatar),
 		a.UpdatedBy,
 		now,

@@ -38,10 +38,55 @@ type Store interface {
 	Members() MemberStore
 	Providers() ProviderStore
 	Agents() AgentStore
-	WorkspaceSkills() WorkspaceSkillStore
 	AgentUserMemories() AgentUserMemoryStore
+	SessionEvents() SessionEventStore
+	SessionCheckpoints() SessionCheckpointStore
+	APIKeys() WorkspaceAPIKeyStore
+	WorkspaceSkills() WorkspaceSkillStore
+	ToolSettings() ToolSettingsStore
 	WithTx(ctx context.Context, fn func(Store) error) error
 	Close() error
+}
+
+// WorkspaceAPIKeyStore manages workspace-scoped API keys used to authenticate
+// /v1 (OpenResponses) requests. Management reads are workspace-scoped; the
+// hash lookup is global because it performs authentication.
+type WorkspaceAPIKeyStore interface {
+	Create(ctx context.Context, key *domain.WorkspaceAPIKey) error
+	List(ctx context.Context, workspaceID string) ([]domain.WorkspaceAPIKey, error)
+	// Revoke sets revoked_at on the key. Revoking an already-revoked key or a
+	// key belonging to another workspace returns domain.ErrNotFound.
+	Revoke(ctx context.Context, workspaceID, id string) error
+	// LookupByHash finds a key by its SHA-256 hex hash (global, for authn).
+	// Unknown hashes return domain.ErrNotFound.
+	LookupByHash(ctx context.Context, keyHash string) (*domain.WorkspaceAPIKey, error)
+}
+
+// WorkspaceSkillStore manages the workspace skill registry: one row per
+// workspace-level skill. All operations are workspace-scoped; the skill body
+// itself lives on disk and is managed by the install service. ListEnabled
+// resolves by workspace slug because the runtime reader works from slugs.
+type WorkspaceSkillStore interface {
+	Create(ctx context.Context, skill *domain.WorkspaceSkill) error
+	Get(ctx context.Context, workspaceID, id string) (*domain.WorkspaceSkill, error)
+	GetByName(ctx context.Context, workspaceID, name string) (*domain.WorkspaceSkill, error)
+	List(ctx context.Context, workspaceID string) ([]domain.WorkspaceSkill, error)
+	// ListEnabled returns the names of enabled skills for a workspace slug.
+	// Unknown slugs return domain.ErrNotFound.
+	ListEnabled(ctx context.Context, workspaceSlug string) ([]string, error)
+	Update(ctx context.Context, skill *domain.WorkspaceSkill) error
+	SetEnabled(ctx context.Context, workspaceID, id string, enabled bool) error
+	Delete(ctx context.Context, workspaceID, id string) error
+}
+
+// ToolSettingsStore manages workspace-scoped per-tool settings: the global
+// enable toggle plus the tool's structured configuration. Absence of a row
+// means the tool is enabled with its default configuration — Get returns
+// domain.ErrNotFound for that case and callers apply defaults.
+type ToolSettingsStore interface {
+	Get(ctx context.Context, workspaceID, toolKey string) (*domain.WorkspaceToolSetting, error)
+	Upsert(ctx context.Context, setting *domain.WorkspaceToolSetting) error
+	List(ctx context.Context, workspaceID string) ([]domain.WorkspaceToolSetting, error)
 }
 
 // AgentStore manages workspace-scoped agents.
@@ -57,21 +102,34 @@ type AgentStore interface {
 	SweepGenerating(ctx context.Context, errMsg string) (int64, error)
 }
 
-// WorkspaceSkillStore manages workspace-level skills.
-type WorkspaceSkillStore interface {
-	Create(ctx context.Context, skill *domain.WorkspaceSkill) error
-	ByID(ctx context.Context, workspaceID, id string) (*domain.WorkspaceSkill, error)
-	FindByName(ctx context.Context, workspaceID, name string) (*domain.WorkspaceSkill, error)
-	ListForWorkspace(ctx context.Context, workspaceID string) ([]domain.WorkspaceSkill, error)
-	Update(ctx context.Context, skill *domain.WorkspaceSkill) error
-	Delete(ctx context.Context, workspaceID, id string) error
-}
-
 // AgentUserMemoryStore manages per-user persistent memory for agents.
 type AgentUserMemoryStore interface {
 	Get(ctx context.Context, workspaceID, agentID, userID string) (*domain.AgentUserMemory, error)
 	Upsert(ctx context.Context, memory *domain.AgentUserMemory) error
 	Delete(ctx context.Context, workspaceID, agentID, userID string) error
+}
+
+// LoadSessionEventsParams configures query parameters for loading session events.
+type LoadSessionEventsParams struct {
+	WorkspaceID  string
+	SessionID    string
+	AfterEventID string
+	Limit        int
+	Reverse      bool
+	Kinds        []string
+}
+
+// SessionEventStore manages the append-only session event log.
+type SessionEventStore interface {
+	AppendEvents(ctx context.Context, workspaceID string, events []domain.SessionEvent) error
+	LoadEvents(ctx context.Context, params LoadSessionEventsParams) ([]domain.SessionEvent, error)
+}
+
+// SessionCheckpointStore manages execution checkpoints.
+type SessionCheckpointStore interface {
+	Get(ctx context.Context, checkpointID string) ([]byte, bool, error)
+	Set(ctx context.Context, checkpointID string, data []byte) error
+	Delete(ctx context.Context, checkpointID string) error
 }
 
 // ProviderStore manages workspace-scoped provider configurations.

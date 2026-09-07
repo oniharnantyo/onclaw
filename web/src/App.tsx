@@ -22,7 +22,6 @@ import { BootError } from './components/BootError';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ErrorState } from './components/ErrorState';
 import { ConnectionBanner } from './components/ConnectionBanner';
-import { SKILLS } from "./lib/constants";
 import { api, formatApiError } from "./lib/api";
 import notFoundSvg from './assets/not-found.svg';
 
@@ -63,7 +62,7 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-function NotFoundRoute({ tenant }: { tenant: any }) {
+function NotFoundRoute() {
   const navigate = useNavigate();
   return (
     <div className="flex h-full w-full items-center justify-center p-6 bg-surface">
@@ -75,7 +74,7 @@ function NotFoundRoute({ tenant }: { tenant: any }) {
         status={404}
         primaryAction={{
           label: 'Back to chats',
-          onClick: () => navigate(tenant?.agents?.[0]?.id ? `/c/${tenant.agents[0].id}` : '/welcome'),
+          onClick: () => navigate('/c'),
         }}
         secondaryAction={{
           label: 'View agents',
@@ -117,11 +116,11 @@ function Layout() {
     : location.pathname.startsWith('/agents') ? 'agents' 
     : location.pathname.startsWith('/cron') ? 'cron' 
     : location.pathname.startsWith('/runs') ? 'runs' 
-    : location.pathname.startsWith('/c/') || location.pathname === '/' ? 'chats'
+    : location.pathname.startsWith('/c/') || location.pathname === '/c' || location.pathname === '/' ? 'chats'
     : '';
 
   const onNav = (v: string) => {
-    if (v === 'chats') navigate(`/c/${tenant?.agents?.[0]?.id || ''}`);
+    if (v === 'chats') navigate('/c');
     else if (v === 'admin-workspaces') navigate('/admin/workspaces');
     else if (v === 'admin-accounts') navigate('/admin/accounts');
     else navigate(`/${v}`);
@@ -147,7 +146,7 @@ function Layout() {
         const nextId = next.workspace_slug || next.workspace_id;
         useStore.getState().switchTenant(nextId);
         const nextWs = useStore.getState().db[nextId];
-        navigate(nextWs?.agents?.length ? `/c/${nextWs.agents[0].id}` : '/welcome');
+        navigate('/c');
         useStore.getState().toast('Left ' + tenant.name + ' — switched to ' + (next.workspace_name || nextWs?.name || nextId));
       } else {
         navigate('/welcome');
@@ -158,7 +157,8 @@ function Layout() {
     }
   };
 
-  const activeChatId = useStore(s => s.pos.chatId) || tenant?.agents?.[0]?.id;
+  const activeChatId = useStore(s => s.pos.chatId) || '';
+  const agentsLoaded = useStore((s: any) => Boolean(s.agentsLoaded?.[s.pos.tenantId]));
   const threadState = useThread(activeChatId);
   const session = threadState.list.find((x: any) => x.id === threadState.active) || null;
   const sessions = threadState.list;
@@ -185,7 +185,9 @@ function Layout() {
   );
 
   const isChatRoute = location.pathname === '/' || location.pathname.startsWith('/c/') || location.pathname === '/c';
-  if (!isSuspended && !tenant?.agents?.length && isChatRoute) {
+  // Only route to onboarding once the workspace's agent list has actually been
+  // fetched — an empty list mid-boot means "not loaded yet", not "no agents".
+  if (!isSuspended && agentsLoaded && !tenant?.agents?.length && isChatRoute) {
     return <Navigate to="/welcome" replace />;
   }
 
@@ -234,8 +236,9 @@ function Layout() {
           currentId={tenant?.id || tenant?.sub}
           onPick={(id) => {
             useStore.getState().switchTenant(id);
-            const next = useStore.getState().db[id];
-            navigate(next?.agents?.length ? `/c/${next.agents[0].id}` : '/welcome');
+            // switchTenant kicks off loadAgents — land on /c and let the guard
+            // decide between chat and onboarding once the fetch resolves.
+            navigate('/c');
           }} 
           onClose={() => patchUi({ wsOpen: false })}
           onCreateWorkspace={() => setCreateWsOpen(true)}
@@ -292,13 +295,15 @@ function Layout() {
                     />
                   }
                 />
+                <Route path="/c" element={<ChatRoute />} />
                 <Route path="/c/:chatId" element={<ChatRoute />} />
                 <Route path="/agents" element={<AgentsView tenant={tenant} onChat={handleSelectChat} onConfigure={(id: string) => patchUi({ configAgent: id })} onDeploy={() => patchUi({ configAgent: 'new' })} />} />
                 <Route path="/cron" element={<CronView tenant={tenant} onEdit={(j: any) => patchUi({ cronEdit: j })} onToggle={(j: any) => useStore.getState().toggleCron(j)} onRunNow={(j: any) => useStore.getState().runNow(j)} onNew={() => patchUi({ cronEdit: { id: null, name: '', agentId: tenant?.agents?.[0]?.id, expr: '0 9 * * 1-5', human: '', enabled: true } })} />} />
                 <Route path="/runs" element={<RunsView tenant={tenant} />} />
                 <Route path="/welcome" element={<OnboardingPane tenant={tenant} onDeploy={() => patchUi({ configAgent: 'new' })} onSettings={() => navigate('/settings')} />} />
-                <Route path="/" element={<Navigate to={useStore.getState().pos.view === 'chats' && useStore.getState().pos.chatId ? `/c/${useStore.getState().pos.chatId}` : `/${useStore.getState().pos.view || 'agents'}`} replace />} />
-                <Route path="*" element={<NotFoundRoute tenant={tenant} />} />
+                {/* Home is the chat page with nothing pre-opened; pick a conversation from the sidebar. */}
+                <Route path="/" element={<Navigate to="/c" replace />} />
+                <Route path="*" element={<NotFoundRoute />} />
               </Routes>
             </ErrorBoundary>
           </main>
@@ -311,7 +316,6 @@ function Layout() {
         <AgentConfigModal 
           key={ui.configAgent}
           draft={ui.configAgent === 'new' ? null : (tenant.agents.find((a: any) => a.id === ui.configAgent) || null)}
-          skillOptions={SKILLS.concat((tenant.skillLib || []).filter((s: any) => !SKILLS.some((r: any) => r.id === s.id)).map((s: any) => ({ id: s.id, label: s.name })))}
           tenant={tenant}
           onClose={() => patchUi({ configAgent: null })} 
           onSave={(values: any) => {

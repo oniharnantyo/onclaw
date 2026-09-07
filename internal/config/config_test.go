@@ -43,8 +43,17 @@ func TestFromServerContextDefaults(t *testing.T) {
 	if parsedCfg.CacheDir != config.DefaultCacheDir {
 		t.Errorf("CacheDir = %q, want %q", parsedCfg.CacheDir, config.DefaultCacheDir)
 	}
+	if parsedCfg.OnClawDir == "" {
+		t.Errorf("OnClawDir = %q, want non-empty default", parsedCfg.OnClawDir)
+	}
+	if !strings.HasSuffix(parsedCfg.WorkspaceRoot(), "workspaces") {
+		t.Errorf("WorkspaceRoot = %q, want path ending in workspaces", parsedCfg.WorkspaceRoot())
+	}
 	if parsedCfg.StorageDriver != config.DefaultStorageDriver {
 		t.Errorf("StorageDriver = %q, want %q", parsedCfg.StorageDriver, config.DefaultStorageDriver)
+	}
+	if parsedCfg.RunDrainWindow != config.DefaultRunDrainWindow {
+		t.Errorf("RunDrainWindow = %v, want %v", parsedCfg.RunDrainWindow, config.DefaultRunDrainWindow)
 	}
 	if parsedCfg.DatabaseURL != "" {
 		t.Errorf("DatabaseURL = %q, want empty", parsedCfg.DatabaseURL)
@@ -71,9 +80,11 @@ func TestFromServerContextCustomFlags(t *testing.T) {
 		"--token-ttl", "12h",
 		"--data-dir", "/tmp/data",
 		"--cache-dir", "/tmp/cache",
+		"--onclaw-dir", "/tmp/onclaw",
 		"--storage-driver", "local",
 		"--superadmin-email", "admin@example.com",
 		"--superadmin-password", "adminpass123",
+		"--run-drain-window", "45s",
 	}
 
 	err := cmd.Run(context.Background(), args)
@@ -99,11 +110,48 @@ func TestFromServerContextCustomFlags(t *testing.T) {
 	if parsedCfg.CacheDir != "/tmp/cache" {
 		t.Errorf("CacheDir = %q, want %q", parsedCfg.CacheDir, "/tmp/cache")
 	}
+	if parsedCfg.OnClawDir != "/tmp/onclaw" {
+		t.Errorf("OnClawDir = %q, want %q", parsedCfg.OnClawDir, "/tmp/onclaw")
+	}
+	if parsedCfg.WorkspaceRoot() != "/tmp/onclaw/workspaces" {
+		t.Errorf("WorkspaceRoot() = %q, want %q", parsedCfg.WorkspaceRoot(), "/tmp/onclaw/workspaces")
+	}
 	if parsedCfg.SuperadminEmail != "admin@example.com" {
 		t.Errorf("SuperadminEmail = %q, want %q", parsedCfg.SuperadminEmail, "admin@example.com")
 	}
 	if parsedCfg.SuperadminPassword != "adminpass123" {
 		t.Errorf("SuperadminPassword = %q, want %q", parsedCfg.SuperadminPassword, "adminpass123")
+	}
+	if parsedCfg.RunDrainWindow != 45*time.Second {
+		t.Errorf("RunDrainWindow = %v, want 45s", parsedCfg.RunDrainWindow)
+	}
+}
+
+func TestFromServerContextRunDrainWindowEnv(t *testing.T) {
+	var parsedCfg *config.Config
+
+	t.Setenv("ONCLAW_RUN_DRAIN_WINDOW", "90s")
+
+	cmd := &cli.Command{
+		Name:  "server",
+		Flags: config.ServerFlags(),
+		Action: func(ctx context.Context, c *cli.Command) error {
+			parsedCfg = config.FromServerContext(ctx, c)
+			return nil
+		},
+	}
+
+	err := cmd.Run(context.Background(), []string{"server"})
+	if err != nil {
+		t.Fatalf("unexpected error running command: %v", err)
+	}
+
+	if parsedCfg == nil {
+		t.Fatal("expected parsedCfg to be non-nil")
+	}
+
+	if parsedCfg.RunDrainWindow != 90*time.Second {
+		t.Errorf("RunDrainWindow = %v, want 90s from ONCLAW_RUN_DRAIN_WINDOW", parsedCfg.RunDrainWindow)
 	}
 }
 

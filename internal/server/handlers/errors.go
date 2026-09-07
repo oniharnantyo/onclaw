@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/skills"
 )
 
 // Standard API error codes.
@@ -86,9 +87,29 @@ func ErrorToStatus(err error) (int, string, string) {
 		return http.StatusConflict, CodeConflict, err.Error()
 	case errors.Is(err, domain.ErrPayloadTooLarge):
 		return http.StatusRequestEntityTooLarge, CodePayloadTooLarge, err.Error()
+	case skills.IsDependencyConflict(err):
+		return http.StatusConflict, CodeConflict, err.Error()
+	case isHostileArchive(err):
+		return http.StatusBadRequest, CodeInvalidRequest, err.Error()
+	case isSSRFRefusal(err):
+		return http.StatusBadRequest, CodeInvalidRequest, err.Error()
 	default:
 		return http.StatusInternalServerError, CodeInternal, "internal server error"
 	}
+}
+
+// isHostileArchive reports whether err is a rejected-archive error from the
+// skill install pipeline (zip-slip, symlink entry, caps, missing SKILL.md).
+func isHostileArchive(err error) bool {
+	var hostile *skills.ErrHostileArchive
+	return errors.As(err, &hostile)
+}
+
+// isSSRFRefusal reports whether err is an SSRF-guard refusal from the
+// skill fetch pipeline (private/internal target, disallowed scheme).
+func isSSRFRefusal(err error) bool {
+	var ssrf *skills.ErrSSRF
+	return errors.As(err, &ssrf)
 }
 
 // CodeToStatus maps a string error code to an HTTP status code.

@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/oniharnantyo/onclaw/internal/auth"
 	"github.com/oniharnantyo/onclaw/internal/bootstrap"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/services"
 	"github.com/oniharnantyo/onclaw/internal/store/fake"
 )
 
@@ -111,7 +111,7 @@ func TestSeedSuperadmin(t *testing.T) {
 	}
 
 	// Verify password hash can authenticate
-	ok, err := auth.NewPasswordHasher().Verify("supersecretpassword", *user.PasswordHash)
+	ok, err := services.NewPasswordHasher().Verify("supersecretpassword", *user.PasswordHash)
 	if err != nil || !ok {
 		t.Fatalf("superadmin password hash verification failed: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestSeedSuperadmin_PasswordFile(t *testing.T) {
 		t.Fatalf("expected non-nil user")
 	}
 
-	ok, err := auth.NewPasswordHasher().Verify("filepassword123", *user.PasswordHash)
+	ok, err := services.NewPasswordHasher().Verify("filepassword123", *user.PasswordHash)
 	if err != nil || !ok {
 		t.Fatalf("password from file verification failed: %v", err)
 	}

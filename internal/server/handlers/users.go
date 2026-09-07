@@ -17,14 +17,14 @@ import (
 
 // userHandlers handles self-profile updates and avatar uploads.
 type userHandlers struct {
-	store   store.Store
+	users   store.UserStore
 	storage storage.Storage
 }
 
 // NewUserHandlers creates a new userHandlers instance with injected dependencies.
-func NewUserHandlers(st store.Store, strg storage.Storage) *userHandlers {
+func NewUserHandlers(users store.UserStore, strg storage.Storage) *userHandlers {
 	return &userHandlers{
-		store:   st,
+		users:   users,
 		storage: strg,
 	}
 }
@@ -85,7 +85,7 @@ func (h *userHandlers) PatchMe(c *gin.Context) {
 		}
 	}
 
-	if err := h.store.Users().Update(c.Request.Context(), user); err != nil {
+	if err := h.users.Update(c.Request.Context(), user); err != nil {
 		RespondError(c, err)
 		return
 	}
@@ -181,7 +181,7 @@ func (h *userHandlers) UploadAvatar(c *gin.Context) {
 	avatarURL := h.storage.URL(key)
 	user.AvatarURL = &avatarURL
 
-	if err := h.store.Users().Update(c.Request.Context(), user); err != nil {
+	if err := h.users.Update(c.Request.Context(), user); err != nil {
 		// Best-effort cleanup of stored file on DB failure
 		_ = h.storage.Delete(c.Request.Context(), key)
 		RespondError(c, err)

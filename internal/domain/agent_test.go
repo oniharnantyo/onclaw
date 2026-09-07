@@ -170,23 +170,123 @@ func TestValidateAgentSlug(t *testing.T) {
 	}
 }
 
-func TestValidateSkillName(t *testing.T) {
-	valid := []string{"incident-runbook", "deploy-helper", "research"}
-	for _, name := range valid {
-		if err := domain.ValidateSkillName(name); err != nil {
-			t.Errorf("ValidateSkillName(%q) expected nil error, got %v", name, err)
+func TestValidateAgentContextWindow(t *testing.T) {
+	valid := []*int{nil}
+	for _, val := range []int{1, 100, 200000, 1000000} {
+		v := val
+		valid = append(valid, &v)
+	}
+	for _, cw := range valid {
+		if err := domain.ValidateAgentContextWindow(cw); err != nil {
+			t.Errorf("ValidateAgentContextWindow(%v) expected nil error, got %v", cw, err)
 		}
 	}
 
-	invalid := []string{"", "   ", "\t\n"}
-	for _, name := range invalid {
-		err := domain.ValidateSkillName(name)
+	invalid := []int{0, -1, -100, -200000}
+	for _, val := range invalid {
+		v := val
+		err := domain.ValidateAgentContextWindow(&v)
 		if err == nil {
-			t.Errorf("ValidateSkillName(%q) expected error, got nil", name)
+			t.Errorf("ValidateAgentContextWindow(%d) expected error, got nil", v)
 		}
 		if !errors.Is(err, domain.ErrInvalid) {
-			t.Errorf("ValidateSkillName(%q) error = %v, want %v", name, err, domain.ErrInvalid)
+			t.Errorf("ValidateAgentContextWindow(%d) error = %v, want %v", v, err, domain.ErrInvalid)
 		}
+	}
+}
+
+func TestResolveContextWindow(t *testing.T) {
+	val50k := 50000
+	val128k := 128000
+	zero := 0
+	neg := -100
+
+	tests := []struct {
+		name      string
+		agentCW   *int
+		catalogCW *int
+		want      int
+	}{
+		{
+			name:      "agent override wins over catalog limit",
+			agentCW:   &val50k,
+			catalogCW: &val128k,
+			want:      50000,
+		},
+		{
+			name:      "agent value used when catalog is nil",
+			agentCW:   &val50k,
+			catalogCW: nil,
+			want:      50000,
+		},
+		{
+			name:      "catalog limit used when agent is nil",
+			agentCW:   nil,
+			catalogCW: &val128k,
+			want:      128000,
+		},
+		{
+			name:      "default fallback 200000 when both are nil",
+			agentCW:   nil,
+			catalogCW: nil,
+			want:      200000,
+		},
+		{
+			name:      "default fallback when agent value is non-positive and catalog is nil",
+			agentCW:   &zero,
+			catalogCW: nil,
+			want:      200000,
+		},
+		{
+			name:      "catalog limit used when agent value is negative",
+			agentCW:   &neg,
+			catalogCW: &val128k,
+			want:      128000,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := domain.ResolveContextWindow(tt.agentCW, tt.catalogCW)
+			if got != tt.want {
+				t.Errorf("ResolveContextWindow(%v, %v) = %d, want %d", tt.agentCW, tt.catalogCW, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPathHelpers(t *testing.T) {
+	base := "/var/lib/onclaw"
+
+	if got, want := domain.WorkspaceRoot(base), filepath.Join(base, "workspaces"); got != want {
+		t.Errorf("WorkspaceRoot() = %q, want %q", got, want)
+	}
+
+	if got, want := domain.SystemSkillsDir(base), filepath.Join(base, "skills"); got != want {
+		t.Errorf("SystemSkillsDir() = %q, want %q", got, want)
+	}
+
+	if got, want := domain.WorkspaceSkillsDir(base, "acme-corp"), filepath.Join(base, "workspaces", "acme-corp", "skills"); got != want {
+		t.Errorf("WorkspaceSkillsDir() = %q, want %q", got, want)
+	}
+
+	if got, want := domain.AgentSkillsDir(base, "acme-corp", "radar"), filepath.Join(base, "workspaces", "acme-corp", "agents", "radar", "skills"); got != want {
+		t.Errorf("AgentSkillsDir() = %q, want %q", got, want)
+	}
+
+	wsRoot := domain.WorkspaceRoot(base)
+	if got, want := domain.AgentWorkspaceDir(wsRoot, "acme-corp", "radar"), filepath.Join(base, "workspaces", "acme-corp", "agents", "radar"); got != want {
+		t.Errorf("AgentWorkspaceDir() = %q, want %q", got, want)
+	}
+}
+
+func TestDefaultOnClawDir(t *testing.T) {
+	got := domain.DefaultOnClawDir()
+	if got == "" {
+		t.Error("DefaultOnClawDir() returned empty string")
+	}
+	if !strings.HasSuffix(got, ".onclaw") {
+		t.Errorf("DefaultOnClawDir() = %q, want path ending in .onclaw", got)
 	}
 }
 

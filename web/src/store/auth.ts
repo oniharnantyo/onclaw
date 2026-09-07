@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { api, getToken, setToken, clearToken, ApiError, formatApiError, type ApiUser, type ApiMemberView } from '../lib/api';
 import { useStore } from './index';
+import { purgeWorkspaceKeys } from './workspaceKeys';
 
 export type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated' | 'error';
 
@@ -52,6 +53,17 @@ export const useAuthStore = create<AuthState>((set) => ({
           const firstTarget = memberships[0].workspace_slug || memberships[0].workspace_id;
           useStore.getState().goPos({ tenantId: firstTarget });
         }
+        // Materialize the active workspace entry now (normally lazy) so its
+        // persisted threads reattach at boot and chat hydration can fire on
+        // open — otherwise a reload shows an empty transcript until the first
+        // store write materializes the tenant.
+        const activeId = useStore.getState().pos.tenantId;
+        if (activeId) {
+          useStore.getState().updateTenant(activeId, (t) => t);
+          // Fetch the workspace's agents so chat routes (/ and /c) land on the
+          // chat page instead of the no-agents onboarding screen.
+          void useStore.getState().loadAgents(activeId);
+        }
       }
     } catch (err: unknown) {
       const isUnauth =
@@ -92,6 +104,11 @@ export const useAuthStore = create<AuthState>((set) => ({
           const firstTarget = memberships[0].workspace_slug || memberships[0].workspace_id;
           useStore.getState().goPos({ tenantId: firstTarget });
         }
+        const activeId = useStore.getState().pos.tenantId;
+        if (activeId) {
+          useStore.getState().updateTenant(activeId, (t) => t);
+          void useStore.getState().loadAgents(activeId);
+        }
       }
 
       return meRes;
@@ -109,6 +126,8 @@ export const useAuthStore = create<AuthState>((set) => ({
       // Ignore logout request errors
     } finally {
       clearToken();
+      // Logout drops every per-workspace chat key slot (D4).
+      purgeWorkspaceKeys();
       set({ user: null, memberships: [], status: 'unauthenticated', bootError: null });
     }
   },

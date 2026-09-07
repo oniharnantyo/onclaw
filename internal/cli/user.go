@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oniharnantyo/onclaw/internal/auth"
 	"github.com/oniharnantyo/onclaw/internal/config"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/services"
 	"github.com/oniharnantyo/onclaw/internal/storage"
 	"github.com/oniharnantyo/onclaw/internal/store"
 	"github.com/urfave/cli/v3"
@@ -22,18 +22,18 @@ const maxAvatarSize = 2 * 1024 * 1024 // 2MB
 
 // userCmd handles user management CLI commands.
 type userCmd struct {
-	hasher auth.PasswordHasher
+	hasher services.PasswordHasher
 }
 
 // NewUserCmd creates a new userCmd instance.
 func NewUserCmd() *userCmd {
-	return NewUserCmdWithHasher(auth.NewPasswordHasher())
+	return NewUserCmdWithHasher(services.NewPasswordHasher())
 }
 
 // NewUserCmdWithHasher creates a new userCmd instance with a custom PasswordHasher.
-func NewUserCmdWithHasher(hasher auth.PasswordHasher) *userCmd {
+func NewUserCmdWithHasher(hasher services.PasswordHasher) *userCmd {
 	if hasher == nil {
-		hasher = auth.NewPasswordHasher()
+		hasher = services.NewPasswordHasher()
 	}
 	return &userCmd{
 		hasher: hasher,

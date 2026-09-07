@@ -5,8 +5,10 @@ import { COMMANDS } from "../../lib/constants";
 
 import { SlashMenu } from "./SlashMenu";
 import { MentionMenu } from "./MentionMenu";
+import { SkillMenu } from "./SkillMenu";
+import type { SkillMenuGroup } from "./SkillMenu";
 
-export function Composer({ agent, running, onSend, onCancel, onAttach, mentionOptions  }: any) {
+export function Composer({ agent, running, onSend, onCancel, onAttach, mentionOptions, skillGroups  }: any) {
   const [text, setText] = useState('');
   const [idx, setIdx] = useState(0);
   const [menuDismissed, setMenuDismissed] = useState(false);
@@ -18,7 +20,25 @@ export function Composer({ agent, running, onSend, onCancel, onAttach, mentionOp
   const mentionList = mentionMatch
     ? mentionOptions.filter((m: any) => memberHandle(m).startsWith(mentionMatch[1].toLowerCase()))
     : [];
-  const menu = menuDismissed ? null : (slashOpen ? 'slash' : (mentionMatch && mentionList.length ? 'mention' : null));
+  // $token triggers the skill invocation menu (groups: System / Workspace /
+  // This agent). An unmatched $name sends as ordinary text.
+  const skillMatch = skillGroups && skillGroups.length ? (text.match(/(^|\s)\$([A-Za-z0-9-]*)$/) || null) : null;
+  const skillQuery = skillMatch ? skillMatch[2] : '';
+  const skillList = skillMatch
+    ? (skillGroups as SkillMenuGroup[])
+        .flatMap((g) => g.skills)
+        .filter((s) => s.name.toLowerCase().startsWith(skillQuery.toLowerCase()))
+    : [];
+  const menu = menuDismissed
+    ? null
+    : slashOpen
+      ? 'slash'
+      : mentionMatch && mentionList.length
+        ? 'mention'
+        : skillMatch && skillList.length
+          ? 'skill'
+          : null;
+  const menuLength = menu === 'slash' ? slashList.length : menu === 'mention' ? mentionList.length : skillList.length;
   const [lastMenu, setLastMenu] = useState(menu);
   if (menu !== lastMenu) { setLastMenu(menu); setIdx(0); }
 
@@ -38,14 +58,21 @@ export function Composer({ agent, running, onSend, onCancel, onAttach, mentionOp
     requestAnimationFrame(() => { if (ta.current) ta.current.focus(); });
   };
 
+  const pickSkill = (name: string) => {
+    setText(text.replace(/(^|\s)\$[A-Za-z0-9-]*$/, (m0, pre) => (pre || '') + '$' + name + ' '));
+    setIdx(0);
+    requestAnimationFrame(() => { if (ta.current) ta.current.focus(); });
+  };
+
   const onKeyDown = (e) => {
-    if (menu && e.key === 'ArrowDown') { e.preventDefault(); const n = menu === 'slash' ? slashList.length : mentionList.length; setIdx((i) => Math.min(n - 1, i + 1)); return; }
+    if (menu && e.key === 'ArrowDown') { e.preventDefault(); setIdx((i) => Math.min(menuLength - 1, i + 1)); return; }
     if (menu && e.key === 'ArrowUp') { e.preventDefault(); setIdx((i) => Math.max(0, i - 1)); return; }
     if (e.key === 'Escape' && menu) { e.preventDefault(); setMenuDismissed(true); return; }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       if (menu === 'slash' && slashList[idx]) { setText(slashList[idx].cmd + ' '); setIdx(0); return; }
       if (menu === 'mention' && mentionList[idx]) { pickMention(mentionList[idx]); setIdx(0); return; }
+      if (menu === 'skill' && skillList[idx]) { pickSkill(skillList[idx].name); return; }
       submit(undefined as any);
     }
   };
@@ -54,6 +81,7 @@ export function Composer({ agent, running, onSend, onCancel, onAttach, mentionOp
     <div className="relative" data-od-id="composer">
       {menu === 'slash' && <SlashMenu q={slashQ} idx={idx} onPick={(cmd) => { setText(cmd + ' '); setIdx(0); if (ta.current) ta.current.focus(); }}/>}
       {menu === 'mention' && <MentionMenu options={mentionList} idx={idx} onPick={pickMention}/>}
+      {menu === 'skill' && <SkillMenu groups={skillGroups} query={skillQuery} idx={idx} onPick={pickSkill}/>}
       <div onClick={() => { if (ta.current) ta.current.focus(); }}
         className="cursor-text rounded-[24px] border border-line bg-surface p-2 transition-colors focus-within:border-accent">
         <textarea ref={ta} rows={1} value={text} autoFocus aria-label={'Message input'}

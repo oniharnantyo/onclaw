@@ -5,14 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/oniharnantyo/onclaw/internal/agents"
 	"github.com/oniharnantyo/onclaw/internal/domain"
-	"github.com/oniharnantyo/onclaw/internal/modelcatalog"
+	"github.com/oniharnantyo/onclaw/internal/promptdocs"
+	"github.com/oniharnantyo/onclaw/internal/promptgen"
 	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/secrets"
+	"github.com/oniharnantyo/onclaw/internal/services"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
@@ -21,13 +23,13 @@ type workspaceHandlers struct {
 	store         store.Store
 	encryptionKey []byte
 	registry      *providers.Registry
-	modelCatalog  *modelcatalog.Service
-	agentService  *agents.Service
+	modelCatalog  *services.ModelCatalog
+	agentService  *promptgen.Service
 	workspaceDir  string
 }
 
 // NewWorkspaceHandlers creates a new workspaceHandlers instance with injected dependencies.
-func NewWorkspaceHandlers(st store.Store, encryptionKey []byte, reg *providers.Registry, mc *modelcatalog.Service, as *agents.Service, workspaceDir string) *workspaceHandlers {
+func NewWorkspaceHandlers(st store.Store, encryptionKey []byte, reg *providers.Registry, mc *services.ModelCatalog, as *promptgen.Service, workspaceDir string) *workspaceHandlers {
 	if reg == nil {
 		reg = providers.NewRegistry()
 	}
@@ -59,6 +61,7 @@ func (h *workspaceHandlers) ListWorkspaces(c *gin.Context) {
 type CreateWorkspaceRequest struct {
 	Name         string                 `json:"name"`
 	Slug         string                 `json:"slug"`
+	Description  *string                `json:"description,omitempty"`
 	Timezone     string                 `json:"timezone"`
 	Provider     *CreateProviderRequest `json:"provider,omitempty"`
 	StarterAgent *CreateAgentRequest    `json:"starter_agent,omitempty"`
@@ -225,13 +228,10 @@ func (h *workspaceHandlers) CreateWorkspace(c *gin.Context) {
 			avatar = req.StarterAgent.Avatar
 		}
 
-		if len(req.StarterAgent.Skills) > 0 {
-			for _, s := range req.StarterAgent.Skills {
-				trimmed := strings.TrimSpace(s)
-				if trimmed != "" {
-					RespondError(c, fmt.Errorf("%w: unknown skill %q in workspace", domain.ErrInvalid, trimmed))
-					return
-				}
+		if req.StarterAgent.ContextWindow != nil {
+			if err := domain.ValidateAgentContextWindow(req.StarterAgent.ContextWindow); err != nil {
+				RespondError(c, err)
+				return
 			}
 		}
 	}
@@ -247,18 +247,30 @@ func (h *workspaceHandlers) CreateWorkspace(c *gin.Context) {
 	var starterAgentDir string
 	if req.StarterAgent != nil {
 		starterAgentDir = domain.AgentWorkspaceDir(h.workspaceDir, slug, agentSlug)
-		if err := agents.SeedWorkspace(starterAgentDir); err != nil {
+		if err := promptdocs.SeedWorkspace(starterAgentDir); err != nil {
+			RespondError(c, fmt.Errorf("failed to create agent workspace directory: %w", err))
+			return
+		}
+		// A new agent starts with the embedded BOOTSTRAP.md template; prompt
+		// generation only writes IDENTITY.md and SOUL.md.
+		if err := promptdocs.SeedBootstrapDocument(starterAgentDir); err != nil {
 			RespondError(c, fmt.Errorf("failed to create agent workspace directory: %w", err))
 			return
 		}
 	}
 
+	var desc string
+	if req.Description != nil {
+		desc = strings.TrimSpace(*req.Description)
+	}
+
 	err := h.store.WithTx(c.Request.Context(), func(txStore store.Store) error {
 		ws := &domain.Workspace{
-			Slug:     slug,
-			Name:     name,
-			Timezone: tz,
-			IsMaster: false,
+			Slug:        slug,
+			Name:        name,
+			Description: desc,
+			Timezone:    tz,
+			IsMaster:    false,
 		}
 		if err := txStore.Workspaces().Create(c.Request.Context(), ws); err != nil {
 			return err
@@ -315,6 +327,7 @@ func (h *workspaceHandlers) CreateWorkspace(c *gin.Context) {
 		ownerRole = oRole
 		creatorMember = member
 
+		// Atomic birth: provision provider and starter agent within the same transaction if requested
 		if req.Provider != nil {
 			var keyCiphertext, keyHint string
 			if req.Provider.Key != nil && strings.TrimSpace(*req.Provider.Key) != "" {
@@ -342,22 +355,22 @@ func (h *workspaceHandlers) CreateWorkspace(c *gin.Context) {
 			createdProvider = prov
 
 			if req.StarterAgent != nil {
-				tools := req.StarterAgent.Tools
-				if tools == nil {
-					tools = []string{}
+				agentTools := req.StarterAgent.Tools
+				if agentTools == nil {
+					agentTools = []string{}
 				}
-				skills := req.StarterAgent.Skills
-				if skills == nil {
-					skills = []string{}
-				}
-				mcp := req.StarterAgent.MCP
-				if mcp == nil {
-					mcp = []string{}
+				disabledMCPs := req.StarterAgent.DisabledMCPs
+				if disabledMCPs == nil {
+					disabledMCPs = []string{}
 				}
 				var effort *string
 				if req.StarterAgent.Effort != nil && strings.TrimSpace(*req.StarterAgent.Effort) != "" {
 					eff := strings.TrimSpace(*req.StarterAgent.Effort)
 					effort = &eff
+				}
+				var contextWindow *int = req.StarterAgent.ContextWindow
+				if contextWindow == nil && h.modelCatalog != nil {
+					contextWindow = h.modelCatalog.ResolveContextLimit(c.Request.Context(), pType, agentModel)
 				}
 				agent := &domain.Agent{
 					WorkspaceID:   ws.ID,
@@ -372,9 +385,9 @@ func (h *workspaceHandlers) CreateWorkspace(c *gin.Context) {
 					MaxTokens:     req.StarterAgent.MaxTokens,
 					Effort:        effort,
 					Autonomy:      autonomy,
-					Tools:         tools,
-					Skills:        skills,
-					MCP:           mcp,
+					ContextWindow: contextWindow,
+					Tools:         agentTools,
+					DisabledMCPs:  disabledMCPs,
 					Avatar:        avatar,
 					PromptsStatus: domain.PromptsStatusGenerating,
 					CreatedBy:     &user.ID,
@@ -391,18 +404,20 @@ func (h *workspaceHandlers) CreateWorkspace(c *gin.Context) {
 	})
 
 	if err != nil {
+		// Clean up the pre-created directory on transaction failure
+		if starterAgentDir != "" {
+			_ = os.RemoveAll(starterAgentDir)
+		}
 		RespondError(c, err)
 		return
 	}
 
-	// Generate starter-agent prompts synchronously so the birth response carries
-	// the final state; a generation failure still returns 201 with the failed
-	// status for retry.
-	if createdAgent != nil {
-		// Detached context: the generation service owns the budget and records
-		// the final prompt state regardless of this request's lifetime.
-		starterDir := domain.AgentWorkspaceDir(h.workspaceDir, createdWs.Slug, createdAgent.Slug)
-		if err := h.agentService.Generate(context.Background(), starterDir, createdWs.ID, createdAgent.ID, ""); err != nil {
+	// Post-commit: generate prompts synchronously for the starter agent
+	// using the detached background context owned by the generation service.
+	// Status transitions generating -> ready upon success; failure leaves
+	// the workspace and agent created with status failed.
+	if createdAgent != nil && h.agentService != nil {
+		if err := h.agentService.Generate(context.Background(), starterAgentDir, createdWs.ID, createdAgent.ID, ""); err != nil {
 			log.Printf("[handlers.workspaces] prompt generation failed for starter agent %s/%s: %v", createdWs.ID, createdAgent.ID, err)
 		}
 
@@ -413,20 +428,21 @@ func (h *workspaceHandlers) CreateWorkspace(c *gin.Context) {
 		composePromptDocuments(domain.AgentWorkspaceDir(h.workspaceDir, createdWs.Slug, createdAgent.Slug), createdAgent)
 	}
 
-	res := gin.H{
+	resp := gin.H{
 		"workspace": createdWs,
 		"role":      ownerRole,
 		"member":    creatorMember,
 	}
 	if createdProvider != nil {
-		res["provider"] = toProviderResponse(createdProvider)
+		resp["provider"] = toProviderResponse(createdProvider)
 	}
 	if createdAgent != nil {
-		res["starter_agent"] = createdAgent
-		res["agent"] = createdAgent
+		wrapped := newAgentResponse(createdAgent)
+		resp["starter_agent"] = wrapped
+		resp["agent"] = wrapped
 	}
 
-	RespondCreated(c, res)
+	RespondCreated(c, resp)
 }
 
 // GetWorkspace returns details of the currently resolved workspace and current caller's role.
@@ -445,11 +461,12 @@ func (h *workspaceHandlers) GetWorkspace(c *gin.Context) {
 
 // PatchWorkspaceRequest holds editable fields for a workspace.
 type PatchWorkspaceRequest struct {
-	Name     *string `json:"name"`
-	Timezone *string `json:"timezone"`
+	Name        *string `json:"name"`
+	Description *string `json:"description"`
+	Timezone    *string `json:"timezone"`
 }
 
-// PatchWorkspace updates name and timezone of the current workspace. Slug remains immutable.
+// PatchWorkspace updates name, description, and timezone of the current workspace. Slug remains immutable.
 // The master workspace is editable only by superadmins: the master tenant has no role with
 // workspace.write other than Superadmin, so the middleware permission guard enforces that rule.
 func (h *workspaceHandlers) PatchWorkspace(c *gin.Context) {
@@ -461,7 +478,7 @@ func (h *workspaceHandlers) PatchWorkspace(c *gin.Context) {
 		return
 	}
 
-	if req.Name == nil && req.Timezone == nil {
+	if req.Name == nil && req.Description == nil && req.Timezone == nil {
 		RespondError(c, fmt.Errorf("%w: no fields to update", domain.ErrInvalid))
 		return
 	}
@@ -473,6 +490,10 @@ func (h *workspaceHandlers) PatchWorkspace(c *gin.Context) {
 			return
 		}
 		ws.Name = trimmed
+	}
+
+	if req.Description != nil {
+		ws.Description = strings.TrimSpace(*req.Description)
 	}
 
 	if req.Timezone != nil {

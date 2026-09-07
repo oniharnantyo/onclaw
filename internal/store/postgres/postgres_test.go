@@ -14,12 +14,15 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/oniharnantyo/onclaw/internal/auth"
 	"github.com/oniharnantyo/onclaw/internal/bootstrap"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/services"
 	"github.com/oniharnantyo/onclaw/internal/store"
 	"github.com/oniharnantyo/onclaw/internal/store/postgres"
 )
+
+// latestSchemaVersion is the newest embedded migration number.
+const latestSchemaVersion = 21
 
 func getTestBaseDSN(t *testing.T) string {
 	dsn := os.Getenv("TEST_DATABASE_URL")
@@ -132,8 +135,8 @@ func TestIntegration_Migration_IdempotenceAndRollback(t *testing.T) {
 		t.Fatalf("unexpected MigrateUp error: %v", err)
 	}
 	v, dirty, err = mig.Status()
-	if err != nil || v != 14 || dirty {
-		t.Fatalf("expected version 14 not dirty, got v=%d, dirty=%v, err=%v", v, dirty, err)
+	if err != nil || v != latestSchemaVersion || dirty {
+		t.Fatalf("expected latest version not dirty, got v=%d, dirty=%v, err=%v", v, dirty, err)
 	}
 
 	// 3. MigrateUp again is idempotent
@@ -141,8 +144,8 @@ func TestIntegration_Migration_IdempotenceAndRollback(t *testing.T) {
 		t.Fatalf("expected MigrateUp to be idempotent, got %v", err)
 	}
 	v, dirty, err = mig.Status()
-	if err != nil || v != 14 || dirty {
-		t.Fatalf("expected version 14 not dirty, got v=%d, dirty=%v, err=%v", v, dirty, err)
+	if err != nil || v != latestSchemaVersion || dirty {
+		t.Fatalf("expected latest version not dirty, got v=%d, dirty=%v, err=%v", v, dirty, err)
 	}
 
 	// 4. MigrateDown 1 step
@@ -150,8 +153,8 @@ func TestIntegration_Migration_IdempotenceAndRollback(t *testing.T) {
 		t.Fatalf("unexpected MigrateDown step error: %v", err)
 	}
 	v, dirty, err = mig.Status()
-	if err != nil || v != 13 || dirty {
-		t.Fatalf("expected version 13, got v=%d, dirty=%v, err=%v", v, dirty, err)
+	if err != nil || v != latestSchemaVersion-1 || dirty {
+		t.Fatalf("expected version %d, got v=%d, dirty=%v, err=%v", latestSchemaVersion-1, v, dirty, err)
 	}
 
 	// 5. MigrateDown all
@@ -163,13 +166,13 @@ func TestIntegration_Migration_IdempotenceAndRollback(t *testing.T) {
 		t.Fatalf("expected version 0, got v=%d, dirty=%v, err=%v", v, dirty, err)
 	}
 
-	// 6. MigrateUp again back to 14
+	// 6. MigrateUp again back to latest
 	if err := mig.Up(); err != nil {
 		t.Fatalf("unexpected MigrateUp error: %v", err)
 	}
 	v, dirty, err = mig.Status()
-	if err != nil || v != 14 || dirty {
-		t.Fatalf("expected version 14 not dirty, got v=%d, dirty=%v, err=%v", v, dirty, err)
+	if err != nil || v != latestSchemaVersion || dirty {
+		t.Fatalf("expected latest version not dirty, got v=%d, dirty=%v, err=%v", v, dirty, err)
 	}
 }
 
@@ -725,7 +728,7 @@ func TestIntegration_EnsureMaster_And_SeedSuperadmin_Idempotence(t *testing.T) {
 	}
 
 	// Verify password hash can authenticate
-	ok, err := auth.NewPasswordHasher().Verify("supersecretpassword123", *user.PasswordHash)
+	ok, err := services.NewPasswordHasher().Verify("supersecretpassword123", *user.PasswordHash)
 	if err != nil || !ok {
 		t.Fatalf("password verification failed: %v", err)
 	}

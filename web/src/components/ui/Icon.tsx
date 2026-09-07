@@ -47,7 +47,12 @@ const ICONS = {
   spark: [<path key="a" d="M12 3l3.2 5.8L21 12l-5.8 3.2L12 21l-3.2-5.8L3 12l5.8-3.2z"/>],
   logout: [<path key="a" d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>, <polyline key="b" points="16 17 21 12 16 7"/>, <line key="c" x1="21" y1="12" x2="9" y2="12"/>],
   "arrow-right": [<path key="a" d="M5 12h14M12 5l7 7-7 7"/>],
-  "arrow-left": [<path key="a" d="M19 12H5M12 19l-7-7 7-7"/>]
+  "arrow-left": [<path key="a" d="M19 12H5M12 19l-7-7 7-7"/>],
+  folder: [<path key="a" d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>],
+  "file-plus": [<path key="a" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>, <path key="b" d="M14 2v6h6M12 12v6M9 15h6"/>],
+  scan: [<path key="a" d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/>, <circle key="b" cx="12" cy="12" r="3"/>],
+  compass: [<circle key="a" cx="12" cy="12" r="9"/>, <path key="b" d="m15.5 8.5-2 5-5 2 2-5z"/>],
+  lock: [<rect key="a" x="4" y="11" width="16" height="10" rx="2"/>, <path key="b" d="M8 11V7a4 4 0 0 1 8 0v4"/>]
 };
 
 

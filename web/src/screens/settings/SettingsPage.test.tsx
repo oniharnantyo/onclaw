@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { SettingsPage } from './SettingsPage';
-import { api, ApiError } from '../../lib/api';
+import { api, ApiError, type ApiWorkspaceSkill } from '../../lib/api';
 import { useAuthStore } from '../../store/auth';
 
 describe('screens/settings/SettingsPage', () => {
@@ -106,6 +106,8 @@ describe('screens/settings/SettingsPage', () => {
       memberships: [],
       status: 'authenticated',
     });
+    // The Tools pane fetches the catalog on mount; deep-link tests render it.
+    vi.spyOn(api.tools, 'list').mockResolvedValue({ tools: [] });
   });
 
   function renderSettingsPage(initialPath = '/settings/workspace', overrides = {}) {
@@ -153,14 +155,14 @@ describe('screens/settings/SettingsPage', () => {
   }
 
   describe('Navigation & Routing', () => {
-    it('renders the eight section tab labels with active highlighting and switches section on click', async () => {
+    it('renders the nine section tab labels with active highlighting and switches section on click', async () => {
       renderSettingsPage('/settings/workspace');
 
       const tablist = screen.getByRole('tablist');
       expect(tablist).not.toBeNull();
 
       const tabs = screen.getAllByRole('tab');
-      expect(tabs.length).toBe(8);
+      expect(tabs.length).toBe(9);
 
       const expectedLabels = [
         'Workspace',
@@ -169,6 +171,7 @@ describe('screens/settings/SettingsPage', () => {
         'Integrations',
         'MCP servers',
         'Skills',
+        'Tools',
         'API keys',
         'Notifications',
       ];
@@ -200,6 +203,7 @@ describe('screens/settings/SettingsPage', () => {
         { path: '/settings/integrations', paneTestId: 'pane-integrations' },
         { path: '/settings/mcp', paneTestId: 'pane-mcp' },
         { path: '/settings/skills', paneTestId: 'pane-skills' },
+        { path: '/settings/tools', paneTestId: 'pane-tools' },
         { path: '/settings/keys', paneTestId: 'pane-keys' },
         { path: '/settings/notifications', paneTestId: 'pane-notifications' },
       ];
@@ -798,59 +802,77 @@ describe('screens/settings/SettingsPage', () => {
   });
 
   describe('Skills pane', () => {
-    it('loads and renders skills with version, custom badge, and run count', async () => {
+    const skillRows = (): { skills: ApiWorkspaceSkill[] } => ({
+      skills: [
+        {
+          id: 'sk-sweeper', workspace_id: 'acme', tier: 'workspace', name: 'changelog-sweeper',
+          version: '0.1.0', source: 'authored', enabled: true,
+          description: 'Sweeps commit logs for changelog entries.', created_at: '', updated_at: '',
+          dependency_status: [{ kind: 'binaries', name: 'pdftotext', status: 'missing', install_hint: 'brew install poppler' }],
+        },
+        {
+          id: 'sys-web-research', tier: 'system', name: 'web-research', version: '2.4.1', source: 'system',
+          locked: true, enabled: true, description: 'Research briefs.', created_at: '', updated_at: '',
+        },
+      ],
+    });
+
+    it('renders library rows and the locked system section from the skills API', async () => {
+      vi.spyOn(api.skills, 'list').mockResolvedValue(skillRows());
+
       renderSettingsPage('/settings/skills');
 
-      expect(screen.getByText('Changelog sweeper')).not.toBeNull();
+      await waitFor(() => {
+        expect(screen.getByTestId('skill-changelog-sweeper')).not.toBeNull();
+      });
       expect(screen.getByText('v0.1.0')).not.toBeNull();
-      expect(screen.getByText('custom')).not.toBeNull();
-      expect(screen.getByText('12 runs')).not.toBeNull();
+      expect(screen.getByText('authored')).not.toBeNull();
+      // Unmet dependency chip names the count
+      expect(screen.getByTestId('skill-dep-warning-changelog-sweeper').textContent).toContain('1 unmet');
+
+      // System skills render locked with a Fork action, no toggle/uninstall
+      expect(screen.getByTestId('system-skills-section')).not.toBeNull();
+      expect(screen.getByTestId('skill-web-research')).not.toBeNull();
+      expect(screen.queryByRole('switch', { name: 'Enable web-research' })).toBeNull();
+      expect(screen.queryByTestId('btn-uninstall-web-research')).toBeNull();
+      expect(screen.getByTestId('btn-fork-web-research')).not.toBeNull();
     });
 
-    it('installs a custom skill via dialog', async () => {
-      const { onUpdate, onToast } = renderSettingsPage('/settings/skills');
-
-      fireEvent.click(screen.getByTestId('btn-skill-add'));
+    it('master toggle drives PATCH and toasts removal from every agent', async () => {
+      vi.spyOn(api.skills, 'list').mockResolvedValue(skillRows());
+      const setEnabled = vi.spyOn(api.skills, 'setEnabled').mockResolvedValue({
+        skill: { ...skillRows().skills[0], enabled: false },
+      });
+      const { onToast } = renderSettingsPage('/settings/skills');
 
       await waitFor(() => {
-        expect(screen.getByTestId('modal-skill')).not.toBeNull();
+        expect(screen.getByTestId('skill-changelog-sweeper')).not.toBeNull();
       });
+      fireEvent.click(screen.getByRole('switch', { name: 'Enable changelog-sweeper' }));
 
-      const nameInput = screen.getByLabelText(/skill name/i);
-      const descInput = screen.getByLabelText(/skill description/i);
-      const installConfirmBtn = screen.getByTestId('btn-skill-add-confirm') as HTMLButtonElement;
-
-      expect(installConfirmBtn.disabled).toBe(true);
-
-      fireEvent.change(nameInput, { target: { value: 'Auto Reviewer' } });
-      fireEvent.change(descInput, { target: { value: 'Reviews pull requests automatically' } });
-
-      expect(installConfirmBtn.disabled).toBe(false);
-
-      fireEvent.click(installConfirmBtn);
-
-      expect(onUpdate).toHaveBeenCalled();
-      expect(onToast).toHaveBeenCalledWith("Auto Reviewer installed — assign it from any agent's capabilities");
-      expect(screen.queryByTestId('modal-skill')).toBeNull();
+      await waitFor(() => {
+        expect(setEnabled).toHaveBeenCalledWith('acme', 'changelog-sweeper', false);
+      });
+      await waitFor(() => {
+        expect(onToast).toHaveBeenCalledWith('changelog-sweeper disabled — removed from every agent');
+      });
     });
 
-    it('edits a custom skill name and description via dialog', async () => {
-      const { onUpdate, onToast } = renderSettingsPage('/settings/skills');
+    it('renders read-only lists for Members with no action affordances', async () => {
+      vi.spyOn(api.skills, 'list').mockResolvedValue(skillRows());
 
-      fireEvent.click(screen.getByTestId('btn-edit-sk-sweeper'));
+      renderSettingsPage('/settings/skills', { skillsCanWrite: false });
 
       await waitFor(() => {
-        expect(screen.getByTestId('modal-skill')).not.toBeNull();
+        expect(screen.getByTestId('skill-changelog-sweeper')).not.toBeNull();
       });
-
-      const descInput = screen.getByLabelText(/skill description/i);
-      fireEvent.change(descInput, { target: { value: 'Updated sweeper description' } });
-
-      fireEvent.click(screen.getByTestId('btn-skill-save'));
-
-      expect(onUpdate).toHaveBeenCalled();
-      expect(onToast).toHaveBeenCalledWith('Changelog sweeper updated');
-      expect(screen.queryByTestId('modal-skill')).toBeNull();
+      expect(screen.queryByTestId('btn-skill-add')).toBeNull();
+      expect(screen.queryByRole('switch', { name: 'Enable changelog-sweeper' })).toBeNull();
+      expect(screen.queryByTestId('btn-edit-changelog-sweeper')).toBeNull();
+      expect(screen.queryByTestId('btn-uninstall-changelog-sweeper')).toBeNull();
+      expect(screen.queryByTestId('btn-fork-web-research')).toBeNull();
+      // Both lists still render
+      expect(screen.getByTestId('system-skills-section')).not.toBeNull();
     });
   });
 

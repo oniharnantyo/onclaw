@@ -9,10 +9,10 @@ import (
 	"testing"
 
 	"github.com/oniharnantyo/onclaw/internal/domain"
-	"github.com/oniharnantyo/onclaw/internal/modelcatalog"
 	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/server"
 	"github.com/oniharnantyo/onclaw/internal/server/handlers"
+	"github.com/oniharnantyo/onclaw/internal/services"
 	storagefake "github.com/oniharnantyo/onclaw/internal/storage/fake"
 	storefake "github.com/oniharnantyo/onclaw/internal/store/fake"
 )
@@ -80,7 +80,7 @@ func TestModels_Endpoints_And_DeleteInUse(t *testing.T) {
 	stor := storagefake.New()
 	encKey := []byte("01234567890123456789012345678901")
 	providerReg := providers.NewRegistry()
-	catalogSvc := modelcatalog.NewService(modelcatalog.Options{
+	catalogSvc := services.NewModelCatalog(services.ModelCatalogOptions{
 		CacheDir:   t.TempDir(),
 		CatalogURL: mockCatalogServer.URL,
 		Registry:   providerReg,

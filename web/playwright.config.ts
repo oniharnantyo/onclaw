@@ -6,6 +6,13 @@ export default defineConfig({
   reporter: 'html',
   use: {
     trace: 'on-first-retry',
+    baseURL: process.env.E2E_BASE_URL ?? 'http://localhost:5173',
+  },
+  webServer: {
+    command: 'pnpm dev --port 5173 --strictPort',
+    url: 'http://localhost:5173',
+    reuseExistingServer: true,
+    timeout: 30_000,
   },
   projects: [
     {

@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from "react";
 import { cx, providerOf, slugify } from "../lib/helpers";
 import { Modal } from "../components/ui/Modal";
 import { inputCls, labelCls } from "../components/ui/constants";
-import { PROVIDER_TYPES, TOOLS, SKILLS, MCP_SERVERS } from "../lib/constants";
+import { PROVIDER_TYPES, MCP_SERVERS } from "../lib/constants";
 import { Segmented } from "../components/ui/Segmented";
 import { OptionChips } from "../components/ui/OptionChips";
 import { MicroLabel } from "../components/ui/MicroLabel";
@@ -16,17 +16,31 @@ import {
   type ApiProviderConfig,
   type ApiWorkspaceSkill,
   type ApiAgentMemory,
+  type ApiToolSettings,
   type AgentAutonomy,
 } from "../lib/api";
+import { useCanWriteSkills, unmetToolDependencies } from "../lib/skills";
 import { useWorkspace, useStore } from "../store";
 
-const TOOL_ICON: Record<string, string> = {
-  web: "globe",
-  files: "file",
-  shell: "terminal",
-  api: "link",
-  db: "db",
+// The browser facade: the catalog exposes one Browser chip whose stored
+// value is the alias `browser`. Legacy allowlists may carry individual
+// `browser.*` names — they collapse to the alias in the UI and on save
+// (workspace-tool-catalog D2).
+const BROWSER_TOOL_ALIAS = "browser";
+const BROWSER_MEMBER_PREFIX = "browser.";
+const TIER_HINT: Record<string, string> = {
+  system: "System skill — always attached",
+  workspace: "Workspace skill — enabled for every agent. Manage in Settings → Skills.",
+  agent: "Agent skill — installed into this agent's directory only.",
 };
+
+function normalizeBrowserAlias(toolIds: string[]): string[] {
+  const hasAlias = toolIds.includes(BROWSER_TOOL_ALIAS);
+  const hasMember = toolIds.some((t) => t.startsWith(BROWSER_MEMBER_PREFIX));
+  if (!hasMember) return toolIds;
+  const withoutMembers = toolIds.filter((t) => !t.startsWith(BROWSER_MEMBER_PREFIX));
+  return hasAlias ? withoutMembers : [...withoutMembers, BROWSER_TOOL_ALIAS];
+}
 
 const ROLE_SUGGESTIONS = [
   "code-reviewer",
@@ -65,7 +79,6 @@ export interface AgentConfigModalProps {
   draft?: any | null;
   onClose: () => void;
   onSave: (values: any) => void;
-  skillOptions?: Array<{ id: string; label: string }>;
   tenant?: any;
 }
 
@@ -73,7 +86,6 @@ export function AgentConfigModal({
   draft,
   onClose,
   onSave,
-  skillOptions: propSkillOptions,
   tenant,
 }: AgentConfigModalProps) {
   const isEdit = Boolean(draft);
@@ -95,12 +107,16 @@ export function AgentConfigModal({
     tenant?.providers || currentWs?.providers || []
   );
 
-  // Workspace custom skills
+  // Workspace skills (system + workspace tiers) and this agent's own skills
   const [workspaceSkills, setWorkspaceSkills] = useState<ApiWorkspaceSkill[]>([]);
+  const [agentSkills, setAgentSkills] = useState<ApiWorkspaceSkill[]>([]);
+  const [agentSkillFormOpen, setAgentSkillFormOpen] = useState(false);
+  const skillsWritable = useCanWriteSkills(tenant || currentWs);
 
   // User's own memory for the agent (in edit mode)
   const [memory, setMemory] = useState<ApiAgentMemory | null>(null);
   const [loadingMemory, setLoadingMemory] = useState(false);
+  const [toolCatalog, setToolCatalog] = useState<ApiToolSettings[]>([]);
 
   // Regenerating state
   const [regenerating, setRegenerating] = useState(false);
@@ -137,12 +153,15 @@ export function AgentConfigModal({
   const [model, setModel] = useState<string>("");
   const [temp, setTemp] = useState<number>(1.0);
   const [maxTokens, setMaxTokens] = useState<string>("");
+  const [contextWindow, setContextWindow] = useState<string>("");
+  const [contextWindowTouched, setContextWindowTouched] = useState(false);
+  const [catalogContextLimit, setCatalogContextLimit] = useState<number | null>(null);
   const [effort, setEffort] = useState<string | null>(null);
   const [availableEfforts, setAvailableEfforts] = useState<string[]>([]);
   const [autonomy, setAutonomy] = useState<AgentAutonomy>('approval');
 
-  const [tools, setTools] = useState<string[]>(["web"]);
-  const [skills, setSkills] = useState<string[]>(["research"]);
+  // Untouched Step 3 enables no registry tools — the deployer opts in.
+  const [tools, setTools] = useState<string[]>([]);
   const [mcp, setMcp] = useState<string[]>([]);
 
   const [promptStatus, setPromptStatus] = useState<string>('ready');
@@ -181,12 +200,15 @@ export function AgentConfigModal({
             setModel(a.model || "");
             setTemp(a.temperature ?? 1.0);
             setMaxTokens(a.max_tokens !== undefined && a.max_tokens !== null ? String(a.max_tokens) : "");
+            // The stored value is authoritative in edit mode; the client
+            // auto-fill effect must not clobber it.
+            setContextWindowTouched(true);
+            setContextWindow(a.context_window !== undefined && a.context_window !== null ? String(a.context_window) : "");
             setEffort(a.effort || null);
             if (a.autonomy && ['approval', 'suggest', 'full'].includes(a.autonomy)) {
               setAutonomy(a.autonomy as AgentAutonomy);
             }
-            if (a.tools) setTools([...a.tools]);
-            if (a.skills) setSkills([...a.skills]);
+            if (a.tools) setTools(normalizeBrowserAlias([...a.tools]));
             if (a.mcp) setMcp([...a.mcp]);
             setPromptStatus(a.prompts_status || 'ready');
             setPromptError(a.prompts_error || null);
@@ -223,6 +245,15 @@ export function AgentConfigModal({
           }
         })
         .catch(() => {});
+
+      api.tools
+        .list(targetWsId)
+        .then((res) => {
+          if (mounted && res?.tools) {
+            setToolCatalog(res.tools);
+          }
+        })
+        .catch(() => {});
     }
     return () => {
       mounted = false;
@@ -246,6 +277,13 @@ export function AgentConfigModal({
         .finally(() => {
           if (mounted) setLoadingMemory(false);
         });
+      // Agent-tier skills live in this agent's own directory — edit mode only.
+      api.agents
+        .listSkills(targetWsId, agentId)
+        .then((res) => {
+          if (mounted && res?.skills) setAgentSkills(res.skills);
+        })
+        .catch(() => {});
     }
     return () => {
       mounted = false;
@@ -262,6 +300,15 @@ export function AgentConfigModal({
     }
   }, [isEdit, configuredProviders, provider]);
 
+  // Auto-fill context window from the selected model's catalog limit whenever
+  // the model changes and the user has not typed a custom value. A manually
+  // entered value wins until the user clears it (reset-to-auto).
+  useEffect(() => {
+    if (!contextWindowTouched && catalogContextLimit) {
+      setContextWindow(String(catalogContextLimit));
+    }
+  }, [catalogContextLimit, contextWindowTouched]);
+
   // Handle name changes + auto-suggest slug
   const handleNameChange = (val: string) => {
     setName(val);
@@ -274,16 +321,6 @@ export function AgentConfigModal({
     setSlugEdited(true);
     setSlug(val.toLowerCase().replace(/[^a-z0-9-]/g, ""));
   };
-
-  // Skill options merged
-  const availableSkillOptions = useMemo(() => {
-    if (propSkillOptions && propSkillOptions.length > 0) return propSkillOptions;
-    const base = SKILLS.map((s) => ({ id: s.id, label: s.label }));
-    const custom = workspaceSkills
-      .filter((ws) => ws.enabled && !base.some((b) => b.id === ws.name || b.id === ws.id))
-      .map((ws) => ({ id: ws.name, label: ws.name }));
-    return [...base, ...custom];
-  }, [propSkillOptions, workspaceSkills]);
 
   // Validate step 1 fields
   const validateStep1 = () => {
@@ -312,9 +349,15 @@ export function AgentConfigModal({
         step2Errors.maxTokens = "Max tokens must be a positive integer";
       }
     }
+    if (contextWindow.trim()) {
+      const num = parseInt(contextWindow.trim(), 10);
+      if (isNaN(num) || num <= 0) {
+        step2Errors.contextWindow = "Context window must be a positive integer";
+      }
+    }
     if (Object.keys(step2Errors).length > 0) {
       setFieldErrors(step2Errors);
-      if (step2Errors.temp || step2Errors.maxTokens || step2Errors.effort) {
+      if (step2Errors.temp || step2Errors.maxTokens || step2Errors.effort || step2Errors.contextWindow) {
         setAdvancedOpen(true);
       }
       return false;
@@ -330,7 +373,7 @@ export function AgentConfigModal({
     }
   };
 
-  const handleCreateSubmit = async (overrideCapabilities?: { tools: string[]; skills: string[]; mcp: string[] }) => {
+  const handleCreateSubmit = async () => {
     if (!validateStep1()) {
       setStep(1);
       return;
@@ -343,11 +386,8 @@ export function AgentConfigModal({
     setSubmitting(true);
     setGeneralError(null);
 
-    const finalTools = overrideCapabilities ? overrideCapabilities.tools : tools;
-    const finalSkills = overrideCapabilities ? overrideCapabilities.skills : skills;
-    const finalMcp = overrideCapabilities ? overrideCapabilities.mcp : mcp;
-
     const parsedMaxTokens = maxTokens.trim() ? parseInt(maxTokens.trim(), 10) : undefined;
+    const parsedContextWindow = contextWindow.trim() ? parseInt(contextWindow.trim(), 10) : undefined;
 
     const payload = {
       name: name.trim(),
@@ -359,11 +399,11 @@ export function AgentConfigModal({
       model: model.trim(),
       temperature: temp,
       max_tokens: parsedMaxTokens,
+      context_window: parsedContextWindow,
       effort: effort || undefined,
       autonomy,
-      tools: finalTools,
-      skills: finalSkills,
-      mcp: finalMcp,
+      tools: normalizeBrowserAlias(tools),
+      mcp: mcp,
       avatar,
     };
 
@@ -392,6 +432,7 @@ export function AgentConfigModal({
     setGeneralError(null);
 
     const parsedMaxTokens = maxTokens.trim() ? parseInt(maxTokens.trim(), 10) : undefined;
+    const parsedContextWindow = contextWindow.trim() ? parseInt(contextWindow.trim(), 10) : undefined;
 
     // The slug is immutable after creation; it is omitted from PATCH so the
     // server's managed-field semantics need never fire.
@@ -406,10 +447,10 @@ export function AgentConfigModal({
       model: model.trim(),
       temperature: temp,
       max_tokens: parsedMaxTokens,
+      context_window: parsedContextWindow,
       effort: effort || undefined,
       autonomy,
-      tools,
-      skills,
+      tools: normalizeBrowserAlias(tools),
       mcp,
       avatar,
     };
@@ -464,6 +505,37 @@ export function AgentConfigModal({
       useStore.getState().toast(formatApiError(err, "Failed to reset memory"), "danger");
     }
   };
+
+  const handleAgentSkillInstalled = (skill: ApiWorkspaceSkill) => {
+    setAgentSkills((prev) => [...prev.filter((s) => s.name !== skill.name), skill]);
+    setAgentSkillFormOpen(false);
+    useStore.getState().toast(`${skill.name} installed for this agent only`);
+  };
+
+  const handleAgentSkillRemove = async (skill: ApiWorkspaceSkill) => {
+    const agentId = draft?.id || draft?.slug;
+    if (!targetWsId || !agentId) return;
+    try {
+      await api.agents.removeSkill(targetWsId, agentId, skill.name);
+      setAgentSkills((prev) => prev.filter((s) => s.name !== skill.name));
+      useStore.getState().toast(`${skill.name} removed from this agent`);
+    } catch (err: unknown) {
+      useStore.getState().toast(formatApiError(err, `Failed to remove ${skill.name}`), "danger");
+    }
+  };
+
+  // Skills attached to every agent: system tier always, workspace tier when the
+  // master switch is on. Never toggleable per agent — tiers are the only model.
+  const lockedSkillChips = useMemo(
+    () =>
+      workspaceSkills.filter(
+        (s) => s.tier === "system" || (s.tier === "workspace" && s.enabled !== false)
+      ),
+    [workspaceSkills]
+  );
+
+  // One inventory: system + enabled workspace tiers, then this agent's own.
+  const allSkills = useMemo(() => [...lockedSkillChips, ...agentSkills], [lockedSkillChips, agentSkills]);
 
   return (
     <Modal
@@ -852,6 +924,7 @@ export function AgentConfigModal({
                 model={model}
                 onModelChange={setModel}
                   onAvailableEffortsChange={setAvailableEfforts}
+                onContextLimitChange={setCatalogContextLimit}
                 effort={effort}
                 onEffortChange={setEffort}
                 modelError={fieldErrors.model}
@@ -919,6 +992,58 @@ export function AgentConfigModal({
                         <p className="mt-1 text-[12px] text-danger">{fieldErrors.maxTokens}</p>
                       )}
                     </div>
+
+                    <div>
+                      <div className="mb-1.5 flex items-center justify-between gap-2">
+                        <label className={cx(labelCls, "mb-0")} htmlFor="ac-context-window">
+                          Context window
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setContextWindowTouched(false);
+                            if (catalogContextLimit) {
+                              setContextWindow(String(catalogContextLimit));
+                            } else {
+                              setContextWindow("");
+                            }
+                          }}
+                          data-testid="btn-reset-context-window"
+                          className="text-[11px] font-medium text-accent transition-colors hover:text-[var(--accent-hover)]"
+                        >
+                          Reset to auto
+                        </button>
+                      </div>
+                      <div className="relative">
+                        <input
+                          id="ac-context-window"
+                          data-testid="input-context-window"
+                          type="number"
+                          min="1"
+                          step="1"
+                          className={cx(inputCls, "pr-14", fieldErrors.contextWindow && "border-danger")}
+                          placeholder={catalogContextLimit ? String(catalogContextLimit) : "Auto (model default)"}
+                          value={contextWindow}
+                          onChange={(e) => {
+                            setContextWindowTouched(true);
+                            setContextWindow(e.target.value);
+                          }}
+                        />
+                        {contextWindow && (
+                          <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center font-mono text-[11px] text-muted">
+                            tokens
+                          </span>
+                        )}
+                      </div>
+                      <p className="mt-1 text-[11px] leading-4 text-muted">
+                        {contextWindowTouched || contextWindow
+                          ? "Leave empty to fall back to the model's default window."
+                          : `Auto-fills from the model's context limit${catalogContextLimit ? ` (${catalogContextLimit.toLocaleString()} tokens)` : " when known"}.`}
+                      </p>
+                      {fieldErrors.contextWindow && (
+                        <p className="mt-1 text-[12px] text-danger">{fieldErrors.contextWindow}</p>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
@@ -932,23 +1057,86 @@ export function AgentConfigModal({
 
             <div>
               <span className={labelCls}>Built-in Tools</span>
-              <OptionChips
-                options={TOOLS}
-                value={tools}
-                onChange={setTools}
-                iconOf={(o: any) => TOOL_ICON[o.id]}
-              />
+              {toolCatalog.length > 0 ? (
+                <OptionChips
+                  options={toolCatalog.map((t) => ({ id: t.key, label: t.display_name }))}
+                  value={tools}
+                  onChange={setTools}
+                  iconOf={(o: any) => toolCatalog.find((t) => t.key === o.id)?.icon_key || "plug"}
+                  disabledOf={(o: any) => !toolCatalog.find((t) => t.key === o.id)?.enabled}
+                />
+              ) : (
+                <p className="text-[12px] text-muted" data-testid="agent-tools-unavailable">
+                  Tool catalog unavailable.
+                </p>
+              )}
             </div>
 
-            <div>
-              <span className={labelCls}>Skills</span>
-              <OptionChips
-                options={availableSkillOptions}
-                value={skills}
-                onChange={setSkills}
-              />
+            <div data-testid="agent-skills-inventory">
+              <div className="flex items-center justify-between">
+                <span className={labelCls}>Skills</span>
+                {isEdit && skillsWritable ? (
+                  <button
+                    type="button"
+                    onClick={() => setAgentSkillFormOpen(true)}
+                    data-testid="btn-add-agent-skill"
+                    className="flex h-7 items-center gap-1.5 rounded-md border border-line px-2.5 text-[11px] font-medium text-fg2 transition-colors hover:border-accent hover:text-fg"
+                  >
+                    <Icon name="plus" size={12} /> Add skill
+                  </button>
+                ) : null}
+              </div>
+              {allSkills.length > 0 ? (
+                <div className="flex flex-wrap gap-2" data-testid="skill-chips">
+                  {allSkills.map((s) => {
+                    // A workspace skill whose tool dependency the agent's
+                    // allowlist lacks warns inline and points at the chips below.
+                    const missingTools = s.tier === "agent" ? [] : unmetToolDependencies(s).filter((t) => !tools.includes(t));
+                    return (
+                      <div key={s.tier + "-" + s.name} className="relative">
+                        <span
+                          title={TIER_HINT[s.tier]}
+                          className="flex h-8 cursor-default items-center gap-1.5 rounded-md border border-line bg-[color-mix(in_oklab,var(--fg)_4%,transparent)] px-3 text-[12px] font-medium text-fg2"
+                          data-testid={s.tier === "agent" ? "agent-skill-" + s.name : "locked-skill-" + s.name}
+                        >
+                          {s.tier === "system" ? <Icon name="lock" size={12} /> : <Icon name="spark" size={12} className="text-accent" />}
+                          {s.name}
+                          <span className="rounded border border-line px-1 py-px font-mono text-[9px] uppercase tracking-wide text-muted" data-testid={"skill-tier-" + s.name}>
+                            {s.tier}
+                          </span>
+                          {s.tier === "agent" && isEdit && skillsWritable ? (
+                            <button
+                              type="button"
+                              aria-label={"Remove " + s.name}
+                              onClick={() => handleAgentSkillRemove(s)}
+                              data-testid={"btn-remove-agent-skill-" + s.name}
+                              className="text-muted transition-colors hover:text-danger"
+                            >
+                              <Icon name="x" size={13} />
+                            </button>
+                          ) : null}
+                        </span>
+                        {missingTools.length > 0 ? (
+                          <p
+                            className="mt-1 flex items-center gap-1 text-[11px] leading-4 text-[color-mix(in_oklab,var(--warn),black_38%)]"
+                            data-testid={"skill-dep-warn-" + s.name}
+                          >
+                            <Icon name="alert" size={11} />
+                            Requires {missingTools.join(", ")} — enable it in the tool chips below.
+                          </p>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="text-[12px] text-muted" data-testid="locked-skills-empty">
+                  No skills attached yet — install one in Settings → Skills.
+                </p>
+              )}
               <p className="mt-1.5 text-[11px] leading-4 text-muted">
-                Skills extend agent behavior with specialized instructions. Configured in Settings → Skills.
+                System skills are always attached, workspace skills follow the Settings → Skills master switch, and agent skills (marked <span className="font-mono uppercase">agent</span>) live only on this agent.
+                {!isEdit ? " Agent-tier skills can be added after it is deployed." : ""}
               </p>
             </div>
 
@@ -1190,6 +1378,130 @@ export function AgentConfigModal({
         )}
           </>
         )}
+
+        {agentSkillFormOpen && isEdit ? (
+          <AgentSkillAddDialog
+            wsSlug={targetWsId}
+            agentId={draft?.id || draft?.slug}
+            onClose={() => setAgentSkillFormOpen(false)}
+            onInstalled={handleAgentSkillInstalled}
+          />
+        ) : null}
+      </div>
+    </Modal>
+  );
+}
+
+// Inline install of an agent-tier skill: authored (name, description, body)
+// straight into this agent's skills directory.
+function AgentSkillAddDialog({
+  wsSlug,
+  agentId,
+  onClose,
+  onInstalled,
+}: {
+  wsSlug: string;
+  agentId: string;
+  onClose: () => void;
+  onInstalled: (skill: ApiWorkspaceSkill) => void;
+}) {
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [body, setBody] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  const valid = slug.length > 0 && body.trim().length > 0;
+
+  const submit = async () => {
+    if (!valid) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await api.agents.installSkill(wsSlug, agentId, {
+        name: slug,
+        description: description.trim() || undefined,
+        body,
+      });
+      onInstalled(res.skill);
+    } catch (err: unknown) {
+      setError(formatApiError(err, "Failed to install skill"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal
+      title="Add agent skill"
+      onClose={onClose}
+      odId="modal-agent-skill-add"
+      data-testid="modal-agent-skill-add"
+      footer={
+        <>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-9 items-center rounded-md border border-line px-3.5 text-[13px] font-medium text-fg2 transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_6%,transparent)] hover:text-fg"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={!valid || saving}
+            data-testid="btn-agent-skill-install"
+            className="flex h-9 items-center rounded-md bg-accent px-4 text-[13px] font-semibold text-accenton transition-colors hover:bg-[var(--accent-hover)] disabled:opacity-40"
+          >
+            {saving ? "Installing…" : "Install for this agent"}
+          </button>
+        </>
+      }
+    >
+      <div className="space-y-4 p-5">
+        {error ? <p className="text-[13px] text-danger">{error}</p> : null}
+        <div>
+          <label className={labelCls} htmlFor="agent-skill-name">
+            Skill name
+          </label>
+          <input
+            id="agent-skill-name"
+            className={inputCls}
+            value={name}
+            aria-label="Agent skill name"
+            data-testid="input-agent-skill-name"
+            onChange={(e) => setName(e.target.value)}
+            autoFocus
+          />
+        </div>
+        <div>
+          <label className={labelCls} htmlFor="agent-skill-desc">
+            Description <span className="text-muted font-normal">(optional)</span>
+          </label>
+          <input
+            id="agent-skill-desc"
+            className={inputCls}
+            value={description}
+            aria-label="Agent skill description"
+            data-testid="input-agent-skill-desc"
+            onChange={(e) => setDescription(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className={labelCls} htmlFor="agent-skill-body">
+            SKILL.md body <span className="text-accent font-normal">(markdown)</span>
+          </label>
+          <textarea
+            id="agent-skill-body"
+            rows={8}
+            className={cx(inputCls, "h-auto py-2 font-mono text-[12px] leading-relaxed")}
+            value={body}
+            aria-label="Agent skill body"
+            data-testid="input-agent-skill-body"
+            onChange={(e) => setBody(e.target.value)}
+          />
+        </div>
       </div>
     </Modal>
   );

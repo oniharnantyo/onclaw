@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/oniharnantyo/onclaw/internal/auth"
 	"github.com/oniharnantyo/onclaw/internal/server/handlers"
+	"github.com/oniharnantyo/onclaw/internal/services"
 	storagefake "github.com/oniharnantyo/onclaw/internal/storage/fake"
 	storefake "github.com/oniharnantyo/onclaw/internal/store/fake"
 )
@@ -18,11 +18,11 @@ func TestHandlers_New(t *testing.T) {
 
 	st := storefake.New()
 	stor := storagefake.New()
-	issuer := auth.NewJWTIssuer(auth.JWTConfig{
+	issuer := services.NewJWTIssuer(services.JWTConfig{
 		Secret: "secret-for-handlers-unit-tests-32-bytes!!",
 		TTL:    time.Hour,
 	})
-	authSvc := auth.NewService(st, issuer, nil)
+	authSvc := services.NewAuthService(st.Users(), st.Members(), issuer, nil)
 
 	authH := handlers.NewAuthHandlers(authSvc, stor)
 	if authH == nil {
@@ -39,12 +39,12 @@ func TestHandlers_New(t *testing.T) {
 		t.Fatal("expected non-nil MemberHandlers instance")
 	}
 
-	roleH := handlers.NewRoleHandlers(st)
+	roleH := handlers.NewRoleHandlers(st.Roles())
 	if roleH == nil {
 		t.Fatal("expected non-nil RoleHandlers instance")
 	}
 
-	userH := handlers.NewUserHandlers(st, stor)
+	userH := handlers.NewUserHandlers(st.Users(), stor)
 	if userH == nil {
 		t.Fatal("expected non-nil UserHandlers instance")
 	}
@@ -59,7 +59,7 @@ func TestHandlers_New(t *testing.T) {
 		t.Fatal("expected non-nil AdminWorkspaceHandlers instance")
 	}
 
-	admUsrH := handlers.NewAdminUserHandlers(st)
+	admUsrH := handlers.NewAdminUserHandlers(st.Users(), st.Workspaces(), st.Members(), st.Roles())
 	if admUsrH == nil {
 		t.Fatal("expected non-nil AdminUserHandlers instance")
 	}
@@ -69,19 +69,14 @@ func TestHandlers_New(t *testing.T) {
 		t.Fatal("expected non-nil AdminSuperadminHandlers instance")
 	}
 
-	provH := handlers.NewProviderHandlers(st, []byte("01234567890123456789012345678901"), nil, nil)
+	provH := handlers.NewProviderHandlers(st.Providers(), st.Agents(), []byte("01234567890123456789012345678901"), nil, nil)
 	if provH == nil {
 		t.Fatal("expected non-nil ProviderHandlers instance")
 	}
 
-	agentH := handlers.NewAgentHandlers(st, []byte("01234567890123456789012345678901"), nil, nil, nil, t.TempDir())
+	agentH := handlers.NewAgentHandlers(st.Agents(), st.AgentUserMemories(), st.Providers(), st.SessionEvents(), []byte("01234567890123456789012345678901"), nil, nil, nil, t.TempDir(), nil, nil)
 	if agentH == nil {
 		t.Fatal("expected non-nil AgentHandlers instance")
-	}
-
-	skillH := handlers.NewSkillHandlers(st)
-	if skillH == nil {
-		t.Fatal("expected non-nil SkillHandlers instance")
 	}
 
 	r := gin.New()

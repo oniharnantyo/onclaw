@@ -27,6 +27,9 @@ const (
 	SkillsRead  = "skills.read"
 	SkillsWrite = "skills.write"
 
+	// Tools permissions (workspace tool settings; reads are covered by membership)
+	ToolsWrite = "tools.write"
+
 	// Admin permissions (master tenant control plane)
 	AdminWorkspacesRead   = "admin.workspaces.read"
 	AdminWorkspacesWrite  = "admin.workspaces.write"
@@ -36,7 +39,7 @@ const (
 )
 
 var (
-	// OwnerPermissions contains all standard workspace permissions (13 permissions).
+	// OwnerPermissions contains all standard workspace permissions (14 permissions).
 	OwnerPermissions = []string{
 		WorkspaceRead,
 		WorkspaceWrite,
@@ -51,9 +54,10 @@ var (
 		AgentsWrite,
 		SkillsRead,
 		SkillsWrite,
+		ToolsWrite,
 	}
 
-	// AdminPermissions contains all standard workspace permissions except roles.write (12 permissions).
+	// AdminPermissions contains all standard workspace permissions except roles.write (13 permissions).
 	AdminPermissions = []string{
 		WorkspaceRead,
 		WorkspaceWrite,
@@ -67,6 +71,7 @@ var (
 		AgentsWrite,
 		SkillsRead,
 		SkillsWrite,
+		ToolsWrite,
 	}
 
 	// MemberPermissions contains only read permissions (6 permissions).
@@ -79,7 +84,7 @@ var (
 		SkillsRead,
 	}
 
-	// SuperadminPermissions contains all workspace permissions plus all instance-admin permissions (18 permissions).
+	// SuperadminPermissions contains all workspace permissions plus all instance-admin permissions (19 permissions).
 	SuperadminPermissions = []string{
 		WorkspaceRead,
 		WorkspaceWrite,
@@ -94,6 +99,7 @@ var (
 		AgentsWrite,
 		SkillsRead,
 		SkillsWrite,
+		ToolsWrite,
 		AdminWorkspacesRead,
 		AdminWorkspacesWrite,
 		AdminUsersRead,
@@ -118,6 +124,7 @@ func AllPermissions() []string {
 		AgentsWrite,
 		SkillsRead,
 		SkillsWrite,
+		ToolsWrite,
 		AdminWorkspacesRead,
 		AdminWorkspacesWrite,
 		AdminUsersRead,
@@ -135,6 +142,7 @@ func IsValidPermission(p string) bool {
 		ProvidersRead, ProvidersWrite,
 		AgentsRead, AgentsWrite,
 		SkillsRead, SkillsWrite,
+		ToolsWrite,
 		AdminWorkspacesRead, AdminWorkspacesWrite,
 		AdminUsersRead, AdminUsersWrite,
 		AdminSuperadminsWrite:

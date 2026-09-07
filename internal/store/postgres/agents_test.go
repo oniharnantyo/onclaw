@@ -52,22 +52,21 @@ func TestIntegration_AgentStore_CRUD(t *testing.T) {
 	maxTok := 2048
 	effort := "medium"
 	a1 := &domain.Agent{
-		WorkspaceID: ws1.ID,
-		Slug:        "support-agent",
-		Name:        "Support Agent",
-		Role:        "customer-success",
-		Description: "Helps users with questions",
-		Brief:       "Friendly support agent persona",
-		ProviderID:  p1.ID,
-		Model:       "gpt-4o",
-		Temperature: 0.8,
-		MaxTokens:   &maxTok,
-		Effort:      &effort,
-		Autonomy:    domain.AutonomyApproval,
-		Tools:       []string{"search_kb", "calc"},
-		Skills:      []string{"refund_policy"},
-		MCP:         []string{"github"},
-		Avatar:      json.RawMessage(`{"shape":"circle","color":"#336699"}`),
+		WorkspaceID:    ws1.ID,
+		Slug:           "support-agent",
+		Name:           "Support Agent",
+		Role:           "customer-success",
+		Description:    "Helps users with questions",
+		Brief:          "Friendly support agent persona",
+		ProviderID:     p1.ID,
+		Model:          "gpt-4o",
+		Temperature:    0.8,
+		MaxTokens:      &maxTok,
+		Effort:         &effort,
+		Autonomy:       domain.AutonomyApproval,
+		Tools:          []string{"search_kb", "calc"},
+		DisabledMCPs:   []string{"github"},
+		Avatar:         json.RawMessage(`{"shape":"circle","color":"#336699"}`),
 	}
 	if err := s.Agents().Create(ctx, a1); err != nil {
 		t.Fatalf("unexpected create agent error: %v", err)
@@ -144,7 +143,7 @@ func TestIntegration_AgentStore_CRUD(t *testing.T) {
 	if found.ID != a1.ID || found.Name != "Support Agent" || found.Autonomy != domain.AutonomyApproval {
 		t.Fatalf("unexpected agent retrieved: %+v", found)
 	}
-	if len(found.Tools) != 2 || len(found.Skills) != 1 || len(found.MCP) != 1 {
+	if len(found.Tools) != 2 || len(found.DisabledMCPs) != 1 {
 		t.Fatalf("unexpected capabilities on agent: %+v", found)
 	}
 
@@ -307,110 +306,6 @@ func TestIntegration_AgentStore_CRUD(t *testing.T) {
 	}
 }
 
-func TestIntegration_WorkspaceSkillStore_CRUD(t *testing.T) {
-	s, _, ctx := setupTestSchema(t)
-
-	ws1 := &domain.Workspace{Slug: "ws-skill-1", Name: "Skill WS 1"}
-	if err := s.Workspaces().Create(ctx, ws1); err != nil {
-		t.Fatalf("unexpected create ws1 error: %v", err)
-	}
-
-	ws2 := &domain.Workspace{Slug: "ws-skill-2", Name: "Skill WS 2"}
-	if err := s.Workspaces().Create(ctx, ws2); err != nil {
-		t.Fatalf("unexpected create ws2 error: %v", err)
-	}
-
-	// 1. Create skill
-	sk1 := &domain.WorkspaceSkill{
-		WorkspaceID: ws1.ID,
-		Name:        "deployment-checklist",
-		Description: "Checklist before deploying to prod",
-		Body:        "# Deployment Checklist\n- [ ] Run tests\n- [ ] Backup DB",
-		Enabled:     true,
-	}
-	if err := s.WorkspaceSkills().Create(ctx, sk1); err != nil {
-		t.Fatalf("unexpected create skill error: %v", err)
-	}
-	if sk1.ID == "" {
-		t.Fatal("expected skill ID")
-	}
-	if sk1.CreatedAt.IsZero() || sk1.UpdatedAt.IsZero() {
-		t.Fatal("expected timestamps")
-	}
-
-	// 2. Duplicate skill name in same workspace fails with ErrConflict
-	dupErr := s.WorkspaceSkills().Create(ctx, &domain.WorkspaceSkill{
-		WorkspaceID: ws1.ID,
-		Name:        "deployment-checklist",
-		Description: "Duplicate",
-	})
-	if !errors.Is(dupErr, domain.ErrConflict) {
-		t.Fatalf("expected ErrConflict on duplicate skill name, got %v", dupErr)
-	}
-
-	// 3. Same skill name in different workspace succeeds
-	skWS2 := &domain.WorkspaceSkill{
-		WorkspaceID: ws2.ID,
-		Name:        "deployment-checklist",
-		Description: "WS2 Checklist",
-		Enabled:     true,
-	}
-	if err := s.WorkspaceSkills().Create(ctx, skWS2); err != nil {
-		t.Fatalf("expected same skill name in different workspace to succeed, got %v", err)
-	}
-
-	// 4. ByID includes body
-	found, err := s.WorkspaceSkills().ByID(ctx, ws1.ID, sk1.ID)
-	if err != nil {
-		t.Fatalf("unexpected ByID error: %v", err)
-	}
-	if found.Body != "# Deployment Checklist\n- [ ] Run tests\n- [ ] Backup DB" {
-		t.Fatalf("expected ByID to return body, got %q", found.Body)
-	}
-
-	// 5. FindByName includes body
-	foundByName, err := s.WorkspaceSkills().FindByName(ctx, ws1.ID, "deployment-checklist")
-	if err != nil {
-		t.Fatalf("unexpected FindByName error: %v", err)
-	}
-	if foundByName.ID != sk1.ID || foundByName.Body == "" {
-		t.Fatalf("unexpected FindByName result: %+v", foundByName)
-	}
-
-	// 6. ListForWorkspace omits body (progressive disclosure)
-	list, err := s.WorkspaceSkills().ListForWorkspace(ctx, ws1.ID)
-	if err != nil {
-		t.Fatalf("unexpected ListForWorkspace error: %v", err)
-	}
-	if len(list) != 1 {
-		t.Fatalf("expected 1 skill in list, got %d", len(list))
-	}
-	if list[0].Body != "" {
-		t.Fatalf("expected ListForWorkspace to omit body, got %q", list[0].Body)
-	}
-
-	// 7. Update
-	found.Description = "Updated checklist"
-	found.Body = "# Updated Body"
-	found.Enabled = false
-	if err := s.WorkspaceSkills().Update(ctx, found); err != nil {
-		t.Fatalf("unexpected Update error: %v", err)
-	}
-
-	reloaded, _ := s.WorkspaceSkills().ByID(ctx, ws1.ID, sk1.ID)
-	if reloaded.Description != "Updated checklist" || reloaded.Body != "# Updated Body" || reloaded.Enabled {
-		t.Fatalf("unexpected skill after update: %+v", reloaded)
-	}
-
-	// 8. Delete
-	if err := s.WorkspaceSkills().Delete(ctx, ws1.ID, sk1.ID); err != nil {
-		t.Fatalf("unexpected Delete error: %v", err)
-	}
-	if _, err := s.WorkspaceSkills().ByID(ctx, ws1.ID, sk1.ID); !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("expected ErrNotFound after delete, got %v", err)
-	}
-}
-
 func TestIntegration_AgentUserMemoryStore_CRUD(t *testing.T) {
 	s, _, ctx := setupTestSchema(t)
 
@@ -487,7 +382,7 @@ func TestIntegration_AgentUserMemoryStore_CRUD(t *testing.T) {
 	}
 }
 
-func TestIntegration_WithTx_AgentsSkillsMemories(t *testing.T) {
+func TestIntegration_WithTx_AgentsMemories(t *testing.T) {
 	s, _, ctx := setupTestSchema(t)
 
 	u := &domain.User{Email: "tx-pg-user@example.com", Name: "Tx PG User"}
@@ -518,17 +413,6 @@ func TestIntegration_WithTx_AgentsSkillsMemories(t *testing.T) {
 			return err
 		}
 
-		sk := &domain.WorkspaceSkill{
-			WorkspaceID: ws.ID,
-			Name:        "tx-pg-skill",
-			Description: "Tx PG Skill",
-			Body:        "# Skill Body",
-			Enabled:     true,
-		}
-		if err := txStore.WorkspaceSkills().Create(ctx, sk); err != nil {
-			return err
-		}
-
 		mem := &domain.AgentUserMemory{
 			AgentID:     a.ID,
 			UserID:      u.ID,
@@ -545,10 +429,6 @@ func TestIntegration_WithTx_AgentsSkillsMemories(t *testing.T) {
 	aList, err := s.Agents().ListForWorkspace(ctx, ws.ID)
 	if err != nil || len(aList) != 1 {
 		t.Fatalf("expected 1 agent, got %d (err: %v)", len(aList), err)
-	}
-	sList, err := s.WorkspaceSkills().ListForWorkspace(ctx, ws.ID)
-	if err != nil || len(sList) != 1 {
-		t.Fatalf("expected 1 skill, got %d (err: %v)", len(sList), err)
 	}
 	mem, err := s.AgentUserMemories().Get(ctx, ws.ID, aList[0].ID, u.ID)
 	if err != nil || mem.Content != "Tx PG Memory" {

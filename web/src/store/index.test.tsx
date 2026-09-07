@@ -1,8 +1,43 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, beforeAll, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { useStore, useWorkspace, useThread } from './index';
 import { useAuthStore } from './auth';
 import { seedDb } from '../data/seed';
+
+beforeAll(() => {
+  // Node's disabled `localStorage` global shadows jsdom's on this Node
+  // version; install a memory-backed stub (same workaround as ChatRoute.test).
+  if (typeof localStorage === 'undefined' || !localStorage) {
+    const mem = new Map<string, string>();
+    const stub = {
+      getItem: (k: string) => mem.get(k) ?? null,
+      setItem: (k: string, v: string) => void mem.set(k, String(v)),
+      removeItem: (k: string) => void mem.delete(k),
+      clear: () => mem.clear(),
+      key: (i: number) => Array.from(mem.keys())[i] ?? null,
+      get length() {
+        return mem.size;
+      },
+    };
+    Object.defineProperty(globalThis, 'localStorage', { value: stub, configurable: true, writable: true });
+  }
+});
+
+const { agentsListMock } = vi.hoisted(() => ({ agentsListMock: vi.fn() }));
+
+vi.mock('../lib/api', () => ({
+  api: {
+    onUnauthorized: () => () => {},
+    auth: {},
+    agents: { list: agentsListMock },
+  },
+  pollAgentPromptsStatus: async () => ({}),
+  formatApiError: (_e: unknown, fallback: string) => fallback,
+  getToken: () => null,
+  setToken: () => {},
+  clearToken: () => {},
+  ApiError: class ApiError extends Error {},
+}));
 
 function WorkspaceProbe() {
   const ws = useWorkspace();
@@ -60,5 +95,30 @@ describe('derived store selectors', () => {
     render(<ThreadProbe chatId="does-not-exist" />);
 
     expect(screen.getByTestId('th').textContent).toBe('0');
+  });
+});
+
+describe('loadAgents loaded marker', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    agentsListMock.mockReset();
+    useStore.setState({ db: seedDb(), agentsLoaded: {}, pos: posFor('acme') });
+    useAuthStore.setState({ memberships: [] });
+  });
+
+  it('marks the workspace loaded when the fetch succeeds — even with zero agents', async () => {
+    agentsListMock.mockResolvedValue({ agents: [] });
+
+    await useStore.getState().loadAgents('acme');
+
+    expect(useStore.getState().agentsLoaded['acme']).toBe(true);
+  });
+
+  it('does not mark the workspace loaded when the fetch fails', async () => {
+    agentsListMock.mockRejectedValue(new Error('offline'));
+
+    await useStore.getState().loadAgents('acme');
+
+    expect(useStore.getState().agentsLoaded['acme']).toBeUndefined();
   });
 });

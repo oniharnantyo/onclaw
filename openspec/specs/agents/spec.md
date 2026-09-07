@@ -10,7 +10,7 @@ Tenant-scoped endpoints under `/workspaces/:ws/agents` SHALL create, list, get, 
 
 #### Scenario: Create with wizard defaults
 - **WHEN** an Owner POSTs {name, slug, role, description, brief, provider_id, model} with no capabilities
-- **THEN** response is 201; the agent exists with empty tools/skills/mcp arrays, autonomy `approval`, temperature 1.0, and `prompts_status` `ready` (generation gates persistence — see agent-prompts)
+- **THEN** response is 201; the agent exists with an empty `tools` array (no registry tools enabled) and empty `disabled_skills`/`disabled_mcps` arrays, autonomy `approval`, temperature 1.0, `context_window` auto-filled per the Agent fields requirement, and `prompts_status` `ready` (generation gates persistence — see agent-prompts)
 
 #### Scenario: Slug conflict
 - **WHEN** a create submits a slug already used in this workspace
@@ -39,9 +39,10 @@ Tenant-scoped endpoints under `/workspaces/:ws/agents` SHALL create, list, get, 
 #### Scenario: List omits prompt documents
 - **WHEN** the roster is listed
 - **THEN** entries do not carry identity/soul/bootstrap document content; the detail endpoint returns them
-
 ### Requirement: Agent fields
-An agent SHALL have: name, slug (DNS-label rules, reserved list shared with workspaces, unique per workspace, immutable after creation), role (short free-form, kebab-case convention with UI suggestions), description (display one-liner), brief (generation driver, required at create), provider and model (required, free-text model id), autonomy (`approval|suggest|full`, default `approval`), temperature (0–2, default 1.0), max_tokens (optional positive integer, required for `anthropic` provider type), effort (optional provider-neutral string), avatar (JSON object of react-nice-avatar props, loosely validated — must be a JSON object under a size cap), and skills (array validated against the workspace's `workspace_skills` names, disabled ones included; the runtime skips disabled skills). The slug SHALL be immutable: a slug in an update payload SHALL be ignored (managed-field semantics, like `prompts_status`). `identity`, `soul`, and `bootstrap` SHALL be server-managed **file-backed** fields: the documents live as `IDENTITY.md`, `SOUL.md`, and `BOOTSTRAP.md` in the agent's workspace directory (see the agent-prompts capability), are composed onto the agent on every read, and are absent from the database. `identity` and `soul` become editable via update once generated — the update writes the files; `bootstrap` is not client-editable. `memory`, `prompts_status`, and `prompts_error` SHALL be ignored on any client input.
+An agent SHALL have: name, slug (DNS-label rules, reserved list shared with workspaces, unique per workspace, immutable after creation), role (short free-form, kebab-case convention with UI suggestions), description (display one-liner), brief (generation driver, required at create), provider and model (required, free-text model id), autonomy (`approval|suggest|full`, default `approval`), temperature (0–2, default 1.0), max_tokens (optional positive integer, required for `anthropic` provider type), effort (optional provider-neutral string), avatar (JSON object of react-nice-avatar props, loosely validated — must be a JSON object under a size cap), `context_window` (optional positive integer token count), `tools` (the agent's tool allowlist: registry tool names plus the reserved shell name `execute`; an empty array enables no registry tools), and `disabled_mcps` (array of capability names the agent must not use). The slug SHALL be immutable: a slug in an update payload SHALL be ignored (managed-field semantics, like `prompts_status`). `identity`, `soul`, and `bootstrap` SHALL be server-managed **file-backed** fields: the documents live as `IDENTITY.md`, `SOUL.md`, and `BOOTSTRAP.md` in the agent's workspace directory (see the agent-prompts capability), are composed onto the agent on every read, and are absent from the database. `identity` and `soul` become editable via update once generated — the update writes the files; `bootstrap` is not client-editable. `memory`, `prompts_status`, and `prompts_error` SHALL be ignored on any client input.
+
+`context_window` SHALL resolve at creation/update when the client omits it: the server SHALL auto-fill it from the model catalog's context limit for the provider/model when the catalog knows the model, and SHALL leave it unset (runtime falls back to its default) otherwise. A client-provided value always wins and SHALL be stored as given. `context_window` MUST be a positive integer when present; zero or negative SHALL be 400 invalid_request. `tools` replaces the former `disabled_tools` denylist, which no longer exists in the schema, API, or runtime. The `tools` allowlist and the `disabled_mcps` denylist SHALL NOT be referentially validated against stored rows — names resolve against runtime registries and directories at execution time, so unknown names are inert, not errors. The former `skills` allowlist and `disabled_skills` denylist fields SHALL NOT exist in the schema or API: skills are governed at tier level (system always attached; workspace skills by the registry master switch; agent-tier by presence — see the workspace-skills capability), and a `disabled_skills` value in any payload SHALL be ignored like a managed field.
 
 #### Scenario: Slug is immutable
 - **WHEN** an update payload includes a slug (changed or unchanged)
@@ -71,14 +72,29 @@ An agent SHALL have: name, slug (DNS-label rules, reserved list shared with work
 - **WHEN** avatar is provided as a string, or as a JSON object exceeding 2 KB
 - **THEN** response is 400 invalid_request
 
-#### Scenario: Unknown skill name rejected
-- **WHEN** an agent is saved referencing a skill name with no workspace_skills row in this workspace
+#### Scenario: Context window auto-filled from catalog
+- **WHEN** an agent is created without `context_window` on a provider/model the catalog knows (e.g. openai gpt-5)
+- **THEN** the stored agent carries the catalog's context limit for that model
+
+#### Scenario: Context window override wins
+- **WHEN** a create or update sets `context_window` explicitly
+- **THEN** the provided value is stored and catalog auto-fill does not run
+
+#### Scenario: Context window must be positive
+- **WHEN** a create or update sets `context_window` to 0 or a negative number
 - **THEN** response is 400 invalid_request
 
-#### Scenario: Disabled skill accepted
-- **WHEN** an agent references a disabled workspace skill
-- **THEN** the save succeeds; the runtime skips disabled skills when the agent executes
+#### Scenario: Tools patch replaces the allowlist
+- **WHEN** an update payload includes `tools`
+- **THEN** the stored allowlist is replaced by the payload value (including the empty array, which enables no registry tools)
 
+#### Scenario: Unknown names are not referentially validated
+- **WHEN** an agent is saved with `tools` or `disabled_mcps` naming capabilities that exist in no registry or directory
+- **THEN** the save succeeds; the unknown names are inert at execution time
+
+#### Scenario: Disabled skill accepted
+- **WHEN** a create or update payload includes `disabled_skills`
+- **THEN** the value is accepted without error but ignored (no stored state); skill attachment is governed solely by tier rules
 ### Requirement: Provider binding
 An agent's provider config SHALL be required and SHALL be guaranteed to belong to the same workspace at the data layer: the composite foreign key `(workspace_id, provider_id) → workspace_providers(workspace_id, id)` SHALL make cross-tenant provider references impossible in the schema. `model` SHALL be a required free-text id.
 
@@ -98,16 +114,16 @@ Deleting an agent SHALL cascade to its per-user memories and SHALL remove the ag
 - **THEN** its workspace directory and the prompt documents inside it are removed from disk
 
 ### Requirement: Derived agent workspace directory
-Every agent SHALL have an on-disk workspace directory at `<workspace_dir_root>/<tenant_slug>/agents/<agent_slug>`, derived at the point of use from the current root and slugs. The root SHALL come from `ONCLAW_WORKSPACE_DIR` (e.g. `/var/lib/onclaw/.onclaw/workspaces`), defaulting to `$HOME/.onclaw/workspaces` when unset. The server SHALL refuse to start when the configured root is not an absolute path. The path SHALL NOT be recorded in the database; the agent row carries no `workspace_dir`. The directory SHALL be created before the agent row is written — in both the create endpoint and the atomic birth — so a directory-creation failure rejects the request before any DB write. Because slugs are immutable, the derived path is stable for the agent's lifetime.
+Every agent SHALL have an on-disk workspace directory at `<ONCLAW_DIR>/workspaces/<tenant_slug>/agents/<agent_slug>`, derived at the point of use from the current root and slugs. All server file locations SHALL derive from the single root `ONCLAW_DIR` (environment variable, defaulting to `$HOME/.onclaw`; the former `ONCLAW_WORKSPACE_DIR` knob no longer exists — the workspace root is `<ONCLAW_DIR>/workspaces`). The server SHALL refuse to start when `ONCLAW_DIR` is not an absolute path. The path SHALL NOT be recorded in the database; the agent row carries no `workspace_dir`. The directory SHALL be created before the agent row is written — in both the create endpoint and the atomic birth — so a directory-creation failure rejects the request before any DB write. Because slugs are immutable, the derived path is stable for the agent's lifetime.
 
 #### Scenario: Directory created at deploy
 - **WHEN** an agent is created
-- **THEN** `<root>/<tenant_slug>/agents/<agent_slug>` exists on disk; the agent response carries no `workspace_dir` field
+- **THEN** `<ONCLAW_DIR>/workspaces/<tenant_slug>/agents/<agent_slug>` exists on disk; the agent response carries no `workspace_dir` field
 
 #### Scenario: Starter agent directory at birth
 - **WHEN** a workspace is born with a starter agent
 - **THEN** the starter agent's directory exists before the birth transaction commits
 
 #### Scenario: Relative workspace root rejected at startup
-- **WHEN** the server starts with a relative `ONCLAW_WORKSPACE_DIR` (from env or `--workspace-dir`)
+- **WHEN** the server starts with a relative `ONCLAW_DIR`
 - **THEN** startup fails with a configuration error instead of deriving cwd-dependent paths

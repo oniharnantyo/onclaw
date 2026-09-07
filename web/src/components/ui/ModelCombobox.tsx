@@ -18,6 +18,7 @@ export interface ModelComboboxProps {
   effort?: string | null;
   onEffortChange?: (effort: string | null) => void;
   onAvailableEffortsChange?: (efforts: string[]) => void;
+  onContextLimitChange?: (limit: number | null) => void;
   disabled?: boolean;
   modelError?: string;
   effortError?: string;
@@ -34,6 +35,7 @@ export function ModelCombobox({
   effort,
   onEffortChange,
   onAvailableEffortsChange,
+  onContextLimitChange,
   disabled,
   modelError,
   effortError,
@@ -149,12 +151,24 @@ export function ModelCombobox({
     return selectedModelObj?.efforts || [];
   }, [selectedModelObj]);
 
+  const contextLimit = useMemo(() => {
+    return selectedModelObj?.context_limit ?? null;
+  }, [selectedModelObj]);
+
   // Expose available efforts to parent
   useEffect(() => {
     if (onAvailableEffortsChange) {
       onAvailableEffortsChange(availableEfforts);
     }
   }, [availableEfforts, onAvailableEffortsChange]);
+
+  // Expose the selected model's catalog context limit to the parent so it can
+  // auto-fill context_window when the user has not set one explicitly.
+  useEffect(() => {
+    if (onContextLimitChange) {
+      onContextLimitChange(contextLimit);
+    }
+  }, [contextLimit, onContextLimitChange]);
 
   const handleSelectChange = (val: string) => {
     if (val === "__custom__") {

@@ -15,6 +15,7 @@ OnClaw is a multi-tenant, self-hosted **AI agent workspace** — an OpenClaw / H
 - **Extensibility via interfaces:** backend extension points (providers, tools, channels, storage, …) are Go interfaces; implementations register into a registry. Built-ins ship as ordinary registrations, not special cases.
 - **Plugins are first-class:** plugins target the _same_ interface contracts as built-ins. If a feature cannot be added without editing core code, the interface is wrong — fix the interface.
 - **Injected dependencies are never nil:** the composition root (`internal/cli` → `internal/server/router.go`) resolves every dependency — including built-in defaults — before constructing services and handlers. Code at the point of use assumes non-nil and MUST NOT add `if x != nil` defensive guards on injected dependencies; nil checks are reserved for optional request payloads, optional response data, and errors.
+- **Explicit dependency injection, no fat config structs:** constructors take the granular dependencies they use as positional parameters — one param per store sub-interface (`agents store.AgentStore`, `users store.UserStore`, …) or narrow interface — never a whole `store.Store` aggregate and never a kitchen-sink config struct bundling many dependencies. Defaultable behavior knobs are functional options (`WithToolRegistry`, `WithSummarizationMargin`). The single exception is transaction-bound code: methods that call `store.WithTx` span multiple sub-stores atomically and keep the whole `store.Store` aggregate, documented as the required transaction seam.
 
 ## Repository State
 
@@ -65,7 +66,7 @@ go run . server [--listen-addr :8080]               # start HTTP API server
 #   ONCLAW_LISTEN_ADDR (default :8080)
 #   ONCLAW_JWT_SECRET (HS256 key; ephemeral if unset)
 #   ONCLAW_DATA_DIR (default ./data)
-#   ONCLAW_WORKSPACE_DIR (root for per-agent workspace dirs; default $HOME/.onclaw/workspaces)
+#   ONCLAW_DIR (root for OnClaw runtime files; default $HOME/.onclaw; workspace root is $ONCLAW_DIR/workspaces)
 #   ONCLAW_SUPERADMIN_EMAIL (initial seed email)
 #   ONCLAW_SUPERADMIN_PASSWORD (initial seed password)
 #   .env in the working directory is auto-loaded before flags resolve; real env vars win over .env

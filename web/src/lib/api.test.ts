@@ -585,20 +585,24 @@ describe('lib/api', () => {
       await api.skills.get('acme', 'sk-1');
       expect((globalThis.fetch as any).mock.calls[1][0]).toBe('/api/v1/workspaces/acme/skills/sk-1');
 
-      await api.skills.create('acme', { name: 'Search', body: '...' });
+      await api.skills.create('acme', { source: 'authored', name: 'search', body: '...' });
       expect((globalThis.fetch as any).mock.calls[2][0]).toBe('/api/v1/workspaces/acme/skills');
       expect((globalThis.fetch as any).mock.calls[2][1].method).toBe('POST');
 
-      await api.skills.patch('acme', 'sk-1', { enabled: false });
+      await api.skills.setEnabled('acme', 'sk-1', false);
       expect((globalThis.fetch as any).mock.calls[3][0]).toBe('/api/v1/workspaces/acme/skills/sk-1');
       expect((globalThis.fetch as any).mock.calls[3][1].method).toBe('PATCH');
+
+      await api.skills.recheck('acme', 'sk-1');
+      expect((globalThis.fetch as any).mock.calls[4][0]).toBe('/api/v1/workspaces/acme/skills/sk-1/dependencies/recheck');
+      expect((globalThis.fetch as any).mock.calls[4][1].method).toBe('POST');
 
       globalThis.fetch = vi.fn().mockResolvedValue({
         ok: true,
         status: 204,
         headers: new Headers(),
       } as any);
-      await api.skills.delete('acme', 'sk-1');
+      await api.skills.uninstall('acme', 'sk-1');
       expect((globalThis.fetch as any).mock.calls[0][0]).toBe('/api/v1/workspaces/acme/skills/sk-1');
       expect((globalThis.fetch as any).mock.calls[0][1].method).toBe('DELETE');
     });

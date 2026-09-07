@@ -14,6 +14,12 @@ export default defineConfig(({ mode }) => {
           target: env.VITE_API_PROXY_TARGET ?? 'http://localhost:8080',
           changeOrigin: true,
         },
+        // OpenResponses /v1 surface — the chat runtime's OpenAI SDK client
+        // calls it on the same origin in dev.
+        '/v1': {
+          target: env.VITE_API_PROXY_TARGET ?? 'http://localhost:8080',
+          changeOrigin: true,
+        },
       },
     },
   }

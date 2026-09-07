@@ -188,6 +188,34 @@ export interface ApiProviderVerifyResult {
   error?: string;
 }
 
+export interface ApiToolConfigFieldOption {
+  value: string;
+  label: string;
+}
+
+export interface ApiToolConfigField {
+  key: string;
+  label: string;
+  type: 'secret' | 'text' | 'number' | 'boolean' | 'enum';
+  required: boolean;
+  help?: string;
+  default?: unknown;
+  options?: ApiToolConfigFieldOption[];
+}
+
+export interface ApiToolSettings {
+  key: string;
+  display_name: string;
+  description: string;
+  group: string;
+  icon_key: string;
+  configurable: boolean;
+  config_schema?: ApiToolConfigField[];
+  enabled: boolean;
+  configured: boolean;
+  config: Record<string, unknown>;
+}
+
 export type AgentAutonomy = 'approval' | 'suggest' | 'full';
 export type PromptsStatus = 'generating' | 'ready' | 'failed';
 
@@ -208,8 +236,14 @@ export interface ApiAgent {
   max_tokens?: number | null;
   effort?: string | null;
   autonomy: AgentAutonomy;
+  context_window?: number | null;
+  /** Server-computed read-only echoes for the context meter (context meter change). */
+  effective_context_window?: number;
+  /** Token count at which the backend summarizes — the meter's warn threshold. */
+  summarization_trigger_tokens?: number;
   tools: string[];
-  skills: string[];
+  /** Agent-tier skill names when the server lists them; never a payload field. */
+  skills?: string[];
   mcp: string[];
   avatar: Record<string, any>;
   prompts_status: PromptsStatus;
@@ -232,6 +266,7 @@ export interface CreateAgentPayload {
   max_tokens?: number;
   effort?: string;
   autonomy?: AgentAutonomy;
+  context_window?: number | null;
   tools?: string[];
   skills?: string[];
   mcp?: string[];
@@ -252,21 +287,86 @@ export interface PatchAgentPayload {
   max_tokens?: number;
   effort?: string;
   autonomy?: AgentAutonomy;
+  context_window?: number | null;
   tools?: string[];
   skills?: string[];
   mcp?: string[];
   avatar?: Record<string, any>;
 }
 
+// ---------------------------------------------------------------------------
+// Workspace skills (registry + system tier)
+// ---------------------------------------------------------------------------
+
+export type SkillSource = 'authored' | 'upload' | 'git' | 'fork' | 'system';
+export type SkillTier = 'system' | 'workspace' | 'agent';
+
+export interface ApiSkillDependencies {
+  tools?: string[];
+  binaries?: string[];
+  python?: string[];
+}
+
+export interface ApiSkillDependencyStatus {
+  kind: 'tools' | 'binaries' | 'python';
+  name: string;
+  status: 'met' | 'missing' | 'unprovisioned';
+  /** Per-platform install command hint (binaries). */
+  install_hint?: string;
+  detail?: string;
+}
+
 export interface ApiWorkspaceSkill {
   id: string;
-  workspace_id: string;
+  workspace_id?: string;
+  tier: SkillTier;
   name: string;
   description?: string;
+  version: string;
+  source: SkillSource;
+  /** System-tier entries are locked: no toggle, edit, or uninstall exists. */
+  locked?: boolean;
+  enabled?: boolean;
+  dependencies?: ApiSkillDependencies;
+  dependency_status?: ApiSkillDependencyStatus[];
+  /** SKILL.md body — present on detail/edit responses. */
   body?: string;
-  enabled: boolean;
   created_at: string;
   updated_at: string;
+}
+
+/** A skill directory discovered inside an uploaded archive or fetched git tree. */
+export interface ApiDiscoveredSkill {
+  name: string;
+  description?: string;
+  dependencies?: ApiSkillDependencies;
+  dependency_status?: ApiSkillDependencyStatus[];
+}
+
+/** Archive inspection result: tree preview + inferred dependency report. */
+export interface ApiSkillInspectResult {
+  skill: ApiDiscoveredSkill;
+  files: string[];
+}
+
+/** Install options shared by every source on the dependency review step. */
+export interface SkillInstallOptions {
+  /** Pre-checked: add missing tools to the workspace gate and every agent allowlist. */
+  enable_everywhere?: boolean;
+  /** Auto-provision python packages into the shared workspace venv. */
+  provision_python?: boolean;
+  /** Same-name import: replace tree, bump version, update row. */
+  overwrite?: boolean;
+}
+
+export type CreateSkillPayload =
+  | ({ source: 'authored'; name: string; description?: string; body: string } & SkillInstallOptions)
+  | ({ source: 'git'; url: string; ref?: string; token?: string; names: string[] } & SkillInstallOptions)
+  | ({ source: 'fork'; system_skill: string } & SkillInstallOptions);
+
+export interface ApiSkillInstallResult {
+  skill: ApiWorkspaceSkill;
+  dependency_status?: ApiSkillDependencyStatus[];
 }
 
 export interface ApiAgentMemory {
@@ -283,6 +383,7 @@ export interface ApiModel {
   name: string;
   efforts?: string[];
   supports_temperature?: boolean;
+  context_limit?: number | null;
 }
 
 export interface ApiModelsResult {
@@ -335,7 +436,7 @@ function notifyUnauthorized() {
 }
 
 // Absolute API origin from build-time env; empty string keeps requests same-origin.
-const API_ORIGIN = (import.meta.env.VITE_API_URL ?? '').replace(/\/+$/, '');
+export const API_ORIGIN = (import.meta.env.VITE_API_URL ?? '').replace(/\/+$/, '');
 
 const API_BASE = `${API_ORIGIN}/api/v1`;
 
@@ -418,6 +519,41 @@ export async function request<T = any>(endpoint: string, options: RequestOptions
   return data as T;
 }
 
+// ---------------------------------------------------------------------------
+// Workspace API keys (native settings surface; plaintext returned once)
+// ---------------------------------------------------------------------------
+
+export interface ApiWorkspaceKey {
+  id: string;
+  name: string;
+  key_prefix: string;
+  key_suffix: string;
+  created_by: string;
+  created_at: string;
+  revoked_at?: string | null;
+}
+
+export const apiKeys = {
+  list: (wsSlug: string) =>
+    request<{ api_keys: ApiWorkspaceKey[] }>(`/workspaces/${encodeURIComponent(wsSlug)}/api-keys`),
+  create: (wsSlug: string, name: string) =>
+    request<{ key: string; api_key: ApiWorkspaceKey }>(
+      `/workspaces/${encodeURIComponent(wsSlug)}/api-keys`,
+      { method: 'POST', body: { name } },
+    ),
+  revoke: (wsSlug: string, id: string) =>
+    request<void>(`/workspaces/${encodeURIComponent(wsSlug)}/api-keys/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  // JWT-authenticated chat key exchange: mints a workspace-scoped key for the
+  // caller (membership of any role suffices); plaintext returned once.
+  exchange: (wsSlug: string) =>
+    request<{ key: string; api_key: ApiWorkspaceKey }>(
+      `/workspaces/${encodeURIComponent(wsSlug)}/api-keys/exchange`,
+      { method: 'POST', body: {} },
+    ),
+};
+
 export const api = {
   request,
   onUnauthorized,
@@ -482,6 +618,20 @@ export const api = {
       request<{ roles: ApiRole[] }>(`/workspaces/${encodeURIComponent(ws)}/roles`, {
         method: 'GET',
       }),
+  },
+  tools: {
+    list: (ws: string) =>
+      request<{ tools: ApiToolSettings[] }>(`/workspaces/${encodeURIComponent(ws)}/tools`, {
+        method: 'GET',
+      }),
+    update: (ws: string, key: string, body: { enabled?: boolean; config?: Record<string, unknown> }) =>
+      request<{ tool: ApiToolSettings }>(
+        `/workspaces/${encodeURIComponent(ws)}/tools/${encodeURIComponent(key)}`,
+        {
+          method: 'PATCH',
+          body,
+        }
+      ),
   },
   providers: {
     list: (ws: string) =>
@@ -561,29 +711,108 @@ export const api = {
       request<void>(`/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/memory`, {
         method: 'DELETE',
       }),
+    resolveApproval: (ws: string, agent: string, sessionId: string, interruptId: string, approved: boolean) =>
+      request<{ resumed: boolean; interrupt_id: string; approved: boolean }>(
+        `/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/sessions/${encodeURIComponent(sessionId)}/approvals/${encodeURIComponent(interruptId)}`,
+        { method: 'POST', body: { approved } },
+      ),
+    // Translated transcript events for an agent session (server-authoritative history).
+    sessionEvents: (ws: string, agent: string, sessionId: string) =>
+      request<{ events: any[]; next: string }>(
+        `/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/sessions/${encodeURIComponent(sessionId)}/events`,
+        { method: 'GET' },
+      ),
+    // Cancels the live run for a session; the :turn segment is addressed by
+    // splitting the in-flight response id (resp_<session>_<turn>) client-side.
+    cancelRun: (ws: string, agent: string, sessionId: string, turnId: string) =>
+      request<{ cancelled: boolean }>(
+        `/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(turnId)}/cancel`,
+        { method: 'POST' },
+      ),
+    // Agent-tier skills: bodies live in the agent's own skills directory;
+    // install/remove are the only operations (presence is the state).
+    listSkills: (ws: string, agent: string) =>
+      request<{ skills: ApiWorkspaceSkill[] }>(`/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/skills`, {
+        method: 'GET',
+      }),
+    installSkill: (ws: string, agent: string, body: { name: string; description?: string; body: string }) =>
+      request<{ skill: ApiWorkspaceSkill }>(`/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/skills`, {
+        method: 'POST',
+        body,
+      }),
+    removeSkill: (ws: string, agent: string, name: string) =>
+      request<void>(`/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/skills/${encodeURIComponent(name)}`, {
+        method: 'DELETE',
+      }),
   },
   skills: {
+    // List includes locked system-tier entries alongside registry rows.
     list: (ws: string) =>
       request<{ skills: ApiWorkspaceSkill[] }>(`/workspaces/${encodeURIComponent(ws)}/skills`, {
         method: 'GET',
       }),
-    get: (ws: string, id: string) =>
-      request<{ skill: ApiWorkspaceSkill }>(`/workspaces/${encodeURIComponent(ws)}/skills/${encodeURIComponent(id)}`, {
+    get: (ws: string, name: string) =>
+      request<{ skill: ApiWorkspaceSkill }>(`/workspaces/${encodeURIComponent(ws)}/skills/${encodeURIComponent(name)}`, {
         method: 'GET',
       }),
-    create: (ws: string, body: { name: string; body?: string; description?: string; enabled?: boolean }) =>
-      request<{ skill: ApiWorkspaceSkill }>(`/workspaces/${encodeURIComponent(ws)}/skills`, {
+    create: (ws: string, body: CreateSkillPayload) =>
+      request<ApiSkillInstallResult>(`/workspaces/${encodeURIComponent(ws)}/skills`, {
         method: 'POST',
         body,
       }),
-    patch: (ws: string, id: string, body: { name?: string; body?: string; description?: string; enabled?: boolean }) =>
-      request<{ skill: ApiWorkspaceSkill }>(`/workspaces/${encodeURIComponent(ws)}/skills/${encodeURIComponent(id)}`, {
-        method: 'PATCH',
+    // Upload source: multipart with the zip archive under the `archive` field.
+    createUpload: (
+      ws: string,
+      payload: { archive: File | Blob; name?: string } & SkillInstallOptions
+    ) => {
+      const form = new FormData();
+      form.append('archive', payload.archive);
+      if (payload.name) form.append('name', payload.name);
+      if (payload.enable_everywhere !== undefined) form.append('enable_everywhere', String(payload.enable_everywhere));
+      if (payload.provision_python !== undefined) form.append('provision_python', String(payload.provision_python));
+      if (payload.overwrite !== undefined) form.append('overwrite', String(payload.overwrite));
+      return request<ApiSkillInstallResult>(`/workspaces/${encodeURIComponent(ws)}/skills`, {
+        method: 'POST',
+        body: form,
+      });
+    },
+    // Metadata/body update (PUT).
+    update: (ws: string, name: string, body: { description?: string; body?: string }) =>
+      request<{ skill: ApiWorkspaceSkill }>(`/workspaces/${encodeURIComponent(ws)}/skills/${encodeURIComponent(name)}`, {
+        method: 'PUT',
         body,
       }),
-    delete: (ws: string, id: string) =>
-      request<void>(`/workspaces/${encodeURIComponent(ws)}/skills/${encodeURIComponent(id)}`, {
+    // Master enable/disable switch (PATCH).
+    setEnabled: (ws: string, name: string, enabled: boolean) =>
+      request<{ skill: ApiWorkspaceSkill }>(`/workspaces/${encodeURIComponent(ws)}/skills/${encodeURIComponent(name)}`, {
+        method: 'PATCH',
+        body: { enabled },
+      }),
+    // Uninstall (DELETE): removes the registry row and the body tree.
+    uninstall: (ws: string, name: string) =>
+      request<void>(`/workspaces/${encodeURIComponent(ws)}/skills/${encodeURIComponent(name)}`, {
         method: 'DELETE',
+      }),
+    // Dependency re-check: re-probes LookPath/imports and updates the row.
+    recheck: (ws: string, name: string) =>
+      request<{ skill: ApiWorkspaceSkill }>(`/workspaces/${encodeURIComponent(ws)}/skills/${encodeURIComponent(name)}/dependencies/recheck`, {
+        method: 'POST',
+      }),
+    // Archive inspection: validates SKILL.md-at-root, returns the tree preview
+    // and the inferred dependency report without installing anything.
+    inspectUpload: (ws: string, archive: File | Blob) => {
+      const form = new FormData();
+      form.append('archive', archive);
+      return request<ApiSkillInspectResult>(`/workspaces/${encodeURIComponent(ws)}/skills/inspect`, {
+        method: 'POST',
+        body: form,
+      });
+    },
+    // Git/URL discovery: shallow fetch, scan for SKILL.md directories.
+    inspectGit: (ws: string, body: { url: string; ref?: string; token?: string }) =>
+      request<{ skills: ApiDiscoveredSkill[] }>(`/workspaces/${encodeURIComponent(ws)}/skills/inspect/git`, {
+        method: 'POST',
+        body,
       }),
   },
 

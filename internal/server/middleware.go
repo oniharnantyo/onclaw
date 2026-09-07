@@ -4,22 +4,28 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/oniharnantyo/onclaw/internal/auth"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/services"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
 // middlewares holds dependencies for HTTP middleware handlers.
 type middlewares struct {
-	store  store.Store
-	issuer auth.TokenIssuer
+	users      store.UserStore
+	workspaces store.WorkspaceStore
+	members    store.MemberStore
+	roles      store.RoleStore
+	issuer     services.TokenIssuer
 }
 
 // NewMiddlewares creates a new middlewares instance with the given store and token issuer.
-func NewMiddlewares(st store.Store, issuer auth.TokenIssuer) *middlewares {
+func NewMiddlewares(users store.UserStore, workspaces store.WorkspaceStore, members store.MemberStore, roles store.RoleStore, issuer services.TokenIssuer) *middlewares {
 	return &middlewares{
-		store:  st,
-		issuer: issuer,
+		users:      users,
+		workspaces: workspaces,
+		members:    members,
+		roles:      roles,
+		issuer:     issuer,
 	}
 }
 
@@ -46,7 +52,7 @@ func (m *middlewares) AuthRequired() gin.HandlerFunc {
 			return
 		}
 
-		user, err := m.store.Users().ByID(c.Request.Context(), claims.UserID)
+		user, err := m.users.ByID(c.Request.Context(), claims.UserID)
 		if err != nil {
 			AbortUnauthenticated(c, "user not found")
 			return
@@ -85,13 +91,13 @@ func (m *middlewares) RequireWorkspace(slugParam ...string) gin.HandlerFunc {
 			return
 		}
 
-		ws, err := m.store.Workspaces().BySlug(c.Request.Context(), slug)
+		ws, err := m.workspaces.BySlug(c.Request.Context(), slug)
 		if err != nil {
 			AbortNotFound(c, "workspace not found")
 			return
 		}
 
-		member, err := m.store.Members().Get(c.Request.Context(), ws.ID, user.ID)
+		member, err := m.members.Get(c.Request.Context(), ws.ID, user.ID)
 		if err != nil {
 			// Non-member gets 404 (indistinguishable from unknown slug)
 			AbortNotFound(c, "workspace not found")
@@ -99,7 +105,7 @@ func (m *middlewares) RequireWorkspace(slugParam ...string) gin.HandlerFunc {
 		}
 
 		if member.Role == nil {
-			role, err := m.store.Roles().ByID(c.Request.Context(), member.RoleID)
+			role, err := m.roles.ByID(c.Request.Context(), member.RoleID)
 			if err != nil {
 				AbortNotFound(c, "role not found")
 				return
@@ -131,13 +137,13 @@ func (m *middlewares) RequireMasterWorkspace() gin.HandlerFunc {
 			return
 		}
 
-		ws, err := m.store.Workspaces().BySlug(c.Request.Context(), domain.MasterWorkspaceSlug)
+		ws, err := m.workspaces.BySlug(c.Request.Context(), domain.MasterWorkspaceSlug)
 		if err != nil {
 			AbortNotFound(c, "workspace not found")
 			return
 		}
 
-		member, err := m.store.Members().Get(c.Request.Context(), ws.ID, user.ID)
+		member, err := m.members.Get(c.Request.Context(), ws.ID, user.ID)
 		if err != nil {
 			// Non-member in master tenant gets 404 (enumeration defense)
 			AbortNotFound(c, "workspace not found")
@@ -145,7 +151,7 @@ func (m *middlewares) RequireMasterWorkspace() gin.HandlerFunc {
 		}
 
 		if member.Role == nil {
-			role, err := m.store.Roles().ByID(c.Request.Context(), member.RoleID)
+			role, err := m.roles.ByID(c.Request.Context(), member.RoleID)
 			if err != nil {
 				AbortNotFound(c, "role not found")
 				return

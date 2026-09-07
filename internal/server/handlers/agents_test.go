@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/oniharnantyo/onclaw/internal/agents"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/promptdocs"
 	"github.com/oniharnantyo/onclaw/internal/server/handlers"
 	storefake "github.com/oniharnantyo/onclaw/internal/store/fake"
 )
@@ -42,10 +42,10 @@ func TestAgents_ListComposesPromptDocuments_GetIncludesPromptDocuments(t *testin
 	}
 
 	agentDir := domain.AgentWorkspaceDir(wsDir, ws.Slug, "oracle")
-	if err := agents.SeedWorkspace(agentDir); err != nil {
-		t.Fatalf("failed to seed workspace: %v", err)
+	if err := promptdocs.SeedWorkspace(agentDir); err != nil {
+		t.Fatalf("SeedWorkspace: %v", err)
 	}
-	if err := agents.WritePromptDocuments(agentDir, "# Identity\nOracle identity", "# Soul\nOracle soul", "# Bootstrap\nOracle bootstrap"); err != nil {
+	if err := promptdocs.WritePromptDocuments(agentDir, "# Identity\nOracle identity", "# Soul\nOracle soul"); err != nil {
 		t.Fatalf("failed to write prompt documents: %v", err)
 	}
 
@@ -65,7 +65,7 @@ func TestAgents_ListComposesPromptDocuments_GetIncludesPromptDocuments(t *testin
 		t.Fatalf("failed to create agent: %v", err)
 	}
 
-	agentH := handlers.NewAgentHandlers(st, []byte("01234567890123456789012345678901"), nil, nil, nil, wsDir)
+	agentH := handlers.NewAgentHandlers(st.Agents(), st.AgentUserMemories(), st.Providers(), st.SessionEvents(), []byte("01234567890123456789012345678901"), nil, nil, nil, wsDir, nil, nil)
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
@@ -119,7 +119,7 @@ func TestAgents_ListComposesPromptDocuments_GetIncludesPromptDocuments(t *testin
 
 	if getRes.Agent.Identity != "# Identity\nOracle identity" ||
 		getRes.Agent.Soul != "# Soul\nOracle soul" ||
-		getRes.Agent.Bootstrap != "# Bootstrap\nOracle bootstrap" {
+		getRes.Agent.Bootstrap != "" {
 		t.Errorf("expected detail response to include prompt documents, got identity=%q soul=%q bootstrap=%q",
 			getRes.Agent.Identity, getRes.Agent.Soul, getRes.Agent.Bootstrap)
 	}

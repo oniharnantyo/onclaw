@@ -128,8 +128,9 @@ func TestWorkspaceStore_CRUD(t *testing.T) {
 
 	// 1. Create workspace
 	ws := &domain.Workspace{
-		Slug: "acme-corp",
-		Name: "Acme Corporation",
+		Slug:        "acme-corp",
+		Name:        "Acme Corporation",
+		Description: "Acme main workspace",
 	}
 	if err := s.Workspaces().Create(ctx, ws); err != nil {
 		t.Fatalf("unexpected Create error: %v", err)
@@ -139,6 +140,9 @@ func TestWorkspaceStore_CRUD(t *testing.T) {
 	}
 	if ws.Timezone != "UTC" {
 		t.Fatalf("expected default UTC timezone, got %q", ws.Timezone)
+	}
+	if ws.Description != "Acme main workspace" {
+		t.Fatalf("expected description 'Acme main workspace', got %q", ws.Description)
 	}
 
 	// 2. Duplicate slug rejected
@@ -174,18 +178,19 @@ func TestWorkspaceStore_CRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected BySlug error: %v", err)
 	}
-	if bySlug.ID != ws.ID || bySlug.Name != "Acme Corporation" {
+	if bySlug.ID != ws.ID || bySlug.Name != "Acme Corporation" || bySlug.Description != "Acme main workspace" {
 		t.Fatalf("unexpected workspace: %+v", bySlug)
 	}
 
 	// 6. Update
 	bySlug.Name = "Acme Corp International"
+	bySlug.Description = "Updated workspace description"
 	bySlug.Timezone = "America/New_York"
 	if err := s.Workspaces().Update(ctx, bySlug); err != nil {
 		t.Fatalf("unexpected Update error: %v", err)
 	}
 	reloaded, _ := s.Workspaces().ByID(ctx, ws.ID)
-	if reloaded.Name != "Acme Corp International" || reloaded.Timezone != "America/New_York" {
+	if reloaded.Name != "Acme Corp International" || reloaded.Description != "Updated workspace description" || reloaded.Timezone != "America/New_York" {
 		t.Fatalf("unexpected updated workspace: %+v", reloaded)
 	}
 
@@ -705,22 +710,23 @@ func TestAgentStore_CRUD(t *testing.T) {
 	// 1. Create agent with defaults
 	maxTok := 4096
 	effort := "high"
+	cw := 128000
 	a1 := &domain.Agent{
-		WorkspaceID: ws1.ID,
-		Slug:        "support-bot",
-		Name:        "Support Bot",
-		Role:        "customer-support",
-		Description: "Helps users with questions",
-		Brief:       "Friendly support persona",
-		ProviderID:  p1.ID,
-		Model:       "gpt-4o",
-		Temperature: 0.7,
-		MaxTokens:   &maxTok,
-		Effort:      &effort,
-		Tools:       []string{"search", "calculator"},
-		Skills:      []string{"greeting"},
-		MCP:         []string{"github"},
-		Avatar:      json.RawMessage(`{"shape":"circle","color":"blue"}`),
+		WorkspaceID:    ws1.ID,
+		Slug:           "support-bot",
+		Name:           "Support Bot",
+		Role:           "customer-support",
+		Description:    "Helps users with questions",
+		Brief:          "Friendly support persona",
+		ProviderID:     p1.ID,
+		Model:          "gpt-4o",
+		Temperature:    0.7,
+		MaxTokens:      &maxTok,
+		Effort:         &effort,
+		ContextWindow:  &cw,
+		Tools:          []string{"search", "calculator"},
+		DisabledMCPs:   []string{"github"},
+		Avatar:         json.RawMessage(`{"shape":"circle","color":"blue"}`),
 	}
 	if err := s.Agents().Create(ctx, a1); err != nil {
 		t.Fatalf("unexpected create agent error: %v", err)
@@ -757,6 +763,10 @@ func TestAgentStore_CRUD(t *testing.T) {
 	badTok := 0
 	if err := s.Agents().Create(ctx, &domain.Agent{WorkspaceID: ws1.ID, Name: "A", Slug: "a2", ProviderID: p1.ID, Model: "m", MaxTokens: &badTok}); !errors.Is(err, domain.ErrInvalid) {
 		t.Fatalf("expected ErrInvalid for max_tokens <= 0, got %v", err)
+	}
+	badCW := 0
+	if err := s.Agents().Create(ctx, &domain.Agent{WorkspaceID: ws1.ID, Name: "A", Slug: "a2b", ProviderID: p1.ID, Model: "m", ContextWindow: &badCW}); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for context_window <= 0, got %v", err)
 	}
 	if err := s.Agents().Create(ctx, &domain.Agent{WorkspaceID: ws1.ID, Name: "A", Slug: "a3", ProviderID: p1.ID, Model: "m", Temperature: 3.0}); !errors.Is(err, domain.ErrInvalid) {
 		t.Fatalf("expected ErrInvalid for temp > 2.0, got %v", err)
@@ -804,7 +814,10 @@ func TestAgentStore_CRUD(t *testing.T) {
 	if found.ID != a1.ID || found.Slug != "support-bot" || found.Name != "Support Bot" || found.Autonomy != domain.AutonomyApproval {
 		t.Fatalf("unexpected agent retrieved: %+v", found)
 	}
-	if len(found.Tools) != 2 || len(found.Skills) != 1 || len(found.MCP) != 1 {
+	if found.ContextWindow == nil || *found.ContextWindow != 128000 {
+		t.Fatalf("unexpected context_window: %+v", found.ContextWindow)
+	}
+	if len(found.Tools) != 2 || len(found.DisabledMCPs) != 1 {
 		t.Fatalf("unexpected capabilities arrays: %+v", found)
 	}
 
@@ -848,15 +861,17 @@ func TestAgentStore_CRUD(t *testing.T) {
 	}
 
 	// 9. Update
+	newCW := 200000
 	found.Name = "Support Bot Pro"
 	found.Role = "senior-support"
 	found.Autonomy = domain.AutonomyFull
+	found.ContextWindow = &newCW
 	found.Tools = []string{"search", "calculator", "docs"}
 	if err := s.Agents().Update(ctx, found); err != nil {
 		t.Fatalf("unexpected Update error: %v", err)
 	}
 	reloaded, _ := s.Agents().ByID(ctx, ws1.ID, a1.ID)
-	if reloaded.Name != "Support Bot Pro" || reloaded.Autonomy != domain.AutonomyFull || len(reloaded.Tools) != 3 {
+	if reloaded.Name != "Support Bot Pro" || reloaded.Autonomy != domain.AutonomyFull || len(reloaded.Tools) != 3 || reloaded.ContextWindow == nil || *reloaded.ContextWindow != 200000 {
 		t.Fatalf("unexpected updated agent: %+v", reloaded)
 	}
 
@@ -1019,108 +1034,6 @@ func TestAgentStore_ListOrdering(t *testing.T) {
 	}
 }
 
-func TestWorkspaceSkillStore_CRUD(t *testing.T) {
-	ctx := context.Background()
-	s := fake.New()
-
-	ws1 := &domain.Workspace{Slug: "ws-skill-1", Name: "Skill WS 1"}
-	_ = s.Workspaces().Create(ctx, ws1)
-	ws2 := &domain.Workspace{Slug: "ws-skill-2", Name: "Skill WS 2"}
-	_ = s.Workspaces().Create(ctx, ws2)
-
-	// 1. Create skill
-	sk1 := &domain.WorkspaceSkill{
-		WorkspaceID: ws1.ID,
-		Name:        "incident-runbook",
-		Description: "Step-by-step incident management",
-		Body:        "# Runbook\n1. Page on-call\n2. Mitigate",
-		Enabled:     true,
-	}
-	if err := s.WorkspaceSkills().Create(ctx, sk1); err != nil {
-		t.Fatalf("unexpected create skill error: %v", err)
-	}
-	if sk1.ID == "" {
-		t.Fatal("expected skill ID to be assigned")
-	}
-	if sk1.CreatedAt.IsZero() || sk1.UpdatedAt.IsZero() {
-		t.Fatal("expected timestamps to be set")
-	}
-
-	// 2. Duplicate skill name in same workspace fails
-	err := s.WorkspaceSkills().Create(ctx, &domain.WorkspaceSkill{
-		WorkspaceID: ws1.ID,
-		Name:        "incident-runbook",
-		Description: "Duplicate",
-	})
-	if !errors.Is(err, domain.ErrConflict) {
-		t.Fatalf("expected ErrConflict for duplicate skill name, got %v", err)
-	}
-
-	// 3. Same skill name in different workspace succeeds
-	sk2 := &domain.WorkspaceSkill{
-		WorkspaceID: ws2.ID,
-		Name:        "incident-runbook",
-		Description: "WS2 runbook",
-		Enabled:     true,
-	}
-	if err := s.WorkspaceSkills().Create(ctx, sk2); err != nil {
-		t.Fatalf("expected same skill name in different workspace to succeed, got %v", err)
-	}
-
-	// 4. ByID includes body
-	found, err := s.WorkspaceSkills().ByID(ctx, ws1.ID, sk1.ID)
-	if err != nil {
-		t.Fatalf("unexpected ByID error: %v", err)
-	}
-	if found.Body != "# Runbook\n1. Page on-call\n2. Mitigate" {
-		t.Fatalf("expected ByID to return body, got %q", found.Body)
-	}
-
-	// 5. FindByName includes body
-	foundName, err := s.WorkspaceSkills().FindByName(ctx, ws1.ID, "incident-runbook")
-	if err != nil {
-		t.Fatalf("unexpected FindByName error: %v", err)
-	}
-	if foundName.ID != sk1.ID || foundName.Body == "" {
-		t.Fatalf("unexpected FindByName result: %+v", foundName)
-	}
-
-	// 6. ListForWorkspace omits body (progressive disclosure)
-	list, err := s.WorkspaceSkills().ListForWorkspace(ctx, ws1.ID)
-	if err != nil {
-		t.Fatalf("unexpected ListForWorkspace error: %v", err)
-	}
-	if len(list) != 1 {
-		t.Fatalf("expected 1 skill, got %d", len(list))
-	}
-	if list[0].Body != "" {
-		t.Fatalf("expected ListForWorkspace to omit body, got %q", list[0].Body)
-	}
-	if list[0].Name != "incident-runbook" || list[0].Description != "Step-by-step incident management" {
-		t.Fatalf("unexpected listed skill: %+v", list[0])
-	}
-
-	// 7. Update skill
-	found.Description = "Updated description"
-	found.Body = "# Updated Runbook"
-	found.Enabled = false
-	if err := s.WorkspaceSkills().Update(ctx, found); err != nil {
-		t.Fatalf("unexpected Update error: %v", err)
-	}
-	reloaded, _ := s.WorkspaceSkills().ByID(ctx, ws1.ID, sk1.ID)
-	if reloaded.Description != "Updated description" || reloaded.Body != "# Updated Runbook" || reloaded.Enabled {
-		t.Fatalf("unexpected updated skill: %+v", reloaded)
-	}
-
-	// 8. Delete skill
-	if err := s.WorkspaceSkills().Delete(ctx, ws1.ID, sk1.ID); err != nil {
-		t.Fatalf("unexpected Delete error: %v", err)
-	}
-	if _, err := s.WorkspaceSkills().ByID(ctx, ws1.ID, sk1.ID); !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("expected ErrNotFound after skill delete, got %v", err)
-	}
-}
-
 func TestAgentUserMemoryStore_CRUD(t *testing.T) {
 	ctx := context.Background()
 	s := fake.New()
@@ -1190,7 +1103,7 @@ func TestAgentUserMemoryStore_CRUD(t *testing.T) {
 	}
 }
 
-func TestWithTx_AgentsSkillsMemories(t *testing.T) {
+func TestWithTx_AgentsMemories(t *testing.T) {
 	ctx := context.Background()
 	s := fake.New()
 
@@ -1216,17 +1129,6 @@ func TestWithTx_AgentsSkillsMemories(t *testing.T) {
 			return err
 		}
 
-		sk := &domain.WorkspaceSkill{
-			WorkspaceID: ws.ID,
-			Name:        "tx-skill",
-			Description: "Tx Skill",
-			Body:        "Skill body",
-			Enabled:     true,
-		}
-		if err := txStore.WorkspaceSkills().Create(ctx, sk); err != nil {
-			return err
-		}
-
 		mem := &domain.AgentUserMemory{
 			AgentID:     a.ID,
 			UserID:      u.ID,
@@ -1243,10 +1145,6 @@ func TestWithTx_AgentsSkillsMemories(t *testing.T) {
 	aList, err := s.Agents().ListForWorkspace(ctx, ws.ID)
 	if err != nil || len(aList) != 1 {
 		t.Fatalf("expected 1 agent after commit, got %d (err: %v)", len(aList), err)
-	}
-	sList, err := s.WorkspaceSkills().ListForWorkspace(ctx, ws.ID)
-	if err != nil || len(sList) != 1 {
-		t.Fatalf("expected 1 skill after commit, got %d (err: %v)", len(sList), err)
 	}
 	mem, err := s.AgentUserMemories().Get(ctx, ws.ID, aList[0].ID, u.ID)
 	if err != nil || mem.Content != "Tx memory content" {
@@ -1276,5 +1174,108 @@ func TestWithTx_AgentsSkillsMemories(t *testing.T) {
 	_, err = s.Agents().BySlug(ctx, ws.ID, "rolled-back-agent")
 	if !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound for rolled back agent, got %v", err)
+	}
+}
+
+func TestWorkspaceSkillStore_CRUD(t *testing.T) {
+	s := fake.New()
+	ctx := context.Background()
+
+	ws := &domain.Workspace{Slug: "skills-ws", Name: "Skills WS"}
+	if err := s.Workspaces().Create(ctx, ws); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	other := &domain.Workspace{Slug: "skills-other", Name: "Other WS"}
+	if err := s.Workspaces().Create(ctx, other); err != nil {
+		t.Fatalf("create other workspace: %v", err)
+	}
+
+	skill := &domain.WorkspaceSkill{
+		WorkspaceID:  ws.ID,
+		Name:         "changelog-sweeper",
+		Description:  "Sweeps changelogs",
+		Version:      domain.DefaultSkillVersion,
+		Source:       domain.SkillSourceAuthored,
+		Enabled:      true,
+		Dependencies: domain.SkillDependencies{Tools: []string{"execute"}},
+	}
+	if err := s.WorkspaceSkills().Create(ctx, skill); err != nil {
+		t.Fatalf("create skill: %v", err)
+	}
+	if skill.ID == "" || skill.CreatedAt.IsZero() {
+		t.Fatalf("expected ID and created_at assigned: %+v", skill)
+	}
+
+	// Get + cross-tenant isolation.
+	found, err := s.WorkspaceSkills().Get(ctx, ws.ID, skill.ID)
+	if err != nil || found.Name != "changelog-sweeper" {
+		t.Fatalf("get = %+v, err %v", found, err)
+	}
+	if _, err := s.WorkspaceSkills().Get(ctx, other.ID, skill.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("foreign get should be ErrNotFound, got %v", err)
+	}
+
+	// Unique name per workspace.
+	if err := s.WorkspaceSkills().Create(ctx, &domain.WorkspaceSkill{WorkspaceID: ws.ID, Name: "changelog-sweeper", Version: "0.1.0", Source: domain.SkillSourceUpload, Enabled: true}); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("duplicate name should be ErrConflict, got %v", err)
+	}
+	if err := s.WorkspaceSkills().Create(ctx, &domain.WorkspaceSkill{WorkspaceID: other.ID, Name: "changelog-sweeper", Version: "0.1.0", Source: domain.SkillSourceGit, Enabled: false}); err != nil {
+		t.Fatalf("same name in other workspace should succeed: %v", err)
+	}
+
+	// Validation.
+	if err := s.WorkspaceSkills().Create(ctx, &domain.WorkspaceSkill{WorkspaceID: ws.ID, Name: "Not A Slug", Version: "0.1.0", Source: domain.SkillSourceAuthored, Enabled: true}); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("invalid name should be ErrInvalid, got %v", err)
+	}
+	if err := s.WorkspaceSkills().Create(ctx, &domain.WorkspaceSkill{WorkspaceID: "missing-ws", Name: "orphan", Version: "0.1.0", Source: domain.SkillSourceAuthored, Enabled: true}); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("unknown workspace should be ErrNotFound, got %v", err)
+	}
+
+	// Update: rename + dependency replacement.
+	found.Description = "Updated"
+	found.Version = "0.2.0"
+	found.Name = "renamed-sweeper"
+	found.Dependencies = domain.SkillDependencies{Binaries: []string{"pdftotext"}}
+	if err := s.WorkspaceSkills().Update(ctx, found); err != nil {
+		t.Fatalf("update skill: %v", err)
+	}
+	updated, err := s.WorkspaceSkills().GetByName(ctx, ws.ID, "renamed-sweeper")
+	if err != nil || updated.Version != "0.2.0" || !updated.Enabled {
+		t.Fatalf("get by name after update = %+v, err %v", updated, err)
+	}
+	if len(updated.Dependencies.Binaries) != 1 || len(updated.Dependencies.Tools) != 0 {
+		t.Fatalf("dependencies not replaced: %+v", updated.Dependencies)
+	}
+	if _, err := s.WorkspaceSkills().GetByName(ctx, ws.ID, "changelog-sweeper"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("old name should be gone after rename, got %v", err)
+	}
+
+	// Enabled toggle round-trip via slug-based ListEnabled.
+	names, err := s.WorkspaceSkills().ListEnabled(ctx, "skills-ws")
+	if err != nil || len(names) != 1 || names[0] != "renamed-sweeper" {
+		t.Fatalf("list enabled = %v, err %v", names, err)
+	}
+	if err := s.WorkspaceSkills().SetEnabled(ctx, ws.ID, updated.ID, false); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if names, err = s.WorkspaceSkills().ListEnabled(ctx, "skills-ws"); err != nil || len(names) != 0 {
+		t.Fatalf("disabled skill must not list, got %v err %v", names, err)
+	}
+	if _, err := s.WorkspaceSkills().ListEnabled(ctx, "no-such-slug"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("unknown slug should be ErrNotFound, got %v", err)
+	}
+
+	// List is workspace-scoped.
+	list, err := s.WorkspaceSkills().List(ctx, other.ID)
+	if err != nil || len(list) != 1 || list[0].Enabled {
+		t.Fatalf("other list = %+v, err %v", list, err)
+	}
+
+	// Delete.
+	if err := s.WorkspaceSkills().Delete(ctx, ws.ID, updated.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if err := s.WorkspaceSkills().Delete(ctx, ws.ID, updated.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("double delete should be ErrNotFound, got %v", err)
 	}
 }

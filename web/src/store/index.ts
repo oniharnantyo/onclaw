@@ -6,6 +6,7 @@ import { uid, nowTime } from '../lib/helpers';
 import { useAuthStore } from './auth';
 import { useConnectionStore } from './connection';
 import { api, pollAgentPromptsStatus, formatApiError, type ApiMemberView } from '../lib/api';
+import { overlayPersistedThreads, persistAllThreads } from './threadPersistence';
 
 export { useConnectionStore, type ConnectionState } from './connection';
 
@@ -33,8 +34,25 @@ const savePos = (p: any) => {
   catch { /* storage unavailable (private mode) — position just won't persist */ }
 };
 
+// Mint a server-addressable session id (D2). Falls back to a manual v4 when
+// randomUUID is unavailable (older jsdom).
+export const mintSessionId = (): string => {
+  const c = globalThis.crypto as Crypto | undefined;
+  if (c?.randomUUID) return 'sess_' + c.randomUUID();
+  const bytes = new Uint8Array(16);
+  (c ?? ({ getRandomValues: (a: Uint8Array) => a.forEach((_, i) => (a[i] = Math.floor(Math.random() * 256))) } as Crypto)).getRandomValues(bytes);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  return 'sess_' + hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-' + hex.slice(12, 16) + '-' + hex.slice(16, 20) + '-' + hex.slice(20);
+};
+
 export interface AppState {
   db: Record<string, Workspace>;
+  // Per-workspace marker that loadAgents completed against the server at least
+  // once — route guards hold off on "no agents" decisions until this is set so
+  // a fresh load never bounces to /welcome while the fetch is in flight.
+  agentsLoaded: Record<string, true>;
   pos: {
     tenantId: string;
     view: string;
@@ -59,6 +77,7 @@ export interface AppState {
   
   updateTenant: (tenantId: string, fn: (t: Workspace) => Workspace) => void;
   pushMsg: (tid: string, cid: string, msg: ChatMessage) => void;
+  dropMsg: (tid: string, cid: string, messageId: string) => void;
   
   selectChat: (id: string) => void;
   openMember: (id: string) => void;
@@ -67,6 +86,12 @@ export interface AppState {
   
   newSession: () => void;
   switchSession: (sid: string) => void;
+  bindSession: (threadId: string, sess: string) => void;
+  getSessionBinding: (threadId: string) => string | null;
+  ensureSessionBinding: (threadId: string) => string | null;
+  recordResponse: (threadId: string, messageId: string, resp: string) => void;
+  recordThreadUsage: (threadId: string, chatId: string, finalInput: number | null) => void;
+  getLastResponse: (threadId: string) => string | null;
   deleteSession: (sid: string) => void;
   switchTenant: (id: string) => void;
   upsertAgent: (values: Partial<Agent>) => string;
@@ -103,8 +128,16 @@ const setSafeTimer = (key: string, fn: () => void, delay: number) => {
   }, delay);
 };
 
+// Boot: reattach persisted threads (session bindings, resp chains, messages)
+// to the seeded tenants so a reload continues the same server sessions.
+const seededDb = seedDb();
+for (const [tenantId, t] of Object.entries(seededDb)) {
+  seededDb[tenantId] = overlayPersistedThreads(tenantId, t);
+}
+
 export const useStore = create<AppState>((set, get) => ({
-  db: seedDb(),
+  db: seededDb,
+  agentsLoaded: {},
   pos: initialPos,
   ui: {
     configAgent: null, cronEdit: null,
@@ -142,7 +175,7 @@ export const useStore = create<AppState>((set, get) => ({
       const mem = authMemberships.find((m) => m.workspace_id === tenantId || m.workspace_slug === tenantId);
       const wsName = mem?.workspace_name || mem?.workspace?.name || tenantId;
       const wsTz = mem?.workspace?.timezone || 'America/Los_Angeles';
-      t = blankTenant({ name: wsName, sub: tenantId, tz: wsTz, starter: false });
+      t = overlayPersistedThreads(tenantId, blankTenant({ name: wsName, sub: tenantId, tz: wsTz, starter: false }));
       t.id = tenantId;
     }
     return { db: { ...s.db, [tenantId]: fn(JSON.parse(JSON.stringify(t))) } };
@@ -169,6 +202,25 @@ export const useStore = create<AppState>((set, get) => ({
     }
     sess.updated = 'just now';
     return { db: d };
+  }),
+
+  // Removes a message from the thread's active session — used to retract the
+  // optimistic empty agent message when a live turn fails before producing
+  // anything (an empty row would render as a forever-loading placeholder).
+  dropMsg: (tid, cid, messageId) => set((s: any) => {
+    const d = JSON.parse(JSON.stringify(s.db));
+    const t = d[tid];
+    const th = t?.threads?.[cid];
+    if (!th || Array.isArray(th)) return s;
+    let dropped = false;
+    th.list = th.list.map((x: any) => {
+      if (dropped || !Array.isArray(x.messages)) return x;
+      const next = x.messages.filter((m: any) => m.id !== messageId);
+      if (next.length === x.messages.length) return x;
+      dropped = true;
+      return { ...x, messages: next };
+    });
+    return dropped ? { db: d } : s;
   }),
 
   selectChat: (id) => {
@@ -251,6 +303,97 @@ export const useStore = create<AppState>((set, get) => ({
     state.patchUi({ running: false });
   },
 
+  bindSession: (threadId, sess) => {
+    const state = get();
+    state.updateTenant(state.pos.tenantId, (tenant) => {
+      const th = tenant.threads[threadId];
+      if (!th || Array.isArray(th)) return tenant;
+      th.list = th.list.map((x: any) => (x.id === th.active ? { ...x, sess } : x));
+      return tenant;
+    });
+  },
+
+  getSessionBinding: (threadId) => {
+    const s: any = get();
+    const th = s.db[s.pos.tenantId]?.threads[threadId];
+    if (!th || Array.isArray(th)) return null;
+    const sess = th.list.find((x: any) => x.id === th.active);
+    return sess?.sess || null;
+  },
+
+  // Lazy migration (D2/D7): on the session's next live turn, mint a
+  // `sess_<uuid>` id, record it as `sess`, and replace non-`sess_` local ids
+  // (legacy counter ids like `s1`). Already-bound sessions are returned as-is.
+  ensureSessionBinding: (threadId) => {
+    const state: any = get();
+    const tid = state.pos.tenantId;
+    const th = state.db[tid]?.threads[threadId];
+    if (!th || Array.isArray(th)) return null;
+    const sess = th.list.find((x: any) => x.id === th.active);
+    if (!sess) return null;
+    if (sess.sess) {
+      if (!sess.id.startsWith('sess_')) {
+        state.updateTenant(tid, (tenant) => {
+          const t2 = tenant.threads[threadId];
+          t2.list = t2.list.map((x: any) => (x.sess === sess.sess ? { ...x, id: sess.sess } : x));
+          if (t2.active === sess.id) t2.active = sess.sess;
+          return tenant;
+        });
+      }
+      return sess.sess;
+    }
+    const minted = mintSessionId();
+    state.updateTenant(tid, (tenant) => {
+      const t2 = tenant.threads[threadId];
+      t2.list = t2.list.map((x: any) => (x.id === sess.id ? { ...x, id: minted, sess: minted } : x));
+      if (t2.active === sess.id) t2.active = minted;
+      return tenant;
+    });
+    return minted;
+  },
+
+  recordResponse: (threadId, messageId, resp) => {
+    const state = get();
+    state.updateTenant(state.pos.tenantId, (tenant) => {
+      const th = tenant.threads[threadId];
+      if (!th || Array.isArray(th)) return tenant;
+      const sess = th.list.find((x: any) => x.id === th.active);
+      if (!sess) return tenant;
+      sess.messages = sess.messages.map((m: any) => (m.id === messageId ? { ...m, resp } : m));
+      return tenant;
+    });
+  },
+
+  // Context-meter state (design D5): the latest terminal turn's final-call
+  // input lives on the thread's ACTIVE session; null clears the field so the
+  // meter hides instead of showing a stale/zero value. Isolation falls out of
+  // addressing by (threadId, chatId).
+  recordThreadUsage: (threadId, chatId, finalInput) => {
+    const state = get();
+    state.updateTenant(threadId, (tenant) => {
+      const th = tenant.threads[chatId];
+      if (!th || Array.isArray(th)) return tenant;
+      const sess = th.list.find((x: any) => x.id === th.active);
+      if (!sess) return tenant;
+      if (finalInput === null) delete sess.usage;
+      else sess.usage = { finalInput, at: nowTime() };
+      return tenant;
+    });
+  },
+
+  getLastResponse: (threadId) => {
+    const s: any = get();
+    const th = s.db[s.pos.tenantId]?.threads[threadId];
+    if (!th || Array.isArray(th)) return null;
+    const sess = th.list.find((x: any) => x.id === th.active);
+    if (!sess) return null;
+    for (let i = sess.messages.length - 1; i >= 0; i--) {
+      const resp = sess.messages[i].resp;
+      if (resp) return resp;
+    }
+    return null;
+  },
+
   deleteSession: (sid) => {
     const state = get();
     const tid = state.pos.tenantId;
@@ -280,7 +423,7 @@ export const useStore = create<AppState>((set, get) => ({
       const mem = authMemberships.find((m) => m.workspace_id === id || m.workspace_slug === id);
       const wsName = mem?.workspace_name || mem?.workspace?.name || id;
       const wsTz = mem?.workspace?.timezone || 'America/Los_Angeles';
-      const newWs = blankTenant({ name: wsName, sub: id, tz: wsTz, starter: false });
+      const newWs = overlayPersistedThreads(id, blankTenant({ name: wsName, sub: id, tz: wsTz, starter: false }));
       newWs.id = id;
       set((s: any) => ({
         db: {
@@ -291,7 +434,9 @@ export const useStore = create<AppState>((set, get) => ({
     }
     const targetWs = get().db[id];
     const firstAgent = targetWs?.agents?.[0]?.id || '';
-    state.goPos({ tenantId: id, view: 'chats', chatId: firstAgent });
+    // Chat selection stays empty — the chat page renders with nothing
+    // pre-opened instead of jumping to the first agent.
+    state.goPos({ tenantId: id, view: 'chats', chatId: '' });
     if (targetWs?.channels) {
       state.updateTenant(id, (tenant) => ({
         ...tenant,
@@ -308,6 +453,7 @@ export const useStore = create<AppState>((set, get) => ({
     try {
       const res = await api.agents.list(tenantId);
       if (res?.agents) {
+        set((s: any) => ({ agentsLoaded: { ...s.agentsLoaded, [tenantId]: true } }));
         get().updateTenant(tenantId, (t) => {
           const existingMap = new Map((t.agents || []).map((a) => [a.id, a]));
           const mergedAgents: Agent[] = res.agents.map((apiAgent) => {
@@ -330,6 +476,8 @@ export const useStore = create<AppState>((set, get) => ({
               temperature: apiAgent.temperature ?? 1.0,
               max_tokens: apiAgent.max_tokens,
               effort: apiAgent.effort,
+              effective_context_window: apiAgent.effective_context_window,
+              summarization_trigger_tokens: apiAgent.summarization_trigger_tokens,
               autonomy: apiAgent.autonomy,
               tools: apiAgent.tools || [],
               skills: apiAgent.skills || [],
@@ -522,6 +670,15 @@ export const useStore = create<AppState>((set, get) => ({
     state.patchUi({ cronEdit: null });
   }
 }));
+
+// Persist the threads slice (debounced) — survived `sess_<uuid>` bindings let
+// a reload reattach to the same server sessions (hydration) instead of
+// birthing fresh ones.
+let threadPersistTimer: ReturnType<typeof setTimeout> | null = null;
+useStore.subscribe(() => {
+  if (threadPersistTimer) clearTimeout(threadPersistTimer);
+  threadPersistTimer = setTimeout(() => persistAllThreads(useStore.getState().db), 350);
+});
 
 // Export selectors
 //

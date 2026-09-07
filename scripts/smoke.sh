@@ -15,6 +15,7 @@
 #  10. Last-owner & last-superadmin protection guards
 #  11. CLI user provisioning & authentication verification
 #  12. Workspace provider configuration CRUD & verify scenarios
+#  14. /v1 OpenResponses live chat sessions (chat key exchange → birth → chain)
 #
 # Usage:
 #   ./scripts/smoke.sh
@@ -70,8 +71,9 @@ DATA_DIR="${TMP_DIR}/data"
 mkdir -p "${DATA_DIR}"
 # Root for on-disk agent workspace prompt documents. The server started below
 # is pointed at this root; when the script attaches to an already-running
-# server, a caller-set ONCLAW_WORKSPACE_DIR is honored instead.
-WS_ROOT="${ONCLAW_WORKSPACE_DIR:-${TMP_DIR}/workspaces}"
+# server, a caller-set ONCLAW_DIR is honored instead.
+ONCLAW_BASE_DIR="${ONCLAW_DIR:-${TMP_DIR}/.onclaw}"
+WS_ROOT="${ONCLAW_BASE_DIR}/workspaces"
 
 SERVER_PID=""
 MOCK_PID=""
@@ -211,7 +213,7 @@ else
     ONCLAW_SUPERADMIN_PASSWORD="${SUPERADMIN_PASSWORD}" \
     ONCLAW_JWT_SECRET="${JWT_SECRET}" \
     ONCLAW_DATA_DIR="${DATA_DIR}" \
-    ONCLAW_WORKSPACE_DIR="${WS_ROOT}" \
+    ONCLAW_DIR="${ONCLAW_BASE_DIR}" \
     ONCLAW_LISTEN_ADDR="${SERVER_HOST}:${SERVER_PORT}" \
     "${TMP_DIR}/onclaw-smoke-bin" server --database-url "${DATABASE_URL}" --listen-addr "${SERVER_HOST}:${SERVER_PORT}" --encryption-key "${ENCRYPTION_KEY}" >"${TMP_DIR}/server.log" 2>&1 &
 
@@ -715,6 +717,75 @@ class Handler(BaseHTTPRequestHandler):
             self._send(401, {"error": {"message": "Invalid API key"}})
 
     def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            body = json.loads(raw)
+        except ValueError:
+            body = {}
+        # Live-chat turns (section 14) are marked in the user input; they get
+        # a plain assistant reply. Everything else is the create/regenerate
+        # prompt-generation flow and receives the submit_prompts tool call.
+        messages = body.get("messages", [])
+
+        def content_text(m):
+            # The agent runner sends content as a list of typed blocks
+            # ([{"type": "text", "text": ...}]), while other callers send a
+            # plain string; the marker can live in either shape.
+            c = m.get("content")
+            if isinstance(c, str):
+                return c
+            if isinstance(c, list):
+                return " ".join(p.get("text", "") for p in c if isinstance(p, dict))
+            return ""
+
+        is_live = any(
+            "ONCLAW_V1_SMOKE" in content_text(m)
+            for m in messages
+            if isinstance(m, dict)
+        )
+        if is_live:
+            # The runner always executes turns in streaming mode; a compliant
+            # server must answer stream:true with an SSE chat.completion.chunk
+            # sequence, otherwise no assistant message is ever assembled (and
+            # none persists into the session history).
+            if body.get("stream"):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+
+                def sse(chunk):
+                    self.wfile.write(("data: " + json.dumps(chunk) + "\n\n").encode())
+
+                def chunk(delta, finish):
+                    return {
+                        "id": "chatcmpl-smoke-live",
+                        "object": "chat.completion.chunk",
+                        "created": 0,
+                        "model": "gpt-4",
+                        "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+                    }
+
+                sse(chunk({"role": "assistant"}, None))
+                for piece in ["live reply", " from the", " smoke mock"]:
+                    sse(chunk({"content": piece}, None))
+                sse(chunk({}, "stop"))
+                self.wfile.write(b"data: [DONE]\n\n")
+                return
+            payload = {
+                "id": "chatcmpl-smoke-live",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "gpt-4",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "live reply from the smoke mock"},
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 6, "total_tokens": 11},
+            }
+            self._send(200, payload)
+            return
         if self.path.startswith("/v1/chat/completions"):
             payload = {
                 "id": "chatcmpl-smoke",
@@ -746,27 +817,64 @@ api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/providers" "${CHARLIE_TOKEN}" 
 assert_status "201" "Owner creates openai-compatible provider against the mock server"
 MOCK_PROV_ID=$(json_get '.provider.id')
 
-# 13.1 Skills CRUD
-api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/skills" "${CHARLIE_TOKEN}" '{"name":"search_web","description":"Search the web","enabled":true}'
-assert_status "201" "Owner creates a skill"
-SKILL_ID=$(json_get '.skill.id')
+# 13.1 Workspace skills: author install, tier-gated listing, enable/disable,
+# uninstall, and the Member write guard. The routes are part of the live
+# contract (workspace-skills-ui); no 404 skip anymore.
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/skills" "${CHARLIE_TOKEN}" '{"source":"authored","name":"search-web","description":"Search the web for a topic and summarize","body":"# search_web\n\nSearch the web and summarize the findings with sources.\n"}'
+assert_status "201" "Owner installs an authored workspace skill"
+assert_json_expr '.skill.name == "search-web"' "Install response carries the skill name"
+assert_json_expr '.skill.tier == "workspace"' "Installed skill is workspace tier"
 
-api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/skills" "${CHARLIE_TOKEN}" '{"name":"search_web","description":"Duplicate"}'
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/skills" "${CHARLIE_TOKEN}" '{"source":"authored","name":"search-web","description":"Duplicate","body":"dup"}'
 assert_status "409" "Duplicate skill name returns 409"
 
 api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/skills" "${CHARLIE_TOKEN}"
 assert_status "200" "Owner lists skills"
-assert_json_expr "(.skills | length) >= 1" "Skills list contains the created skill"
+assert_json_expr '(.skills | length) >= 1' "Skills list contains the created skill"
+assert_json_expr '([.skills[] | select(.tier == "system")] | length) >= 1' "List includes the locked system tier"
+assert_json_expr '[.skills[] | select(.tier == "system")][0].locked == true' "System tier entries are locked"
 
-api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/skills/${SKILL_ID}" "${CHARLIE_TOKEN}"
-assert_status "200" "Owner gets skill by ID"
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/skills/search-web" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner gets skill by name"
+assert_json_expr '.skill.body | contains("Search the web")' "Skill body includes the authored SKILL.md"
 
-api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/skills/${SKILL_ID}" "${CHARLIE_TOKEN}" '{"description":"Updated description"}'
-assert_status "200" "Owner updates a skill"
-assert_json_expr '.skill.description == "Updated description"' "Skill description updated"
+api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/skills/search-web" "${CHARLIE_TOKEN}" '{"enabled":false}'
+assert_status "200" "Owner disables the skill (master switch)"
+assert_json_expr '.skill.enabled == false' "Skill reports disabled"
+
+api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/skills/search-web" "${CHARLIE_TOKEN}" '{"enabled":true}'
+assert_status "200" "Owner re-enables the skill"
+assert_json_expr '.skill.enabled == true' "Skill reports enabled"
+
+# Member write guard: a plain Member can read the library but not mutate it.
+DAVE_EMAIL="dave.skills.${RUN_ID}@example.com"
+DAVE_PASSWORD="dave-Skills-Pass1"
+api_req "POST" "/api/v1/admin/users" "${SUPERADMIN_TOKEN}" "{\"email\":\"${DAVE_EMAIL}\",\"name\":\"Dave Skills Smoke\",\"password\":\"${DAVE_PASSWORD}\"}"
+assert_status "201" "Superadmin creates Dave (skills guard fixture)"
+
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/members" "${ALICE_TOKEN}" "{\"email\":\"${DAVE_EMAIL}\",\"role_id\":\"${MEMBER_ROLE_ID}\"}"
+assert_status "201" "Alice adds Dave as Member"
+
+api_req "POST" "/api/v1/auth/login" "" "{\"email\":\"${DAVE_EMAIL}\",\"password\":\"${DAVE_PASSWORD}\"}"
+assert_status "200" "Dave logs in"
+DAVE_TOKEN=$(json_get '.token')
+
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/skills" "${DAVE_TOKEN}"
+assert_status "200" "Member can list skills (skills.read)"
+
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/skills" "${DAVE_TOKEN}" '{"source":"authored","name":"nope","description":"x","body":"x"}'
+assert_status "403" "Member cannot install skills (skills.write 403)"
+
+api_req "DELETE" "/api/v1/workspaces/${TENANT_SLUG}/skills/search-web" "${DAVE_TOKEN}"
+assert_status "403" "Member cannot uninstall skills (403)"
+
+api_req "DELETE" "/api/v1/workspaces/${TENANT_SLUG}/skills/search-web" "${CHARLIE_TOKEN}"
+assert_status "204" "Owner uninstalls the skill"
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/skills/search-web" "${CHARLIE_TOKEN}"
+assert_status "404" "Uninstalled skill is gone"
 
 # 13.2 Agents CRUD & Models Endpoint
-api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/agents" "${CHARLIE_TOKEN}" '{"name":"Test Agent","slug":"test-agent","role":"Tester","description":"Tests things","brief":"A short brief","provider_id":"'"${MOCK_PROV_ID}"'","model":"gpt-4","skills":["search_web"]}'
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/agents" "${CHARLIE_TOKEN}" '{"name":"Test Agent","slug":"test-agent","role":"Tester","description":"Tests things","brief":"A short brief","provider_id":"'"${MOCK_PROV_ID}"'","model":"gpt-4"}'
 assert_status "201" "Owner creates an agent (generation gates persistence)"
 assert_json_expr '.agent.prompts_status == "ready"' "Create returns the agent with prompts ready (generation ran against the mock provider)"
 AGENT_ID=$(json_get '.agent.id')
@@ -819,6 +927,41 @@ assert_json_expr 'has("models")' "Models endpoint returns models list"
 api_req "POST" "/api/v1/providers/models-preview" "${CHARLIE_TOKEN}" '{"type":"openai","key":"sk-fake"}'
 assert_status "200" "Models preview endpoint returns 200"
 
+# 13.2b Workspace tool settings: catalog, gate toggle, validation, secrets
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/tools" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists workspace tools"
+assert_json_expr '(.tools | map(.key) | index("ls")) != null' "Tool catalog contains fs tool ls"
+assert_json_expr '(.tools | map(.key) | index("web.search")) != null' "Tool catalog contains web.search"
+assert_json_expr '(.tools | map(select(.key == "browser")) | length) == 1' "Tool catalog exposes the single browser alias"
+
+api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/tools/ls" "${CLI_USER_TOKEN}" '{"enabled":false}'
+assert_status "403" "Member cannot change tool settings"
+
+api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/tools/ls" "${CHARLIE_TOKEN}" '{"enabled":false}'
+assert_status "200" "Owner disables a tool"
+assert_json_expr '.tool.enabled == false' "Disable is reflected in the response"
+
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/tools" "${CHARLIE_TOKEN}"
+assert_json_expr '.tools | map(select(.key == "ls")) | .[0].enabled == false' "List shows the tool disabled"
+
+api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/tools/ls" "${CHARLIE_TOKEN}" '{"enabled":true}'
+assert_status "200" "Owner re-enables the tool"
+
+api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/tools/not.a.tool" "${CHARLIE_TOKEN}" '{"enabled":false}'
+assert_status "400" "Unknown tool key returns 400"
+
+api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/tools/web.search" "${CHARLIE_TOKEN}" '{"enabled":true,"config":{"provider":"tavily"}}'
+assert_status "422" "Enabling an unconfigured provider returns 422"
+
+api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/tools/web.search" "${CHARLIE_TOKEN}" '{"enabled":true,"config":{"provider":"tavily","api_key":"tvly-smoke-secret-key-9876"}}'
+assert_status "200" "Configured provider enables"
+assert_json_expr '.tool.configured == true' "Configured tool reports configured"
+if echo "${HTTP_BODY}" | grep -q "tvly-smoke-secret-key-9876"; then
+    log_fail "Tool config response echoed the secret"
+else
+    log_pass "Tool config response never echoes the secret"
+fi
+
 # 13.3 Delete in-use provider 409 (the agent references the mock provider)
 api_req "DELETE" "/api/v1/workspaces/${TENANT_SLUG}/providers/${MOCK_PROV_ID}" "${CHARLIE_TOKEN}"
 assert_status "409" "Deleting in-use provider returns 409"
@@ -860,4 +1003,68 @@ assert_status "201" "Atomic workspace birth with provider and agent"
 assert_json_expr 'has("workspace")' "Response has workspace"
 assert_json_expr 'has("provider")' "Response has provider"
 assert_json_expr 'has("agent")' "Response has agent"
+
+# -----------------------------------------------------------------------------
+# 14. /v1 OpenResponses Live Chat Sessions
+# -----------------------------------------------------------------------------
+log_step "14. /v1 OpenResponses Live Chat Sessions"
+
+# 14.1 Mint a chat key through the existing key machinery: a plain Member
+# exchanges for a workspace-scoped key (returned in plaintext exactly once).
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/api-keys/exchange" "${DAVE_TOKEN}"
+assert_status "201" "Member exchanges a workspace-scoped chat key"
+V1_KEY=$(json_get '.key')
+if [[ -z "${V1_KEY}" || "${V1_KEY}" == "null" ]]; then
+    log_fail "Failed to retrieve chat key from exchange response"
+fi
+log_pass "Chat key exchanged (${V1_KEY:0:11}...)"
+
+# 14.2 The chat key authenticates /v1 and lists the workspace agents as models.
+api_req "GET" "/v1/models" "${V1_KEY}"
+assert_status "200" "GET /v1/models with the exchanged chat key"
+assert_json_expr '([.data[].id] | index("test-agent")) != null' "Agent slug listed as a /v1 model"
+
+# 14.3 Birth turn: an unknown metadata.onclaw_session births a persistent
+# session in the key's workspace (streaming, the web binding style).
+V1_SESSION="sess-smoke-$(date +%s)-${RANDOM}"
+api_req "POST" "/v1/responses" "${V1_KEY}" '{"model":"test-agent","input":"ONCLAW_V1_SMOKE hello birth","stream":true,"metadata":{"onclaw_session":"'"${V1_SESSION}"'"}}'
+assert_status "200" "Birth turn (streaming, metadata.onclaw_session) accepted"
+printf '%s' "${HTTP_BODY}" | grep -q '"type":"response.created"' || log_fail "Birth stream missing response.created"
+printf '%s' "${HTTP_BODY}" | grep -q '"type":"response.completed"' || log_fail "Birth stream missing response.completed"
+printf '%s' "${HTTP_BODY}" | grep -q '^data: \[DONE\]' || log_fail "Birth stream missing [DONE] sentinel"
+printf '%s' "${HTTP_BODY}" | grep -q 'live reply' || log_fail "Birth stream carried no assistant text delta"
+log_pass "Birth turn streamed the full SSE lifecycle (assistant deltas included)"
+V1_RESP_1=$(printf '%s' "${HTTP_BODY}" | grep -o '"id":"resp_[^"]*"' | head -1 | cut -d'"' -f4)
+if [[ -z "${V1_RESP_1}" ]]; then
+    log_fail "Birth stream carried no minted response id: ${HTTP_BODY}"
+fi
+log_pass "Birth turn minted response id: ${V1_RESP_1:0:24}..."
+
+# 14.4 Chained turn: previous_response_id binds to the birth session
+# (OpenResponses convention) and appends to the same history.
+api_req "POST" "/v1/responses" "${V1_KEY}" '{"model":"test-agent","input":"ONCLAW_V1_SMOKE chained follow-up","previous_response_id":"'"${V1_RESP_1}"'"}'
+assert_status "200" "Chained turn (previous_response_id) accepted"
+assert_json_expr '.status == "completed"' "Chained turn completed"
+assert_json_expr ".id | startswith(\"resp_${V1_SESSION}_\")" "Chained response id encodes the birth session"
+
+# 14.5 Chaining cannot bootstrap: a well-formed previous_response_id to an
+# unknown session is not-found and never births.
+api_req "POST" "/v1/responses" "${V1_KEY}" '{"model":"test-agent","input":"ONCLAW_V1_SMOKE ghost","previous_response_id":"resp_sess-ghost-unknown_00000000-0000-0000-0000-000000000000"}'
+assert_status "404" "Chaining against an unknown session returns 404 (bind-only, never births)"
+
+# 14.6 The born session's events are retrievable on the native session-events
+# endpoint (workspace JWT auth): birth turn and chained turn both persisted.
+# The assistant appends land shortly after the turn's HTTP response returns,
+# so poll briefly for the full history before asserting.
+for i in {1..20}; do
+    api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/agents/test-agent/sessions/${V1_SESSION}/events?limit=100" "${CHARLIE_TOKEN}"
+    assert_status "200" "Native session-events endpoint serves the born session"
+    if [[ "$(json_get '(.events | length)')" -ge 4 ]]; then
+        break
+    fi
+    sleep 0.25
+done
+assert_json_expr '(.events | length) >= 4' "Birth + chained turns persisted events (user and assistant per turn)"
+assert_json_expr '[.events[]?.message.content // "" ] | join(" ") | contains("ONCLAW_V1_SMOKE hello birth")' "Birth turn input present in session history"
+assert_json_expr '[.events[]?.message.content // "" ] | join(" ") | contains("ONCLAW_V1_SMOKE chained follow-up")' "Chained turn input present in session history"
 

@@ -15,8 +15,9 @@ import (
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	"github.com/gin-gonic/gin"
-	"github.com/oniharnantyo/onclaw/internal/agents"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/promptdocs"
+	"github.com/oniharnantyo/onclaw/internal/promptgen"
 	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/server/handlers"
 	storefake "github.com/oniharnantyo/onclaw/internal/store/fake"
@@ -30,10 +31,9 @@ func (m *createFlowChatModel) Generate(ctx context.Context, input []*schema.Mess
 	if m.err != nil {
 		return nil, m.err
 	}
-	args, err := json.Marshal(agents.GeneratedPrompts{
-		Identity:  "# Identity\nCreated agent identity.",
-		Soul:      "# Soul\nCreated agent soul.",
-		Bootstrap: "# BOOTSTRAP.md\nCreated agent bootstrap.",
+	args, err := json.Marshal(promptgen.GeneratedPrompts{
+		Identity: "# Identity\nCreated agent identity.",
+		Soul:     "# Soul\nCreated agent soul.",
 	})
 	if err != nil {
 		return nil, err
@@ -75,11 +75,11 @@ func TestCreateAgent_GeneratesBeforePersist(t *testing.T) {
 	factory := func(ctx context.Context, providerType string, cred providers.Credential, modelName string) (model.BaseChatModel, error) {
 		return &createFlowChatModel{}, nil
 	}
-	agentSvc := agents.NewService(st, key,
-		agents.WithAgentPromptGeneratorModelFactory(factory),
-		agents.WithTimeout(5*time.Second),
+	agentSvc := promptgen.NewService(st.Agents(), st.Providers(), key,
+		promptgen.WithModelFactory(factory),
+		promptgen.WithTimeout(5*time.Second),
 	)
-	agentH := handlers.NewAgentHandlers(st, key, providers.NewRegistry(), nil, agentSvc, wsDir)
+	agentH := handlers.NewAgentHandlers(st.Agents(), st.AgentUserMemories(), st.Providers(), st.SessionEvents(), key, providers.NewRegistry(), nil, agentSvc, wsDir, nil, nil)
 
 	currentUser := &domain.User{ID: "user-1", Email: "owner@example.com", Name: "Owner"}
 
@@ -119,14 +119,22 @@ func TestCreateAgent_GeneratesBeforePersist(t *testing.T) {
 		t.Fatalf("expected agent row after successful create: %v", err)
 	}
 
-	// …and the workspace directory holds the generated documents.
+	// …and the workspace directory holds the generated documents, with
+	// BOOTSTRAP.md seeded from the embedded template.
 	dir := filepath.Join(wsDir, ws.Slug, "agents", "scout")
-	id, soul, boot, err := agents.ReadPromptDocuments(dir)
+	id, soul, _, err := promptdocs.ReadPromptDocuments(dir)
 	if err != nil {
 		t.Fatalf("read documents: %v", err)
 	}
-	if id != "# Identity\nCreated agent identity." || soul != "# Soul\nCreated agent soul." || boot != "# BOOTSTRAP.md\nCreated agent bootstrap." {
-		t.Errorf("unexpected document contents: %q / %q / %q", id, soul, boot)
+	if id != "# Identity\nCreated agent identity." || soul != "# Soul\nCreated agent soul." {
+		t.Errorf("unexpected document contents: %q / %q", id, soul)
+	}
+	boot, err := os.ReadFile(filepath.Join(dir, "BOOTSTRAP.md"))
+	if err != nil {
+		t.Fatalf("read BOOTSTRAP.md: %v", err)
+	}
+	if string(boot) != promptdocs.BootstrapTemplate {
+		t.Errorf("BOOTSTRAP.md = %q, want the embedded template", string(boot))
 	}
 }
 
@@ -157,11 +165,11 @@ func TestCreateAgent_GenerationFailureAbortsCreate(t *testing.T) {
 	factory := func(ctx context.Context, providerType string, cred providers.Credential, modelName string) (model.BaseChatModel, error) {
 		return &createFlowChatModel{err: errors.New("401 unauthorized from upstream")}, nil
 	}
-	agentSvc := agents.NewService(st, key,
-		agents.WithAgentPromptGeneratorModelFactory(factory),
-		agents.WithTimeout(5*time.Second),
+	agentSvc := promptgen.NewService(st.Agents(), st.Providers(), key,
+		promptgen.WithModelFactory(factory),
+		promptgen.WithTimeout(5*time.Second),
 	)
-	agentH := handlers.NewAgentHandlers(st, key, providers.NewRegistry(), nil, agentSvc, wsDir)
+	agentH := handlers.NewAgentHandlers(st.Agents(), st.AgentUserMemories(), st.Providers(), st.SessionEvents(), key, providers.NewRegistry(), nil, agentSvc, wsDir, nil, nil)
 
 	currentUser := &domain.User{ID: "user-1", Email: "owner@example.com", Name: "Owner"}
 
@@ -238,11 +246,11 @@ func TestCreateAgent_SlugConflictKeepsExistingAgentWorkspace(t *testing.T) {
 	factory := func(ctx context.Context, providerType string, cred providers.Credential, modelName string) (model.BaseChatModel, error) {
 		return &createFlowChatModel{}, nil
 	}
-	agentSvc := agents.NewService(st, key,
-		agents.WithAgentPromptGeneratorModelFactory(factory),
-		agents.WithTimeout(5*time.Second),
+	agentSvc := promptgen.NewService(st.Agents(), st.Providers(), key,
+		promptgen.WithModelFactory(factory),
+		promptgen.WithTimeout(5*time.Second),
 	)
-	agentH := handlers.NewAgentHandlers(st, key, providers.NewRegistry(), nil, agentSvc, wsDir)
+	agentH := handlers.NewAgentHandlers(st.Agents(), st.AgentUserMemories(), st.Providers(), st.SessionEvents(), key, providers.NewRegistry(), nil, agentSvc, wsDir, nil, nil)
 
 	currentUser := &domain.User{ID: "user-1", Email: "owner@example.com", Name: "Owner"}
 

@@ -222,3 +222,39 @@ func parseProviderError(resp *http.Response) error {
 	}
 	return fmt.Errorf("provider error (%d): %s", resp.StatusCode, bodyStr)
 }
+
+// StripVersionPath removes one trailing version path segment ("/v1", "/api/v1",
+// "/v1beta") from a base_url. base_url stores the full API base including the
+// version path; SDKs that append their own version path (Anthropic, Gemini)
+// receive the base without it.
+func StripVersionPath(base string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(base), "/")
+	idx := strings.LastIndex(trimmed, "/")
+	if idx < 0 {
+		return trimmed
+	}
+	last := trimmed[idx+1:]
+	if len(last) < 2 || last[0] != 'v' {
+		return trimmed
+	}
+	rest := last[1:]
+	i := 0
+	for i < len(rest) && rest[i] >= '0' && rest[i] <= '9' {
+		i++
+	}
+	if i == 0 {
+		return trimmed
+	}
+	if i < len(rest) {
+		switch rest[i:] {
+		case "beta", "alpha", "beta1", "alpha1":
+		default:
+			return trimmed
+		}
+	}
+	return trimmed[:idx]
+}
+
+// OpenRouterDefaultEndpoint is the base URL used when an OpenRouter provider
+// has no explicit base_url configured.
+const OpenRouterDefaultEndpoint = "https://openrouter.ai/api/v1"

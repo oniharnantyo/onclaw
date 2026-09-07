@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, beforeAll, vi } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import App from './App';
 import { useAuthStore } from './store/auth';
@@ -9,6 +9,26 @@ vi.mock('@assistant-ui/react', () => ({
   useExternalStoreRuntime: vi.fn((opts) => opts),
   AssistantRuntimeProvider: ({ children }: any) => <div>{children}</div>,
 }));
+
+beforeAll(() => {
+  // Node's disabled `localStorage` global shadows jsdom's on this Node
+  // version; install a memory-backed stub so boot/store behavior is testable
+  // (same workaround as ChatRoute.test).
+  if (typeof localStorage === 'undefined' || !localStorage) {
+    const mem = new Map<string, string>();
+    const stub = {
+      getItem: (k: string) => mem.get(k) ?? null,
+      setItem: (k: string, v: string) => void mem.set(k, String(v)),
+      removeItem: (k: string) => void mem.delete(k),
+      clear: () => mem.clear(),
+      key: (i: number) => Array.from(mem.keys())[i] ?? null,
+      get length() {
+        return mem.size;
+      },
+    };
+    Object.defineProperty(globalThis, 'localStorage', { value: stub, configurable: true, writable: true });
+  }
+});
 
 describe('App & Route Guard', () => {
   beforeEach(() => {
@@ -21,6 +41,7 @@ describe('App & Route Guard', () => {
     });
     useStore.setState({
       db: seedDb(),
+      agentsLoaded: {},
       pos: { tenantId: 'acme', view: 'chats', chatId: 'a-atlas', showContext: false, railExpanded: false },
     });
     vi.restoreAllMocks();
@@ -175,6 +196,104 @@ describe('App & Route Guard', () => {
     await waitFor(() => {
       expect(screen.getByTestId('agents-view')).not.toBeNull();
       expect(screen.getByText(/no agents in empty ws yet/i)).not.toBeNull();
+    });
+  });
+
+  it('lands / and /c on the chat page with no conversation opened when agents exist', async () => {
+    useAuthStore.setState({
+      status: 'authenticated',
+      user: { id: 'u1', email: 'alice@example.com', name: 'Alice', created_at: '', updated_at: '' },
+      memberships: [],
+      boot: vi.fn(),
+    });
+
+    window.history.pushState({}, '', '/c');
+    const { unmount } = render(<App />);
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/c');
+      expect(screen.getByTestId('chat-empty')).not.toBeNull();
+      expect(screen.getByText('Select a conversation')).not.toBeNull();
+    });
+    // Agents exist in the workspace — none may be auto-opened.
+    expect(screen.queryByLabelText(/conversation with atlas/i)).toBeNull();
+    unmount();
+
+    window.history.pushState({}, '', '/');
+    render(<App />);
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/c');
+      expect(screen.getByTestId('chat-empty')).not.toBeNull();
+    });
+    expect(screen.queryByText(/welcome to onclaw/i)).toBeNull();
+  });  it('does not bounce chat routes to /welcome while the agent list is still loading', async () => {
+    useAuthStore.setState({
+      status: 'authenticated',
+      user: { id: 'u1', email: 'alice@example.com', name: 'Alice', created_at: '', updated_at: '' },
+      memberships: [],
+      boot: vi.fn(),
+    });
+
+    // Seeded acme has agents, but simulate a workspace whose agent list has
+    // not arrived yet: a materialized blank workspace + no agentsLoaded mark.
+    useStore.setState({
+      db: {
+        acme: {
+          id: 'acme',
+          sub: 'acme',
+          name: 'Acme Corp',
+          plan: 'Free',
+          tz: 'UTC',
+          agents: [],
+          channels: [],
+          people: [],
+          cron: [],
+          runs: [],
+          threads: {},
+        } as any,
+      },
+    });
+
+    window.history.pushState({}, '', '/c');
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('chat-empty')).not.toBeNull();
+    });
+    expect(screen.queryByTestId('onboarding-pane')).toBeNull();
+  });
+
+  it('redirects chat routes to /welcome once a genuinely zero-agent workspace is loaded', async () => {
+    useAuthStore.setState({
+      status: 'authenticated',
+      user: { id: 'u1', email: 'alice@example.com', name: 'Alice', created_at: '', updated_at: '' },
+      memberships: [],
+      boot: vi.fn(),
+    });
+
+    useStore.setState({
+      db: {
+        acme: {
+          id: 'acme',
+          sub: 'acme',
+          name: 'Acme Corp',
+          plan: 'Free',
+          tz: 'UTC',
+          agents: [],
+          channels: [],
+          people: [],
+          cron: [],
+          runs: [],
+          threads: {},
+        } as any,
+      },
+      agentsLoaded: { acme: true },
+    });
+
+    window.history.pushState({}, '', '/c');
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-pane')).not.toBeNull();
     });
   });
 

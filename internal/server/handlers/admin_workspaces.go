@@ -35,6 +35,7 @@ type AdminWorkspaceItem struct {
 	ID          string     `json:"id"`
 	Slug        string     `json:"slug"`
 	Name        string     `json:"name"`
+	Description string     `json:"description,omitempty"`
 	Timezone    string     `json:"timezone"`
 	IsMaster    bool       `json:"is_master"`
 	DisabledAt  *time.Time `json:"disabled_at,omitempty"`
@@ -80,6 +81,7 @@ func (h *adminWorkspaceHandlers) AdminListWorkspaces(c *gin.Context) {
 			ID:          ws.ID,
 			Slug:        ws.Slug,
 			Name:        ws.Name,
+			Description: ws.Description,
 			Timezone:    ws.Timezone,
 			IsMaster:    ws.IsMaster,
 			DisabledAt:  ws.DisabledAt,
@@ -94,10 +96,11 @@ func (h *adminWorkspaceHandlers) AdminListWorkspaces(c *gin.Context) {
 
 // AdminCreateWorkspaceRequest holds parameters for creating a new workspace as an admin.
 type AdminCreateWorkspaceRequest struct {
-	Name       string `json:"name"`
-	Slug       string `json:"slug"`
-	Timezone   string `json:"timezone"`
-	OwnerEmail string `json:"owner_email"`
+	Name        string  `json:"name"`
+	Slug        string  `json:"slug"`
+	Description *string `json:"description,omitempty"`
+	Timezone    string  `json:"timezone"`
+	OwnerEmail  string  `json:"owner_email"`
 }
 
 // AdminCreateWorkspace creates a new workspace, seeds the three built-in roles,
@@ -161,11 +164,17 @@ func (h *adminWorkspaceHandlers) AdminCreateWorkspace(c *gin.Context) {
 			}
 		}
 
+		var desc string
+		if req.Description != nil {
+			desc = strings.TrimSpace(*req.Description)
+		}
+
 		ws := &domain.Workspace{
-			Slug:     slug,
-			Name:     name,
-			Timezone: tz,
-			IsMaster: false,
+			Slug:        slug,
+			Name:        name,
+			Description: desc,
+			Timezone:    tz,
+			IsMaster:    false,
 		}
 		if err := txStore.Workspaces().Create(c.Request.Context(), ws); err != nil {
 			return err
@@ -235,6 +244,7 @@ func (h *adminWorkspaceHandlers) AdminCreateWorkspace(c *gin.Context) {
 			ID:          createdWs.ID,
 			Slug:        createdWs.Slug,
 			Name:        createdWs.Name,
+			Description: createdWs.Description,
 			Timezone:    createdWs.Timezone,
 			IsMaster:    createdWs.IsMaster,
 			DisabledAt:  createdWs.DisabledAt,
@@ -248,13 +258,14 @@ func (h *adminWorkspaceHandlers) AdminCreateWorkspace(c *gin.Context) {
 	})
 }
 
-// AdminPatchWorkspaceRequest holds parameters for updating a workspace's name and timezone by an admin.
+// AdminPatchWorkspaceRequest holds parameters for updating a workspace's name, description, and timezone by an admin.
 type AdminPatchWorkspaceRequest struct {
-	Name     *string `json:"name"`
-	Timezone *string `json:"timezone"`
+	Name        *string `json:"name"`
+	Description *string `json:"description"`
+	Timezone    *string `json:"timezone"`
 }
 
-// AdminPatchWorkspace renames a workspace and/or updates its timezone with creation-grade validation.
+// AdminPatchWorkspace renames a workspace and/or updates its description and timezone with creation-grade validation.
 // The route is superadmin-gated, so the master workspace may be renamed and re-zoned here;
 // its slug remains immutable.
 func (h *adminWorkspaceHandlers) AdminPatchWorkspace(c *gin.Context) {
@@ -270,7 +281,7 @@ func (h *adminWorkspaceHandlers) AdminPatchWorkspace(c *gin.Context) {
 		return
 	}
 
-	if req.Name == nil && req.Timezone == nil {
+	if req.Name == nil && req.Description == nil && req.Timezone == nil {
 		RespondError(c, fmt.Errorf("%w: no fields to update", domain.ErrInvalid))
 		return
 	}
@@ -282,6 +293,10 @@ func (h *adminWorkspaceHandlers) AdminPatchWorkspace(c *gin.Context) {
 			return
 		}
 		ws.Name = trimmed
+	}
+
+	if req.Description != nil {
+		ws.Description = strings.TrimSpace(*req.Description)
 	}
 
 	if req.Timezone != nil {

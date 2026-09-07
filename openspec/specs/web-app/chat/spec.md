@@ -22,11 +22,11 @@ The transcript SHALL render user messages, agent messages, and teammate messages
 - **THEN** the message displays a marker naming that schedule
 
 ### Requirement: Message send and simulated response
-Sending a message SHALL append it to the active session, derive the session title from the first user message (truncated at 42 characters), and produce the agent's reply through the chat runtime bridge. The reply SHALL stream into the transcript incrementally, with a running indicator while the turn is in flight. The reply SHALL include a tool-call card when the responding agent has tools granted. While a turn is in flight the send control SHALL become a stop control that cancels the turn; partial text SHALL remain in the transcript. Teammate direct messages SHALL NOT trigger an agent turn.
+Sending a message SHALL append it to the active session, derive the session title from the first user message (truncated at 42 characters), and produce the agent's reply through the chat runtime bridge. The reply SHALL stream into the transcript incrementally, with a running indicator while the turn is in flight. While a turn is in flight the send control SHALL become a stop control that cancels the turn; partial text SHALL remain in the transcript. Teammate direct messages SHALL NOT trigger an agent turn. In the live UI the reply SHALL always come from the agent runtime — canned simulated replies SHALL NOT be produced (they remain available to test fixtures only); when live chat is unavailable the connect state governs instead.
 
 #### Scenario: Direct agent chat
 - **WHEN** the user sends a message to agent "Atlas"
-- **THEN** a running indicator appears, then Atlas's reply streams in incrementally
+- **THEN** a running indicator appears, then Atlas's real reply streams in incrementally
 
 #### Scenario: Teammate direct message
 - **WHEN** the user sends a message in a teammate DM
@@ -35,6 +35,10 @@ Sending a message SHALL append it to the active session, derive the session titl
 #### Scenario: Stop control
 - **WHEN** the user presses stop while Atlas is responding
 - **THEN** the turn cancels, the running indicator clears, and partial text remains
+
+#### Scenario: No canned fallback
+- **WHEN** live chat is unavailable and the user sends a message to an agent
+- **THEN** no simulated reply is generated; the connect state is shown instead
 
 ### Requirement: Slash commands
 Typing `/` at the start of the composer SHALL open a filtered command menu (`/tools`, `/model`, `/schedule`, `/reset`, `/help`) navigable by arrow keys with Enter completing the command. `/tools`, `/model`, and `/help` SHALL produce scripted replies derived from the agent's actual configuration. `/reset` SHALL clear the active session without contacting the agent. `/schedule` SHALL reply and then open the schedule editor.
@@ -46,6 +50,21 @@ Typing `/` at the start of the composer SHALL open a filtered command menu (`/to
 #### Scenario: Reset
 - **WHEN** the user sends `/reset`
 - **THEN** the active session's messages are cleared and a confirmation toast appears
+
+### Requirement: Skill invocation menu
+In any composer, typing `$` SHALL open a skill invocation menu following the established `/` and `@` menu mechanics: entries list each available skill's name and description, grouped System / Workspace / This agent, filtered by the token typed after `$`, navigable by arrow keys, with Enter (or click) replacing the token with `$name ` and returning focus to the input. Skills whose tier is unavailable in the current surface (a disabled workspace skill, or another agent's skills) SHALL NOT appear. An unmatched `$name` token sends as ordinary text.
+
+#### Scenario: Menu opens and filters
+- **WHEN** the user types `$web` in a direct chat with an agent
+- **THEN** the menu shows the `web-research` entry (name and description) and arrow keys move selection
+
+#### Scenario: Pick inserts the token
+- **WHEN** the user picks `web-research` from the menu
+- **THEN** the composer text contains `$web-research ` with focus back in the input, ready for the rest of the message
+
+#### Scenario: Disabled skill absent from the menu
+- **WHEN** a workspace skill's master switch is off
+- **THEN** no menu in that workspace lists it
 
 ### Requirement: Channel mentions
 In a channel, typing `@` SHALL open a menu of channel members filtered by handle prefix. A message mentioning one or more agents SHALL cause each mentioned agent to respond as itself, staggered in time; a message with no mentions SHALL fall to the channel's primary agent.
@@ -89,3 +108,18 @@ An empty session with an agent SHALL render the agent's identity, a one-line rol
 #### Scenario: Starter prompt
 - **WHEN** the user clicks a starter prompt in an empty session
 - **THEN** it is sent as the user's message
+
+### Requirement: Tool approval prompt
+When an execution pauses on a dangerous shell command, the transcript SHALL render a pending-approval card in place of the tool-call result: the card SHALL show the command text with an approve and a deny action, and SHALL replace itself with the eventual tool-call result (output or denial notice) once the approval is resolved. The card SHALL render for approvals that are pending from a previous page load or server restart, not only for live interruptions. While the approval is pending, the turn SHALL be presented as paused rather than failed or completed.
+
+#### Scenario: Live approval card
+- **WHEN** an `approval_required` event arrives in the live transcript
+- **THEN** a pending-approval card appears with the command text and approve/deny actions
+
+#### Scenario: Resolution replaces the card
+- **WHEN** the user approves or denies from the card
+- **THEN** the card is replaced by the tool result (command output or denial notice) without a full page reload
+
+#### Scenario: Reloaded pending approval
+- **WHEN** the transcript is loaded while an approval is pending from an earlier execution
+- **THEN** the pending-approval card renders from durable history and remains actionable

@@ -8,9 +8,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/oniharnantyo/onclaw/internal/domain"
-	"github.com/oniharnantyo/onclaw/internal/modelcatalog"
 	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/secrets"
+	"github.com/oniharnantyo/onclaw/internal/services"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
@@ -46,19 +46,21 @@ func toProviderResponse(p *domain.ProviderConfig) ProviderResponse {
 
 // providerHandlers handles workspace provider configuration endpoints.
 type providerHandlers struct {
-	store         store.Store
+	providers     store.ProviderStore
+	agents        store.AgentStore
 	encryptionKey []byte
 	registry      *providers.Registry
-	modelCatalog  *modelcatalog.Service
+	modelCatalog  *services.ModelCatalog
 }
 
 // NewProviderHandlers creates a new providerHandlers instance with injected dependencies.
-func NewProviderHandlers(st store.Store, encryptionKey []byte, registry *providers.Registry, modelCatalog *modelcatalog.Service) *providerHandlers {
+func NewProviderHandlers(providerConfigs store.ProviderStore, agentStore store.AgentStore, encryptionKey []byte, registry *providers.Registry, modelCatalog *services.ModelCatalog) *providerHandlers {
 	if registry == nil {
 		registry = providers.NewRegistry()
 	}
 	return &providerHandlers{
-		store:         st,
+		providers:     providerConfigs,
+		agents:        agentStore,
 		encryptionKey: encryptionKey,
 		registry:      registry,
 		modelCatalog:  modelCatalog,
@@ -69,7 +71,7 @@ func NewProviderHandlers(st store.Store, encryptionKey []byte, registry *provide
 func (h *providerHandlers) ListProviders(c *gin.Context) {
 	ws := MustCurrentWorkspace(c)
 
-	configs, err := h.store.Providers().ListForWorkspace(c.Request.Context(), ws.ID)
+	configs, err := h.providers.ListForWorkspace(c.Request.Context(), ws.ID)
 	if err != nil {
 		RespondError(c, err)
 		return
@@ -159,7 +161,7 @@ func (h *providerHandlers) CreateProvider(c *gin.Context) {
 		Enabled:       enabled,
 	}
 
-	if err := h.store.Providers().Create(c.Request.Context(), p); err != nil {
+	if err := h.providers.Create(c.Request.Context(), p); err != nil {
 		RespondError(c, err)
 		return
 	}
@@ -186,7 +188,7 @@ func (h *providerHandlers) PatchProvider(c *gin.Context) {
 		return
 	}
 
-	existing, err := h.store.Providers().ByID(c.Request.Context(), ws.ID, id)
+	existing, err := h.providers.ByID(c.Request.Context(), ws.ID, id)
 	if err != nil {
 		RespondError(c, err)
 		return
@@ -237,7 +239,7 @@ func (h *providerHandlers) PatchProvider(c *gin.Context) {
 		existing.Enabled = *req.Enabled
 	}
 
-	if err := h.store.Providers().Update(c.Request.Context(), existing); err != nil {
+	if err := h.providers.Update(c.Request.Context(), existing); err != nil {
 		RespondError(c, err)
 		return
 	}
@@ -250,7 +252,7 @@ func (h *providerHandlers) DeleteProvider(c *gin.Context) {
 	ws := MustCurrentWorkspace(c)
 	id := c.Param("id")
 
-	count, err := h.store.Agents().CountByProvider(c.Request.Context(), ws.ID, id)
+	count, err := h.agents.CountByProvider(c.Request.Context(), ws.ID, id)
 	if err != nil {
 		RespondError(c, err)
 		return
@@ -260,7 +262,7 @@ func (h *providerHandlers) DeleteProvider(c *gin.Context) {
 		return
 	}
 
-	if err := h.store.Providers().Delete(c.Request.Context(), ws.ID, id); err != nil {
+	if err := h.providers.Delete(c.Request.Context(), ws.ID, id); err != nil {
 		RespondError(c, err)
 		return
 	}
@@ -273,7 +275,7 @@ func (h *providerHandlers) GetProviderModels(c *gin.Context) {
 	ws := MustCurrentWorkspace(c)
 	id := c.Param("id")
 
-	existing, err := h.store.Providers().ByID(c.Request.Context(), ws.ID, id)
+	existing, err := h.providers.ByID(c.Request.Context(), ws.ID, id)
 	if err != nil {
 		RespondError(c, err)
 		return
@@ -405,7 +407,7 @@ func (h *providerHandlers) VerifyProvider(c *gin.Context) {
 	ws := MustCurrentWorkspace(c)
 	id := c.Param("id")
 
-	existing, err := h.store.Providers().ByID(c.Request.Context(), ws.ID, id)
+	existing, err := h.providers.ByID(c.Request.Context(), ws.ID, id)
 	if err != nil {
 		RespondError(c, err)
 		return

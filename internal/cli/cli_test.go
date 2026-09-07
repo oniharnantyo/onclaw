@@ -98,18 +98,18 @@ func TestServerEncryptionKeyRequirement(t *testing.T) {
 	}
 }
 
-func TestServerRelativeWorkspaceDirRejected(t *testing.T) {
+func TestServerRelativeOnClawDirRejected(t *testing.T) {
 	cmd := cli.NewRootCommand()
 	err := cmd.Run(context.Background(), []string{
 		"onclaw", "server",
 		"--database-url", "postgres://localhost:5432/test",
 		"--encryption-key", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		"--workspace-dir", "relative/workspaces",
+		"--onclaw-dir", "relative/onclaw",
 	})
 	if err == nil {
-		t.Fatal("expected error for relative workspace dir, got nil")
+		t.Fatal("expected error for relative onclaw dir, got nil")
 	}
-	if !strings.Contains(err.Error(), "workspace dir must be an absolute path") {
+	if !strings.Contains(err.Error(), "onclaw dir must be an absolute path") {
 		t.Errorf("error %q does not explain the absolute-path requirement", err.Error())
 	}
 }

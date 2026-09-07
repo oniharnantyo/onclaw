@@ -346,6 +346,33 @@ func TestProviderPermissions(t *testing.T) {
 	}
 }
 
+func TestToolsPermissions(t *testing.T) {
+	// Owner has tools.write
+	if !domain.HasPermission(domain.OwnerPermissions, domain.ToolsWrite) {
+		t.Errorf("expected OwnerPermissions to have %s", domain.ToolsWrite)
+	}
+
+	// Admin has tools.write
+	if !domain.HasPermission(domain.AdminPermissions, domain.ToolsWrite) {
+		t.Errorf("expected AdminPermissions to have %s", domain.ToolsWrite)
+	}
+
+	// Member does NOT have tools.write (reads are covered by membership)
+	if domain.HasPermission(domain.MemberPermissions, domain.ToolsWrite) {
+		t.Errorf("expected MemberPermissions NOT to have %s", domain.ToolsWrite)
+	}
+
+	// Superadmin inherits tools.write
+	if !domain.HasPermission(domain.SuperadminPermissions, domain.ToolsWrite) {
+		t.Errorf("expected SuperadminPermissions to have %s", domain.ToolsWrite)
+	}
+
+	// tools.write is part of the closed catalog
+	if !domain.IsValidPermission(domain.ToolsWrite) {
+		t.Errorf("expected %s to be a valid permission", domain.ToolsWrite)
+	}
+}
+
 func TestAgentAndSkillPermissions(t *testing.T) {
 	// Owner has agents.read/write and skills.read/write
 	for _, p := range []string{domain.AgentsRead, domain.AgentsWrite, domain.SkillsRead, domain.SkillsWrite} {

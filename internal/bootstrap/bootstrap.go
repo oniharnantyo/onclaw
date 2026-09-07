@@ -9,26 +9,26 @@ import (
 	"os"
 	"strings"
 
-	"github.com/oniharnantyo/onclaw/internal/auth"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/services"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
 // bootstrapper handles fresh-instance initialization, master tenant setup, and superadmin seeding with injected dependencies.
 type bootstrapper struct {
 	store  store.Store
-	hasher auth.PasswordHasher
+	hasher services.PasswordHasher
 }
 
 // New creates a new bootstrapper instance with the provided store and default password hasher.
 func New(st store.Store) *bootstrapper {
-	return NewWithHasher(st, auth.NewPasswordHasher())
+	return NewWithHasher(st, services.NewPasswordHasher())
 }
 
 // NewWithHasher creates a new bootstrapper instance with the provided store and custom password hasher.
-func NewWithHasher(st store.Store, hasher auth.PasswordHasher) *bootstrapper {
+func NewWithHasher(st store.Store, hasher services.PasswordHasher) *bootstrapper {
 	if hasher == nil {
-		hasher = auth.NewPasswordHasher()
+		hasher = services.NewPasswordHasher()
 	}
 	return &bootstrapper{
 		store:  st,

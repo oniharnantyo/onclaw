@@ -9,15 +9,15 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/oniharnantyo/onclaw/internal/auth"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/services"
 	"github.com/oniharnantyo/onclaw/internal/store"
 	storefake "github.com/oniharnantyo/onclaw/internal/store/fake"
 )
 
-func setupTestAuth(t *testing.T) (store.Store, auth.TokenIssuer) {
+func setupTestAuth(t *testing.T) (store.Store, services.TokenIssuer) {
 	st := storefake.New()
-	issuer := auth.NewJWTIssuer(auth.JWTConfig{
+	issuer := services.NewJWTIssuer(services.JWTConfig{
 		Secret: "test-jwt-secret-key-32-chars-length!",
 		TTL:    time.Hour,
 	})
@@ -71,7 +71,7 @@ func TestAuthRequiredMiddleware(t *testing.T) {
 	}
 
 	// Expired token issuer
-	expiredIssuer := auth.NewJWTIssuer(auth.JWTConfig{
+	expiredIssuer := services.NewJWTIssuer(services.JWTConfig{
 		Secret: "test-jwt-secret-key-32-chars-length!",
 		TTL:    -time.Hour,
 	})
@@ -80,7 +80,7 @@ func TestAuthRequiredMiddleware(t *testing.T) {
 		t.Fatalf("failed to issue expired token: %v", err)
 	}
 
-	mw := NewMiddlewares(st, issuer)
+	mw := NewMiddlewares(st.Users(), st.Workspaces(), st.Members(), st.Roles(), issuer)
 	router := gin.New()
 	router.Use(mw.AuthRequired())
 	router.GET("/protected", func(c *gin.Context) {
@@ -218,7 +218,7 @@ func TestRequireWorkspaceMiddleware(t *testing.T) {
 		RoleID:      suspendedRole.ID,
 	})
 
-	mw := NewMiddlewares(st, issuer)
+	mw := NewMiddlewares(st.Users(), st.Workspaces(), st.Members(), st.Roles(), issuer)
 	router := gin.New()
 	wsGroup := router.Group("/workspaces/:ws")
 	wsGroup.Use(mw.AuthRequired())
@@ -340,7 +340,7 @@ func TestRequirePermissionMiddleware(t *testing.T) {
 	_ = st.Members().Add(ctx, &domain.Member{WorkspaceID: ws.ID, UserID: adminUser.ID, RoleID: adminRole.ID})
 	_ = st.Members().Add(ctx, &domain.Member{WorkspaceID: ws.ID, UserID: memberUser.ID, RoleID: memberRole.ID})
 
-	mw := NewMiddlewares(st, issuer)
+	mw := NewMiddlewares(st.Users(), st.Workspaces(), st.Members(), st.Roles(), issuer)
 	router := gin.New()
 	wsGroup := router.Group("/workspaces/:ws")
 	wsGroup.Use(mw.AuthRequired())
@@ -474,7 +474,7 @@ func TestRequireMasterWorkspaceMiddleware(t *testing.T) {
 		RoleID:      masterRole.ID,
 	})
 
-	mw := NewMiddlewares(st, issuer)
+	mw := NewMiddlewares(st.Users(), st.Workspaces(), st.Members(), st.Roles(), issuer)
 	router := gin.New()
 	adminGroup := router.Group("/admin")
 	adminGroup.Use(mw.AuthRequired())

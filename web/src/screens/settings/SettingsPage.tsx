@@ -9,6 +9,7 @@ import { MembersSection } from "./MembersSection";
 import { IntegrationsSection } from "./IntegrationsSection";
 import { McpPane } from "./McpPane";
 import { SkillsPane } from "./SkillsPane";
+import { ToolsPane } from "./ToolsPane";
 import { KeysSection } from "./KeysSection";
 import { NotificationsSection } from "./NotificationsSection";
 
@@ -19,6 +20,7 @@ export const SETTINGS_SECTIONS = [
   { id: 'integrations', label: 'Integrations', icon: 'link' },
   { id: 'mcp', label: 'MCP servers', icon: 'plug' },
   { id: 'skills', label: 'Skills', icon: 'spark' },
+  { id: 'tools', label: 'Tools', icon: 'zap' },
   { id: 'keys', label: 'API keys', icon: 'key' },
   { id: 'notifications', label: 'Notifications', icon: 'bell' },
 ] as const;
@@ -32,6 +34,8 @@ export interface SettingsPageProps {
   onToast?: (text: string, kind?: string) => void;
   onUpdate?: (fn: any) => void;
   onLeaveWorkspace?: () => Promise<void> | void;
+  /** Override the derived skills.write check for the Skills pane (tests). */
+  skillsCanWrite?: boolean;
 }
 
 export function SettingsPage({
@@ -39,6 +43,7 @@ export function SettingsPage({
   onToast: propOnToast,
   onUpdate: propOnUpdate,
   onLeaveWorkspace,
+  skillsCanWrite,
 }: SettingsPageProps = {}) {
   const { section = 'workspace' } = useParams<{ section?: string }>();
   const navigate = useNavigate();
@@ -151,6 +156,15 @@ export function SettingsPage({
               tenant={tenant}
               onUpdate={onUpdate}
               onToast={onToast}
+              canWrite={skillsCanWrite}
+            />
+          )}
+
+          {section === 'tools' && (
+            <ToolsPane
+              tenant={tenant}
+              onToast={onToast}
+              onUpdate={onUpdate}
             />
           )}
 

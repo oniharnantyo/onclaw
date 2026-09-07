@@ -32,44 +32,33 @@ const MaxAvatarBytes = 2048
 
 // Agent represents an autonomous persona configured in a workspace.
 type Agent struct {
-	ID          string `json:"id"`
-	WorkspaceID string `json:"workspace_id"`
-	Slug        string `json:"slug"`
-	Name          string          `json:"name"`
-	Role          string          `json:"role"`
-	Description   string          `json:"description"`
-	Brief         string          `json:"brief"`
-	Identity      string          `json:"identity"`
-	Soul          string          `json:"soul"`
-	Bootstrap     string          `json:"bootstrap"`
-	ProviderID    string          `json:"provider_id"`
-	Model         string          `json:"model"`
-	Temperature   float64         `json:"temperature"`
-	MaxTokens     *int            `json:"max_tokens,omitempty"`
-	Effort        *string         `json:"effort,omitempty"`
-	Autonomy      AgentAutonomy   `json:"autonomy"`
-	Tools         []string        `json:"tools"`
-	Skills        []string        `json:"skills"`
-	MCP           []string        `json:"mcp"`
-	Avatar        json.RawMessage `json:"avatar"`
-	PromptsStatus PromptsStatus   `json:"prompts_status"`
-	PromptsError  *string         `json:"prompts_error,omitempty"`
-	CreatedBy     *string         `json:"created_by,omitempty"`
-	UpdatedBy     *string         `json:"updated_by,omitempty"`
-	CreatedAt     time.Time       `json:"created_at"`
-	UpdatedAt     time.Time       `json:"updated_at"`
-}
-
-// WorkspaceSkill represents a SKILL.md document stored at the workspace level.
-type WorkspaceSkill struct {
-	ID          string    `json:"id"`
-	WorkspaceID string    `json:"workspace_id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
-	Body        string    `json:"body,omitempty"`
-	Enabled     bool      `json:"enabled"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID             string          `json:"id"`
+	WorkspaceID    string          `json:"workspace_id"`
+	Slug           string          `json:"slug"`
+	Name           string          `json:"name"`
+	Role           string          `json:"role"`
+	Description    string          `json:"description"`
+	Brief          string          `json:"brief"`
+	Identity       string          `json:"identity"`
+	Soul           string          `json:"soul"`
+	Bootstrap      string          `json:"bootstrap"`
+	ProviderID     string          `json:"provider_id"`
+	Model          string          `json:"model"`
+	Temperature    float64         `json:"temperature"`
+	MaxTokens      *int            `json:"max_tokens,omitempty"`
+	Effort         *string         `json:"effort,omitempty"`
+	Autonomy       AgentAutonomy   `json:"autonomy"`
+	ContextWindow  *int            `json:"context_window,omitempty"`
+	Tools          []string        `json:"tools"`
+	DisabledMCPs   []string        `json:"disabled_mcps"`
+	Avatar         json.RawMessage `json:"avatar"`
+	PromptsStatus  PromptsStatus   `json:"prompts_status"`
+	PromptsError   *string         `json:"prompts_error,omitempty"`
+	MaxIterations  *int            `json:"max_iterations,omitempty"`
+	CreatedBy      *string         `json:"created_by,omitempty"`
+	UpdatedBy      *string         `json:"updated_by,omitempty"`
+	CreatedAt      time.Time       `json:"created_at"`
+	UpdatedAt      time.Time       `json:"updated_at"`
 }
 
 // AgentUserMemory represents per-user persistent memory for an agent.
@@ -100,6 +89,32 @@ func ValidateAgentTemperature(temp float64) error {
 	return nil
 }
 
+// DefaultContextWindow is the fallback context window size (200,000 tokens)
+// when neither the agent configuration nor the model catalog specifies a limit.
+const DefaultContextWindow = 200000
+
+// ResolveContextWindow resolves the effective context window in precedence order:
+// 1. Agent's explicitly stored context_window (if set and > 0)
+// 2. Catalog context limit (if set and > 0)
+// 3. DefaultContextWindow (200,000 tokens)
+func ResolveContextWindow(agentCW *int, catalogCW *int) int {
+	if agentCW != nil && *agentCW > 0 {
+		return *agentCW
+	}
+	if catalogCW != nil && *catalogCW > 0 {
+		return *catalogCW
+	}
+	return DefaultContextWindow
+}
+
+// ValidateAgentContextWindow validates that context_window is a positive integer when present.
+func ValidateAgentContextWindow(cw *int) error {
+	if cw != nil && *cw <= 0 {
+		return fmt.Errorf("%w: context_window must be greater than 0", ErrInvalid)
+	}
+	return nil
+}
+
 // ValidateAgentAvatar validates that avatar is a JSON object and does not exceed 2 KB.
 func ValidateAgentAvatar(avatar json.RawMessage) error {
 	trimmed := strings.TrimSpace(string(avatar))
@@ -124,15 +139,38 @@ func ValidateAgentSlug(slug string) error {
 	return ValidateSlug(slug)
 }
 
-// DefaultWorkspaceDir returns the default agent workspace root:
-// $HOME/.onclaw/workspaces, falling back to a relative .onclaw/workspaces when
-// no home directory is available.
-func DefaultWorkspaceDir() string {
+// DefaultOnClawDir returns the default OnClaw root directory:
+// $HOME/.onclaw, falling back to a relative .onclaw when no home directory is available.
+func DefaultOnClawDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return filepath.Join(".onclaw", "workspaces")
+		return ".onclaw"
 	}
-	return filepath.Join(home, ".onclaw", "workspaces")
+	return filepath.Join(home, ".onclaw")
+}
+
+// WorkspaceRoot returns the root directory for workspaces under the OnClaw root:
+// <dir>/workspaces
+func WorkspaceRoot(dir string) string {
+	return filepath.Join(dir, "workspaces")
+}
+
+// SystemSkillsDir returns the system skills directory under the OnClaw root:
+// <dir>/skills
+func SystemSkillsDir(dir string) string {
+	return filepath.Join(dir, "skills")
+}
+
+// WorkspaceSkillsDir returns the skills directory for a tenant workspace:
+// <dir>/workspaces/<tenant_slug>/skills
+func WorkspaceSkillsDir(dir, tenantSlug string) string {
+	return filepath.Join(WorkspaceRoot(dir), tenantSlug, "skills")
+}
+
+// AgentSkillsDir returns the skills directory for an agent:
+// <dir>/workspaces/<tenant_slug>/agents/<agent_slug>/skills
+func AgentSkillsDir(dir, tenantSlug, agentSlug string) string {
+	return filepath.Join(AgentWorkspaceDir(WorkspaceRoot(dir), tenantSlug, agentSlug), "skills")
 }
 
 // AgentWorkspaceDir returns the agent's on-disk workspace directory under the
@@ -142,13 +180,4 @@ func DefaultWorkspaceDir() string {
 // Both slugs are validated ([a-z0-9-]), so the path cannot traverse.
 func AgentWorkspaceDir(root, tenantSlug, agentSlug string) string {
 	return filepath.Join(root, tenantSlug, "agents", agentSlug)
-}
-
-// ValidateSkillName validates that a skill name is not empty.
-func ValidateSkillName(name string) error {
-	trimmed := strings.TrimSpace(name)
-	if trimmed == "" {
-		return fmt.Errorf("%w: skill name cannot be empty", ErrInvalid)
-	}
-	return nil
 }

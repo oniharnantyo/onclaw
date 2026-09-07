@@ -13,11 +13,13 @@ import (
 	"time"
 
 	"github.com/oniharnantyo/onclaw/internal/agents"
-	"github.com/oniharnantyo/onclaw/internal/auth"
+	"github.com/oniharnantyo/onclaw/internal/agents/systemskills"
 	"github.com/oniharnantyo/onclaw/internal/bootstrap"
 	"github.com/oniharnantyo/onclaw/internal/config"
-	"github.com/oniharnantyo/onclaw/internal/modelcatalog"
+	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/promptgen"
 	"github.com/oniharnantyo/onclaw/internal/server"
+	"github.com/oniharnantyo/onclaw/internal/services"
 	"github.com/oniharnantyo/onclaw/internal/storage"
 	"github.com/oniharnantyo/onclaw/internal/store"
 	"github.com/urfave/cli/v3"
@@ -49,10 +51,10 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		return errors.New("database URL is required (specify --database-url or DATABASE_URL)")
 	}
 
-	// Agent workspace paths derive from this root at every use; a relative
+	// OnClaw runtime paths derive from this root at every use; a relative
 	// root would make them depend on the server's working directory.
-	if !filepath.IsAbs(cfg.WorkspaceDir) {
-		return fmt.Errorf("workspace dir must be an absolute path (got %q; specify --workspace-dir or ONCLAW_WORKSPACE_DIR)", cfg.WorkspaceDir)
+	if !filepath.IsAbs(cfg.OnClawDir) {
+		return fmt.Errorf("onclaw dir must be an absolute path (got %q; specify --onclaw-dir or ONCLAW_DIR)", cfg.OnClawDir)
 	}
 
 	encKey, err := config.ParseEncryptionKey(cfg.EncryptionKey)
@@ -105,7 +107,7 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		slog.Info("superadmin seeded successfully", "email", seededUser.Email)
 	}
 
-	issuer := auth.NewJWTIssuer(auth.JWTConfig{
+	issuer := services.NewJWTIssuer(services.JWTConfig{
 		Secret: cfg.JWTSecret,
 		TTL:    cfg.TokenTTL,
 	})
@@ -114,14 +116,46 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	if cacheDir == "" {
 		cacheDir = config.DefaultCacheDir
 	}
-	modelCatalog := modelcatalog.NewService(modelcatalog.Options{
+	modelCatalog := services.NewModelCatalog(services.ModelCatalogOptions{
 		CacheDir: cacheDir,
 	})
 
-	agentService := agents.NewService(st, encKey)
+	agentService := promptgen.NewService(st.Agents(), st.Providers(), encKey)
 	if swept, err := agentService.Sweep(ctx); err == nil && swept > 0 {
 		slog.Info("swept stale generating agents on startup", "count", swept)
 	}
+
+	// Mirror the embedded system skills into <ONClaw_DIR>/skills on every
+	// start: changed files are overwritten, extraneous files removed — the
+	// disk is a self-healing cache.
+	if err := systemskills.SyncSystemSkills(domain.SystemSkillsDir(cfg.OnClawDir)); err != nil {
+		return fmt.Errorf("sync system skills: %w", err)
+	}
+
+	// Workspace tool settings back the runtime's tool gate and the settings
+	// API: the same service decrypts runtime configs and encrypts writes.
+	toolSettings := agents.NewToolSettingsService(st.ToolSettings(), encKey)
+
+	// Construct the runtime runner. ToolRegistry is built-in; NewDefaultToolRegistry
+	// registers web.search. The runner handles session history queries and execution.
+	// Run contexts derive from a process-lifetime base context, not the command
+	// context: the command context is cancelled to trigger shutdown, which would
+	// otherwise kill in-flight runs before they can drain.
+	runner := agents.NewRunner(
+		st.Workspaces(),
+		st.Agents(),
+		st.Users(),
+		st.Members(),
+		st.Roles(),
+		st.Providers(),
+		st.SessionEvents(),
+		st.SessionCheckpoints(),
+		encKey,
+		cfg.OnClawDir,
+		agents.WithBaseContext(context.Background()),
+		agents.WithToolPolicy(toolSettings),
+		agents.WithEnabledSkillReader(server.WorkspaceSkillReader(st.WorkspaceSkills())),
+	)
 
 	router := server.NewRouter(server.RouterOptions{
 		Store:         st,
@@ -130,7 +164,10 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		EncryptionKey: encKey,
 		ModelCatalog:  modelCatalog,
 		AgentService:  agentService,
-		WorkspaceDir:  cfg.WorkspaceDir,
+		WorkspaceDir:  cfg.WorkspaceRoot(),
+		OnClawDir:     cfg.OnClawDir,
+		Runner:        runner,
+		ToolSettings:  toolSettings,
 	})
 
 	listenAddr := cfg.ListenAddr
@@ -169,6 +206,12 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("server shutdown failed: %w", err)
 	}
+
+	// The HTTP server is down, so no new runs can arrive. Give in-flight runs
+	// the drain window to reach a terminal state; stragglers are cancelled and
+	// record their cancel markers through the existing safe-point path.
+	slog.Info("draining in-flight agent runs", "window", cfg.RunDrainWindow)
+	runner.DrainRuns(cfg.RunDrainWindow)
 
 	slog.Info("server exited cleanly")
 	return nil

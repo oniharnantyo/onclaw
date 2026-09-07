@@ -43,6 +43,10 @@ declare global {
     tools?: any[];
     branch?: number;
     branches?: any[];
+    resp?: string;
+    reasoning?: string;
+    error?: string;
+    parts?: any[];
   }
 
   interface ThreadSession {
@@ -50,6 +54,7 @@ declare global {
     title: string;
     updated: string;
     messages: ChatMessage[];
+    sess?: string;
   }
 
   interface ThreadState {
@@ -119,10 +124,12 @@ declare global {
     id: string;
     name: string;
     version: string;
-    uses: number;
     enabled: boolean;
+    tier: string;
     source: string;
+    locked?: boolean;
     desc?: string;
+    dependencies?: { tools?: string[]; binaries?: string[]; python?: string[] };
   }
 
   interface ApiKey {

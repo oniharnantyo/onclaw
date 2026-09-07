@@ -7,13 +7,13 @@ import (
 
 // roleHandlers handles role listing endpoints.
 type roleHandlers struct {
-	store store.Store
+	roles store.RoleStore
 }
 
 // NewRoleHandlers creates a new roleHandlers instance with injected dependencies.
-func NewRoleHandlers(st store.Store) *roleHandlers {
+func NewRoleHandlers(roles store.RoleStore) *roleHandlers {
 	return &roleHandlers{
-		store: st,
+		roles: roles,
 	}
 }
 
@@ -21,7 +21,7 @@ func NewRoleHandlers(st store.Store) *roleHandlers {
 func (h *roleHandlers) ListRoles(c *gin.Context) {
 	ws := MustCurrentWorkspace(c)
 
-	roles, err := h.store.Roles().ListForWorkspace(c.Request.Context(), ws.ID)
+	roles, err := h.roles.ListForWorkspace(c.Request.Context(), ws.ID)
 	if err != nil {
 		RespondError(c, err)
 		return
