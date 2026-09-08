@@ -7,20 +7,31 @@ The chat experience for agents, channels, and teammate direct messages: transcri
 ## Requirements
 
 ### Requirement: Transcript rendering
-The transcript SHALL render user messages, agent messages, and teammate messages distinctly, with agent messages showing the agent's identity, and agent tool invocations rendered as expandable cards exposing tool name, arguments, and latency in milliseconds. A tool card SHALL show a running state while its turn is in flight and latency once completed. Messages produced by a scheduled run SHALL carry a visible cron-origin marker naming the schedule.
+The transcript SHALL render user messages, agent messages, and teammate messages distinctly, with agent messages showing the agent's identity. Agent message text SHALL render as markdown — headings, lists, emphasis, links, inline code, and fenced code blocks — with `@mention` highlighting continuing to apply within rendered text. Agent tool invocations SHALL render as expandable cards exposing the tool's catalog display name (the raw tool id SHALL remain visible on the expanded card), the call's arguments, and the call's result; a completed card whose result is absent SHALL render an explicit no-output state and SHALL NOT display a fabricated result, row count, or latency. A tool card SHALL show a running state while its call is in flight and latency in milliseconds once completed. Messages produced by a scheduled run SHALL carry a visible cron-origin marker naming the schedule.
+
+#### Scenario: Markdown rendering
+- **WHEN** an agent reply contains a heading, a bullet list, and a fenced code block
+- **THEN** the transcript renders them as formatted markdown, not as literal plain text
+
+#### Scenario: Mention highlighting inside markdown
+- **WHEN** an agent reply renders as markdown and contains `@Atlas`
+- **THEN** the mention still renders with its highlight styling
 
 #### Scenario: Tool call card
 - **WHEN** an agent message includes a tool invocation that has completed
-- **THEN** the transcript shows a card with the tool name, its arguments, and the latency (e.g. `760ms`)
+- **THEN** the transcript shows a card with the tool's display name, its arguments, its result, and the measured latency (e.g. `760ms`), with the raw tool id visible when expanded
 
 #### Scenario: Tool card running state
 - **WHEN** an agent message's tool invocation is still executing
 - **THEN** the card shows a running state instead of a latency value
 
+#### Scenario: Completed card with no result
+- **WHEN** a tool call completes without producing result content
+- **THEN** its expanded card shows an explicit no-output state — never a synthesized result line
+
 #### Scenario: Cron-origin message
 - **WHEN** a thread message was produced by schedule "morning-digest"
 - **THEN** the message displays a marker naming that schedule
-
 ### Requirement: Message send and simulated response
 Sending a message SHALL append it to the active session, derive the session title from the first user message (truncated at 42 characters), and produce the agent's reply through the chat runtime bridge. The reply SHALL stream into the transcript incrementally, with a running indicator while the turn is in flight. While a turn is in flight the send control SHALL become a stop control that cancels the turn; partial text SHALL remain in the transcript. Teammate direct messages SHALL NOT trigger an agent turn. In the live UI the reply SHALL always come from the agent runtime — canned simulated replies SHALL NOT be produced (they remain available to test fixtures only); when live chat is unavailable the connect state governs instead.
 
@@ -123,3 +134,56 @@ When an execution pauses on a dangerous shell command, the transcript SHALL rend
 #### Scenario: Reloaded pending approval
 - **WHEN** the transcript is loaded while an approval is pending from an earlier execution
 - **THEN** the pending-approval card renders from durable history and remains actionable
+
+### Requirement: Reasoning display
+An agent message SHALL render the reasoning its turn produced as a collapsible section positioned above the message text. While reasoning is streaming, the section SHALL be visible with its content growing, so the waiting state shows the agent's thought rather than silence; once the turn completes the section SHALL collapse. A turn that produced no reasoning SHALL render no section. A hydrated message whose completed assistant content carries persisted reasoning SHALL render the same section.
+
+#### Scenario: Streaming reasoning is visible
+- **WHEN** an agent turn is producing reasoning before its answer text
+- **THEN** the message shows a growing reasoning section instead of an empty loading placeholder
+
+#### Scenario: Completed reasoning collapses
+- **WHEN** an agent turn with reasoning completes
+- **THEN** the reasoning section collapses and can be re-expanded in place
+
+#### Scenario: No reasoning renders nothing
+- **WHEN** an agent turn produced no reasoning content
+- **THEN** no reasoning section renders on the message
+
+#### Scenario: Hydrated reasoning
+- **WHEN** a transcript is hydrated and a completed assistant message carries persisted reasoning
+- **THEN** the message renders the collapsible reasoning section from the persisted content
+
+### Requirement: Turn error display
+When an agent turn fails, the transcript SHALL render an error entry in the thread at the point of failure carrying the server-provided error message, styled distinctly from normal messages. The entry SHALL NOT depend on a toast for its existence; a toast may accompany it. Key/connection failures SHALL continue to surface the connect state with its retry path instead of an error entry.
+
+#### Scenario: Failed turn shows an entry
+- **WHEN** a live turn ends with a terminal provider error
+- **THEN** an error entry carrying the error message appears in the thread after the partial content
+
+#### Scenario: Connect state unchanged
+- **WHEN** the workspace chat key is missing or a key exchange fails
+- **THEN** the connect state with retry renders as today and no error entry is produced
+
+### Requirement: Context meter
+For a 1:1 agent chat, the chat header SHALL render a context meter in the top-right control row — a compact bar plus a monospace percentage indicating how much of the agent's effective context window the conversation currently fills. The meter's value SHALL be the latest turn's final-call input tokens divided by the agent's `effective_context_window`, updated when a terminal response event carries usage and restored from the thread's last turn on reload. Hovering SHALL reveal the exact counts (used and window, e.g. `68k / 200k`). The meter SHALL turn amber at or above `summarization_trigger_tokens`. Channels and direct member messages SHALL NOT render a meter. When no turn has produced usage yet, or a terminal event arrives without a usage block, the meter SHALL be hidden rather than show a zero or a fabricated value.
+
+#### Scenario: Meter fills per turn
+- **WHEN** a turn completes on an agent chat whose usage reports 68,000 final-call input tokens and whose agent exposes an effective window of 200,000
+- **THEN** the header meter shows 34% and, on hover, `68k / 200k`
+
+#### Scenario: Warn at the summarization trigger
+- **WHEN** the meter's value reaches or exceeds the agent's `summarization_trigger_tokens`
+- **THEN** the meter renders in the amber warn state
+
+#### Scenario: Meter survives reload
+- **WHEN** a user reopens a thread whose last turn carried usage
+- **THEN** the meter shows that turn's final-call input against the effective window without waiting for a new turn
+
+#### Scenario: Hidden outside agent chats
+- **WHEN** the header renders for a channel or a direct member conversation
+- **THEN** no context meter appears
+
+#### Scenario: Hidden without usage data
+- **WHEN** a fresh thread has no turns yet, or the latest terminal event carries no usage block
+- **THEN** the header renders no meter and no placeholder value

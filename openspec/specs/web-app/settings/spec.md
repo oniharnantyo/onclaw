@@ -49,24 +49,47 @@ The members pane SHALL render members from the members API — email, name, avat
 - **THEN** the dialog closes, the member list refreshes, and a confirmation toast appears
 
 ### Requirement: MCP servers pane
-The MCP pane SHALL list servers with transport string, status (Connected/Paused/Error), exposed-tool count, and the agents referencing each; support adding a server by name plus transport string through an add dialog, editing a server's name and transport through an edit dialog, pausing/reconnecting via toggle, retrying errored servers, and expanding the exposed tool list.
+The MCP pane SHALL render from the workspace MCP endpoints (API-backed, no local mock state): one card per registered server showing its name, transport, status dot (Connected/Paused/Error), exposed-tool count, and the number and names of agents whose `enabled_mcps` reference it. Adding and editing SHALL happen through a structured dialog — never free-text config entry — with one labeled control per property: server name; transport select (`stdio`, `streamable_http`, `sse`); for stdio a command input, an args input, and an env-var row editor (name plus write-only value showing the stored hint); for streamable HTTP and SSE a URL input and a header row editor (name plus write-only value showing the stored hint). Submitting the dialog SHALL create or update via the API and surface the probe result — status and error message — so a misconfigured server is visible immediately. Pausing/resuming SHALL toggle the server's master switch via the API; errored servers SHALL offer a retry that triggers a re-probe; deletion SHALL ask for confirmation. Expanding a server SHALL list its exposed tool names as read-only chips. Destructive or write actions SHALL be limited to `tools.write` holders; read-only members see the pane without them.
 
 #### Scenario: Pause with dependents
-- **WHEN** a connected server referenced by two agents is paused
-- **THEN** its status becomes Paused, its row dims, and the usage note flags the referencing agents as inactive
+- **WHEN** a connected server referenced by two agents' `enabled_mcps` is paused
+- **THEN** its status becomes Paused, its row dims, and the usage note flags the referencing agents as losing its tools
 
 #### Scenario: Add server via dialog
-- **WHEN** the user submits the add-server dialog with name and transport
-- **THEN** the server appears in the list and the dialog closes
+- **WHEN** the user submits the add dialog for a `stdio` server — name "GitHub", command `npx`, args, and one env var
+- **THEN** the server is created via the API, appears in the list with its probe status (Connected or Error with the message), and the dialog closes
+
+#### Scenario: Add HTTP server with secret header
+- **WHEN** the user adds a `streamable_http` server with an Authorization header value
+- **THEN** the value is submitted once and the dialog afterwards shows only its stored hint — never the value
 
 #### Scenario: Edit server
-- **WHEN** the user opens edit on a server, changes its transport, and saves
-- **THEN** the row shows the new transport after save
+- **WHEN** the user opens edit on a server, changes its transport through the select (reconfiguring the form), and saves
+- **THEN** the row shows the new transport and the fresh probe status after save
+
+#### Scenario: Edit keeps the stored secret
+- **WHEN** the user opens edit on a server and saves without retyping a header value
+- **THEN** the update sends an empty value for that header and the stored secret is kept
+
+#### Scenario: Transport select reconfigures the form
+- **WHEN** the user switches the transport select from `stdio` to `streamable_http`
+- **THEN** the command/args/env controls are replaced by URL and header controls
+
+#### Scenario: Failed probe surfaces inline
+- **WHEN** a create or edit probe cannot reach the server
+- **THEN** the card's status dot turns Error with the failure message visible and no toast-only error
 
 #### Scenario: Retry errored server
 - **WHEN** the user clicks retry on an errored server
-- **THEN** a reconnect is attempted and the status returns to Connected
+- **THEN** a re-probe is requested via the API and the status returns to Connected or stays Error with a refreshed message
 
+#### Scenario: Delete asks for confirmation
+- **WHEN** the user deletes a server referenced by agents
+- **THEN** a confirmation names the referencing agents before the delete is sent
+
+#### Scenario: Member sees a read-only pane
+- **WHEN** a holder without `tools.write` opens the pane
+- **THEN** server cards and tool lists render, but add/edit/pause/retry/delete controls are absent
 ### Requirement: Skills pane
 The skills pane SHALL present the workspace skill library backed by the skills API: each row shows the skill's name, version chip, source badge (`authored` | `upload` | `git` | `fork`), dependency status chip when unmet, an enable master toggle, an edit action, and an uninstall action (confirm dialog). An **Install skill** wizard SHALL walk through source selection (Author / Upload / Git or URL; Fork when entered from a system skill), content (body editor for Author; archive drop with file-tree preview for Upload; URL with ref and optional token plus discovered-skill selection for Git/URL), and a dependency review step listing every declared or inferred dependency with its resolution status — tools (with the pre-checked "enable everywhere" option), binaries (per-platform install command with copy action and re-check), python packages (auto-provision checkbox). Installing with unmet dependencies SHALL be allowed and leave a persistent warning chip on the row. Disabling a skill SHALL toast that it was removed from every agent; enabling SHALL restore it everywhere. A **System skills** section SHALL list embedded skills as read-only locked entries marked always-on with a Fork-to-workspace action. Holders of `skills.read` without `skills.write` (Members) SHALL see the same lists with no action affordances.
 
@@ -107,7 +130,7 @@ The skills pane SHALL present the workspace skill library backed by the skills A
 - **THEN** the library and system lists render with no install, toggle, edit, or uninstall affordances
 
 ### Requirement: Tools pane (API-backed)
-The Tools pane SHALL list every tool from the workspace tools endpoint as a flat list — one row per tool with its display name, one-line description, and an enable toggle reflecting (and driving) the workspace-wide tool status; toggling requires the settings-management permission and SHALL surface guard rejections as toasts. Configurable tools SHALL additionally render a gear button opening a structured config dialog rendered from the tool's config-field schema: one labeled control per field — `secret` fields as password-style write-only inputs (existing values shown only as hints, replaced on save), `text` as inputs, `number` as numeric inputs, `boolean` as toggles, `enum` as selects fed by the schema's options — with help text and a Save action. A configurable tool whose required config is missing SHALL show its toggle as unavailable until configured, and the dialog SHALL state what is missing; saving valid config SHALL enable toggling. The pane SHALL NOT offer raw JSON editing for any structured value.
+The Tools pane SHALL list every tool from the workspace tools endpoint as a flat list — one row per tool with its display name, one-line description, and an enable toggle reflecting (and driving) the workspace-wide tool status; toggling requires the settings-management permission and SHALL surface guard rejections as toasts. Configurable tools SHALL additionally render a gear button opening a structured config dialog rendered from the tool's config-field schema: one labeled control per field — `secret` fields as password-style write-only inputs (existing values shown only as hints, replaced on save), `text` as inputs, `number` as numeric inputs, `boolean` as toggles, `enum` as selects fed by the schema's options — with help text and a Save action. For `web.search` the dialog SHALL additionally render a provider-stack list editor: one row per configured entry with a reorder control pair (disabled at the list bounds), a name input, a provider select fed by the registry options, the credential field that provider requires (a password-style write-only key input showing the stored last-4 hint, or a base-URL input for SearXNG), and a remove action; an Add control appends a new row, and a timeout field bounds the per-attempt request timeout. Rows in the first three positions SHALL be labeled "in rotation"; rows below SHALL render dimmed and labeled "standby", and reordering SHALL re-evaluate the labels immediately. Removing a row SHALL not persist until Save; saving SHALL submit the whole ordered list with entry ids, and a row whose credential field is left empty SHALL keep its stored credential (reorder-safe via the stable entry id). Validation failures SHALL render inline per row (empty name, missing credential for a key-requiring provider, duplicate names) and block Save. The pane SHALL NOT offer raw JSON editing for any structured value.
 
 #### Scenario: Flat list with toggles
 - **WHEN** a Member opens the Tools pane
@@ -115,28 +138,35 @@ The Tools pane SHALL list every tool from the workspace tools endpoint as a flat
 
 #### Scenario: Gear opens config dialog
 - **WHEN** the user activates the gear on "Web Search"
-- **THEN** a dialog opens with a provider select (registry options with their credential kinds) and an API key field, one labeled control per property
+- **THEN** the dialog opens as a provider-stack list editor — per-row name, provider select, credential, reorder, remove, an Add control, and the per-attempt timeout field
+
+#### Scenario: Rotation labels track order
+- **WHEN** the user moves a standby row into the top three (or a rotation row out)
+- **THEN** the in-rotation/standby labels and dimming re-evaluate immediately, before Save
+
+#### Scenario: Reorder keeps credentials
+- **WHEN** the user swaps two configured rows and saves without retyping either key
+- **THEN** each row keeps its own stored credential, matched by entry id rather than position
 
 #### Scenario: Browser config dialog
 - **WHEN** the user opens the Browser config dialog
 - **THEN** it exposes headless toggle, remote CDP URL, max pages, idle timeout, and action timeout, one labeled control per property, with help text explaining that a set CDP URL makes headless irrelevant
 
 #### Scenario: Disabled until configured
-- **WHEN** no search provider is configured for the workspace
-- **THEN** the Web Search row shows its toggle as unavailable with an explanatory hint, and saving a valid provider config enables the toggle
+- **WHEN** no search entry is configured for the workspace
+- **THEN** the Web Search row shows its toggle as unavailable with an explanatory hint, and saving one valid entry enables the toggle
 
 #### Scenario: Secret never echoed
 - **WHEN** the user reopens the Web Search dialog after saving an API key
-- **THEN** the key field is empty with the stored hint displayed beside it, and saving without typing preserves the stored key
+- **THEN** each row's key field is empty with the stored hint displayed beside it, and saving without typing preserves the stored keys
 
 #### Scenario: Toggle rejection surfaces as toast
 - **WHEN** a Member attempts to toggle a tool
 - **THEN** the request is refused with a 403 and the pane surfaces a toast
 
 #### Scenario: Invalid config reported inline
-- **WHEN** the user saves the Browser dialog with max pages 0
-- **THEN** the dialog shows the validation error on that field and does not close
-
+- **WHEN** the user saves with a row missing its name, a row missing a key for a key-requiring provider, or two rows with the same name
+- **THEN** the dialog shows the validation error on the offending rows and does not close
 ### Requirement: API keys pane
 The keys pane SHALL create keys through a create-key dialog requiring a key name (keys keep a random suffix); the newly created key's full value SHALL be presented once with a one-time copy warning. The pane SHALL offer reveal, clipboard copy, and revoke per key. When the browser blocks clipboard access the pane SHALL show a danger toast instead of failing silently.
 
@@ -192,3 +222,18 @@ The providers pane SHALL list the workspace's provider configs from the API — 
 #### Scenario: Empty state
 - **WHEN** the workspace has no provider configs
 - **THEN** the pane shows an empty state inviting configuration, visible to Members too (read is a permission)
+
+### Requirement: Workspace memory editor
+The Workspace pane SHALL include a shared-memory (`WORKSPACE.md`) editor below the existing workspace fields: a free-form textarea (memory is unstructured markdown), a live size/token counter fed by the server cap, and save via the workspace memory endpoint. The editor SHALL load for all members (read state) and save SHALL follow the workspace settings-management permission — Members see the editor disabled or read-only, Owner/Admin persist changes. Over-cap saves SHALL surface the 422 field error inline. The editor SHALL NOT participate in the general workspace-details save (renaming the workspace must not rewrite memory and vice versa).
+
+#### Scenario: Admin edits shared memory
+- **WHEN** an Owner or Admin opens Settings → Workspace, edits the memory textarea, and saves
+- **THEN** the content persists via the workspace memory endpoint without altering the workspace's other fields
+
+#### Scenario: Member sees read-only
+- **WHEN** a Member opens the Workspace pane
+- **THEN** the memory editor is visible read-only and its save control is disabled or hidden
+
+#### Scenario: Rename does not touch memory
+- **WHEN** an Admin saves a workspace rename from the pane
+- **THEN** the stored memory content is unchanged

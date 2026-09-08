@@ -1,9 +1,6 @@
-# agents Specification
+# agents Delta
 
-## Purpose
-Agents are the core tenant entity: named, slug-addressed personas bound to a workspace provider config and model, created through a three-step wizard and manageable via CRUD endpoints scoped to the workspace.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Agent CRUD
 Tenant-scoped endpoints under `/workspaces/:ws/agents` SHALL create, list, get, update, and delete agents. Routes SHALL address agents by slug; the store port SHALL also resolve by ID internally. Requests require `agents.read` for list/get and `agents.write` for create/update/delete. Non-members and unknown slugs SHALL receive 404 indistinguishably. Listing SHALL return the roster with name, slug, role, description, model, provider, autonomy, avatar, and `prompts_status`. Listing SHALL return agents ordered by creation time, newest first, with the agent id descending as tiebreaker. List responses SHALL NOT include generated prompt documents (identity, soul, bootstrap); clients SHALL read those from the agent detail endpoint.
@@ -39,6 +36,7 @@ Tenant-scoped endpoints under `/workspaces/:ws/agents` SHALL create, list, get, 
 #### Scenario: List omits prompt documents
 - **WHEN** the roster is listed
 - **THEN** entries do not carry identity/soul/bootstrap document content; the detail endpoint returns them
+
 ### Requirement: Agent fields
 An agent SHALL have: name, slug (DNS-label rules, reserved list shared with workspaces, unique per workspace, immutable after creation), role (short free-form, kebab-case convention with UI suggestions), description (display one-liner), brief (generation driver, required at create), provider and model (required, free-text model id), autonomy (`approval|suggest|full`, default `approval`), temperature (0–2, default 1.0), max_tokens (optional positive integer, required for `anthropic` provider type), effort (optional provider-neutral string), avatar (JSON object of react-nice-avatar props, loosely validated — must be a JSON object under a size cap), `context_window` (optional positive integer token count), `tools` (the agent's tool allowlist: registry tool names plus the reserved shell name `execute`; an empty array enables no registry tools), and `enabled_mcps` (the agent's opt-in allowlist of workspace MCP server ids; an empty array enables no workspace MCP servers — see the workspace-mcp capability). The slug SHALL be immutable: a slug in an update payload SHALL be ignored (managed-field semantics, like `prompts_status`). `identity`, `soul`, and `bootstrap` SHALL be server-managed **file-backed** fields: the documents live as `IDENTITY.md`, `SOUL.md`, and `BOOTSTRAP.md` in the agent's workspace directory (see the agent-prompts capability), are composed onto the agent on every read, and are absent from the database. `identity` and `soul` become editable via update once generated — the update writes the files; `bootstrap` is not client-editable. `memory`, `prompts_status`, and `prompts_error` SHALL be ignored on any client input.
 
@@ -103,50 +101,3 @@ An agent SHALL have: name, slug (DNS-label rules, reserved list shared with work
 #### Scenario: Disabled skill accepted
 - **WHEN** a create or update payload includes `disabled_skills`
 - **THEN** the value is accepted without error but ignored (no stored state); skill attachment is governed solely by tier rules
-### Requirement: Provider binding
-An agent's provider config SHALL be required and SHALL be guaranteed to belong to the same workspace at the data layer: the composite foreign key `(workspace_id, provider_id) → workspace_providers(workspace_id, id)` SHALL make cross-tenant provider references impossible in the schema. `model` SHALL be a required free-text id.
-
-#### Scenario: Cross-workspace provider rejected
-- **WHEN** a create or update references a provider id from another workspace
-- **THEN** response is 400 invalid_request (mapped from the data-layer violation; enumeration defense via 404 pre-check)
-
-### Requirement: Deletion semantics
-Deleting an agent SHALL cascade to its per-user memories and SHALL remove the agent's workspace directory from disk. Deleting a provider config that agents reference SHALL be refused (see providers capability). Deleting an agent SHALL NOT affect providers, skills, or other agents.
-
-#### Scenario: Delete agent with memories
-- **WHEN** an agent with per-user memories is deleted
-- **THEN** 204; the memories are gone; the workspace's skills and providers are untouched
-
-#### Scenario: Delete removes the workspace directory
-- **WHEN** an agent is deleted
-- **THEN** its workspace directory and the prompt documents inside it are removed from disk
-
-### Requirement: Derived agent workspace directory
-Every agent SHALL have an on-disk workspace directory at `<ONCLAW_DIR>/workspaces/<tenant_slug>/agents/<agent_slug>`, derived at the point of use from the current root and slugs. All server file locations SHALL derive from the single root `ONCLAW_DIR` (environment variable, defaulting to `$HOME/.onclaw`; the former `ONCLAW_WORKSPACE_DIR` knob no longer exists — the workspace root is `<ONCLAW_DIR>/workspaces`). The server SHALL refuse to start when `ONCLAW_DIR` is not an absolute path. The path SHALL NOT be recorded in the database; the agent row carries no `workspace_dir`. The directory SHALL be created before the agent row is written — in both the create endpoint and the atomic birth — so a directory-creation failure rejects the request before any DB write. Because slugs are immutable, the derived path is stable for the agent's lifetime.
-
-#### Scenario: Directory created at deploy
-- **WHEN** an agent is created
-- **THEN** `<ONCLAW_DIR>/workspaces/<tenant_slug>/agents/<agent_slug>` exists on disk; the agent response carries no `workspace_dir` field
-
-#### Scenario: Starter agent directory at birth
-- **WHEN** a workspace is born with a starter agent
-- **THEN** the starter agent's directory exists before the birth transaction commits
-
-#### Scenario: Relative workspace root rejected at startup
-- **WHEN** the server starts with a relative `ONCLAW_DIR`
-- **THEN** startup fails with a configuration error instead of deriving cwd-dependent paths
-
-### Requirement: Effective context exposure
-The agents API SHALL expose, on the agent payload, two computed read-only fields describing the context budget execution actually enforces: `effective_context_window` — the agent's resolved context window (its stored `context_window`, or the 200,000-token default when none is stored) — and `summarization_trigger_tokens` — the effective window multiplied by the server's summarization margin. The values SHALL be derived at read time from the same resolution execution applies, and clients SHALL treat them as authoritative display data rather than recomputing resolution or duplicating the margin constant. These fields SHALL NOT be writable through create or update requests.
-
-#### Scenario: Stored window is echoed as effective
-- **WHEN** an agent has a stored `context_window` of 50,000
-- **THEN** its payload reports `effective_context_window` 50,000 and `summarization_trigger_tokens` 37,500 with a 0.75 server margin
-
-#### Scenario: Unset window falls back to the default
-- **WHEN** an agent has no stored `context_window`
-- **THEN** its payload reports `effective_context_window` 200,000
-
-#### Scenario: Not writable
-- **WHEN** a create or update request supplies `effective_context_window` or `summarization_trigger_tokens`
-- **THEN** the request ignores those fields and the stored agent is unaffected

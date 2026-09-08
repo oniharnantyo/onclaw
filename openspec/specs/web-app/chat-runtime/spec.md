@@ -35,11 +35,15 @@ Agent identity, cron-origin schedule name, and tool invocation data SHALL surviv
 - **THEN** the message renders its cron-origin marker naming that schedule
 
 ### Requirement: Streaming response lifecycle
-While an agent turn is in flight the bridge SHALL expose a running state that drives the thinking indicator, and SHALL stream reply text incrementally into the transcript. The send control SHALL become a stop control that cancels the in-flight turn, leaving any partial text in the transcript.
+While an agent turn is in flight the bridge SHALL expose a running state that drives the thinking indicator, and SHALL stream reply text incrementally into the transcript. Reasoning deltas from the stream SHALL accumulate onto the in-flight agent message as reasoning content kept separate from reply text. The send control SHALL become a stop control that cancels the in-flight turn, leaving any partial text in the transcript.
 
 #### Scenario: Incremental arrival
 - **WHEN** an agent reply is being produced
 - **THEN** the reply text appears progressively in the transcript (not as one whole message followed by a caret)
+
+#### Scenario: Reasoning accumulates separately
+- **WHEN** the stream delivers reasoning deltas followed by text deltas
+- **THEN** the in-flight message carries the reasoning content and the reply text as distinct fields, and neither leaks into the other
 
 #### Scenario: Streaming caret removal
 - **WHEN** an agent reply completes
@@ -48,14 +52,24 @@ While an agent turn is in flight the bridge SHALL expose a running state that dr
 #### Scenario: Stop control cancels
 - **WHEN** the user presses stop during an in-flight turn
 - **THEN** the turn ends, running state clears, and the partial text stays in the transcript
-
 ### Requirement: Tool-card lifecycle
-An agent tool invocation SHALL render as a card whose state follows the turn lifecycle: running while its turn is in flight, completed with latency once the turn's tool phase resolves.
+An agent tool invocation SHALL render as a card whose state follows the call lifecycle: running while the call is in flight, completed with its measured latency once the call's output event arrives. The bridge SHALL capture the call's arguments from the function-call stream item and attach the result, error flag, and latency from the tool output event to that same card. Hydrated cards SHALL carry the same fields projected by the server transcript. The bridge SHALL NOT synthesize placeholder arguments, results, or latencies for any card.
 
 #### Scenario: Running card completes with latency
-- **WHEN** an agent message with a tool invocation finishes its turn
-- **THEN** the card shows running during the turn, then latency (e.g. `760ms`) on completion
+- **WHEN** an agent message's tool call starts and its output event arrives
+- **THEN** the card shows running during the call, then the measured latency (e.g. `760ms`) on completion
 
+#### Scenario: Arguments captured from the stream
+- **WHEN** a function-call item with arguments arrives during a live turn
+- **THEN** the card carries those arguments rather than an empty string
+
+#### Scenario: Output lands on the right card
+- **WHEN** a tool output event arrives for a call id during a live turn
+- **THEN** the result attaches to the card opened for that call id, and an errored output marks the card as failed
+
+#### Scenario: Hydrated cards keep fidelity
+- **WHEN** a transcript is hydrated from the server for a session with tool calls
+- **THEN** the rendered cards carry arguments, results, error flags, and latency from the server transcript
 ### Requirement: Behavior scoping to agent DMs
 Edit, reload, and branch affordances SHALL apply to agent direct chats only. Channel agent messages SHALL NOT offer regenerate, and channel transcripts SHALL render exactly one authoritative variant per agent message.
 
@@ -75,7 +89,7 @@ Adopting the runtime SHALL NOT change the rendered appearance of the chat: fonts
 - **THEN** all parity tests pass without baseline rewrites attributable to the runtime adoption
 
 ### Requirement: Live session binding
-Live agent turns SHALL bind to persistent server sessions following the OpenResponses convention: the first live turn of a chat session SHALL carry a client-minted `sess_<uuid>` as `metadata.onclaw_session` (birthing the server-side session), and every subsequent turn of that chat session SHALL chain via `previous_response_id` from the previous turn's minted response ID. The runtime SHALL record each assistant turn's response ID on the message it produced. `/reset` SHALL start the next live turn on a freshly minted session ID.
+Live agent turns SHALL bind to persistent server sessions following the OpenResponses convention: the first live turn of a chat session SHALL carry a client-minted `sess_<uuid>` as `metadata.onclaw_session` (birthing the server-side session), and every subsequent turn of that chat session SHALL chain via `previous_response_id` from the previous turn's minted response ID. The client SHALL immediately and synchronously persist newly minted session bindings to durable local storage upon message submission before network dispatch, ensuring page reloads retain the server session address. The runtime SHALL record each assistant turn's response ID on the message it produced. `/reset` SHALL start the next live turn on a freshly minted session ID.
 
 #### Scenario: Birth turn creates server memory
 - **WHEN** the user sends the first live message in a chat session
@@ -93,6 +107,9 @@ Live agent turns SHALL bind to persistent server sessions following the OpenResp
 - **WHEN** the user reloads the page mid-conversation and sends another message
 - **THEN** the turn chains from the recorded response ID and the conversation continues with context
 
+#### Scenario: Immediate page reload retains session binding
+- **WHEN** the user sends a message and reloads the browser within milliseconds
+- **THEN** the reloaded application loads the exact same `sess_<uuid>` from local storage and hydrates against the server session
 ### Requirement: Live cancel
 The stop control during a live turn SHALL cancel the server-side run: the runtime SHALL address the native session-scoped cancel endpoint using the in-flight turn's minted response identity captured from the stream, and the run SHALL stop producing events. Cancelling SHALL leave partial text and any completed tool cards in the transcript.
 
@@ -105,7 +122,7 @@ The stop control during a live turn SHALL cancel the server-side run: the runtim
 - **THEN** the partial text and the tool card remain in the transcript
 
 ### Requirement: Transcript hydration
-Opening an agent chat whose live session is bound SHALL load the server-side transcript for that session and render it in the thread, so transcripts converge across browsers and reloads. Hydrated history SHALL render through the same message components as local history, and SHALL NOT duplicate or displace messages already present locally.
+Opening an agent chat whose live session is bound SHALL load the server-side transcript for that session and render it in the thread, so transcripts converge across browsers and reloads. Hydrated history SHALL render through the same message components as local history — including markdown, reasoning sections, and tool-card fidelity fields — and SHALL NOT duplicate or displace messages already present locally.
 
 #### Scenario: Second browser sees history
 - **WHEN** the user opens a bound chat from a browser that has never seen it
@@ -114,7 +131,6 @@ Opening an agent chat whose live session is bound SHALL load the server-side tra
 #### Scenario: Local messages not duplicated
 - **WHEN** a chat holds local messages that also exist in the hydrated server transcript
 - **THEN** the thread renders them once
-
 ### Requirement: Live regenerate
 Regenerating an agent message in a live chat SHALL re-run the turn through the live bridge so the new variant is a real agent completion chained to the conversation's session, replacing the canned-variant fallback. Variant mechanics (branch state, `n / total` picker, agent-DM scoping) are unchanged.
 
@@ -140,3 +156,29 @@ The app SHALL provision the workspace chat key automatically: on entry to a work
 #### Scenario: Logout clears keys
 - **WHEN** the user logs out
 - **THEN** held chat keys are removed from the browser
+
+### Requirement: Turn failure surfacing
+When a live turn ends in a terminal error from the stream, the bridge SHALL append an error entry to the active thread carrying the server error message and SHALL clear the running state. A turn that failed before producing any content SHALL retract its empty optimistic agent message so no permanent loading placeholder remains. Authentication failures SHALL follow the key re-exchange path and surface the connect state instead of an error entry; a retried turn after re-exchange SHALL stream into the original optimistic message rather than duplicating it.
+
+#### Scenario: Terminal error appends an entry
+- **WHEN** a live turn ends with `response.failed` carrying an error message
+- **THEN** an error entry with that message is appended to the thread and the running state clears
+
+#### Scenario: Empty optimistic row retracted
+- **WHEN** a live turn fails before streaming any text or tool card
+- **THEN** the empty optimistic agent message is removed from the thread and the error entry represents the turn
+
+#### Scenario: Auth failure takes the connect path
+- **WHEN** a live turn fails with an authentication error and key re-exchange also fails
+- **THEN** the connect state with retry renders and no error entry is appended
+
+### Requirement: Active run re-attachment on chat load
+When a chat view or thread mounts with an active bound server session (`sess_<uuid>`), the client runtime SHALL check if an in-flight run is active or unfinished. If an execution is in progress, the client SHALL initiate a streaming connection to catch up missed events and attach to the live stream, streaming reasoning deltas, tool cards, and text deltas directly into the active assistant message until the turn completes.
+
+#### Scenario: Page reload mid-turn resumes live stream
+- **WHEN** the user refreshes the browser while the agent is executing tools or generating text
+- **THEN** the chat re-attaches to the ongoing execution, renders completed tool cards and reasoning parts, and continues streaming new deltas to completion without manual user intervention
+
+#### Scenario: Page reload after turn completed renders full response
+- **WHEN** the user refreshes the browser and returns after the agent execution has finished
+- **THEN** the hydration catches up all persisted events and renders the complete message, tool results, and usage meter

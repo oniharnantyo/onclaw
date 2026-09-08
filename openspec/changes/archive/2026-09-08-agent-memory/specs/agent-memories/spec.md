@@ -1,20 +1,5 @@
-# agent-memories Specification
+## ADDED Requirements
 
-## Purpose
-Per-user, per-agent memory (`agent_user_memories`): the user's own view and reset of what an agent remembers about them, while all memory writes stay runtime-owned — never exposed on the management API.
-
-## Requirements
-
-### Requirement: Runtime-owned writes
-Memory content SHALL be written through exactly two paths: the `memory` tool (agent-side, scoped to the executing run) and the two human edit endpoints (own user memory; workspace memory with settings permission). No other management-API endpoint SHALL accept memory content, and regenerating prompts SHALL NOT touch memories.
-
-#### Scenario: No memory write endpoint
-- **WHEN** any management-API request other than the two edit endpoints carries memory content
-- **THEN** it is ignored; no write path exists outside the memory tool and the two edit endpoints
-
-#### Scenario: Prompt regeneration leaves memory intact
-- **WHEN** an agent's IDENTITY/SOUL prompts are regenerated
-- **THEN** all three memory scopes are unchanged
 ### Requirement: Three memory scopes
 Agent memory SHALL consist of three independently scoped, append-friendly markdown documents: `USER.md` — memory about the current user, one document per (workspace, user) pair; `WORKSPACE.md` — shared team memory, one document per workspace; `MEMORY-DD-MM-YYYY.md` — the agent's private log for one specific day, one document per (workspace, agent, date). All three SHALL be persisted server-side (database-backed, not files in the agent jail), and every read/write SHALL be scoped to the executing run's workspace, agent, and user — no argument can address another user's, agent's, or workspace's memory. Writing a daily memory for a day that already has one SHALL update that day's document in place; dates SHALL be parsed strictly as dd-mm-yyyy, and the reserved name `MEMORY-TODAY.md` SHALL resolve to today's date in the workspace's timezone.
 
@@ -77,3 +62,22 @@ Workspace members SHALL be able to read the shared `WORKSPACE.md` via `GET /api/
 #### Scenario: Admin writes shared memory
 - **WHEN** an Admin PUTs content to the workspace memory endpoint
 - **THEN** the content persists and every agent's next execution composes it
+
+## REMOVED Requirements
+
+### Requirement: Own-memory view and reset
+**Reason**: Superseded by the workspace-scoped user memory endpoint (`/me/memory`) and the three-scope memory system; the per-agent-per-user memory model is replaced wholesale.
+**Migration**: Clients use `GET/DELETE` → `GET/PUT /api/v1/workspaces/:ws/me/memory`. The underlying `agent_user_memories` table is dropped (it was never writable, so no data exists to migrate).
+
+## MODIFIED Requirements
+
+### Requirement: Runtime-owned writes
+Memory content SHALL be written through exactly two paths: the `memory` tool (agent-side, scoped to the executing run) and the two human edit endpoints (own user memory; workspace memory with settings permission). No other management-API endpoint SHALL accept memory content, and regenerating prompts SHALL NOT touch memories.
+
+#### Scenario: No memory write endpoint
+- **WHEN** any management-API request other than the two edit endpoints carries memory content
+- **THEN** it is ignored; no write path exists outside the memory tool and the two edit endpoints
+
+#### Scenario: Prompt regeneration leaves memory intact
+- **WHEN** an agent's IDENTITY/SOUL prompts are regenerated
+- **THEN** all three memory scopes are unchanged

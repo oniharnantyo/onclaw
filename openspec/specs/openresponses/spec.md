@@ -56,11 +56,15 @@ The `/v1` surface SHALL authenticate requests with workspace API keys only. A va
 - **THEN** the request fails with `invalid_request_error` naming the part type
 
 ### Requirement: Streaming event contract
-With `stream: true`, the endpoint SHALL emit `text/event-stream` with `data: <json>` frames, a terminal `data: [DONE]` line, and a monotonic integer `sequence_number` on every event. The stream SHALL follow the OpenResponses lifecycle: `response.created`, `response.in_progress`, per-item `output_item.added` / `output_item.done` with content-part and text-delta events bracketing assistant text, and exactly one terminal response event (`response.completed`, `response.failed`, or `response.incomplete`).
+With `stream: true`, the endpoint SHALL emit `text/event-stream` with `data: <json>` frames, a terminal `data: [DONE]` line, and a monotonic integer `sequence_number` on every event. The stream SHALL follow the OpenResponses lifecycle: `response.created`, `response.in_progress`, per-item `output_item.added` / `output_item.done` with content-part and text-delta events bracketing assistant text, and exactly one terminal response event (`response.completed`, `response.failed`, or `response.incomplete`). Reasoning the model produces during generation SHALL stream as custom `onclaw:reasoning_delta` events, each carrying one incremental chunk of reasoning text, interleaved with text deltas and always before the terminal event.
 
 #### Scenario: Text turn stream
 - **WHEN** an agent answers with text only
 - **THEN** the stream contains created → in_progress → message item added → content part added → text deltas → part done → item done → completed → [DONE], with strictly increasing sequence numbers
+
+#### Scenario: Reasoning turn stream
+- **WHEN** the model produces reasoning before or during its answer
+- **THEN** `onclaw:reasoning_delta` events carrying the reasoning chunks are interleaved with the stream before the terminal event, and a client that ignores unknown event types still receives a valid lifecycle
 
 #### Scenario: Tool turn stream
 - **WHEN** an agent invokes a tool
@@ -69,7 +73,6 @@ With `stream: true`, the endpoint SHALL emit `text/event-stream` with `data: <js
 #### Scenario: Failed turn
 - **WHEN** the run ends with the error transcript event
 - **THEN** the stream terminates with `response.failed` carrying the error, then [DONE]
-
 ### Requirement: Session binding and chaining
 A request SHALL bind to a session either by `metadata.onclaw_session` or by `previous_response_id` (an opaque response ID minted by the server that resolves to a prior response's session and turn). A `metadata.onclaw_session` naming a session with no persisted events in the key's workspace SHALL birth that session: the turn executes in a persistent session under the client-chosen ID, scoped to the key's workspace, and its history is persisted. `previous_response_id` SHALL remain bind-only: a malformed ID SHALL fail with `invalid_request_error`, and an ID resolving to a session with no persisted events in the key's workspace SHALL fail with not-found indistinguishable from a foreign workspace's session; it SHALL NEVER birth a session. A request with neither binding SHALL run in a fresh ephemeral session whose history is not persisted. Chained and metadata-bound requests append to the bound session's full-replay history.
 
@@ -121,11 +124,15 @@ An authenticated native endpoint SHALL mint a workspace-scoped API key for the a
 - **THEN** the key stops authenticating immediately, like any settings-created key
 
 ### Requirement: Server-side tool trace
-Tool calls SHALL execute server-side per the agent's allowlist; clients SHALL NOT feed tool outputs back. For each tool call the stream/response SHALL contain the `function_call` output item with the call's arguments, followed by a custom `onclaw:function_call_output` output item carrying the call ID, tool name, result payload, and latency. Request-level `tools` SHALL be intersected with the agent's allowlist and SHALL never extend it; `tool_choice: "none"` SHALL run the turn without tools.
+Tool calls SHALL execute server-side per the agent's allowlist; clients SHALL NOT feed tool outputs back. For each tool call the stream/response SHALL contain a `function_call` output item carrying the call's arguments at `output_item.added`, followed by an `onclaw.function_call_output` output item delivered through the standard `response.output_item.added` / `response.output_item.done` events and present in the aggregated `response.output`, carrying the call ID, tool name, result payload, `latency_ms` when the call's duration was measured, and `is_error: true` when the call failed. Request-level `tools` SHALL be intersected with the agent's allowlist and SHALL never extend it; `tool_choice: "none"` SHALL run the turn without tools.
 
 #### Scenario: Tool call trace
 - **WHEN** an agent executes `web.fetch` during a turn
-- **THEN** the output contains a `function_call` item for the call followed by `onclaw:function_call_output` with the fetched result and latency
+- **THEN** the output contains a `function_call` item with the call's arguments followed by an `onclaw.function_call_output` item with the fetched result, its measured latency, and the standard output-item added/done events
+
+#### Scenario: Failed tool call trace
+- **WHEN** a tool call fails during a turn
+- **THEN** its `onclaw.function_call_output` item carries the error payload with `is_error: true`
 
 #### Scenario: Request tools cannot extend the allowlist
 - **WHEN** a request lists a tool the agent's allowlist excludes
@@ -134,7 +141,6 @@ Tool calls SHALL execute server-side per the agent's allowlist; clients SHALL NO
 #### Scenario: Tool choice none
 - **WHEN** a request sets `tool_choice: "none"`
 - **THEN** the turn runs with no tools and the model cannot invoke any
-
 ### Requirement: Approval flow over the wire
 When the run pauses for a dangerous shell-command approval, the stream SHALL emit the custom `onclaw:approval_required` event carrying the interrupt ID, command, and response/item identity, and SHALL end with [DONE] leaving the response `incomplete`. Resolution SHALL happen only through the native approval endpoint; public clients use the event payload's identifiers to route the decision out-of-band. After resolution the continued turn is a new response chained to the same session.
 
@@ -147,12 +153,19 @@ When the run pauses for a dangerous shell-command approval, the stream SHALL emi
 - **THEN** the resumed turn persists to the same session and is retrievable by chaining from the paused response's session
 
 ### Requirement: Usage reporting
-Response objects (aggregated and terminal stream events) SHALL report token usage — input, output, and total — captured for the executed turn.
+Response objects (aggregated and terminal stream events) SHALL report token usage — input, output, and total — captured for the executed turn, plus the turn's final-call input tokens (the input count of the turn's last model call). A turn whose provider reported no usage SHALL omit the `usage` block entirely rather than report zeros.
 
 #### Scenario: Usage on completed response
 - **WHEN** a turn completes
-- **THEN** the Response object carries `usage` with the turn's input/output/total token counts
+- **THEN** the Response object carries `usage` with the turn's input/output/total token counts and the turn's final-call input token count
 
+#### Scenario: Terminal events without a final answer still carry usage
+- **WHEN** a turn ends as `response.incomplete` or `response.failed` after model calls were made
+- **THEN** the Response object carries `usage` with the counts captured up to the terminal event
+
+#### Scenario: No provider usage omits the block
+- **WHEN** a turn's provider reports no usage for any of its model calls
+- **THEN** the Response object carries no `usage` block
 ### Requirement: OpenResponses error envelope
 Errors on the `/v1` surface SHALL use the envelope `{error: {message, type, param, code}}` with the standard types: `invalid_request_error` (400), `not_found_error` (404), `rate_limit_error` (429), `model_error` (500, upstream model failure), `server_error` (500). Authentication and tenancy failures SHALL NOT leak workspace existence.
 
