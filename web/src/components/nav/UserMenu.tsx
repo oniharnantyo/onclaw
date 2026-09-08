@@ -1,8 +1,10 @@
 import { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../../store/auth';
+import { useWorkspace } from '../../store';
 import { Avatar } from '../ui/Avatar';
 import { Icon } from '../ui/Icon';
 import { Tooltip } from '../ui/Tooltip';
+import { UserMemoryModal } from '../../modals/UserMemoryModal';
 import { cx } from '../../lib/helpers';
 
 interface UserMenuProps {
@@ -13,7 +15,10 @@ interface UserMenuProps {
 export function UserMenu({ onLogout, expanded = false }: UserMenuProps) {
   const { user, logout } = useAuth();
   const [open, setOpen] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const ws = useWorkspace();
+  const wsSlug = ws?.sub || ws?.id || '';
 
   useEffect(() => {
     if (!open) return;
@@ -90,6 +95,23 @@ export function UserMenu({ onLogout, expanded = false }: UserMenuProps) {
             )}
           </div>
 
+          {wsSlug && (
+            <button
+              type="button"
+              role="menuitem"
+              data-od-id="user-memory-btn"
+              data-testid="user-memory-btn"
+              onClick={() => {
+                setOpen(false);
+                setMemoryOpen(true);
+              }}
+              className="mb-0.5 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-[13px] text-fg2 transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_6%,transparent)] hover:text-fg"
+            >
+              <Icon name="memory" size={15} />
+              <span>My memory</span>
+            </button>
+          )}
+
           <button
             type="button"
             role="menuitem"
@@ -101,6 +123,10 @@ export function UserMenu({ onLogout, expanded = false }: UserMenuProps) {
             <span>Log out</span>
           </button>
         </div>
+      )}
+
+      {memoryOpen && wsSlug && (
+        <UserMemoryModal wsSlug={wsSlug} onClose={() => setMemoryOpen(false)} />
       )}
     </div>
   );
