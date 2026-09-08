@@ -14,6 +14,7 @@ import {
   formatApiError,
   ApiError,
   type CreateWorkspaceResult,
+  type CreateAgentPayload,
   type AgentAutonomy,
 } from '../lib/api';
 import { useAuthStore } from '../store/auth';
@@ -182,7 +183,7 @@ export function CreateWorkspaceModal({
       },
       starter_agent:
         !skipAgent && includeAgent && agentName.trim()
-          ? {
+          ? ({
               name: agentName.trim(),
               slug: agentSlug.trim(),
               role: agentRole.trim(),
@@ -194,8 +195,10 @@ export function CreateWorkspaceModal({
               avatar: agentAvatar,
               tools: [],
               skills: [],
-              mcp: [],
-            }
+              // Design D1: opt-in MCP starts empty — a starter agent opts into
+              // servers post-deploy.
+              enabled_mcps: [],
+            } as CreateAgentPayload)
           : undefined,
     };
 

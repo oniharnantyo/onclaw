@@ -28,7 +28,7 @@ func (f *fakeToolPolicy) ToolConfigs(context.Context, string) (map[string]map[st
 }
 
 func TestExpandBrowserAlias(t *testing.T) {
-	reg := NewDefaultToolRegistry()
+	reg := NewDefaultToolRegistry(nil)
 	expanded := expandBrowserAlias(reg, []string{"web.search", BrowserToolAlias, "execute"})
 
 	if !slices.Contains(expanded, "browser.snapshot") || !slices.Contains(expanded, "browser.click") {
@@ -49,7 +49,7 @@ func TestExpandBrowserAlias(t *testing.T) {
 }
 
 func TestApplyToolGate(t *testing.T) {
-	runner := NewRunner(nil, nil, nil, nil, nil, nil, nil, nil, []byte("k"), "/tmp/o",
+	runner := NewRunner(nil, nil, nil, nil, nil, nil, nil, nil, nil, []byte("k"), "/tmp/o",
 		WithToolPolicy(&fakeToolPolicy{enabled: map[string]bool{
 			"web.search": false,
 			"browser":    false,

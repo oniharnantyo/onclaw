@@ -6,10 +6,76 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/oniharnantyo/onclaw/internal/agents"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 )
+
+// fakeMemories is a minimal store.MemoryStore for composer tests: maps keyed
+// by the composite identity, Get returning (nil, nil) when nothing is stored.
+type fakeMemories struct {
+	user      map[string]*domain.Memory // key: workspaceID + "|" + userID
+	workspace map[string]*domain.Memory // key: workspaceID
+}
+
+func newFakeMemories() *fakeMemories {
+	return &fakeMemories{
+		user:      make(map[string]*domain.Memory),
+		workspace: make(map[string]*domain.Memory),
+	}
+}
+
+func (f *fakeMemories) UserMemory(_ context.Context, workspaceID, userID string) (*domain.Memory, error) {
+	return f.user[workspaceID+"|"+userID], nil
+}
+
+func (f *fakeMemories) UpsertUserMemory(_ context.Context, workspaceID, userID, content string) error {
+	f.user[workspaceID+"|"+userID] = &domain.Memory{Content: content, UpdatedAt: time.Now().UTC()}
+	return nil
+}
+
+func (f *fakeMemories) AppendUserMemory(_ context.Context, workspaceID, userID, content string) error {
+	key := workspaceID + "|" + userID
+	mem, ok := f.user[key]
+	if !ok {
+		f.user[key] = &domain.Memory{Content: content, UpdatedAt: time.Now().UTC()}
+		return nil
+	}
+	mem.Content += content
+	return nil
+}
+
+func (f *fakeMemories) WorkspaceMemory(_ context.Context, workspaceID string) (*domain.Memory, error) {
+	return f.workspace[workspaceID], nil
+}
+
+func (f *fakeMemories) UpsertWorkspaceMemory(_ context.Context, workspaceID, content string) error {
+	f.workspace[workspaceID] = &domain.Memory{Content: content, UpdatedAt: time.Now().UTC()}
+	return nil
+}
+
+func (f *fakeMemories) AppendWorkspaceMemory(_ context.Context, workspaceID, content string) error {
+	mem, ok := f.workspace[workspaceID]
+	if !ok {
+		f.workspace[workspaceID] = &domain.Memory{Content: content, UpdatedAt: time.Now().UTC()}
+		return nil
+	}
+	mem.Content += content
+	return nil
+}
+
+func (f *fakeMemories) AgentDailyMemory(context.Context, string, string, time.Time) (*domain.Memory, error) {
+	return nil, nil
+}
+
+func (f *fakeMemories) UpsertAgentDailyMemory(context.Context, string, string, time.Time, string) error {
+	return nil
+}
+
+func (f *fakeMemories) AppendAgentDailyMemory(context.Context, string, string, time.Time, string) error {
+	return nil
+}
 
 func TestInstructionComposer_AllDocumentsPresent(t *testing.T) {
 	ctx := context.Background()
@@ -35,6 +101,7 @@ func TestInstructionComposer_AllDocumentsPresent(t *testing.T) {
 		Workspace: ws,
 		User:      user,
 		RoleName:  "Admin",
+		Memories:  newFakeMemories(),
 	})
 	if err != nil {
 		t.Fatalf("unexpected compose error: %v", err)
@@ -83,6 +150,7 @@ func TestInstructionComposer_UserVariesByCaller(t *testing.T) {
 		Workspace: ws,
 		User:      user1,
 		RoleName:  "Owner",
+		Memories:  newFakeMemories(),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -94,6 +162,7 @@ func TestInstructionComposer_UserVariesByCaller(t *testing.T) {
 		Workspace: ws,
 		User:      user2,
 		RoleName:  "Member",
+		Memories:  newFakeMemories(),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -130,6 +199,7 @@ func TestInstructionComposer_MissingDocumentsTolerated(t *testing.T) {
 		Workspace: ws,
 		User:      user,
 		RoleName:  "Viewer",
+		Memories:  newFakeMemories(),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error when some prompt files are missing: %v", err)
@@ -146,5 +216,122 @@ func TestInstructionComposer_MissingDocumentsTolerated(t *testing.T) {
 	}
 	if strings.Contains(result, "IDENTITY") || strings.Contains(result, "BOOTSTRAP") {
 		t.Errorf("expected absent documents to not appear in result")
+	}
+}
+
+func TestInstructionComposer_MemorySubsectionsCarryStoredContent(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(tempDir, "AGENTS.md"), []byte("# Agents"), 0644)
+
+	memories := newFakeMemories()
+	if err := memories.UpsertWorkspaceMemory(ctx, "ws-1", "Ship on Thursdays."); err != nil {
+		t.Fatalf("seed workspace memory: %v", err)
+	}
+	if err := memories.UpsertUserMemory(ctx, "ws-1", "user-1", "Prefers concise answers."); err != nil {
+		t.Fatalf("seed user memory: %v", err)
+	}
+
+	composer := agents.NewInstructionComposer()
+	result, err := composer.Compose(ctx, agents.ComposeParams{
+		AgentDir:  tempDir,
+		Workspace: &domain.Workspace{ID: "ws-1", Name: "Acme"},
+		User:      &domain.User{ID: "user-1", Name: "Alice"},
+		RoleName:  "Member",
+		Memories:  memories,
+	})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+
+	wsIdx := strings.Index(result, "# Workspace")
+	sharedIdx := strings.Index(result, "## Shared memory")
+	sharedContentIdx := strings.Index(result, "Ship on Thursdays.")
+	userIdx := strings.Index(result, "# Current User")
+	userMemIdx := strings.Index(result, "## Memory")
+	userContentIdx := strings.Index(result, "Prefers concise answers.")
+
+	for name, idx := range map[string]int{
+		"# Workspace": wsIdx, "## Shared memory": sharedIdx, "shared content": sharedContentIdx,
+		"# Current User": userIdx, "## Memory": userMemIdx, "user memory content": userContentIdx,
+	} {
+		if idx < 0 {
+			t.Fatalf("expected %s in output:\n%s", name, result)
+		}
+	}
+
+	// The shared memory subsection lives inside the Workspace doc; the user
+	// memory subsection inside the User doc.
+	if !(wsIdx < sharedIdx && sharedIdx < sharedContentIdx && sharedContentIdx < userIdx) {
+		t.Errorf("shared memory must render inside the Workspace doc:\n%s", result)
+	}
+	if !(userIdx < userMemIdx && userMemIdx < userContentIdx) {
+		t.Errorf("user memory must render inside the User doc:\n%s", result)
+	}
+}
+
+func TestInstructionComposer_EmptyMemoryOmitsSubsections(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(tempDir, "AGENTS.md"), []byte("# Agents"), 0644)
+
+	composer := agents.NewInstructionComposer()
+	result, err := composer.Compose(ctx, agents.ComposeParams{
+		AgentDir:  tempDir,
+		Workspace: &domain.Workspace{ID: "ws-1", Name: "Acme"},
+		User:      &domain.User{ID: "user-1", Name: "Alice"},
+		RoleName:  "Member",
+		Memories:  newFakeMemories(),
+	})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+
+	if strings.Contains(result, "## Shared memory") || strings.Contains(result, "## Memory") {
+		t.Errorf("empty memory must omit its subsection entirely:\n%s", result)
+	}
+}
+
+func TestInstructionComposer_MemoryFreshPerExecution(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(tempDir, "AGENTS.md"), []byte("# Agents"), 0644)
+
+	memories := newFakeMemories()
+	params := agents.ComposeParams{
+		AgentDir:  tempDir,
+		Workspace: &domain.Workspace{ID: "ws-1", Name: "Acme"},
+		User:      &domain.User{ID: "user-1", Name: "Alice"},
+		RoleName:  "Member",
+		Memories:  memories,
+	}
+
+	composer := agents.NewInstructionComposer()
+	first, err := composer.Compose(ctx, params)
+	if err != nil {
+		t.Fatalf("first compose: %v", err)
+	}
+	if strings.Contains(first, "First-turn note.") {
+		t.Fatalf("nothing appended yet, first turn must not carry it:\n%s", first)
+	}
+
+	// The agent appends to WORKSPACE.md and USER.md during the first turn;
+	// the second execution's instruction must already carry the appended text.
+	if err := memories.AppendWorkspaceMemory(ctx, "ws-1", "First-turn note."); err != nil {
+		t.Fatalf("append workspace memory: %v", err)
+	}
+	if err := memories.AppendUserMemory(ctx, "ws-1", "user-1", "Second-turn note."); err != nil {
+		t.Fatalf("append user memory: %v", err)
+	}
+
+	second, err := composer.Compose(ctx, params)
+	if err != nil {
+		t.Fatalf("second compose: %v", err)
+	}
+	if !strings.Contains(second, "First-turn note.") {
+		t.Errorf("second turn must see the first turn's workspace append:\n%s", second)
+	}
+	if !strings.Contains(second, "Second-turn note.") {
+		t.Errorf("second turn must see the first turn's user append:\n%s", second)
 	}
 }

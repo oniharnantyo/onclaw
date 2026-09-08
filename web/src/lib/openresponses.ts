@@ -58,8 +58,11 @@ export interface TurnCallbacks {
    * `meta.unauthorized` marks a /v1 auth failure (401 / invalid_api_key) so
    * the caller can clear the workspace key slot, re-exchange once, and retry
    * (design D4) instead of looping on a stale key.
+   * `meta.conflict` marks a 409 from the per-session run lock — another run
+   * is still active on this session — so the caller can queue the turn
+   * behind the live run instead of surfacing a failure.
    */
-  onError: (message: string, meta?: { unauthorized?: boolean }) => void;
+  onError: (message: string, meta?: { unauthorized?: boolean; conflict?: boolean }) => void;
 }
 
 // cached per (key) client — the OpenAI SDK is cheap but not free
@@ -189,6 +192,19 @@ export async function runTurn(
   } catch (err: any) {
     const message = err?.error?.message || err?.message || 'request failed';
     const unauthorized = err?.status === 401 || err?.error?.code === 'invalid_api_key' || err?.code === 'invalid_api_key';
-    cb.onError(message, { unauthorized });
+    const conflict = err?.status === 409;
+    cb.onError(message, { unauthorized, conflict });
   }
+}
+
+/** Decodes the minted response id codec `resp_<session>_<turn>` (see
+ * internal/openresponses codec.go: strip the prefix, split at the LAST
+ * underscore — turn ids are UUIDs, never underscored) to its session id.
+ * Undefined for anything that does not parse. */
+export function sessionIdFromResponseId(responseId: string | null | undefined): string | undefined {
+  if (!responseId || !responseId.startsWith('resp_')) return undefined;
+  const payload = responseId.slice('resp_'.length);
+  const cut = payload.lastIndexOf('_');
+  if (cut <= 0 || cut >= payload.length - 1) return undefined;
+  return payload.slice(0, cut);
 }

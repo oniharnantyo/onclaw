@@ -11,6 +11,7 @@ import {
   hydrateSession,
   fetchSessionTranscript,
   applyServerTranscript,
+  attachCatchUpStream,
   isBoundSessionId,
 } from '../lib/livechat';
 import notFoundSvg from '../assets/not-found.svg';
@@ -62,22 +63,53 @@ function ChatRouteActive({
   // Transcript hydration: opening a chat whose session is server-bound
   // (sess_<uuid>) replaces the local thread with the authoritative server
   // transcript — two browsers converge on the same history. Legacy counter
-  // sessions hydrate nothing.
-  const hydratedRef = useRef<string>('');
+  // sessions hydrate nothing. On success the catch-up stream attaches (D4):
+  // in-flight re-attachment — the hydrated cursor resumes the server's event
+  // feed so a reload mid-turn streams the remainder of the run to completion.
+  const catchUpRef = useRef<{ key: string; abort: AbortController } | null>(null);
   const boundSessionId = session && isBoundSessionId(session.id) ? session.id : null;
   useEffect(() => {
     if (!boundSessionId || !chatAgent) return;
     const slug = chatAgent.slug || chatAgent.id;
     const key = `${workspaceId}:${cleanId}:${boundSessionId}`;
-    if (hydratedRef.current === key) return;
-    hydratedRef.current = key;
-    void hydrateSession({ workspaceId, agentSlug: slug, chatId: cleanId, sessionId: boundSessionId }).then((hydrated) => {
+    // One live attach per session key: a re-run while the stream is open
+    // never opens a duplicate. The ref is cleared on cleanup, so StrictMode's
+    // setup→cleanup→setup cycle (and chat A→B→A switches) re-attach instead
+    // of inheriting a guard whose stream was just aborted — the aborted first
+    // attempt otherwise killed the attach for good (reload mid-run showed a
+    // frozen transcript and never streamed the rest of the turn).
+    if (catchUpRef.current?.key === key) return;
+    const abort = new AbortController();
+    catchUpRef.current = { key, abort };
+    void hydrateSession({ workspaceId, agentSlug: slug, chatId: cleanId, sessionId: boundSessionId, signal: abort.signal }).then((hydrated) => {
+      if (abort.signal.aborted) return;
       // null means the fetch failed — the store is untouched so a transient
       // network miss never wipes a still-valid meter value.
       if (hydrated) {
         useStore.getState().recordThreadUsage(workspaceId, cleanId, hydrated.finalInputTokens ?? null);
+        // Attach unconditionally rather than sniffing the transcript for an
+        // unfinished turn: history only shows committed events, so a run
+        // between events (or mid-tool-call) is invisible to heuristics. The
+        // server answers the probe with [DONE] immediately when no run is
+        // active (design D2 Phase 3), and a live turn this page started keeps
+        // its own stream — skip only when the composer is already running.
+        if (!useStore.getState().ui.running) {
+          attachCatchUpStream({
+            workspaceId,
+            agentSlug: slug,
+            chatId: cleanId,
+            sessionId: boundSessionId,
+            after: hydrated.lastEventId,
+            signal: abort.signal,
+          });
+        }
       }
     });
+    // Chat switch / unmount aborts the catch-up stream (clean teardown).
+    return () => {
+      abort.abort();
+      if (catchUpRef.current?.key === key) catchUpRef.current = null;
+    };
   }, [workspaceId, cleanId, boundSessionId, chatAgent?.slug, chatAgent?.id]);
 
   // Approval pickup (D6): while a pending approval card exists for the bound
@@ -255,6 +287,10 @@ export function ChatRoute() {
   useEffect(() => {
     if (cleanId && valid && cleanId !== pos.chatId) {
       useStore.getState().selectChat(cleanId);
+    } else if (!cleanId && pos.chatId) {
+      // /c is the empty picker — drop the persisted chat highlight so the
+      // sidebar never shows an active conversation the URL doesn't have.
+      useStore.getState().goPos({ chatId: '', showContext: false });
     }
   }, [cleanId, valid, pos.chatId]);
 

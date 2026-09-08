@@ -1,25 +1,35 @@
 package agents
 
 import (
+	"errors"
 	"fmt"
+	"net/http"
 	"sort"
+	"time"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/oniharnantyo/onclaw/internal/agents/tools"
+	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
 // ToolContext carries the per-execution scope a tool constructor may need to
-// bind itself to: the tenancy path and the agent's on-disk workspace jail root
-// plus the chat session that triggered the run. Stateless tools ignore it;
-// stateful tools (browser sessions, screenshots) scope themselves to it.
-// ToolConfigs carries the workspace's resolved per-tool configuration for
-// configurable tools (secrets decrypted, env fallbacks merged); constructors
-// of configurable tools read their settings from it.
+// bind itself to: the tenancy path, the executing principal's identity
+// (workspace, agent, user), the workspace-local timezone, and the agent's
+// on-disk workspace jail root plus the chat session that triggered the run.
+// Stateless tools ignore it; stateful tools (browser sessions, memory
+// documents) scope themselves to it. ToolConfigs carries the workspace's
+// resolved per-tool configuration for configurable tools (secrets decrypted,
+// env fallbacks merged); constructors of configurable tools read their
+// settings from it.
 type ToolContext struct {
 	WorkspaceSlug string
 	AgentSlug     string
 	AgentDir      string // agent workspace jail root
 	SessionID     string
+	WorkspaceID   string
+	AgentID       string
+	UserID        string
+	WorkspaceTZ   *time.Location // workspace-local clock; never nil from the runner
 	ToolConfigs   map[string]map[string]any
 }
 
@@ -78,10 +88,12 @@ func NewToolRegistry() *toolRegistry {
 
 // NewDefaultToolRegistry returns the registry pre-loaded with every built-in
 // tool. The composition root uses this single constructor; individual
-// registrations stay internal to this package. Instance-level tool
-// configuration (search provider, browser CDP endpoint) is read from the
-// environment at registration time.
-func NewDefaultToolRegistry() ToolRegistry {
+// registrations stay internal to this package. The memory store backs the
+// memory tool's three persistent scopes; the executing run's identity binds
+// per construction through ToolContext. Instance-level tool configuration
+// (search provider, browser CDP endpoint) is read from the environment at
+// registration time.
+func NewDefaultToolRegistry(memories store.MemoryStore) ToolRegistry {
 	reg := NewToolRegistry()
 	reg.browser = tools.NewBrowserManager()
 
@@ -95,6 +107,14 @@ func NewDefaultToolRegistry() ToolRegistry {
 
 	reg.Register(tools.NameWebFetch, func(ToolContext) (tool.BaseTool, error) {
 		return tools.NewWebFetch()
+	})
+
+	reg.Register(tools.NameMemory, func(tctx ToolContext) (tool.BaseTool, error) {
+		return tools.NewMemory(memories, tctx.WorkspaceID, tctx.AgentID, tctx.UserID, tctx.WorkspaceTZ)
+	})
+
+	reg.Register(tools.NameDeleteFile, func(tctx ToolContext) (tool.BaseTool, error) {
+		return tools.NewDeleteFile(tctx.AgentDir)
 	})
 
 	reg.Register(tools.NameBrowserNavigate, func(tctx ToolContext) (tool.BaseTool, error) {
@@ -179,31 +199,82 @@ func (r *toolRegistry) CloseSession(sessionID string) {
 	}
 }
 
+// errWebSearchNotConfigured is the construction error for a workspace with no
+// usable search provider entries (design.md D4): explicit and actionable,
+// raised before any network attempt, with no credential-free fallback.
+var errWebSearchNotConfigured = errors.New("web.search is not configured — add a provider in Settings → Tools")
+
+// webSearchWindow is the positional failover window: the first N entries in
+// list order serve; entries below it never do (design.md D2).
+const webSearchWindow = 3
+
 // searchProviderFor builds the per-execution web.search backend from the
-// workspace's resolved tool config (design.md D5). Instance env fallbacks are
-// merged by the policy resolver before this point; with no configuration at
-// all the zero-credential DuckDuckGo backend applies. A workspace-selected
-// provider whose credential is missing fails construction with an error
-// naming the missing configuration.
+// workspace's resolved tool config: each entry's provider is constructed with
+// a per-attempt HTTP client bounded by request_timeout_seconds (design.md D7)
+// and the first webSearchWindow entries are chained as the failover window
+// (design.md D2). Config arrives decrypted with instance env already merged
+// by the settings service; with no entries there is no fallback —
+// construction fails with the explicit not-configured error (design.md D4).
 func searchProviderFor(tctx ToolContext) (tools.SearchProvider, error) {
-	config := tctx.ToolConfigs["web.search"]
-	if len(config) == 0 {
-		return tools.NewSearchProviderByCredential(tools.SearchProviderDuckDuckGo, "", nil)
+	named, err := webSearchChainEntries(tctx.ToolConfigs[tools.Name])
+	if err != nil {
+		return nil, err
 	}
-	provider, _ := config["provider"].(string)
-	if provider == "" {
-		return tools.NewSearchProviderByCredential(tools.SearchProviderDuckDuckGo, "", nil)
+	if len(named) == 0 {
+		return nil, errWebSearchNotConfigured
 	}
-	credential := ""
-	if info, known := tools.SearchProviderInfoFor(provider); known {
-		switch info.Credential {
-		case tools.SearchCredentialAPIKey:
-			credential, _ = config["api_key"].(string)
-		case tools.SearchCredentialBaseURL:
-			credential, _ = config["base_url"].(string)
+	if len(named) > webSearchWindow {
+		named = named[:webSearchWindow]
+	}
+	return tools.NewChainSearchProvider(named)
+}
+
+// webSearchChainEntries constructs every configured entry's provider from the
+// decrypted config: the credential comes from api_key or base_url per the
+// provider's registry kind, and construction errors (unknown provider,
+// missing credential) fail the build naming the provider.
+func webSearchChainEntries(config map[string]any) ([]tools.NamedSearchProvider, error) {
+	entries := configEntries(config)
+	timeout := webSearchAttemptTimeout(config)
+	named := make([]tools.NamedSearchProvider, 0, len(entries))
+	for _, entryItem := range entries {
+		provider := stringConfig(entryItem["provider"])
+		credential := ""
+		if info, known := tools.SearchProviderInfoFor(provider); known {
+			switch info.Credential {
+			case tools.SearchCredentialAPIKey:
+				credential = stringConfig(entryItem["api_key"])
+			case tools.SearchCredentialBaseURL:
+				credential = stringConfig(entryItem["base_url"])
+			}
+		}
+		chainLink, err := tools.NewSearchProviderByCredential(provider, credential, &http.Client{Timeout: timeout})
+		if err != nil {
+			return nil, err
+		}
+		name := stringConfig(entryItem["name"])
+		if name == "" {
+			name = provider
+		}
+		named = append(named, tools.NamedSearchProvider{Name: name, Provider: chainLink})
+	}
+	return named, nil
+}
+
+// webSearchAttemptTimeout resolves the per-attempt request timeout: default
+// 10s, clamped positive and at most 60s (design.md D7). Values that fail
+// validation fall back to the default rather than disabling the bound.
+func webSearchAttemptTimeout(config map[string]any) time.Duration {
+	seconds := webSearchDefaultTimeoutSeconds
+	if raw, present := config["request_timeout_seconds"]; present && !isEmptyConfigValue(raw) {
+		if n, ok := numericConfigValue(raw); ok && n > 0 {
+			seconds = int(n)
 		}
 	}
-	return tools.NewSearchProviderByCredential(provider, credential, nil)
+	if seconds > webSearchMaxTimeoutSeconds {
+		seconds = webSearchMaxTimeoutSeconds
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func (r *toolRegistry) Register(name string, ctor ToolConstructor) {

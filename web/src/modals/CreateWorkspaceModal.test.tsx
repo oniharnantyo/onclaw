@@ -58,7 +58,7 @@ describe('modals/CreateWorkspaceModal', () => {
         autonomy: 'approval',
         tools: [],
         skills: [],
-        mcp: [],
+        enabled_mcps: [],
         avatar: {},
         prompts_status: 'generating',
         created_at: '',
@@ -127,9 +127,14 @@ describe('modals/CreateWorkspaceModal', () => {
           model: 'claude-3-7-sonnet',
           temperature: 1.0,
           autonomy: 'approval',
+          // Design D1: the starter agent ships with an empty opt-in set under
+          // the renamed field — the legacy `mcp` key is gone.
+          enabled_mcps: [],
         }),
       });
     });
+    const birthPayload = (api.workspaces.create as any).mock.calls[0][0];
+    expect(birthPayload.starter_agent).not.toHaveProperty('mcp');
 
     expect(onCreateSuccess).toHaveBeenCalled();
   });

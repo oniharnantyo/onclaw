@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/oniharnantyo/onclaw/internal/agents"
@@ -34,10 +36,29 @@ type AgentRunCanceler interface {
 	CancelRun(workspaceID, agentID, sessionID string) bool
 }
 
-// agentHandlers handles workspace agent CRUD, prompt regeneration, and memory endpoints.
+// AgentRunTapper attaches live subscriber streams to in-flight runs so a
+// streaming session-events client can follow a run after replaying committed
+// history (design D2, live-run-reattach-and-catchup). The production runner
+// (*agents.Runner) implements it alongside AgentHistoryReader; the capability
+// is discovered by assertion on the injected runner, so the composition root
+// needs no extra wiring and fakes that only read history keep working — for
+// them the stream degrades to replay-plus-[DONE], the no-active-run path.
+// SubscribeRun's ok return subsumes an IsRunActive pre-check (and atomically,
+// at that), so only the two methods the handler uses are on the seam.
+type AgentRunTapper interface {
+	// SubscribeRun attaches a fresh subscriber stream to the run executing
+	// for key. The stream stays live until the run finishes, at which point
+	// it is closed so Recv drains to io.EOF. ok is false when no run is live.
+	SubscribeRun(key agents.RunKey) (subID uint64, stream *agents.EventStream, ok bool)
+	// UnsubscribeRun detaches a subscriber added by SubscribeRun without
+	// affecting the run or other subscribers. Unknown keys and sub-IDs are
+	// no-ops.
+	UnsubscribeRun(key agents.RunKey, subID uint64)
+}
+
+// agentHandlers handles workspace agent CRUD, prompt regeneration, and session endpoints.
 type agentHandlers struct {
 	agents        store.AgentStore
-	memories      store.AgentUserMemoryStore
 	providers     store.ProviderStore
 	sessionEvents store.SessionEventStore
 	encryptionKey []byte
@@ -50,10 +71,9 @@ type agentHandlers struct {
 }
 
 // NewAgentHandlers creates a new agentHandlers instance with injected dependencies.
-func NewAgentHandlers(agentStore store.AgentStore, memoryStore store.AgentUserMemoryStore, providerStore store.ProviderStore, sessionEvents store.SessionEventStore, encryptionKey []byte, reg *providers.Registry, mc *services.ModelCatalog, as *promptgen.Service, workspaceDir string, runner AgentHistoryReader, runCanceler AgentRunCanceler) *agentHandlers {
+func NewAgentHandlers(agentStore store.AgentStore, providerStore store.ProviderStore, sessionEvents store.SessionEventStore, encryptionKey []byte, reg *providers.Registry, mc *services.ModelCatalog, as *promptgen.Service, workspaceDir string, runner AgentHistoryReader, runCanceler AgentRunCanceler) *agentHandlers {
 	return &agentHandlers{
 		agents:        agentStore,
-		memories:      memoryStore,
 		providers:     providerStore,
 		sessionEvents: sessionEvents,
 		encryptionKey: encryptionKey,
@@ -163,7 +183,7 @@ type CreateAgentRequest struct {
 	Autonomy      *domain.AgentAutonomy `json:"autonomy,omitempty"`
 	ContextWindow *int                  `json:"context_window,omitempty"`
 	Tools         []string              `json:"tools,omitempty"`
-	DisabledMCPs  []string              `json:"disabled_mcps,omitempty"`
+	EnabledMCPS   []string              `json:"enabled_mcps,omitempty"`
 	Avatar        json.RawMessage       `json:"avatar,omitempty"`
 }
 
@@ -249,7 +269,7 @@ type PatchAgentRequest struct {
 	Autonomy      *domain.AgentAutonomy `json:"autonomy,omitempty"`
 	ContextWindow *int                  `json:"context_window,omitempty"`
 	Tools         *[]string             `json:"tools,omitempty"`
-	DisabledMCPs  *[]string             `json:"disabled_mcps,omitempty"`
+	EnabledMCPS   *[]string             `json:"enabled_mcps,omitempty"`
 	Avatar        *json.RawMessage      `json:"avatar,omitempty"`
 }
 
@@ -269,7 +289,7 @@ func (h *agentHandlers) PatchAgent(c *gin.Context) {
 		req.Brief == nil && req.Identity == nil && req.Soul == nil && req.ProviderID == nil &&
 		req.Model == nil && req.Temperature == nil && req.MaxTokens == nil && req.Effort == nil &&
 		req.Autonomy == nil && req.ContextWindow == nil && req.Tools == nil &&
-		req.DisabledMCPs == nil && req.Avatar == nil {
+		req.EnabledMCPS == nil && req.Avatar == nil {
 		RespondError(c, fmt.Errorf("%w: no fields to update", domain.ErrInvalid))
 		return
 	}
@@ -416,8 +436,8 @@ func (h *agentHandlers) PatchAgent(c *gin.Context) {
 		existing.Tools = *req.Tools
 	}
 
-	if req.DisabledMCPs != nil {
-		existing.DisabledMCPs = *req.DisabledMCPs
+	if req.EnabledMCPS != nil {
+		existing.EnabledMCPS = *req.EnabledMCPS
 	}
 
 	existing.UpdatedBy = &user.ID
@@ -449,7 +469,7 @@ func (h *agentHandlers) PatchAgent(c *gin.Context) {
 	RespondOK(c, gin.H{"agent": newAgentResponse(existing)})
 }
 
-// DeleteAgent deletes an agent and its per-user memories.
+// DeleteAgent deletes an agent and its workspace directory.
 func (h *agentHandlers) DeleteAgent(c *gin.Context) {
 	ws := MustCurrentWorkspace(c)
 	param := c.Param("agent")
@@ -523,60 +543,11 @@ func (h *agentHandlers) RegenerateAgent(c *gin.Context) {
 	RespondOK(c, gin.H{"agent": newAgentResponse(existing)})
 }
 
-// GetAgentMemory returns the authenticated user's own memory for the specified agent.
-func (h *agentHandlers) GetAgentMemory(c *gin.Context) {
-	ws := MustCurrentWorkspace(c)
-	user := MustCurrentUser(c)
-	param := c.Param("agent")
-
-	agent, err := h.resolveAgent(c.Request.Context(), ws.ID, param)
-	if err != nil {
-		RespondError(c, err)
-		return
-	}
-
-	mem, err := h.memories.Get(c.Request.Context(), ws.ID, agent.ID, user.ID)
-	if err != nil {
-		if errors.Is(err, domain.ErrNotFound) {
-			RespondOK(c, gin.H{
-				"agent_id":     agent.ID,
-				"user_id":      user.ID,
-				"workspace_id": ws.ID,
-				"content":      "",
-				"created_at":   nil,
-				"updated_at":   nil,
-			})
-			return
-		}
-		RespondError(c, err)
-		return
-	}
-
-	RespondOK(c, mem)
-}
-
-// DeleteAgentMemory resets (deletes) the authenticated user's own memory for the specified agent.
-func (h *agentHandlers) DeleteAgentMemory(c *gin.Context) {
-	ws := MustCurrentWorkspace(c)
-	user := MustCurrentUser(c)
-	param := c.Param("agent")
-
-	agent, err := h.resolveAgent(c.Request.Context(), ws.ID, param)
-	if err != nil {
-		RespondError(c, err)
-		return
-	}
-
-	err = h.memories.Delete(c.Request.Context(), ws.ID, agent.ID, user.ID)
-	if err != nil && !errors.Is(err, domain.ErrNotFound) {
-		RespondError(c, err)
-		return
-	}
-
-	RespondNoContent(c)
-}
-
 // ListSessionEvents returns the translated transcript events for an agent session.
+// With stream=true it serves server-sent events instead of the JSON snapshot:
+// Phase 1 replays the committed history, Phase 2 taps the live run (when one
+// is executing) and streams new events to completion, Phase 3 ends with the
+// [DONE] sentinel (design D2, live-run-reattach-and-catchup).
 func (h *agentHandlers) ListSessionEvents(c *gin.Context) {
 	ws := MustCurrentWorkspace(c)
 	param := c.Param("agent")
@@ -602,6 +573,28 @@ func (h *agentHandlers) ListSessionEvents(c *gin.Context) {
 		limit = n
 	}
 
+	streaming, _ := strconv.ParseBool(c.Query("stream"))
+	key := agents.RunKey{WorkspaceID: ws.ID, AgentID: agent.ID, SessionID: sessionID}
+
+	// Phase 2 attachment happens before the history query: the tap registers
+	// first so events emitted while the snapshot loads buffer on the stream
+	// instead of being missed; Phase 1's seen set dedups the overlap.
+	var (
+		tap        *agents.EventStream
+		tapSubID   uint64
+		subscribed bool
+	)
+	if streaming {
+		if tapper, ok := h.runner.(AgentRunTapper); ok {
+			if subID, s, live := tapper.SubscribeRun(key); live {
+				tap, tapSubID, subscribed = s, subID, true
+				// Disconnect hygiene: release the tap on every exit path so
+				// abandoned connections never leak subscribers.
+				defer tapper.UnsubscribeRun(key, tapSubID)
+			}
+		}
+	}
+
 	res, err := h.runner.History(c.Request.Context(), agents.HistoryRequest{
 		WorkspaceID: ws.ID,
 		AgentID:     agent.ID,
@@ -614,7 +607,123 @@ func (h *agentHandlers) ListSessionEvents(c *gin.Context) {
 		return
 	}
 
-	RespondOK(c, res)
+	if !streaming {
+		RespondOK(c, res)
+		return
+	}
+
+	h.serveSessionEventStream(c, res, tap, subscribed)
+}
+
+// serveSessionEventStream writes the two-phase SSE response: the committed
+// history snapshot, then (when a live tap is attached) new events until the
+// run finishes, then the [DONE] sentinel. Every socket write stays on the
+// request goroutine — Recv is pumped on a helper goroutine so the writer loop
+// can also select the client-disconnect signal (the v1.go SSE pattern).
+func (h *agentHandlers) serveSessionEventStream(c *gin.Context, res *agents.HistoryResult, tap *agents.EventStream, subscribed bool) {
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	// Ask reverse proxies not to buffer frames (nginx honors this).
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Status(http.StatusOK)
+
+	writeEvent := func(ev *agents.TranscriptEvent) {
+		data, err := json.Marshal(ev)
+		if err != nil {
+			return
+		}
+		_, _ = c.Writer.Write([]byte("data: " + string(data) + "\n\n"))
+		c.Writer.Flush()
+	}
+	writeDone := func() {
+		_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
+		c.Writer.Flush()
+	}
+
+	// A live tap means the turn is still executing: say so before the history
+	// replay so the reconnected page shows its running state immediately —
+	// the first real run event can be seconds away (a long tool call or model
+	// stream commits nothing until it finishes).
+	if subscribed {
+		writeEvent(&agents.TranscriptEvent{Kind: agents.TranscriptEventRunActive, OccurredAt: time.Now().UTC()})
+	}
+
+	// Phase 1: committed history replay, recording event IDs so events that
+	// reached both the store and the live tap are not written twice.
+	seen := make(map[string]bool, len(res.Events))
+	for i := range res.Events {
+		ev := &res.Events[i]
+		if ev.ID != "" {
+			seen[ev.ID] = true
+		}
+		writeEvent(ev)
+	}
+
+	if !subscribed {
+		// No run in flight: the snapshot is the whole transcript.
+		writeDone()
+		return
+	}
+
+	// Phase 2: pump the live tap into a channel so the writer loop can also
+	// select the client-disconnect signal — every socket write stays on this
+	// single goroutine.
+	events := make(chan *agents.TranscriptEvent)
+	pumpDone := make(chan struct{})
+	defer close(pumpDone)
+	go func() {
+		defer close(events)
+		for {
+			ev, err := tap.Recv()
+			if err != nil {
+				// The run finished and closed the tap (or the tap was torn
+				// down): the buffered drain is complete.
+				return
+			}
+			select {
+			case events <- ev:
+			case <-pumpDone:
+				return
+			}
+		}
+	}()
+
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				writeDone()
+				return
+			}
+			if ev.ID != "" {
+				if seen[ev.ID] {
+					continue
+				}
+				seen[ev.ID] = true
+			}
+			writeEvent(ev)
+			if isTerminalSessionEvent(ev.Kind) {
+				writeDone()
+				return
+			}
+		case <-c.Request.Context().Done():
+			// The browser went away (navigation, refresh, abort) — stop
+			// pumping into the dead socket.
+			writeDone()
+			return
+		}
+	}
+}
+
+// isTerminalSessionEvent reports whether the kind ends a live turn. The tap
+// closing (Recv EOF) is the primary completion signal — this only ends the
+// SSE early once the terminal marker is already visible.
+func isTerminalSessionEvent(kind agents.TranscriptEventKind) bool {
+	switch kind {
+	case agents.TranscriptEventTurnCompleted, agents.TranscriptEventError, agents.TranscriptEventCancelled:
+		return true
+	}
+	return false
 }
 
 // buildAgentFromCreateRequest validates and constructs a domain.Agent from CreateAgentRequest.
@@ -721,9 +830,9 @@ func buildAgentFromCreateRequest(ctx context.Context, wsID, userID string, req *
 	if agentTools == nil {
 		agentTools = []string{}
 	}
-	disabledMCPs := req.DisabledMCPs
-	if disabledMCPs == nil {
-		disabledMCPs = []string{}
+	enabledMCPS := req.EnabledMCPS
+	if enabledMCPS == nil {
+		enabledMCPS = []string{}
 	}
 
 	var effort *string
@@ -752,7 +861,7 @@ func buildAgentFromCreateRequest(ctx context.Context, wsID, userID string, req *
 		Autonomy:      autonomy,
 		ContextWindow: contextWindow,
 		Tools:         agentTools,
-		DisabledMCPs:  disabledMCPs,
+		EnabledMCPS:   enabledMCPS,
 		Avatar:        avatar,
 		PromptsStatus: domain.PromptsStatusGenerating,
 		CreatedBy:     creator,

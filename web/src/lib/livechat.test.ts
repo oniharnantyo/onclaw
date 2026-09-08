@@ -1,8 +1,9 @@
 /**
  * @vitest-environment jsdom
  */
-import { describe, it, expect, vi } from 'vitest';
-import { fetchSessionTranscript } from './livechat';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { fetchSessionTranscript, streamSessionEvents, attachCatchUpStream } from './livechat';
+import { useStore } from '../store';
 import { api } from './api';
 
 vi.mock('../lib/api', () => ({
@@ -25,6 +26,15 @@ vi.mock('../lib/api', () => ({
       }),
     },
   },
+  // streamSessionEvents authenticates exactly like request(): JWT bearer.
+  API_ORIGIN: '',
+  getToken: () => 'jwt-test-token',
+  // Named exports ../store (imported below for the attach tests) needs.
+  pollAgentPromptsStatus: async () => ({}),
+  formatApiError: (_e: unknown, fallback: string) => fallback,
+  setToken: () => {},
+  clearToken: () => {},
+  ApiError: class ApiError extends Error {},
 }));
 
 // This environment's jsdom exposes no localStorage; the store module touches
@@ -84,6 +94,40 @@ describe('fetchSessionTranscript', () => {
       { k: 'reasoning', text: 'got it, summarizing.' },
     ]);
   });
+
+  it('skips empty user/assistant echoes so hydrated turns never mint blank bubbles', async () => {
+    vi.mocked(api.agents.sessionEvents).mockResolvedValueOnce({
+      next: '',
+      events: [
+        { id: 'e1', kind: 'message_completed', occurred_at: 't0', turn_id: 'turn-1',
+          message: { role: 'user', content: 'give me full article' } },
+        // Tool loop: text-less assistant request + tool result persisted under
+        // role user — neither may hydrate as a message (they render as blank
+        // bubbles and split the turn).
+        { id: 'e2', kind: 'tool_call_started', occurred_at: 't1', turn_id: 'turn-1',
+          tool_call: { call_id: 'c1', name: 'browser.read', arguments: '{}' } },
+        { id: 'e3', kind: 'message_completed', occurred_at: 't2', turn_id: 'turn-1',
+          message: { role: 'user', content: '' } },
+        { id: 'e4', kind: 'message_completed', occurred_at: 't3', turn_id: 'turn-1',
+          message: { role: 'assistant', content: '' } },
+        { id: 'e5', kind: 'tool_call_finished', occurred_at: 't4', turn_id: 'turn-1',
+          tool_result: { call_id: 'c1', result: 'page body', latency: 1000000 } },
+        { id: 'e6', kind: 'message_completed', occurred_at: 't5', turn_id: 'turn-1',
+          message: { role: 'assistant', content: 'Here it is.' } },
+        // A turn made solely of empty echoes contributes nothing at all.
+        { id: 'f1', kind: 'message_completed', occurred_at: 't6', turn_id: 'turn-2',
+          message: { role: 'user', content: '' } },
+        { id: 'f2', kind: 'message_completed', occurred_at: 't7', turn_id: 'turn-2',
+          message: { role: 'assistant', content: '' } },
+      ],
+    });
+    const { messages } = await fetchSessionTranscript('ws1', 'atlas', 'sess_h-skip');
+
+    expect(messages.map((m: any) => m.author)).toEqual(['you', 'agent']);
+    expect(messages[0].text).toBe('give me full article');
+    expect(messages[1].text).toBe('Here it is.');
+    expect(messages[1].tools).toHaveLength(1);
+  });
 });
 
 describe('fetchSessionTranscript — context meter restore (chat-context-meter)', () => {
@@ -117,5 +161,300 @@ describe('fetchSessionTranscript — context meter restore (chat-context-meter)'
 
     const hydrated = await fetchSessionTranscript('ws1', 'atlas', 'sess_h-nousage');
     expect(hydrated.finalInputTokens).toBeUndefined();
+  });
+});
+
+describe('fetchSessionTranscript — live delta vocabulary (catch-up stream)', () => {
+  it('folds live text/reasoning deltas into the turn body like the runtime does', async () => {
+    vi.mocked(api.agents.sessionEvents).mockResolvedValueOnce({
+      next: '',
+      events: [
+        { id: 'e1', kind: 'message_completed', occurred_at: 't0', turn_id: 'turn-1',
+          message: { role: 'user', content: 'catch me up' } },
+        { id: 'e2', kind: 'text_delta', occurred_at: 't1', turn_id: 'turn-1', text_delta: 'Hel' },
+        { id: 'e3', kind: 'text_delta', occurred_at: 't2', turn_id: 'turn-1', text_delta: 'lo there' },
+        { id: 'e4', kind: 'reasoning_delta', occurred_at: 't3', turn_id: 'turn-1', reasoning_delta: 'thinking…' },
+        { id: 'e5', kind: 'tool_call_started', occurred_at: 't4', turn_id: 'turn-1',
+          tool_call: { call_id: 'c1', name: 'files.write', arguments: '{}' } },
+        { id: 'e6', kind: 'turn_completed', occurred_at: 't5', turn_id: 'turn-1',
+          usage: { final_input_tokens: 900 } },
+      ],
+    });
+
+    const { messages, finalInputTokens, lastEventId } = await fetchSessionTranscript('ws1', 'atlas', 'sess_h-delta');
+
+    // Deltas fold into ONE agent message; the reasoning delta becomes an
+    // ordered part, exactly like live streaming renders it.
+    expect(messages.map((m: any) => m.author)).toEqual(['you', 'agent']);
+    expect(messages[1].text).toBe('Hello there');
+    expect(messages[1].parts).toEqual([{ k: 'reasoning', text: 'thinking…' }, { k: 'tool', i: 0 }]);
+    expect(messages[1].tools).toHaveLength(1);
+    expect(finalInputTokens).toBe(900);
+    // The last event seen — any kind — is the catch-up cursor (D4).
+    expect(lastEventId).toBe('e6');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// streamSessionEvents — resilient SSE consumer for the catch-up stream (D4)
+// ---------------------------------------------------------------------------
+
+const encoder = new TextEncoder();
+
+/** Minimal SSE Response: fetch is mocked, so only what the consumer reads is
+ * provided — ok/status/headers/body. `open` keeps the stream unclosed (only
+ * an abort can unblock the reader). */
+function sseResponse(
+  chunks: string[],
+  init?: { status?: number; contentType?: string | null; open?: boolean }
+): Response {
+  const status = init?.status ?? 200;
+  const headers = new Headers();
+  if (init?.contentType !== null) headers.set('Content-Type', init?.contentType ?? 'text/event-stream');
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers,
+    body: new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+        if (!init?.open) controller.close();
+      },
+    }),
+  } as unknown as Response;
+}
+
+const frame = (ev: any) => `data: ${JSON.stringify(ev)}\n\n`;
+
+describe('streamSessionEvents', () => {
+  it('parses chunked SSE — including lines split across chunks — firing onEvent per event and onDone on [DONE]', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      sseResponse([
+        // First event's JSON is split mid-line across three chunks.
+        'data: {"id":"s1","kind":"message_completed","turn_id":"t1","message":{"role":"assistant","content":"Hel',
+        'lo"}}\n\ndata: {"id":"s2","kind":"tu',
+        'rn_completed","turn_id":"t1","usage":{"final_input_tokens":42}}\n\n',
+        frame({ id: 's3', kind: 'text_delta', turn_id: 't1', text_delta: '!'}),
+        'data: [DONE]\n\n',
+      ])
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const events: any[] = [];
+    const onDone = vi.fn();
+    const onError = vi.fn();
+    await streamSessionEvents({
+      workspaceId: 'ws1',
+      agentSlug: 'atlas',
+      sessionId: 'sess_sse-1',
+      after: 'e0',
+      onEvent: (ev) => events.push(ev),
+      onDone,
+      onError,
+    });
+
+    expect(events.map((e) => e.id)).toEqual(['s1', 's2', 's3']);
+    expect(events[0].message.content).toBe('Hello');
+    expect(onDone).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
+
+    // Auth + cursor match the existing call conventions (JWT bearer, after=).
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toBe(
+      '/api/v1/workspaces/ws1/agents/atlas/sessions/sess_sse-1/events?stream=true&after=e0'
+    );
+    expect(init.headers.Authorization).toBe('Bearer jwt-test-token');
+    vi.unstubAllGlobals();
+  });
+
+  it('treats a plain stream end (no [DONE]) as completion', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse([frame({ id: 's1', kind: 'turn_started', turn_id: 't1' })])));
+
+    const onDone = vi.fn();
+    const onError = vi.fn();
+    await streamSessionEvents({
+      workspaceId: 'ws1',
+      agentSlug: 'atlas',
+      sessionId: 'sess_sse-2',
+      onEvent: () => {},
+      onDone,
+      onError,
+    });
+
+    expect(onDone).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it('honors abort: clean teardown without onDone or onError', async () => {
+    // A stream that stays open after its first frame — only the abort can
+    // unblock the pending read.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        sseResponse([frame({ id: 's1', kind: 'turn_started', turn_id: 't1' })], { open: true })
+      )
+    );
+    const controller = new AbortController();
+    const onEvent = vi.fn();
+    const onDone = vi.fn();
+    const onError = vi.fn();
+
+    const settled = streamSessionEvents({
+      workspaceId: 'ws1',
+      agentSlug: 'atlas',
+      sessionId: 'sess_sse-3',
+      signal: controller.signal,
+      onEvent,
+      onDone,
+      onError,
+    });
+    // Wait until the first event landed and the reader is parked on read().
+    await vi.waitFor(() => expect(onEvent).toHaveBeenCalledTimes(1));
+    controller.abort();
+    await settled;
+
+    expect(onDone).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it('reports network failure via onError', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')));
+
+    const onDone = vi.fn();
+    const onError = vi.fn();
+    await streamSessionEvents({
+      workspaceId: 'ws1',
+      agentSlug: 'atlas',
+      sessionId: 'sess_sse-4',
+      onEvent: () => {},
+      onDone,
+      onError,
+    });
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onDone).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it('reports a malformed data payload via onError (parse failure)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse(['data: {not-json\n\n'])));
+
+    const onError = vi.fn();
+    await streamSessionEvents({
+      workspaceId: 'ws1',
+      agentSlug: 'atlas',
+      sessionId: 'sess_sse-5',
+      onEvent: () => {},
+      onDone: () => {},
+      onError,
+    });
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// attachCatchUpStream — reattach runtime (live-run-reattach-and-catchup)
+// ---------------------------------------------------------------------------
+
+describe('attachCatchUpStream', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** Binds ws1/chat-1 to session sess_cu with an empty thread. */
+  const seed = () => {
+    const db: any = {
+      ws1: {
+        id: 'ws1', name: 'WS', sub: 'ws1', tz: 'UTC',
+        agents: [], channels: [], people: [], cron: [], runs: [], members: [], integrations: [], skillLib: [], keys: [],
+        threads: { 'chat-1': { active: 'sess_cu', list: [{ id: 'sess_cu', title: 'Live', updated: '', messages: [] }] } },
+      },
+    };
+    useStore.setState({
+      db,
+      ui: { configAgent: null, cronEdit: null, wsOpen: false, running: false, toasts: [] },
+    });
+  };
+
+  const session = (): any =>
+    useStore.getState().db.ws1.threads['chat-1'].list.find((x: any) => x.id === 'sess_cu');
+
+  it('run_active flips the spinner before the first real event and never renders as a bubble', async () => {
+    seed();
+    // Hold the stream open after the status frame: the spinner must be on
+    // with NO run event delivered yet (the live run is mid tool call).
+    const abort = new AbortController();
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      sseResponse([frame({ kind: 'run_active', occurred_at: '2026-09-08T07:13:00Z' })], { open: true })
+    ));
+
+    attachCatchUpStream({
+      workspaceId: 'ws1', agentSlug: 'atlas', chatId: 'chat-1', sessionId: 'sess_cu',
+      after: 'e1', signal: abort.signal,
+    });
+
+    await vi.waitFor(() => {
+      expect(useStore.getState().ui.running).toBe(true);
+    });
+    // The synthetic frame rendered nothing — no split bubble, no cursor move.
+    expect(session().messages).toEqual([]);
+
+    // Abandoning the stream (chat switch) clears the spinner.
+    abort.abort();
+    expect(useStore.getState().ui.running).toBe(false);
+  });
+
+  it('duplicate tool_call_started (replay + tap overlap) never duplicates the card', async () => {
+    seed();
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      sseResponse([
+        frame({ id: 'e2', kind: 'tool_call_started', occurred_at: 'x', turn_id: 't1',
+          tool_call: { call_id: 'c1', name: 'web.search', arguments: '{"q":"x"}' } }),
+        // The subscribe-boundary window can deliver the same call again from
+        // the live tap after the history replay already carded it.
+        frame({ kind: 'tool_call_started', occurred_at: 'x', turn_id: 't1',
+          tool_call: { call_id: 'c1', name: 'web.search', arguments: '{"q":"x"}' } }),
+        frame({ id: 'e4', kind: 'tool_call_finished', occurred_at: 'x', turn_id: 't1',
+          tool_result: { call_id: 'c1', result: 'results', latency: 420000000 } }),
+        'data: [DONE]\n\n',
+      ])
+    ));
+
+    attachCatchUpStream({
+      workspaceId: 'ws1', agentSlug: 'atlas', chatId: 'chat-1', sessionId: 'sess_cu',
+    });
+
+    await vi.waitFor(() => {
+      expect(session().messages.length).toBeGreaterThan(0);
+    });
+    const agent = session().messages[0];
+    expect(agent.tools).toHaveLength(1);
+    expect(agent.tools[0].res).toBe('results');
+    expect(agent.tools[0].ms).toBe(420);
+    expect(useStore.getState().ui.running).toBe(false);
+  });
+
+  it('fires onError (and clears the spinner) when the stream fails', async () => {
+    seed();
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new Error('boom');
+    }));
+
+    const onDone = vi.fn();
+    const onError = vi.fn();
+    attachCatchUpStream({
+      workspaceId: 'ws1', agentSlug: 'atlas', chatId: 'chat-1', sessionId: 'sess_cu',
+      onDone, onError,
+    });
+
+    await vi.waitFor(() => {
+      expect(onError).toHaveBeenCalledTimes(1);
+    });
+    expect(useStore.getState().ui.running).toBe(false);
+    expect(onDone).not.toHaveBeenCalled();
   });
 });

@@ -60,9 +60,34 @@ func (v1StubComposer) Compose(_ context.Context, _ agents.ComposeParams) (string
 	return "stub instruction", nil
 }
 
-// setupV1Env builds a router with a stub-model runner and seeds a workspace
-// with an agent (slug "atlas"). Returns the store, router, and API key.
+// v1StallModel holds the model call open until its release channel closes —
+// the silent stretch an SSE keepalive must bridge.
+type v1StallModel struct{ release chan struct{} }
+
+func (m v1StallModel) Generate(_ context.Context, _ []*schema.AgenticMessage, _ ...model.Option) (*schema.AgenticMessage, error) {
+	<-m.release
+	return v1StubMessage(), nil
+}
+
+func (m v1StallModel) Stream(_ context.Context, _ []*schema.AgenticMessage, _ ...model.Option) (*schema.StreamReader[*schema.AgenticMessage], error) {
+	sr, sw := schema.Pipe[*schema.AgenticMessage](1)
+	go func() {
+		<-m.release
+		_ = sw.Send(v1StubMessage(), nil)
+		sw.Close()
+	}()
+	return sr, nil
+}
+
 func setupV1Env(t *testing.T) (store.Store, *gin.Engine, string) {
+	t.Helper()
+	return setupV1EnvOpts(t, nil, 0)
+}
+
+// setupV1EnvOpts builds the same environment with an optional stalling model
+// (release non-nil) and a custom /v1 SSE keepalive cadence for the streaming
+// tests. keepAlive 0 uses the handler default.
+func setupV1EnvOpts(t *testing.T, release chan struct{}, keepAlive time.Duration) (store.Store, *gin.Engine, string) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
@@ -76,22 +101,30 @@ func setupV1Env(t *testing.T) (store.Store, *gin.Engine, string) {
 	onClawDir := t.TempDir()
 	runner := agents.NewRunner(
 		st.Workspaces(), st.Agents(), st.Users(), st.Members(), st.Roles(),
-		st.Providers(), st.SessionEvents(), st.SessionCheckpoints(),
+		st.Providers(), st.SessionEvents(), st.SessionCheckpoints(), st.Memories(),
 		[]byte("test-key-32-bytes-long-12345678"),
 		onClawDir,
 		agents.WithAgenticModelFactory(func(_ context.Context, _ string, _ providers.Credential, _ string) (model.BaseModel[*schema.AgenticMessage], error) {
+			if release != nil {
+				return v1StallModel{release: release}, nil
+			}
 			return v1StubModel{}, nil
 		}),
 		agents.WithInstructionComposer(v1StubComposer{}),
+		// Mirror the composition root's wiring: tool resolution reads the
+		// workspace's tool settings (web.search provider entries) through the
+		// settings service, not the allow-all default gate.
+		agents.WithToolPolicy(agents.NewToolSettingsService(st.ToolSettings(), []byte("test-key-32-bytes-long-12345678"))),
 	)
 
-	r := server.NewRouter(server.RouterOptions{
-		Store:         st,
-		Storage:       stor,
-		Issuer:        issuer,
-		EncryptionKey: []byte("test-key-32-bytes-long-12345678"),
-		Runner:        runner,
-	})
+		r := server.NewRouter(server.RouterOptions{
+			Store:             st,
+			Storage:           stor,
+			Issuer:            issuer,
+			EncryptionKey:     []byte("test-key-32-bytes-long-12345678"),
+			Runner:            runner,
+			V1StreamKeepAlive: keepAlive,
+		})
 
 	ctx := context.Background()
 	ws := &domain.Workspace{Slug: "v1ws", Name: "V1 WS", Timezone: "UTC"}
@@ -114,6 +147,23 @@ func setupV1Env(t *testing.T) (store.Store, *gin.Engine, string) {
 	}
 	if err := st.Agents().Create(ctx, ag); err != nil {
 		t.Fatalf("create agent: %v", err)
+	}
+
+	// web.search fails construction when a workspace has no provider entries
+	// (fail-fast, no credential-free default), which would fail every turn at
+	// tool resolution. Seed one valid entries-shaped provider so the agent
+	// composes; the stub model never invokes the tool.
+	if err := st.ToolSettings().Upsert(ctx, &domain.WorkspaceToolSetting{
+		WorkspaceID: ws.ID,
+		ToolKey:     "web.search",
+		Enabled:     true,
+		Config: map[string]any{
+			"entries": []any{
+				map[string]any{"name": "Tavily fixture", "provider": "tavily", "api_key": "tvly-v1-fixture-key"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("seed web.search tool settings: %v", err)
 	}
 
 	// Seed the agent's on-disk workspace directory (the jail root).
@@ -495,6 +545,68 @@ func TestV1Responses_StreamingTurn(t *testing.T) {
 	}
 
 	// Sequence numbers strictly increasing.
+	var seqs []int
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimPrefix(line, "data: ")
+		if !strings.HasPrefix(line, "{") {
+			continue
+		}
+		var ev map[string]any
+		if json.Unmarshal([]byte(line), &ev) != nil {
+			continue
+		}
+		if s, ok := ev["sequence_number"].(float64); ok {
+			seqs = append(seqs, int(s))
+		}
+	}
+	for i := 1; i < len(seqs); i++ {
+		if seqs[i] <= seqs[i-1] {
+			t.Fatalf("sequence numbers not strictly increasing: %v", seqs)
+		}
+	}
+}
+
+// TestV1Responses_StreamingKeepAlive bridges long silent stretches (a slow
+// model call or a long browser tool) by periodically re-emitting the in-progress
+// response snapshot. Proxies don't reap the idle connection and sequence numbers
+// remain ordered.
+func TestV1Responses_StreamingKeepAlive(t *testing.T) {
+	release := make(chan struct{})
+	// Fast keepalive so the test stays quick.
+	_, router, key := setupV1EnvOpts(t, release, 25*time.Millisecond)
+
+	b, _ := json.Marshal(map[string]any{"model": "atlas", "input": "hi", "stream": true})
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(b))
+	req.Header.Set("Authorization", "Bearer "+key)
+	rec := httptest.NewRecorder()
+
+	// Release the stalling model after ~80ms (giving the 25ms keepalive time
+	// to fire at least twice during the silent stretch).
+	go func() {
+		time.Sleep(80 * time.Millisecond)
+		close(release)
+	}()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if xab := rec.Header().Get("X-Accel-Buffering"); xab != "no" {
+		t.Errorf("X-Accel-Buffering = %q, want 'no'", xab)
+	}
+
+	body := rec.Body.String()
+	// Count how many times response.in_progress appeared: 1 initial + >= 2 keepalives.
+	inProgressCount := strings.Count(body, `"type":"response.in_progress"`)
+	if inProgressCount < 2 {
+		t.Errorf("got %d response.in_progress frames, want >= 2 (keepalive did not fire)", inProgressCount)
+	}
+	if !strings.Contains(body, "data: [DONE]") {
+		t.Error("missing [DONE] terminal frame")
+	}
+
+	// Sequence numbers across all frames (including keepalives) must be strictly increasing.
 	var seqs []int
 	for _, line := range strings.Split(body, "\n") {
 		line = strings.TrimPrefix(line, "data: ")

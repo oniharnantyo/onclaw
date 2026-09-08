@@ -109,6 +109,76 @@ describe('threadPersistence', () => {
     }
   });
 
+  it('ensureSessionBinding persists immediately without waiting for debounce timer', async () => {
+    vi.useFakeTimers();
+    try {
+      const { useStore } = await import('./index');
+      useStore.setState({
+        pos: { ...(useStore.getState().pos as any), tenantId: 'ws-sync' },
+        db: {
+          ...useStore.getState().db,
+          'ws-sync': {
+            threads: {
+              'agent-1': {
+                active: 's-local-1',
+                list: [{ id: 's-local-1', title: 'New chat', updated: '', messages: [] }],
+              },
+            },
+          } as any,
+        },
+      });
+      // Clear localStorage before action to ensure it gets written synchronously
+      localStorage.removeItem(KEY);
+
+      const minted = useStore.getState().ensureSessionBinding('agent-1');
+      expect(minted).toMatch(/^sess_/);
+
+      // Verify immediate synchronous write to localStorage (0 ms timer elapsed)
+      const stored = JSON.parse(localStorage.getItem(KEY) || '{}');
+      expect(stored['ws-sync']?.['agent-1']?.active).toBe(minted);
+      expect(stored['ws-sync']?.['agent-1']?.list[0]?.sess).toBe(minted);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('pushMsg persists immediately without waiting for debounce timer', async () => {
+    vi.useFakeTimers();
+    try {
+      const { useStore } = await import('./index');
+      useStore.setState({
+        pos: { ...(useStore.getState().pos as any), tenantId: 'ws-sync-msg' },
+        db: {
+          ...useStore.getState().db,
+          'ws-sync-msg': {
+            threads: {
+              'agent-2': {
+                active: 'sess_123',
+                list: [{ id: 'sess_123', sess: 'sess_123', title: 'Chat', updated: '', messages: [] }],
+              },
+            },
+          } as any,
+        },
+      });
+      // Clear localStorage
+      localStorage.removeItem(KEY);
+
+      useStore.getState().pushMsg('ws-sync-msg', 'agent-2', {
+        id: 'msg_1',
+        author: 'you',
+        text: 'hello world immediate sync',
+        ts: '',
+      });
+
+      // Verify immediate synchronous write to localStorage without timer advancing
+      const stored = JSON.parse(localStorage.getItem(KEY) || '{}');
+      expect(stored['ws-sync-msg']?.['agent-2']?.list[0]?.messages).toHaveLength(1);
+      expect(stored['ws-sync-msg']?.['agent-2']?.list[0]?.messages[0]?.text).toBe('hello world immediate sync');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   afterEach(() => {
     delete (globalThis as any).__threadPersistProbe;
   });

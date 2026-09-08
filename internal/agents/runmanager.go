@@ -35,11 +35,15 @@ type RunKey struct {
 // function for its manager-derived context, the ADK agent-level cancel
 // function (the safe-point cancel state machine that persists the durable
 // cancel marker), and the done channel the run goroutine closes when it has
-// fully unwound.
+// fully unwound. It also manages dynamic subscriber streams.
 type liveRun struct {
 	cancel      func()
 	agentCancel adk.AgentCancelFunc
 	done        chan struct{}
+
+	mu          sync.Mutex
+	nextSubID   uint64
+	subscribers map[uint64]*EventStream
 }
 
 // runHandle bundles what a run goroutine needs from the manager: the detached
@@ -101,14 +105,31 @@ func (m *runManager) start(key RunKey, agentCancel adk.AgentCancelFunc) (*runHan
 	}
 
 	ctx, cancel := context.WithCancel(m.base)
-	lr := &liveRun{cancel: cancel, agentCancel: agentCancel, done: make(chan struct{})}
+	lr := &liveRun{
+		cancel:      cancel,
+		agentCancel: agentCancel,
+		done:        make(chan struct{}),
+		subscribers: make(map[uint64]*EventStream),
+	}
 	m.live[key] = lr
 	m.mu.Unlock()
 
 	// Deregister once the run goroutine has fully unwound so a completed
-	// session can run again.
+	// session can run again. The sweep also closes any subscriber that raced
+	// in after the run's own CloseSubscribers but before done — every
+	// subscriber stream is guaranteed to close when the run ends.
 	go func() {
 		<-lr.done
+		lr.mu.Lock()
+		subs := make([]*EventStream, 0, len(lr.subscribers))
+		for subID, sub := range lr.subscribers {
+			subs = append(subs, sub)
+			delete(lr.subscribers, subID)
+		}
+		lr.mu.Unlock()
+		for _, sub := range subs {
+			_ = sub.Close()
+		}
 		m.mu.Lock()
 		if current, ok := m.live[key]; ok && current == lr {
 			delete(m.live, key)
@@ -122,6 +143,114 @@ func (m *runManager) start(key RunKey, agentCancel adk.AgentCancelFunc) (*runHan
 		finish: sync.OnceFunc(func() { close(lr.done) }),
 		done:   lr.done,
 	}, nil
+}
+
+// Subscribe dynamically attaches a new subscriber stream to the live run identified by key.
+// It returns the assigned subscription ID, the EventStream, and true if the run is active.
+// If the run is not active, it returns (0, nil, false).
+func (m *runManager) Subscribe(key RunKey) (uint64, *EventStream, bool) {
+	m.mu.Lock()
+	lr, ok := m.live[key]
+	m.mu.Unlock()
+	if !ok {
+		return 0, nil, false
+	}
+
+	lr.mu.Lock()
+	defer lr.mu.Unlock()
+
+	select {
+	case <-lr.done:
+		return 0, nil, false
+	default:
+	}
+
+	lr.nextSubID++
+	subID := lr.nextSubID
+	stream := NewEventStream(128)
+	lr.subscribers[subID] = stream
+	return subID, stream, true
+}
+
+// Unsubscribe removes subscriber subID from the live run identified by key and closes its stream.
+func (m *runManager) Unsubscribe(key RunKey, subID uint64) {
+	m.mu.Lock()
+	lr, ok := m.live[key]
+	m.mu.Unlock()
+	if !ok {
+		return
+	}
+
+	lr.mu.Lock()
+	stream, exists := lr.subscribers[subID]
+	if exists {
+		delete(lr.subscribers, subID)
+	}
+	lr.mu.Unlock()
+
+	if exists && stream != nil {
+		_ = stream.Close()
+	}
+}
+
+// Broadcast fans out ev to all active subscribers of the live run identified by key.
+// If a subscriber's buffer is full or closed, it handles it gracefully without blocking the runner.
+func (m *runManager) Broadcast(key RunKey, ev *TranscriptEvent) {
+	m.mu.Lock()
+	lr, ok := m.live[key]
+	m.mu.Unlock()
+	if !ok {
+		return
+	}
+
+	lr.mu.Lock()
+	subs := make([]*EventStream, 0, len(lr.subscribers))
+	for _, sub := range lr.subscribers {
+		subs = append(subs, sub)
+	}
+	lr.mu.Unlock()
+
+	for _, sub := range subs {
+		sub.Send(ev)
+	}
+}
+
+// CloseSubscribers closes all active subscribers for the live run identified by key.
+func (m *runManager) CloseSubscribers(key RunKey) {
+	m.mu.Lock()
+	lr, ok := m.live[key]
+	m.mu.Unlock()
+	if !ok {
+		return
+	}
+
+	lr.mu.Lock()
+	subs := make([]*EventStream, 0, len(lr.subscribers))
+	for subID, sub := range lr.subscribers {
+		subs = append(subs, sub)
+		delete(lr.subscribers, subID)
+	}
+	lr.mu.Unlock()
+
+	for _, sub := range subs {
+		_ = sub.Close()
+	}
+}
+
+// isLive reports whether a run is currently registered and executing for key.
+func (m *runManager) isLive(key RunKey) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	lr, ok := m.live[key]
+	if !ok {
+		return false
+	}
+	select {
+	case <-lr.done:
+		return false
+	default:
+		return true
+	}
 }
 
 // cancel triggers cancellation of the live run for key, returning false when

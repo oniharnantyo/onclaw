@@ -32,43 +32,33 @@ const MaxAvatarBytes = 2048
 
 // Agent represents an autonomous persona configured in a workspace.
 type Agent struct {
-	ID             string          `json:"id"`
-	WorkspaceID    string          `json:"workspace_id"`
-	Slug           string          `json:"slug"`
-	Name           string          `json:"name"`
-	Role           string          `json:"role"`
-	Description    string          `json:"description"`
-	Brief          string          `json:"brief"`
-	Identity       string          `json:"identity"`
-	Soul           string          `json:"soul"`
-	Bootstrap      string          `json:"bootstrap"`
-	ProviderID     string          `json:"provider_id"`
-	Model          string          `json:"model"`
-	Temperature    float64         `json:"temperature"`
-	MaxTokens      *int            `json:"max_tokens,omitempty"`
-	Effort         *string         `json:"effort,omitempty"`
-	Autonomy       AgentAutonomy   `json:"autonomy"`
-	ContextWindow  *int            `json:"context_window,omitempty"`
-	Tools          []string        `json:"tools"`
-	DisabledMCPs   []string        `json:"disabled_mcps"`
-	Avatar         json.RawMessage `json:"avatar"`
-	PromptsStatus  PromptsStatus   `json:"prompts_status"`
-	PromptsError   *string         `json:"prompts_error,omitempty"`
-	MaxIterations  *int            `json:"max_iterations,omitempty"`
-	CreatedBy      *string         `json:"created_by,omitempty"`
-	UpdatedBy      *string         `json:"updated_by,omitempty"`
-	CreatedAt      time.Time       `json:"created_at"`
-	UpdatedAt      time.Time       `json:"updated_at"`
-}
-
-// AgentUserMemory represents per-user persistent memory for an agent.
-type AgentUserMemory struct {
-	AgentID     string    `json:"agent_id"`
-	UserID      string    `json:"user_id"`
-	WorkspaceID string    `json:"workspace_id"`
-	Content     string    `json:"content"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID            string          `json:"id"`
+	WorkspaceID   string          `json:"workspace_id"`
+	Slug          string          `json:"slug"`
+	Name          string          `json:"name"`
+	Role          string          `json:"role"`
+	Description   string          `json:"description"`
+	Brief         string          `json:"brief"`
+	Identity      string          `json:"identity"`
+	Soul          string          `json:"soul"`
+	Bootstrap     string          `json:"bootstrap"`
+	ProviderID    string          `json:"provider_id"`
+	Model         string          `json:"model"`
+	Temperature   float64         `json:"temperature"`
+	MaxTokens     *int            `json:"max_tokens,omitempty"`
+	Effort        *string         `json:"effort,omitempty"`
+	Autonomy      AgentAutonomy   `json:"autonomy"`
+	ContextWindow *int            `json:"context_window,omitempty"`
+	Tools         []string        `json:"tools"`
+	EnabledMCPS   []string        `json:"enabled_mcps"`
+	Avatar        json.RawMessage `json:"avatar"`
+	PromptsStatus PromptsStatus   `json:"prompts_status"`
+	PromptsError  *string         `json:"prompts_error,omitempty"`
+	MaxIterations *int            `json:"max_iterations,omitempty"`
+	CreatedBy     *string         `json:"created_by,omitempty"`
+	UpdatedBy     *string         `json:"updated_by,omitempty"`
+	CreatedAt     time.Time       `json:"created_at"`
+	UpdatedAt     time.Time       `json:"updated_at"`
 }
 
 // ValidateAgentAutonomy validates that autonomy is one of the allowed values (approval, suggest, full).

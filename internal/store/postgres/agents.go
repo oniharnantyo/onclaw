@@ -57,8 +57,8 @@ func (as *agentStore) Create(ctx context.Context, a *domain.Agent) error {
 	if a.Tools == nil {
 		a.Tools = []string{}
 	}
-	if a.DisabledMCPs == nil {
-		a.DisabledMCPs = []string{}
+	if a.EnabledMCPS == nil {
+		a.EnabledMCPS = []string{}
 	}
 
 	if a.ID == "" {
@@ -77,7 +77,7 @@ func (as *agentStore) Create(ctx context.Context, a *domain.Agent) error {
 		INSERT INTO agents (
 			id, workspace_id, slug, name, role, description, brief,
 			provider_id, model, temperature, max_tokens, effort, autonomy,
-			context_window, tools, disabled_mcps,
+			context_window, tools, enabled_mcps,
 			avatar, prompts_status, prompts_error, created_by, updated_by, created_at, updated_at
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7,
@@ -102,7 +102,7 @@ func (as *agentStore) Create(ctx context.Context, a *domain.Agent) error {
 		string(a.Autonomy),
 		a.ContextWindow,
 		a.Tools,
-		a.DisabledMCPs,
+		a.EnabledMCPS,
 		[]byte(a.Avatar),
 		string(a.PromptsStatus),
 		a.PromptsError,
@@ -125,7 +125,7 @@ func (as *agentStore) ByID(ctx context.Context, workspaceID, id string) (*domain
 	query := `
 		SELECT id, workspace_id, slug, name, role, description, brief,
 		       provider_id, model, temperature, max_tokens, effort, autonomy,
-		       context_window, tools, disabled_mcps,
+		       context_window, tools, enabled_mcps,
 		       avatar, prompts_status, prompts_error, created_by, updated_by, created_at, updated_at
 		FROM agents
 		WHERE workspace_id = $1 AND id = $2
@@ -149,7 +149,7 @@ func (as *agentStore) ByID(ctx context.Context, workspaceID, id string) (*domain
 		&autonomyStr,
 		&a.ContextWindow,
 		&a.Tools,
-		&a.DisabledMCPs,
+		&a.EnabledMCPS,
 		&avatarBytes,
 		&promptsStatusStr,
 		&a.PromptsError,
@@ -171,8 +171,8 @@ func (as *agentStore) ByID(ctx context.Context, workspaceID, id string) (*domain
 	if a.Tools == nil {
 		a.Tools = []string{}
 	}
-	if a.DisabledMCPs == nil {
-		a.DisabledMCPs = []string{}
+	if a.EnabledMCPS == nil {
+		a.EnabledMCPS = []string{}
 	}
 	return &a, nil
 }
@@ -185,7 +185,7 @@ func (as *agentStore) BySlug(ctx context.Context, workspaceID, slug string) (*do
 	query := `
 		SELECT id, workspace_id, slug, name, role, description, brief,
 		       provider_id, model, temperature, max_tokens, effort, autonomy,
-		       context_window, tools, disabled_mcps,
+		       context_window, tools, enabled_mcps,
 		       avatar, prompts_status, prompts_error, created_by, updated_by, created_at, updated_at
 		FROM agents
 		WHERE workspace_id = $1 AND slug = $2
@@ -209,7 +209,7 @@ func (as *agentStore) BySlug(ctx context.Context, workspaceID, slug string) (*do
 		&autonomyStr,
 		&a.ContextWindow,
 		&a.Tools,
-		&a.DisabledMCPs,
+		&a.EnabledMCPS,
 		&avatarBytes,
 		&promptsStatusStr,
 		&a.PromptsError,
@@ -231,8 +231,8 @@ func (as *agentStore) BySlug(ctx context.Context, workspaceID, slug string) (*do
 	if a.Tools == nil {
 		a.Tools = []string{}
 	}
-	if a.DisabledMCPs == nil {
-		a.DisabledMCPs = []string{}
+	if a.EnabledMCPS == nil {
+		a.EnabledMCPS = []string{}
 	}
 	return &a, nil
 }
@@ -245,7 +245,7 @@ func (as *agentStore) ListForWorkspace(ctx context.Context, workspaceID string) 
 	query := `
 		SELECT id, workspace_id, slug, name, role, description, brief,
 		       provider_id, model, temperature, max_tokens, effort, autonomy,
-		       context_window, tools, disabled_mcps,
+		       context_window, tools, enabled_mcps,
 		       avatar, prompts_status, prompts_error, created_by, updated_by, created_at, updated_at
 		FROM agents
 		WHERE workspace_id = $1
@@ -278,7 +278,7 @@ func (as *agentStore) ListForWorkspace(ctx context.Context, workspaceID string) 
 			&autonomyStr,
 			&a.ContextWindow,
 			&a.Tools,
-			&a.DisabledMCPs,
+			&a.EnabledMCPS,
 			&avatarBytes,
 			&promptsStatusStr,
 			&a.PromptsError,
@@ -299,8 +299,8 @@ func (as *agentStore) ListForWorkspace(ctx context.Context, workspaceID string) 
 		if a.Tools == nil {
 			a.Tools = []string{}
 		}
-		if a.DisabledMCPs == nil {
-			a.DisabledMCPs = []string{}
+		if a.EnabledMCPS == nil {
+			a.EnabledMCPS = []string{}
 		}
 		agents = append(agents, a)
 	}
@@ -343,8 +343,8 @@ func (as *agentStore) Update(ctx context.Context, a *domain.Agent) error {
 	if a.Tools == nil {
 		a.Tools = []string{}
 	}
-	if a.DisabledMCPs == nil {
-		a.DisabledMCPs = []string{}
+	if a.EnabledMCPS == nil {
+		a.EnabledMCPS = []string{}
 	}
 
 	now := time.Now().UTC()
@@ -365,7 +365,7 @@ func (as *agentStore) Update(ctx context.Context, a *domain.Agent) error {
 		    autonomy = $11,
 		    context_window = $12,
 		    tools = $13,
-			    disabled_mcps = $14,
+			    enabled_mcps = $14,
 			    avatar = $15,
 			    updated_by = $16,
 			    updated_at = $17
@@ -387,7 +387,7 @@ func (as *agentStore) Update(ctx context.Context, a *domain.Agent) error {
 		string(a.Autonomy),
 		a.ContextWindow,
 		a.Tools,
-		a.DisabledMCPs,
+		a.EnabledMCPS,
 		[]byte(a.Avatar),
 		a.UpdatedBy,
 		now,

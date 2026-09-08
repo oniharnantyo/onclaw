@@ -2,11 +2,12 @@ import { useState, useEffect, useMemo, useCallback } from "react";
 import { cx, providerOf, slugify } from "../lib/helpers";
 import { Modal } from "../components/ui/Modal";
 import { inputCls, labelCls } from "../components/ui/constants";
-import { PROVIDER_TYPES, MCP_SERVERS } from "../lib/constants";
+import { PROVIDER_TYPES } from "../lib/constants";
 import { Segmented } from "../components/ui/Segmented";
 import { OptionChips } from "../components/ui/OptionChips";
 import { MicroLabel } from "../components/ui/MicroLabel";
 import { Icon } from "../components/ui/Icon";
+import { Toggle } from "../components/ui/Toggle";
 import { AvatarPicker, generateRandomAvatar } from "../components/ui/AvatarPicker";
 import { ModelCombobox } from "../components/ui/ModelCombobox";
 import { OnboardingLoader } from "../components/ui/OnboardingLoader";
@@ -15,11 +16,15 @@ import {
   formatApiError,
   type ApiProviderConfig,
   type ApiWorkspaceSkill,
-  type ApiAgentMemory,
   type ApiToolSettings,
+  type ApiMcpServer,
+  type McpServerPayload,
   type AgentAutonomy,
+  type CreateAgentPayload,
 } from "../lib/api";
 import { useCanWriteSkills, unmetToolDependencies } from "../lib/skills";
+import { useCanWriteAgents } from "../lib/agents";
+import { McpServerDialog } from "./McpServerDialog";
 import { useWorkspace, useStore } from "../store";
 
 // The browser facade: the catalog exposes one Browser chip whose stored
@@ -40,6 +45,22 @@ function normalizeBrowserAlias(toolIds: string[]): string[] {
   if (!hasMember) return toolIds;
   const withoutMembers = toolIds.filter((t) => !t.startsWith(BROWSER_MEMBER_PREFIX));
   return hasAlias ? withoutMembers : [...withoutMembers, BROWSER_TOOL_ALIAS];
+}
+
+// Design D1: the agent's MCP opt-ins are server-assigned UUIDs in
+// `enabled_mcps`.
+function mcpRefs(a: any): string[] {
+  return a?.enabled_mcps ?? [];
+}
+
+// Same display contract as the settings pane: the enabled master switch wins
+// (Paused), then the probed status — connected/ok green, error red, unknown gray.
+function mcpStatusView(s: ApiMcpServer): { dot: string; label: string; errored: boolean } {
+  if (!s.enabled) return { dot: 'bg-muted', label: 'Paused', errored: false };
+  if (s.status === 'error') return { dot: 'bg-danger', label: 'Error', errored: true };
+  if (s.status === 'ok' || s.status === 'connected')
+    return { dot: 'bg-success', label: 'Connected', errored: false };
+  return { dot: 'bg-muted', label: 'Unknown', errored: false };
 }
 
 const ROLE_SUGGESTIONS = [
@@ -96,8 +117,8 @@ export function AgentConfigModal({
   // Step in wizard (1 = Identity, 2 = Model, 3 = Capabilities)
   const [step, setStep] = useState<1 | 2 | 3>(1);
 
-  // Tab in edit mode ('identity' | 'capabilities' | 'prompts' | 'memory')
-  const [editTab, setEditTab] = useState<'identity' | 'model' | 'capabilities' | 'prompts' | 'memory'>('identity');
+  // Tab in edit mode ('identity' | 'capabilities' | 'prompts')
+  const [editTab, setEditTab] = useState<'identity' | 'model' | 'capabilities' | 'prompts'>('identity');
 
   // Loading detail state for edit mode
   const [loadingDetail, setLoadingDetail] = useState(isEdit);
@@ -113,9 +134,16 @@ export function AgentConfigModal({
   const [agentSkillFormOpen, setAgentSkillFormOpen] = useState(false);
   const skillsWritable = useCanWriteSkills(tenant || currentWs);
 
-  // User's own memory for the agent (in edit mode)
-  const [memory, setMemory] = useState<ApiAgentMemory | null>(null);
-  const [loadingMemory, setLoadingMemory] = useState(false);
+  // MCP: the workspace registry rows (opt-in toggles) and this agent's own
+  // private servers (edit mode only). Private add/edit rides the shared
+  // structured dialog, gated to agents.write holders (design D9).
+  const [wsMcpServers, setWsMcpServers] = useState<ApiMcpServer[]>([]);
+  const [agentMcpServers, setAgentMcpServers] = useState<ApiMcpServer[]>([]);
+  const [agentMcpDialog, setAgentMcpDialog] = useState<
+    { mode: 'add' } | { mode: 'edit'; server: ApiMcpServer } | null
+  >(null);
+  const agentsWritable = useCanWriteAgents(tenant || currentWs);
+
   const [toolCatalog, setToolCatalog] = useState<ApiToolSettings[]>([]);
 
   // Regenerating state
@@ -160,9 +188,10 @@ export function AgentConfigModal({
   const [availableEfforts, setAvailableEfforts] = useState<string[]>([]);
   const [autonomy, setAutonomy] = useState<AgentAutonomy>('approval');
 
-  // Untouched Step 3 enables no registry tools — the deployer opts in.
+  // Untouched Step 3 enables no registry tools and opts into no MCP servers —
+  // the deployer opts in (scenarios: Step 3 skippable).
   const [tools, setTools] = useState<string[]>([]);
-  const [mcp, setMcp] = useState<string[]>([]);
+  const [enabledMcps, setEnabledMcps] = useState<string[]>([]);
 
   const [promptStatus, setPromptStatus] = useState<string>('ready');
   const [promptError, setPromptError] = useState<string | null | undefined>(null);
@@ -209,7 +238,7 @@ export function AgentConfigModal({
               setAutonomy(a.autonomy as AgentAutonomy);
             }
             if (a.tools) setTools(normalizeBrowserAlias([...a.tools]));
-            if (a.mcp) setMcp([...a.mcp]);
+            setEnabledMcps([...mcpRefs(a)]);
             setPromptStatus(a.prompts_status || 'ready');
             setPromptError(a.prompts_error || null);
       }
@@ -254,34 +283,40 @@ export function AgentConfigModal({
           }
         })
         .catch(() => {});
+
+      // Workspace MCP registry — reads are tools.read, every built-in role
+      // holds them, so the opt-in rows render for anyone configuring an agent.
+      api.mcp
+        .list(targetWsId)
+        .then((res) => {
+          if (mounted && res?.servers) {
+            setWsMcpServers(res.servers);
+          }
+        })
+        .catch(() => {});
     }
     return () => {
       mounted = false;
     };
   }, [targetWsId]);
 
-  // Load memory in edit mode
+  // Hydrate agent-tier skills and private MCP servers in edit mode.
   useEffect(() => {
     let mounted = true;
     const agentId = draft?.id || draft?.slug;
     if (isEdit && agentId && targetWsId) {
-      setLoadingMemory(true);
-      api.agents
-        .getMemory(targetWsId, agentId)
-        .then((res) => {
-          if (mounted && res) {
-            setMemory(res);
-          }
-        })
-        .catch(() => {})
-        .finally(() => {
-          if (mounted) setLoadingMemory(false);
-        });
       // Agent-tier skills live in this agent's own directory — edit mode only.
       api.agents
         .listSkills(targetWsId, agentId)
         .then((res) => {
           if (mounted && res?.skills) setAgentSkills(res.skills);
+        })
+        .catch(() => {});
+      // Agent-private MCP servers hydrate from the agent detail endpoints.
+      api.agents
+        .listMcpServers(targetWsId, agentId)
+        .then((res) => {
+          if (mounted && res?.servers) setAgentMcpServers(res.servers);
         })
         .catch(() => {});
     }
@@ -389,7 +424,8 @@ export function AgentConfigModal({
     const parsedMaxTokens = maxTokens.trim() ? parseInt(maxTokens.trim(), 10) : undefined;
     const parsedContextWindow = contextWindow.trim() ? parseInt(contextWindow.trim(), 10) : undefined;
 
-    const payload = {
+    // Design D1: MCP opt-ins ride `enabled_mcps` (server UUIDs).
+    const payload: CreateAgentPayload = {
       name: name.trim(),
       slug: slug.trim(),
       role: role.trim(),
@@ -403,7 +439,7 @@ export function AgentConfigModal({
       effort: effort || undefined,
       autonomy,
       tools: normalizeBrowserAlias(tools),
-      mcp: mcp,
+      enabled_mcps: enabledMcps,
       avatar,
     };
 
@@ -451,7 +487,7 @@ export function AgentConfigModal({
       effort: effort || undefined,
       autonomy,
       tools: normalizeBrowserAlias(tools),
-      mcp,
+      enabled_mcps: enabledMcps,
       avatar,
     };
 
@@ -494,18 +530,6 @@ export function AgentConfigModal({
     }
   };
 
-  const handleResetMemory = async () => {
-    const agentId = draft?.id || draft?.slug;
-    if (!targetWsId || !agentId) return;
-    try {
-      await api.agents.deleteMemory(targetWsId, agentId);
-      setMemory(null);
-      useStore.getState().toast("Agent memory reset successfully");
-    } catch (err: unknown) {
-      useStore.getState().toast(formatApiError(err, "Failed to reset memory"), "danger");
-    }
-  };
-
   const handleAgentSkillInstalled = (skill: ApiWorkspaceSkill) => {
     setAgentSkills((prev) => [...prev.filter((s) => s.name !== skill.name), skill]);
     setAgentSkillFormOpen(false);
@@ -521,6 +545,49 @@ export function AgentConfigModal({
       useStore.getState().toast(`${skill.name} removed from this agent`);
     } catch (err: unknown) {
       useStore.getState().toast(formatApiError(err, `Failed to remove ${skill.name}`), "danger");
+    }
+  };
+
+  // Opt-in toggle: storing/removing the server UUID in the draft `enabled_mcps`
+  // — persisted only on save. Anyone who can edit the agent can toggle.
+  const toggleMcpServer = (id: string) => {
+    setEnabledMcps((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
+
+  // Agent-private MCP server save through the shared structured dialog. The
+  // dialog owns error display: a rejection keeps it open with the message
+  // inline, so API failures propagate untouched.
+  const handleAgentMcpSave = async (payload: McpServerPayload) => {
+    const agentId = draft?.id || draft?.slug;
+    if (!targetWsId || !agentId || !agentMcpDialog) return;
+    if (agentMcpDialog.mode === 'edit') {
+      const res = await api.agents.updateMcpServer(targetWsId, agentId, agentMcpDialog.server.id, payload);
+      if (res?.server) {
+        const saved = res.server;
+        setAgentMcpServers((prev) => prev.map((s) => (s.id === saved.id ? saved : s)));
+        useStore.getState().toast(`${payload.name} updated`);
+      }
+    } else {
+      const res = await api.agents.createMcpServer(targetWsId, agentId, payload);
+      if (res?.server) {
+        const saved = res.server;
+        setAgentMcpServers((prev) => [...prev, saved]);
+        useStore.getState().toast(`${saved.name} attached to this agent`);
+      }
+    }
+  };
+
+  const handleAgentMcpRemove = async (server: ApiMcpServer) => {
+    const agentId = draft?.id || draft?.slug;
+    if (!targetWsId || !agentId) return;
+    try {
+      await api.agents.deleteMcpServer(targetWsId, agentId, server.id);
+      setAgentMcpServers((prev) => prev.filter((s) => s.id !== server.id));
+      useStore.getState().toast(`${server.name} removed from this agent`);
+    } catch (err: unknown) {
+      useStore.getState().toast(formatApiError(err, `Failed to remove ${server.name}`), "danger");
     }
   };
 
@@ -739,18 +806,6 @@ export function AgentConfigModal({
               )}
             >
               Prompts
-            </button>
-            <button
-              type="button"
-              onClick={() => setEditTab('memory')}
-              className={cx(
-                "border-b-2 px-4 py-2 text-[13px] font-medium transition-colors",
-                editTab === 'memory'
-                  ? "border-accent text-fg font-semibold"
-                  : "border-transparent text-muted hover:text-fg"
-              )}
-            >
-              Memory
             </button>
           </div>
         )}
@@ -1140,11 +1195,156 @@ export function AgentConfigModal({
               </p>
             </div>
 
-            <div>
+            <div data-testid="agent-mcp-section">
               <span className={labelCls}>MCP Servers</span>
-              <OptionChips options={MCP_SERVERS} value={mcp} onChange={setMcp} />
+              {wsMcpServers.length > 0 ? (
+                <div className="space-y-2">
+                  {wsMcpServers.map((s) => {
+                    const st = mcpStatusView(s);
+                    const optedIn = enabledMcps.includes(s.id);
+                    return (
+                      <div
+                        key={s.id}
+                        data-testid={'agent-mcp-row-' + s.id}
+                        className={cx(
+                          'rounded-md border border-line px-3 py-2.5',
+                          !s.enabled && 'opacity-70'
+                        )}
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <p className="truncate text-[13px] font-medium text-fg">{s.name}</p>
+                              <span
+                                className={cx(
+                                  'inline-flex items-center gap-1.5 text-[11px]',
+                                  st.errored
+                                    ? 'text-danger'
+                                    : s.enabled
+                                    ? 'text-[color-mix(in_oklab,var(--success),black_25%)]'
+                                    : 'text-muted'
+                                )}
+                                data-testid={'agent-mcp-status-' + s.id}
+                              >
+                                <span className={cx('h-1.5 w-1.5 rounded-full', st.dot)} />
+                                {st.label}
+                              </span>
+                            </div>
+                            <p className="truncate font-mono text-[11px] text-muted">{s.transport}</p>
+                          </div>
+                          <Toggle
+                            on={optedIn}
+                            label={'Opt this agent into ' + s.name}
+                            onChange={() => toggleMcpServer(s.id)}
+                          />
+                        </div>
+                        {optedIn && !s.enabled && (
+                          <p
+                            className="mt-1.5 flex items-center gap-1 text-[11px] leading-4 text-[color-mix(in_oklab,var(--warn),black_38%)]"
+                            data-testid={'agent-mcp-paused-warn-' + s.id}
+                          >
+                            <Icon name="alert" size={11} />
+                            Paused at workspace level — it contributes no tools until it is resumed in Settings → MCP servers.
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="text-[12px] text-muted" data-testid="agent-mcp-empty">
+                  No MCP servers registered yet — add one in Settings → MCP servers.
+                </p>
+              )}
               <p className="mt-1.5 text-[11px] leading-4 text-muted">
-                Connectors configured in Settings → MCP servers exposed over the Model Context Protocol.
+                An agent gains a server's tools only by opting in — toggles store or remove the server for this agent on save.
+              </p>
+            </div>
+
+            <div data-testid="agent-mcp-servers">
+              <div className="flex items-center justify-between">
+                <span className={labelCls}>Agent MCP servers</span>
+                {isEdit && agentsWritable ? (
+                  <button
+                    type="button"
+                    onClick={() => setAgentMcpDialog({ mode: 'add' })}
+                    data-testid="btn-add-agent-mcp"
+                    className="flex h-7 items-center gap-1.5 rounded-md border border-line px-2.5 text-[11px] font-medium text-fg2 transition-colors hover:border-accent hover:text-fg"
+                  >
+                    <Icon name="plus" size={12} /> Add server
+                  </button>
+                ) : null}
+              </div>
+              {agentMcpServers.length > 0 ? (
+                <div className="space-y-2">
+                  {agentMcpServers.map((s) => {
+                    const st = mcpStatusView(s);
+                    return (
+                      <div
+                        key={s.id}
+                        data-testid={'agent-mcp-server-' + s.id}
+                        className="flex items-center gap-3 rounded-md border border-line px-3 py-2.5"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <p className="truncate text-[13px] font-medium text-fg">{s.name}</p>
+                            <span
+                              className={cx(
+                                'inline-flex items-center gap-1.5 text-[11px]',
+                                st.errored
+                                  ? 'text-danger'
+                                  : s.enabled
+                                  ? 'text-[color-mix(in_oklab,var(--success),black_25%)]'
+                                  : 'text-muted'
+                              )}
+                              data-testid={'agent-mcp-server-status-' + s.id}
+                            >
+                              <span className={cx('h-1.5 w-1.5 rounded-full', st.dot)} />
+                              {st.label}
+                            </span>
+                          </div>
+                          <p className="truncate font-mono text-[11px] text-muted">{s.transport}</p>
+                          {st.errored && s.status_error && (
+                            <p className="truncate text-[11px] text-danger" title={s.status_error}>
+                              {s.status_error}
+                            </p>
+                          )}
+                        </div>
+                        {isEdit && agentsWritable ? (
+                          <>
+                            <button
+                              type="button"
+                              aria-label={'Edit ' + s.name}
+                              data-testid={'btn-edit-agent-mcp-' + s.id}
+                              onClick={() => setAgentMcpDialog({ mode: 'edit', server: s })}
+                              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] hover:text-fg2"
+                            >
+                              <Icon name="edit" size={13} />
+                            </button>
+                            <button
+                              type="button"
+                              aria-label={'Remove ' + s.name}
+                              data-testid={'btn-remove-agent-mcp-' + s.id}
+                              onClick={() => void handleAgentMcpRemove(s)}
+                              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--danger)_10%,transparent)] hover:text-danger"
+                            >
+                              <Icon name="x" size={13} />
+                            </button>
+                          </>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="text-[12px] text-muted" data-testid="agent-mcp-servers-empty">
+                  {isEdit
+                    ? "No private servers — servers added here are attached to this agent only."
+                    : "Private servers can be attached to this agent after it is deployed."}
+                </p>
+              )}
+              <p className="mt-1.5 text-[11px] leading-4 text-muted">
+                Private servers use the same structured form as Settings → MCP servers and are visible only to this agent.
               </p>
             </div>
 
@@ -1339,43 +1539,6 @@ export function AgentConfigModal({
             </p>
           </div>
         )}
-
-        {/* Edit Tab Memory */}
-        {isEdit && editTab === 'memory' && (
-          <div className="space-y-4 max-w-xl" data-testid="agent-memory-pane">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-[14px] font-semibold text-fg">Your personal agent memory</h3>
-                <p className="text-[12px] text-muted">
-                  Memories this agent has recorded from your past conversations. Only visible to you.
-                </p>
-              </div>
-              {memory && memory.content && (
-                <button
-                  type="button"
-                  onClick={handleResetMemory}
-                  data-testid="btn-reset-memory"
-                  className="flex h-8 items-center gap-1.5 rounded-md border border-danger/40 bg-danger/10 px-3 text-[12px] font-medium text-danger transition-colors hover:bg-danger/20"
-                >
-                  <Icon name="trash" size={13} />
-                  Reset memory
-                </button>
-              )}
-            </div>
-
-            {loadingMemory ? (
-              <div className="py-8 text-center text-[13px] text-muted font-mono">Loading memory…</div>
-            ) : memory && memory.content ? (
-              <div className="rounded-lg border border-line bg-warm p-4 font-mono text-[12px] leading-relaxed text-fg whitespace-pre-wrap">
-                {memory.content}
-              </div>
-            ) : (
-              <div className="rounded-lg border border-dashed border-line p-6 text-center text-[13px] text-muted">
-                No memories recorded yet for your conversations with this agent.
-              </div>
-            )}
-          </div>
-        )}
           </>
         )}
 
@@ -1385,6 +1548,15 @@ export function AgentConfigModal({
             agentId={draft?.id || draft?.slug}
             onClose={() => setAgentSkillFormOpen(false)}
             onInstalled={handleAgentSkillInstalled}
+          />
+        ) : null}
+
+        {agentMcpDialog && isEdit ? (
+          <McpServerDialog
+            server={agentMcpDialog.mode === 'edit' ? agentMcpDialog.server : null}
+            existingServers={agentMcpServers}
+            onClose={() => setAgentMcpDialog(null)}
+            onSave={handleAgentMcpSave}
           />
         ) : null}
       </div>

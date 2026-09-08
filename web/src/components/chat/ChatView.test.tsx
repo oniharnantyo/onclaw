@@ -50,4 +50,47 @@ describe('ChatView loading states', () => {
     const { container } = render(<ChatView {...base} thread={thread} typing busy />);
     expect(container.querySelectorAll('[data-od-id="msg-thinking"]').length).toBe(1);
   });
+
+  it('renders latency for finished tool cards and pulsing dots only for pending cards during a live turn', () => {
+    // Regression: a turn that emits multiple tool calls in sequence must show
+    // latency for completed calls (e.g. clickElement that returned an error,
+    // navigate that succeeded) and only pulse dots on the call still waiting
+    // for output. The whole turn having busy=true must not turn every card into
+    // pulsing dots.
+    const thread = [
+      { id: 'u1', author: 'you', text: 'check lilianweng', ts: '' },
+      {
+        id: 'm1',
+        author: 'agent',
+        agentId: 'a1',
+        text: '',
+        ts: '',
+        tools: [
+          { name: 'browser.navigate', args: '{"url":"https://lilianweng.github.io/"}', res: '{"loaded":true}', ms: 1420 },
+          { name: 'browser.click', args: '{"ref":"182"}', error: 'unknown ref "182"', res: 'unknown ref "182"', ms: 380 },
+          { name: 'browser.read', args: '{}', ms: 0 },
+        ],
+        parts: [
+          { k: 'tool', i: 0 },
+          { k: 'tool', i: 1 },
+          { k: 'tool', i: 2 },
+        ],
+      },
+    ];
+    const { container } = render(<ChatView {...base} thread={thread} typing busy />);
+    const buttons = container.querySelectorAll('button[data-od-id^="tool-"]');
+    expect(buttons.length).toBe(3);
+
+    // Card 0: finished success → shows latency, no dots
+    expect(buttons[0].textContent).toContain('1420ms');
+    expect(buttons[0].querySelectorAll('.od-dot').length).toBe(0);
+
+    // Card 1: finished error → shows error latency, no dots
+    expect(buttons[1].textContent).toContain('error · 380ms');
+    expect(buttons[1].querySelectorAll('.od-dot').length).toBe(0);
+
+    // Card 2: still pending (no res/error) → pulses dots, no ms label
+    expect(buttons[2].querySelectorAll('.od-dot').length).toBe(3);
+    expect(buttons[2].textContent).not.toContain('0ms');
+  });
 });

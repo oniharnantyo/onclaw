@@ -52,7 +52,9 @@ const ICONS = {
   "file-plus": [<path key="a" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>, <path key="b" d="M14 2v6h6M12 12v6M9 15h6"/>],
   scan: [<path key="a" d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/>, <circle key="b" cx="12" cy="12" r="3"/>],
   compass: [<circle key="a" cx="12" cy="12" r="9"/>, <path key="b" d="m15.5 8.5-2 5-5 2 2-5z"/>],
-  lock: [<rect key="a" x="4" y="11" width="16" height="10" rx="2"/>, <path key="b" d="M8 11V7a4 4 0 0 1 8 0v4"/>]
+  lock: [<rect key="a" x="4" y="11" width="16" height="10" rx="2"/>, <path key="b" d="M8 11V7a4 4 0 0 1 8 0v4"/>],
+  memory: [<path key="a" d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/>, <path key="b" d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/>, <path key="c" d="M12 13v5"/>],
+  trash: [<path key="a" d="M3 6h18"/>, <path key="b" d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/>, <path key="c" d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>, <path key="d" d="M10 11v6"/>, <path key="e" d="M14 11v6"/>]
 };
 
 

@@ -16,6 +16,7 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 	"github.com/oniharnantyo/onclaw/internal/agents/backend"
+	"github.com/oniharnantyo/onclaw/internal/agents/mcp"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/secrets"
@@ -36,6 +37,7 @@ type Runner struct {
 	providers     store.ProviderStore
 	sessionEvents store.SessionEventStore
 	checkpoints   store.SessionCheckpointStore
+	memories      store.MemoryStore
 
 	encryptionKey []byte
 	onClawDir     string
@@ -47,6 +49,10 @@ type Runner struct {
 	enabledSkillReader  backend.EnabledSkillReader
 	summarizationMargin float64
 	maxIterations       int
+
+	mcpPolicy  mcp.MCPPolicy
+	mcpManager mcp.ToolSource
+	mcpStatus  mcp.StatusWriter
 
 	baseCtx context.Context
 	runMgr  *runManager
@@ -95,6 +101,43 @@ func WithToolPolicy(policy ToolPolicy) RunnerOption {
 	return func(r *Runner) {
 		if policy != nil {
 			r.toolPolicy = policy
+		}
+	}
+}
+
+// WithMCPPolicy supplies the MCP server policy consulted at resolution
+// (design.md D6): the agent's opt-in workspace servers (enabled only) plus
+// its private servers. MCP tools bypass the tools allowlist and this gate —
+// the policy is their only authority. Default: a policy that contributes no
+// servers; the composition root wires the settings-service-backed
+// implementation (a later wave).
+func WithMCPPolicy(policy mcp.MCPPolicy) RunnerOption {
+	return func(r *Runner) {
+		if policy != nil {
+			r.mcpPolicy = policy
+		}
+	}
+}
+
+// WithMCPManager supplies the MCP connection cache the resolver draws server
+// tools from through its ToolSource seam (design.md D5). Default: a no-op
+// source that is never consulted (the default policy yields no servers).
+func WithMCPManager(manager mcp.ToolSource) RunnerOption {
+	return func(r *Runner) {
+		if manager != nil {
+			r.mcpManager = manager
+		}
+	}
+}
+
+// WithMCPStatusWriter supplies the best-effort sink for runtime MCP
+// connection outcomes (design.md D8): failures flip the stored row status to
+// error, successes refresh connected + tool count. A failing write never
+// fails a run. Default: a discarding writer.
+func WithMCPStatusWriter(w mcp.StatusWriter) RunnerOption {
+	return func(r *Runner) {
+		if w != nil {
+			r.mcpStatus = w
 		}
 	}
 }
@@ -158,6 +201,7 @@ func NewRunner(
 	providers store.ProviderStore,
 	sessionEvents store.SessionEventStore,
 	checkpoints store.SessionCheckpointStore,
+	memories store.MemoryStore,
 	encryptionKey []byte,
 	onClawDir string,
 	opts ...RunnerOption,
@@ -171,12 +215,16 @@ func NewRunner(
 		providers:           providers,
 		sessionEvents:       sessionEvents,
 		checkpoints:         checkpoints,
+		memories:            memories,
 		encryptionKey:       encryptionKey,
 		onClawDir:           onClawDir,
 		agenticFactory:      DefaultAgenticModelFactory,
 		instructionComposer: NewInstructionComposer(),
-		toolRegistry:        NewDefaultToolRegistry(),
+		toolRegistry:        NewDefaultToolRegistry(memories),
 		toolPolicy:          allowAllToolPolicy{},
+		mcpPolicy:           noopMCPPolicy{},
+		mcpManager:          noopMCPTools{},
+		mcpStatus:           noopMCPStatus{},
 		summarizationMargin: DefaultSummarizationMargin,
 		baseCtx:             context.Background(),
 	}
@@ -286,6 +334,14 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 
 	agentDir := domain.AgentWorkspaceDir(domain.WorkspaceRoot(r.onClawDir), ws.Slug, agent.Slug)
 
+	// Workspace-local clock for tools that resolve dates (the memory tool's
+	// MEMORY-TODAY.md). An empty identifier loads as UTC; an invalid one
+	// degrades to UTC without failing the run.
+	workspaceTZ, tzErr := time.LoadLocation(ws.Timezone)
+	if tzErr != nil {
+		workspaceTZ = time.UTC
+	}
+
 	// Tool resolution order (workspace-tool-catalog 3.2): the per-turn
 	// AllowedTools override replaces the agent allowlist, the browser facade
 	// alias expands, then the workspace gate filters — so the gate wins over
@@ -309,12 +365,25 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 		AgentSlug:     agent.Slug,
 		AgentDir:      agentDir,
 		SessionID:     req.SessionID,
+		WorkspaceID:   req.WorkspaceID,
+		AgentID:       req.AgentID,
+		UserID:        req.UserID,
+		WorkspaceTZ:   workspaceTZ,
 		ToolConfigs:   toolConfigs,
 	}, r.toolRegistry, effective)
 	if err != nil {
 		return cfg, nil, fmt.Errorf("resolve tools: %w", err)
 	}
 	resolvedTools = tools
+
+	// MCP tools append after built-ins (design.md D6): governed solely by the
+	// opt-in allowlist + master switches + private attachment via the policy —
+	// deliberately independent of `effective`, the allowlist, and the gate.
+	mcpTools, err := r.resolveMCPTools(ctx, req, agent)
+	if err != nil {
+		return cfg, nil, fmt.Errorf("resolve mcp tools: %w", err)
+	}
+	resolvedTools = append(resolvedTools, mcpTools...)
 
 	provider, err := r.providers.ByID(ctx, req.WorkspaceID, agent.ProviderID)
 	if err != nil {
@@ -386,6 +455,111 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 	return cfg, resolvedTools, nil
 }
 
+// noopMCPPolicy is the default MCP policy: no servers, so resolution
+// contributes zero MCP tools. It exists so the runner holds no nil
+// dependencies at the point of use (composition-root wiring replaces it).
+type noopMCPPolicy struct{}
+
+func (noopMCPPolicy) WorkspaceServers(context.Context, string, []string) ([]domain.WorkspaceMCPServer, error) {
+	return nil, nil
+}
+
+func (noopMCPPolicy) AgentServers(context.Context, string) ([]domain.AgentMCPServer, error) {
+	return nil, nil
+}
+
+// noopMCPTools is the default ToolSource. The default policy never yields a
+// server, so it is never consulted; it keeps the manager dependency non-nil.
+type noopMCPTools struct{}
+
+func (noopMCPTools) Tools(context.Context, mcp.Ref) ([]tool.BaseTool, error) { return nil, nil }
+
+// noopMCPStatus discards best-effort status writes when no writer is wired.
+type noopMCPStatus struct{}
+
+func (noopMCPStatus) SetWorkspaceStatus(context.Context, string, string, string, string, int) error {
+	return nil
+}
+
+func (noopMCPStatus) SetAgentStatus(context.Context, string, string, string, string, int) error {
+	return nil
+}
+
+// resolveMCPTools appends the agent's MCP tools after the built-ins
+// (design.md D6/D8): the policy's opt-in workspace servers first, then the
+// agent's private servers, in policy order — the pass-shared [mcp.Namer]
+// makes collision suffixes deterministic given that stable order. A
+// per-server failure contributes zero tools and best-effort flips the row's
+// status to error; the run proceeds. Policy failures (store-level) fail the
+// resolution like any other store error.
+func (r *Runner) resolveMCPTools(ctx context.Context, req ExecRequest, agent *domain.Agent) ([]tool.BaseTool, error) {
+	wsServers, err := r.mcpPolicy.WorkspaceServers(ctx, req.WorkspaceID, agent.EnabledMCPS)
+	if err != nil {
+		return nil, fmt.Errorf("load workspace mcp servers: %w", err)
+	}
+	agentServers, err := r.mcpPolicy.AgentServers(ctx, req.AgentID)
+	if err != nil {
+		return nil, fmt.Errorf("load agent mcp servers: %w", err)
+	}
+
+	var (
+		tools []tool.BaseTool
+		namer = mcp.NewNamer()
+	)
+	// resolveServer fetches one server's tools through the manager, renames
+	// them into the shared pass namespace, and reports the outcome
+	// best-effort. Never fails the run (design.md D8).
+	resolveServer := func(ref mcp.Ref, prevStatus, prevStatusErr string, prevCount int, report func(status, statusErr string, count int)) []tool.BaseTool {
+		serverTools, err := r.mcpManager.Tools(ctx, ref)
+		if err != nil {
+			slog.WarnContext(ctx, "mcp server unavailable; skipping its tools",
+				"workspace_id", req.WorkspaceID,
+				"agent_id", req.AgentID,
+				"server", ref.Name,
+				"error", err,
+			)
+			if prevStatus != domain.MCPStatusError || prevStatusErr != err.Error() {
+				report(domain.MCPStatusError, err.Error(), prevCount)
+			}
+			return nil
+		}
+		named := mcp.ApplyNames(ref.Name, serverTools, namer)
+		if prevStatus != domain.MCPStatusConnected || prevCount != len(named) {
+			report(domain.MCPStatusConnected, "", len(named))
+		}
+		return named
+	}
+
+	for _, s := range wsServers {
+		ref := mcp.Ref{WorkspaceID: req.WorkspaceID, ServerID: s.ID, Name: s.Name, Conn: s.MCPConnection}
+		ws, wsID := req.WorkspaceID, s.ID
+		tools = append(tools, resolveServer(ref, s.Status, s.StatusError, s.ToolCount,
+			func(status, statusErr string, count int) {
+				reportMCPStatus(ctx, r.mcpStatus.SetWorkspaceStatus(ctx, ws, wsID, status, statusErr, count),
+					"workspace", ref.Name)
+			})...)
+	}
+	for _, s := range agentServers {
+		ref := mcp.Ref{WorkspaceID: s.WorkspaceID, ServerID: s.ID, Name: s.Name, Conn: s.MCPConnection}
+		agentID, srvID := req.AgentID, s.ID
+		tools = append(tools, resolveServer(ref, s.Status, s.StatusError, s.ToolCount,
+			func(status, statusErr string, count int) {
+				reportMCPStatus(ctx, r.mcpStatus.SetAgentStatus(ctx, agentID, srvID, status, statusErr, count),
+					"agent", ref.Name)
+			})...)
+	}
+	return tools, nil
+}
+
+// reportMCPStatus logs a failed best-effort status write; the run proceeds
+// regardless (design.md D8: a failing status write never fails the run).
+func reportMCPStatus(ctx context.Context, err error, scope, server string) {
+	if err != nil {
+		slog.WarnContext(ctx, "mcp status write failed (best-effort)",
+			"scope", scope, "server", server, "error", err)
+	}
+}
+
 // skillMentionPattern matches $name tokens in user input. Skill names are
 // DNS-label shaped (lowercase letters, digits, hyphens); anything else —
 // shell variables like $HOME, dollar amounts — does not match.
@@ -455,6 +629,7 @@ func (r *Runner) composeAgent(
 		Workspace: ws,
 		User:      user,
 		RoleName:  role.Name,
+		Memories:  r.memories,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("compose instruction: %w", err)
@@ -529,6 +704,27 @@ func (r *Runner) RunEphemeral(ctx context.Context, req ExecRequest) (*EventStrea
 	return r.run(ctx, req, true)
 }
 
+// SubscribeRun attaches a fresh subscriber stream to the run currently
+// executing for key. It returns (0, nil, false) when no run is live — the
+// caller falls back to committed history. The stream stays live until the run
+// finishes, at which point it is closed so Recv drains to EOF; detach early
+// via UnsubscribeRun. Slow consumers never stall the run: Send drops when the
+// subscriber's buffer is full.
+func (r *Runner) SubscribeRun(key RunKey) (uint64, *EventStream, bool) {
+	return r.runMgr.Subscribe(key)
+}
+
+// UnsubscribeRun detaches a subscriber added by SubscribeRun without
+// affecting the run or other subscribers. Unknown keys and sub-IDs are no-ops.
+func (r *Runner) UnsubscribeRun(key RunKey, subID uint64) {
+	r.runMgr.Unsubscribe(key, subID)
+}
+
+// IsRunActive reports whether a run is currently executing for key.
+func (r *Runner) IsRunActive(key RunKey) bool {
+	return r.runMgr.isLive(key)
+}
+
 // CancelRun cancels the live run for the given session. The run unwinds at
 // the next safe point and records a cancel marker in the session history.
 // It returns false when no run is live for the session.
@@ -589,6 +785,11 @@ func (r *Runner) run(ctx context.Context, req ExecRequest, ephemeral bool) (*Eve
 	return r.execute(handle, cancelOpt, adkAgent, req, sessionAdapter, ephemeral), nil
 }
 
+// runKeyOf builds the manager key for a request's session coordinates.
+func runKeyOf(req ExecRequest) RunKey {
+	return RunKey{WorkspaceID: req.WorkspaceID, AgentID: req.AgentID, SessionID: req.SessionID}
+}
+
 // streamRun drives the ADK runner to completion and maps events onto the EventStream.
 func (r *Runner) streamRun(
 	handle *runHandle,
@@ -597,7 +798,13 @@ func (r *Runner) streamRun(
 	stream *EventStream,
 	req ExecRequest,
 ) {
+	key := runKeyOf(req)
 	defer handle.finish()
+	// Close dynamic subscriber streams before finish() flips lr.done: running
+	// here — ahead of the deregistration goroutine that drops the manager
+	// entry — guarantees every attached live subscriber is closed and drains
+	// to EOF on all exit paths, including the interrupt/cancel short-circuits.
+	defer r.runMgr.CloseSubscribers(key)
 	defer handle.cancel()
 	defer func() { _ = stream.Close() }()
 	defer r.logTapDrops(stream, req)
@@ -619,7 +826,7 @@ func (r *Runner) streamRun(
 		TurnID:     turnID,
 	})
 
-	r.drainAgentEvents(handle.ctx, iter, stream, turnID, partialText)
+	r.drainAgentEvents(handle.ctx, iter, stream, key, turnID, partialText)
 }
 
 // logTapDrops emits one debug line when the live tap dropped events because
@@ -637,11 +844,15 @@ func (r *Runner) logTapDrops(stream *EventStream, req ExecRequest) {
 
 // drainAgentEvents consumes the ADK event iterator and maps it onto the
 // domain EventStream, including the interrupt short-circuit: an approval
-// interrupt ends the stream without a terminal event.
+// interrupt ends the stream without a terminal event. Every mapped event is
+// additionally fanned out via Broadcast to dynamically attached live
+// subscribers; subscriber sends are drop-new, so slow consumers never stall
+// the run.
 func (r *Runner) drainAgentEvents(
 	ctx context.Context,
 	iter *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]],
 	stream *EventStream,
+	key RunKey,
 	turnID string,
 	partialText string,
 ) {
@@ -659,6 +870,13 @@ func (r *Runner) drainAgentEvents(
 	// emitToolFinished can stamp ToolResultPayload.Latency on both the
 	// message-driven and span-driven emit paths (design D3).
 	startedAtTools := map[string]time.Time{}
+
+	// emit sends every mapped transcript event to the primary tap and, additively,
+	// to all dynamically attached live subscribers of the run.
+	emit := func(ev *TranscriptEvent) {
+		stream.Send(ev)
+		r.runMgr.Broadcast(key, ev)
+	}
 
 	recordToolStart := func(callID string, at time.Time) {
 		if callID == "" {
@@ -682,7 +900,7 @@ func (r *Runner) drainAgentEvents(
 		}
 		startedTools[callID] = true
 		recordToolStart(callID, time.Now().UTC())
-		stream.Send(&TranscriptEvent{
+		emit(&TranscriptEvent{
 			Kind:       TranscriptEventToolCallStarted,
 			OccurredAt: time.Now().UTC(),
 			TurnID:     turnID,
@@ -694,7 +912,7 @@ func (r *Runner) drainAgentEvents(
 			return
 		}
 		finishedTools[callID] = true
-		stream.Send(&TranscriptEvent{
+		emit(&TranscriptEvent{
 			Kind:       TranscriptEventToolCallFinished,
 			OccurredAt: time.Now().UTC(),
 			TurnID:     turnID,
@@ -726,7 +944,7 @@ func (r *Runner) drainAgentEvents(
 			var cancelErr *adk.CancelError
 			var streamCanceled *adk.StreamCanceledError
 			if errors.As(event.Err, &cancelErr) || errors.As(event.Err, &streamCanceled) {
-				stream.Send(&TranscriptEvent{
+				emit(&TranscriptEvent{
 					Kind:         TranscriptEventCancelled,
 					OccurredAt:   now,
 					TurnID:       turnID,
@@ -737,7 +955,7 @@ func (r *Runner) drainAgentEvents(
 				return
 			}
 			if errors.Is(event.Err, context.Canceled) {
-				stream.Send(&TranscriptEvent{
+				emit(&TranscriptEvent{
 					Kind:         TranscriptEventCancelled,
 					OccurredAt:   now,
 					TurnID:       turnID,
@@ -758,7 +976,7 @@ func (r *Runner) drainAgentEvents(
 			interrupted := event.Action.Interrupted
 			approval := &ApprovalPayload{InterruptID: interruptIDOf(interrupted)}
 			approval.Command = shellCommandOf(interrupted)
-			stream.Send(&TranscriptEvent{
+			emit(&TranscriptEvent{
 				Kind:       TranscriptEventApprovalRequired,
 				OccurredAt: now,
 				TurnID:     turnID,
@@ -794,7 +1012,7 @@ func (r *Runner) drainAgentEvents(
 							// Escalated immediate abort tore down the model
 							// stream mid-turn; the durable cancel marker is
 							// persisted by the ADK machine.
-							stream.Send(&TranscriptEvent{
+							emit(&TranscriptEvent{
 								Kind:         TranscriptEventCancelled,
 								OccurredAt:   time.Now().UTC(),
 								TurnID:       turnID,
@@ -807,7 +1025,7 @@ func (r *Runner) drainAgentEvents(
 						if errors.Is(err, context.Canceled) {
 							// Send incomplete marker and cancel event.
 							if partialText != "" {
-								stream.Send(&TranscriptEvent{
+								emit(&TranscriptEvent{
 									Kind:       TranscriptEventMessageCompleted,
 									OccurredAt: time.Now().UTC(),
 									TurnID:     turnID,
@@ -817,7 +1035,7 @@ func (r *Runner) drainAgentEvents(
 									},
 								})
 							}
-							stream.Send(&TranscriptEvent{
+							emit(&TranscriptEvent{
 								Kind:         TranscriptEventCancelled,
 								OccurredAt:   time.Now().UTC(),
 								TurnID:       turnID,
@@ -837,7 +1055,7 @@ func (r *Runner) drainAgentEvents(
 					delta := extractAgenticText(frame)
 					if delta != "" {
 						partialText += delta
-						stream.Send(&TranscriptEvent{
+						emit(&TranscriptEvent{
 							Kind:       TranscriptEventTextDelta,
 							OccurredAt: time.Now().UTC(),
 							TurnID:     turnID,
@@ -849,7 +1067,7 @@ func (r *Runner) drainAgentEvents(
 					reasoning := agenticReasoningText(frame)
 					if reasoning != "" {
 						partialReasoning += reasoning
-						stream.Send(&TranscriptEvent{
+						emit(&TranscriptEvent{
 							Kind:           TranscriptEventReasoningDelta,
 							OccurredAt:     time.Now().UTC(),
 							TurnID:         turnID,
@@ -865,7 +1083,7 @@ func (r *Runner) drainAgentEvents(
 				}
 				// Emit completed message.
 				if partialText != "" {
-					stream.Send(&TranscriptEvent{
+					emit(&TranscriptEvent{
 						Kind:       TranscriptEventMessageCompleted,
 						OccurredAt: time.Now().UTC(),
 						TurnID:     turnID,
@@ -902,7 +1120,7 @@ func (r *Runner) drainAgentEvents(
 				if role == "assistant" {
 					reasoning = agenticReasoningText(mo.Message)
 					if reasoning != "" {
-						stream.Send(&TranscriptEvent{
+						emit(&TranscriptEvent{
 							Kind:           TranscriptEventReasoningDelta,
 							OccurredAt:     now,
 							TurnID:         turnID,
@@ -911,7 +1129,7 @@ func (r *Runner) drainAgentEvents(
 					}
 				}
 				if content != "" {
-					stream.Send(&TranscriptEvent{
+					emit(&TranscriptEvent{
 						Kind:       TranscriptEventMessageCompleted,
 						OccurredAt: now,
 						TurnID:     turnID,
@@ -947,7 +1165,7 @@ func (r *Runner) drainAgentEvents(
 			case adk.SessionEventSpanToolCallStart:
 				if se.Span != nil && se.Span.Tool != nil {
 					recordToolStart(se.Span.Tool.ToolUseID, now)
-					stream.Send(&TranscriptEvent{
+					emit(&TranscriptEvent{
 						Kind:       TranscriptEventToolCallStarted,
 						OccurredAt: now,
 						TurnID:     turnID,
@@ -959,7 +1177,7 @@ func (r *Runner) drainAgentEvents(
 				}
 			case adk.SessionEventSpanToolCallEnd:
 				if se.Span != nil && se.Span.Tool != nil {
-					stream.Send(&TranscriptEvent{
+					emit(&TranscriptEvent{
 						Kind:       TranscriptEventToolCallFinished,
 						OccurredAt: now,
 						TurnID:     turnID,
@@ -971,7 +1189,7 @@ func (r *Runner) drainAgentEvents(
 					})
 				}
 			case adk.SessionEventMessagesReplaced:
-				stream.Send(&TranscriptEvent{
+				emit(&TranscriptEvent{
 					Kind:       TranscriptEventContextCompacted,
 					OccurredAt: now,
 					TurnID:     turnID,
@@ -983,7 +1201,7 @@ func (r *Runner) drainAgentEvents(
 
 	// Terminal events.
 	if lastErr != nil {
-		stream.Send(&TranscriptEvent{
+		emit(&TranscriptEvent{
 			Kind:       TranscriptEventError,
 			OccurredAt: time.Now().UTC(),
 			TurnID:     turnID,
@@ -993,7 +1211,7 @@ func (r *Runner) drainAgentEvents(
 		return
 	}
 
-	stream.Send(&TranscriptEvent{
+	emit(&TranscriptEvent{
 		Kind:       TranscriptEventTurnCompleted,
 		OccurredAt: time.Now().UTC(),
 		TurnID:     turnID,
@@ -1171,7 +1389,12 @@ func (r *Runner) streamResume(
 	approval *ApprovalPayload,
 	approved bool,
 ) {
+	key := runKeyOf(req)
 	defer handle.finish()
+	// Same subscriber-close ordering as streamRun: ahead of finish() so the
+	// manager entry is still registered and every live subscriber drains to
+	// EOF, including the ResumeWithParams error short-circuit below.
+	defer r.runMgr.CloseSubscribers(key)
 	defer handle.cancel()
 	defer func() { _ = stream.Close() }()
 	defer r.logTapDrops(stream, req)
@@ -1188,15 +1411,19 @@ func (r *Runner) streamResume(
 		})
 		return
 	}
-	r.drainAgentEvents(handle.ctx, iter, stream, "", "")
+	r.drainAgentEvents(handle.ctx, iter, stream, key, "", "")
 }
 
 // ComposeParams contains the data necessary to compose the execution instruction.
+// Memories is always provided by the runner (design.md D7): the composer reads
+// the workspace's shared memory and the calling user's own memory per
+// execution so the previous turn's appends are visible this turn.
 type ComposeParams struct {
 	AgentDir  string
 	Workspace *domain.Workspace
 	User      *domain.User
 	RoleName  string
+	Memories  store.MemoryStore
 }
 
 // InstructionComposer defines the interface for composing agent execution instructions.
@@ -1213,7 +1440,7 @@ func NewInstructionComposer() *DefaultInstructionComposer {
 }
 
 // Compose constructs the system instruction from disk prompt files and virtual documents.
-func (c *DefaultInstructionComposer) Compose(_ context.Context, params ComposeParams) (string, error) {
+func (c *DefaultInstructionComposer) Compose(ctx context.Context, params ComposeParams) (string, error) {
 	var docs []string
 
 	// 1. AGENTS.md
@@ -1231,13 +1458,35 @@ func (c *DefaultInstructionComposer) Compose(_ context.Context, params ComposePa
 		docs = append(docs, content)
 	}
 
-	// 4. WORKSPACE.md (virtual)
-	if wsDoc := renderWorkspaceDoc(params.Workspace); wsDoc != "" {
+	// 4. WORKSPACE.md (virtual) — metadata plus the workspace's shared memory
+	// subsection, reloaded every execution so last turn's appends are visible
+	// this turn (design.md D7).
+	var sharedMemory string
+	if params.Workspace != nil {
+		mem, err := params.Memories.WorkspaceMemory(ctx, params.Workspace.ID)
+		if err != nil {
+			return "", fmt.Errorf("load workspace memory: %w", err)
+		}
+		if mem != nil {
+			sharedMemory = strings.TrimSpace(mem.Content)
+		}
+	}
+	if wsDoc := renderWorkspaceDoc(params.Workspace, sharedMemory); wsDoc != "" {
 		docs = append(docs, wsDoc)
 	}
 
-	// 5. USER.md (virtual)
-	if userDoc := renderUserDoc(params.User, params.RoleName); userDoc != "" {
+	// 5. USER.md (virtual) — metadata plus the calling user's own memory.
+	var userMemory string
+	if params.User != nil && params.Workspace != nil {
+		mem, err := params.Memories.UserMemory(ctx, params.Workspace.ID, params.User.ID)
+		if err != nil {
+			return "", fmt.Errorf("load user memory: %w", err)
+		}
+		if mem != nil {
+			userMemory = strings.TrimSpace(mem.Content)
+		}
+	}
+	if userDoc := renderUserDoc(params.User, params.RoleName, userMemory); userDoc != "" {
 		docs = append(docs, userDoc)
 	}
 
@@ -1261,7 +1510,7 @@ func readPromptFile(agentDir, filename string) string {
 	return strings.TrimSpace(string(data))
 }
 
-func renderWorkspaceDoc(ws *domain.Workspace) string {
+func renderWorkspaceDoc(ws *domain.Workspace, sharedMemory string) string {
 	if ws == nil {
 		return ""
 	}
@@ -1273,10 +1522,15 @@ func renderWorkspaceDoc(ws *domain.Workspace) string {
 	if ws.Description != "" {
 		sb.WriteString(fmt.Sprintf("- **Description**: %s\n", ws.Description))
 	}
+	if sharedMemory != "" {
+		sb.WriteString("\n## Shared memory\n")
+		sb.WriteString(sharedMemory)
+		sb.WriteString("\n")
+	}
 	return strings.TrimSpace(sb.String())
 }
 
-func renderUserDoc(u *domain.User, roleName string) string {
+func renderUserDoc(u *domain.User, roleName, memory string) string {
 	if u == nil && roleName == "" {
 		return ""
 	}
@@ -1292,6 +1546,11 @@ func renderUserDoc(u *domain.User, roleName string) string {
 	}
 	if roleName != "" {
 		sb.WriteString(fmt.Sprintf("- **Role**: %s\n", roleName))
+	}
+	if memory != "" {
+		sb.WriteString("\n## Memory\n")
+		sb.WriteString(memory)
+		sb.WriteString("\n")
 	}
 	return strings.TrimSpace(sb.String())
 }

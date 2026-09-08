@@ -52,21 +52,21 @@ func TestIntegration_AgentStore_CRUD(t *testing.T) {
 	maxTok := 2048
 	effort := "medium"
 	a1 := &domain.Agent{
-		WorkspaceID:    ws1.ID,
-		Slug:           "support-agent",
-		Name:           "Support Agent",
-		Role:           "customer-success",
-		Description:    "Helps users with questions",
-		Brief:          "Friendly support agent persona",
-		ProviderID:     p1.ID,
-		Model:          "gpt-4o",
-		Temperature:    0.8,
-		MaxTokens:      &maxTok,
-		Effort:         &effort,
-		Autonomy:       domain.AutonomyApproval,
-		Tools:          []string{"search_kb", "calc"},
-		DisabledMCPs:   []string{"github"},
-		Avatar:         json.RawMessage(`{"shape":"circle","color":"#336699"}`),
+		WorkspaceID: ws1.ID,
+		Slug:        "support-agent",
+		Name:        "Support Agent",
+		Role:        "customer-success",
+		Description: "Helps users with questions",
+		Brief:       "Friendly support agent persona",
+		ProviderID:  p1.ID,
+		Model:       "gpt-4o",
+		Temperature: 0.8,
+		MaxTokens:   &maxTok,
+		Effort:      &effort,
+		Autonomy:    domain.AutonomyApproval,
+		Tools:       []string{"search_kb", "calc"},
+		EnabledMCPS: []string{"github"},
+		Avatar:      json.RawMessage(`{"shape":"circle","color":"#336699"}`),
 	}
 	if err := s.Agents().Create(ctx, a1); err != nil {
 		t.Fatalf("unexpected create agent error: %v", err)
@@ -143,7 +143,7 @@ func TestIntegration_AgentStore_CRUD(t *testing.T) {
 	if found.ID != a1.ID || found.Name != "Support Agent" || found.Autonomy != domain.AutonomyApproval {
 		t.Fatalf("unexpected agent retrieved: %+v", found)
 	}
-	if len(found.Tools) != 2 || len(found.DisabledMCPs) != 1 {
+	if len(found.Tools) != 2 || len(found.EnabledMCPS) != 1 {
 		t.Fatalf("unexpected capabilities on agent: %+v", found)
 	}
 
@@ -306,89 +306,8 @@ func TestIntegration_AgentStore_CRUD(t *testing.T) {
 	}
 }
 
-func TestIntegration_AgentUserMemoryStore_CRUD(t *testing.T) {
+func TestIntegration_WithTx_Agents(t *testing.T) {
 	s, _, ctx := setupTestSchema(t)
-
-	u := &domain.User{Email: "mem-user@example.com", Name: "Mem User"}
-	if err := s.Users().Create(ctx, u); err != nil {
-		t.Fatalf("unexpected Create user: %v", err)
-	}
-
-	ws := &domain.Workspace{Slug: "ws-memory-test", Name: "Memory WS"}
-	if err := s.Workspaces().Create(ctx, ws); err != nil {
-		t.Fatalf("unexpected Create ws: %v", err)
-	}
-
-	p := &domain.ProviderConfig{WorkspaceID: ws.ID, Type: "openai", Name: "OpenAI", Enabled: true}
-	if err := s.Providers().Create(ctx, p); err != nil {
-		t.Fatalf("unexpected Create provider: %v", err)
-	}
-
-	a := &domain.Agent{WorkspaceID: ws.ID, Slug: "memory-agent", Name: "Memory Agent", ProviderID: p.ID, Model: "gpt-4o"}
-	if err := s.Agents().Create(ctx, a); err != nil {
-		t.Fatalf("unexpected Create agent: %v", err)
-	}
-
-	// 1. Initial Get returns ErrNotFound
-	_, err := s.AgentUserMemories().Get(ctx, ws.ID, a.ID, u.ID)
-	if !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("expected ErrNotFound before upsert, got %v", err)
-	}
-
-	// 2. Initial Upsert
-	mem := &domain.AgentUserMemory{
-		AgentID:     a.ID,
-		UserID:      u.ID,
-		WorkspaceID: ws.ID,
-		Content:     "User works on backend microservices.",
-	}
-	if err := s.AgentUserMemories().Upsert(ctx, mem); err != nil {
-		t.Fatalf("unexpected Upsert error: %v", err)
-	}
-	if mem.CreatedAt.IsZero() || mem.UpdatedAt.IsZero() {
-		t.Fatal("expected timestamps to be set")
-	}
-
-	// 3. Get retrieves memory
-	got, err := s.AgentUserMemories().Get(ctx, ws.ID, a.ID, u.ID)
-	if err != nil {
-		t.Fatalf("unexpected Get error: %v", err)
-	}
-	if got.Content != "User works on backend microservices." {
-		t.Fatalf("unexpected content: %q", got.Content)
-	}
-
-	// 4. Update via Upsert preserves created_at
-	origCreated := got.CreatedAt
-	got.Content = "User works on fullstack features."
-	if err := s.AgentUserMemories().Upsert(ctx, got); err != nil {
-		t.Fatalf("unexpected second Upsert error: %v", err)
-	}
-	updated, _ := s.AgentUserMemories().Get(ctx, ws.ID, a.ID, u.ID)
-	if updated.Content != "User works on fullstack features." {
-		t.Fatalf("unexpected updated content: %q", updated.Content)
-	}
-	if !updated.CreatedAt.Equal(origCreated) {
-		t.Fatalf("expected CreatedAt preserved: %v vs %v", origCreated, updated.CreatedAt)
-	}
-
-	// 5. Cascade delete when agent is deleted
-	if err := s.Agents().Delete(ctx, ws.ID, a.ID); err != nil {
-		t.Fatalf("unexpected Delete agent error: %v", err)
-	}
-	_, err = s.AgentUserMemories().Get(ctx, ws.ID, a.ID, u.ID)
-	if !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("expected ErrNotFound after agent delete cascade, got %v", err)
-	}
-}
-
-func TestIntegration_WithTx_AgentsMemories(t *testing.T) {
-	s, _, ctx := setupTestSchema(t)
-
-	u := &domain.User{Email: "tx-pg-user@example.com", Name: "Tx PG User"}
-	if err := s.Users().Create(ctx, u); err != nil {
-		t.Fatalf("unexpected create user: %v", err)
-	}
 
 	ws := &domain.Workspace{Slug: "tx-pg-ws", Name: "Tx PG WS"}
 	if err := s.Workspaces().Create(ctx, ws); err != nil {
@@ -409,17 +328,7 @@ func TestIntegration_WithTx_AgentsMemories(t *testing.T) {
 			ProviderID:  p.ID,
 			Model:       "gpt-4o",
 		}
-		if err := txStore.Agents().Create(ctx, a); err != nil {
-			return err
-		}
-
-		mem := &domain.AgentUserMemory{
-			AgentID:     a.ID,
-			UserID:      u.ID,
-			WorkspaceID: ws.ID,
-			Content:     "Tx PG Memory",
-		}
-		return txStore.AgentUserMemories().Upsert(ctx, mem)
+		return txStore.Agents().Create(ctx, a)
 	})
 	if err != nil {
 		t.Fatalf("unexpected WithTx error: %v", err)
@@ -429,10 +338,6 @@ func TestIntegration_WithTx_AgentsMemories(t *testing.T) {
 	aList, err := s.Agents().ListForWorkspace(ctx, ws.ID)
 	if err != nil || len(aList) != 1 {
 		t.Fatalf("expected 1 agent, got %d (err: %v)", len(aList), err)
-	}
-	mem, err := s.AgentUserMemories().Get(ctx, ws.ID, aList[0].ID, u.ID)
-	if err != nil || mem.Content != "Tx PG Memory" {
-		t.Fatalf("expected memory: %+v, err: %v", mem, err)
 	}
 
 	// Rollback test

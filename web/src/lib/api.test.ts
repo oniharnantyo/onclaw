@@ -554,21 +554,14 @@ describe('lib/api', () => {
       expect((globalThis.fetch as any).mock.calls[4][0]).toBe('/api/v1/workspaces/acme/agents/radar/regenerate');
       expect((globalThis.fetch as any).mock.calls[4][1].method).toBe('POST');
 
-      await api.agents.getMemory('acme', 'radar');
-      expect((globalThis.fetch as any).mock.calls[5][0]).toBe('/api/v1/workspaces/acme/agents/radar/memory');
-
       globalThis.fetch = vi.fn().mockResolvedValue({
         ok: true,
         status: 204,
         headers: new Headers(),
       } as any);
-      await api.agents.deleteMemory('acme', 'radar');
-      expect((globalThis.fetch as any).mock.calls[0][0]).toBe('/api/v1/workspaces/acme/agents/radar/memory');
-      expect((globalThis.fetch as any).mock.calls[0][1].method).toBe('DELETE');
-
       await api.agents.delete('acme', 'radar');
-      expect((globalThis.fetch as any).mock.calls[1][0]).toBe('/api/v1/workspaces/acme/agents/radar');
-      expect((globalThis.fetch as any).mock.calls[1][1].method).toBe('DELETE');
+      expect((globalThis.fetch as any).mock.calls[0][0]).toBe('/api/v1/workspaces/acme/agents/radar');
+      expect((globalThis.fetch as any).mock.calls[0][1].method).toBe('DELETE');
     });
 
     it('calls skills endpoints correctly', async () => {

@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -41,7 +42,10 @@ func drainUsageEvents(t *testing.T, send func(gen *adk.AsyncGenerator[*adk.Typed
 	}()
 
 	stream := NewEventStream(16)
-	(&Runner{}).drainAgentEvents(t.Context(), iter, stream, "turn-1", "")
+	// drainAgentEvents fans each event out via the manager's Broadcast; a
+	// manager with no live runs makes that a no-op for this unit test.
+	r := &Runner{runMgr: newRunManager(context.Background(), 0)}
+	r.drainAgentEvents(t.Context(), iter, stream, RunKey{}, "turn-1", "")
 	// drainAgentEvents returns after the terminal event; the caller (streamRun
 	// in production) closes the stream.
 	stream.Close()

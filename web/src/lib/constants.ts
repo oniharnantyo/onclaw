@@ -42,14 +42,6 @@ export const SKILLS = [
   { id: 'summarize', label: 'Summarization' },
   { id: 'postmortem', label: 'Postmortem writer' }
 ];
-export const MCP_SERVERS = [
-  { id: 'github', label: 'GitHub MCP', detail: 'repos, issues, pull requests' },
-  { id: 'postgres', label: 'Postgres MCP', detail: 'read-only SQL' },
-  { id: 'slack', label: 'Slack MCP', detail: 'channels & messages' },
-  { id: 'filesystem', label: 'Filesystem MCP', detail: 'workspace files' },
-  { id: 'memory', label: 'Memory MCP', detail: 'persistent notes' },
-  { id: 'browser', label: 'Browser MCP', detail: 'headless browsing' }
-];
 export const STATUS = {
   running: { dot: 'bg-success', label: 'Running', live: true },
   idle: { dot: 'bg-muted', label: 'Idle' },

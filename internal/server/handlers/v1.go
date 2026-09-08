@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -19,11 +20,23 @@ type v1Handlers struct {
 	runner        *agents.Runner
 	agents        store.AgentStore
 	sessionEvents store.SessionEventStore
+	keepAlive     time.Duration
 }
 
+// defaultKeepAlive is the SSE idle cadence: how often the stream re-sends the
+// response snapshot while the run sits silent (a slow model call or a long
+// browser tool can produce no events for minutes). Without traffic, proxies
+// along the path reap the idle connection and strand the browser's stream
+// client mid-turn.
+const defaultKeepAlive = 15 * time.Second
+
 // NewV1Handlers creates a new v1Handlers instance with injected dependencies.
-func NewV1Handlers(runner *agents.Runner, agents store.AgentStore, sessionEvents store.SessionEventStore) *v1Handlers {
-	return &v1Handlers{runner: runner, agents: agents, sessionEvents: sessionEvents}
+// keepAlive <= 0 falls back to the default cadence.
+func NewV1Handlers(runner *agents.Runner, agents store.AgentStore, sessionEvents store.SessionEventStore, keepAlive time.Duration) *v1Handlers {
+	if keepAlive <= 0 {
+		keepAlive = defaultKeepAlive
+	}
+	return &v1Handlers{runner: runner, agents: agents, sessionEvents: sessionEvents, keepAlive: keepAlive}
 }
 
 // ListModels implements GET /v1/models: the workspace's agents listed as
@@ -218,6 +231,8 @@ func (h *v1Handlers) serveStream(c *gin.Context, stream *agents.EventStream, tra
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
+	// Ask reverse proxies not to buffer frames (nginx honors this).
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Status(http.StatusOK)
 
 	writeFrame := func(ev map[string]any) {
@@ -226,18 +241,50 @@ func (h *v1Handlers) serveStream(c *gin.Context, stream *agents.EventStream, tra
 	}
 	translator.SetSink(writeFrame)
 
-	stopped := false
-	for {
-		ev, err := stream.Recv()
-		if err != nil {
-			break
+	// Pump Recv into a channel so the writer loop can also select the
+	// keepalive ticker and the client-disconnect signal — every socket write
+	// stays on this single goroutine.
+	events := make(chan *agents.TranscriptEvent)
+	pumpDone := make(chan struct{})
+	defer close(pumpDone)
+	go func() {
+		defer close(events)
+		for {
+			ev, err := stream.Recv()
+			if err != nil {
+				return
+			}
+			select {
+			case events <- ev:
+			case <-pumpDone:
+				return
+			}
 		}
-		if translator.Handle(ev) {
+	}()
+
+	keepalive := time.NewTicker(h.keepAlive)
+	defer keepalive.Stop()
+
+	stopped := false
+	for !stopped {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				// The run goroutine finished without a terminal event reaching
+				// the tap. End the stream so the client's event loop exits and
+				// its turn resolves instead of hanging on an open socket.
+				stopped = true
+			} else if translator.Handle(ev) {
+				stopped = true
+			}
+		case <-keepalive.C:
+			translator.KeepAlive()
+		case <-c.Request.Context().Done():
+			// The browser went away (navigation, refresh, abort) — stop early
+			// instead of draining the rest of the run into a dead socket.
 			stopped = true
-			break
 		}
 	}
-	_ = stopped
 
 	_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
 	c.Writer.Flush()

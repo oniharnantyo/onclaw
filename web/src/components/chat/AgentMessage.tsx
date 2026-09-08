@@ -72,7 +72,15 @@ export function AgentMessage({ m, agent, inChannel, busy, isLast, onCopy, onRefr
       : undefined;
   };
   const renderTool = (t: any, key: any) => (
-    <ToolCall key={key} t={t} running={busy && isLast} approval={approvalFor(t)}/>
+    // Dots are per-card: a card that already carries its result (or error)
+    // shows its latency even while the turn keeps running — only the
+    // still-pending call pulses.
+    <ToolCall
+      key={key}
+      t={t}
+      running={busy && isLast && !t.res && !t.error}
+      approval={approvalFor(t)}
+    />
   );
 
   return (

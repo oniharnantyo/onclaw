@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { SettingsPage } from './SettingsPage';
-import { api, ApiError, type ApiWorkspaceSkill } from '../../lib/api';
+import { api, ApiError, type ApiWorkspaceSkill, type ApiMcpServer } from '../../lib/api';
 import { useAuthStore } from '../../store/auth';
 
 describe('screens/settings/SettingsPage', () => {
@@ -60,7 +60,7 @@ describe('screens/settings/SettingsPage', () => {
       },
     ],
     agents: [
-      { id: 'a_triage', name: 'Triage Agent', mcp: ['mcp-sentry'], skills: ['sk-sweeper'] },
+      { id: 'a_triage', name: 'Triage Agent', enabled_mcps: ['mcp-sentry'], skills: ['sk-sweeper'] },
     ],
     notifications: { cronFail: true, agentErrors: true, digest: false, email: 'ops@acme.dev' },
   };
@@ -106,8 +106,11 @@ describe('screens/settings/SettingsPage', () => {
       memberships: [],
       status: 'authenticated',
     });
-    // The Tools pane fetches the catalog on mount; deep-link tests render it.
+    // The Tools pane fetches the catalog and the MCP pane fetches the registry
+    // + agents on mount; deep-link tests render them.
     vi.spyOn(api.tools, 'list').mockResolvedValue({ tools: [] });
+    vi.spyOn(api.mcp, 'list').mockResolvedValue({ servers: [] });
+    vi.spyOn(api.agents, 'list').mockResolvedValue({ agents: [] });
   });
 
   function renderSettingsPage(initialPath = '/settings/workspace', overrides = {}) {
@@ -736,68 +739,205 @@ describe('screens/settings/SettingsPage', () => {
   });
 
   describe('MCP servers pane', () => {
-    it('loads and renders MCP servers and exposed tools', async () => {
+    const mcpServers = (): ApiMcpServer[] => [
+      {
+        id: 'mcp-sentry',
+        workspace_id: 'acme',
+        name: 'Sentry',
+        transport: 'stdio',
+        command: 'sentry-mcp',
+        args: ['serve'],
+        env: [{ name: 'SENTRY_TOKEN', value_hint: 'ab12' }],
+        enabled: true,
+        status: 'connected',
+        status_error: null,
+        tool_count: 3,
+        created_at: '',
+        updated_at: '',
+      },
+      {
+        id: 'mcp-http',
+        workspace_id: 'acme',
+        name: 'Linear',
+        transport: 'streamable_http',
+        url: 'https://mcp.linear.app/mcp',
+        headers: [{ name: 'Authorization', value_hint: '9f04' }],
+        enabled: true,
+        status: 'connected',
+        status_error: null,
+        tool_count: 12,
+        created_at: '',
+        updated_at: '',
+      },
+      {
+        id: 'mcp-broken',
+        workspace_id: 'acme',
+        name: 'Broken DB',
+        transport: 'stdio',
+        command: 'db-mcp',
+        enabled: true,
+        status: 'error',
+        status_error: 'Connection refused',
+        tool_count: 0,
+        created_at: '',
+        updated_at: '',
+      },
+    ];
+
+    it('loads and renders MCP servers from the registry API', async () => {
+      vi.spyOn(api.mcp, 'list').mockResolvedValue({ servers: mcpServers() });
+
       renderSettingsPage('/settings/mcp');
 
+      await waitFor(() => {
+        expect(screen.getByTestId('mcp-mcp-sentry')).not.toBeNull();
+      });
       expect(screen.getByText('Sentry')).not.toBeNull();
-      expect(screen.getByText('stdio · sentry-mcp serve')).not.toBeNull();
+      expect(screen.getByTestId('mcp-status-mcp-sentry').textContent).toBe('Connected');
       expect(screen.getByText('3 tools')).not.toBeNull();
       expect(screen.getByText('Broken DB')).not.toBeNull();
+      expect(screen.getByTestId('mcp-status-mcp-broken').textContent).toBe('Error');
+      expect(screen.getByText('Connection refused')).not.toBeNull();
     });
 
-    it('adds an MCP server via dialog', async () => {
-      const { onUpdate, onToast } = renderSettingsPage('/settings/mcp');
+    it('adds a stdio MCP server via the structured dialog', async () => {
+      vi.spyOn(api.mcp, 'list').mockResolvedValue({ servers: [mcpServers()[2]] });
+      const createSpy = vi.spyOn(api.mcp, 'create').mockResolvedValue({
+        server: {
+          ...mcpServers()[0],
+          id: 'mcp-gh',
+          name: 'GitHub',
+        },
+      });
+      const { onToast } = renderSettingsPage('/settings/mcp');
 
+      await waitFor(() => {
+        expect(screen.getByTestId('btn-mcp-add')).not.toBeNull();
+      });
       fireEvent.click(screen.getByTestId('btn-mcp-add'));
 
       await waitFor(() => {
         expect(screen.getByTestId('modal-mcp-server')).not.toBeNull();
       });
 
-      const nameInput = screen.getByLabelText(/server name/i);
-      const transportInput = screen.getByLabelText(/transport command/i);
       const addConfirmBtn = screen.getByTestId('btn-mcp-add-confirm') as HTMLButtonElement;
 
-      expect(addConfirmBtn.disabled).toBe(true);
+      fireEvent.change(screen.getByLabelText(/server name/i), { target: { value: 'GitHub' } });
 
-      fireEvent.change(nameInput, { target: { value: 'GitHub MCP' } });
-      fireEvent.change(transportInput, { target: { value: 'stdio · gh-mcp' } });
+      // Blocking is inline (ToolsPane dialog precedent), not a disabled button.
+      fireEvent.click(addConfirmBtn);
+      expect(createSpy).not.toHaveBeenCalled();
+      expect(screen.getByTestId('mcp-command-error').textContent).toContain('required');
+      fireEvent.click(addConfirmBtn);
 
-      expect(addConfirmBtn.disabled).toBe(false);
+      fireEvent.change(screen.getByLabelText('Command'), { target: { value: 'npx' } });
+      fireEvent.change(screen.getByLabelText('Arguments'), {
+        target: { value: '-y @modelcontextprotocol/server-github' },
+      });
+      fireEvent.click(screen.getByTestId('btn-mcp-env-add'));
+      fireEvent.change(screen.getByLabelText('Variable name'), { target: { value: 'GITHUB_TOKEN' } });
+      fireEvent.change(screen.getByLabelText('Variable value'), { target: { value: 'ghp_1' } });
 
       fireEvent.click(addConfirmBtn);
 
-      expect(onUpdate).toHaveBeenCalled();
-      expect(onToast).toHaveBeenCalledWith('GitHub MCP added — tools sync on the first handshake');
-      expect(screen.queryByTestId('modal-mcp-server')).toBeNull();
+      await waitFor(() => {
+        expect(createSpy).toHaveBeenCalledWith('acme', {
+          name: 'GitHub',
+          transport: 'stdio',
+          command: 'npx',
+          args: ['-y', '@modelcontextprotocol/server-github'],
+          env: [{ name: 'GITHUB_TOKEN', value: 'ghp_1' }],
+        });
+      });
+      await waitFor(() => {
+        expect(onToast).toHaveBeenCalledWith(expect.stringContaining('GitHub added'));
+      });
+      await waitFor(() => {
+        expect(screen.queryByTestId('modal-mcp-server')).toBeNull();
+        expect(screen.getByTestId('mcp-mcp-gh')).not.toBeNull();
+      });
     });
 
-    it('edits an MCP server name and transport via dialog', async () => {
-      const { onUpdate, onToast } = renderSettingsPage('/settings/mcp');
+    it('edits a server keeping the stored secret when the value is left empty', async () => {
+      vi.spyOn(api.mcp, 'list').mockResolvedValue({ servers: mcpServers() });
+      const patchSpy = vi.spyOn(api.mcp, 'update').mockResolvedValue({
+        server: { ...mcpServers()[1], name: 'Linear HQ' },
+      });
+      const { onToast } = renderSettingsPage('/settings/mcp');
 
-      fireEvent.click(screen.getByTestId('btn-edit-mcp-sentry'));
+      await waitFor(() => {
+        expect(screen.getByTestId('btn-edit-mcp-http')).not.toBeNull();
+      });
+      fireEvent.click(screen.getByTestId('btn-edit-mcp-http'));
 
       await waitFor(() => {
         expect(screen.getByTestId('modal-mcp-server')).not.toBeNull();
       });
 
-      const transportInput = screen.getByLabelText(/transport command/i);
-      fireEvent.change(transportInput, { target: { value: 'stdio · sentry-v2-mcp' } });
+      // Write-only: the stored header value is never echoed.
+      const valueInput = screen.getByLabelText('Header value') as HTMLInputElement;
+      expect(valueInput.type).toBe('password');
+      expect(valueInput.value).toBe('');
+      expect(valueInput.placeholder).toBe('•••• 9f04');
 
+      fireEvent.change(screen.getByLabelText(/server name/i), { target: { value: 'Linear HQ' } });
       fireEvent.click(screen.getByTestId('btn-mcp-save'));
 
-      expect(onUpdate).toHaveBeenCalled();
-      expect(onToast).toHaveBeenCalledWith('Sentry updated');
-      expect(screen.queryByTestId('modal-mcp-server')).toBeNull();
+      await waitFor(() => {
+        expect(patchSpy).toHaveBeenCalledWith('acme', 'mcp-http', {
+          name: 'Linear HQ',
+          transport: 'streamable_http',
+          url: 'https://mcp.linear.app/mcp',
+          // Empty value omitted — the stored secret is kept.
+          headers: [{ name: 'Authorization' }],
+        });
+      });
+      await waitFor(() => {
+        expect(onToast).toHaveBeenCalledWith('Linear HQ updated');
+        expect(screen.queryByTestId('modal-mcp-server')).toBeNull();
+      });
     });
 
-    it('retries an errored MCP server and reconnects', async () => {
-      const { onUpdate, onToast } = renderSettingsPage('/settings/mcp');
+    it('retries an errored MCP server via the probe endpoint', async () => {
+      vi.spyOn(api.mcp, 'list').mockResolvedValue({ servers: mcpServers() });
+      const probeSpy = vi.spyOn(api.mcp, 'probe').mockResolvedValue({
+        server: { ...mcpServers()[2], status: 'connected', status_error: null, tool_count: 6 },
+      });
+      const { onToast } = renderSettingsPage('/settings/mcp');
 
+      await waitFor(() => {
+        expect(screen.getByTestId('mcp-retry-mcp-broken')).not.toBeNull();
+      });
       fireEvent.click(screen.getByTestId('mcp-retry-mcp-broken'));
 
-      expect(onUpdate).toHaveBeenCalled();
-      expect(onToast).toHaveBeenCalledWith('Broken DB reconnected — 0 tools available');
+      await waitFor(() => {
+        expect(probeSpy).toHaveBeenCalledWith('acme', 'mcp-broken');
+      });
+      await waitFor(() => {
+        expect(onToast).toHaveBeenCalledWith('Broken DB connected — 6 tools exposed');
+        expect(screen.getByTestId('mcp-status-mcp-broken').textContent).toBe('Connected');
+      });
+    });
+
+    it('pauses and resumes a server through the master switch', async () => {
+      vi.spyOn(api.mcp, 'list').mockResolvedValue({ servers: mcpServers() });
+      const patchSpy = vi.spyOn(api.mcp, 'update').mockResolvedValue({
+        server: { ...mcpServers()[0], enabled: false },
+      });
+      const { onToast } = renderSettingsPage('/settings/mcp');
+
+      await waitFor(() => {
+        expect(screen.getByRole('switch', { name: 'Enable Sentry' })).not.toBeNull();
+      });
+      fireEvent.click(screen.getByRole('switch', { name: 'Enable Sentry' }));
+
+      await waitFor(() => {
+        expect(patchSpy).toHaveBeenCalledWith('acme', 'mcp-sentry', { enabled: false });
+      });
+      await waitFor(() => {
+        expect(onToast).toHaveBeenCalledWith('Sentry paused — agents lose access on the next run');
+        expect(screen.getByTestId('mcp-status-mcp-sentry').textContent).toBe('Paused');
+      });
     });
   });
 

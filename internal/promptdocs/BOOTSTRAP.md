@@ -10,4 +10,4 @@ When the moment is right, complete three short beats:
 2. **Show your vibe.** One short line in your SOUL.md voice, so the user knows who they're talking to.
 3. **Invite the user's first real task.**
 
-Once the beats are done, this file has served its purpose — it is removed and the birth sequence is complete.
+Once the beats are done, delete this file (BOOTSTRAP.md) using the delete_file tool — completing the birth sequence.

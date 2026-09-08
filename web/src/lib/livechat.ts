@@ -7,6 +7,11 @@
 // This module reads/writes the same slot directly as a fallback so the web
 // build stays green while the store lands its half in parallel.
 import { api, apiKeys, formatApiError } from './api';
+// API_ORIGIN/getToken are read through the module namespace instead of named
+// imports: suites that mock './api' narrowly (e.g. chat/runtime.test.ts) keep
+// working — a missing export degrades to undefined rather than breaking the
+// import binding. Both exist on the real module.
+import * as apiModule from './api';
 import { appendReasoningPart, appendToolPart } from './helpers';
 import { useStore } from '../store';
 import {
@@ -129,11 +134,226 @@ export interface HydratedTranscript {
   /** The last `turn_completed` event's `usage.final_input_tokens` — reloads
    * restore the context meter from it. Undefined when no turn carries usage. */
   finalInputTokens?: number;
+  /** Id of the last event folded into this transcript — the `after` cursor a
+   * catch-up stream resumes from (D4). Undefined when the transcript is empty. */
+  lastEventId?: string;
 }
 
 function toolCardFor(turn: any): any[] {
   if (!turn.tools) turn.tools = [];
   return turn.tools;
+}
+
+/**
+ * Folds transcript events into thread messages with the per-turn accumulator
+ * shared by transcript hydration and the live catch-up stream (D4): whatever
+ * the source, user/assistant/tool events land as one agent message per turn.
+ */
+class TranscriptTranslator {
+  private messages: any[] = [];
+  private pendingInterruptIds: string[] = [];
+  private activityAfterInterrupt = false;
+  private openInterrupts = new Set<string>();
+  private finalInputTokens: number | undefined;
+  private lastEventId: string | undefined;
+  // Per-turn accumulator so user/assistant/tool events fold into one agent
+  // message per turn, matching how live streaming builds the thread.
+  private turnUser: any = null;
+  private turnAgent: any = null;
+  private turnId = '';
+
+  private sessionId: string;
+  private idPrefix = 'h';
+
+  constructor(sessionId: string, idPrefix = 'h') {
+    this.sessionId = sessionId;
+    this.idPrefix = idPrefix;
+  }
+
+  /** Continues an in-flight turn already rendered locally (catch-up, D4):
+   * streamed chunks extend THIS message instead of minting a split bubble.
+   * The agent message's resp codec (`resp_<session>_<turn>`) names the turn. */
+  seedTail(turnId: string, agent: any): void {
+    this.turnId = turnId;
+    this.turnAgent = agent;
+  }
+
+  private ensureAgent(ev: any): any {
+    if (!this.turnAgent) {
+      this.turnAgent = {
+        id: ev.id || `${this.idPrefix}-a-${this.messages.length}`,
+        author: 'agent',
+        ts: ev.occurred_at || '',
+        text: '',
+        tools: [],
+      };
+    }
+    return this.turnAgent;
+  }
+
+  private flushTurn(): void {
+    // Rebuild the turn's minted response id (codec: resp_<session>_<turn>) so
+    // a hydrated thread chains via previous_response_id instead of birthing
+    // a fresh session on its next turn.
+    if (this.turnAgent && this.turnId) this.turnAgent.resp = 'resp_' + this.sessionId + '_' + this.turnId;
+    if (this.turnUser) this.messages.push(this.turnUser);
+    if (this.turnAgent) this.messages.push(this.turnAgent);
+    this.turnUser = null;
+    this.turnAgent = null;
+    this.turnId = '';
+  }
+
+  push(ev: any): void {
+    if (ev.id) this.lastEventId = ev.id;
+    // A new turn id flushes the accumulated turn even without a user message
+    // (tool-only or cron turns) so each turn becomes its own agent message.
+    if (ev.turn_id && this.turnId && ev.turn_id !== this.turnId) this.flushTurn();
+    if (ev.turn_id) this.turnId = ev.turn_id;
+    switch (ev.kind) {
+      case 'message_completed': {
+        const role = ev.message?.role;
+        if (role === 'user') {
+          const text = ev.message?.content || '';
+          // Tool results persist under role user with no extractable text —
+          // they never render and would split the turn into empty bubbles.
+          if (!text.trim()) break;
+          if (this.turnUser || this.turnAgent) this.flushTurn();
+          this.turnUser = {
+            id: ev.id || `${this.idPrefix}-u-${this.messages.length}`,
+            author: 'you',
+            ts: ev.occurred_at || '',
+            text,
+          };
+        } else if (role === 'assistant') {
+          const text = ev.message?.content || '';
+          const reasoning = ev.message?.reasoning_content || '';
+          if (!text.trim() && !reasoning.trim()) break;
+          const agent = this.ensureAgent(ev);
+          agent.text = (agent.text || '') + text;
+          // Reasoning hydrates as ordered bubbles (same parts model as live
+          // streaming): a message's reasoning lands where the event sits in
+          // the turn — before its tool calls, or between them and the text.
+          if (reasoning) appendReasoningPart(agent, reasoning);
+        }
+        this.noteInterruptActivity();
+        break;
+      }
+      case 'text_delta': {
+        // Live-broadcast only (deltas are never persisted): the catch-up
+        // stream folds them into the turn body exactly like the live runtime.
+        const delta = ev.text_delta || '';
+        if (!this.turnAgent && !delta.trim()) break;
+        this.ensureAgent(ev).text = (this.turnAgent.text || '') + delta;
+        break;
+      }
+      case 'reasoning_delta': {
+        const delta = ev.reasoning_delta || '';
+        if (!this.turnAgent && !delta.trim()) break;
+        appendReasoningPart(this.ensureAgent(ev), delta);
+        break;
+      }
+      case 'tool_call_started': {
+        const agent = this.ensureAgent(ev);
+        // A call already carded (the subscribe-boundary window can deliver
+        // the same call from BOTH the history replay and the live tap) never
+        // duplicates its card — tool_call_finished updates by call id.
+        const callId = ev.tool_call?.call_id;
+        if (callId && toolCardFor(agent).some((t: any) => t.callId === callId)) break;
+        toolCardFor(agent).push({
+          callId,
+          name: ev.tool_call?.name,
+          args: ev.tool_call?.arguments || '',
+          ms: 0,
+        });
+        appendToolPart(agent, agent.tools.length - 1);
+        this.noteInterruptActivity();
+        break;
+      }
+      case 'tool_call_finished': {
+        const agent = this.ensureAgent(ev);
+        const card = toolCardFor(agent).find((t: any) => t.callId && t.callId === ev.tool_result?.call_id);
+        if (card) {
+          card.res = ev.tool_result?.result || '';
+          card.ms = ev.tool_result?.latency ? Math.round(ev.tool_result.latency / 1e6) : 0;
+          if (ev.tool_result?.is_error) card.error = card.res;
+        }
+        this.noteInterruptActivity();
+        break;
+      }
+      case 'approval_required': {
+        const agent = this.ensureAgent(ev);
+        const interruptId = ev.approval?.interrupt_id || '';
+        toolCardFor(agent).push({
+          args: '',
+          ms: 0,
+          approval: {
+            interruptId,
+            command: ev.approval?.command || '',
+            sessionId: this.sessionId,
+            resolved: false,
+          },
+        });
+        appendToolPart(agent, agent.tools.length - 1);
+        this.openInterrupts.add(interruptId);
+        this.activityAfterInterrupt = false;
+        break;
+      }
+      case 'turn_started':
+      case 'cancelled':
+      case 'error':
+      default:
+        break;
+      case 'turn_completed': {
+        if (typeof ev.usage?.final_input_tokens === 'number') {
+          this.finalInputTokens = ev.usage.final_input_tokens;
+        }
+        break;
+      }
+    }
+  }
+
+  private noteInterruptActivity(): void {
+    if (this.openInterrupts.size > 0) {
+      this.activityAfterInterrupt = true;
+      this.openInterrupts.clear();
+    }
+  }
+
+  /** Flushed messages plus the in-progress tail, for incremental writers:
+   * repeated views stay stable (ids and object identity) so a catch-up writer
+   * can re-render the growing tail without duplicating completed turns. */
+  view(): {
+    messages: any[];
+    tail: { turnId: string; user: any; agent: any } | null;
+    finalInputTokens?: number;
+  } {
+    const tail =
+      this.turnUser || this.turnAgent
+        ? { turnId: this.turnId, user: this.turnUser, agent: this.turnAgent }
+        : null;
+    return {
+      messages: this.messages,
+      tail,
+      ...(this.finalInputTokens !== undefined ? { finalInputTokens: this.finalInputTokens } : {}),
+    };
+  }
+
+  /** Terminal transcript (hydration path): flushes the tail and resolves
+   * which approval interrupts were never followed by turn activity. */
+  result(): HydratedTranscript {
+    this.flushTurn();
+    // An approval is still pending when the latest interrupt was never followed
+    // by resumed turn activity (mirrors the server's PendingApproval rule).
+    if (!this.activityAfterInterrupt && this.openInterrupts.size > 0) {
+      this.openInterrupts.forEach((id) => id && this.pendingInterruptIds.push(id));
+    }
+    return {
+      messages: this.messages,
+      pendingInterruptIds: this.pendingInterruptIds,
+      ...(this.finalInputTokens !== undefined ? { finalInputTokens: this.finalInputTokens } : {}),
+      ...(this.lastEventId !== undefined ? { lastEventId: this.lastEventId } : {}),
+    };
+  }
 }
 
 /**
@@ -149,165 +369,9 @@ export async function fetchSessionTranscript(
   const res = await api.agents.sessionEvents(workspaceId, agentSlug, sessionId);
   const events = res?.events || [];
 
-  const messages: any[] = [];
-  const pendingInterruptIds: string[] = [];
-  let activityAfterInterrupt = false;
-  const openInterrupts = new Set<string>();
-  // Last turn_completed's final-call input (events are chronological — a
-  // later turn_completed carrying usage overwrites an earlier one).
-  let finalInputTokens: number | undefined;
-
-  // Per-turn accumulator so user/assistant/tool events fold into one agent
-  // message per turn, matching how live streaming builds the thread.
-  let turnUser: any = null;
-  let turnAgent: any = null;
-  let turnId = '';
-  const flushTurn = () => {
-    // Rebuild the turn's minted response id (codec: resp_<session>_<turn>) so
-    // a hydrated thread chains via previous_response_id instead of birthing
-    // a fresh session on its next turn.
-    if (turnAgent && turnId) turnAgent.resp = 'resp_' + sessionId + '_' + turnId;
-    if (turnUser) messages.push(turnUser);
-    if (turnAgent) messages.push(turnAgent);
-    turnUser = null;
-    turnAgent = null;
-    turnId = '';
-  };
-
-  for (const ev of events || []) {
-    // A new turn id flushes the accumulated turn even without a user message
-    // (tool-only or cron turns) so each turn becomes its own agent message.
-    if (ev.turn_id && turnId && ev.turn_id !== turnId) flushTurn();
-    if (ev.turn_id) turnId = ev.turn_id;
-    switch (ev.kind) {
-      case 'message_completed': {
-        const role = ev.message?.role;
-        if (role === 'user') {
-          if (turnUser || turnAgent) flushTurn();
-          turnUser = {
-            id: ev.id || `h-u-${messages.length}`,
-            author: 'you',
-            ts: ev.occurred_at || '',
-            text: ev.message?.content || '',
-          };
-        } else if (role === 'assistant') {
-          if (!turnAgent) {
-            turnAgent = {
-              id: ev.id || `h-a-${messages.length}`,
-              author: 'agent',
-              ts: ev.occurred_at || '',
-              text: '',
-              tools: [],
-            };
-          }
-          turnAgent.text = (turnAgent.text || '') + (ev.message?.content || '');
-          // Reasoning hydrates as ordered bubbles (same parts model as live
-          // streaming): a message's reasoning lands where the event sits in
-          // the turn — before its tool calls, or between them and the text.
-          if (ev.message?.reasoning_content) appendReasoningPart(turnAgent, ev.message.reasoning_content);
-        }
-        if (openInterrupts.size > 0) {
-          activityAfterInterrupt = true;
-          openInterrupts.clear();
-        }
-        break;
-      }
-      case 'tool_call_started': {
-        if (!turnAgent) {
-          turnAgent = {
-            id: ev.id || `h-a-${messages.length}`,
-            author: 'agent',
-            ts: ev.occurred_at || '',
-            text: '',
-            tools: [],
-          };
-        }
-        toolCardFor(turnAgent).push({
-          callId: ev.tool_call?.call_id,
-          name: ev.tool_call?.name,
-          args: ev.tool_call?.arguments || '',
-          ms: 0,
-        });
-        appendToolPart(turnAgent, turnAgent.tools.length - 1);
-        if (openInterrupts.size > 0) {
-          activityAfterInterrupt = true;
-          openInterrupts.clear();
-        }
-        break;
-      }
-      case 'tool_call_finished': {
-        if (!turnAgent) {
-          turnAgent = {
-            id: ev.id || `h-a-${messages.length}`,
-            author: 'agent',
-            ts: ev.occurred_at || '',
-            text: '',
-            tools: [],
-          };
-        }
-        const card = toolCardFor(turnAgent).find((t: any) => t.callId && t.callId === ev.tool_result?.call_id);
-        if (card) {
-          card.res = ev.tool_result?.result || '';
-          card.ms = ev.tool_result?.latency ? Math.round(ev.tool_result.latency / 1e6) : 0;
-          if (ev.tool_result?.is_error) card.error = card.res;
-        }
-        if (openInterrupts.size > 0) {
-          activityAfterInterrupt = true;
-          openInterrupts.clear();
-        }
-        break;
-      }
-      case 'approval_required': {
-        if (!turnAgent) {
-          turnAgent = {
-            id: ev.id || `h-a-${messages.length}`,
-            author: 'agent',
-            ts: ev.occurred_at || '',
-            text: '',
-            tools: [],
-          };
-        }
-        const interruptId = ev.approval?.interrupt_id || '';
-        toolCardFor(turnAgent).push({
-          args: '',
-          ms: 0,
-          approval: {
-            interruptId,
-            command: ev.approval?.command || '',
-            sessionId,
-            resolved: false,
-          },
-        });
-        appendToolPart(turnAgent, turnAgent.tools.length - 1);
-        openInterrupts.add(interruptId);
-        activityAfterInterrupt = false;
-        break;
-      }
-      case 'turn_started':
-      case 'text_delta':
-      case 'cancelled':
-      case 'error':
-      default:
-        break;
-      case 'turn_completed': {
-        if (typeof ev.usage?.final_input_tokens === 'number') {
-          finalInputTokens = ev.usage.final_input_tokens;
-        }
-        break;
-      }
-    }
-  }
-  flushTurn();
-
-  // An approval is still pending when the latest interrupt was never followed
-  // by resumed turn activity (mirrors the server's PendingApproval rule).
-  if (!activityAfterInterrupt && openInterrupts.size > 0) {
-    openInterrupts.forEach((id) => id && pendingInterruptIds.push(id));
-  }
-
-  return finalInputTokens === undefined
-    ? { messages, pendingInterruptIds }
-    : { messages, pendingInterruptIds, finalInputTokens };
+  const translator = new TranscriptTranslator(sessionId);
+  for (const ev of events || []) translator.push(ev);
+  return translator.result();
 }
 
 /**
@@ -344,8 +408,12 @@ export async function hydrateSession(opts: {
   agentSlug: string;
   chatId: string;
   sessionId: string;
+  /** Checked after the fetch resolves and before the transcript replaces the
+   * local thread — a stale attempt (StrictMode's aborted first effect run, a
+   * chat switch) must not clobber a newer attach's streamed tail. */
+  signal?: AbortSignal;
 }): Promise<HydratedTranscript | null> {
-  const { workspaceId, agentSlug, chatId, sessionId } = opts;
+  const { workspaceId, agentSlug, chatId, sessionId, signal } = opts;
   if (!isBoundSessionId(sessionId)) return null;
   let hydrated: HydratedTranscript;
   try {
@@ -354,8 +422,269 @@ export async function hydrateSession(opts: {
     // Old backend / transient failure: keep the local thread untouched.
     return null;
   }
+  if (signal?.aborted) return null;
   if (hydrated.messages.length > 0) {
     applyServerTranscript(workspaceId, chatId, sessionId, hydrated.messages);
   }
   return hydrated;
+}
+
+// ---------------------------------------------------------------------------
+// In-flight re-attachment & catch-up stream (live-run-reattach-and-catchup D4)
+// ---------------------------------------------------------------------------
+
+/** Absolute API origin without hard import-binding to api.ts exports: suites
+ * that mock './api' narrowly (no API_ORIGIN) resolve to the same-origin
+ * default instead of breaking the import. Evaluated lazily — module-scope
+ * namespace reads would throw under those mocks. */
+function apiOrigin(): string {
+  try {
+    return (apiModule as any).API_ORIGIN ?? '';
+  } catch {
+    return '';
+  }
+}
+
+/** The workspace member's JWT (same credential request() attaches), read
+ * through the namespace so narrow api mocks without getToken degrade to an
+ * unauthenticated probe rather than throwing. */
+function bearerToken(): string | null {
+  try {
+    return (apiModule as any).getToken?.() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export interface StreamSessionEventsOptions {
+  workspaceId: string;
+  agentSlug: string;
+  sessionId: string;
+  /** Only stream events committed after this event id (catch-up cursor). */
+  after?: string;
+  signal?: AbortSignal;
+  onEvent: (ev: any) => void;
+  onDone?: () => void;
+  onError?: (err: unknown) => void;
+}
+
+/**
+ * Resilient SSE consumer for the streaming session-events endpoint
+ * (`?stream=true&after=<eventId>`). Uses fetch + a ReadableStream reader —
+ * not native EventSource, which cannot send the auth header. Each SSE
+ * `data:` frame is one transcript event (same vocabulary as the non-stream
+ * endpoint); the literal `[DONE]` payload or a plain stream end resolves
+ * with onDone, network/parse failures call onError. Aborting the signal
+ * tears the stream down silently.
+ */
+export async function streamSessionEvents(opts: StreamSessionEventsOptions): Promise<void> {
+  const { workspaceId, agentSlug, sessionId, after, signal, onEvent, onDone, onError } = opts;
+  const params = new URLSearchParams({ stream: 'true' });
+  if (after) params.set('after', after);
+  const url = `${apiOrigin()}/api/v1/workspaces/${encodeURIComponent(workspaceId)}/agents/${encodeURIComponent(
+    agentSlug
+  )}/sessions/${encodeURIComponent(sessionId)}/events?${params.toString()}`;
+
+  // Same auth as every other API call (request()): the workspace member's JWT.
+  const headers: Record<string, string> = { Accept: 'text/event-stream' };
+  const token = bearerToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    onDone?.();
+  };
+
+  try {
+    const res = await fetch(url, { headers, signal });
+    if (!res.ok || !res.body) {
+      throw new Error(`session event stream failed (HTTP ${res.status})`);
+    }
+    const contentType = res.headers.get('Content-Type') || '';
+    if (contentType && !contentType.includes('text/event-stream')) {
+      throw new Error(`session event stream returned unexpected content type ${contentType}`);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let sawDone = false;
+    const handleFrame = (frame: string) => {
+      const data = frame
+        .split('\n')
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice('data:'.length).replace(/^ /, ''))
+        .join('\n');
+      if (!data) return;
+      if (data === '[DONE]') {
+        sawDone = true;
+        return;
+      }
+      onEvent(JSON.parse(data));
+    };
+    // The abort path must also unblock a pending read (mock streams and some
+    // proxies don't reject in-flight reads on their own).
+    const teardown = () => {
+      try {
+        void reader.cancel();
+      } catch {
+        // already closed
+      }
+    };
+    if (signal) {
+      if (signal.aborted) {
+        teardown();
+        return;
+      }
+      signal.addEventListener('abort', teardown, { once: true });
+    }
+
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (value) {
+          // Normalize CRLF so frames split identically however the server
+          // ends its lines (a lone trailing \r pairs with the next chunk).
+          buffer = (buffer + decoder.decode(value, { stream: true })).replace(/\r\n/g, '\n');
+          let cut: number;
+          while ((cut = buffer.indexOf('\n\n')) !== -1) {
+            const frame = buffer.slice(0, cut);
+            buffer = buffer.slice(cut + 2);
+            handleFrame(frame);
+            if (sawDone) break;
+          }
+        }
+        if (sawDone || done) break;
+      }
+      // A server that closes without the trailing blank line still gets its
+      // final frame processed.
+      if (!sawDone) {
+        buffer += decoder.decode();
+        if (buffer.trim()) handleFrame(buffer);
+      }
+    } finally {
+      signal?.removeEventListener('abort', teardown);
+      teardown();
+    }
+    // Aborted mid-stream: clean teardown — neither onDone nor onError.
+    if (signal?.aborted) return;
+    finish();
+  } catch (err) {
+    if (signal?.aborted) return;
+    onError?.(err);
+    return;
+  }
+}
+
+/**
+ * Attaches the catch-up stream for a bound session (D4): streams every event
+ * after the hydrate cursor and folds live deltas, tool cards, and reasoning
+ * into the thread via the SAME per-turn translation as transcript hydration.
+ *
+ * Attachment is unconditional for bound sessions (the page did not itself
+ * start a live turn — the caller guards `ui.running`): a transcript heuristic
+ * cannot see a run between persisted events, and the server-side design makes
+ * the probe idempotent — with no run in flight it replays nothing and answers
+ * `[DONE]` immediately (design D2 Phase 3).
+ */
+export function attachCatchUpStream(opts: {
+  workspaceId: string;
+  agentSlug: string;
+  chatId: string;
+  sessionId: string;
+  after?: string;
+  signal?: AbortSignal;
+  /** Completion hooks fired after the internal running-state patch: onDone
+   * when the server closes the stream ([DONE] / clean end), onError on a
+   * network/HTTP failure. Neither fires when the signal aborts (chat switch). */
+  onDone?: () => void;
+  onError?: (err: unknown) => void;
+}): void {
+  const { workspaceId, agentSlug, chatId, sessionId, after, signal, onDone, onError } = opts;
+  if (signal?.aborted) return;
+  const translator = new TranscriptTranslator(sessionId, 'cu');
+  const owned = new Set<string>();
+
+  // Seed the in-flight tail: the newest agent message carrying a response id
+  // of this session (e.g. the reload landed between that message and the
+  // turn's tool calls; the conflict-queue flow has the queued user message
+  // sitting after it) — streamed chunks must continue THAT message instead
+  // of minting a split bubble. Its resp (`resp_<session>_<turn>`) names the
+  // turn.
+  const th = useStore.getState().db[workspaceId]?.threads?.[chatId];
+  const sess = th?.list?.find((x: any) => x.id === sessionId);
+  const prefix = 'resp_' + sessionId + '_';
+  const seedMsg = [...(sess?.messages || [])]
+    .reverse()
+    .find((m: any) => m.author === 'agent' && typeof m.resp === 'string' && m.resp.startsWith(prefix));
+  if (seedMsg) {
+    translator.seedTail(seedMsg.resp.slice(prefix.length), JSON.parse(JSON.stringify(seedMsg)));
+    owned.add(seedMsg.id);
+  }
+
+  const write = () => {
+    const view = translator.view();
+    const rendered = view.tail
+      ? [...view.messages, view.tail.user, view.tail.agent].filter(Boolean)
+      : view.messages;
+    for (const m of rendered) if (m?.id) owned.add(m.id);
+    // Deep-clone on write: the translator keeps mutating these objects across
+    // events, while updateTenant stores them by reference.
+    const clone = JSON.parse(JSON.stringify(rendered));
+    useStore.getState().updateTenant(workspaceId, (t: any) => {
+      const th = t.threads[chatId];
+      const sess = th && th.list.find((x: any) => x.id === sessionId);
+      if (!sess) return t;
+      // Rebuild the catch-up tail: messages the stream owns are REPLACED IN
+      // PLACE (id-keyed) so an owned turn tail never jumps below messages
+      // typed since (the queued-conflict flow); turns the stream minted that
+      // the thread doesn't have yet append at the end.
+      const byId = new Map(clone.filter((m: any) => m?.id).map((m: any) => [m.id, m]));
+      const replaced = new Set<string>();
+      sess.messages = sess.messages.map((m: any) => {
+        const next = byId.get(m.id);
+        if (next === undefined) return m;
+        replaced.add(m.id);
+        return next;
+      });
+      for (const m of clone) {
+        if (m?.id && !replaced.has(m.id)) sess.messages.push(m);
+      }
+      return t;
+    });
+    if (typeof view.finalInputTokens === 'number') {
+      useStore.getState().recordThreadUsage(workspaceId, chatId, view.finalInputTokens);
+    }
+  };
+
+  // Chat switch / unmount mid-catch-up: nothing else will call onDone, so
+  // clear the composer spinner here.
+  signal?.addEventListener('abort', () => useStore.getState().patchUi({ running: false }), { once: true });
+
+  void streamSessionEvents({
+    workspaceId,
+    agentSlug,
+    sessionId,
+    after,
+    signal,
+    onEvent: (ev) => {
+      // Live catch-up renders exactly like a live turn: spinner on until the
+      // server closes the stream. The synthetic run_active frame (no run
+      // payload) flips the spinner the moment the tap attaches — before the
+      // first real event, which can be seconds away mid-tool-call.
+      useStore.getState().patchUi({ running: true });
+      translator.push(ev);
+      write();
+    },
+    onDone: () => {
+      useStore.getState().patchUi({ running: false });
+      onDone?.();
+    },
+    onError: (err) => {
+      useStore.getState().patchUi({ running: false });
+      onError?.(err);
+    },
+  });
 }

@@ -18,7 +18,6 @@ describe('screens/AgentsView & AgentCard', () => {
       status: 'running',
       tools: ['web', 'files'],
       skills: ['research'],
-      mcp: [],
       lastActive: 'just now',
       prompts_status: 'ready',
     },
@@ -35,7 +34,6 @@ describe('screens/AgentsView & AgentCard', () => {
       status: 'idle',
       tools: ['web'],
       skills: [],
-      mcp: [],
       lastActive: '5m ago',
       prompts_status: 'generating',
     },
@@ -52,7 +50,6 @@ describe('screens/AgentsView & AgentCard', () => {
       status: 'idle',
       tools: [],
       skills: [],
-      mcp: [],
       lastActive: '1d ago',
       prompts_status: 'failed',
       prompts_error: 'Provider rejected the API key',
@@ -112,7 +109,6 @@ describe('screens/AgentsView & AgentCard', () => {
       status: 'idle',
       tools: [],
       skills: [],
-      mcp: [],
       lastActive: 'just now',
       prompts_status: 'ready',
     };
@@ -222,9 +218,9 @@ describe('screens/AgentsView & AgentCard', () => {
 
   it('switches sort order between Newest first (default), Name A–Z, and Oldest', () => {
     const sortAgents = [
-      { id: 'z1', name: 'Zeta', status: 'idle', tools: [], skills: [], mcp: [] },
-      { id: 'a1', name: 'Alpha', status: 'idle', tools: [], skills: [], mcp: [] },
-      { id: 'b1', name: 'Beta', status: 'idle', tools: [], skills: [], mcp: [] },
+      { id: 'z1', name: 'Zeta', status: 'idle', tools: [], skills: [] },
+      { id: 'a1', name: 'Alpha', status: 'idle', tools: [], skills: [] },
+      { id: 'b1', name: 'Beta', status: 'idle', tools: [], skills: [] },
     ];
     const sortTenant: any = {
       id: 'acme',
@@ -304,7 +300,6 @@ describe('screens/AgentsView & AgentCard', () => {
         status: 'idle',
         tools: [],
         skills: [],
-        mcp: [],
         lastActive: 'just now',
       };
     });

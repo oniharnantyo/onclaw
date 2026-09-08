@@ -1,8 +1,26 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { AgentConfigModal } from './AgentConfigModal';
-import { api, type ApiWorkspaceSkill } from '../lib/api';
+import { api, type ApiMcpServer, type ApiWorkspaceSkill } from '../lib/api';
 import { useStore } from '../store';
+import { useAuthStore } from '../store/auth';
+
+const mcpServerRow = (overrides: Partial<ApiMcpServer> = {}): ApiMcpServer => ({
+  id: 'srv-gh',
+  workspace_id: 'acme',
+  name: 'GitHub',
+  transport: 'stdio',
+  command: 'npx',
+  args: ['-y', '@modelcontextprotocol/server-github'],
+  env: [],
+  enabled: true,
+  status: 'connected',
+  status_error: null,
+  tool_count: 24,
+  created_at: '',
+  updated_at: '',
+  ...overrides,
+});
 
 /** Fill Step 1 (Identity) fields and advance to Step 2 (Model). */
 async function goToStep2(fields?: { name?: string; role?: string; brief?: string }) {
@@ -71,6 +89,10 @@ describe('modals/AgentConfigModal', () => {
 
   beforeEach(() => {
     vi.restoreAllMocks();
+    // Permission helpers read the auth store; default to no memberships so
+    // "offline / mock mode" keeps every affordance visible (tests that assert
+    // gating set memberships explicitly).
+    useAuthStore.setState({ memberships: [] });
     vi.spyOn(api.providers, 'list').mockResolvedValue({
       providers: mockTenant.providers,
     });
@@ -100,6 +122,8 @@ describe('modals/AgentConfigModal', () => {
       ] as ApiWorkspaceSkill[]),
     });
     vi.spyOn(api.agents, 'listSkills').mockResolvedValue({ skills: [] });
+    vi.spyOn(api.agents, 'listMcpServers').mockResolvedValue({ servers: [] });
+    vi.spyOn(api.mcp, 'list').mockResolvedValue({ servers: [] });
     vi.spyOn(api.tools, 'list').mockResolvedValue({
       tools: [
         { key: 'ls', display_name: 'List Files', description: '', group: 'filesystem', icon_key: 'folder', configurable: false, enabled: true, configured: false, config: {} },
@@ -257,7 +281,7 @@ describe('modals/AgentConfigModal', () => {
         autonomy: 'approval',
         tools: [],
         skills: [],
-        mcp: [],
+        enabled_mcps: [],
         avatar: {},
         prompts_status: 'generating',
         created_at: '',
@@ -296,7 +320,7 @@ describe('modals/AgentConfigModal', () => {
         provider_id: 'prov_anthropic',
         model: 'claude-3-7-sonnet',
         tools: [],
-        mcp: [],
+        enabled_mcps: [],
       }));
       // No per-agent skill state ships in the payload — tiers only.
       expect((api.agents.create as any).mock.calls[0][1].skills).toBeUndefined();
@@ -325,7 +349,7 @@ describe('modals/AgentConfigModal', () => {
         autonomy: 'approval',
         tools: ['web.search'],
         skills: ['github-sweeper'],
-        mcp: [],
+        enabled_mcps: [],
         avatar: {},
         prompts_status: 'generating',
         created_at: '',
@@ -364,7 +388,7 @@ describe('modals/AgentConfigModal', () => {
       expect(api.agents.create).toHaveBeenCalledWith('acme', expect.objectContaining({
         name: 'Beacon',
         tools: ['web.search'],
-        mcp: [],
+        enabled_mcps: [],
         autonomy: 'suggest',
       }));
     });
@@ -403,7 +427,7 @@ describe('modals/AgentConfigModal', () => {
       autonomy: 'approval' as const,
       tools: ['web.search'],
       skills: ['research'],
-      mcp: [],
+      enabled_mcps: [],
       avatar: {},
       prompts_status: 'ready' as const,
       created_at: '',
@@ -418,13 +442,6 @@ describe('modals/AgentConfigModal', () => {
     vi.spyOn(api.agents, 'patch').mockResolvedValue({
       agent: detailAgent,
     });
-    vi.spyOn(api.agents, 'getMemory').mockResolvedValue({
-      agent_id: 'radar',
-      user_id: 'u1',
-      workspace_id: 'acme',
-      content: 'User prefers TypeScript over JavaScript.',
-    });
-    vi.spyOn(api.agents, 'deleteMemory').mockResolvedValue(undefined);
 
     const onSave = vi.fn();
 
@@ -483,81 +500,6 @@ describe('modals/AgentConfigModal', () => {
     expect(onSave).toHaveBeenCalled();
   });
 
-  it('in edit mode allows editing identity & soul and resetting own-memory', async () => {
-    const detailAgent = {
-      id: 'radar',
-      workspace_id: 'acme',
-      slug: 'radar',
-      name: 'Radar',
-      role: 'Reviewer',
-      description: 'PR Reviewer',
-      brief: 'Review all PRs',
-      identity: 'System prompt identity',
-      soul: 'Helpful and concise',
-      bootstrap: '',
-      provider_id: 'prov_anthropic',
-      model: 'claude-3-7-sonnet',
-      temperature: 1.0,
-      autonomy: 'approval' as const,
-      tools: ['web.search'],
-      skills: ['research'],
-      mcp: [],
-      avatar: {},
-      prompts_status: 'ready' as const,
-      created_at: '',
-      updated_at: '',
-    };
-
-    vi.spyOn(api.agents, 'get').mockResolvedValue({
-      agent: detailAgent,
-    });
-    vi.spyOn(api.agents, 'getMemory').mockResolvedValue({
-      agent_id: 'radar',
-      user_id: 'u1',
-      workspace_id: 'acme',
-      content: 'User prefers TypeScript over JavaScript.',
-    });
-    vi.spyOn(api.agents, 'deleteMemory').mockResolvedValue(undefined);
-    vi.spyOn(api.agents, 'patch').mockResolvedValue({
-      agent: { ...detailAgent, identity: 'Updated identity' },
-    });
-
-    const onSave = vi.fn();
-
-    render(
-      <AgentConfigModal
-        draft={{ id: 'radar', name: 'Radar' }}
-        tenant={mockTenant}
-        onClose={vi.fn()}
-        onSave={onSave}
-      />
-    );
-
-    await waitFor(() => {
-      expect(screen.queryByTestId('agent-modal-loading')).toBeNull();
-    });
-
-    // The generated files live on the Prompts tab
-    fireEvent.click(screen.getByText('Prompts'));
-    const identityInput = screen.getByTestId('input-agent-identity') as HTMLTextAreaElement;
-    expect(identityInput.value).toBe('System prompt identity');
-
-    // Switch to Memory tab
-    fireEvent.click(screen.getByText('Memory'));
-
-    await waitFor(() => {
-      expect(screen.getByText('User prefers TypeScript over JavaScript.')).not.toBeNull();
-    });
-
-    // Reset memory
-    const resetBtn = screen.getByTestId('btn-reset-memory');
-    fireEvent.click(resetBtn);
-
-    await waitFor(() => {
-      expect(api.agents.deleteMemory).toHaveBeenCalledWith('acme', 'radar');
-    });
-  });
-
   it('lists the generated prompt files on the Prompts tab and refreshes after regenerate', async () => {
     const detailV1 = {
       id: 'radar',
@@ -576,7 +518,7 @@ describe('modals/AgentConfigModal', () => {
       autonomy: 'approval' as const,
       tools: ['web.search'],
       skills: ['research'],
-      mcp: [],
+      enabled_mcps: [],
       avatar: {},
       prompts_status: 'ready' as const,
       created_at: '',
@@ -592,12 +534,6 @@ describe('modals/AgentConfigModal', () => {
       .mockResolvedValueOnce({ agent: detailV1 })
       .mockResolvedValueOnce({ agent: detailV2 });
     const regenerate = vi.spyOn(useStore.getState(), 'regenerateAgent').mockResolvedValue(undefined);
-    vi.spyOn(api.agents, 'getMemory').mockResolvedValue({
-      agent_id: 'radar',
-      user_id: 'u1',
-      workspace_id: 'acme',
-      content: '',
-    });
 
     render(
       <AgentConfigModal
@@ -664,7 +600,7 @@ describe('modals/AgentConfigModal', () => {
         autonomy: 'approval' as const,
         tools: [],
         skills: [],
-        mcp: [],
+        enabled_mcps: [],
         avatar: {},
         prompts_status: 'ready' as const,
         created_at: '',
@@ -672,12 +608,6 @@ describe('modals/AgentConfigModal', () => {
       },
     });
     const regenerate = vi.spyOn(useStore.getState(), 'regenerateAgent').mockResolvedValue(undefined);
-    vi.spyOn(api.agents, 'getMemory').mockResolvedValue({
-      agent_id: 'radar',
-      user_id: 'u1',
-      workspace_id: 'acme',
-      content: '',
-    });
 
     render(
       <AgentConfigModal
@@ -731,7 +661,7 @@ describe('modals/AgentConfigModal', () => {
         context_window: 200000,
         tools: ['web.search'],
         skills: ['research'],
-        mcp: [],
+        enabled_mcps: [],
         avatar: {},
         prompts_status: 'ready' as const,
         created_at: '',
@@ -795,7 +725,7 @@ describe('modals/AgentConfigModal', () => {
       context_window: 50000,
       tools: ['web.search'],
       skills: ['research'],
-      mcp: [],
+      enabled_mcps: [],
       avatar: {},
       prompts_status: 'ready' as const,
       created_at: '',
@@ -803,12 +733,6 @@ describe('modals/AgentConfigModal', () => {
     };
     vi.spyOn(api.agents, 'get').mockResolvedValue({ agent: detailAgent });
     vi.spyOn(api.agents, 'patch').mockResolvedValue({ agent: detailAgent });
-    vi.spyOn(api.agents, 'getMemory').mockResolvedValue({
-      agent_id: 'radar',
-      user_id: 'u1',
-      workspace_id: 'acme',
-      content: '',
-    });
     const onSave = vi.fn();
 
     render(
@@ -850,7 +774,7 @@ describe('modals/AgentConfigModal', () => {
       ],
     });
     vi.spyOn(api.agents, 'create').mockResolvedValue({
-      agent: { id: 'agent-x', workspace_id: 'acme', slug: 'beacon', name: 'Beacon', role: 'triage-bot', description: '', brief: 'Triage', identity: '', soul: '', bootstrap: '', provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet', temperature: 1.0, autonomy: 'approval', tools: [], skills: [], mcp: [], avatar: {}, prompts_status: 'generating', created_at: '', updated_at: '' },
+      agent: { id: 'agent-x', workspace_id: 'acme', slug: 'beacon', name: 'Beacon', role: 'triage-bot', description: '', brief: 'Triage', identity: '', soul: '', bootstrap: '', provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet', temperature: 1.0, autonomy: 'approval', tools: [], skills: [], enabled_mcps: [], avatar: {}, prompts_status: 'generating', created_at: '', updated_at: '' },
     });
 
     render(<AgentConfigModal tenant={mockTenant} onClose={vi.fn()} onSave={vi.fn()} />);
@@ -889,15 +813,11 @@ describe('modals/AgentConfigModal', () => {
       provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet', temperature: 1.0,
       autonomy: 'approval' as const,
       tools: ['web.search', 'browser.navigate', 'browser.read'],
-      skills: [], mcp: [], avatar: {}, prompts_status: 'ready' as const,
+      skills: [], enabled_mcps: [], avatar: {}, prompts_status: 'ready' as const,
       created_at: '', updated_at: '',
     };
     vi.spyOn(api.agents, 'get').mockResolvedValue({ agent: detailAgent });
     vi.spyOn(api.agents, 'patch').mockResolvedValue({ agent: detailAgent });
-    vi.spyOn(api.agents, 'getMemory').mockResolvedValue({
-      agent_id: 'radar', user_id: 'u1', workspace_id: 'acme', content: '',
-    });
-    vi.spyOn(api.agents, 'deleteMemory').mockResolvedValue(undefined);
 
     render(<AgentConfigModal draft={summaryDraft} tenant={mockTenant} onClose={vi.fn()} onSave={vi.fn()} />);
 
@@ -967,13 +887,10 @@ describe('modals/AgentConfigModal', () => {
       id: 'radar', workspace_id: 'acme', slug: 'radar', name: 'Radar', role: 'Reviewer',
       description: 'PR Reviewer', brief: 'Review all PRs', identity: '', soul: '', bootstrap: '',
       provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet', temperature: 1.0,
-      autonomy: 'approval' as const, tools: [], mcp: [], avatar: {},
+      autonomy: 'approval' as const, tools: [], enabled_mcps: [], avatar: {},
       prompts_status: 'ready' as const, created_at: '', updated_at: '',
     };
     vi.spyOn(api.agents, 'get').mockResolvedValue({ agent: detailAgent });
-    vi.spyOn(api.agents, 'getMemory').mockResolvedValue({
-      agent_id: 'radar', user_id: 'u1', workspace_id: 'acme', content: '',
-    });
     vi.spyOn(api.agents, 'patch').mockResolvedValue({ agent: detailAgent });
     vi.spyOn(api.agents, 'listSkills').mockResolvedValue({
       skills: [
@@ -1024,5 +941,254 @@ describe('modals/AgentConfigModal', () => {
     await waitFor(() => {
       expect(screen.queryByTestId('agent-skill-pdf-sweep')).toBeNull();
     });
+  });
+
+  it('Step 3 MCP section lists workspace servers with status hints and off toggles by default', async () => {
+    vi.spyOn(api.mcp, 'list').mockResolvedValue({
+      servers: [
+        mcpServerRow(),
+        mcpServerRow({ id: 'srv-paused', name: 'Postgres', enabled: false }),
+        mcpServerRow({ id: 'srv-err', name: 'Broken DB', status: 'error', status_error: 'refused', tool_count: 0 }),
+      ],
+    });
+
+    render(<AgentConfigModal tenant={mockTenant} onClose={vi.fn()} onSave={vi.fn()} />);
+
+    await waitFor(() => { expect(screen.getByTestId('input-agent-name')).not.toBeNull(); });
+    await goToStep2();
+    await goToStep3();
+
+    // Rows render from the workspace MCP endpoints with their status hints.
+    expect(screen.getByTestId('agent-mcp-row-srv-gh')).not.toBeNull();
+    expect(screen.getByTestId('agent-mcp-status-srv-gh').textContent).toBe('Connected');
+    expect(screen.getByTestId('agent-mcp-status-srv-paused').textContent).toBe('Paused');
+    expect(screen.getByTestId('agent-mcp-status-srv-err').textContent).toBe('Error');
+
+    // Every toggle defaults to OFF — an agent opts in only explicitly.
+    expect(screen.getByRole('switch', { name: 'Opt this agent into GitHub' }).getAttribute('aria-checked')).toBe('false');
+    expect(screen.getByRole('switch', { name: 'Opt this agent into Postgres' }).getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('opt-in toggles store and remove server ids in the draft enabled_mcps on save', async () => {
+    vi.spyOn(api.mcp, 'list').mockResolvedValue({
+      servers: [mcpServerRow(), mcpServerRow({ id: 'srv-slack', name: 'Slack', transport: 'sse', command: undefined, args: undefined, env: undefined, url: 'https://slack.example/sse' })],
+    });
+    const create = vi.spyOn(api.agents, 'create').mockResolvedValue({
+      agent: {
+        id: 'agent-mcp', workspace_id: 'acme', slug: 'radar', name: 'Radar Agent', role: 'code-reviewer',
+        description: '', brief: 'Review all PRs', identity: '', soul: '', bootstrap: '',
+        provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet', temperature: 1.0, autonomy: 'approval',
+        tools: [], skills: [], enabled_mcps: [], avatar: {}, prompts_status: 'generating', created_at: '', updated_at: '',
+      },
+    });
+
+    render(<AgentConfigModal tenant={mockTenant} onClose={vi.fn()} onSave={vi.fn()} />);
+
+    await waitFor(() => { expect(screen.getByTestId('input-agent-name')).not.toBeNull(); });
+    await goToStep2();
+    await goToStep3();
+
+    // Opt into exactly one of the two servers.
+    fireEvent.click(screen.getByRole('switch', { name: 'Opt this agent into GitHub' }));
+    expect(screen.getByRole('switch', { name: 'Opt this agent into GitHub' }).getAttribute('aria-checked')).toBe('true');
+    fireEvent.click(screen.getByRole('switch', { name: 'Opt this agent into GitHub' }));
+    expect(screen.getByRole('switch', { name: 'Opt this agent into GitHub' }).getAttribute('aria-checked')).toBe('false');
+    fireEvent.click(screen.getByRole('switch', { name: 'Opt this agent into Slack' }));
+
+    fireEvent.click(screen.getByTestId('btn-agent-save-modal'));
+
+    await waitFor(() => {
+      expect(create).toHaveBeenCalledWith('acme', expect.objectContaining({
+        enabled_mcps: ['srv-slack'],
+      }));
+    });
+  });
+
+  it('opting into a paused server warns that it contributes nothing until resumed', async () => {
+    vi.spyOn(api.mcp, 'list').mockResolvedValue({
+      servers: [mcpServerRow({ id: 'srv-paused', name: 'Postgres', enabled: false })],
+    });
+
+    render(<AgentConfigModal tenant={mockTenant} onClose={vi.fn()} onSave={vi.fn()} />);
+
+    await waitFor(() => { expect(screen.getByTestId('input-agent-name')).not.toBeNull(); });
+    await goToStep2();
+    await goToStep3();
+
+    // Off: no warning.
+    expect(screen.queryByTestId('agent-mcp-paused-warn-srv-paused')).toBeNull();
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Opt this agent into Postgres' }));
+
+    const warn = screen.getByTestId('agent-mcp-paused-warn-srv-paused');
+    expect(warn.textContent).toContain('contributes no tools');
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Opt this agent into Postgres' }));
+    expect(screen.queryByTestId('agent-mcp-paused-warn-srv-paused')).toBeNull();
+  });
+
+  it('edit mode hydrates opted-in servers from enabled_mcps and drops removed ids on save', async () => {
+    vi.spyOn(api.mcp, 'list').mockResolvedValue({ servers: [mcpServerRow()] });
+    const detailAgent = {
+      id: 'radar', workspace_id: 'acme', slug: 'radar', name: 'Radar', role: 'Reviewer',
+      description: 'PR Reviewer', brief: 'Review all PRs', identity: '', soul: '', bootstrap: '',
+      provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet', temperature: 1.0,
+      autonomy: 'approval' as const, tools: [], skills: [],
+      enabled_mcps: ['srv-gh'],
+      avatar: {}, prompts_status: 'ready' as const, created_at: '', updated_at: '',
+    };
+    vi.spyOn(api.agents, 'get').mockResolvedValue({ agent: detailAgent as any });
+    vi.spyOn(api.agents, 'patch').mockResolvedValue({ agent: detailAgent as any });
+    render(<AgentConfigModal draft={{ id: 'radar', name: 'Radar' }} tenant={mockTenant} onClose={vi.fn()} onSave={vi.fn()} />);
+
+    await waitFor(() => { expect(screen.queryByTestId('agent-modal-loading')).toBeNull(); });
+    fireEvent.click(screen.getByText('Capabilities'));
+
+    // The opted-in server's row shows selected.
+    const toggle = screen.getByRole('switch', { name: 'Opt this agent into GitHub' });
+    await waitFor(() => {
+      expect(toggle.getAttribute('aria-checked')).toBe('true');
+    });
+
+    // Removing the selection drops the id on save.
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByTestId('btn-agent-save-modal'));
+
+    await waitFor(() => {
+      expect(api.agents.patch).toHaveBeenCalledWith('acme', 'radar', expect.objectContaining({
+        enabled_mcps: [],
+      }));
+    });
+  });
+
+  it('agent MCP servers sub-list hydrates from the agent detail and adds through the shared dialog', async () => {
+    vi.spyOn(api.agents, 'listMcpServers').mockResolvedValue({
+      servers: [mcpServerRow({ id: 'srv-private', name: 'Private Sentry', tool_count: 3 })],
+    });
+    const detailAgent = {
+      id: 'radar', workspace_id: 'acme', slug: 'radar', name: 'Radar', role: 'Reviewer',
+      description: '', brief: 'Review all PRs', identity: '', soul: '', bootstrap: '',
+      provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet', temperature: 1.0,
+      autonomy: 'approval' as const, tools: [], skills: [], enabled_mcps: [],
+      avatar: {}, prompts_status: 'ready' as const, created_at: '', updated_at: '',
+    };
+    vi.spyOn(api.agents, 'get').mockResolvedValue({ agent: detailAgent });
+    const createMcp = vi.spyOn(api.agents, 'createMcpServer').mockResolvedValue({
+      server: mcpServerRow({ id: 'srv-new-private', name: 'Linear Private', transport: 'streamable_http', command: undefined, args: undefined, env: undefined, url: 'https://mcp.linear.app/mcp' }),
+    });
+
+    render(<AgentConfigModal draft={{ id: 'radar', name: 'Radar' }} tenant={mockTenant} onClose={vi.fn()} onSave={vi.fn()} />);
+
+    await waitFor(() => { expect(screen.queryByTestId('agent-modal-loading')).toBeNull(); });
+    fireEvent.click(screen.getByText('Capabilities'));
+
+    // Hydrated private server row.
+    expect(screen.getByTestId('agent-mcp-server-srv-private')).not.toBeNull();
+
+    // Add opens the shared structured transport-branched dialog.
+    fireEvent.click(screen.getByTestId('btn-add-agent-mcp'));
+    await waitFor(() => {
+      expect(screen.getByTestId('modal-mcp-server')).not.toBeNull();
+    });
+
+    fireEvent.change(screen.getByLabelText('Server name'), { target: { value: 'Linear Private' } });
+    fireEvent.change(screen.getByLabelText('Transport'), { target: { value: 'streamable_http' } });
+    fireEvent.change(screen.getByLabelText('URL'), { target: { value: 'https://mcp.linear.app/mcp' } });
+    fireEvent.click(screen.getByTestId('btn-mcp-add-confirm'));
+
+    await waitFor(() => {
+      expect(createMcp).toHaveBeenCalledWith('acme', 'radar', {
+        name: 'Linear Private',
+        transport: 'streamable_http',
+        url: 'https://mcp.linear.app/mcp',
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('agent-mcp-server-srv-new-private')).not.toBeNull();
+      expect(screen.queryByTestId('modal-mcp-server')).toBeNull();
+    });
+  });
+
+  it('edits a private server through the pre-filled shared dialog and removes it', async () => {
+    vi.spyOn(api.agents, 'listMcpServers').mockResolvedValue({
+      servers: [mcpServerRow({ id: 'srv-private', name: 'Private Sentry', tool_count: 3 })],
+    });
+    const detailAgent = {
+      id: 'radar', workspace_id: 'acme', slug: 'radar', name: 'Radar', role: 'Reviewer',
+      description: '', brief: 'Review all PRs', identity: '', soul: '', bootstrap: '',
+      provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet', temperature: 1.0,
+      autonomy: 'approval' as const, tools: [], skills: [], enabled_mcps: [],
+      avatar: {}, prompts_status: 'ready' as const, created_at: '', updated_at: '',
+    };
+    vi.spyOn(api.agents, 'get').mockResolvedValue({ agent: detailAgent });
+    const updateMcp = vi.spyOn(api.agents, 'updateMcpServer').mockResolvedValue({
+      server: mcpServerRow({ id: 'srv-private', name: 'Sentry Renamed' }),
+    });
+    const deleteMcp = vi.spyOn(api.agents, 'deleteMcpServer').mockResolvedValue(undefined);
+
+    render(<AgentConfigModal draft={{ id: 'radar', name: 'Radar' }} tenant={mockTenant} onClose={vi.fn()} onSave={vi.fn()} />);
+
+    await waitFor(() => { expect(screen.queryByTestId('agent-modal-loading')).toBeNull(); });
+    fireEvent.click(screen.getByText('Capabilities'));
+
+    // Edit opens the shared dialog pre-filled from the row.
+    fireEvent.click(screen.getByTestId('btn-edit-agent-mcp-srv-private'));
+    await waitFor(() => {
+      expect(screen.getByTestId('modal-mcp-server')).not.toBeNull();
+    });
+    expect((screen.getByLabelText('Server name') as HTMLInputElement).value).toBe('Private Sentry');
+    expect((screen.getByLabelText('Command') as HTMLInputElement).value).toBe('npx');
+
+    fireEvent.change(screen.getByLabelText('Server name'), { target: { value: 'Sentry Renamed' } });
+    fireEvent.click(screen.getByTestId('btn-mcp-save'));
+
+    await waitFor(() => {
+      expect(updateMcp).toHaveBeenCalledWith('acme', 'radar', 'srv-private', expect.objectContaining({
+        name: 'Sentry Renamed',
+        transport: 'stdio',
+        command: 'npx',
+      }));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('agent-mcp-server-srv-private').textContent).toContain('Sentry Renamed');
+    });
+
+    // Remove deletes it from this agent only.
+    fireEvent.click(screen.getByTestId('btn-remove-agent-mcp-srv-private'));
+    await waitFor(() => {
+      expect(deleteMcp).toHaveBeenCalledWith('acme', 'radar', 'srv-private');
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId('agent-mcp-server-srv-private')).toBeNull();
+    });
+  });
+
+  it('hides private server write controls from holders without agents.write but keeps rows', async () => {
+    useAuthStore.setState({
+      memberships: [
+        { workspace_id: 'acme', role_name: 'Member', role: { name: 'Member', permissions: ['agents.read'] } },
+      ] as any,
+    });
+    vi.spyOn(api.agents, 'listMcpServers').mockResolvedValue({
+      servers: [mcpServerRow({ id: 'srv-private', name: 'Private Sentry', tool_count: 3 })],
+    });
+    const detailAgent = {
+      id: 'radar', workspace_id: 'acme', slug: 'radar', name: 'Radar', role: 'Reviewer',
+      description: '', brief: 'Review all PRs', identity: '', soul: '', bootstrap: '',
+      provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet', temperature: 1.0,
+      autonomy: 'approval' as const, tools: [], skills: [], enabled_mcps: [],
+      avatar: {}, prompts_status: 'ready' as const, created_at: '', updated_at: '',
+    };
+    vi.spyOn(api.agents, 'get').mockResolvedValue({ agent: detailAgent });
+    render(<AgentConfigModal draft={{ id: 'radar', name: 'Radar' }} tenant={mockTenant} onClose={vi.fn()} onSave={vi.fn()} />);
+
+    await waitFor(() => { expect(screen.queryByTestId('agent-modal-loading')).toBeNull(); });
+    fireEvent.click(screen.getByText('Capabilities'));
+
+    // Rows still render for readers; every write affordance is absent.
+    expect(screen.getByTestId('agent-mcp-server-srv-private')).not.toBeNull();
+    expect(screen.queryByTestId('btn-add-agent-mcp')).toBeNull();
+    expect(screen.queryByTestId('btn-edit-agent-mcp-srv-private')).toBeNull();
+    expect(screen.queryByTestId('btn-remove-agent-mcp-srv-private')).toBeNull();
   });
 });

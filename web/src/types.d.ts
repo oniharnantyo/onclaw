@@ -19,7 +19,6 @@ declare global {
     status: string;
     tools: string[];
     skills?: string[];
-    mcp?: string[];
     avatar?: Record<string, any>;
     prompts_status?: 'generating' | 'ready' | 'failed' | string;
     prompts_error?: string | null;
@@ -110,16 +109,6 @@ declare global {
     connected: boolean;
   }
 
-  interface McpServer {
-    id: string;
-    name: string;
-    transport: string;
-    auth: string;
-    tools: number;
-    status: string;
-    sample?: string[];
-  }
-
   interface Skill {
     id: string;
     name: string;
@@ -155,7 +144,6 @@ declare global {
     runs: Run[];
     members: Person[];
     integrations: Integration[];
-    mcpServers: McpServer[];
     skillLib: Skill[];
     keys: ApiKey[];
   }

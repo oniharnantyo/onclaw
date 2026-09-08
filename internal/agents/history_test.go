@@ -26,6 +26,7 @@ func setupHistoryTest(t *testing.T) (store.Store, *Runner, context.Context) {
 		st.Providers(),
 		st.SessionEvents(),
 		st.SessionCheckpoints(),
+		st.Memories(),
 		[]byte("test-key-32-bytes-long-12345678"),
 		t.TempDir(),
 	)

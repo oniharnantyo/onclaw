@@ -201,6 +201,8 @@ export interface ApiToolConfigField {
   help?: string;
   default?: unknown;
   options?: ApiToolConfigFieldOption[];
+  /** Rendered only while the named sibling field currently holds `equals`. */
+  show_if?: { field: string; equals: string };
 }
 
 export interface ApiToolSettings {
@@ -214,6 +216,30 @@ export interface ApiToolSettings {
   enabled: boolean;
   configured: boolean;
   config: Record<string, unknown>;
+}
+
+// ---------------------------------------------------------------------------
+// web.search provider stacks (config shape locked in design D1/D5)
+// ---------------------------------------------------------------------------
+
+/** One ordered web.search provider entry. Config VIEW payloads never include
+ * `api_key` — only the last-4 `api_key_hint` nested per entry. UPSERT payloads
+ * carry `api_key` only when a secret is entered; a known `id` with an omitted
+ * or empty `api_key` means "keep the stored secret". SearXNG entries carry
+ * `base_url` instead of a key. */
+export interface ApiSearchEntry {
+  id?: string;
+  name: string;
+  provider: string;
+  api_key?: string;
+  base_url?: string;
+  api_key_hint?: string;
+}
+
+export interface ApiWebSearchConfig {
+  entries: ApiSearchEntry[];
+  /** Positive integer, default 10, max 60 — bounds each failover attempt. */
+  request_timeout_seconds?: number;
 }
 
 export type AgentAutonomy = 'approval' | 'suggest' | 'full';
@@ -244,7 +270,8 @@ export interface ApiAgent {
   tools: string[];
   /** Agent-tier skill names when the server lists them; never a payload field. */
   skills?: string[];
-  mcp: string[];
+  /** MCP server UUIDs the agent opts into (design D1). */
+  enabled_mcps: string[];
   avatar: Record<string, any>;
   prompts_status: PromptsStatus;
   prompts_error?: string | null;
@@ -269,7 +296,7 @@ export interface CreateAgentPayload {
   context_window?: number | null;
   tools?: string[];
   skills?: string[];
-  mcp?: string[];
+  enabled_mcps?: string[];
   avatar?: Record<string, any>;
 }
 
@@ -290,7 +317,7 @@ export interface PatchAgentPayload {
   context_window?: number | null;
   tools?: string[];
   skills?: string[];
-  mcp?: string[];
+  enabled_mcps?: string[];
   avatar?: Record<string, any>;
 }
 
@@ -369,13 +396,12 @@ export interface ApiSkillInstallResult {
   dependency_status?: ApiSkillDependencyStatus[];
 }
 
-export interface ApiAgentMemory {
-  agent_id: string;
-  user_id: string;
-  workspace_id: string;
+/** USER.md / WORKSPACE.md payload (change agent-memory). The size cap is
+ * server-owned — every read carries `max_chars` and the UI never hardcodes it. */
+export interface ApiMemory {
   content: string;
-  created_at?: string | null;
-  updated_at?: string | null;
+  max_chars: number;
+  updated_at: string | null;
 }
 
 export interface ApiModel {
@@ -412,6 +438,68 @@ export interface CreateWorkspaceResult {
   provider?: ApiProviderConfig;
   starter_agent?: ApiAgent;
 }
+
+// ---------------------------------------------------------------------------
+// MCP servers (workspace registry + agent-private; change integrate-mcp-servers)
+// ---------------------------------------------------------------------------
+
+export type McpTransport = 'stdio' | 'streamable_http' | 'sse';
+
+/** Probe outcome persisted on the row. The spec's vocabulary is `connected`;
+ * `ok` is accepted as its terse alias and `unknown` marks a never-probed row. */
+export type McpServerStatus = 'connected' | 'ok' | 'error' | 'unknown';
+
+/** Read view of one env-var/header row. Secret values are write-only and never
+ * round-trip — reads carry only the plaintext `value_hint` beside the name. */
+export interface ApiMcpSecretRow {
+  name: string;
+  value_hint?: string | null;
+}
+
+export interface ApiMcpServer {
+  id: string;
+  workspace_id?: string;
+  /** Set on agent-private servers only. */
+  agent_id?: string;
+  name: string;
+  transport: McpTransport;
+  /** stdio transport: executable plus whitespace-split args. */
+  command?: string;
+  args?: string[];
+  /** stdio transport: env-var rows (secrets hinted, never echoed). */
+  env?: ApiMcpSecretRow[];
+  /** streamable_http / sse transports. */
+  url?: string;
+  /** streamable_http / sse transports: header rows (secrets hinted, never echoed). */
+  headers?: ApiMcpSecretRow[];
+  /** Master switch — a paused server contributes no tools despite agent opt-in. */
+  enabled: boolean;
+  status: McpServerStatus;
+  status_error?: string | null;
+  tool_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Write-side env/header row. Values are write-only: an omitted or empty
+ * `value` keeps the stored secret; a non-empty value replaces it. */
+export interface ApiMcpSecretRowInput {
+  name: string;
+  value?: string;
+}
+
+export interface McpServerPayload {
+  name: string;
+  transport: McpTransport;
+  command?: string;
+  args?: string[];
+  env?: ApiMcpSecretRowInput[];
+  url?: string;
+  headers?: ApiMcpSecretRowInput[];
+  enabled?: boolean;
+}
+
+export type PatchMcpServerPayload = Partial<McpServerPayload>;
 
 
 type UnauthorizedHandler = () => void;
@@ -673,6 +761,35 @@ export const api = {
         body,
       }),
   },
+  // Workspace MCP registry (tools.read for reads, tools.write for writes —
+  // gating is server-side; the pane mirrors it for affordance visibility).
+  mcp: {
+    list: (ws: string) =>
+      request<{ servers: ApiMcpServer[] }>(`/workspaces/${encodeURIComponent(ws)}/mcp-servers`, {
+        method: 'GET',
+      }),
+    create: (ws: string, body: McpServerPayload) =>
+      request<{ server: ApiMcpServer }>(`/workspaces/${encodeURIComponent(ws)}/mcp-servers`, {
+        method: 'POST',
+        body,
+      }),
+    update: (ws: string, id: string, body: PatchMcpServerPayload) =>
+      request<{ server: ApiMcpServer }>(
+        `/workspaces/${encodeURIComponent(ws)}/mcp-servers/${encodeURIComponent(id)}`,
+        { method: 'PATCH', body }
+      ),
+    delete: (ws: string, id: string) =>
+      request<void>(`/workspaces/${encodeURIComponent(ws)}/mcp-servers/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      }),
+    // Bounded (~10s) re-probe; the response carries the refreshed row —
+    // status, tool count, and on failure the connection error message.
+    probe: (ws: string, id: string) =>
+      request<{ server: ApiMcpServer }>(
+        `/workspaces/${encodeURIComponent(ws)}/mcp-servers/${encodeURIComponent(id)}/probe`,
+        { method: 'POST' }
+      ),
+  },
   agents: {
     list: (ws: string) =>
       request<{ agents: ApiAgent[] }>(`/workspaces/${encodeURIComponent(ws)}/agents`, {
@@ -703,14 +820,6 @@ export const api = {
         ...(trimmed ? { body: { instruction: trimmed } } : {}),
       });
     },
-    getMemory: (ws: string, agent: string) =>
-      request<ApiAgentMemory>(`/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/memory`, {
-        method: 'GET',
-      }),
-    deleteMemory: (ws: string, agent: string) =>
-      request<void>(`/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/memory`, {
-        method: 'DELETE',
-      }),
     resolveApproval: (ws: string, agent: string, sessionId: string, interruptId: string, approved: boolean) =>
       request<{ resumed: boolean; interrupt_id: string; approved: boolean }>(
         `/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/sessions/${encodeURIComponent(sessionId)}/approvals/${encodeURIComponent(interruptId)}`,
@@ -744,6 +853,34 @@ export const api = {
       request<void>(`/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/skills/${encodeURIComponent(name)}`, {
         method: 'DELETE',
       }),
+    // Agent-private MCP servers (agents.write): same payload/response shapes
+    // as the workspace registry, scoped under the agent and invisible to the
+    // workspace pane.
+    listMcpServers: (ws: string, agent: string) =>
+      request<{ servers: ApiMcpServer[] }>(
+        `/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/mcp-servers`,
+        { method: 'GET' }
+      ),
+    createMcpServer: (ws: string, agent: string, body: McpServerPayload) =>
+      request<{ server: ApiMcpServer }>(
+        `/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/mcp-servers`,
+        { method: 'POST', body }
+      ),
+    updateMcpServer: (ws: string, agent: string, id: string, body: PatchMcpServerPayload) =>
+      request<{ server: ApiMcpServer }>(
+        `/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/mcp-servers/${encodeURIComponent(id)}`,
+        { method: 'PATCH', body }
+      ),
+    deleteMcpServer: (ws: string, agent: string, id: string) =>
+      request<void>(
+        `/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/mcp-servers/${encodeURIComponent(id)}`,
+        { method: 'DELETE' }
+      ),
+    probeMcpServer: (ws: string, agent: string, id: string) =>
+      request<{ server: ApiMcpServer }>(
+        `/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/mcp-servers/${encodeURIComponent(id)}/probe`,
+        { method: 'POST' }
+      ),
   },
   skills: {
     // List includes locked system-tier entries alongside registry rows.
@@ -830,6 +967,30 @@ export const api = {
         body: form,
       });
     },
+  },
+  // Per-user (USER.md) and shared (WORKSPACE.md) memory. Routes key on the
+  // workspace slug like every other workspace-scoped call; the user pair is
+  // self-scoped (`/me/memory`), the workspace pair follows the settings
+  // write permission server-side (Members get 403 on the shared PUT).
+  memory: {
+    getMine: (ws: string) =>
+      request<ApiMemory>(`/workspaces/${encodeURIComponent(ws)}/me/memory`, {
+        method: 'GET',
+      }),
+    updateMine: (ws: string, body: { content: string }) =>
+      request<ApiMemory>(`/workspaces/${encodeURIComponent(ws)}/me/memory`, {
+        method: 'PUT',
+        body,
+      }),
+    getWorkspace: (ws: string) =>
+      request<ApiMemory>(`/workspaces/${encodeURIComponent(ws)}/memory`, {
+        method: 'GET',
+      }),
+    updateWorkspace: (ws: string, body: { content: string }) =>
+      request<ApiMemory>(`/workspaces/${encodeURIComponent(ws)}/memory`, {
+        method: 'PUT',
+        body,
+      }),
   },
   admin: {
     workspaces: {

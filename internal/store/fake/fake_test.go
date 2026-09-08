@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -712,21 +713,21 @@ func TestAgentStore_CRUD(t *testing.T) {
 	effort := "high"
 	cw := 128000
 	a1 := &domain.Agent{
-		WorkspaceID:    ws1.ID,
-		Slug:           "support-bot",
-		Name:           "Support Bot",
-		Role:           "customer-support",
-		Description:    "Helps users with questions",
-		Brief:          "Friendly support persona",
-		ProviderID:     p1.ID,
-		Model:          "gpt-4o",
-		Temperature:    0.7,
-		MaxTokens:      &maxTok,
-		Effort:         &effort,
-		ContextWindow:  &cw,
-		Tools:          []string{"search", "calculator"},
-		DisabledMCPs:   []string{"github"},
-		Avatar:         json.RawMessage(`{"shape":"circle","color":"blue"}`),
+		WorkspaceID:   ws1.ID,
+		Slug:          "support-bot",
+		Name:          "Support Bot",
+		Role:          "customer-support",
+		Description:   "Helps users with questions",
+		Brief:         "Friendly support persona",
+		ProviderID:    p1.ID,
+		Model:         "gpt-4o",
+		Temperature:   0.7,
+		MaxTokens:     &maxTok,
+		Effort:        &effort,
+		ContextWindow: &cw,
+		Tools:         []string{"search", "calculator"},
+		EnabledMCPS:   []string{"github"},
+		Avatar:        json.RawMessage(`{"shape":"circle","color":"blue"}`),
 	}
 	if err := s.Agents().Create(ctx, a1); err != nil {
 		t.Fatalf("unexpected create agent error: %v", err)
@@ -817,7 +818,7 @@ func TestAgentStore_CRUD(t *testing.T) {
 	if found.ContextWindow == nil || *found.ContextWindow != 128000 {
 		t.Fatalf("unexpected context_window: %+v", found.ContextWindow)
 	}
-	if len(found.Tools) != 2 || len(found.DisabledMCPs) != 1 {
+	if len(found.Tools) != 2 || len(found.EnabledMCPS) != 1 {
 		t.Fatalf("unexpected capabilities arrays: %+v", found)
 	}
 
@@ -1034,134 +1035,267 @@ func TestAgentStore_ListOrdering(t *testing.T) {
 	}
 }
 
-func TestAgentUserMemoryStore_CRUD(t *testing.T) {
+// seedMemoryFixtures creates a workspace, user, and agent for memory tests,
+// returning their IDs.
+func seedMemoryFixtures(t *testing.T, s store.Store, wsSlug, userEmail, agentSlug string) (wsID, userID, agentID string) {
+	t.Helper()
+	ctx := context.Background()
+
+	ws := &domain.Workspace{Slug: wsSlug, Name: "Mem WS " + wsSlug}
+	if err := s.Workspaces().Create(ctx, ws); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	u := &domain.User{Email: userEmail, Name: "Mem User"}
+	if err := s.Users().Create(ctx, u); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	p := &domain.ProviderConfig{WorkspaceID: ws.ID, Type: "openai", Name: "P", Enabled: true}
+	if err := s.Providers().Create(ctx, p); err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	a := &domain.Agent{WorkspaceID: ws.ID, Slug: agentSlug, Name: "Atlas", ProviderID: p.ID, Model: "gpt-4o"}
+	if err := s.Agents().Create(ctx, a); err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	return ws.ID, u.ID, a.ID
+}
+
+func TestMemoryStore_UserMemory(t *testing.T) {
 	ctx := context.Background()
 	s := fake.New()
 
-	u := &domain.User{Email: "user@example.com", Name: "User"}
-	_ = s.Users().Create(ctx, u)
+	ws1, u1, _ := seedMemoryFixtures(t, s, "mem-user-ws1", "mem-u1@example.com", "atlas")
+	ws2, u2, _ := seedMemoryFixtures(t, s, "mem-user-ws2", "mem-u2@example.com", "atlas")
+	mem := s.Memories()
 
-	ws := &domain.Workspace{Slug: "ws-mem", Name: "Mem WS"}
-	_ = s.Workspaces().Create(ctx, ws)
-
-	p := &domain.ProviderConfig{WorkspaceID: ws.ID, Type: "openai", Name: "P", Enabled: true}
-	_ = s.Providers().Create(ctx, p)
-
-	a := &domain.Agent{WorkspaceID: ws.ID, Slug: "atlas", Name: "Atlas", ProviderID: p.ID, Model: "gpt-4o"}
-	_ = s.Agents().Create(ctx, a)
-
-	// 1. Initial Get returns ErrNotFound
-	_, err := s.AgentUserMemories().Get(ctx, ws.ID, a.ID, u.ID)
-	if !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("expected ErrNotFound before memory write, got %v", err)
+	// Get-absent returns (nil, nil), not a sentinel.
+	got, err := mem.UserMemory(ctx, ws1, u1)
+	if err != nil || got != nil {
+		t.Fatalf("expected (nil, nil) for absent user memory, got (%v, %v)", got, err)
 	}
 
-	// 2. Upsert initial memory
-	mem := &domain.AgentUserMemory{
-		AgentID:     a.ID,
-		UserID:      u.ID,
-		WorkspaceID: ws.ID,
-		Content:     "User prefers Python and UTC timestamps.",
+	// Upsert stores content.
+	if err := mem.UpsertUserMemory(ctx, ws1, u1, "Prefers Python."); err != nil {
+		t.Fatalf("unexpected UpsertUserMemory error: %v", err)
 	}
-	if err := s.AgentUserMemories().Upsert(ctx, mem); err != nil {
-		t.Fatalf("unexpected Upsert error: %v", err)
+	got, err = mem.UserMemory(ctx, ws1, u1)
+	if err != nil || got == nil || got.Content != "Prefers Python." {
+		t.Fatalf("expected stored content, got (%v, %v)", got, err)
 	}
-	if mem.CreatedAt.IsZero() || mem.UpdatedAt.IsZero() {
-		t.Fatal("expected timestamps to be set")
+	if got.UpdatedAt.IsZero() {
+		t.Fatal("expected UpdatedAt to be set")
 	}
 
-	// 3. Get retrieves memory
-	got, err := s.AgentUserMemories().Get(ctx, ws.ID, a.ID, u.ID)
-	if err != nil {
-		t.Fatalf("unexpected Get error: %v", err)
+	// Upsert REPLACES content (HTTP PUT semantics).
+	if err := mem.UpsertUserMemory(ctx, ws1, u1, "Prefers Go."); err != nil {
+		t.Fatalf("unexpected second UpsertUserMemory error: %v", err)
 	}
-	if got.Content != "User prefers Python and UTC timestamps." {
-		t.Fatalf("unexpected content: %q", got.Content)
-	}
-
-	// 4. Upsert update preserves created_at
-	origCreatedAt := got.CreatedAt
-	got.Content = "User prefers Go and UTC timestamps."
-	if err := s.AgentUserMemories().Upsert(ctx, got); err != nil {
-		t.Fatalf("unexpected second Upsert error: %v", err)
-	}
-	updatedMem, _ := s.AgentUserMemories().Get(ctx, ws.ID, a.ID, u.ID)
-	if updatedMem.Content != "User prefers Go and UTC timestamps." {
-		t.Fatalf("unexpected updated content: %q", updatedMem.Content)
-	}
-	if !updatedMem.CreatedAt.Equal(origCreatedAt) {
-		t.Fatalf("expected CreatedAt to be preserved: %v vs %v", origCreatedAt, updatedMem.CreatedAt)
+	got, _ = mem.UserMemory(ctx, ws1, u1)
+	if got.Content != "Prefers Go." {
+		t.Fatalf("expected replaced content, got %q", got.Content)
 	}
 
-	// 5. Cascade delete when agent is deleted
-	if err := s.Agents().Delete(ctx, ws.ID, a.ID); err != nil {
-		t.Fatalf("unexpected Delete agent error: %v", err)
+	// Scope isolation: another user and another workspace see nothing.
+	got, _ = mem.UserMemory(ctx, ws1, u2)
+	if got != nil {
+		t.Fatalf("expected nil memory for other user, got %q", got.Content)
 	}
-	_, err = s.AgentUserMemories().Get(ctx, ws.ID, a.ID, u.ID)
-	if !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("expected ErrNotFound after agent delete cascade, got %v", err)
+	got, _ = mem.UserMemory(ctx, ws2, u1)
+	if got != nil {
+		t.Fatalf("expected nil memory for other workspace, got %q", got.Content)
+	}
+
+	// Append concatenates atomically.
+	if err := mem.AppendUserMemory(ctx, ws1, u1, " Likes coffee."); err != nil {
+		t.Fatalf("unexpected AppendUserMemory error: %v", err)
+	}
+	got, _ = mem.UserMemory(ctx, ws1, u1)
+	if got.Content != "Prefers Go. Likes coffee." {
+		t.Fatalf("expected concatenated content, got %q", got.Content)
+	}
+
+	// Cap rejection on Upsert.
+	over := strings.Repeat("a", domain.MaxMemoryContentChars+1)
+	if err := mem.UpsertUserMemory(ctx, ws1, u1, over); !errors.Is(err, domain.ErrMemoryCapExceeded) {
+		t.Fatalf("expected ErrMemoryCapExceeded on over-cap upsert, got %v", err)
+	}
+
+	// Cap rejection on Append (resulting size, not fragment size).
+	if err := mem.AppendUserMemory(ctx, ws1, u1, strings.Repeat("b", domain.MaxMemoryContentChars)); !errors.Is(err, domain.ErrMemoryCapExceeded) {
+		t.Fatalf("expected ErrMemoryCapExceeded on over-cap append, got %v", err)
+	}
+
+	// Stored memory is unchanged after rejected writes.
+	got, _ = mem.UserMemory(ctx, ws1, u1)
+	if got.Content != "Prefers Go. Likes coffee." {
+		t.Fatalf("expected content unchanged after rejected writes, got %q", got.Content)
 	}
 }
 
-func TestWithTx_AgentsMemories(t *testing.T) {
+func TestMemoryStore_WorkspaceMemory(t *testing.T) {
 	ctx := context.Background()
 	s := fake.New()
 
-	u := &domain.User{Email: "tx-agent-user@example.com", Name: "Tx User"}
-	_ = s.Users().Create(ctx, u)
+	ws1, _, _ := seedMemoryFixtures(t, s, "mem-ws-ws1", "mem-ws1@example.com", "atlas")
+	ws2, _, _ := seedMemoryFixtures(t, s, "mem-ws-ws2", "mem-ws2@example.com", "atlas")
+	mem := s.Memories()
 
-	ws := &domain.Workspace{Slug: "tx-all-ws", Name: "Tx All WS"}
-	_ = s.Workspaces().Create(ctx, ws)
+	// Get-absent returns (nil, nil).
+	got, err := mem.WorkspaceMemory(ctx, ws1)
+	if err != nil || got != nil {
+		t.Fatalf("expected (nil, nil) for absent workspace memory, got (%v, %v)", got, err)
+	}
 
-	p := &domain.ProviderConfig{WorkspaceID: ws.ID, Type: "openai", Name: "P", Enabled: true}
-	_ = s.Providers().Create(ctx, p)
+	if err := mem.UpsertWorkspaceMemory(ctx, ws1, "Deploy freeze on Fridays."); err != nil {
+		t.Fatalf("unexpected UpsertWorkspaceMemory error: %v", err)
+	}
+	got, err = mem.WorkspaceMemory(ctx, ws1)
+	if err != nil || got == nil || got.Content != "Deploy freeze on Fridays." {
+		t.Fatalf("expected stored content, got (%v, %v)", got, err)
+	}
+
+	// Scope isolation between workspaces.
+	got, _ = mem.WorkspaceMemory(ctx, ws2)
+	if got != nil {
+		t.Fatalf("expected nil memory for other workspace, got %q", got.Content)
+	}
+
+	// Append concatenates.
+	if err := mem.AppendWorkspaceMemory(ctx, ws1, " On-call rota rotated weekly."); err != nil {
+		t.Fatalf("unexpected AppendWorkspaceMemory error: %v", err)
+	}
+	got, _ = mem.WorkspaceMemory(ctx, ws1)
+	if got.Content != "Deploy freeze on Fridays. On-call rota rotated weekly." {
+		t.Fatalf("expected concatenated content, got %q", got.Content)
+	}
+
+	// Cap rejection on Upsert and Append.
+	over := strings.Repeat("a", domain.MaxMemoryContentChars+1)
+	if err := mem.UpsertWorkspaceMemory(ctx, ws1, over); !errors.Is(err, domain.ErrMemoryCapExceeded) {
+		t.Fatalf("expected ErrMemoryCapExceeded on over-cap upsert, got %v", err)
+	}
+	if err := mem.AppendWorkspaceMemory(ctx, ws1, over); !errors.Is(err, domain.ErrMemoryCapExceeded) {
+		t.Fatalf("expected ErrMemoryCapExceeded on over-cap append, got %v", err)
+	}
+
+	// Workspace memory does not clobber other workspace fields.
+	w, err := s.Workspaces().ByID(ctx, ws1)
+	if err != nil {
+		t.Fatalf("unexpected workspace read error: %v", err)
+	}
+	if w.Name != "Mem WS mem-ws-ws1" || w.Slug != "mem-ws-ws1" {
+		t.Fatalf("expected workspace fields untouched, got name=%q slug=%q", w.Name, w.Slug)
+	}
+}
+
+func TestMemoryStore_AgentDailyMemory(t *testing.T) {
+	ctx := context.Background()
+	s := fake.New()
+
+	ws1, _, a1 := seedMemoryFixtures(t, s, "mem-daily-ws1", "mem-d1@example.com", "atlas")
+	ws2, _, a2 := seedMemoryFixtures(t, s, "mem-daily-ws2", "mem-d2@example.com", "beacon")
+	mem := s.Memories()
+
+	day := time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC)
+	nextDay := time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)
+
+	// Get-absent returns (nil, nil).
+	got, err := mem.AgentDailyMemory(ctx, ws1, a1, day)
+	if err != nil || got != nil {
+		t.Fatalf("expected (nil, nil) for absent daily memory, got (%v, %v)", got, err)
+	}
+
+	// First append to a nonexistent day creates the document.
+	if err := mem.AppendAgentDailyMemory(ctx, ws1, a1, day, "Morning: triaged incidents."); err != nil {
+		t.Fatalf("unexpected AppendAgentDailyMemory error: %v", err)
+	}
+
+	// Two appends land in order in one document.
+	if err := mem.AppendAgentDailyMemory(ctx, ws1, a1, day, " Afternoon: wrote postmortem."); err != nil {
+		t.Fatalf("unexpected second AppendAgentDailyMemory error: %v", err)
+	}
+	got, err = mem.AgentDailyMemory(ctx, ws1, a1, day)
+	if err != nil || got == nil {
+		t.Fatalf("expected daily memory, got (%v, %v)", got, err)
+	}
+	if got.Content != "Morning: triaged incidents. Afternoon: wrote postmortem." {
+		t.Fatalf("expected ordered concatenation, got %q", got.Content)
+	}
+
+	// Upsert REPLACES the day's document in place (one doc per day).
+	if err := mem.UpsertAgentDailyMemory(ctx, ws1, a1, day, "Rewritten summary."); err != nil {
+		t.Fatalf("unexpected UpsertAgentDailyMemory error: %v", err)
+	}
+	got, _ = mem.AgentDailyMemory(ctx, ws1, a1, day)
+	if got.Content != "Rewritten summary." {
+		t.Fatalf("expected replaced daily content, got %q", got.Content)
+	}
+
+	// A different date is a separate document.
+	got, _ = mem.AgentDailyMemory(ctx, ws1, a1, nextDay)
+	if got != nil {
+		t.Fatalf("expected nil memory for other day, got %q", got.Content)
+	}
+
+	// Scope isolation: other agent and other workspace see nothing.
+	got, _ = mem.AgentDailyMemory(ctx, ws1, a2, day)
+	if got != nil {
+		t.Fatalf("expected nil memory for other agent, got %q", got.Content)
+	}
+	got, _ = mem.AgentDailyMemory(ctx, ws2, a1, day)
+	if got != nil {
+		t.Fatalf("expected nil memory for other workspace, got %q", got.Content)
+	}
+
+	// Cap rejection on Upsert and Append.
+	over := strings.Repeat("a", domain.MaxMemoryContentChars+1)
+	if err := mem.UpsertAgentDailyMemory(ctx, ws1, a1, day, over); !errors.Is(err, domain.ErrMemoryCapExceeded) {
+		t.Fatalf("expected ErrMemoryCapExceeded on over-cap upsert, got %v", err)
+	}
+	if err := mem.AppendAgentDailyMemory(ctx, ws1, a1, day, over); !errors.Is(err, domain.ErrMemoryCapExceeded) {
+		t.Fatalf("expected ErrMemoryCapExceeded on over-cap append, got %v", err)
+	}
+
+	// Daily memories die with the agent (ON DELETE CASCADE).
+	if err := s.Agents().Delete(ctx, ws1, a1); err != nil {
+		t.Fatalf("unexpected Delete agent error: %v", err)
+	}
+	got, _ = mem.AgentDailyMemory(ctx, ws1, a1, day)
+	if got != nil {
+		t.Fatalf("expected daily memory to cascade-delete with agent, got %q", got.Content)
+	}
+}
+
+func TestWithTx_Memories(t *testing.T) {
+	ctx := context.Background()
+	s := fake.New()
+
+	ws, u, _ := seedMemoryFixtures(t, s, "tx-mem-ws", "tx-mem@example.com", "atlas")
 
 	// Commit test
 	err := s.WithTx(ctx, func(txStore store.Store) error {
-		a := &domain.Agent{
-			WorkspaceID: ws.ID,
-			Slug:        "tx-agent",
-			Name:        "Tx Agent",
-			ProviderID:  p.ID,
-			Model:       "gpt-4o",
-		}
-		if err := txStore.Agents().Create(ctx, a); err != nil {
+		if err := txStore.Memories().UpsertUserMemory(ctx, ws, u, "Tx user memory"); err != nil {
 			return err
 		}
-
-		mem := &domain.AgentUserMemory{
-			AgentID:     a.ID,
-			UserID:      u.ID,
-			WorkspaceID: ws.ID,
-			Content:     "Tx memory content",
-		}
-		return txStore.AgentUserMemories().Upsert(ctx, mem)
+		return txStore.Memories().AppendWorkspaceMemory(ctx, ws, "Tx workspace memory")
 	})
 	if err != nil {
 		t.Fatalf("unexpected WithTx error: %v", err)
 	}
 
-	// Verify committed
-	aList, err := s.Agents().ListForWorkspace(ctx, ws.ID)
-	if err != nil || len(aList) != 1 {
-		t.Fatalf("expected 1 agent after commit, got %d (err: %v)", len(aList), err)
+	um, err := s.Memories().UserMemory(ctx, ws, u)
+	if err != nil || um == nil || um.Content != "Tx user memory" {
+		t.Fatalf("expected committed user memory, got (%v, %v)", um, err)
 	}
-	mem, err := s.AgentUserMemories().Get(ctx, ws.ID, aList[0].ID, u.ID)
-	if err != nil || mem.Content != "Tx memory content" {
-		t.Fatalf("expected memory after commit: %+v, err: %v", mem, err)
+	wm, err := s.Memories().WorkspaceMemory(ctx, ws)
+	if err != nil || wm == nil || wm.Content != "Tx workspace memory" {
+		t.Fatalf("expected committed workspace memory, got (%v, %v)", wm, err)
 	}
 
 	// Rollback test
 	rollbackErr := errors.New("rollback transaction")
 	err = s.WithTx(ctx, func(txStore store.Store) error {
-		a2 := &domain.Agent{
-			WorkspaceID: ws.ID,
-			Slug:        "rolled-back-agent",
-			Name:        "Rolled Back",
-			ProviderID:  p.ID,
-			Model:       "gpt-4o",
-		}
-		if err := txStore.Agents().Create(ctx, a2); err != nil {
+		if err := txStore.Memories().AppendUserMemory(ctx, ws, u, " rolled back"); err != nil {
 			return err
 		}
 		return rollbackErr
@@ -1169,11 +1303,9 @@ func TestWithTx_AgentsMemories(t *testing.T) {
 	if !errors.Is(err, rollbackErr) {
 		t.Fatalf("expected rollback error, got %v", err)
 	}
-
-	// Verify not committed
-	_, err = s.Agents().BySlug(ctx, ws.ID, "rolled-back-agent")
-	if !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("expected ErrNotFound for rolled back agent, got %v", err)
+	um, _ = s.Memories().UserMemory(ctx, ws, u)
+	if um.Content != "Tx user memory" {
+		t.Fatalf("expected rolled-back append to be discarded, got %q", um.Content)
 	}
 }
 
@@ -1277,5 +1409,324 @@ func TestWorkspaceSkillStore_CRUD(t *testing.T) {
 	}
 	if err := s.WorkspaceSkills().Delete(ctx, ws.ID, updated.ID); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("double delete should be ErrNotFound, got %v", err)
+	}
+}
+
+func TestWorkspaceMCPServerStore_CRUD(t *testing.T) {
+	ctx := context.Background()
+	s := fake.New()
+
+	ws := &domain.Workspace{Slug: "mcp-ws", Name: "MCP WS"}
+	if err := s.Workspaces().Create(ctx, ws); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	other := &domain.Workspace{Slug: "mcp-other", Name: "Other WS"}
+	if err := s.Workspaces().Create(ctx, other); err != nil {
+		t.Fatalf("create other workspace: %v", err)
+	}
+
+	server := &domain.WorkspaceMCPServer{
+		WorkspaceID: ws.ID,
+		Name:        "GitHub",
+		Enabled:     true,
+		MCPConnection: domain.MCPConnection{
+			Transport: domain.MCPTransportStdio,
+			Command:   "npx",
+			Args:      []string{"-y", "@modelcontextprotocol/server-github"},
+			Env:       []domain.EnvRow{{Name: "GITHUB_TOKEN", Value: "secret"}},
+		},
+	}
+	if err := s.WorkspaceMCPServers().Create(ctx, server); err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+	if server.ID == "" || server.CreatedAt.IsZero() || server.UpdatedAt.IsZero() {
+		t.Fatalf("expected ID and timestamps assigned: %+v", server)
+	}
+
+	// Get + cross-tenant isolation.
+	found, err := s.WorkspaceMCPServers().Get(ctx, ws.ID, server.ID)
+	if err != nil || found.Name != "GitHub" || found.Command != "npx" {
+		t.Fatalf("get = %+v, err %v", found, err)
+	}
+	if _, err := s.WorkspaceMCPServers().Get(ctx, other.ID, server.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("foreign get should be ErrNotFound, got %v", err)
+	}
+
+	// Returned copies must not alias stored state.
+	found.Env[0].Value = "mutated"
+	again, _ := s.WorkspaceMCPServers().Get(ctx, ws.ID, server.ID)
+	if again.Env[0].Value != "secret" {
+		t.Fatalf("stored env aliased by caller: %+v", again.Env)
+	}
+
+	// Name uniqueness: exact, case-insensitive, and scoped to the workspace.
+	dup := *server
+	dup.ID = ""
+	if err := s.WorkspaceMCPServers().Create(ctx, &dup); !errors.Is(err, domain.ErrMCPServerNameTaken) {
+		t.Fatalf("duplicate name should be ErrMCPServerNameTaken, got %v", err)
+	}
+	cased := *server
+	cased.ID = ""
+	cased.Name = "GITHUB"
+	if err := s.WorkspaceMCPServers().Create(ctx, &cased); !errors.Is(err, domain.ErrMCPServerNameTaken) {
+		t.Fatalf("case-insensitive duplicate should be ErrMCPServerNameTaken, got %v", err)
+	}
+	if !errors.Is(domain.ErrMCPServerNameTaken, domain.ErrConflict) {
+		t.Fatal("ErrMCPServerNameTaken must chain to ErrConflict")
+	}
+	if err := s.WorkspaceMCPServers().Create(ctx, &domain.WorkspaceMCPServer{
+		WorkspaceID: other.ID,
+		Name:        "github",
+		MCPConnection: domain.MCPConnection{
+			Transport: domain.MCPTransportStreamableHTTP,
+			URL:       "https://mcp.example.com",
+		},
+	}); err != nil {
+		t.Fatalf("same name in other workspace should succeed: %v", err)
+	}
+
+	// Validation and unknown scope.
+	if err := s.WorkspaceMCPServers().Create(ctx, &domain.WorkspaceMCPServer{
+		WorkspaceID:   ws.ID,
+		Name:          "broken",
+		MCPConnection: domain.MCPConnection{Transport: domain.MCPTransportStdio},
+	}); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("stdio without command should be ErrInvalid, got %v", err)
+	}
+	if err := s.WorkspaceMCPServers().Create(ctx, &domain.WorkspaceMCPServer{
+		WorkspaceID:   "missing-ws",
+		Name:          "orphan",
+		MCPConnection: domain.MCPConnection{Transport: domain.MCPTransportStdio, Command: "npx"},
+	}); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("unknown workspace should be ErrNotFound, got %v", err)
+	}
+
+	// SetStatus persists probe outcome; unknown id is ErrNotFound.
+	if err := s.WorkspaceMCPServers().SetStatus(ctx, ws.ID, server.ID, domain.MCPStatusConnected, "", 24); err != nil {
+		t.Fatalf("set status: %v", err)
+	}
+	if err := s.WorkspaceMCPServers().SetStatus(ctx, other.ID, server.ID, domain.MCPStatusError, "boom", 0); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("foreign set status should be ErrNotFound, got %v", err)
+	}
+
+	// Update replaces editable fields but keeps probe status.
+	found.Name = "GitHub Enterprise"
+	found.Enabled = false
+	found.MCPConnection = domain.MCPConnection{
+		Transport: domain.MCPTransportStreamableHTTP,
+		URL:       "https://mcp.corp.example.com",
+		Headers:   []domain.EnvRow{{Name: "Authorization", Value: "Bearer tok"}},
+	}
+	if err := s.WorkspaceMCPServers().Update(ctx, found); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	updated, _ := s.WorkspaceMCPServers().Get(ctx, ws.ID, server.ID)
+	if updated.Name != "GitHub Enterprise" || updated.Enabled || updated.URL != "https://mcp.corp.example.com" || len(updated.Headers) != 1 {
+		t.Fatalf("update not applied: %+v", updated)
+	}
+	if updated.Status != domain.MCPStatusConnected || updated.ToolCount != 24 || updated.StatusError != "" {
+		t.Fatalf("update must preserve probe status: %+v", updated)
+	}
+	if updated.Command != "" || len(updated.Env) != 0 {
+		t.Fatalf("old transport fields must be replaced: %+v", updated.MCPConnection)
+	}
+
+	// Rename onto another server's name in the same scope collides.
+	helper := &domain.WorkspaceMCPServer{
+		WorkspaceID:   ws.ID,
+		Name:          "Registry Helper",
+		MCPConnection: domain.MCPConnection{Transport: domain.MCPTransportStdio, Command: "npx"},
+	}
+	if err := s.WorkspaceMCPServers().Create(ctx, helper); err != nil {
+		t.Fatalf("create helper server: %v", err)
+	}
+	updated.Name = "registry helper"
+	if err := s.WorkspaceMCPServers().Update(ctx, updated); !errors.Is(err, domain.ErrMCPServerNameTaken) {
+		t.Fatalf("rename collision should be ErrMCPServerNameTaken, got %v", err)
+	}
+
+	// List is workspace-scoped.
+	list, err := s.WorkspaceMCPServers().List(ctx, ws.ID)
+	if err != nil || len(list) != 2 || list[0].ID != server.ID || list[1].ID != helper.ID {
+		t.Fatalf("list = %+v, err %v", list, err)
+	}
+
+	// Delete + double delete.
+	if err := s.WorkspaceMCPServers().Delete(ctx, ws.ID, server.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if err := s.WorkspaceMCPServers().Delete(ctx, ws.ID, server.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("double delete should be ErrNotFound, got %v", err)
+	}
+}
+
+func TestAgentMCPServerStore_CRUD(t *testing.T) {
+	ctx := context.Background()
+	s := fake.New()
+
+	ws := &domain.Workspace{Slug: "agent-mcp-ws", Name: "Agent MCP WS"}
+	if err := s.Workspaces().Create(ctx, ws); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	other := &domain.Workspace{Slug: "agent-mcp-other", Name: "Other WS"}
+	if err := s.Workspaces().Create(ctx, other); err != nil {
+		t.Fatalf("create other workspace: %v", err)
+	}
+	p := &domain.ProviderConfig{WorkspaceID: ws.ID, Type: "openai", Name: "OpenAI", Enabled: true}
+	if err := s.Providers().Create(ctx, p); err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	agentA := &domain.Agent{WorkspaceID: ws.ID, Slug: "atlas", Name: "Atlas", ProviderID: p.ID, Model: "gpt-4o"}
+	if err := s.Agents().Create(ctx, agentA); err != nil {
+		t.Fatalf("create agent A: %v", err)
+	}
+	agentB := &domain.Agent{WorkspaceID: ws.ID, Slug: "beacon", Name: "Beacon", ProviderID: p.ID, Model: "gpt-4o"}
+	if err := s.Agents().Create(ctx, agentB); err != nil {
+		t.Fatalf("create agent B: %v", err)
+	}
+
+	server := &domain.AgentMCPServer{
+		WorkspaceID: ws.ID,
+		AgentID:     agentA.ID,
+		Name:        "Private Fetch",
+		Enabled:     true,
+		MCPConnection: domain.MCPConnection{
+			Transport: domain.MCPTransportStreamableHTTP,
+			URL:       "https://internal.example.com/mcp",
+			Headers:   []domain.EnvRow{{Name: "Authorization", Value: "Bearer tok"}},
+		},
+	}
+	if err := s.AgentMCPServers().Create(ctx, server); err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+	if server.ID == "" || server.CreatedAt.IsZero() {
+		t.Fatalf("expected ID and timestamps assigned: %+v", server)
+	}
+
+	// Get + agent-scope isolation: another agent cannot see it.
+	found, err := s.AgentMCPServers().Get(ctx, agentA.ID, server.ID)
+	if err != nil || found.Name != "Private Fetch" {
+		t.Fatalf("get = %+v, err %v", found, err)
+	}
+	if _, err := s.AgentMCPServers().Get(ctx, agentB.ID, server.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("other agent's get should be ErrNotFound, got %v", err)
+	}
+
+	// Names are unique per agent: same name under another agent is fine;
+	// a case-insensitive repeat under the same agent collides.
+	if err := s.AgentMCPServers().Create(ctx, &domain.AgentMCPServer{
+		WorkspaceID:   ws.ID,
+		AgentID:       agentB.ID,
+		Name:          "private fetch",
+		MCPConnection: domain.MCPConnection{Transport: domain.MCPTransportStdio, Command: "npx"},
+	}); err != nil {
+		t.Fatalf("same name under other agent should succeed: %v", err)
+	}
+	if err := s.AgentMCPServers().Create(ctx, &domain.AgentMCPServer{
+		WorkspaceID:   ws.ID,
+		AgentID:       agentA.ID,
+		Name:          "PRIVATE FETCH",
+		MCPConnection: domain.MCPConnection{Transport: domain.MCPTransportStdio, Command: "npx"},
+	}); !errors.Is(err, domain.ErrMCPServerNameTaken) {
+		t.Fatalf("case-insensitive duplicate should be ErrMCPServerNameTaken, got %v", err)
+	}
+
+	// Scope integrity: the agent must exist in the server's workspace.
+	if err := s.AgentMCPServers().Create(ctx, &domain.AgentMCPServer{
+		WorkspaceID:   other.ID,
+		AgentID:       agentA.ID,
+		Name:          "cross-ws",
+		MCPConnection: domain.MCPConnection{Transport: domain.MCPTransportStdio, Command: "npx"},
+	}); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("agent in another workspace should be ErrNotFound, got %v", err)
+	}
+
+	// SetStatus then update: editable fields change, probe status persists.
+	if err := s.AgentMCPServers().SetStatus(ctx, agentA.ID, server.ID, domain.MCPStatusError, "connection refused", 0); err != nil {
+		t.Fatalf("set status: %v", err)
+	}
+	found.URL = "https://internal.example.com/mcp-v2"
+	if err := s.AgentMCPServers().Update(ctx, found); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	updated, _ := s.AgentMCPServers().Get(ctx, agentA.ID, server.ID)
+	if updated.URL != "https://internal.example.com/mcp-v2" {
+		t.Fatalf("update not applied: %+v", updated)
+	}
+	if updated.Status != domain.MCPStatusError || updated.StatusError != "connection refused" || updated.ToolCount != 0 {
+		t.Fatalf("update must preserve probe status: %+v", updated)
+	}
+
+	// List is agent-scoped.
+	listA, err := s.AgentMCPServers().List(ctx, agentA.ID)
+	if err != nil || len(listA) != 1 {
+		t.Fatalf("agent A list = %+v, err %v", listA, err)
+	}
+	listB, err := s.AgentMCPServers().List(ctx, agentB.ID)
+	if err != nil || len(listB) != 1 {
+		t.Fatalf("agent B list = %+v, err %v", listB, err)
+	}
+
+	// Cascade: deleting agent A removes its private servers; agent B untouched.
+	if err := s.Agents().Delete(ctx, ws.ID, agentA.ID); err != nil {
+		t.Fatalf("delete agent A: %v", err)
+	}
+	if listA, err = s.AgentMCPServers().List(ctx, agentA.ID); err != nil || len(listA) != 0 {
+		t.Fatalf("agent A private servers must die with the agent, got %+v err %v", listA, err)
+	}
+	if listB, err = s.AgentMCPServers().List(ctx, agentB.ID); err != nil || len(listB) != 1 {
+		t.Fatalf("agent B private servers must survive, got %+v err %v", listB, err)
+	}
+
+	// Delete + double delete.
+	if err := s.AgentMCPServers().Delete(ctx, agentB.ID, listB[0].ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if err := s.AgentMCPServers().Delete(ctx, agentB.ID, listB[0].ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("double delete should be ErrNotFound, got %v", err)
+	}
+}
+
+func TestWithTx_MCPServers(t *testing.T) {
+	ctx := context.Background()
+	s := fake.New()
+
+	ws := &domain.Workspace{Slug: "mcp-tx-ws", Name: "MCP Tx WS"}
+	if err := s.Workspaces().Create(ctx, ws); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+
+	// Rollback discards MCP server writes.
+	if err := s.WithTx(ctx, func(txStore store.Store) error {
+		srv := &domain.WorkspaceMCPServer{
+			WorkspaceID:   ws.ID,
+			Name:          "Rollback",
+			MCPConnection: domain.MCPConnection{Transport: domain.MCPTransportStdio, Command: "npx"},
+		}
+		if err := txStore.WorkspaceMCPServers().Create(ctx, srv); err != nil {
+			return err
+		}
+		return errors.New("force rollback")
+	}); err == nil {
+		t.Fatal("expected forced rollback error")
+	}
+	if list, err := s.WorkspaceMCPServers().List(ctx, ws.ID); err != nil || len(list) != 0 {
+		t.Fatalf("rolled back server must not persist, got %+v err %v", list, err)
+	}
+
+	// Commit persists MCP server writes.
+	if err := s.WithTx(ctx, func(txStore store.Store) error {
+		srv := &domain.WorkspaceMCPServer{
+			WorkspaceID:   ws.ID,
+			Name:          "Committed",
+			MCPConnection: domain.MCPConnection{Transport: domain.MCPTransportSSE, URL: "https://mcp.example.com/sse"},
+		}
+		return txStore.WorkspaceMCPServers().Create(ctx, srv)
+	}); err != nil {
+		t.Fatalf("unexpected WithTx error: %v", err)
+	}
+	list, err := s.WorkspaceMCPServers().List(ctx, ws.ID)
+	if err != nil || len(list) != 1 || list[0].Name != "Committed" {
+		t.Fatalf("committed server must persist, got %+v err %v", list, err)
 	}
 }

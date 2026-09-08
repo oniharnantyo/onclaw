@@ -52,7 +52,7 @@ func (stubChatModel) Stream(_ context.Context, _ []*schema.Message, _ ...model.O
 	return nil, errors.New("stream not implemented in stub")
 }
 
-func setupTestEnv(t *testing.T) *testEnv {
+func setupTestEnv(t *testing.T, opts ...func(*server.RouterOptions)) *testEnv {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
@@ -75,7 +75,7 @@ func setupTestEnv(t *testing.T) *testEnv {
 	// touch the real home directory.
 	workspaceDir := filepath.Join(t.TempDir(), "workspaces")
 
-	r := server.NewRouter(server.RouterOptions{
+	routerOpts := server.RouterOptions{
 		Store:         st,
 		Storage:       stor,
 		Issuer:        issuer,
@@ -83,7 +83,12 @@ func setupTestEnv(t *testing.T) *testEnv {
 		EncryptionKey: encKey,
 		AgentService:  agentSvc,
 		WorkspaceDir:  workspaceDir,
-	})
+	}
+	for _, opt := range opts {
+		opt(&routerOpts)
+	}
+
+	r := server.NewRouter(routerOpts)
 
 	return &testEnv{
 		store:         st,

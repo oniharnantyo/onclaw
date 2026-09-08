@@ -38,12 +38,14 @@ type Store interface {
 	Members() MemberStore
 	Providers() ProviderStore
 	Agents() AgentStore
-	AgentUserMemories() AgentUserMemoryStore
+	Memories() MemoryStore
 	SessionEvents() SessionEventStore
 	SessionCheckpoints() SessionCheckpointStore
 	APIKeys() WorkspaceAPIKeyStore
 	WorkspaceSkills() WorkspaceSkillStore
 	ToolSettings() ToolSettingsStore
+	WorkspaceMCPServers() WorkspaceMCPServers
+	AgentMCPServers() AgentMCPServers
 	WithTx(ctx context.Context, fn func(Store) error) error
 	Close() error
 }
@@ -102,11 +104,27 @@ type AgentStore interface {
 	SweepGenerating(ctx context.Context, errMsg string) (int64, error)
 }
 
-// AgentUserMemoryStore manages per-user persistent memory for agents.
-type AgentUserMemoryStore interface {
-	Get(ctx context.Context, workspaceID, agentID, userID string) (*domain.AgentUserMemory, error)
-	Upsert(ctx context.Context, memory *domain.AgentUserMemory) error
-	Delete(ctx context.Context, workspaceID, agentID, userID string) error
+// MemoryStore manages the three agent-memory scopes: user memory (one doc per
+// workspace+user), shared workspace memory (one doc per workspace), and agent
+// daily memory (one doc per workspace+agent+date). All operations are
+// workspace-scoped by their arguments.
+//
+// Get methods return (nil, nil) when no memory is stored — absence is a normal
+// state, not an error. Upsert* REPLACES the stored content (HTTP PUT
+// semantics). Append* concatenates atomically (single statement in the
+// postgres adapter — no read-modify-write race) and enforces the shared
+// domain.MaxMemoryContentChars cap on the resulting document, returning a
+// wrapped domain.ErrMemoryCapExceeded when blocked.
+type MemoryStore interface {
+	UserMemory(ctx context.Context, workspaceID, userID string) (*domain.Memory, error)
+	UpsertUserMemory(ctx context.Context, workspaceID, userID, content string) error
+	AppendUserMemory(ctx context.Context, workspaceID, userID, content string) error
+	WorkspaceMemory(ctx context.Context, workspaceID string) (*domain.Memory, error)
+	UpsertWorkspaceMemory(ctx context.Context, workspaceID, content string) error
+	AppendWorkspaceMemory(ctx context.Context, workspaceID, content string) error
+	AgentDailyMemory(ctx context.Context, workspaceID, agentID string, date time.Time) (*domain.Memory, error)
+	UpsertAgentDailyMemory(ctx context.Context, workspaceID, agentID string, date time.Time, content string) error
+	AppendAgentDailyMemory(ctx context.Context, workspaceID, agentID string, date time.Time, content string) error
 }
 
 // LoadSessionEventsParams configures query parameters for loading session events.

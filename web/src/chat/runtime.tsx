@@ -6,8 +6,8 @@ import { mintSessionId } from '../store';
 import { getWorkspaceKey } from '../store/workspaceKeys';
 import type { Message, Agent } from '../data/types';
 import { uid, nowTime, parseMentions, appendReasoningPart, appendToolPart } from '../lib/helpers';
-import { runTurn } from '../lib/openresponses';
-import { markLiveChatDisconnected, handleV1AuthFailure } from '../lib/livechat';
+import { runTurn, sessionIdFromResponseId } from '../lib/openresponses';
+import { markLiveChatDisconnected, handleV1AuthFailure, hydrateSession, attachCatchUpStream } from '../lib/livechat';
 import { api } from '../lib/api';
 
 const activeTimers: Record<string, any> = {};
@@ -108,6 +108,10 @@ export function useChatRuntime(chatId: string) {
   const respondFor = useCallback((tid: string, cid: string, ag: Agent, origText: string, opts?: any) => {
     const delay = opts?.delay;
     const mentioned = opts?.mentioned;
+    // queued: this call is the re-dispatch after a 409-conflict queue (the
+    // active run that blocked it has drained) — a second conflict must
+    // surface as a real failure instead of queueing again.
+    const queued = opts?.queued;
     patchUi({ running: true });
 
     // Real turn via the OpenResponses /v1 surface when a workspace chat key
@@ -221,6 +225,45 @@ export function useChatRuntime(chatId: string) {
               });
               return;
             }
+            if (meta?.conflict && !queued) {
+              // 409 from the per-session run lock: another run still holds
+              // this session (this page reloaded mid-turn, a second tab, or
+              // cron). Queue the send behind it — attach the catch-up stream
+              // so the active turn streams to completion HERE, then re-run
+              // this turn once. The queued retry drops the guard: a second
+              // conflict surfaces as a real failure instead of looping.
+              retractIfEmpty();
+              clearInFlight();
+              const agentSlug = (ag as any).slug || ag.id;
+              const sessionId = binding.sessionId || sessionIdFromResponseId(binding.previousResponseId || '');
+              if (!sessionId) {
+                // No session coordinates to reattach under — surface it.
+                useStore.getState().pushMsg(tid, cid, {
+                  id: uid('m'), author: 'error', ts: nowTime(), text: '', error: message,
+                });
+                useStore.getState().toast(message, 'error');
+                useStore.getState().patchUi({ running: false });
+                return;
+              }
+              useStore.getState().toast('A run is still active — your message will follow it.');
+              useStore.getState().patchUi({ running: true });
+              void hydrateSession({ workspaceId: tid, agentSlug, chatId: cid, sessionId }).then((hydrated) => {
+                attachCatchUpStream({
+                  workspaceId: tid,
+                  agentSlug,
+                  chatId: cid,
+                  sessionId,
+                  after: hydrated?.lastEventId,
+                  onDone: () => respondFor(tid, cid, ag, origText, { queued: true }),
+                  onError: () => {
+                    // The catch-up stream died mid-run — drop the queue; the
+                    // composer is live again and the user can resend.
+                    useStore.getState().toast('Lost the live stream — send your message again.');
+                  },
+                });
+              });
+              return;
+            }
             // Terminal failure (e.g. provider 429): retract the empty
             // optimistic row — it would otherwise render as a forever-loading
             // placeholder next to the error toast. Runs before clearInFlight,
@@ -308,27 +351,21 @@ export function useChatRuntime(chatId: string) {
       }
     }
     // Live cancel (design D5): the in-flight minted response id has the shape
-    // `resp_<session>_<turn>`. Per the published codec (internal/openresponses
-    // codec.go), decode = strip the `resp_` prefix, then split at the LAST
-    // underscore (turn ids are UUIDs — never underscored). Partial text and
-    // completed tool cards stay in the transcript; a cancel before anything
-    // streamed retracts the empty optimistic row.
+    // `resp_<session>_<turn>`; decode it to cancel the server-side run.
+    // Partial text and completed tool cards stay in the transcript; a cancel
+    // before anything streamed retracts the empty optimistic row.
     const rid = inFlight.responseId;
     const agentSlug = inFlight.agentSlug;
-    if (rid && agentSlug && rid.startsWith('resp_')) {
-      const payload = rid.slice('resp_'.length);
-      const cut = payload.lastIndexOf('_');
-      if (cut > 0 && cut < payload.length - 1) {
-        const sessionId = payload.slice(0, cut);
-        const turn = payload.slice(cut + 1);
-        retractIfEmpty();
-        clearInFlight();
-        void api.agents.cancelRun(tenantId, agentSlug, sessionId, turn).catch(() => {
-          // The local stop already succeeded; a failed server cancel just
-          // means the stream ends on its own.
-        });
-        return;
-      }
+    const sessionId = sessionIdFromResponseId(rid);
+    if (rid && agentSlug && sessionId) {
+      const turn = rid.slice(('resp_' + sessionId + '_').length);
+      retractIfEmpty();
+      clearInFlight();
+      void api.agents.cancelRun(tenantId, agentSlug, sessionId, turn).catch(() => {
+        // The local stop already succeeded; a failed server cancel just
+        // means the stream ends on its own.
+      });
+      return;
     }
     retractIfEmpty();
     clearInFlight();

@@ -12,7 +12,18 @@ import { api } from '../lib/api';
 vi.mock('@assistant-ui/react', () => ({
   useExternalStoreRuntime: vi.fn((opts) => opts),
 }));
-vi.mock('../lib/openresponses', () => ({ runTurn: vi.fn() }));
+vi.mock('../lib/openresponses', () => ({
+  runTurn: vi.fn(),
+  // Real codec (tiny pure fn) — the conflict-queue test asserts the retried
+  // turn chains via the decoded session id.
+  sessionIdFromResponseId: (rid: string | null | undefined) => {
+    if (!rid || !rid.startsWith('resp_')) return undefined;
+    const payload = rid.slice('resp_'.length);
+    const cut = payload.lastIndexOf('_');
+    if (cut <= 0 || cut >= payload.length - 1) return undefined;
+    return payload.slice(0, cut);
+  },
+}));
 // Real livechat module (connect-status store, hydration) except the network
 // exchange, which the auth-failure tests stub.
 vi.mock('../lib/livechat', async (importOriginal) => {
@@ -46,7 +57,7 @@ describe('useChatRuntime', () => {
     act(() => {
       const mkAgent = (id: string, name: string, tools: string[]) => ({
         id, name, model: 'claude-sonnet-5', temp: 0.4, autonomy: 'approval', channelPost: false,
-        role: 'Test agent', status: 'idle', tools, skills: ['research'], mcp: [], lastActive: 'now', prompt: ''
+        role: 'Test agent', status: 'idle', tools, skills: ['research'], lastActive: 'now', prompt: ''
       });
       useStore.setState({
         pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
@@ -56,7 +67,7 @@ describe('useChatRuntime', () => {
             id: 't1',
             name: 'T1', sub: 't1', tz: 'America/Los_Angeles',
             defaultModel: 'claude-sonnet-5', retention: '90 days',
-            people: [], cron: [], runs: [], members: [], integrations: [], mcpServers: [], skillLib: [], keys: [],
+            people: [], cron: [], runs: [], members: [], integrations: [], skillLib: [], keys: [],
             agents: [mkAgent('a1', 'Alice', ['search']), mkAgent('a2', 'Bob', [])],
             // agentId is '' (not 'a1') so no agent auto-responds to plain
             // channel messages — the no-turn and DM-only tests rely on it.
@@ -169,7 +180,7 @@ describe('useChatRuntime — live session binding (birth → chain → reset-for
     act(() => {
       const mkAgent = (id: string, name: string, tools: string[]) => ({
         id, name, model: 'claude-sonnet-5', temp: 0.4, autonomy: 'approval', channelPost: false,
-        role: 'Test agent', status: 'idle', tools, skills: ['research'], mcp: [], lastActive: 'now', prompt: ''
+        role: 'Test agent', status: 'idle', tools, skills: ['research'], lastActive: 'now', prompt: ''
       });
       useStore.setState({
         pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
@@ -179,7 +190,7 @@ describe('useChatRuntime — live session binding (birth → chain → reset-for
             id: 't1',
             name: 'T1', sub: 't1', tz: 'America/Los_Angeles',
             defaultModel: 'claude-sonnet-5', retention: '90 days',
-            people: [], cron: [], runs: [], members: [], integrations: [], mcpServers: [], skillLib: [], keys: [],
+            people: [], cron: [], runs: [], members: [], integrations: [], skillLib: [], keys: [],
             agents: [mkAgent('a1', 'Alice', ['search'])],
             channels: [],
             threads: {
@@ -574,5 +585,148 @@ describe('useChatRuntime — live session binding (birth → chain → reset-for
     const c1Th: any = useStore.getState().db.t1.threads.c1;
     const c1Sess = c1Th.list.find((x: any) => x.id === c1Th.active);
     expect(c1Sess.usage).toEqual({ finalInput: 9999, at: expect.any(String) });
+  });
+});
+
+describe('useChatRuntime — 409 conflict queue (live-run-reattach fix)', () => {
+  const encoder = new TextEncoder();
+
+  const activeSession = (): any => {
+    const th = useStore.getState().db.t1.threads.a1;
+    return th.list.find((x: any) => x.id === th.active);
+  };
+
+  const send = (result: any, text: string) =>
+    act(async () => {
+      await result.current.onNew({ role: 'user', content: [{ type: 'text', text }] } as any);
+    });
+
+  beforeEach(() => {
+    localStorage.clear();
+    vi.mocked(runTurn).mockReset();
+    vi.mocked(handleV1AuthFailure).mockReset();
+    act(() => {
+      const mkAgent = (id: string, name: string, tools: string[]) => ({
+        id, name, model: 'claude-sonnet-5', temp: 0.4, autonomy: 'approval', channelPost: false,
+        role: 'Test agent', status: 'idle', tools, skills: ['research'], lastActive: 'now', prompt: ''
+      });
+      useStore.setState({
+        pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
+        ui: { configAgent: null, cronEdit: null, wsOpen: false, running: false, toasts: [] },
+        db: {
+          t1: {
+            id: 't1', name: 'T1', sub: 't1', tz: 'America/Los_Angeles',
+            defaultModel: 'claude-sonnet-5', retention: '90 days',
+            people: [], cron: [], runs: [], members: [], integrations: [], skillLib: [], keys: [],
+            agents: [mkAgent('a1', 'Alice', ['search'])],
+            channels: [],
+            threads: {
+              // Bound session mid-run: the tail agent message carries the
+              // response chain the queue's re-dispatch must extend.
+              a1: {
+                active: 'sess_live-9',
+                list: [{
+                  id: 'sess_live-9', title: 'Chat', updated: '',
+                  messages: [{ id: 'm0', author: 'agent', ts: '', text: 'partial', resp: 'resp_sess_live-9_turn-1' }],
+                }],
+              },
+            },
+          },
+        },
+      });
+    });
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('queues the send behind the active run, streams it, and re-dispatches chained', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+
+    // The catch-up stream: run_active, a delta of the still-running turn,
+    // terminal, [DONE] — after which the queued turn re-dispatches.
+    const encoder = new TextEncoder();
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ kind: 'run_active', occurred_at: 'x' })}\n\n`));
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ id: 'e9', kind: 'text_delta', occurred_at: 'x', turn_id: 'turn-1', text_delta: ' finished' })}\n\n`));
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+      }) as unknown as Response
+    ));
+
+    vi.mocked(runTurn)
+      .mockImplementationOnce(async (_k: any, _p: any, cb: any) => {
+        cb.onError('agent.Run: conflict: a run is already active for session "sess_live-9"', { conflict: true });
+      })
+      .mockImplementationOnce(async () => {});
+
+    const { result } = renderHook(() => useChatRuntime('a1'));
+    await send(result, 'any update?');
+
+    // Drain the queue chain (hydrate → attach → [DONE] → re-dispatch).
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(runTurn).toHaveBeenCalledTimes(2);
+    // The re-dispatch streams the SAME text, chained to the drained run.
+    const [, retryParams]: any[] = vi.mocked(runTurn).mock.calls[1];
+    expect(retryParams.input).toBe('any update?');
+    expect(retryParams.previousResponseId).toBe('resp_sess_live-9_turn-1');
+    expect(useStore.getState().ui.running).toBe(true);
+
+    // The active run's tail streamed into the seeded message before the
+    // queued turn took over.
+    const msgs = activeSession().messages;
+    expect(msgs[0].text).toBe('partial finished');
+    // The conflict left no error card behind.
+    expect(msgs.some((m: any) => m.author === 'error')).toBe(false);
+  });
+
+  it('a queued retry that conflicts again surfaces the error instead of looping', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+      }) as unknown as Response
+    ));
+
+    vi.mocked(runTurn)
+      .mockImplementationOnce(async (_k: any, _p: any, cb: any) => {
+        cb.onError('agent.Run: conflict: a run is already active for session "sess_live-9"', { conflict: true });
+      })
+      .mockImplementationOnce(async (_k: any, _p: any, cb: any) => {
+        cb.onError('agent.Run: conflict: a run is already active for session "sess_live-9"', { conflict: true });
+      });
+
+    const { result } = renderHook(() => useChatRuntime('a1'));
+    await send(result, 'any update?');
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+
+    // Exactly one queue + one guarded retry — the second conflict is terminal.
+    expect(runTurn).toHaveBeenCalledTimes(2);
+    const msgs = activeSession().messages;
+    expect(msgs.some((m: any) => m.author === 'error')).toBe(true);
+    expect(useStore.getState().ui.running).toBe(false);
   });
 });

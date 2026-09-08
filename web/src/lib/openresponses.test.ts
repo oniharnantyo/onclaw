@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { runTurn } from './openresponses';
+import { runTurn, sessionIdFromResponseId } from './openresponses';
 
 const createMock = vi.hoisted(() => vi.fn());
 
@@ -245,5 +245,57 @@ describe('runTurn — terminal-event usage capture (chat-context-meter)', () => 
 
     expect(onUsage).not.toHaveBeenCalled();
     expect(onDone).not.toHaveBeenCalled();
+  });
+});
+
+describe('runTurn — 409 conflict dispatch (live-run-reattach fix)', () => {
+  it('flags meta.conflict when the per-session run lock rejects the turn', async () => {
+    createMock.mockRejectedValue({
+      status: 409,
+      message: 'agent.Run: conflict: a run is already active for session "sess_1"',
+    });
+
+    const onError = vi.fn();
+    await runTurn(nextKey(), { agentSlug: 'atlas', input: 'hello' }, {
+      onDelta: vi.fn(), onDone: vi.fn(), onError,
+    });
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    const [, meta] = onError.mock.calls[0];
+    expect(meta?.conflict).toBe(true);
+    expect(meta?.unauthorized).toBeFalsy();
+  });
+
+  it('leaves meta.conflict undefined for non-409 failures', async () => {
+    createMock.mockRejectedValue({ status: 429, message: 'rate limited' });
+
+    const onError = vi.fn();
+    await runTurn(nextKey(), { agentSlug: 'atlas', input: 'hello' }, {
+      onDelta: vi.fn(), onDone: vi.fn(), onError,
+    });
+
+    const [, meta] = onError.mock.calls[0];
+    expect(meta?.conflict).toBeFalsy();
+  });
+});
+
+describe('sessionIdFromResponseId — published resp_ codec', () => {
+  it.each([
+    ['resp_sess_52eca0d5-bccd_turn-9', 'sess_52eca0d5-bccd'],
+    ['resp_sess-1_t2', 'sess-1'],
+  ])('decodes %s to %s (split at the LAST underscore)', (rid, want) => {
+    expect(sessionIdFromResponseId(rid)).toBe(want);
+  });
+
+  it.each([
+    [''],
+    ['resp_'],
+    ['resp_nounderscore'],
+    ['resp__t'],
+    ['m-42'],
+    [undefined],
+    [null],
+  ])('returns undefined for %p', (rid) => {
+    expect(sessionIdFromResponseId(rid as any)).toBeUndefined();
   });
 });

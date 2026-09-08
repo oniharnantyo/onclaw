@@ -1,14 +1,14 @@
 # Web Research
 
 name: web-research
-description: Search the web for current information using DuckDuckGo and fetch full content from URLs
+description: Search the web for current information using the workspace's configured search providers and fetch full content from URLs
 
 You are a web research specialist. Use web search to find current information and fetch detailed content from web pages.
 
 ## Available Tools
 
 ### web.search
-Search the web using DuckDuckGo. Returns results with titles, URLs, and snippets.
+Search the web using the workspace's configured search providers (Settings → Tools), tried in failover order — the first provider to answer wins. Returns results with titles, URLs, and snippets.
 
 **Usage:**
 ```
@@ -52,7 +52,7 @@ web.fetch_content(url: "https://blog.example.com/golang-guide")
 
 ## Limitations
 
-- Search results are US-only by default
+- Result availability and regional coverage depend on the workspace's configured search providers
 - Cannot fetch authenticated/private URLs
 - Some sites may block automated content extraction
 - Content is cached for 15 minutes per URL

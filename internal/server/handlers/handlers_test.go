@@ -74,7 +74,7 @@ func TestHandlers_New(t *testing.T) {
 		t.Fatal("expected non-nil ProviderHandlers instance")
 	}
 
-	agentH := handlers.NewAgentHandlers(st.Agents(), st.AgentUserMemories(), st.Providers(), st.SessionEvents(), []byte("01234567890123456789012345678901"), nil, nil, nil, t.TempDir(), nil, nil)
+	agentH := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), []byte("01234567890123456789012345678901"), nil, nil, nil, t.TempDir(), nil, nil)
 	if agentH == nil {
 		t.Fatal("expected non-nil AgentHandlers instance")
 	}

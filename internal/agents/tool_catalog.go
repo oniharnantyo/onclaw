@@ -2,6 +2,7 @@ package agents
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/oniharnantyo/onclaw/internal/agents/tools"
 )
@@ -22,6 +23,9 @@ const (
 	ConfigFieldNumber  ConfigFieldType = "number"
 	ConfigFieldBoolean ConfigFieldType = "boolean"
 	ConfigFieldEnum    ConfigFieldType = "enum"
+	// ConfigFieldList marks an ordered list of structured entries, each
+	// validated against the field's Items definitions.
+	ConfigFieldList ConfigFieldType = "list"
 )
 
 // ConfigFieldOption is one choice of an enum config field.
@@ -30,17 +34,31 @@ type ConfigFieldOption struct {
 	Label string `json:"label"`
 }
 
+// ConfigFieldCondition makes a config field conditional: it renders only
+// while the named sibling field currently holds Equals. The dialog evaluates
+// it against live form state, so the field appears and disappears as the user
+// edits the controlling field.
+type ConfigFieldCondition struct {
+	Field  string `json:"field"`
+	Equals string `json:"equals"`
+}
+
 // ConfigField describes one structured config property of a configurable
 // tool. The settings dialog renders it generically — a newly configurable
 // tool needs no frontend edit.
 type ConfigField struct {
-	Key      string              `json:"key"`
-	Label    string              `json:"label"`
-	Type     ConfigFieldType     `json:"type"`
-	Required bool                `json:"required"`
-	Help     string              `json:"help,omitempty"`
-	Default  any                 `json:"default,omitempty"`
-	Options  []ConfigFieldOption `json:"options,omitempty"`
+	Key      string                `json:"key"`
+	Label    string                `json:"label"`
+	Type     ConfigFieldType       `json:"type"`
+	Required bool                  `json:"required"`
+	Help     string                `json:"help,omitempty"`
+	Default  any                   `json:"default,omitempty"`
+	Options  []ConfigFieldOption   `json:"options,omitempty"`
+	ShowIf   *ConfigFieldCondition `json:"show_if,omitempty"`
+	// Items declares the per-entry fields of a list field (Type list). Each
+	// stored entry is a map keyed like a flat config and validated against
+	// these definitions.
+	Items []ConfigField `json:"items,omitempty"`
 }
 
 // ToolCatalogEntry is the metadata record for one catalog tool: the surface
@@ -59,8 +77,8 @@ type ToolCatalogEntry struct {
 
 // ToolCatalog returns the full tool catalog: every registry tool, the six fs
 // middleware tools, the reserved execute name, and the browser facade alias.
-// The order is stable (filesystem, shell, web, browser) so surfaces render
-// deterministically.
+// The order is stable (filesystem, shell, memory, web, browser) so surfaces
+// render deterministically.
 func ToolCatalog() []ToolCatalogEntry {
 	return []ToolCatalogEntry{
 		{
@@ -106,11 +124,25 @@ func ToolCatalog() []ToolCatalogEntry {
 			IconKey:     "compass",
 		},
 		{
+			Key:         "delete_file",
+			DisplayName: "Delete File",
+			Description: "Permanently delete a file inside the agent workspace.",
+			Group:       "filesystem",
+			IconKey:     "trash",
+		},
+		{
 			Key:         ReservedShellTool,
 			DisplayName: "Shell",
 			Description: "Run shell commands inside the agent workspace jail.",
 			Group:       "shell",
 			IconKey:     "terminal",
+		},
+		{
+			Key:         tools.NameMemory,
+			DisplayName: "Memory",
+			Description: "Persistent memory across conversations: read and append the user's memory, the shared workspace memory, and daily agent logs.",
+			Group:       "memory",
+			IconKey:     "memory",
 		},
 		{
 			Key:          tools.Name,
@@ -150,10 +182,18 @@ func ToolCatalogEntryByKey(key string) (ToolCatalogEntry, bool) {
 	return ToolCatalogEntry{}, false
 }
 
-// webSearchConfigSchema describes the web.search workspace config. The
-// credential field's requiredness is dynamic — it follows the chosen
-// provider's credential kind — so the static schema marks both credential
-// fields optional and server-side validation enforces the pairing.
+// webSearchDefaultTimeoutSeconds is the default per-attempt request timeout
+// applied to every provider entry in the chain (design.md D7).
+const webSearchDefaultTimeoutSeconds = 10
+
+// webSearchMaxTimeoutSeconds bounds the per-attempt request timeout.
+const webSearchMaxTimeoutSeconds = 60
+
+// webSearchConfigSchema describes the web.search workspace config: an ordered
+// provider stack (design.md D1) plus a flat per-attempt timeout. The entries'
+// credential requiredness is dynamic — it follows each entry's provider's
+// credential kind — so the static schema marks credential fields optional and
+// server-side validation enforces the pairing.
 func webSearchConfigSchema() []ConfigField {
 	options := make([]ConfigFieldOption, 0, 8)
 	for _, p := range tools.SearchProviders() {
@@ -161,26 +201,107 @@ func webSearchConfigSchema() []ConfigField {
 	}
 	return []ConfigField{
 		{
-			Key:      "provider",
-			Label:    "Provider",
-			Type:     ConfigFieldEnum,
-			Required: true,
-			Help:     "Which search backend this workspace uses.",
-			Options:  options,
+			Key:   "entries",
+			Label: "Provider stack",
+			Type:  ConfigFieldList,
+			Help:  "Requests try the first three in order — first success wins. Lower entries stand by until promoted into the top three.",
+			Items: []ConfigField{
+				{
+					Key:      "name",
+					Label:    "Name",
+					Type:     ConfigFieldText,
+					Required: true,
+					Help:     "Unique name for this provider entry, shown in transcripts and errors.",
+				},
+				{
+					Key:      "provider",
+					Label:    "Provider",
+					Type:     ConfigFieldEnum,
+					Required: true,
+					Help:     "Which search backend this entry uses.",
+					Options:  options,
+				},
+				{
+					Key:   "api_key",
+					Label: "API key",
+					Type:  ConfigFieldSecret,
+					Help:  "Required for tavily, brave, exa, perplexity, and firecrawl. Stored encrypted; never shown again.",
+				},
+				{
+					Key:    "base_url",
+					Label:  "Base URL",
+					Type:   ConfigFieldText,
+					Help:   "The SearXNG instance root, e.g. http://searxng:8080.",
+					ShowIf: &ConfigFieldCondition{Field: "provider", Equals: tools.SearchProviderSearXNG},
+				},
+			},
 		},
 		{
-			Key:   "api_key",
-			Label: "API key",
-			Type:  ConfigFieldSecret,
-			Help:  "Required for tavily, brave, exa, perplexity, and firecrawl. Stored encrypted; never shown again.",
-		},
-		{
-			Key:   "base_url",
-			Label: "Base URL",
-			Type:  ConfigFieldText,
-			Help:  "Required for searxng — the instance root, e.g. http://searxng:8080.",
+			Key:     "request_timeout_seconds",
+			Label:   "Request timeout (seconds)",
+			Type:    ConfigFieldNumber,
+			Default: webSearchDefaultTimeoutSeconds,
+			Help:    "Bounds each provider attempt — worst case ≈ 3 × timeout. Max 60.",
 		},
 	}
+}
+
+// listConfigField returns the entry's declarative list field, if its schema
+// has one. Only web.search carries one today; the helpers below stay generic
+// so a second list-shaped tool needs no new machinery.
+func listConfigField(entry ToolCatalogEntry) (ConfigField, bool) {
+	for _, field := range entry.ConfigSchema {
+		if field.Type == ConfigFieldList {
+			return field, true
+		}
+	}
+	return ConfigField{}, false
+}
+
+// secretItemKeys lists the list field's per-entry secret keys.
+func secretItemKeys(field ConfigField) []string {
+	keys := make([]string, 0, len(field.Items))
+	for _, item := range field.Items {
+		if item.Type == ConfigFieldSecret {
+			keys = append(keys, item.Key)
+		}
+	}
+	return keys
+}
+
+// configListItems coerces the decoded shapes a list config value may carry
+// ([]any of map[string]any from encoding/json, []map[string]any from
+// in-process callers) into per-entry maps. Any other shape is rejected.
+func configListItems(value any) ([]map[string]any, bool) {
+	switch list := value.(type) {
+	case []map[string]any:
+		return list, true
+	case []any:
+		out := make([]map[string]any, 0, len(list))
+		for _, item := range list {
+			m, ok := item.(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, m)
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
+// configEntries reads a tool config's "entries" list as per-entry maps.
+// Absent or malformed values read as no entries.
+func configEntries(config map[string]any) []map[string]any {
+	if config == nil {
+		return nil
+	}
+	items, ok := configListItems(config["entries"])
+	if !ok {
+		return nil
+	}
+	return items
 }
 
 // browserConfigSchema describes the browser workspace config.
@@ -320,6 +441,67 @@ func validateConfigFieldValue(entry ToolCatalogEntry, field ConfigField, value a
 			}
 		}
 		return fmt.Errorf("config field %q must be one of the allowed providers", field.Key)
+	case ConfigFieldList:
+		return validateConfigListValue(field, value)
+	}
+	return nil
+}
+
+// isServerManagedItemKey reports whether a list-entry key is server-owned:
+// the stable entry id assigned on first persist (design.md D1) and the
+// per-secret last-4 hint fields (design.md D5). Clients echo them back but
+// never set them; validation permits them without requiring them.
+func isServerManagedItemKey(itemFields []ConfigField, key string) bool {
+	if key == "id" {
+		return true
+	}
+	if suffix := "_hint"; strings.HasSuffix(key, suffix) {
+		base := strings.TrimSuffix(key, suffix)
+		for _, item := range itemFields {
+			if item.Key == base && item.Type == ConfigFieldSecret {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// validateConfigListValue checks each entry of a list config value against
+// the field's Items definitions: entries must be objects, keys must be
+// declared (plus server-managed ones), values must match their field type,
+// and statically required item fields must be present. Dynamic per-entry
+// requiredness (credential following provider kind) is layered on top by the
+// owning tool's validation.
+func validateConfigListValue(field ConfigField, value any) error {
+	items, ok := configListItems(value)
+	if !ok {
+		return fmt.Errorf("config field %q must be a list of objects", field.Key)
+	}
+	itemFields := make(map[string]ConfigField, len(field.Items))
+	for _, item := range field.Items {
+		itemFields[item.Key] = item
+	}
+	for i, entryItem := range items {
+		for key, value := range entryItem {
+			itemField, known := itemFields[key]
+			if !known {
+				if isServerManagedItemKey(field.Items, key) {
+					continue
+				}
+				return fmt.Errorf("config field %q entry %d: %q is not a valid option", field.Key, i+1, key)
+			}
+			if err := validateConfigFieldValue(ToolCatalogEntry{}, itemField, value); err != nil {
+				return fmt.Errorf("config field %q entry %d: %w", field.Key, i+1, err)
+			}
+		}
+		for _, itemField := range field.Items {
+			if !itemField.Required {
+				continue
+			}
+			if value, present := entryItem[itemField.Key]; !present || isEmptyConfigValue(value) {
+				return fmt.Errorf("config field %q entry %d: %q is required", field.Key, i+1, itemField.Key)
+			}
+		}
 	}
 	return nil
 }
@@ -327,7 +509,7 @@ func validateConfigFieldValue(entry ToolCatalogEntry, field ConfigField, value a
 // positiveNumberConfigKeys lists config fields that must be positive numbers
 // when present, regardless of the owning tool's schema (mirrors the domain's
 // shared structural constraint).
-var positiveNumberConfigKeys = []string{"max_pages", "idle_timeout_seconds", "action_timeout_seconds"}
+var positiveNumberConfigKeys = []string{"max_pages", "idle_timeout_seconds", "action_timeout_seconds", "request_timeout_seconds"}
 
 // validateStructuralConfig applies the shared structural constraints every
 // tool config must satisfy (positive numbers for bounded numeric fields).

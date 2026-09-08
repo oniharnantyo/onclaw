@@ -180,6 +180,16 @@ func (r *Runner) History(ctx context.Context, req HistoryRequest) (*HistoryResul
 						}
 						accumulateTokenUsage(u, se.Message.ResponseMeta.TokenUsage)
 					}
+					content := extractAgenticText(se.Message)
+					reasoning := agenticReasoningText(se.Message)
+					// Tool-call requests and tool results persist as plain
+					// assistant/user messages with no renderable text (the ADK
+					// stores results under role user). Emitting them would mint
+					// empty bubbles in the hydrated transcript — mirror the
+					// live runner's content guard.
+					if strings.TrimSpace(content) == "" && strings.TrimSpace(reasoning) == "" {
+						break
+					}
 					events = append(events, TranscriptEvent{
 						ID:         id,
 						Kind:       TranscriptEventMessageCompleted,
@@ -187,8 +197,8 @@ func (r *Runner) History(ctx context.Context, req HistoryRequest) (*HistoryResul
 						TurnID:     turnID,
 						Message: &CompletedMessage{
 							Role:             role,
-							Content:          extractAgenticText(se.Message),
-							ReasoningContent: agenticReasoningText(se.Message),
+							Content:          content,
+							ReasoningContent: reasoning,
 						},
 					})
 				}

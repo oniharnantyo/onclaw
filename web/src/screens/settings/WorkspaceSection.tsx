@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { cx } from "../../lib/helpers";
 import { TimezoneSelect } from "../../components/ui/TimezoneSelect";
+import { Chip } from "../../components/ui/Chip";
 import { inputCls, labelCls } from "../../components/ui/constants";
 import { MODELS } from "../../lib/constants";
-import { api, formatApiError } from "../../lib/api";
+import { api, ApiError, formatApiError, type ApiMemory } from "../../lib/api";
 import { useAuthStore } from "../../store/auth";
 import { useStore } from "../../store";
 
@@ -32,8 +33,82 @@ export function WorkspaceSection({
   const [savingWs, setSavingWs] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const currentUser = useAuthStore((s) => s.user);
+  const memberships = useAuthStore((s) => s.memberships);
 
   const targetWsId = tenant.sub || tenant.id;
+
+  // Shared-memory (WORKSPACE.md) editor state — fully independent of the
+  // workspace-details draft above so neither save rewrites the other.
+  const [memory, setMemory] = useState<ApiMemory | null>(null);
+  const [memContent, setMemContent] = useState("");
+  const [memLoading, setMemLoading] = useState(true);
+  const [memSaving, setMemSaving] = useState(false);
+  const [memSaved, setMemSaved] = useState(false);
+  const [memError, setMemError] = useState<string | null>(null);
+
+  // Settings-management permission: Owner/Admin (workspace.write) persist;
+  // Members get the read-only view. Same derivation shape as canWriteSkills.
+  const canWriteMemory = useMemo(() => {
+    if (!memberships.length) return true; // offline / mock mode — affordance stays
+    const mem = memberships.find(
+      (m) =>
+        m.workspace_id === targetWsId ||
+        m.workspace_slug === targetWsId ||
+        m.workspace_id === tenant?.id ||
+        m.workspace_slug === tenant?.sub
+    );
+    if (!mem) return false;
+    const role = mem.role;
+    const roleName = (mem.role_name || role?.name || '').toLowerCase();
+    const perms: string[] = role?.permissions || [];
+    return (
+      role?.is_owner === true ||
+      roleName === 'superadmin' ||
+      roleName === 'owner' ||
+      roleName === 'admin' ||
+      perms.some((p) => p === '*' || p === 'workspace.write' || p === 'workspace.*')
+    );
+  }, [memberships, targetWsId, tenant]);
+
+  // Loads for every member (read state); offline failures stay silent so the
+  // pane still renders in mock mode.
+  useEffect(() => {
+    let cancelled = false;
+    setMemLoading(true);
+    setMemError(null);
+    api.memory
+      .getWorkspace(targetWsId)
+      .then((res: ApiMemory) => {
+        if (cancelled) return;
+        setMemory(res);
+        setMemContent(res.content ?? "");
+      })
+      .catch((err: unknown) => {
+        if (cancelled || (err instanceof ApiError && err.status === 0)) return;
+        setMemError(formatApiError(err, "Failed to load shared memory"));
+      })
+      .finally(() => {
+        if (!cancelled) setMemLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [targetWsId]);
+
+  const saveMemory = async () => {
+    setMemSaving(true);
+    setMemError(null);
+    try {
+      const res = await api.memory.updateWorkspace(targetWsId, { content: memContent });
+      setMemory(res);
+      setMemSaved(true);
+      onToast('Shared memory saved');
+    } catch (err: unknown) {
+      setMemError(formatApiError(err, "Failed to save shared memory"));
+    } finally {
+      setMemSaving(false);
+    }
+  };
 
   const saveWorkspace = async () => {
     setSavingWs(true);
@@ -183,6 +258,83 @@ export function WorkspaceSection({
         >
           {savingWs ? 'Saving…' : 'Save workspace'}
         </button>
+      </div>
+      <div className="pt-2" data-testid="ws-memory-editor">
+        <div className="mb-1.5 flex items-center justify-between gap-3">
+          <label className={cx(labelCls, 'mb-0')} htmlFor="ws-memory">
+            Shared memory
+          </label>
+          <Chip mono>WORKSPACE.md</Chip>
+        </div>
+        <p className="mb-2 text-[12px] leading-5 text-muted">
+          Markdown every agent in this workspace reads for shared context.
+        </p>
+        {memLoading ? (
+          <div data-testid="ws-memory-loading" className="py-8 text-center font-mono text-[13px] text-muted">
+            Loading memory…
+          </div>
+        ) : (
+          <>
+            <textarea
+              id="ws-memory"
+              data-od-id="textarea-workspace-memory"
+              data-testid="textarea-workspace-memory"
+              disabled={!canWriteMemory}
+              value={memContent}
+              onChange={(e) => {
+                setMemContent(e.target.value);
+                setMemSaved(false);
+              }}
+              rows={8}
+              placeholder="Shared notes, conventions and context for every agent."
+              className="w-full resize-y rounded-md border border-line bg-[color-mix(in_oklab,var(--bg)_55%,var(--surface))] p-3 font-mono text-[12.5px] leading-relaxed text-fg2 placeholder:text-muted focus:border-accent focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+            />
+            <div className="mt-1.5 flex items-center justify-between gap-3">
+              {memory ? (
+                <p
+                  data-testid="ws-memory-counter"
+                  className={cx(
+                    'font-mono text-[11px]',
+                    memContent.length > memory.max_chars ? 'text-danger' : 'text-muted'
+                  )}
+                >
+                  {memContent.length} / {memory.max_chars} chars
+                </p>
+              ) : (
+                <span />
+              )}
+              <div className="flex items-center gap-3">
+                {memError && (
+                  <span data-testid="ws-memory-error" className="text-[12px] text-danger" role="alert">
+                    {memError}
+                  </span>
+                )}
+                {canWriteMemory && (
+                  <>
+                    {memSaved && !memError && (
+                      <span data-testid="ws-memory-saved" className="text-[12px] font-medium text-fg2">
+                        Saved
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      disabled={memSaving}
+                      onClick={saveMemory}
+                      data-od-id="btn-workspace-memory-save"
+                      data-testid="btn-workspace-memory-save"
+                      className="flex h-8 items-center rounded-md border border-line px-3 text-[12px] font-medium text-fg2 transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_6%,transparent)] hover:text-fg disabled:opacity-50"
+                    >
+                      {memSaving ? 'Saving…' : 'Save memory'}
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+            {!canWriteMemory && (
+              <p className="mt-1 text-[11px] text-muted">Read-only — an Owner or Admin can edit shared memory.</p>
+            )}
+          </>
+        )}
       </div>
       <div className="mt-8 rounded-md border border-[color-mix(in_oklab,var(--danger)_35%,transparent)] p-4">
         <p className="text-[13px] font-semibold text-fg">Danger zone</p>

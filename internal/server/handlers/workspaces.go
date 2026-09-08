@@ -359,9 +359,9 @@ func (h *workspaceHandlers) CreateWorkspace(c *gin.Context) {
 				if agentTools == nil {
 					agentTools = []string{}
 				}
-				disabledMCPs := req.StarterAgent.DisabledMCPs
-				if disabledMCPs == nil {
-					disabledMCPs = []string{}
+				enabledMCPS := req.StarterAgent.EnabledMCPS
+				if enabledMCPS == nil {
+					enabledMCPS = []string{}
 				}
 				var effort *string
 				if req.StarterAgent.Effort != nil && strings.TrimSpace(*req.StarterAgent.Effort) != "" {
@@ -387,7 +387,7 @@ func (h *workspaceHandlers) CreateWorkspace(c *gin.Context) {
 					Autonomy:      autonomy,
 					ContextWindow: contextWindow,
 					Tools:         agentTools,
-					DisabledMCPs:  disabledMCPs,
+					EnabledMCPS:   enabledMCPS,
 					Avatar:        avatar,
 					PromptsStatus: domain.PromptsStatusGenerating,
 					CreatedBy:     &user.ID,

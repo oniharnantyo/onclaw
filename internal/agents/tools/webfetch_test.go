@@ -173,36 +173,6 @@ func TestWebFetch_RedirectRevalidated(t *testing.T) {
 	}
 }
 
-func TestTavilyProvider(t *testing.T) {
-	p, err := NewSearchProvider("tavily", "tv-key", &fetchFakeClient{resp: &fetchFakeResp{
-		status: 200,
-		header: http.Header{"Content-Type": []string{"application/json"}},
-		body:   `{"results":[{"title":"T","url":"https://t.example","content":"snippet"}]}`,
-	}})
-	if err != nil {
-		t.Fatalf("NewSearchProvider: %v", err)
-	}
-	results, err := p.Search(context.Background(), "q", 5)
-	if err != nil {
-		t.Fatalf("Search: %v", err)
-	}
-	if len(results) != 1 || results[0].Title != "T" || results[0].URL != "https://t.example" || results[0].Snippet != "snippet" {
-		t.Errorf("unexpected results: %+v", results)
-	}
-}
-
-func TestTavilyProvider_MissingKey(t *testing.T) {
-	if _, err := NewSearchProvider("tavily", "", nil); err == nil {
-		t.Error("expected error for missing tavily API key")
-	}
-	if _, err := NewSearchProvider("bogus", "k", nil); err == nil {
-		t.Error("expected error for unknown provider")
-	}
-	if _, err := NewSearchProvider("", "", nil); err != nil {
-		t.Errorf("default provider should require no credentials: %v", err)
-	}
-}
-
 func TestWebSearch_UsesProvider(t *testing.T) {
 	tl, err := NewWebSearch(WithSearchProvider(stubSearchProvider{}))
 	if err != nil {

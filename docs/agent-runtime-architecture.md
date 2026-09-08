@@ -30,7 +30,7 @@ flowchart TB
         ENGINE["Engine port<br/>Run ctx, ExecRequest → domain TranscriptEvents<br/>(Eino types never escape)"]:::onclaw
         COMPOSER["Instruction composer · per execution<br/>AGENTS.md + IDENTITY.md + SOUL.md<br/>+ WORKSPACE.md virtual<br/>+ USER.md virtual · varies by caller<br/>+ BOOTSTRAP.md"]:::onclaw
         FACTORY["Agentic model factory<br/>openai / openrouter / oa-compat → agenticopenai<br/>anthropic / a-compat → agenticclaude<br/>gemini → agenticgemini"]:::onclaw
-        REGISTRY["Tool registry · denylist disabled_tools<br/>built-in: web.search (duckduckgo)"]:::onclaw
+        REGISTRY["Tool registry · denylist disabled_tools<br/>built-in: web.search (provider stack, 3-deep failover)"]:::onclaw
         SKILLRES["Skills resolver<br/>tiers: agent > workspace > system<br/>system tier ignores disabled_skills"]:::onclaw
         SESSAD["adk/session adapter<br/>serializes events + checkpoints"]:::onclaw
     end

@@ -96,9 +96,9 @@ func (s *store) Agents() storeport.AgentStore {
 	return NewAgentStore(s.db)
 }
 
-// AgentUserMemories returns the AgentUserMemoryStore sub-port.
-func (s *store) AgentUserMemories() storeport.AgentUserMemoryStore {
-	return NewAgentUserMemoryStore(s.db)
+// Memories returns the MemoryStore sub-port.
+func (s *store) Memories() storeport.MemoryStore {
+	return NewMemoryStore(s.db)
 }
 
 // SessionEvents returns the SessionEventStore sub-port.
@@ -124,6 +124,16 @@ func (s *store) WorkspaceSkills() storeport.WorkspaceSkillStore {
 // ToolSettings returns the ToolSettingsStore sub-port.
 func (s *store) ToolSettings() storeport.ToolSettingsStore {
 	return NewToolSettingStore(s.db)
+}
+
+// WorkspaceMCPServers returns the WorkspaceMCPServers sub-port.
+func (s *store) WorkspaceMCPServers() storeport.WorkspaceMCPServers {
+	return NewWorkspaceMCPServerStore(s.db)
+}
+
+// AgentMCPServers returns the AgentMCPServers sub-port.
+func (s *store) AgentMCPServers() storeport.AgentMCPServers {
+	return NewAgentMCPServerStore(s.db)
 }
 
 // WithTx executes the provided function within a database transaction.

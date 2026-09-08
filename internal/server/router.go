@@ -1,8 +1,11 @@
 package server
 
 import (
+	"time"
+
 	"github.com/gin-gonic/gin"
 	"github.com/oniharnantyo/onclaw/internal/agents"
+	"github.com/oniharnantyo/onclaw/internal/agents/mcp"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/promptgen"
 	"github.com/oniharnantyo/onclaw/internal/providers"
@@ -27,6 +30,14 @@ type RouterOptions struct {
 	OnClawDir     string
 	Runner        *agents.Runner
 	ToolSettings  *agents.ToolSettingsService
+	MCPSettings   *agents.MCPSettingsService
+	MCPManager    *mcp.MCPManager
+	// MCPProbeTimeout bounds each MCP probe's fresh connection attempt; 0
+	// uses the handler default (10s).
+	MCPProbeTimeout time.Duration
+	// V1StreamKeepAlive is the /v1 SSE idle keepalive cadence; 0 uses the
+	// handler default (15s).
+	V1StreamKeepAlive time.Duration
 }
 
 // router configures and builds the HTTP API routes and handlers.
@@ -96,6 +107,19 @@ func (rt *router) Engine() *gin.Engine {
 	adminWorkspaceHandlers := handlers.NewAdminWorkspaceHandlers(rt.opts.Store, rt.opts.Storage)
 	adminUserHandlers := handlers.NewAdminUserHandlers(rt.opts.Store.Users(), rt.opts.Store.Workspaces(), rt.opts.Store.Members(), rt.opts.Store.Roles())
 	adminSuperadminHandlers := handlers.NewAdminSuperadminHandlers(rt.opts.Store)
+	// MCP settings + connection manager: the service backs both the settings
+	// API and the runtime policy; the manager owns the lazy connection cache.
+	// The composition root may inject long-lived instances (whose Close rides
+	// its lifecycle); the fallback builds fresh ones.
+	mcpSettings := rt.opts.MCPSettings
+	if mcpSettings == nil {
+		mcpSettings = agents.NewMCPSettingsService(rt.opts.Store.WorkspaceMCPServers(), rt.opts.Store.AgentMCPServers(), rt.opts.Store.Agents(), rt.opts.EncryptionKey)
+	}
+	mcpManager := rt.opts.MCPManager
+	if mcpManager == nil {
+		mcpManager = mcp.NewMCPManager()
+	}
+
 	runner := rt.opts.Runner
 	if runner == nil && rt.opts.Store != nil {
 		runner = agents.NewRunner(
@@ -107,20 +131,27 @@ func (rt *router) Engine() *gin.Engine {
 			rt.opts.Store.Providers(),
 			rt.opts.Store.SessionEvents(),
 			rt.opts.Store.SessionCheckpoints(),
+			rt.opts.Store.Memories(),
 			rt.opts.EncryptionKey,
 			onClawDir,
 			agents.WithEnabledSkillReader(WorkspaceSkillReader(rt.opts.Store.WorkspaceSkills())),
+			agents.WithMCPPolicy(mcp.NewSettingsPolicy(mcpSettings)),
+			agents.WithMCPManager(mcpManager),
+			agents.WithMCPStatusWriter(mcp.NewSettingsStatusWriter(mcpSettings)),
 		)
 	}
 
 	providerHandlers := handlers.NewProviderHandlers(rt.opts.Store.Providers(), rt.opts.Store.Agents(), rt.opts.EncryptionKey, providerRegistry, modelCatalog)
-	agentHandlers := handlers.NewAgentHandlers(rt.opts.Store.Agents(), rt.opts.Store.AgentUserMemories(), rt.opts.Store.Providers(), rt.opts.Store.SessionEvents(), rt.opts.EncryptionKey, providerRegistry, modelCatalog, agentService, workspaceDir, runner, runner)
+	agentHandlers := handlers.NewAgentHandlers(rt.opts.Store.Agents(), rt.opts.Store.Providers(), rt.opts.Store.SessionEvents(), rt.opts.EncryptionKey, providerRegistry, modelCatalog, agentService, workspaceDir, runner, runner)
+	memoryHandlers := handlers.NewMemoryHandlers(rt.opts.Store.Memories())
 
 	toolSettings := rt.opts.ToolSettings
 	if toolSettings == nil {
 		toolSettings = agents.NewToolSettingsService(rt.opts.Store.ToolSettings(), rt.opts.EncryptionKey)
 	}
 	toolSettingsHandlers := handlers.NewToolSettingsHandlers(toolSettings)
+
+	mcpServerHandlers := handlers.NewMCPServerHandlers(mcpSettings, rt.opts.Store.Agents(), mcpManager, rt.opts.MCPProbeTimeout)
 
 	// Workspace skill library: the registry store bridges into the install
 	// pipeline's port (skills.Store), the transaction seam binds to
@@ -144,7 +175,7 @@ func (rt *router) Engine() *gin.Engine {
 	r.Use(gin.Logger())
 
 	// /v1 (OpenResponses) surface: API-key authenticated only (JWTs rejected).
-	v1Handlers := handlers.NewV1Handlers(runner, rt.opts.Store.Agents(), rt.opts.Store.SessionEvents())
+	v1Handlers := handlers.NewV1Handlers(runner, rt.opts.Store.Agents(), rt.opts.Store.SessionEvents(), rt.opts.V1StreamKeepAlive)
 	v1 := r.Group("/v1")
 	v1.Use(rt.v1mw.APIKeyAuthRequired())
 	{
@@ -207,6 +238,15 @@ func (rt *router) Engine() *gin.Engine {
 				wsGroup.GET("", rt.mw.RequirePermission(domain.WorkspaceRead), workspaceHandlers.GetWorkspace)
 				wsGroup.PATCH("", rt.mw.RequirePermission(domain.WorkspaceWrite), workspaceHandlers.PatchWorkspace)
 
+				// Memory (design D8): own user memory is membership-only and
+				// self-scoped to the authenticated caller; shared workspace
+				// memory reads ride membership, writes use the same
+				// workspace.write gate as the workspace PATCH above.
+				wsGroup.GET("/me/memory", memoryHandlers.GetUserMemory)
+				wsGroup.PUT("/me/memory", memoryHandlers.PutUserMemory)
+				wsGroup.GET("/memory", memoryHandlers.GetWorkspaceMemory)
+				wsGroup.PUT("/memory", rt.mw.RequirePermission(domain.WorkspaceWrite), memoryHandlers.PutWorkspaceMemory)
+
 				wsGroup.GET("/roles", rt.mw.RequirePermission(domain.RolesRead), roleHandlers.ListRoles)
 
 				wsGroup.GET("/members", rt.mw.RequirePermission(domain.MembersRead), memberHandlers.ListMembers)
@@ -229,8 +269,6 @@ func (rt *router) Engine() *gin.Engine {
 				wsGroup.PATCH("/agents/:agent", rt.mw.RequirePermission(domain.AgentsWrite), agentHandlers.PatchAgent)
 				wsGroup.DELETE("/agents/:agent", rt.mw.RequirePermission(domain.AgentsWrite), agentHandlers.DeleteAgent)
 				wsGroup.POST("/agents/:agent/regenerate", rt.mw.RequirePermission(domain.AgentsWrite), agentHandlers.RegenerateAgent)
-				wsGroup.GET("/agents/:agent/memory", agentHandlers.GetAgentMemory)
-				wsGroup.DELETE("/agents/:agent/memory", agentHandlers.DeleteAgentMemory)
 				wsGroup.GET("/agents/:agent/sessions/:session/events", rt.mw.RequirePermission(domain.AgentsRead), agentHandlers.ListSessionEvents)
 				wsGroup.POST("/agents/:agent/sessions/:session/approvals/:interruptID", rt.mw.RequirePermission(domain.AgentsWrite), agentHandlers.ResolveApproval)
 				wsGroup.POST("/agents/:agent/sessions/:session/runs/:turn/cancel", rt.mw.RequirePermission(domain.AgentsWrite), agentHandlers.CancelRun)
@@ -239,6 +277,15 @@ func (rt *router) Engine() *gin.Engine {
 				// writes are Owner/Admin via tools.write)
 				wsGroup.GET("/tools", toolSettingsHandlers.ListTools)
 				wsGroup.PATCH("/tools/:key", rt.mw.RequirePermission(domain.ToolsWrite), toolSettingsHandlers.PatchTool)
+
+				// Workspace MCP registry (reads ride membership like /tools —
+				// every built-in role holds tools.read; writes are Owner/Admin
+				// via tools.write, design.md D9)
+				wsGroup.GET("/mcp-servers", mcpServerHandlers.ListWorkspaceServers)
+				wsGroup.POST("/mcp-servers", rt.mw.RequirePermission(domain.ToolsWrite), mcpServerHandlers.CreateWorkspaceServer)
+				wsGroup.PATCH("/mcp-servers/:id", rt.mw.RequirePermission(domain.ToolsWrite), mcpServerHandlers.PatchWorkspaceServer)
+				wsGroup.DELETE("/mcp-servers/:id", rt.mw.RequirePermission(domain.ToolsWrite), mcpServerHandlers.DeleteWorkspaceServer)
+				wsGroup.POST("/mcp-servers/:id/probe", rt.mw.RequirePermission(domain.ToolsWrite), mcpServerHandlers.ProbeWorkspaceServer)
 
 				// Workspace skill library (registry + system tier; Member reads,
 				// Owner/Admin/Superadmin manage via skills.write)
@@ -257,6 +304,14 @@ func (rt *router) Engine() *gin.Engine {
 				wsGroup.GET("/agents/:agent/skills", rt.mw.RequirePermission(domain.SkillsRead), skillHandlers.ListAgentSkills)
 				wsGroup.POST("/agents/:agent/skills", rt.mw.RequirePermission(domain.SkillsWrite), skillHandlers.InstallAgentSkill)
 				wsGroup.DELETE("/agents/:agent/skills/:name", rt.mw.RequirePermission(domain.SkillsWrite), skillHandlers.RemoveAgentSkill)
+
+				// Agent-private MCP servers (agents.write per design.md D9;
+				// reads ride agents.read like the agent detail endpoint)
+				wsGroup.GET("/agents/:agent/mcp-servers", rt.mw.RequirePermission(domain.AgentsRead), mcpServerHandlers.ListAgentServers)
+				wsGroup.POST("/agents/:agent/mcp-servers", rt.mw.RequirePermission(domain.AgentsWrite), mcpServerHandlers.CreateAgentServer)
+				wsGroup.PATCH("/agents/:agent/mcp-servers/:id", rt.mw.RequirePermission(domain.AgentsWrite), mcpServerHandlers.PatchAgentServer)
+				wsGroup.DELETE("/agents/:agent/mcp-servers/:id", rt.mw.RequirePermission(domain.AgentsWrite), mcpServerHandlers.DeleteAgentServer)
+				wsGroup.POST("/agents/:agent/mcp-servers/:id/probe", rt.mw.RequirePermission(domain.AgentsWrite), mcpServerHandlers.ProbeAgentServer)
 
 				// API keys management (workspace settings; workspace.write is Owner/Admin only)
 				// Exchange is Member-level: membership via RequireWorkspace suffices,

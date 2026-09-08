@@ -64,7 +64,6 @@ export interface Agent {
   tools: string[];
   lastActive: string;
   skills: string[];
-  mcp: string[];
   avatar?: Record<string, any>;
   prompts_status?: 'generating' | 'ready' | 'failed';
   prompts_error?: string | null;
@@ -132,17 +131,6 @@ export interface Integration {
   connected: boolean;
 }
 
-export interface McpServer {
-  id: string;
-  name: string;
-  transport: string;
-  auth: string;
-  tools: number;
-  status: 'connected' | 'error' | 'disabled' | string;
-  error?: string;
-  sample: string[];
-}
-
 export interface Skill {
   id: string;
   name: string;
@@ -202,7 +190,6 @@ export interface Workspace {
   runs: Run[];
   members: Member[];
   integrations: Integration[];
-  mcpServers: McpServer[];
   skillLib: Skill[];
   keys: ApiKey[];
   providers?: ProviderConfig[];

@@ -314,6 +314,18 @@ func (t *Translator) Handle(ev *agents.TranscriptEvent) bool {
 	return false
 }
 
+// KeepAlive re-emits the current response snapshot as an in_progress frame.
+// A run can sit silent for minutes (a slow model call, a long browser tool);
+// an idle SSE connection gets reaped by proxies, which strands the browser's
+// stream client mid-turn. Clients ignore the repeated in_progress event and
+// the sequence counter keeps frames ordered.
+func (t *Translator) KeepAlive() {
+	if t.emit == nil {
+		return
+	}
+	t.send("response.in_progress", map[string]any{"response": t.resp})
+}
+
 func approvalID(ev *agents.TranscriptEvent) string {
 	if ev.Approval != nil {
 		return ev.Approval.InterruptID

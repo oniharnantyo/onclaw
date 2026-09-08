@@ -181,28 +181,31 @@ export const useStore = create<AppState>((set, get) => ({
     return { db: { ...s.db, [tenantId]: fn(JSON.parse(JSON.stringify(t))) } };
   }),
 
-  pushMsg: (tid, cid, msg) => set((s: any) => {
-    const d = JSON.parse(JSON.stringify(s.db));
-    const t = d[tid];
-    if (!t) return s;
-    const th = t.threads[cid] = t.threads[cid] || { active: null, list: [] };
-    if (Array.isArray(th)) {
-      t.threads[cid] = { active: null, list: th.length ? [{ id: uid('s'), title: 'Chat', updated: '', messages: th }] : [] };
-    }
-    const state = t.threads[cid];
-    let sess = state.list.find((x: any) => x.id === state.active);
-    if (!sess) {
-      sess = { id: uid('s'), title: 'New chat', updated: nowTime(), messages: [] };
-      state.list.unshift(sess);
-      state.active = sess.id;
-    }
-    sess.messages.push(msg);
-    if (msg.author === 'you' && (sess.title === 'New chat' || !sess.title)) {
-      sess.title = msg.text.length > 42 ? msg.text.slice(0, 42) + '…' : msg.text;
-    }
-    sess.updated = 'just now';
-    return { db: d };
-  }),
+  pushMsg: (tid, cid, msg) => {
+    set((s: any) => {
+      const d = JSON.parse(JSON.stringify(s.db));
+      const t = d[tid];
+      if (!t) return s;
+      const th = t.threads[cid] = t.threads[cid] || { active: null, list: [] };
+      if (Array.isArray(th)) {
+        t.threads[cid] = { active: null, list: th.length ? [{ id: uid('s'), title: 'Chat', updated: '', messages: th }] : [] };
+      }
+      const state = t.threads[cid];
+      let sess = state.list.find((x: any) => x.id === state.active);
+      if (!sess) {
+        sess = { id: uid('s'), title: 'New chat', updated: nowTime(), messages: [] };
+        state.list.unshift(sess);
+        state.active = sess.id;
+      }
+      sess.messages.push(msg);
+      if (msg.author === 'you' && (sess.title === 'New chat' || !sess.title)) {
+        sess.title = msg.text.length > 42 ? msg.text.slice(0, 42) + '…' : msg.text;
+      }
+      sess.updated = 'just now';
+      return { db: d };
+    });
+    persistAllThreads(get().db);
+  },
 
   // Removes a message from the thread's active session — used to retract the
   // optimistic empty agent message when a live turn fails before producing
@@ -333,22 +336,24 @@ export const useStore = create<AppState>((set, get) => ({
     if (!sess) return null;
     if (sess.sess) {
       if (!sess.id.startsWith('sess_')) {
-        state.updateTenant(tid, (tenant) => {
+        state.updateTenant(tid, (tenant: any) => {
           const t2 = tenant.threads[threadId];
           t2.list = t2.list.map((x: any) => (x.sess === sess.sess ? { ...x, id: sess.sess } : x));
           if (t2.active === sess.id) t2.active = sess.sess;
           return tenant;
         });
+        persistAllThreads(get().db);
       }
       return sess.sess;
     }
     const minted = mintSessionId();
-    state.updateTenant(tid, (tenant) => {
+    state.updateTenant(tid, (tenant: any) => {
       const t2 = tenant.threads[threadId];
       t2.list = t2.list.map((x: any) => (x.id === sess.id ? { ...x, id: minted, sess: minted } : x));
       if (t2.active === sess.id) t2.active = minted;
       return tenant;
     });
+    persistAllThreads(get().db);
     return minted;
   },
 
@@ -481,7 +486,6 @@ export const useStore = create<AppState>((set, get) => ({
               autonomy: apiAgent.autonomy,
               tools: apiAgent.tools || [],
               skills: apiAgent.skills || [],
-              mcp: apiAgent.mcp || [],
               avatar: apiAgent.avatar || {},
               prompts_status: apiAgent.prompts_status,
               prompts_error: apiAgent.prompts_error,

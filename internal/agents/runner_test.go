@@ -23,7 +23,7 @@ func TestResolvedContextWindow(t *testing.T) {
 
 func TestNewRunner_DefaultsAndOptions(t *testing.T) {
 	runner := NewRunner(
-		nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		[]byte("dummy-key"),
 		"/tmp/test-onclaw",
 	)
@@ -42,7 +42,7 @@ func TestNewRunner_DefaultsAndOptions(t *testing.T) {
 	}
 
 	customRunner := NewRunner(
-		nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		[]byte("dummy-key"),
 		"/tmp/test-onclaw",
 		WithSummarizationMargin(0.5),
@@ -59,7 +59,7 @@ func TestNewRunner_DefaultsAndOptions(t *testing.T) {
 func TestRunner_Run_Validation(t *testing.T) {
 	ctx := context.Background()
 	runner := NewRunner(
-		nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		[]byte("dummy-key"),
 		"/tmp/test-onclaw",
 	)

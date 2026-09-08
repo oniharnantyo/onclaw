@@ -191,6 +191,139 @@ func TestHistory_HydrationFidelity(t *testing.T) {
 	}
 }
 
+// TestHistory_SkipsNonRenderableMessages verifies that tool-call and tool-result
+// messages — which the ADK persists as plain assistant/user messages with no
+// extractable text (results ride under role user) — do not project into
+// message_completed events. Emitting them hydrates as empty transcript bubbles.
+// Usage carried on a skipped message still accumulates for the turn.
+func TestHistory_SkipsNonRenderableMessages(t *testing.T) {
+	st, runner, ctx := setupHistoryTest(t)
+	ws, ag := createTestWorkspaceAndAgent(t, ctx, st, "ws-fid-skip", "ag-fid-skip")
+	sessionID := "sess-fid-skip"
+
+	adapter := NewADKSessionAdapter(st.SessionEvents(), st.SessionCheckpoints(), ws.ID)
+
+	t1 := time.Date(2026, 9, 7, 9, 0, 0, 0, time.UTC)
+
+	events := []*adk.SessionEvent[*schema.AgenticMessage]{
+		// Real user input.
+		{
+			EventID:   "skip-user",
+			TurnID:    "turn-skip",
+			Timestamp: t1,
+			Message:   schema.UserAgenticMessage("give me full article"),
+		},
+		// Assistant tool-call request: no text, no reasoning — must not project.
+		{
+			EventID:   "skip-assistant-call",
+			TurnID:    "turn-skip",
+			Timestamp: t1,
+			Message: &schema.AgenticMessage{
+				Role: schema.AgenticRoleTypeAssistant,
+				ContentBlocks: []*schema.ContentBlock{
+					schema.NewContentBlock(&schema.FunctionToolCall{
+						CallID:    "call-skip-1",
+						Name:      "browser.read",
+						Arguments: `{}`,
+					}),
+				},
+				ResponseMeta: &schema.AgenticResponseMeta{
+					TokenUsage: &schema.TokenUsage{PromptTokens: 120, CompletionTokens: 8, TotalTokens: 128},
+				},
+			},
+		},
+		// Tool result persisted under role user (production shape) — no
+		// extractable text, must not project as a user message.
+		{
+			EventID:   "skip-tool-result",
+			TurnID:    "turn-skip",
+			Timestamp: t1,
+			Message: &schema.AgenticMessage{
+				Role: schema.AgenticRoleTypeUser,
+				ContentBlocks: []*schema.ContentBlock{
+					schema.NewContentBlock(&schema.FunctionToolResult{
+						CallID: "call-skip-1",
+						Name:   "browser.read",
+						Content: []*schema.FunctionToolResultContentBlock{
+							{Type: schema.FunctionToolResultContentBlockTypeText, Text: &schema.UserInputText{Text: "…page body…"}},
+						},
+					}),
+				},
+			},
+		},
+		// Assistant reasoning-only message (no visible text) — must project so
+		// the reasoning still hydrates.
+		{
+			EventID:   "skip-assistant-reasoning",
+			TurnID:    "turn-skip",
+			Timestamp: t1,
+			Message: &schema.AgenticMessage{
+				Role: schema.AgenticRoleTypeAssistant,
+				ContentBlocks: []*schema.ContentBlock{
+					schema.NewContentBlock(&schema.Reasoning{Text: "The page is long — extract the article."}),
+				},
+			},
+		},
+		// Final assistant text.
+		{
+			EventID:   "skip-assistant-final",
+			TurnID:    "turn-skip",
+			Timestamp: t1,
+			Message: &schema.AgenticMessage{
+				Role: schema.AgenticRoleTypeAssistant,
+				ContentBlocks: []*schema.ContentBlock{
+					schema.NewContentBlock(&schema.AssistantGenText{Text: "Here is the article."}),
+				},
+			},
+		},
+	}
+
+	if err := adapter.AppendEvents(ctx, sessionID, events); err != nil {
+		t.Fatalf("AppendEvents failed: %v", err)
+	}
+
+	res, err := runner.History(ctx, HistoryRequest{
+		WorkspaceID: ws.ID,
+		AgentID:     ag.ID,
+		SessionID:   sessionID,
+	})
+	if err != nil {
+		t.Fatalf("History failed: %v", err)
+	}
+
+	var userMsgs, assistantMsgs []*TranscriptEvent
+	var turnDone *TranscriptEvent
+	for i := range res.Events {
+		switch {
+		case res.Events[i].Kind == TranscriptEventMessageCompleted && res.Events[i].Message != nil && res.Events[i].Message.Role == "user":
+			userMsgs = append(userMsgs, &res.Events[i])
+		case res.Events[i].Kind == TranscriptEventMessageCompleted && res.Events[i].Message != nil && res.Events[i].Message.Role == "assistant":
+			assistantMsgs = append(assistantMsgs, &res.Events[i])
+		case res.Events[i].Kind == TranscriptEventTurnCompleted:
+			turnDone = &res.Events[i]
+		}
+	}
+
+	if len(userMsgs) != 1 || userMsgs[0].Message.Content != "give me full article" {
+		t.Fatalf("user messages: got %d (%+v), want exactly the real input", len(userMsgs), userMsgs)
+	}
+	// The tool-call request projects nothing; the reasoning-only and final
+	// messages project (reasoning hydrates even without visible text).
+	if len(assistantMsgs) != 2 {
+		t.Fatalf("assistant messages: got %d, want 2 (reasoning-only + final)", len(assistantMsgs))
+	}
+	if assistantMsgs[0].Message.Content != "" || assistantMsgs[0].Message.ReasoningContent != "The page is long — extract the article." {
+		t.Errorf("first assistant message: got content=%q reasoning=%q, want content=\"\" with reasoning", assistantMsgs[0].Message.Content, assistantMsgs[0].Message.ReasoningContent)
+	}
+	if assistantMsgs[1].Message.Content != "Here is the article." {
+		t.Errorf("final assistant message: got %q", assistantMsgs[1].Message.Content)
+	}
+	// Usage from the skipped tool-call message still accumulates on the turn.
+	if turnDone == nil || turnDone.Usage == nil || turnDone.Usage.InputTokens != 120 {
+		t.Fatalf("turn usage: got %+v, want input tokens 120 accumulated from the skipped message", turnDone)
+	}
+}
+
 // TestHistory_HydrationFallbacks verifies the call-id fallbacks: spans without
 // join IDs still resolve arguments and results, and an errored span without a
 // result message reports the span error with IsError set.

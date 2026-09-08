@@ -171,6 +171,13 @@ function Layout() {
     setDrawerOpen(false);
   };
 
+  // A history row must always land in the chat it belongs to — switch the
+  // session and make sure the URL points at that chat (e.g. arriving from /c).
+  const handleSwitchSession = (sid: string) => {
+    switchSession(sid);
+    if (activeChatId) navigate(`/c/${activeChatId}`);
+  };
+
   const currentMembership = memberships.find(
     (m) =>
       m.workspace_id === tenant?.id ||
@@ -200,7 +207,7 @@ function Layout() {
       activeIsAgent={(tenant?.agents || []).some(a => a.id === activeChatId)}
       session={session} 
       sessions={sessions} 
-      onSwitchSession={switchSession} 
+      onSwitchSession={handleSwitchSession}
       onNewSession={newSession} 
       onDeleteSession={deleteSession}
       onDeploy={() => navigate('/agents')} 

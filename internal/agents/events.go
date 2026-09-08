@@ -29,6 +29,13 @@ const (
 	TranscriptEventTurnCompleted    TranscriptEventKind = "turn_completed"
 	TranscriptEventError            TranscriptEventKind = "error"
 	TranscriptEventCancelled        TranscriptEventKind = "cancelled"
+	// TranscriptEventRunActive is a synthetic status frame the streaming
+	// session-events endpoint writes when its tap attaches to a live run —
+	// never persisted or broadcast by the runner. It tells a reconnected
+	// client the turn is still executing so the running state shows
+	// immediately, before any run event lands (a run between persisted events
+	// is invisible to the history snapshot).
+	TranscriptEventRunActive TranscriptEventKind = "run_active"
 )
 
 // ApprovalPayload carries a pending shell-approval interrupt.

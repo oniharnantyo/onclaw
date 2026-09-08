@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,24 +19,30 @@ import (
 type fakeStore struct {
 	mu sync.RWMutex
 
-	users            map[string]*domain.User                 // key: ID
-	usersByEmail     map[string]string                       // key: normalized email -> ID
-	workspaces       map[string]*domain.Workspace            // key: ID
-	workspacesBySlug map[string]string                       // key: slug -> ID
-	roles            map[string]*domain.Role                 // key: ID
-	rolesByName      map[string]string                       // key: workspaceID + ":" + name -> ID
-	members          map[string]*domain.Member               // key: workspaceID + ":" + userID -> Member
-	providers        map[string]*domain.ProviderConfig       // key: ID
-	agents           map[string]*domain.Agent                // key: ID
-	agentsBySlug     map[string]string                       // key: workspaceID + ":" + slug -> ID
-	memories         map[string]*domain.AgentUserMemory      // key: workspaceID + ":" + agentID + ":" + userID -> Memory
-	sessionEvents    map[string][]domain.SessionEvent        // key: sessionID -> ordered events
-	sessionCPData    map[string][]byte                       // key: checkpointID -> data
-	apiKeys          map[string]*domain.WorkspaceAPIKey      // key: ID
-	apiKeysByHash    map[string]string                       // key: SHA-256 hex hash -> ID
-	toolSettings     map[string]*domain.WorkspaceToolSetting // key: workspaceID + ":" + toolKey -> Setting
-	skills           map[string]*domain.WorkspaceSkill       // key: ID
-	skillsByName     map[string]string                       // key: workspaceID + ":" + name -> ID
+	users               map[string]*domain.User                 // key: ID
+	usersByEmail        map[string]string                       // key: normalized email -> ID
+	workspaces          map[string]*domain.Workspace            // key: ID
+	workspacesBySlug    map[string]string                       // key: slug -> ID
+	roles               map[string]*domain.Role                 // key: ID
+	rolesByName         map[string]string                       // key: workspaceID + ":" + name -> ID
+	members             map[string]*domain.Member               // key: workspaceID + ":" + userID -> Member
+	providers           map[string]*domain.ProviderConfig       // key: ID
+	agents              map[string]*domain.Agent                // key: ID
+	agentsBySlug        map[string]string                       // key: workspaceID + ":" + slug -> ID
+	userMemories        map[string]*domain.Memory               // key: workspaceID + ":" + userID -> Memory
+	workspaceMemories   map[string]*domain.Memory               // key: workspaceID -> Memory
+	agentDailyMemories  map[string]*domain.Memory               // key: workspaceID + ":" + agentID + ":" + date(2006-01-02) -> Memory
+	sessionEvents       map[string][]domain.SessionEvent        // key: sessionID -> ordered events
+	sessionCPData       map[string][]byte                       // key: checkpointID -> data
+	apiKeys             map[string]*domain.WorkspaceAPIKey      // key: ID
+	apiKeysByHash       map[string]string                       // key: SHA-256 hex hash -> ID
+	toolSettings        map[string]*domain.WorkspaceToolSetting // key: workspaceID + ":" + toolKey -> Setting
+	skills              map[string]*domain.WorkspaceSkill       // key: ID
+	skillsByName        map[string]string                       // key: workspaceID + ":" + name -> ID
+	wsMCPServers        map[string]*domain.WorkspaceMCPServer   // key: ID
+	wsMCPServerNames    map[string]string                       // key: workspaceID + ":" + lower(name) -> ID
+	agentMCPServers     map[string]*domain.AgentMCPServer       // key: ID
+	agentMCPServerNames map[string]string                       // key: agentID + ":" + lower(name) -> ID
 }
 
 // New creates a new in-memory fake store.
@@ -45,24 +52,30 @@ func New() store.Store {
 
 func newStore() *fakeStore {
 	return &fakeStore{
-		users:            make(map[string]*domain.User),
-		usersByEmail:     make(map[string]string),
-		workspaces:       make(map[string]*domain.Workspace),
-		workspacesBySlug: make(map[string]string),
-		roles:            make(map[string]*domain.Role),
-		rolesByName:      make(map[string]string),
-		members:          make(map[string]*domain.Member),
-		providers:        make(map[string]*domain.ProviderConfig),
-		agents:           make(map[string]*domain.Agent),
-		agentsBySlug:     make(map[string]string),
-		memories:         make(map[string]*domain.AgentUserMemory),
-		sessionEvents:    make(map[string][]domain.SessionEvent),
-		sessionCPData:    make(map[string][]byte),
-		apiKeys:          make(map[string]*domain.WorkspaceAPIKey),
-		apiKeysByHash:    make(map[string]string),
-		toolSettings:     make(map[string]*domain.WorkspaceToolSetting),
-		skills:           make(map[string]*domain.WorkspaceSkill),
-		skillsByName:     make(map[string]string),
+		users:               make(map[string]*domain.User),
+		usersByEmail:        make(map[string]string),
+		workspaces:          make(map[string]*domain.Workspace),
+		workspacesBySlug:    make(map[string]string),
+		roles:               make(map[string]*domain.Role),
+		rolesByName:         make(map[string]string),
+		members:             make(map[string]*domain.Member),
+		providers:           make(map[string]*domain.ProviderConfig),
+		agents:              make(map[string]*domain.Agent),
+		agentsBySlug:        make(map[string]string),
+		userMemories:        make(map[string]*domain.Memory),
+		workspaceMemories:   make(map[string]*domain.Memory),
+		agentDailyMemories:  make(map[string]*domain.Memory),
+		sessionEvents:       make(map[string][]domain.SessionEvent),
+		sessionCPData:       make(map[string][]byte),
+		apiKeys:             make(map[string]*domain.WorkspaceAPIKey),
+		apiKeysByHash:       make(map[string]string),
+		toolSettings:        make(map[string]*domain.WorkspaceToolSetting),
+		skills:              make(map[string]*domain.WorkspaceSkill),
+		skillsByName:        make(map[string]string),
+		wsMCPServers:        make(map[string]*domain.WorkspaceMCPServer),
+		wsMCPServerNames:    make(map[string]string),
+		agentMCPServers:     make(map[string]*domain.AgentMCPServer),
+		agentMCPServerNames: make(map[string]string),
 	}
 }
 
@@ -96,9 +109,9 @@ func (s *fakeStore) Agents() store.AgentStore {
 	return &agentStore{s: s}
 }
 
-// AgentUserMemories returns the AgentUserMemoryStore sub-port.
-func (s *fakeStore) AgentUserMemories() store.AgentUserMemoryStore {
-	return &agentUserMemoryStore{s: s}
+// Memories returns the MemoryStore sub-port.
+func (s *fakeStore) Memories() store.MemoryStore {
+	return &memoryStore{s: s}
 }
 
 // SessionEvents returns the SessionEventStore sub-port.
@@ -124,6 +137,16 @@ func (s *fakeStore) WorkspaceSkills() store.WorkspaceSkillStore {
 // ToolSettings returns the ToolSettingsStore sub-port.
 func (s *fakeStore) ToolSettings() store.ToolSettingsStore {
 	return &toolSettingStore{s: s}
+}
+
+// WorkspaceMCPServers returns the WorkspaceMCPServers sub-port.
+func (s *fakeStore) WorkspaceMCPServers() store.WorkspaceMCPServers {
+	return &workspaceMCPServerStore{s: s}
+}
+
+// AgentMCPServers returns the AgentMCPServers sub-port.
+func (s *fakeStore) AgentMCPServers() store.AgentMCPServers {
+	return &agentMCPServerStore{s: s}
 }
 
 // WithTx executes the given function in an isolated transaction.
@@ -178,8 +201,14 @@ func (s *fakeStore) clone() *fakeStore {
 	for key, id := range s.agentsBySlug {
 		cp.agentsBySlug[key] = id
 	}
-	for key, m := range s.memories {
-		cp.memories[key] = cloneAgentUserMemory(m)
+	for key, m := range s.userMemories {
+		cp.userMemories[key] = cloneMemory(m)
+	}
+	for key, m := range s.workspaceMemories {
+		cp.workspaceMemories[key] = cloneMemory(m)
+	}
+	for key, m := range s.agentDailyMemories {
+		cp.agentDailyMemories[key] = cloneMemory(m)
 	}
 	for sid, evts := range s.sessionEvents {
 		copied := make([]domain.SessionEvent, len(evts))
@@ -206,6 +235,18 @@ func (s *fakeStore) clone() *fakeStore {
 	for key, id := range s.skillsByName {
 		cp.skillsByName[key] = id
 	}
+	for id, srv := range s.wsMCPServers {
+		cp.wsMCPServers[id] = cloneWorkspaceMCPServer(srv)
+	}
+	for key, id := range s.wsMCPServerNames {
+		cp.wsMCPServerNames[key] = id
+	}
+	for id, srv := range s.agentMCPServers {
+		cp.agentMCPServers[id] = cloneAgentMCPServer(srv)
+	}
+	for key, id := range s.agentMCPServerNames {
+		cp.agentMCPServerNames[key] = id
+	}
 	return cp
 }
 
@@ -220,7 +261,9 @@ func (s *fakeStore) apply(other *fakeStore) {
 	s.providers = other.providers
 	s.agents = other.agents
 	s.agentsBySlug = other.agentsBySlug
-	s.memories = other.memories
+	s.userMemories = other.userMemories
+	s.workspaceMemories = other.workspaceMemories
+	s.agentDailyMemories = other.agentDailyMemories
 	s.sessionEvents = other.sessionEvents
 	s.sessionCPData = other.sessionCPData
 	s.apiKeys = other.apiKeys
@@ -228,6 +271,10 @@ func (s *fakeStore) apply(other *fakeStore) {
 	s.toolSettings = other.toolSettings
 	s.skills = other.skills
 	s.skillsByName = other.skillsByName
+	s.wsMCPServers = other.wsMCPServers
+	s.wsMCPServerNames = other.wsMCPServerNames
+	s.agentMCPServers = other.agentMCPServers
+	s.agentMCPServerNames = other.agentMCPServerNames
 }
 
 func cloneUser(u *domain.User) *domain.User {
@@ -318,9 +365,9 @@ func cloneAgent(a *domain.Agent) *domain.Agent {
 		cp.Tools = make([]string, len(a.Tools))
 		copy(cp.Tools, a.Tools)
 	}
-	if a.DisabledMCPs != nil {
-		cp.DisabledMCPs = make([]string, len(a.DisabledMCPs))
-		copy(cp.DisabledMCPs, a.DisabledMCPs)
+	if a.EnabledMCPS != nil {
+		cp.EnabledMCPS = make([]string, len(a.EnabledMCPS))
+		copy(cp.EnabledMCPS, a.EnabledMCPS)
 	}
 	if a.Avatar != nil {
 		cp.Avatar = make(json.RawMessage, len(a.Avatar))
@@ -341,7 +388,7 @@ func cloneAgent(a *domain.Agent) *domain.Agent {
 	return &cp
 }
 
-func cloneAgentUserMemory(m *domain.AgentUserMemory) *domain.AgentUserMemory {
+func cloneMemory(m *domain.Memory) *domain.Memory {
 	if m == nil {
 		return nil
 	}
@@ -393,6 +440,40 @@ func cloneStringSlice(src []string) []string {
 	cp := make([]string, len(src))
 	copy(cp, src)
 	return cp
+}
+
+func cloneEnvRows(src []domain.EnvRow) []domain.EnvRow {
+	if src == nil {
+		return nil
+	}
+	cp := make([]domain.EnvRow, len(src))
+	copy(cp, src)
+	return cp
+}
+
+func cloneWorkspaceMCPServer(srv *domain.WorkspaceMCPServer) *domain.WorkspaceMCPServer {
+	if srv == nil {
+		return nil
+	}
+	cp := *srv
+	cp.MCPConnection = cloneMCPConnection(srv.MCPConnection)
+	return &cp
+}
+
+func cloneAgentMCPServer(srv *domain.AgentMCPServer) *domain.AgentMCPServer {
+	if srv == nil {
+		return nil
+	}
+	cp := *srv
+	cp.MCPConnection = cloneMCPConnection(srv.MCPConnection)
+	return &cp
+}
+
+func cloneMCPConnection(c domain.MCPConnection) domain.MCPConnection {
+	c.Args = cloneStringSlice(c.Args)
+	c.Env = cloneEnvRows(c.Env)
+	c.Headers = cloneEnvRows(c.Headers)
+	return c
 }
 
 // -------------------------------------------------------------------------
@@ -1145,8 +1226,8 @@ func (as *agentStore) Create(ctx context.Context, a *domain.Agent) error {
 	if a.Tools == nil {
 		a.Tools = []string{}
 	}
-	if a.DisabledMCPs == nil {
-		a.DisabledMCPs = []string{}
+	if a.EnabledMCPS == nil {
+		a.EnabledMCPS = []string{}
 	}
 
 	as.s.mu.Lock()
@@ -1314,9 +1395,9 @@ func (as *agentStore) Update(ctx context.Context, a *domain.Agent) error {
 		existing.Tools = make([]string, len(a.Tools))
 		copy(existing.Tools, a.Tools)
 	}
-	if a.DisabledMCPs != nil {
-		existing.DisabledMCPs = make([]string, len(a.DisabledMCPs))
-		copy(existing.DisabledMCPs, a.DisabledMCPs)
+	if a.EnabledMCPS != nil {
+		existing.EnabledMCPS = make([]string, len(a.EnabledMCPS))
+		copy(existing.EnabledMCPS, a.EnabledMCPS)
 	}
 	if a.Avatar != nil {
 		existing.Avatar = make(json.RawMessage, len(a.Avatar))
@@ -1345,9 +1426,20 @@ func (as *agentStore) Delete(ctx context.Context, workspaceID, id string) error 
 	delete(as.s.agents, id)
 	delete(as.s.agentsBySlug, workspaceID+":"+existing.Slug)
 
-	for key, m := range as.s.memories {
-		if m.AgentID == id {
-			delete(as.s.memories, key)
+	// Agent daily memories die with the agent (ON DELETE CASCADE via the
+	// composite FK to agents).
+	prefix := workspaceID + ":" + id + ":"
+	for key := range as.s.agentDailyMemories {
+		if strings.HasPrefix(key, prefix) {
+			delete(as.s.agentDailyMemories, key)
+		}
+	}
+
+	// Agent-private MCP servers die with the agent (ON DELETE CASCADE).
+	for srvID, srv := range as.s.agentMCPServers {
+		if srv.AgentID == id {
+			delete(as.s.agentMCPServers, srvID)
+			delete(as.s.agentMCPServerNames, srv.AgentID+":"+strings.ToLower(srv.Name))
 		}
 	}
 
@@ -1414,81 +1506,217 @@ func (as *agentStore) SweepGenerating(ctx context.Context, errMsg string) (int64
 }
 
 // -------------------------------------------------------------------------
-// AgentUserMemoryStore implementation
+// MemoryStore implementation
 // -------------------------------------------------------------------------
 
-type agentUserMemoryStore struct {
+type memoryStore struct {
 	s *fakeStore
 }
 
-func (ms *agentUserMemoryStore) Get(ctx context.Context, workspaceID, agentID, userID string) (*domain.AgentUserMemory, error) {
-	if workspaceID == "" || agentID == "" || userID == "" {
-		return nil, domain.ErrNotFound
+// memoryDayKey normalizes a date to its calendar day (in the caller's intended
+// location) so Get/Upsert/Append always address the same key for one day.
+func memoryDayKey(date time.Time) string {
+	y, m, d := date.Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Format("2006-01-02")
+}
+
+func (ms *memoryStore) UserMemory(ctx context.Context, workspaceID, userID string) (*domain.Memory, error) {
+	if workspaceID == "" || userID == "" {
+		return nil, nil
 	}
 
 	ms.s.mu.RLock()
 	defer ms.s.mu.RUnlock()
 
-	memKey := workspaceID + ":" + agentID + ":" + userID
-	m, exists := ms.s.memories[memKey]
+	m, exists := ms.s.userMemories[workspaceID+":"+userID]
 	if !exists {
-		return nil, domain.ErrNotFound
+		return nil, nil
 	}
-	return cloneAgentUserMemory(m), nil
+	return cloneMemory(m), nil
 }
 
-func (ms *agentUserMemoryStore) Upsert(ctx context.Context, memory *domain.AgentUserMemory) error {
-	if memory == nil || memory.WorkspaceID == "" || memory.AgentID == "" || memory.UserID == "" {
+func (ms *memoryStore) UpsertUserMemory(ctx context.Context, workspaceID, userID, content string) error {
+	if workspaceID == "" || userID == "" {
 		return domain.ErrInvalid
+	}
+	if err := domain.ValidateMemoryContent(content); err != nil {
+		return err
 	}
 
 	ms.s.mu.Lock()
 	defer ms.s.mu.Unlock()
 
-	if _, exists := ms.s.workspaces[memory.WorkspaceID]; !exists {
+	if _, exists := ms.s.workspaces[workspaceID]; !exists {
 		return fmt.Errorf("%w: workspace not found", domain.ErrNotFound)
 	}
-	a, exists := ms.s.agents[memory.AgentID]
-	if !exists || a.WorkspaceID != memory.WorkspaceID {
-		return fmt.Errorf("%w: agent not found in workspace", domain.ErrNotFound)
-	}
-	if _, exists := ms.s.users[memory.UserID]; !exists {
+	if _, exists := ms.s.users[userID]; !exists {
 		return fmt.Errorf("%w: user not found", domain.ErrNotFound)
 	}
 
-	memKey := memory.WorkspaceID + ":" + memory.AgentID + ":" + memory.UserID
-	now := time.Now().UTC()
-
-	if existing, exists := ms.s.memories[memKey]; exists {
-		existing.Content = memory.Content
-		existing.UpdatedAt = now
-		*memory = *cloneAgentUserMemory(existing)
-		return nil
-	}
-
-	if memory.CreatedAt.IsZero() {
-		memory.CreatedAt = now
-	}
-	memory.UpdatedAt = now
-
-	ms.s.memories[memKey] = cloneAgentUserMemory(memory)
+	ms.s.userMemories[workspaceID+":"+userID] = &domain.Memory{Content: content, UpdatedAt: time.Now().UTC()}
 	return nil
 }
 
-func (ms *agentUserMemoryStore) Delete(ctx context.Context, workspaceID, agentID, userID string) error {
-	if workspaceID == "" || agentID == "" || userID == "" {
-		return domain.ErrNotFound
+func (ms *memoryStore) AppendUserMemory(ctx context.Context, workspaceID, userID, content string) error {
+	if workspaceID == "" || userID == "" {
+		return domain.ErrInvalid
+	}
+	if err := domain.ValidateMemoryContent(content); err != nil {
+		return err
 	}
 
 	ms.s.mu.Lock()
 	defer ms.s.mu.Unlock()
 
-	memKey := workspaceID + ":" + agentID + ":" + userID
-	if _, exists := ms.s.memories[memKey]; !exists {
-		return domain.ErrNotFound
+	if _, exists := ms.s.workspaces[workspaceID]; !exists {
+		return fmt.Errorf("%w: workspace not found", domain.ErrNotFound)
+	}
+	if _, exists := ms.s.users[userID]; !exists {
+		return fmt.Errorf("%w: user not found", domain.ErrNotFound)
 	}
 
-	delete(ms.s.memories, memKey)
+	key := workspaceID + ":" + userID
+	existing, exists := ms.s.userMemories[key]
+	current := ""
+	if exists {
+		current = existing.Content
+	}
+	if err := domain.ValidateMemoryAppend(current, content); err != nil {
+		return err
+	}
+	ms.s.userMemories[key] = &domain.Memory{Content: current + content, UpdatedAt: time.Now().UTC()}
+	return nil
+}
+
+func (ms *memoryStore) WorkspaceMemory(ctx context.Context, workspaceID string) (*domain.Memory, error) {
+	if workspaceID == "" {
+		return nil, nil
+	}
+
+	ms.s.mu.RLock()
+	defer ms.s.mu.RUnlock()
+
+	m, exists := ms.s.workspaceMemories[workspaceID]
+	if !exists {
+		return nil, nil
+	}
+	return cloneMemory(m), nil
+}
+
+func (ms *memoryStore) UpsertWorkspaceMemory(ctx context.Context, workspaceID, content string) error {
+	if workspaceID == "" {
+		return domain.ErrInvalid
+	}
+	if err := domain.ValidateMemoryContent(content); err != nil {
+		return err
+	}
+
+	ms.s.mu.Lock()
+	defer ms.s.mu.Unlock()
+
+	if _, exists := ms.s.workspaces[workspaceID]; !exists {
+		return fmt.Errorf("%w: workspace not found", domain.ErrNotFound)
+	}
+
+	ms.s.workspaceMemories[workspaceID] = &domain.Memory{Content: content, UpdatedAt: time.Now().UTC()}
+	return nil
+}
+
+func (ms *memoryStore) AppendWorkspaceMemory(ctx context.Context, workspaceID, content string) error {
+	if workspaceID == "" {
+		return domain.ErrInvalid
+	}
+	if err := domain.ValidateMemoryContent(content); err != nil {
+		return err
+	}
+
+	ms.s.mu.Lock()
+	defer ms.s.mu.Unlock()
+
+	if _, exists := ms.s.workspaces[workspaceID]; !exists {
+		return fmt.Errorf("%w: workspace not found", domain.ErrNotFound)
+	}
+
+	existing, exists := ms.s.workspaceMemories[workspaceID]
+	current := ""
+	if exists {
+		current = existing.Content
+	}
+	if err := domain.ValidateMemoryAppend(current, content); err != nil {
+		return err
+	}
+	ms.s.workspaceMemories[workspaceID] = &domain.Memory{Content: current + content, UpdatedAt: time.Now().UTC()}
+	return nil
+}
+
+func (ms *memoryStore) AgentDailyMemory(ctx context.Context, workspaceID, agentID string, date time.Time) (*domain.Memory, error) {
+	if workspaceID == "" || agentID == "" || date.IsZero() {
+		return nil, nil
+	}
+
+	ms.s.mu.RLock()
+	defer ms.s.mu.RUnlock()
+
+	m, exists := ms.s.agentDailyMemories[workspaceID+":"+agentID+":"+memoryDayKey(date)]
+	if !exists {
+		return nil, nil
+	}
+	return cloneMemory(m), nil
+}
+
+func (ms *memoryStore) UpsertAgentDailyMemory(ctx context.Context, workspaceID, agentID string, date time.Time, content string) error {
+	if workspaceID == "" || agentID == "" || date.IsZero() {
+		return domain.ErrInvalid
+	}
+	if err := domain.ValidateMemoryContent(content); err != nil {
+		return err
+	}
+
+	ms.s.mu.Lock()
+	defer ms.s.mu.Unlock()
+
+	if _, exists := ms.s.workspaces[workspaceID]; !exists {
+		return fmt.Errorf("%w: workspace not found", domain.ErrNotFound)
+	}
+	a, exists := ms.s.agents[agentID]
+	if !exists || a.WorkspaceID != workspaceID {
+		return fmt.Errorf("%w: agent not found in workspace", domain.ErrNotFound)
+	}
+
+	key := workspaceID + ":" + agentID + ":" + memoryDayKey(date)
+	ms.s.agentDailyMemories[key] = &domain.Memory{Content: content, UpdatedAt: time.Now().UTC()}
+	return nil
+}
+
+func (ms *memoryStore) AppendAgentDailyMemory(ctx context.Context, workspaceID, agentID string, date time.Time, content string) error {
+	if workspaceID == "" || agentID == "" || date.IsZero() {
+		return domain.ErrInvalid
+	}
+	if err := domain.ValidateMemoryContent(content); err != nil {
+		return err
+	}
+
+	ms.s.mu.Lock()
+	defer ms.s.mu.Unlock()
+
+	if _, exists := ms.s.workspaces[workspaceID]; !exists {
+		return fmt.Errorf("%w: workspace not found", domain.ErrNotFound)
+	}
+	a, exists := ms.s.agents[agentID]
+	if !exists || a.WorkspaceID != workspaceID {
+		return fmt.Errorf("%w: agent not found in workspace", domain.ErrNotFound)
+	}
+
+	key := workspaceID + ":" + agentID + ":" + memoryDayKey(date)
+	existing, exists := ms.s.agentDailyMemories[key]
+	current := ""
+	if exists {
+		current = existing.Content
+	}
+	if err := domain.ValidateMemoryAppend(current, content); err != nil {
+		return err
+	}
+	ms.s.agentDailyMemories[key] = &domain.Memory{Content: current + content, UpdatedAt: time.Now().UTC()}
 	return nil
 }
 
@@ -2034,5 +2262,327 @@ func (wss *workspaceSkillStore) Delete(ctx context.Context, workspaceID, id stri
 
 	delete(wss.s.skills, id)
 	delete(wss.s.skillsByName, workspaceID+":"+sk.Name)
+	return nil
+}
+
+// -------------------------------------------------------------------------
+// WorkspaceMCPServers implementation
+// -------------------------------------------------------------------------
+
+type workspaceMCPServerStore struct {
+	s *fakeStore
+}
+
+func (mss *workspaceMCPServerStore) Create(ctx context.Context, srv *domain.WorkspaceMCPServer) error {
+	if srv == nil {
+		return domain.ErrInvalid
+	}
+	if err := srv.Validate(); err != nil {
+		return err
+	}
+
+	mss.s.mu.Lock()
+	defer mss.s.mu.Unlock()
+
+	if _, exists := mss.s.workspaces[srv.WorkspaceID]; !exists {
+		return fmt.Errorf("%w: workspace not found", domain.ErrNotFound)
+	}
+
+	nameKey := srv.WorkspaceID + ":" + strings.ToLower(srv.Name)
+	if _, exists := mss.s.wsMCPServerNames[nameKey]; exists {
+		return fmt.Errorf("%w: workspace mcp server %q already exists in workspace", domain.ErrMCPServerNameTaken, srv.Name)
+	}
+
+	if srv.ID != "" {
+		if _, exists := mss.s.wsMCPServers[srv.ID]; exists {
+			return fmt.Errorf("%w: workspace mcp server with id %q already exists", domain.ErrConflict, srv.ID)
+		}
+	} else {
+		srv.ID = uuid.NewString()
+	}
+
+	now := time.Now().UTC()
+	if srv.CreatedAt.IsZero() {
+		srv.CreatedAt = now
+	}
+	if srv.UpdatedAt.IsZero() {
+		srv.UpdatedAt = now
+	}
+
+	mss.s.wsMCPServers[srv.ID] = cloneWorkspaceMCPServer(srv)
+	mss.s.wsMCPServerNames[nameKey] = srv.ID
+	return nil
+}
+
+func (mss *workspaceMCPServerStore) Get(ctx context.Context, workspaceID, id string) (*domain.WorkspaceMCPServer, error) {
+	if workspaceID == "" || id == "" {
+		return nil, domain.ErrNotFound
+	}
+
+	mss.s.mu.RLock()
+	defer mss.s.mu.RUnlock()
+
+	srv, exists := mss.s.wsMCPServers[id]
+	if !exists || srv.WorkspaceID != workspaceID {
+		return nil, domain.ErrNotFound
+	}
+	return cloneWorkspaceMCPServer(srv), nil
+}
+
+func (mss *workspaceMCPServerStore) List(ctx context.Context, workspaceID string) ([]domain.WorkspaceMCPServer, error) {
+	if workspaceID == "" {
+		return []domain.WorkspaceMCPServer{}, nil
+	}
+
+	mss.s.mu.RLock()
+	defer mss.s.mu.RUnlock()
+
+	servers := make([]domain.WorkspaceMCPServer, 0)
+	for _, srv := range mss.s.wsMCPServers {
+		if srv.WorkspaceID == workspaceID {
+			servers = append(servers, *cloneWorkspaceMCPServer(srv))
+		}
+	}
+	sort.Slice(servers, func(i, j int) bool {
+		if servers[i].CreatedAt.Equal(servers[j].CreatedAt) {
+			return servers[i].ID < servers[j].ID
+		}
+		return servers[i].CreatedAt.Before(servers[j].CreatedAt)
+	})
+	return servers, nil
+}
+
+func (mss *workspaceMCPServerStore) Update(ctx context.Context, srv *domain.WorkspaceMCPServer) error {
+	if srv == nil || srv.ID == "" || srv.WorkspaceID == "" {
+		return domain.ErrInvalid
+	}
+	if err := srv.Validate(); err != nil {
+		return err
+	}
+
+	mss.s.mu.Lock()
+	defer mss.s.mu.Unlock()
+
+	existing, exists := mss.s.wsMCPServers[srv.ID]
+	if !exists || existing.WorkspaceID != srv.WorkspaceID {
+		return domain.ErrNotFound
+	}
+
+	if !strings.EqualFold(srv.Name, existing.Name) {
+		nameKey := srv.WorkspaceID + ":" + strings.ToLower(srv.Name)
+		if otherID, exists := mss.s.wsMCPServerNames[nameKey]; exists && otherID != srv.ID {
+			return fmt.Errorf("%w: workspace mcp server %q already exists in workspace", domain.ErrMCPServerNameTaken, srv.Name)
+		}
+		delete(mss.s.wsMCPServerNames, srv.WorkspaceID+":"+strings.ToLower(existing.Name))
+		mss.s.wsMCPServerNames[nameKey] = srv.ID
+	}
+
+	existing.Name = srv.Name
+	existing.MCPConnection = cloneMCPConnection(srv.MCPConnection)
+	existing.Enabled = srv.Enabled
+	existing.UpdatedAt = time.Now().UTC()
+
+	*srv = *cloneWorkspaceMCPServer(existing)
+	return nil
+}
+
+func (mss *workspaceMCPServerStore) Delete(ctx context.Context, workspaceID, id string) error {
+	if workspaceID == "" || id == "" {
+		return domain.ErrNotFound
+	}
+
+	mss.s.mu.Lock()
+	defer mss.s.mu.Unlock()
+
+	srv, exists := mss.s.wsMCPServers[id]
+	if !exists || srv.WorkspaceID != workspaceID {
+		return domain.ErrNotFound
+	}
+
+	delete(mss.s.wsMCPServers, id)
+	delete(mss.s.wsMCPServerNames, workspaceID+":"+strings.ToLower(srv.Name))
+	return nil
+}
+
+func (mss *workspaceMCPServerStore) SetStatus(ctx context.Context, workspaceID, id, status, statusError string, toolCount int) error {
+	if workspaceID == "" || id == "" {
+		return domain.ErrNotFound
+	}
+
+	mss.s.mu.Lock()
+	defer mss.s.mu.Unlock()
+
+	srv, exists := mss.s.wsMCPServers[id]
+	if !exists || srv.WorkspaceID != workspaceID {
+		return domain.ErrNotFound
+	}
+
+	srv.Status = status
+	srv.StatusError = statusError
+	srv.ToolCount = toolCount
+	srv.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
+// -------------------------------------------------------------------------
+// AgentMCPServers implementation
+// -------------------------------------------------------------------------
+
+type agentMCPServerStore struct {
+	s *fakeStore
+}
+
+func (mss *agentMCPServerStore) Create(ctx context.Context, srv *domain.AgentMCPServer) error {
+	if srv == nil {
+		return domain.ErrInvalid
+	}
+	if err := srv.Validate(); err != nil {
+		return err
+	}
+
+	mss.s.mu.Lock()
+	defer mss.s.mu.Unlock()
+
+	if _, exists := mss.s.workspaces[srv.WorkspaceID]; !exists {
+		return fmt.Errorf("%w: workspace not found", domain.ErrNotFound)
+	}
+	a, exists := mss.s.agents[srv.AgentID]
+	if !exists || a.WorkspaceID != srv.WorkspaceID {
+		return fmt.Errorf("%w: agent not found in workspace", domain.ErrNotFound)
+	}
+
+	nameKey := srv.AgentID + ":" + strings.ToLower(srv.Name)
+	if _, exists := mss.s.agentMCPServerNames[nameKey]; exists {
+		return fmt.Errorf("%w: agent mcp server %q already exists for agent", domain.ErrMCPServerNameTaken, srv.Name)
+	}
+
+	if srv.ID != "" {
+		if _, exists := mss.s.agentMCPServers[srv.ID]; exists {
+			return fmt.Errorf("%w: agent mcp server with id %q already exists", domain.ErrConflict, srv.ID)
+		}
+	} else {
+		srv.ID = uuid.NewString()
+	}
+
+	now := time.Now().UTC()
+	if srv.CreatedAt.IsZero() {
+		srv.CreatedAt = now
+	}
+	if srv.UpdatedAt.IsZero() {
+		srv.UpdatedAt = now
+	}
+
+	mss.s.agentMCPServers[srv.ID] = cloneAgentMCPServer(srv)
+	mss.s.agentMCPServerNames[nameKey] = srv.ID
+	return nil
+}
+
+func (mss *agentMCPServerStore) Get(ctx context.Context, agentID, id string) (*domain.AgentMCPServer, error) {
+	if agentID == "" || id == "" {
+		return nil, domain.ErrNotFound
+	}
+
+	mss.s.mu.RLock()
+	defer mss.s.mu.RUnlock()
+
+	srv, exists := mss.s.agentMCPServers[id]
+	if !exists || srv.AgentID != agentID {
+		return nil, domain.ErrNotFound
+	}
+	return cloneAgentMCPServer(srv), nil
+}
+
+func (mss *agentMCPServerStore) List(ctx context.Context, agentID string) ([]domain.AgentMCPServer, error) {
+	if agentID == "" {
+		return []domain.AgentMCPServer{}, nil
+	}
+
+	mss.s.mu.RLock()
+	defer mss.s.mu.RUnlock()
+
+	servers := make([]domain.AgentMCPServer, 0)
+	for _, srv := range mss.s.agentMCPServers {
+		if srv.AgentID == agentID {
+			servers = append(servers, *cloneAgentMCPServer(srv))
+		}
+	}
+	sort.Slice(servers, func(i, j int) bool {
+		if servers[i].CreatedAt.Equal(servers[j].CreatedAt) {
+			return servers[i].ID < servers[j].ID
+		}
+		return servers[i].CreatedAt.Before(servers[j].CreatedAt)
+	})
+	return servers, nil
+}
+
+func (mss *agentMCPServerStore) Update(ctx context.Context, srv *domain.AgentMCPServer) error {
+	if srv == nil || srv.ID == "" || srv.WorkspaceID == "" || srv.AgentID == "" {
+		return domain.ErrInvalid
+	}
+	if err := srv.Validate(); err != nil {
+		return err
+	}
+
+	mss.s.mu.Lock()
+	defer mss.s.mu.Unlock()
+
+	existing, exists := mss.s.agentMCPServers[srv.ID]
+	if !exists || existing.AgentID != srv.AgentID || existing.WorkspaceID != srv.WorkspaceID {
+		return domain.ErrNotFound
+	}
+
+	if !strings.EqualFold(srv.Name, existing.Name) {
+		nameKey := srv.AgentID + ":" + strings.ToLower(srv.Name)
+		if otherID, exists := mss.s.agentMCPServerNames[nameKey]; exists && otherID != srv.ID {
+			return fmt.Errorf("%w: agent mcp server %q already exists for agent", domain.ErrMCPServerNameTaken, srv.Name)
+		}
+		delete(mss.s.agentMCPServerNames, srv.AgentID+":"+strings.ToLower(existing.Name))
+		mss.s.agentMCPServerNames[nameKey] = srv.ID
+	}
+
+	existing.Name = srv.Name
+	existing.MCPConnection = cloneMCPConnection(srv.MCPConnection)
+	existing.Enabled = srv.Enabled
+	existing.UpdatedAt = time.Now().UTC()
+
+	*srv = *cloneAgentMCPServer(existing)
+	return nil
+}
+
+func (mss *agentMCPServerStore) Delete(ctx context.Context, agentID, id string) error {
+	if agentID == "" || id == "" {
+		return domain.ErrNotFound
+	}
+
+	mss.s.mu.Lock()
+	defer mss.s.mu.Unlock()
+
+	srv, exists := mss.s.agentMCPServers[id]
+	if !exists || srv.AgentID != agentID {
+		return domain.ErrNotFound
+	}
+
+	delete(mss.s.agentMCPServers, id)
+	delete(mss.s.agentMCPServerNames, agentID+":"+strings.ToLower(srv.Name))
+	return nil
+}
+
+func (mss *agentMCPServerStore) SetStatus(ctx context.Context, agentID, id, status, statusError string, toolCount int) error {
+	if agentID == "" || id == "" {
+		return domain.ErrNotFound
+	}
+
+	mss.s.mu.Lock()
+	defer mss.s.mu.Unlock()
+
+	srv, exists := mss.s.agentMCPServers[id]
+	if !exists || srv.AgentID != agentID {
+		return domain.ErrNotFound
+	}
+
+	srv.Status = status
+	srv.StatusError = statusError
+	srv.ToolCount = toolCount
+	srv.UpdatedAt = time.Now().UTC()
 	return nil
 }

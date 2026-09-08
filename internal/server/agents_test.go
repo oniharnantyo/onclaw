@@ -90,7 +90,27 @@ func TestAgents_PermissionMatrix_And_404(t *testing.T) {
 		}
 	})
 
-	t.Run("member has agents.read and memory access, but not agents.write", func(t *testing.T) {
+	t.Run("old agent-memory routes are gone for every member", func(t *testing.T) {
+		// The per-agent-per-user memory endpoints were removed with the
+		// agent_user_memories model (agent-memory design D8); requests 404
+		// regardless of role.
+		for _, ep := range []struct {
+			method string
+			path   string
+		}{
+			{http.MethodGet, "/api/v1/workspaces/agents-perm-ws/agents/atlas/memory"},
+			{http.MethodDelete, "/api/v1/workspaces/agents-perm-ws/agents/atlas/memory"},
+		} {
+			for _, token := range []string{ownerToken, adminToken, memberToken} {
+				w := doRequest(env.router, ep.method, ep.path, token, nil)
+				if w.Code != http.StatusNotFound {
+					t.Errorf("%s %s expected 404 (route removed), got %d: %s", ep.method, ep.path, w.Code, w.Body.String())
+				}
+			}
+		}
+	})
+
+	t.Run("member has agents.read, but not agents.write", func(t *testing.T) {
 		// GET roster -> 200 OK
 		wList := doRequest(env.router, http.MethodGet, "/api/v1/workspaces/agents-perm-ws/agents", memberToken, nil)
 		if wList.Code != http.StatusOK {
@@ -107,18 +127,6 @@ func TestAgents_PermissionMatrix_And_404(t *testing.T) {
 		wEvents := doRequest(env.router, http.MethodGet, "/api/v1/workspaces/agents-perm-ws/agents/atlas/sessions/sess-1/events", memberToken, nil)
 		if wEvents.Code != http.StatusOK {
 			t.Errorf("expected 200 OK on get session events for member, got %d: %s", wEvents.Code, wEvents.Body.String())
-		}
-
-		// GET memory -> 200 OK
-		wMemGet := doRequest(env.router, http.MethodGet, "/api/v1/workspaces/agents-perm-ws/agents/atlas/memory", memberToken, nil)
-		if wMemGet.Code != http.StatusOK {
-			t.Errorf("expected 200 OK on get memory for member, got %d", wMemGet.Code)
-		}
-
-		// DELETE memory -> 204 No Content
-		wMemDel := doRequest(env.router, http.MethodDelete, "/api/v1/workspaces/agents-perm-ws/agents/atlas/memory", memberToken, nil)
-		if wMemDel.Code != http.StatusNoContent {
-			t.Errorf("expected 204 No Content on delete memory for member, got %d", wMemDel.Code)
 		}
 
 		// POST create -> 403 Forbidden
@@ -278,8 +286,8 @@ func TestAgents_CRUD_And_Validation(t *testing.T) {
 		if agent.PromptsStatus != domain.PromptsStatusReady {
 			t.Errorf("expected prompts_status %q, got %q", domain.PromptsStatusReady, agent.PromptsStatus)
 		}
-		if len(agent.Tools) != 0 || len(agent.DisabledMCPs) != 0 {
-			t.Errorf("expected empty capability arrays, got tools=%v mcps=%v", agent.Tools, agent.DisabledMCPs)
+		if len(agent.Tools) != 0 || len(agent.EnabledMCPS) != 0 {
+			t.Errorf("expected empty capability arrays, got tools=%v mcps=%v", agent.Tools, agent.EnabledMCPS)
 		}
 	})
 
@@ -565,11 +573,65 @@ func TestAgents_CRUD_And_Validation(t *testing.T) {
 			Agent domain.Agent `json:"agent"`
 		}
 		_ = json.Unmarshal(wUnknownSkill.Body.Bytes(), &res)
-		if len(res.Agent.Tools) != 2 || len(res.Agent.DisabledMCPs) != 1 {
-			t.Errorf("expected capabilities saved as provided: %+v", res.Agent)
+		if len(res.Agent.Tools) != 2 || len(res.Agent.EnabledMCPS) != 0 {
+			t.Errorf("expected tools saved as provided and the legacy disabled_mcps denylist ignored: %+v", res.Agent)
 		}
-		if strings.Contains(wUnknownSkill.Body.String(), "disabled_skills") {
-			t.Error("disabled_skills must not appear in agent responses")
+		if strings.Contains(wUnknownSkill.Body.String(), "disabled_skills") || strings.Contains(wUnknownSkill.Body.String(), "disabled_mcps") {
+			t.Error("disabled_skills/disabled_mcps must not appear in agent responses")
+		}
+	})
+
+	t.Run("enabled_mcps allowlist patch replaces the opt-in set", func(t *testing.T) {
+		// Create carries enabled_mcps; the legacy disabled_mcps key in the
+		// same payload is ignored like a managed field.
+		wCreate := doRequest(env.router, http.MethodPost, "/api/v1/workspaces/crud-agents-ws/agents", ownerToken, map[string]any{
+			"name":          "MCP Opt-in Test",
+			"slug":          "mcp-opt-in-test",
+			"role":          "tester",
+			"brief":         "brief",
+			"provider_id":   openAIProvID,
+			"model":         "gpt-4o",
+			"enabled_mcps":  []string{"srv-a", "srv-b"},
+			"disabled_mcps": []string{"srv-z"},
+		})
+		if wCreate.Code != http.StatusCreated {
+			t.Fatalf("expected 201 Created, got %d: %s", wCreate.Code, wCreate.Body.String())
+		}
+		var created struct {
+			Agent domain.Agent `json:"agent"`
+		}
+		_ = json.Unmarshal(wCreate.Body.Bytes(), &created)
+		if len(created.Agent.EnabledMCPS) != 2 || created.Agent.EnabledMCPS[0] != "srv-a" || created.Agent.EnabledMCPS[1] != "srv-b" {
+			t.Errorf("expected enabled_mcps saved as provided, got %+v", created.Agent.EnabledMCPS)
+		}
+
+		// Patch replaces the allowlist, including with the empty array.
+		wPatch := doRequest(env.router, http.MethodPatch, "/api/v1/workspaces/crud-agents-ws/agents/mcp-opt-in-test", ownerToken, map[string]any{
+			"enabled_mcps": []string{"srv-c"},
+		})
+		if wPatch.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK on enabled_mcps patch, got %d: %s", wPatch.Code, wPatch.Body.String())
+		}
+		var patched struct {
+			Agent domain.Agent `json:"agent"`
+		}
+		_ = json.Unmarshal(wPatch.Body.Bytes(), &patched)
+		if len(patched.Agent.EnabledMCPS) != 1 || patched.Agent.EnabledMCPS[0] != "srv-c" {
+			t.Errorf("expected enabled_mcps replaced by the patch, got %+v", patched.Agent.EnabledMCPS)
+		}
+
+		wClear := doRequest(env.router, http.MethodPatch, "/api/v1/workspaces/crud-agents-ws/agents/mcp-opt-in-test", ownerToken, map[string]any{
+			"enabled_mcps": []string{},
+		})
+		if wClear.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK on empty enabled_mcps patch, got %d: %s", wClear.Code, wClear.Body.String())
+		}
+		var cleared struct {
+			Agent domain.Agent `json:"agent"`
+		}
+		_ = json.Unmarshal(wClear.Body.Bytes(), &cleared)
+		if len(cleared.Agent.EnabledMCPS) != 0 {
+			t.Errorf("expected empty enabled_mcps patch to clear the allowlist, got %+v", cleared.Agent.EnabledMCPS)
 		}
 	})
 
@@ -650,13 +712,13 @@ func TestAgents_CRUD_And_Validation(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// 3. Regeneration & Memory Endpoint Tests
+// 3. Regeneration Tests
 // -----------------------------------------------------------------------------
 
-func TestAgents_Regenerate_And_Memories(t *testing.T) {
+func TestAgents_Regenerate(t *testing.T) {
 	env := setupTestEnv(t)
 	ownerUser, ownerToken := createTestUser(t, env, "owner@example.com", "Owner", "pwd")
-	memberUser, memberToken := createTestUser(t, env, "member@example.com", "Member", "pwd")
+	memberUser, _ := createTestUser(t, env, "member@example.com", "Member", "pwd")
 
 	ws, ownerRole, _, memberRole := createTestWorkspaceWithRoles(t, env, "regen-mem-ws", "Regen Mem WS")
 	addMember(t, env, ws.ID, ownerUser.ID, ownerRole.ID)
@@ -710,96 +772,6 @@ func TestAgents_Regenerate_And_Memories(t *testing.T) {
 		_ = json.Unmarshal(wRegen.Body.Bytes(), &res)
 		if res.Agent.PromptsStatus != domain.PromptsStatusReady {
 			t.Errorf("expected final prompts_status ready, got %q", res.Agent.PromptsStatus)
-		}
-	})
-
-	t.Run("memory view and reset are membership-gated for own memory", func(t *testing.T) {
-		// GET non-existent memory -> returns 200 with empty content
-		wGetEmpty := doRequest(env.router, http.MethodGet, "/api/v1/workspaces/regen-mem-ws/agents/regen-agent/memory", memberToken, nil)
-		if wGetEmpty.Code != http.StatusOK {
-			t.Fatalf("expected 200 OK for empty memory, got %d: %s", wGetEmpty.Code, wGetEmpty.Body.String())
-		}
-		var emptyRes struct {
-			Content string `json:"content"`
-		}
-		_ = json.Unmarshal(wGetEmpty.Body.Bytes(), &emptyRes)
-		if emptyRes.Content != "" {
-			t.Errorf("expected empty content, got %q", emptyRes.Content)
-		}
-
-		// Insert runtime-owned memory for memberUser
-		_ = env.store.AgentUserMemories().Upsert(context.Background(), &domain.AgentUserMemory{
-			WorkspaceID: ws.ID,
-			AgentID:     agentID,
-			UserID:      memberUser.ID,
-			Content:     "User prefers Go over Python and likes dark mode.",
-		})
-
-		// GET existing memory for memberUser
-		wGet := doRequest(env.router, http.MethodGet, "/api/v1/workspaces/regen-mem-ws/agents/regen-agent/memory", memberToken, nil)
-		if wGet.Code != http.StatusOK {
-			t.Fatalf("expected 200 OK for existing memory, got %d: %s", wGet.Code, wGet.Body.String())
-		}
-		var memRes struct {
-			Content string `json:"content"`
-		}
-		_ = json.Unmarshal(wGet.Body.Bytes(), &memRes)
-		if memRes.Content != "User prefers Go over Python and likes dark mode." {
-			t.Errorf("expected stored memory content, got %q", memRes.Content)
-		}
-
-		// Owner views their own memory -> empty (isolated per-user)
-		wOwnerGet := doRequest(env.router, http.MethodGet, "/api/v1/workspaces/regen-mem-ws/agents/regen-agent/memory", ownerToken, nil)
-		if wOwnerGet.Code != http.StatusOK {
-			t.Fatalf("expected 200 OK for owner memory, got %d", wOwnerGet.Code)
-		}
-		var ownerMemRes struct {
-			Content string `json:"content"`
-		}
-		_ = json.Unmarshal(wOwnerGet.Body.Bytes(), &ownerMemRes)
-		if ownerMemRes.Content != "" {
-			t.Errorf("expected empty memory for owner, got %q", ownerMemRes.Content)
-		}
-
-		// Member resets (DELETEs) own memory
-		wDel := doRequest(env.router, http.MethodDelete, "/api/v1/workspaces/regen-mem-ws/agents/regen-agent/memory", memberToken, nil)
-		if wDel.Code != http.StatusNoContent {
-			t.Fatalf("expected 204 No Content on memory reset, got %d", wDel.Code)
-		}
-
-		// Subsequent GET returns empty content
-		wGetAfterReset := doRequest(env.router, http.MethodGet, "/api/v1/workspaces/regen-mem-ws/agents/regen-agent/memory", memberToken, nil)
-		if wGetAfterReset.Code != http.StatusOK {
-			t.Fatalf("expected 200 OK after reset, got %d", wGetAfterReset.Code)
-		}
-		var afterRes struct {
-			Content string `json:"content"`
-		}
-		_ = json.Unmarshal(wGetAfterReset.Body.Bytes(), &afterRes)
-		if afterRes.Content != "" {
-			t.Errorf("expected empty content after reset, got %q", afterRes.Content)
-		}
-	})
-
-	t.Run("deleting agent cascades to per-user memories", func(t *testing.T) {
-		// Set memory
-		_ = env.store.AgentUserMemories().Upsert(context.Background(), &domain.AgentUserMemory{
-			WorkspaceID: ws.ID,
-			AgentID:     agentID,
-			UserID:      memberUser.ID,
-			Content:     "Some persistent context",
-		})
-
-		// Delete agent
-		wDelAgent := doRequest(env.router, http.MethodDelete, "/api/v1/workspaces/regen-mem-ws/agents/regen-agent", ownerToken, nil)
-		if wDelAgent.Code != http.StatusNoContent {
-			t.Fatalf("expected 204 No Content on agent delete, got %d", wDelAgent.Code)
-		}
-
-		// Verify memories are gone
-		_, err := env.store.AgentUserMemories().Get(context.Background(), ws.ID, agentID, memberUser.ID)
-		if err == nil {
-			t.Fatalf("expected memory to be cascade deleted")
 		}
 	})
 }

@@ -11,32 +11,32 @@ export function seedAcme() {
       { id: 'a-atlas', name: 'Atlas', model: 'claude-sonnet-5', temp: 0.3, autonomy: 'approval', channelPost: true,
         role: 'Ops coordinator — triages alerts, runs playbooks, writes postmortems',
         status: 'running', tools: ['web', 'shell', 'api', 'db'], lastActive: '2m ago',
-        skills: ['research', 'summarize', 'postmortem'], mcp: ['github', 'postgres', 'slack'],
+        skills: ['research', 'summarize', 'postmortem'],
         prompt: 'You are Atlas, on-call ops coordinator for Acme. Triage alerts, correlate with deploys, page only when SLO burn demands it. Always end with a proposed next action.' },
       { id: 'a-beacon', name: 'Beacon', model: 'claude-opus-5', temp: 0.5, autonomy: 'approval', channelPost: false,
         role: 'Research analyst — deep briefs with citations',
         status: 'idle', tools: ['web', 'files'], lastActive: '1h ago',
-        skills: ['research', 'writing', 'summarize'], mcp: ['browser'],
+        skills: ['research', 'writing', 'summarize'],
         prompt: 'You are Beacon. Produce research briefs with sources, clear tradeoffs, and a recommendation. Never pad.' },
       { id: 'a-warden', name: 'Warden', model: 'claude-sonnet-5', temp: 0.2, autonomy: 'approval', channelPost: true,
         role: 'SRE — incident response and error budgets',
         status: 'error', tools: ['shell', 'api', 'db'], lastActive: '3h ago',
-        skills: ['postmortem', 'summarize'], mcp: ['postgres'],
+        skills: ['postmortem', 'summarize'],
         prompt: 'You are Warden. Own incident timeline hygiene, error budgets, and on-call handoffs. Escalate stalled acks.' },
       { id: 'a-quill', name: 'Quill', model: 'claude-haiku-4-5', temp: 0.6, autonomy: 'approval', channelPost: true,
         role: 'Writer — release notes, changelogs, docs polish',
         status: 'idle', tools: ['files', 'web'], lastActive: 'Yesterday',
-        skills: ['writing', 'summarize'], mcp: ['github'],
+        skills: ['writing', 'summarize'],
         prompt: 'You are Quill. Turn commit history into human release notes. Flag breaking changes first.' },
       { id: 'a-ledger', name: 'Ledger', model: 'llama-4-maverick', temp: 0.1, autonomy: 'suggest', channelPost: false,
         role: 'Finance analyst — spend summaries, invoice extraction',
         status: 'idle', tools: ['files', 'db'], lastActive: '2d ago',
-        skills: ['data', 'summarize'], mcp: ['postgres'],
+        skills: ['data', 'summarize'],
         prompt: 'You are Ledger. Extract structure from invoices, reconcile against the ledger, surface variance over 2%.' },
       { id: 'a-scout', name: 'Scout', model: 'claude-haiku-4-5', temp: 0.3, autonomy: 'full', channelPost: true,
         role: 'Support triage — classifies tickets, drafts replies',
         status: 'running', tools: ['api', 'web'], lastActive: 'just now',
-        skills: ['summarize'], mcp: ['slack'],
+        skills: ['summarize'],
         prompt: 'You are Scout. Classify inbound tickets, auto-reply to known issues, escalate angry or billing-related ones to a human.' }
     ],
     channels: [
@@ -136,20 +136,6 @@ export function seedAcme() {
       { id: 'linear', name: 'Linear', detail: 'Sync issues to agent tasks', connected: false },
       { id: 'notion', name: 'Notion', detail: 'Publish briefs to docs', connected: false }
     ],
-    mcpServers: [
-      { id: 'github', name: 'GitHub', transport: 'stdio · gh-mcp serve --read-only', auth: 'OAuth · acme/platform', tools: 24, status: 'connected',
-        sample: ['repo.list', 'repo.read_file', 'issues.search', 'issues.create', 'pulls.list', 'pulls.review', 'commits.range', 'actions.runs'] },
-      { id: 'postgres', name: 'Postgres', transport: 'stdio · postgres-mcp --replica prod-ro', auth: 'Service account · read-only', tools: 6, status: 'connected',
-        sample: ['db.schema', 'db.tables', 'db.query_ro', 'db.explain'] },
-      { id: 'slack', name: 'Slack', transport: 'http · slack-mcp.internal:8787/sse', auth: 'Bot token · 4 channels', tools: 12, status: 'connected',
-        sample: ['channels.list', 'history.read', 'message.post', 'users.lookup'] },
-      { id: 'browser', name: 'Browser', transport: 'stdio · browser-mcp --headless', auth: 'No auth · sandboxed profile', tools: 8, status: 'error',
-        error: 'Handshake failed — headless Chromium missing on runner-2', sample: ['page.open', 'page.click', 'page.extract', 'screenshot.capture'] },
-      { id: 'filesystem', name: 'Filesystem', transport: 'stdio · fs-mcp --root /docs', auth: 'Workspace scope · /docs', tools: 5, status: 'disabled',
-        sample: ['fs.list', 'fs.read', 'fs.write', 'fs.glob'] },
-      { id: 'memory', name: 'Memory', transport: 'stdio · memory-mcp', auth: 'Workspace scope · shared', tools: 4, status: 'disabled',
-        sample: ['memory.save', 'memory.recall', 'memory.forget'] }
-    ],
     skillLib: [
       { id: 'research', name: 'web-research', version: '2.4.1', enabled: true, tier: 'system', source: 'system', locked: true,
         desc: 'Multi-source research briefs with citation tracking and a structured summary template.' },
@@ -210,17 +196,17 @@ export function seedGlobex() {
       { id: 'a-herald', name: 'Herald', model: 'claude-sonnet-5', temp: 0.4, autonomy: 'approval', channelPost: true,
         role: 'Comms coordinator — standup notes and announcements',
         status: 'idle', tools: ['files', 'api'], lastActive: '1d ago',
-        skills: ['writing', 'summarize'], mcp: ['slack'],
+        skills: ['writing', 'summarize'],
         prompt: 'You are Herald. Turn ticket activity into crisp standup notes. Never invent status.' },
       { id: 'a-tally', name: 'Tally', model: 'llama-4-scout', temp: 0.1, autonomy: 'full', channelPost: true,
         role: 'Data analyst — ETL checks and weekly metrics',
         status: 'running', tools: ['db', 'api'], lastActive: 'just now',
-        skills: ['data', 'summarize'], mcp: ['postgres'],
+        skills: ['data', 'summarize'],
         prompt: 'You are Tally. Verify pipeline freshness and row counts against a 7-day baseline. Alert on drift over 5%.' },
       { id: 'a-forge', name: 'Forge', model: 'claude-sonnet-5', temp: 0.3, autonomy: 'approval', channelPost: false,
         role: 'Dev agent — PR review and test triage',
         status: 'idle', tools: ['shell', 'api'], lastActive: '6h ago',
-        skills: ['code', 'summarize'], mcp: ['github'],
+        skills: ['code', 'summarize'],
         prompt: 'You are Forge. Review PRs for correctness first, style second. Run the test suite before commenting.' }
     ],
     channels: [
@@ -259,20 +245,6 @@ export function seedGlobex() {
       { id: 'github', name: 'GitHub', detail: 'globex/etl', connected: true },
       { id: 'linear', name: 'Linear', detail: 'Sync issues to agent tasks', connected: false },
       { id: 'postgres', name: 'Postgres', detail: 'warehouse read replica', connected: false }
-    ],
-    mcpServers: [
-      { id: 'github', name: 'GitHub', transport: 'stdio · gh-mcp serve --read-only', auth: 'OAuth · globex/etl', tools: 24, status: 'connected',
-        sample: ['repo.list', 'issues.search', 'pulls.list', 'pulls.review', 'commits.range'] },
-      { id: 'slack', name: 'Slack', transport: 'http · slack-mcp.internal:8787/sse', auth: 'Bot token · 2 channels', tools: 12, status: 'connected',
-        sample: ['channels.list', 'history.read', 'message.post'] },
-      { id: 'postgres', name: 'Postgres', transport: 'stdio · postgres-mcp --replica warehouse-ro', auth: 'Service account · read-only', tools: 6, status: 'error',
-        error: 'Connect failed — warehouse replica unreachable', sample: ['db.schema', 'db.query_ro'] },
-      { id: 'filesystem', name: 'Filesystem', transport: 'stdio · fs-mcp --root /docs', auth: 'Workspace scope · /docs', tools: 5, status: 'disabled',
-        sample: ['fs.list', 'fs.read'] },
-      { id: 'browser', name: 'Browser', transport: 'stdio · browser-mcp --headless', auth: 'No auth · sandboxed profile', tools: 8, status: 'disabled',
-        sample: ['page.open', 'page.extract'] },
-      { id: 'memory', name: 'Memory', transport: 'stdio · memory-mcp', auth: 'Workspace scope · shared', tools: 4, status: 'disabled',
-        sample: ['memory.save', 'memory.recall'] }
     ],
     skillLib: [
       { id: 'research', name: 'web-research', version: '2.4.1', enabled: true, tier: 'system', source: 'system', locked: true,
@@ -361,8 +333,7 @@ export function withSessions(t: any) {
     agents: (t.agents || []).map((a: any) => ({
       ...a,
       provider: a.provider || providerOf(a.model),
-      skills: a.skills || ['research', 'summarize'],
-      mcp: a.mcp || []
+      skills: a.skills || ['research', 'summarize']
     })),
     providers: t.providers || [],
     threads
@@ -379,7 +350,7 @@ export function blankTenant({ name, sub, tz, starter  }: any): Workspace {
     agents: starter ? [{
       id: aid, name: 'Guide', model: 'claude-haiku-4-5', temp: 0.4, autonomy: 'suggest', channelPost: true,
       role: 'Starter agent — answers questions, searches the web, shows the ropes',
-      status: 'idle', tools: ['web'], lastActive: 'just now', skills: [], mcp: [],
+      status: 'idle', tools: ['web'], lastActive: 'just now', skills: [],
       prompt: 'You are Guide, the starter agent for a brand-new OnClaw workspace. Answer questions about the workspace, demonstrate tool use, and suggest what to deploy next.'
     }] : [],
     channels: starter ? [{ id: uid('c'), name: 'general', purpose: 'Company-wide', agentId: aid, unread: 0, members: [aid] }] : [],
@@ -398,14 +369,6 @@ export function blankTenant({ name, sub, tz, starter  }: any): Workspace {
       { id: 'linear', name: 'Linear', detail: 'Sync issues to agent tasks', connected: false },
       { id: 'notion', name: 'Notion', detail: 'Publish briefs to docs', connected: false },
       { id: 'postgres', name: 'Postgres', detail: 'Query a read replica', connected: false }
-    ],
-    mcpServers: [
-      { id: 'github', name: 'GitHub', transport: 'stdio · gh-mcp serve --read-only', auth: 'Not configured', tools: 24, status: 'disabled', sample: ['repo.list', 'issues.search', 'pulls.list', 'commits.range'] },
-      { id: 'postgres', name: 'Postgres', transport: 'stdio · postgres-mcp --replica', auth: 'Not configured', tools: 6, status: 'disabled', sample: ['db.schema', 'db.query_ro'] },
-      { id: 'slack', name: 'Slack', transport: 'http · slack-mcp.internal:8787/sse', auth: 'Not configured', tools: 12, status: 'disabled', sample: ['channels.list', 'message.post'] },
-      { id: 'filesystem', name: 'Filesystem', transport: 'stdio · fs-mcp --root /docs', auth: 'Not configured', tools: 5, status: 'disabled', sample: ['fs.list', 'fs.read'] },
-      { id: 'memory', name: 'Memory', transport: 'stdio · memory-mcp', auth: 'Not configured', tools: 4, status: 'disabled', sample: ['memory.save', 'memory.recall'] },
-      { id: 'browser', name: 'Browser', transport: 'stdio · browser-mcp --headless', auth: 'Not configured', tools: 8, status: 'disabled', sample: ['page.open', 'page.extract'] }
     ],
     skillLib: [
       { id: 'research', name: 'web-research', version: '2.4.1', enabled: true, tier: 'system', source: 'system', locked: true,

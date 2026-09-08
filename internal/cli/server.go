@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/oniharnantyo/onclaw/internal/agents"
+	"github.com/oniharnantyo/onclaw/internal/agents/mcp"
 	"github.com/oniharnantyo/onclaw/internal/agents/systemskills"
 	"github.com/oniharnantyo/onclaw/internal/bootstrap"
 	"github.com/oniharnantyo/onclaw/internal/config"
@@ -136,6 +137,15 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	// API: the same service decrypts runtime configs and encrypts writes.
 	toolSettings := agents.NewToolSettingsService(st.ToolSettings(), encKey)
 
+	// MCP settings + connection manager (design.md D5/D10): the settings
+	// service backs both the workspace/agent MCP API and the runtime policy;
+	// the manager owns the lazy per-workspace connection cache. Its teardown
+	// rides the composition root's lifecycle — connections outlive single
+	// sessions deliberately.
+	mcpSettings := agents.NewMCPSettingsService(st.WorkspaceMCPServers(), st.AgentMCPServers(), st.Agents(), encKey)
+	mcpManager := mcp.NewMCPManager()
+	defer mcpManager.Close()
+
 	// Construct the runtime runner. ToolRegistry is built-in; NewDefaultToolRegistry
 	// registers web.search. The runner handles session history queries and execution.
 	// Run contexts derive from a process-lifetime base context, not the command
@@ -150,10 +160,14 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		st.Providers(),
 		st.SessionEvents(),
 		st.SessionCheckpoints(),
+		st.Memories(),
 		encKey,
 		cfg.OnClawDir,
 		agents.WithBaseContext(context.Background()),
 		agents.WithToolPolicy(toolSettings),
+		agents.WithMCPPolicy(mcp.NewSettingsPolicy(mcpSettings)),
+		agents.WithMCPManager(mcpManager),
+		agents.WithMCPStatusWriter(mcp.NewSettingsStatusWriter(mcpSettings)),
 		agents.WithEnabledSkillReader(server.WorkspaceSkillReader(st.WorkspaceSkills())),
 	)
 
@@ -168,6 +182,8 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		OnClawDir:     cfg.OnClawDir,
 		Runner:        runner,
 		ToolSettings:  toolSettings,
+		MCPSettings:   mcpSettings,
+		MCPManager:    mcpManager,
 	})
 
 	listenAddr := cfg.ListenAddr

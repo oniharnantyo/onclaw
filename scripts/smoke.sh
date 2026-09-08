@@ -15,7 +15,9 @@
 #  10. Last-owner & last-superadmin protection guards
 #  11. CLI user provisioning & authentication verification
 #  12. Workspace provider configuration CRUD & verify scenarios
+#  13. Agents, skills, tools, user & workspace memory endpoints, birth flow
 #  14. /v1 OpenResponses live chat sessions (chat key exchange → birth → chain)
+#  15. MCP server registry & agent-private servers (CRUD, probes, enabled_mcps)
 #
 # Usage:
 #   ./scripts/smoke.sh
@@ -950,12 +952,17 @@ assert_status "200" "Owner re-enables the tool"
 api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/tools/not.a.tool" "${CHARLIE_TOKEN}" '{"enabled":false}'
 assert_status "400" "Unknown tool key returns 400"
 
-api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/tools/web.search" "${CHARLIE_TOKEN}" '{"enabled":true,"config":{"provider":"tavily"}}'
-assert_status "422" "Enabling an unconfigured provider returns 422"
+api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/tools/web.search" "${CHARLIE_TOKEN}" '{"enabled":true}'
+assert_status "422" "Enabling web.search without provider entries returns 422"
 
-api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/tools/web.search" "${CHARLIE_TOKEN}" '{"enabled":true,"config":{"provider":"tavily","api_key":"tvly-smoke-secret-key-9876"}}'
-assert_status "200" "Configured provider enables"
+api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/tools/web.search" "${CHARLIE_TOKEN}" '{"enabled":true,"config":{"entries":[{"name":"Tavily 1","provider":"tavily"}]}}'
+assert_status "422" "Entry missing its required credential returns 422"
+assert_json_expr '[.error.details[]? | select(.field == "entries[0].api_key")] | length > 0' "Credential error fields the offending entry"
+
+api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/tools/web.search" "${CHARLIE_TOKEN}" '{"enabled":true,"config":{"entries":[{"name":"Tavily 1","provider":"tavily","api_key":"tvly-smoke-secret-key-9876"}]}}'
+assert_status "200" "Configured provider stack enables"
 assert_json_expr '.tool.configured == true' "Configured tool reports configured"
+assert_json_expr '.tool.config.entries[0].api_key_hint == "9876"' "Entry credential carries only its last-4 hint"
 if echo "${HTTP_BODY}" | grep -q "tvly-smoke-secret-key-9876"; then
     log_fail "Tool config response echoed the secret"
 else
@@ -966,12 +973,57 @@ fi
 api_req "DELETE" "/api/v1/workspaces/${TENANT_SLUG}/providers/${MOCK_PROV_ID}" "${CHARLIE_TOKEN}"
 assert_status "409" "Deleting in-use provider returns 409"
 
-# 13.4 Memory view/reset
+# 13.4 Memory endpoints (agent-memory): own user memory is membership-only and
+# self-scoped to the caller; shared workspace memory reads ride membership and
+# PUT requires workspace settings management (workspace.write).
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/me/memory" "${DAVE_TOKEN}"
+assert_status "200" "Member reads own (absent) user memory"
+assert_json_expr '.content == "" and .max_chars == 32000 and .updated_at == null' "Absent user memory is empty with the char budget"
+
+api_req "PUT" "/api/v1/workspaces/${TENANT_SLUG}/me/memory" "${DAVE_TOKEN}" '{"content":"Dave prefers concise answers."}'
+assert_status "200" "Member PUTs own user memory"
+assert_json_expr '.content == "Dave prefers concise answers." and .max_chars == 32000' "PUT echoes the saved shape"
+
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/me/memory" "${DAVE_TOKEN}"
+assert_status "200" "Member GETs own user memory back"
+assert_json_expr '.content == "Dave prefers concise answers."' "User memory content round-trips"
+assert_json_expr '.updated_at != null' "Saved user memory carries a timestamp"
+
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/me/memory" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner reads their own user memory"
+assert_json_expr '.content == ""' "User memory is self-scoped (owner sees own empty document)"
+
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/memory" "${DAVE_TOKEN}"
+assert_status "200" "Member reads shared workspace memory"
+assert_json_expr '.content == ""' "Workspace memory starts empty"
+
+api_req "PUT" "/api/v1/workspaces/${TENANT_SLUG}/memory" "${DAVE_TOKEN}" '{"content":"member attempted write"}'
+assert_status "403" "Member cannot write shared workspace memory (403)"
+assert_json_expr '.error.code == "forbidden"' "Error code is forbidden"
+
+api_req "PUT" "/api/v1/workspaces/${TENANT_SLUG}/memory" "${BOB_TOKEN}" '{"content":"# Team memory — smoke writes go through admins."}'
+assert_status "200" "Admin PUTs shared workspace memory"
+assert_json_expr '.content == "# Team memory — smoke writes go through admins." and .max_chars == 32000' "Admin PUT echoes the saved shape"
+
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/memory" "${DAVE_TOKEN}"
+assert_status "200" "Member reads the admin's workspace memory"
+assert_json_expr '.content == "# Team memory — smoke writes go through admins."' "Workspace memory content round-trips"
+
+# 13.4a Over-cap content is rejected with 422 naming the limit.
+python3 -c 'import json,sys; open(sys.argv[1],"w").write(json.dumps({"content":"x"*32001}))' "${TMP_DIR}/overcap.json"
+api_req "PUT" "/api/v1/workspaces/${TENANT_SLUG}/me/memory" "${DAVE_TOKEN}" "$(cat "${TMP_DIR}/overcap.json")"
+assert_status "422" "Over-cap user memory is rejected (422)"
+assert_json_expr '.error.message | contains("32000")' "422 error names the char cap"
+
+api_req "PUT" "/api/v1/workspaces/${TENANT_SLUG}/memory" "${BOB_TOKEN}" "$(cat "${TMP_DIR}/overcap.json")"
+assert_status "422" "Over-cap workspace memory is rejected (422)"
+
+# 13.4b The old per-agent memory routes are gone (agent-memory design D8).
 api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/agents/${AGENT_ID}/memory" "${CHARLIE_TOKEN}"
-assert_status "200" "View agent memory"
+assert_status "404" "Old GET agent-memory route is gone (404)"
 
 api_req "DELETE" "/api/v1/workspaces/${TENANT_SLUG}/agents/${AGENT_ID}/memory" "${CHARLIE_TOKEN}"
-assert_status "204" "Reset agent memory"
+assert_status "404" "Old DELETE agent-memory route is gone (404)"
 
 # 13.5 Regenerate: enhance mode against the mock provider. On success the
 # previous documents must survive as .bak beside the enhanced files.
@@ -1067,4 +1119,160 @@ done
 assert_json_expr '(.events | length) >= 4' "Birth + chained turns persisted events (user and assistant per turn)"
 assert_json_expr '[.events[]?.message.content // "" ] | join(" ") | contains("ONCLAW_V1_SMOKE hello birth")' "Birth turn input present in session history"
 assert_json_expr '[.events[]?.message.content // "" ] | join(" ") | contains("ONCLAW_V1_SMOKE chained follow-up")' "Chained turn input present in session history"
+
+# -----------------------------------------------------------------------------
+# 15. MCP Server Registry, Probes, Agent-Private Servers & enabled_mcps
+# -----------------------------------------------------------------------------
+log_step "15. MCP Server Registry, Probes & enabled_mcps"
+
+# 15.0 Compile the stdio stub MCP server — the same testdata binary the handler
+# tests drive: a real mcp-go server exposing exactly 3 tools over stdio
+# (test_tool, echo_env, echo_args).
+MCP_STUB_BIN="${TMP_DIR}/mockmcpserver"
+go build -o "${MCP_STUB_BIN}" ./internal/agents/mcp/testdata/mockmcpserver || {
+    log_fail "Failed to compile the stub MCP server (internal/agents/mcp/testdata/mockmcpserver)"
+}
+log_pass "Stub MCP server compiled from internal/agents/mcp/testdata/mockmcpserver"
+
+MCP_BASE="/api/v1/workspaces/${TENANT_SLUG}/mcp-servers"
+MCP_SECRET_NAME="ONCLAW_MCP_TEST_MARKER"
+MCP_SECRET_VALUE="onclaw-smoke-secret-9876"
+
+# 15.1 Permission guards: a Member can read the registry (tools.read) but
+# cannot register servers (tools.write).
+api_req "GET" "${MCP_BASE}" "${CLI_USER_TOKEN}"
+assert_status "200" "Member can list MCP servers (tools.read)"
+assert_json_expr '(.servers | length) == 0' "MCP registry starts empty"
+
+api_req "POST" "${MCP_BASE}" "${CLI_USER_TOKEN}" '{"name":"Nope","transport":"stdio","command":"x"}'
+assert_status "403" "Member cannot create MCP servers (tools.write 403)"
+assert_json_expr '.error.code == "forbidden"' "Error code is forbidden"
+
+# 15.2 Owner registers a stdio server against the stub; the on-save probe
+# connects and counts the stub's 3 tools; the env secret round-trips as a
+# hint only — never plaintext.
+api_req "POST" "${MCP_BASE}" "${CHARLIE_TOKEN}" "{\"name\":\"Smoke Stub\",\"transport\":\"stdio\",\"command\":\"${MCP_STUB_BIN}\",\"args\":[\"--marker=smoke\"],\"env\":[{\"name\":\"${MCP_SECRET_NAME}\",\"value\":\"${MCP_SECRET_VALUE}\"}]}"
+assert_status "201" "Owner registers a stdio MCP server (201)"
+assert_json_expr '.server.transport == "stdio"' "Create echoes the transport"
+assert_json_expr '.server.command == "'"${MCP_STUB_BIN}"'"' "Create echoes the command"
+assert_json_expr '.server.status == "connected"' "On-save probe connects to the stub"
+assert_json_expr '.server.tool_count == 3' "Probe counts the stub's 3 tools"
+assert_json_expr '.server.enabled == true' "Servers default to enabled"
+assert_json_expr '.server.env[0].name == "'"${MCP_SECRET_NAME}"'"' "Env row echoed by name"
+assert_json_expr '.server.env[0].value_hint == "9876"' "Env secret carries only its last-4 hint"
+if echo "${HTTP_BODY}" | grep -q "${MCP_SECRET_VALUE}"; then
+    log_fail "MCP create response leaked the plaintext env secret"
+else
+    log_pass "MCP create response never echoes the env secret"
+fi
+MCP_SRV_ID=$(json_get '.server.id')
+
+# 15.3 Fielded validation: stdio without a command, an unknown transport, and
+# a (case-insensitive) duplicate name are all 422s.
+api_req "POST" "${MCP_BASE}" "${CHARLIE_TOKEN}" '{"name":"Broken Stdio","transport":"stdio"}'
+assert_status "422" "stdio server without command is rejected (422)"
+assert_json_expr '[.error.details[]? | select(.field == "command")] | length > 0' "Validation error fields command"
+
+api_req "POST" "${MCP_BASE}" "${CHARLIE_TOKEN}" '{"name":"Broken Transport","transport":"carrier_pigeon","command":"x"}'
+assert_status "422" "Unknown transport is rejected (422)"
+assert_json_expr '[.error.details[]? | select(.field == "transport")] | length > 0' "Validation error fields transport"
+
+api_req "POST" "${MCP_BASE}" "${CHARLIE_TOKEN}" '{"name":"smoke stub","transport":"stdio","command":"x"}'
+assert_status "422" "Duplicate server name (case-insensitive) is rejected (422)"
+assert_json_expr '[.error.details[]? | select(.field == "name")] | length > 0' "Duplicate-name error fields name"
+
+# 15.4 The registry lists the server with its persisted probe status.
+api_req "GET" "${MCP_BASE}" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists MCP servers"
+assert_json_expr "[.servers[] | select(.id == \"${MCP_SRV_ID}\")] | length == 1" "Registry lists the registered server"
+assert_json_expr "[.servers[] | select(.id == \"${MCP_SRV_ID}\")][0].status == \"connected\"" "Connected status persists on the row"
+assert_json_expr "[.servers[] | select(.id == \"${MCP_SRV_ID}\")][0].tool_count == 3" "Tool count persists on the row"
+
+# 15.5 PATCH: change the args; then keep the stored secret via an empty env
+# value (name-keyed merge); the master switch pauses/resumes without touching
+# the connection.
+api_req "PATCH" "${MCP_BASE}/${MCP_SRV_ID}" "${CHARLIE_TOKEN}" '{"args":["--marker=smoke-patched"]}'
+assert_status "200" "Owner patches the server args"
+assert_json_expr '.server.args[0] == "--marker=smoke-patched"' "Patched args are echoed"
+assert_json_expr '.server.status == "connected"' "Patched server re-probes connected"
+assert_json_expr '.server.env[0].value_hint == "9876"' "Args-only patch keeps the stored secret hint"
+
+api_req "PATCH" "${MCP_BASE}/${MCP_SRV_ID}" "${CHARLIE_TOKEN}" "{\"env\":[{\"name\":\"${MCP_SECRET_NAME}\",\"value\":\"\"}]}"
+assert_status "200" "Owner patches with an empty env secret value"
+assert_json_expr '.server.env[0].value_hint == "9876"' "Empty env value keeps the stored secret (hint unchanged)"
+
+api_req "PATCH" "${MCP_BASE}/${MCP_SRV_ID}" "${CHARLIE_TOKEN}" '{"enabled":false}'
+assert_status "200" "Owner pauses the server (master switch)"
+assert_json_expr '.server.enabled == false' "Paused server reports enabled false"
+assert_json_expr ".server.env[0].name == \"${MCP_SECRET_NAME}\"" "Master-switch patch keeps the connection intact"
+
+api_req "PATCH" "${MCP_BASE}/${MCP_SRV_ID}" "${CHARLIE_TOKEN}" '{"enabled":true}'
+assert_status "200" "Owner resumes the server"
+assert_json_expr '.server.enabled == true' "Resumed server reports enabled true"
+
+# 15.6 Explicit probe endpoint: a fresh bounded dial, persisted and returned.
+api_req "POST" "${MCP_BASE}/${MCP_SRV_ID}/probe" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner probes the server on demand"
+assert_json_expr '.server.status == "connected"' "Re-probe reports connected"
+assert_json_expr '.server.tool_count == 3' "Re-probe counts 3 tools"
+
+# 15.7 An unreachable command still persists (201) with the failed probe
+# stored as the row status; the explicit re-probe behaves identically.
+api_req "POST" "${MCP_BASE}" "${CHARLIE_TOKEN}" '{"name":"Dead Stub","transport":"stdio","command":"/nonexistent/onclaw-mcp-smoke-binary"}'
+assert_status "201" "Registering an unreachable server still persists (201)"
+assert_json_expr '.server.status == "error"' "Failed on-save probe persists error status"
+assert_json_expr '.server.status_error != ""' "Probe failure message is persisted"
+MCP_DEAD_ID=$(json_get '.server.id')
+
+api_req "POST" "${MCP_BASE}/${MCP_DEAD_ID}/probe" "${CHARLIE_TOKEN}"
+assert_status "200" "Re-probing the dead server returns 200"
+assert_json_expr '.server.status == "error"' "Re-probe persists the error status"
+
+# 15.8 Delete: 204, then the row is unreachable (probe 404) and gone from the
+# registry.
+api_req "DELETE" "${MCP_BASE}/${MCP_DEAD_ID}" "${CHARLIE_TOKEN}"
+assert_status "204" "Owner deletes the dead server (204)"
+api_req "POST" "${MCP_BASE}/${MCP_DEAD_ID}/probe" "${CHARLIE_TOKEN}"
+assert_status "404" "Probing a deleted server returns 404"
+api_req "GET" "${MCP_BASE}" "${CHARLIE_TOKEN}"
+assert_json_expr "[.servers[] | select(.id == \"${MCP_DEAD_ID}\")] | length == 0" "Deleted server is gone from the registry"
+
+# 15.9 Agent-private servers under /agents/:slug/mcp-servers (agents.write for
+# writes): Member guard, attach against the stub, registry invisibility, list,
+# delete.
+MCP_AGENT_BASE="/api/v1/workspaces/${TENANT_SLUG}/agents/test-agent/mcp-servers"
+
+api_req "POST" "${MCP_AGENT_BASE}" "${CLI_USER_TOKEN}" '{"name":"Nope Private","transport":"stdio","command":"x"}'
+assert_status "403" "Member cannot attach private MCP servers (agents.write 403)"
+
+api_req "POST" "${MCP_AGENT_BASE}" "${CHARLIE_TOKEN}" "{\"name\":\"Agent Private Stub\",\"transport\":\"stdio\",\"command\":\"${MCP_STUB_BIN}\",\"env\":[{\"name\":\"PRIVATE_TOKEN\",\"value\":\"tok-private-4321\"}]}"
+assert_status "201" "Owner attaches a private MCP server to the agent"
+assert_json_expr ".server.agent_id == \"${AGENT_ID}\"" "Private server carries the agent id"
+assert_json_expr '.server.status == "connected"' "Private server probe connects"
+assert_json_expr '.server.tool_count == 3' "Private server probe counts 3 tools"
+assert_json_expr '.server.env[0].value_hint == "4321"' "Private server secret hinted"
+MCP_PRIV_ID=$(json_get '.server.id')
+
+api_req "GET" "${MCP_BASE}" "${CHARLIE_TOKEN}"
+assert_json_expr "[.servers[] | select(.id == \"${MCP_PRIV_ID}\")] | length == 0" "Private server is absent from the workspace registry"
+
+api_req "GET" "${MCP_AGENT_BASE}" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists the agent's private servers"
+assert_json_expr "[.servers[] | select(.id == \"${MCP_PRIV_ID}\")] | length == 1" "Agent list shows the private server"
+
+api_req "DELETE" "${MCP_AGENT_BASE}/${MCP_PRIV_ID}" "${CHARLIE_TOKEN}"
+assert_status "204" "Owner removes the private server (204)"
+api_req "GET" "${MCP_AGENT_BASE}" "${CHARLIE_TOKEN}"
+assert_json_expr "[.servers[] | select(.id == \"${MCP_PRIV_ID}\")] | length == 0" "Removed private server is gone"
+
+# 15.10 Agent create echoes enabled_mcps (the opt-in allowlist of server
+# UUIDs) and ignores the legacy disabled_mcps denylist in payloads.
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/agents" "${CHARLIE_TOKEN}" "{\"name\":\"MCP Optin Agent\",\"slug\":\"mcp-optin-agent\",\"role\":\"Tester\",\"description\":\"Opts into MCP\",\"brief\":\"A short brief\",\"provider_id\":\"${MOCK_PROV_ID}\",\"model\":\"gpt-4\",\"enabled_mcps\":[\"${MCP_SRV_ID}\"],\"disabled_mcps\":[\"legacy-denylist-server\"]}"
+assert_status "201" "Owner creates an agent with enabled_mcps and a legacy disabled_mcps payload"
+assert_json_expr ".agent.enabled_mcps == [\"${MCP_SRV_ID}\"]" "Agent create echoes enabled_mcps"
+if echo "${HTTP_BODY}" | grep -q "disabled_mcps"; then
+    log_fail "Agent response carries the legacy disabled_mcps field"
+else
+    log_pass "Agent responses never carry disabled_mcps"
+fi
 
