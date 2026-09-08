@@ -2,13 +2,14 @@ package agents
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/oniharnantyo/onclaw/internal/agents/tools"
 	"github.com/oniharnantyo/onclaw/internal/domain"
-	"github.com/oniharnantyo/onclaw/internal/secrets"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
@@ -84,11 +85,13 @@ func (s *ToolSettingsService) Setting(ctx context.Context, workspaceID, toolKey 
 }
 
 // Upsert validates and persists a workspace tool setting. The incoming config
-// is merged over the stored one first: non-secret values overwrite, and a
-// secret value is replaced only when the client supplies a non-empty one
-// (secret fields are write-only). Schema and credential-requirement failures
-// return a *ConfigValidationError (HTTP 422 with per-field details); unknown
-// tools and structurally invalid settings return domain.ErrInvalid.
+// is merged over the stored one first: non-secret values overwrite, secret
+// values are replaced only when the client supplies a non-empty one (secret
+// fields are write-only), and list fields merge per entry — an entry keeps
+// its stored credential by id when the client re-supplies it empty (design.md
+// D5). Schema, structural, and per-entry failures return a
+// *ConfigValidationError (HTTP 422 with per-field details); unknown tools and
+// structurally invalid settings return domain.ErrInvalid.
 func (s *ToolSettingsService) Upsert(ctx context.Context, setting *domain.WorkspaceToolSetting) error {
 	entry, known := ToolCatalogEntryByKey(setting.ToolKey)
 	if !known {
@@ -115,7 +118,18 @@ func (s *ToolSettingsService) Upsert(ctx context.Context, setting *domain.Worksp
 		// Hint fields are server-managed: neither writable nor validatable.
 		delete(merged, key+"_hint")
 	}
+	listFields := map[string]ConfigField{}
+	for _, field := range entry.ConfigSchema {
+		if field.Type == ConfigFieldList {
+			listFields[field.Key] = field
+		}
+	}
 	for k, v := range setting.Config {
+		if _, isList := listFields[k]; isList {
+			// List fields merge per entry below: ids decide secret
+			// keep/replace, not the wholesale overwrite flat fields get.
+			continue
+		}
 		if secretKeys[k] {
 			// A secret field is replaced only by a non-empty supply; an empty
 			// value means "keep the stored credential".
@@ -124,6 +138,27 @@ func (s *ToolSettingsService) Upsert(ctx context.Context, setting *domain.Worksp
 			}
 		}
 		merged[k] = v
+	}
+	for key, field := range listFields {
+		incoming, supplied := setting.Config[key]
+		if !supplied || isEmptyConfigValue(incoming) {
+			continue // absent or null keeps the stored list
+		}
+		incomingItems, ok := configListItems(incoming)
+		if !ok {
+			// Kept verbatim so schema validation reports the malformed shape.
+			merged[key] = incoming
+			continue
+		}
+		var storedItems []map[string]any
+		if existing != nil {
+			storedItems = configEntries(existing.Config)
+		}
+		mergedEntries, err := mergeConfigEntries(incomingItems, storedItems, field)
+		if err != nil {
+			return err
+		}
+		merged[key] = mergedEntries
 	}
 
 	if entry.Configurable {
@@ -141,11 +176,12 @@ func (s *ToolSettingsService) Upsert(ctx context.Context, setting *domain.Worksp
 		if err := ValidateToolConfig(entry, viewOnly); err != nil {
 			return err
 		}
-		// Credential requirements gate enabling only: a workspace may keep an
-		// unconfigured configurable tool disabled. Stored ciphertext counts as
-		// a satisfied credential (non-empty).
-		if setting.Enabled {
-			if err := validateCredentialRequirements(entry, viewOnly); err != nil {
+		// Per-entry semantics (unique names, credential per provider kind,
+		// entry cap) apply to every save; enabling additionally requires at
+		// least one fully valid entry (design.md D9). Stored ciphertext counts
+		// as a satisfied credential (non-empty after the merge above).
+		if entry.Key == tools.Name {
+			if err := validateWebSearchEntries(viewOnly, setting.Enabled); err != nil {
 				return err
 			}
 		}
@@ -194,7 +230,11 @@ func (s *ToolSettingsService) ViewForWorkspace(ctx context.Context, workspaceID 
 					config[k] = v
 				}
 			}
-			view.Configured = configSatisfiesRequirements(entry, config)
+			if entry.Key == tools.Name {
+				view.Configured = webSearchHasValidEntry(config)
+			} else {
+				view.Configured = true
+			}
 			view.Config = configWithHints(entry, config)
 		}
 		views[entry.Key] = view
@@ -230,8 +270,18 @@ func (s *ToolSettingsService) ToolConfigs(ctx context.Context, workspaceID strin
 				}
 				config[k] = v
 			}
+			if field, ok := listConfigField(entry); ok {
+				for _, key := range secretItemKeys(field) {
+					for _, entryItem := range configEntries(config) {
+						delete(entryItem, key+"_hint")
+					}
+				}
+			}
 		}
-		merged := mergeEnvFallbacks(entry.Key, config)
+		merged, err := mergeEnvFallbacks(entry.Key, config)
+		if err != nil {
+			return nil, err
+		}
 		if len(merged) > 0 {
 			configs[entry.Key] = merged
 		}
@@ -239,29 +289,31 @@ func (s *ToolSettingsService) ToolConfigs(ctx context.Context, workspaceID strin
 	return configs, nil
 }
 
+// envSearchFallbackEntryName labels the single fallback entry seeded from
+// instance env (design.md D6).
+const envSearchFallbackEntryName = "Instance default (env)"
+
 // mergeEnvFallbacks overlays instance env onto a workspace tool config for
-// the configurable tools with env-backed defaults. Workspace values win;
-// env only fills gaps (proposal: env remains the soft fallback).
-func mergeEnvFallbacks(key string, config map[string]any) map[string]any {
+// the configurable tools with env-backed defaults. Workspace values win; env
+// only fills gaps. For web.search (design.md D6) the env seeds a single
+// fallback entry only when the workspace has no entries — it is never a
+// silent default on top of a configured stack.
+func mergeEnvFallbacks(key string, config map[string]any) (map[string]any, error) {
 	merged := map[string]any{}
 	for k, v := range config {
 		merged[k] = v
 	}
 	switch key {
 	case tools.Name:
-		if _, present := merged["provider"]; !present {
-			provider := os.Getenv(tools.EnvSearchProvider)
-			if provider == "" {
-				provider = tools.SearchProviderDuckDuckGo
-			}
-			merged["provider"] = provider
+		if len(configEntries(merged)) > 0 {
+			break // workspace entries win; env never mixes into a populated stack
 		}
-		if info, ok := tools.SearchProviderInfoFor(stringConfig(merged["provider"])); ok && info.Credential == tools.SearchCredentialAPIKey {
-			if _, present := merged["api_key"]; !present {
-				if envKey := os.Getenv(tools.EnvTavilyAPIKey); envKey != "" {
-					merged["api_key"] = envKey
-				}
-			}
+		seed, err := envSearchFallbackEntry()
+		if err != nil {
+			return nil, err
+		}
+		if seed != nil {
+			merged["entries"] = []any{seed}
 		}
 	case BrowserToolAlias:
 		if _, present := merged["remote_cdp_url"]; !present {
@@ -276,7 +328,35 @@ func mergeEnvFallbacks(key string, config map[string]any) map[string]any {
 			merged["max_pages"] = 3
 		}
 	}
-	return merged
+	return merged, nil
+}
+
+// envSearchFallbackEntry builds the single-entry chain seeded from instance
+// env when a workspace has no entries (design.md D6). Unset env — including
+// "duckduckgo", the removed scraping default, which counts as unset — or an
+// unknown provider returns nil. Env naming a provider whose credential is
+// unavailable is an error, never a silent skip.
+func envSearchFallbackEntry() (map[string]any, error) {
+	provider := os.Getenv(tools.EnvSearchProvider)
+	if provider == "" || provider == "duckduckgo" {
+		return nil, nil
+	}
+	info, known := tools.SearchProviderInfoFor(provider)
+	if !known {
+		return nil, nil
+	}
+	seed := map[string]any{"name": envSearchFallbackEntryName, "provider": provider}
+	switch info.Credential {
+	case tools.SearchCredentialAPIKey:
+		if envKey := os.Getenv(tools.EnvTavilyAPIKey); envKey != "" {
+			seed["api_key"] = envKey
+			return seed, nil
+		}
+		return nil, fmt.Errorf("web.search: %s selects %q, which requires an API key — set %s", tools.EnvSearchProvider, provider, tools.EnvTavilyAPIKey)
+	case tools.SearchCredentialBaseURL:
+		return nil, fmt.Errorf("web.search: %s selects %q, which requires a base URL — configure a provider entry for this workspace", tools.EnvSearchProvider, provider)
+	}
+	return nil, nil
 }
 
 func stringConfig(value any) string {
@@ -286,36 +366,68 @@ func stringConfig(value any) string {
 	return ""
 }
 
-// validateCredentialRequirements enforces the dynamic requiredness the static
-// schema cannot express: web.search's credential field follows the chosen
-// provider's credential kind. Failures return a *ConfigValidationError naming
-// the missing field.
-func validateCredentialRequirements(entry ToolCatalogEntry, config map[string]any) error {
-	if entry.Key != tools.Name {
-		return nil
-	}
-	provider := stringConfig(config["provider"])
-	if provider == "" {
-		// Provider absent falls back to the env-selected or default provider;
-		// its credential, if any, must come from settings or env at runtime.
-		return nil
-	}
-	info, known := tools.SearchProviderInfoFor(provider)
-	if !known {
-		ve := &ConfigValidationError{}
-		ve.add("provider", fmt.Sprintf("unknown search provider %q", provider))
-		return ve
-	}
+// maxWebSearchEntries is the sanity cap on provider entries per workspace
+// (design.md D9) — well above the three-entry request window.
+const maxWebSearchEntries = 20
+
+// validateWebSearchEntries enforces the per-entry semantics the declarative
+// schema cannot express: non-empty names unique case-insensitively, known
+// providers, and the credential each provider's kind requires (api_key kinds:
+// a stored envelope carried by the merge or a newly supplied key; base_url
+// kind: a non-empty base URL), the entry cap, and the timeout bounds.
+// requireValidEntry gates enabling: at least one fully valid entry.
+// Failures return a *ConfigValidationError naming the offending entry.
+func validateWebSearchEntries(config map[string]any, requireValidEntry bool) error {
 	ve := &ConfigValidationError{}
-	switch info.Credential {
-	case tools.SearchCredentialAPIKey:
-		if stringConfig(config["api_key"]) == "" {
-			ve.add("api_key", fmt.Sprintf("web.search provider %q requires an API key", provider))
+	if raw, present := config["request_timeout_seconds"]; present && !isEmptyConfigValue(raw) {
+		n, ok := numericConfigValue(raw)
+		switch {
+		case !ok || n <= 0 || n != float64(int64(n)):
+			ve.add("request_timeout_seconds", "request_timeout_seconds must be a positive whole number of seconds")
+		case n > webSearchMaxTimeoutSeconds:
+			ve.add("request_timeout_seconds", fmt.Sprintf("request_timeout_seconds must be at most %d", webSearchMaxTimeoutSeconds))
 		}
-	case tools.SearchCredentialBaseURL:
-		if stringConfig(config["base_url"]) == "" {
-			ve.add("base_url", fmt.Sprintf("web.search provider %q requires a base URL", provider))
+	}
+
+	entries := configEntries(config)
+	if len(entries) > maxWebSearchEntries {
+		ve.add("entries", fmt.Sprintf("web.search supports at most %d provider entries (%d configured)", maxWebSearchEntries, len(entries)))
+	}
+	seen := make(map[string]bool, len(entries))
+	validEntries := 0
+	for i, entryItem := range entries {
+		prefix := fmt.Sprintf("entries[%d]", i)
+		name := strings.TrimSpace(stringConfig(entryItem["name"]))
+		provider := stringConfig(entryItem["provider"])
+		if name == "" {
+			ve.add(prefix+".name", fmt.Sprintf("entry %d: name is required", i+1))
+		} else if seen[strings.ToLower(name)] {
+			ve.add(prefix+".name", fmt.Sprintf("duplicate entry name %q", name))
 		}
+		if name != "" {
+			seen[strings.ToLower(name)] = true
+		}
+		info, knownProvider := tools.SearchProviderInfoFor(provider)
+		if !knownProvider {
+			ve.add(prefix+".provider", fmt.Sprintf("entry %q: unknown search provider %q", name, provider))
+		} else {
+			switch info.Credential {
+			case tools.SearchCredentialAPIKey:
+				if stringConfig(entryItem["api_key"]) == "" {
+					ve.add(prefix+".api_key", fmt.Sprintf("entry %q: api_key is required for provider %q", name, provider))
+				}
+			case tools.SearchCredentialBaseURL:
+				if stringConfig(entryItem["base_url"]) == "" {
+					ve.add(prefix+".base_url", fmt.Sprintf("entry %q: base_url is required for provider %q", name, provider))
+				}
+			}
+		}
+		if searchEntryValid(entryItem) {
+			validEntries++
+		}
+	}
+	if requireValidEntry && validEntries == 0 {
+		ve.add("entries", "web.search requires at least one fully configured provider entry to enable")
 	}
 	if len(ve.Errors) == 0 {
 		return nil
@@ -323,20 +435,109 @@ func validateCredentialRequirements(entry ToolCatalogEntry, config map[string]an
 	return ve
 }
 
-// configSatisfiesRequirements reports whether a stored (encrypted) config has
-// every credential field its chosen provider requires. Encrypted ciphertext
-// is non-empty exactly when a secret was supplied, so the check works without
-// decrypting.
-func configSatisfiesRequirements(entry ToolCatalogEntry, config map[string]any) bool {
-	return validateCredentialRequirements(entry, config) == nil
+// searchEntryValid reports whether one entry carries a non-empty name, a
+// known provider, and the credential that provider's kind requires. Envelope
+// ciphertext is non-empty exactly when a secret was supplied, so the check
+// works on stored (encrypted) config without decrypting.
+func searchEntryValid(entryItem map[string]any) bool {
+	if strings.TrimSpace(stringConfig(entryItem["name"])) == "" {
+		return false
+	}
+	info, known := tools.SearchProviderInfoFor(stringConfig(entryItem["provider"]))
+	if !known {
+		return false
+	}
+	switch info.Credential {
+	case tools.SearchCredentialAPIKey:
+		return stringConfig(entryItem["api_key"]) != ""
+	case tools.SearchCredentialBaseURL:
+		return stringConfig(entryItem["base_url"]) != ""
+	}
+	return false
+}
+
+// webSearchHasValidEntry reports whether a stored config holds at least one
+// fully valid entry — the Configured signal for the tools view (design.md D9).
+func webSearchHasValidEntry(config map[string]any) bool {
+	for _, entryItem := range configEntries(config) {
+		if searchEntryValid(entryItem) {
+			return true
+		}
+	}
+	return false
+}
+
+// newEntryID returns the 8-char lowercase hex id the server assigns to an
+// entry when it is first persisted (design.md D1).
+func newEntryID() (string, error) {
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate web.search entry id: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// mergeConfigEntries reconciles an incoming entry list against the stored one
+// (design.md D1/D5): the server assigns a stable id to every entry, and an
+// entry whose id matches a stored entry keeps the stored secret envelope and
+// hint when the client supplies an empty credential — secrets are write-only
+// and the client cannot echo them back. Entries are matched by id, not
+// position, so reordering never scrambles credentials. An id that matches no
+// stored entry is treated as new: reassigned, with any empty credential
+// rejected later by validation rather than silently dropped.
+func mergeConfigEntries(incoming, stored []map[string]any, field ConfigField) ([]any, error) {
+	storedByID := make(map[string]map[string]any, len(stored))
+	for _, storedItem := range stored {
+		if id := stringConfig(storedItem["id"]); id != "" {
+			storedByID[id] = storedItem
+		}
+	}
+	secretKeys := secretItemKeys(field)
+	out := make([]any, 0, len(incoming))
+	for _, item := range incoming {
+		entryItem := make(map[string]any, len(item))
+		for k, v := range item {
+			entryItem[k] = v
+		}
+		id := stringConfig(entryItem["id"])
+		storedItem, knownID := storedByID[id]
+		if id != "" && !knownID {
+			id = ""
+			delete(entryItem, "id")
+		}
+		for _, key := range secretKeys {
+			if !isEmptyConfigValue(entryItem[key]) {
+				continue // client supplies a new credential; encryption refreshes the hint
+			}
+			if !knownID {
+				continue // nothing stored to keep
+			}
+			if v, ok := storedItem[key]; ok {
+				entryItem[key] = v
+			}
+			if v, ok := storedItem[key+"_hint"]; ok {
+				entryItem[key+"_hint"] = v
+			}
+		}
+		if id == "" {
+			assigned, err := newEntryID()
+			if err != nil {
+				return nil, err
+			}
+			entryItem["id"] = assigned
+		}
+		out = append(out, entryItem)
+	}
+	return out, nil
 }
 
 // encryptSecretFields encrypts the entry's plaintext secret config fields
 // using the workspace ID as AAD — the same key derivation as workspace
 // provider keys (design.md D6) — and records a last-4 plaintext hint beside
-// each one. Values that are already envelopes (stored ciphertext merged back
-// in) pass through untouched; a failing encryption is an error, never a
-// silent plaintext store.
+// each one (nested inside list entries, design.md D5). Values that are
+// already envelopes (stored ciphertext merged back in) pass through
+// untouched; a failing encryption is an error, never a silent plaintext
+// store.
 func (s *ToolSettingsService) encryptSecretFields(workspaceID string, entry ToolCatalogEntry, config map[string]any) (map[string]any, error) {
 	out := make(map[string]any, len(config))
 	for k, v := range config {
@@ -347,46 +548,90 @@ func (s *ToolSettingsService) encryptSecretFields(workspaceID string, entry Tool
 		if !ok || value == "" || isSecretEnvelope(value) {
 			continue
 		}
-		envelope, err := secrets.Encrypt(s.encKey, []byte(workspaceID), []byte(value))
+		envelope, err := encryptSecretValue(s.encKey, secretAAD(workspaceID), value)
 		if err != nil {
 			return nil, fmt.Errorf("encrypt %s config field %q: %w", entry.Key, key, err)
 		}
 		out[key] = envelope
-		hint := value
-		if len(hint) > 4 {
-			hint = hint[len(hint)-4:]
+		out[key+"_hint"] = lastSecretChars(value, 4)
+	}
+	if field, ok := listConfigField(entry); ok {
+		for _, key := range secretItemKeys(field) {
+			for _, entryItem := range configEntries(out) {
+				value, ok := entryItem[key].(string)
+				if !ok || value == "" || isSecretEnvelope(value) {
+					continue
+				}
+				envelope, err := encryptSecretValue(s.encKey, secretAAD(workspaceID), value)
+				if err != nil {
+					return nil, fmt.Errorf("encrypt %s entry %q config field %q: %w", entry.Key, stringConfig(entryItem["name"]), key, err)
+				}
+				entryItem[key] = envelope
+				entryItem[key+"_hint"] = lastSecretChars(value, 4)
+			}
 		}
-		out[key+"_hint"] = hint
 	}
 	return out, nil
 }
 
-// isSecretEnvelope reports whether a config value is already an encrypted
-// envelope ("v1:...") rather than plaintext.
-func isSecretEnvelope(value string) bool {
-	return strings.HasPrefix(value, secrets.Version1Prefix)
+// copyConfigEntries rebuilds a config's "entries" value as fresh per-entry
+// maps so later mutation (decryption, hint stripping) never touches
+// store-owned state — the in-memory store shallow-copies config maps.
+func copyConfigEntries(config map[string]any) {
+	entries := configEntries(config)
+	if entries == nil {
+		return
+	}
+	fresh := make([]any, 0, len(entries))
+	for _, entryItem := range entries {
+		cp := make(map[string]any, len(entryItem))
+		for k, v := range entryItem {
+			cp[k] = v
+		}
+		fresh = append(fresh, cp)
+	}
+	config["entries"] = fresh
 }
 
-// decryptSecretFields decrypts the entry's secret config fields in place.
+// decryptSecretFields decrypts the entry's secret config fields in place —
+// including per-entry secrets nested inside list fields (design.md D5).
 // Values that are not valid envelopes are left as-is so plaintext values
 // written by tests or older flows keep working.
 func (s *ToolSettingsService) decryptSecretFields(workspaceID string, entry ToolCatalogEntry, config map[string]any) error {
+	if field, ok := listConfigField(entry); ok {
+		copyConfigEntries(config)
+		for _, key := range secretItemKeys(field) {
+			for _, entryItem := range configEntries(config) {
+				envelope, ok := entryItem[key].(string)
+				if !ok || envelope == "" {
+					continue
+				}
+				plaintext, err := decryptSecretValue(s.encKey, secretAAD(workspaceID), envelope)
+				if err != nil {
+					continue
+				}
+				entryItem[key] = plaintext
+			}
+		}
+	}
 	for _, key := range SecretConfigFields(entry) {
 		envelope, ok := config[key].(string)
 		if !ok || envelope == "" {
 			continue
 		}
-		plaintext, err := secrets.Decrypt(s.encKey, []byte(workspaceID), envelope)
+		plaintext, err := decryptSecretValue(s.encKey, secretAAD(workspaceID), envelope)
 		if err != nil {
 			continue
 		}
-		config[key] = string(plaintext)
+		config[key] = plaintext
 	}
 	return nil
 }
 
 // configWithHints replaces secret ciphertext with the last-4 hint recorded at
-// write time; raw hint fields are not emitted.
+// write time: flat secret values become {"hint": ...}, list entries carry the
+// hint nested as the secret's "_hint" field with the credential removed —
+// credentials never cross the API boundary (design.md D5).
 func configWithHints(entry ToolCatalogEntry, config map[string]any) map[string]any {
 	out := make(map[string]any, len(config))
 	for k, v := range config {
@@ -400,6 +645,23 @@ func configWithHints(entry ToolCatalogEntry, config map[string]any) map[string]a
 		}
 		hint, _ := config[key+"_hint"].(string)
 		out[key] = map[string]any{"hint": hint}
+	}
+	if field, ok := listConfigField(entry); ok {
+		entries := configEntries(out)
+		viewEntries := make([]any, 0, len(entries))
+		for _, entryItem := range entries {
+			viewEntry := make(map[string]any, len(entryItem))
+			for k, v := range entryItem {
+				viewEntry[k] = v
+			}
+			for _, key := range secretItemKeys(field) {
+				hint, _ := viewEntry[key+"_hint"].(string)
+				delete(viewEntry, key)
+				viewEntry[key+"_hint"] = hint
+			}
+			viewEntries = append(viewEntries, viewEntry)
+		}
+		out["entries"] = viewEntries
 	}
 	return out
 }

@@ -1,7 +1,9 @@
 // Package tools holds the OnClaw built-in tool implementations wired into the
-// agent execution Engine via the ToolRegistry. Built-ins ship zero external
-// credentials: web.search defaults to DuckDuckGo scraping; Tavily and the
-// browser tools opt into credentials or a local browser respectively.
+// agent execution Engine via the ToolRegistry. web.search is composed from
+// API-backed providers (Tavily, Brave, Exa, Perplexity, Firecrawl, SearXNG)
+// configured per workspace; there is no credential-free default — an
+// unconfigured web.search fails construction. The browser tools opt into a
+// local browser.
 package tools
 
 import (
@@ -19,11 +21,15 @@ import (
 
 // Search provider names selected by ONCLAW_SEARCH_PROVIDER.
 const (
+	// SearchProviderDuckDuckGo is retained only so configuration handling can
+	// recognize the removed DuckDuckGo backend (treated as unset); no provider
+	// is registered under it anymore.
 	SearchProviderDuckDuckGo = "duckduckgo"
 	SearchProviderTavily     = "tavily"
 )
 
-// EnvSearchProvider selects the web.search backend ("duckduckgo" default).
+// EnvSearchProvider optionally names a fallback search provider (env seeding;
+// there is no default backend).
 const EnvSearchProvider = "ONCLAW_SEARCH_PROVIDER"
 
 // EnvTavilyAPIKey carries the Tavily API key when the tavily provider is selected.
@@ -45,16 +51,6 @@ func WithSearchProvider(p SearchProvider) WebSearchOption {
 	return func(w *webSearchTool) { w.provider = p }
 }
 
-// WithUserAgent overrides the default user-agent header used by the default
-// DuckDuckGo provider.
-func WithUserAgent(ua string) WebSearchOption {
-	return func(w *webSearchTool) {
-		if ddg, ok := w.provider.(*duckduckgoProvider); ok {
-			ddg.userAgent = ua
-		}
-	}
-}
-
 // webSearchTool implements the web.search built-in on top of a SearchProvider.
 type webSearchTool struct {
 	provider SearchProvider
@@ -64,38 +60,18 @@ type webSearchTool struct {
 // Name is the dotted capability name registered in the tool registry.
 const Name = "web.search"
 
-// NewWebSearch constructs the web.search built-in with the DuckDuckGo provider
-// (zero credentials). Pass WithSearchProvider to select a different backend.
+// NewWebSearch constructs the web.search built-in. A provider must be injected
+// with WithSearchProvider; without one construction fails — there is no
+// credential-free default backend.
 func NewWebSearch(opts ...WebSearchOption) (tool.BaseTool, error) {
 	t := &webSearchTool{}
 	for _, opt := range opts {
 		opt(t)
 	}
 	if t.provider == nil {
-		t.provider = &duckduckgoProvider{
-			client:    orDefaultClient(t.client),
-			userAgent: defaultUserAgent,
-		}
+		return nil, errors.New("web.search: no search provider configured")
 	}
 	return t, nil
-}
-
-// NewSearchProvider resolves a provider by instance configuration name:
-// "tavily" requires an API key, "duckduckgo" (the default and the zero-value)
-// requires nothing. Unknown names are an error.
-func NewSearchProvider(name, apiKey string, client HTTPClient) (SearchProvider, error) {
-	c := orDefaultClient(client)
-	switch name {
-	case "", SearchProviderDuckDuckGo:
-		return &duckduckgoProvider{client: c, userAgent: defaultUserAgent}, nil
-	case SearchProviderTavily:
-		if apiKey == "" {
-			return nil, errors.New("web.search: tavily provider requires ONCLAW_TAVILY_API_KEY")
-		}
-		return &tavilyProvider{client: c, apiKey: apiKey}, nil
-	default:
-		return nil, fmt.Errorf("web.search: unknown search provider %q (want duckduckgo or tavily)", name)
-	}
 }
 
 func orDefaultClient(c HTTPClient) HTTPClient {
@@ -177,6 +153,8 @@ func Timeout(d time.Duration) WebSearchOption {
 type tavilyProvider struct {
 	client HTTPClient
 	apiKey string
+	// endpoint overrides tavilyAPIEndpoint when set (httptest seam).
+	endpoint string
 }
 
 type tavilyRequest struct {
@@ -198,7 +176,11 @@ func (p *tavilyProvider) Search(ctx context.Context, query string, num int) ([]S
 	if err != nil {
 		return nil, fmt.Errorf("web.search: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tavilyAPIEndpoint, bytes.NewReader(payload))
+	endpoint := p.endpoint
+	if endpoint == "" {
+		endpoint = tavilyAPIEndpoint
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return nil, fmt.Errorf("web.search: %w", err)
 	}
@@ -215,7 +197,7 @@ func (p *tavilyProvider) Search(ctx context.Context, query string, num int) ([]S
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("web.search: tavily returned status %d", resp.StatusCode)
+		return nil, &providerStatusError{name: "tavily", code: resp.StatusCode}
 	}
 
 	var body tavilyResponse

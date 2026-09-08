@@ -14,8 +14,6 @@ import (
 type SearchProviderKind string
 
 const (
-	// SearchCredentialNone marks a key-free provider.
-	SearchCredentialNone SearchProviderKind = "none"
 	// SearchCredentialAPIKey marks providers that require an API key.
 	SearchCredentialAPIKey SearchProviderKind = "api_key"
 	// SearchCredentialBaseURL marks providers that require an instance base URL.
@@ -35,9 +33,8 @@ type SearchProviderInfo struct {
 // searchProviderRegistry is the first-cut provider table (design.md D7):
 // each entry is a thin request/parse pair modeled on the tavily client.
 var searchProviderRegistry = []SearchProviderInfo{
-	{ID: SearchProviderDuckDuckGo, Label: "DuckDuckGo", Credential: SearchCredentialNone},
 	{ID: SearchProviderTavily, Label: "Tavily", Credential: SearchCredentialAPIKey},
-	{ID: SearchProviderBrave, Label: "Brave Search", Credential: SearchCredentialAPIKey},
+	{ID: SearchProviderBrave, Label: "Brave", Credential: SearchCredentialAPIKey},
 	{ID: SearchProviderExa, Label: "Exa", Credential: SearchCredentialAPIKey},
 	{ID: SearchProviderPerplexity, Label: "Perplexity", Credential: SearchCredentialAPIKey},
 	{ID: SearchProviderFirecrawl, Label: "Firecrawl", Credential: SearchCredentialAPIKey},
@@ -72,9 +69,11 @@ func SearchProviderInfoFor(id string) (SearchProviderInfo, bool) {
 }
 
 // NewSearchProviderByCredential constructs the named provider from its
-// credential (API key or base URL; empty for key-free providers). Providers
-// whose credential kind is unsatisfied return an error naming the provider —
-// callers surface this as the "configured tool failed to construct" path.
+// credential (API key or base URL). Providers whose credential kind is
+// unsatisfied return an error naming the provider — callers surface this as
+// the "configured tool failed to construct" path. The client defaults to
+// http.DefaultClient when nil; callers pass a client with a Timeout to bound
+// each attempt (design D7).
 func NewSearchProviderByCredential(id, credential string, client HTTPClient) (SearchProvider, error) {
 	info, ok := SearchProviderInfoFor(id)
 	if !ok {
@@ -82,8 +81,6 @@ func NewSearchProviderByCredential(id, credential string, client HTTPClient) (Se
 	}
 	c := orDefaultClient(client)
 	switch info.Credential {
-	case SearchCredentialNone:
-		return newSearchProviderConstructor(id)(c, "")
 	case SearchCredentialAPIKey:
 		if credential == "" {
 			return nil, fmt.Errorf("web.search: %s provider requires an API key", id)
@@ -103,10 +100,6 @@ func NewSearchProviderByCredential(id, credential string, client HTTPClient) (Se
 // constructor; the credential is the API key or base URL per registry kind.
 func newSearchProviderConstructor(id string) func(HTTPClient, string) (SearchProvider, error) {
 	switch id {
-	case SearchProviderDuckDuckGo:
-		return func(c HTTPClient, _ string) (SearchProvider, error) {
-			return &duckduckgoProvider{client: c, userAgent: defaultUserAgent}, nil
-		}
 	case SearchProviderTavily:
 		return func(c HTTPClient, credential string) (SearchProvider, error) {
 			return &tavilyProvider{client: c, apiKey: credential}, nil
@@ -343,7 +336,10 @@ func (p *searxngProvider) Search(ctx context.Context, query string, num int) ([]
 }
 
 // doJSONSearch executes a JSON API request and decodes the response body.
-// Non-200 statuses and decode failures return a "web.search:"-prefixed error.
+// Non-200 statuses return a *providerStatusError (rendered as
+// "web.search: <name> returned status <code>") so the chain provider can
+// re-name the error after the failing entry; decode failures return a
+// "web.search:"-prefixed error.
 func doJSONSearch(ctx context.Context, client HTTPClient, req *http.Request, body any, name string) (any, error) {
 	c := client
 	if c == nil {
@@ -355,7 +351,7 @@ func doJSONSearch(ctx context.Context, client HTTPClient, req *http.Request, bod
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("web.search: %s returned status %d", name, resp.StatusCode)
+		return nil, &providerStatusError{name: name, code: resp.StatusCode}
 	}
 	if err := json.NewDecoder(resp.Body).Decode(body); err != nil {
 		return nil, fmt.Errorf("web.search: decode %s response: %w", name, err)
