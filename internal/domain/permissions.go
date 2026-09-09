@@ -30,6 +30,10 @@ const (
 	// Tools permissions (workspace tool settings; reads are covered by membership)
 	ToolsWrite = "tools.write"
 
+	// Hooks permissions (workspace agent lifecycle hooks)
+	HooksRead  = "hooks.read"
+	HooksWrite = "hooks.write"
+
 	// Admin permissions (master tenant control plane)
 	AdminWorkspacesRead   = "admin.workspaces.read"
 	AdminWorkspacesWrite  = "admin.workspaces.write"
@@ -39,7 +43,7 @@ const (
 )
 
 var (
-	// OwnerPermissions contains all standard workspace permissions (14 permissions).
+	// OwnerPermissions contains all standard workspace permissions (16 permissions).
 	OwnerPermissions = []string{
 		WorkspaceRead,
 		WorkspaceWrite,
@@ -55,9 +59,11 @@ var (
 		SkillsRead,
 		SkillsWrite,
 		ToolsWrite,
+		HooksRead,
+		HooksWrite,
 	}
 
-	// AdminPermissions contains all standard workspace permissions except roles.write (13 permissions).
+	// AdminPermissions contains all standard workspace permissions except roles.write (15 permissions).
 	AdminPermissions = []string{
 		WorkspaceRead,
 		WorkspaceWrite,
@@ -72,6 +78,8 @@ var (
 		SkillsRead,
 		SkillsWrite,
 		ToolsWrite,
+		HooksRead,
+		HooksWrite,
 	}
 
 	// MemberPermissions contains only read permissions (6 permissions).
@@ -84,7 +92,7 @@ var (
 		SkillsRead,
 	}
 
-	// SuperadminPermissions contains all workspace permissions plus all instance-admin permissions (19 permissions).
+	// SuperadminPermissions contains all workspace permissions plus all instance-admin permissions (21 permissions).
 	SuperadminPermissions = []string{
 		WorkspaceRead,
 		WorkspaceWrite,
@@ -100,6 +108,8 @@ var (
 		SkillsRead,
 		SkillsWrite,
 		ToolsWrite,
+		HooksRead,
+		HooksWrite,
 		AdminWorkspacesRead,
 		AdminWorkspacesWrite,
 		AdminUsersRead,
@@ -125,6 +135,8 @@ func AllPermissions() []string {
 		SkillsRead,
 		SkillsWrite,
 		ToolsWrite,
+		HooksRead,
+		HooksWrite,
 		AdminWorkspacesRead,
 		AdminWorkspacesWrite,
 		AdminUsersRead,
@@ -143,6 +155,7 @@ func IsValidPermission(p string) bool {
 		AgentsRead, AgentsWrite,
 		SkillsRead, SkillsWrite,
 		ToolsWrite,
+		HooksRead, HooksWrite,
 		AdminWorkspacesRead, AdminWorkspacesWrite,
 		AdminUsersRead, AdminUsersWrite,
 		AdminSuperadminsWrite:

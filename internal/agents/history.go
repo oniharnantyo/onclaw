@@ -281,8 +281,25 @@ func (r *Runner) History(ctx context.Context, req HistoryRequest) (*HistoryResul
 				TurnID:     turnID,
 				Approval:   approval,
 			})
+		case sessionEventKindPromptBlocked:
+			// Hook-blocked prompt (D6): render the notice exactly as the live
+			// stream delivered it. The turn terminal is synthesized at the
+			// turn boundary below, like every other turn's.
+			if se.Extension != nil {
+				if blocked, ok := se.Extension.Data.(promptBlockedEvent); ok {
+					events = append(events, TranscriptEvent{
+						ID:            id,
+						Kind:          TranscriptEventPromptBlocked,
+						OccurredAt:    occurredAt,
+						TurnID:        turnID,
+						PromptBlocked: &PromptBlockedPayload{Hook: blocked.Hook, Reason: blocked.Reason},
+					})
+				}
+			}
 		}
-		prevTurnHadEvents = len(events) > before
+		// Accumulate: a trailing row that renders nothing (run status spans,
+		// model-span bookkeeping) must not un-render the turn's earlier events.
+		prevTurnHadEvents = prevTurnHadEvents || len(events) > before
 	}
 
 	// Close the final turn — but only at the end of pagination; a limited

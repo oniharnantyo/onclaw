@@ -18,13 +18,25 @@ import {
   type ApiWorkspaceSkill,
   type ApiToolSettings,
   type ApiMcpServer,
+  type ApiHook,
+  type ApiHookPayload,
+  type ApiHookSaveResult,
   type McpServerPayload,
   type AgentAutonomy,
   type CreateAgentPayload,
 } from "../lib/api";
 import { useCanWriteSkills, unmetToolDependencies } from "../lib/skills";
 import { useCanWriteAgents } from "../lib/agents";
+import { useCanWriteTools } from "../lib/tools";
+import {
+  HOOK_LEVEL_LABEL,
+  hookEventMeta,
+  hookHandlerLabel,
+  hookStatusView,
+  matcherSummary,
+} from "../lib/hooksUi";
 import { McpServerDialog } from "./McpServerDialog";
+import { HookDialog } from "./HookDialog";
 import { useWorkspace, useStore } from "../store";
 
 // The browser facade: the catalog exposes one Browser chip whose stored
@@ -117,8 +129,8 @@ export function AgentConfigModal({
   // Step in wizard (1 = Identity, 2 = Model, 3 = Capabilities)
   const [step, setStep] = useState<1 | 2 | 3>(1);
 
-  // Tab in edit mode ('identity' | 'capabilities' | 'prompts')
-  const [editTab, setEditTab] = useState<'identity' | 'model' | 'capabilities' | 'prompts'>('identity');
+  // Tab in edit mode ('identity' | 'capabilities' | 'prompts' | 'hooks')
+  const [editTab, setEditTab] = useState<'identity' | 'model' | 'capabilities' | 'prompts' | 'hooks'>('identity');
 
   // Loading detail state for edit mode
   const [loadingDetail, setLoadingDetail] = useState(isEdit);
@@ -143,6 +155,20 @@ export function AgentConfigModal({
     { mode: 'add' } | { mode: 'edit'; server: ApiMcpServer } | null
   >(null);
   const agentsWritable = useCanWriteAgents(tenant || currentWs);
+
+  // Agent lifecycle hooks (edit mode, D13): the agent's private hooks (CRUD,
+  // same editor contract as the workspace pane) plus the instance/workspace
+  // hooks that reach this agent — read-only, level-marked, no controls.
+  // hooks.write rides the same built-in role grants as tools.write.
+  const [agentHooks, setAgentHooks] = useState<ApiHook[]>([]);
+  const [inheritedHooks, setInheritedHooks] = useState<{ instance: ApiHook[]; workspace: ApiHook[] }>({
+    instance: [],
+    workspace: [],
+  });
+  const [agentHookDialog, setAgentHookDialog] = useState<
+    { mode: 'add' } | { mode: 'edit'; hook: ApiHook } | null
+  >(null);
+  const hooksWritable = useCanWriteTools(tenant || currentWs);
 
   const [toolCatalog, setToolCatalog] = useState<ApiToolSettings[]>([]);
 
@@ -317,6 +343,18 @@ export function AgentConfigModal({
         .listMcpServers(targetWsId, agentId)
         .then((res) => {
           if (mounted && res?.servers) setAgentMcpServers(res.servers);
+        })
+        .catch(() => {});
+      // The agent's hook sections: private hooks plus the read-only
+      // instance/workspace visibility (D13). Optional context — the modal
+      // works without it.
+      api.agents
+        .listHooks(targetWsId, agentId)
+        .then((res) => {
+          if (mounted && res) {
+            setAgentHooks(res.agent || []);
+            setInheritedHooks({ instance: res.instance || [], workspace: res.workspace || [] });
+          }
         })
         .catch(() => {});
     }
@@ -591,6 +629,56 @@ export function AgentConfigModal({
     }
   };
 
+  // Agent-private hook CRUD (D13): same dialog contract as the workspace
+  // Hooks pane, agent-level endpoints; the dry-run Test section inside the
+  // dialog rides the workspace-level test endpoint and records nothing.
+  const handleAgentHookToggle = async (hook: ApiHook) => {
+    const agentId = draft?.id || draft?.slug;
+    if (!targetWsId || !agentId) return;
+    try {
+      const res = await api.agents.updateHook(targetWsId, agentId, hook.id, { enabled: !hook.enabled });
+      if (res?.hook) {
+        setAgentHooks((prev) => prev.map((h) => (h.id === res.hook.id ? res.hook : h)));
+        useStore.getState().toast(res.hook.enabled ? `${hook.name} enabled` : `${hook.name} disabled — it no longer fires for this agent`);
+      }
+    } catch (err: unknown) {
+      useStore.getState().toast(formatApiError(err, `Failed to update ${hook.name}`), "danger");
+    }
+  };
+
+  const handleAgentHookRemove = async (hook: ApiHook) => {
+    const agentId = draft?.id || draft?.slug;
+    if (!targetWsId || !agentId) return;
+    try {
+      await api.agents.deleteHook(targetWsId, agentId, hook.id);
+      setAgentHooks((prev) => prev.filter((h) => h.id !== hook.id));
+      useStore.getState().toast(`${hook.name} removed from this agent`);
+    } catch (err: unknown) {
+      useStore.getState().toast(formatApiError(err, `Failed to remove ${hook.name}`), "danger");
+    }
+  };
+
+  const handleAgentHookSave = async (payload: ApiHookPayload): Promise<ApiHookSaveResult | void> => {
+    const agentId = draft?.id || draft?.slug;
+    if (!targetWsId || !agentId || !agentHookDialog) return;
+    if (agentHookDialog.mode === 'edit') {
+      const res = await api.agents.updateHook(targetWsId, agentId, agentHookDialog.hook.id, payload);
+      if (res?.hook) {
+        const saved = res.hook;
+        setAgentHooks((prev) => prev.map((h) => (h.id === saved.id ? saved : h)));
+        useStore.getState().toast(`${payload.name} updated`);
+      }
+      return res;
+    }
+    const res = await api.agents.createHook(targetWsId, agentId, payload);
+    if (res?.hook) {
+      const saved = res.hook;
+      setAgentHooks((prev) => [...prev, saved]);
+      useStore.getState().toast(`${saved.name} attached to this agent`);
+    }
+    return res;
+  };
+
   // Skills attached to every agent: system tier always, workspace tier when the
   // master switch is on. Never toggleable per agent — tiers are the only model.
   const lockedSkillChips = useMemo(
@@ -794,6 +882,18 @@ export function AgentConfigModal({
               )}
             >
               Capabilities
+            </button>
+            <button
+              type="button"
+              onClick={() => setEditTab('hooks')}
+              className={cx(
+                "border-b-2 px-4 py-2 text-[13px] font-medium transition-colors",
+                editTab === 'hooks'
+                  ? "border-accent text-fg font-semibold"
+                  : "border-transparent text-muted hover:text-fg"
+              )}
+            >
+              Hooks
             </button>
             <button
               type="button"
@@ -1362,6 +1462,166 @@ export function AgentConfigModal({
           </div>
         ) : null}
 
+        {/* Edit Tab Hooks — agent-private hook CRUD plus the read-only
+            instance/workspace visibility (integrate-agent-hooks D13) */}
+        {isEdit && editTab === 'hooks' && (
+          <div className="space-y-6 max-w-xl" data-testid="agent-hooks-pane">
+            <MicroLabel>Hooks</MicroLabel>
+
+            <div data-testid="agent-hooks-section">
+              <div className="flex items-center justify-between">
+                <span className={labelCls}>This agent's hooks</span>
+                {hooksWritable ? (
+                  <button
+                    type="button"
+                    onClick={() => setAgentHookDialog({ mode: 'add' })}
+                    data-testid="btn-add-agent-hook"
+                    className="flex h-7 items-center gap-1.5 rounded-md border border-line px-2.5 text-[11px] font-medium text-fg2 transition-colors hover:border-accent hover:text-fg"
+                  >
+                    <Icon name="plus" size={12} /> Add hook
+                  </button>
+                ) : null}
+              </div>
+              {agentHooks.length > 0 ? (
+                <div className="space-y-2">
+                  {agentHooks.map((hook) => {
+                    const st = hookStatusView(hook);
+                    const meta = hookEventMeta(hook.event);
+                    return (
+                      <div
+                        key={hook.id}
+                        data-testid={'agent-hook-' + hook.id}
+                        className={cx('rounded-md border border-line px-3 py-2.5', !hook.enabled && 'opacity-70')}
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="truncate text-[13px] font-medium text-fg">{hook.name}</p>
+                              <span
+                                className={cx(
+                                  'inline-flex items-center gap-1.5 text-[11px]',
+                                  st.errored ? 'text-danger' : hook.enabled ? 'text-[color-mix(in_oklab,var(--success),black_25%)]' : 'text-muted'
+                                )}
+                                data-testid={'agent-hook-status-' + hook.id}
+                                title={st.errored ? hook.status_error || 'Last delivery failed' : st.label}
+                              >
+                                <span className={cx('h-1.5 w-1.5 rounded-full', st.dot)} />
+                                {st.label}
+                              </span>
+                              {meta.blocking && (
+                                <span className="rounded-full bg-[color-mix(in_oklab,var(--danger)_12%,transparent)] px-2 py-0.5 font-mono text-[10px] text-danger">
+                                  can block
+                                </span>
+                              )}
+                            </div>
+                            <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                              <span className="rounded border border-line px-1 py-px font-mono text-[10px] text-muted">{hook.event}</span>
+                              <span className="rounded border border-line px-1 py-px font-mono text-[10px] text-muted">{hookHandlerLabel(hook.handler_type)}</span>
+                              <span className="rounded border border-line px-1 py-px font-mono text-[10px] text-muted">{matcherSummary(hook)}</span>
+                            </div>
+                          </div>
+                          {hooksWritable && (
+                            <>
+                              <Toggle
+                                on={hook.enabled}
+                                label={'Enable ' + hook.name}
+                                onChange={() => void handleAgentHookToggle(hook)}
+                              />
+                              <button
+                                type="button"
+                                aria-label={'Edit ' + hook.name}
+                                data-testid={'btn-edit-agent-hook-' + hook.id}
+                                onClick={() => setAgentHookDialog({ mode: 'edit', hook })}
+                                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] hover:text-fg2"
+                              >
+                                <Icon name="edit" size={13} />
+                              </button>
+                              <button
+                                type="button"
+                                aria-label={'Remove ' + hook.name}
+                                data-testid={'btn-remove-agent-hook-' + hook.id}
+                                onClick={() => void handleAgentHookRemove(hook)}
+                                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--danger)_10%,transparent)] hover:text-danger"
+                              >
+                                <Icon name="x" size={13} />
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="text-[12px] text-muted" data-testid="agent-hooks-empty">
+                  {hooksWritable
+                    ? "No private hooks — hooks added here apply to this agent only."
+                    : "This agent has no private hooks."}
+                </p>
+              )}
+              <p className="mt-1.5 text-[11px] leading-4 text-muted">
+                Private hooks attach to this agent only, and evaluate after instance and workspace hooks — first block wins.
+              </p>
+            </div>
+
+            <div data-testid="agent-hooks-inherited">
+              <span className={labelCls}>Hooks that reach this agent</span>
+              {inheritedHooks.instance.length + inheritedHooks.workspace.length > 0 ? (
+                <div className="space-y-2">
+                  {[...inheritedHooks.instance, ...inheritedHooks.workspace].map((hook) => {
+                    const st = hookStatusView(hook);
+                    const meta = hookEventMeta(hook.event);
+                    // Instance hook views carry no workspace_id — that alone
+                    // separates the two read-only tiers.
+                    const level = hook.workspace_id ? HOOK_LEVEL_LABEL.workspace : HOOK_LEVEL_LABEL.instance;
+                    return (
+                      <div
+                        key={hook.id}
+                        data-testid={'agent-hook-inherited-' + hook.id}
+                        className="rounded-md border border-line bg-[color-mix(in_oklab,var(--fg)_3%,transparent)] px-3 py-2.5"
+                      >
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="truncate text-[13px] font-medium text-fg">{hook.name}</p>
+                          <span
+                            className={cx('inline-flex items-center gap-1.5 text-[11px]', st.errored ? 'text-danger' : 'text-[color-mix(in_oklab,var(--success),black_25%)]')}
+                            title={st.errored ? hook.status_error || 'Last delivery failed' : st.label}
+                          >
+                            <span className={cx('h-1.5 w-1.5 rounded-full', st.dot)} />
+                            {st.label}
+                          </span>
+                          {meta.blocking && (
+                            <span className="rounded-full bg-[color-mix(in_oklab,var(--danger)_12%,transparent)] px-2 py-0.5 font-mono text-[10px] text-danger">
+                              can block
+                            </span>
+                          )}
+                        </div>
+                        <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                          <span className="rounded border border-line px-1 py-px font-mono text-[10px] text-muted">{hook.event}</span>
+                          <span className="rounded border border-line px-1 py-px font-mono text-[10px] text-muted">{hookHandlerLabel(hook.handler_type)}</span>
+                          <span className="rounded border border-line px-1 py-px font-mono text-[10px] text-muted">{matcherSummary(hook)}</span>
+                          <span
+                            className="rounded border border-line px-1 py-px font-mono text-[9px] uppercase tracking-wide text-muted"
+                            data-testid={'agent-hook-level-' + hook.id}
+                          >
+                            {level}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="text-[12px] text-muted" data-testid="agent-hooks-inherited-empty">
+                  No instance or workspace hooks apply right now.
+                </p>
+              )}
+              <p className="mt-1.5 text-[11px] leading-4 text-muted">
+                Instance and workspace hooks are mandatory policy — they cannot be disabled or excluded for this agent.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Edit Tab Prompts — generated prompt files, list left / preview right */}
         {isEdit && editTab === 'prompts' && (
           <div className="space-y-4" data-testid="agent-prompts-pane">
@@ -1557,6 +1817,16 @@ export function AgentConfigModal({
             existingServers={agentMcpServers}
             onClose={() => setAgentMcpDialog(null)}
             onSave={handleAgentMcpSave}
+          />
+        ) : null}
+
+        {agentHookDialog && isEdit ? (
+          <HookDialog
+            hook={agentHookDialog.mode === 'edit' ? agentHookDialog.hook : null}
+            wsSlug={targetWsId}
+            existingNames={agentHooks.map((h) => h.name)}
+            onClose={() => setAgentHookDialog(null)}
+            onSave={handleAgentHookSave}
           />
         ) : null}
       </div>

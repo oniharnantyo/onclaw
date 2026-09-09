@@ -5,6 +5,9 @@ import { api, type ApiSearchEntry } from "./api";
 // On failure the cache resets so a later `ensure` retries.
 let cacheWorkspace: string | null = null;
 let names: Record<string, string> = {};
+// Icon mirror (design D8): Icon.tsx name per catalog key, same lifecycle as
+// `names` — reset on workspace switch and on failure.
+let icons: Record<string, string> = {};
 let inflight: Promise<void> | null = null;
 
 // Browser facade members (design D2) are runtime expansions of the `browser`
@@ -24,6 +27,48 @@ const facadeToolNames: Record<string, string> = {
   'browser.select_option': 'Select Option',
 };
 
+// Design D8: facade members share the browser family icon — the same one the
+// catalog's `browser` alias entry carries; computed MCP ids get the default
+// MCP icon (both exist in ui/Icon.tsx).
+const FACADE_FAMILY_ICON = 'globe';
+const MCP_DEFAULT_ICON = 'plug';
+
+// Built-in catalog entries mirrored statically (names and icons from the
+// backend's ToolCatalog, internal/agents/tool_catalog.go). The workspace
+// catalog fetch stays the source of truth for anything beyond these twelve,
+// but transcript cards must never flash raw ids while it loads — or drop to
+// them when it fails — so built-ins resolve before the network does. The
+// static values equal the server's by construction.
+const builtinToolNames: Record<string, string> = {
+  ls: 'List Files',
+  read_file: 'Read File',
+  write_file: 'Write File',
+  edit_file: 'Edit File',
+  glob: 'Glob',
+  grep: 'Grep',
+  delete_file: 'Delete File',
+  execute: 'Shell',
+  memory: 'Memory',
+  'web.search': 'Web Search',
+  'web.fetch': 'Web Fetch',
+  browser: 'Browser',
+};
+
+const builtinToolIcons: Record<string, string> = {
+  ls: 'folder',
+  read_file: 'file',
+  write_file: 'file-plus',
+  edit_file: 'edit',
+  glob: 'scan',
+  grep: 'compass',
+  delete_file: 'trash',
+  execute: 'terminal',
+  memory: 'memory',
+  'web.search': 'search',
+  'web.fetch': 'link',
+  browser: 'globe',
+};
+
 export const toolCatalog = {
   /** Fetch (once per workspace) the display-name map. Resolves when settled. */
   ensure(wsId: string | null | undefined): Promise<void> {
@@ -34,13 +79,19 @@ export const toolCatalog = {
     } else {
       cacheWorkspace = wsId;
       names = {};
+      icons = {};
     }
     inflight = api.tools
       .list(wsId)
       .then((res: any) => {
         const next: Record<string, string> = {};
-        for (const t of res.tools || []) next[t.key] = t.display_name || t.key;
+        const nextIcons: Record<string, string> = {};
+        for (const t of res.tools || []) {
+          next[t.key] = t.display_name || t.key;
+          if (t.icon_key) nextIcons[t.key] = t.icon_key;
+        }
         names = next;
+        icons = nextIcons;
       })
       .catch(() => {
         // fall back to raw ids; retry on the next ensure call
@@ -51,14 +102,30 @@ export const toolCatalog = {
       });
     return inflight;
   },
-  /** Display name for a tool id, or null when neither the catalog nor a
-   * known facade family has an entry. */
+  /** Display name for a tool id, or null when neither the static built-in
+   * mirror, the workspace catalog, nor a known facade family has an entry. */
   displayName(id: string): string | null {
     // MCP ids are computed, never catalog entries (design D6/D7 — MCP sits
     // outside the static tool catalog), so the branch runs first.
     const mcp = mcpDisplayName(id);
     if (mcp) return mcp;
-    return names[id] ?? facadeToolNames[id] ?? null;
+    return builtinToolNames[id] ?? names[id] ?? facadeToolNames[id] ?? null;
+  },
+  /** Icon name (an Icon.tsx key) for a tool id, or null when none is known
+   * (design D8). Order mirrors displayName: computed MCP ids first, then the
+   * static built-in mirror, the catalog mirror, and browser facade members. */
+  icon(id: string): string | null {
+    if (id.startsWith('mcp__')) return MCP_DEFAULT_ICON;
+    if (builtinToolIcons[id]) return builtinToolIcons[id];
+    return icons[id] ?? (facadeToolNames[id] ? FACADE_FAMILY_ICON : null);
+  },
+  /** The workspace-visible tool ids with display names (static built-in
+   * mirror merged with the fetched catalog). Populated by ensure(); a never-
+   * fetched or failed catalog still yields the built-ins. Consumers that
+   * enumerate values (hook matcher pickers) read this after awaiting ensure. */
+  entries(): { key: string; name: string }[] {
+    const merged: Record<string, string> = { ...builtinToolNames, ...names };
+    return Object.keys(merged).map((key) => ({ key, name: merged[key] }));
   },
 };
 

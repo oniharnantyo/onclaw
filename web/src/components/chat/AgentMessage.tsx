@@ -80,6 +80,9 @@ export function AgentMessage({ m, agent, inChannel, busy, isLast, onCopy, onRefr
       t={t}
       running={busy && isLast && !t.res && !t.error}
       approval={approvalFor(t)}
+      // The same message's cards feed the ref→name lookup (design D5);
+      // undefined is tolerated (no siblings → refs stay ref chips).
+      siblings={tools}
     />
   );
 

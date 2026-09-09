@@ -43,6 +43,7 @@ type fakeStore struct {
 	wsMCPServerNames    map[string]string                       // key: workspaceID + ":" + lower(name) -> ID
 	agentMCPServers     map[string]*domain.AgentMCPServer       // key: ID
 	agentMCPServerNames map[string]string                       // key: agentID + ":" + lower(name) -> ID
+	hooks               *hookData                               // hook state: all three levels + execution audit log
 }
 
 // New creates a new in-memory fake store.
@@ -76,6 +77,7 @@ func newStore() *fakeStore {
 		wsMCPServerNames:    make(map[string]string),
 		agentMCPServers:     make(map[string]*domain.AgentMCPServer),
 		agentMCPServerNames: make(map[string]string),
+		hooks:               newHookData(),
 	}
 }
 
@@ -247,6 +249,7 @@ func (s *fakeStore) clone() *fakeStore {
 	for key, id := range s.agentMCPServerNames {
 		cp.agentMCPServerNames[key] = id
 	}
+	cp.hooks = s.hooks.clone()
 	return cp
 }
 
@@ -275,6 +278,7 @@ func (s *fakeStore) apply(other *fakeStore) {
 	s.wsMCPServerNames = other.wsMCPServerNames
 	s.agentMCPServers = other.agentMCPServers
 	s.agentMCPServerNames = other.agentMCPServerNames
+	s.hooks = other.hooks
 }
 
 func cloneUser(u *domain.User) *domain.User {

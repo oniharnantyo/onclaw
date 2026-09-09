@@ -5,6 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/oniharnantyo/onclaw/internal/agents"
+	agenthooks "github.com/oniharnantyo/onclaw/internal/agents/hooks"
 	"github.com/oniharnantyo/onclaw/internal/agents/mcp"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/promptgen"
@@ -38,6 +39,14 @@ type RouterOptions struct {
 	// V1StreamKeepAlive is the /v1 SSE idle keepalive cadence; 0 uses the
 	// handler default (15s).
 	V1StreamKeepAlive time.Duration
+	// HooksCommandEnabled is the command hook handler kill switch (D10,
+	// ONCLAW_HOOKS_COMMAND_ENABLED; default on). It drives the shared hook
+	// registry's runtime gate and save-time validation alike.
+	HooksCommandEnabled bool
+	// HooksScriptEnabled is the script hook handler kill switch (D22,
+	// ONCLAW_HOOKS_SCRIPT_ENABLED; default on). It drives the shared hook
+	// registry's runtime gate.
+	HooksScriptEnabled bool
 }
 
 // router configures and builds the HTTP API routes and handlers.
@@ -120,6 +129,19 @@ func (rt *router) Engine() *gin.Engine {
 		mcpManager = mcp.NewMCPManager()
 	}
 
+	// Shared hook handler registry (D9/D10): one instance serves the REST
+	// dry-run endpoint AND the runtime dispatcher. The command kill switch
+	// rides the composition root's flag; the mcp_tool handler invokes
+	// workspace-level servers through the shared manager; the prompt handler
+	// resolves evaluator models through the workspace provider catalog.
+	hookRegistry := agenthooks.NewRegistry(
+		agenthooks.WithEncryptionKey(rt.opts.EncryptionKey),
+		agenthooks.WithCommandEnabled(rt.opts.HooksCommandEnabled),
+		agenthooks.WithScriptEnabled(rt.opts.HooksScriptEnabled),
+		agenthooks.WithMCPInvoker(mcp.NewHooksInvoker(mcpSettings, mcpManager)),
+		agenthooks.WithEvaluatorFactory(agents.NewHookEvaluatorFactory(rt.opts.Store.Providers(), rt.opts.EncryptionKey, agents.DefaultAgenticModelFactory)),
+	)
+
 	runner := rt.opts.Runner
 	if runner == nil && rt.opts.Store != nil {
 		runner = agents.NewRunner(
@@ -138,6 +160,7 @@ func (rt *router) Engine() *gin.Engine {
 			agents.WithMCPPolicy(mcp.NewSettingsPolicy(mcpSettings)),
 			agents.WithMCPManager(mcpManager),
 			agents.WithMCPStatusWriter(mcp.NewSettingsStatusWriter(mcpSettings)),
+			agents.WithHooks(agenthooks.NewDispatcher(rt.opts.Store.Hooks(), hookRegistry)),
 		)
 	}
 
@@ -152,6 +175,17 @@ func (rt *router) Engine() *gin.Engine {
 	toolSettingsHandlers := handlers.NewToolSettingsHandlers(toolSettings)
 
 	mcpServerHandlers := handlers.NewMCPServerHandlers(mcpSettings, rt.opts.Store.Agents(), mcpManager, rt.opts.MCPProbeTimeout)
+
+	// Save-time match counts (D8) enumerate the workspace-visible toolset:
+	// the built-in tool surface (a fresh default registry's names — identical
+	// to the runner's; no tool is constructed) plus the workspace's enabled
+	// MCP servers' tools through the shared manager.
+	hookToolValues := handlers.NewWorkspaceHookToolValueSource(
+		agents.NewDefaultToolRegistry(rt.opts.Store.Memories()),
+		rt.opts.Store.WorkspaceMCPServers(),
+		mcpManager,
+	)
+	hookHandlers := handlers.NewHookHandlers(rt.opts.Store.Hooks(), rt.opts.Store.Agents(), rt.opts.Store.WorkspaceMCPServers(), hookRegistry, hookToolValues, rt.opts.EncryptionKey, rt.opts.HooksCommandEnabled)
 
 	// Workspace skill library: the registry store bridges into the install
 	// pipeline's port (skills.Store), the transaction seam binds to
@@ -320,6 +354,28 @@ func (rt *router) Engine() *gin.Engine {
 				wsGroup.GET("/api-keys", rt.mw.RequirePermission(domain.WorkspaceWrite), apiKeyHandlers.ListAPIKeys)
 				wsGroup.POST("/api-keys", rt.mw.RequirePermission(domain.WorkspaceWrite), apiKeyHandlers.CreateAPIKey)
 				wsGroup.DELETE("/api-keys/:id", rt.mw.RequirePermission(domain.WorkspaceWrite), apiKeyHandlers.RevokeAPIKey)
+
+				// Workspace agent lifecycle hooks (D13/D17): reads ride
+				// hooks.read, writes hooks.write. The instance section of the
+				// list is read-only visibility; the dry-run endpoint executes
+				// the real handler against a synthetic event.
+				wsGroup.GET("/hooks", rt.mw.RequirePermission(domain.HooksRead), hookHandlers.ListWorkspaceHooks)
+				wsGroup.POST("/hooks", rt.mw.RequirePermission(domain.HooksWrite), hookHandlers.CreateWorkspaceHook)
+				wsGroup.POST("/hooks/reorder", rt.mw.RequirePermission(domain.HooksWrite), hookHandlers.ReorderWorkspaceHooks)
+				wsGroup.POST("/hooks/test", rt.mw.RequirePermission(domain.HooksWrite), hookHandlers.TestWorkspaceHook)
+				wsGroup.GET("/hooks/executions", rt.mw.RequirePermission(domain.HooksRead), hookHandlers.ListWorkspaceHookExecutions)
+				wsGroup.GET("/hooks/:id/executions", rt.mw.RequirePermission(domain.HooksRead), hookHandlers.ListWorkspaceHookExecutions)
+				wsGroup.PATCH("/hooks/:id", rt.mw.RequirePermission(domain.HooksWrite), hookHandlers.PatchWorkspaceHook)
+				wsGroup.DELETE("/hooks/:id", rt.mw.RequirePermission(domain.HooksWrite), hookHandlers.DeleteWorkspaceHook)
+
+				// Agent-level hooks (agent config modal; private to the
+				// owning agent, D13): same permission contract as the
+				// workspace level.
+				wsGroup.GET("/agents/:agent/hooks", rt.mw.RequirePermission(domain.HooksRead), hookHandlers.ListAgentLevelHooks)
+				wsGroup.POST("/agents/:agent/hooks", rt.mw.RequirePermission(domain.HooksWrite), hookHandlers.CreateAgentHook)
+				wsGroup.POST("/agents/:agent/hooks/reorder", rt.mw.RequirePermission(domain.HooksWrite), hookHandlers.ReorderAgentHooks)
+				wsGroup.PATCH("/agents/:agent/hooks/:id", rt.mw.RequirePermission(domain.HooksWrite), hookHandlers.PatchAgentHook)
+				wsGroup.DELETE("/agents/:agent/hooks/:id", rt.mw.RequirePermission(domain.HooksWrite), hookHandlers.DeleteAgentHook)
 			}
 
 			// Instance Admin route group (master tenant control plane)
@@ -347,6 +403,17 @@ func (rt *router) Engine() *gin.Engine {
 				// Superadmins management
 				adminGroup.POST("/superadmins", rt.mw.RequirePermission(domain.AdminSuperadminsWrite), adminSuperadminHandlers.AdminGrantSuperadmin)
 				adminGroup.DELETE("/superadmins/:uid", rt.mw.RequirePermission(domain.AdminSuperadminsWrite), adminSuperadminHandlers.AdminRevokeSuperadmin)
+
+				// Instance hooks (D13/D15/D17): managed rows under superadmin
+				// CRUD plus the read-only builtin listing. Hooks permissions
+				// gate the surface (the built-in master-tenant Superadmin role
+				// holds them via the permission backfill); no workspace scope
+				// anywhere in these paths.
+				adminGroup.GET("/hooks", rt.mw.RequirePermission(domain.HooksRead), hookHandlers.AdminListHooks)
+				adminGroup.POST("/hooks", rt.mw.RequirePermission(domain.HooksWrite), hookHandlers.AdminCreateHook)
+				adminGroup.POST("/hooks/reorder", rt.mw.RequirePermission(domain.HooksWrite), hookHandlers.AdminReorderHooks)
+				adminGroup.PATCH("/hooks/:id", rt.mw.RequirePermission(domain.HooksWrite), hookHandlers.AdminPatchHook)
+				adminGroup.DELETE("/hooks/:id", rt.mw.RequirePermission(domain.HooksWrite), hookHandlers.AdminDeleteHook)
 			}
 		}
 	}

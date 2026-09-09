@@ -152,7 +152,7 @@ func TestV1APIKeyAuth(t *testing.T) {
 
 	var envelope struct {
 		Error struct {
-			Type string  `json:"type"`
+			Type  string  `json:"type"`
 			Param *string `json:"param"`
 			Code  *string `json:"code"`
 		} `json:"error"`

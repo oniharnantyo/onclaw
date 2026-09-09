@@ -24,9 +24,9 @@ func agenticStreamEvent(frames ...*schema.AgenticMessage) *adk.TypedAgentEvent[*
 	return &adk.TypedAgentEvent[*schema.AgenticMessage]{
 		Output: &adk.TypedAgentOutput[*schema.AgenticMessage]{
 			MessageOutput: &adk.TypedMessageVariant[*schema.AgenticMessage]{
-				IsStreaming:    true,
-				AgenticRole:    schema.AgenticRoleTypeAssistant,
-				MessageStream:  schema.StreamReaderFromArray(frames),
+				IsStreaming:   true,
+				AgenticRole:   schema.AgenticRoleTypeAssistant,
+				MessageStream: schema.StreamReaderFromArray(frames),
 			},
 		},
 	}
@@ -146,8 +146,8 @@ func sendSpanToolCall(gen *adk.AsyncGenerator[*adk.TypedAgentEvent[*schema.Agent
 				Kind:   kind,
 				TurnID: "turn-1",
 				Span: &adk.SpanEvent{
-					Kind:  adk.SpanKindTool,
-					Tool:  &adk.ToolSpanMeta{ToolUseID: callID, Name: "files.list"},
+					Kind: adk.SpanKindTool,
+					Tool: &adk.ToolSpanMeta{ToolUseID: callID, Name: "files.list"},
 				},
 			},
 		},

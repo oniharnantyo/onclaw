@@ -18,6 +18,8 @@
 #  13. Agents, skills, tools, user & workspace memory endpoints, birth flow
 #  14. /v1 OpenResponses live chat sessions (chat key exchange → birth → chain)
 #  15. MCP server registry & agent-private servers (CRUD, probes, enabled_mcps)
+#  16. Agent hooks: workspace CRUD, validation, reorder, dry-run, executions,
+#      agent-level hooks, instance-admin managed hooks
 #
 # Usage:
 #   ./scripts/smoke.sh
@@ -1275,4 +1277,174 @@ if echo "${HTTP_BODY}" | grep -q "disabled_mcps"; then
 else
     log_pass "Agent responses never carry disabled_mcps"
 fi
+
+# -----------------------------------------------------------------------------
+# 16. Agent Hooks: Workspace CRUD, Validation, Reorder, Dry-Run, Executions,
+#     Agent-Level Hooks & Instance-Admin Managed Hooks
+# -----------------------------------------------------------------------------
+log_step "16. Agent Hooks: CRUD, Validation, Dry-Run, Admin Managed"
+
+HOOKS_BASE="/api/v1/workspaces/${TENANT_SLUG}/hooks"
+HOOK_SECRET_VALUE="Bearer onclaw-hook-secret-4321"
+
+# 16.1 Permission guards: a plain Member holds neither hooks.read nor
+# hooks.write (Member role is read-only on the catalog).
+api_req "GET" "${HOOKS_BASE}" "${CLI_USER_TOKEN}"
+assert_status "403" "Member cannot list hooks (hooks.read 403)"
+assert_json_expr '.error.code == "forbidden"' "Error code is forbidden"
+
+api_req "POST" "${HOOKS_BASE}" "${CLI_USER_TOKEN}" '{"name":"Nope","event":"run_finished","handler_type":"http","config":{"url":"https://example.com/hook"}}'
+assert_status "403" "Member cannot create hooks (hooks.write 403)"
+
+# 16.2 Save validation: an un-compilable regex matcher string is a fielded 422.
+api_req "POST" "${HOOKS_BASE}" "${CHARLIE_TOKEN}" '{"name":"Broken Regex","event":"pre_tool_use","matcher":"(","handler_type":"http","config":{"url":"https://example.com/hook"}}'
+assert_status "422" "Un-compilable regex matcher is rejected (422)"
+assert_json_expr '[.error.details[]? | select(.field == "matcher")] | length > 0' "Validation error fields matcher"
+
+# 16.3 Owner creates an http hook with a secret header: 201 with the
+# save-time match count and a masked (last-4) hint — never the plaintext.
+api_req "POST" "${HOOKS_BASE}" "${CHARLIE_TOKEN}" "{\"name\":\"Policy Gate\",\"event\":\"pre_tool_use\",\"matcher\":\"web.fetch\",\"handler_type\":\"http\",\"config\":{\"url\":\"https://hooks.example.com/onclaw\",\"headers\":[{\"name\":\"Authorization\",\"value\":\"${HOOK_SECRET_VALUE}\"}]}}"
+assert_status "201" "Owner creates an http hook with a secret header"
+assert_json_expr '.hook.handler_type == "http"' "Create echoes the handler type"
+assert_json_expr '.hook.matcher == "web.fetch"' "Create echoes the matcher string"
+assert_json_expr '.match_count.matched >= 1 and .match_count.of > .match_count.matched' "Match count reports matched of visible tools"
+assert_json_expr '.hook.config.headers[0].value == "4321"' "Secret header carries only its last-4 hint"
+if echo "${HTTP_BODY}" | grep -q "onclaw-hook-secret-4321"; then
+    log_fail "Hook create response leaked the plaintext header secret"
+else
+    log_pass "Hook create response never echoes the secret"
+fi
+HOOK_ID=$(json_get '.hook.id')
+
+# 16.4 Duplicate hook name is a 409 conflict.
+api_req "POST" "${HOOKS_BASE}" "${CHARLIE_TOKEN}" '{"name":"Policy Gate","event":"run_finished","handler_type":"http","config":{"url":"https://hooks.example.com/other"}}'
+assert_status "409" "Duplicate hook name returns 409"
+
+# 16.5 The workspace list carries the read-only (empty) instance section.
+api_req "GET" "${HOOKS_BASE}" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists hooks"
+assert_json_expr '(.hooks | length) == 1' "Workspace list shows the created hook"
+assert_json_expr '(.instance | length) == 0' "Instance section starts empty"
+
+# 16.6 PATCH with the hint echoed back keeps the stored secret (hint is
+# unchanged); the rename rides along.
+api_req "PATCH" "${HOOKS_BASE}/${HOOK_ID}" "${CHARLIE_TOKEN}" '{"name":"Policy Gate Renamed","config":{"url":"https://hooks.example.com/onclaw","headers":[{"name":"Authorization","value":"4321"}]}}'
+assert_status "200" "Owner patches the hook echoing the secret hint"
+assert_json_expr '.hook.name == "Policy Gate Renamed"' "Patch renamed the hook"
+assert_json_expr '.hook.config.headers[0].value == "4321"' "Hint-echo patch keeps the stored secret"
+
+# 16.7 Reorder: add a second hook and move it to the front (D14: the list
+# order is the execution order).
+api_req "POST" "${HOOKS_BASE}" "${CHARLIE_TOKEN}" '{"name":"Cheap First","event":"pre_tool_use","handler_type":"http","config":{"url":"https://hooks.example.com/cheap"}}'
+assert_status "201" "Owner creates a second hook"
+HOOK_SECOND_ID=$(json_get '.hook.id')
+api_req "POST" "${HOOKS_BASE}/reorder" "${CHARLIE_TOKEN}" "{\"ids\":[\"${HOOK_SECOND_ID}\",\"${HOOK_ID}\"]}"
+assert_status "204" "Owner reorders hooks (204)"
+api_req "GET" "${HOOKS_BASE}" "${CHARLIE_TOKEN}"
+assert_json_expr '.hooks[0].name == "Cheap First"' "Reorder moves the second hook to the front"
+
+# 16.8 Execution history starts empty for the hook.
+api_req "GET" "${HOOKS_BASE}/${HOOK_ID}/executions" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists hook executions"
+assert_json_expr '(.executions | length) == 0' "Execution history starts empty"
+
+# 16.9 Test dry-run (command handler): exit 0 is an allow with the exit code
+# in the detail, and no audit row is written (16.8's count stays 0).
+api_req "POST" "${HOOKS_BASE}/test" "${CHARLIE_TOKEN}" '{"name":"Dry Run Gate","event":"pre_tool_use","handler_type":"command","config":{"command":"/bin/sh","args":["-c","cat >/dev/null; exit 0"]}}'
+assert_status "200" "Dry-run executes the real command handler"
+assert_json_expr '.decision == "allow"' "Exit-0 command dry-run allows"
+assert_json_expr '.detail.exit_code == 0' "Dry-run detail carries the exit code"
+assert_json_expr 'has("duration_ms")' "Dry-run reports its duration"
+
+api_req "GET" "${HOOKS_BASE}/${HOOK_ID}/executions" "${CHARLIE_TOKEN}"
+assert_json_expr '(.executions | length) == 0' "Dry-run writes no audit row"
+
+# 16.10 Exit 2 with stderr blocks with the (trimmed) stderr reason — the
+# Claude Code compatibility row of the decision table.
+api_req "POST" "${HOOKS_BASE}/test" "${CHARLIE_TOKEN}" '{"name":"Dry Run Gate","event":"pre_tool_use","handler_type":"command","config":{"command":"/bin/sh","args":["-c","echo blocked by smoke policy >&2; exit 2"]}}'
+assert_status "200" "Exit-2 command dry-run completes"
+assert_json_expr '.decision == "block"' "Exit-2 command dry-run blocks"
+assert_json_expr '.reason == "blocked by smoke policy"' "Exit-2 reason is the trimmed stderr"
+
+# 16.11 Agent-level hooks (agent config modal): create a private hook on
+# test-agent, see the three-section listing, then remove it.
+AGENT_HOOKS_BASE="/api/v1/workspaces/${TENANT_SLUG}/agents/test-agent/hooks"
+
+api_req "POST" "${AGENT_HOOKS_BASE}" "${CLI_USER_TOKEN}" '{"name":"Nope Private","event":"pre_tool_use","handler_type":"command","config":{"command":"/bin/echo"}}'
+assert_status "403" "Member cannot create agent hooks (hooks.write 403)"
+
+api_req "POST" "${AGENT_HOOKS_BASE}" "${CHARLIE_TOKEN}" '{"name":"Atlas Gate","event":"pre_tool_use","matcher":"execute","if":"execute(command)","handler_type":"command","config":{"command":"/bin/echo"}}'
+assert_status "201" "Owner creates an agent-private hook"
+assert_json_expr '.match_count.matched >= 1' "Agent hook match count is reported"
+assert_json_expr '.hook.matcher == "execute" and .hook["if"] == "execute(command)"' "String matcher and if condition round-trip"
+AGENT_HOOK_ID=$(json_get '.hook.id')
+
+api_req "GET" "${AGENT_HOOKS_BASE}" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists the agent's hook sections"
+assert_json_expr '(.agent | length) == 1' "Agent section shows the private hook"
+assert_json_expr '(.instance | length) == 0 and (.workspace | length) == 2' "Instance and workspace sections are read-only visibility"
+
+api_req "PATCH" "${AGENT_HOOKS_BASE}/${AGENT_HOOK_ID}" "${CHARLIE_TOKEN}" '{"enabled":false}'
+assert_status "200" "Owner disables the agent-private hook"
+assert_json_expr '.hook.enabled == false' "Disable is reflected"
+
+api_req "DELETE" "${AGENT_HOOKS_BASE}/${AGENT_HOOK_ID}" "${CHARLIE_TOKEN}"
+assert_status "204" "Owner deletes the agent-private hook (204)"
+
+# 16.12 Instance-admin surface: the tenant Owner is not a master-tenant
+# member, so RequireMasterWorkspace's enumeration defense hides the surface
+# behind the same 404 "workspace not found" every other admin route returns
+# (section 7 convention); the superadmin manages managed rows and sees the
+# (empty) builtin listing.
+api_req "GET" "/api/v1/admin/hooks" "${CHARLIE_TOKEN}"
+assert_status "404" "Tenant owner cannot see the instance-admin hooks surface (404)"
+
+api_req "GET" "/api/v1/admin/hooks" "${SUPERADMIN_TOKEN}"
+assert_status "200" "Superadmin lists instance hooks"
+assert_json_expr '(.builtin | length) == 0' "Builtin listing starts empty (v1 ships none)"
+assert_json_expr '(.managed | length) == 0' "Managed listing starts empty"
+
+api_req "POST" "/api/v1/admin/hooks" "${SUPERADMIN_TOKEN}" '{"key":"smoke-org-gate","name":"Org Policy Gate","event":"run_finished","handler_type":"http","config":{"url":"https://policy.example.com/hook"}}'
+assert_status "201" "Superadmin creates a managed instance hook"
+assert_json_expr '.hook.source == "managed"' "Managed row carries source managed"
+assert_json_expr '.hook.version == 1' "Managed row starts at version 1"
+ADMIN_HOOK_ID=$(json_get '.hook.id')
+
+api_req "POST" "/api/v1/admin/hooks" "${SUPERADMIN_TOKEN}" '{"key":"smoke-org-gate","name":"Dup","event":"run_finished","handler_type":"http","config":{"url":"https://policy.example.com/other"}}'
+assert_status "409" "Duplicate instance hook key returns 409"
+
+api_req "PATCH" "/api/v1/admin/hooks/${ADMIN_HOOK_ID}" "${SUPERADMIN_TOKEN}" '{"name":"Renamed Org Gate"}'
+assert_status "200" "Superadmin patches the managed instance hook"
+assert_json_expr '.hook.name == "Renamed Org Gate"' "Managed rename is reflected"
+
+api_req "DELETE" "/api/v1/admin/hooks/${ADMIN_HOOK_ID}" "${SUPERADMIN_TOKEN}"
+assert_status "204" "Superadmin deletes the managed instance hook (204)"
+
+# 16.13 Workspace cleanup: delete the reordered hook, then 404 afterwards.
+api_req "DELETE" "${HOOKS_BASE}/${HOOK_SECOND_ID}" "${CHARLIE_TOKEN}"
+assert_status "204" "Owner deletes a workspace hook (204)"
+api_req "PATCH" "${HOOKS_BASE}/${HOOK_SECOND_ID}" "${CHARLIE_TOKEN}" '{"name":"Ghost"}'
+assert_status "404" "Patching a deleted hook returns 404"
+
+# 16.14 Script handler (D22): save-time compile validation fields config.script
+# with the first syntax error's line/column; a valid script saves with a
+# non-match-all matcher (script hooks carry no matcher requirement); the
+# dry-run executes a block script live and surfaces the captured console
+# output beside the blocked decision.
+api_req "POST" "${HOOKS_BASE}" "${CHARLIE_TOKEN}" '{"name":"Broken Script","event":"pre_tool_use","handler_type":"script","config":{"script":"(function(input){ const bad = ; })"}}'
+assert_status "422" "Syntax-error script is rejected at save (422)"
+assert_json_expr '[.error.details[]? | select(.field == "config.script")] | length > 0' "Script validation error fields config.script"
+assert_json_expr '.error.details[0].message | test("line [0-9]+, column [0-9]+")' "Script error message names line and column"
+
+api_req "POST" "${HOOKS_BASE}" "${CHARLIE_TOKEN}" '{"name":"Script Gate","event":"pre_tool_use","matcher":"shell","handler_type":"script","config":{"script":"(function(input){ return { decision: \"allow\" }; })"}}'
+assert_status "201" "Owner creates a script hook (no matcher restriction applies)"
+assert_json_expr '.hook.handler_type == "script"' "Create echoes the script handler type"
+assert_json_expr '.hook.config.script | contains("decision")' "Script source round-trips in the view"
+
+api_req "POST" "${HOOKS_BASE}/test" "${CHARLIE_TOKEN}" '{"name":"Script Dry Run","event":"pre_tool_use","handler_type":"script","config":{"script":"(function(input){ console.log(\"script gate\"); return { decision: \"block\", reason: \"blocked by script\" }; })"}}'
+assert_status "200" "Script dry-run executes the real script handler"
+assert_json_expr '.decision == "block"' "Script dry-run blocks on the block return"
+assert_json_expr '.reason == "blocked by script"' "Script block reason is honored"
+assert_json_expr '.detail.console_lines | index("script gate") != null' "Dry-run detail carries the captured console output"
+
 

@@ -21,6 +21,7 @@ import (
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 	"github.com/oniharnantyo/onclaw/internal/agents/backend"
+	agenthooks "github.com/oniharnantyo/onclaw/internal/agents/hooks"
 )
 
 // DefaultMaxIterations caps how many turns the ADK runner takes before
@@ -86,6 +87,13 @@ type Config struct {
 	Filesystem    *FilesystemConfig
 	Skills        *SkillsConfig
 	Summarization *SummarizationConfig
+
+	// Hooks is the run's resolved lifecycle-hook chain (design.md D2); nil or
+	// a chain with no hooks attaches no hooks middleware. HooksBase carries
+	// the per-run event identity (workspace, agent, session, user, origin)
+	// every hook delivery is built from; it is non-nil whenever Hooks is.
+	Hooks     *agenthooks.Resolved
+	HooksBase *agenthooks.Event
 }
 
 // Compose constructs an executable ADK agent from caller-supplied configuration.
@@ -240,7 +248,17 @@ func buildMiddlewares(ctx context.Context, cfg *Config) ([]adk.TypedChatModelAge
 		handlers = append(handlers, fsMW)
 	}
 
-	// 6. tool-error-result: appended last so it wraps every tool endpoint —
+	// 6. hooks: the machine policy gate on tool calls (design.md D2/D3),
+	// attached only when the run resolved a non-empty hook chain — a run with
+	// no applicable hooks pays nothing. Appended BEFORE the tool-error-result
+	// middleware so that wrapper stays outside it: a hook block returns the
+	// block JSON as a successful tool result, while endpoint errors and
+	// interrupt/cancel signals flow out to it (and to the ADK) untouched.
+	if cfg.Hooks != nil && cfg.Hooks.HasHooks() && cfg.HooksBase != nil {
+		handlers = append(handlers, newHooksMiddleware(cfg.Hooks, *cfg.HooksBase))
+	}
+
+	// 7. tool-error-result: appended last so it wraps every tool endpoint —
 	// registry tools and middleware-registered fs/shell tools alike. A failed
 	// tool call becomes an error result the model can read and react to
 	// instead of a run-killing NodeRunError.

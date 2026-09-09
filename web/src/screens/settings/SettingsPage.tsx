@@ -10,6 +10,7 @@ import { IntegrationsSection } from "./IntegrationsSection";
 import { McpPane } from "./McpPane";
 import { SkillsPane } from "./SkillsPane";
 import { ToolsPane } from "./ToolsPane";
+import { HooksPane } from "./HooksPane";
 import { KeysSection } from "./KeysSection";
 import { NotificationsSection } from "./NotificationsSection";
 
@@ -21,6 +22,7 @@ export const SETTINGS_SECTIONS = [
   { id: 'mcp', label: 'MCP servers', icon: 'plug' },
   { id: 'skills', label: 'Skills', icon: 'spark' },
   { id: 'tools', label: 'Tools', icon: 'zap' },
+  { id: 'hooks', label: 'Hooks', icon: 'activity' },
   { id: 'keys', label: 'API keys', icon: 'key' },
   { id: 'notifications', label: 'Notifications', icon: 'bell' },
 ] as const;
@@ -165,6 +167,14 @@ export function SettingsPage({
               tenant={tenant}
               onToast={onToast}
               onUpdate={onUpdate}
+            />
+          )}
+
+          {section === 'hooks' && (
+            <HooksPane
+              tenant={tenant}
+              onUpdate={onUpdate}
+              onToast={onToast}
             />
           )}
 

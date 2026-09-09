@@ -4,6 +4,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 )
@@ -29,6 +30,14 @@ const (
 	TranscriptEventTurnCompleted    TranscriptEventKind = "turn_completed"
 	TranscriptEventError            TranscriptEventKind = "error"
 	TranscriptEventCancelled        TranscriptEventKind = "cancelled"
+	// TranscriptEventPromptBlocked terminates a turn whose user prompt was
+	// blocked by a user_prompt_submit hook (design.md D6): the model was never
+	// called. It is followed by a well-formed turn_completed so live streams
+	// and reloaded transcripts both show why the turn has no assistant reply.
+	// Blocked tool calls deliberately ride the existing tool_call_started /
+	// tool_call_finished pair (their ToolResultPayload.Result carries the
+	// block JSON) — this kind is only for the prompt gate.
+	TranscriptEventPromptBlocked TranscriptEventKind = "prompt_blocked"
 	// TranscriptEventRunActive is a synthetic status frame the streaming
 	// session-events endpoint writes when its tap attaches to a live run —
 	// never persisted or broadcast by the runner. It tells a reconnected
@@ -87,23 +96,52 @@ type CompactionPayload struct {
 	OffloadPath string `json:"offload_path,omitempty"`
 }
 
+// PromptBlockedPayload carries a hook-blocked prompt notice: which hook
+// blocked the submission and why (design.md D6).
+type PromptBlockedPayload struct {
+	Hook   string `json:"hook"`
+	Reason string `json:"reason"`
+}
+
+// sessionEventKindPromptBlocked is the application-owned session-event kind
+// (the ADK extension namespace) that persists a hook-blocked prompt notice.
+// The ADK runner never produces it; the runner's prompt gate appends it so a
+// reloaded transcript renders the notice identically to the live stream (D6).
+// The turn terminal itself is not persisted — History synthesizes
+// turn_completed at the turn boundary exactly as it does for every other turn.
+const sessionEventKindPromptBlocked = adk.SessionEventKind("x.prompt_blocked")
+
+// promptBlockedEvent is the durable payload of sessionEventKindPromptBlocked.
+// Hook/Reason round-trip into PromptBlockedPayload verbatim. The concrete type
+// is registered below because the ADK serializer reconstructs the
+// SessionExtensionEvent.Data any field from registered concrete types.
+type promptBlockedEvent struct {
+	Hook   string `json:"hook"`
+	Reason string `json:"reason"`
+}
+
+func init() {
+	schema.Register[promptBlockedEvent]()
+}
+
 // TranscriptEvent represents a single domain-level event in an agent turn transcript.
 type TranscriptEvent struct {
-	ID             string              `json:"id,omitempty"`
-	Kind           TranscriptEventKind `json:"kind"`
-	OccurredAt     time.Time           `json:"occurred_at"`
-	TurnID         string              `json:"turn_id,omitempty"`
-	TextDelta      string              `json:"text_delta,omitempty"`
-	ReasoningDelta string              `json:"reasoning_delta,omitempty"`
-	ToolCall       *ToolCallPayload    `json:"tool_call,omitempty"`
-	ToolResult     *ToolResultPayload  `json:"tool_result,omitempty"`
-	Message        *CompletedMessage   `json:"message,omitempty"`
-	Compaction     *CompactionPayload  `json:"compaction,omitempty"`
-	Approval       *ApprovalPayload    `json:"approval,omitempty"`
-	Error          string              `json:"error,omitempty"`
-	CancelReason   string              `json:"cancel_reason,omitempty"`
-	RetryAttempt   int                 `json:"retry_attempt,omitempty"`
-	Usage          *UsagePayload       `json:"usage,omitempty"`
+	ID             string                `json:"id,omitempty"`
+	Kind           TranscriptEventKind   `json:"kind"`
+	OccurredAt     time.Time             `json:"occurred_at"`
+	TurnID         string                `json:"turn_id,omitempty"`
+	TextDelta      string                `json:"text_delta,omitempty"`
+	ReasoningDelta string                `json:"reasoning_delta,omitempty"`
+	ToolCall       *ToolCallPayload      `json:"tool_call,omitempty"`
+	ToolResult     *ToolResultPayload    `json:"tool_result,omitempty"`
+	Message        *CompletedMessage     `json:"message,omitempty"`
+	Compaction     *CompactionPayload    `json:"compaction,omitempty"`
+	Approval       *ApprovalPayload      `json:"approval,omitempty"`
+	PromptBlocked  *PromptBlockedPayload `json:"prompt_blocked,omitempty"`
+	Error          string                `json:"error,omitempty"`
+	CancelReason   string                `json:"cancel_reason,omitempty"`
+	RetryAttempt   int                   `json:"retry_attempt,omitempty"`
+	Usage          *UsagePayload         `json:"usage,omitempty"`
 }
 
 // ExecRequest contains all parameters required to execute an agent turn.
@@ -114,11 +152,37 @@ type ExecRequest struct {
 	UserID      string
 	Input       string
 
+	// Origin identifies what triggered the run (hooks design.md D1):
+	// OriginUser, OriginCron, or OriginChannel. Empty selects OriginUser —
+	// every current caller is user-initiated; the schedule runtime sets
+	// OriginCron when a cron run is submitted.
+	Origin string
+
 	// AllowedTools replaces the agent's tool allowlist for this turn when
 	// non-nil (an empty slice runs the turn with no tools). nil keeps the
 	// agent's configured allowlist. Callers that narrow must intersect with
 	// the agent allowlist themselves — a request can narrow, never widen.
 	AllowedTools []string
+}
+
+// Run origins (hooks design.md D1). ExecRequest.Origin carries one; empty
+// selects OriginUser.
+const (
+	OriginUser    = "user"
+	OriginCron    = "cron"
+	OriginChannel = "channel"
+)
+
+// normalizeOrigin maps a request's origin onto the fixed D1 value set: the
+// documented values pass through, anything else (including empty) is
+// user-initiated.
+func normalizeOrigin(origin string) string {
+	switch origin {
+	case OriginCron, OriginChannel:
+		return origin
+	default:
+		return OriginUser
+	}
 }
 
 // Validate checks that required fields on ExecRequest are present.

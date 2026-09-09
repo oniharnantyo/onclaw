@@ -44,7 +44,7 @@ export function Modal({ title, onClose, children, footer, wide, boxClassName, od
             <Icon name="x" size={16}/>
           </button>
         </div>
-        <div className="od-scroll flex-1 overflow-y-auto">{children}</div>
+        <div className="od-scroll flex-1 overflow-y-auto overflow-x-hidden">{children}</div>
         {footer && <div className="flex shrink-0 items-center justify-end gap-2.5 border-t border-linesoft bg-[color-mix(in_oklab,var(--fg)_3%,transparent)] px-5 py-3.5">{footer}</div>}
       </div>
     </div>

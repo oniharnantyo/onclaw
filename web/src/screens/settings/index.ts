@@ -6,5 +6,6 @@ export * from "./NotificationsSection";
 export * from "./ProvidersPane";
 export * from "./McpPane";
 export * from "./SkillsPane";
+export * from "./HooksPane";
 export * from "./KeyRow";
 export * from "./SettingsPage";

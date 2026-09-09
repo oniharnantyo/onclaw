@@ -193,6 +193,16 @@ func (w *webFetchTool) InvokableRun(ctx context.Context, argumentsInJSON string,
 	return string(out), nil
 }
 
+// ValidateOutboundURL is the exported form of the platform's outbound-fetch
+// SSRF guard: the same scheme and IP-literal check web.fetch applies before
+// fetching and re-applies to every redirect hop via the guarded client's
+// CheckRedirect. The agent-hooks HTTP handler calls it so webhook targets
+// pass through one shared guard (integrate-agent-hooks design.md, HTTP
+// handler requirement).
+func ValidateOutboundURL(u *url.URL, allowPrivate bool) error {
+	return validateFetchURL(u, allowPrivate)
+}
+
 // validateFetchURL enforces the scheme guard on a target (and, via
 // CheckRedirect, on every redirect hop).
 func validateFetchURL(u *url.URL, allowPrivate bool) error {

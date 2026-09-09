@@ -107,10 +107,13 @@ describe('screens/settings/SettingsPage', () => {
       status: 'authenticated',
     });
     // The Tools pane fetches the catalog and the MCP pane fetches the registry
-    // + agents on mount; deep-link tests render them.
+    // + agents on mount; the Hooks pane fetches the registry + audit trail.
+    // Deep-link tests render them.
     vi.spyOn(api.tools, 'list').mockResolvedValue({ tools: [] });
     vi.spyOn(api.mcp, 'list').mockResolvedValue({ servers: [] });
     vi.spyOn(api.agents, 'list').mockResolvedValue({ agents: [] });
+    vi.spyOn(api.hooks, 'list').mockResolvedValue({ instance: [], hooks: [] });
+    vi.spyOn(api.hooks, 'executions').mockResolvedValue({ executions: [] });
   });
 
   function renderSettingsPage(initialPath = '/settings/workspace', overrides = {}) {
@@ -158,14 +161,14 @@ describe('screens/settings/SettingsPage', () => {
   }
 
   describe('Navigation & Routing', () => {
-    it('renders the nine section tab labels with active highlighting and switches section on click', async () => {
+    it('renders the ten section tab labels with active highlighting and switches section on click', async () => {
       renderSettingsPage('/settings/workspace');
 
       const tablist = screen.getByRole('tablist');
       expect(tablist).not.toBeNull();
 
       const tabs = screen.getAllByRole('tab');
-      expect(tabs.length).toBe(9);
+      expect(tabs.length).toBe(10);
 
       const expectedLabels = [
         'Workspace',
@@ -175,6 +178,7 @@ describe('screens/settings/SettingsPage', () => {
         'MCP servers',
         'Skills',
         'Tools',
+        'Hooks',
         'API keys',
         'Notifications',
       ];
@@ -207,6 +211,7 @@ describe('screens/settings/SettingsPage', () => {
         { path: '/settings/mcp', paneTestId: 'pane-mcp' },
         { path: '/settings/skills', paneTestId: 'pane-skills' },
         { path: '/settings/tools', paneTestId: 'pane-tools' },
+        { path: '/settings/hooks', paneTestId: 'pane-hooks' },
         { path: '/settings/keys', paneTestId: 'pane-keys' },
         { path: '/settings/notifications', paneTestId: 'pane-notifications' },
       ];

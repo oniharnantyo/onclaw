@@ -104,6 +104,49 @@ describe('toolCatalog mcp__ display names (design D7)', () => {
   });
 });
 
+describe('toolCatalog icon (design D8)', () => {
+  it('returns the stored icon_key for catalog ids', async () => {
+    vi.mocked(api.tools.list).mockResolvedValueOnce({
+      tools: [
+        {
+          key: 'files.write',
+          display_name: 'Write File',
+          description: '',
+          group: 'files',
+          icon_key: 'file-plus',
+          configurable: false,
+          enabled: true,
+          configured: false,
+          config: {},
+        },
+      ],
+    });
+    await toolCatalog.ensure('ws-icons');
+    expect(toolCatalog.icon('files.write')).toBe('file-plus');
+    // An id the loaded catalog does not govern resolves to null.
+    expect(toolCatalog.icon('totally.unknown')).toBeNull();
+  });
+
+  it('maps browser facade members to the browser family icon', () => {
+    expect(toolCatalog.icon('browser.navigate')).toBe('globe');
+    expect(toolCatalog.icon('browser.select_option')).toBe('globe');
+  });
+
+  it('maps every mcp__ id to the default plug icon', () => {
+    expect(toolCatalog.icon('mcp__github__create_issue')).toBe('plug');
+    expect(toolCatalog.icon('mcp__x')).toBe('plug');
+  });
+
+  it('returns null for non-facade non-MCP ids when the catalog has not loaded them', async () => {
+    // Fresh workspace against the default empty-catalog mock: nothing stored.
+    await toolCatalog.ensure('ws-icons-empty');
+    expect(toolCatalog.icon('files.write')).toBeNull();
+    // Facade and MCP ids still resolve without a catalog entry.
+    expect(toolCatalog.icon('browser.read')).toBe('globe');
+    expect(toolCatalog.icon('mcp__fs__read_file')).toBe('plug');
+  });
+});
+
 describe('web.search provider stacks', () => {
   it('mirrors the provider registry without DuckDuckGo', () => {
     expect(SEARCH_PROVIDERS.map((p) => p.value)).toEqual([
@@ -185,5 +228,26 @@ describe('web.search provider stacks', () => {
     });
     // Empty timeout omits the field so the server default (10) applies.
     expect(searchConfigPayload(drafts, '').request_timeout_seconds).toBeUndefined();
+  });
+});
+
+describe('static built-in mirror (card names/icons resolve before the catalog loads)', () => {
+  it('resolves built-in display names without any catalog fetch', () => {
+    expect(toolCatalog.displayName('web.fetch')).toBe('Web Fetch');
+    expect(toolCatalog.displayName('web.search')).toBe('Web Search');
+    expect(toolCatalog.displayName('execute')).toBe('Shell');
+    expect(toolCatalog.displayName('ls')).toBe('List Files');
+  });
+
+  it('resolves built-in icons without any catalog fetch', () => {
+    expect(toolCatalog.icon('web.fetch')).toBe('link');
+    expect(toolCatalog.icon('web.search')).toBe('search');
+    expect(toolCatalog.icon('execute')).toBe('terminal');
+    expect(toolCatalog.icon('memory')).toBe('memory');
+  });
+
+  it('still returns null for ids outside the built-in set', () => {
+    expect(toolCatalog.displayName('totally.unknown')).toBeNull();
+    expect(toolCatalog.icon('totally.unknown')).toBeNull();
   });
 });

@@ -22,7 +22,7 @@ import (
 )
 
 // latestSchemaVersion is the newest embedded migration number.
-const latestSchemaVersion = 25
+const latestSchemaVersion = 29
 
 func getTestBaseDSN(t *testing.T) string {
 	dsn := os.Getenv("TEST_DATABASE_URL")

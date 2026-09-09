@@ -8,6 +8,7 @@ import (
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
+	"github.com/oniharnantyo/onclaw/internal/agents/hooks"
 )
 
 // sendSpanModelEnd emits a model-request-end session event carrying the given
@@ -43,9 +44,10 @@ func drainUsageEvents(t *testing.T, send func(gen *adk.AsyncGenerator[*adk.Typed
 
 	stream := NewEventStream(16)
 	// drainAgentEvents fans each event out via the manager's Broadcast; a
-	// manager with no live runs makes that a no-op for this unit test.
+	// manager with no live runs makes that a no-op for this unit test. The
+	// nil hook chain disables the run_finished terminal seam here.
 	r := &Runner{runMgr: newRunManager(context.Background(), 0)}
-	r.drainAgentEvents(t.Context(), iter, stream, RunKey{}, "turn-1", "")
+	r.drainAgentEvents(t.Context(), iter, stream, RunKey{}, "turn-1", "", nil, hooks.Event{})
 	// drainAgentEvents returns after the terminal event; the caller (streamRun
 	// in production) closes the stream.
 	stream.Close()

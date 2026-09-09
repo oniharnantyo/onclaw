@@ -3,6 +3,9 @@ import { Modal } from "../components/ui/Modal";
 import { inputCls, labelCls } from "../components/ui/constants";
 import { Icon } from "../components/ui/Icon";
 import { cx } from "../lib/helpers";
+
+const rowInputCls =
+  'rounded-md border border-line bg-[color-mix(in_oklab,var(--bg)_55%,var(--surface))] px-2.5 text-[13px] text-fg2 placeholder:text-muted focus:border-accent outline-none font-mono';
 import {
   ApiError,
   formatApiError,
@@ -450,7 +453,7 @@ function SecretRowsEditor({
                 <input
                   aria-label={`${capNoun} name`}
                   placeholder="NAME"
-                  className={cx(inputCls, 'h-8 w-40 shrink-0 font-mono text-[13px]', rowErrors[row.localKey] && 'border-danger')}
+                  className={cx(rowInputCls, 'h-8 w-28 sm:w-40 shrink-0', rowErrors[row.localKey] && 'border-danger')}
                   value={row.name}
                   data-od-id={nameTestId}
                   data-testid={nameTestId}
@@ -461,7 +464,7 @@ function SecretRowsEditor({
                   type="password"
                   placeholder={row.hint ? `•••• ${row.hint}` : 'Value'}
                   title={row.hint ? `Stored — leave empty to keep •••• ${row.hint}` : undefined}
-                  className={cx(inputCls, 'h-8 min-w-0 flex-1 font-mono text-[13px]')}
+                  className={cx(rowInputCls, 'h-8 min-w-0 flex-1')}
                   value={row.value}
                   data-od-id={valueTestId}
                   data-testid={valueTestId}

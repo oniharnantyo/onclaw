@@ -264,6 +264,7 @@ class TranscriptTranslator {
           name: ev.tool_call?.name,
           args: ev.tool_call?.arguments || '',
           ms: 0,
+          ts: ev.occurred_at || '', // wall-clock start for the expanded card (design D7)
         });
         appendToolPart(agent, agent.tools.length - 1);
         this.noteInterruptActivity();
@@ -296,6 +297,26 @@ class TranscriptTranslator {
         appendToolPart(agent, agent.tools.length - 1);
         this.openInterrupts.add(interruptId);
         this.activityAfterInterrupt = false;
+        break;
+      }
+      case 'prompt_blocked': {
+        // Hook-blocked prompt (integrate-agent-hooks D6): the model never
+        // ran — flush the turn accumulated so far (the user message) and
+        // mint a standalone notice entry carrying the enforcing hook and
+        // reason. Hydrated history and the live catch-up stream share this
+        // case, so the notice renders identically after a reload.
+        if (this.turnUser || this.turnAgent) this.flushTurn();
+        this.messages.push({
+          id: ev.id || `${this.idPrefix}-n-${this.messages.length}`,
+          author: 'notice',
+          ts: ev.occurred_at || '',
+          text: '',
+          notice: {
+            hook: ev.prompt_blocked?.hook || ev.hook || '',
+            reason: ev.prompt_blocked?.reason || ev.reason || '',
+          },
+        });
+        this.noteInterruptActivity();
         break;
       }
       case 'turn_started':

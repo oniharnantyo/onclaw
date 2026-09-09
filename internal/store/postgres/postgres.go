@@ -136,6 +136,11 @@ func (s *store) AgentMCPServers() storeport.AgentMCPServers {
 	return NewAgentMCPServerStore(s.db)
 }
 
+// Hooks returns the HookStore sub-port.
+func (s *store) Hooks() storeport.HookStore {
+	return NewHookStore(s.db)
+}
+
 // WithTx executes the provided function within a database transaction.
 // If the store is already in a transaction, a SAVEPOINT is used for nested isolation.
 func (s *store) WithTx(ctx context.Context, fn func(storeport.Store) error) error {

@@ -117,14 +117,14 @@ func setupV1EnvOpts(t *testing.T, release chan struct{}, keepAlive time.Duration
 		agents.WithToolPolicy(agents.NewToolSettingsService(st.ToolSettings(), []byte("test-key-32-bytes-long-12345678"))),
 	)
 
-		r := server.NewRouter(server.RouterOptions{
-			Store:             st,
-			Storage:           stor,
-			Issuer:            issuer,
-			EncryptionKey:     []byte("test-key-32-bytes-long-12345678"),
-			Runner:            runner,
-			V1StreamKeepAlive: keepAlive,
-		})
+	r := server.NewRouter(server.RouterOptions{
+		Store:             st,
+		Storage:           stor,
+		Issuer:            issuer,
+		EncryptionKey:     []byte("test-key-32-bytes-long-12345678"),
+		Runner:            runner,
+		V1StreamKeepAlive: keepAlive,
+	})
 
 	ctx := context.Background()
 	ws := &domain.Workspace{Slug: "v1ws", Name: "V1 WS", Timezone: "UTC"}

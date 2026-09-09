@@ -13,12 +13,14 @@ import (
 
 // Default configuration constants.
 const (
-	DefaultListenAddr     = ":8080"
-	DefaultTokenTTL       = 24 * time.Hour
-	DefaultDataDir        = "./data"
-	DefaultCacheDir       = ".onclaw/cache"
-	DefaultStorageDriver  = "local"
-	DefaultRunDrainWindow = 30 * time.Second
+	DefaultListenAddr          = ":8080"
+	DefaultTokenTTL            = 24 * time.Hour
+	DefaultDataDir             = "./data"
+	DefaultCacheDir            = ".onclaw/cache"
+	DefaultStorageDriver       = "local"
+	DefaultRunDrainWindow      = 30 * time.Second
+	DefaultHooksCommandEnabled = true
+	DefaultHooksScriptEnabled  = true
 )
 
 // Config represents runtime configuration assembled from flags, environment variables, and defaults.
@@ -36,6 +38,8 @@ type Config struct {
 	SuperadminPassword     string        `json:"-"`
 	SuperadminPasswordFile string        `json:"superadmin_password_file,omitempty"`
 	RunDrainWindow         time.Duration `json:"run_drain_window"`
+	HooksCommandEnabled    bool          `json:"hooks_command_enabled"`
+	HooksScriptEnabled     bool          `json:"hooks_script_enabled"`
 }
 
 // WorkspaceRoot returns the derived workspace root directory: <OnClawDir>/workspaces.
@@ -118,6 +122,18 @@ func ServerFlags() []cli.Flag {
 			Usage:   "Graceful-shutdown window for in-flight agent runs to finish before cancellation",
 			Sources: cli.EnvVars("ONCLAW_RUN_DRAIN_WINDOW"),
 		},
+		&cli.BoolFlag{
+			Name:    "hooks-command-enabled",
+			Value:   DefaultHooksCommandEnabled,
+			Usage:   "Enable the command hook handler (kill switch for command-type agent hooks)",
+			Sources: cli.EnvVars("ONCLAW_HOOKS_COMMAND_ENABLED"),
+		},
+		&cli.BoolFlag{
+			Name:    "hooks-script-enabled",
+			Value:   DefaultHooksScriptEnabled,
+			Usage:   "Enable the script hook handler (kill switch for script-type agent hooks)",
+			Sources: cli.EnvVars("ONCLAW_HOOKS_SCRIPT_ENABLED"),
+		},
 	}
 }
 
@@ -182,6 +198,8 @@ func FromServerContext(ctx context.Context, cmd *cli.Command) *Config {
 		SuperadminPassword:     cmd.String("superadmin-password"),
 		SuperadminPasswordFile: cmd.String("superadmin-password-file"),
 		RunDrainWindow:         cmd.Duration("run-drain-window"),
+		HooksCommandEnabled:    cmd.Bool("hooks-command-enabled"),
+		HooksScriptEnabled:     cmd.Bool("hooks-script-enabled"),
 	}
 }
 

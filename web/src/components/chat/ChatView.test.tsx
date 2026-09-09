@@ -82,15 +82,32 @@ describe('ChatView loading states', () => {
     expect(buttons.length).toBe(3);
 
     // Card 0: finished success → shows latency, no dots
-    expect(buttons[0].textContent).toContain('1420ms');
+    expect(buttons[0].textContent).toContain('1.4 s');
     expect(buttons[0].querySelectorAll('.od-dot').length).toBe(0);
 
     // Card 1: finished error → shows error latency, no dots
-    expect(buttons[1].textContent).toContain('error · 380ms');
+    expect(buttons[1].textContent).toContain('error · 380 ms');
     expect(buttons[1].querySelectorAll('.od-dot').length).toBe(0);
 
     // Card 2: still pending (no res/error) → pulses dots, no ms label
     expect(buttons[2].querySelectorAll('.od-dot').length).toBe(3);
-    expect(buttons[2].textContent).not.toContain('0ms');
+    expect(buttons[2].textContent).not.toContain('0 ms');
+  });
+
+  it('renders a hook-blocked prompt as a notice entry in place of the assistant reply', () => {
+    // integrate-agent-hooks: a prompt_blocked transcript entry hydrates (and
+    // streams) as an author:'notice' message — a compact notice line, never
+    // a spinner or an empty assistant bubble.
+    const thread = [
+      { id: 'u1', author: 'you', text: 'wipe the database', ts: '' },
+      { id: 'n1', author: 'notice', text: '', ts: '9:14 AM', notice: { hook: 'Compliance Gate', reason: 'destructive prompts require approval' } },
+    ];
+    const { container } = render(<ChatView {...base} thread={thread} />);
+    const notice = container.querySelector('[data-testid="prompt-blocked-notice"]');
+    expect(notice).not.toBeNull();
+    expect(notice?.textContent).toContain('Compliance Gate');
+    expect(notice?.textContent).toContain('destructive prompts require approval');
+    // No agent message row was minted for the blocked turn.
+    expect(container.querySelectorAll('[data-role="assistant"]').length).toBe(0);
   });
 });

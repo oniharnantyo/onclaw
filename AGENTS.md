@@ -4,7 +4,7 @@ This file provides guidance to agent when working with code in this repository.
 
 ## What OnClaw Is
 
-OnClaw is a multi-tenant, self-hosted **AI agent workspace** — an OpenClaw / Hermes alternative. Each tenant gets a **workspace** (e.g. "Acme Corp") where members create named **agents** (Atlas, Beacon, …) configured with a system prompt, provider/model, temperature, exposed tools, skills, slash commands, and MCP servers. Agents are reached through direct chats, team **channels** (`#ops`, `#incidents`), and **cron schedules** (e.g. a morning digest); executions appear as **runs** with tool-call cards (`grafana.query`, `files.write`, …) in the transcript.
+OnClaw is a multi-tenant, self-hosted **AI agent workspace** — an OpenClaw / Hermes alternative. Each tenant gets a **workspace** (e.g. "Acme Corp") where members create named **agents** (Atlas, Beacon, …) configured with a system prompt, provider/model, temperature, exposed tools, skills, slash commands, MCP servers, and hooks. Agents are reached through direct chats, team **channels** (`#ops`, `#incidents`), and **cron schedules** (e.g. a morning digest); executions appear as **runs** with tool-call cards (`grafana.query`, `files.write`, …) in the transcript.
 
 ## Fixed Stack & Requirements
 
@@ -103,4 +103,5 @@ Use these names consistently across schema, API, and UI (they come from the prot
 - **Cron / Schedule** — name, expression, next/last run, trigger, email routing.
 - **Run** — one agent execution: status/state, tokens used, started/last-active.
 - **Skills / MCP servers / Tools** — agent-attachable capabilities.
+- **Hooks** — event-driven policy gates (`run_started`, `user_prompt_submit`, `pre_tool_use`, `post_tool_use`, `run_finished`) defined at three levels — instance (builtin/managed), workspace, agent — evaluated in tier order with first-block-wins; handlers are `http`, `command` (exit 0 allow / 2 block), `mcp_tool`, or `prompt` (decide-only evaluator). Hooks are soft gates: a block returns the canonical block JSON as the tool result or ends the turn with a `prompt_blocked` notice — never a run failure.
 - **API keys / Tokens** — per-workspace credentials.

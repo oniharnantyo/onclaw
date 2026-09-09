@@ -46,6 +46,7 @@ type Store interface {
 	ToolSettings() ToolSettingsStore
 	WorkspaceMCPServers() WorkspaceMCPServers
 	AgentMCPServers() AgentMCPServers
+	Hooks() HookStore
 	WithTx(ctx context.Context, fn func(Store) error) error
 	Close() error
 }

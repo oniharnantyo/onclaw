@@ -1192,3 +1192,127 @@ describe('modals/AgentConfigModal', () => {
     expect(screen.queryByTestId('btn-remove-agent-mcp-srv-private')).toBeNull();
   });
 });
+
+describe('modals/AgentConfigModal — Hooks section (integrate-agent-hooks)', () => {
+  const hooksTenant = {
+    id: 'acme',
+    sub: 'acme',
+    name: 'Acme Corp',
+    providers: [],
+  };
+
+  const hookRow = (overrides: Record<string, unknown> = {}) => ({
+    id: 'hook-agent-1',
+    agent_id: 'radar',
+    workspace_id: 'acme',
+    name: 'Private Shell Gate',
+    event: 'pre_tool_use',
+    matcher: 'execute',
+    handler_type: 'command',
+    config: { command: '/usr/local/bin/gate' },
+    timeout_ms: 5000,
+    on_failure: 'allow',
+    enabled: true,
+    position: 0,
+    status: 'ok',
+    created_at: '2026-09-01T00:00:00Z',
+    updated_at: '2026-09-01T00:00:00Z',
+    ...overrides,
+  });
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useAuthStore.setState({ memberships: [] });
+    vi.spyOn(api.providers, 'list').mockResolvedValue({ providers: [] });
+    vi.spyOn(api.providers, 'models').mockResolvedValue({ source: 'none', models: [] });
+    vi.spyOn(api.skills, 'list').mockResolvedValue({ skills: [] });
+    vi.spyOn(api.agents, 'listSkills').mockResolvedValue({ skills: [] });
+    vi.spyOn(api.agents, 'listMcpServers').mockResolvedValue({ servers: [] });
+    vi.spyOn(api.mcp, 'list').mockResolvedValue({ servers: [] });
+    vi.spyOn(api.tools, 'list').mockResolvedValue({ tools: [] });
+  });
+
+  /** Renders the edit modal with hooks resolved and opens the Hooks tab. */
+  async function openHooksTab(listHooks: { instance: any[]; workspace: any[]; agent: any[] }) {
+    const detailAgent = {
+      id: 'radar', workspace_id: 'acme', slug: 'radar', name: 'Radar', role: 'Reviewer',
+      description: '', brief: 'Review all PRs', identity: '', soul: '', bootstrap: '',
+      provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet', temperature: 1.0,
+      autonomy: 'approval' as const, tools: [], skills: [], enabled_mcps: [],
+      avatar: {}, prompts_status: 'ready' as const, created_at: '', updated_at: '',
+    };
+    vi.spyOn(api.agents, 'get').mockResolvedValue({ agent: detailAgent });
+    const listHooksSpy = vi.spyOn(api.agents, 'listHooks').mockResolvedValue(listHooks as any);
+
+    render(<AgentConfigModal draft={{ id: 'radar', name: 'Radar' }} tenant={hooksTenant} onClose={vi.fn()} onSave={vi.fn()} />);
+    await waitFor(() => {
+      expect(screen.queryByTestId('agent-modal-loading')).toBeNull();
+    });
+    expect(listHooksSpy).toHaveBeenCalledWith('acme', 'radar');
+    fireEvent.click(screen.getByText('Hooks'));
+    await waitFor(() => {
+      expect(screen.getByTestId('agent-hooks-pane')).not.toBeNull();
+    });
+  }
+
+  it('shows the mandatory instance and workspace hooks read-only with level badges and no controls', async () => {
+    await openHooksTab({
+      instance: [hookRow({ id: 'hook-inst', name: 'Org Gate', agent_id: undefined, workspace_id: undefined, handler_type: 'http' })],
+      workspace: [hookRow({ id: 'hook-ws', name: 'WS Observer', agent_id: undefined })],
+      agent: [hookRow()],
+    });
+
+    // The agent's own hook is editable.
+    expect(screen.getByTestId('agent-hook-hook-agent-1')).not.toBeNull();
+    expect(screen.getByTestId('btn-edit-agent-hook-hook-agent-1')).not.toBeNull();
+
+    // Instance + workspace rows render read-only with their level marked.
+    expect(screen.getByTestId('agent-hook-inherited-hook-inst').textContent).toContain('Org Gate');
+    expect(screen.getByTestId('agent-hook-level-hook-inst').textContent).toBe('Instance');
+    expect(screen.getByTestId('agent-hook-inherited-hook-ws').textContent).toContain('WS Observer');
+    expect(screen.getByTestId('agent-hook-level-hook-ws').textContent).toBe('Workspace');
+
+    // Neither offers disable or exclusion controls (D13).
+    expect(screen.queryByRole('switch', { name: 'Enable Org Gate' })).toBeNull();
+    expect(screen.queryByRole('switch', { name: 'Enable WS Observer' })).toBeNull();
+    expect(screen.queryByTestId('btn-edit-agent-hook-hook-inst')).toBeNull();
+    expect(screen.queryByTestId('btn-remove-agent-hook-hook-ws')).toBeNull();
+  });
+
+  it('creates an agent-private hook through the shared dialog on the agent endpoints', async () => {
+    await openHooksTab({ instance: [], workspace: [], agent: [] });
+    expect(screen.getByTestId('agent-hooks-empty')).not.toBeNull();
+
+    const createHook = vi.spyOn(api.agents, 'createHook').mockResolvedValue({
+      hook: hookRow({ id: 'hook-new', name: 'Gate' }),
+      match_count: { matched: 1, of: 12 },
+    } as any);
+
+    fireEvent.click(screen.getByTestId('btn-add-agent-hook'));
+    await waitFor(() => {
+      expect(screen.getByTestId('modal-hook')).not.toBeNull();
+    });
+    fireEvent.change(screen.getByTestId('input-hook-name'), { target: { value: 'Gate' } });
+    fireEvent.change(screen.getByTestId('select-hook-handler'), { target: { value: 'http' } });
+    fireEvent.change(screen.getByTestId('input-hook-url'), { target: { value: 'https://hooks.example.com/x' } });
+    fireEvent.click(screen.getByTestId('btn-hook-save'));
+
+    await waitFor(() => {
+      expect(createHook).toHaveBeenCalledWith('acme', 'radar', {
+        name: 'Gate',
+        event: 'pre_tool_use',
+        matcher: '',
+        handler_type: 'http',
+        config: { url: 'https://hooks.example.com/x' },
+        timeout_ms: 5000,
+        on_failure: 'allow',
+        enabled: true,
+      });
+    });
+    fireEvent.click(screen.getByTestId('btn-hook-done'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('modal-hook')).toBeNull();
+      expect(screen.getByTestId('agent-hook-hook-new')).not.toBeNull();
+    });
+  });
+});

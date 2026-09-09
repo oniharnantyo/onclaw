@@ -84,12 +84,12 @@ func TestWorkspaceSkillValidate(t *testing.T) {
 	}
 
 	cases := map[string]func(*WorkspaceSkill){
-		"empty workspace id":  func(s *WorkspaceSkill) { s.WorkspaceID = "" },
-		"reserved name":       func(s *WorkspaceSkill) { s.Name = "api" },
-		"invalid source":      func(s *WorkspaceSkill) { s.Source = "marketplace" },
-		"invalid version":     func(s *WorkspaceSkill) { s.Version = "1.0" },
-		"huge description":    func(s *WorkspaceSkill) { s.Description = strings.Repeat("x", MaxSkillDescriptionBytes+1) },
-		"invalid dependency":  func(s *WorkspaceSkill) { s.Dependencies.Binaries = []string{"has space"} },
+		"empty workspace id": func(s *WorkspaceSkill) { s.WorkspaceID = "" },
+		"reserved name":      func(s *WorkspaceSkill) { s.Name = "api" },
+		"invalid source":     func(s *WorkspaceSkill) { s.Source = "marketplace" },
+		"invalid version":    func(s *WorkspaceSkill) { s.Version = "1.0" },
+		"huge description":   func(s *WorkspaceSkill) { s.Description = strings.Repeat("x", MaxSkillDescriptionBytes+1) },
+		"invalid dependency": func(s *WorkspaceSkill) { s.Dependencies.Binaries = []string{"has space"} },
 	}
 	for label, mutate := range cases {
 		s := base()

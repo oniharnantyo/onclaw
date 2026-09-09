@@ -10,12 +10,15 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
+	"github.com/google/uuid"
 	"github.com/oniharnantyo/onclaw/internal/agents/backend"
+	"github.com/oniharnantyo/onclaw/internal/agents/hooks"
 	"github.com/oniharnantyo/onclaw/internal/agents/mcp"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/providers"
@@ -53,6 +56,21 @@ type Runner struct {
 	mcpPolicy  mcp.MCPPolicy
 	mcpManager mcp.ToolSource
 	mcpStatus  mcp.StatusWriter
+
+	hooks      *hooks.Dispatcher
+	hooksWired bool
+
+	// hooksRuns carries the per-run hook chain from Run to its approval
+	// Resume so D4 call-ID dedup spans the interrupt boundary: the Resolved
+	// that evaluated a call before the interrupt is the same one consulted on
+	// the approved re-execution. Entries are remembered when a run with hooks
+	// starts and forgotten when drainAgentEvents reaches a terminal outcome;
+	// an interrupted turn keeps its entry until the resume reuses it or the
+	// next run on the session replaces it. A resumed turn in a fresh process
+	// (restart) resolves a new chain — the decision cache is per-run, and the
+	// run did not survive the restart.
+	hooksMu   sync.Mutex
+	hooksRuns map[RunKey]*hooks.Resolved
 
 	baseCtx context.Context
 	runMgr  *runManager
@@ -142,6 +160,20 @@ func WithMCPStatusWriter(w mcp.StatusWriter) RunnerOption {
 	}
 }
 
+// WithHooks supplies the lifecycle-hook dispatcher consulted at the runtime
+// seams (design.md D2): prompt submission and tool calls on the run's
+// context, observers detached. Default: a no-op dispatcher that resolves no
+// hooks and skips resolution entirely; the composition root wires the real
+// one.
+func WithHooks(d *hooks.Dispatcher) RunnerOption {
+	return func(r *Runner) {
+		if d != nil {
+			r.hooks = d
+			r.hooksWired = true
+		}
+	}
+}
+
 // WithEnabledSkillReader supplies the workspace-skill registry reader that
 // governs the workspace skills tier (design D2/D3): only skills whose rows
 // are enabled attach to agents. The composition root wires the store-backed
@@ -225,6 +257,8 @@ func NewRunner(
 		mcpPolicy:           noopMCPPolicy{},
 		mcpManager:          noopMCPTools{},
 		mcpStatus:           noopMCPStatus{},
+		hooks:               hooks.NewNoopDispatcher(),
+		hooksRuns:           make(map[RunKey]*hooks.Resolved),
 		summarizationMargin: DefaultSummarizationMargin,
 		baseCtx:             context.Background(),
 	}
@@ -293,6 +327,12 @@ type agentConfig struct {
 	Filesystem    *FilesystemConfig
 	Skills        *SkillsConfig
 	Summarization *SummarizationConfig
+
+	// Hooks is the run's resolved lifecycle-hook chain (design.md D2); nil or
+	// hook-free attaches no hooks middleware. HooksBase carries the per-run
+	// event identity every delivery is built from.
+	Hooks     *hooks.Resolved
+	HooksBase *hooks.Event
 }
 
 // validateAgentConfig checks that an agentConfig has all required fields
@@ -645,6 +685,8 @@ func (r *Runner) composeAgent(
 		Filesystem:    cfg.Filesystem,
 		Skills:        cfg.Skills,
 		Summarization: cfg.Summarization,
+		Hooks:         cfg.Hooks,
+		HooksBase:     cfg.HooksBase,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("compose agent: %w", err)
@@ -665,6 +707,8 @@ func (r *Runner) execute(
 	req ExecRequest,
 	sessionAdapter *ADKSessionAdapter,
 	ephemeral bool,
+	hookChain *hooks.Resolved,
+	hookBase hooks.Event,
 ) *EventStream {
 	var sessionStore adk.SessionEventStore[*schema.AgenticMessage] = sessionAdapter
 	var cpStore adk.CheckPointStore = sessionAdapter
@@ -683,7 +727,7 @@ func (r *Runner) execute(
 	})
 
 	stream := NewEventStream(128)
-	go r.streamRun(handle, cancelOpt, runner, stream, req)
+	go r.streamRun(handle, cancelOpt, runner, stream, req, hookChain, hookBase)
 	return stream
 }
 
@@ -758,6 +802,35 @@ func (r *Runner) run(ctx context.Context, req ExecRequest, ephemeral bool) (*Eve
 		return nil, fmt.Errorf("agent.Run: %w", err)
 	}
 
+	// Hooks are resolved ONCE per run (design.md D2, D7): definitions read
+	// fresh, matchers compiled once, per-run state (call-ID dedup, prompt
+	// caps) owned by the chain. The chain is shared with the middleware and
+	// carried across an approval resume so pre_tool_use evaluates each call
+	// exactly once (D4). Runners without a wired dispatcher skip resolution
+	// entirely; store-level read failures fail the run — a policy gate must
+	// not silently disappear.
+	hookChain, err := r.resolveHooksChain(ctx, ws, domainAgent)
+	if err != nil {
+		return nil, fmt.Errorf("agent.Run: %w", err)
+	}
+	hookBase := hookBaseEvent(normalizeOrigin(req.Origin), ws, domainAgent, user, req.SessionID)
+
+	// Run-entry seam (design.md D2/D6): user_prompt_submit evaluates BEFORE
+	// the model is ever called. A block ends the turn with the notice + a
+	// well-formed turn_completed terminal — zero tokens, live stream
+	// terminates cleanly — and the notice persists so a reloaded transcript
+	// shows why the turn has no assistant reply.
+	if hookChain.HasHooks() {
+		blocked, hookName, reason := hookChain.EvaluatePromptSubmission(ctx, hookBase)
+		if blocked {
+			return r.blockedPromptTurn(ctx, req, ephemeral, hookChain, hookBase, hookName, reason), nil
+		}
+		hookChain.ObserveRunStarted(ctx, hookBase)
+		cfg.Hooks = hookChain
+		cfg.HooksBase = &hookBase
+		r.rememberHookChain(runKeyOf(req), hookChain)
+	}
+
 	adkAgent, err := r.composeAgent(ctx, &cfg, ws, user, role, resolvedTools, domainAgent)
 	if err != nil {
 		return nil, fmt.Errorf("agent.Run: %w", err)
@@ -782,8 +855,134 @@ func (r *Runner) run(ctx context.Context, req ExecRequest, ephemeral bool) (*Eve
 	if err != nil {
 		return nil, fmt.Errorf("agent.Run: %w", err)
 	}
-	return r.execute(handle, cancelOpt, adkAgent, req, sessionAdapter, ephemeral), nil
+	return r.execute(handle, cancelOpt, adkAgent, req, sessionAdapter, ephemeral, hookChain, hookBase), nil
 }
+
+// resolveHooksChain resolves the run's hook chain (D2). A runner whose
+// dispatcher was never wired (the no-op default) skips resolution entirely;
+// a wired dispatcher resolves fresh every run (D7) and store-level read
+// failures return an error — the caller owns the run's fate.
+func (r *Runner) resolveHooksChain(ctx context.Context, ws *domain.Workspace, agent *domain.Agent) (*hooks.Resolved, error) {
+	if !r.hooksWired || r.hooks == nil {
+		return hooks.NewNoopDispatcher().Resolve(ctx, ws.ID, agent.ID)
+	}
+	return r.hooks.Resolve(ctx, ws.ID, agent.ID)
+}
+
+// hookBaseEvent builds the per-run hook event identity every delivery clones
+// (hooks design.md D1: workspace, agent, session, originating user, origin).
+func hookBaseEvent(origin string, ws *domain.Workspace, agent *domain.Agent, user *domain.User, sessionID string) hooks.Event {
+	base := hooks.Event{
+		Origin:    origin,
+		Workspace: hooks.EventRef{ID: ws.ID, Name: ws.Name},
+		Agent:     hooks.EventRef{ID: agent.ID, Name: agent.Name},
+		SessionID: sessionID,
+	}
+	if user != nil {
+		base.User = &hooks.EventRef{ID: user.ID, Name: user.Name}
+	}
+	return base
+}
+
+// blockedPromptTurn terminates a hook-blocked submission (design.md D6): the
+// notice transcript event, a well-formed turn_completed terminal, the durable
+// history entry (non-ephemeral sessions), the detached observers, and a
+// closed stream — the model is never called, so the turn spends zero tokens
+// and live consumers see a clean termination instead of a loading hang.
+func (r *Runner) blockedPromptTurn(
+	ctx context.Context,
+	req ExecRequest,
+	ephemeral bool,
+	chain *hooks.Resolved,
+	base hooks.Event,
+	hookName, reason string,
+) *EventStream {
+	turnID := uuid.NewString()
+	now := time.Now().UTC()
+	stream := NewEventStream(128)
+	stream.Send(&TranscriptEvent{
+		Kind:       TranscriptEventTurnStarted,
+		OccurredAt: now,
+		TurnID:     turnID,
+	})
+	stream.Send(&TranscriptEvent{
+		Kind:          TranscriptEventPromptBlocked,
+		OccurredAt:    now,
+		TurnID:        turnID,
+		PromptBlocked: &PromptBlockedPayload{Hook: hookName, Reason: reason},
+	})
+	stream.Send(&TranscriptEvent{
+		Kind:       TranscriptEventTurnCompleted,
+		OccurredAt: time.Now().UTC(),
+		TurnID:     turnID,
+	})
+
+	// Durable notice (D6), best-effort: the enforcement already happened; a
+	// failing history write degrades the reloaded view, never the decision.
+	if !ephemeral {
+		adapter := NewADKSessionAdapter(r.sessionEvents, r.checkpoints, req.WorkspaceID)
+		persistPromptBlocked(ctx, adapter, req.SessionID, turnID, hookName, reason)
+	}
+
+	// Observers see the full lifecycle (D1): the run started and finished
+	// completed — its terminal event is a well-formed turn_completed.
+	chain.ObserveRunStarted(ctx, base)
+	chain.RunFinished(ctx, base, hookRunStatusCompleted)
+
+	_ = stream.Close()
+	return stream
+}
+
+// persistPromptBlocked appends the hook-blocked prompt notice as an
+// application-owned session event so hydrated transcripts render it
+// identically to the live stream (D6).
+func persistPromptBlocked(ctx context.Context, adapter *ADKSessionAdapter, sessionID, turnID, hookName, reason string) {
+	ev := &adk.SessionEvent[*schema.AgenticMessage]{
+		EventID:   uuid.NewString(),
+		TurnID:    turnID,
+		Timestamp: time.Now().UTC(),
+		Kind:      sessionEventKindPromptBlocked,
+		Extension: &adk.SessionExtensionEvent{Data: promptBlockedEvent{Hook: hookName, Reason: reason}},
+	}
+	if err := adapter.AppendEvents(ctx, sessionID, []*adk.SessionEvent[*schema.AgenticMessage]{ev}); err != nil {
+		slog.WarnContext(ctx, "hooks: persist prompt_blocked notice failed (best-effort)",
+			"session_id", sessionID, "error", err)
+	}
+}
+
+// rememberHookChain stores the run's hook chain for a later approval Resume
+// of the same session (D4 call-ID dedup across the interrupt boundary).
+func (r *Runner) rememberHookChain(key RunKey, chain *hooks.Resolved) {
+	if !chain.HasHooks() {
+		return
+	}
+	r.hooksMu.Lock()
+	defer r.hooksMu.Unlock()
+	r.hooksRuns[key] = chain
+}
+
+// reuseHookChain returns the chain remembered by the interrupted run, or nil
+// when this resume starts fresh (no interrupted turn, or a restart).
+func (r *Runner) reuseHookChain(key RunKey) *hooks.Resolved {
+	r.hooksMu.Lock()
+	defer r.hooksMu.Unlock()
+	return r.hooksRuns[key]
+}
+
+// forgetHookChain drops the run's hook chain at a terminal outcome: the next
+// run on the session resolves fresh per-run state (D4).
+func (r *Runner) forgetHookChain(key RunKey) {
+	r.hooksMu.Lock()
+	defer r.hooksMu.Unlock()
+	delete(r.hooksRuns, key)
+}
+
+// run_finished statuses (hooks design.md D1).
+const (
+	hookRunStatusCompleted = "completed"
+	hookRunStatusFailed    = "failed"
+	hookRunStatusCancelled = "cancelled"
+)
 
 // runKeyOf builds the manager key for a request's session coordinates.
 func runKeyOf(req ExecRequest) RunKey {
@@ -797,6 +996,8 @@ func (r *Runner) streamRun(
 	runner *adk.TypedRunner[*schema.AgenticMessage],
 	stream *EventStream,
 	req ExecRequest,
+	hookChain *hooks.Resolved,
+	hookBase hooks.Event,
 ) {
 	key := runKeyOf(req)
 	defer handle.finish()
@@ -826,7 +1027,7 @@ func (r *Runner) streamRun(
 		TurnID:     turnID,
 	})
 
-	r.drainAgentEvents(handle.ctx, iter, stream, key, turnID, partialText)
+	r.drainAgentEvents(handle.ctx, iter, stream, key, turnID, partialText, hookChain, hookBase)
 }
 
 // logTapDrops emits one debug line when the live tap dropped events because
@@ -855,6 +1056,8 @@ func (r *Runner) drainAgentEvents(
 	key RunKey,
 	turnID string,
 	partialText string,
+	hookChain *hooks.Resolved,
+	hookBase hooks.Event,
 ) {
 	var lastErr error
 	var usage UsagePayload
@@ -876,6 +1079,22 @@ func (r *Runner) drainAgentEvents(
 	emit := func(ev *TranscriptEvent) {
 		stream.Send(ev)
 		r.runMgr.Broadcast(key, ev)
+	}
+
+	// settle is the terminal seam (design.md D2/D5): run_finished fires after
+	// the terminal transcript event settles — on the cancel path, after the
+	// durable cancel marker drains — with the outcome as status data. The
+	// per-run hook chain is forgotten here: the next run on the session
+	// resolves fresh per-run state (D4). The approval-interrupt short-circuit
+	// below deliberately never settles: a paused turn is not terminal, and
+	// the resumed turn keeps evaluating against the same chain. hookChain is
+	// nil only for direct drainAgentEvents callers without hooks (tests).
+	settle := func(status string) {
+		r.forgetHookChain(key)
+		if hookChain == nil || !hookChain.HasHooks() {
+			return
+		}
+		hookChain.RunFinished(ctx, hookBase, status)
 	}
 
 	recordToolStart := func(callID string, at time.Time) {
@@ -952,6 +1171,7 @@ func (r *Runner) drainAgentEvents(
 					Usage:        usageOf(usage),
 				})
 				drainToEOF(iter)
+				settle(hookRunStatusCancelled)
 				return
 			}
 			if errors.Is(event.Err, context.Canceled) {
@@ -963,6 +1183,7 @@ func (r *Runner) drainAgentEvents(
 					Usage:        usageOf(usage),
 				})
 				drainToEOF(iter)
+				settle(hookRunStatusCancelled)
 				return
 			}
 			lastErr = event.Err
@@ -1020,6 +1241,7 @@ func (r *Runner) drainAgentEvents(
 								Usage:        usageOf(usage),
 							})
 							drainToEOF(iter)
+							settle(hookRunStatusCancelled)
 							return
 						}
 						if errors.Is(err, context.Canceled) {
@@ -1043,6 +1265,7 @@ func (r *Runner) drainAgentEvents(
 								Usage:        usageOf(usage),
 							})
 							drainToEOF(iter)
+							settle(hookRunStatusCancelled)
 							return
 						}
 						lastErr = err
@@ -1208,6 +1431,7 @@ func (r *Runner) drainAgentEvents(
 			Error:      lastErr.Error(),
 			Usage:      usageOf(usage),
 		})
+		settle(hookRunStatusFailed)
 		return
 	}
 
@@ -1217,6 +1441,7 @@ func (r *Runner) drainAgentEvents(
 		TurnID:     turnID,
 		Usage:      usageOf(usage),
 	})
+	settle(hookRunStatusCompleted)
 }
 
 // drainToEOF consumes and discards the remaining ADK events so the run's
@@ -1338,6 +1563,25 @@ func (r *Runner) Resume(ctx context.Context, req ExecRequest, approval *Approval
 		return nil, fmt.Errorf("agent.Resume: %w", err)
 	}
 
+	// D4 call-ID dedup across the approval pause: reuse the interrupted
+	// run's hook chain so the approved re-execution returns the decision
+	// recorded before the interrupt instead of re-firing pre_tool_use. A
+	// fresh resume (no remembered chain — restart or nothing interrupted)
+	// resolves a new per-run chain.
+	hookBase := hookBaseEvent(normalizeOrigin(req.Origin), ws, domainAgent, user, req.SessionID)
+	hookChain := r.reuseHookChain(runKeyOf(req))
+	if hookChain == nil {
+		hookChain, err = r.resolveHooksChain(ctx, ws, domainAgent)
+		if err != nil {
+			return nil, fmt.Errorf("agent.Resume: %w", err)
+		}
+	}
+	if hookChain.HasHooks() {
+		cfg.Hooks = hookChain
+		cfg.HooksBase = &hookBase
+		r.rememberHookChain(runKeyOf(req), hookChain)
+	}
+
 	adkAgent, err := r.composeAgent(ctx, &cfg, ws, user, role, resolvedTools, domainAgent)
 	if err != nil {
 		return nil, fmt.Errorf("agent.Resume: %w", err)
@@ -1373,7 +1617,7 @@ func (r *Runner) Resume(ctx context.Context, req ExecRequest, approval *Approval
 	})
 
 	stream := NewEventStream(128)
-	go r.streamResume(handle, cancelOpt, adkRunner, stream, req, approval, approved)
+	go r.streamResume(handle, cancelOpt, adkRunner, stream, req, approval, approved, hookChain, hookBase)
 	return stream, nil
 }
 
@@ -1388,6 +1632,8 @@ func (r *Runner) streamResume(
 	req ExecRequest,
 	approval *ApprovalPayload,
 	approved bool,
+	hookChain *hooks.Resolved,
+	hookBase hooks.Event,
 ) {
 	key := runKeyOf(req)
 	defer handle.finish()
@@ -1409,9 +1655,15 @@ func (r *Runner) streamResume(
 			OccurredAt: time.Now().UTC(),
 			Error:      err.Error(),
 		})
+		// Terminal failure before any drain: run_finished still observes the
+		// outcome (D1: every terminal outcome fires, status failed).
+		r.forgetHookChain(key)
+		if hookChain.HasHooks() {
+			hookChain.RunFinished(handle.ctx, hookBase, hookRunStatusFailed)
+		}
 		return
 	}
-	r.drainAgentEvents(handle.ctx, iter, stream, key, "", "")
+	r.drainAgentEvents(handle.ctx, iter, stream, key, "", "", hookChain, hookBase)
 }
 
 // ComposeParams contains the data necessary to compose the execution instruction.

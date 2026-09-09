@@ -501,6 +501,185 @@ export interface McpServerPayload {
 
 export type PatchMcpServerPayload = Partial<McpServerPayload>;
 
+// ---------------------------------------------------------------------------
+// Agent lifecycle hooks (change integrate-agent-hooks): workspace/agent-level
+// CRUD under /workspaces/:slug/..., plus the workspace-wide dry-run and audit
+// surfaces. Secret row values inside config (http headers, command env) are
+// write-only: reads carry only the last-4 hint, and a create/update echoing
+// the hint (or an empty value) keeps the stored secret server-side.
+// ---------------------------------------------------------------------------
+
+export type HookEvent =
+  | 'run_started'
+  | 'user_prompt_submit'
+  | 'pre_tool_use'
+  | 'post_tool_use'
+  | 'run_finished';
+
+export type HookHandlerType = 'http' | 'command' | 'mcp_tool' | 'prompt' | 'script';
+
+export type HookFailurePolicy = 'allow' | 'block';
+
+export type HookStatus = 'ok' | 'error';
+
+/** Matcher: one plain string (D19 — Claude Code parity). Empty or "*" selects
+ * every occurrence; comma/pipe/space-separated charset-valid entries match
+ * exactly or by family ("web.*"); anything else reads as an unanchored RE2
+ * regex (<= 256 chars). */
+export type ApiHookMatcher = string;
+
+/** Write-side secret row (http header / command env). An omitted or empty
+ * `value` keeps the stored secret; echoing the masked hint does too. */
+export interface ApiHookSecretRowInput {
+  name: string;
+  value?: string;
+}
+
+/** Handler config shapes — one per handler_type (pinned by save validation). */
+export interface ApiHookHttpConfig {
+  url: string;
+  headers?: ApiHookSecretRowInput[];
+}
+
+export interface ApiHookCommandConfig {
+  command: string;
+  args?: string[];
+  env?: ApiHookSecretRowInput[];
+  cwd?: string;
+}
+
+export interface ApiHookMcpToolConfig {
+  /** Workspace MCP server id (D21 rename: server_id → server). */
+  server: string;
+  /** Tool name on that server (D21 rename: tool_name → tool). */
+  tool: string;
+  /** Structured key/value rows (values may use the closed ${event.*} set). */
+  input?: Record<string, unknown>;
+}
+
+export interface ApiHookPromptConfig {
+  provider: string;
+  model: string;
+  /** Policy prompt (D21 rename: prompt_template → prompt). */
+  prompt: string;
+  max_invocations_per_run?: number;
+}
+
+/** In-process sandboxed JavaScript (D22): one string inside the config JSONB,
+ * invoked as `(function(input){ … })` — no env rows, no cwd, no files. */
+export interface ApiHookScriptConfig {
+  script: string;
+}
+
+/** Read view of a hook at any level. Secret row values arrive masked as their
+ * last-4 hints; the masked config round-trips (echoing it keeps the stored
+ * secrets). */
+export interface ApiHook {
+  id: string;
+  workspace_id?: string;
+  agent_id?: string;
+  /** Instance rows only (builtin key). */
+  key?: string;
+  source?: 'builtin' | 'managed';
+  version?: number;
+  name: string;
+  event: HookEvent;
+  matcher: ApiHookMatcher;
+  /** Optional input-level gate (D20), pre_tool_use/post_tool_use
+   * only: `ToolName(pattern)` — narrows by the serialized tool input JSON. */
+  if?: string;
+  handler_type: HookHandlerType;
+  config?: any;
+  timeout_ms: number;
+  on_failure: HookFailurePolicy;
+  enabled: boolean;
+  position: number;
+  status: HookStatus;
+  status_error?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Save-time matcher report (D8): how many of the event's currently available
+ * values the matcher selects. Absent when the count source failed. */
+export interface ApiHookMatchCount {
+  matched: number;
+  of: number;
+}
+
+export interface ApiHookSaveResult {
+  hook: ApiHook;
+  match_count?: ApiHookMatchCount | null;
+}
+
+export interface ApiHookPayload {
+  name: string;
+  event: HookEvent;
+  matcher?: ApiHookMatcher;
+  /** Input gate `ToolName(pattern)` — tool events only (D20). */
+  if?: string;
+  handler_type: HookHandlerType;
+  config?: unknown;
+  timeout_ms?: number;
+  on_failure?: HookFailurePolicy;
+  enabled?: boolean;
+}
+
+export type PatchHookPayload = Partial<ApiHookPayload>;
+
+/** One audit record (D16). hook_id is nullable — records survive hook
+ * deletion with the name denormalized. */
+export interface ApiHookExecution {
+  id: string;
+  hook_id?: string | null;
+  hook_name: string;
+  hook_level: 'instance' | 'workspace' | 'agent';
+  workspace_id: string;
+  event: HookEvent;
+  decision: string;
+  duration_ms: number;
+  exit_code?: number | null;
+  http_status?: number | null;
+  detail?: string;
+  token_count?: number | null;
+  origin?: string;
+  created_at: string;
+}
+
+/** Dry-run result (D18): a REAL handler execution of a synthetic event that
+ * records nothing. decision is allow | block | failure. */
+export interface ApiHookTestResult {
+  decision: string;
+  reason?: string;
+  duration_ms: number;
+  detail?: {
+    exit_code?: number;
+    http_status?: number;
+    token_count?: number;
+  };
+  /** Captured console.log/console.error of a script dry run (D22) — present
+   * for script hooks only. */
+  console_lines?: string[];
+  error?: string;
+}
+
+/** Synthetic event knobs for the dry run. event overrides the hook's own
+ * event only for the simulated delivery. */
+export interface ApiHookTestOverrides {
+  event?: HookEvent;
+  tool_name?: string;
+  tool_args?: string;
+  origin?: string;
+  status?: string;
+}
+
+export interface ApiHookTestPayload extends ApiHookPayload {
+  /** Saved hook id — enables the server's keep-stored secret merge for the
+   * dry run of an existing hook's current config. */
+  id?: string;
+  overrides?: ApiHookTestOverrides;
+}
+
 
 type UnauthorizedHandler = () => void;
 const unauthorizedHandlers = new Set<UnauthorizedHandler>();
@@ -790,6 +969,56 @@ export const api = {
         { method: 'POST' }
       ),
   },
+  // Workspace agent lifecycle hooks (hooks.read / hooks.write; gating is
+  // server-side). The list response also carries the read-only instance
+  // section — instance hooks are mandatory visibility, no control from below.
+  hooks: {
+    list: (ws: string) =>
+      request<{ instance: ApiHook[]; hooks: ApiHook[] }>(`/workspaces/${encodeURIComponent(ws)}/hooks`, {
+        method: 'GET',
+      }),
+    create: (ws: string, body: ApiHookPayload) =>
+      request<ApiHookSaveResult>(`/workspaces/${encodeURIComponent(ws)}/hooks`, {
+        method: 'POST',
+        body,
+      }),
+    update: (ws: string, id: string, body: PatchHookPayload) =>
+      request<ApiHookSaveResult>(`/workspaces/${encodeURIComponent(ws)}/hooks/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body,
+      }),
+    delete: (ws: string, id: string) =>
+      request<void>(`/workspaces/${encodeURIComponent(ws)}/hooks/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      }),
+    // The list order IS the execution order (D14): payload is the level's
+    // hook ids in their new order.
+    reorder: (ws: string, ids: string[]) =>
+      request<void>(`/workspaces/${encodeURIComponent(ws)}/hooks/reorder`, {
+        method: 'POST',
+        body: { ids },
+      }),
+    // Dry run (D18): executes the handler against a synthetic event, records
+    // nothing. Accepts a full definition (saved or unsaved); `id` merges the
+    // stored secrets when testing an existing hook.
+    test: (ws: string, body: ApiHookTestPayload) =>
+      request<ApiHookTestResult>(`/workspaces/${encodeURIComponent(ws)}/hooks/test`, {
+        method: 'POST',
+        body,
+      }),
+    // Workspace-wide audit trail; also surfaces records of deleted hooks.
+    executions: (ws: string, limit = 50) =>
+      request<{ executions: ApiHookExecution[] }>(
+        `/workspaces/${encodeURIComponent(ws)}/hooks/executions?limit=${limit}`,
+        { method: 'GET' }
+      ),
+    // Per-hook history (unknown/deleted ids answer an empty list, not 404).
+    hookExecutions: (ws: string, id: string, limit = 50) =>
+      request<{ executions: ApiHookExecution[] }>(
+        `/workspaces/${encodeURIComponent(ws)}/hooks/${encodeURIComponent(id)}/executions?limit=${limit}`,
+        { method: 'GET' }
+      ),
+  },
   agents: {
     list: (ws: string) =>
       request<{ agents: ApiAgent[] }>(`/workspaces/${encodeURIComponent(ws)}/agents`, {
@@ -881,6 +1110,34 @@ export const api = {
         `/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/mcp-servers/${encodeURIComponent(id)}/probe`,
         { method: 'POST' }
       ),
+    // Agent-private lifecycle hooks (agent config modal, D13). The list
+    // response carries all three sections the modal shows: read-only
+    // instance + workspace visibility, plus the agent's own hooks.
+    listHooks: (ws: string, agent: string) =>
+      request<{ instance: ApiHook[]; workspace: ApiHook[]; agent: ApiHook[] }>(
+        `/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/hooks`,
+        { method: 'GET' }
+      ),
+    createHook: (ws: string, agent: string, body: ApiHookPayload) =>
+      request<ApiHookSaveResult>(`/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/hooks`, {
+        method: 'POST',
+        body,
+      }),
+    updateHook: (ws: string, agent: string, id: string, body: PatchHookPayload) =>
+      request<ApiHookSaveResult>(
+        `/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/hooks/${encodeURIComponent(id)}`,
+        { method: 'PATCH', body }
+      ),
+    deleteHook: (ws: string, agent: string, id: string) =>
+      request<void>(
+        `/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/hooks/${encodeURIComponent(id)}`,
+        { method: 'DELETE' }
+      ),
+    reorderHooks: (ws: string, agent: string, ids: string[]) =>
+      request<void>(`/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/hooks/reorder`, {
+        method: 'POST',
+        body: { ids },
+      }),
   },
   skills: {
     // List includes locked system-tier entries alongside registry rows.

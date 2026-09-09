@@ -399,3 +399,32 @@ func TestAgentAndSkillPermissions(t *testing.T) {
 		}
 	}
 }
+
+func TestHooksPermissions(t *testing.T) {
+	// Owner, Admin and Superadmin have both hooks.read and hooks.write
+	for _, p := range []string{domain.HooksRead, domain.HooksWrite} {
+		if !domain.HasPermission(domain.OwnerPermissions, p) {
+			t.Errorf("expected OwnerPermissions to have %s", p)
+		}
+		if !domain.HasPermission(domain.AdminPermissions, p) {
+			t.Errorf("expected AdminPermissions to have %s", p)
+		}
+		if !domain.HasPermission(domain.SuperadminPermissions, p) {
+			t.Errorf("expected SuperadminPermissions to have %s", p)
+		}
+	}
+
+	// Member has neither (reads are not granted either)
+	for _, p := range []string{domain.HooksRead, domain.HooksWrite} {
+		if domain.HasPermission(domain.MemberPermissions, p) {
+			t.Errorf("expected MemberPermissions NOT to have %s", p)
+		}
+	}
+
+	// Both are part of the closed catalog
+	for _, p := range []string{domain.HooksRead, domain.HooksWrite} {
+		if !domain.IsValidPermission(p) {
+			t.Errorf("expected %s to be a valid permission", p)
+		}
+	}
+}

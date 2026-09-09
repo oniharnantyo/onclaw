@@ -94,6 +94,13 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	}
 	slog.Info("master tenant verified", "slug", master.Slug, "id", master.ID)
 
+	// Materialize the builtin instance hooks shipped with this binary (D15):
+	// version-guarded upserts, then removal of builtin rows this binary no
+	// longer ships. Idempotent and race-safe under concurrent starts.
+	if err := bootstrap.SyncBuiltinHooks(ctx, st); err != nil {
+		return fmt.Errorf("failed to sync builtin instance hooks: %w", err)
+	}
+
 	// Bootstrap initial superadmin from env if configured
 	seedCfg := bootstrap.SuperadminSeedConfig{
 		Email:        cfg.SuperadminEmail,
@@ -172,18 +179,20 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	)
 
 	router := server.NewRouter(server.RouterOptions{
-		Store:         st,
-		Storage:       stor,
-		Issuer:        issuer,
-		EncryptionKey: encKey,
-		ModelCatalog:  modelCatalog,
-		AgentService:  agentService,
-		WorkspaceDir:  cfg.WorkspaceRoot(),
-		OnClawDir:     cfg.OnClawDir,
-		Runner:        runner,
-		ToolSettings:  toolSettings,
-		MCPSettings:   mcpSettings,
-		MCPManager:    mcpManager,
+		Store:               st,
+		Storage:             stor,
+		Issuer:              issuer,
+		EncryptionKey:       encKey,
+		ModelCatalog:        modelCatalog,
+		AgentService:        agentService,
+		WorkspaceDir:        cfg.WorkspaceRoot(),
+		OnClawDir:           cfg.OnClawDir,
+		Runner:              runner,
+		ToolSettings:        toolSettings,
+		MCPSettings:         mcpSettings,
+		MCPManager:          mcpManager,
+		HooksCommandEnabled: cfg.HooksCommandEnabled,
+		HooksScriptEnabled:  cfg.HooksScriptEnabled,
 	})
 
 	listenAddr := cfg.ListenAddr

@@ -196,6 +196,80 @@ describe('fetchSessionTranscript — live delta vocabulary (catch-up stream)', (
 });
 
 // ---------------------------------------------------------------------------
+// prompt_blocked — hook enforcement transcript entries (integrate-agent-hooks)
+// ---------------------------------------------------------------------------
+
+describe('fetchSessionTranscript — prompt_blocked notices', () => {
+  it('hydrates a blocked prompt as a standalone notice between the user message and the turn terminal', async () => {
+    vi.mocked(api.agents.sessionEvents).mockResolvedValueOnce({
+      next: '',
+      events: [
+        { id: 'e1', kind: 'message_completed', occurred_at: 't0', turn_id: 'turn-1',
+          message: { role: 'user', content: 'wipe the production database' } },
+        // The hook block: the model never ran; a well-formed terminal follows.
+        { id: 'e2', kind: 'prompt_blocked', occurred_at: 't1', turn_id: 'turn-1',
+          prompt_blocked: { hook: 'Compliance Gate', reason: 'destructive prompts require approval' } },
+        { id: 'e3', kind: 'turn_completed', occurred_at: 't2', turn_id: 'turn-1' },
+      ],
+    });
+
+    const { messages } = await fetchSessionTranscript('ws1', 'atlas', 'sess_h-blocked');
+
+    expect(messages.map((m: any) => m.author)).toEqual(['you', 'notice']);
+    expect(messages[1].notice).toEqual({ hook: 'Compliance Gate', reason: 'destructive prompts require approval' });
+    expect(messages[1].text).toBe('');
+  });
+
+  it('mints the same notice shape from the live catch-up stream (identical rendering after reload)', async () => {
+    const seed = () => {
+      const db: any = {
+        ws1: {
+          id: 'ws1', name: 'WS', sub: 'ws1', tz: 'UTC',
+          agents: [], channels: [], people: [], cron: [], runs: [], members: [], integrations: [], skillLib: [], keys: [],
+          threads: { 'chat-1': { active: 'sess_cu2', list: [{ id: 'sess_cu2', title: 'Live', updated: '', messages: [] }] } },
+        },
+      };
+      useStore.setState({
+        db,
+        ui: { configAgent: null, cronEdit: null, wsOpen: false, running: false, toasts: [] },
+      });
+    };
+    seed();
+    const encoder2 = new TextEncoder();
+    const frame = (ev: any) => `data: ${JSON.stringify(ev)}\n\n`;
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder2.encode(frame({ id: 'x1', kind: 'prompt_blocked', occurred_at: 't1', turn_id: 'turn-9', prompt_blocked: { hook: 'Gate', reason: 'nope' } })));
+            controller.enqueue(encoder2.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+      } as unknown as Response)
+    ));
+
+    attachCatchUpStream({
+      workspaceId: 'ws1', agentSlug: 'atlas', chatId: 'chat-1', sessionId: 'sess_cu2',
+    });
+
+    await vi.waitFor(() => {
+      const sess = useStore.getState().db.ws1.threads['chat-1'].list.find((x: any) => x.id === 'sess_cu2');
+      expect(sess.messages).toHaveLength(1);
+    });
+    const sess = useStore.getState().db.ws1.threads['chat-1'].list.find((x: any) => x.id === 'sess_cu2');
+    const noticeMsg = sess.messages[0] as any;
+    expect(noticeMsg.author).toBe('notice');
+    expect(noticeMsg.notice).toEqual({ hook: 'Gate', reason: 'nope' });
+    expect(useStore.getState().ui.running).toBe(false);
+    vi.unstubAllGlobals();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // streamSessionEvents — resilient SSE consumer for the catch-up stream (D4)
 // ---------------------------------------------------------------------------
 

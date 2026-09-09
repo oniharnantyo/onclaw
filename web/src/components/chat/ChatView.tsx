@@ -11,6 +11,7 @@ import { UserMessage } from "./UserMessage";
 import { OtherMessage } from "./OtherMessage";
 import { AgentMessage } from "./AgentMessage";
 import { ErrorEntry } from "./ErrorEntry";
+import { PromptBlockedNotice } from "./PromptBlockedNotice";
 import { ThinkingRow } from "./ThinkingRow";
 import { toolCatalog } from "../../lib/toolCatalog";
 
@@ -81,9 +82,6 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
   const listRef = useRef(null);
   const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
-  const prevLen = useRef(thread.length);
-  const prevChat = useRef(target.obj.id);
-  const prevSession = useRef(session && session.id);
 
   // long-history guard: render the latest window, load older on demand
   const [msgLimit, setMsgLimit] = useState(80);
@@ -93,31 +91,23 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
   const visibleMsgs = thread.length > msgLimit ? thread.slice(thread.length - msgLimit) : thread;
   const hiddenMsgs = thread.length - visibleMsgs.length;
 
-  const pinBottom = () => {
-    const el = listRef.current;
-    if (el && atBottomRef.current) el.scrollTop = el.scrollHeight;
-  };
-
+  // A new message lands at the bottom — a sent message included, so the
+  // response starts in view — and chat/session switches reset to the bottom.
   useEffect(() => {
     const el = listRef.current;
-    if (!el) return;
-    const sameChat = target.obj.id === prevChat.current;
-    const sameSession = (session && session.id) === prevSession.current;
-    const lastMsg = thread[thread.length - 1];
-    const grewUser = sameChat && sameSession && thread.length > prevLen.current && lastMsg && lastMsg.author === 'you';
-    prevLen.current = thread.length;
-    prevChat.current = target.obj.id;
-    prevSession.current = sessionId;
-    if (grewUser) {
-      // assistant-ui turnAnchor="top" — a fresh user message pins to the top of the viewport
-      const nodes = el.querySelectorAll('[data-role="user"]');
-      const node = nodes[nodes.length - 1];
-      if (node) el.scrollTop = Math.max(0, node.offsetTop - 16);
-      else el.scrollTop = el.scrollHeight;
-    } else {
-      el.scrollTop = el.scrollHeight;
-    }
-  }, [thread.length, typing, target.obj.id, sessionId]); // eslint-disable-line react-hooks/exhaustive-deps -- scroll tracks thread.length only; full deps would re-run on every store update and jump the viewport
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [thread.length, typing, target.obj.id, sessionId]);
+
+  // Follow the streaming tail: deltas mutate the last message in place (no
+  // length change, the effect above never fires), so pinning runs after every
+  // render while a turn is in flight — but only while the user hasn't
+  // scrolled away; onScroll keeps atBottomRef honest and the jump-to-bottom
+  // button re-engages it.
+  useEffect(() => {
+    if (!busy && !typing) return;
+    const el = listRef.current;
+    if (el && atBottomRef.current) el.scrollTop = el.scrollHeight;
+  });
 
   const onScroll = (e) => {
     const el = e.currentTarget;
@@ -188,10 +178,14 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
               if (m.author === 'you') return <UserMessage key={m.id} m={m} onEdit={onEditSubmit} members={channelMembers}/>;
               if (m.author === 'other') return <OtherMessage key={m.id} m={m} members={channelMembers}/>;
               if (m.author === 'error') return <ErrorEntry key={m.id} m={m}/>;
+              // Hook-blocked prompt notice (integrate-agent-hooks): a
+              // `prompt_blocked` transcript entry renders in place of the
+              // assistant reply that never came — live and hydrated alike.
+              if (m.author === 'notice') return <PromptBlockedNotice key={m.id} m={m}/>;
               return (
                 <AgentMessage key={m.id} m={m} agent={msgAgent} inChannel={target.kind === 'channel'}
                   busy={busy} isLast={isLast}
-                  onCopy={onCopy} onGrow={pinBottom}
+                  onCopy={onCopy}
                   onRefresh={onRefresh} onBranch={onBranch} members={channelMembers}
                   sessionId={sessionId}
                   onResolveApproval={handleResolveApproval}/>
