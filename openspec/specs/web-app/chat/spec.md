@@ -7,31 +7,47 @@ The chat experience for agents, channels, and teammate direct messages: transcri
 ## Requirements
 
 ### Requirement: Transcript rendering
-The transcript SHALL render user messages, agent messages, and teammate messages distinctly, with agent messages showing the agent's identity. Agent message text SHALL render as markdown — headings, lists, emphasis, links, inline code, and fenced code blocks — with `@mention` highlighting continuing to apply within rendered text. Agent tool invocations SHALL render as expandable cards exposing the tool's catalog display name (the raw tool id SHALL remain visible on the expanded card), the call's arguments, and the call's result; a completed card whose result is absent SHALL render an explicit no-output state and SHALL NOT display a fabricated result, row count, or latency. A tool card SHALL show a running state while its call is in flight and latency in milliseconds once completed. Messages produced by a scheduled run SHALL carry a visible cron-origin marker naming the schedule.
-
-#### Scenario: Markdown rendering
-- **WHEN** an agent reply contains a heading, a bullet list, and a fenced code block
-- **THEN** the transcript renders them as formatted markdown, not as literal plain text
-
-#### Scenario: Mention highlighting inside markdown
-- **WHEN** an agent reply renders as markdown and contains `@Atlas`
-- **THEN** the mention still renders with its highlight styling
+The transcript SHALL render user messages, agent messages, and teammate messages distinctly, with agent messages showing the agent's identity, and agent tool invocations rendered as expandable cards. A card's collapsed header SHALL show the tool's display name and icon, a human-readable one-line summary of the call (not raw argument JSON), and the latency in milliseconds once completed. A tool card SHALL show a running state while its turn is in flight, an outcome summary when completed, and an error state — the intent form of the summary styled as an error — when the invocation failed. Messages produced by a scheduled run SHALL carry a visible cron-origin marker naming the schedule.
 
 #### Scenario: Tool call card
 - **WHEN** an agent message includes a tool invocation that has completed
-- **THEN** the transcript shows a card with the tool's display name, its arguments, its result, and the measured latency (e.g. `760ms`), with the raw tool id visible when expanded
+- **THEN** the collapsed card header shows the tool's display name, a human-readable outcome summary (e.g. "Appended to USER.md" for a memory append; the command verbatim for a shell call), and the latency (e.g. `760ms`) — not truncated raw JSON
 
 #### Scenario: Tool card running state
 - **WHEN** an agent message's tool invocation is still executing
-- **THEN** the card shows a running state instead of a latency value
+- **THEN** the card shows the intent form of the summary (e.g. "Appending to USER.md") with a running indicator instead of a latency value
 
-#### Scenario: Completed card with no result
-- **WHEN** a tool call completes without producing result content
-- **THEN** its expanded card shows an explicit no-output state — never a synthesized result line
+#### Scenario: Tool card error state
+- **WHEN** a tool invocation completes with an error
+- **THEN** the card shows the intent form of the summary in an error style with the failure latency, and the expanded view shows the error text
+
+#### Scenario: Summary facts from results
+- **WHEN** a completed call's result provides a derivable fact (e.g. a web search returning 8 results)
+- **THEN** the outcome summary appends the fact (e.g. "Searched for 'onclaw agent' — 8 results")
 
 #### Scenario: Cron-origin message
 - **WHEN** a thread message was produced by schedule "morning-digest"
 - **THEN** the message displays a marker naming that schedule
+
+### Requirement: Tool card expanded detail
+Expanding a tool card SHALL show labeled fields for the call's arguments — only arguments actually present — with values shaped by kind: monospace chips for paths, selectors, element refs, and URLs; quoted literals for queries and patterns; clamped content blocks with a "show all" affordance for long text. A file-edit call SHALL render the replaced and replacement text as a stacked before/after diff. The expanded view SHALL render the result shaped by its kind (search results as a titled list, text output as a clamped block) and SHALL include the wall-clock time the call started. A raw toggle SHALL expose the full, unmodified argument and result JSON of any card.
+
+#### Scenario: Labeled argument fields
+- **WHEN** a memory append card is expanded
+- **THEN** the view shows labeled fields for the action and path, and the appended content as a content block — with no fields for absent arguments
+
+#### Scenario: File edit diff
+- **WHEN** a file edit card is expanded
+- **THEN** the replaced and replacement text render as a stacked before/after diff, clamped like other long content
+
+#### Scenario: Raw JSON toggle
+- **WHEN** the raw toggle on any expanded card is activated
+- **THEN** the card shows the full unmodified argument and result JSON exactly as delivered by the events
+
+#### Scenario: Unknown-tool fallback
+- **WHEN** a tool outside the curated catalog (e.g. an MCP tool) renders a card
+- **THEN** the header shows only the tool's display name with running/latency indicators and no fabricated summary sentence, and the expanded view renders parsed JSON as humanized labeled key-value rows — or the raw text when it does not parse
+
 ### Requirement: Message send and simulated response
 Sending a message SHALL append it to the active session, derive the session title from the first user message (truncated at 42 characters), and produce the agent's reply through the chat runtime bridge. The reply SHALL stream into the transcript incrementally, with a running indicator while the turn is in flight. While a turn is in flight the send control SHALL become a stop control that cancels the turn; partial text SHALL remain in the transcript. Teammate direct messages SHALL NOT trigger an agent turn. In the live UI the reply SHALL always come from the agent runtime — canned simulated replies SHALL NOT be produced (they remain available to test fixtures only); when live chat is unavailable the connect state governs instead.
 
@@ -187,3 +203,14 @@ For a 1:1 agent chat, the chat header SHALL render a context meter in the top-ri
 #### Scenario: Hidden without usage data
 - **WHEN** a fresh thread has no turns yet, or the latest terminal event carries no usage block
 - **THEN** the header renders no meter and no placeholder value
+
+### Requirement: Hook enforcement rendering
+The transcript SHALL render hook enforcement where it occurs: a tool call prevented by a hook SHALL render as a tool card marked blocked, showing the hook's reason in place of a result; a prompt prevented by a hook SHALL render as a notice entry carrying the reason in place of an assistant reply. Both renderings SHALL persist across reloads, hydrated from the same history the live stream wrote.
+
+#### Scenario: Blocked tool call in the transcript
+- **WHEN** a pre-tool hook blocks the agent's shell call during a live chat
+- **THEN** the tool card shows a blocked state with the hook's reason, and the conversation continues from the model's reaction to the block
+
+#### Scenario: Blocked prompt after reload
+- **WHEN** a turn whose submitted prompt was blocked by a hook is viewed after a page reload
+- **THEN** the transcript shows the notice entry with the reason, and no spinner or empty assistant bubble appears
