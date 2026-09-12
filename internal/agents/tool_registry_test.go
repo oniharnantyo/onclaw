@@ -3,6 +3,9 @@ package agents
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +13,7 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 	"github.com/oniharnantyo/onclaw/internal/agents/tools"
+	"github.com/oniharnantyo/onclaw/internal/store/fake"
 )
 
 type stubTool struct{}
@@ -135,6 +139,139 @@ func TestNewDefaultToolRegistry_MemoryAndDeleteFileRegistered(t *testing.T) {
 	}
 	if del.Group != "filesystem" || del.IconKey != "trash" || del.Configurable {
 		t.Errorf("unexpected delete_file catalog entry: %+v", del)
+	}
+}
+
+// stubDocumentPublisher is a fixed DocumentPublisher: a deterministic
+// capability URL per name, verifying the source file exists.
+type stubDocumentPublisher struct{}
+
+func (stubDocumentPublisher) PublishCreatedDocument(_ context.Context, _, name, sourcePath string) (string, error) {
+	if _, err := os.Stat(sourcePath); err != nil {
+		return "", fmt.Errorf("created document %q not found", sourcePath)
+	}
+	return "/api/v1/files/doc-cap/" + name, nil
+}
+
+// TestNewDefaultToolRegistry_DocumentTools pins the document.* family's
+// registration contract (add-document-read-tool / add-document-create-tool):
+// both tools register in the default registry, document.read builds against a
+// real workspace directory with the run's read-only roots, and
+// document.create binds the workspace blob store's publisher plus the
+// run's read-only roots for chat-delivered templates.
+func TestNewDefaultToolRegistry_DocumentTools(t *testing.T) {
+	reg := NewDefaultToolRegistry(nil)
+
+	for _, name := range []string{tools.NameDocumentRead, tools.NameDocumentCreate} {
+		if _, ok := reg.Lookup(name); !ok {
+			t.Errorf("expected %q to be registered", name)
+		}
+	}
+
+	agentDir := t.TempDir()
+
+	// document.read builds against the jail root plus read-only roots.
+	ctor, ok := reg.Lookup(tools.NameDocumentRead)
+	if !ok {
+		t.Fatal("expected document.read registration")
+	}
+	dropRoot := t.TempDir()
+	tl, err := ctor(ToolContext{AgentDir: agentDir, ReadOnlyRoots: []string{dropRoot}})
+	if err != nil {
+		t.Fatalf("document.read constructor: %v", err)
+	}
+	info, err := tl.Info(context.Background())
+	if err != nil {
+		t.Fatalf("document.read info: %v", err)
+	}
+	if info.Name != tools.NameDocumentRead {
+		t.Errorf("tool name = %q, want %q", info.Name, tools.NameDocumentRead)
+	}
+	// A missing workspace directory fails construction (the constructor
+	// validates the jail root exists).
+	if _, err := ctor(ToolContext{AgentDir: filepath.Join(agentDir, "missing")}); err == nil {
+		t.Error("expected document.read construction failure for a missing agent dir")
+	}
+
+	// document.create builds against the jail root; the publisher and the
+	// rod HTML→PDF renderer are bound per construction. An unwired publisher
+	// still constructs — the create tool's documented contract omits the
+	// capability URL from results when delivery is unwired.
+	ctor, ok = reg.Lookup(tools.NameDocumentCreate)
+	if !ok {
+		t.Fatal("expected document.create registration")
+	}
+	tl, err = ctor(ToolContext{AgentDir: agentDir})
+	if err != nil {
+		t.Fatalf("document.create constructor without publisher: %v", err)
+	}
+	tl, err = ctor(ToolContext{AgentDir: agentDir, WorkspaceID: "ws", DocumentPublisher: stubDocumentPublisher{}})
+	if err != nil {
+		t.Fatalf("document.create constructor: %v", err)
+	}
+	info, err = tl.Info(context.Background())
+	if err != nil {
+		t.Fatalf("document.create info: %v", err)
+	}
+	if info.Name != tools.NameDocumentCreate {
+		t.Errorf("tool name = %q, want %q", info.Name, tools.NameDocumentCreate)
+	}
+
+	// Catalog cards: group document, per-verb icons, non-configurable.
+	read, ok := ToolCatalogEntryByKey(tools.NameDocumentRead)
+	if !ok {
+		t.Fatal("expected a document.read catalog entry")
+	}
+	if read.Group != "document" || read.IconKey != "file-text" || read.DisplayName != "Read Document" || read.Configurable {
+		t.Errorf("unexpected document.read catalog entry: %+v", read)
+	}
+	create, ok := ToolCatalogEntryByKey(tools.NameDocumentCreate)
+	if !ok {
+		t.Fatal("expected a document.create catalog entry")
+	}
+	if create.Group != "document" || create.IconKey != "file-plus" || create.DisplayName != "Create Document" || create.Configurable {
+		t.Errorf("unexpected document.create catalog entry: %+v", create)
+	}
+}
+
+// TestNewDefaultToolRegistry_ScheduleOptional pins the schedule tool's
+// registration contract (integrate-scheduler 6.1): WithSchedulerTools registers
+// it and its catalog entry exists; without the option it is simply absent —
+// never a broken registration.
+func TestNewDefaultToolRegistry_ScheduleOptional(t *testing.T) {
+	bare := NewDefaultToolRegistry(nil)
+	if _, ok := bare.Lookup(tools.NameSchedule); ok {
+		t.Fatal("the schedule tool must not register without WithSchedulerTools")
+	}
+
+	st := fake.New()
+	reg := NewDefaultToolRegistry(st.Memories(), WithSchedulerTools(st.Schedulers(), st.Channels()))
+	ctor, ok := reg.Lookup(tools.NameSchedule)
+	if !ok {
+		t.Fatal("WithSchedulerTools must register the schedule tool")
+	}
+
+	// The constructor builds against the wired stores and binds the run's
+	// identity (a construction failure fails tool resolution).
+	tl, err := ctor(ToolContext{WorkspaceID: "ws", AgentID: "ag", UserID: "user", WorkspaceTZ: time.UTC})
+	if err != nil {
+		t.Fatalf("schedule constructor: %v", err)
+	}
+	info, err := tl.Info(context.Background())
+	if err != nil {
+		t.Fatalf("tool info: %v", err)
+	}
+	if info.Name != tools.NameSchedule {
+		t.Errorf("tool name = %q, want %q", info.Name, tools.NameSchedule)
+	}
+
+	// Catalog card: non-configurable, calendar icon (the web Icon map's key).
+	entry, ok := ToolCatalogEntryByKey(tools.NameSchedule)
+	if !ok {
+		t.Fatal("expected a schedule catalog entry")
+	}
+	if entry.DisplayName != "Schedule" || entry.IconKey != "calendar" || entry.Configurable {
+		t.Errorf("unexpected schedule catalog entry: %+v", entry)
 	}
 }
 

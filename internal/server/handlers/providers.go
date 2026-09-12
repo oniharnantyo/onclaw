@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -27,21 +29,56 @@ type ProviderResponse struct {
 	Enabled     bool      `json:"enabled"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+	// CatalogProvider echoes the stored catalog-mapping hint (empty = unset).
+	CatalogProvider string `json:"catalog_provider,omitempty"`
+	// SuggestedCatalogProvider is read-only: the host-based guess for
+	// compatible gateway types (empty for canonically mapped types). The
+	// stored CatalogProvider, once set, always wins over it.
+	SuggestedCatalogProvider string `json:"suggested_catalog_provider,omitempty"`
 }
 
 func toProviderResponse(p *domain.ProviderConfig) ProviderResponse {
-	return ProviderResponse{
-		ID:          p.ID,
-		WorkspaceID: p.WorkspaceID,
-		Type:        p.Type,
-		Name:        p.Name,
-		BaseURL:     p.BaseURL,
-		KeySet:      p.HasKey(),
-		KeyHint:     p.KeyHint,
-		Enabled:     p.Enabled,
-		CreatedAt:   p.CreatedAt,
-		UpdatedAt:   p.UpdatedAt,
+	suggested := ""
+	if _, mapped := services.MapProviderType(p.Type); !mapped {
+		suggested = providers.SuggestCatalogProvider(p.BaseURL)
 	}
+	return ProviderResponse{
+		ID:                       p.ID,
+		WorkspaceID:              p.WorkspaceID,
+		Type:                     p.Type,
+		Name:                     p.Name,
+		BaseURL:                  p.BaseURL,
+		KeySet:                   p.HasKey(),
+		KeyHint:                  p.KeyHint,
+		Enabled:                  p.Enabled,
+		CreatedAt:                p.CreatedAt,
+		UpdatedAt:                p.UpdatedAt,
+		CatalogProvider:          p.CatalogProvider,
+		SuggestedCatalogProvider: suggested,
+	}
+}
+
+// validateCatalogHint rejects non-empty catalog-provider values that no known
+// community-catalog provider carries. A catalog fetch failure accepts the
+// value (fail open): a stale hint only ever resolves unknown downstream.
+func validateCatalogHint(ctx context.Context, mc *services.ModelCatalog, hint string) error {
+	trimmed := strings.TrimSpace(hint)
+	if trimmed == "" || mc == nil {
+		return nil
+	}
+	data, err := mc.FetchCatalog(ctx)
+	if err != nil || data == nil {
+		return nil
+	}
+	if _, ok := data.Providers[trimmed]; !ok {
+		known := make([]string, 0, len(data.Providers))
+		for id := range data.Providers {
+			known = append(known, id)
+		}
+		sort.Strings(known)
+		return fmt.Errorf("%w: unknown catalog_provider %q (not a community-catalog provider id)", domain.ErrInvalid, trimmed)
+	}
+	return nil
 }
 
 // providerHandlers handles workspace provider configuration endpoints.
@@ -92,6 +129,9 @@ type CreateProviderRequest struct {
 	BaseURL *string `json:"base_url,omitempty"`
 	Key     *string `json:"key,omitempty"`
 	Enabled *bool   `json:"enabled,omitempty"`
+	// CatalogProvider optionally maps a compatible gateway to a
+	// community-catalog provider id; ignored by canonically mapped types.
+	CatalogProvider *string `json:"catalog_provider,omitempty"`
 }
 
 // CreateProvider creates a new provider configuration in the current workspace.
@@ -134,6 +174,15 @@ func (h *providerHandlers) CreateProvider(c *gin.Context) {
 		}
 	}
 
+	catalogProvider := ""
+	if req.CatalogProvider != nil {
+		catalogProvider = strings.TrimSpace(*req.CatalogProvider)
+		if err := validateCatalogHint(c.Request.Context(), h.modelCatalog, catalogProvider); err != nil {
+			RespondError(c, err)
+			return
+		}
+	}
+
 	enabled := true
 	if req.Enabled != nil {
 		enabled = *req.Enabled
@@ -152,13 +201,14 @@ func (h *providerHandlers) CreateProvider(c *gin.Context) {
 	}
 
 	p := &domain.ProviderConfig{
-		WorkspaceID:   ws.ID,
-		Type:          pType,
-		Name:          pName,
-		BaseURL:       baseURL,
-		KeyCiphertext: keyCiphertext,
-		KeyHint:       keyHint,
-		Enabled:       enabled,
+		WorkspaceID:     ws.ID,
+		Type:            pType,
+		Name:            pName,
+		BaseURL:         baseURL,
+		CatalogProvider: catalogProvider,
+		KeyCiphertext:   keyCiphertext,
+		KeyHint:         keyHint,
+		Enabled:         enabled,
 	}
 
 	if err := h.providers.Create(c.Request.Context(), p); err != nil {
@@ -175,6 +225,9 @@ type PatchProviderRequest struct {
 	BaseURL *string `json:"base_url,omitempty"`
 	Key     *string `json:"key,omitempty"`
 	Enabled *bool   `json:"enabled,omitempty"`
+	// CatalogProvider replaces the stored hint when present (empty string
+	// clears it back to host auto-detection).
+	CatalogProvider *string `json:"catalog_provider,omitempty"`
 }
 
 // PatchProvider updates an existing provider configuration.
@@ -218,6 +271,15 @@ func (h *providerHandlers) PatchProvider(c *gin.Context) {
 			}
 		}
 		existing.BaseURL = trimmed
+	}
+
+	if req.CatalogProvider != nil {
+		trimmed := strings.TrimSpace(*req.CatalogProvider)
+		if err := validateCatalogHint(c.Request.Context(), h.modelCatalog, trimmed); err != nil {
+			RespondError(c, err)
+			return
+		}
+		existing.CatalogProvider = trimmed
 	}
 
 	if req.Key != nil {
@@ -290,9 +352,10 @@ func (h *providerHandlers) GetProviderModels(c *gin.Context) {
 	}
 
 	cred := providers.Credential{
-		Type:    existing.Type,
-		BaseURL: existing.BaseURL,
-		APIKey:  apiKey,
+		Type:        existing.Type,
+		BaseURL:     existing.BaseURL,
+		APIKey:      apiKey,
+		CatalogHint: existing.CatalogProvider,
 	}
 
 	if h.modelCatalog != nil {
@@ -336,6 +399,9 @@ type ModelsPreviewRequest struct {
 	BaseURL string `json:"base_url,omitempty"`
 	Key     string `json:"key,omitempty"`
 	APIKey  string `json:"api_key,omitempty"`
+	// CatalogProvider optionally maps a compatible gateway to a
+	// community-catalog provider id for the preview resolution.
+	CatalogProvider string `json:"catalog_provider,omitempty"`
 }
 
 // ModelsPreview resolves models using ephemeral credentials provided in the request body without storing them.
@@ -363,9 +429,10 @@ func (h *providerHandlers) ModelsPreview(c *gin.Context) {
 	}
 
 	cred := providers.Credential{
-		Type:    pType,
-		BaseURL: strings.TrimSpace(req.BaseURL),
-		APIKey:  apiKey,
+		Type:        pType,
+		BaseURL:     strings.TrimSpace(req.BaseURL),
+		APIKey:      apiKey,
+		CatalogHint: strings.TrimSpace(req.CatalogProvider),
 	}
 
 	if h.modelCatalog != nil {

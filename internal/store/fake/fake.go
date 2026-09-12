@@ -19,31 +19,38 @@ import (
 type fakeStore struct {
 	mu sync.RWMutex
 
-	users               map[string]*domain.User                 // key: ID
-	usersByEmail        map[string]string                       // key: normalized email -> ID
-	workspaces          map[string]*domain.Workspace            // key: ID
-	workspacesBySlug    map[string]string                       // key: slug -> ID
-	roles               map[string]*domain.Role                 // key: ID
-	rolesByName         map[string]string                       // key: workspaceID + ":" + name -> ID
-	members             map[string]*domain.Member               // key: workspaceID + ":" + userID -> Member
-	providers           map[string]*domain.ProviderConfig       // key: ID
-	agents              map[string]*domain.Agent                // key: ID
-	agentsBySlug        map[string]string                       // key: workspaceID + ":" + slug -> ID
-	userMemories        map[string]*domain.Memory               // key: workspaceID + ":" + userID -> Memory
-	workspaceMemories   map[string]*domain.Memory               // key: workspaceID -> Memory
-	agentDailyMemories  map[string]*domain.Memory               // key: workspaceID + ":" + agentID + ":" + date(2006-01-02) -> Memory
-	sessionEvents       map[string][]domain.SessionEvent        // key: sessionID -> ordered events
-	sessionCPData       map[string][]byte                       // key: checkpointID -> data
-	apiKeys             map[string]*domain.WorkspaceAPIKey      // key: ID
-	apiKeysByHash       map[string]string                       // key: SHA-256 hex hash -> ID
-	toolSettings        map[string]*domain.WorkspaceToolSetting // key: workspaceID + ":" + toolKey -> Setting
-	skills              map[string]*domain.WorkspaceSkill       // key: ID
-	skillsByName        map[string]string                       // key: workspaceID + ":" + name -> ID
-	wsMCPServers        map[string]*domain.WorkspaceMCPServer   // key: ID
-	wsMCPServerNames    map[string]string                       // key: workspaceID + ":" + lower(name) -> ID
-	agentMCPServers     map[string]*domain.AgentMCPServer       // key: ID
-	agentMCPServerNames map[string]string                       // key: agentID + ":" + lower(name) -> ID
-	hooks               *hookData                               // hook state: all three levels + execution audit log
+	users                   map[string]*domain.User                   // key: ID
+	usersByEmail            map[string]string                         // key: normalized email -> ID
+	workspaces              map[string]*domain.Workspace              // key: ID
+	workspacesBySlug        map[string]string                         // key: slug -> ID
+	roles                   map[string]*domain.Role                   // key: ID
+	rolesByName             map[string]string                         // key: workspaceID + ":" + name -> ID
+	members                 map[string]*domain.Member                 // key: workspaceID + ":" + userID -> Member
+	providers               map[string]*domain.ProviderConfig         // key: ID
+	agents                  map[string]*domain.Agent                  // key: ID
+	agentsBySlug            map[string]string                         // key: workspaceID + ":" + slug -> ID
+	userMemories            map[string]*domain.Memory                 // key: workspaceID + ":" + userID -> Memory
+	workspaceMemories       map[string]*domain.Memory                 // key: workspaceID -> Memory
+	agentDailyMemories      map[string]*domain.Memory                 // key: workspaceID + ":" + agentID + ":" + date(2006-01-02) -> Memory
+	sessionEvents           map[string][]domain.SessionEvent          // key: sessionID -> ordered events
+	sessionCPData           map[string][]byte                         // key: checkpointID -> data
+	apiKeys                 map[string]*domain.WorkspaceAPIKey        // key: ID
+	apiKeysByHash           map[string]string                         // key: SHA-256 hex hash -> ID
+	toolSettings            map[string]*domain.WorkspaceToolSetting   // key: workspaceID + ":" + toolKey -> Setting
+	skills                  map[string]*domain.WorkspaceSkill         // key: ID
+	skillsByName            map[string]string                         // key: workspaceID + ":" + name -> ID
+	wsMCPServers            map[string]*domain.WorkspaceMCPServer     // key: ID
+	wsMCPServerNames        map[string]string                         // key: workspaceID + ":" + lower(name) -> ID
+	agentMCPServers         map[string]*domain.AgentMCPServer         // key: ID
+	agentMCPServerNames     map[string]string                         // key: agentID + ":" + lower(name) -> ID
+	hooks                   *hookData                                 // hook state: all three levels + execution audit log
+	channels                *channelData                              // channel state: rooms, membership roster, shared feed
+	agentSessions           map[string]*domain.AgentSession           // key: workspaceID + ":" + agentID + ":" + sessionID
+	attachments             map[string]*domain.Attachment             // key: ID
+	attachmentsByStorageKey map[string]string                         // key: capability storage key -> ID
+	workspaceStorage        map[string]*domain.WorkspaceStorageConfig // key: workspaceID -> config
+	schedulers              map[string]*domain.Scheduler              // key: ID
+	schedulerRuns           map[string]*domain.SchedulerRun           // key: ID
 }
 
 // New creates a new in-memory fake store.
@@ -53,31 +60,38 @@ func New() store.Store {
 
 func newStore() *fakeStore {
 	return &fakeStore{
-		users:               make(map[string]*domain.User),
-		usersByEmail:        make(map[string]string),
-		workspaces:          make(map[string]*domain.Workspace),
-		workspacesBySlug:    make(map[string]string),
-		roles:               make(map[string]*domain.Role),
-		rolesByName:         make(map[string]string),
-		members:             make(map[string]*domain.Member),
-		providers:           make(map[string]*domain.ProviderConfig),
-		agents:              make(map[string]*domain.Agent),
-		agentsBySlug:        make(map[string]string),
-		userMemories:        make(map[string]*domain.Memory),
-		workspaceMemories:   make(map[string]*domain.Memory),
-		agentDailyMemories:  make(map[string]*domain.Memory),
-		sessionEvents:       make(map[string][]domain.SessionEvent),
-		sessionCPData:       make(map[string][]byte),
-		apiKeys:             make(map[string]*domain.WorkspaceAPIKey),
-		apiKeysByHash:       make(map[string]string),
-		toolSettings:        make(map[string]*domain.WorkspaceToolSetting),
-		skills:              make(map[string]*domain.WorkspaceSkill),
-		skillsByName:        make(map[string]string),
-		wsMCPServers:        make(map[string]*domain.WorkspaceMCPServer),
-		wsMCPServerNames:    make(map[string]string),
-		agentMCPServers:     make(map[string]*domain.AgentMCPServer),
-		agentMCPServerNames: make(map[string]string),
-		hooks:               newHookData(),
+		users:                   make(map[string]*domain.User),
+		usersByEmail:            make(map[string]string),
+		workspaces:              make(map[string]*domain.Workspace),
+		workspacesBySlug:        make(map[string]string),
+		roles:                   make(map[string]*domain.Role),
+		rolesByName:             make(map[string]string),
+		members:                 make(map[string]*domain.Member),
+		providers:               make(map[string]*domain.ProviderConfig),
+		agents:                  make(map[string]*domain.Agent),
+		agentsBySlug:            make(map[string]string),
+		userMemories:            make(map[string]*domain.Memory),
+		workspaceMemories:       make(map[string]*domain.Memory),
+		agentDailyMemories:      make(map[string]*domain.Memory),
+		sessionEvents:           make(map[string][]domain.SessionEvent),
+		sessionCPData:           make(map[string][]byte),
+		apiKeys:                 make(map[string]*domain.WorkspaceAPIKey),
+		apiKeysByHash:           make(map[string]string),
+		toolSettings:            make(map[string]*domain.WorkspaceToolSetting),
+		skills:                  make(map[string]*domain.WorkspaceSkill),
+		skillsByName:            make(map[string]string),
+		wsMCPServers:            make(map[string]*domain.WorkspaceMCPServer),
+		wsMCPServerNames:        make(map[string]string),
+		agentMCPServers:         make(map[string]*domain.AgentMCPServer),
+		agentMCPServerNames:     make(map[string]string),
+		hooks:                   newHookData(),
+		channels:                newChannelData(),
+		agentSessions:           make(map[string]*domain.AgentSession),
+		attachments:             make(map[string]*domain.Attachment),
+		attachmentsByStorageKey: make(map[string]string),
+		workspaceStorage:        make(map[string]*domain.WorkspaceStorageConfig),
+		schedulers:              make(map[string]*domain.Scheduler),
+		schedulerRuns:           make(map[string]*domain.SchedulerRun),
 	}
 }
 
@@ -149,6 +163,26 @@ func (s *fakeStore) WorkspaceMCPServers() store.WorkspaceMCPServers {
 // AgentMCPServers returns the AgentMCPServers sub-port.
 func (s *fakeStore) AgentMCPServers() store.AgentMCPServers {
 	return &agentMCPServerStore{s: s}
+}
+
+// AgentSessions returns the AgentSessionStore sub-port.
+func (s *fakeStore) AgentSessions() store.AgentSessionStore {
+	return &agentSessionStore{s: s}
+}
+
+// Attachments returns the AttachmentStore sub-port.
+func (s *fakeStore) Attachments() store.AttachmentStore {
+	return &attachmentStore{s: s}
+}
+
+// WorkspaceStorage returns the WorkspaceStorageStore sub-port.
+func (s *fakeStore) WorkspaceStorage() store.WorkspaceStorageStore {
+	return &workspaceStorageStore{s: s}
+}
+
+// Schedulers returns the SchedulerStore sub-port.
+func (s *fakeStore) Schedulers() store.SchedulerStore {
+	return &schedulerStore{s: s}
 }
 
 // WithTx executes the given function in an isolated transaction.
@@ -250,6 +284,25 @@ func (s *fakeStore) clone() *fakeStore {
 		cp.agentMCPServerNames[key] = id
 	}
 	cp.hooks = s.hooks.clone()
+	cp.channels = s.channels.clone()
+	for key, session := range s.agentSessions {
+		cp.agentSessions[key] = cloneAgentSession(session)
+	}
+	for id, a := range s.attachments {
+		cp.attachments[id] = cloneAttachment(a)
+	}
+	for key, id := range s.attachmentsByStorageKey {
+		cp.attachmentsByStorageKey[key] = id
+	}
+	for wsID, cfg := range s.workspaceStorage {
+		cp.workspaceStorage[wsID] = cloneWorkspaceStorageConfig(cfg)
+	}
+	for id, sched := range s.schedulers {
+		cp.schedulers[id] = cloneScheduler(sched)
+	}
+	for id, run := range s.schedulerRuns {
+		cp.schedulerRuns[id] = cloneSchedulerRun(run)
+	}
 	return cp
 }
 
@@ -279,6 +332,13 @@ func (s *fakeStore) apply(other *fakeStore) {
 	s.agentMCPServers = other.agentMCPServers
 	s.agentMCPServerNames = other.agentMCPServerNames
 	s.hooks = other.hooks
+	s.channels = other.channels
+	s.agentSessions = other.agentSessions
+	s.attachments = other.attachments
+	s.attachmentsByStorageKey = other.attachmentsByStorageKey
+	s.workspaceStorage = other.workspaceStorage
+	s.schedulers = other.schedulers
+	s.schedulerRuns = other.schedulerRuns
 }
 
 func cloneUser(u *domain.User) *domain.User {
@@ -478,6 +538,18 @@ func cloneMCPConnection(c domain.MCPConnection) domain.MCPConnection {
 	c.Env = cloneEnvRows(c.Env)
 	c.Headers = cloneEnvRows(c.Headers)
 	return c
+}
+
+func cloneAgentSession(session *domain.AgentSession) *domain.AgentSession {
+	if session == nil {
+		return nil
+	}
+	cp := *session
+	if session.DeletedAt != nil {
+		t := *session.DeletedAt
+		cp.DeletedAt = &t
+	}
+	return &cp
 }
 
 // -------------------------------------------------------------------------
@@ -1160,6 +1232,7 @@ func (ps *providerStore) Update(ctx context.Context, p *domain.ProviderConfig) e
 		existing.Name = p.Name
 	}
 	existing.BaseURL = p.BaseURL
+	existing.CatalogProvider = p.CatalogProvider
 	existing.KeyCiphertext = p.KeyCiphertext
 	existing.KeyHint = p.KeyHint
 	existing.Enabled = p.Enabled
@@ -1444,6 +1517,19 @@ func (as *agentStore) Delete(ctx context.Context, workspaceID, id string) error 
 		if srv.AgentID == id {
 			delete(as.s.agentMCPServers, srvID)
 			delete(as.s.agentMCPServerNames, srv.AgentID+":"+strings.ToLower(srv.Name))
+		}
+	}
+
+	// Schedulers and their run records die with the agent
+	// (ON DELETE CASCADE).
+	for schedID, sched := range as.s.schedulers {
+		if sched.AgentID == id {
+			delete(as.s.schedulers, schedID)
+			for runID, run := range as.s.schedulerRuns {
+				if run.SchedulerID == schedID {
+					delete(as.s.schedulerRuns, runID)
+				}
+			}
 		}
 	}
 
@@ -1790,8 +1876,18 @@ func (se *sessionEventStore) LoadEvents(_ context.Context, params store.LoadSess
 		scoped = filtered
 	}
 
-	// Sort by seq ascending.
-	sort.Slice(scoped, func(i, j int) bool { return scoped[i].Seq < scoped[j].Seq })
+	// Sort by (seq, occurred_at, event_id) ascending — the same deterministic
+	// total order as the postgres store (fix-session-event-ordering D2); the
+	// reverse slice below is then the exact mirror of this order.
+	sort.Slice(scoped, func(i, j int) bool {
+		if scoped[i].Seq != scoped[j].Seq {
+			return scoped[i].Seq < scoped[j].Seq
+		}
+		if !scoped[i].OccurredAt.Equal(scoped[j].OccurredAt) {
+			return scoped[i].OccurredAt.Before(scoped[j].OccurredAt)
+		}
+		return scoped[i].EventID < scoped[j].EventID
+	})
 
 	// Apply cursor filter.
 	if params.AfterEventID != "" {
@@ -1825,15 +1921,44 @@ func (se *sessionEventStore) LoadEvents(_ context.Context, params store.LoadSess
 		}
 	}
 
-	// Apply limit.
-	limit := params.Limit
-	if limit <= 0 {
-		limit = 100
-	}
-	if len(scoped) > limit {
-		scoped = scoped[:limit]
+	// Apply limit. Limit <= 0 means "no limit": every matching event is
+	// returned (same semantics as the postgres store).
+	if params.Limit > 0 && len(scoped) > params.Limit {
+		scoped = scoped[:params.Limit]
 	}
 	return scoped, nil
+}
+
+// NextEventSeq returns the next append position for the session's event log:
+// MAX(seq)+1 over its rows, or 0 when the log is empty.
+func (se *sessionEventStore) NextEventSeq(_ context.Context, workspaceID, sessionID string) (int64, error) {
+	se.s.mu.RLock()
+	defer se.s.mu.RUnlock()
+
+	var next int64
+	for _, e := range se.s.sessionEvents[sessionID] {
+		if e.WorkspaceID != workspaceID {
+			continue
+		}
+		if e.Seq >= next {
+			next = e.Seq + 1
+		}
+	}
+	return next, nil
+}
+
+// EventExists reports whether an event with the given ID is already stored for
+// the session. Absence is (false, nil), not an error.
+func (se *sessionEventStore) EventExists(_ context.Context, workspaceID, sessionID, eventID string) (bool, error) {
+	se.s.mu.RLock()
+	defer se.s.mu.RUnlock()
+
+	for _, e := range se.s.sessionEvents[sessionID] {
+		if e.WorkspaceID == workspaceID && e.EventID == eventID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // --- sessionCheckpointStore ---
@@ -2588,5 +2713,114 @@ func (mss *agentMCPServerStore) SetStatus(ctx context.Context, agentID, id, stat
 	srv.StatusError = statusError
 	srv.ToolCount = toolCount
 	srv.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
+// -------------------------------------------------------------------------
+// AgentSessionStore implementation (agent-session-index D1/D2). Mirrors the
+// postgres adapter: unknown workspace / agent / user references fail with
+// domain.ErrNotFound (the FK behavior), the birth-only title rule rides in
+// the upsert, and ownership is fixed at birth — the conflict path never
+// rewrites user_id.
+// -------------------------------------------------------------------------
+
+type agentSessionStore struct {
+	s *fakeStore
+}
+
+// agentSessionKey is the fake's (workspace, agent, session) uniqueness key,
+// mirroring the schema's UNIQUE triple.
+func agentSessionKey(workspaceID, agentID, sessionID string) string {
+	return workspaceID + ":" + agentID + ":" + sessionID
+}
+
+func (a *agentSessionStore) UpsertAgentSession(ctx context.Context, workspaceID, agentID, userID string, up domain.AgentSessionUpsert) error {
+	if up.SessionID == "" {
+		return domain.ErrInvalid
+	}
+
+	a.s.mu.Lock()
+	defer a.s.mu.Unlock()
+
+	// FK parity: unknown references fail before any row is touched.
+	if _, exists := a.s.workspaces[workspaceID]; !exists {
+		return fmt.Errorf("%w: workspace not found", domain.ErrNotFound)
+	}
+	agent, exists := a.s.agents[agentID]
+	if !exists || agent.WorkspaceID != workspaceID {
+		return fmt.Errorf("%w: agent not found in workspace", domain.ErrNotFound)
+	}
+	if _, exists := a.s.users[userID]; !exists {
+		return fmt.Errorf("%w: user not found", domain.ErrNotFound)
+	}
+
+	key := agentSessionKey(workspaceID, agentID, up.SessionID)
+	now := time.Now().UTC()
+	if existing, exists := a.s.agentSessions[key]; exists {
+		// Conflict path (design D2): bump activity, revive soft-deleted rows,
+		// and apply the birth-only title rule. user_id stays as born.
+		existing.LastActiveAt = now
+		existing.DeletedAt = nil
+		if existing.Title == "" {
+			existing.Title = up.Title
+		}
+		return nil
+	}
+
+	a.s.agentSessions[key] = &domain.AgentSession{
+		ID:           uuid.NewString(),
+		WorkspaceID:  workspaceID,
+		AgentID:      agentID,
+		UserID:       userID,
+		SessionID:    up.SessionID,
+		Title:        up.Title,
+		CreatedAt:    now,
+		LastActiveAt: now,
+	}
+	return nil
+}
+
+func (a *agentSessionStore) ListAgentSessions(ctx context.Context, workspaceID, agentID, userID string) ([]domain.AgentSession, error) {
+	if workspaceID == "" || agentID == "" || userID == "" {
+		return []domain.AgentSession{}, nil
+	}
+
+	a.s.mu.RLock()
+	defer a.s.mu.RUnlock()
+
+	sessions := make([]domain.AgentSession, 0)
+	for _, session := range a.s.agentSessions {
+		// Non-deleted only, scoped to the requesting user (privacy boundary).
+		if session.WorkspaceID == workspaceID && session.AgentID == agentID && session.UserID == userID && session.DeletedAt == nil {
+			sessions = append(sessions, *cloneAgentSession(session))
+		}
+	}
+	// Most recently active first, id as the determinism tiebreak.
+	sort.Slice(sessions, func(i, j int) bool {
+		if sessions[i].LastActiveAt.Equal(sessions[j].LastActiveAt) {
+			return sessions[i].ID > sessions[j].ID
+		}
+		return sessions[i].LastActiveAt.After(sessions[j].LastActiveAt)
+	})
+	return sessions, nil
+}
+
+func (a *agentSessionStore) SoftDeleteAgentSession(ctx context.Context, workspaceID, agentID, userID, sessionID string) error {
+	if workspaceID == "" || agentID == "" || userID == "" || sessionID == "" {
+		return domain.ErrNotFound
+	}
+
+	a.s.mu.Lock()
+	defer a.s.mu.Unlock()
+
+	session, exists := a.s.agentSessions[agentSessionKey(workspaceID, agentID, sessionID)]
+	if !exists || session.UserID != userID {
+		// Foreign-owned and unknown are indistinguishable (no existence leak).
+		return domain.ErrNotFound
+	}
+	// Re-deleting an already-deleted row is an accepted no-op: the listing
+	// outcome is identical.
+	now := time.Now().UTC()
+	session.DeletedAt = &now
 	return nil
 }

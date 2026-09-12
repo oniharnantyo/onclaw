@@ -30,7 +30,7 @@ func MatchedValue(ev Event) string {
 // OriginValues is the fixed origin value set (D1). Fixed enums are also the
 // candidate set for run_started / user_prompt_submit match counts.
 func OriginValues() []string {
-	return []string{"user", "cron", "channel"}
+	return []string{"user", "scheduler", "channel"}
 }
 
 // StatusValues is the fixed run_finished status value set (D1).

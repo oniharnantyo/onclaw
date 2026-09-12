@@ -141,7 +141,7 @@ describe('App & Route Guard', () => {
     });
   });
 
-  it('allows access to /agents, /cron, and /runs in a zero-agent workspace, while chat routes redirect to /welcome', async () => {
+  it('allows access to /agents, /schedules, and /runs in a zero-agent workspace, while chat routes redirect to /welcome', async () => {
     const zeroAgentWorkspace = {
       id: 'empty_ws',
       sub: 'empty_ws',
@@ -151,7 +151,7 @@ describe('App & Route Guard', () => {
       agents: [],
       channels: [],
       people: [],
-      cron: [],
+      schedules: [],
       runs: [],
       threads: {},
     };
@@ -246,7 +246,7 @@ describe('App & Route Guard', () => {
           agents: [],
           channels: [],
           people: [],
-          cron: [],
+          schedules: [],
           runs: [],
           threads: {},
         } as any,
@@ -281,7 +281,7 @@ describe('App & Route Guard', () => {
           agents: [],
           channels: [],
           people: [],
-          cron: [],
+          schedules: [],
           runs: [],
           threads: {},
         } as any,
@@ -307,7 +307,7 @@ describe('App & Route Guard', () => {
       agents: [],
       channels: [],
       people: [],
-      cron: [],
+      schedules: [],
       runs: [],
       threads: {},
     };
@@ -349,7 +349,7 @@ describe('App & Route Guard', () => {
       agents: [{ id: 'a1', name: 'Atlas' }],
       channels: [],
       people: [],
-      cron: [],
+      schedules: [],
       runs: [],
       threads: {},
     };
@@ -489,7 +489,7 @@ describe('App & Route Guard', () => {
       agents: [],
       channels: [],
       people: [],
-      cron: [],
+      schedules: [],
       runs: [],
       threads: {},
     };

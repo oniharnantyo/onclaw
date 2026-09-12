@@ -2,10 +2,12 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	storeport "github.com/oniharnantyo/onclaw/internal/store"
 )
@@ -93,24 +95,28 @@ func (s *sessionEventStore) LoadEvents(ctx context.Context, params storeport.Loa
 		argIdx++
 	}
 
+	// Deterministic total order (fix-session-event-ordering D2): seq is the
+	// ordering authority; occurred_at and event_id only break ties so two
+	// loads can never disagree even if legacy tied-seq rows remain.
 	order := "ASC"
 	if params.Reverse {
 		order = "DESC"
 	}
+	orderBy := fmt.Sprintf("ORDER BY seq %s, occurred_at %s, event_id %s", order, order, order)
 
-	limit := params.Limit
-	if limit <= 0 {
-		limit = 100
-	}
-	args = append(args, limit)
-
+	// Limit <= 0 means "no limit": every matching event is returned. Only a
+	// positive Limit adds a SQL LIMIT clause (matches the ADK contract where
+	// opts.Limit > 0 is the bounded case).
 	query := fmt.Sprintf(`
 		SELECT session_id, event_id, turn_id, seq, kind, payload, occurred_at, workspace_id
 		FROM session_events
 		WHERE %s
-		ORDER BY seq %s
-		LIMIT $%d
-	`, strings.Join(conds, " AND "), order, argIdx)
+		%s
+	`, strings.Join(conds, " AND "), orderBy)
+	if params.Limit > 0 {
+		query += fmt.Sprintf(" LIMIT $%d", argIdx)
+		args = append(args, params.Limit)
+	}
 
 	rows, err := s.db.Query(ctx, query, args...)
 	if err != nil {
@@ -139,4 +145,36 @@ func (s *sessionEventStore) LoadEvents(ctx context.Context, params storeport.Loa
 		return nil, convertError(err)
 	}
 	return events, nil
+}
+
+// NextEventSeq returns the next append position for the session's event log:
+// MAX(seq)+1 over its rows, or 0 when the log is empty.
+func (s *sessionEventStore) NextEventSeq(ctx context.Context, workspaceID, sessionID string) (int64, error) {
+	var next int64
+	err := s.db.QueryRow(ctx,
+		`SELECT COALESCE(MAX(seq)+1, 0) FROM session_events WHERE workspace_id = $1 AND session_id = $2`,
+		workspaceID, sessionID,
+	).Scan(&next)
+	if err != nil {
+		return 0, convertError(err)
+	}
+	return next, nil
+}
+
+// EventExists reports whether an event with the given ID is already stored for
+// the session. The (session_id, event_id) primary key makes this an indexed
+// probe; absence maps to (false, nil) — pgx's no-rows error is not surfaced.
+func (s *sessionEventStore) EventExists(ctx context.Context, workspaceID, sessionID, eventID string) (bool, error) {
+	var one int
+	err := s.db.QueryRow(ctx,
+		`SELECT 1 FROM session_events WHERE workspace_id = $1 AND session_id = $2 AND event_id = $3`,
+		workspaceID, sessionID, eventID,
+	).Scan(&one)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, convertError(err)
+	}
+	return true, nil
 }

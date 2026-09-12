@@ -426,7 +426,7 @@ func TestDispatcher_ScriptHookCompileCachedOnResolved(t *testing.T) {
 // its TRUE coordinates (the editor displays exactly this text).
 func TestValidateScript(t *testing.T) {
 	t.Run("good script", func(t *testing.T) {
-		if err := ValidateScript(wrapBody(`if (input.origin === "cron") return {decision: "block"};`)); err != nil {
+		if err := ValidateScript(wrapBody(`if (input.origin === "scheduler") return {decision: "block"};`)); err != nil {
 			t.Errorf("ValidateScript: %v", err)
 		}
 	})

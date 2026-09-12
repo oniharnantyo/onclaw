@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/cloudwego/eino/adk"
@@ -65,26 +66,32 @@ func (a *ADKSessionAdapter) AppendEvents(ctx context.Context, sessionID string, 
 		seenIDs[e.EventID] = struct{}{}
 	}
 
-	// Load existing event IDs for duplicate detection against the store.
-	existing, err := a.eventStore.LoadEvents(ctx, storeport.LoadSessionEventsParams{
-		WorkspaceID: a.workspaceID,
-		SessionID:   sessionID,
-		Limit:       0, // all
-	})
+	// Allocate the batch's starting sequence from the store's append
+	// position (MAX(seq)+1) instead of reading the whole history.
+	//
+	// Concurrency assumption (fix-session-event-ordering D5): sequence
+	// allocation assumes per-session serialization of appends — turn
+	// execution holds a per-run lock, and compaction runs as-a-turn. Two
+	// concurrent appends to one session would race this read-modify-write
+	// count; that is unreachable today, so this comment records the
+	// assumption rather than adding locking machinery.
+	nextSeq, err := a.eventStore.NextEventSeq(ctx, a.workspaceID, sessionID)
 	if err != nil {
-		return fmt.Errorf("ADKSessionAdapter.AppendEvents: load existing: %w", err)
+		return fmt.Errorf("ADKSessionAdapter.AppendEvents: next seq: %w", err)
 	}
-	existingIDs := make(map[string]struct{}, len(existing))
-	for _, ex := range existing {
-		existingIDs[ex.EventID] = struct{}{}
-	}
-
-	// Determine next seq (domain store seqs are append positions).
-	nextSeq := int64(len(existing))
 
 	var domainEvents []domain.SessionEvent
 	for _, e := range events {
-		if _, dup := existingIDs[e.EventID]; dup {
+		// Cross-call duplicate detection without the full pre-read (D4): a
+		// single indexed existence probe per candidate event. Batches are
+		// small, so per-event probes stay cheap; the store's
+		// ON CONFLICT (session_id, event_id) DO NOTHING remains the
+		// last-line idempotency guarantee.
+		exists, err := a.eventStore.EventExists(ctx, a.workspaceID, sessionID, e.EventID)
+		if err != nil {
+			return fmt.Errorf("ADKSessionAdapter.AppendEvents: probe event %q: %w", e.EventID, err)
+		}
+		if exists {
 			return adk.ErrDuplicateEventID
 		}
 
@@ -92,7 +99,13 @@ func (a *ADKSessionAdapter) AppendEvents(ctx context.Context, sessionID string, 
 			return fmt.Errorf("ADKSessionAdapter.AppendEvents: normalize kind: %w", err)
 		}
 
-		payload, err := eventSerializer.Marshal(e)
+		// Attachment bytes never persist (attachments design D6): user
+		// messages carrying inline bytes are demoted to URL-only references
+		// before serialization. The demotion is a clone — the ADK still holds
+		// the caller's event and message for the running turn.
+		persisted := demoteAttachmentBytes(e)
+
+		payload, err := eventSerializer.Marshal(persisted)
 		if err != nil {
 			return fmt.Errorf("ADKSessionAdapter.AppendEvents: marshal event %q: %w", e.EventID, err)
 		}
@@ -116,6 +129,52 @@ func (a *ADKSessionAdapter) AppendEvents(ctx context.Context, sessionID string, 
 	}
 
 	return a.eventStore.AppendEvents(ctx, a.workspaceID, domainEvents)
+}
+
+// demoteAttachmentBytes returns a shallow-cloned copy of the event whose user
+// message's image and file blocks carry no inline bytes (attachments design
+// D6): Base64Data is cleared while the capability URL, Extra identity
+// (name/mime/size), and every other block survive untouched. The input event
+// and message are never mutated — the ADK still holds them for the running
+// turn. Events without byte-carrying user blocks return unchanged (aliased),
+// so the zero-attachment path pays a type test and nothing else.
+func demoteAttachmentBytes(e *adk.SessionEvent[*schema.AgenticMessage]) *adk.SessionEvent[*schema.AgenticMessage] {
+	msg := e.Message
+	if msg == nil || strings.ToLower(strings.TrimSpace(string(msg.Role))) != string(schema.AgenticRoleTypeUser) {
+		return e
+	}
+
+	demoted := false
+	blocks := make([]*schema.ContentBlock, len(msg.ContentBlocks))
+	for i, block := range msg.ContentBlocks {
+		switch {
+		case block != nil && block.UserInputImage != nil && block.UserInputImage.Base64Data != "":
+			b := *block
+			img := *block.UserInputImage
+			img.Base64Data = ""
+			b.UserInputImage = &img
+			blocks[i] = &b
+			demoted = true
+		case block != nil && block.UserInputFile != nil && block.UserInputFile.Base64Data != "":
+			b := *block
+			file := *block.UserInputFile
+			file.Base64Data = ""
+			b.UserInputFile = &file
+			blocks[i] = &b
+			demoted = true
+		default:
+			blocks[i] = block
+		}
+	}
+	if !demoted {
+		return e
+	}
+
+	clone := *e
+	m := *msg
+	m.ContentBlocks = blocks
+	clone.Message = &m
+	return &clone
 }
 
 // LoadEvents deserializes domain store rows back into typed ADK session events.

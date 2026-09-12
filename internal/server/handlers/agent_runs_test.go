@@ -80,7 +80,7 @@ func newAgentRunTestEnv(t *testing.T, runner *fakeAgentRunRunner) *gin.Engine {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	h := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), []byte("01234567890123456789012345678901"), nil, nil, nil, t.TempDir(), runner, runner)
+	h := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), st.AgentSessions(), []byte("01234567890123456789012345678901"), nil, nil, nil, t.TempDir(), runner, runner)
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
@@ -188,6 +188,9 @@ func TestAgentRuns_CancelUnknownSession(t *testing.T) {
 	runner := &fakeAgentRunRunner{
 		// Empty transcript: an unknown session and a foreign session are
 		// indistinguishable — both are not-found, mirroring the /v1 binding.
+		// The live-run lookup runs first (a live run proves the session
+		// exists), so the fake IS consulted — its false result falls through
+		// to the not-found.
 		history: &agents.HistoryResult{Events: []agents.TranscriptEvent{}},
 	}
 	r := newAgentRunTestEnv(t, runner)
@@ -199,8 +202,31 @@ func TestAgentRuns_CancelUnknownSession(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for unknown session, got %d: %s", w.Code, w.Body.String())
 	}
-	if len(runner.cancelCalls) != 0 {
-		t.Errorf("CancelRun must not be reached for an unknown session")
+}
+
+// A stop during the session's first turn arrives before any event has been
+// committed: the live run is the only proof the session exists. The cancel
+// must succeed, not 404 — a 404 here silently left the run streaming to
+// completion while the UI showed it stopped.
+func TestAgentRuns_CancelLiveRunBeforeFirstCommit(t *testing.T) {
+	runner := &fakeAgentRunRunner{
+		history:      &agents.HistoryResult{Events: []agents.TranscriptEvent{}},
+		cancelResult: true,
+	}
+	r := newAgentRunTestEnv(t, runner)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/workspaces/run-ws/agents/atlas/sessions/sess-uncommitted/runs/pending/cancel", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 cancelling a live run with no committed events, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(runner.cancelCalls) != 1 {
+		t.Fatalf("expected exactly one CancelRun call, got %d", len(runner.cancelCalls))
+	}
+	if call := runner.cancelCalls[0]; call != [3]string{"ws-run-test", "agent-atlas-1", "sess-uncommitted"} {
+		t.Errorf("CancelRun addressed the wrong run, got %v", call)
 	}
 }
 
@@ -277,7 +303,7 @@ func TestAgentRuns_ApprovalResumeOutlivesRequest(t *testing.T) {
 	if err := st.Agents().Create(context.Background(), agent); err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	h := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), []byte("01234567890123456789012345678901"), nil, nil, nil, t.TempDir(), runner, runner)
+	h := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), st.AgentSessions(), []byte("01234567890123456789012345678901"), nil, nil, nil, t.TempDir(), runner, runner)
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {

@@ -6,17 +6,26 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/oniharnantyo/onclaw/internal/storage"
+	"github.com/oniharnantyo/onclaw/internal/storage/resolver"
+	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
-// fileHandlers handles capability file serving.
+// fileHandlers handles capability file serving: avatar files from the
+// instance storage and, for attachment keys, blobs streamed from the backend
+// recorded on the attachment row (attachments design D15/D16 — capability
+// URLs are onclaw-proxied and driver-invariant).
 type fileHandlers struct {
-	storage storage.Storage
+	storage     storage.Storage
+	attachments store.AttachmentStore
+	wsStorage   *resolver.WorkspaceStorage
 }
 
 // NewFileHandlers creates a new fileHandlers instance with injected dependencies.
-func NewFileHandlers(strg storage.Storage) *fileHandlers {
+func NewFileHandlers(strg storage.Storage, attachments store.AttachmentStore, wsStorage *resolver.WorkspaceStorage) *fileHandlers {
 	return &fileHandlers{
-		storage: strg,
+		storage:     strg,
+		attachments: attachments,
+		wsStorage:   wsStorage,
 	}
 }
 
@@ -36,7 +45,29 @@ func (h *fileHandlers) ServeFile(c *gin.Context) {
 		return
 	}
 
-	file, err := h.storage.Open(c.Request.Context(), key)
+	// Attachment branch: capability keys are bearer tokens, so the lookup by
+	// storage key is deliberately global and unauthenticated (AttachmentStore
+	// contract); the blob streams from the backend recorded on the row.
+	if att, err := h.attachments.ByStorageKey(c.Request.Context(), key); err == nil {
+		h.serve(c, key, func() (storage.File, error) {
+			st, err := h.wsStorage.ForBackend(c.Request.Context(), att.WorkspaceID, att.Backend)
+			if err != nil {
+				return nil, err
+			}
+			return st.Open(c.Request.Context(), key)
+		})
+		return
+	}
+
+	h.serve(c, key, func() (storage.File, error) {
+		return h.storage.Open(c.Request.Context(), key)
+	})
+}
+
+// serve resolves the file through open, then streams it with the shared
+// capability-serving headers.
+func (h *fileHandlers) serve(c *gin.Context, key string, open func() (storage.File, error)) {
+	file, err := open()
 	if err != nil {
 		AbortNotFound(c, "file not found")
 		return

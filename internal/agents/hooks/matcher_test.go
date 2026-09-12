@@ -186,14 +186,14 @@ func TestCompileMatcher_Matches(t *testing.T) {
 			want:    true,
 		},
 		{
-			name:    "origin value set: only cron",
-			matcher: "cron",
-			value:   "cron",
+			name:    "origin value set: only scheduler",
+			matcher: "scheduler",
+			value:   "scheduler",
 			want:    true,
 		},
 		{
 			name:    "origin value set: user not selected",
-			matcher: "cron",
+			matcher: "scheduler",
 			value:   "user",
 			want:    false,
 		},

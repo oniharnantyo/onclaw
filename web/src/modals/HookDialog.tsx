@@ -1155,7 +1155,7 @@ export function HookDialog({ hook, wsSlug, existingNames = [], onClose, onSave }
                         onChange={(e) => setTestOrigin(e.target.value)}
                       >
                         <option value="user">user</option>
-                        <option value="cron">cron</option>
+                        <option value="scheduler">scheduler</option>
                         <option value="channel">channel</option>
                       </select>
                     </div>

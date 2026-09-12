@@ -146,7 +146,7 @@ func TestSmoke_ManualEngineRunAndHistoryEndpoint(t *testing.T) {
 		st.Providers(),
 		st.SessionEvents(),
 		st.SessionCheckpoints(),
-		st.Memories(),
+		st.Memories(), st.AgentSessions(),
 		encKey,
 		tempDir,
 		agents.WithAgenticModelFactory(agenticFactory),

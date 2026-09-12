@@ -1,5 +1,5 @@
 
-import { PROVIDER_MODELS, REPLY_TEMPLATES } from "../lib/constants";
+import { PROVIDER_MODELS } from "../lib/constants";
 
 export const cx = (...a: any[]) => a.filter(Boolean).join(' ');
 
@@ -18,6 +18,58 @@ export const formatTokens = (n: number) => {
   return (Number.isInteger(m) ? String(m) : m.toFixed(1)) + 'M';
 };
 export const nowTime = () => new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
+// ---------------------------------------------------------------------------
+// Live-data display formatting (change integrate-scheduler): scheduler runs
+// and schedules carry ISO instants and millisecond durations on the wire; the
+// tables render them in the workspace timezone with the prototype's monospace
+// treatment handled by the callers.
+// ---------------------------------------------------------------------------
+
+/** Formats an ISO instant in the given IANA timezone; '—' when absent. */
+export const fmtInTz = (iso: string | null | undefined, tz: string | undefined,
+  opts: Intl.DateTimeFormatOptions): string => {
+  const t = iso ? Date.parse(iso) : NaN;
+  if (!Number.isFinite(t)) return '—';
+  try {
+    return new Intl.DateTimeFormat('en-US', { timeZone: tz, hour12: false, hourCycle: 'h23', ...opts })
+      .format(new Date(t));
+  } catch {
+    // Unknown timezone — fall back to the browser's zone rather than failing.
+    return new Intl.DateTimeFormat('en-US', { hour12: false, hourCycle: 'h23', ...opts }).format(new Date(t));
+  }
+};
+
+/** Next fire instant, e.g. "Tue, 09:00". */
+export const fmtNextRun = (iso: string | null | undefined, tz: string | undefined): string =>
+  fmtInTz(iso, tz, { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+
+/** Run start stamp, e.g. "Sep 10, 07:00". */
+export const fmtRunStarted = (iso: string | null | undefined, tz: string | undefined): string =>
+  fmtInTz(iso, tz, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+/** Coarse relative age for last-run cells, e.g. "just now", "2h ago". */
+export const relativeTime = (iso: string | null | undefined): string => {
+  const t = iso ? Date.parse(iso) : NaN;
+  if (!Number.isFinite(t)) return '—';
+  const mins = Math.floor((Date.now() - t) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return mins + 'm ago';
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return hours + 'h ago';
+  return Math.floor(hours / 24) + 'd ago';
+};
+
+/** Millisecond duration in the prototype's compact form: 42s, 2m 10s, 1h 04m. */
+export const formatDuration = (ms: number | null | undefined): string => {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return '—';
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + 'm ' + String(s % 60).padStart(2, '0') + 's';
+  const h = Math.floor(m / 60);
+  return h + 'h ' + String(m % 60).padStart(2, '0') + 'm';
+};
 
 export const memberHandle = (m: any) => (m.kind === 'agent' ? m.name : m.name.split(' ')[0]).toLowerCase();
 
@@ -52,13 +104,3 @@ export const providerOf = (model: string): string => {
   if (model.startsWith('llama')) return 'openai-compatible';
   return 'anthropic';
 };
-
-
-export function craftReply(agent: any, text: string) {
-  const c = text.trim().toLowerCase();
-  if (c.startsWith('/tools')) return 'Tools granted to me: ' + (agent.tools.join(', ') || 'none yet') + '. Grant or revoke them in Settings → Agents → ' + agent.name + '.';
-  if (c.startsWith('/model')) return 'I run on ' + agent.model + ' at temperature ' + agent.temp.toFixed(1) + '. Switch models in Settings → Agents.';
-  if (c.startsWith('/help')) return 'Commands: /tools — list my tools · /model — current model · /schedule — open the cron editor · /reset — clear this thread. Everything else you type goes straight to me.';
-  if (c.startsWith('/schedule')) return 'Schedules live in the Cron view — opening the editor for you now.';
-  return REPLY_TEMPLATES[Math.floor(Math.random() * REPLY_TEMPLATES.length)];
-}

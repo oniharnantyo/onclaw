@@ -49,7 +49,7 @@ func TestExpandBrowserAlias(t *testing.T) {
 }
 
 func TestApplyToolGate(t *testing.T) {
-	runner := NewRunner(nil, nil, nil, nil, nil, nil, nil, nil, nil, []byte("k"), "/tmp/o",
+	runner := NewRunner(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, []byte("k"), "/tmp/o",
 		WithToolPolicy(&fakeToolPolicy{enabled: map[string]bool{
 			"web.search": false,
 			"browser":    false,

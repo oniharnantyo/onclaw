@@ -56,11 +56,21 @@ type AgentRunTapper interface {
 	UnsubscribeRun(key agents.RunKey, subID uint64)
 }
 
+// AgentRunSessionLister enumerates the session ids of the runs currently
+// executing for a workspace+agent pair (agent-session-index D3). Like
+// AgentRunTapper, the capability is discovered by assertion on the injected
+// runner — the production runner implements it; fakes that don't simply
+// report every session as idle.
+type AgentRunSessionLister interface {
+	ActiveRunSessionIDs(workspaceID, agentID string) []string
+}
+
 // agentHandlers handles workspace agent CRUD, prompt regeneration, and session endpoints.
 type agentHandlers struct {
 	agents        store.AgentStore
 	providers     store.ProviderStore
 	sessionEvents store.SessionEventStore
+	agentSessions store.AgentSessionStore
 	encryptionKey []byte
 	registry      *providers.Registry
 	modelCatalog  *services.ModelCatalog
@@ -71,11 +81,12 @@ type agentHandlers struct {
 }
 
 // NewAgentHandlers creates a new agentHandlers instance with injected dependencies.
-func NewAgentHandlers(agentStore store.AgentStore, providerStore store.ProviderStore, sessionEvents store.SessionEventStore, encryptionKey []byte, reg *providers.Registry, mc *services.ModelCatalog, as *promptgen.Service, workspaceDir string, runner AgentHistoryReader, runCanceler AgentRunCanceler) *agentHandlers {
+func NewAgentHandlers(agentStore store.AgentStore, providerStore store.ProviderStore, sessionEvents store.SessionEventStore, agentSessions store.AgentSessionStore, encryptionKey []byte, reg *providers.Registry, mc *services.ModelCatalog, as *promptgen.Service, workspaceDir string, runner AgentHistoryReader, runCanceler AgentRunCanceler) *agentHandlers {
 	return &agentHandlers{
 		agents:        agentStore,
 		providers:     providerStore,
 		sessionEvents: sessionEvents,
+		agentSessions: agentSessions,
 		encryptionKey: encryptionKey,
 		registry:      reg,
 		modelCatalog:  mc,
@@ -83,6 +94,20 @@ func NewAgentHandlers(agentStore store.AgentStore, providerStore store.ProviderS
 		workspaceDir:  workspaceDir,
 		runner:        runner,
 		runCanceler:   runCanceler,
+	}
+}
+
+// creationDeps projects the handler's own collaborators onto the shared
+// agent creation path (the teams materializer's spawner constructs the same
+// struct from the router's collaborators).
+func (h *agentHandlers) creationDeps() AgentCreationDeps {
+	return AgentCreationDeps{
+		Agents:       h.agents,
+		Providers:    h.providers,
+		Registry:     h.registry,
+		ModelCatalog: h.modelCatalog,
+		AgentService: h.agentService,
+		WorkspaceDir: h.workspaceDir,
 	}
 }
 
@@ -118,18 +143,54 @@ type agentResponse struct {
 	domain.Agent
 	EffectiveContextWindow     int `json:"effective_context_window"`
 	SummarizationTriggerTokens int `json:"summarization_trigger_tokens"`
+	// InputModalities is always present: the agent model's image/pdf input
+	// capability, resolved provider-scoped from the catalog at read time.
+	InputModalities *domain.AgentInputModalities `json:"input_modalities"`
 }
 
-// newAgentResponse derives the agent's context budget: the effective window
-// (stored value → catalog → default) and the summarization trigger execution
-// arms at the runner's default margin.
-func newAgentResponse(a *domain.Agent) agentResponse {
+// inputModalitiesFor resolves the agent model's input-modality capability at
+// response build time (fix-image-attachment-lane D5), alongside
+// effective_context_window. A provider lookup failure degrades to
+// unknown/unknown — it never fails the read — and SupportsInput itself
+// resolves unknown whenever the catalog carries no evidence. A cold cache may
+// hit the network on ctx; that is the accepted read-time cost.
+func inputModalitiesFor(ctx context.Context, providerStore store.ProviderStore, mc *services.ModelCatalog, workspaceID string, a *domain.Agent) *domain.AgentInputModalities {
+	modalities := &domain.AgentInputModalities{
+		Image: domain.InputUnknown,
+		PDF:   domain.InputUnknown,
+	}
+	if mc == nil || a.ProviderID == "" {
+		return modalities
+	}
+	provider, err := providerStore.ByID(ctx, workspaceID, a.ProviderID)
+	if err != nil {
+		return modalities
+	}
+	hint := services.EffectiveCatalogHint(provider.Type, provider.CatalogProvider, provider.BaseURL)
+	modalities.Image = mc.SupportsInput(ctx, provider.Type, hint, a.Model, domain.InputKindImage)
+	modalities.PDF = mc.SupportsInput(ctx, provider.Type, hint, a.Model, domain.InputKindPDF)
+	return modalities
+}
+
+// newAgentResponseWith derives the agent's computed payload fields — context
+// budget (stored value → catalog → default), summarization trigger at the
+// runner's default margin, and input-modality capability — from explicit
+// collaborators. The agent REST handler and the workspace-creation handler
+// both build it, from different dependency holders.
+func newAgentResponseWith(ctx context.Context, providerStore store.ProviderStore, mc *services.ModelCatalog, workspaceID string, a *domain.Agent) agentResponse {
 	effective := domain.ResolveContextWindow(a.ContextWindow, nil)
 	return agentResponse{
 		Agent:                      *a,
 		EffectiveContextWindow:     effective,
 		SummarizationTriggerTokens: int(float64(effective) * agents.DefaultSummarizationMargin),
+		InputModalities:            inputModalitiesFor(ctx, providerStore, mc, workspaceID, a),
 	}
+}
+
+// newAgentResponse derives the agent's computed payload fields from the
+// handler's own collaborators.
+func (h *agentHandlers) newAgentResponse(ctx context.Context, workspaceID string, a *domain.Agent) agentResponse {
+	return newAgentResponseWith(ctx, h.providers, h.modelCatalog, workspaceID, a)
 }
 
 // ListAgents lists all agents in the current workspace.
@@ -147,7 +208,7 @@ func (h *agentHandlers) ListAgents(c *gin.Context) {
 
 	wrapped := make([]agentResponse, 0, len(agentList))
 	for i := range agentList {
-		wrapped = append(wrapped, newAgentResponse(&agentList[i]))
+		wrapped = append(wrapped, h.newAgentResponse(c.Request.Context(), ws.ID, &agentList[i]))
 	}
 
 	RespondOK(c, gin.H{"agents": wrapped})
@@ -165,7 +226,7 @@ func (h *agentHandlers) GetAgent(c *gin.Context) {
 	}
 
 	composePromptDocuments(domain.AgentWorkspaceDir(h.workspaceDir, ws.Slug, agent.Slug), agent)
-	RespondOK(c, gin.H{"agent": newAgentResponse(agent)})
+	RespondOK(c, gin.H{"agent": h.newAgentResponse(c.Request.Context(), ws.ID, agent)})
 }
 
 // CreateAgentRequest holds payload parameters for creating a new agent.
@@ -187,6 +248,70 @@ type CreateAgentRequest struct {
 	Avatar        json.RawMessage       `json:"avatar,omitempty"`
 }
 
+// AgentCreationDeps bundles the stores and services the shared agent creation
+// path needs. The agents REST handler and the teams materializer's spawner
+// both run through it, so template-spawned agents ride the exact same slug
+// pre-check, workspace seeding, role-informed prompt generation, and
+// persistence the handler runs (channel-teams D6).
+type AgentCreationDeps struct {
+	Agents       store.AgentStore
+	Providers    store.ProviderStore
+	Registry     *providers.Registry
+	ModelCatalog *services.ModelCatalog
+	AgentService *promptgen.Service
+	WorkspaceDir string
+}
+
+// CreateAgentRecord runs the shared agent creation path from a bound
+// CreateAgentRequest: build+validate the row, pre-check the slug, seed the
+// workspace directory, generate prompts synchronously (the request's
+// role/description/brief are the role hints promptgen's IDENTITY/SOUL
+// generation consumes), persist, and refetch so the result carries
+// store-assigned fields. Generation runs on a detached context: the caller's
+// request dying must not strand state.
+func (d AgentCreationDeps) CreateAgentRecord(ctx context.Context, workspaceID, workspaceSlug, userID string, req *CreateAgentRequest) (*domain.Agent, error) {
+	agent, err := buildAgentFromCreateRequest(ctx, workspaceID, userID, req, d.Providers, d.Registry, d.ModelCatalog)
+	if err != nil {
+		return nil, err
+	}
+
+	// The slug must be free before any filesystem or generation work: seeding
+	// and generating into a taken directory would clobber a live agent's prompt
+	// documents, and the post-insert cleanup would delete its directory.
+	if _, err := d.Agents.BySlug(ctx, workspaceID, agent.Slug); err == nil {
+		return nil, fmt.Errorf("%w: agent slug already exists in this workspace", domain.ErrConflict)
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		return nil, err
+	}
+
+	// Assign the agent's on-disk workspace directory and seed it with the base
+	// prompt before any DB write, so a failure rejects the request cleanly.
+	agentDir := domain.AgentWorkspaceDir(d.WorkspaceDir, workspaceSlug, agent.Slug)
+	if err := promptdocs.SeedWorkspace(agentDir); err != nil {
+		return nil, fmt.Errorf("failed to create agent workspace directory: %w", err)
+	}
+
+	if err := d.AgentService.GenerateForCreate(context.Background(), agentDir, workspaceID, agent); err != nil {
+		os.RemoveAll(agentDir)
+		return nil, fmt.Errorf("%w: %v", domain.ErrInvalid, promptgen.SanitizeError(err))
+	}
+	agent.PromptsStatus = domain.PromptsStatusReady
+
+	if err := d.Agents.Create(ctx, agent); err != nil {
+		// No directory cleanup here: after the pre-check above, a conflict
+		// means a raced create won the slug, and the directory now belongs to
+		// that agent. An orphaned directory is inert and gets cleared by the
+		// next SeedWorkspace for this slug.
+		return nil, err
+	}
+
+	// Refetch so the result carries store-assigned fields (id, timestamps).
+	if refreshed, err := d.Agents.ByID(ctx, workspaceID, agent.ID); err == nil {
+		agent = refreshed
+	}
+	return agent, nil
+}
+
 // CreateAgent creates a new agent in the current workspace and generates its prompts synchronously.
 func (h *agentHandlers) CreateAgent(c *gin.Context) {
 	ws := MustCurrentWorkspace(c)
@@ -198,59 +323,14 @@ func (h *agentHandlers) CreateAgent(c *gin.Context) {
 		return
 	}
 
-	agent, err := buildAgentFromCreateRequest(c.Request.Context(), ws.ID, user.ID, &req, h.providers, h.registry, h.modelCatalog)
+	agent, err := h.creationDeps().CreateAgentRecord(c.Request.Context(), ws.ID, ws.Slug, user.ID, &req)
 	if err != nil {
 		RespondError(c, err)
 		return
 	}
-
-	// The slug must be free before any filesystem or generation work: seeding
-	// and generating into a taken directory would clobber a live agent's prompt
-	// documents, and the post-insert cleanup would delete its directory.
-	if _, err := h.agents.BySlug(c.Request.Context(), ws.ID, agent.Slug); err == nil {
-		RespondError(c, fmt.Errorf("%w: agent slug already exists in this workspace", domain.ErrConflict))
-		return
-	} else if !errors.Is(err, domain.ErrNotFound) {
-		RespondError(c, err)
-		return
-	}
-
-	// Assign the agent's on-disk workspace directory and seed it with the base
-	// prompt before any DB write, so a failure rejects the request cleanly.
-	agentDir := domain.AgentWorkspaceDir(h.workspaceDir, ws.Slug, agent.Slug)
-	if err := promptdocs.SeedWorkspace(agentDir); err != nil {
-		RespondError(c, fmt.Errorf("failed to create agent workspace directory: %w", err))
-		return
-	}
-
-	// Generate prompts BEFORE persisting: a failed generation aborts the create
-	// with no agent row and no directory — the client keeps its form state and
-	// the workspace never sees an error agent.
-	// The generation service owns the generation budget; the context is
-	// detached from the request so the request dying cannot strand state.
-	if err := h.agentService.GenerateForCreate(context.Background(), agentDir, ws.ID, agent); err != nil {
-		os.RemoveAll(agentDir)
-		RespondError(c, fmt.Errorf("%w: %v", domain.ErrInvalid, promptgen.SanitizeError(err)))
-		return
-	}
-	agent.PromptsStatus = domain.PromptsStatusReady
-
-	if err := h.agents.Create(c.Request.Context(), agent); err != nil {
-		// No directory cleanup here: after the pre-check above, a conflict
-		// means a raced create won the slug, and the directory now belongs to
-		// that agent. An orphaned directory is inert and gets cleared by the
-		// next SeedWorkspace for this slug.
-		RespondError(c, err)
-		return
-	}
-
-	// Refetch so the response carries store-assigned fields (id, timestamps).
-	if refreshed, err := h.agents.ByID(c.Request.Context(), ws.ID, agent.ID); err == nil {
-		agent = refreshed
-	}
 	composePromptDocuments(domain.AgentWorkspaceDir(h.workspaceDir, ws.Slug, agent.Slug), agent)
 
-	RespondCreated(c, gin.H{"agent": newAgentResponse(agent)})
+	RespondCreated(c, gin.H{"agent": h.newAgentResponse(c.Request.Context(), ws.ID, agent)})
 }
 
 // PatchAgentRequest holds editable fields for updating an existing agent.
@@ -387,7 +467,8 @@ func (h *agentHandlers) PatchAgent(c *gin.Context) {
 		}
 	}
 	if targetEffort != nil {
-		if err := validateEffort(c.Request.Context(), h.modelCatalog, provider.Type, targetModel, *targetEffort); err != nil {
+		hint := services.EffectiveCatalogHint(provider.Type, provider.CatalogProvider, provider.BaseURL)
+		if err := validateEffort(c.Request.Context(), h.modelCatalog, provider.Type, targetModel, hint, *targetEffort); err != nil {
 			RespondError(c, err)
 			return
 		}
@@ -429,7 +510,8 @@ func (h *agentHandlers) PatchAgent(c *gin.Context) {
 		}
 		existing.ContextWindow = req.ContextWindow
 	} else if (req.ProviderID != nil || req.Model != nil) && h.modelCatalog != nil {
-		existing.ContextWindow = h.modelCatalog.ResolveContextLimit(c.Request.Context(), provider.Type, targetModel)
+		hint := services.EffectiveCatalogHint(provider.Type, provider.CatalogProvider, provider.BaseURL)
+		existing.ContextWindow = h.modelCatalog.ResolveContextLimit(c.Request.Context(), provider.Type, targetModel, hint)
 	}
 
 	if req.Tools != nil {
@@ -466,7 +548,7 @@ func (h *agentHandlers) PatchAgent(c *gin.Context) {
 	}
 
 	composePromptDocuments(domain.AgentWorkspaceDir(h.workspaceDir, ws.Slug, existing.Slug), existing)
-	RespondOK(c, gin.H{"agent": newAgentResponse(existing)})
+	RespondOK(c, gin.H{"agent": h.newAgentResponse(c.Request.Context(), ws.ID, existing)})
 }
 
 // DeleteAgent deletes an agent and its workspace directory.
@@ -540,7 +622,7 @@ func (h *agentHandlers) RegenerateAgent(c *gin.Context) {
 	}
 	composePromptDocuments(domain.AgentWorkspaceDir(h.workspaceDir, ws.Slug, existing.Slug), existing)
 
-	RespondOK(c, gin.H{"agent": newAgentResponse(existing)})
+	RespondOK(c, gin.H{"agent": h.newAgentResponse(c.Request.Context(), ws.ID, existing)})
 }
 
 // ListSessionEvents returns the translated transcript events for an agent session.
@@ -560,6 +642,12 @@ func (h *agentHandlers) ListSessionEvents(c *gin.Context) {
 
 	sessionID := c.Param("session")
 	after := c.Query("after")
+	// Wire contract (fix-session-event-ordering D6): `after` is an event-id
+	// cursor. An omitted `limit` leaves the zero default below, which History
+	// treats as "no limit" — the full committed log is returned and no `next`
+	// cursor is reported. A present `limit` must be a positive integer and
+	// caps the page (server-clamped to 500); only then can `next` be
+	// non-empty. There is no other implicit cap.
 	limit := 0
 	if limitStr := c.Query("limit"); limitStr != "" {
 		n, err := strconv.Atoi(limitStr)
@@ -788,7 +876,8 @@ func buildAgentFromCreateRequest(ctx context.Context, wsID, userID string, req *
 
 	// Effort resolution validation
 	if req.Effort != nil && strings.TrimSpace(*req.Effort) != "" {
-		if err := validateEffort(ctx, mc, provider.Type, model, *req.Effort); err != nil {
+		hint := services.EffectiveCatalogHint(provider.Type, provider.CatalogProvider, provider.BaseURL)
+		if err := validateEffort(ctx, mc, provider.Type, model, hint, *req.Effort); err != nil {
 			return nil, err
 		}
 	}
@@ -823,7 +912,8 @@ func buildAgentFromCreateRequest(ctx context.Context, wsID, userID string, req *
 			return nil, err
 		}
 	} else if mc != nil {
-		contextWindow = mc.ResolveContextLimit(ctx, provider.Type, model)
+		hint := services.EffectiveCatalogHint(provider.Type, provider.CatalogProvider, provider.BaseURL)
+		contextWindow = mc.ResolveContextLimit(ctx, provider.Type, model, hint)
 	}
 
 	agentTools := req.Tools
@@ -869,13 +959,13 @@ func buildAgentFromCreateRequest(ctx context.Context, wsID, userID string, req *
 	}, nil
 }
 
-func validateEffort(ctx context.Context, mc *services.ModelCatalog, providerType, modelID, effort string) error {
+func validateEffort(ctx context.Context, mc *services.ModelCatalog, providerType, modelID, catalogHint, effort string) error {
 	trimmed := strings.TrimSpace(effort)
 	if trimmed == "" {
 		return nil
 	}
 
-	validEfforts := mc.ResolveEfforts(ctx, providerType, modelID)
+	validEfforts := mc.ResolveEfforts(ctx, providerType, modelID, catalogHint)
 
 	if len(validEfforts) == 0 {
 		return fmt.Errorf("%w: model %q does not support reasoning effort", domain.ErrInvalid, modelID)

@@ -22,7 +22,7 @@ An agent execution SHALL stream transcript events to its caller as they occur an
 - **THEN** the stream ends with exactly one terminal event and no events follow it
 
 ### Requirement: Instruction composition
-At execution start, the system instruction SHALL be composed in fixed order from: `AGENTS.md`, `IDENTITY.md`, `SOUL.md`, `WORKSPACE.md`, `USER.md`, `BOOTSTRAP.md`. The first three and the last SHALL be read from the agent's workspace directory. `WORKSPACE.md` SHALL be rendered from the workspace record (name, description) plus a `## Shared memory` subsection carrying the workspace's shared memory content. `USER.md` SHALL be rendered from the calling user's record and workspace membership (name, email, role) plus a `## Memory` subsection carrying that user's own memory content. The memory subsections are distinct from the structured metadata (which remains free context): they carry preferences and information the structured fields do not capture. Composition SHALL happen per execution because `USER.md` varies by caller and memory may have changed since the previous turn, and missing documents and empty memory SHALL be skipped without failing the run (an empty memory omits its subsection entirely).
+At execution start, the system instruction SHALL be composed in fixed order from: `AGENTS.md`, `IDENTITY.md`, `SOUL.md`, `WORKSPACE.md`, `USER.md`, `CHANNEL.md`, `BOOTSTRAP.md`. The first three and the last SHALL be read from the agent's workspace directory. `WORKSPACE.md` SHALL be rendered from the workspace record (name, description) plus a `## Shared memory` subsection carrying the workspace's shared memory content. `USER.md` SHALL be rendered from the calling user's record and workspace membership (name, email, role) plus a `## Memory` subsection carrying that user's own memory content. `CHANNEL.md` SHALL be rendered only when the execution carries channel context — from the channel record (name, slug, purpose, conventions), the member roster with specialization notes, and the channel catch-up tail as specified in the `agent-channels` capability — and SHALL occupy its fixed position between `USER.md` and `BOOTSTRAP.md`; executions without channel context SHALL omit it entirely. The memory subsections are distinct from the structured metadata (which remains free context): they carry preferences and information the structured fields do not capture. Composition SHALL happen per execution because `USER.md` varies by caller and memory may have changed since the previous turn, and missing documents and empty memory SHALL be skipped without failing the run (an empty memory omits its subsection entirely).
 
 #### Scenario: Fixed document order
 - **WHEN** an execution composes its instruction with all six documents present
@@ -43,8 +43,17 @@ At execution start, the system instruction SHALL be composed in fixed order from
 #### Scenario: Empty memory omitted
 - **WHEN** a user and workspace have no stored memory
 - **THEN** the composed instruction carries the metadata docs without any memory subsections
+
+#### Scenario: Channel execution gains CHANNEL.md
+- **WHEN** an agent is summoned from a channel
+- **THEN** the composed instruction contains CHANNEL.md — roster, specializations, conventions, catch-up tail — between USER.md and BOOTSTRAP.md
+
+#### Scenario: Non-channel execution unchanged
+- **WHEN** an agent is executed through a direct chat
+- **THEN** the composed instruction contains no CHANNEL.md section
+
 ### Requirement: Filesystem jail
-File tools (list, read, write, edit, glob, grep, delete) SHALL operate only on paths inside the agent's workspace directory; any resolved path escaping it SHALL be rejected as a tool error, not a crash. The agent's generated prompt documents, its agent-tier skills directory, and the summarization offload file all live inside this directory and are reachable through the file tools, including deletion of prompt documents such as `BOOTSTRAP.md`. (Shell execution is no longer banned outright — it is governed by the "Shell execution" and "Dangerous-command approval" requirements below.)
+File tools (list, read, write, edit, glob, grep, delete) and runtime capability middlewares (reduction truncation and context clearing) SHALL operate on virtual mount paths scoped to the agent's workspace directory (mounted at `/workspace`); any resolved path escaping it SHALL be rejected as a tool error, not a crash. The agent's generated prompt documents, its agent-tier skills directory, summarization offload files, and tool reduction offload artifacts (`/workspace/trunc/...` and `/workspace/clear/...`) all live inside this directory and are reachable through the file tools, including deletion of prompt documents such as `BOOTSTRAP.md`. (Shell execution is no longer banned outright — it is governed by the "Shell execution" and "Dangerous-command approval" requirements below.) Additionally, an agent that is a member of a channel with a project space SHALL have that channel's project directory mounted read-write at `/project` inside its jail (see the `channel-teams` capability); all jail rules apply to `/project` identically.
 
 #### Scenario: Path escape rejected
 - **WHEN** a file tool is invoked with a path resolving outside the agent's workspace directory (including via symlink or `..`)
@@ -53,6 +62,19 @@ File tools (list, read, write, edit, glob, grep, delete) SHALL operate only on p
 #### Scenario: Delete within the jail
 - **WHEN** a file tool deletes a document inside the agent's workspace directory
 - **THEN** the file is removed; deleting a missing file is an error result, not a crash
+
+#### Scenario: Shared project root writable for members
+- **WHEN** a channel member agent writes `/project/spec.md`
+- **THEN** the write succeeds inside the channel's project directory and other member agents read it
+
+#### Scenario: Project root cannot escape the jail
+- **WHEN** a member agent follows a symlink in `/project` pointing outside the workspace data root
+- **THEN** the resolved path is rejected as a tool error
+
+#### Scenario: Tool reduction offloads under workspace mount
+- **WHEN** a tool produces output exceeding the reduction truncation threshold or context clearing triggers
+- **THEN** the middleware offloads the content to `/workspace/trunc/<call_id>` or `/workspace/clear/<call_id>` via the jail backend without triggering an absolute-path rejection error, and the agent can read the offloaded file using `read_file`
+
 ### Requirement: Three-tier skills
 Skills SHALL be discovered from three sources: the system tier (`<ONCLAW_DIR>/skills`, embedded and mirrored at startup), the workspace tier (`<ONCLAW_DIR>/workspaces/<tenant_slug>/skills/<name>/` where each skill carries a registry row), and the agent tier (`<ONCLAW_DIR>/workspaces/<tenant_slug>/agents/<agent_slug>/skills`). Attachment SHALL be governed by tier rules with no per-agent skill denylist: system-tier skills SHALL attach to every agent always; a workspace-tier skill SHALL attach to every agent in the workspace when its registry row is `enabled` and to no agent when disabled; agent-tier skills SHALL attach to their owning agent only. There is no per-agent skill toggle at any tier. On name collision the most specific tier SHALL win: agent > workspace > system. Skills SHALL be consumed through progressive disclosure: metadata lists first, full SKILL.md bodies fetched on demand.
 
@@ -107,7 +129,7 @@ The filesystem jail SHALL grant read-only access to the workspace skills directo
 - **THEN** the venv's python interpreter executes and its installed packages are importable
 
 ### Requirement: Context summarization
-When an execution's working-context token count exceeds the resolved context window multiplied by a server-configured safety margin, the runtime SHALL compress the conversation history into a summary generated with the agent's own provider/model, SHALL offload the full pre-compaction history to `transcript.md` inside the agent's workspace directory, SHALL continue the execution with the compressed window plus the agent's recent user messages, and SHALL record the replacement in the session history so the full prior record remains retrievable by replay.
+When an execution's working-context token count exceeds the resolved context window multiplied by a server-configured safety margin, the runtime SHALL compress the conversation history into a summary generated with the agent's own provider/model, SHALL offload the full pre-compaction history to `transcript.md` inside the agent's workspace directory, SHALL continue the execution with the compressed window plus the agent's recent user messages, and SHALL record the replacement in the session history so the full prior record remains retrievable by replay. The context-compacted transcript event — emitted live and on replay of the session log — SHALL carry the working-context token estimates before and after the compaction. The messages handed to the summarizer SHALL NOT contain raw attachment blocks: stale attachment blocks (reference-form images and files from earlier turns) SHALL first be expanded to the same model-facing placeholder text the turn path uses, so summarization succeeds on sessions that contain attachments.
 
 #### Scenario: Trigger fires mid-conversation
 - **WHEN** a long thread's token count crosses the resolved context window × margin
@@ -116,6 +138,37 @@ When an execution's working-context token count exceeds the resolved context win
 #### Scenario: Compaction is auditable
 - **WHEN** a compaction has occurred on a thread
 - **THEN** the session history contains a window-replacement record and replaying the full log still yields the pre-compaction messages
+
+#### Scenario: Compaction event carries token estimates
+- **WHEN** a context-compacted event is emitted live or replayed from the session log
+- **THEN** it carries the working-context token estimates before and after the compaction
+
+#### Scenario: Summarizer never receives raw attachment blocks
+- **WHEN** compaction runs on a session whose persisted history contains reference-form image or PDF attachment blocks
+- **THEN** the summarizer's model call receives placeholder text naming those attachments instead of the raw blocks, and the summary is generated successfully
+
+### Requirement: Manual compaction command
+A turn submitted with the compact command SHALL NOT run a normal model chat turn and SHALL NOT append a user message to the session. The runtime SHALL load the session's current message window, expand stale attachment blocks in that window to the model-facing placeholder text (as the turn path does), generate a summary with the agent's own provider/model under an instruction incorporating the command's optional focus text, offload the full pre-compaction history to `transcript.md` in the agent's workspace directory (the same retention rule as automatic compaction), record the window replacement in the session history, and emit the context-compacted transcript event — carrying before/after working-context token estimates — followed by a terminal turn-completed event carrying the summarizer call's usage. Manual compaction SHALL execute regardless of the current token count. A compact command against a session with no compactable message history SHALL complete without emitting a compaction event.
+
+#### Scenario: Compact rewrites the window
+- **WHEN** a compact command executes on a session with prior turns
+- **THEN** the working window is replaced by the summary, `transcript.md` in the agent directory holds the full prior history, and the stream ends with the context-compacted event (token estimates included) followed by turn-completed carrying the summarizer usage
+
+#### Scenario: Focus text shapes the summary instruction
+- **WHEN** the compact command carries focus text
+- **THEN** the summary is generated under an instruction that incorporates that text
+
+#### Scenario: Below-threshold compaction allowed
+- **WHEN** a compact command executes on a session whose token count is under the automatic trigger threshold
+- **THEN** compaction still executes
+
+#### Scenario: Empty history is a quiet no-op
+- **WHEN** a compact command executes on a session with no compactable messages
+- **THEN** the turn completes without error and without a compaction event
+
+#### Scenario: Compact succeeds on a session containing a PDF attachment
+- **WHEN** a compact command executes on a session whose history contains a PDF attachment turn, on any provider including the OpenAI family
+- **THEN** the compaction completes with a summary and does not fail with a content-block conversion error
 
 ### Requirement: Context window resolution
 An agent's effective context window SHALL resolve in order: the agent's stored `context_window` when set; otherwise the model catalog's context limit for the agent's provider/model when known; otherwise 200,000 tokens. Resolution is applied when the agent is created or updated: an omitted `context_window` is auto-filled from the catalog (or left unset when the catalog has no limit) and the resolved value is stored, so execution reads a stable stored value (falling back to the 200,000 default when the agent has none).
@@ -133,11 +186,19 @@ An agent's effective context window SHALL resolve in order: the agent's stored `
 - **THEN** 200000 is used
 
 ### Requirement: Session history
-Conversations SHALL be persisted as an append-only, totally ordered event log per thread, independent of any particular model message format. The log SHALL support: cursor pagination (after a given event id, with limit, optionally newest-first), filtering by event kind, and idempotent appends — appending an event whose identity already exists in the thread SHALL NOT duplicate it. A thread's current message window SHALL be reconstructible by replaying the log in order, including across summarization replacements. Execution checkpoints SHALL persist under a resolvable id. Every history query SHALL be workspace-scoped; events from one workspace SHALL be unreachable from another. A workspace member SHALL be able to read a session's persisted transcript as UI-shaped transcript events through the agents API, ordered by log sequence, with event-id cursor pagination, projected with full call fidelity: tool-call started events carry the call's arguments, tool-call finished events carry the call's result, error flag, and measured latency, and completed assistant messages carry the reasoning content persisted with them; the read path SHALL NOT alter how the model receives context, which remains full per-session replay (no provider response-id chaining).
+Conversations SHALL be persisted as an append-only, totally ordered event log per thread, independent of any particular model message format and independent of thread length: the total order SHALL hold for threads of any length, including threads longer than any internal read window, and no internal limit on a supporting read SHALL be able to break ordering or hide events from a full-log read. The log SHALL support: cursor pagination (after a given event id, with limit, optionally newest-first), filtering by event kind, and idempotent appends — appending an event whose identity already exists in the thread SHALL NOT duplicate it, and detecting a cross-call duplicate SHALL NOT require reading the whole log. A thread's current message window SHALL be reconstructible by replaying the log in order, including across summarization replacements. Execution checkpoints SHALL persist under a resolvable id. Every history query SHALL be workspace-scoped; events from one workspace SHALL be unreachable from another. A workspace member SHALL be able to read a session's persisted transcript as UI-shaped transcript events through the agents API, ordered by log sequence, with event-id cursor pagination, projected with full call fidelity: tool-call started events carry the call's arguments, tool-call finished events carry the call's result, error flag, and measured latency, and completed assistant messages carry the reasoning content persisted with them; the read path SHALL NOT alter how the model receives context, which remains full per-session replay (no provider response-id chaining).
 
 #### Scenario: Idempotent append
 - **WHEN** the same event (identical thread and event identity) is persisted twice, e.g. after a persist retry
 - **THEN** the thread contains exactly one copy — idempotency is guaranteed at the durable store layer, which ignores a conflicting re-insert (Postgres `ON CONFLICT DO NOTHING`); the ADK session adapter additionally rejects a cross-call duplicate EventID with `adk.ErrDuplicateEventID` so a runner retry of an already-committed event is surfaced rather than silently double-applied
+
+#### Scenario: Long thread replays completely and in order
+- **WHEN** a thread has accumulated more events than any internal read window (e.g. more than 100) and a client or the model replays the full log
+- **THEN** the replay returns every persisted event exactly once, in true execution order, with strictly increasing sequence numbers
+
+#### Scenario: Late append keeps the total order
+- **WHEN** an event is appended to a thread that already exceeds any internal read window
+- **THEN** the new event's sequence number is greater than every existing sequence number in the thread
 
 #### Scenario: Cursor pagination newest-first
 - **WHEN** a client pages a long thread backwards from the end with a limit
@@ -166,6 +227,35 @@ Conversations SHALL be persisted as an append-only, totally ordered event log pe
 #### Scenario: Read path leaves model context alone
 - **WHEN** a subsequent chat turn executes on a thread after any number of transcript reads
 - **THEN** the model still receives the full replayed session history from the event log, and no provider response-id chaining is introduced
+
+### Requirement: Durable session index and per-user session listing
+
+The runtime SHALL maintain a durable index of agent chat sessions so that the set of existing sessions — not just their transcripts — survives the browser. Every persistent (non-ephemeral) execution SHALL register its session in the index at run start, scoped by workspace, agent, and owning user, and SHALL bump the session's last-activity timestamp on every subsequent turn so the session surfaces as most-recently-active. The first turn of a session SHALL record a title derived from the user's input (first line, trimmed, truncated with an ellipsis); later turns SHALL never rewrite the title, and empty input SHALL leave the title unset. Ephemeral executions SHALL NOT touch the index. The agents API SHALL expose a session listing for an agent that returns only the requesting user's non-deleted sessions for that workspace, ordered by last activity (newest first), each row carrying the session id, title, birth time, last-activity time, and a running flag reflecting whether an execution is currently live for that session. Deletion SHALL be soft: the session disappears from listings while its transcript events and checkpoints remain on disk. Listing and deletion SHALL be permission-gated like the existing session-event reads; direct session access by id (transcript hydration, run binding) SHALL remain workspace-permission-scoped and SHALL NOT gain user-ownership enforcement. Sessions that predate the index SHALL NOT be backfilled — the index has no historical agent attribution to draw on.
+
+#### Scenario: First turn births the index row
+- **WHEN** a persistent turn starts on a session id that has no index row in the workspace
+- **THEN** a row is created carrying the workspace, agent, requesting user, the input-derived title, and the turn time as both birth and last activity
+
+#### Scenario: Later turns bump activity without retitling
+- **WHEN** a subsequent turn runs on an indexed session whose title is already set
+- **THEN** the row's last-activity time is updated, the title is unchanged, and the session orders first in a listing by last activity
+
+#### Scenario: Compact turn does not title
+- **WHEN** a compaction turn runs as the first indexed contact for a session
+- **THEN** the compaction focus text never becomes the title and the row's title remains unset
+
+#### Scenario: Listing is private per user
+- **WHEN** a workspace member lists an agent's sessions
+- **THEN** only sessions they own in that workspace are returned, ordered by last activity, and a session live with a run carries the running flag
+
+#### Scenario: Soft delete hides but preserves
+- **WHEN** the user deletes one of their sessions
+- **THEN** the session disappears from subsequent listings, while its persisted transcript events remain retrievable by direct id
+
+#### Scenario: Ephemeral runs skip the index
+- **WHEN** an execution runs with no session binding (ephemeral)
+- **THEN** no index row is created and no existing row is touched
+
 ### Requirement: Cancellation at a safe point
 A running execution SHALL be cancellable by an explicit cancel request addressing the run (workspace, agent, session). Cancellation SHALL take effect at a safe point — the in-flight model call or tool call either completes and is recorded, or is aborted with its partial state marked — and SHALL record a cancel marker in the session history. Cancellation SHALL NOT leave dangling tool-call records that would break the next execution on the thread. A consumer disconnecting — an HTTP request returning, a stream client closing, or a stream never being consumed — SHALL NOT cancel the run.
 
@@ -418,3 +508,108 @@ The session events endpoint SHALL support server-sent event (SSE) streaming with
 #### Scenario: Re-attach and live switchover on active run
 - **WHEN** a client connects with an `after` cursor to a session while an agent execution is actively running
 - **THEN** the server streams historical events past the cursor, transitions to streaming live execution events as they are produced, and terminates when the active run completes
+
+### Requirement: Multimodal user turns
+Agent chat turns SHALL accept an optional attachment set alongside the text input. When attachments are present, the turn's user message SHALL be constructed as a multimodal message carrying, in order: fenced text parts for inline-lane text attachments, native image blocks for inline-lane images, native file blocks for inline-lane PDFs, and — for drop-lane attachments — a pointer text note naming the file and its read-only workspace path so the agent can inspect it with file tools. Attachment-only messages (no user text) SHALL be valid turns. Cron and channel origins remain text-only in v1; command turns (compact) never carry attachments.
+
+#### Scenario: Image turn reaches the model as bytes
+- **WHEN** a user sends a message with text and one uploaded PNG attachment
+- **THEN** the turn's user message carries the text and the image block with the image's bytes (base64 data), and the model's answer reflects the image content
+
+#### Scenario: Attachment-only message
+- **WHEN** a user sends a message with an attached screenshot and no text
+- **THEN** the turn executes with a user message whose content is the image block alone, and it is billed and streamed like any turn
+
+#### Scenario: Drop-lane pointer note
+- **WHEN** a turn carries a 4 MB SQL dump attachment
+- **THEN** the user message carries a pointer note giving the file's name and its read-only workspace path, and the model can read the file's contents through the filesystem tools during the same turn
+
+#### Scenario: Compact never carries attachments
+- **WHEN** a compact turn request includes attachments
+- **THEN** the request fails validation before execution and no run starts
+
+### Requirement: Attachment context lifetime is current-turn-only
+Attachment bytes SHALL be delivered to the model only during the turn that carries them. On every subsequent model call within that turn (tool-loop iterations, retries) the attachments remain present. Persisted history SHALL carry attachment references, never bytes, and the model-time expansion SHALL replace reference-only blocks from older turns with placeholder text naming the attachment and its workspace path. The policy is a single model-time rule keyed on the block's own shape: blocks carrying bytes pass through; URL-only blocks become placeholders.
+
+#### Scenario: Image visible across one turn's tool loop
+- **WHEN** a turn with an attached screenshot invokes tools and makes multiple model calls before answering
+- **THEN** every model call in that turn receives the image bytes
+
+#### Scenario: Older attachments collapse to placeholders
+- **WHEN** a later turn on the same session executes after a turn that carried an image
+- **THEN** the model context shows a text placeholder for the older image (naming the file and its workspace path) instead of the image bytes, and token usage does not include the older image
+
+#### Scenario: Regenerated turn re-expands its attachments
+- **WHEN** a turn carrying attachments is regenerated
+- **THEN** the regenerated run is the current turn for its attachments and delivers their bytes to the model without re-uploading
+
+#### Scenario: Document attachments are never model-bound blocks
+- **WHEN** a turn carries a PDF or office-format attachment on any provider
+- **THEN** the model message contains the drop-lane pointer note naming the document read tool, not a file block, on every model call of the turn
+
+### Requirement: Attachment bytes never persist
+Session event persistence SHALL NOT contain attachment bytes. When persisting a turn's user message, attachment blocks SHALL be demoted to reference form (capability URL, filename, media type, size); the same reference form is what history hydration reads. Session event payloads therefore stay lightweight regardless of attachment size.
+
+#### Scenario: Session payload stays lean
+- **WHEN** a turn with a 5 MB image attachment completes and its events are persisted
+- **THEN** the persisted user message carries the attachment's reference metadata and URL, and no base64 payload appears in the session events
+
+#### Scenario: Model replay after demotion
+- **WHEN** the ADK replays persisted history for a later turn's model context
+- **THEN** URL-only attachment blocks are replaced by placeholders per the current-turn-only policy, never re-sent as URLs
+
+### Requirement: Transcript attachment fidelity
+A session's persisted transcript SHALL surface user-message attachments: each completed user message that carried attachments SHALL project them as structured attachment metadata (name, media type, size, capability URL) in the transcript event, identical for the live stream and the hydrated read path, so a reloaded transcript renders the same attachment chips the live turn showed. Attachment pointer notes written for the model SHALL NOT leak into the projected message text.
+
+#### Scenario: Hydrated transcript shows attachments
+- **WHEN** a workspace member reloads a session whose earlier turn carried an image and a PDF
+- **THEN** the projected user-message events carry both attachments' metadata with capability URLs, indistinguishable from what the live stream showed
+
+#### Scenario: Pointer note hidden from transcript text
+- **WHEN** a user message projected into the transcript carried a drop-lane pointer note for the model
+- **THEN** the projected message text contains only the user's own text, not the pointer note
+
+### Requirement: Scheduler execution profile
+A run with origin `scheduler` SHALL execute under a trimmed profile. The composed instruction SHALL contain `AGENTS.md`, `IDENTITY.md`, and `SOUL.md`, a workspace document carrying workspace metadata without the shared-memory subsection, and a closing unattended-run contract stating that the run executes unattended on a schedule, that the final reply is the deliverable, and that nothing worth reporting SHALL be stated plainly (the `NO_REPLY` convention). The profile SHALL omit `USER.md`, `BOOTSTRAP.md`, and channel documents entirely. The run's tool surface SHALL additionally exclude the `schedule` tool and the memory tools regardless of the agent's allowlist or workspace gate. Channel runs' context documents are not applicable and SHALL NOT be composed.
+
+#### Scenario: Trimmed composition
+- **WHEN** a scheduler run composes its instruction for an agent with all six documents and workspace shared memory present
+- **THEN** the instruction contains AGENTS, IDENTITY, SOUL, and the workspace metadata document, does not contain `USER.md` content, `BOOTSTRAP.md` content, the shared-memory subsection, or channel documents, and ends with the unattended-run contract
+
+#### Scenario: Tools stripped for unattended runs
+- **WHEN** a scheduler run resolves its tool surface for an agent whose allowlist includes the `schedule` tool and memory tools
+- **THEN** the run exposes neither — the remaining tools follow the normal allowlist and workspace gate
+
+#### Scenario: Interactive runs are unchanged
+- **WHEN** a user-initiated or channel-initiated run executes for the same agent
+- **THEN** composition and tool surface follow the existing requirements exactly — the scheduler profile applies only to origin `scheduler`
+
+### Requirement: Model-bound attachment blocks carry bytes, not fetchable references
+When the runtime builds a multimodal user message for the model, inline-image attachment blocks SHALL carry the attachment's inline bytes and MIME type and SHALL NOT carry a server-relative capability URL in the reference field, because providers cannot resolve server-local URLs. The capability URL SHALL remain available to the transcript projection through the attachment block metadata, so hydrated attachment pills keep their download references. Documents are not model-bound blocks: PDFs classify as drop-lane attachments and reach the model only as pointer notes naming the document read tool.
+
+#### Scenario: Image block reaches the provider as data
+- **WHEN** a turn with an inline-image attachment builds its model message on a vision-capable model
+- **THEN** the image block carries the attachment's base64 bytes and MIME type and no server-relative URL, and the provider accepts the block (the run does not fail on the image)
+
+#### Scenario: Persisted transcript keeps the download reference
+- **WHEN** the same turn is persisted and later reloaded in the transcript UI
+- **THEN** the attachment pill still exposes the capability-URL download link, sourced from the block metadata
+
+### Requirement: Model-modality attachment degradation
+When building a turn's model message, the runtime SHALL resolve whether the turn's (provider, model) accepts each inline attachment input kind (image) and, for an input the model does not accept, SHALL replace that block with a pointer note naming the file, its type and size, and stating that the current model cannot view it — the run SHALL succeed. Capability is resolved per (provider, model), never by model name alone, and is tri-state: supported, unsupported, or unknown. Unknown capability SHALL fail open (the block is sent as-is). The image lane is the only inline attachment kind subject to modality resolution: documents do not enter model context as blocks, so no connector or modality gating applies to them.
+
+#### Scenario: Image degrades on a text-only model
+- **WHEN** an agent whose model accepts text-only input executes a turn carrying an inline-image attachment
+- **THEN** the model message contains a pointer note for the image (name, type, size, cannot-view notice) instead of an image block, and the run completes successfully
+
+#### Scenario: Image is sent whole on a vision-capable model
+- **WHEN** an agent whose model accepts image input executes the same turn
+- **THEN** the model message contains the image block with inline bytes and no pointer note
+
+#### Scenario: Regeneration after a model switch sees the image again
+- **WHEN** a turn that degraded on a text-only model is regenerated after the agent was reconfigured to a vision-capable model
+- **THEN** the rebuilt model message contains the image block with inline bytes
+
+#### Scenario: Unknown capability fails open
+- **WHEN** the turn's (provider, model) has no catalog entry and no hint, and the turn carries an inline-image attachment
+- **THEN** the image block is sent as-is (today's wire behavior), not degraded

@@ -37,8 +37,8 @@ func (ps *providerStore) Create(ctx context.Context, p *domain.ProviderConfig) e
 	}
 
 	query := `
-		INSERT INTO workspace_providers (id, workspace_id, type, name, base_url, key_ciphertext, key_hint, enabled, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		INSERT INTO workspace_providers (id, workspace_id, type, name, base_url, catalog_provider, key_ciphertext, key_hint, enabled, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 	`
 	_, err := ps.db.Exec(ctx, query,
 		p.ID,
@@ -46,6 +46,7 @@ func (ps *providerStore) Create(ctx context.Context, p *domain.ProviderConfig) e
 		p.Type,
 		p.Name,
 		p.BaseURL,
+		p.CatalogProvider,
 		p.KeyCiphertext,
 		p.KeyHint,
 		p.Enabled,
@@ -64,7 +65,7 @@ func (ps *providerStore) ByID(ctx context.Context, workspaceID, id string) (*dom
 	}
 
 	query := `
-		SELECT id, workspace_id, type, name, base_url, key_ciphertext, key_hint, enabled, created_at, updated_at
+		SELECT id, workspace_id, type, name, base_url, catalog_provider, key_ciphertext, key_hint, enabled, created_at, updated_at
 		FROM workspace_providers
 		WHERE workspace_id = $1 AND id = $2
 	`
@@ -75,6 +76,7 @@ func (ps *providerStore) ByID(ctx context.Context, workspaceID, id string) (*dom
 		&p.Type,
 		&p.Name,
 		&p.BaseURL,
+		&p.CatalogProvider,
 		&p.KeyCiphertext,
 		&p.KeyHint,
 		&p.Enabled,
@@ -93,7 +95,7 @@ func (ps *providerStore) ListForWorkspace(ctx context.Context, workspaceID strin
 	}
 
 	query := `
-		SELECT id, workspace_id, type, name, base_url, key_ciphertext, key_hint, enabled, created_at, updated_at
+		SELECT id, workspace_id, type, name, base_url, catalog_provider, key_ciphertext, key_hint, enabled, created_at, updated_at
 		FROM workspace_providers
 		WHERE workspace_id = $1
 		ORDER BY created_at ASC, id ASC
@@ -113,6 +115,7 @@ func (ps *providerStore) ListForWorkspace(ctx context.Context, workspaceID strin
 			&p.Type,
 			&p.Name,
 			&p.BaseURL,
+			&p.CatalogProvider,
 			&p.KeyCiphertext,
 			&p.KeyHint,
 			&p.Enabled,
@@ -140,17 +143,19 @@ func (ps *providerStore) Update(ctx context.Context, p *domain.ProviderConfig) e
 		SET type = CASE WHEN $1 <> '' THEN $1 ELSE type END,
 		    name = CASE WHEN $2 <> '' THEN $2 ELSE name END,
 		    base_url = $3,
-		    key_ciphertext = $4,
-		    key_hint = $5,
-		    enabled = $6,
-		    updated_at = $7
-		WHERE workspace_id = $8 AND id = $9
-		RETURNING type, name, base_url, key_ciphertext, key_hint, enabled, created_at, updated_at
+		    catalog_provider = $4,
+		    key_ciphertext = $5,
+		    key_hint = $6,
+		    enabled = $7,
+		    updated_at = $8
+		WHERE workspace_id = $9 AND id = $10
+		RETURNING type, name, base_url, catalog_provider, key_ciphertext, key_hint, enabled, created_at, updated_at
 	`
 	err := ps.db.QueryRow(ctx, query,
 		p.Type,
 		p.Name,
 		p.BaseURL,
+		p.CatalogProvider,
 		p.KeyCiphertext,
 		p.KeyHint,
 		p.Enabled,
@@ -161,6 +166,7 @@ func (ps *providerStore) Update(ctx context.Context, p *domain.ProviderConfig) e
 		&p.Type,
 		&p.Name,
 		&p.BaseURL,
+		&p.CatalogProvider,
 		&p.KeyCiphertext,
 		&p.KeyHint,
 		&p.Enabled,

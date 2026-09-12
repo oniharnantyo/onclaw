@@ -13,6 +13,23 @@ export const PROVIDER_CATALOG_TYPES = [
   { id: 'anthropic-compatible', label: 'Anthropic-compatible', placeholder: 'https://api.anthropic-proxy.com/v1', requiresBaseUrl: true },
 ] as const;
 
+/** Provider types that accept the optional catalog-mapping hint (D3). The
+ * four canonical types are catalog-mapped by their type alone. */
+const CATALOG_MAPPED_TYPES = ['openai-compatible', 'anthropic-compatible'];
+
+/** Curated catalog-mapping options — every id verified against the community
+ * catalog cache (.onclaw/cache/models.dev.json top-level provider ids). */
+const CATALOG_PROVIDER_OPTIONS = [
+  { id: 'zai-coding-plan', label: 'Z.AI Coding Plan' },
+  { id: 'zhipuai-coding-plan', label: 'Zhipu AI Coding Plan' },
+  { id: 'zhipuai', label: 'Zhipu AI' },
+  { id: 'openrouter', label: 'OpenRouter' },
+  { id: 'deepseek', label: 'DeepSeek' },
+  { id: 'mistral', label: 'Mistral' },
+  { id: 'groq', label: 'Groq' },
+  { id: 'fireworks-ai', label: 'Fireworks AI' },
+] as const;
+
 export function getProviderTypeLabel(type: string): string {
   const found = PROVIDER_CATALOG_TYPES.find((c) => c.id === type);
   return found ? found.label : type;
@@ -40,9 +57,18 @@ export function ProviderFormDialog({
   const [key, setKey] = useState('');
   const [enabled] = useState(provider ? provider.enabled : true);
   const [saving, setSaving] = useState(false);
+  // Explicit catalog-mapping selection (D3). null = untouched "auto": the
+  // select DISPLAYS the host-derived suggestion but persists an EMPTY
+  // catalog_provider so server-side host auto-detect keeps working; only an
+  // explicit selection persists its id.
+  const [catalogProvider, setCatalogProvider] = useState<string | null>(
+    provider?.catalog_provider || null
+  );
 
   const selectedTypeConfig =
     PROVIDER_CATALOG_TYPES.find((c) => c.id === type) || PROVIDER_CATALOG_TYPES[0];
+  const isCatalogMappable = CATALOG_MAPPED_TYPES.includes(type);
+  const catalogSelectValue = catalogProvider ?? provider?.suggested_catalog_provider ?? '';
 
   const isValid =
     name.trim().length > 0 &&
@@ -55,10 +81,13 @@ export function ProviderFormDialog({
     setSaving(true);
     try {
       if (isEdit && provider) {
-        const payload: { name?: string; base_url?: string; key?: string; enabled?: boolean } = {
+        const payload: { name?: string; base_url?: string; key?: string; enabled?: boolean; catalog_provider?: string } = {
           name: name.trim(),
           enabled,
         };
+        if (isCatalogMappable) {
+          payload.catalog_provider = catalogProvider ?? '';
+        }
         if (selectedTypeConfig.requiresBaseUrl || baseUrl.trim()) {
           payload.base_url = baseUrl.trim();
         }
@@ -71,11 +100,14 @@ export function ProviderFormDialog({
         onSaved(res.provider);
         onClose();
       } else {
-        const payload: { type: string; name: string; base_url?: string; key?: string; enabled?: boolean } = {
+        const payload: { type: string; name: string; base_url?: string; key?: string; enabled?: boolean; catalog_provider?: string } = {
           type,
           name: name.trim(),
           enabled,
         };
+        if (isCatalogMappable) {
+          payload.catalog_provider = catalogProvider ?? '';
+        }
         if (baseUrl.trim()) {
           payload.base_url = baseUrl.trim();
         }
@@ -191,6 +223,31 @@ export function ProviderFormDialog({
             Full API base including the version path (e.g. https://api.example.com/v1) — the server appends resource paths like /models or /chat/completions on top.
           </p>
         </div>
+
+        {isCatalogMappable && (
+          <div>
+            <label className={labelCls} htmlFor="prov-catalog">
+              Catalog mapping (optional)
+            </label>
+            <select
+              id="prov-catalog"
+              aria-label="Catalog mapping"
+              className={inputCls}
+              value={catalogSelectValue}
+              onChange={(e) => setCatalogProvider(e.target.value)}
+            >
+              <option value="">Auto-detect from host</option>
+              {CATALOG_PROVIDER_OPTIONS.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-[11px] leading-4 text-muted">
+              Maps this gateway onto the community model catalog — used for model lists and model capabilities (image input, reasoning, tool calling).
+            </p>
+          </div>
+        )}
 
         <div>
           <label className={labelCls} htmlFor="prov-key">

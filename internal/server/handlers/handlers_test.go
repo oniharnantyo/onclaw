@@ -10,6 +10,7 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/server/handlers"
 	"github.com/oniharnantyo/onclaw/internal/services"
 	storagefake "github.com/oniharnantyo/onclaw/internal/storage/fake"
+	"github.com/oniharnantyo/onclaw/internal/storage/resolver"
 	storefake "github.com/oniharnantyo/onclaw/internal/store/fake"
 )
 
@@ -49,7 +50,8 @@ func TestHandlers_New(t *testing.T) {
 		t.Fatal("expected non-nil UserHandlers instance")
 	}
 
-	fileH := handlers.NewFileHandlers(stor)
+	wsStorage := resolver.New(stor, st.WorkspaceStorage(), st.Attachments(), []byte("01234567890123456789012345678901"), t.TempDir())
+	fileH := handlers.NewFileHandlers(stor, st.Attachments(), wsStorage)
 	if fileH == nil {
 		t.Fatal("expected non-nil FileHandlers instance")
 	}
@@ -74,7 +76,7 @@ func TestHandlers_New(t *testing.T) {
 		t.Fatal("expected non-nil ProviderHandlers instance")
 	}
 
-	agentH := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), []byte("01234567890123456789012345678901"), nil, nil, nil, t.TempDir(), nil, nil)
+	agentH := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), st.AgentSessions(), []byte("01234567890123456789012345678901"), nil, nil, nil, t.TempDir(), nil, nil)
 	if agentH == nil {
 		t.Fatal("expected non-nil AgentHandlers instance")
 	}

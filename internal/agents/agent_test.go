@@ -140,10 +140,11 @@ func TestCompose_Capabilities(t *testing.T) {
 		if err != nil {
 			t.Fatalf("buildMiddlewares failed: %v", err)
 		}
-		if len(handlers) != 2 {
-			t.Fatalf("expected exactly 2 handlers (patchtoolcalls, tool-error-result), got %d", len(handlers))
+		if len(handlers) != 3 {
+			t.Fatalf("expected exactly 3 handlers (patchtoolcalls, attachments, tool-error-result), got %d", len(handlers))
 		}
 		assertHandlerType(t, handlers[0], "patchtoolcalls")
+		assertHandlerType(t, handlers[1], "attachmentsplaceholdermiddleware")
 
 		agent, err := Compose(ctx, cfg)
 		if err != nil {
@@ -169,12 +170,13 @@ func TestCompose_Capabilities(t *testing.T) {
 		if err != nil {
 			t.Fatalf("buildMiddlewares failed: %v", err)
 		}
-		if len(handlers) != 4 {
-			t.Fatalf("expected 4 handlers (patchtoolcalls, reduction, filesystem, tool-error-result), got %d", len(handlers))
+		if len(handlers) != 5 {
+			t.Fatalf("expected 5 handlers (patchtoolcalls, reduction, filesystem, attachments, tool-error-result), got %d", len(handlers))
 		}
 		assertHandlerType(t, handlers[0], "patchtoolcalls")
 		assertHandlerType(t, handlers[1], "reduction")
 		assertHandlerType(t, handlers[2], "filesystem")
+		assertHandlerType(t, handlers[3], "attachmentsplaceholdermiddleware")
 
 		agent, err := Compose(ctx, cfg)
 		if err != nil {
@@ -202,8 +204,8 @@ func TestCompose_Capabilities(t *testing.T) {
 		if err != nil {
 			t.Fatalf("buildMiddlewares failed: %v", err)
 		}
-		if len(handlers) != 3 {
-			t.Fatalf("expected 3 handlers (patchtoolcalls, skill, tool-error-result), got %d", len(handlers))
+		if len(handlers) != 4 {
+			t.Fatalf("expected 4 handlers (patchtoolcalls, skill, attachments, tool-error-result), got %d", len(handlers))
 		}
 		assertHandlerType(t, handlers[0], "patchtoolcalls")
 		assertHandlerType(t, handlers[1], "skill")
@@ -235,13 +237,14 @@ func TestCompose_Capabilities(t *testing.T) {
 		if err != nil {
 			t.Fatalf("buildMiddlewares failed: %v", err)
 		}
-		if len(handlers) != 5 {
-			t.Fatalf("expected 5 handlers (patchtoolcalls, reduction, summarization, filesystem, tool-error-result), got %d", len(handlers))
+		if len(handlers) != 6 {
+			t.Fatalf("expected 6 handlers (patchtoolcalls, reduction, summarization, filesystem, attachments, tool-error-result), got %d", len(handlers))
 		}
 		assertHandlerType(t, handlers[0], "patchtoolcalls")
 		assertHandlerType(t, handlers[1], "reduction")
 		assertHandlerType(t, handlers[2], "summarization")
 		assertHandlerType(t, handlers[3], "filesystem")
+		assertHandlerType(t, handlers[4], "attachmentsplaceholdermiddleware")
 
 		agent, err := Compose(ctx, cfg)
 		if err != nil {
@@ -278,11 +281,11 @@ func TestCompose_Capabilities(t *testing.T) {
 		if err != nil {
 			t.Fatalf("buildMiddlewares failed: %v", err)
 		}
-		if len(handlers) != 6 {
-			t.Fatalf("expected 6 handlers, got %d", len(handlers))
+		if len(handlers) != 7 {
+			t.Fatalf("expected 7 handlers, got %d", len(handlers))
 		}
 
-		expectedOrder := []string{"patchtoolcalls", "reduction", "summarization", "skill", "filesystem"}
+		expectedOrder := []string{"patchtoolcalls", "reduction", "summarization", "skill", "filesystem", "attachmentsplaceholdermiddleware"}
 		for i, exp := range expectedOrder {
 			assertHandlerType(t, handlers[i], exp)
 		}

@@ -10,7 +10,7 @@ describe('components/nav/Rail', () => {
     agents: [{ id: 'a1', name: 'Atlas' }],
     channels: [{ id: 'general', name: 'general', unread: 3 }],
     people: [],
-    cron: [],
+    schedules: [],
     runs: [],
   };
 
@@ -28,23 +28,23 @@ describe('components/nav/Rail', () => {
     onToggleExpand: vi.fn(),
   };
 
-  it('renders primary nav items (Chats, Agents, Cron, Runs) without native title attrs', () => {
+  it('renders primary nav items (Chats, Agents, Schedules, Runs) without native title attrs', () => {
     render(<Rail {...defaultProps} />);
 
     const chatsBtn = screen.getByRole('button', { name: 'Chats' });
     const agentsBtn = screen.getByRole('button', { name: 'Agents' });
-    const cronBtn = screen.getByRole('button', { name: 'Cron' });
+    const schedulesBtn = screen.getByRole('button', { name: 'Schedules' });
     const runsBtn = screen.getByRole('button', { name: 'Runs' });
 
     expect(chatsBtn).not.toBeNull();
     expect(agentsBtn).not.toBeNull();
-    expect(cronBtn).not.toBeNull();
+    expect(schedulesBtn).not.toBeNull();
     expect(runsBtn).not.toBeNull();
 
     // Ensure native title attribute is removed to avoid duplicate tooltips
     expect(chatsBtn.getAttribute('title')).toBeNull();
     expect(agentsBtn.getAttribute('title')).toBeNull();
-    expect(cronBtn.getAttribute('title')).toBeNull();
+    expect(schedulesBtn.getAttribute('title')).toBeNull();
     expect(runsBtn.getAttribute('title')).toBeNull();
 
     // Switcher and Settings also have no native title
@@ -138,7 +138,7 @@ describe('components/nav/Rail', () => {
     // All labels are rendered as visible text
     expect(screen.getByText('Chats')).not.toBeNull();
     expect(screen.getByText('Agents')).not.toBeNull();
-    expect(screen.getByText('Cron')).not.toBeNull();
+    expect(screen.getByText('Schedules')).not.toBeNull();
     expect(screen.getByText('Runs')).not.toBeNull();
     expect(screen.getByText('Workspaces')).not.toBeNull();
     expect(screen.getByText('Accounts')).not.toBeNull();

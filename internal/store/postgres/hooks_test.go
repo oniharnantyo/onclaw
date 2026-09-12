@@ -51,7 +51,7 @@ func validManagedInstanceHook(key string) *domain.InstanceHook {
 		HookBase: domain.HookBase{
 			Name:        "Managed " + key,
 			Event:       domain.HookEventRunStarted,
-			Matcher:     "cron",
+			Matcher:     "scheduler",
 			HandlerType: domain.HookHandlerHTTP,
 			Config:      json.RawMessage(`{"url":"https://hooks.example.com/observe"}`),
 			TimeoutMS:   domain.DefaultHookTimeoutMS,
@@ -147,7 +147,7 @@ func TestIntegration_HookStore_InstanceCRUD(t *testing.T) {
 	if got.Key != "gate" || got.Source != domain.HookSourceManaged || got.Version != 1 {
 		t.Fatalf("unexpected identity fields: %+v", got)
 	}
-	if got.Matcher != "cron" {
+	if got.Matcher != "scheduler" {
 		t.Fatalf("unexpected matcher roundtrip: %+v", got.Matcher)
 	}
 	// jsonb normalizes whitespace, so compare semantically.

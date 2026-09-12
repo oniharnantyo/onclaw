@@ -1,3 +1,6 @@
+import type { ApiChannelMember, ApiChannelMessage } from '../lib/api';
+import type { Scheduler, SchedulerRun } from '../lib/schedulers';
+
 export interface ToolCall {
   name: string;
   args: string;
@@ -22,7 +25,9 @@ export interface Message {
   /** Failure text for author:'error' entries (design D8). */
   error?: string;
   agentId?: string;
-  cron?: string;
+  /** Scheduler-origin marker (integrate-scheduler D1): the schedule's name
+   * when known; the chip falls back to generic copy when it is ''. */
+  scheduler?: string;
   name?: string;
   tools?: ToolCall[];
   branches?: Message[]; // Support for branching variants
@@ -76,11 +81,22 @@ export interface Agent {
   updated_at?: string;
 }
 
+/** Sidebar/room display view of a server channel (wire: ApiChannel in
+ * lib/api). Hydrated from the API — channels are never seeded (change
+ * integrate-agent-channels). `name` carries the slug so the sidebar/room keep
+ * the mock's `#handle` visual; the server's display name rides `slug`'s
+ * sibling on the wire, not the UI. The primary-agent concept is gone
+ * (design D15) — agentId lingers optional for legacy fixtures. */
 export interface Channel {
   id: string;
+  workspace_id?: string;
   name: string;
+  slug?: string;
   purpose: string;
-  agentId: string;
+  conventions?: string;
+  created_at?: string;
+  updated_at?: string;
+  agentId?: string;
   unread: number;
   members: string[];
 }
@@ -89,31 +105,6 @@ export interface Person {
   id: string;
   name: string;
   presence: 'online' | 'away' | string;
-}
-
-export interface CronJob {
-  id: string;
-  name: string;
-  agentId: string;
-  expr: string;
-  human: string;
-  next: string;
-  enabled: boolean;
-  last: {
-    status: 'success' | 'failed' | 'skipped' | string;
-    when: string;
-    dur: string;
-  };
-}
-
-export interface Run {
-  id: string;
-  agentId: string;
-  trigger: 'cron' | 'chat' | 'api' | string;
-  when: string;
-  dur: string;
-  tokens: string;
-  status: 'success' | 'failed' | string;
 }
 
 export interface Member {
@@ -184,10 +175,19 @@ export interface Workspace {
   retention: string;
   agents: Agent[];
   channels: Channel[];
+  /** Per-channel wire roster (integrate-agent-channels): keyed by channel id. */
+  channelRoster?: Record<string, ApiChannelMember[]>;
+  /** Per-channel wire feed, ascending seq (integrate-agent-channels). */
+  channelMessages?: Record<string, ApiChannelMessage[]>;
   people: Person[];
   threads: Record<string, { active: string | null; list: ThreadSession[] }>;
-  cron: CronJob[];
-  runs: Run[];
+  /** Server-only (integrate-scheduler): schedules hydrate from the API via
+   * loadSchedules and are never seeded — an empty list is the correct state.
+   * Wire rows (lib/schedulers Scheduler), not a display projection. */
+  schedules: Scheduler[];
+  /** Server-only (integrate-scheduler): the workspace-wide scheduler-run
+   * history hydrates with the runs screen; never seeded. */
+  runs: SchedulerRun[];
   members: Member[];
   integrations: Integration[];
   skillLib: Skill[];

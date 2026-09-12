@@ -87,7 +87,8 @@ describe('components/chat/Composer $ skill menu', () => {
     expect(screen.queryByTestId('skill-menu')).toBeNull();
 
     fireEvent.keyDown(input, { key: 'Enter' });
-    expect(onSend).toHaveBeenCalledWith('$no-such-skill hello');
+    // add-chat-attachments D11: onSend carries the (here empty) ready chips.
+    expect(onSend).toHaveBeenCalledWith('$no-such-skill hello', []);
   });
 
   it('escape dismisses the menu and $ does not open it without groups', () => {
@@ -105,5 +106,60 @@ describe('components/chat/Composer $ skill menu', () => {
     const input2 = utils2.getByLabelText('Message input') as HTMLTextAreaElement;
     fireEvent.change(input2, { target: { value: '$web' } });
     expect(utils2.queryByTestId('skill-menu')).toBeNull();
+  });
+});
+
+describe('components/chat/Composer /compact slash menu (chat-compact-command)', () => {
+  it('agent chat: opens on / and lists only /compact; Enter picks it with a trailing space', () => {
+    const onSend = vi.fn();
+    render(
+      <Composer agent={{ name: 'Atlas' }} running={false} onSend={onSend} onCancel={vi.fn()} onAttach={vi.fn()} allowCommands />
+    );
+    const input = screen.getByLabelText('Message input') as HTMLTextAreaElement;
+
+    fireEvent.change(input, { target: { value: '/comp' } });
+    const menu = document.querySelector('[data-od-id="slash-menu"]')!;
+    expect(menu).not.toBeNull();
+    expect(menu.textContent).toContain('/compact');
+    expect(menu.textContent).toContain("Compact this conversation's context");
+    expect(menu.querySelectorAll('button').length).toBe(1);
+
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(input.value).toBe('/compact ');
+  });
+
+  it('agent chat: typing /compact with focus text closes the menu and Enter sends the raw text', () => {
+    const onSend = vi.fn();
+    render(
+      <Composer agent={{ name: 'Atlas' }} running={false} onSend={onSend} onCancel={vi.fn()} onAttach={vi.fn()} allowCommands />
+    );
+    const input = screen.getByLabelText('Message input') as HTMLTextAreaElement;
+
+    fireEvent.change(input, { target: { value: '/compact keep the decisions' } });
+    expect(document.querySelector('[data-od-id="slash-menu"]')).toBeNull();
+    fireEvent.keyDown(input, { key: 'Enter' });
+    // add-chat-attachments D11: onSend carries the (here empty) ready chips.
+    expect(onSend).toHaveBeenCalledWith('/compact keep the decisions', []);
+  });
+
+  it('channel composer: /compact never opens the menu and passes through as plain text', () => {
+    const onSend = vi.fn();
+    render(
+      <Composer
+        agent={{ name: 'Atlas' }}
+        running={false}
+        onSend={onSend}
+        onCancel={vi.fn()}
+        onAttach={vi.fn()}
+        mentionOptions={[{ id: 'p1', kind: 'person', name: 'Pat' }]}
+      />
+    );
+    const input = screen.getByLabelText('Message input') as HTMLTextAreaElement;
+
+    fireEvent.change(input, { target: { value: '/compact' } });
+    expect(document.querySelector('[data-od-id="slash-menu"]')).toBeNull();
+    fireEvent.keyDown(input, { key: 'Enter' });
+    // add-chat-attachments D11: onSend carries the (here empty) ready chips.
+    expect(onSend).toHaveBeenCalledWith('/compact', []);
   });
 });

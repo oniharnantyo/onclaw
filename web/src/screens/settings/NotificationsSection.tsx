@@ -22,7 +22,7 @@ export function NotificationsSection({ tenant, onToast, onUpdate }: Notification
   return (
     <div className="max-w-md space-y-1" data-od-id="pane-notifications" data-testid="pane-notifications">
       {[
-        { id: 'cronFail', label: 'Cron failures', desc: 'A scheduled run fails or misses its window' },
+        { id: 'cronFail', label: 'Scheduler failures', desc: 'A scheduled run fails or misses its window' },
         { id: 'agentErrors', label: 'Agent errors', desc: 'Tool failures, auth expiry, budget thresholds' },
         { id: 'digest', label: 'Weekly digest', desc: 'Monday summary of runs, spend and failures' },
       ].map((row) => (

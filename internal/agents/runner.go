@@ -20,9 +20,11 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/agents/backend"
 	"github.com/oniharnantyo/onclaw/internal/agents/hooks"
 	"github.com/oniharnantyo/onclaw/internal/agents/mcp"
+	"github.com/oniharnantyo/onclaw/internal/agents/tools"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/secrets"
+	"github.com/oniharnantyo/onclaw/internal/services"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
@@ -41,6 +43,7 @@ type Runner struct {
 	sessionEvents store.SessionEventStore
 	checkpoints   store.SessionCheckpointStore
 	memories      store.MemoryStore
+	agentSessions store.AgentSessionStore
 
 	encryptionKey []byte
 	onClawDir     string
@@ -59,6 +62,35 @@ type Runner struct {
 
 	hooks      *hooks.Dispatcher
 	hooksWired bool
+
+	// Channel-run ports (integrate-agent-channels D8). Both are required for
+	// channel runs: resolve fails a channel run when either is unset — that
+	// is an error path, not a defaultable dependency. Non-channel runs never
+	// consult them.
+	channelContext ChannelContext
+	channelFeed    ChannelFeed
+
+	// Work-session ports (channel-teams D2/D5). Both are required for a run
+	// minted inside a work session: session.close closes the session through
+	// WorkSessions and the shared /project materializes through ProjectSpace.
+	// A session run on a runner without them fails at resolve time — an error
+	// path, not a defensive default. Plain channel and non-channel runs never
+	// consult WorkSessions; non-channel runs never consult ProjectSpace.
+	workSessions WorkSessions
+	projectSpace ProjectSpace
+
+	// Attachment port (attachments design D17): the byte resolver drop-lane
+	// materialization downloads through. Required for runs carrying drop-lane
+	// refs — such a run fails at materialization time on a runner without it
+	// (an error path, not a defaultable dependency). Runs without attachments
+	// never consult it.
+	attachmentBlobs AttachmentBlobs
+
+	// Input-modality resolver (fix-image-attachment-lane D4): resolves whether
+	// the turn's (provider, model) pair accepts a non-text input kind.
+	// Default: unknown-for-everything, so unwired runners fail open — the
+	// message build sends attachment bytes exactly as before.
+	inputModalityResolver InputModalityResolver
 
 	// hooksRuns carries the per-run hook chain from Run to its approval
 	// Resume so D4 call-ID dedup spans the interrupt boundary: the Resolved
@@ -174,6 +206,55 @@ func WithHooks(d *hooks.Dispatcher) RunnerOption {
 	}
 }
 
+// WithChannelContext supplies the channel roster/tail reads channel-run
+// composition draws from (integrate-agent-channels D8). Required for channel
+// runs — a channel ExecRequest on a runner without it fails at resolve time;
+// non-channel runs never consult it.
+func WithChannelContext(cc ChannelContext) RunnerOption {
+	return func(r *Runner) {
+		if cc != nil {
+			r.channelContext = cc
+		}
+	}
+}
+
+// WithChannelFeed supplies the sink agent posts flow through (the
+// channel.post tool; integrate-agent-channels D9). Required for channel runs
+// — a channel ExecRequest on a runner without it fails at resolve time;
+// non-channel runs never consult it.
+func WithChannelFeed(cf ChannelFeed) RunnerOption {
+	return func(r *Runner) {
+		if cf != nil {
+			r.channelFeed = cf
+		}
+	}
+}
+
+// WithWorkSessions supplies the session-lifecycle writes the facilitator's
+// session.close tool flows through (channel-teams D2). Required for
+// work-session runs — an ExecRequest carrying WorkSessionID on a runner
+// without it fails at resolve time; other runs never consult it.
+func WithWorkSessions(ws WorkSessions) RunnerOption {
+	return func(r *Runner) {
+		if ws != nil {
+			r.workSessions = ws
+		}
+	}
+}
+
+// WithProjectSpace supplies the shared per-channel project directories the
+// jail mounts read-write at /project for channel member agents (channel-teams
+// D5). Required for work-session runs; plain channel runs mount /project with
+// it when wired and skip the mount without it. Non-channel runs never consult
+// it.
+func WithProjectSpace(ps ProjectSpace) RunnerOption {
+	return func(r *Runner) {
+		if ps != nil {
+			r.projectSpace = ps
+		}
+	}
+}
+
 // WithEnabledSkillReader supplies the workspace-skill registry reader that
 // governs the workspace skills tier (design D2/D3): only skills whose rows
 // are enabled attach to agents. The composition root wires the store-backed
@@ -220,6 +301,36 @@ func WithBaseContext(ctx context.Context) RunnerOption {
 	}
 }
 
+// InputModalityResolver resolves whether the (provider, model) pair behind a
+// turn accepts a non-text input kind (fix-image-attachment-lane D2). The
+// tri-state outcome is the contract: supported, unsupported (affirmative
+// catalog evidence against), or unknown (missing evidence — fails open
+// downstream). *services.ModelCatalog satisfies this structurally; the narrow
+// interface keeps the engine decoupled from the catalog service.
+type InputModalityResolver interface {
+	SupportsInput(ctx context.Context, providerType, catalogHint, modelID string, kind domain.InputKind) domain.InputSupport
+}
+
+// WithInputModalityResolver supplies the input-modality resolver attachment
+// degradation consults at resolve time (fix-image-attachment-lane D4).
+// Default: a resolver that answers unknown for everything, so a runner
+// without the catalog wired degrades nothing.
+func WithInputModalityResolver(r InputModalityResolver) RunnerOption {
+	return func(runner *Runner) {
+		if r != nil {
+			runner.inputModalityResolver = r
+		}
+	}
+}
+
+// unknownInputModalityResolver is the default resolver: no catalog evidence,
+// every kind unknown — the fail-open identity for attachment degradation.
+type unknownInputModalityResolver struct{}
+
+func (unknownInputModalityResolver) SupportsInput(context.Context, string, string, string, domain.InputKind) domain.InputSupport {
+	return domain.InputUnknown
+}
+
 // NewRunner creates a new production runner instance from explicit per-store
 // dependencies. Each granular store sub-interface is a positional parameter;
 // pass the aggregate's accessors (e.g. st.Agents(), st.Users()) at the call
@@ -234,37 +345,43 @@ func NewRunner(
 	sessionEvents store.SessionEventStore,
 	checkpoints store.SessionCheckpointStore,
 	memories store.MemoryStore,
+	agentSessions store.AgentSessionStore,
 	encryptionKey []byte,
 	onClawDir string,
 	opts ...RunnerOption,
 ) *Runner {
 	r := &Runner{
-		workspaces:          workspaces,
-		agents:              agents,
-		users:               users,
-		members:             members,
-		roles:               roles,
-		providers:           providers,
-		sessionEvents:       sessionEvents,
-		checkpoints:         checkpoints,
-		memories:            memories,
-		encryptionKey:       encryptionKey,
-		onClawDir:           onClawDir,
-		agenticFactory:      DefaultAgenticModelFactory,
-		instructionComposer: NewInstructionComposer(),
-		toolRegistry:        NewDefaultToolRegistry(memories),
-		toolPolicy:          allowAllToolPolicy{},
-		mcpPolicy:           noopMCPPolicy{},
-		mcpManager:          noopMCPTools{},
-		mcpStatus:           noopMCPStatus{},
-		hooks:               hooks.NewNoopDispatcher(),
-		hooksRuns:           make(map[RunKey]*hooks.Resolved),
-		summarizationMargin: DefaultSummarizationMargin,
-		baseCtx:             context.Background(),
+		workspaces:            workspaces,
+		agents:                agents,
+		users:                 users,
+		members:               members,
+		roles:                 roles,
+		providers:             providers,
+		sessionEvents:         sessionEvents,
+		checkpoints:           checkpoints,
+		memories:              memories,
+		agentSessions:         agentSessions,
+		encryptionKey:         encryptionKey,
+		onClawDir:             onClawDir,
+		agenticFactory:        DefaultAgenticModelFactory,
+		instructionComposer:   NewInstructionComposer(),
+		toolRegistry:          NewDefaultToolRegistry(memories),
+		toolPolicy:            allowAllToolPolicy{},
+		mcpPolicy:             noopMCPPolicy{},
+		mcpManager:            noopMCPTools{},
+		mcpStatus:             noopMCPStatus{},
+		hooks:                 hooks.NewNoopDispatcher(),
+		hooksRuns:             make(map[RunKey]*hooks.Resolved),
+		summarizationMargin:   DefaultSummarizationMargin,
+		baseCtx:               context.Background(),
+		inputModalityResolver: unknownInputModalityResolver{},
 	}
 	for _, opt := range opts {
 		opt(r)
 	}
+	// Leftover run-scoped drop-lane materializations from crashed runs are
+	// removed at startup (attachments design D17); best-effort.
+	sweepDropLane(r.onClawDir)
 	r.runMgr = newRunManager(r.baseCtx, DefaultCancelEscalation)
 	return r
 }
@@ -333,6 +450,28 @@ type agentConfig struct {
 	// event identity every delivery is built from.
 	Hooks     *hooks.Resolved
 	HooksBase *hooks.Event
+
+	// CompactionObserver receives the display-only token estimates of every
+	// summarization the composed agent performs (chat-compact-command D5);
+	// wired from the per-run compaction state, nil in unit constructions.
+	CompactionObserver func(tokensBefore, tokensAfter int)
+
+	// InputModality is the turn's resolved input-modality capability
+	// (fix-image-attachment-lane D4), consumed by attachment message
+	// construction: affirmatively-unsupported kinds degrade to pointer notes.
+	InputModality inputModality
+}
+
+// inputModality carries one turn's input-modality capability for attachment
+// degradation (fix-image-attachment-lane D4): what the turn's
+// (provider, model) pair accepts, resolved once per run at resolve time.
+// The zero value fails open — only an affirmative InputUnsupported degrades.
+type inputModality struct {
+	providerType string
+	catalogHint  string
+	model        string
+	image        domain.InputSupport
+	pdf          domain.InputSupport
 }
 
 // validateAgentConfig checks that an agentConfig has all required fields
@@ -372,7 +511,49 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 		UserID:      req.UserID,
 	}
 
+	// Channel runs require the channel ports (integrate-agent-channels D8):
+	// composition reads the room and channel.post writes to it. Work-session
+	// runs additionally require the session ports (channel-teams D2/D5):
+	// session.close writes the session and /project must materialize for the
+	// team. Unset ports are wiring errors surfaced at resolve time — error
+	// paths, not defensive defaults.
+	if req.ChannelID != "" && (r.channelContext == nil || r.channelFeed == nil) {
+		return cfg, nil, errors.New("channel run: the runner requires WithChannelContext and WithChannelFeed")
+	}
+	if req.WorkSessionID != "" && (r.workSessions == nil || r.projectSpace == nil) {
+		return cfg, nil, errors.New("work-session run: the runner requires WithWorkSessions and WithProjectSpace")
+	}
+
 	agentDir := domain.AgentWorkspaceDir(domain.WorkspaceRoot(r.onClawDir), ws.Slug, agent.Slug)
+
+	// Channel-run scope (channel-teams D2/D5): the roster read decides the
+	// running agent's membership and role — the facilitator powers ride it,
+	// and the shared project space mounts for member agents only. Read
+	// failures fail the run — a membership gate must not silently disappear.
+	var (
+		channelSlug string
+		memberRole  domain.ChannelMemberRole
+		isMember    bool
+	)
+	if req.ChannelID != "" {
+		channel, err := r.channelContext.GetChannel(ctx, req.WorkspaceID, req.ChannelID)
+		if err != nil {
+			return cfg, nil, fmt.Errorf("load channel: %w", err)
+		}
+		channelSlug = channel.Slug
+		members, err := r.channelContext.ListChannelMembers(ctx, req.WorkspaceID, req.ChannelID)
+		if err != nil {
+			return cfg, nil, fmt.Errorf("load channel members: %w", err)
+		}
+		for _, m := range members {
+			if m.MemberType == domain.ChannelMemberTypeAgent && m.AgentID == req.AgentID {
+				isMember = true
+				memberRole = m.Role
+				break
+			}
+		}
+	}
+	exposeSessionClose := isMember && req.WorkSessionID != "" && memberRole == domain.ChannelMemberRoleFacilitator
 
 	// Workspace-local clock for tools that resolve dates (the memory tool's
 	// MEMORY-TODAY.md). An empty identifier loads as UTC; an invalid one
@@ -385,14 +566,33 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 	// Tool resolution order (workspace-tool-catalog 3.2): the per-turn
 	// AllowedTools override replaces the agent allowlist, the browser facade
 	// alias expands, then the workspace gate filters — so the gate wins over
-	// both the allowlist and the override.
+	// both the allowlist and the override. Channel runs carry the channel
+	// toolset through the gate (exposure is channel-run-only, integrate-agent-
+	// channels task 5); non-channel runs strip it even when allowlisted.
+	// session.close rides the same gate, exposed only to the facilitator of a
+	// run minted inside a work session (channel-teams task 4).
 	allowlist := agent.Tools
 	if req.AllowedTools != nil {
 		allowlist = req.AllowedTools
 	}
+	allowlist = scopeChannelToolsIn(allowlist, req.ChannelID != "")
+	allowlist = scopeSessionToolsIn(allowlist, exposeSessionClose)
 	effective, err := r.applyToolGate(ctx, req.WorkspaceID, allowlist)
 	if err != nil {
 		return cfg, nil, fmt.Errorf("apply tool policy: %w", err)
+	}
+	if req.ChannelID == "" {
+		effective = withoutChannelTools(effective)
+	}
+	if !exposeSessionClose {
+		effective = withoutSessionTools(effective)
+	}
+	// Scheduler runs run unattended (integrate-scheduler D6): the strip
+	// applies after the allowlist and the workspace gate, so neither can
+	// re-expose the excluded tools — a scheduled run cannot mint schedulers
+	// and cannot silently edit a human's memory.
+	if normalizeOrigin(req.Origin) == OriginScheduler {
+		effective = withoutSchedulerTools(effective)
 	}
 
 	toolConfigs, err := r.toolPolicy.ToolConfigs(ctx, req.WorkspaceID)
@@ -400,7 +600,24 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 		return cfg, nil, fmt.Errorf("load tool configs: %w", err)
 	}
 
-	_, tools, err := ResolvedTools(ToolContext{
+	// Read-only jail roots for tool constructors (document.* family): the
+	// workspace skills tree plus this turn's materialized drop-lane
+	// directory, so document.read can convert chat-attached documents and
+	// document.create can read chat-delivered templates. Materialization
+	// runs here — before tool resolution and composition, so a download
+	// failure fails the run before any model call; "" means the turn carries
+	// no drop-lane refs and only the skills tree mounts.
+	skillsDir := domain.WorkspaceSkillsDir(r.onClawDir, ws.Slug)
+	readOnlyRoots := []string{skillsDir}
+	dropDir, err := r.materializeDropLane(ctx, req)
+	if err != nil {
+		return cfg, nil, fmt.Errorf("materialize drop-lane attachments: %w", err)
+	}
+	if dropDir != "" {
+		readOnlyRoots = append(readOnlyRoots, dropDir)
+	}
+
+	tctx := ToolContext{
 		WorkspaceSlug: ws.Slug,
 		AgentSlug:     agent.Slug,
 		AgentDir:      agentDir,
@@ -410,7 +627,28 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 		UserID:        req.UserID,
 		WorkspaceTZ:   workspaceTZ,
 		ToolConfigs:   toolConfigs,
-	}, r.toolRegistry, effective)
+		ChannelID:     req.ChannelID,
+
+		// Document.family bindings (add-document-read-tool /
+		// add-document-create-tool): the read-only roots above and the
+		// workspace blob store's publisher, both consumed at tool
+		// construction time.
+		ReadOnlyRoots: readOnlyRoots,
+	}
+	if r.attachmentBlobs != nil {
+		tctx.DocumentPublisher = r.attachmentBlobs
+	}
+	if req.ChannelID != "" {
+		tctx.ChannelContext = r.channelContext
+		tctx.ChannelFeed = r.channelFeed
+		tctx.ChannelHandles = newRunnerChannelHandles(r.users, r.agents)
+		tctx.ChannelRole = memberRole
+		if req.WorkSessionID != "" {
+			tctx.WorkSessionID = req.WorkSessionID
+			tctx.WorkSessions = r.workSessions
+		}
+	}
+	_, tools, err := ResolvedTools(tctx, r.toolRegistry, effective)
 	if err != nil {
 		return cfg, nil, fmt.Errorf("resolve tools: %w", err)
 	}
@@ -443,6 +681,22 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 		APIKey:  apiKey,
 	}
 
+	// Input-modality capability (fix-image-attachment-lane D4): resolved once
+	// per run for the turn's (provider, model) pair. Unknown — no catalog
+	// entry, no hint, failed fetch — reaches the message build as unknown and
+	// fails open there; only an affirmative unsupported degrades. The hint
+	// also rides the credential so model resolution and degradation agree on
+	// the same catalog mapping.
+	hint := services.EffectiveCatalogHint(provider.Type, provider.CatalogProvider, provider.BaseURL)
+	cfg.InputModality = inputModality{
+		providerType: provider.Type,
+		catalogHint:  hint,
+		model:        agent.Model,
+		image:        r.inputModalityResolver.SupportsInput(ctx, provider.Type, hint, agent.Model, domain.InputKindImage),
+		pdf:          r.inputModalityResolver.SupportsInput(ctx, provider.Type, hint, agent.Model, domain.InputKindPDF),
+	}
+	cred.CatalogHint = hint
+
 	agenticModel, err := r.agenticFactory(ctx, provider.Type, cred, agent.Model)
 	if err != nil {
 		return cfg, nil, fmt.Errorf("build agentic model: %w", err)
@@ -466,13 +720,26 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 		}
 	}
 
-	skillsDir := domain.WorkspaceSkillsDir(r.onClawDir, ws.Slug)
 	fsCfg := &FilesystemConfig{
 		AgentDir:      agentDir,
 		DisabledTools: disabledFilesystemTools(effective),
-		// The workspace skills tree is readable (bundled references served by
-		// absolute path) but never writable (design D6).
-		ReadOnlyRoots: []string{skillsDir},
+		// The same read-only roots tool constructors saw on the ToolContext
+		// (the skills tree, readable but never writable per design D6, plus
+		// the turn's drop-lane mount — attachments design D8/D17).
+		ReadOnlyRoots: readOnlyRoots,
+	}
+	// Shared project space (channel-teams D5): member agents of a channel run
+	// mount the channel's project directory read-write at /project; everyone
+	// else — non-members, non-channel runs — gets no /project. Ensure
+	// materializes the directory before the jail builds, so a failure to
+	// create the shared space fails the run rather than silently dropping the
+	// mount.
+	if req.ChannelID != "" && r.projectSpace != nil && isMember {
+		projectDir, err := r.projectSpace.Ensure(req.WorkspaceID, channelSlug)
+		if err != nil {
+			return cfg, nil, fmt.Errorf("ensure project space: %w", err)
+		}
+		fsCfg.ProjectMountDir = projectDir
 	}
 	allowedSet := make(map[string]bool, len(effective))
 	for _, t := range effective {
@@ -493,6 +760,30 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 	cfg.Summarization = &SummarizationConfig{TriggerTokens: triggerTokens}
 
 	return cfg, resolvedTools, nil
+}
+
+// schedulerExcludedTools are the tool names a scheduler-origin run never
+// carries, regardless of its allowlist or the workspace gate
+// (integrate-scheduler D6): the schedule tool is filtered by its registry
+// name — a scheduled run must never mint schedulers — and the memory tools
+// are excluded so an unattended run cannot silently edit a human's memory.
+var schedulerExcludedTools = map[string]struct{}{
+	tools.NameSchedule:   {},
+	tools.NameMemory:     {},
+	tools.NameDeleteFile: {},
+}
+
+// withoutSchedulerTools strips the scheduler-excluded tool names from an
+// effective allowlist (integrate-scheduler D6).
+func withoutSchedulerTools(names []string) []string {
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		if _, excluded := schedulerExcludedTools[name]; excluded {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
 }
 
 // noopMCPPolicy is the default MCP policy: no servers, so resolution
@@ -651,8 +942,14 @@ func (r *Runner) injectSkillInvocations(ctx context.Context, ws *domain.Workspac
 }
 
 // composeAgent validates config, builds instruction, and delegates composition to Compose.
+// req carries the run's channel coordinates: channel runs (ChannelID set)
+// compose the CHANNEL.md virtual doc and catch-up tail (design D8) in fixed
+// position between USER.md and BOOTSTRAP.md; non-channel runs compose exactly
+// as before. The deterministic channel session id is the caller's job (D7) —
+// this branch only composes documents.
 func (r *Runner) composeAgent(
 	ctx context.Context,
+	req ExecRequest,
 	cfg *agentConfig,
 	ws *domain.Workspace,
 	user *domain.User,
@@ -664,29 +961,52 @@ func (r *Runner) composeAgent(
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
+	// Scheduler runs execute under the trimmed unattended profile
+	// (integrate-scheduler D6); every other origin composes exactly as
+	// before.
+	schedulerRun := normalizeOrigin(req.Origin) == OriginScheduler
+
+	// Channel context docs (integrate-agent-channels D8). Read failures fail
+	// the run — the room context is the run's grounding, not a nice-to-have.
+	// The branch is additionally guarded on origin: scheduler runs never
+	// carry ChannelID, but a malformed request must not compose channel docs
+	// into the unattended profile.
+	var channelDocs []string
+	if req.ChannelID != "" && !schedulerRun {
+		docs, err := r.composeChannelDocs(ctx, req, domainAgent)
+		if err != nil {
+			return nil, fmt.Errorf("compose channel context: %w", err)
+		}
+		channelDocs = docs
+	}
+
 	instruction, err := r.instructionComposer.Compose(ctx, ComposeParams{
-		AgentDir:  cfg.Filesystem.AgentDir,
-		Workspace: ws,
-		User:      user,
-		RoleName:  role.Name,
-		Memories:  r.memories,
+		AgentDir:         cfg.Filesystem.AgentDir,
+		Workspace:        ws,
+		User:             user,
+		RoleName:         role.Name,
+		Memories:         r.memories,
+		ChannelDocs:      channelDocs,
+		SchedulerProfile: schedulerRun,
+		NoReplyToken:     req.SchedulerNoReply,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("compose instruction: %w", err)
 	}
 
 	adkAgent, err := Compose(ctx, &Config{
-		Name:          domainAgent.Name,
-		Description:   domainAgent.Description,
-		Instruction:   instruction,
-		ChatModel:     cfg.Model,
-		Tools:         resolvedTools,
-		MaxIterations: cfg.MaxIterations,
-		Filesystem:    cfg.Filesystem,
-		Skills:        cfg.Skills,
-		Summarization: cfg.Summarization,
-		Hooks:         cfg.Hooks,
-		HooksBase:     cfg.HooksBase,
+		Name:               domainAgent.Name,
+		Description:        domainAgent.Description,
+		Instruction:        instruction,
+		ChatModel:          cfg.Model,
+		Tools:              resolvedTools,
+		MaxIterations:      cfg.MaxIterations,
+		Filesystem:         cfg.Filesystem,
+		Skills:             cfg.Skills,
+		Summarization:      cfg.Summarization,
+		Hooks:              cfg.Hooks,
+		HooksBase:          cfg.HooksBase,
+		CompactionObserver: cfg.CompactionObserver,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("compose agent: %w", err)
@@ -705,10 +1025,12 @@ func (r *Runner) execute(
 	cancelOpt adk.AgentRunOption,
 	adkAgent adk.TypedResumableAgent[*schema.AgenticMessage],
 	req ExecRequest,
+	userMsg *schema.AgenticMessage,
 	sessionAdapter *ADKSessionAdapter,
 	ephemeral bool,
 	hookChain *hooks.Resolved,
 	hookBase hooks.Event,
+	compaction *compactionState,
 ) *EventStream {
 	var sessionStore adk.SessionEventStore[*schema.AgenticMessage] = sessionAdapter
 	var cpStore adk.CheckPointStore = sessionAdapter
@@ -716,6 +1038,15 @@ func (r *Runner) execute(
 		eph := NewEphemeralSessionAdapter()
 		sessionStore = eph
 		cpStore = eph
+	}
+	// Run sessions are never resumed (integrate-scheduler D7, task 3.2): a
+	// persistent scheduler-origin run skips the checkpoint store entirely.
+	// The ADK tolerates a nil CheckPointStore cleanly — every checkpoint
+	// load/save/delete path guards on the nil store while session-event
+	// persistence stays enabled — so the transcript still persists without
+	// the checkpoint write amplification.
+	if !ephemeral && normalizeOrigin(req.Origin) == OriginScheduler {
+		cpStore = nil
 	}
 
 	runner := adk.NewTypedRunner(adk.TypedRunnerConfig[*schema.AgenticMessage]{
@@ -727,7 +1058,7 @@ func (r *Runner) execute(
 	})
 
 	stream := NewEventStream(128)
-	go r.streamRun(handle, cancelOpt, runner, stream, req, hookChain, hookBase)
+	go r.streamRun(handle, cancelOpt, runner, stream, req, userMsg, hookChain, hookBase, compaction)
 	return stream
 }
 
@@ -769,6 +1100,14 @@ func (r *Runner) IsRunActive(key RunKey) bool {
 	return r.runMgr.isLive(key)
 }
 
+// ActiveRunSessionIDs enumerates the session ids of the runs currently
+// executing for the workspace+agent pair (agent-session-index D3). The
+// session listing intersects it with the durable index rows to compute each
+// row's running flag — one map read, no per-row queries.
+func (r *Runner) ActiveRunSessionIDs(workspaceID, agentID string) []string {
+	return r.runMgr.ActiveRunSessionIDs(workspaceID, agentID)
+}
+
 // CancelRun cancels the live run for the given session. The run unwinds at
 // the next safe point and records a cancel marker in the session history.
 // It returns false when no run is live for the session.
@@ -785,6 +1124,54 @@ func (r *Runner) CancelRun(workspaceID, agentID, sessionID string) bool {
 // shutdown before process exit.
 func (r *Runner) DrainRuns(timeout time.Duration) {
 	r.runMgr.drain(timeout)
+}
+
+// sessionTitleMaxRunes caps the derived session title. The rule is
+// byte-identical to the web's deriveSessionTitle (web/src/store/index.ts) so
+// the optimistic client title and the server-authored birth title agree by
+// construction (agent-session-index D2).
+const sessionTitleMaxRunes = 42
+
+// sessionTitle derives a session's birth title from the user's input: the
+// first line, trimmed, truncated at 42 runes with an ellipsis. Empty or
+// whitespace-only input (and whitespace-only first lines) yield "" — the
+// birth then stores the empty title and the "New chat" fallback survives.
+// Truncation is rune-safe so multi-byte titles never split mid-character.
+func sessionTitle(input string) string {
+	firstLine := input
+	if idx := strings.IndexByte(firstLine, '\n'); idx >= 0 {
+		firstLine = firstLine[:idx]
+	}
+	trimmed := strings.TrimSpace(firstLine)
+	runes := []rune(trimmed)
+	if len(runes) > sessionTitleMaxRunes {
+		return string(runes[:sessionTitleMaxRunes]) + "…"
+	}
+	return trimmed
+}
+
+// indexAgentSession upserts the durable session index row for one persistent
+// run at start (agent-session-index D2): the birth turn carries the
+// input-derived title, later turns only bump last-activity — the store's
+// birth-only CASE guard owns that rule. Bookkeeping, never execution: a
+// failed upsert is logged and the run proceeds. Compact-command turns pass an
+// empty title — their input is summarizer focus text that must never become
+// the session title (an empty title stores ” on birth and rewrites nothing
+// on conflict). Scheduler-origin runs return early (integrate-scheduler D7):
+// run sessions are artifacts — their transcripts persist, but they never
+// appear in the per-user chat-sidebar index.
+func (r *Runner) indexAgentSession(ctx context.Context, req ExecRequest, title string) {
+	if normalizeOrigin(req.Origin) == OriginScheduler {
+		return
+	}
+	err := r.agentSessions.UpsertAgentSession(ctx, req.WorkspaceID, req.AgentID, req.UserID, domain.AgentSessionUpsert{
+		SessionID: req.SessionID,
+		Title:     title,
+	})
+	if err != nil {
+		slog.WarnContext(ctx, "agents: session index upsert failed (best-effort)",
+			"session_id", req.SessionID, "error", err)
+	}
 }
 
 func (r *Runner) run(ctx context.Context, req ExecRequest, ephemeral bool) (*EventStream, error) {
@@ -815,6 +1202,13 @@ func (r *Runner) run(ctx context.Context, req ExecRequest, ephemeral bool) (*Eve
 	}
 	hookBase := hookBaseEvent(normalizeOrigin(req.Origin), ws, domainAgent, user, req.SessionID)
 
+	// Compact-command turns branch before the prompt gate and the composed
+	// stack (chat-compact-command 1.2/D3): the turn carries no user prompt to
+	// gate and runs a standalone summarizer instead of the composed agent.
+	if normalizeCommand(req.Command) == CommandCompact {
+		return r.runCompact(ctx, req, ephemeral, cfg, hookChain, hookBase)
+	}
+
 	// Run-entry seam (design.md D2/D6): user_prompt_submit evaluates BEFORE
 	// the model is ever called. A block ends the turn with the notice + a
 	// well-formed turn_completed terminal — zero tokens, live stream
@@ -831,14 +1225,41 @@ func (r *Runner) run(ctx context.Context, req ExecRequest, ephemeral bool) (*Eve
 		r.rememberHookChain(runKeyOf(req), hookChain)
 	}
 
-	adkAgent, err := r.composeAgent(ctx, &cfg, ws, user, role, resolvedTools, domainAgent)
+	// The per-run compaction state surfaces the estimates the composition's
+	// summarization Callback captures at compaction time (chat-compact-command
+	// D5) to the drain loop's MessagesReplaced seam.
+	compaction := &compactionState{}
+	cfg.CompactionObserver = compaction.record
+
+	adkAgent, err := r.composeAgent(ctx, req, &cfg, ws, user, role, resolvedTools, domainAgent)
 	if err != nil {
 		return nil, fmt.Errorf("agent.Run: %w", err)
 	}
 
 	// $name explicit invocation (design D7): one seam ahead of the ADK runner
-	// so chats, channels, and cron prompts all honor it.
+	// so chats, channels, and scheduler prompts all honor it. The birth title
+	// derives from the raw user input captured before the injection — the
+	// injected skill text is runner plumbing, never the user's words
+	// (agent-session-index D2).
+	titleInput := req.Input
 	req.Input = r.injectSkillInvocations(ctx, ws, domainAgent, req.Input)
+
+	// Multimodal turn construction (attachments design D5/D9): a turn
+	// carrying attachments builds its user message here, before the run
+	// registers, so an inline-resolution failure fails with a returned error
+	// instead of a half-started stream. String-only turns keep the Query
+	// path untouched; compact turns never reach this seam.
+	var userMsg *schema.AgenticMessage
+	if len(req.Attachments) > 0 {
+		userMsg, err = r.buildAttachmentUserMessage(ctx, req, cfg.InputModality)
+		if err != nil {
+			// The drop-lane materialization from resolve() would otherwise
+			// outlive a run that never started — its teardown defer lives in
+			// streamRun, which is never reached.
+			r.teardownDropLane(req)
+			return nil, fmt.Errorf("agent.Run: %w", err)
+		}
+	}
 
 	sessionAdapter := NewADKSessionAdapter(r.sessionEvents, r.checkpoints, req.WorkspaceID)
 
@@ -855,7 +1276,20 @@ func (r *Runner) run(ctx context.Context, req ExecRequest, ephemeral bool) (*Eve
 	if err != nil {
 		return nil, fmt.Errorf("agent.Run: %w", err)
 	}
-	return r.execute(handle, cancelOpt, adkAgent, req, sessionAdapter, ephemeral, hookChain, hookBase), nil
+
+	// Durable session index (agent-session-index D2): persistent runs index
+	// their session exactly once, at start — birth carries the input-derived
+	// title, later turns bump activity through the store's birth-only rule.
+	// Ephemeral runs never touch the index.
+	if !ephemeral {
+		title := ""
+		if normalizeCommand(req.Command) != CommandCompact {
+			title = sessionTitle(titleInput)
+		}
+		r.indexAgentSession(ctx, req, title)
+	}
+
+	return r.execute(handle, cancelOpt, adkAgent, req, userMsg, sessionAdapter, ephemeral, hookChain, hookBase, compaction), nil
 }
 
 // resolveHooksChain resolves the run's hook chain (D2). A runner whose
@@ -990,14 +1424,18 @@ func runKeyOf(req ExecRequest) RunKey {
 }
 
 // streamRun drives the ADK runner to completion and maps events onto the EventStream.
+// userMsg is the pre-constructed multimodal user message of a turn carrying
+// attachments (attachments design D5); nil keeps the string-input Query path.
 func (r *Runner) streamRun(
 	handle *runHandle,
 	cancelOpt adk.AgentRunOption,
 	runner *adk.TypedRunner[*schema.AgenticMessage],
 	stream *EventStream,
 	req ExecRequest,
+	userMsg *schema.AgenticMessage,
 	hookChain *hooks.Resolved,
 	hookBase hooks.Event,
+	compaction *compactionState,
 ) {
 	key := runKeyOf(req)
 	defer handle.finish()
@@ -1009,6 +1447,10 @@ func (r *Runner) streamRun(
 	defer handle.cancel()
 	defer func() { _ = stream.Close() }()
 	defer r.logTapDrops(stream, req)
+	// Registered last so it runs first: the materialized drop-lane dir is
+	// removed before the stream closes, so a consumer observing the terminal
+	// event (or EOF) never finds the dir behind it.
+	defer r.teardownDropLane(req)
 	r.teardownBrowserSession(req)
 
 	turnID := ""
@@ -1017,7 +1459,12 @@ func (r *Runner) streamRun(
 	// cancelOpt arms the per-run ADK cancel state machine: CancelRun goes
 	// through the manager's agentCancel and the run unwinds at a safe point,
 	// persisting the durable cancel marker.
-	iter := runner.Query(handle.ctx, req.Input, cancelOpt)
+	var iter *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]]
+	if userMsg != nil {
+		iter = runner.Run(handle.ctx, []*schema.AgenticMessage{userMsg}, cancelOpt)
+	} else {
+		iter = runner.Query(handle.ctx, req.Input, cancelOpt)
+	}
 
 	// Emit turn_started.
 	now := time.Now().UTC()
@@ -1027,7 +1474,7 @@ func (r *Runner) streamRun(
 		TurnID:     turnID,
 	})
 
-	r.drainAgentEvents(handle.ctx, iter, stream, key, turnID, partialText, hookChain, hookBase)
+	r.drainAgentEvents(handle.ctx, iter, stream, key, turnID, partialText, hookChain, hookBase, compaction, userMsg)
 }
 
 // logTapDrops emits one debug line when the live tap dropped events because
@@ -1048,7 +1495,10 @@ func (r *Runner) logTapDrops(stream *EventStream, req ExecRequest) {
 // interrupt ends the stream without a terminal event. Every mapped event is
 // additionally fanned out via Broadcast to dynamically attached live
 // subscribers; subscriber sends are drop-new, so slow consumers never stall
-// the run.
+// the run. compaction carries the per-run estimates captured by the
+// composition's summarization Callback; it must be non-nil. userMsg is the
+// pre-constructed multimodal user message of a turn carrying attachments
+// (attachments design D5); nil keeps string-input turns unchanged.
 func (r *Runner) drainAgentEvents(
 	ctx context.Context,
 	iter *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]],
@@ -1058,6 +1508,8 @@ func (r *Runner) drainAgentEvents(
 	partialText string,
 	hookChain *hooks.Resolved,
 	hookBase hooks.Event,
+	compaction *compactionState,
+	userMsg *schema.AgenticMessage,
 ) {
 	var lastErr error
 	var usage UsagePayload
@@ -1136,6 +1588,25 @@ func (r *Runner) drainAgentEvents(
 			OccurredAt: time.Now().UTC(),
 			TurnID:     turnID,
 			ToolResult: &ToolResultPayload{CallID: callID, Name: name, Result: result, Latency: toolLatency(callID)},
+		})
+	}
+
+	// Transcript fidelity (attachments design D10): a turn carrying
+	// attachments emits its user message on the live stream — the ADK never
+	// surfaces the input message as an output event, so this is the carrying
+	// turn's only live user bubble, carrying the same attachment metadata the
+	// hydrated projection derives (one helper, both paths). Pointer notes are
+	// excluded from the text by extractAgenticText (D8).
+	if userMsg != nil {
+		emit(&TranscriptEvent{
+			Kind:       TranscriptEventMessageCompleted,
+			OccurredAt: time.Now().UTC(),
+			TurnID:     turnID,
+			Message: &CompletedMessage{
+				Role:        "user",
+				Content:     extractAgenticText(userMsg),
+				Attachments: attachmentMetasOf(userMsg),
+			},
 		})
 	}
 
@@ -1412,11 +1883,18 @@ func (r *Runner) drainAgentEvents(
 					})
 				}
 			case adk.SessionEventMessagesReplaced:
+				// The Callback recorded the replacement's estimates before the
+				// middleware forwarded this event (chat-compact-command D5).
+				payload := &CompactionPayload{}
+				if before, after, ok := compaction.snapshot(); ok {
+					payload.TokensBefore = before
+					payload.TokensAfter = after
+				}
 				emit(&TranscriptEvent{
 					Kind:       TranscriptEventContextCompacted,
 					OccurredAt: now,
 					TurnID:     turnID,
-					Compaction: &CompactionPayload{},
+					Compaction: payload,
 				})
 			}
 		}
@@ -1582,7 +2060,7 @@ func (r *Runner) Resume(ctx context.Context, req ExecRequest, approval *Approval
 		r.rememberHookChain(runKeyOf(req), hookChain)
 	}
 
-	adkAgent, err := r.composeAgent(ctx, &cfg, ws, user, role, resolvedTools, domainAgent)
+	adkAgent, err := r.composeAgent(ctx, req, &cfg, ws, user, role, resolvedTools, domainAgent)
 	if err != nil {
 		return nil, fmt.Errorf("agent.Resume: %w", err)
 	}
@@ -1607,6 +2085,11 @@ func (r *Runner) Resume(ctx context.Context, req ExecRequest, approval *Approval
 	if err != nil {
 		return nil, fmt.Errorf("agent.Resume: %w", err)
 	}
+
+	// Session index activity bump (agent-session-index D2): the resumed
+	// execution is a persistent turn on an already-indexed session, so the
+	// empty title never retitles — it only refreshes last_active_at.
+	r.indexAgentSession(ctx, req, "")
 
 	adkRunner := adk.NewTypedRunner(adk.TypedRunnerConfig[*schema.AgenticMessage]{
 		Agent:           adkAgent,
@@ -1644,6 +2127,10 @@ func (r *Runner) streamResume(
 	defer handle.cancel()
 	defer func() { _ = stream.Close() }()
 	defer r.logTapDrops(stream, req)
+	// Registered last so it runs first: the materialized drop-lane dir is
+	// removed before the stream closes, so a consumer observing the terminal
+	// event (or EOF) never finds the dir behind it.
+	defer r.teardownDropLane(req)
 	r.teardownBrowserSession(req)
 
 	iter, err := runner.ResumeWithParams(handle.ctx, ResumeCheckpointID(req.SessionID), &adk.ResumeParams{
@@ -1663,7 +2150,7 @@ func (r *Runner) streamResume(
 		}
 		return
 	}
-	r.drainAgentEvents(handle.ctx, iter, stream, key, "", "", hookChain, hookBase)
+	r.drainAgentEvents(handle.ctx, iter, stream, key, "", "", hookChain, hookBase, &compactionState{}, nil)
 }
 
 // ComposeParams contains the data necessary to compose the execution instruction.
@@ -1676,6 +2163,22 @@ type ComposeParams struct {
 	User      *domain.User
 	RoleName  string
 	Memories  store.MemoryStore
+	// ChannelDocs are the pre-rendered channel virtual documents (the
+	// CHANNEL.md doc and the catch-up tail, integrate-agent-channels D8),
+	// inserted in fixed position between USER.md and BOOTSTRAP.md. Empty for
+	// non-channel runs — composition is byte-identical without them.
+	ChannelDocs []string
+	// SchedulerProfile selects the trimmed unattended-run composition
+	// (integrate-scheduler D6): AGENTS/IDENTITY/SOUL plus the workspace
+	// metadata doc without the shared-memory subsection, closed by the
+	// unattended-run contract. USER.md, BOOTSTRAP.md, and channel docs are
+	// omitted entirely. False keeps the ordinary composition byte-identical.
+	SchedulerProfile bool
+	// NoReplyToken is the literal suppression token the unattended-run
+	// contract teaches for channel-target scheduler runs ("NO_REPLY"); empty
+	// for thread targets, where the contract asks for a plain
+	// "Nothing to report." instead. Only read when SchedulerProfile is true.
+	NoReplyToken string
 }
 
 // InstructionComposer defines the interface for composing agent execution instructions.
@@ -1693,6 +2196,12 @@ func NewInstructionComposer() *DefaultInstructionComposer {
 
 // Compose constructs the system instruction from disk prompt files and virtual documents.
 func (c *DefaultInstructionComposer) Compose(ctx context.Context, params ComposeParams) (string, error) {
+	// Scheduler execution profile (integrate-scheduler D6): the trimmed
+	// unattended composition replaces the ordinary document stack entirely.
+	if params.SchedulerProfile {
+		return c.composeSchedulerProfile(ctx, params)
+	}
+
 	var docs []string
 
 	// 1. AGENTS.md
@@ -1742,12 +2251,69 @@ func (c *DefaultInstructionComposer) Compose(ctx context.Context, params Compose
 		docs = append(docs, userDoc)
 	}
 
-	// 6. BOOTSTRAP.md
+	// 6. Channel context (integrate-agent-channels D8): the CHANNEL.md virtual
+	// doc and the catch-up tail, pre-rendered by the runner, in fixed position
+	// between USER.md and BOOTSTRAP.md. Empty for non-channel runs.
+	docs = append(docs, params.ChannelDocs...)
+
+	// 7. BOOTSTRAP.md
 	if content := readPromptFile(params.AgentDir, "BOOTSTRAP.md"); content != "" {
 		docs = append(docs, content)
 	}
 
 	return strings.Join(docs, "\n\n"), nil
+}
+
+// composeSchedulerProfile builds the trimmed unattended-run instruction
+// (integrate-scheduler D6): AGENTS/IDENTITY/SOUL plus the workspace metadata
+// document WITHOUT the shared-memory subsection — the workspace memory read
+// is skipped entirely — closed by the unattended-run contract as the last
+// document. USER.md, BOOTSTRAP.md, and channel docs are omitted entirely:
+// an unattended run has no calling user and no room to catch up on.
+func (c *DefaultInstructionComposer) composeSchedulerProfile(_ context.Context, params ComposeParams) (string, error) {
+	var docs []string
+
+	// 1. AGENTS.md
+	if content := readPromptFile(params.AgentDir, "AGENTS.md"); content != "" {
+		docs = append(docs, content)
+	}
+
+	// 2. IDENTITY.md
+	if content := readPromptFile(params.AgentDir, "IDENTITY.md"); content != "" {
+		docs = append(docs, content)
+	}
+
+	// 3. SOUL.md
+	if content := readPromptFile(params.AgentDir, "SOUL.md"); content != "" {
+		docs = append(docs, content)
+	}
+
+	// 4. WORKSPACE.md (virtual) — metadata only. The shared-memory
+	// subsection is deliberately absent: params.Memories is never consulted.
+	if wsDoc := renderWorkspaceDoc(params.Workspace, ""); wsDoc != "" {
+		docs = append(docs, wsDoc)
+	}
+
+	// 5. Unattended-run contract — always last.
+	docs = append(docs, unattendedRunContract(params.NoReplyToken))
+
+	return strings.Join(docs, "\n\n"), nil
+}
+
+// unattendedRunContract renders the closing document of the scheduler
+// execution profile (integrate-scheduler D6/D8): the run executes unattended,
+// the final reply is the deliverable, and nothing worth reporting is stated
+// plainly — or, when the run's delivery carries the suppression token, by
+// replying with exactly that token.
+func unattendedRunContract(noReplyToken string) string {
+	var sb strings.Builder
+	sb.WriteString("## Unattended run\n\nThis run executes unattended on a schedule — nobody is watching live. Your final reply is the deliverable: report the outcome plainly and completely, including any failures.")
+	if noReplyToken != "" {
+		sb.WriteString(" If there is nothing worth reporting, reply with exactly NO_REPLY and nothing else.")
+	} else {
+		sb.WriteString(` If there is nothing worth reporting, say so plainly (for example: "Nothing to report.").`)
+	}
+	return sb.String()
 }
 
 func readPromptFile(agentDir, filename string) string {

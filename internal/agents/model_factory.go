@@ -15,6 +15,22 @@ import (
 	"google.golang.org/genai"
 )
 
+// AcceptsFileBlocks reports whether the underlying connector for the provider type
+// accepts schema.UserInputFile content blocks natively. Anthropic and Gemini
+// models support file/document blocks; OpenAI-family connectors (openai, openrouter,
+// openai-compatible) do not support file blocks and require them to be degraded or
+// collapsed.
+func AcceptsFileBlocks(providerType string) bool {
+	switch strings.TrimSpace(providerType) {
+	case providers.TypeAnthropic, providers.TypeAnthropicCompatible, providers.TypeGemini:
+		return true
+	case providers.TypeOpenAI, providers.TypeOpenRouter, providers.TypeOpenAICompatible:
+		return false
+	default:
+		return false
+	}
+}
+
 // AgenticModelFactory builds the Eino agentic model used for agent conversations and executions.
 type AgenticModelFactory func(ctx context.Context, providerType string, cred providers.Credential, modelName string) (model.BaseModel[*schema.AgenticMessage], error)
 

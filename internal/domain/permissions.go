@@ -34,6 +34,14 @@ const (
 	HooksRead  = "hooks.read"
 	HooksWrite = "hooks.write"
 
+	// Channels permissions (team rooms with shared human/agent feeds)
+	ChannelsRead  = "channels.read"
+	ChannelsWrite = "channels.write"
+
+	// Scheduler permissions (workspace scheduled agent runs)
+	SchedulerRead  = "scheduler.read"
+	SchedulerWrite = "scheduler.write"
+
 	// Admin permissions (master tenant control plane)
 	AdminWorkspacesRead   = "admin.workspaces.read"
 	AdminWorkspacesWrite  = "admin.workspaces.write"
@@ -43,7 +51,7 @@ const (
 )
 
 var (
-	// OwnerPermissions contains all standard workspace permissions (16 permissions).
+	// OwnerPermissions contains all standard workspace permissions (20 permissions).
 	OwnerPermissions = []string{
 		WorkspaceRead,
 		WorkspaceWrite,
@@ -61,9 +69,13 @@ var (
 		ToolsWrite,
 		HooksRead,
 		HooksWrite,
+		ChannelsRead,
+		ChannelsWrite,
+		SchedulerRead,
+		SchedulerWrite,
 	}
 
-	// AdminPermissions contains all standard workspace permissions except roles.write (15 permissions).
+	// AdminPermissions contains all standard workspace permissions except roles.write (19 permissions).
 	AdminPermissions = []string{
 		WorkspaceRead,
 		WorkspaceWrite,
@@ -80,9 +92,13 @@ var (
 		ToolsWrite,
 		HooksRead,
 		HooksWrite,
+		ChannelsRead,
+		ChannelsWrite,
+		SchedulerRead,
+		SchedulerWrite,
 	}
 
-	// MemberPermissions contains only read permissions (6 permissions).
+	// MemberPermissions contains only read permissions (7 permissions).
 	MemberPermissions = []string{
 		WorkspaceRead,
 		MembersRead,
@@ -90,9 +106,10 @@ var (
 		ProvidersRead,
 		AgentsRead,
 		SkillsRead,
+		SchedulerRead,
 	}
 
-	// SuperadminPermissions contains all workspace permissions plus all instance-admin permissions (21 permissions).
+	// SuperadminPermissions contains all workspace permissions plus all instance-admin permissions (25 permissions).
 	SuperadminPermissions = []string{
 		WorkspaceRead,
 		WorkspaceWrite,
@@ -110,6 +127,10 @@ var (
 		ToolsWrite,
 		HooksRead,
 		HooksWrite,
+		ChannelsRead,
+		ChannelsWrite,
+		SchedulerRead,
+		SchedulerWrite,
 		AdminWorkspacesRead,
 		AdminWorkspacesWrite,
 		AdminUsersRead,
@@ -137,6 +158,10 @@ func AllPermissions() []string {
 		ToolsWrite,
 		HooksRead,
 		HooksWrite,
+		ChannelsRead,
+		ChannelsWrite,
+		SchedulerRead,
+		SchedulerWrite,
 		AdminWorkspacesRead,
 		AdminWorkspacesWrite,
 		AdminUsersRead,
@@ -156,6 +181,8 @@ func IsValidPermission(p string) bool {
 		SkillsRead, SkillsWrite,
 		ToolsWrite,
 		HooksRead, HooksWrite,
+		ChannelsRead, ChannelsWrite,
+		SchedulerRead, SchedulerWrite,
 		AdminWorkspacesRead, AdminWorkspacesWrite,
 		AdminUsersRead, AdminUsersWrite,
 		AdminSuperadminsWrite:

@@ -1,14 +1,22 @@
 package agents
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"time"
 
 	"github.com/cloudwego/eino/components/tool"
+	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/launcher"
+	"github.com/go-rod/rod/lib/proto"
 	"github.com/oniharnantyo/onclaw/internal/agents/tools"
+	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
@@ -31,6 +39,33 @@ type ToolContext struct {
 	UserID        string
 	WorkspaceTZ   *time.Location // workspace-local clock; never nil from the runner
 	ToolConfigs   map[string]map[string]any
+
+	// Document-family bindings (add-document-read-tool /
+	// add-document-create-tool). ReadOnlyRoots lists the run's extra
+	// read-only jail roots (the workspace skills tree plus the turn's
+	// materialized drop-lane mount) so document.read can convert
+	// chat-attached documents and document.create can read chat-delivered
+	// templates. DocumentPublisher publishes a created document into the
+	// workspace's blob storage and returns its capability URL; set only on
+	// runners wired with the workspace blob store.
+	ReadOnlyRoots     []string
+	DocumentPublisher DocumentPublisher
+
+	// Channel-run bindings (integrate-agent-channels D8): set only for
+	// channel runs; non-channel runs leave them zero and never resolve the
+	// channel tools. ChannelFeed posts into the room, ChannelContext reads
+	// the feed back, ChannelHandles resolves author handles for output.
+	ChannelID      string
+	ChannelContext ChannelContext
+	ChannelFeed    ChannelFeed
+	ChannelHandles ChannelHandles
+
+	// Work-session bindings (channel-teams D2/D5): set only for a channel
+	// run minted inside an active work session. ChannelRole is the running
+	// agent's roster role; session.close resolves only for facilitators.
+	WorkSessionID string
+	ChannelRole   domain.ChannelMemberRole
+	WorkSessions  WorkSessions
 }
 
 // ToolConstructor builds a tool.BaseTool for a specific execution context.
@@ -79,6 +114,31 @@ type SessionTeardown interface {
 type toolRegistry struct {
 	ctors   map[string]ToolConstructor
 	browser *tools.BrowserManager
+	// schedule carries the optional schedule tool's dependencies (set only by
+	// WithSchedulerTools); nil means the schedule tool is not registered.
+	schedule *scheduleToolDeps
+}
+
+// scheduleToolDeps bundles the stores the schedule tool needs at construction
+// time; both are required whenever the tool is registered.
+type scheduleToolDeps struct {
+	schedulers store.SchedulerStore
+	members    tools.ScheduleChannelMembers
+}
+
+// ToolRegistryOption configures optional built-in registrations on the default
+// registry.
+type ToolRegistryOption func(*toolRegistry)
+
+// WithSchedulerTools registers the schedule tool (integrate-scheduler 6.1)
+// backed by the workspace's scheduler store and the channel-membership source
+// its channel-target rule consults. Unset, the schedule tool is simply not
+// registered — the deployment surfaces no schedule tool at all, not a broken
+// one.
+func WithSchedulerTools(schedulers store.SchedulerStore, members tools.ScheduleChannelMembers) ToolRegistryOption {
+	return func(r *toolRegistry) {
+		r.schedule = &scheduleToolDeps{schedulers: schedulers, members: members}
+	}
 }
 
 // NewToolRegistry returns a fresh, empty registry.
@@ -93,9 +153,12 @@ func NewToolRegistry() *toolRegistry {
 // per construction through ToolContext. Instance-level tool configuration
 // (search provider, browser CDP endpoint) is read from the environment at
 // registration time.
-func NewDefaultToolRegistry(memories store.MemoryStore) ToolRegistry {
+func NewDefaultToolRegistry(memories store.MemoryStore, opts ...ToolRegistryOption) ToolRegistry {
 	reg := NewToolRegistry()
 	reg.browser = tools.NewBrowserManager()
+	for _, opt := range opts {
+		opt(reg)
+	}
 
 	reg.Register(tools.Name, func(tctx ToolContext) (tool.BaseTool, error) {
 		provider, err := searchProviderFor(tctx)
@@ -113,9 +176,54 @@ func NewDefaultToolRegistry(memories store.MemoryStore) ToolRegistry {
 		return tools.NewMemory(memories, tctx.WorkspaceID, tctx.AgentID, tctx.UserID, tctx.WorkspaceTZ)
 	})
 
+	// Schedule tool (integrate-scheduler 6.1): an ordinary registration, but
+	// optional at the registry level — it registers only when wired with the
+	// scheduler store and membership source, so the tool exists exactly where
+	// the scheduler does. Scheduler-origin runs strip it by name regardless
+	// (runner's schedulerExcludedTools).
+	if d := reg.schedule; d != nil {
+		reg.Register(tools.NameSchedule, func(tctx ToolContext) (tool.BaseTool, error) {
+			return tools.NewSchedule(d.schedulers, d.members, tctx.WorkspaceID, tctx.AgentID, tctx.UserID, tctx.WorkspaceTZ)
+		})
+	}
+
 	reg.Register(tools.NameDeleteFile, func(tctx ToolContext) (tool.BaseTool, error) {
 		return tools.NewDeleteFile(tctx.AgentDir)
 	})
+
+	// Document tools (add-document-read-tool / add-document-create-tool):
+	// the document.* family registers behind the same seam — per-verb
+	// constructors bound to the run's ToolContext. Both resolve paths through
+	// the jailed workspace plus the run's read-only roots (the skills tree
+	// and the turn's drop-lane mount), so chat-attached documents and
+	// templates are addressable. document.create's delivery rides the
+	// workspace blob store's publisher; an unwired publisher omits the
+	// capability URL from results (the create tool's documented contract).
+	reg.Register(tools.NameDocumentRead, func(tctx ToolContext) (tool.BaseTool, error) {
+		return tools.NewDocumentRead(tctx.AgentDir, tools.WithReadOnlyRoots(tctx.ReadOnlyRoots...))
+	})
+	reg.Register(tools.NameDocumentCreate, func(tctx ToolContext) (tool.BaseTool, error) {
+		return tools.NewDocumentCreate(tctx.AgentDir, tctx.DocumentPublisher, rodPDFRenderer{},
+			tools.WithWorkspaceID(tctx.WorkspaceID),
+			tools.WithDocumentCreateReadOnlyRoots(tctx.ReadOnlyRoots...))
+	})
+
+	// Channel tools (integrate-agent-channels task 5): registry tools so
+	// pre_tool_use hooks target them by name, bound per run through the
+	// ToolContext channel bindings. Exposure is decided at resolution —
+	// channel runs append them to the effective allowlist, non-channel runs
+	// strip them — so the constructors below only ever build against wired
+	// channel state and fail explicitly otherwise.
+	reg.Register(ChannelToolPost, newChannelPostTool)
+	reg.Register(ChannelToolHistory, newChannelHistoryTool)
+
+	// Session tools (channel-teams task 4): the facilitator's session.close,
+	// registered like the channel tools so pre_tool_use hooks target it by
+	// name. Exposure is decided at resolution — session runs append it for
+	// the facilitator only, every other run strips it — so the constructor
+	// below only ever builds against wired session state and fails
+	// explicitly otherwise.
+	reg.Register(SessionToolClose, newSessionCloseTool)
 
 	reg.Register(tools.NameBrowserNavigate, func(tctx ToolContext) (tool.BaseTool, error) {
 		core, err := browserCore(reg, tctx)
@@ -174,6 +282,58 @@ func NewDefaultToolRegistry(memories store.MemoryStore) ToolRegistry {
 	}
 
 	return reg
+}
+
+// rodPDFRenderer renders agent-authored HTML to PDF through headless
+// Chromium (add-document-create-tool design.md D4), mirroring the browser
+// tool's launch pattern (tools/browser_rod.go): a fresh local launcher per
+// render with a temp user-data-dir, closed when the render ends. Renderer
+// failures — Chrome absent above all — propagate as errors; the create tool
+// converts them into structured per-document results. Each render is bounded
+// by a deadline so a hung page cannot stall the run.
+type rodPDFRenderer struct{}
+
+// documentPDFRenderTimeout bounds one HTML→PDF render: browser launch, page
+// load, and print.
+const documentPDFRenderTimeout = 60 * time.Second
+
+func (rodPDFRenderer) RenderHTMLToPDF(ctx context.Context, html string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, documentPDFRenderTimeout)
+	defer cancel()
+
+	l := launcher.New().
+		UserDataDir(filepath.Join(os.TempDir(), "onclaw-pdf-render", fmt.Sprintf("%x", time.Now().UnixNano()))).
+		Headless(true)
+	u, err := l.Launch()
+	if err != nil {
+		return nil, fmt.Errorf("launch chromium: %w", err)
+	}
+
+	browser := rod.New().ControlURL(u).Context(ctx)
+	if err := browser.Connect(); err != nil {
+		return nil, fmt.Errorf("connect to local chromium: %w", err)
+	}
+	defer browser.Close()
+
+	page, err := browser.Page(proto.TargetCreateTarget{URL: "about:blank"})
+	if err != nil {
+		return nil, fmt.Errorf("open render page: %w", err)
+	}
+	page = page.Context(ctx)
+	if err := page.SetDocumentContent(html); err != nil {
+		return nil, fmt.Errorf("load html: %w", err)
+	}
+	stream, err := page.PDF(&proto.PagePrintToPDF{})
+	if err != nil {
+		return nil, fmt.Errorf("print to pdf: %w", err)
+	}
+	defer stream.Close()
+
+	pdf, err := io.ReadAll(stream)
+	if err != nil {
+		return nil, fmt.Errorf("read pdf output: %w", err)
+	}
+	return pdf, nil
 }
 
 // browserCore builds the shared browser tool plumbing for an execution: the

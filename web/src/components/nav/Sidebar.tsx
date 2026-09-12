@@ -1,25 +1,39 @@
-import { useState, Fragment } from "react";
-import { cx } from "../../lib/helpers";
+import { useState, Fragment, useEffect } from "react";
+import { cx, fmtNextRun } from "../../lib/helpers";
+import { useStore } from "../../store";
 import { Icon } from "../ui/Icon";
 import { Avatar } from "../ui/Avatar";
 import { SideRow } from "../ui/SideRow";
 import { SectionLabel } from "../ui/SectionLabel";
 import { STATUS } from "../../lib/constants";
 
-export function Sidebar({ view, tenant, chatId, onSelect, onDeploy, onNewSchedule, onEditCron, onOpenSwitcher, search, setSearch,
-  activeIsAgent, session, sessions, onSwitchSession, onNewSession, onDeleteSession }: any) {
+export function Sidebar({ view, tenant, chatId, onSelect, onDeploy, onNewSchedule, onEditSchedule, onOpenSwitcher, search, setSearch,
+  activeIsAgent, session, sessions, uiRunning, onSwitchSession, onNewSession, onDeleteSession }: any) {
   const [showAllSessions, setShowAllSessions] = useState(false);
   const [prevChatId, setPrevChatId] = useState(chatId);
   if (chatId !== prevChatId) { setPrevChatId(chatId); setShowAllSessions(false); }
   const q = search.trim().toLowerCase();
   const match = (s?: string) => !q || (s ? s.toLowerCase().includes(q) : false);
   const agents = tenant.agents.filter((a: any) => match(a.name) || match(a.role));
-  const channels = tenant.channels.filter((c: any) => match(c.name) || match(c.purpose));
+  // Server channels render as #slug (name carries the slug in the store view);
+  // search also matches the slug and purpose lines.
+  const channels = tenant.channels.filter((c: any) => match(c.name) || match(c.slug) || match(c.purpose));
   const people = tenant.people.filter((p: any) => match(p.name));
-  const nextUp = tenant.cron.filter((c: any) => c.enabled).slice(0, 4);
-  const today = tenant.runs;
-  const okCount = today.filter((r: any) => r.status === 'success').length;
-  const failCount = today.filter((r: any) => r.status === 'failed').length;
+  const schedules = tenant.schedules || [];
+  const nextUp = schedules.filter((c: any) => c.enabled).slice(0, 4);
+  const runs = tenant.runs || [];
+  const okCount = runs.filter((r: any) => r.status === 'completed').length;
+  const failCount = runs.filter((r: any) => r.status === 'failed').length;
+  const wsId = tenant?.id || tenant?.sub;
+
+  // Live schedules (integrate-scheduler 7.2): the sidebar's "Next up" pane is
+  // the workspace's real rows — refresh when its pane opens, same as the
+  // screen's own load on mount.
+  useEffect(() => {
+    if (view === 'schedules' && wsId) {
+      void useStore.getState().loadSchedules(wsId);
+    }
+  }, [view, wsId]);
   const agentRowIcon = (a) => (
     <span className="relative inline-flex shrink-0 items-center justify-center">
       <Avatar name={a.name} avatar={a.avatar} kind="agent" size={18}/>
@@ -80,13 +94,29 @@ export function Sidebar({ view, tenant, chatId, onSelect, onDeploy, onNewSchedul
                       <div className={cx(showAllSessions && list.length > 8 && 'od-scroll max-h-56 overflow-y-auto')}>
                         {visible.map((s: any) => {
                           const activeS = session && s.id === session.id;
+                          // Running indicator (agent-session-index): the title
+                          // itself breathes while a run is live — running = the
+                          // server list's flag (foreign runs) OR this tab's own
+                          // in-flight run on the active session. Idle rows carry
+                          // no marker at all.
+                          const sessionRunning = Boolean(s.running) || (Boolean(uiRunning) && Boolean(activeS));
                           return (
                             <div key={s.id} className="group relative">
                               <button type="button" onClick={() => onSwitchSession(s.id)} data-od-id={'sidebar-session-' + s.id}
-                                title={s.title}
+                                title={sessionRunning ? s.title + ' — run in progress' : s.title}
                                 className={cx('flex h-[26px] w-full items-center rounded-md px-2 pr-7 text-left transition-colors',
                                   activeS ? 'bg-[color-mix(in_oklab,var(--accent)_12%,transparent)] text-fg' : 'text-muted hover:bg-[color-mix(in_oklab,var(--fg)_5%,transparent)] hover:text-fg2')}>
-                                <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">{s.title}</span>
+                                <span data-od-id={'sidebar-session-title-' + s.id}
+                                  className={cx('min-w-0 flex flex-1 items-center truncate text-[12.5px] font-medium', sessionRunning && 'animate-pulse')}>
+                                  {sessionRunning && (
+                                    // Leading spinner (agent-session-index): the
+                                    // ConnectionBanner border-spinner idiom, the
+                                    // clear left-edge signal the title pulse lacks.
+                                    <span data-od-id={'sidebar-session-spinner-' + s.id} title="Run in progress"
+                                      className="mr-1.5 inline-block h-3 w-3 shrink-0 animate-spin rounded-full border border-current border-t-transparent"/>
+                                  )}
+                                  <span className="min-w-0 flex-1 truncate">{s.title}</span>
+                                </span>
                               </button>
                               <button type="button" onClick={() => onDeleteSession(s.id)} data-od-id={'sidebar-session-del-' + s.id}
                                 aria-label={'Delete ' + s.title} title="Delete session"
@@ -98,7 +128,15 @@ export function Sidebar({ view, tenant, chatId, onSelect, onDeploy, onNewSchedul
                         })}
                       </div>
                       {capped && olderCount > 0 && (
-                        <button type="button" onClick={() => setShowAllSessions(true)} data-od-id="sidebar-sessions-expand"
+                        <button type="button" onClick={() => {
+                          setShowAllSessions(true);
+                          // Expanding is a refetch trigger (agent-session-index):
+                          // pull fresh server rows so older sessions and their
+                          // running flags are current. Optional until the store
+                          // action lands; a no-op keeps the expand working.
+                          const refetch = (useStore.getState() as any).refetchAgentSessions;
+                          refetch?.(tenant.id, chatId);
+                        }} data-od-id="sidebar-sessions-expand"
                           className="flex h-[26px] w-full items-center gap-1.5 rounded-md px-2 text-[12px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_5%,transparent)] hover:text-fg2">
                           <Icon name="chevdown" size={11}/> Show {olderCount} older sessions
                         </button>
@@ -156,7 +194,7 @@ export function Sidebar({ view, tenant, chatId, onSelect, onDeploy, onNewSchedul
         </div>
       )}
 
-      {view === 'cron' && (
+      {view === 'schedules' && (
         <div className="od-scroll flex-1 overflow-y-auto pb-4">
           <SectionLabel action={
             <button type="button" onClick={onNewSchedule} data-od-id="sidebar-new-schedule" title="New schedule"
@@ -167,15 +205,15 @@ export function Sidebar({ view, tenant, chatId, onSelect, onDeploy, onNewSchedul
           }>Next up</SectionLabel>
           <div className="px-1.5">
             {nextUp.map((j: any) => (
-              <SideRow key={j.id} odId={'side-cron-' + j.id} active={false} onClick={() => onEditCron(j)}
+              <SideRow key={j.id} odId={'side-schedule-' + j.id} active={false} onClick={() => onEditSchedule(j)}
                 icon={<Icon name="clock" size={13} className="text-muted"/>} label={j.name}
-                sub={<span className="font-mono text-[10px] text-muted">{j.next}</span>}/>
+                sub={<span className="font-mono text-[10px] text-muted">{fmtNextRun(j.next_run_at, tenant.tz)}</span>}/>
             ))}
           </div>
           <SectionLabel>Schedules</SectionLabel>
           <p className="px-3.5 text-[12px] leading-5 text-muted">
-            {tenant.cron.filter((c: any) => c.enabled).length} active · {tenant.cron.filter((c: any) => !c.enabled).length} paused.
-            Open the Cron view to edit expressions, agents and history.
+            {schedules.filter((c: any) => c.enabled).length} active · {schedules.filter((c: any) => !c.enabled).length} paused.
+            Open the Schedules view to edit recurrences, agents and history.
           </p>
         </div>
       )}

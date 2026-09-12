@@ -147,7 +147,7 @@ func setupLifecycleRunner(t *testing.T, sessionID string, m model.BaseModel[*sch
 	runner := NewRunner(
 		st.Workspaces(), st.Agents(), st.Users(), st.Members(), st.Roles(),
 		st.Providers(), st.SessionEvents(), st.SessionCheckpoints(),
-		st.Memories(),
+		st.Memories(), st.AgentSessions(),
 		[]byte("test-key-32-bytes-long-12345678"),
 		t.TempDir(),
 		runnerOpts...)
@@ -581,6 +581,54 @@ func TestRun_CancelBetweenToolCalls(t *testing.T) {
 	}
 	if !markerOnCancelledTurn {
 		t.Fatalf("expected the follow-up history to show the cancel marker on turn %q, got %+v", cancelledTurn, hist.Events)
+	}
+}
+
+// TestRunManager_ActiveRunSessionIDs: the D3 enumeration collects the session
+// ids of live runs for exactly the requested workspace+agent pair, excludes
+// runs finished under the same key, and returns an empty slice — never nil —
+// when nothing is live (agent-session-index task 3.1).
+func TestRunManager_ActiveRunSessionIDs(t *testing.T) {
+	m := newRunManager(context.Background(), 0)
+
+	if ids := m.ActiveRunSessionIDs("ws", "ag"); ids == nil || len(ids) != 0 {
+		t.Fatalf("empty manager must yield an empty (non-nil) slice, got %#v", ids)
+	}
+
+	h1, err := m.start(RunKey{"ws", "ag", "s1"}, stubAgentCancel)
+	if err != nil {
+		t.Fatalf("start s1: %v", err)
+	}
+	if _, err := m.start(RunKey{"ws", "ag", "s2"}, stubAgentCancel); err != nil {
+		t.Fatalf("start s2: %v", err)
+	}
+	// Same agent in a different workspace, and a different agent in the same
+	// workspace: neither may leak into the enumeration.
+	if _, err := m.start(RunKey{"other-ws", "ag", "s3"}, stubAgentCancel); err != nil {
+		t.Fatalf("start s3: %v", err)
+	}
+	if _, err := m.start(RunKey{"ws", "other-ag", "s4"}, stubAgentCancel); err != nil {
+		t.Fatalf("start s4: %v", err)
+	}
+
+	got := map[string]bool{}
+	for _, id := range m.ActiveRunSessionIDs("ws", "ag") {
+		got[id] = true
+	}
+	if len(got) != 2 || !got["s1"] || !got["s2"] {
+		t.Fatalf("expected {s1 s2} live for ws/ag, got %v", got)
+	}
+
+	// A finished run drops out of the enumeration even before its manager
+	// deregistration lands (the liveness rule reads the done channel).
+	h1.finish()
+	<-h1.done
+	got = map[string]bool{}
+	for _, id := range m.ActiveRunSessionIDs("ws", "ag") {
+		got[id] = true
+	}
+	if len(got) != 1 || !got["s2"] {
+		t.Fatalf("expected only {s2} after s1 finished, got %v", got)
 	}
 }
 
@@ -1024,7 +1072,7 @@ func setupGatedApprovalRunner(t *testing.T, sessionID string, m model.BaseModel[
 	runner := NewRunner(
 		st.Workspaces(), st.Agents(), st.Users(), st.Members(), st.Roles(),
 		st.Providers(), st.SessionEvents(), st.SessionCheckpoints(),
-		st.Memories(),
+		st.Memories(), st.AgentSessions(),
 		[]byte("test-key-32-bytes-long-12345678"),
 		t.TempDir(),
 		WithAgenticModelFactory(func(context.Context, string, providers.Credential, string) (model.BaseModel[*schema.AgenticMessage], error) {

@@ -114,6 +114,7 @@ describe('screens/settings/SettingsPage', () => {
     vi.spyOn(api.agents, 'list').mockResolvedValue({ agents: [] });
     vi.spyOn(api.hooks, 'list').mockResolvedValue({ instance: [], hooks: [] });
     vi.spyOn(api.hooks, 'executions').mockResolvedValue({ executions: [] });
+    vi.spyOn(api.storage, 'get').mockResolvedValue({ driver: 'local' });
   });
 
   function renderSettingsPage(initialPath = '/settings/workspace', overrides = {}) {
@@ -161,14 +162,14 @@ describe('screens/settings/SettingsPage', () => {
   }
 
   describe('Navigation & Routing', () => {
-    it('renders the ten section tab labels with active highlighting and switches section on click', async () => {
+    it('renders the eleven section tab labels with active highlighting and switches section on click', async () => {
       renderSettingsPage('/settings/workspace');
 
       const tablist = screen.getByRole('tablist');
       expect(tablist).not.toBeNull();
 
       const tabs = screen.getAllByRole('tab');
-      expect(tabs.length).toBe(10);
+      expect(tabs.length).toBe(11);
 
       const expectedLabels = [
         'Workspace',
@@ -181,6 +182,7 @@ describe('screens/settings/SettingsPage', () => {
         'Hooks',
         'API keys',
         'Notifications',
+        'Storage',
       ];
       tabs.forEach((tabEl, index) => {
         expect(tabEl.textContent).toBe(expectedLabels[index]);
@@ -214,6 +216,7 @@ describe('screens/settings/SettingsPage', () => {
         { path: '/settings/hooks', paneTestId: 'pane-hooks' },
         { path: '/settings/keys', paneTestId: 'pane-keys' },
         { path: '/settings/notifications', paneTestId: 'pane-notifications' },
+        { path: '/settings/storage', paneTestId: 'pane-storage' },
       ];
 
       for (const s of sections) {
@@ -1091,7 +1094,7 @@ describe('screens/settings/SettingsPage', () => {
     it('toggles notification preferences and saves email routing via toast and update callback', async () => {
       const { onToast, onUpdate } = renderSettingsPage('/settings/notifications');
 
-      expect(screen.getByText('Cron failures')).not.toBeNull();
+      expect(screen.getByText('Scheduler failures')).not.toBeNull();
       expect(screen.getByText('Agent errors')).not.toBeNull();
       expect(screen.getByText('Weekly digest')).not.toBeNull();
 

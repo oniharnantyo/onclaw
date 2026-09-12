@@ -39,13 +39,10 @@ export function seedAcme() {
         skills: ['summarize'],
         prompt: 'You are Scout. Classify inbound tickets, auto-reply to known issues, escalate angry or billing-related ones to a human.' }
     ],
-    channels: [
-      { id: 'c-ops', name: 'ops', purpose: 'Production ops & alerting', agentId: 'a-atlas', unread: 3, members: ['a-atlas', 'a-warden', 'p-dana'] },
-      { id: 'c-incidents', name: 'incidents', purpose: 'Incident channels & postmortems', agentId: 'a-warden', unread: 0, members: ['a-warden', 'a-atlas', 'p-milo'] },
-      { id: 'c-engineering', name: 'engineering', purpose: 'Platform engineering', agentId: 'a-beacon', unread: 0, members: ['a-beacon', 'p-milo', 'p-sasha'] },
-      { id: 'c-release', name: 'release', purpose: 'Deploys & release notes', agentId: 'a-quill', unread: 0, members: ['a-quill', 'p-dana'] },
-      { id: 'c-general', name: 'general', purpose: 'Company-wide', agentId: 'a-scout', unread: 12, members: ['a-scout', 'a-atlas', 'a-beacon', 'p-dana', 'p-milo', 'p-sasha'] }
-    ],
+    // Channels are server-only (integrate-agent-channels): they hydrate from
+    // the API via loadChannels and are never seeded. Room rendering code
+    // stays; an empty real feed is the correct state.
+    channels: [],
     people: [
       { id: 'p-dana', name: 'Dana Kwan', presence: 'online' },
       { id: 'p-milo', name: 'Milo Park', presence: 'online' },
@@ -53,7 +50,7 @@ export function seedAcme() {
     ],
     threads: {
       'a-atlas': [
-        { id: 'm1', author: 'agent', ts: '7:00 AM', cron: 'morning-digest', text: 'Morning digest — 14 alerts overnight (13 auto-resolved, 1 paged), 3 deploys (1 rolled back), 22 tickets closed. The full report is pinned in #ops.' },
+        { id: 'm1', author: 'agent', ts: '7:00 AM', scheduler: 'morning-digest', text: 'Morning digest — 14 alerts overnight (13 auto-resolved, 1 paged), 3 deploys (1 rolled back), 22 tickets closed. The full report is pinned in #ops.' },
         { id: 'm2', author: 'you', ts: '9:12 AM', text: 'Atlas, summarize anything that happened overnight in #incidents' },
         { id: 'm3', author: 'agent', ts: '9:12 AM',
           tools: [
@@ -88,40 +85,19 @@ export function seedAcme() {
       ],
       'a-ledger': [],
       'a-scout': [
-        { id: 'm11', author: 'agent', ts: '9:26 AM', cron: 'inbox-triage', text: 'Triage pass: 31 new tickets — 18 routed to Billing (auto-replied), 9 to Bugs, 4 escalated to a human. Three replies are drafted and waiting in the approval queue.' }
+        { id: 'm11', author: 'agent', ts: '9:26 AM', scheduler: 'inbox-triage', text: 'Triage pass: 31 new tickets — 18 routed to Billing (auto-replied), 9 to Bugs, 4 escalated to a human. Three replies are drafted and waiting in the approval queue.' }
       ],
-      'c-ops': [
-        { id: 'm12', author: 'agent', agentId: 'a-atlas', ts: '7:00 AM', text: 'Morning digest pinned. Highlight: deploys 3 / rollback 1 — timeline in #incidents.' },
-        { id: 'm13', author: 'you', ts: '9:10 AM', text: '@Warden can you take the 5xx spike? Atlas is already on the deploy correlation' },
-        { id: 'm14', author: 'agent', agentId: 'a-warden', ts: '9:11 AM',
-          tools: [{ name: 'grafana.query', args: 'alert: rate_5xx window 3h', ms: 640, res: '5xx rate 0.4% now; burn window clear since rollback at 02:40' }],
-          text: 'On it — pulling the 5xx timeline now. @Atlas flag me if the rollback window shifts and I\'ll re-check the burn rate.' }
-      ],
-      'c-general': [],
-      'c-incidents': [],
-      'c-engineering': [],
-      'c-release': [],
       'p-dana': [
         { id: 'm15', author: 'other', name: 'Dana Kwan', ts: '9:15 AM', text: 'Saw the postmortem stub — nice. I\'ll review after standup.' }
       ],
       'p-milo': [],
       'p-sasha': []
     },
-    cron: [
-      { id: 'morning-digest', name: 'Morning ops digest', agentId: 'a-atlas', expr: '0 7 * * 1-5', human: 'Weekdays · 7:00 AM', next: 'Tue 7:00 AM', enabled: true, last: { status: 'success', when: '2h ago', dur: '42s' } },
-      { id: 'inbox-triage', name: 'Inbox triage', agentId: 'a-scout', expr: '*/30 * * * *', human: 'Every 30 minutes', next: '9:30 AM', enabled: true, last: { status: 'success', when: '12m ago', dur: '8s' } },
-      { id: 'spend-report', name: 'Weekly spend report', agentId: 'a-ledger', expr: '0 8 * * 1', human: 'Mondays · 8:00 AM', next: 'Mon 8:00 AM', enabled: true, last: { status: 'success', when: '6d ago', dur: '51s' } },
-      { id: 'postmortem-reminder', name: 'Postmortem follow-ups', agentId: 'a-warden', expr: '0 9 * * 1-5', human: 'Weekdays · 9:00 AM', next: 'Tue 9:00 AM', enabled: false, last: { status: 'skipped', when: '3d ago', dur: '—' } },
-      { id: 'changelog-sweep', name: 'Changelog sweep', agentId: 'a-quill', expr: '30 17 * * 5', human: 'Fridays · 5:30 PM', next: 'Fri 5:30 PM', enabled: true, last: { status: 'success', when: '4d ago', dur: '2m 10s' } }
-    ],
-    runs: [
-      { id: 'run_9f27', agentId: 'a-atlas', trigger: 'cron', when: '7:00 AM', dur: '42s', tokens: '18.2k', status: 'success' },
-      { id: 'run_9f26', agentId: 'a-scout', trigger: 'chat', when: '9:12 AM', dur: '8s', tokens: '2.1k', status: 'success' },
-      { id: 'run_9f25', agentId: 'a-beacon', trigger: 'chat', when: 'Yesterday', dur: '3m 12s', tokens: '96.4k', status: 'success' },
-      { id: 'run_9f24', agentId: 'a-warden', trigger: 'api', when: 'Yesterday', dur: '21s', tokens: '9.4k', status: 'failed' },
-      { id: 'run_9f23', agentId: 'a-atlas', trigger: 'cron', when: 'Yesterday', dur: '39s', tokens: '17.8k', status: 'success' },
-      { id: 'run_9f22', agentId: 'a-quill', trigger: 'cron', when: 'Friday', dur: '2m 10s', tokens: '44.0k', status: 'success' }
-    ],
+    // Schedules and runs are server-only (integrate-scheduler): they hydrate
+    // from the live API (loadSchedules / the runs screen) and are never
+    // seeded — an empty real list is the correct state, same as channels.
+    schedules: [],
+    runs: [],
     members: [
       { id: 'me', name: 'You', email: 'you@acme.dev', role: 'Owner' },
       { id: 'p-dana', name: 'Dana Kwan', email: 'dana@acme.dev', role: 'Admin' },
@@ -209,33 +185,22 @@ export function seedGlobex() {
         skills: ['code', 'summarize'],
         prompt: 'You are Forge. Review PRs for correctness first, style second. Run the test suite before commenting.' }
     ],
-    channels: [
-      { id: 'g-general', name: 'general', purpose: 'Company-wide', agentId: 'a-herald', unread: 4, members: ['a-herald', 'a-tally', 'p-ravi'] },
-      { id: 'g-data', name: 'data', purpose: 'Pipelines & metrics', agentId: 'a-tally', unread: 0, members: ['a-tally', 'a-forge', 'p-ravi'] }
-    ],
+    // Channels are server-only (integrate-agent-channels) — never seeded.
+    channels: [],
     people: [{ id: 'p-ravi', name: 'Ravi Shah', presence: 'online' }],
     threads: {
       'a-herald': [],
       'a-tally': [
-        { id: 'g1', author: 'agent', ts: '2:00 AM', cron: 'nightly-etl', text: 'ETL check: 12/12 pipelines green. Row counts within 2% of the 7-day average. No action needed.' }
+        { id: 'g1', author: 'agent', ts: '2:00 AM', scheduler: 'nightly-etl', text: 'ETL check: 12/12 pipelines green. Row counts within 2% of the 7-day average. No action needed.' }
       ],
       'a-forge': [
         { id: 'g2', author: 'you', ts: 'Yesterday', text: 'Review the auth refactor PR when tests go green' },
         { id: 'g3', author: 'agent', ts: 'Yesterday', tools: [{ name: 'shell.run', args: 'pnpm test auth/', ms: 15800, res: '142 passed, 2 failed — token-expiry and refresh race' }], text: 'Reviewed. Two real findings: a missing token-expiry test and a race in refresh. Left comments on the diff — rest looks clean.' }
       ],
-      'g-general': [],
-      'g-data': [],
       'p-ravi': []
     },
-    cron: [
-      { id: 'nightly-etl', name: 'Nightly ETL check', agentId: 'a-tally', expr: '0 2 * * *', human: 'Daily · 2:00 AM', next: '2:00 AM', enabled: true, last: { status: 'success', when: '7h ago', dur: '26s' } },
-      { id: 'standup-notes', name: 'Standup notes', agentId: 'a-herald', expr: '0 9 * * 1-5', human: 'Weekdays · 9:00 AM', next: 'Tue 9:00 AM', enabled: false, last: { status: 'skipped', when: '5d ago', dur: '—' } }
-    ],
-    runs: [
-      { id: 'run_g07', agentId: 'a-tally', trigger: 'cron', when: '2:00 AM', dur: '26s', tokens: '6.8k', status: 'success' },
-      { id: 'run_g06', agentId: 'a-forge', trigger: 'chat', when: 'Yesterday', dur: '19m 04s', tokens: '210k', status: 'success' },
-      { id: 'run_g05', agentId: 'a-herald', trigger: 'cron', when: 'Yesterday', dur: '12s', tokens: '3.2k', status: 'success' }
-    ],
+    schedules: [],
+    runs: [],
     members: [
       { id: 'me', name: 'You', email: 'you@globex.io', role: 'Owner' },
       { id: 'p-ravi', name: 'Ravi Shah', email: 'ravi@globex.io', role: 'Member' }
@@ -323,7 +288,7 @@ export function withSessions(t: any) {
     const firstYou = msgs.find((m: any) => m.author === 'you');
     const title = firstYou
       ? (firstYou.text.length > 42 ? firstYou.text.slice(0, 42) + '…' : firstYou.text)
-      : ('Scheduled · ' + (msgs[0].cron || 'digest')).slice(0, 48);
+      : ('Scheduled · ' + (msgs[0].scheduler || 'digest')).slice(0, 48);
     const main = { id: uid('s'), title, updated: (msgs[msgs.length - 1] || {}).ts || '', messages: msgs };
     const extras = (EXTRA_SESSIONS[cid] || []).map((s: any) => ({ ...s, id: uid('s'), messages: s.messages.slice() }));
     threads[cid] = { active: main.id, list: [main].concat(extras) };
@@ -353,14 +318,16 @@ export function blankTenant({ name, sub, tz, starter  }: any): Workspace {
       status: 'idle', tools: ['web'], lastActive: 'just now', skills: [],
       prompt: 'You are Guide, the starter agent for a brand-new OnClaw workspace. Answer questions about the workspace, demonstrate tool use, and suggest what to deploy next.'
     }] : [],
-    channels: starter ? [{ id: uid('c'), name: 'general', purpose: 'Company-wide', agentId: aid, unread: 0, members: [aid] }] : [],
+    // Server-only (integrate-agent-channels) — fresh workspaces start with no
+    // local channel rows; the real list hydrates via loadChannels.
+    channels: [],
     people: [],
     threads: starter ? {
       [aid]: { active: 's0', list: [{ id: 's0', title: 'Chat', updated: 'just now', messages: [
         { id: uid('m'), author: 'agent', ts: 'just now', text: 'Welcome to ' + name + '. I\'m Guide, your starter agent — ask me anything or put me to work with a web search. When you\'re ready, deploy specialists from the Agents view; everything about me lives in Settings → Agents.' }
       ] }] }
     } : {},
-    cron: [], runs: [],
+    schedules: [], runs: [],
     members: [{ id: 'me', name: 'You', email: 'you@' + sub + '.dev', role: 'Owner' }],
     integrations: [
       { id: 'slack', name: 'Slack', detail: 'Route digests to a channel', connected: false },

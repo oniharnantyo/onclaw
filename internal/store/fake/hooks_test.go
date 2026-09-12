@@ -48,7 +48,7 @@ func validManagedInstanceHook(key string) *domain.InstanceHook {
 		HookBase: domain.HookBase{
 			Name:        "Managed " + key,
 			Event:       domain.HookEventRunStarted,
-			Matcher:     "cron",
+			Matcher:     "scheduler",
 			HandlerType: domain.HookHandlerHTTP,
 			Config:      json.RawMessage(`{"url":"https://hooks.example.com/observe"}`),
 			TimeoutMS:   domain.DefaultHookTimeoutMS,
@@ -150,7 +150,7 @@ func TestHookStore_InstanceCRUD(t *testing.T) {
 	if err != nil || got == nil {
 		t.Fatalf("unexpected get result: %+v, %v", got, err)
 	}
-	if got.Key != "gate" || got.Source != domain.HookSourceManaged || got.Matcher != "cron" {
+	if got.Key != "gate" || got.Source != domain.HookSourceManaged || got.Matcher != "scheduler" {
 		t.Fatalf("unexpected hook: %+v", got)
 	}
 	if absent, err := s.Hooks().GetInstanceHook(ctx, "does-not-exist"); err != nil || absent != nil {

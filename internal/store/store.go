@@ -47,6 +47,12 @@ type Store interface {
 	WorkspaceMCPServers() WorkspaceMCPServers
 	AgentMCPServers() AgentMCPServers
 	Hooks() HookStore
+	Channels() ChannelStore
+	WorkSessions() WorkSessionStore
+	AgentSessions() AgentSessionStore
+	Attachments() AttachmentStore
+	WorkspaceStorage() WorkspaceStorageStore
+	Schedulers() SchedulerStore
 	WithTx(ctx context.Context, fn func(Store) error) error
 	Close() error
 }
@@ -133,15 +139,25 @@ type LoadSessionEventsParams struct {
 	WorkspaceID  string
 	SessionID    string
 	AfterEventID string
-	Limit        int
-	Reverse      bool
-	Kinds        []string
+	// Limit bounds the returned page. Limit <= 0 means "no limit": every
+	// matching event is returned. Only a positive Limit caps the page.
+	Limit   int
+	Reverse bool
+	Kinds   []string
 }
 
 // SessionEventStore manages the append-only session event log.
 type SessionEventStore interface {
 	AppendEvents(ctx context.Context, workspaceID string, events []domain.SessionEvent) error
 	LoadEvents(ctx context.Context, params LoadSessionEventsParams) ([]domain.SessionEvent, error)
+	// NextEventSeq returns the next append position for the session's event
+	// log: MAX(seq)+1 over its rows, or 0 when the log is empty. It lets
+	// appenders allocate sequences without reading the whole history.
+	NextEventSeq(ctx context.Context, workspaceID, sessionID string) (int64, error)
+	// EventExists reports whether an event with the given ID is already
+	// stored for the session (indexed existence check — not an error when
+	// absent).
+	EventExists(ctx context.Context, workspaceID, sessionID, eventID string) (bool, error)
 }
 
 // SessionCheckpointStore manages execution checkpoints.
@@ -198,6 +214,76 @@ type MemberStore interface {
 	ListForUser(ctx context.Context, userID string) ([]domain.MemberView, error)
 	UpdateRole(ctx context.Context, workspaceID, userID, roleID string) error
 	Remove(ctx context.Context, workspaceID, userID string) error
+}
+
+// AgentSessionStore manages the durable per-user agent session index
+// (agent-session-index D1): one row per (workspace, agent, session) recording
+// that an agent chat session exists, with its birth-derived title and
+// last-activity time. Rows are written at run start by the runner (D2) and
+// read by the per-user session listing; deletion is soft.
+//
+// Privacy: the index is private per user. Listing filters on the requesting
+// user and SoftDelete is scoped to the owning user, so a foreign user's row
+// is indistinguishable from an absent one (domain.ErrNotFound — no existence
+// leak). The unique (workspace_id, agent_id, session_id) triple keeps one row
+// per session; ownership is fixed at birth and never rewritten.
+type AgentSessionStore interface {
+	// UpsertAgentSession indexes one persistent run at run start (design D2):
+	// the birth turn inserts the row with the input-derived title and
+	// created_at = last_active_at = now; a later turn bumps last_active_at,
+	// clears deleted_at (a soft-deleted session re-chatted revives — the
+	// transcript is still on disk), and applies the birth-only title rule:
+	// EXCLUDED.title wins only while the stored title is still '', so
+	// empty-title upserts and later turns never retitle. The owning user_id
+	// is fixed at birth (the conflict path does not rewrite it).
+	UpsertAgentSession(ctx context.Context, workspaceID, agentID, userID string, up domain.AgentSessionUpsert) error
+	// ListAgentSessions returns the user's non-deleted sessions for the
+	// agent in the workspace, ordered by last activity (newest first, id as
+	// the determinism tiebreak). Soft-deleted rows are never returned. An
+	// empty result is an empty slice, not nil.
+	ListAgentSessions(ctx context.Context, workspaceID, agentID, userID string) ([]domain.AgentSession, error)
+	// SoftDeleteAgentSession sets deleted_at = now() on the caller's own row
+	// (workspace + agent + user + session scoped). A row owned by another
+	// user, or absent entirely, returns domain.ErrNotFound — foreign-owned
+	// and unknown are indistinguishable.
+	SoftDeleteAgentSession(ctx context.Context, workspaceID, agentID, userID, sessionID string) error
+}
+
+// SchedulerClaim is one result of a due-claim batch: Missed marks a once
+// scheduler that was overdue beyond the grace window — it was archived
+// (enabled=false, next_run_at=nil, last_run status "missed") instead of fired.
+type SchedulerClaim struct {
+	Scheduler *domain.Scheduler
+	Missed    bool
+}
+
+// SchedulerStore manages workspace-scoped schedulers (named standing orders
+// firing an agent on a recurrence or one-shot instant) and their run records.
+// Every method is workspace-scoped — no query runs without a workspace scope —
+// except ClaimDueSchedulers, which is intentionally global: it serves the
+// ticker, and every claimed row still carries its workspace.
+type SchedulerStore interface {
+	CreateScheduler(ctx context.Context, workspaceID string, s *domain.Scheduler) error
+	GetScheduler(ctx context.Context, workspaceID, id string) (*domain.Scheduler, error) // (nil, nil) when absent
+	ListSchedulers(ctx context.Context, workspaceID string) ([]domain.Scheduler, error)
+	UpdateScheduler(ctx context.Context, workspaceID string, s *domain.Scheduler) error
+	DeleteScheduler(ctx context.Context, workspaceID, id string) error
+	// ClaimDueSchedulers atomically claims up to limit enabled schedulers whose
+	// next occurrence (recurring next_run_at, once run_at) is due at now, so
+	// concurrent claimers never fire the same occurrence: rows are selected
+	// FOR UPDATE SKIP LOCKED inside one transaction and each recurring row's
+	// next_run_at is advanced to its next future occurrence (computed in the
+	// workspace timezone via domain.NextRun) in that same transaction. A once
+	// row overdue beyond the missed grace window (1h constant) is instead
+	// marked missed (enabled=false, next_run_at=nil, last_run status "missed")
+	// and returned with Missed=true — never fired. Uses DB now() semantics
+	// anchored at the passed now.
+	ClaimDueSchedulers(ctx context.Context, now time.Time, limit int) ([]SchedulerClaim, error)
+	StartSchedulerRun(ctx context.Context, run *domain.SchedulerRun) error // inserts with status running
+	// FinishSchedulerRun writes the run outcome and mirrors it into the
+	// scheduler's last_run column atomically.
+	FinishSchedulerRun(ctx context.Context, workspaceID, runID string, status string, durationMS int64, tokensUsed int, deliveryStatus string, errMsg string) error
+	ListSchedulerRuns(ctx context.Context, workspaceID, schedulerID string, limit, offset int) ([]domain.SchedulerRun, int, error) // newest-first + total
 }
 
 // DSNConfig holds connection parameters for store drivers.

@@ -20,7 +20,7 @@ func commandTestEvent() Event {
 	return Event{
 		Event:      "user_prompt_submit",
 		DeliveryID: "cmd-delivery-7",
-		Origin:     "cron",
+		Origin:     "scheduler",
 		Workspace:  EventRef{ID: "ws-1", Name: "Acme"},
 		Agent:      EventRef{ID: "ag-1", Name: "Atlas"},
 		SessionID:  "sess-9",

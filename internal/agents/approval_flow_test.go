@@ -81,7 +81,7 @@ func setupApprovalRunner(t *testing.T, sessionID string) (store.Store, *Runner, 
 	runner := NewRunner(
 		st.Workspaces(), st.Agents(), st.Users(), st.Members(), st.Roles(),
 		st.Providers(), st.SessionEvents(), st.SessionCheckpoints(),
-		st.Memories(),
+		st.Memories(), st.AgentSessions(),
 		[]byte("test-key-32-bytes-long-12345678"),
 		t.TempDir(),
 		WithAgenticModelFactory(func(context.Context, string, providers.Credential, string) (Model, error) {
@@ -236,7 +236,7 @@ func TestApprovalFlow_ResumeSurvivesRunnerRestart(t *testing.T) {
 	restarted := NewRunner(
 		st.Workspaces(), st.Agents(), st.Users(), st.Members(), st.Roles(),
 		st.Providers(), st.SessionEvents(), st.SessionCheckpoints(),
-		st.Memories(),
+		st.Memories(), st.AgentSessions(),
 		[]byte("test-key-32-bytes-long-12345678"),
 		runner.onClawDir,
 		WithAgenticModelFactory(func(context.Context, string, providers.Credential, string) (Model, error) {

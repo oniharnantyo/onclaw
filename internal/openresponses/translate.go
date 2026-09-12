@@ -176,10 +176,10 @@ func (t *Translator) Handle(ev *agents.TranscriptEvent) bool {
 		t.openMessage()
 		t.msgText += ev.TextDelta
 		t.send("response.output_text.delta", map[string]any{
-			"item_id":      t.msgID,
-			"output_index": t.msgIndex,
+			"item_id":       t.msgID,
+			"output_index":  t.msgIndex,
 			"content_index": 0,
-			"delta":        ev.TextDelta,
+			"delta":         ev.TextDelta,
 		})
 
 	case agents.TranscriptEventReasoningDelta:
@@ -269,7 +269,18 @@ func (t *Translator) Handle(ev *agents.TranscriptEvent) bool {
 		}
 
 	case agents.TranscriptEventContextCompacted:
-		t.send("onclaw:context_compacted", map[string]any{})
+		// chat-compact-command D6: the compaction frame carries the display-only
+		// token estimates; zeros are omitted (same style as latency_ms above).
+		fields := map[string]any{}
+		if ev.Compaction != nil {
+			if ev.Compaction.TokensBefore != 0 {
+				fields["tokens_before"] = ev.Compaction.TokensBefore
+			}
+			if ev.Compaction.TokensAfter != 0 {
+				fields["tokens_after"] = ev.Compaction.TokensAfter
+			}
+		}
+		t.send("onclaw:context_compacted", fields)
 
 	case agents.TranscriptEventApprovalRequired:
 		t.resp.Status = StatusIncomplete
@@ -353,10 +364,10 @@ func (t *Translator) openMessage() {
 	t.send("response.output_item.added", map[string]any{
 		"output_index": t.msgIndex,
 		"item": map[string]any{
-			"type":   "message",
-			"id":     t.msgID,
-			"role":   "assistant",
-			"status": "in_progress",
+			"type":    "message",
+			"id":      t.msgID,
+			"role":    "assistant",
+			"status":  "in_progress",
 			"content": []map[string]any{},
 		},
 	})

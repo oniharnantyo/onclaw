@@ -20,6 +20,20 @@
 #  15. MCP server registry & agent-private servers (CRUD, probes, enabled_mcps)
 #  16. Agent hooks: workspace CRUD, validation, reorder, dry-run, executions,
 #      agent-level hooks, instance-admin managed hooks
+#  17. Channels: CRUD, membership, feed & SSE (integrate-agent-channels)
+#  18. Teams: templates, materialization, kickoff & work sessions
+#      (channel-teams: spawn-all materialization, in-session hop chains,
+#      human gates, facilitator close via session.close)
+#  19. /v1 compact command (chat-compact-command: bind-only compaction turn,
+#      onclaw:context_compacted frame, completed-with-usage)
+#  20. Durable agent session index (agent-session-index: /v1 turn births the
+#      index row with the derived title, per-user private listing, running
+#      flag, foreign-delete 404, soft delete hides the row)
+#  21. Chat attachments (workspace-attachments: upload + lane validation,
+#      capability-URL serving with byte equality, oversize/office rejection,
+#      workspace storage config API with member gating — local driver)
+#  22. Schedulers (integrate-scheduler: permission guards, run-now with a
+#      real agent run + transcript, channel delivery, pause flow)
 #
 # Usage:
 #   ./scripts/smoke.sh
@@ -130,8 +144,10 @@ api_req() {
 
     curl "${args[@]}" "${url}" || log_fail "curl failed to reach ${url}"
 
-    # Extract HTTP status code
-    HTTP_STATUS=$(head -n 1 "${headers_file}" | awk '{print $2}')
+    # Extract the FINAL HTTP status code — large bodies get an interim
+    # "HTTP/1.1 100 Continue" header block from curl's Expect handshake, so
+    # the first header line is not necessarily the response status.
+    HTTP_STATUS=$(awk '/^HTTP\/[0-9.]+/ {code=$2} END {print code}' "${headers_file}")
     HTTP_BODY=$(cat "${body_file}")
 }
 
@@ -151,7 +167,8 @@ api_upload() {
 
     curl "${args[@]}" "${url}" || log_fail "curl upload failed to reach ${url}"
 
-    HTTP_STATUS=$(head -n 1 "${headers_file}" | awk '{print $2}')
+    # Final status, not the interim 100 Continue block (see api_req).
+    HTTP_STATUS=$(awk '/^HTTP\/[0-9.]+/ {code=$2} END {print code}' "${headers_file}")
     HTTP_BODY=$(cat "${body_file}")
 }
 
@@ -743,12 +760,37 @@ class Handler(BaseHTTPRequestHandler):
                 return " ".join(p.get("text", "") for p in c if isinstance(p, dict))
             return ""
 
-        is_live = any(
-            "ONCLAW_V1_SMOKE" in content_text(m)
-            for m in messages
-            if isinstance(m, dict)
-        )
-        if is_live:
+        all_text = " ".join(content_text(m) for m in messages if isinstance(m, dict))
+
+        # Section 18 teams branch (channel-teams): the kickoff body carries
+        # ONCLAW_TEAMS_SMOKE and every in-session auto-post carries the same
+        # marker, so every run of the materialized team lands here. The chain
+        # advances by replying with an @mention of the next specialist; the
+        # deepest hop tags the human (@charlie-smoke), which pauses the
+        # session. ONCLAW_TEAMS_CLOSE steers the facilitator's run to the
+        # session.close tool call instead of a plain reply.
+        is_teams = "ONCLAW_TEAMS_SMOKE" in all_text
+        is_close = "ONCLAW_TEAMS_CLOSE" in all_text
+
+        def teams_reply(text):
+            # Stage detection rides explicit markers, NOT bare @handles: the
+            # composed input carries the roster, so every handle appears in
+            # every run's context. The stage markers exist only in the chain's
+            # own messages and accumulate, so the highest marker present
+            # identifies the current run: S2 = the pm was summoned, S3 = the
+            # architect, S4 = the backend, S5 = the tester (who then tags the
+            # human, pausing the session as awaiting-human).
+            if "ONCLAW_TEAMS_S5" in text:
+                return "@charlie-smoke ONCLAW_TEAMS_SMOKE build and test are complete — requesting human sign-off to proceed."
+            if "ONCLAW_TEAMS_S4" in text:
+                return "@tester ONCLAW_TEAMS_SMOKE ONCLAW_TEAMS_S5 the build is done, please verify against the acceptance criteria."
+            if "ONCLAW_TEAMS_S3" in text:
+                return "@backend ONCLAW_TEAMS_SMOKE ONCLAW_TEAMS_S4 the spec is in /project/spec.md, please implement the service side."
+            if "ONCLAW_TEAMS_S2" in text:
+                return "@architect ONCLAW_TEAMS_SMOKE ONCLAW_TEAMS_S3 please draft the technical spec and cut the scope."
+            return "@pm ONCLAW_TEAMS_SMOKE ONCLAW_TEAMS_S2 kickoff received — I have sequenced the work, starting with the plan."
+
+        if is_live := ("ONCLAW_V1_SMOKE" in all_text):
             # The runner always executes turns in streaming mode; a compliant
             # server must answer stream:true with an SSE chat.completion.chunk
             # sequence, otherwise no assistant message is ever assembled (and
@@ -773,7 +815,12 @@ class Handler(BaseHTTPRequestHandler):
                 sse(chunk({"role": "assistant"}, None))
                 for piece in ["live reply", " from the", " smoke mock"]:
                     sse(chunk({"content": piece}, None))
-                sse(chunk({}, "stop"))
+                final = chunk({}, "stop")
+                # OpenAI include_usage convention: the terminal chunk carries
+                # the usage block so streamed turns report token usage (the
+                # compact-command section asserts completed-with-usage).
+                final["usage"] = {"prompt_tokens": 5, "completion_tokens": 6, "total_tokens": 11}
+                sse(final)
                 self.wfile.write(b"data: [DONE]\n\n")
                 return
             payload = {
@@ -784,6 +831,71 @@ class Handler(BaseHTTPRequestHandler):
                 "choices": [{
                     "index": 0,
                     "message": {"role": "assistant", "content": "live reply from the smoke mock"},
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 6, "total_tokens": 11},
+            }
+            self._send(200, payload)
+            return
+        if is_teams or is_close:
+            if body.get("stream") and is_close and "@scrum-master" in all_text:
+                # The facilitator close leg: steer the run to the session.close
+                # tool via a streaming tool_calls frame pair, then finish with
+                # finish_reason "tool_calls" so the runner executes the tool.
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+
+                def sse_close(part):
+                    self.wfile.write(("data: " + json.dumps(part) + "\n\n").encode())
+
+                def close_chunk(delta, finish):
+                    return {
+                        "id": "chatcmpl-smoke-close",
+                        "object": "chat.completion.chunk",
+                        "created": 0,
+                        "model": "gpt-4",
+                        "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+                    }
+
+                sse_close(close_chunk({"role": "assistant"}, None))
+                sse_close(close_chunk({"tool_calls": [{"index": 0, "id": "call_close", "type": "function", "function": {"name": "session.close", "arguments": "{\"summary\":"}}]}, None))
+                sse_close(close_chunk({"tool_calls": [{"index": 0, "function": {"arguments": "\"Dark mode shipped and verified; follow-ups tracked in PLAN.md.\"}"}}]}, None))
+                sse_close(close_chunk({}, "tool_calls"))
+                self.wfile.write(b"data: [DONE]\n\n")
+                return
+            reply = teams_reply(all_text)
+            if body.get("stream"):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+
+                def sse_teams(part):
+                    self.wfile.write(("data: " + json.dumps(part) + "\n\n").encode())
+
+                def teams_chunk(delta, finish):
+                    return {
+                        "id": "chatcmpl-smoke-teams",
+                        "object": "chat.completion.chunk",
+                        "created": 0,
+                        "model": "gpt-4",
+                        "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+                    }
+
+                sse_teams(teams_chunk({"role": "assistant"}, None))
+                for piece in [reply]:
+                    sse_teams(teams_chunk({"content": piece}, None))
+                sse_teams(teams_chunk({}, "stop"))
+                self.wfile.write(b"data: [DONE]\n\n")
+                return
+            payload = {
+                "id": "chatcmpl-smoke-teams",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "gpt-4",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": reply},
                     "finish_reason": "stop",
                 }],
                 "usage": {"prompt_tokens": 5, "completion_tokens": 6, "total_tokens": 11},
@@ -937,6 +1049,12 @@ assert_status "200" "Owner lists workspace tools"
 assert_json_expr '(.tools | map(.key) | index("ls")) != null' "Tool catalog contains fs tool ls"
 assert_json_expr '(.tools | map(.key) | index("web.search")) != null' "Tool catalog contains web.search"
 assert_json_expr '(.tools | map(select(.key == "browser")) | length) == 1' "Tool catalog exposes the single browser alias"
+# document.* family (add-document-read-tool / add-document-create-tool):
+# both verbs catalog under the document group behind the family seam.
+assert_json_expr '(.tools | map(.key) | index("document.read")) != null' "Tool catalog contains document.read"
+assert_json_expr '(.tools | map(select(.key == "document.read")) | .[0].group) == "document"' "document.read catalogs under group document"
+assert_json_expr '(.tools | map(.key) | index("document.create")) != null' "Tool catalog contains document.create"
+assert_json_expr '(.tools | map(select(.key == "document.create")) | .[0].group) == "document"' "document.create catalogs under group document"
 
 api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/tools/ls" "${CLI_USER_TOKEN}" '{"enabled":false}'
 assert_status "403" "Member cannot change tool settings"
@@ -1447,4 +1565,649 @@ assert_json_expr '.decision == "block"' "Script dry-run blocks on the block retu
 assert_json_expr '.reason == "blocked by script"' "Script block reason is honored"
 assert_json_expr '.detail.console_lines | index("script gate") != null' "Dry-run detail carries the captured console output"
 
+
+
+# -----------------------------------------------------------------------------
+# 17. Channels: CRUD, Membership, Feed & SSE (integrate-agent-channels)
+# -----------------------------------------------------------------------------
+log_step "17. Channels: CRUD, Membership, Feed & SSE"
+
+CHANNELS_BASE="/api/v1/workspaces/${TENANT_SLUG}/channels"
+
+# 17.1 Permission guards: the builtin Member role holds neither channels.read
+# nor channels.write, so a plain Member is 403 on the whole surface.
+api_req "GET" "${CHANNELS_BASE}" "${CLI_USER_TOKEN}"
+assert_status "403" "Member cannot list channels (channels.read 403)"
+assert_json_expr '.error.code == "forbidden"' "Error code is forbidden"
+
+api_req "POST" "${CHANNELS_BASE}" "${CLI_USER_TOKEN}" '{"name":"Nope","slug":"nope"}'
+assert_status "403" "Member cannot create channels (channels.write 403)"
+
+# 17.2 Owner creates the room; the slug is the #handle and URL form.
+api_req "POST" "${CHANNELS_BASE}" "${CHARLIE_TOKEN}" '{"name":"Production Ops","slug":"ops","purpose":"Coordinate production incident response.","conventions":"Keep runbooks linked. One incident per chain."}'
+assert_status "201" "Owner creates channel #ops"
+assert_json_expr '.channel.slug == "ops"' "Create echoes the slug"
+assert_json_expr '.channel.name == "Production Ops"' "Create echoes the name"
+CHANNEL_ID=$(json_get '.channel.id')
+
+# 17.3 Slug conflicts are 409 (workspace-scoped). The store's uniqueness is
+# case-insensitive, but kebab-case validation is lowercase-only, so a
+# case-variant slug is rejected as invalid input (422) before the conflict
+# check can apply.
+api_req "POST" "${CHANNELS_BASE}" "${CHARLIE_TOKEN}" '{"name":"Ops Duplicate","slug":"ops"}'
+assert_status "409" "Duplicate channel slug returns 409"
+api_req "POST" "${CHANNELS_BASE}" "${CHARLIE_TOKEN}" '{"name":"Ops Uppercase","slug":"OPS"}'
+assert_status "422" "Case-variant slug OPS is invalid input (kebab-case is lowercase-only, 422)"
+
+# 17.4 Validation: blank name and an invalid slug are fielded 422s.
+api_req "POST" "${CHANNELS_BASE}" "${CHARLIE_TOKEN}" '{"name":"  ","slug":"Bad Slug!"}'
+assert_status "422" "Blank name + invalid slug is rejected (422)"
+assert_json_expr '[.error.details[]? | select(.field == "name")] | length > 0' "Validation error fields name"
+assert_json_expr '[.error.details[]? | select(.field == "slug")] | length > 0' "Validation error fields slug"
+
+# 17.5 Reads: list, get by id, get by slug, and the enumeration defense for
+# non-members of the workspace.
+api_req "GET" "${CHANNELS_BASE}" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists channels"
+assert_json_expr "[.channels[] | select(.id == \"${CHANNEL_ID}\")] | length == 1" "List shows #ops"
+
+api_req "GET" "${CHANNELS_BASE}/${CHANNEL_ID}" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner gets the channel by id"
+api_req "GET" "${CHANNELS_BASE}/ops" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner gets the channel by slug"
+assert_json_expr ".channel.id == \"${CHANNEL_ID}\"" "Slug lookup resolves the same channel"
+
+api_req "GET" "/api/v1/workspaces/master/channels" "${CHARLIE_TOKEN}"
+assert_status "404" "Non-member of the workspace gets 404 (enumeration defense)"
+
+# 17.6 PATCH covers name/purpose/conventions; the slug is identity, not patch.
+api_req "PATCH" "${CHANNELS_BASE}/${CHANNEL_ID}" "${CHARLIE_TOKEN}" '{"purpose":"Incident coordination for the smoke tenant."}'
+assert_status "200" "Owner patches the channel purpose"
+assert_json_expr '.channel.purpose == "Incident coordination for the smoke tenant."' "Patched purpose round-trips"
+assert_json_expr '.channel.slug == "ops"' "PATCH leaves the slug untouched"
+
+# 17.7 Membership: an agent joins with a specialization; duplicates are 409;
+# the roster resolves display name + @handle.
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/agents" "${CHARLIE_TOKEN}" "{\"name\":\"Ops Agent\",\"slug\":\"ops-agent\",\"role\":\"Responder\",\"description\":\"Channels smoke agent\",\"brief\":\"A short brief\",\"provider_id\":\"${MOCK_PROV_ID}\",\"model\":\"gpt-4\"}"
+assert_status "201" "Owner creates the channel agent (generation runs against the mock provider)"
+OPS_AGENT_ID=$(json_get '.agent.id')
+
+api_req "POST" "${CHANNELS_BASE}/${CHANNEL_ID}/members" "${CHARLIE_TOKEN}" "{\"member_type\":\"agent\",\"agent_id\":\"${OPS_AGENT_ID}\",\"specialization\":\"Metrics and dashboards\"}"
+assert_status "201" "Owner adds the agent with a specialization"
+assert_json_expr '.member.member_type == "agent"' "Roster row carries member_type agent"
+assert_json_expr '.member.display_name == "Ops Agent"' "Roster resolves the agent display name"
+assert_json_expr '.member.handle == "ops-agent"' "Roster resolves the agent handle (slug)"
+assert_json_expr '.member.specialization == "Metrics and dashboards"' "Specialization round-trips"
+CHANNEL_MEMBER_ID=$(json_get '.member.id')
+
+api_req "POST" "${CHANNELS_BASE}/${CHANNEL_ID}/members" "${CHARLIE_TOKEN}" "{\"member_type\":\"agent\",\"agent_id\":\"${OPS_AGENT_ID}\"}"
+assert_status "409" "Re-adding the same agent is a 409 duplicate"
+
+api_req "GET" "${CHANNELS_BASE}/${CHANNEL_ID}/members" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists the roster"
+assert_json_expr '(.members | length) == 1' "Roster has one member"
+
+api_req "PATCH" "${CHANNELS_BASE}/${CHANNEL_ID}/members/${CHANNEL_MEMBER_ID}" "${CHARLIE_TOKEN}" '{"specialization":"Stakeholder comms"}'
+assert_status "200" "Owner patches the specialization"
+assert_json_expr '.member.specialization == "Stakeholder comms"' "Patched specialization round-trips"
+
+# 17.8 Feed: the owner posts a human message mentioning the agent. The
+# ONCLAW_V1_SMOKE marker steers the section-13 mock provider into its
+# plain-assistant-reply branch, so the deterministic summon (D3 tier 1) runs
+# against the mock and the agent auto-posts its final reply into the feed (D9).
+api_req "POST" "${CHANNELS_BASE}/${CHANNEL_ID}/messages" "${CHARLIE_TOKEN}" '{"body":"@ops-agent ONCLAW_V1_SMOKE summarize the channel conventions"}'
+assert_status "201" "Owner posts a human message mentioning the agent"
+assert_json_expr '.message.author_type == "user"' "Human message is user-authored"
+assert_json_expr '.message.seq >= 1' "Message carries the store-assigned seq"
+CHANNEL_MSG_SEQ=$(json_get '.message.seq')
+
+# 17.9 The summoned agent's auto-post lands above the human cursor. Poll the
+# cursor briefly — the run takes a few model hops against the mock.
+AGENT_MSG_FOUND=0
+for i in {1..40}; do
+    api_req "GET" "${CHANNELS_BASE}/${CHANNEL_ID}/messages?after=${CHANNEL_MSG_SEQ}" "${CHARLIE_TOKEN}"
+    assert_status "200" "Feed cursor serves messages after seq ${CHANNEL_MSG_SEQ}"
+    if [[ "$(json_get '([.messages[] | select(.author_type == "agent")] | length)')" -ge 1 ]]; then
+        AGENT_MSG_FOUND=1
+        break
+    fi
+    sleep 0.5
+done
+if [[ "${AGENT_MSG_FOUND}" -ne 1 ]]; then
+    log_fail "Agent auto-post never appeared above cursor ${CHANNEL_MSG_SEQ} (D9 auto-post path)"
+fi
+log_pass "Agent auto-posted its final reply into the feed"
+assert_json_expr '[.messages[] | select(.author_type == "agent")][0].body | contains("live reply")' "Agent reply body comes from the mock provider"
+assert_json_expr '[.messages[] | select(.author_type == "agent")][0].session_id | startswith("chan_")' "Agent reply links its deterministic channel session (D7)"
+
+# An untagged message persists; the observe-decide fan-out stays silent on the
+# mock (the decider gets a non-engaging response — soft-gate doctrine).
+api_req "POST" "${CHANNELS_BASE}/${CHANNEL_ID}/messages" "${CHARLIE_TOKEN}" '{"body":"Untagged status note: all quiet on the ops front."}'
+assert_status "201" "Untagged human message persists"
+
+# 17.10 SSE: subscribe, post a canary, and watch the message_posted frame
+# (with its feed seq for client-side dedup) arrive live.
+SSE_FILE="${TMP_DIR}/channel_events.sse"
+curl -s -N --max-time 15 -H "Authorization: Bearer ${CHARLIE_TOKEN}" "${SERVER_URL}${CHANNELS_BASE}/${CHANNEL_ID}/events?stream=true" > "${SSE_FILE}" 2>/dev/null &
+SSE_PID=$!
+sleep 1
+api_req "POST" "${CHANNELS_BASE}/${CHANNEL_ID}/messages" "${CHARLIE_TOKEN}" '{"body":"SSE canary: live wire check"}'
+assert_status "201" "Canary message posted while the SSE subscription is live"
+SSE_OK=0
+for i in {1..20}; do
+    if grep -q '"type":"message_posted"' "${SSE_FILE}" 2>/dev/null; then
+        SSE_OK=1
+        break
+    fi
+    sleep 0.5
+done
+kill "${SSE_PID}" 2>/dev/null || true
+wait "${SSE_PID}" 2>/dev/null || true
+if [[ "${SSE_OK}" -ne 1 ]]; then
+    log_fail "SSE stream carried no message_posted event. Captured: $(head -5 "${SSE_FILE}")"
+fi
+log_pass "SSE stream delivered the live message_posted event"
+grep -q '"seq":' "${SSE_FILE}" || log_fail "message_posted frame carries no seq for client dedup"
+log_pass "SSE frames carry seq for client-side dedup"
+
+# 17.11 Cleanup: remove the agent, delete the room, confirm it is gone.
+api_req "DELETE" "${CHANNELS_BASE}/${CHANNEL_ID}/members/${CHANNEL_MEMBER_ID}" "${CHARLIE_TOKEN}"
+assert_status "204" "Owner removes the agent from the roster (204)"
+
+api_req "DELETE" "${CHANNELS_BASE}/${CHANNEL_ID}" "${CHARLIE_TOKEN}"
+assert_status "204" "Owner deletes the channel (204)"
+
+api_req "GET" "${CHANNELS_BASE}/${CHANNEL_ID}" "${CHARLIE_TOKEN}"
+assert_status "404" "Deleted channel is gone (404)"
+
+# -----------------------------------------------------------------------------
+# 18. Teams: Templates, Materialization, Kickoff & Work Sessions (channel-teams)
+# -----------------------------------------------------------------------------
+log_step "18. Teams: Templates, Materialization & Work Sessions"
+
+# 18.1 Fresh workspace for the teams leg: template-spawned agents bind the
+# workspace's first provider, so the mock provider must be the only one there.
+TEAMS_TENANT_SLUG="teams-tenant-${RUN_ID}"
+TEAMS_CHANNEL_BASE="/api/v1/workspaces/${TEAMS_TENANT_SLUG}/channels"
+api_req "POST" "/api/v1/workspaces" "${CHARLIE_TOKEN}" "{\"name\":\"Teams Tenant\",\"slug\":\"${TEAMS_TENANT_SLUG}\"}"
+assert_status "201" "Charlie creates the dedicated teams workspace"
+
+api_req "POST" "/api/v1/workspaces/${TEAMS_TENANT_SLUG}/providers" "${CHARLIE_TOKEN}" '{"type":"openai-compatible","name":"Teams Mock Provider","base_url":"http://127.0.0.1:'"${MOCK_PORT}"'/v1","key":"sk-mock-key"}'
+assert_status "201" "Owner registers the mock provider as the teams workspace's only provider"
+
+# 18.2 Permission guards: a plain Member holds neither channels.read nor
+# channels.write on the teams surface. Role ids are workspace-scoped, so the
+# Member role comes from the teams workspace's own role catalog.
+api_req "GET" "/api/v1/workspaces/${TEAMS_TENANT_SLUG}/roles" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists the teams workspace roles"
+TEAMS_MEMBER_ROLE_ID=$(json_get '.roles[] | select(.name == "Member") | .id')
+
+api_req "POST" "/api/v1/admin/workspaces/${TEAMS_TENANT_SLUG}/members" "${SUPERADMIN_TOKEN}" "{\"email\":\"${DAVE_EMAIL}\",\"role_id\":\"${TEAMS_MEMBER_ROLE_ID}\"}"
+assert_status "201" "Dave joins the teams workspace as a Member"
+
+api_req "GET" "${TEAMS_CHANNEL_BASE}/templates" "${DAVE_TOKEN}"
+assert_status "403" "Member cannot list team templates (channels.read 403)"
+api_req "POST" "${TEAMS_CHANNEL_BASE}/templates/software-team/materialize" "${DAVE_TOKEN}" '{"name":"Nope","slug":"nope"}'
+assert_status "403" "Member cannot materialize templates (channels.write 403)"
+
+# 18.3 Template listing: the built-in Software Team with its six slots.
+api_req "GET" "${TEAMS_CHANNEL_BASE}/templates" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists team templates"
+assert_json_expr '(.templates | length) == 1' "Software Team is the only built-in template"
+assert_json_expr '.templates[0].id == "software-team"' "Template id is software-team"
+assert_json_expr '(.templates[0].slots | length) == 6' "Software Team exposes six role slots"
+assert_json_expr '([.templates[0].slots[] | select(.facilitator)] | length) == 1' "Exactly one facilitator slot"
+assert_json_expr '[.templates[0].slots[] | select(.facilitator)][0].id == "scrum-master"' "The scrum master is the facilitator slot"
+assert_json_expr '[.templates[0].slots[] | select(.id == "pm")][0].specialization | length > 0' "Slots carry role specializations"
+
+# 18.4 Materialization validation: unknown template, missing bindings.
+api_req "POST" "${TEAMS_CHANNEL_BASE}/templates/ghost/materialize" "${CHARLIE_TOKEN}" '{"name":"X","slug":"x"}'
+assert_status "404" "Unknown template returns 404"
+
+api_req "POST" "${TEAMS_CHANNEL_BASE}/templates/software-team/materialize" "${CHARLIE_TOKEN}" '{"name":"Half Team","slug":"half-team","slots":{"pm":{"spawn":true}}}'
+assert_status "422" "Materializing with unbound slots returns 422"
+assert_json_expr '[.error.details[]? | select(.field == "slots")] | length > 0' "The validation error lists the missing slot ids"
+
+# 18.5 Materialize the Software Team, spawning all six agents.
+TEAMS_SLOTS='{"pm":{"spawn":true},"architect":{"spawn":true},"scrum-master":{"spawn":true},"frontend":{"spawn":true},"backend":{"spawn":true},"tester":{"spawn":true}}'
+api_req "POST" "${TEAMS_CHANNEL_BASE}/templates/software-team/materialize" "${CHARLIE_TOKEN}" "{\"name\":\"Dark Mode Build\",\"slug\":\"dark-mode\",\"purpose\":\"Ship dark mode.\",\"slots\":${TEAMS_SLOTS}}"
+assert_status "201" "Materializing Software Team with all six spawns returns 201"
+assert_json_expr '.channel.slug == "dark-mode"' "Materialized channel carries the requested slug"
+assert_json_expr '.channel.conventions | contains("PLAN.md")' "Channel conventions carry the /project + PLAN.md prefill"
+assert_json_expr '(.members | length) == 7' "Roster has the six agents plus the human creator"
+assert_json_expr '([.members[] | select(.member_type == "agent")] | length) == 6' "Six agent memberships carry their slots"
+assert_json_expr '([.members[] | select(.role == "facilitator")] | length) == 1' "Exactly one facilitator member on the roster"
+assert_json_expr '[.members[] | select(.role == "facilitator")][0].handle == "scrum-master"' "The scrum master landed as the facilitator"
+assert_json_expr '([.members[] | select(.member_type == "agent" and (.specialization | length > 0))] | length) == 6' "Every agent member carries its specialization"
+assert_json_expr '(.created_agents | length) == 6' "Six agents were spawned"
+TEAM_CHANNEL_ID=$(json_get '.channel.id')
+
+# Slug conflicts are 409.
+api_req "POST" "${TEAMS_CHANNEL_BASE}/templates/software-team/materialize" "${CHARLIE_TOKEN}" "{\"name\":\"Duplicate\",\"slug\":\"dark-mode\",\"slots\":${TEAMS_SLOTS}}"
+assert_status "409" "Materializing onto a taken channel slug returns 409"
+
+# The spawned agents are real workspace agents (spot-check one).
+api_req "GET" "/api/v1/workspaces/${TEAMS_TENANT_SLUG}/agents/pm" "${CHARLIE_TOKEN}"
+assert_status "200" "The spawned pm agent exists as a workspace agent"
+
+# 18.6 Kickoff: the flagged post mints the work session (human-gated, D1).
+KICKOFF_BASE="${TEAMS_CHANNEL_BASE}/${TEAM_CHANNEL_ID}"
+api_req "POST" "${KICKOFF_BASE}/messages" "${CHARLIE_TOKEN}" '{"body":"ONCLAW_TEAMS_SMOKE kickoff: add dark mode to the settings page","is_kickoff":true}'
+assert_status "201" "The kickoff post mints the work session"
+assert_json_expr '.session.status == "open"' "The session opens"
+assert_json_expr '.session.budget == 12' "The session carries the default 12-hop budget"
+TEAM_SESSION_ID=$(json_get '.session.id')
+
+api_req "POST" "${KICKOFF_BASE}/messages" "${CHARLIE_TOKEN}" '{"body":"ONCLAW_TEAMS_SMOKE a second kickoff attempt","is_kickoff":true}'
+assert_status "409" "A second kickoff while the session is live returns 409"
+
+# The awaiting state rides the channel view while the session is live.
+api_req "GET" "${KICKOFF_BASE}" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner gets the channel with its awaiting state"
+assert_json_expr ".channel.active_session.id == \"${TEAM_SESSION_ID}\"" "The channel view carries the active session"
+
+# 18.7 Hop accounting + in-session chain: the facilitator plans (hop 1) and
+# hands off @pm → @architect → @backend → @tester. Depth 4 exceeds the v1
+# chain cap, proving session bounds suspend it (D3); the tester tags the
+# human, which pauses the session (D4). Poll until the pause lands.
+TEAM_HOPS=0
+for i in {1..40}; do
+    api_req "GET" "${KICKOFF_BASE}/sessions/${TEAM_SESSION_ID}" "${CHARLIE_TOKEN}"
+    TEAM_HOPS=$(json_get '.session.hops_used')
+    if [[ "${TEAM_HOPS}" != "null" && "${TEAM_HOPS}" -ge 1 ]]; then
+        break
+    fi
+    sleep 0.5
+done
+if [[ "${TEAM_HOPS}" -ge 1 ]]; then
+    log_pass "Facilitator summon consumed hop 1 (hops_used: ${TEAM_HOPS})"
+else
+    log_fail "Session hops never advanced past 0 (last body: ${HTTP_BODY})"
+fi
+
+TEAM_PAUSED=0
+for i in {1..80}; do
+    api_req "GET" "${KICKOFF_BASE}/sessions/${TEAM_SESSION_ID}" "${CHARLIE_TOKEN}"
+    if [[ "$(json_get '.session.status')" == "paused" && "$(json_get '.session.pause_reason')" == "awaiting-human" ]]; then
+        TEAM_PAUSED=1
+        break
+    fi
+    sleep 0.5
+done
+if [[ "${TEAM_PAUSED}" -ne 1 ]]; then
+    log_fail "Session never paused awaiting-human (status: $(json_get '.session.status'), hops: $(json_get '.session.hops_used'))"
+fi
+log_pass "Agent-tagged-human paused the session as awaiting-human"
+assert_json_expr '.session.hops_used >= 5' "Hops accounting shows the depth-4 in-session chain (caps suspended)"
+
+# 18.8 Session reads: list (newest first) + detail payload.
+api_req "GET" "${KICKOFF_BASE}/sessions" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists the channel's work sessions"
+assert_json_expr '(.sessions | length) == 1' "The list shows the one session"
+assert_json_expr '.sessions[0].id == "'"${TEAM_SESSION_ID}"'"' "The list carries the minted session"
+
+# 18.9 The human reply resumes the session (D4).
+api_req "POST" "${KICKOFF_BASE}/messages" "${CHARLIE_TOKEN}" '{"body":"approved — proceed with the build"}'
+assert_status "201" "The human member posts to the paused channel"
+api_req "GET" "${KICKOFF_BASE}/sessions/${TEAM_SESSION_ID}" "${CHARLIE_TOKEN}"
+assert_json_expr '.session.status == "open"' "The human post resumed the session (open)"
+
+# 18.10 Facilitator close: ask the scrum master; the ONCLAW_TEAMS_CLOSE marker
+# steers the mock to a session.close tool call, and the session closes with a
+# stored summary (D2 — only the facilitator closes).
+api_req "POST" "${KICKOFF_BASE}/messages" "${CHARLIE_TOKEN}" '{"body":"@scrum-master ONCLAW_TEAMS_CLOSE wrap up and close the session"}'
+assert_status "201" "The human asks the facilitator to close"
+
+TEAM_CLOSED=0
+for i in {1..60}; do
+    api_req "GET" "${KICKOFF_BASE}/sessions/${TEAM_SESSION_ID}" "${CHARLIE_TOKEN}"
+    if [[ "$(json_get '.session.status')" == "closed" ]]; then
+        TEAM_CLOSED=1
+        break
+    fi
+    sleep 0.5
+done
+if [[ "${TEAM_CLOSED}" -ne 1 ]]; then
+    log_fail "Facilitator never closed the session (status: $(json_get '.session.status'), body: ${HTTP_BODY})"
+fi
+log_pass "The facilitator closed the session via session.close"
+assert_json_expr '.session.summary | contains("Dark mode")' "The close summary is stored on the session"
+assert_json_expr '.session.closed_at != null' "The session carries its close timestamp"
+
+# -----------------------------------------------------------------------------
+# 19. /v1 Compact Command (chat-compact-command)
+# -----------------------------------------------------------------------------
+log_step "19. /v1 Compact Command"
+
+# 19.1 Bind a session with two ordinary turns. The ONCLAW_V1_SMOKE marker in
+# the transcript steers the mock provider's live branch — which also serves
+# the summarizer's own completion call during the compact turn below (the
+# transcript the summarizer forwards carries the marker).
+COMPACT_SESSION="sess-compact-$(date +%s)-${RANDOM}"
+api_req "POST" "/v1/responses" "${V1_KEY}" '{"model":"test-agent","input":"ONCLAW_V1_SMOKE compact history turn one","stream":true,"metadata":{"onclaw_session":"'"${COMPACT_SESSION}"'"}}'
+assert_status "200" "Compact-session ordinary turn one accepted"
+printf '%s' "${HTTP_BODY}" | grep -q '"type":"response.completed"' || log_fail "Compact-session turn one missing response.completed"
+
+api_req "POST" "/v1/responses" "${V1_KEY}" '{"model":"test-agent","input":"ONCLAW_V1_SMOKE compact history turn two","stream":true,"metadata":{"onclaw_session":"'"${COMPACT_SESSION}"'"}}'
+assert_status "200" "Compact-session ordinary turn two accepted"
+printf '%s' "${HTTP_BODY}" | grep -q '"type":"response.completed"' || log_fail "Compact-session turn two missing response.completed"
+
+# 19.2 Compact turn: metadata.onclaw_command routes the turn to the
+# summarizer with the focus text in input; the SSE body carries the
+# onclaw:context_compacted frame with the token estimates and terminates with
+# a completed response carrying the summarizer's usage.
+api_req "POST" "/v1/responses" "${V1_KEY}" '{"model":"test-agent","input":"ONCLAW_V1_SMOKE keep the deployment runbook details","stream":true,"metadata":{"onclaw_session":"'"${COMPACT_SESSION}"'","onclaw_command":"compact"}}'
+assert_status "200" "Compact turn accepted on the bound session"
+printf '%s' "${HTTP_BODY}" | grep -q '"type":"onclaw:context_compacted"' || log_fail "Compact stream missing onclaw:context_compacted frame"
+printf '%s' "${HTTP_BODY}" | grep -q '"tokens_before":' || log_fail "context_compacted frame missing tokens_before"
+printf '%s' "${HTTP_BODY}" | grep -q '"tokens_after":' || log_fail "context_compacted frame missing tokens_after"
+printf '%s' "${HTTP_BODY}" | grep -q '"type":"response.completed"' || log_fail "Compact stream missing response.completed"
+printf '%s' "${HTTP_BODY}" | grep -q '"usage":{' || log_fail "Compact completed response carries no usage block"
+printf '%s' "${HTTP_BODY}" | grep -q '^data: \[DONE\]' || log_fail "Compact stream missing [DONE] sentinel"
+log_pass "Compact turn streamed context_compacted (tokens) and completed with usage"
+
+# 19.3 Compact never births (design D2): an unknown metadata.onclaw_session
+# fails bind-only not-found instead of minting an empty session.
+api_req "POST" "/v1/responses" "${V1_KEY}" '{"model":"test-agent","input":"ONCLAW_V1_SMOKE ghost compact","metadata":{"onclaw_session":"sess-compact-ghost-unknown","onclaw_command":"compact"}}'
+assert_status "404" "Compact against an unknown session returns 404 (bind-only, never births)"
+
+# -----------------------------------------------------------------------------
+# 20. Durable Agent Session Index (agent-session-index)
+# -----------------------------------------------------------------------------
+log_step "20. Durable Agent Session Index"
+
+# 20.1 The index write rides the runner's persistent-run start, so one /v1
+# turn on a bound session births the row. The turn runs as Charlie (the
+# workspace Owner) so this section can exercise the agents.write delete; the
+# chat key machinery is member-agnostic.
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/api-keys/exchange" "${CHARLIE_TOKEN}"
+assert_status "201" "Owner exchanges a workspace-scoped chat key for the index section"
+V1C_KEY=$(json_get '.key')
+
+IDX_SESSION="sess-index-$(date +%s)-${RANDOM}"
+api_req "POST" "/v1/responses" "${V1C_KEY}" '{"model":"test-agent","input":"ONCLAW_V1_SMOKE fix the login flow bug","stream":true,"metadata":{"onclaw_session":"'"${IDX_SESSION}"'"}}'
+assert_status "200" "Index-session birth turn accepted"
+printf '%s' "${HTTP_BODY}" | grep -q '"type":"response.completed"' || log_fail "Index-session stream missing response.completed"
+
+# 20.2 The per-user listing shows the session with its birth title (the first
+# input line, trimmed — short enough here that no truncation applies), the
+# running flag settled to false (the turn already completed), and exactly the
+# documented row keys.
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/agents/test-agent/sessions" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists the agent's session index"
+assert_json_expr "[.sessions[] | select(.session_id == \"${IDX_SESSION}\")] | length == 1" "Listing shows the turn's session"
+assert_json_expr "[.sessions[] | select(.session_id == \"${IDX_SESSION}\")][0].title == \"ONCLAW_V1_SMOKE fix the login flow bug\"" "Session row carries the input-derived title"
+assert_json_expr "[.sessions[] | select(.session_id == \"${IDX_SESSION}\")][0].title | length > 0" "Session title is non-empty"
+assert_json_expr "[.sessions[] | select(.session_id == \"${IDX_SESSION}\")][0].running == false" "Completed turn reports running false"
+assert_json_expr "[.sessions[] | select(.session_id == \"${IDX_SESSION}\")][0] | keys == [\"created_at\",\"id\",\"last_active_at\",\"running\",\"session_id\",\"title\"]" "Session row carries exactly the documented keys"
+
+# 20.3 The listing is private per user: Dave's own sessions never include
+# Charlie's row.
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/agents/test-agent/sessions" "${DAVE_TOKEN}"
+assert_status "200" "Member lists their own session index"
+assert_json_expr "[.sessions[] | select(.session_id == \"${IDX_SESSION}\")] | length == 0" "Charlie's session is absent from Dave's listing"
+
+# 20.4 A foreign delete with agents.write is a 404 — a foreign-owned row is
+# indistinguishable from an absent one (no existence leak). Bob is Admin.
+api_req "DELETE" "/api/v1/workspaces/${TENANT_SLUG}/agents/test-agent/sessions/${IDX_SESSION}" "${BOB_TOKEN}"
+assert_status "404" "Foreign user's delete of a session they do not own is 404"
+
+# 20.5 The owner's delete is a 204 soft delete; the row disappears from
+# subsequent listings while the transcript stays on disk.
+api_req "DELETE" "/api/v1/workspaces/${TENANT_SLUG}/agents/test-agent/sessions/${IDX_SESSION}" "${CHARLIE_TOKEN}"
+assert_status "204" "Owner deletes their own session (204)"
+
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/agents/test-agent/sessions" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner re-lists after the delete"
+assert_json_expr "[.sessions[] | select(.session_id == \"${IDX_SESSION}\")] | length == 0" "Deleted session no longer appears in the listing"
+
+# The transcript itself survives the soft delete (direct-id access unchanged).
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/agents/test-agent/sessions/${IDX_SESSION}/events?limit=100" "${CHARLIE_TOKEN}"
+assert_status "200" "Soft-deleted session's transcript remains retrievable by direct id"
+assert_json_expr '(.events | length) >= 2' "Soft-deleted session's events still carry the birth turn"
+
+# -----------------------------------------------------------------------------
+# 21. Chat Attachments (workspace-attachments, local driver)
+# -----------------------------------------------------------------------------
+log_step "21. Chat Attachments & Workspace Storage Config"
+
+# NOTE: turn-reference coverage (the /v1 input parts carrying capability-URL
+# attachments) belongs to the /v1 multimodal-input task group and is added
+# when that group lands; this section covers the out-of-band upload surface.
+
+# 21.1 Generate a small valid PNG and upload it as a workspace attachment.
+ATT_PNG="${TMP_DIR}/att_shot.png"
+echo "iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAFUlEQVR42mNkYPjPwMDAwMgABIkAKQ0DFXsMkFcAAAAASUVORK5CYII=" | base64 -d > "${ATT_PNG}"
+
+api_upload "/api/v1/workspaces/${TENANT_SLUG}/attachments" "${ALICE_TOKEN}" "${ATT_PNG}" "file"
+assert_status "201" "Owner uploads a small PNG attachment (201)"
+assert_json_expr '.id != null and .id != ""' "Upload response carries the attachment id"
+assert_json_expr '.name == "att_shot.png"' "Upload response carries the original filename"
+assert_json_expr '.mime == "image/png"' "Upload response carries the server-sniffed mime"
+ATT_SIZE=$(stat -f%z "${ATT_PNG}" 2>/dev/null || stat -c%s "${ATT_PNG}")
+assert_json_expr ".size == ${ATT_SIZE}" "Upload response carries the byte size"
+ATT_URL=$(json_get '.url')
+if [[ "${ATT_URL}" =~ ^/api/v1/files/[0-9a-f]{32}$ ]]; then
+    log_pass "Capability URL is the proxied files path over a 32-hex key (${ATT_URL})"
+else
+    log_fail "Capability URL malformed: ${ATT_URL}"
+fi
+
+# 21.2 The capability URL serves the stored bytes without authentication,
+# byte-for-byte.
+api_req "GET" "${ATT_URL}" ""
+assert_status "200" "Capability URL serves the attachment without authentication (200)"
+if cmp -s "${TMP_DIR}/body.tmp" "${ATT_PNG}"; then
+    log_pass "Served bytes are identical to the uploaded file"
+else
+    log_fail "Served bytes differ from the uploaded attachment"
+fi
+
+# 21.3 Oversize image: PNG header over the 5 MB cap → 413.
+printf '\x89PNG\x0D\x0A\x1A\x0A' > "${TMP_DIR}/att_huge.png"
+head -c 5500000 /dev/zero >> "${TMP_DIR}/att_huge.png"
+api_upload "/api/v1/workspaces/${TENANT_SLUG}/attachments" "${ALICE_TOKEN}" "${TMP_DIR}/att_huge.png" "file"
+assert_status "413" "Oversize image upload rejected 413"
+assert_json_expr '.error.message | contains("5242880")' "413 message names the 5 MB image cap"
+
+# 21.4 Drop-lane document upload (report.docx) & legacy office rejection (legacy.doc).
+echo "fake docx package content" > "${TMP_DIR}/report.docx"
+api_upload "/api/v1/workspaces/${TENANT_SLUG}/attachments" "${ALICE_TOKEN}" "${TMP_DIR}/report.docx" "file"
+assert_status "201" "Modern office format (docx) enters the drop lane (201)"
+assert_json_expr '.lane == "drop"' "docx is classified as drop lane"
+
+echo "legacy binary doc content" > "${TMP_DIR}/legacy.doc"
+api_upload "/api/v1/workspaces/${TENANT_SLUG}/attachments" "${ALICE_TOKEN}" "${TMP_DIR}/legacy.doc" "file"
+assert_status "400" "Legacy office-format (.doc) upload rejected 400"
+assert_json_expr '.error.message | ascii_downcase | contains("legacy binary office formats")' "Legacy office rejection suggests converting to modern formats or PDF"
+
+# 21.5 Storage configuration: unconfigured workspace reads as the local
+# default, masked shape (no s3 fields, no secret material).
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/storage" "${ALICE_TOKEN}"
+assert_status "200" "Owner reads the storage configuration"
+assert_json_expr '.driver == "local"' "Unconfigured workspace reports the local driver"
+assert_json_expr 'has("endpoint") | not' "Local default omits the s3 fields"
+
+# 21.6 Owner saves the local driver choice (probe-free) → 200.
+api_req "PUT" "/api/v1/workspaces/${TENANT_SLUG}/storage" "${ALICE_TOKEN}" '{"driver":"local"}'
+assert_status "200" "Owner saves the local storage configuration"
+assert_json_expr '.driver == "local"' "Saved configuration reports local"
+
+# 21.7 Settings management is Owner/Admin: the Member token is 403 on both
+# reads (masked) and writes.
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/storage" "${DAVE_TOKEN}"
+assert_status "403" "Member cannot read the storage configuration (403)"
+api_req "PUT" "/api/v1/workspaces/${TENANT_SLUG}/storage" "${DAVE_TOKEN}" '{"driver":"local"}'
+assert_status "403" "Member cannot change the storage configuration (403)"
+
+# -----------------------------------------------------------------------------
+# 22. Schedulers: Permission Guards, Run-Now, Run History, Channel Delivery &
+#     Pause Flow (integrate-scheduler)
+# -----------------------------------------------------------------------------
+log_step "22. Schedulers: Run-Now, History, Channel Delivery & Pause"
+
+SCHED_BASE="/api/v1/workspaces/${TENANT_SLUG}/schedulers"
+# The recurring expression fires Jan 1 03:30 in the workspace timezone — a
+# year out, so the ticker's claim loop can never fire it mid-test.
+SCHED_EXPR="30 3 1 1 *"
+# The ONCLAW_V1_SMOKE marker steers the section-13 mock provider into its
+# plain-assistant-reply branch, so the run-now agent run genuinely completes.
+SCHED_PROMPT="ONCLAW_V1_SMOKE scheduler smoke: summarize the workspace state"
+
+# 22.1 Permission guards (D10): reads ride scheduler.read (granted to every
+# built-in role), writes ride scheduler.write (Owner/Admin only).
+api_req "GET" "${SCHED_BASE}" "${CLI_USER_TOKEN}"
+assert_status "200" "Member can list schedulers (scheduler.read)"
+assert_json_expr '(.schedulers | length) == 0' "Scheduler list starts empty"
+
+api_req "POST" "${SCHED_BASE}" "${CLI_USER_TOKEN}" "{\"name\":\"Nope\",\"agent_id\":\"${AGENT_ID}\",\"prompt\":\"x\",\"kind\":\"recurring\",\"expr\":\"${SCHED_EXPR}\"}"
+assert_status "403" "Member cannot create schedulers (scheduler.write 403)"
+assert_json_expr '.error.code == "forbidden"' "Error code is forbidden"
+
+# 22.2 Owner creates a recurring scheduler bound to the smoke agent; the next
+# fire time is store-derived, never carried from input (D12).
+api_req "POST" "${SCHED_BASE}" "${CHARLIE_TOKEN}" "{\"name\":\"Morning Digest\",\"agent_id\":\"${AGENT_ID}\",\"prompt\":\"${SCHED_PROMPT}\",\"kind\":\"recurring\",\"expr\":\"${SCHED_EXPR}\",\"delivery\":{\"type\":\"thread\"}}"
+assert_status "201" "Owner creates a recurring scheduler bound to the smoke agent"
+assert_json_expr ".scheduler.kind == \"recurring\" and .scheduler.expr == \"${SCHED_EXPR}\"" "Create echoes kind and the raw expression"
+assert_json_expr ".scheduler.agent_id == \"${AGENT_ID}\"" "Scheduler carries the bound agent id"
+assert_json_expr '.scheduler.enabled == true' "New scheduler starts enabled"
+assert_json_expr '.scheduler.next_run_at != null' "Enabled scheduler carries a derived next fire time"
+assert_json_expr '.scheduler.human_label | length > 0' "Read view derives the human label"
+SCHED_ID=$(json_get '.scheduler.id')
+
+# A garbage cron is a fielded 422 from the shared validator (D11).
+api_req "POST" "${SCHED_BASE}" "${CHARLIE_TOKEN}" "{\"name\":\"Broken Cron\",\"agent_id\":\"${AGENT_ID}\",\"prompt\":\"x\",\"kind\":\"recurring\",\"expr\":\"not a cron\"}"
+assert_status "422" "Invalid cron expression is rejected (422)"
+assert_json_expr '[.error.details[]? | select(.field == "expr")] | length > 0' "Validation error fields expr"
+
+# 22.3 Run-now (D9): direct dispatch recording trigger manual. The row comes
+# back live and drains asynchronously; poll the run history to terminal. The
+# ONCLAW_V1_SMOKE prompt drives a real agent run against the mock provider
+# (the same wiring sections 14/17 use).
+api_req "POST" "${SCHED_BASE}/${SCHED_ID}/run" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner runs the scheduler now"
+assert_json_expr '.run.trigger == "manual"' "Run-now records trigger manual"
+assert_json_expr '.run.status == "running"' "Run-now returns the live run row"
+assert_json_expr ".run.session_id | startswith(\"sched_${SCHED_ID}_\")" "Run session id has the sched_<schedulerID>_<ts> shape"
+
+SCHED_RUNS_TERMINAL=0
+for i in {1..60}; do
+    api_req "GET" "${SCHED_BASE}/${SCHED_ID}/runs?limit=100" "${CHARLIE_TOKEN}"
+    SCHED_RUN_STATUS=$(json_get '.runs[0].status')
+    if [[ "${SCHED_RUN_STATUS}" != "running" && "${SCHED_RUN_STATUS}" != "null" && "${SCHED_RUN_STATUS}" != "" ]]; then
+        SCHED_RUNS_TERMINAL=1
+        break
+    fi
+    sleep 0.5
+done
+if [[ "${SCHED_RUNS_TERMINAL}" -ne 1 ]]; then
+    log_fail "Scheduler run never reached a terminal status (last: ${SCHED_RUN_STATUS})"
+fi
+assert_status "200" "Scheduler runs endpoint serves the history"
+assert_json_expr '.runs[0].status == "completed"' "Scheduler run completed (mock provider produced a real agent run)"
+assert_json_expr '.runs[0].trigger == "manual"' "History row records the manual trigger"
+assert_json_expr '.runs[0].tokens_used > 0' "Completed run metered token usage"
+assert_json_expr '.total >= 1' "Runs history reports its total"
+SCHED_RUN_SESSION=$(json_get '.runs[0].session_id')
+
+# 22.4 The run transcript is a real session artifact (D7): fetchable through
+# the standard agent session-events read by its sched_ session id.
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/agents/test-agent/sessions/${SCHED_RUN_SESSION}/events?limit=100" "${CHARLIE_TOKEN}"
+assert_status "200" "Scheduler run transcript resolves by its session id"
+assert_json_expr '(.events | length) >= 2' "Run transcript carries the user prompt and the assistant reply"
+assert_json_expr '[.events[]?.message.content // ""] | join(" ") | contains("'"${SCHED_PROMPT}"'")' "Run transcript contains the scheduler prompt"
+assert_json_expr '[.events[]?.message.content // ""] | join(" ") | contains("live reply")' "Run transcript contains the mock provider's final reply"
+
+# 22.5 Channel delivery (D8): a scheduler targeting a channel posts the run's
+# final reply into the feed through the chokepoint as an agent author.
+api_req "POST" "${CHANNELS_BASE}" "${CHARLIE_TOKEN}" '{"name":"Scheduler Digest","slug":"sched-digest","purpose":"Scheduler delivery target."}'
+assert_status "201" "Owner creates the scheduler delivery channel"
+SCHED_CHANNEL_ID=$(json_get '.channel.id')
+
+api_req "POST" "${CHANNELS_BASE}/${SCHED_CHANNEL_ID}/members" "${CHARLIE_TOKEN}" "{\"member_type\":\"agent\",\"agent_id\":\"${AGENT_ID}\",\"specialization\":\"Scheduled digests\"}"
+assert_status "201" "Owner adds the scheduler's agent to the delivery channel"
+
+api_req "POST" "${SCHED_BASE}" "${CHARLIE_TOKEN}" "{\"name\":\"Channel Digest\",\"agent_id\":\"${AGENT_ID}\",\"prompt\":\"${SCHED_PROMPT}\",\"kind\":\"recurring\",\"expr\":\"${SCHED_EXPR}\",\"delivery\":{\"type\":\"channel\",\"channel_id\":\"${SCHED_CHANNEL_ID}\"}}"
+assert_status "201" "Owner creates a channel-delivery scheduler"
+assert_json_expr ".scheduler.delivery.type == \"channel\" and .scheduler.delivery.channel_id == \"${SCHED_CHANNEL_ID}\"" "Create echoes the channel delivery target"
+SCHED_CHAN_SCHED_ID=$(json_get '.scheduler.id')
+
+api_req "POST" "${SCHED_BASE}" "${CHARLIE_TOKEN}" "{\"name\":\"Channel Digest\",\"agent_id\":\"${AGENT_ID}\",\"prompt\":\"dup\",\"kind\":\"recurring\",\"expr\":\"${SCHED_EXPR}\"}"
+assert_status "409" "Duplicate scheduler name per agent returns 409"
+
+api_req "POST" "${SCHED_BASE}/${SCHED_CHAN_SCHED_ID}/run" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner runs the channel-delivery scheduler now"
+
+SCHED_RUNS_TERMINAL=0
+for i in {1..60}; do
+    api_req "GET" "${SCHED_BASE}/${SCHED_CHAN_SCHED_ID}/runs?limit=100" "${CHARLIE_TOKEN}"
+    SCHED_RUN_STATUS=$(json_get '.runs[0].status')
+    if [[ "${SCHED_RUN_STATUS}" != "running" && "${SCHED_RUN_STATUS}" != "null" && "${SCHED_RUN_STATUS}" != "" ]]; then
+        SCHED_RUNS_TERMINAL=1
+        break
+    fi
+    sleep 0.5
+done
+if [[ "${SCHED_RUNS_TERMINAL}" -ne 1 ]]; then
+    log_fail "Channel-delivery run never reached a terminal status (last: ${SCHED_RUN_STATUS})"
+fi
+assert_json_expr '.runs[0].status == "completed"' "Channel-delivery run completed"
+assert_json_expr '.runs[0].delivery_status == "delivered"' "Run records the delivered channel delivery"
+
+# The final reply lands in the channel feed as an agent-authored message.
+SCHED_CHAN_MSG=0
+for i in {1..20}; do
+    api_req "GET" "${CHANNELS_BASE}/${SCHED_CHANNEL_ID}/messages" "${CHARLIE_TOKEN}"
+    if [[ "$(json_get '([.messages[] | select(.author_type == "agent")] | length)')" -ge 1 ]]; then
+        SCHED_CHAN_MSG=1
+        break
+    fi
+    sleep 0.5
+done
+if [[ "${SCHED_CHAN_MSG}" -ne 1 ]]; then
+    log_fail "Channel delivery never posted the run's final reply into the feed"
+fi
+log_pass "Channel delivery posted the run's final reply into the feed"
+assert_json_expr '[.messages[] | select(.author_type == "agent")][0].body | contains("live reply")' "Delivered reply body comes from the mock provider"
+
+# 22.6 Workspace-wide run feed: both schedulers' runs, enriched rows.
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/scheduler-runs?limit=100" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists the workspace-wide scheduler runs"
+assert_json_expr '.total >= 2' "Workspace-wide feed counts both schedulers' runs"
+assert_json_expr '.runs[0].scheduler_name | length > 0' "Feed rows are enriched with the scheduler name"
+
+# 22.7 Pause flow (D9): disabling clears the derived next fire time; run-now
+# still executes a paused scheduler and never re-enables it.
+api_req "PATCH" "${SCHED_BASE}/${SCHED_ID}" "${CHARLIE_TOKEN}" '{"enabled":false}'
+assert_status "200" "Owner disables the scheduler"
+assert_json_expr '.scheduler.enabled == false' "Patch disables the scheduler"
+assert_json_expr '.scheduler.next_run_at == null' "Pausing clears the next fire time"
+
+api_req "GET" "${SCHED_BASE}/${SCHED_ID}" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner reads the paused scheduler"
+assert_json_expr '.scheduler.next_run_at == null' "Paused scheduler reads without a next fire time"
+
+api_req "POST" "${SCHED_BASE}/${SCHED_ID}/run" "${CHARLIE_TOKEN}"
+assert_status "200" "Run-now still executes a paused scheduler"
+assert_json_expr '.run.trigger == "manual"' "Paused run-now records trigger manual"
+
+SCHED_RUNS_TERMINAL=0
+for i in {1..60}; do
+    api_req "GET" "${SCHED_BASE}/${SCHED_ID}/runs?limit=100" "${CHARLIE_TOKEN}"
+    SCHED_RUN_STATUS=$(json_get '.runs[0].status')
+    if [[ "${SCHED_RUN_STATUS}" != "running" && "${SCHED_RUN_STATUS}" != "null" && "${SCHED_RUN_STATUS}" != "" ]]; then
+        SCHED_RUNS_TERMINAL=1
+        break
+    fi
+    sleep 0.5
+done
+if [[ "${SCHED_RUNS_TERMINAL}" -ne 1 ]]; then
+    log_fail "Paused scheduler's run-now never reached a terminal status (last: ${SCHED_RUN_STATUS})"
+fi
+assert_json_expr '.runs[0].status == "completed"' "Paused scheduler's run-now completed"
+
+api_req "GET" "${SCHED_BASE}/${SCHED_ID}" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner re-reads the scheduler after the paused run-now"
+assert_json_expr '.scheduler.enabled == false' "Run-now did not re-enable the paused scheduler"
+assert_json_expr '.scheduler.next_run_at == null' "Paused scheduler still has no next fire time"
 

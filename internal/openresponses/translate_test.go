@@ -2,6 +2,7 @@ package openresponses
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -379,10 +380,232 @@ func TestTranslator_ToolTraceOmitsLatencyWhenZero(t *testing.T) {
 	t.Fatal("no onclaw.function_call_output added item found")
 }
 
+func TestTranslator_ContextCompactedCarriesTokens(t *testing.T) {
+	resp, wire := collect(t, []*agents.TranscriptEvent{
+		{Kind: agents.TranscriptEventTurnStarted},
+		{Kind: agents.TranscriptEventContextCompacted, Compaction: &agents.CompactionPayload{
+			TokensBefore: 154000,
+			TokensAfter:  9200,
+		}},
+		{Kind: agents.TranscriptEventTurnCompleted, Usage: &agents.UsagePayload{InputTokens: 40, OutputTokens: 30, TotalTokens: 70}},
+	})
+
+	// The compacted frame sits between created/in_progress and completed and
+	// carries the display-only token estimates with type + sequence_number.
+	var compacted map[string]any
+	for _, ev := range wire {
+		if ev["type"] == "onclaw:context_compacted" {
+			compacted = ev
+			break
+		}
+	}
+	if compacted == nil {
+		t.Fatalf("no onclaw:context_compacted frame in %v", typesOf(wire))
+	}
+	if compacted["tokens_before"] != 154000 || compacted["tokens_after"] != 9200 {
+		t.Fatalf("compacted frame = %+v, want tokens 154000 -> 9200", compacted)
+	}
+	if _, ok := compacted["sequence_number"]; !ok {
+		t.Fatalf("compacted frame missing sequence_number: %+v", compacted)
+	}
+
+	// Compaction is a notification: never an output item.
+	if len(resp.Output) != 0 {
+		t.Fatalf("output = %d items, want 0", len(resp.Output))
+	}
+	// The turn still terminates with the summarizer usage.
+	if resp.Status != StatusCompleted || resp.Usage == nil || resp.Usage.TotalTokens != 70 {
+		t.Fatalf("terminal = %s usage %+v", resp.Status, resp.Usage)
+	}
+	if wire[len(wire)-1]["type"] != "response.completed" {
+		t.Fatalf("terminal wire event = %v", wire[len(wire)-1]["type"])
+	}
+}
+
+func TestTranslator_ContextCompactedOmitsZeroAndEmpty(t *testing.T) {
+	// Nil Compaction (legacy event shape) and zero estimates omit the keys
+	// entirely, mirroring the latency_ms style.
+	_, wire := collect(t, []*agents.TranscriptEvent{
+		{Kind: agents.TranscriptEventContextCompacted},
+		{Kind: agents.TranscriptEventContextCompacted, Compaction: &agents.CompactionPayload{}},
+		{Kind: agents.TranscriptEventTurnCompleted},
+	})
+	var frames []map[string]any
+	for _, ev := range wire {
+		if ev["type"] == "onclaw:context_compacted" {
+			frames = append(frames, ev)
+		}
+	}
+	if len(frames) != 2 {
+		t.Fatalf("got %d compacted frames, want 2", len(frames))
+	}
+	for i, frame := range frames {
+		if _, present := frame["tokens_before"]; present {
+			t.Fatalf("frame %d must omit zero tokens_before: %+v", i, frame)
+		}
+		if _, present := frame["tokens_after"]; present {
+			t.Fatalf("frame %d must omit zero tokens_after: %+v", i, frame)
+		}
+	}
+}
+
+func TestTranslator_CompactAggregateShape(t *testing.T) {
+	// The non-streaming compact turn folds to a completed response carrying
+	// the summarizer usage and NO output items; the wire is just created,
+	// in_progress, the compacted notification, and completed.
+	resp, wire := collect(t, []*agents.TranscriptEvent{
+		{Kind: agents.TranscriptEventTurnStarted},
+		{Kind: agents.TranscriptEventContextCompacted, Compaction: &agents.CompactionPayload{
+			Summary:      "digest",
+			TokensBefore: 1000,
+			TokensAfter:  100,
+		}},
+		{Kind: agents.TranscriptEventTurnCompleted, Usage: &agents.UsagePayload{InputTokens: 5, OutputTokens: 6, TotalTokens: 11}},
+	})
+	if resp.Status != StatusCompleted {
+		t.Fatalf("status = %s", resp.Status)
+	}
+	if len(resp.Output) != 0 {
+		t.Fatalf("output = %d items, want 0 (compaction emits no items)", len(resp.Output))
+	}
+	if resp.Usage == nil || resp.Usage.InputTokens != 5 || resp.Usage.OutputTokens != 6 {
+		t.Fatalf("usage = %+v, want the summarizer's 5/6", resp.Usage)
+	}
+	if got := typesOf(wire); len(got) != 4 {
+		t.Fatalf("wire = %v, want [created in_progress compacted completed]", got)
+	}
+}
+
 func typesOf(events []map[string]any) []string {
 	out := make([]string, 0, len(events))
 	for _, ev := range events {
 		out = append(out, ev["type"].(string))
 	}
 	return out
+}
+
+func TestFlattenInputParts_AcceptedShapes(t *testing.T) {
+	cases := []struct {
+		name     string
+		in       string
+		wantText string
+		wantAtts []InputAttachment
+	}{
+		{
+			name:     "capability image beside text",
+			in:       `[{"type":"message","role":"user","content":[{"type":"input_text","text":"look"},{"type":"input_image","image_url":"/api/v1/files/abc123","detail":"high"}]}]`,
+			wantText: "look",
+			wantAtts: []InputAttachment{{Kind: "image", URL: "/api/v1/files/abc123", Detail: "high"}},
+		},
+		{
+			name:     "inline data URL image",
+			in:       `[{"type":"message","content":[{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}]`,
+			wantAtts: []InputAttachment{{Kind: "image", URL: "data:image/png;base64,AAAA", Inline: true}},
+		},
+		{
+			name:     "absolute-origin capability URL normalizes to its path",
+			in:       `[{"type":"message","content":[{"type":"input_image","image_url":"https://onclaw.example.com/api/v1/files/k1"}]}]`,
+			wantAtts: []InputAttachment{{Kind: "image", URL: "/api/v1/files/k1"}},
+		},
+		{
+			name:     "image_url object form",
+			in:       `[{"type":"message","content":[{"type":"input_image","image_url":{"url":"/api/v1/files/k2"}}]}]`,
+			wantAtts: []InputAttachment{{Kind: "image", URL: "/api/v1/files/k2"}},
+		},
+		{
+			name:     "input_file capability URL with filename",
+			in:       `[{"type":"message","content":[{"type":"input_file","file_url":"/api/v1/files/k3","filename":"report.pdf"}]}]`,
+			wantAtts: []InputAttachment{{Kind: "file", URL: "/api/v1/files/k3", Filename: "report.pdf"}},
+		},
+		{
+			name:     "file_data alias is the inline file form",
+			in:       `[{"type":"message","content":[{"type":"input_file","file_data":"data:application/pdf;base64,AAAA","filename":"r.pdf"}]}]`,
+			wantAtts: []InputAttachment{{Kind: "file", URL: "data:application/pdf;base64,AAAA", Filename: "r.pdf", Inline: true}},
+		},
+	}
+	for _, tc := range cases {
+		text, atts, err := FlattenInputParts([]byte(tc.in))
+		if err != nil {
+			t.Errorf("%s: unexpected error %v", tc.name, err)
+			continue
+		}
+		if text != tc.wantText {
+			t.Errorf("%s: text = %q, want %q", tc.name, text, tc.wantText)
+		}
+		if !reflect.DeepEqual(atts, tc.wantAtts) {
+			t.Errorf("%s: atts = %+v, want %+v", tc.name, atts, tc.wantAtts)
+		}
+	}
+
+	// Capability references expose their store key; inline ones do not.
+	cap := InputAttachment{Kind: "image", URL: "/api/v1/files/abc123"}
+	if key, ok := cap.CapabilityKey(); !ok || key != "abc123" {
+		t.Errorf("CapabilityKey = %q, %v; want abc123, true", key, ok)
+	}
+	if _, ok := (InputAttachment{Kind: "image", URL: "data:image/png;base64,AAAA", Inline: true}).CapabilityKey(); ok {
+		t.Error("inline attachments must not report a capability key")
+	}
+}
+
+func TestFlattenInputParts_RejectedShapes(t *testing.T) {
+	cases := []struct{ name, in, wantContains string }{
+		{
+			name:         "file_id rejected",
+			in:           `[{"type":"message","content":[{"type":"input_file","file_id":"file-123"}]}]`,
+			wantContains: "file_id",
+		},
+		{
+			name:         "remote file URL rejected",
+			in:           `[{"type":"message","content":[{"type":"input_file","file_url":"https://example.com/doc.pdf","filename":"doc.pdf"}]}]`,
+			wantContains: "remote URLs are not accepted",
+		},
+		{
+			name:         "remote image URL rejected",
+			in:           `[{"type":"message","content":[{"type":"input_image","image_url":"https://example.com/x.png"}]}]`,
+			wantContains: "remote URLs are not accepted",
+		},
+		{
+			name:         "image part without URL rejected",
+			in:           `[{"type":"message","content":[{"type":"input_image"}]}]`,
+			wantContains: "input_image",
+		},
+		{
+			name:         "file part without URL rejected",
+			in:           `[{"type":"message","content":[{"type":"input_file","filename":"x.pdf"}]}]`,
+			wantContains: "input_file",
+		},
+	}
+	for _, tc := range cases {
+		_, atts, err := FlattenInputParts([]byte(tc.in))
+		if err == nil {
+			t.Errorf("%s: expected error, got atts %+v", tc.name, atts)
+			continue
+		}
+		if !strings.Contains(err.Error(), tc.wantContains) {
+			t.Errorf("%s: error %q must contain %q", tc.name, err.Error(), tc.wantContains)
+		}
+	}
+}
+
+// TestFlattenInputParts_PassthroughByteForByte pins the openresponses spec
+// guarantee: string-only and text-part-only inputs flatten to exactly what
+// they always did, with no attachments — the string path is byte-for-byte
+// identical to the pre-parts behavior.
+func TestFlattenInputParts_PassthroughByteForByte(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"string", `"hello"`, "hello"},
+		{"empty", ``, ""},
+		{"text-only parts", `[{"type":"message","role":"user","content":[{"type":"input_text","text":"a"},{"type":"input_text","text":"b"}]}]`, "a\nb"},
+		{"string content", `[{"type":"message","role":"user","content":"plain"}]`, "plain"},
+	}
+	for _, tc := range cases {
+		got, atts, err := FlattenInputParts([]byte(tc.in))
+		if err != nil || got != tc.want || len(atts) != 0 {
+			t.Errorf("%s: parts flatten = %q, %d atts, err %v; want %q, 0 atts, nil", tc.name, got, len(atts), err, tc.want)
+		}
+		viaOld, err := FlattenInput([]byte(tc.in))
+		if err != nil || viaOld != tc.want {
+			t.Errorf("%s: FlattenInput diverged: %q, err %v", tc.name, viaOld, err)
+		}
+	}
 }

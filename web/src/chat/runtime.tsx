@@ -2,15 +2,26 @@ import { useCallback } from 'react';
 import { useExternalStoreRuntime } from '@assistant-ui/react';
 import type { ThreadMessageLike, AppendMessage } from '@assistant-ui/react';
 import { useStore, useWorkspace } from '../store';
-import { mintSessionId } from '../store';
 import { getWorkspaceKey } from '../store/workspaceKeys';
 import type { Message, Agent } from '../data/types';
 import { uid, nowTime, parseMentions, appendReasoningPart, appendToolPart } from '../lib/helpers';
 import { runTurn, sessionIdFromResponseId } from '../lib/openresponses';
-import { markLiveChatDisconnected, handleV1AuthFailure, hydrateSession, attachCatchUpStream } from '../lib/livechat';
+import { markLiveChatDisconnected, handleV1AuthFailure, hydrateSession, attachCatchUpStream, isBoundSessionId } from '../lib/livechat';
 import { api } from '../lib/api';
+import type { AttachmentChip } from '../lib/attachments';
 
 const activeTimers: Record<string, any> = {};
+
+/** Ready composer chips → the ChatAttachment references carried by the store
+ * entry and the /v1 turn request (add-chat-attachments D11). Filtering on the
+ * ready state again here keeps rejected / failed / still-uploading chips out
+ * of the transcript and the wire even if a caller bypasses the send gate. */
+const toAttachments = (chips?: AttachmentChip[]): ChatAttachment[] | undefined => {
+  const out = (chips || [])
+    .filter((c) => c.state === 'ready' && c.url)
+    .map((c) => ({ id: c.id, name: c.name, mime: c.mime, size: c.size, url: c.url as string }));
+  return out.length ? out : undefined;
+};
 
 // ---------------------------------------------------------------------------
 // Live session binding (web-live-chat-sessions design D2/D5)
@@ -29,12 +40,36 @@ const resolveBinding = (tid: string, cid: string): { sessionId?: string; previou
   return sessionId ? { sessionId } : {};
 };
 
-/** Identity of the in-flight live turn, captured at the FIRST stream event so
- * the stop control can cancel the server-side run mid-stream (design D5).
- * `mid` is the optimistic agent message the turn streams into — a turn that
- * fails before producing anything gets that empty row retracted. */
-const inFlight: { responseId?: string; agentSlug?: string; mid?: string; tid?: string; cid?: string } = {};
-const clearInFlight = () => { inFlight.responseId = undefined; inFlight.agentSlug = undefined; inFlight.mid = undefined; inFlight.tid = undefined; inFlight.cid = undefined; };
+/** The thread's ALREADY-bound server session id, read without minting one —
+ * a compact turn binds like any metadata-bound request but never births a
+ * session (chat-compact-command design D2). Undefined when the thread has no
+ * binding yet. */
+const existingBoundSessionId = (tid: string, cid: string): string | undefined => {
+  const th = useStore.getState().db[tid]?.threads?.[cid];
+  const s = th && th.list.find((x: any) => x.id === th.active);
+  if (isBoundSessionId(s?.id)) return s!.id;
+  if (isBoundSessionId(s?.sess)) return s!.sess;
+  return undefined;
+};
+
+/** Identity of the in-flight live turn, captured at TURN START (not the first
+ * stream event) so the stop control can always reach the server-side run.
+ * `responseId` still arrives only with the first stream event — the cancel
+ * endpoint is session-scoped, so stop-before-first-event addresses the run by
+ * `sessionId` with a placeholder turn segment. `mid` is the optimistic agent
+ * message the turn streams into — a turn that fails before producing anything
+ * gets that empty row retracted. `abort` tears down the local SSE stream so
+ * a stopped turn stops mutating the transcript immediately. */
+const inFlight: { responseId?: string; agentSlug?: string; sessionId?: string; mid?: string; tid?: string; cid?: string; abort?: () => void; flush?: () => void } = {};
+const clearInFlight = () => { inFlight.responseId = undefined; inFlight.agentSlug = undefined; inFlight.sessionId = undefined; inFlight.mid = undefined; inFlight.tid = undefined; inFlight.cid = undefined; inFlight.abort = undefined; inFlight.flush = undefined; };
+
+/** The chat's bound server session id (`sess_<uuid>`), for cancel addressing
+ * before the minted response id exists. Legacy counter sessions bind nothing. */
+const activeBoundSessionId = (tid: string, cid: string): string | undefined => {
+  const th = useStore.getState().db[tid]?.threads?.[cid];
+  const s = th && th.list.find((x: any) => x.id === th.active);
+  return isBoundSessionId(s?.id) ? s!.id : undefined;
+};
 
 /** Retracts the optimistic empty agent message left behind by a turn that
  * died before any text or tool card landed (e.g. a provider 429). */
@@ -96,7 +131,7 @@ export function useChatRuntime(chatId: string) {
         custom: {
           onclaw: {
             agentId: msg.agentId,
-            cron: msg.cron,
+            scheduler: msg.scheduler,
             name: msg.name,
             author: msg.author
           }
@@ -112,7 +147,13 @@ export function useChatRuntime(chatId: string) {
     // active run that blocked it has drained) — a second conflict must
     // surface as a real failure instead of queueing again.
     const queued = opts?.queued;
-    patchUi({ running: true });
+    // attachments: the turn's ready chips (add-chat-attachments D11) as
+    // ChatAttachment references — carried by the turn request AND by the
+    // 409-conflict queued re-dispatch below.
+    const attachments: ChatAttachment[] | undefined = opts?.attachments;
+    // compacting: false — an ordinary turn never shows the compact status row
+    // even if a stale compacting flag survived a chat/session switch.
+    patchUi({ running: true, compacting: false });
 
     // Real turn via the OpenResponses /v1 surface when a workspace chat key
     // is held (agent = model, key = tenant). Without a key the chat shows
@@ -140,16 +181,58 @@ export function useChatRuntime(chatId: string) {
           return t;
         });
       };
+
+      // Stream deltas coalesce into ONE store write per macrotask: a stream
+      // chunk can carry dozens of events, and per-event store updates drive
+      // React into 50+ consecutive synchronous update cycles (each commit's
+      // effects — assistant-ui's adapter resync — schedule the next one),
+      // tripping the nested-update limit. The throw lands in runTurn's catch
+      // and surfaced as a "Run failed: Maximum update depth exceeded" entry.
+      // Low-frequency structural events (tool calls, outputs, approval, done,
+      // error, stop) flush the buffer synchronously first, so part order and
+      // partial-text detection stay exactly as with per-delta writes.
+      let pendingText = '';
+      let pendingReasoning: string[] = [];
+      let flushQueued = false;
+      let flushTimer: ReturnType<typeof setTimeout> | null = null;
+      const flushDeltas = () => {
+        if (flushQueued) { clearTimeout(flushTimer); flushQueued = false; }
+        const text = pendingText; pendingText = '';
+        const reasoning = pendingReasoning; pendingReasoning = [];
+        if (!text && reasoning.length === 0) return;
+        useStore.getState().updateTenant(tid, (t: any) => {
+          const s = t.threads[cid]?.list.find((x: any) => x.id === t.threads[cid].active);
+          const last = s?.messages[s.messages.length - 1];
+          if (last && last.author === 'agent') {
+            if (text) last.text = (last.text || '') + text;
+            for (const d of reasoning) appendReasoningPart(last, d);
+          }
+          return t;
+        });
+      };
+      const queueFlush = () => {
+        if (flushQueued) return;
+        flushQueued = true;
+        flushTimer = setTimeout(flushDeltas, 0);
+      };
+      inFlight.flush = flushDeltas;
+
       // startTurn streams into the already-pushed optimistic agent message,
-      // so a post-auth-failure retry (design D4: clear slot → re-exchange
-      // once → retry) reuses the same message instead of duplicating it.
+      // so a post-auth-failure retry (design D4: clear slot → re-exchange once
+      // → retry) reuses the same message instead of duplicating it. A fresh
+      // AbortController per attempt: the cancel path aborts the OPEN stream;
+      // a controller created before startTurn could sit pre-aborted through
+      // the queued re-dispatch and silently kill the retry.
       const startTurn = (key: string, attempt: number) => {
-        // Restamped per attempt: the error/cancel paths clear the in-flight
-        // identity, and a retried turn streams into the same message.
+        const turnAbort = new AbortController();
         inFlight.mid = mid; inFlight.tid = tid; inFlight.cid = cid;
+        inFlight.agentSlug = (ag as any).slug || ag.id;
+        inFlight.sessionId = binding.sessionId;
+        inFlight.abort = () => turnAbort.abort();
         void runTurn(key, {
           agentSlug: (ag as any).slug || ag.id,
           input: origText,
+          ...(attachments?.length ? { attachments } : {}),
           ...(binding.sessionId ? { sessionId: binding.sessionId } : {}),
           ...(binding.previousResponseId ? { previousResponseId: binding.previousResponseId } : {}),
         }, {
@@ -158,36 +241,40 @@ export function useChatRuntime(chatId: string) {
             inFlight.agentSlug = (ag as any).slug || ag.id;
           },
           onDelta: (delta) => {
-            useStore.getState().updateTenant(tid, (t: any) => {
-              const s = t.threads[cid]?.list.find((x: any) => x.id === t.threads[cid].active);
-              const last = s?.messages[s.messages.length - 1];
-              if (last && last.author === 'agent') last.text = (last.text || '') + delta;
-              return t;
-            });
+            pendingText += delta;
+            queueFlush();
           },
           onReasoningDelta: (delta) => {
             // Reasoning is its own ordered bubble (part) on the turn body —
             // never leaks into the visible text. Consecutive deltas extend
             // the open segment; a delta after a tool card opens a new one,
             // so round-2 reasoning sits between the cards and the text.
-            patchTools((_tools, msg) => appendReasoningPart(msg, delta));
+            pendingReasoning.push(delta);
+            queueFlush();
           },
-          onToolCall: (name, callId, args) => patchTools((tools, msg) => {
-            // The stream client fires this twice per call (added: argless card,
-            // done: complete args) — update the existing card by call id.
-            const existing = args ? tools.find((t: any) => t.callId === callId) : undefined;
-            if (existing) { existing.args = args; return; }
-            tools.push({ callId, name, args: args || '', ms: 0 });
-            appendToolPart(msg, tools.length - 1);
-          }),
-          onToolOutput: (callId, _name, result, latencyMs, isError) => patchTools((tools) => {
-            const card = [...tools].reverse().find((t: any) => t.callId === callId) || tools[tools.length - 1];
-            if (!card) return;
-            card.res = result;
-            card.ms = latencyMs ?? 0;
-            if (isError) card.error = result;
-          }),
+          onToolCall: (name, callId, args) => {
+            flushDeltas();
+            patchTools((tools, msg) => {
+              // The stream client fires this twice per call (added: argless card,
+              // done: complete args) — update the existing card by call id.
+              const existing = args ? tools.find((t: any) => t.callId === callId) : undefined;
+              if (existing) { existing.args = args; return; }
+              tools.push({ callId, name, args: args || '', ms: 0 });
+              appendToolPart(msg, tools.length - 1);
+            });
+          },
+          onToolOutput: (callId, _name, result, latencyMs, isError) => {
+            flushDeltas();
+            patchTools((tools) => {
+              const card = [...tools].reverse().find((t: any) => t.callId === callId) || tools[tools.length - 1];
+              if (!card) return;
+              card.res = result;
+              card.ms = latencyMs ?? 0;
+              if (isError) card.error = result;
+            });
+          },
           onApprovalRequired: (a) => {
+            flushDeltas();
             patchTools((tools, msg) => {
               tools.push({ args: '', ms: 0, approval: { interruptId: a.interrupt_id, command: a.command, resolved: false } });
               appendToolPart(msg, tools.length - 1);
@@ -204,6 +291,7 @@ export function useChatRuntime(chatId: string) {
             useStore.getState().recordThreadUsage(tid, cid, u && typeof u.finalInputTokens === 'number' ? u.finalInputTokens : null);
           },
           onDone: (responseId) => {
+            flushDeltas();
             clearInFlight();
             // Record the minted response id on the assistant message it
             // produced — this is the `previous_response_id` chain link for the
@@ -212,6 +300,7 @@ export function useChatRuntime(chatId: string) {
             useStore.getState().patchUi({ running: false });
           },
           onError: (message, meta) => {
+            flushDeltas();
             if (meta?.unauthorized && attempt === 0) {
               // Stale workspace key: clear the slot, re-exchange once, and
               // retry this turn with the fresh key; handleV1AuthFailure has
@@ -254,7 +343,7 @@ export function useChatRuntime(chatId: string) {
                   chatId: cid,
                   sessionId,
                   after: hydrated?.lastEventId,
-                  onDone: () => respondFor(tid, cid, ag, origText, { queued: true }),
+                  onDone: () => respondFor(tid, cid, ag, origText, { queued: true, attachments }),
                   onError: () => {
                     // The catch-up stream died mid-run — drop the queue; the
                     // composer is live again and the user can resend.
@@ -279,7 +368,7 @@ export function useChatRuntime(chatId: string) {
             useStore.getState().toast(message, 'error');
             useStore.getState().patchUi({ running: false });
           },
-        });
+        }, { signal: turnAbort.signal });
       };
       void startTurn(apiKey, 0);
       return;
@@ -292,11 +381,128 @@ export function useChatRuntime(chatId: string) {
     useStore.getState().patchUi({ running: false });
   }, [patchUi]);
 
-  const onNew = useCallback(async (msg: AppendMessage) => {
+  /** Submits a /compact turn (chat-compact-command): a NORMAL /v1 request
+   * carrying `metadata.onclaw_command: "compact"` with the focus text as
+   * input. Never appends a user message and never mints optimistic rows —
+   * while running the transcript shows only the "Compacting context…" status
+   * row (ui.compacting). Terminal states (design D7): the compacted event
+   * swaps the row for the compaction divider; quiet completion (no compacted
+   * event) or failure leaves NOTHING in the thread. */
+  const respondCompact = useCallback((tid: string, cid: string, ag: Agent, focus: string, attempt = 0) => {
+    patchUi({ running: true, compacting: true });
+    const apiKey = getWorkspaceKey(tid);
+    if (!apiKey) {
+      markLiveChatDisconnected(tid);
+      useStore.getState().patchUi({ running: false, compacting: false });
+      return;
+    }
+    // Bind-only (design D2): chain from the last recorded resp, else use the
+    // session's existing binding — a compact request never births a session.
+    const chained = useStore.getState().getLastResponse(cid);
+    const binding = chained
+      ? { previousResponseId: chained }
+      : { sessionId: existingBoundSessionId(tid, cid) };
+
+    const turnAbort = new AbortController();
+    // No `mid`: the stop control has no optimistic row to retract, but the
+    // server-side run stays cancellable via the session/decoded response id.
+    inFlight.tid = tid; inFlight.cid = cid;
+    inFlight.agentSlug = (ag as any).slug || ag.id;
+    inFlight.sessionId = binding.sessionId;
+    inFlight.abort = () => turnAbort.abort();
+    let dividerId: string | undefined;
+    const finish = () => {
+      clearInFlight();
+      useStore.getState().patchUi({ running: false, compacting: false });
+    };
+    void runTurn(apiKey, {
+      agentSlug: (ag as any).slug || ag.id,
+      input: focus,
+      command: 'compact',
+      ...(binding.sessionId ? { sessionId: binding.sessionId } : {}),
+      ...(binding.previousResponseId ? { previousResponseId: binding.previousResponseId } : {}),
+    }, {
+      // A compact stream carries no output items — no text ever delta-frames.
+      onDelta: () => {},
+      onResponseId: (rid) => {
+        inFlight.responseId = rid;
+        inFlight.agentSlug = (ag as any).slug || ag.id;
+      },
+      onContextCompacted: ({ tokensBefore, tokensAfter }) => {
+        // Success marker: the divider swaps in for the status row at the
+        // compacted event; the turn keeps running until the terminal event
+        // lands the summarizer usage.
+        dividerId = uid('m');
+        useStore.getState().pushMsg(tid, cid, {
+          id: dividerId, author: 'compaction', ts: nowTime(), text: '',
+          compaction: { tokensBefore, tokensAfter },
+          summarySaved: true,
+        } as any);
+        useStore.getState().patchUi({ compacting: false });
+      },
+      onUsage: (u) => {
+        // Same terminal-event meter capture as ordinary turns (design D5):
+        // turn_completed carries the summarizer call's usage.
+        useStore.getState().recordThreadUsage(tid, cid, u && typeof u.finalInputTokens === 'number' ? u.finalInputTokens : null);
+      },
+      onDone: (responseId) => {
+        // The compact turn is a real run: record its minted response id on
+        // the divider entry so later turns chain to it via
+        // previous_response_id — the pre-compaction chain was invalidated by
+        // the window replacement.
+        if (responseId && dividerId) useStore.getState().recordResponse(cid, dividerId, responseId);
+        finish();
+      },
+      onError: (message, meta) => {
+        if (meta?.unauthorized && attempt === 0) {
+          // Stale workspace key: clear the slot, re-exchange once, and retry
+          // this compact turn with the fresh key (same contract as ordinary
+          // turns, design D4). The status row stays up while retrying.
+          void handleV1AuthFailure(tid).then((fresh) => {
+            if (fresh) { respondCompact(tid, cid, ag, focus, 1); return; }
+            finish();
+          });
+          return;
+        }
+        // Terminal failure (including a 409 from a concurrent run): the
+        // status row retracts and NOTHING stays in the thread (design D7) —
+        // a compact turn cannot be queued behind the active run like an
+        // ordinary message, so the conflict surfaces as a toast only.
+        finish();
+        useStore.getState().toast(message, 'error');
+      },
+    }, { signal: turnAbort.signal });
+  }, [patchUi]);
+
+  // `chips` carries the composer's ready attachments (add-chat-attachments
+  // D11): they land on the optimistic user entry — so the bubble renders them
+  // exactly like a hydrated one — and ride the turn request. Attachment-only
+  // sends (empty text, ≥1 ready chip) are valid and proceed like any turn.
+  const onNew = useCallback(async (msg: AppendMessage, chips?: AttachmentChip[]) => {
     const target = useStore.getState().db[tenantId]?.agents.find((a: any) => a.id === chatId) ? 'agent' : 'channel';
     const text = msg.content.map((c: any) => c.text).join('') || '';
+    const trimmed = text.trim();
+    const attachments = toAttachments(chips);
 
-    useStore.getState().pushMsg(tenantId, chatId, { id: uid('m'), author: 'you', ts: nowTime(), text });
+    // /compact interception (chat-compact-command D7): agent chats only, an
+    // exact `/compact` or `/compact <focus>` match submits a compact turn —
+    // the command text never enters the message list. Every other /command
+    // sends as ordinary text in every surface (D8); channel/team composers
+    // never even open the command menu.
+    const compactMatch = target === 'agent' ? trimmed.match(/^\/compact(?:\s+(.*))?$/) : null;
+    if (compactMatch) {
+      const db = useStore.getState().db[tenantId];
+      const agent = db.agents.find((a: any) => a.id === chatId);
+      if (agent) {
+        respondCompact(tenantId, chatId, agent, (compactMatch[1] || '').trim());
+        return;
+      }
+    }
+
+    useStore.getState().pushMsg(tenantId, chatId, {
+      id: uid('m'), author: 'you', ts: nowTime(), text,
+      ...(attachments ? { attachments } : {}),
+    });
 
     const db = useStore.getState().db[tenantId];
     const agent = db.agents.find((a: any) => a.id === chatId);
@@ -304,21 +510,6 @@ export function useChatRuntime(chatId: string) {
     const chatAgent = agent || (channel ? db.agents.find((a: any) => a.id === channel.agentId) : null);
 
     if (target === 'agent' && !chatAgent) return;
-
-    if (text.trim().toLowerCase().startsWith('/reset')) {
-      useStore.getState().updateTenant(tenantId, (t) => {
-        const th = t.threads[chatId];
-        const s = th && th.list.find((x: any) => x.id === th.active);
-        // Local clear only — no server call. Minting a fresh session id makes
-        // the next live turn BIRTH a new server session (the old one is
-        // abandoned server-side).
-        // `sess` typing lands with the store's session-id work (task 3.1).
-        if (s) { s.messages = []; s.title = 'New chat'; s.updated = nowTime(); s.sess = mintSessionId(); }
-        return t;
-      });
-      useStore.getState().toast('Thread cleared');
-      return;
-    }
 
     if (target === 'channel' && channel) {
       const ids = channel.members && channel.members.length ? channel.members : (channel.agentId ? [channel.agentId] : []);
@@ -339,11 +530,13 @@ export function useChatRuntime(chatId: string) {
       }
     }
 
-    if (chatAgent) respondFor(tenantId, chatId, chatAgent, text);
-  }, [tenantId, chatId, respondFor]);
+    // Channel mention fan-out stays text-only: the composer's attach button is
+    // agent-chat-only (ChatRoute allowAttachments), so chips never reach here.
+    if (chatAgent) respondFor(tenantId, chatId, chatAgent, text, { attachments });
+  }, [tenantId, chatId, respondFor, respondCompact]);
 
   const onCancel = useCallback(async () => {
-    patchUi({ running: false });
+    patchUi({ running: false, compacting: false });
     for (const k in activeTimers) {
       if (k.startsWith('respond-') || k.startsWith('refresh-') || k.startsWith('stream-')) {
         clearTimeout(activeTimers[k]);
@@ -354,18 +547,27 @@ export function useChatRuntime(chatId: string) {
     // `resp_<session>_<turn>`; decode it to cancel the server-side run.
     // Partial text and completed tool cards stay in the transcript; a cancel
     // before anything streamed retracts the empty optimistic row.
+    // Stop BEFORE the first stream event: responseId is still unset, but the
+    // run is already live and cancellable — the endpoint is session-scoped,
+    // so address it by the bound session with a placeholder turn segment.
+    // Skipping the server cancel here left the run streaming to completion:
+    // the open SSE kept mutating the transcript after "stop", and a reload
+    // re-attached to the live run (spinner came back).
     const rid = inFlight.responseId;
     const agentSlug = inFlight.agentSlug;
-    const sessionId = sessionIdFromResponseId(rid);
-    if (rid && agentSlug && sessionId) {
-      const turn = rid.slice(('resp_' + sessionId + '_').length);
-      retractIfEmpty();
-      clearInFlight();
+    const abort = inFlight.abort;
+    const flush = inFlight.flush;
+    const sessionId = sessionIdFromResponseId(rid) || inFlight.sessionId || activeBoundSessionId(tenantId, inFlight.cid || '');
+    abort?.();
+    // Land any coalesced deltas before the retract check: a stop after text
+    // streamed must keep that text, not read an empty row.
+    flush?.();
+    if (agentSlug && sessionId) {
+      const turn = rid ? rid.slice(('resp_' + sessionId + '_').length) : 'pending';
       void api.agents.cancelRun(tenantId, agentSlug, sessionId, turn).catch(() => {
         // The local stop already succeeded; a failed server cancel just
         // means the stream ends on its own.
       });
-      return;
     }
     retractIfEmpty();
     clearInFlight();
@@ -409,12 +611,22 @@ export function useChatRuntime(chatId: string) {
 
     // The regenerate prompt is the original user text: the nearest preceding
     // user message (regenerate is a REAL live turn — no canned templates).
+    // Its attachment references re-send too (ids / capability URLs straight
+    // from the stored entry — never re-uploads, add-chat-attachments D12).
     const idx = s.messages.findIndex((x: any) => x.id === parentId);
     let origText = '';
+    let origAttachments: ChatAttachment[] | undefined;
     for (let i = idx - 1; i >= 0; i--) {
-      if (s.messages[i].author === 'you') { origText = s.messages[i].text || ''; break; }
+      if (s.messages[i].author === 'you') {
+        origText = s.messages[i].text || '';
+        // data/types Message doesn't declare attachments yet (global
+        // ChatMessage does) — same cast idiom as the branches read below.
+        origAttachments = (s.messages[i] as any).attachments;
+        break;
+      }
     }
-    if (!origText) return;
+    // Attachment-only turns regenerate like any other (empty text is valid).
+    if (!origText && !(origAttachments && origAttachments.length)) return;
 
     const apiKey = getWorkspaceKey(tenantId);
     if (!apiKey) {
@@ -422,7 +634,7 @@ export function useChatRuntime(chatId: string) {
       return;
     }
 
-    patchUi({ running: true });
+    patchUi({ running: true, compacting: false });
     // Seed the branch list with the current variant (full body — text, cards,
     // reasoning, ordered parts), then append a live branch that streams in
     // place (`n / total` comes from branches.length). The new variant gets a
@@ -458,9 +670,45 @@ export function useChatRuntime(chatId: string) {
       });
     };
 
+    // Same cancel-addressing contract as startTurn: identity set at turn
+    // start (not the first stream event), stream abortable by the stop
+    // control. Deltas coalesce per macrotask, same as the respondFor path.
+    let pendingText = '';
+    let pendingReasoning: string[] = [];
+    let flushQueued = false;
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    const flushDeltas = () => {
+      if (flushQueued) { clearTimeout(flushTimer); flushQueued = false; }
+      const text = pendingText; pendingText = '';
+      const reasoning = pendingReasoning; pendingReasoning = [];
+      if (!text && reasoning.length === 0) return;
+      patchTarget((mm) => {
+        if (text) {
+          mm.text = (mm.text || '') + text;
+          const branch = mm.branches?.[mm.branch];
+          if (branch) branch.text = mm.text;
+        }
+        for (const d of reasoning) {
+          appendReasoningPart(mm, d);
+          const branch = mm.branches?.[mm.branch];
+          if (branch) { branch.parts = mm.parts; branch.reasoning = mm.reasoning; }
+        }
+      });
+    };
+    const queueFlush = () => {
+      if (flushQueued) return;
+      flushQueued = true;
+      flushTimer = setTimeout(flushDeltas, 0);
+    };
+    const turnAbort = new AbortController();
+    inFlight.agentSlug = (agent as any).slug || agent.id;
+    inFlight.sessionId = binding.sessionId;
+    inFlight.abort = () => turnAbort.abort();
+    inFlight.flush = flushDeltas;
     void runTurn(apiKey, {
       agentSlug: (agent as any).slug || agent.id,
       input: origText,
+      ...(origAttachments && origAttachments.length ? { attachments: origAttachments } : {}),
       ...(binding.sessionId ? { sessionId: binding.sessionId } : {}),
       ...(binding.previousResponseId ? { previousResponseId: binding.previousResponseId } : {}),
     }, {
@@ -468,38 +716,41 @@ export function useChatRuntime(chatId: string) {
         inFlight.responseId = rid;
         inFlight.agentSlug = (agent as any).slug || agent.id;
       },
-      onDelta: (delta) => patchTarget((mm) => {
-        mm.text = (mm.text || '') + delta;
-        const branch = mm.branches?.[mm.branch];
-        if (branch) branch.text = mm.text;
-      }),
-      onReasoningDelta: (delta) => patchTarget((mm) => {
+      onDelta: (delta) => {
+        pendingText += delta;
+        queueFlush();
+      },
+      onReasoningDelta: (delta) => {
         // Ordered bubble, same as the respondFor path — never mixed into text.
-        // The active branch mirrors the streamed arrays by reference so the
-        // variant picker renders the in-progress body.
-        appendReasoningPart(mm, delta);
-        const branch = mm.branches?.[mm.branch];
-        if (branch) { branch.parts = mm.parts; branch.reasoning = mm.reasoning; }
-      }),
-      onToolCall: (name, callId, args) => patchTarget((mm) => {
-        if (!mm.tools) mm.tools = [];
-        // Added fires argless, done carries the complete args (see respondFor).
-        const existing = args ? mm.tools.find((t: any) => t.callId === callId) : undefined;
-        if (existing) { existing.args = args; return; }
-        mm.tools.push({ callId, name, args: args || '', ms: 0 });
-        appendToolPart(mm, mm.tools.length - 1);
-        const branch = mm.branches?.[mm.branch];
-        if (branch) { branch.tools = mm.tools; branch.parts = mm.parts; }
-      }),
-      onToolOutput: (callId, _name, result, latencyMs, isError) => patchTarget((mm) => {
-        const tools = mm.tools || [];
-        const card = [...tools].reverse().find((t: any) => t.callId === callId) || tools[tools.length - 1];
-        if (!card) return;
-        card.res = result;
-        card.ms = latencyMs ?? 0;
-        if (isError) card.error = result;
-      }),
+        pendingReasoning.push(delta);
+        queueFlush();
+      },
+      onToolCall: (name, callId, args) => {
+        flushDeltas();
+        patchTarget((mm) => {
+          if (!mm.tools) mm.tools = [];
+          // Added fires argless, done carries the complete args (see respondFor).
+          const existing = args ? mm.tools.find((t: any) => t.callId === callId) : undefined;
+          if (existing) { existing.args = args; return; }
+          mm.tools.push({ callId, name, args: args || '', ms: 0 });
+          appendToolPart(mm, mm.tools.length - 1);
+          const branch = mm.branches?.[mm.branch];
+          if (branch) { branch.tools = mm.tools; branch.parts = mm.parts; }
+        });
+      },
+      onToolOutput: (callId, _name, result, latencyMs, isError) => {
+        flushDeltas();
+        patchTarget((mm) => {
+          const tools = mm.tools || [];
+          const card = [...tools].reverse().find((t: any) => t.callId === callId) || tools[tools.length - 1];
+          if (!card) return;
+          card.res = result;
+          card.ms = latencyMs ?? 0;
+          if (isError) card.error = result;
+        });
+      },
       onApprovalRequired: (a) => {
+        flushDeltas();
         patchTarget((mm) => {
           if (!mm.tools) mm.tools = [];
           mm.tools.push({ args: '', ms: 0, approval: { interruptId: a.interrupt_id, command: a.command, resolved: false } });
@@ -515,6 +766,7 @@ export function useChatRuntime(chatId: string) {
         useStore.getState().recordThreadUsage(tenantId, chatId, u && typeof u.finalInputTokens === 'number' ? u.finalInputTokens : null);
       },
       onDone: (responseId) => {
+        flushDeltas();
         clearInFlight();
         if (responseId) {
           // The variant is a real turn of this session: record its response id
@@ -528,6 +780,7 @@ export function useChatRuntime(chatId: string) {
         useStore.getState().patchUi({ running: false });
       },
       onError: (message, meta) => {
+        flushDeltas();
         clearInFlight();
         if (meta?.unauthorized) {
           // D4: stale key — re-exchange once; the retried variant is the
@@ -555,7 +808,7 @@ export function useChatRuntime(chatId: string) {
         useStore.getState().toast(message, 'error');
         useStore.getState().patchUi({ running: false });
       },
-    });
+    }, { signal: turnAbort.signal });
   }, [tenantId, chatId, patchUi]);
 
   const runtime = useExternalStoreRuntime({

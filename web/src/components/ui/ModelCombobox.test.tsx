@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import { ModelCombobox } from './ModelCombobox';
 import { api } from '../../lib/api';
 
@@ -127,5 +127,91 @@ describe('components/ui/ModelCombobox', () => {
     });
 
     expect(screen.getByTestId('badge-source-live')).not.toBeNull();
+  });
+
+  it('threads the catalog-mapping hint through models-preview', async () => {
+    const previewSpy = vi.spyOn(api.providers, 'modelsPreview').mockResolvedValue({
+      source: 'live',
+      models: [{ id: 'glm-5.3-flash', name: 'GLM 5.3 Flash' }],
+    });
+
+    render(
+      <ModelCombobox
+        previewCreds={{
+          type: 'openai-compatible',
+          base_url: 'https://api.example.com/v1',
+          key: 'sk-test',
+          catalog_provider: 'zai-coding-plan',
+        }}
+        model="glm-5.3-flash"
+        onModelChange={vi.fn()}
+      />
+    );
+
+    await waitFor(() => {
+      expect(previewSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ catalog_provider: 'zai-coding-plan' })
+      );
+    });
+  });
+
+  it('renders capability icons only on dropdown rows of affirmatively capable models', async () => {
+    vi.spyOn(api.providers, 'models').mockResolvedValue({
+      source: 'catalog',
+      models: [
+        {
+          id: 'glm-5.3-flash',
+          name: 'GLM 5.3 Flash',
+          image_input: true,
+          pdf_input: true,
+          reasoning: true,
+          tool_call: true,
+        },
+        // Same family, text-only: reasoning + tools only.
+        { id: 'glm-5.3', name: 'GLM 5.3', reasoning: true, tool_call: true },
+        // No catalog entry: no capability flags at all.
+        { id: 'unknown-model', name: 'Unknown Model' },
+      ],
+    });
+
+    render(
+      <ModelCombobox
+        workspaceId="acme"
+        providerId="prov-1"
+        model="glm-5.3-flash"
+        onModelChange={vi.fn()}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('badge-source-catalog')).not.toBeNull();
+    });
+
+    // Closed combobox stays quiet — icons live in the dropdown rows only.
+    expect(screen.queryByTitle('Accepts image input')).toBeNull();
+    expect(screen.queryByTitle('Accepts PDF input')).toBeNull();
+    expect(screen.queryByTitle('Supports reasoning')).toBeNull();
+    expect(screen.queryByTitle('Supports tool calling')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('select-model-trigger'));
+
+    const capableRow = screen.getByTestId('combobox-option-glm-5.3-flash');
+    expect(within(capableRow).getByTitle('Accepts image input')).not.toBeNull();
+    expect(within(capableRow).getByTitle('Accepts PDF input')).not.toBeNull();
+    expect(within(capableRow).getByTitle('Supports reasoning')).not.toBeNull();
+    expect(within(capableRow).getByTitle('Supports tool calling')).not.toBeNull();
+
+    // Show-if-capable only: no struck-through or placeholder markers.
+    const partialRow = screen.getByTestId('combobox-option-glm-5.3');
+    expect(within(partialRow).queryByTitle('Accepts image input')).toBeNull();
+    expect(within(partialRow).queryByTitle('Accepts PDF input')).toBeNull();
+    expect(within(partialRow).getByTitle('Supports reasoning')).not.toBeNull();
+    expect(within(partialRow).getByTitle('Supports tool calling')).not.toBeNull();
+
+    const unknownRow = screen.getByTestId('combobox-option-unknown-model');
+    expect(within(unknownRow).queryByTitle('Accepts image input')).toBeNull();
+    expect(within(unknownRow).queryByTitle('Accepts PDF input')).toBeNull();
+    expect(within(unknownRow).queryByTitle('Supports reasoning')).toBeNull();
+    expect(within(unknownRow).queryByTitle('Supports tool calling')).toBeNull();
   });
 });

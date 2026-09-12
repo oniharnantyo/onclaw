@@ -61,8 +61,11 @@ export const useAuthStore = create<AuthState>((set) => ({
         if (activeId) {
           useStore.getState().updateTenant(activeId, (t) => t);
           // Fetch the workspace's agents so chat routes (/ and /c) land on the
-          // chat page instead of the no-agents onboarding screen.
+          // chat page instead of the no-agents onboarding screen, and hydrate
+          // the server's channels (server-only, never seeded — change
+          // integrate-agent-channels).
           void useStore.getState().loadAgents(activeId);
+          void useStore.getState().loadChannels(activeId);
         }
       }
     } catch (err: unknown) {
@@ -108,6 +111,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         if (activeId) {
           useStore.getState().updateTenant(activeId, (t) => t);
           void useStore.getState().loadAgents(activeId);
+          void useStore.getState().loadChannels(activeId);
         }
       }
 

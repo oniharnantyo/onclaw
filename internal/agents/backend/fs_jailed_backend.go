@@ -35,16 +35,39 @@ import (
 // prefix into the primary root instead of rejecting them as host paths.
 const DefaultMountPoint = "/workspace"
 
+// ProjectMountPoint is the absolute prefix a channel's shared project space
+// is mounted read-write at (channel-teams D5).
+const ProjectMountPoint = "/project"
+
+// WritableMount pairs a model-facing absolute mount prefix with the host
+// directory it exposes read-write (channel-teams D5: the channel's shared
+// /project). The same escape/symlink rules as the primary root apply.
+type WritableMount struct {
+	// Mount is the model-facing absolute prefix (e.g. /project).
+	Mount string
+	// Dir is the existing host directory the prefix maps onto.
+	Dir string
+}
+
+// extraRoot is one non-primary jail root. Read-only extra roots (the
+// workspace skills tree, design D6) carry an empty mount: they extend
+// absolute-path reachability for reads only. A root with a mount prefix is
+// additionally writable under that prefix — the same extra-roots mechanism
+// with the read-write state carried by the prefix (channel-teams D5).
+type extraRoot struct {
+	dir   string // resolved absolute host directory
+	mount string // model-facing absolute prefix; "" = read-only reachability
+}
+
 // fsJailedBackend is a filesystem backend that restricts all operations to a root directory.
 // It prevents path escape via .., absolute paths, or symlinks pointing outside the jail.
-// Optional extra read-only roots (design D6: the workspace skills tree) extend
-// reachability for read operations: absolute paths resolving under any root are
-// readable, while Write/Edit remain primary-root-only — an agent writing into
-// the skills root could plant a skill that flows workspace-wide.
+// Optional extra roots extend reachability: read-only ones (design D6: the
+// workspace skills tree) for reads by absolute path; mounted ones
+// (channel-teams D5: /project) for reads and writes under their prefix.
 type fsJailedBackend struct {
 	root       string
 	rootAbs    string
-	extraRoots []string
+	extraRoots []extraRoot
 	mount      string
 	mu         sync.RWMutex
 }
@@ -61,6 +84,15 @@ func NewFilesystemJail(root string) (einofs.Backend, error) {
 // exist yet are skipped: the workspace skills tree is absent on fresh
 // workspaces and must not break agent composition.
 func NewFilesystemJailedWithRoots(primary string, extra ...string) (einofs.Backend, error) {
+	return NewFilesystemJailedWithMounts(primary, nil, extra...)
+}
+
+// NewFilesystemJailedWithMounts creates the jail with read-write mounts on
+// top of the primary root and the extra read-only roots. Mount directories
+// must already exist (the project space's Ensure materializes them before
+// composition) — a mounted root is load-bearing, unlike the optional
+// read-only roots, and its absence is a wiring error, not a skip.
+func NewFilesystemJailedWithMounts(primary string, mounts []WritableMount, extra ...string) (einofs.Backend, error) {
 	if primary == "" {
 		return nil, fmt.Errorf("root directory cannot be empty")
 	}
@@ -89,7 +121,39 @@ func NewFilesystemJailedWithRoots(primary string, extra ...string) (einofs.Backe
 	// Ensure root ends without trailing separator for consistent joins
 	resolvedRoot = strings.TrimSuffix(resolvedRoot, string(filepath.Separator))
 
-	extraRoots := make([]string, 0, len(extra))
+	// Validate the writable mounts first so prefix-shape errors surface
+	// before directory I/O errors. prefixes stays parallel to mounts.
+	prefixes := make([]string, 0, len(mounts))
+	for _, m := range mounts {
+		prefix, err := validateMountPrefix(m.Mount, prefixes)
+		if err != nil {
+			return nil, err
+		}
+		prefixes = append(prefixes, prefix)
+	}
+
+	extraRoots := make([]extraRoot, 0, len(mounts)+len(extra))
+	for i, m := range mounts {
+		absDir, err := filepath.Abs(m.Dir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve mount %s directory: %w", prefixes[i], err)
+		}
+		info, err := os.Stat(absDir)
+		if err != nil {
+			return nil, fmt.Errorf("stat mount %s directory: %w", prefixes[i], err)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("mount %s is not a directory: %s", prefixes[i], absDir)
+		}
+		resolved, err := filepath.EvalSymlinks(absDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve symlinks in mount %s: %w", prefixes[i], err)
+		}
+		extraRoots = append(extraRoots, extraRoot{
+			dir:   strings.TrimSuffix(resolved, string(filepath.Separator)),
+			mount: prefixes[i],
+		})
+	}
 	for _, root := range extra {
 		if root == "" {
 			continue
@@ -112,7 +176,9 @@ func NewFilesystemJailedWithRoots(primary string, extra ...string) (einofs.Backe
 		if err != nil {
 			return nil, fmt.Errorf("resolve symlinks in extra root: %w", err)
 		}
-		extraRoots = append(extraRoots, strings.TrimSuffix(resolvedExtra, string(filepath.Separator)))
+		extraRoots = append(extraRoots, extraRoot{
+			dir: strings.TrimSuffix(resolvedExtra, string(filepath.Separator)),
+		})
 	}
 
 	return &fsJailedBackend{
@@ -121,6 +187,28 @@ func NewFilesystemJailedWithRoots(primary string, extra ...string) (einofs.Backe
 		extraRoots: extraRoots,
 		mount:      DefaultMountPoint,
 	}, nil
+}
+
+// validateMountPrefix checks one mount prefix: absolute, no "..", not the
+// primary mount, and neither nesting nor nested in a previously validated
+// mount. It returns the cleaned prefix.
+func validateMountPrefix(mount string, prior []string) (string, error) {
+	if mount == "" {
+		return "", fmt.Errorf("mount prefix cannot be empty")
+	}
+	cleaned := filepath.Clean(mount)
+	if !filepath.IsAbs(cleaned) {
+		return "", fmt.Errorf("mount prefix %q must be an absolute path", mount)
+	}
+	if cleaned == DefaultMountPoint {
+		return "", fmt.Errorf("mount prefix %q shadows the primary mount", mount)
+	}
+	for _, p := range prior {
+		if cleaned == p || strings.HasPrefix(cleaned, p+"/") || strings.HasPrefix(p, cleaned+"/") {
+			return "", fmt.Errorf("mount prefix %q overlaps mount %q", mount, p)
+		}
+	}
+	return cleaned, nil
 }
 
 // unmount maps a mount-scoped path ("/workspace/notes.md") to a root-relative
@@ -135,10 +223,30 @@ func (j *fsJailedBackend) unmount(userPath string) (string, bool) {
 	return "", false
 }
 
+// mountedRoot finds the writable mount whose prefix contains userPath and
+// returns it with the prefix-relative remainder. ok is false outside every
+// mount prefix. Mounted prefixes never overlap each other or the primary
+// mount (validated at construction).
+func (j *fsJailedBackend) mountedRoot(userPath string) (extraRoot, string, bool) {
+	for _, x := range j.extraRoots {
+		if x.mount == "" {
+			continue
+		}
+		if userPath == x.mount {
+			return x, ".", true
+		}
+		if rel := strings.TrimPrefix(userPath, x.mount+"/"); rel != userPath && rel != "" {
+			return x, rel, true
+		}
+	}
+	return extraRoot{}, "", false
+}
+
 // resolvePath resolves a user-provided path for read operations. Relative
 // paths resolve under the primary root; absolute paths are accepted when they
-// resolve (EvalSymlinks) under the primary or any extra read-only root.
-// Returns the absolute, normalized path within the jail roots.
+// resolve (EvalSymlinks) under the primary or any extra root. Mounted roots
+// are additionally reachable at their model-facing prefix. Returns the
+// absolute, normalized path within the jail roots.
 func (j *fsJailedBackend) resolvePath(userPath string) (string, error) {
 	if userPath == "" {
 		return "", fmt.Errorf("path cannot be empty")
@@ -149,11 +257,18 @@ func (j *fsJailedBackend) resolvePath(userPath string) (string, error) {
 		return "", fmt.Errorf("path escape attempt: %q contains \"..\"", userPath)
 	}
 
+	// Mounted roots ("/project/...") resolve under their host directory with
+	// the same containment rules as the primary mount: a read may land in any
+	// jail root, an escape in none.
+	if x, rel, ok := j.mountedRoot(userPath); ok {
+		return j.resolveUnder(x.dir, rel, j.isWithinAnyRoot)
+	}
+
 	// Mount-scoped paths ("/workspace/...") resolve under the primary root
 	// no matter where the jail lives on the host — the tools contract
 	// absolute paths, and this is the mount the model is told about.
 	if rel, ok := j.unmount(userPath); ok {
-		return j.resolveRelative(rel, j.isWithinAnyRoot)
+		return j.resolveUnder(j.rootAbs, rel, j.isWithinAnyRoot)
 	}
 
 	// Absolute paths: resolve symlinks and accept when under any root.
@@ -169,11 +284,12 @@ func (j *fsJailedBackend) resolvePath(userPath string) (string, error) {
 		return resolved, nil
 	}
 
-	return j.resolveRelative(userPath, j.isWithinAnyRoot)
+	return j.resolveUnder(j.rootAbs, userPath, j.isWithinAnyRoot)
 }
 
 // resolveWritablePath resolves a user-provided path for write operations:
-// primary root only, absolute paths rejected, extra roots unreachable.
+// the primary root and writable mounts only, raw host absolute paths
+// rejected, read-only extra roots unreachable.
 func (j *fsJailedBackend) resolveWritablePath(userPath string) (string, error) {
 	if userPath == "" {
 		return "", fmt.Errorf("path cannot be empty")
@@ -184,11 +300,20 @@ func (j *fsJailedBackend) resolveWritablePath(userPath string) (string, error) {
 		return "", fmt.Errorf("path escape attempt: %q contains \"..\"", userPath)
 	}
 
-	// Mount-scoped paths are writable under the primary root. Raw host
-	// absolute paths stay rejected: extra roots are read-only, and the jail
-	// must not become writable just because a path exists on the host.
+	// Mounted roots are writable at their prefix, contained to their own
+	// host directory (channel-teams D5: /project is read-write for member
+	// agents). Raw host absolute paths stay rejected: read-only extra roots
+	// stay unwritable, and the jail must not become writable just because a
+	// path exists on the host.
+	if x, rel, ok := j.mountedRoot(userPath); ok {
+		return j.resolveUnder(x.dir, rel, func(path string) bool {
+			return isWithinRoot(x.dir, path)
+		})
+	}
+
+	// Mount-scoped paths are writable under the primary root.
 	if rel, ok := j.unmount(userPath); ok {
-		return j.resolveRelative(rel, j.isWithinPrimary)
+		return j.resolveUnder(j.rootAbs, rel, j.isWithinPrimary)
 	}
 
 	// Absolute paths are never writable (extra roots are read-only).
@@ -196,16 +321,18 @@ func (j *fsJailedBackend) resolveWritablePath(userPath string) (string, error) {
 		return "", fmt.Errorf("absolute paths are not allowed: %q (write under %s instead)", userPath, j.mount)
 	}
 
-	return j.resolveRelative(userPath, j.isWithinPrimary)
+	return j.resolveUnder(j.rootAbs, userPath, j.isWithinPrimary)
 }
 
-// resolveRelative resolves a relative path against the primary root, walking
-// up to the first existing parent for not-yet-created targets, and validating
-// resolved symlinks with the given containment predicate.
-func (j *fsJailedBackend) resolveRelative(userPath string, within func(string) bool) (string, error) {
+// resolveUnder resolves a relative path against the given jail root,
+// walking up to the first existing parent for not-yet-created targets, and
+// validating resolved symlinks with the given containment predicate. The
+// primary root and the writable mounts share it (the read-only extra roots
+// are never resolved relatively — no prefix maps onto them).
+func (j *fsJailedBackend) resolveUnder(rootAbs, userPath string, within func(string) bool) (string, error) {
 	// Clean the path and join with root
 	cleanPath := filepath.Clean(userPath)
-	fullPath := filepath.Join(j.rootAbs, cleanPath)
+	fullPath := filepath.Join(rootAbs, cleanPath)
 
 	// Resolve symlinks to their target
 	resolved, err := filepath.EvalSymlinks(fullPath)
@@ -261,8 +388,8 @@ func (j *fsJailedBackend) isWithinAnyRoot(path string) bool {
 	if j.isWithinPrimary(path) {
 		return true
 	}
-	for _, root := range j.extraRoots {
-		if isWithinRoot(root, path) {
+	for _, x := range j.extraRoots {
+		if isWithinRoot(x.dir, path) {
 			return true
 		}
 	}

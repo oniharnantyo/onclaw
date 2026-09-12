@@ -384,7 +384,7 @@ describe('store/auth', () => {
             channels: [],
             people: [],
             threads: {},
-            cron: [],
+            schedules: [],
             runs: [],
           } as any,
         },

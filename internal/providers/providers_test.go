@@ -789,3 +789,34 @@ func TestOpenRouterProvider_ListModels(t *testing.T) {
 		}
 	})
 }
+
+func TestSuggestCatalogProvider(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		want    string
+	}{
+		{"z.ai", "https://api.z.ai/api/paas/v4", "zai-coding-plan"},
+		{"zhipuai", "https://api.zhipuai.cn/api/paas/v4", "zhipuai-coding-plan"},
+		{"openrouter", "https://openrouter.ai/api/v1", "openrouter"},
+		{"deepseek", "https://api.deepseek.com/v1", "deepseek"},
+		{"mistral", "https://api.mistral.ai/v1", "mistral"},
+		{"groq", "https://api.groq.com/openai/v1", "groq"},
+		{"fireworks", "https://api.fireworks.ai/inference/v1", "fireworks-ai"},
+		// Matching keys on the hostname alone: scheme, port, path, and case
+		// are all ignored.
+		{"host case and port", "http://API.Z.AI:8443/v1", "zai-coding-plan"},
+		{"trailing slash", "https://api.deepseek.com/", "deepseek"},
+		{"unknown host", "https://llm.corp.example/internal/v1", ""},
+		{"empty", "", ""},
+		{"not a url", "not a url", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := providers.SuggestCatalogProvider(tt.baseURL); got != tt.want {
+				t.Errorf("SuggestCatalogProvider(%q) = %q, want %q", tt.baseURL, got, tt.want)
+			}
+		})
+	}
+}

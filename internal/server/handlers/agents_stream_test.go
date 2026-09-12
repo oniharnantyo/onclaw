@@ -151,7 +151,7 @@ func newAgentStreamTestEnv(t *testing.T, runner *fakeStreamingRunner) *gin.Engin
 		t.Fatalf("create agent: %v", err)
 	}
 
-	h := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), []byte("01234567890123456789012345678901"), nil, nil, nil, t.TempDir(), runner, runner)
+	h := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), st.AgentSessions(), []byte("01234567890123456789012345678901"), nil, nil, nil, t.TempDir(), runner, runner)
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {

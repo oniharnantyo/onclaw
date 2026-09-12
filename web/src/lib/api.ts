@@ -179,6 +179,10 @@ export interface ApiProviderConfig {
   key_set: boolean;
   key_hint: string;
   enabled: boolean;
+  /** Community-catalog provider id stored on compatible gateways (D3 hint). */
+  catalog_provider?: string;
+  /** Host-derived suggestion; empty when not derivable. */
+  suggested_catalog_provider?: string;
   created_at: string;
   updated_at: string;
 }
@@ -186,6 +190,37 @@ export interface ApiProviderConfig {
 export interface ApiProviderVerifyResult {
   ok: boolean;
   error?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Workspace blob-storage configuration (attachments design D16): the settings
+// Storage pane backend. The secret is write-only — reads carry only the
+// last-4 `secret_hint`, and a PUT/probe with an empty or hint-echoed
+// `secret_access_key` keeps the stored secret server-side. The default when
+// no row exists is `{"driver": "local"}`.
+// ---------------------------------------------------------------------------
+
+export interface ApiWorkspaceStorageConfig {
+  driver: 'local' | 's3';
+  endpoint?: string;
+  region?: string;
+  bucket?: string;
+  access_key_id?: string;
+  use_path_style?: boolean;
+  /** Last-4 of the stored secret; present on stored s3 configs only. */
+  secret_hint?: string;
+  updated_at?: string;
+}
+
+export interface WorkspaceStoragePayload {
+  driver: 'local' | 's3';
+  endpoint?: string;
+  region?: string;
+  bucket?: string;
+  access_key_id?: string;
+  /** Write-only: empty or the masked hint keeps the stored secret. */
+  secret_access_key?: string;
+  use_path_style?: boolean;
 }
 
 export interface ApiToolConfigFieldOption {
@@ -267,6 +302,13 @@ export interface ApiAgent {
   effective_context_window?: number;
   /** Token count at which the backend summarizes — the meter's warn threshold. */
   summarization_trigger_tokens?: number;
+  /** Server-computed read-only input-modality capability of the agent's
+   * model (fix-image-attachment-lane D5): tri-state per kind, `unknown`
+   * when the catalog cannot answer. */
+  input_modalities?: {
+    image: 'supported' | 'unsupported' | 'unknown';
+    pdf: 'supported' | 'unsupported' | 'unknown';
+  };
   tools: string[];
   /** Agent-tier skill names when the server lists them; never a payload field. */
   skills?: string[];
@@ -410,6 +452,12 @@ export interface ApiModel {
   efforts?: string[];
   supports_temperature?: boolean;
   context_limit?: number | null;
+  /** Capability flags from the model catalog — true ONLY when the catalog
+   * affirmatively supports the capability; absent/false otherwise. */
+  image_input?: boolean;
+  pdf_input?: boolean;
+  reasoning?: boolean;
+  tool_call?: boolean;
 }
 
 export interface ApiModelsResult {
@@ -680,6 +728,106 @@ export interface ApiHookTestPayload extends ApiHookPayload {
   overrides?: ApiHookTestOverrides;
 }
 
+// ---------------------------------------------------------------------------
+// Agent channels (change integrate-agent-channels): team rooms where humans
+// and agents share one attributed feed. Wire shapes mirror the server's
+// snake_case JSON (domain.Channel / ChannelMember / ChannelMessage).
+// ---------------------------------------------------------------------------
+
+/** Discriminates the two roster/author kinds sharing a channel. */
+export type ApiChannelMemberType = 'user' | 'agent';
+
+export interface ApiChannel {
+  id: string;
+  workspace_id: string;
+  /** Display name ("Production Ops"). */
+  name: string;
+  /** URL + #handle form ("ops"); workspace-unique, case-insensitive. */
+  slug: string;
+  purpose: string;
+  /** Freeform CHANNEL.md section (design D8 — textarea exception). */
+  conventions: string;
+  created_by?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** One heterogeneous roster row (design D5): exactly one of user_id/agent_id.
+ * Wire: the roster read view — display_name/handle are resolved server-side
+ * (agent name+slug, user name+dashed handle) and the raw row's workspace_id
+ * never crosses the wire. */
+export interface ApiChannelMember {
+  id: string;
+  channel_id: string;
+  member_type: ApiChannelMemberType;
+  user_id?: string;
+  agent_id?: string;
+  /** Resolved display name — the agent's name or the user's name. */
+  display_name: string;
+  /** Resolved @handle — agent slug / dashed user name; the mention key. */
+  handle: string;
+  specialization: string;
+  added_at: string;
+}
+
+/** One resolved @handle reference on a message's mentions list. */
+export interface ApiChannelMention {
+  type: ApiChannelMemberType;
+  id: string;
+  handle: string;
+}
+
+/** Run footprint written onto agent-authored feed messages at run finish (D9). */
+export interface ApiChannelRunSummary {
+  tools?: Record<string, number>;
+  duration_ms: number;
+}
+
+export interface ApiChannelMessage {
+  id: string;
+  workspace_id: string;
+  channel_id: string;
+  /** Monotonic per-channel feed cursor — the SSE dedup + gap-recovery key. */
+  seq: number;
+  author_type: ApiChannelMemberType;
+  author_user_id?: string;
+  author_agent_id?: string;
+  body: string;
+  mentions: ApiChannelMention[];
+  session_id?: string | null;
+  turn_id?: string | null;
+  run_summary?: ApiChannelRunSummary | null;
+  root_message_id?: string | null;
+  chain_depth: number;
+  created_at: string;
+}
+
+export interface CreateChannelPayload {
+  name: string;
+  slug: string;
+  purpose?: string;
+  conventions?: string;
+}
+
+export type PatchChannelPayload = Partial<CreateChannelPayload>;
+
+export interface AddChannelMemberPayload {
+  member_type: ApiChannelMemberType;
+  /** Required when member_type is 'user'. */
+  user_id?: string;
+  /** Required when member_type is 'agent'. */
+  agent_id?: string;
+  specialization?: string;
+}
+
+export interface PatchChannelMemberPayload {
+  specialization: string;
+}
+
+export interface PostChannelMessagePayload {
+  body: string;
+}
+
 
 type UnauthorizedHandler = () => void;
 const unauthorizedHandlers = new Set<UnauthorizedHandler>();
@@ -860,6 +1008,26 @@ export const api = {
         body,
       }),
   },
+  // Workspace blob-storage configuration (storage pane; Owner/Admin gated
+  // server-side — Members get 403 on all three). `probe` is the Test
+  // connection affordance: verifies connectivity for the submitted values and
+  // persists nothing.
+  storage: {
+    get: (ws: string) =>
+      request<ApiWorkspaceStorageConfig>(`/workspaces/${encodeURIComponent(ws)}/storage`, {
+        method: 'GET',
+      }),
+    update: (ws: string, body: WorkspaceStoragePayload) =>
+      request<ApiWorkspaceStorageConfig>(`/workspaces/${encodeURIComponent(ws)}/storage`, {
+        method: 'PUT',
+        body,
+      }),
+    probe: (ws: string, body: WorkspaceStoragePayload) =>
+      request<{ ok: boolean }>(`/workspaces/${encodeURIComponent(ws)}/storage/probe`, {
+        method: 'POST',
+        body,
+      }),
+  },
   members: {
     list: (ws: string) =>
       request<{ members: ApiMemberItem[] }>(`/workspaces/${encodeURIComponent(ws)}/members`, {
@@ -907,7 +1075,7 @@ export const api = {
       }),
     create: (
       ws: string,
-      body: { type: string; name: string; base_url?: string; key?: string; enabled?: boolean }
+      body: { type: string; name: string; base_url?: string; key?: string; enabled?: boolean; catalog_provider?: string }
     ) =>
       request<{ provider: ApiProviderConfig }>(`/workspaces/${encodeURIComponent(ws)}/providers`, {
         method: 'POST',
@@ -916,7 +1084,7 @@ export const api = {
     patch: (
       ws: string,
       id: string,
-      body: { name?: string; base_url?: string; key?: string; enabled?: boolean }
+      body: { name?: string; base_url?: string; key?: string; enabled?: boolean; catalog_provider?: string }
     ) =>
       request<{ provider: ApiProviderConfig }>(`/workspaces/${encodeURIComponent(ws)}/providers/${encodeURIComponent(id)}`, {
         method: 'PATCH',
@@ -934,7 +1102,9 @@ export const api = {
       request<ApiModelsResult>(`/workspaces/${encodeURIComponent(ws)}/providers/${encodeURIComponent(id)}/models`, {
         method: 'GET',
       }),
-    modelsPreview: (body: { type: string; base_url?: string; key?: string; api_key?: string }) =>
+    /** Optional catalog-mapping hint (D3) so compatible gateways resolve
+     * against the community catalog's provider entries. */
+    modelsPreview: (body: { type: string; base_url?: string; key?: string; api_key?: string; catalog_provider?: string }) =>
       request<ApiModelsResult>('/providers/models-preview', {
         method: 'POST',
         body,
@@ -1018,6 +1188,72 @@ export const api = {
         `/workspaces/${encodeURIComponent(ws)}/hooks/${encodeURIComponent(id)}/executions?limit=${limit}`,
         { method: 'GET' }
       ),
+  },
+  // Agent channels (integrate-agent-channels D11): workspace-scoped CRUD,
+  // the heterogeneous human+agent roster, and the seq-cursored feed.
+  // Gating is server-side (channels.read / channels.write).
+  channels: {
+    list: (ws: string) =>
+      request<{ channels: ApiChannel[] }>(`/workspaces/${encodeURIComponent(ws)}/channels`, {
+        method: 'GET',
+      }),
+    create: (ws: string, body: CreateChannelPayload) =>
+      request<{ channel: ApiChannel }>(`/workspaces/${encodeURIComponent(ws)}/channels`, {
+        method: 'POST',
+        body,
+      }),
+    get: (ws: string, id: string) =>
+      request<{ channel: ApiChannel }>(`/workspaces/${encodeURIComponent(ws)}/channels/${encodeURIComponent(id)}`, {
+        method: 'GET',
+      }),
+    update: (ws: string, id: string, body: PatchChannelPayload) =>
+      request<{ channel: ApiChannel }>(`/workspaces/${encodeURIComponent(ws)}/channels/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body,
+      }),
+    delete: (ws: string, id: string) =>
+      request<void>(`/workspaces/${encodeURIComponent(ws)}/channels/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      }),
+    // One heterogeneous roster (humans + agents) consumed as a unit (design D5).
+    members: {
+      list: (ws: string, id: string) =>
+        request<{ members: ApiChannelMember[] }>(`/workspaces/${encodeURIComponent(ws)}/channels/${encodeURIComponent(id)}/members`, {
+          method: 'GET',
+        }),
+      add: (ws: string, id: string, body: AddChannelMemberPayload) =>
+        request<{ member: ApiChannelMember }>(`/workspaces/${encodeURIComponent(ws)}/channels/${encodeURIComponent(id)}/members`, {
+          method: 'POST',
+          body,
+        }),
+      patch: (ws: string, id: string, mid: string, body: PatchChannelMemberPayload) =>
+        request<{ member: ApiChannelMember }>(
+          `/workspaces/${encodeURIComponent(ws)}/channels/${encodeURIComponent(id)}/members/${encodeURIComponent(mid)}`,
+          { method: 'PATCH', body }
+        ),
+      remove: (ws: string, id: string, mid: string) =>
+        request<void>(`/workspaces/${encodeURIComponent(ws)}/channels/${encodeURIComponent(id)}/members/${encodeURIComponent(mid)}`, {
+          method: 'DELETE',
+        }),
+    },
+    messages: {
+      // Cursor list on seq: `after` excludes the boundary row; ascending order.
+      list: (ws: string, id: string, opts?: { after?: number; limit?: number }) => {
+        const params = new URLSearchParams();
+        if (opts?.after !== undefined) params.set('after', String(opts.after));
+        if (opts?.limit !== undefined) params.set('limit', String(opts.limit));
+        const qs = params.toString();
+        return request<{ messages: ApiChannelMessage[] }>(
+          `/workspaces/${encodeURIComponent(ws)}/channels/${encodeURIComponent(id)}/messages${qs ? `?${qs}` : ''}`,
+          { method: 'GET' }
+        );
+      },
+      post: (ws: string, id: string, body: PostChannelMessagePayload) =>
+        request<{ message: ApiChannelMessage }>(`/workspaces/${encodeURIComponent(ws)}/channels/${encodeURIComponent(id)}/messages`, {
+          method: 'POST',
+          body,
+        }),
+    },
   },
   agents: {
     list: (ws: string) =>
@@ -1320,6 +1556,37 @@ export const api = {
     },
   },
 };
+
+// ---------------------------------------------------------------------------
+// Agent session index (change agent-session-index, D3): per-user session rows
+// for one agent, delivered newest-activity-first; `running` marks a live run
+// on that session right now (run-manager intersection, server-side).
+// ---------------------------------------------------------------------------
+
+export interface ApiAgentSession {
+  id: string;
+  session_id: string;
+  title: string;
+  created_at: string;
+  last_active_at: string;
+  running: boolean;
+}
+
+export function listAgentSessions(slug: string, agentSlug: string): Promise<{ sessions: ApiAgentSession[] }> {
+  return request(
+    `/workspaces/${encodeURIComponent(slug)}/agents/${encodeURIComponent(agentSlug)}/sessions`,
+    { method: 'GET' }
+  );
+}
+
+/** Soft-deletes the caller's own session row; foreign-owned or absent rows
+ * answer 404 (indistinguishable by design — no existence leak). */
+export function deleteAgentSession(slug: string, agentSlug: string, sessionId: string): Promise<void> {
+  return request<void>(
+    `/workspaces/${encodeURIComponent(slug)}/agents/${encodeURIComponent(agentSlug)}/sessions/${encodeURIComponent(sessionId)}`,
+    { method: 'DELETE' }
+  );
+}
 
 export async function pollAgentPromptsStatus(
   workspaceId: string,

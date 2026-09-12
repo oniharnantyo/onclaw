@@ -82,18 +82,38 @@ type UsagePayload struct {
 	FinalInputTokens int `json:"final_input_tokens,omitempty"`
 }
 
+// AttachmentMeta is the transcript attachment identity of one user-message
+// attachment (attachments design D10): name, media type, size, and the
+// capability URL. The JSON tags are the web contract — identical for the
+// live stream and the hydrated read path.
+type AttachmentMeta struct {
+	Name     string `json:"name"`
+	MimeType string `json:"mime"`
+	Size     int64  `json:"size"`
+	URL      string `json:"url"`
+}
+
 // CompletedMessage represents a fully assembled assistant message.
 type CompletedMessage struct {
 	Role             string            `json:"role"`
 	Content          string            `json:"content"`
 	ReasoningContent string            `json:"reasoning_content,omitempty"`
 	ToolCalls        []ToolCallPayload `json:"tool_calls,omitempty"`
+	// Attachments carries the message's attachment metadata when it carried
+	// attachments (design D10); nil otherwise.
+	Attachments []AttachmentMeta `json:"attachments,omitempty"`
 }
 
 // CompactionPayload carries context window compaction metadata.
 type CompactionPayload struct {
 	Summary     string `json:"summary,omitempty"`
 	OffloadPath string `json:"offload_path,omitempty"`
+	// TokensBefore/TokensAfter are display-only estimates of the window size
+	// around the replacement (chat-compact-command D5, ~4 chars/token). They
+	// feed the compaction divider's "154k → 9.2k" copy — never billing or
+	// trigger math.
+	TokensBefore int `json:"tokens_before"`
+	TokensAfter  int `json:"tokens_after"`
 }
 
 // PromptBlockedPayload carries a hook-blocked prompt notice: which hook
@@ -120,8 +140,26 @@ type promptBlockedEvent struct {
 	Reason string `json:"reason"`
 }
 
+// sessionExtraKeyCompaction is the Extra key under which a window-replacement
+// session event carries its display-only token estimates (chat-compact-command
+// D4/D5). The stock adk.SessionEventMessagesReplaced record has no estimate
+// fields, and Extra is ignored by ADK replay — the runner stamps the estimates
+// onto the record it appends so a hydrated History projection fills the same
+// CompactionPayload the live stream delivered.
+const sessionExtraKeyCompaction = "onclaw_compaction_estimates"
+
+// compactionEstimates is the durable Extra payload behind
+// sessionExtraKeyCompaction. Registered below: Extra is a map[string]any, and
+// the ADK serializer reconstructs registered concrete types stored behind
+// interface fields.
+type compactionEstimates struct {
+	TokensBefore int `json:"tokens_before"`
+	TokensAfter  int `json:"tokens_after"`
+}
+
 func init() {
 	schema.Register[promptBlockedEvent]()
+	schema.Register[compactionEstimates]()
 }
 
 // TranscriptEvent represents a single domain-level event in an agent turn transcript.
@@ -144,6 +182,17 @@ type TranscriptEvent struct {
 	Usage          *UsagePayload         `json:"usage,omitempty"`
 }
 
+// AttachmentRef identifies one attachment carried on a turn (attachments
+// design D9). Lane is one of the attachment lane values: "inline-image",
+// "inline-pdf", "inline-text", "drop".
+type AttachmentRef struct {
+	ID       string
+	Name     string
+	MimeType string
+	Lane     string
+	Size     int64
+}
+
 // ExecRequest contains all parameters required to execute an agent turn.
 type ExecRequest struct {
 	WorkspaceID string
@@ -153,32 +202,79 @@ type ExecRequest struct {
 	Input       string
 
 	// Origin identifies what triggered the run (hooks design.md D1):
-	// OriginUser, OriginCron, or OriginChannel. Empty selects OriginUser —
-	// every current caller is user-initiated; the schedule runtime sets
-	// OriginCron when a cron run is submitted.
+	// OriginUser, OriginScheduler, or OriginChannel. Empty selects
+	// OriginUser — every current caller is user-initiated; the scheduler
+	// service sets OriginScheduler when a scheduled run is submitted.
 	Origin string
+
+	// Channel-run coordinates (OriginChannel). ChannelID is required when
+	// Origin normalizes to OriginChannel; RootMessageID/ChainDepth carry the
+	// summon chain state (integrate-agent-channels D4/D8) and are owned by
+	// the channel chokepoint that submits the run.
+	ChannelID     string
+	RootMessageID string
+	ChainDepth    int
+
+	// WorkSessionID links the run to the channel's work session it was
+	// minted for (channel-teams D1/D3); "" outside sessions. Set only by the
+	// channel chokepoint, for runs whose hop was billed against the session.
+	WorkSessionID string
 
 	// AllowedTools replaces the agent's tool allowlist for this turn when
 	// non-nil (an empty slice runs the turn with no tools). nil keeps the
 	// agent's configured allowlist. Callers that narrow must intersect with
 	// the agent allowlist themselves — a request can narrow, never widen.
 	AllowedTools []string
+
+	// Command names a built-in slash command executed as a turn
+	// (chat-compact-command D2): CommandCompact compacts the session's
+	// context window, with Input carrying the summarizer's focus text
+	// instead of a user prompt. Optional — empty (or any unrecognized value,
+	// which must never be an error) runs an ordinary model turn.
+	Command string
+
+	// Attachments carries the attachments referenced by this turn's input
+	// (attachments design D9). nil for scheduler/channel/compact runs — those
+	// callers are untouched. Only drop-lane refs are materialized into the
+	// run-scoped read-only mount (D17); inline lanes are resolved by the
+	// message-construction layer instead.
+	Attachments []AttachmentRef
+
+	// SchedulerNoReply teaches the unattended-run contract the literal suppression
+	// token for channel-target scheduler runs ("NO_REPLY"); empty for thread
+	// targets (the contract then asks for a plain "Nothing to report."). NonEmpty
+	// only when Origin normalizes to OriginScheduler.
+	SchedulerNoReply string
 }
 
 // Run origins (hooks design.md D1). ExecRequest.Origin carries one; empty
 // selects OriginUser.
 const (
-	OriginUser    = "user"
-	OriginCron    = "cron"
-	OriginChannel = "channel"
+	OriginUser      = "user"
+	OriginScheduler = "scheduler"
+	OriginChannel   = "channel"
 )
+
+// Built-in slash commands executed as turns (chat-compact-command D2).
+// ExecRequest.Command carries one; empty selects a normal model turn.
+const CommandCompact = "compact"
+
+// normalizeCommand maps a request's command onto the fixed value set: only
+// the documented CommandCompact branches to a command turn, anything else
+// (including empty) is a normal model turn — unknown values are not errors.
+func normalizeCommand(command string) string {
+	if command == CommandCompact {
+		return CommandCompact
+	}
+	return ""
+}
 
 // normalizeOrigin maps a request's origin onto the fixed D1 value set: the
 // documented values pass through, anything else (including empty) is
 // user-initiated.
 func normalizeOrigin(origin string) string {
 	switch origin {
-	case OriginCron, OriginChannel:
+	case OriginScheduler, OriginChannel:
 		return origin
 	default:
 		return OriginUser
@@ -199,17 +295,23 @@ func (r ExecRequest) Validate() error {
 	if r.UserID == "" {
 		return errors.New("exec request: user_id is required")
 	}
+	if normalizeOrigin(r.Origin) == OriginChannel && r.ChannelID == "" {
+		return errors.New("exec request: channel_id is required for channel runs")
+	}
 	return nil
 }
 
 // extractAgenticText extracts the text content from an AgenticMessage's ContentBlocks.
+// Blocks marked AttachmentPointerExtraKey (drop-lane pointer notes and the
+// model-time stale-attachment placeholders, attachments design D8) are
+// model-facing plumbing and never part of the visible text.
 func extractAgenticText(msg *schema.AgenticMessage) string {
 	if msg == nil {
 		return ""
 	}
 	var sb []byte
 	for _, block := range msg.ContentBlocks {
-		if block == nil {
+		if block == nil || isAttachmentPointerNote(block) {
 			continue
 		}
 		if block.AssistantGenText != nil {

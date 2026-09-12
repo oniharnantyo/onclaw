@@ -25,9 +25,16 @@ const sampleCatalogJSON = `{
         "id": "gpt-4o",
         "name": "GPT-4o",
         "temperature": true,
+        "attachment": true,
+        "reasoning": false,
+        "tool_call": true,
         "limit": {
           "context": 128000,
           "output": 16384
+        },
+        "modalities": {
+          "input": ["text", "image"],
+          "output": ["text"]
         },
         "reasoning_options": [
           {
@@ -584,25 +591,25 @@ func TestResolveEfforts(t *testing.T) {
 	})
 
 	// Case 1: Catalog knows the model with effort values (gpt-4o -> [minimal, low, medium, high])
-	eff1 := svc.ResolveEfforts(ctx, providers.TypeOpenAI, "gpt-4o")
+	eff1 := svc.ResolveEfforts(ctx, providers.TypeOpenAI, "gpt-4o", "")
 	if len(eff1) != 4 || eff1[0] != "minimal" {
 		t.Errorf("ResolveEfforts(openai, gpt-4o) = %v, want [minimal low medium high]", eff1)
 	}
 
 	// Case 2: OpenAI model unknown to catalog -> static floor [low, medium, high]
-	eff2 := svc.ResolveEfforts(ctx, providers.TypeOpenAI, "custom-gateway-model")
+	eff2 := svc.ResolveEfforts(ctx, providers.TypeOpenAI, "custom-gateway-model", "")
 	if len(eff2) != 3 || eff2[0] != "low" {
 		t.Errorf("ResolveEfforts(openai, custom) = %v, want static floor [low medium high]", eff2)
 	}
 
 	// Case 3: OpenAI-compatible -> static floor [low, medium, high]
-	eff3 := svc.ResolveEfforts(ctx, providers.TypeOpenAICompatible, "local-model")
+	eff3 := svc.ResolveEfforts(ctx, providers.TypeOpenAICompatible, "local-model", "")
 	if len(eff3) != 3 || eff3[0] != "low" {
 		t.Errorf("ResolveEfforts(openai-compatible) = %v, want static floor [low medium high]", eff3)
 	}
 
 	// Case 4: Anthropic -> empty floor []
-	eff4 := svc.ResolveEfforts(ctx, providers.TypeAnthropic, "claude-3-5-sonnet-20241022")
+	eff4 := svc.ResolveEfforts(ctx, providers.TypeAnthropic, "claude-3-5-sonnet-20241022", "")
 	if len(eff4) != 0 {
 		t.Errorf("ResolveEfforts(anthropic) = %v, want empty slice", eff4)
 	}
@@ -631,42 +638,451 @@ func TestResolveContextLimit(t *testing.T) {
 	})
 
 	// 1. OpenAI gpt-4o -> published limit 128000
-	cw1 := svc.ResolveContextLimit(ctx, providers.TypeOpenAI, "gpt-4o")
+	cw1 := svc.ResolveContextLimit(ctx, providers.TypeOpenAI, "gpt-4o", "")
 	if cw1 == nil || *cw1 != 128000 {
 		t.Errorf("ResolveContextLimit(openai, gpt-4o) = %v, want 128000", cw1)
 	}
 
 	// 2. OpenAI o1 -> model known but no limit.context published -> returns nil
-	cw2 := svc.ResolveContextLimit(ctx, providers.TypeOpenAI, "o1")
+	cw2 := svc.ResolveContextLimit(ctx, providers.TypeOpenAI, "o1", "")
 	if cw2 != nil {
 		t.Errorf("ResolveContextLimit(openai, o1) = %v, want nil", cw2)
 	}
 
 	// 3. Anthropic claude-3-5-sonnet-20241022 -> published limit 200000
-	cw3 := svc.ResolveContextLimit(ctx, providers.TypeAnthropic, "claude-3-5-sonnet-20241022")
+	cw3 := svc.ResolveContextLimit(ctx, providers.TypeAnthropic, "claude-3-5-sonnet-20241022", "")
 	if cw3 == nil || *cw3 != 200000 {
 		t.Errorf("ResolveContextLimit(anthropic, claude-3-5-sonnet) = %v, want 200000", cw3)
 	}
 
 	// 4. Compatible provider types (openai-compatible, anthropic-compatible) -> resolve nothing (return nil)
-	cwCompatOpenAI := svc.ResolveContextLimit(ctx, providers.TypeOpenAICompatible, "gpt-4o")
+	cwCompatOpenAI := svc.ResolveContextLimit(ctx, providers.TypeOpenAICompatible, "gpt-4o", "")
 	if cwCompatOpenAI != nil {
 		t.Errorf("ResolveContextLimit(openai-compatible, gpt-4o) = %v, want nil", cwCompatOpenAI)
 	}
 
-	cwCompatAnthropic := svc.ResolveContextLimit(ctx, providers.TypeAnthropicCompatible, "claude-3-5-sonnet-20241022")
+	cwCompatAnthropic := svc.ResolveContextLimit(ctx, providers.TypeAnthropicCompatible, "claude-3-5-sonnet-20241022", "")
 	if cwCompatAnthropic != nil {
 		t.Errorf("ResolveContextLimit(anthropic-compatible, claude-3-5-sonnet) = %v, want nil", cwCompatAnthropic)
 	}
 
 	// 5. Unknown model / unknown provider
-	cwUnknownModel := svc.ResolveContextLimit(ctx, providers.TypeOpenAI, "non-existent-model")
+	cwUnknownModel := svc.ResolveContextLimit(ctx, providers.TypeOpenAI, "non-existent-model", "")
 	if cwUnknownModel != nil {
 		t.Errorf("ResolveContextLimit(openai, non-existent) = %v, want nil", cwUnknownModel)
 	}
 
-	cwUnknownProvider := svc.ResolveContextLimit(ctx, "unknown-provider", "gpt-4o")
+	cwUnknownProvider := svc.ResolveContextLimit(ctx, "unknown-provider", "gpt-4o", "")
 	if cwUnknownProvider != nil {
 		t.Errorf("ResolveContextLimit(unknown-provider, gpt-4o) = %v, want nil", cwUnknownProvider)
+	}
+}
+
+// modalityCatalogJSON mirrors real models.dev entries (2026-09-11 cache):
+// zai-coding-plan/glm-5.3-flash lists input modalities text/image/video/pdf
+// while zai-coding-plan/glm-5.3 is text-only; textgateway hosts the SAME
+// glm-5.3-flash id with a text-only input list (provider scoping).
+const modalityCatalogJSON = `{
+  "zai-coding-plan": {
+    "id": "zai-coding-plan",
+    "name": "Z.ai Coding Plan",
+    "models": {
+      "glm-5.3-flash": {
+        "id": "glm-5.3-flash",
+        "name": "GLM-5.3-Flash",
+        "attachment": true,
+        "reasoning": true,
+        "tool_call": true,
+        "limit": {"context": 200000, "output": 131072},
+        "modalities": {"input": ["text", "image", "video", "pdf"], "output": ["text"]},
+        "reasoning_options": [{"type": "effort", "values": ["low", "high", "max"]}]
+      },
+      "glm-5.3": {
+        "id": "glm-5.3",
+        "name": "GLM-5.3",
+        "attachment": false,
+        "reasoning": true,
+        "tool_call": true,
+        "modalities": {"input": ["text"], "output": ["text"]}
+      }
+    }
+  },
+  "textgateway": {
+    "id": "textgateway",
+    "name": "Text-Only Gateway",
+    "models": {
+      "glm-5.3-flash": {
+        "id": "glm-5.3-flash",
+        "name": "GLM-5.3-Flash (text-only gateway)",
+        "modalities": {"input": ["text"], "output": ["text"]}
+      }
+    }
+  },
+  "attachmentonly": {
+    "id": "attachmentonly",
+    "name": "Attachment Metadata Only",
+    "models": {
+      "legacy-attachment-model": {
+        "id": "legacy-attachment-model",
+        "name": "Legacy Attachment Model",
+        "attachment": true
+      }
+    }
+  }
+}`
+
+func newModalityCatalogService(t *testing.T) *services.ModelCatalog {
+	t.Helper()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(modalityCatalogJSON))
+	}))
+	t.Cleanup(server.Close)
+
+	cacheDir, err := os.MkdirTemp("", "modelcatalog-modality-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(cacheDir) })
+
+	return services.NewModelCatalog(services.ModelCatalogOptions{
+		CacheDir:   cacheDir,
+		CatalogURL: server.URL,
+		TTL:        24 * time.Hour,
+		Client:     server.Client(),
+	})
+}
+
+func TestSupportsInput(t *testing.T) {
+	ctx := context.Background()
+	svc := newModalityCatalogService(t)
+
+	tests := []struct {
+		name         string
+		providerType string
+		hint         string
+		modelID      string
+		kind         domain.InputKind
+		want         domain.InputSupport
+	}{
+		// Capable gateway entry → supported (image and pdf).
+		{"capable gateway image", providers.TypeOpenAICompatible, "zai-coding-plan", "glm-5.3-flash", domain.InputKindImage, domain.InputSupported},
+		{"capable gateway pdf", providers.TypeOpenAICompatible, "zai-coding-plan", "glm-5.3-flash", domain.InputKindPDF, domain.InputSupported},
+
+		// Same gateway, text-only model id → unsupported (entry present, modality absent).
+		{"text-only model image", providers.TypeOpenAICompatible, "zai-coding-plan", "glm-5.3", domain.InputKindImage, domain.InputUnsupported},
+		{"text-only model pdf", providers.TypeOpenAICompatible, "zai-coding-plan", "glm-5.3", domain.InputKindPDF, domain.InputUnsupported},
+
+		// Same model id on a text-only gateway → unsupported: resolution follows
+		// the provider mapping, not the model name.
+		{"same model id text-only gateway image", providers.TypeOpenAICompatible, "textgateway", "glm-5.3-flash", domain.InputKindImage, domain.InputUnsupported},
+
+		// Canonical mapping wins; a hint for a different provider is ignored.
+		{"mapped type ignores hint", providers.TypeOpenAI, "zai-coding-plan", "glm-5.3-flash", domain.InputKindImage, domain.InputUnknown},
+		{"mapped type unknown model", providers.TypeOpenAI, "", "not-in-catalog", domain.InputKindImage, domain.InputUnknown},
+
+		// Unmapped provider without hint → unknown.
+		{"unmapped no hint image", providers.TypeOpenAICompatible, "", "glm-5.3-flash", domain.InputKindImage, domain.InputUnknown},
+		{"unmapped no hint pdf", providers.TypeAnthropicCompatible, "", "glm-5.3-flash", domain.InputKindPDF, domain.InputUnknown},
+		{"unknown provider type", "mystery-type", "", "glm-5.3-flash", domain.InputKindImage, domain.InputUnknown},
+
+		// Hint pointing at an absent catalog provider → unknown.
+		{"absent hint provider", providers.TypeOpenAICompatible, "no-such-provider", "glm-5.3-flash", domain.InputKindImage, domain.InputUnknown},
+
+		// attachment==true fallback: pdf supported when modalities is absent;
+		// image stays unknown (no evidence).
+		{"attachment fallback pdf", providers.TypeOpenAICompatible, "attachmentonly", "legacy-attachment-model", domain.InputKindPDF, domain.InputSupported},
+		{"attachment fallback image", providers.TypeOpenAICompatible, "attachmentonly", "legacy-attachment-model", domain.InputKindImage, domain.InputUnknown},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := svc.SupportsInput(ctx, tt.providerType, tt.hint, tt.modelID, tt.kind)
+			if got != tt.want {
+				t.Errorf("SupportsInput(%q, hint=%q, %q, %q) = %q, want %q", tt.providerType, tt.hint, tt.modelID, tt.kind, got, tt.want)
+			}
+		})
+	}
+
+	// Canonically mapped provider types resolve through their own catalog
+	// entry (sampleCatalogJSON carries gpt-4o with input [text image]).
+	sampleSvc := newSampleCatalogService(t)
+	if got := sampleSvc.SupportsInput(ctx, providers.TypeOpenAI, "", "gpt-4o", domain.InputKindImage); got != domain.InputSupported {
+		t.Errorf("SupportsInput(openai, gpt-4o, image) = %q, want %q", got, domain.InputSupported)
+	}
+	if got := sampleSvc.SupportsInput(ctx, providers.TypeOpenAI, "", "gpt-4o", domain.InputKindPDF); got != domain.InputUnsupported {
+		t.Errorf("SupportsInput(openai, gpt-4o, pdf) = %q, want %q (entry lists text+image only)", got, domain.InputUnsupported)
+	}
+}
+
+// newSampleCatalogService serves sampleCatalogJSON.
+func newSampleCatalogService(t *testing.T) *services.ModelCatalog {
+	t.Helper()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sampleCatalogJSON))
+	}))
+	t.Cleanup(server.Close)
+
+	cacheDir, err := os.MkdirTemp("", "modelcatalog-sample-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(cacheDir) })
+
+	return services.NewModelCatalog(services.ModelCatalogOptions{
+		CacheDir:   cacheDir,
+		CatalogURL: server.URL,
+		TTL:        24 * time.Hour,
+		Client:     server.Client(),
+	})
+}
+
+func TestSupportsInput_CatalogUnavailable(t *testing.T) {
+	ctx := context.Background()
+
+	// Failing server, empty cache dir: FetchCatalog cannot serve anything.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	cacheDir, err := os.MkdirTemp("", "modelcatalog-unavail-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	defer os.RemoveAll(cacheDir)
+
+	svc := services.NewModelCatalog(services.ModelCatalogOptions{
+		CacheDir:   cacheDir,
+		CatalogURL: server.URL,
+		TTL:        24 * time.Hour,
+		Client:     server.Client(),
+	})
+
+	if got := svc.SupportsInput(ctx, providers.TypeOpenAICompatible, "zai-coding-plan", "glm-5.3-flash", domain.InputKindImage); got != domain.InputUnknown {
+		t.Errorf("SupportsInput with unavailable catalog = %q, want %q", got, domain.InputUnknown)
+	}
+}
+
+func TestEffectiveCatalogHint(t *testing.T) {
+	tests := []struct {
+		name         string
+		providerType string
+		storedHint   string
+		baseURL      string
+		want         string
+	}{
+		// Canonical mapping wins: the stored hint is ignored entirely.
+		{"openai ignores hint", providers.TypeOpenAI, "zai-coding-plan", "https://api.z.ai/v1", ""},
+		{"anthropic ignores hint", providers.TypeAnthropic, "openrouter", "https://api.zhipuai.cn/v1", ""},
+		{"openrouter ignores hint", providers.TypeOpenRouter, "deepseek", "https://openrouter.ai/api/v1", ""},
+
+		// Compatible types: stored hint wins over the host suggestion.
+		{"stored hint wins", providers.TypeOpenAICompatible, "zai-coding-plan", "https://api.groq.com/openai/v1", "zai-coding-plan"},
+		{"stored hint anthropic-compatible", providers.TypeAnthropicCompatible, " deepseek ", "https://api.z.ai/v1", "deepseek"},
+
+		// Compatible types without hint: host suggestion.
+		{"host z.ai", providers.TypeOpenAICompatible, "", "https://api.z.ai/api/paas/v4", "zai-coding-plan"},
+		{"host zhipuai", providers.TypeOpenAICompatible, "", "https://api.zhipuai.cn/v1", "zhipuai-coding-plan"},
+		{"host openrouter", providers.TypeAnthropicCompatible, "", "https://openrouter.ai/api/v1", "openrouter"},
+		{"host deepseek", providers.TypeOpenAICompatible, "", "https://api.deepseek.com/v1", "deepseek"},
+		{"host mistral", providers.TypeOpenAICompatible, "", "https://api.mistral.ai/v1", "mistral"},
+		{"host groq", providers.TypeOpenAICompatible, "", "https://api.groq.com/openai/v1", "groq"},
+		{"host fireworks", providers.TypeOpenAICompatible, "", "https://api.fireworks.ai/inference/v1", "fireworks-ai"},
+
+		// Unknown host (or empty base URL) without hint → empty (unmapped).
+		{"unknown host", providers.TypeOpenAICompatible, "", "https://llm.corp.example/internal/v1", ""},
+		{"empty base url", providers.TypeOpenAICompatible, "", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := services.EffectiveCatalogHint(tt.providerType, tt.storedHint, tt.baseURL)
+			if got != tt.want {
+				t.Errorf("EffectiveCatalogHint(%q, %q, %q) = %q, want %q", tt.providerType, tt.storedHint, tt.baseURL, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveModels_CompatibleGatewayWithHint(t *testing.T) {
+	ctx := context.Background()
+
+	// Dead live server: tier-1 fails, tier-2 catalog list must come from the hint.
+	liveServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer liveServer.Close()
+
+	catServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(modalityCatalogJSON))
+	}))
+	defer catServer.Close()
+
+	cacheDir, err := os.MkdirTemp("", "modelcatalog-hint-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	defer os.RemoveAll(cacheDir)
+
+	reg := providers.NewRegistryWithClient(liveServer.Client())
+	svc := services.NewModelCatalog(services.ModelCatalogOptions{
+		CacheDir:   cacheDir,
+		CatalogURL: catServer.URL,
+		TTL:        24 * time.Hour,
+		Client:     catServer.Client(),
+		Registry:   reg,
+	})
+
+	// Without a hint the compatible gateway stays unmapped → source "none".
+	withoutHint, err := svc.ResolveModels(ctx, providers.Credential{
+		Type:    providers.TypeOpenAICompatible,
+		BaseURL: liveServer.URL,
+	})
+	if err != nil {
+		t.Fatalf("ResolveModels without hint failed: %v", err)
+	}
+	if withoutHint.Source != domain.ModelSourceNone || len(withoutHint.Models) != 0 {
+		t.Fatalf("without hint: source = %q, models = %d, want none/0", withoutHint.Source, len(withoutHint.Models))
+	}
+
+	// With the hint the catalog model list resolves, carrying capability fields.
+	withHint, err := svc.ResolveModels(ctx, providers.Credential{
+		Type:        providers.TypeOpenAICompatible,
+		BaseURL:     liveServer.URL,
+		CatalogHint: "zai-coding-plan",
+	})
+	if err != nil {
+		t.Fatalf("ResolveModels with hint failed: %v", err)
+	}
+	if withHint.Source != domain.ModelSourceCatalog {
+		t.Fatalf("with hint: source = %q, want %q", withHint.Source, domain.ModelSourceCatalog)
+	}
+
+	byID := make(map[string]domain.Model, len(withHint.Models))
+	for _, m := range withHint.Models {
+		byID[m.ID] = m
+	}
+
+	flash, ok := byID["glm-5.3-flash"]
+	if !ok {
+		t.Fatalf("glm-5.3-flash missing from catalog list: %+v", withHint.Models)
+	}
+	if !flash.ImageInput || !flash.PDFInput {
+		t.Errorf("glm-5.3-flash capabilities = image:%v pdf:%v, want both true", flash.ImageInput, flash.PDFInput)
+	}
+	if flash.Reasoning == nil || !*flash.Reasoning || flash.ToolCall == nil || !*flash.ToolCall {
+		t.Errorf("glm-5.3-flash reasoning/tool_call = %v/%v, want true/true", flash.Reasoning, flash.ToolCall)
+	}
+	if flash.ContextLimit == nil || *flash.ContextLimit != 200000 {
+		t.Errorf("glm-5.3-flash context limit = %v, want 200000", flash.ContextLimit)
+	}
+	if len(flash.Efforts) != 3 || flash.Efforts[0] != "low" {
+		t.Errorf("glm-5.3-flash efforts = %v, want [low high max]", flash.Efforts)
+	}
+
+	textOnly, ok := byID["glm-5.3"]
+	if !ok {
+		t.Fatalf("glm-5.3 missing from catalog list: %+v", withHint.Models)
+	}
+	if textOnly.ImageInput || textOnly.PDFInput {
+		t.Errorf("glm-5.3 capabilities = image:%v pdf:%v, want both false (text-only)", textOnly.ImageInput, textOnly.PDFInput)
+	}
+	if textOnly.Reasoning == nil || !*textOnly.Reasoning {
+		t.Errorf("glm-5.3 reasoning = %v, want true", textOnly.Reasoning)
+	}
+}
+
+func TestResolveModels_Tier1_ProjectsCapabilities(t *testing.T) {
+	ctx := context.Background()
+
+	catServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sampleCatalogJSON))
+	}))
+	defer catServer.Close()
+
+	liveServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data": [{"id": "gpt-4o", "name": "GPT-4o Live"}]}`))
+	}))
+	defer liveServer.Close()
+
+	reg := providers.NewRegistryWithClient(liveServer.Client())
+
+	cacheDir, err := os.MkdirTemp("", "modelcatalog-tier1-cap-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	defer os.RemoveAll(cacheDir)
+
+	svc := services.NewModelCatalog(services.ModelCatalogOptions{
+		CacheDir:   cacheDir,
+		CatalogURL: catServer.URL,
+		TTL:        24 * time.Hour,
+		Client:     catServer.Client(),
+		Registry:   reg,
+	})
+
+	res, err := svc.ResolveModels(ctx, providers.Credential{
+		Type:    providers.TypeOpenAI,
+		BaseURL: liveServer.URL,
+		APIKey:  "sk-test",
+	})
+	if err != nil {
+		t.Fatalf("ResolveModels failed: %v", err)
+	}
+	if res.Source != domain.ModelSourceLive || len(res.Models) != 1 {
+		t.Fatalf("source = %q, models = %d, want live/1", res.Source, len(res.Models))
+	}
+
+	m := res.Models[0]
+	if !m.ImageInput {
+		t.Errorf("gpt-4o live model ImageInput = false, want true (catalog modalities)")
+	}
+	if m.PDFInput {
+		t.Errorf("gpt-4o live model PDFInput = true, want false (catalog lists text+image only)")
+	}
+	// Catalog says reasoning:false — only affirmative true is projected.
+	if m.Reasoning != nil {
+		t.Errorf("gpt-4o live model Reasoning = %v, want nil (catalog reasoning:false)", *m.Reasoning)
+	}
+	if m.ToolCall == nil || !*m.ToolCall {
+		t.Errorf("gpt-4o live model ToolCall = %v, want true", m.ToolCall)
+	}
+}
+
+func TestResolveContextLimit_WithHint(t *testing.T) {
+	ctx := context.Background()
+	svc := newModalityCatalogService(t)
+
+	// Compatible gateway + hint resolves the catalog limit.
+	if got := svc.ResolveContextLimit(ctx, providers.TypeOpenAICompatible, "glm-5.3-flash", "zai-coding-plan"); got == nil || *got != 200000 {
+		t.Errorf("ResolveContextLimit(compatible, glm-5.3-flash, hint) = %v, want 200000", got)
+	}
+
+	// Without the hint still nil.
+	if got := svc.ResolveContextLimit(ctx, providers.TypeOpenAICompatible, "glm-5.3-flash", ""); got != nil {
+		t.Errorf("ResolveContextLimit(compatible, glm-5.3-flash, no hint) = %v, want nil", got)
+	}
+}
+
+func TestResolveEfforts_WithHint(t *testing.T) {
+	ctx := context.Background()
+	svc := newModalityCatalogService(t)
+
+	got := svc.ResolveEfforts(ctx, providers.TypeOpenAICompatible, "glm-5.3-flash", "zai-coding-plan")
+	if len(got) != 3 || got[0] != "low" {
+		t.Errorf("ResolveEfforts(compatible, glm-5.3-flash, hint) = %v, want [low high max]", got)
+	}
+
+	// Without the hint: static floor for openai-compatible [low medium high].
+	gotFloor := svc.ResolveEfforts(ctx, providers.TypeOpenAICompatible, "glm-5.3-flash", "")
+	if len(gotFloor) != 3 || gotFloor[0] != "low" || gotFloor[2] != "high" {
+		t.Errorf("ResolveEfforts(compatible, glm-5.3-flash, no hint) = %v, want static floor", gotFloor)
 	}
 }

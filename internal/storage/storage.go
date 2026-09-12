@@ -32,6 +32,14 @@ type StorageConfig struct {
 	Driver  string
 	DataDir string
 	BaseURL string
+	// S3-compatible driver fields (attachments design D15). Ignored by the
+	// local driver.
+	Endpoint     string
+	Region       string
+	Bucket       string
+	AccessKey    string
+	SecretKey    string
+	UsePathStyle bool
 }
 
 // DriverOpenFunc creates a Storage driver instance from configuration.

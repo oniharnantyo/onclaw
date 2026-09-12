@@ -182,12 +182,15 @@ func (r *Runner) History(ctx context.Context, req HistoryRequest) (*HistoryResul
 					}
 					content := extractAgenticText(se.Message)
 					reasoning := agenticReasoningText(se.Message)
+					attachments := attachmentMetasOf(se.Message)
 					// Tool-call requests and tool results persist as plain
 					// assistant/user messages with no renderable text (the ADK
 					// stores results under role user). Emitting them would mint
 					// empty bubbles in the hydrated transcript — mirror the
-					// live runner's content guard.
-					if strings.TrimSpace(content) == "" && strings.TrimSpace(reasoning) == "" {
+					// live runner's content guard. The exception is an
+					// attachment-only user message (attachments design D10):
+					// no text, but its chips render, so attachments keep it.
+					if strings.TrimSpace(content) == "" && strings.TrimSpace(reasoning) == "" && len(attachments) == 0 {
 						break
 					}
 					events = append(events, TranscriptEvent{
@@ -199,6 +202,7 @@ func (r *Runner) History(ctx context.Context, req HistoryRequest) (*HistoryResul
 							Role:             role,
 							Content:          content,
 							ReasoningContent: reasoning,
+							Attachments:      attachments,
 						},
 					})
 				}
@@ -245,12 +249,22 @@ func (r *Runner) History(ctx context.Context, req HistoryRequest) (*HistoryResul
 				},
 			})
 		case adk.SessionEventMessagesReplaced:
+			// Estimates ride the record's Extra when the runner appended it
+			// (chat-compact-command D4); events without them hydrate with an
+			// empty payload, as before.
+			payload := &CompactionPayload{}
+			if se.Extra != nil {
+				if est, ok := se.Extra[sessionExtraKeyCompaction].(compactionEstimates); ok {
+					payload.TokensBefore = est.TokensBefore
+					payload.TokensAfter = est.TokensAfter
+				}
+			}
 			events = append(events, TranscriptEvent{
 				ID:         id,
 				Kind:       TranscriptEventContextCompacted,
 				OccurredAt: occurredAt,
 				TurnID:     turnID,
-				Compaction: &CompactionPayload{},
+				Compaction: payload,
 			})
 		case adk.SessionEventCancel:
 			reason := "cancelled"

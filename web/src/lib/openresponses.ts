@@ -38,6 +38,10 @@ export interface TurnCallbacks {
   onToolOutput?: (callId: string, name: string, result: string, latencyMs?: number, isError?: boolean) => void;
   /** Called on each reasoning trace chunk (`onclaw:reasoning_delta`). */
   onReasoningDelta?: (delta: string) => void;
+  /** Called when the run compacts the conversation context
+   * (`onclaw:context_compacted`) with the display-only token estimates
+   * (before → after) from the wire frame. */
+  onContextCompacted?: (info: { tokensBefore: number; tokensAfter: number }) => void;
   /** Called when the run pauses for a dangerous-command approval. */
   onApprovalRequired?: (approval: OnclawApproval) => void;
   /**
@@ -107,25 +111,59 @@ export async function listAgentModels(key: string): Promise<string[]> {
 }
 
 /**
+ * Builds the /v1 `input` for a turn. With no attachments this is the plain
+ * string — byte-for-byte the pre-attachment request. With attachments it
+ * becomes the item-array form: one user message whose content carries an
+ * `input_text` part (only when the text is non-empty) plus an
+ * `input_image`/`input_file` URL part per attachment, the capability URL as
+ * the wire token (add-chat-attachments D2).
+ */
+function turnInput(text: string, attachments?: ChatAttachment[]): string | OpenAI.Responses.ResponseInput {
+  if (!attachments || attachments.length === 0) return text;
+  const content: OpenAI.Responses.ResponseInputContent[] = [];
+  if (text && text.trim()) content.push({ type: 'input_text', text });
+  for (const a of attachments) {
+    if (!a || !a.url) continue;
+    if ((a.mime || '').toLowerCase().startsWith('image/')) {
+      content.push({ type: 'input_image', image_url: a.url, detail: 'auto' });
+    } else {
+      content.push({ type: 'input_file', file_url: a.url, filename: a.name });
+    }
+  }
+  return [{ role: 'user', content }];
+}
+
+/**
  * Runs one agent turn against POST /v1/responses with SSE streaming and
- * translates the event vocabulary into the given callbacks.
+ * translates the event vocabulary into the given callbacks. Aborting
+ * `opts.signal` tears the stream down mid-run; an aborted turn fires NO
+ * callback — the stop control owns the terminal state (design D5), so the
+ * abort must never surface as an error entry.
  */
 export async function runTurn(
   key: string,
-  params: { agentSlug: string; input: string; sessionId?: string; previousResponseId?: string },
+  params: { agentSlug: string; input: string; sessionId?: string; previousResponseId?: string; command?: string; attachments?: ChatAttachment[] },
   cb: TurnCallbacks,
+  opts?: { signal?: AbortSignal },
 ): Promise<void> {
   const client = openResponsesClient(key);
   let text = '';
   try {
+    // `command` rides metadata (where session binding already lives) — e.g.
+    // `onclaw_command: "compact"` marks a compact turn whose `input` is the
+    // focus text (chat-compact-command design D2).
+    const metadata = {
+      ...(params.sessionId ? { [ONCLAW_SESSION_KEY]: params.sessionId } : {}),
+      ...(params.command ? { onclaw_command: params.command } : {}),
+    };
     const stream = await client.responses.create({
 
       model: params.agentSlug,
-      input: params.input,
+      input: turnInput(params.input, params.attachments),
       stream: true,
-      ...(params.sessionId ? { metadata: { [ONCLAW_SESSION_KEY]: params.sessionId } } : {}),
+      ...(Object.keys(metadata).length ? { metadata } : {}),
       ...(params.previousResponseId ? { previous_response_id: params.previousResponseId } : {}),
-    });
+    }, { signal: opts?.signal });
 
     let responseId: string | undefined;
     let pendingApproval: OnclawApproval | null = null;
@@ -156,6 +194,12 @@ export async function runTurn(
           break;
         case 'onclaw:reasoning_delta':
           cb.onReasoningDelta?.(ev.delta ?? '');
+          break;
+        case 'onclaw:context_compacted':
+          cb.onContextCompacted?.({
+            tokensBefore: ev.tokens_before ?? 0,
+            tokensAfter: ev.tokens_after ?? 0,
+          });
           break;
         case 'onclaw:approval_required':
           pendingApproval = {
@@ -190,6 +234,9 @@ export async function runTurn(
     // An approval pause ends the stream without a terminal event.
     if (!pendingApproval) cb.onDone(responseId);
   } catch (err: any) {
+    // User-initiated stop: the abort IS the teardown. No onDone/onError —
+    // the stop control already settled the composer and the transcript.
+    if (opts?.signal?.aborted || err?.name === 'AbortError') return;
     const message = err?.error?.message || err?.message || 'request failed';
     const unauthorized = err?.status === 401 || err?.error?.code === 'invalid_api_key' || err?.code === 'invalid_api_key';
     const conflict = err?.status === 409;

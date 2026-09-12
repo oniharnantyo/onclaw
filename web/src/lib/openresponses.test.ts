@@ -299,3 +299,130 @@ describe('sessionIdFromResponseId — published resp_ codec', () => {
     expect(sessionIdFromResponseId(rid as any)).toBeUndefined();
   });
 });
+
+describe('runTurn — compact command wire (chat-compact-command)', () => {
+  it('fires onContextCompacted with tokens_before/tokens_after and keeps the stream terminal contract', async () => {
+    const events = [
+      { type: 'response.created', response: { id: 'resp_sess-a_turn-9' } },
+      { type: 'onclaw:context_compacted', tokens_before: 154000, tokens_after: 9200, sequence_number: 3 },
+      { type: 'response.completed', response: { id: 'resp_sess-a_turn-9', usage: { input_tokens: 9200, output_tokens: 210, total_tokens: 9410 } } },
+    ];
+    createMock.mockResolvedValue(events);
+
+    const onContextCompacted = vi.fn();
+    const onDone = vi.fn();
+    await runTurn(nextKey(), { agentSlug: 'atlas', input: '', command: 'compact' }, {
+      onDelta: vi.fn(), onContextCompacted, onDone, onError: vi.fn(),
+    });
+
+    expect(onContextCompacted).toHaveBeenCalledTimes(1);
+    expect(onContextCompacted).toHaveBeenCalledWith({ tokensBefore: 154000, tokensAfter: 9200 });
+    // The compact stream ends in a normal terminal event (usage, no output).
+    expect(onDone).toHaveBeenCalledWith('resp_sess-a_turn-9');
+  });
+
+  it('sends metadata.onclaw_command alongside the session binding', async () => {
+    createMock.mockResolvedValue([
+      { type: 'response.completed', response: { id: 'resp_sess-a_turn-9' } },
+    ]);
+
+    await runTurn(nextKey(), { agentSlug: 'atlas', input: 'keep the decisions', command: 'compact', sessionId: 'sess_abc' }, {
+      onDelta: vi.fn(), onDone: vi.fn(), onError: vi.fn(),
+    });
+
+    const request = createMock.mock.calls[0][0];
+    expect(request.metadata).toEqual({ onclaw_session: 'sess_abc', onclaw_command: 'compact' });
+    expect(request.input).toBe('keep the decisions');
+  });
+
+  it('omits the metadata block entirely when no session or command is present', async () => {
+    createMock.mockResolvedValue([
+      { type: 'response.completed', response: { id: 'resp_x_1' } },
+    ]);
+
+    await runTurn(nextKey(), { agentSlug: 'atlas', input: 'hi' }, {
+      onDelta: vi.fn(), onDone: vi.fn(), onError: vi.fn(),
+    });
+
+    expect(createMock.mock.calls[0][0].metadata).toBeUndefined();
+  });
+});
+
+describe('runTurn — attachment turn input (add-chat-attachments D2/D11)', () => {
+  const baseCb = () => ({ onDelta: vi.fn(), onDone: vi.fn(), onError: vi.fn() });
+
+  it('builds the exact item-array input for text + image + pdf', async () => {
+    createMock.mockResolvedValue([{ type: 'response.completed', response: { id: 'resp_x_1' } }]);
+
+    await runTurn(nextKey(), {
+      agentSlug: 'atlas',
+      input: 'What do you see here?',
+      attachments: [
+        { id: 'att-1', name: 'shot.png', mime: 'image/png', size: 12, url: '/api/v1/files/k1' },
+        { name: 'report.pdf', mime: 'application/pdf', size: 5033164, url: '/api/v1/files/k2' },
+      ],
+    }, baseCb());
+
+    const request = createMock.mock.calls[0][0];
+    expect(request.input).toEqual([
+      {
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'What do you see here?' },
+          { type: 'input_image', image_url: '/api/v1/files/k1', detail: 'auto' },
+          { type: 'input_file', file_url: '/api/v1/files/k2', filename: 'report.pdf' },
+        ],
+      },
+    ]);
+    // Everything else about the request is unchanged.
+    expect(request.model).toBe('atlas');
+    expect(request.stream).toBe(true);
+  });
+
+  it('sends a plain string input when there are no attachments (byte-for-byte legacy request)', async () => {
+    createMock.mockResolvedValue([{ type: 'response.completed', response: { id: 'resp_x_2' } }]);
+
+    await runTurn(nextKey(), { agentSlug: 'atlas', input: 'hello' }, baseCb());
+
+    const request = createMock.mock.calls[0][0];
+    expect(request.input).toBe('hello');
+    expect(typeof request.input).toBe('string');
+  });
+
+  it('omits input_text for attachment-only turns (empty text)', async () => {
+    createMock.mockResolvedValue([{ type: 'response.completed', response: { id: 'resp_x_3' } }]);
+
+    await runTurn(nextKey(), {
+      agentSlug: 'atlas',
+      input: '',
+      attachments: [{ id: 'att-9', name: 'dump.sql', mime: 'application/sql', size: 4300000, url: '/api/v1/files/k9' }],
+    }, baseCb());
+
+    const request = createMock.mock.calls[0][0];
+    expect(request.input).toEqual([
+      {
+        role: 'user',
+        content: [
+          { type: 'input_file', file_url: '/api/v1/files/k9', filename: 'dump.sql' },
+        ],
+      },
+    ]);
+  });
+
+  it('routes by mime: image parts ride input_image, everything else input_file', async () => {
+    createMock.mockResolvedValue([{ type: 'response.completed', response: { id: 'resp_x_4' } }]);
+
+    await runTurn(nextKey(), {
+      agentSlug: 'atlas',
+      input: 'x',
+      attachments: [
+        { name: 'a.webp', mime: 'image/webp', size: 1, url: '/api/v1/files/ka' },
+        { name: 'notes.txt', mime: 'text/plain', size: 2, url: '/api/v1/files/kb' },
+      ],
+    }, baseCb());
+
+    const content = createMock.mock.calls[0][0].input[0].content;
+    expect(content[1]).toEqual({ type: 'input_image', image_url: '/api/v1/files/ka', detail: 'auto' });
+    expect(content[2]).toEqual({ type: 'input_file', file_url: '/api/v1/files/kb', filename: 'notes.txt' });
+  });
+});

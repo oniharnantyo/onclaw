@@ -65,7 +65,7 @@ func TestAgents_ListComposesPromptDocuments_GetIncludesPromptDocuments(t *testin
 		t.Fatalf("failed to create agent: %v", err)
 	}
 
-	agentH := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), []byte("01234567890123456789012345678901"), nil, nil, nil, wsDir, nil, nil)
+	agentH := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), st.AgentSessions(), []byte("01234567890123456789012345678901"), nil, nil, nil, wsDir, nil, nil)
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {

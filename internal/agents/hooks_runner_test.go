@@ -99,8 +99,13 @@ func (m *hooksModel) inputToolResultText(t *testing.T, call int) string {
 
 // setupHooksRunner seeds a workspace, agent (with the given allowlisted
 // tools), user, provider, and workspace hooks, and wires the runner with the
-// real hook dispatcher over the fake store.
+// real hook dispatcher over the fake store. Extra opts configure further
+// runner knobs (e.g. the channel ports for channel-run tests).
 func setupHooksRunner(t *testing.T, tools []string, mdl *hooksModel, hookList ...*domain.WorkspaceHook) (store.Store, *Runner, *domain.Workspace, *domain.Agent, ExecRequest) {
+	return setupHooksRunnerWithOpts(t, tools, mdl, nil, hookList...)
+}
+
+func setupHooksRunnerWithOpts(t *testing.T, tools []string, mdl *hooksModel, opts []RunnerOption, hookList ...*domain.WorkspaceHook) (store.Store, *Runner, *domain.Workspace, *domain.Agent, ExecRequest) {
 	t.Helper()
 	ctx := context.Background()
 	st := fake.New()
@@ -134,7 +139,7 @@ func setupHooksRunner(t *testing.T, tools []string, mdl *hooksModel, hookList ..
 	onClawDir := t.TempDir()
 	runner := NewRunner(
 		st.Workspaces(), st.Agents(), st.Users(), st.Members(), st.Roles(),
-		st.Providers(), st.SessionEvents(), st.SessionCheckpoints(), st.Memories(),
+		st.Providers(), st.SessionEvents(), st.SessionCheckpoints(), st.Memories(), st.AgentSessions(),
 		[]byte("test-key-32-bytes-long-12345678"),
 		onClawDir,
 		WithAgenticModelFactory(func(context.Context, string, providers.Credential, string) (Model, error) {
@@ -143,6 +148,9 @@ func setupHooksRunner(t *testing.T, tools []string, mdl *hooksModel, hookList ..
 		WithInstructionComposer(stubComposer{}),
 		WithHooks(agenthooks.NewDispatcher(st.Hooks(), agenthooks.NewRegistry())),
 	)
+	for _, opt := range opts {
+		opt(runner)
+	}
 
 	ag := &domain.Agent{
 		WorkspaceID: ws.ID,
@@ -299,11 +307,11 @@ func TestHooks_OriginGatesPromptSubmit(t *testing.T) {
 	mdl := &hooksModel{final: "ok"}
 	hook := &domain.WorkspaceHook{
 		HookBase: domain.HookBase{
-			Name:        "cron-gate",
+			Name:        "scheduler-gate",
 			Event:       domain.HookEventUserPromptSubmit,
-			Matcher:     "cron",
+			Matcher:     "scheduler",
 			HandlerType: domain.HookHandlerCommand,
-			Config:      mustHookJSON(t, map[string]any{"command": "sh", "args": []string{"-c", "echo no cron on weekends >&2; exit 2"}}),
+			Config:      mustHookJSON(t, map[string]any{"command": "sh", "args": []string{"-c", "echo no scheduled runs on weekends >&2; exit 2"}}),
 			TimeoutMS:   5000,
 			OnFailure:   domain.HookFailureAllow,
 			Enabled:     true,
@@ -311,17 +319,18 @@ func TestHooks_OriginGatesPromptSubmit(t *testing.T) {
 	}
 	st, runner, _, ag, req := setupHooksRunner(t, nil, mdl, hook)
 
-	// Origin cron: the hook's matcher selects cron → blocked before the model.
-	cronReq := req
-	cronReq.SessionID = "sess-cron"
-	cronReq.Origin = OriginCron
-	stream, err := runner.Run(context.Background(), cronReq)
+	// Origin scheduler: the hook's matcher selects scheduler → blocked before
+	// the model.
+	schedulerReq := req
+	schedulerReq.SessionID = "sess-scheduler"
+	schedulerReq.Origin = OriginScheduler
+	stream, err := runner.Run(context.Background(), schedulerReq)
 	if err != nil {
-		t.Fatalf("Run (cron): %v", err)
+		t.Fatalf("Run (scheduler): %v", err)
 	}
-	cronEvents := collectStream(t, stream)
-	if findPromptBlocked(cronEvents) == nil || mdl.callCount(t) != 0 {
-		t.Fatalf("cron-origin run must be blocked before the model, got %+v", cronEvents)
+	schedulerEvents := collectStream(t, stream)
+	if findPromptBlocked(schedulerEvents) == nil || mdl.callCount(t) != 0 {
+		t.Fatalf("scheduler-origin run must be blocked before the model, got %+v", schedulerEvents)
 	}
 
 	// Origin user (default): the hook does not match → normal turn.

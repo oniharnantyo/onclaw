@@ -29,9 +29,19 @@ func (h *agentHandlers) CancelRun(c *gin.Context) {
 		return
 	}
 
-	// The session must exist in this workspace. Like the /v1 session binding,
-	// a session with no persisted events is indistinguishable from an unknown
-	// one: both are not-found.
+	// A live run proves the session exists — cancel it even when its events
+	// have not been committed yet. A stop during the session's first turn
+	// (nothing persisted before the run's terminal event) would otherwise 404
+	// and silently leave the run streaming to completion.
+	if h.runCanceler.CancelRun(ws.ID, agent.ID, sessionID) {
+		RespondOK(c, gin.H{"cancelled": true})
+		return
+	}
+
+	// No live run: the session-existence check decides the error. Like the
+	// /v1 session binding, a session with no persisted events is
+	// indistinguishable from an unknown one — both are not-found; a known
+	// session with no live run is a conflict.
 	rows, err := h.sessionEvents.LoadEvents(c.Request.Context(), store.LoadSessionEventsParams{
 		WorkspaceID: ws.ID,
 		SessionID:   sessionID,
@@ -46,10 +56,5 @@ func (h *agentHandlers) CancelRun(c *gin.Context) {
 		return
 	}
 
-	if !h.runCanceler.CancelRun(ws.ID, agent.ID, sessionID) {
-		RespondError(c, fmt.Errorf("%w: no live run for session %q", domain.ErrConflict, sessionID))
-		return
-	}
-
-	RespondOK(c, gin.H{"cancelled": true})
+	RespondError(c, fmt.Errorf("%w: no live run for session %q", domain.ErrConflict, sessionID))
 }

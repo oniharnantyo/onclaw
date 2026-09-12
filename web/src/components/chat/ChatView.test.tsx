@@ -111,3 +111,51 @@ describe('ChatView loading states', () => {
     expect(container.querySelectorAll('[data-role="assistant"]').length).toBe(0);
   });
 });
+
+describe('ChatView compaction surface (chat-compact-command)', () => {
+  it('shows the Compacting context… status row while a compact turn runs — no thinking row, no user pill', () => {
+    const thread = [{ id: 'u1', author: 'you', text: 'earlier turn', ts: '' }];
+    const { container } = render(<ChatView {...base} thread={thread} typing busy compacting />);
+    const status = container.querySelector('[data-od-id="compaction-status"]');
+    expect(status).not.toBeNull();
+    expect(status?.textContent).toContain('Compacting context…');
+    expect(container.querySelectorAll('[data-od-id="msg-thinking"]').length).toBe(0);
+  });
+
+  it('an ordinary running turn shows the thinking row, never the compact status row', () => {
+    const thread = [{ id: 'u1', author: 'you', text: 'hello', ts: '' }];
+    const { container } = render(<ChatView {...base} thread={thread} typing busy />);
+    expect(container.querySelectorAll('[data-od-id="msg-thinking"]').length).toBe(1);
+    expect(container.querySelector('[data-od-id="compaction-status"]')).toBeNull();
+  });
+
+  it('renders the compaction divider from a live (summarySaved) thread entry and retracts the status row', () => {
+    const thread = [
+      { id: 'u1', author: 'you', text: 'earlier turn', ts: '' },
+      { id: 'c1', author: 'compaction', text: '', ts: '9:14 AM', summarySaved: true, compaction: { tokensBefore: 154000, tokensAfter: 9200 } },
+    ];
+    // Real post-compacted-event state: the runtime cleared ui.compacting when
+    // the divider landed, but the turn is still running (typing/busy) — the
+    // divider has swapped in and NEITHER row renders while it finishes.
+    const { container } = render(<ChatView {...base} thread={thread} typing busy />);
+    const divider = container.querySelector('[data-od-id="msg-c1"][data-role="compaction"]');
+    expect(divider).not.toBeNull();
+    expect(divider?.textContent).toContain('Context compacted');
+    expect(divider?.textContent).toContain('154k → 9.2k tokens');
+    expect(divider?.textContent).toContain('summary saved to transcript');
+    expect(container.querySelector('[data-od-id="compaction-status"]')).toBeNull();
+    expect(container.querySelectorAll('[data-od-id="msg-thinking"]').length).toBe(0);
+  });
+
+  it('renders the divider from a hydrated history entry with token counts only (mockup D)', () => {
+    const thread = [
+      { id: 'u1', author: 'you', text: 'earlier turn', ts: '' },
+      { id: 'h-c1', author: 'compaction', text: '', ts: '', compaction: { tokensBefore: 154000, tokensAfter: 9200 } },
+    ];
+    const { container } = render(<ChatView {...base} thread={thread} />);
+    const divider = container.querySelector('[data-od-id="msg-h-c1"][data-role="compaction"]');
+    expect(divider).not.toBeNull();
+    expect(divider?.textContent).toContain('154k → 9.2k tokens');
+    expect(divider?.textContent).not.toContain('summary saved to transcript');
+  });
+});

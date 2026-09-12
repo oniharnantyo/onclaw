@@ -68,7 +68,7 @@ func TestApprovalsEndpoint_NoPendingApprovalConflicts(t *testing.T) {
 	tempDir := t.TempDir()
 	runner := agents.NewRunner(
 		st.Workspaces(), st.Agents(), st.Users(), st.Members(), st.Roles(),
-		st.Providers(), st.SessionEvents(), st.SessionCheckpoints(), st.Memories(),
+		st.Providers(), st.SessionEvents(), st.SessionCheckpoints(), st.Memories(), st.AgentSessions(),
 		encKey, tempDir,
 		agents.WithAgenticModelFactory(func(context.Context, string, providers.Credential, string) (agents.Model, error) {
 			return &smokeChatModel{}, nil

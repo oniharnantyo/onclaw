@@ -60,13 +60,23 @@ type CatalogLimit struct {
 	Output  *int `json:"output,omitempty"`
 }
 
+// CatalogModalities represents the input/output modality lists in models.dev.
+type CatalogModalities struct {
+	Input  []string `json:"input,omitempty"`
+	Output []string `json:"output,omitempty"`
+}
+
 // CatalogModel represents a model entry parsed from models.dev.
 type CatalogModel struct {
-	ID               string            `json:"id"`
-	Name             string            `json:"name"`
-	Temperature      *bool             `json:"temperature,omitempty"`
-	ReasoningOptions []ReasoningOption `json:"reasoning_options,omitempty"`
-	Limit            *CatalogLimit     `json:"limit,omitempty"`
+	ID               string             `json:"id"`
+	Name             string             `json:"name"`
+	Temperature      *bool              `json:"temperature,omitempty"`
+	ReasoningOptions []ReasoningOption  `json:"reasoning_options,omitempty"`
+	Limit            *CatalogLimit      `json:"limit,omitempty"`
+	Modalities       *CatalogModalities `json:"modalities,omitempty"`
+	Attachment       *bool              `json:"attachment,omitempty"`
+	Reasoning        *bool              `json:"reasoning,omitempty"`
+	ToolCall         *bool              `json:"tool_call,omitempty"`
 }
 
 // ContextLimit returns the context limit from limit if present.
@@ -100,6 +110,10 @@ func (m *CatalogModel) UnmarshalJSON(data []byte) error {
 		Temperature      *bool           `json:"temperature,omitempty"`
 		ReasoningOptions json.RawMessage `json:"reasoning_options,omitempty"`
 		Limit            *CatalogLimit   `json:"limit,omitempty"`
+		Modalities       json.RawMessage `json:"modalities,omitempty"`
+		Attachment       *bool           `json:"attachment,omitempty"`
+		Reasoning        *bool           `json:"reasoning,omitempty"`
+		ToolCall         *bool           `json:"tool_call,omitempty"`
 	}
 
 	var raw rawModel
@@ -111,6 +125,9 @@ func (m *CatalogModel) UnmarshalJSON(data []byte) error {
 	m.Name = raw.Name
 	m.Temperature = raw.Temperature
 	m.Limit = raw.Limit
+	m.Attachment = raw.Attachment
+	m.Reasoning = raw.Reasoning
+	m.ToolCall = raw.ToolCall
 
 	if len(raw.ReasoningOptions) > 0 {
 		trimmed := strings.TrimSpace(string(raw.ReasoningOptions))
@@ -124,6 +141,15 @@ func (m *CatalogModel) UnmarshalJSON(data []byte) error {
 			if err := json.Unmarshal(raw.ReasoningOptions, &opt); err == nil {
 				m.ReasoningOptions = []ReasoningOption{opt}
 			}
+		}
+	}
+
+	// modalities is an object with input/output lists in models.dev; any other
+	// shape degrades to absent so resolution falls back to attachment/unknown.
+	if len(raw.Modalities) > 0 && strings.HasPrefix(strings.TrimSpace(string(raw.Modalities)), "{") {
+		var mods CatalogModalities
+		if err := json.Unmarshal(raw.Modalities, &mods); err == nil {
+			m.Modalities = &mods
 		}
 	}
 	return nil
@@ -384,6 +410,129 @@ func (s *ModelCatalog) fallbackToStale(originalErr error) (*CatalogData, error) 
 	return nil, fmt.Errorf("failed to fetch models catalog: %w", originalErr)
 }
 
+// EffectiveCatalogHint returns the catalog provider id catalog resolution
+// should use for the provider: empty for canonically mapped provider types
+// (the type mapping wins, any stored hint is ignored), otherwise the stored
+// hint when set, else the host-based suggestion for known gateway hosts.
+func EffectiveCatalogHint(providerType, storedHint, baseURL string) string {
+	if _, mapped := MapProviderType(providerType); mapped {
+		return ""
+	}
+	if hint := strings.TrimSpace(storedHint); hint != "" {
+		return hint
+	}
+	return providers.SuggestCatalogProvider(baseURL)
+}
+
+// catalogEntry returns the catalog model entry for the (provider, model) pair
+// under the effective catalog mapping: the canonical MapProviderType id when
+// the provider type maps, otherwise the caller-supplied hint. ok is false when
+// the provider type is unmapped without a hint, the catalog is unavailable, or
+// the provider/model entry is absent — callers degrade to unknown semantics.
+func (s *ModelCatalog) catalogEntry(ctx context.Context, providerType, catalogHint, modelID string) (*CatalogModel, bool) {
+	providerID, mapped := MapProviderType(providerType)
+	if !mapped {
+		hint := strings.TrimSpace(catalogHint)
+		if hint == "" {
+			return nil, false
+		}
+		providerID = hint
+	}
+
+	data, err := s.FetchCatalog(ctx)
+	if err != nil || data == nil {
+		return nil, false
+	}
+	prov, ok := data.Providers[providerID]
+	if !ok {
+		return nil, false
+	}
+	model, ok := prov.Models[modelID]
+	if !ok {
+		return nil, false
+	}
+	return &model, true
+}
+
+// SupportsInput resolves whether the model behind (providerType, catalogHint,
+// modelID) accepts the given non-text input kind. Resolution is
+// provider-scoped: the same model id on different gateways may expose
+// different modalities. Any missing evidence — unmapped provider without
+// hint, catalog fetch failure, absent provider or model entry — resolves to
+// InputUnknown, never an error; an entry whose input list lacks the kind
+// resolves to InputUnsupported.
+func (s *ModelCatalog) SupportsInput(ctx context.Context, providerType, catalogHint, modelID string, kind domain.InputKind) domain.InputSupport {
+	switch kind {
+	case domain.InputKindImage, domain.InputKindPDF:
+	default:
+		return domain.InputUnknown
+	}
+
+	model, ok := s.catalogEntry(ctx, providerType, catalogHint, modelID)
+	if !ok {
+		return domain.InputUnknown
+	}
+
+	// An entry with an input list is affirmative evidence: the kind present →
+	// supported, absent → unsupported (the tri-state point).
+	if model.Modalities != nil && len(model.Modalities.Input) > 0 {
+		for _, mod := range model.Modalities.Input {
+			if strings.EqualFold(strings.TrimSpace(mod), string(kind)) {
+				return domain.InputSupported
+			}
+		}
+		return domain.InputUnsupported
+	}
+
+	// Without a modalities list only the pdf kind has a fallback signal
+	// (attachment==true); image has none and stays unknown (fail-open).
+	if kind == domain.InputKindPDF && model.Attachment != nil && *model.Attachment {
+		return domain.InputSupported
+	}
+	return domain.InputUnknown
+}
+
+// projectModelCapabilities copies the catalog entry's input modality and
+// capability flags onto the resolved model. The bools are set only on
+// affirmative catalog evidence; the pointer fields are set only when the
+// catalog affirmatively says true, so absent entries stay omitted.
+func projectModelCapabilities(m *domain.Model, cat *CatalogModel) {
+	if cat.Modalities != nil {
+		for _, mod := range cat.Modalities.Input {
+			switch strings.ToLower(strings.TrimSpace(mod)) {
+			case "image":
+				m.ImageInput = true
+			case "pdf":
+				m.PDFInput = true
+			}
+		}
+	}
+	if cat.Reasoning != nil && *cat.Reasoning {
+		m.Reasoning = cat.Reasoning
+	}
+	if cat.ToolCall != nil && *cat.ToolCall {
+		m.ToolCall = cat.ToolCall
+	}
+}
+
+// catalogMapping resolves the catalog provider id for the credential: the
+// canonical provider-type mapping wins; compatible gateways fall back to the
+// credential's catalog hint, then the host-based suggestion for known gateway
+// hosts. hasMapping is false when none applies.
+func catalogMapping(cred providers.Credential) (string, bool) {
+	providerID, mapped := MapProviderType(cred.Type)
+	if mapped {
+		return providerID, true
+	}
+	if hint := strings.TrimSpace(cred.CatalogHint); hint != "" {
+		return hint, true
+	}
+	if suggested := providers.SuggestCatalogProvider(cred.BaseURL); suggested != "" {
+		return suggested, true
+	}
+	return "", false
+}
+
 // ResolveModels performs two-tier model resolution for the given provider credential.
 // Tier 1: provider ListModels live API call
 // Tier 2: models.dev cached catalog fallback
@@ -394,12 +543,13 @@ func (s *ModelCatalog) ResolveModels(ctx context.Context, cred providers.Credent
 		return nil, err
 	}
 
+	catalogProviderID, hasMapping := catalogMapping(cred)
+
 	// Tier 1: Try live ListModels
 	liveModels, liveErr := p.ListModels(ctx, cred)
 	if liveErr == nil && len(liveModels) > 0 {
 		// Enrich live models with catalog metadata if available
 		catalogData, _ := s.FetchCatalog(ctx)
-		catalogProviderID, hasMapping := MapProviderType(cred.Type)
 
 		enriched := make([]domain.Model, 0, len(liveModels))
 		for _, m := range liveModels {
@@ -422,6 +572,7 @@ func (s *ModelCatalog) ResolveModels(ctx context.Context, cred providers.Credent
 						if catModel.Limit != nil && catModel.Limit.Context != nil {
 							contextLimit = catModel.Limit.Context
 						}
+						projectModelCapabilities(&m, &catModel)
 					}
 				}
 			}
@@ -440,6 +591,10 @@ func (s *ModelCatalog) ResolveModels(ctx context.Context, cred providers.Credent
 				Efforts:             efforts,
 				SupportsTemperature: supportsTemp,
 				ContextLimit:        contextLimit,
+				ImageInput:          m.ImageInput,
+				PDFInput:            m.PDFInput,
+				Reasoning:           m.Reasoning,
+				ToolCall:            m.ToolCall,
 			})
 		}
 
@@ -450,7 +605,6 @@ func (s *ModelCatalog) ResolveModels(ctx context.Context, cred providers.Credent
 	}
 
 	// Tier 2: Try catalog fallback
-	catalogProviderID, hasMapping := MapProviderType(cred.Type)
 	if hasMapping {
 		catalogData, catErr := s.FetchCatalog(ctx)
 		if catErr == nil && catalogData != nil {
@@ -482,13 +636,16 @@ func (s *ModelCatalog) ResolveModels(ctx context.Context, cred providers.Credent
 						contextLimit = catModel.Limit.Context
 					}
 
-					catalogModels = append(catalogModels, domain.Model{
+					res := domain.Model{
 						ID:                  catModel.ID,
 						Name:                name,
 						Efforts:             efforts,
 						SupportsTemperature: supportsTemp,
 						ContextLimit:        contextLimit,
-					})
+					}
+					projectModelCapabilities(&res, &catModel)
+
+					catalogModels = append(catalogModels, res)
 				}
 
 				// Sort catalog models deterministically by ID
@@ -514,25 +671,19 @@ func (s *ModelCatalog) ResolveModels(ctx context.Context, cred providers.Credent
 }
 
 // ResolveEfforts returns the allowed effort values for a given provider type and model ID.
-// If the catalog knows the model and has effort values, those are returned.
-// Otherwise, the static floor for the provider type is returned.
-func (s *ModelCatalog) ResolveEfforts(ctx context.Context, providerType, modelID string) []string {
+// catalogHint supplies the community-catalog provider id for compatible gateway
+// types that MapProviderType leaves unmapped. If the catalog knows the model
+// and has effort values, those are returned; otherwise, the static floor for
+// the provider type is returned.
+func (s *ModelCatalog) ResolveEfforts(ctx context.Context, providerType, modelID, catalogHint string) []string {
 	p, err := s.registry.Get(providerType)
 	if err != nil {
 		return []string{}
 	}
 
-	catalogProviderID, hasMapping := MapProviderType(providerType)
-	if hasMapping {
-		catalogData, err := s.FetchCatalog(ctx)
-		if err == nil && catalogData != nil {
-			if prov, ok := catalogData.Providers[catalogProviderID]; ok {
-				if catModel, ok := prov.Models[modelID]; ok {
-					if catEfforts := catModel.EffortValues(); len(catEfforts) > 0 {
-						return catEfforts
-					}
-				}
-			}
+	if catModel, ok := s.catalogEntry(ctx, providerType, catalogHint, modelID); ok {
+		if catEfforts := catModel.EffortValues(); len(catEfforts) > 0 {
+			return catEfforts
 		}
 	}
 
@@ -543,30 +694,16 @@ func (s *ModelCatalog) ResolveEfforts(ctx context.Context, providerType, modelID
 	return floor
 }
 
-// ResolveContextLimit returns the context window limit for a given provider type and model ID.
-// If the catalog knows the model and has limit.context, that value is returned.
-// For compatible provider types, unmapped providers, or unknown models, nil is returned.
-func (s *ModelCatalog) ResolveContextLimit(ctx context.Context, providerType, modelID string) *int {
-	catalogProviderID, hasMapping := MapProviderType(providerType)
-	if !hasMapping {
-		return nil
-	}
-
-	catalogData, err := s.FetchCatalog(ctx)
-	if err != nil || catalogData == nil {
-		return nil
-	}
-
-	prov, ok := catalogData.Providers[catalogProviderID]
+// ResolveContextLimit returns the context window limit for a given provider
+// type and model ID. catalogHint supplies the community-catalog provider id
+// for compatible gateway types that MapProviderType leaves unmapped. For
+// unmapped providers without a hint, catalog fetch failures, or unknown
+// models, nil is returned.
+func (s *ModelCatalog) ResolveContextLimit(ctx context.Context, providerType, modelID, catalogHint string) *int {
+	catModel, ok := s.catalogEntry(ctx, providerType, catalogHint, modelID)
 	if !ok {
 		return nil
 	}
-
-	catModel, ok := prov.Models[modelID]
-	if !ok {
-		return nil
-	}
-
 	return catModel.ContextLimit()
 }
 

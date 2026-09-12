@@ -35,7 +35,7 @@ const MCP_DEFAULT_ICON = 'plug';
 
 // Built-in catalog entries mirrored statically (names and icons from the
 // backend's ToolCatalog, internal/agents/tool_catalog.go). The workspace
-// catalog fetch stays the source of truth for anything beyond these twelve,
+// catalog fetch stays the source of truth for anything beyond these fifteen,
 // but transcript cards must never flash raw ids while it loads — or drop to
 // them when it fails — so built-ins resolve before the network does. The
 // static values equal the server's by construction.
@@ -47,11 +47,14 @@ const builtinToolNames: Record<string, string> = {
   glob: 'Glob',
   grep: 'Grep',
   delete_file: 'Delete File',
+  'document.read': 'Read Document',
+  'document.create': 'Create Document',
   execute: 'Shell',
   memory: 'Memory',
   'web.search': 'Web Search',
   'web.fetch': 'Web Fetch',
   browser: 'Browser',
+  schedule: 'Schedule',
 };
 
 const builtinToolIcons: Record<string, string> = {
@@ -62,11 +65,14 @@ const builtinToolIcons: Record<string, string> = {
   glob: 'scan',
   grep: 'compass',
   delete_file: 'trash',
+  'document.read': 'file-text',
+  'document.create': 'file-plus',
   execute: 'terminal',
   memory: 'memory',
   'web.search': 'search',
   'web.fetch': 'link',
   browser: 'globe',
+  schedule: 'calendar',
 };
 
 export const toolCatalog = {

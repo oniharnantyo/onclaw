@@ -6,7 +6,7 @@ import { Avatar } from "../ui/Avatar";
 import { MentionText } from "../ui/MentionText";
 
 import { ToolCall } from "./ToolCall";
-import { CronChip } from "./CronChip";
+import { SchedulerChip } from "./SchedulerChip";
 import { BranchPicker } from "./BranchPicker";
 import { ReasoningBubble } from "./ReasoningBubble";
 const variantsOf = (m) => m.branches || [{ text: m.text, tools: m.tools, reasoning: m.reasoning, parts: m.parts }];
@@ -93,10 +93,10 @@ export function AgentMessage({ m, agent, inChannel, busy, isLast, onCopy, onRefr
         {inChannel && (
           <div className="mb-0.5 flex items-center gap-2">
             <span className="text-[13px] font-semibold text-fg">{agent ? agent.name : 'Agent'}</span>
-            {m.cron && <CronChip id={m.cron}/>}
+            {m.scheduler !== undefined && <SchedulerChip name={m.scheduler}/>}
           </div>
         )}
-        {!inChannel && m.cron && <div className="mb-1"><CronChip id={m.cron}/></div>}
+        {!inChannel && m.scheduler !== undefined && <div className="mb-1"><SchedulerChip name={m.scheduler}/></div>}
         {parts && parts.length > 0 ? (
           // Ordered turn body (design D6/D2): each reasoning segment is its
           // own bubble, interleaved with the tool cards in stream order —

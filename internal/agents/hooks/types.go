@@ -21,12 +21,12 @@ import (
 type Event struct {
 	Event      string     `json:"event"`            // run_started|user_prompt_submit|pre_tool_use|post_tool_use|run_finished
 	DeliveryID string     `json:"delivery_id"`      // unique per evaluation
-	Origin     string     `json:"origin"`           // user|cron|channel
+	Origin     string     `json:"origin"`           // user|scheduler|channel
 	Status     string     `json:"status,omitempty"` // run_finished only: completed|failed|cancelled
 	Workspace  EventRef   `json:"workspace"`        // {id,name}
 	Agent      EventRef   `json:"agent"`            // {id,name}
 	SessionID  string     `json:"session_id"`       // chat/thread session the run belongs to
-	User       *EventRef  `json:"user,omitempty"`   // originating user, absent for cron/channel runs
+	User       *EventRef  `json:"user,omitempty"`   // originating user, absent for scheduler/channel runs
 	Tool       *EventTool `json:"tool,omitempty"`   // pre/post_tool_use only
 }
 

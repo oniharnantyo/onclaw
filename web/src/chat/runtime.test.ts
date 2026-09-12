@@ -61,13 +61,13 @@ describe('useChatRuntime', () => {
       });
       useStore.setState({
         pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
-        ui: { configAgent: null, cronEdit: null, wsOpen: false, running: false, toasts: [] },
+        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, toasts: [] },
         db: {
           t1: {
             id: 't1',
             name: 'T1', sub: 't1', tz: 'America/Los_Angeles',
             defaultModel: 'claude-sonnet-5', retention: '90 days',
-            people: [], cron: [], runs: [], members: [], integrations: [], skillLib: [], keys: [],
+            people: [], schedules: [], runs: [], members: [], integrations: [], skillLib: [], keys: [],
             agents: [mkAgent('a1', 'Alice', ['search']), mkAgent('a2', 'Bob', [])],
             // agentId is '' (not 'a1') so no agent auto-responds to plain
             // channel messages — the no-turn and DM-only tests rely on it.
@@ -75,7 +75,7 @@ describe('useChatRuntime', () => {
             threads: {
               a1: { active: 's1', list: [{ id: 's1', title: 'Chat', updated: '', messages: [{
                 id: 'm1', text: 'hello', author: 'agent', ts: '2026-08-27T00:00:00Z',
-                agentId: 'a1', cron: 'cron1', name: 'Agent 1',
+                agentId: 'a1', scheduler: 'sched1', name: 'Agent 1',
                 tools: [{ name: 'test.tool', args: 'foo', ms: 100 }]
               }] }] },
               c1: { active: 's2', list: [{ id: 's2', title: 'Chat', updated: '', messages: [{
@@ -94,14 +94,14 @@ describe('useChatRuntime', () => {
     vi.useRealTimers();
   });
 
-  it('conversion round-trip maintains identity/cron/tools', () => {
+  it('conversion round-trip maintains identity/scheduler-origin/tools', () => {
     const { result } = renderHook(() => useChatRuntime('a1'));
     const converted: any = result.current.convertMessage(useStore.getState().db.t1.threads.a1.list[0].messages[0]);
     
     expect(converted.id).toBe('m1');
     expect(converted.role).toBe('assistant');
     expect(converted.metadata.custom.onclaw.agentId).toBe('a1');
-    expect(converted.metadata.custom.onclaw.cron).toBe('cron1');
+    expect(converted.metadata.custom.onclaw.scheduler).toBe('sched1');
     expect(converted.content[1].type).toBe('tool-call');
     expect(converted.content[1].toolName).toBe('test.tool');
   });
@@ -184,13 +184,13 @@ describe('useChatRuntime — live session binding (birth → chain → reset-for
       });
       useStore.setState({
         pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
-        ui: { configAgent: null, cronEdit: null, wsOpen: false, running: false, toasts: [] },
+        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, toasts: [] },
         db: {
           t1: {
             id: 't1',
             name: 'T1', sub: 't1', tz: 'America/Los_Angeles',
             defaultModel: 'claude-sonnet-5', retention: '90 days',
-            people: [], cron: [], runs: [], members: [], integrations: [], skillLib: [], keys: [],
+            people: [], schedules: [], runs: [], members: [], integrations: [], skillLib: [], keys: [],
             agents: [mkAgent('a1', 'Alice', ['search'])],
             channels: [],
             threads: {
@@ -262,7 +262,7 @@ describe('useChatRuntime — live session binding (birth → chain → reset-for
     expect(params.sessionId).toBeUndefined();
   });
 
-  it('/reset mints a fresh session id so the next turn births a new session (local clear only)', async () => {
+  it('/reset passes through as ordinary text (commands are /compact-only, chat-compact-command D8)', async () => {
     localStorage.setItem('onclaw.api_key.t1', 'k-live');
     vi.mocked(runTurn).mockImplementation(async () => {});
     act(() => {
@@ -280,19 +280,19 @@ describe('useChatRuntime — live session binding (birth → chain → reset-for
 
     await send(result, '/reset');
 
-    const after = activeSession();
-    expect(after.messages).toEqual([]);
-    expect(after.sess).toMatch(/^sess_/);
-    expect(after.sess).not.toBe('sess_old-1');
-
-    await send(result, 'fresh start');
-
+    // The old local /reset interception is gone: /reset is an unknown command
+    // and rides the send path as an ordinary chained turn.
     expect(runTurn).toHaveBeenCalledTimes(1);
     const [, params]: any[] = vi.mocked(runTurn).mock.calls[0];
-    // Post-reset: birth again — fresh session metadata, no chaining across
-    // the cleared conversation.
-    expect(params.sessionId).toBe(after.sess);
-    expect(params.previousResponseId).toBeUndefined();
+    expect(params.input).toBe('/reset');
+    expect(params.previousResponseId).toBe('resp_old_1');
+    // The thread was NOT cleared locally — the message lands and the turn
+    // runs (with its optimistic agent row, like any ordinary message).
+    const after = activeSession();
+    expect(after.messages).toHaveLength(4);
+    expect(after.messages[2].author).toBe('you');
+    expect(after.messages[2].text).toBe('/reset');
+    expect(after.messages[3].author).toBe('agent');
   });
 
   it('stop cancels the in-flight server run by decoding resp_<session>_<turn> at the last underscore', async () => {
@@ -317,6 +317,27 @@ describe('useChatRuntime — live session binding (birth → chain → reset-for
     // Partial text persists in the transcript.
     const msgs = activeSession().messages;
     expect(msgs[msgs.length - 1].text).toBe('partial ');
+  });
+
+  it('stop before the first stream event still cancels the server run by session (placeholder turn)', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await send(result, 'slow first token');
+
+    // Nothing streamed yet: no minted response id exists, but the run is
+    // already live server-side. The stop must still reach it — addressed by
+    // the bound session (the cancel endpoint is session-scoped; the turn
+    // segment is a placeholder). Skipping the cancel here left the run
+    // streaming to completion after "stop", and a reload re-attached to it.
+    const [, params]: any[] = vi.mocked(runTurn).mock.calls[0];
+    expect(params.sessionId).toMatch(/^sess_/);
+
+    await act(async () => { await result.current.onCancel(); });
+
+    expect(api.agents.cancelRun).toHaveBeenCalledWith('t1', 'a1', params.sessionId, 'pending');
+    expect(useStore.getState().ui.running).toBe(false);
   });
 
   it('/v1 auth failure re-exchanges once and retries the turn with the fresh key', async () => {
@@ -442,6 +463,8 @@ describe('useChatRuntime — live session binding (birth → chain → reset-for
     act(() => { cb.onReasoningDelta?.('step one. '); });
     act(() => { cb.onReasoningDelta?.('step two.'); });
     act(() => { cb.onDelta('Answer'); });
+    // Deltas coalesce into one store write per macrotask (nested-update guard).
+    act(() => { vi.advanceTimersByTime(1); });
 
     const last = activeSession().messages[activeSession().messages.length - 1];
     expect(last.author).toBe('agent');
@@ -462,6 +485,8 @@ describe('useChatRuntime — live session binding (birth → chain → reset-for
     act(() => { cb.onToolOutput?.('call_1', 'web.fetch', '<html>', 410, false); });
     act(() => { cb.onReasoningDelta?.('got it, summarizing.'); });
     act(() => { cb.onDelta('Here is the summary.'); });
+    // Deltas coalesce into one store write per macrotask (nested-update guard).
+    act(() => { vi.advanceTimersByTime(1); });
 
     const last = activeSession().messages[activeSession().messages.length - 1];
     expect(last.parts).toEqual([
@@ -482,6 +507,8 @@ describe('useChatRuntime — live session binding (birth → chain → reset-for
     const [, , cb]: any[] = vi.mocked(runTurn).mock.calls[0];
     act(() => { cb.onReasoningDelta?.('   '); });
     act(() => { cb.onDelta('Answer'); });
+    // Deltas coalesce into one store write per macrotask (nested-update guard).
+    act(() => { vi.advanceTimersByTime(1); });
 
     const last = activeSession().messages[activeSession().messages.length - 1];
     expect(last.parts ?? []).toEqual([]);
@@ -612,12 +639,12 @@ describe('useChatRuntime — 409 conflict queue (live-run-reattach fix)', () => 
       });
       useStore.setState({
         pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
-        ui: { configAgent: null, cronEdit: null, wsOpen: false, running: false, toasts: [] },
+        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, toasts: [] },
         db: {
           t1: {
             id: 't1', name: 'T1', sub: 't1', tz: 'America/Los_Angeles',
             defaultModel: 'claude-sonnet-5', retention: '90 days',
-            people: [], cron: [], runs: [], members: [], integrations: [], skillLib: [], keys: [],
+            people: [], schedules: [], runs: [], members: [], integrations: [], skillLib: [], keys: [],
             agents: [mkAgent('a1', 'Alice', ['search'])],
             channels: [],
             threads: {
@@ -728,5 +755,402 @@ describe('useChatRuntime — 409 conflict queue (live-run-reattach fix)', () => 
     const msgs = activeSession().messages;
     expect(msgs.some((m: any) => m.author === 'error')).toBe(true);
     expect(useStore.getState().ui.running).toBe(false);
+  });
+});
+
+describe('useChatRuntime — /compact command (chat-compact-command)', () => {
+  const activeSession = (): any => {
+    const th = useStore.getState().db.t1.threads.a1;
+    return th.list.find((x: any) => x.id === th.active);
+  };
+
+  const send = (result: any, text: string) =>
+    act(async () => {
+      await result.current.onNew({ role: 'user', content: [{ type: 'text', text }] } as any);
+    });
+
+  beforeEach(() => {
+    localStorage.clear();
+    vi.mocked(runTurn).mockReset();
+    vi.mocked(handleV1AuthFailure).mockReset();
+    act(() => {
+      const mkAgent = (id: string, name: string, tools: string[]) => ({
+        id, name, model: 'claude-sonnet-5', temp: 0.4, autonomy: 'approval', channelPost: false,
+        role: 'Test agent', status: 'idle', tools, skills: ['research'], lastActive: 'now', prompt: ''
+      });
+      useStore.setState({
+        pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
+        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, toasts: [] },
+        db: {
+          t1: {
+            id: 't1', name: 'T1', sub: 't1', tz: 'America/Los_Angeles',
+            defaultModel: 'claude-sonnet-5', retention: '90 days',
+            people: [], schedules: [], runs: [], members: [], integrations: [], skillLib: [], keys: [],
+            agents: [mkAgent('a1', 'Alice', ['search'])],
+            channels: [{ id: 'c1', name: 'general', purpose: 'Team chat', agentId: '', unread: 0, members: ['a1'] }],
+            threads: {
+              // Bound session with a recorded response chain — a compact turn
+              // binds via previous_response_id.
+              a1: {
+                active: 'sess_live-1',
+                list: [{
+                  id: 'sess_live-1', title: 'Chat', updated: '',
+                  messages: [{ id: 'm0', author: 'agent', ts: '', text: 'prior', resp: 'resp_sess_live-1_t1' }],
+                }],
+              },
+              c1: { active: 's2', list: [{ id: 's2', title: 'Chat', updated: '', messages: [] }] },
+            },
+          },
+        },
+      });
+    });
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it('intercepts /compact <focus>: command turn, focus as input, no user message, status flag on', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await send(result, '/compact keep the decisions');
+
+    expect(runTurn).toHaveBeenCalledTimes(1);
+    const [, params]: any[] = vi.mocked(runTurn).mock.calls[0];
+    expect(params.input).toBe('keep the decisions');
+    expect(params.command).toBe('compact');
+    // Bind-only: chains to the existing response — never births a session.
+    expect(params.previousResponseId).toBe('resp_sess_live-1_t1');
+    expect(params.sessionId).toBeUndefined();
+    // The command text never entered the message list and no optimistic
+    // agent row was minted — only the prior message remains.
+    const msgs = activeSession().messages;
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].id).toBe('m0');
+    expect(useStore.getState().ui.running).toBe(true);
+    expect(useStore.getState().ui.compacting).toBe(true);
+  });
+
+  it('bare /compact sends an empty (absent) focus as input', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await send(result, '/compact');
+
+    const [, params]: any[] = vi.mocked(runTurn).mock.calls[0];
+    expect(params.input).toBe('');
+    expect(params.command).toBe('compact');
+  });
+
+  it('an unbound thread never births a session for a compact turn (bind-only, design D2)', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    act(() => {
+      useStore.getState().updateTenant('t1', (t: any) => {
+        t.threads.a1 = { active: 's1', list: [{ id: 's1', title: 'Chat', updated: '', messages: [] }] };
+        return t;
+      });
+    });
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await send(result, '/compact');
+
+    const [, params]: any[] = vi.mocked(runTurn).mock.calls[0];
+    expect(params.sessionId).toBeUndefined();
+    expect(params.previousResponseId).toBeUndefined();
+    // No lazy migration happened — the session stays unbound.
+    expect(activeSession().id).toBe('s1');
+  });
+
+  it('compacted event swaps the status for the divider; onDone records the chain on it', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await send(result, '/compact');
+    const [, , cb]: any[] = vi.mocked(runTurn).mock.calls[0];
+
+    await act(async () => { cb.onContextCompacted({ tokensBefore: 154000, tokensAfter: 9200 }); });
+
+    // The status row retracts at the compacted event; the divider entry is
+    // the only thing the turn leaves behind (no user pill, no agent row).
+    expect(useStore.getState().ui.compacting).toBe(false);
+    expect(useStore.getState().ui.running).toBe(true);
+    let msgs = activeSession().messages;
+    expect(msgs).toHaveLength(2);
+    expect(msgs[1].author).toBe('compaction');
+    expect(msgs[1].compaction).toEqual({ tokensBefore: 154000, tokensAfter: 9200 });
+    expect(msgs[1].summarySaved).toBe(true);
+
+    await act(async () => { cb.onDone('resp_sess_live-1_t9'); });
+
+    expect(useStore.getState().ui.running).toBe(false);
+    expect(useStore.getState().ui.compacting).toBe(false);
+    // The compact turn is the new chain head: later turns chain to it.
+    msgs = activeSession().messages;
+    expect(msgs[1].resp).toBe('resp_sess_live-1_t9');
+    expect(useStore.getState().getLastResponse('a1')).toBe('resp_sess_live-1_t9');
+  });
+
+  it('quiet completion (no compacted event) leaves nothing in the thread', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await send(result, '/compact');
+    const [, , cb]: any[] = vi.mocked(runTurn).mock.calls[0];
+    await act(async () => { cb.onDone('resp_sess_live-1_t9'); });
+
+    expect(useStore.getState().ui.running).toBe(false);
+    expect(useStore.getState().ui.compacting).toBe(false);
+    // No divider (no compacted event), no agent row, no error entry.
+    expect(activeSession().messages).toHaveLength(1);
+  });
+
+  it('failure retracts the status row and leaves nothing — no error entry', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await send(result, '/compact');
+    const [, , cb]: any[] = vi.mocked(runTurn).mock.calls[0];
+    await act(async () => { cb.onError('Error from provider: Rate limit exceeded', {}); });
+
+    expect(useStore.getState().ui.running).toBe(false);
+    expect(useStore.getState().ui.compacting).toBe(false);
+    const msgs = activeSession().messages;
+    expect(msgs).toHaveLength(1);
+    expect(msgs.some((m: any) => m.author === 'error')).toBe(false);
+  });
+
+  it('unknown /foo sends as ordinary text in an agent chat (design D8)', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await send(result, '/foo list tools');
+
+    expect(runTurn).toHaveBeenCalledTimes(1);
+    const [, params]: any[] = vi.mocked(runTurn).mock.calls[0];
+    expect(params.input).toBe('/foo list tools');
+    expect(params.command).toBeUndefined();
+    expect(activeSession().messages.some((m: any) => m.author === 'you' && m.text === '/foo list tools')).toBe(true);
+  });
+
+  it('channels are unaffected: /compact passes through as plain text with no command turn', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('c1'));
+
+    await send(result, '/compact');
+
+    // c1 has no bound agent — nothing runs; the text lands verbatim.
+    expect(runTurn).not.toHaveBeenCalled();
+    const msgs = useStore.getState().db.t1.threads.c1.list[0].messages;
+    expect(msgs.some((m: any) => m.author === 'you' && m.text === '/compact')).toBe(true);
+    expect(useStore.getState().ui.compacting).toBeFalsy();
+  });
+});
+
+describe('useChatRuntime — attachment sends (add-chat-attachments D11/D12)', () => {
+  const activeSession = (): any => {
+    const th = useStore.getState().db.t1.threads.a1;
+    return th.list.find((x: any) => x.id === th.active);
+  };
+
+  const send = (result: any, text: string, chips?: any[]) =>
+    act(async () => {
+      await result.current.onNew({ role: 'user', content: [{ type: 'text', text }] } as any, chips);
+    });
+
+  const readyChip = (over: Partial<any> = {}) => ({
+    key: 'c1', id: 'att-1', name: 'shot.png', mime: 'image/png', size: 12,
+    url: '/api/v1/files/k1', state: 'ready', progress: 100, ...over,
+  });
+
+  beforeEach(() => {
+    localStorage.clear();
+    vi.mocked(runTurn).mockReset();
+    vi.mocked(handleV1AuthFailure).mockReset();
+    act(() => {
+      const mkAgent = (id: string, name: string, tools: string[]) => ({
+        id, name, model: 'claude-sonnet-5', temp: 0.4, autonomy: 'approval', channelPost: false,
+        role: 'Test agent', status: 'idle', tools, skills: ['research'], lastActive: 'now', prompt: ''
+      });
+      useStore.setState({
+        pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
+        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, toasts: [] },
+        db: {
+          t1: {
+            id: 't1', name: 'T1', sub: 't1', tz: 'America/Los_Angeles',
+            defaultModel: 'claude-sonnet-5', retention: '90 days',
+            people: [], schedules: [], runs: [], members: [], integrations: [], skillLib: [], keys: [],
+            agents: [mkAgent('a1', 'Alice', ['search'])],
+            channels: [],
+            threads: {
+              a1: { active: 'sess_live-5', list: [{ id: 'sess_live-5', title: 'Chat', updated: '', messages: [] }] },
+            },
+          },
+        },
+      });
+    });
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('onNew with ready chips pushes the entry carrying attachments and calls runTurn with them', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await send(result, 'what is this?', [readyChip()]);
+
+    const user = activeSession().messages.find((m: any) => m.author === 'you');
+    expect(user.attachments).toEqual([
+      { id: 'att-1', name: 'shot.png', mime: 'image/png', size: 12, url: '/api/v1/files/k1' },
+    ]);
+    expect(runTurn).toHaveBeenCalledTimes(1);
+    const [, params]: any[] = vi.mocked(runTurn).mock.calls[0];
+    expect(params.attachments).toEqual(user.attachments);
+    expect(params.input).toBe('what is this?');
+  });
+
+  it('only ready chips ride the entry and the turn (uploading/rejected are filtered)', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await send(result, 'mixed tray', [
+      readyChip(),
+      { key: 'c2', name: 'mid.png', mime: 'image/png', size: 5, state: 'uploading', progress: 40 },
+      { key: 'c3', name: 'bad.docx', mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', size: 9, state: 'rejected', progress: 0, reason: 'Not supported — export as PDF' },
+    ]);
+
+    const user = activeSession().messages.find((m: any) => m.author === 'you');
+    expect(user.attachments).toHaveLength(1);
+    expect(user.attachments[0].name).toBe('shot.png');
+    const [, params]: any[] = vi.mocked(runTurn).mock.calls[0];
+    expect(params.attachments).toEqual(user.attachments);
+  });
+
+  it('attachment-only send (empty text, ≥1 ready chip) proceeds', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await send(result, '', [readyChip({ key: 'c9', id: 'att-9', name: 'report.pdf', mime: 'application/pdf', size: 5033164, url: '/api/v1/files/k2' })]);
+
+    // The optimistic user entry lands WITH its chips — the visible content is
+    // the attachment alone.
+    const user = activeSession().messages.find((m: any) => m.author === 'you');
+    expect(user.text).toBe('');
+    expect(user.attachments).toEqual([
+      { id: 'att-9', name: 'report.pdf', mime: 'application/pdf', size: 5033164, url: '/api/v1/files/k2' },
+    ]);
+    expect(runTurn).toHaveBeenCalledTimes(1);
+    const [, params]: any[] = vi.mocked(runTurn).mock.calls[0];
+    expect(params.input).toBe('');
+    expect(params.attachments).toEqual(user.attachments);
+  });
+
+  it('the 409-conflict queued re-dispatch carries the same attachments', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    const encoder = new TextEncoder();
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+      }) as unknown as Response
+    ));
+
+    vi.mocked(runTurn)
+      .mockImplementationOnce(async (_k: any, _p: any, cb: any) => {
+        cb.onError('agent.Run: conflict: a run is already active for session "sess_live-5"', { conflict: true });
+      })
+      .mockImplementationOnce(async () => {});
+
+    const { result } = renderHook(() => useChatRuntime('a1'));
+    await send(result, 'look at this', [readyChip()]);
+
+    // Drain the queue chain (hydrate → attach → [DONE] → re-dispatch).
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(runTurn).toHaveBeenCalledTimes(2);
+    const [, retryParams]: any[] = vi.mocked(runTurn).mock.calls[1];
+    expect(retryParams.input).toBe('look at this');
+    expect(retryParams.attachments).toEqual([
+      { id: 'att-1', name: 'shot.png', mime: 'image/png', size: 12, url: '/api/v1/files/k1' },
+    ]);
+  });
+
+  it('regenerate re-sends the stored user entry attachment references (never re-uploads)', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const stored = [{ id: 'att-1', name: 'shot.png', mime: 'image/png', size: 12, url: '/api/v1/files/k1' }];
+    act(() => {
+      useStore.getState().updateTenant('t1', (t: any) => {
+        const s = t.threads.a1.list[0];
+        s.messages = [
+          { id: 'u1', author: 'you', ts: '', text: 'see this', attachments: stored },
+          { id: 'g1', author: 'agent', ts: '', text: 'old reply', resp: 'resp_sess_live-5_t1' },
+        ];
+        return t;
+      });
+    });
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await act(async () => {
+      await result.current.onReload('g1');
+    });
+
+    expect(runTurn).toHaveBeenCalledTimes(1);
+    const [, params]: any[] = vi.mocked(runTurn).mock.calls[0];
+    expect(params.input).toBe('see this');
+    // The references come straight from the stored entry — same urls/ids.
+    expect(params.attachments).toEqual(stored);
+  });
+
+  it('regenerate works for an attachment-only user turn (empty text)', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const stored = [{ id: 'att-9', name: 'report.pdf', mime: 'application/pdf', size: 5033164, url: '/api/v1/files/k2' }];
+    act(() => {
+      useStore.getState().updateTenant('t1', (t: any) => {
+        const s = t.threads.a1.list[0];
+        s.messages = [
+          { id: 'u1', author: 'you', ts: '', text: '', attachments: stored },
+          { id: 'g1', author: 'agent', ts: '', text: 'old reply', resp: 'resp_sess_live-5_t1' },
+        ];
+        return t;
+      });
+    });
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await act(async () => {
+      await result.current.onReload('g1');
+    });
+
+    expect(runTurn).toHaveBeenCalledTimes(1);
+    const [, params]: any[] = vi.mocked(runTurn).mock.calls[0];
+    expect(params.input).toBe('');
+    expect(params.attachments).toEqual(stored);
   });
 });

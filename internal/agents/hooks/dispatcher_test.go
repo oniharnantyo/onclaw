@@ -877,7 +877,7 @@ func TestDispatcher_EvaluatePromptSubmission(t *testing.T) {
 	srv := newCountingHookServer(t, http.StatusOK, `{"decision":"block","reason":"cron prompts need review"}`)
 	hs := &fakeHookStore{
 		workspaceHooks: []domain.WorkspaceHook{
-			workspaceHTTPHook("ws-1", "ws-1", "Cron Gate", 0, domain.HookEventUserPromptSubmit, matchOnly("cron"), srv.srv.URL),
+			workspaceHTTPHook("ws-1", "ws-1", "Cron Gate", 0, domain.HookEventUserPromptSubmit, matchOnly("scheduler"), srv.srv.URL),
 		},
 	}
 	d := NewDispatcher(hs, dispatcherRegistry(srv.srv))
@@ -895,7 +895,7 @@ func TestDispatcher_EvaluatePromptSubmission(t *testing.T) {
 	}
 
 	ev := dispatcherEvent()
-	ev.Origin = "cron"
+	ev.Origin = "scheduler"
 	blocked, hookName, reason = resolved.EvaluatePromptSubmission(context.Background(), ev)
 	if !blocked || hookName != "Cron Gate" || reason != "cron prompts need review" {
 		t.Fatalf("cron-origin prompt: (%v, %q, %q), want block by Cron Gate", blocked, hookName, reason)

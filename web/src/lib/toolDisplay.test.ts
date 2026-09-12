@@ -8,6 +8,7 @@ import {
   FACADE_TOOL_IDS,
   SENTENCE_TABLE,
   blockedByHook,
+  createdDocumentURL,
   fieldRows,
   formatLatency,
   formatResult,
@@ -318,7 +319,7 @@ describe('humanizeKey', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4.2 coverage guard: the full expected tool universe — the 12 backend
+// 4.2 coverage guard: the full expected tool universe — the 13 backend
 // catalog keys (internal/agents/tool_catalog.go) + the 10 browser facade
 // member ids (toolCatalog.ts facadeToolNames) — MUST have a sentence-table
 // entry that mints a one-liner. When the backend gains a tool, extend this
@@ -333,11 +334,14 @@ const SUITABLE_ARGS: Record<string, Record<string, unknown>> = {
   glob: { pattern: '*.go' },
   grep: { pattern: 'TODO' },
   delete_file: { file_path: 'tmp.txt' },
+  'document.read': { path: 'invoice.pdf' },
+  'document.create': { path: 'invoice.xlsx', format: 'xlsx' },
   execute: { command: 'ls -la' },
   memory: { action: 'read', path: 'USER.md' },
   'web.search': { query: 'onclaw' },
   'web.fetch': { url: 'https://example.com' },
   browser: {},
+  schedule: { action: 'create', name: 'morning-digest', kind: 'recurring', expression: '0 9 * * 1-5' },
   'browser.navigate': { url: 'https://example.com' },
   'browser.act': { action: 'click', selector: '.btn' },
   'browser.read': {},
@@ -352,7 +356,7 @@ const SUITABLE_ARGS: Record<string, Record<string, unknown>> = {
 
 describe('coverage guard (4.2)', () => {
   it('pins the expected universe sizes', () => {
-    expect(CATALOG_TOOL_KEYS).toHaveLength(12);
+    expect(CATALOG_TOOL_KEYS).toHaveLength(15);
     expect(FACADE_TOOL_IDS).toHaveLength(10);
   });
 
@@ -380,6 +384,171 @@ describe('coverage guard (4.2)', () => {
     );
     // An unknown action must not invent a sentence (D1).
     expect(toolOneLiner('memory', { args: '{"action":"wipe"}' }, false)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// schedule tool (integrate-scheduler): action-driven one-liners and facts
+// ---------------------------------------------------------------------------
+
+const SCHEDULE_CREATED = JSON.stringify({
+  id: 'sch_01',
+  name: 'morning-digest',
+  kind: 'recurring',
+  schedule: '09:00 · Mon–Fri',
+  next_run_at: '2026-09-14T09:00:00+07:00',
+  delivery: 'thread',
+  result: 'Created schedule "morning-digest" (09:00 · Mon–Fri) — it fires next at 2026-09-14T09:00:00+07:00.',
+});
+
+describe('schedule tool one-liners (integrate-scheduler)', () => {
+  it('create: names the schedule and appends the trusted label on done', () => {
+    const args = JSON.stringify({ action: 'create', name: 'morning-digest', kind: 'recurring', expression: '0 9 * * 1-5' });
+    expect(toolOneLiner('schedule', { args }, true)).toBe("Scheduling 'morning-digest'");
+    expect(toolOneLiner('schedule', { args, res: SCHEDULE_CREATED }, false)).toBe(
+      "Scheduled 'morning-digest' · 09:00 · Mon–Fri"
+    );
+    // No result yet (or unparseable): outcome without a fact (D2).
+    expect(toolOneLiner('schedule', { args }, false)).toBe("Scheduled 'morning-digest'");
+  });
+
+  it('create: channel delivery appends the target channel chip', () => {
+    const args = JSON.stringify({ action: 'create', name: 'morning-digest', kind: 'recurring', expression: '0 9 * * 1-5', delivery: 'channel', channel_id: 'ch-ops' });
+    expect(toolOneLiner('schedule', { args, res: SCHEDULE_CREATED }, false)).toBe(
+      "Scheduled 'morning-digest' · 09:00 · Mon–Fri → `ch-ops`"
+    );
+  });
+
+  it('list: bare sentence with a count fact only when schedules exist', () => {
+    const args = '{"action":"list"}';
+    expect(toolOneLiner('schedule', { args }, true)).toBe('Listing schedules');
+    const three = JSON.stringify({ schedules: [{ id: 'a' }, { id: 'b' }, { id: 'c' }], result: '3 schedules' });
+    expect(toolOneLiner('schedule', { args, res: three }, false)).toBe('Listed schedules — 3 schedules');
+    const one = JSON.stringify({ schedules: [{ id: 'a' }], result: '1' });
+    expect(toolOneLiner('schedule', { args, res: one }, false)).toBe('Listed schedules — 1 schedule');
+    expect(toolOneLiner('schedule', { args, res: JSON.stringify({ schedules: [] }) }, false)).toBe(
+      'Listed schedules'
+    );
+  });
+
+  it('update: identifies the schedule by id chip and appends the new label', () => {
+    const args = '{"action":"update","id":"sch_01","enabled":false}';
+    expect(toolOneLiner('schedule', { args }, true)).toBe('Updating schedule `sch_01`');
+    const res = JSON.stringify({ id: 'sch_01', name: 'morning-digest', schedule: '09:00 · Mon–Fri', enabled: false, result: 'Updated' });
+    expect(toolOneLiner('schedule', { args, res }, false)).toBe(
+      'Updated schedule `sch_01` · 09:00 · Mon–Fri'
+    );
+  });
+
+  it('delete: identifies the schedule by id chip', () => {
+    const args = '{"action":"delete","id":"sch_01"}';
+    expect(toolOneLiner('schedule', { args }, true)).toBe('Deleting schedule `sch_01`');
+    expect(toolOneLiner('schedule', { args, res: '{"id":"sch_01","result":"Deleted"}' }, false)).toBe(
+      'Deleted schedule `sch_01`'
+    );
+  });
+
+  it('unknown action mints nothing (D1)', () => {
+    expect(toolOneLiner('schedule', { args: '{"action":"noop"}' }, false)).toBeNull();
+  });
+
+  it('expanded view lists the verified arg keys in spec order', () => {
+    expect(toolFieldSpec('schedule')).toEqual([
+      { key: 'action', label: 'Action', kind: 'enum' },
+      { key: 'name', label: 'Name', kind: 'quote' },
+      { key: 'kind', label: 'Kind', kind: 'enum' },
+      { key: 'expression', label: 'Expression', kind: 'quote' },
+      { key: 'run_at', label: 'Run At', kind: 'plain' },
+      { key: 'delivery', label: 'Delivery', kind: 'enum' },
+      { key: 'channel_id', label: 'Channel', kind: 'chip' },
+      { key: 'enabled', label: 'Enabled', kind: 'plain' },
+      { key: 'prompt', label: 'Prompt', kind: 'content' },
+      { key: 'id', label: 'ID', kind: 'chip' },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// document.* tools (add-document-read-tool / add-document-create-tool):
+// one-liners, trusted facts, expanded field specs, and the download URL
+// ---------------------------------------------------------------------------
+
+const DOCUMENT_READ_OK = JSON.stringify({
+  path: 'invoice.pdf',
+  name: 'invoice.pdf',
+  markdown: 'Invoice #42\n\nSeller: Acme',
+});
+const DOCUMENT_READ_TRUNCATED = JSON.stringify({
+  path: 'big.pdf',
+  name: 'big.pdf',
+  markdown: 'x'.repeat(32) + '\n\n[Output truncated at 200 KB — use filesystem or grep tools if you need to search specific sections]',
+});
+const DOCUMENT_CREATED = JSON.stringify({
+  path: 'invoice.xlsx',
+  format: 'xlsx',
+  url: '/api/v1/files/abc123',
+  result: 'Created invoice.xlsx',
+});
+
+describe('document tools one-liners (document.* family)', () => {
+  it('document.read: intent while running, outcome when done', () => {
+    const args = '{"path":"invoice.pdf"}';
+    expect(toolOneLiner('document.read', { args }, true)).toBe('Reading document `invoice.pdf`');
+    expect(toolOneLiner('document.read', { args, res: DOCUMENT_READ_OK }, false)).toBe(
+      'Read document `invoice.pdf`'
+    );
+  });
+
+  it('document.read: appends the truncation fact only from the trusted marker', () => {
+    const args = '{"path":"big.pdf"}';
+    expect(toolOneLiner('document.read', { args, res: DOCUMENT_READ_TRUNCATED }, false)).toBe(
+      'Read document `big.pdf` · truncated'
+    );
+    // Plain reads and unparseable results append nothing (D2).
+    expect(toolOneLiner('document.read', { args, res: DOCUMENT_READ_OK }, false)).toBe(
+      'Read document `big.pdf`'
+    );
+    expect(toolOneLiner('document.read', { args, res: 'gateway timeout' }, false)).toBe(
+      'Read document `big.pdf`'
+    );
+  });
+
+  it('document.create: outcome appends the format fact from the result envelope', () => {
+    const args = '{"path":"invoice.xlsx","format":"xlsx","data":{}}';
+    expect(toolOneLiner('document.create', { args }, true)).toBe('Creating document `invoice.xlsx`');
+    expect(toolOneLiner('document.create', { args, res: DOCUMENT_CREATED }, false)).toBe(
+      'Created document `invoice.xlsx` · xlsx'
+    );
+    // No result yet (or unparseable): outcome without a fact (D2).
+    expect(toolOneLiner('document.create', { args }, false)).toBe('Created document `invoice.xlsx`');
+    expect(toolOneLiner('document.create', { args, res: 'nope' }, false)).toBe(
+      'Created document `invoice.xlsx`'
+    );
+  });
+
+  it('expanded view lists the verified arg keys in spec order', () => {
+    expect(toolFieldSpec('document.read')).toEqual([
+      { key: 'path', label: 'Path', kind: 'chip' },
+    ]);
+    expect(toolFieldSpec('document.create')).toEqual([
+      { key: 'path', label: 'Path', kind: 'chip' },
+      { key: 'format', label: 'Format', kind: 'enum' },
+      { key: 'template', label: 'Template', kind: 'chip' },
+    ]);
+  });
+});
+
+describe('createdDocumentURL (document.create delivery)', () => {
+  it('extracts the capability URL from the trusted envelope', () => {
+    expect(createdDocumentURL(DOCUMENT_CREATED)).toBe('/api/v1/files/abc123');
+  });
+
+  it('returns null for absent, empty, or unparseable envelopes', () => {
+    expect(createdDocumentURL(undefined)).toBeNull();
+    expect(createdDocumentURL('')).toBeNull();
+    expect(createdDocumentURL('not json')).toBeNull();
+    expect(createdDocumentURL('{"format":"xlsx"}')).toBeNull();
+    expect(createdDocumentURL('{"url":""}')).toBeNull();
   });
 });
 

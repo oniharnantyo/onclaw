@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { Combobox, type ComboboxOption } from './Combobox';
 
 describe('components/ui/Combobox', () => {
@@ -191,5 +191,26 @@ describe('components/ui/Combobox', () => {
     fireEvent.change(select, { target: { value: 'eggplant' } });
 
     expect(onChange).toHaveBeenCalledWith('eggplant', sampleOptions[4]);
+  });
+
+  it('renders a per-option trailing icons node in the default row rendering', () => {
+    render(
+      <Combobox
+        options={[
+          { value: 'capable', label: 'Capable', icons: <span title="Accepts image input">icon</span> },
+          { value: 'quiet', label: 'Quiet' },
+        ]}
+        onChange={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('combobox'));
+
+    const capableRow = screen.getByTestId('combobox-option-capable');
+    expect(within(capableRow).getByTitle('Accepts image input')).not.toBeNull();
+    // Options without an icons node render unchanged — no placeholder markers.
+    const quietRow = screen.getByTestId('combobox-option-quiet');
+    expect(quietRow.textContent).toContain('Quiet');
+    expect(within(quietRow).queryByTitle('Accepts image input')).toBeNull();
   });
 });

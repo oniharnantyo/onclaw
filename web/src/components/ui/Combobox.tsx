@@ -7,6 +7,10 @@ export interface ComboboxOption {
   label: string;
   sublabel?: string;
   disabled?: boolean;
+  /** Optional trailing node rendered on the option row (default rendering
+   * only — custom renderOption implementations receive the option and may
+   * read it themselves), e.g. capability icons. */
+  icons?: React.ReactNode;
   [key: string]: any;
 }
 
@@ -346,6 +350,11 @@ export function Combobox<T extends ComboboxOption = ComboboxOption>({
                             </span>
                           )}
                         </div>
+                        {opt.icons && (
+                          <span className="ml-2 flex shrink-0 items-center gap-1 text-muted">
+                            {opt.icons}
+                          </span>
+                        )}
                         {isSelected && (
                           <Icon
                             name="check"

@@ -101,7 +101,7 @@ func setupV1EnvOpts(t *testing.T, release chan struct{}, keepAlive time.Duration
 	onClawDir := t.TempDir()
 	runner := agents.NewRunner(
 		st.Workspaces(), st.Agents(), st.Users(), st.Members(), st.Roles(),
-		st.Providers(), st.SessionEvents(), st.SessionCheckpoints(), st.Memories(),
+		st.Providers(), st.SessionEvents(), st.SessionCheckpoints(), st.Memories(), st.AgentSessions(),
 		[]byte("test-key-32-bytes-long-12345678"),
 		onClawDir,
 		agents.WithAgenticModelFactory(func(_ context.Context, _ string, _ providers.Credential, _ string) (model.BaseModel[*schema.AgenticMessage], error) {
@@ -670,5 +670,341 @@ func TestV1Responses_BoundAndChainedTurns(t *testing.T) {
 	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("chained turn: status = %d body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// v1SeedSession runs one ordinary metadata-bound turn so the named session
+// holds compactable history for the compact-command tests.
+func v1SeedSession(t *testing.T, router *gin.Engine, key, sess, input string) {
+	t.Helper()
+	rec := v1Post(t, router, key, map[string]any{
+		"model":    "atlas",
+		"input":    input,
+		"metadata": map[string]string{"onclaw_session": sess},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("seed turn on %s: status = %d body = %s", sess, rec.Code, rec.Body.String())
+	}
+}
+
+// v1StreamFrames decodes every SSE data frame of a streaming /v1 response
+// body into wire-event maps.
+func v1StreamFrames(t *testing.T, body string) []map[string]any {
+	t.Helper()
+	var frames []map[string]any
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimPrefix(line, "data: ")
+		if !strings.HasPrefix(line, "{") {
+			continue
+		}
+		var ev map[string]any
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			continue
+		}
+		frames = append(frames, ev)
+	}
+	return frames
+}
+
+// TestV1Responses_CompactStreamShape (chat-compact-command 2.4): a compact
+// turn on a bound session streams the onclaw:context_compacted frame with
+// the token estimates, terminates with a completed response carrying the
+// summarizer's usage, and ends with [DONE].
+func TestV1Responses_CompactStreamShape(t *testing.T) {
+	_, router, key := setupV1Env(t)
+
+	const sess = "sess-v1-compact-stream"
+	v1SeedSession(t, router, key, sess, "remember the deployment runbook")
+
+	rec := v1Post(t, router, key, map[string]any{
+		"model":  "atlas",
+		"input":  "keep the runbook details",
+		"stream": true,
+		"metadata": map[string]string{
+			"onclaw_session": sess,
+			"onclaw_command": "compact",
+		},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("compact turn: status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	body := rec.Body.String()
+	var compacted map[string]any
+	completedWithUsage := false
+	for _, frame := range v1StreamFrames(t, body) {
+		switch frame["type"] {
+		case "onclaw:context_compacted":
+			compacted = frame
+		case "response.completed":
+			completedWithUsage = true
+		}
+	}
+	if compacted == nil {
+		t.Fatalf("stream missing onclaw:context_compacted: %s", body)
+	}
+	if tb, ok := compacted["tokens_before"].(float64); !ok || tb <= 0 {
+		t.Fatalf("compacted frame tokens_before = %v (%T), want a positive estimate", compacted["tokens_before"], compacted["tokens_before"])
+	}
+	if _, ok := compacted["tokens_after"].(float64); !ok {
+		t.Fatalf("compacted frame missing numeric tokens_after: %+v", compacted)
+	}
+	if _, ok := compacted["sequence_number"]; !ok {
+		t.Fatalf("compacted frame missing sequence_number: %+v", compacted)
+	}
+	if !completedWithUsage {
+		t.Fatalf("stream missing response.completed: %s", body)
+	}
+	assertDoneLastV1(t, body)
+
+	// The compacted frame carries no output item framing: no message item is
+	// ever opened for a compact turn.
+	if strings.Contains(body, `"type":"response.output_text.delta"`) {
+		t.Fatalf("compact turn streamed text deltas: %s", body)
+	}
+}
+
+// TestV1Responses_CompactFocusNotPersisted (2.4): the focus text is the
+// summarizer instruction, not a user message — it never lands in the
+// session's persisted history.
+func TestV1Responses_CompactFocusNotPersisted(t *testing.T) {
+	st, router, key := setupV1Env(t)
+	wsID := mustV1WorkspaceID(t, st)
+
+	const sess = "sess-v1-compact-focus"
+	const focus = "keep the ONCLAW_COMPACT_FOCUS details"
+	v1SeedSession(t, router, key, sess, "remember the deployment runbook")
+
+	rec := v1Post(t, router, key, map[string]any{
+		"model":  "atlas",
+		"input":  focus,
+		"stream": true,
+		"metadata": map[string]string{
+			"onclaw_session": sess,
+			"onclaw_command": "compact",
+		},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("compact turn: status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	rows, err := st.SessionEvents().LoadEvents(context.Background(), store.LoadSessionEventsParams{
+		WorkspaceID: wsID,
+		SessionID:   sess,
+	})
+	if err != nil {
+		t.Fatalf("load session events: %v", err)
+	}
+	if len(rows) == 0 {
+		t.Fatalf("session %s persisted no events", sess)
+	}
+	for _, row := range rows {
+		if strings.Contains(string(row.Payload), focus) {
+			t.Fatalf("focus text leaked into persisted event %q (kind %s): %.200s", row.EventID, row.Kind, row.Payload)
+		}
+	}
+}
+
+// TestV1Responses_CompactNeverBirths (2.4, design D2): a compact request is
+// bind-only everywhere — unknown metadata sessions fail not-found and birth
+// nothing, an unbound compact never runs ephemeral, and the chained path
+// keeps its ordinary bind-only behavior.
+func TestV1Responses_CompactNeverBirths(t *testing.T) {
+	st, router, key := setupV1Env(t)
+	wsID := mustV1WorkspaceID(t, st)
+	ctx := context.Background()
+
+	// Compact + fresh metadata session: 404, no session born.
+	const ghost = "sess-v1-compact-ghost"
+	rec := v1Post(t, router, key, map[string]any{
+		"model": "atlas",
+		"input": "focus",
+		"metadata": map[string]string{
+			"onclaw_session": ghost,
+			"onclaw_command": "compact",
+		},
+	})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("compact on unknown session: status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "not_found_error") {
+		t.Fatalf("error envelope = %s, want not_found_error", rec.Body.String())
+	}
+	rows, err := st.SessionEvents().LoadEvents(ctx, store.LoadSessionEventsParams{WorkspaceID: wsID, SessionID: ghost})
+	if err == nil && len(rows) > 0 {
+		t.Fatalf("compact birthed the session with %d events; want none", len(rows))
+	}
+
+	// Compact with no binding at all: no session exists to compact — 404,
+	// never an ephemeral run (which would have answered 200).
+	rec = v1Post(t, router, key, map[string]any{
+		"model":    "atlas",
+		"input":    "focus",
+		"metadata": map[string]string{"onclaw_command": "compact"},
+	})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unbound compact: status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	// Compact chained to an unknown session: the bind-only rule is unchanged.
+	rec = v1Post(t, router, key, map[string]any{
+		"model":                "atlas",
+		"input":                "focus",
+		"previous_response_id": openresponses.MintResponseID("sess-v1-compact-chain-ghost", "00000000-0000-0000-0000-000000000000"),
+		"metadata":             map[string]string{"onclaw_command": "compact"},
+	})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("chained compact on unknown session: status = %d body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestV1Responses_CompactEmptyHistoryQuiet (2.4, runner task 1.2 through the
+// wire): a bound session whose persisted events carry no compactable messages
+// compacts quietly — no onclaw:context_compacted frame, a clean completed
+// terminal.
+func TestV1Responses_CompactEmptyHistoryQuiet(t *testing.T) {
+	st, router, key := setupV1Env(t)
+	wsID := mustV1WorkspaceID(t, st)
+	ctx := context.Background()
+
+	const sess = "sess-v1-compact-empty"
+	// Seed one persisted event that carries no message payload (a cancel
+	// marker): the session exists so the bind resolves, but the compactable
+	// message window is empty.
+	adapter := agents.NewADKSessionAdapter(st.SessionEvents(), st.SessionCheckpoints(), wsID)
+	if err := adapter.AppendEvents(ctx, sess, []*adk.SessionEvent[*schema.AgenticMessage]{
+		{EventID: "evt-empty-1", TurnID: "turn-empty", Timestamp: time.Now().UTC(), Cancel: &adk.CancelEvent{Reason: "seed"}},
+	}); err != nil {
+		t.Fatalf("seed empty session: %v", err)
+	}
+
+	rec := v1Post(t, router, key, map[string]any{
+		"model":  "atlas",
+		"input":  "focus",
+		"stream": true,
+		"metadata": map[string]string{
+			"onclaw_session": sess,
+			"onclaw_command": "compact",
+		},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("quiet compact: status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	body := rec.Body.String()
+	if strings.Contains(body, "onclaw:context_compacted") {
+		t.Fatalf("quiet compact emitted a compacted frame: %s", body)
+	}
+	if !strings.Contains(body, `"type":"response.completed"`) {
+		t.Fatalf("quiet compact missing response.completed: %s", body)
+	}
+	assertDoneLastV1(t, body)
+}
+
+// TestV1Responses_CompactConflictsWithActiveRun (2.4, design D1): the
+// compact request enters the normal run pipeline, so a compact turn submitted
+// while a run is live on the session conflicts exactly as an ordinary turn.
+func TestV1Responses_CompactConflictsWithActiveRun(t *testing.T) {
+	release := make(chan struct{})
+	st, router, key := setupV1EnvOpts(t, release, 0)
+
+	const sess = "sess-v1-compact-conflict"
+	// Seed compactable history through the adapter: the ordinary live turn
+	// below uses the stalling model, so a birth turn would never finish.
+	wsID := mustV1WorkspaceID(t, st)
+	adapter := agents.NewADKSessionAdapter(st.SessionEvents(), st.SessionCheckpoints(), wsID)
+	if err := adapter.AppendEvents(context.Background(), sess, []*adk.SessionEvent[*schema.AgenticMessage]{
+		{EventID: "evt-conflict-1", TurnID: "turn-conflict", Timestamp: time.Now().UTC(), Message: schema.UserAgenticMessage("seeded history")},
+	}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+
+	// Start an ordinary streaming turn; the stalling model keeps the run live.
+	streamDone := make(chan struct{})
+	var first *httptest.ResponseRecorder
+	go func() {
+		defer close(streamDone)
+		first = v1Post(t, router, key, map[string]any{
+			"model":    "atlas",
+			"input":    "slow ordinary turn",
+			"stream":   true,
+			"metadata": map[string]string{"onclaw_session": sess},
+		})
+	}()
+	time.Sleep(250 * time.Millisecond) // the run registers; the model call stalls
+
+	rec := v1Post(t, router, key, map[string]any{
+		"model": "atlas",
+		"input": "focus",
+		"metadata": map[string]string{
+			"onclaw_session": sess,
+			"onclaw_command": "compact",
+		},
+	})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("compact during live run: status = %d body = %s, want 409 conflict", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "conflict") {
+		t.Fatalf("conflict envelope = %s, want the conflict code", rec.Body.String())
+	}
+
+	close(release)
+	<-streamDone
+	if first == nil || first.Code != http.StatusOK {
+		t.Fatalf("the live turn itself should have streamed fine, got %+v", first)
+	}
+}
+
+// TestV1Responses_CompactAggregateNoOutputItems (2.4, task 2.2): the
+// non-streaming compact turn folds to response.completed carrying the
+// summarizer usage with NO output items.
+func TestV1Responses_CompactAggregateNoOutputItems(t *testing.T) {
+	_, router, key := setupV1Env(t)
+
+	const sess = "sess-v1-compact-aggregate"
+	v1SeedSession(t, router, key, sess, "remember the deployment runbook")
+
+	rec := v1Post(t, router, key, map[string]any{
+		"model": "atlas",
+		"input": "keep the runbook details",
+		"metadata": map[string]string{
+			"onclaw_session": sess,
+			"onclaw_command": "compact",
+		},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("aggregate compact: status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	var res struct {
+		Status string `json:"status"`
+		Output []any  `json:"output"`
+		Usage  *struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+			TotalTokens  int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res.Status != "completed" {
+		t.Fatalf("status = %s", res.Status)
+	}
+	if len(res.Output) != 0 {
+		t.Fatalf("output = %+v, want no items (compaction emits none)", res.Output)
+	}
+	if res.Usage == nil || res.Usage.TotalTokens <= 0 {
+		t.Fatalf("usage = %+v, want the summarizer call's usage", res.Usage)
+	}
+}
+
+// assertDoneLastV1 checks a streaming /v1 body terminates with [DONE].
+func assertDoneLastV1(t *testing.T, body string) {
+	t.Helper()
+	frames := strings.Split(strings.TrimSpace(body), "\n\n")
+	last := strings.TrimSpace(frames[len(frames)-1])
+	if last != "data: [DONE]" {
+		t.Fatalf("stream must end with [DONE], got %q", last)
 	}
 }

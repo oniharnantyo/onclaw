@@ -1,8 +1,9 @@
 import { useEffect, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { AssistantRuntimeProvider } from '@assistant-ui/react';
 import { useStore, useWorkspace, useThread } from '../store';
 import { useChatRuntime } from '../chat/runtime';
+import type { AttachmentChip } from '../lib/attachments';
 import { ErrorState } from '../components/ErrorState';
 import { ChatView } from '../components/chat/ChatView';
 import { ContextPanel } from '../components/chat/ContextPanel';
@@ -30,11 +31,27 @@ function ChatRouteActive({
   tenant: any;
 }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const pos = useStore((s: any) => s.pos);
   const goPos = useStore((s: any) => s.goPos);
   const ui = useStore((s: any) => s.ui);
   const toast = useStore((s: any) => s.toast);
   const chatRuntime = useChatRuntime(cleanId);
+
+  // Run transcript handoff (integrate-scheduler 7.4): the runs screen
+  // navigates here with the run's session address. One store write injects
+  // (or reuses) the session entry in this agent's thread and activates it;
+  // the state is consumed immediately so a reload doesn't re-inject.
+  const openRun = (location.state as any)?.openRun as
+    | { sessionId: string; schedulerName?: string; title?: string }
+    | undefined;
+  useEffect(() => {
+    if (!openRun?.sessionId || !cleanId) return;
+    const title = openRun.schedulerName ? 'Run · ' + openRun.schedulerName : 'Scheduled run';
+    useStore.getState().openRunSession(cleanId, openRun.sessionId, title, openRun.schedulerName);
+    navigate(location.pathname, { replace: true, state: null });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openRun?.sessionId, cleanId]);
 
   const addChannelMember = (id: string) => useStore.getState().addChannelMember(cleanId, id);
   const removeChannelMember = (id: string) => useStore.getState().removeChannelMember(cleanId, id);
@@ -81,7 +98,11 @@ function ChatRouteActive({
     if (catchUpRef.current?.key === key) return;
     const abort = new AbortController();
     catchUpRef.current = { key, abort };
-    void hydrateSession({ workspaceId, agentSlug: slug, chatId: cleanId, sessionId: boundSessionId, signal: abort.signal }).then((hydrated) => {
+    void hydrateSession({ workspaceId, agentSlug: slug, chatId: cleanId, sessionId: boundSessionId, signal: abort.signal,
+      // A run session opened from the runs screen knows its schedule's name —
+      // stamp messages that carry no origin tag of their own (7.4).
+      originTag: (session as any)?.schedulerName,
+    }).then((hydrated) => {
       if (abort.signal.aborted) return;
       // null means the fetch failed — the store is untouched so a transient
       // network miss never wipes a still-valid meter value.
@@ -197,7 +218,11 @@ function ChatRouteActive({
   return (
     <>
       <AssistantRuntimeProvider runtime={chatRuntime.runtime}>
+        {/* key: the whole view (Composer tray included) remounts per
+            conversation, so switching chats empties the attachment tray and
+            the Composer's cleanup aborts its in-flight uploads. */}
         <ChatView
+          key={cleanId}
           tenant={tenant}
           target={target}
           agent={chatAgent}
@@ -207,11 +232,16 @@ function ChatRouteActive({
           onToggleMembers={() => goPos({ showContext: !pos.showContext })}
           typing={ui.running}
           busy={ui.running}
-          onSend={(text: string) =>
-            chatRuntime.onNew({
-              role: 'user',
-              content: [{ type: 'text', text }],
-            } as unknown as import('@assistant-ui/react').AppendMessage)
+          compacting={ui.compacting}
+          allowAttachments={target.kind === 'agent'}
+          onSend={(text: string, chips?: AttachmentChip[]) =>
+            chatRuntime.onNew(
+              {
+                role: 'user',
+                content: [{ type: 'text', text }],
+              } as unknown as import('@assistant-ui/react').AppendMessage,
+              chips
+            )
           }
           onCancel={chatRuntime.onCancel}
           onConfigure={() => useStore.getState().patchUi({ configAgent: chatAgent?.id })}
@@ -224,11 +254,6 @@ function ChatRouteActive({
               role: 'user',
               content: [{ type: 'text', text }],
             } as unknown as import('@assistant-ui/react').AppendMessage)
-          }
-          onAttach={() =>
-            useStore
-              .getState()
-              .toast('Attachments arrive with the storage integration — connect it in Settings → Integrations')
           }
         />
       </AssistantRuntimeProvider>

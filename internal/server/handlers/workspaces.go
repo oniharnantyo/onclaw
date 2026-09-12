@@ -106,7 +106,7 @@ func (h *workspaceHandlers) CreateWorkspace(c *gin.Context) {
 		return
 	}
 
-	var pType, pName, baseURL string
+	var pType, pName, baseURL, catalogProvider string
 	var pEnabled bool = true
 	var providerImpl providers.Provider
 
@@ -136,6 +136,14 @@ func (h *workspaceHandlers) CreateWorkspace(c *gin.Context) {
 
 		if baseURL != "" {
 			if err := validateBaseURL(baseURL); err != nil {
+				RespondError(c, err)
+				return
+			}
+		}
+
+		if req.Provider.CatalogProvider != nil {
+			catalogProvider = strings.TrimSpace(*req.Provider.CatalogProvider)
+			if err := validateCatalogHint(c.Request.Context(), h.modelCatalog, catalogProvider); err != nil {
 				RespondError(c, err)
 				return
 			}
@@ -198,7 +206,8 @@ func (h *workspaceHandlers) CreateWorkspace(c *gin.Context) {
 		}
 
 		if req.StarterAgent.Effort != nil && strings.TrimSpace(*req.StarterAgent.Effort) != "" {
-			if err := validateEffort(c.Request.Context(), h.modelCatalog, pType, agentModel, *req.StarterAgent.Effort); err != nil {
+			hint := services.EffectiveCatalogHint(pType, catalogProvider, baseURL)
+			if err := validateEffort(c.Request.Context(), h.modelCatalog, pType, agentModel, hint, *req.StarterAgent.Effort); err != nil {
 				RespondError(c, err)
 				return
 			}
@@ -341,13 +350,14 @@ func (h *workspaceHandlers) CreateWorkspace(c *gin.Context) {
 			}
 
 			prov := &domain.ProviderConfig{
-				WorkspaceID:   ws.ID,
-				Type:          pType,
-				Name:          pName,
-				BaseURL:       baseURL,
-				KeyCiphertext: keyCiphertext,
-				KeyHint:       keyHint,
-				Enabled:       pEnabled,
+				WorkspaceID:     ws.ID,
+				Type:            pType,
+				Name:            pName,
+				BaseURL:         baseURL,
+				CatalogProvider: catalogProvider,
+				KeyCiphertext:   keyCiphertext,
+				KeyHint:         keyHint,
+				Enabled:         pEnabled,
 			}
 			if err := txStore.Providers().Create(c.Request.Context(), prov); err != nil {
 				return err
@@ -370,7 +380,8 @@ func (h *workspaceHandlers) CreateWorkspace(c *gin.Context) {
 				}
 				var contextWindow *int = req.StarterAgent.ContextWindow
 				if contextWindow == nil && h.modelCatalog != nil {
-					contextWindow = h.modelCatalog.ResolveContextLimit(c.Request.Context(), pType, agentModel)
+					hint := services.EffectiveCatalogHint(pType, catalogProvider, baseURL)
+					contextWindow = h.modelCatalog.ResolveContextLimit(c.Request.Context(), pType, agentModel, hint)
 				}
 				agent := &domain.Agent{
 					WorkspaceID:   ws.ID,
@@ -437,7 +448,7 @@ func (h *workspaceHandlers) CreateWorkspace(c *gin.Context) {
 		resp["provider"] = toProviderResponse(createdProvider)
 	}
 	if createdAgent != nil {
-		wrapped := newAgentResponse(createdAgent)
+		wrapped := newAgentResponseWith(c.Request.Context(), h.store.Providers(), h.modelCatalog, createdWs.ID, createdAgent)
 		resp["starter_agent"] = wrapped
 		resp["agent"] = wrapped
 	}

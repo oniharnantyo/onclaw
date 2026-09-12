@@ -162,7 +162,7 @@ export function WorkspaceSwitcher({
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[13px] font-medium text-fg">{t.name}</span>
                   <span className="block font-mono text-[10px] text-muted">
-                    {t.agents?.length || 0} agents · {t.cron?.filter((c: any) => c.enabled).length || 0} schedules
+                    {t.agents?.length || 0} agents · {t.schedules?.filter((c: any) => c.enabled).length || 0} schedules
                   </span>
                 </span>
                 {t.id === currentId && <Icon name="check" size={14} className="shrink-0 text-accent" />}

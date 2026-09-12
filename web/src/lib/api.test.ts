@@ -6,10 +6,27 @@ import {
   clearToken,
   ApiError,
   formatApiError,
+  listAgentSessions,
+  deleteAgentSession,
   TOKEN_STORAGE_KEY,
 } from './api';
 import { useConnectionStore } from '../store/connection';
 import { useStore } from '../store';
+
+// This environment's jsdom exposes no localStorage (opaque origin — same mode
+// behind the other store suites); install a minimal stub so token handling and
+// the store import work.
+const backing = new Map<string, string>();
+if (typeof (globalThis as any).localStorage === 'undefined' || true) {
+  (globalThis as any).localStorage = {
+    getItem: (k: string) => (backing.has(k) ? backing.get(k)! : null),
+    setItem: (k: string, v: string) => void backing.set(k, String(v)),
+    removeItem: (k: string) => void backing.delete(k),
+    clear: () => void backing.clear(),
+    key: (i: number) => Array.from(backing.keys())[i] ?? null,
+    get length() { return backing.size; },
+  };
+}
 
 describe('lib/api', () => {
   const originalFetch = globalThis.fetch;
@@ -625,6 +642,60 @@ describe('lib/api', () => {
 
       expect(finalAgent.prompts_status).toBe('ready');
       expect(onUpdate).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  describe('Agent session index endpoints (agent-session-index)', () => {
+    it('lists agent sessions via GET /workspaces/:slug/agents/:agent/sessions', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'Content-Type': 'application/json' }),
+        json: async () => ({
+          sessions: [
+            { id: 'row-1', session_id: 'sess_b', title: 'Fix the login bug', created_at: '2026-01-01T00:00:00Z', last_active_at: '2026-01-02T00:00:00Z', running: false },
+            { id: 'row-2', session_id: 'sess_a', title: 'Old chat', created_at: '2025-12-01T00:00:00Z', last_active_at: '2025-12-31T00:00:00Z', running: true },
+          ],
+        }),
+      } as any);
+
+      const res = await listAgentSessions('acme', 'atlas');
+      expect((globalThis.fetch as any).mock.calls[0][0]).toBe('/api/v1/workspaces/acme/agents/atlas/sessions');
+      expect((globalThis.fetch as any).mock.calls[0][1].method).toBe('GET');
+      expect(res.sessions).toHaveLength(2);
+      expect(res.sessions[0].session_id).toBe('sess_b');
+      expect(res.sessions[1].running).toBe(true);
+    });
+
+    it('soft-deletes a session via DELETE and tolerates the 204', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 204,
+        headers: new Headers(),
+      } as any);
+
+      await expect(deleteAgentSession('acme', 'atlas', 'sess_1')).resolves.toBeUndefined();
+      expect((globalThis.fetch as any).mock.calls[0][0]).toBe('/api/v1/workspaces/acme/agents/atlas/sessions/sess_1');
+      expect((globalThis.fetch as any).mock.calls[0][1].method).toBe('DELETE');
+    });
+
+    it('maps auth/permission/absence failures through the shared error envelope', async () => {
+      for (const [status, code] of [[401, 'unauthenticated'], [403, 'forbidden'], [404, 'not_found']] as const) {
+        globalThis.fetch = vi.fn().mockResolvedValue({
+          ok: false,
+          status,
+          statusText: 'Err',
+          headers: new Headers({ 'Content-Type': 'application/json' }),
+          json: async () => ({ error: { code, message: 'boom' } }),
+        } as any);
+
+        await expect(listAgentSessions('acme', 'atlas')).rejects.toSatisfy((err: any) => {
+          expect(err).toBeInstanceOf(ApiError);
+          expect(err.status).toBe(status);
+          expect(err.code).toBe(code);
+          return true;
+        });
+      }
     });
   });
 });

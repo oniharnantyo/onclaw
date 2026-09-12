@@ -64,3 +64,12 @@ Thumbs.db
 web/.omc/
 .gemini/
 .team/
+.team/
+.qwen/
+.commandcode/
+.zcode/
+gui-test-screenshots/
+internal/server/.onclaw/
+createdb
+seed
+*.bak

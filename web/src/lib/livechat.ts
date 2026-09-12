@@ -123,8 +123,12 @@ export async function retryLiveChat(workspaceId: string): Promise<string | null>
 // Transcript hydration (server-authoritative replacement, D7)
 // ---------------------------------------------------------------------------
 
+/** Session ids that hydrate from the server transcript: interactive sessions
+ * (`sess_<uuid>`) and scheduler-run sessions (`sched_<schedulerID>_<ts>`,
+ * integrate-scheduler D7 — run sessions are artifacts that "hydrate like any
+ * session"). */
 export function isBoundSessionId(sessionId: string | null | undefined): boolean {
-  return typeof sessionId === 'string' && sessionId.startsWith('sess_');
+  return typeof sessionId === 'string' && (sessionId.startsWith('sess_') || sessionId.startsWith('sched_'));
 }
 
 export interface HydratedTranscript {
@@ -144,6 +148,27 @@ function toolCardFor(turn: any): any[] {
   return turn.tools;
 }
 
+/** Wire attachment metadata ({name, mime, size, url}) → the entry's
+ * ChatAttachment[] (add-chat-attachments D10). Malformed entries (no url or
+ * no name) drop rather than render a dead chip. */
+function hydrateAttachments(raw: any): ChatAttachment[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ChatAttachment[] = [];
+  for (const a of raw) {
+    if (!a || typeof a !== 'object') continue;
+    if (typeof a.url !== 'string' || !a.url) continue;
+    if (typeof a.name !== 'string' || !a.name) continue;
+    out.push({
+      ...(typeof a.id === 'string' && a.id ? { id: a.id } : {}),
+      name: a.name,
+      mime: typeof a.mime === 'string' ? a.mime : '',
+      size: typeof a.size === 'number' ? a.size : 0,
+      url: a.url,
+    });
+  }
+  return out;
+}
+
 /**
  * Folds transcript events into thread messages with the per-turn accumulator
  * shared by transcript hydration and the live catch-up stream (D4): whatever
@@ -161,6 +186,10 @@ class TranscriptTranslator {
   private turnUser: any = null;
   private turnAgent: any = null;
   private turnId = '';
+  // Scheduler-origin marker for the in-flight turn (integrate-scheduler):
+  // transcript events from a scheduler run carry origin 'scheduler' and, when
+  // the backend includes it, the schedule's name/id.
+  private turnOriginTag: string | undefined;
 
   private sessionId: string;
   private idPrefix = 'h';
@@ -196,11 +225,17 @@ class TranscriptTranslator {
     // a hydrated thread chains via previous_response_id instead of birthing
     // a fresh session on its next turn.
     if (this.turnAgent && this.turnId) this.turnAgent.resp = 'resp_' + this.sessionId + '_' + this.turnId;
+    // Stamp the scheduler-origin marker (integrate-scheduler): '' (schedule
+    // unknown) still renders the generic chip, so the marker is sticky once set.
+    if (this.turnAgent && this.turnOriginTag !== undefined && this.turnAgent.scheduler === undefined) {
+      this.turnAgent.scheduler = this.turnOriginTag;
+    }
     if (this.turnUser) this.messages.push(this.turnUser);
     if (this.turnAgent) this.messages.push(this.turnAgent);
     this.turnUser = null;
     this.turnAgent = null;
     this.turnId = '';
+    this.turnOriginTag = undefined;
   }
 
   push(ev: any): void {
@@ -209,20 +244,30 @@ class TranscriptTranslator {
     // (tool-only or cron turns) so each turn becomes its own agent message.
     if (ev.turn_id && this.turnId && ev.turn_id !== this.turnId) this.flushTurn();
     if (ev.turn_id) this.turnId = ev.turn_id;
+    if (ev.origin === 'scheduler' && this.turnOriginTag === undefined) {
+      this.turnOriginTag = ev.scheduler_name || ev.scheduler || ev.scheduler_id || '';
+    }
     switch (ev.kind) {
       case 'message_completed': {
         const role = ev.message?.role;
         if (role === 'user') {
           const text = ev.message?.content || '';
-          // Tool results persist under role user with no extractable text —
-          // they never render and would split the turn into empty bubbles.
-          if (!text.trim()) break;
+          // Attachment metadata hydrates into the entry so reloaded history
+          // renders the SAME chips the optimistic bubble did
+          // (add-chat-attachments D10): {name, mime, size, url} on the wire.
+          const atts = hydrateAttachments(ev.message?.attachments);
+          // Tool results persist under role user with no extractable text and
+          // no attachments — they never render and would split the turn into
+          // empty bubbles. Attachment-only user messages (empty content,
+          // non-empty attachments) are real messages and must survive.
+          if (!text.trim() && atts.length === 0) break;
           if (this.turnUser || this.turnAgent) this.flushTurn();
           this.turnUser = {
             id: ev.id || `${this.idPrefix}-u-${this.messages.length}`,
             author: 'you',
             ts: ev.occurred_at || '',
             text,
+            ...(atts.length ? { attachments: atts } : {}),
           };
         } else if (role === 'assistant') {
           const text = ev.message?.content || '';
@@ -317,6 +362,24 @@ class TranscriptTranslator {
           },
         });
         this.noteInterruptActivity();
+        break;
+      }
+      case 'context_compacted': {
+        // Compaction divider (chat-compact-command D6): hydrated transcripts
+        // and the catch-up replay carry the token estimates in the event's
+        // compaction payload. The entry renders through the same
+        // CompactionDivider as the live /v1 event — never an agent ack bubble.
+        if (this.turnUser || this.turnAgent) this.flushTurn();
+        this.messages.push({
+          id: ev.id || `${this.idPrefix}-c-${this.messages.length}`,
+          author: 'compaction',
+          ts: ev.occurred_at || '',
+          text: '',
+          compaction: {
+            tokensBefore: ev.compaction?.tokens_before ?? 0,
+            tokensAfter: ev.compaction?.tokens_after ?? 0,
+          },
+        });
         break;
       }
       case 'turn_started':
@@ -433,8 +496,12 @@ export async function hydrateSession(opts: {
    * local thread — a stale attempt (StrictMode's aborted first effect run, a
    * chat switch) must not clobber a newer attach's streamed tail. */
   signal?: AbortSignal;
+  /** Scheduler-origin tag (integrate-scheduler): the schedule's name when the
+   * open path knows it (runs-view context). Stamped onto agent messages that
+   * carry no origin tag of their own; '' renders the generic chip. */
+  originTag?: string;
 }): Promise<HydratedTranscript | null> {
-  const { workspaceId, agentSlug, chatId, sessionId, signal } = opts;
+  const { workspaceId, agentSlug, chatId, sessionId, signal, originTag } = opts;
   if (!isBoundSessionId(sessionId)) return null;
   let hydrated: HydratedTranscript;
   try {
@@ -444,6 +511,11 @@ export async function hydrateSession(opts: {
     return null;
   }
   if (signal?.aborted) return null;
+  if (originTag !== undefined) {
+    for (const m of hydrated.messages) {
+      if (m.author === 'agent' && m.scheduler === undefined) m.scheduler = originTag;
+    }
+  }
   if (hydrated.messages.length > 0) {
     applyServerTranscript(workspaceId, chatId, sessionId, hydrated.messages);
   }

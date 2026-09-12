@@ -141,6 +141,31 @@ func (s *store) Hooks() storeport.HookStore {
 	return NewHookStore(s.db)
 }
 
+// Channels returns the ChannelStore sub-port.
+func (s *store) Channels() storeport.ChannelStore {
+	return NewChannelStore(s.db)
+}
+
+// WorkSessions returns the WorkSessionStore sub-port.
+func (s *store) WorkSessions() storeport.WorkSessionStore {
+	return NewWorkSessionStore(s.db)
+}
+
+// Attachments returns the AttachmentStore sub-port.
+func (s *store) Attachments() storeport.AttachmentStore {
+	return NewAttachmentStore(s.db)
+}
+
+// WorkspaceStorage returns the WorkspaceStorageStore sub-port.
+func (s *store) WorkspaceStorage() storeport.WorkspaceStorageStore {
+	return NewWorkspaceStorageStore(s.db)
+}
+
+// Schedulers returns the SchedulerStore sub-port.
+func (s *store) Schedulers() storeport.SchedulerStore {
+	return NewSchedulerStore(s.db)
+}
+
 // WithTx executes the provided function within a database transaction.
 // If the store is already in a transaction, a SAVEPOINT is used for nested isolation.
 func (s *store) WithTx(ctx context.Context, fn func(storeport.Store) error) error {

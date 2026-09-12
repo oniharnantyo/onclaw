@@ -16,12 +16,15 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/agents/mcp"
 	"github.com/oniharnantyo/onclaw/internal/agents/systemskills"
 	"github.com/oniharnantyo/onclaw/internal/bootstrap"
+	"github.com/oniharnantyo/onclaw/internal/channels"
 	"github.com/oniharnantyo/onclaw/internal/config"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/promptgen"
+	"github.com/oniharnantyo/onclaw/internal/scheduler"
 	"github.com/oniharnantyo/onclaw/internal/server"
 	"github.com/oniharnantyo/onclaw/internal/services"
 	"github.com/oniharnantyo/onclaw/internal/storage"
+	"github.com/oniharnantyo/onclaw/internal/storage/resolver"
 	"github.com/oniharnantyo/onclaw/internal/store"
 	"github.com/urfave/cli/v3"
 )
@@ -84,6 +87,13 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return fmt.Errorf("failed to open storage driver: %w", err)
 	}
+
+	// Workspace blob storage resolver (attachments design D15/D16): maps each
+	// workspace's stored storage configuration to a driver instance — the
+	// instance storage above is the default for unconfigured workspaces. One
+	// instance is shared by the upload/serving API and the runner's drop-lane
+	// materialization so the per-workspace driver cache is common.
+	wsResolver := resolver.New(stor, st.WorkspaceStorage(), st.Attachments(), encKey, cfg.DataDir)
 
 	bootstrapper := bootstrap.New(st)
 
@@ -153,6 +163,24 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	mcpManager := mcp.NewMCPManager()
 	defer mcpManager.Close()
 
+	// Channel fan-out (integrate-agent-channels D2/D11 + channel-teams D1/D3):
+	// one runtime shared by the runner (channel context + feed + work
+	// sessions) and the HTTP layer (post chokepoint + SSE hub). Built before
+	// the runner because the runner's channel options consume the chokepoint;
+	// the runtime late-binds the runner (BindRunner). The work-session store
+	// backs the chokepoint's session branch (kickoff, hop accounting) and the
+	// store-backed handles directory resolves roster @handles for mention
+	// summons.
+	channelRuntime := server.NewChannelRuntime(st.Channels(), st.WorkSessions(), st.Users(), st.Agents())
+
+	// The stall watchdog (channel-teams D2) rides the process lifecycle
+	// context, not the command context: the command context is cancelled to
+	// trigger shutdown, but the watchdog must stop BEFORE the drain window
+	// opens so it cannot mint new facilitator runs mid-shutdown. Its runs
+	// derive from the runner's base context like every other background run.
+	lifecycleCtx, stopWatchdog := context.WithCancel(context.Background())
+	go channelRuntime.Chokepoint().StartWatchdog(lifecycleCtx)
+
 	// Construct the runtime runner. ToolRegistry is built-in; NewDefaultToolRegistry
 	// registers web.search. The runner handles session history queries and execution.
 	// Run contexts derive from a process-lifetime base context, not the command
@@ -168,15 +196,45 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		st.SessionEvents(),
 		st.SessionCheckpoints(),
 		st.Memories(),
+		st.AgentSessions(),
 		encKey,
 		cfg.OnClawDir,
 		agents.WithBaseContext(context.Background()),
+		agents.WithToolRegistry(agents.NewDefaultToolRegistry(
+			st.Memories(),
+			agents.WithSchedulerTools(st.Schedulers(), st.Channels()),
+		)),
 		agents.WithToolPolicy(toolSettings),
 		agents.WithMCPPolicy(mcp.NewSettingsPolicy(mcpSettings)),
 		agents.WithMCPManager(mcpManager),
 		agents.WithMCPStatusWriter(mcp.NewSettingsStatusWriter(mcpSettings)),
 		agents.WithEnabledSkillReader(server.WorkspaceSkillReader(st.WorkspaceSkills())),
+		agents.WithChannelContext(channelRuntime.Chokepoint()),
+		agents.WithChannelFeed(channelRuntime.Chokepoint()),
+		agents.WithWorkSessions(channelRuntime.Chokepoint()),
+		agents.WithProjectSpace(channels.NewLocalProjectSpace(cfg.DataDir, st.Workspaces())),
+		agents.WithAttachmentBlobs(wsResolver),
+		agents.WithInputModalityResolver(modelCatalog),
 	)
+	channelRuntime.BindRunner(runner)
+
+	// Scheduler loop (integrate-scheduler D3/D4): the ticker claims due
+	// standing orders from the store and dispatches them through the same
+	// runner the interactive surfaces use; channel delivery posts through the
+	// chokepoint. Its lifecycle rides the process-lifetime context like the
+	// stall watchdog — the command context is cancelled to trigger shutdown,
+	// which stops the ticker, while Stop() waits for in-flight fires.
+	schedulerSvc := scheduler.NewService(
+		st.Schedulers(),
+		st.Users(),
+		st.Agents(),
+		runner,
+		channelRuntime.Chokepoint(),
+		slog.Default(),
+		scheduler.WithTick(cfg.SchedulerTick),
+		scheduler.WithRunTimeout(cfg.SchedulerRunTimeout),
+	)
+	schedulerSvc.Start(lifecycleCtx)
 
 	router := server.NewRouter(server.RouterOptions{
 		Store:               st,
@@ -187,12 +245,15 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		AgentService:        agentService,
 		WorkspaceDir:        cfg.WorkspaceRoot(),
 		OnClawDir:           cfg.OnClawDir,
+		DataDir:             cfg.DataDir,
 		Runner:              runner,
 		ToolSettings:        toolSettings,
 		MCPSettings:         mcpSettings,
 		MCPManager:          mcpManager,
+		ChannelRuntime:      channelRuntime,
 		HooksCommandEnabled: cfg.HooksCommandEnabled,
 		HooksScriptEnabled:  cfg.HooksScriptEnabled,
+		WorkspaceStorage:    wsResolver,
 	})
 
 	listenAddr := cfg.ListenAddr
@@ -218,12 +279,17 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 
 	select {
 	case err := <-errChan:
+		stopWatchdog()
 		return fmt.Errorf("server error: %w", err)
 	case sig := <-sigChan:
 		slog.Info("received signal, shutting down server...", "signal", sig)
 	case <-ctx.Done():
 		slog.Info("context cancelled, shutting down server...")
 	}
+
+	// Stop the stall watchdog before the drain window opens: no new
+	// facilitator summons may be minted while in-flight runs drain.
+	stopWatchdog()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -237,6 +303,21 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	// record their cancel markers through the existing safe-point path.
 	slog.Info("draining in-flight agent runs", "window", cfg.RunDrainWindow)
 	runner.DrainRuns(cfg.RunDrainWindow)
+
+	// Stop the scheduler: the ticker halts (its loop also watches the
+	// lifecycle context) and in-flight fires get the same drain window; the
+	// service keeps its own longer deadline for stragglers beyond it.
+	slog.Info("stopping scheduler loop", "window", cfg.RunDrainWindow)
+	schedulerDone := make(chan struct{})
+	go func() {
+		schedulerSvc.Stop()
+		close(schedulerDone)
+	}()
+	select {
+	case <-schedulerDone:
+	case <-time.After(cfg.RunDrainWindow):
+		slog.Warn("scheduler stop exceeded the drain window; in-flight fires keep their own deadline")
+	}
 
 	slog.Info("server exited cleanly")
 	return nil

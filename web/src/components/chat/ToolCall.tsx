@@ -4,6 +4,7 @@ import { Icon } from "../ui/Icon";
 import { toolCatalog } from "../../lib/toolCatalog";
 import {
   blockedByHook,
+  createdDocumentURL,
   fieldRows,
   formatLatency,
   formatResult,
@@ -288,6 +289,9 @@ export function ToolCall({ t, running, approval, siblings }: any) {
   // unparseable args) — the header then shows just name + indicators.
   const oneLiner = toolOneLiner(t.name, { args: t.args, res: t.res, error: bad ? true : undefined }, running);
   const refOverride = headerRefName ? { ref: String((parsed as any).ref), name: headerRefName } : null;
+  // document.create delivery (add-document-create-tool D6): a successful
+  // envelope carries the capability URL the transcript's download link uses.
+  const downloadURL = t.name === 'document.create' && !bad && !running ? createdDocumentURL(t.res) : null;
   // edit_file's content rows become the stacked diff (task 3.6).
   const oldString = typeof (parsed as any)?.old_string === 'string' ? (parsed as any).old_string : '';
   const newString = typeof (parsed as any)?.new_string === 'string' ? (parsed as any).new_string : '';
@@ -408,6 +412,18 @@ export function ToolCall({ t, running, approval, siblings }: any) {
                 <p className="text-muted">running…</p>
               ) : (
                 <ResultBody view={formatResult(t.name, t.res)}/>
+              )}
+              {/* Download affordance on created documents (add-document-create-tool
+                  5.2): the capability URL stamped on the result envelope, served by
+                  the same path as attachment downloads. */}
+              {downloadURL && (
+                <div className="mt-1.5">
+                  <a href={downloadURL} download
+                    className="inline-flex items-center gap-1 rounded-[4px] bg-[color-mix(in_oklab,var(--accent)_14%,transparent)] px-1.5 py-0.5 text-fg2 transition-colors hover:bg-[color-mix(in_oklab,var(--accent)_22%,transparent)]">
+                    <Icon name="down" size={12}/>
+                    Download document
+                  </a>
+                </div>
               )}
             </>
           )}

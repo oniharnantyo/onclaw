@@ -3,6 +3,7 @@ import { cx } from "../../lib/helpers";
 import { Icon } from "../ui/Icon";
 import { Avatar } from "../ui/Avatar";
 import { api } from "../../lib/api";
+import { useStore } from "../../store";
 import { getLiveChatStatus, subscribeLiveChat, retryLiveChat } from "../../lib/livechat";
 
 import { ChatHeader } from "./ChatHeader";
@@ -13,6 +14,7 @@ import { AgentMessage } from "./AgentMessage";
 import { ErrorEntry } from "./ErrorEntry";
 import { PromptBlockedNotice } from "./PromptBlockedNotice";
 import { ThinkingRow } from "./ThinkingRow";
+import { CompactionDivider } from "./CompactionDivider";
 import { toolCatalog } from "../../lib/toolCatalog";
 
 function useResolveApproval(tenant: any, agent: any) {
@@ -77,11 +79,77 @@ function useSkillGroups(tenant: any, agent: any) {
 }
 
 export function ChatView({ tenant, target, agent, thread, session, channelMembers, onToggleMembers,
-  typing, busy, onConfigure,
-  onSend, onCancel, onAttach, onCopy, onRefresh, onBranch, onEditSubmit  }: any) {
+  typing, busy, compacting, onConfigure, allowAttachments,
+  onSend, onCancel, onCopy, onRefresh, onBranch, onEditSubmit  }: any) {
   const listRef = useRef(null);
   const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
+  const toast = useStore((s: any) => s.toast);
+
+  // Drag-drop attach surface (add-chat-attachments D14): the whole chat view
+  // (message list + composer region) accepts file drags when attachments are
+  // allowed. Chip state stays in the Composer — dropped files are handed over
+  // through its imperative ref. dragenter/dragleave use a depth COUNTER
+  // because firing on child boundaries would flicker the overlay otherwise;
+  // `pointer-events-none` on the overlay keeps the counter honest.
+  const composerRef = useRef<{ addFiles: (files: File[]) => void } | null>(null);
+  const dragDepthRef = useRef(0);
+  const [dragActive, setDragActive] = useState(false);
+
+  const hasFileDrag = (e: any) => {
+    const types = e.dataTransfer?.types;
+    if (!types) return false;
+    for (let i = 0; i < types.length; i++) if (types[i] === 'Files') return true;
+    return false;
+  };
+
+  // Chrome/Edge: dropping a folder yields no `.files` at all (items still list
+  // file entries). Firefox: the folder appears as a zero-byte, type-less File.
+  // Both shapes reject with the explicit toast; genuine zero-byte files are
+  // rejected server-side anyway, so mislabeling them costs nothing.
+  const extractDropFiles = (e: any): { files: File[]; folder: boolean } => {
+    const dt = e.dataTransfer;
+    const files: File[] = Array.from(dt?.files || []);
+    if (files.some((f) => f.size === 0 && !f.type)) return { files: [], folder: true };
+    if (files.length === 0) {
+      const items = dt?.items;
+      for (let i = 0; i < (items?.length || 0); i++) {
+        if (items[i].kind === 'file') return { files: [], folder: true };
+      }
+    }
+    return { files, folder: false };
+  };
+
+  const onDragEnter = (e: any) => {
+    if (!allowAttachments || !hasFileDrag(e)) return;
+    e.preventDefault();
+    dragDepthRef.current += 1;
+    setDragActive(true);
+  };
+  const onDragOver = (e: any) => {
+    if (!allowAttachments || !hasFileDrag(e)) return;
+    // Required: without preventDefault the drop event never fires and the
+    // browser NAVIGATES to the dropped file.
+    e.preventDefault();
+  };
+  const onDragLeave = (e: any) => {
+    if (!allowAttachments) return;
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setDragActive(false);
+  };
+  const onDrop = (e: any) => {
+    if (!allowAttachments || !hasFileDrag(e)) return;
+    // Same navigation hazard as dragover — preventDefault is mandatory here.
+    e.preventDefault();
+    dragDepthRef.current = 0;
+    setDragActive(false);
+    const { files, folder } = extractDropFiles(e);
+    if (folder) {
+      toast("Folders can't be attached — drop files instead");
+      return;
+    }
+    if (files.length) composerRef.current?.addFiles(files);
+  };
 
   // long-history guard: render the latest window, load older on demand
   const [msgLimit, setMsgLimit] = useState(80);
@@ -144,7 +212,17 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
   ] : [];
 
   return (
-    <section data-od-id="chat-view" className="flex min-w-0 flex-1 flex-col bg-bg" aria-label={'Conversation with ' + (target.kind === 'channel' ? '#' + target.obj.name : target.obj.name)}>
+    <section data-od-id="chat-view" aria-label={'Conversation with ' + (target.kind === 'channel' ? '#' + target.obj.name : target.obj.name)}
+      onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}
+      className="relative flex min-w-0 flex-1 flex-col bg-bg">
+      {dragActive && (
+        <div data-testid="drop-overlay" className="pointer-events-none absolute inset-2 z-20 flex items-center justify-center rounded-[16px] border-2 border-dashed border-accent bg-[color-mix(in_oklab,var(--accent)_6%,transparent)]">
+          <span className="flex items-center gap-2 rounded-full border border-line bg-surface px-4 py-2 text-[13px] font-medium text-fg shadow-[var(--elev-raised)]">
+            <Icon name="down" size={14}/>
+            Drop to attach
+          </span>
+        </div>
+      )}
       <ChatHeader target={target} agent={agent} channelMembers={channelMembers} usage={session?.usage} onToggleMembers={onToggleMembers} onConfigure={onConfigure}/>
       <div ref={listRef} onScroll={onScroll} role="log" aria-label="Messages" className="od-scroll relative flex-1 overflow-y-auto" data-od-id="message-list">
         {isEmpty ? (
@@ -182,6 +260,9 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
               // `prompt_blocked` transcript entry renders in place of the
               // assistant reply that never came — live and hydrated alike.
               if (m.author === 'notice') return <PromptBlockedNotice key={m.id} m={m}/>;
+              // Context compaction marker (chat-compact-command): live events
+              // and hydrated history entries share this divider component.
+              if (m.author === 'compaction') return <CompactionDivider key={m.id} m={m}/>;
               return (
                 <AgentMessage key={m.id} m={m} agent={msgAgent} inChannel={target.kind === 'channel'}
                   busy={busy} isLast={isLast}
@@ -193,8 +274,18 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
             })}
             {/* The streaming agent message renders its own loading dots and
                 caret — the thinking row is only for a turn with no agent
-                message on the transcript yet, else the agent shows twice. */}
-            {typing && thread[thread.length - 1]?.author !== 'agent' && <ThinkingRow agent={agent}/>}
+                message on the transcript yet, else the agent shows twice.
+                A compact turn shows its own status row instead (no optimistic
+                rows at all); once the compacted divider lands the tail is a
+                compaction entry and neither row renders while the turn
+                finishes. */}
+            {typing && compacting && (
+              <div className="flex gap-3 px-2 py-1" data-od-id="compaction-status" role="status" aria-label="Compacting context">
+                <span className="inline-block h-2 w-2 animate-pulse self-center rounded-full bg-fg"/>
+                <span className="self-center text-[13px] text-muted">Compacting context…</span>
+              </div>
+            )}
+            {typing && !compacting && thread[thread.length - 1]?.author !== 'agent' && thread[thread.length - 1]?.author !== 'compaction' && <ThinkingRow agent={agent}/>}
           </div>
         )}
       </div>
@@ -219,8 +310,10 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
           </div>
         )}
         <div className="mx-auto w-full max-w-[44rem] px-4 pb-4">
-          <Composer agent={agent} running={busy} onSend={onSend} onCancel={onCancel} onAttach={onAttach}
+          <Composer agent={agent} running={busy} onSend={onSend} onCancel={onCancel}
+            ref={composerRef} allowAttachments={allowAttachments} workspaceSlug={workspaceId}
             mentionOptions={target.kind === 'channel' ? channelMembers : null}
+            allowCommands={target.kind === 'agent'}
             skillGroups={skillGroups}/>
           {isEmpty && agent && suggestions.length > 0 && (
             <div className="mt-3 flex flex-wrap items-center justify-center gap-2 px-1" data-od-id="welcome-suggestions">

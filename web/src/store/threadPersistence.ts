@@ -7,7 +7,12 @@
 //
 // Storage shape: `onclaw.threads.v1` → { [tenantId]: { [chatId]: ThreadState } }
 
-const KEY = 'onclaw.threads.v1';
+/** The storage key also matters outside this module: the browser `storage`
+ * event fires in OTHER tabs for writes under it, and the session-list
+ * refetch trigger (agent-session-index D4) keys off it. */
+export const THREADS_KEY = 'onclaw.threads.v1';
+
+const KEY = THREADS_KEY;
 
 // Local storage is a cache, not an archive — cap what we write.
 const MAX_SESSIONS_PER_THREAD = 50;
@@ -49,6 +54,10 @@ export function persistAllThreads(db: Record<string, any> | undefined) {
         active: state.active ?? null,
         list: state.list.slice(-MAX_SESSIONS_PER_THREAD).map((s: any) => ({
           ...s,
+          // `running` is live indicator state (agent-session-index D5) — a
+          // stale `true` must not survive a reload as a phantom pulsing dot.
+          // undefined keys are dropped by JSON.stringify.
+          running: undefined,
           messages: Array.isArray(s.messages) ? s.messages.slice(-MAX_MESSAGES_PER_SESSION) : [],
         })),
       };

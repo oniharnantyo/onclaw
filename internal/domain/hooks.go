@@ -26,7 +26,7 @@ const (
 // HookEvent is one of the five lifecycle events hooks fire on (D1). Exactly
 // two events may block: user_prompt_submit and pre_tool_use. run_finished
 // fires on every terminal outcome with status-as-data (completed|failed|
-// cancelled); every payload carries origin (user|cron|channel).
+// cancelled); every payload carries origin (user|scheduler|channel).
 type HookEvent string
 
 const (

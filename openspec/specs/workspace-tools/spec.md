@@ -7,7 +7,7 @@ The per-workspace tool catalog and its control surface: what every selectable to
 ## Requirements
 
 ### Requirement: Tool catalog
-The backend SHALL maintain a tool catalog covering every selectable tool: registry built-ins, the filesystem middleware tools (`ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`), and the reserved shell name `execute`. Each entry SHALL carry a stable key (the allowlist name, with `browser` as the browser facade alias), a human-readable display name, a one-line description, a group, and an icon key. A tool MAY declare itself configurable with a config-field schema (field key, label, type: `secret` | `text` | `number` | `boolean` | `enum`, requirement, help text) so clients can render structured config forms without frontend changes. Registering a new tool into the registry or catalog SHALL be sufficient for it to appear in API responses; no frontend edit SHALL be required.
+The backend SHALL maintain a tool catalog covering every selectable tool: registry built-ins, the filesystem middleware tools (`ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`), the `document.read` tool, and the reserved shell name `execute`. Each entry SHALL carry a stable key (the allowlist name, with `browser` as the browser facade alias), a human-readable display name, a one-line description, a group, and an icon key. A tool MAY declare itself configurable with a config-field schema (field key, label, type: `secret` | `text` | `number` | `boolean` | `enum`, requirement, help text) so clients can render structured config forms without frontend changes. Registering a new tool into the registry or catalog SHALL be sufficient for it to appear in API responses; no frontend edit SHALL be required.
 
 #### Scenario: Catalog includes filesystem tools
 - **WHEN** the catalog is requested
@@ -16,6 +16,10 @@ The backend SHALL maintain a tool catalog covering every selectable tool: regist
 #### Scenario: New tool appears without frontend changes
 - **WHEN** a new built-in tool is registered with catalog metadata
 - **THEN** subsequent catalog responses include it and existing clients render it from metadata alone
+
+#### Scenario: Catalog includes document.read
+- **WHEN** the catalog is requested
+- **THEN** entries include `document.read` with a display name, description, group, and icon key, selectable per agent and subject to the workspace tool gate
 
 ### Requirement: Workspace tool settings storage
 Each workspace SHALL store per-tool state in a `workspace_tool_settings` table: workspace id, tool key, `enabled` (default true), and `config` (JSON object, default empty). Rows SHALL be workspace-scoped — no query without the workspace boundary. Secret config values SHALL be encrypted at rest with the instance encryption key in the same manner as workspace provider keys, and SHALL never be returned by any endpoint; reads SHALL expose only a non-secret hint (e.g. last four characters) plus all non-secret values.

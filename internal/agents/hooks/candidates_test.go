@@ -66,8 +66,8 @@ func TestMatchedValue(t *testing.T) {
 		},
 		{
 			name: "run_started uses the origin",
-			ev:   Event{Event: "run_started", Origin: "cron"},
-			want: "cron",
+			ev:   Event{Event: "run_started", Origin: "scheduler"},
+			want: "scheduler",
 		},
 		{
 			name: "user_prompt_submit uses the origin",
@@ -90,7 +90,7 @@ func TestMatchedValue(t *testing.T) {
 }
 
 func TestOriginValuesAndStatusValues(t *testing.T) {
-	if got, want := OriginValues(), []string{"user", "cron", "channel"}; len(got) != len(want) {
+	if got, want := OriginValues(), []string{"user", "scheduler", "channel"}; len(got) != len(want) {
 		t.Errorf("OriginValues() = %v, want %v", got, want)
 	} else {
 		for i := range want {
@@ -164,7 +164,7 @@ func TestCountMatches(t *testing.T) {
 		{
 			name:        "run_started counts against the origin enum",
 			event:       domain.HookEventRunStarted,
-			matcher:     "cron",
+			matcher:     "scheduler",
 			src:         nil,
 			wantMatched: 1,
 			wantTotal:   3,

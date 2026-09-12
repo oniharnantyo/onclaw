@@ -51,11 +51,14 @@ export const CATALOG_TOOL_KEYS = [
   'glob',
   'grep',
   'delete_file',
+  'document.read',
+  'document.create',
   'execute',
   'memory',
   'web.search',
   'web.fetch',
   'browser',
+  'schedule',
 ] as const;
 
 /** Browser facade member ids (runtime expansions of the `browser` alias). */
@@ -132,6 +135,18 @@ export const SENTENCE_TABLE: Record<string, SentenceTableEntry> = {
     outcome: 'Deleted {object}',
     object: { key: 'file_path', style: 'chip' },
   },
+  'document.read': {
+    intent: 'Reading document {object}',
+    outcome: 'Read document {object}',
+    object: { key: 'path', style: 'chip' },
+    fact: documentReadFact,
+  },
+  'document.create': {
+    intent: 'Creating document {object}',
+    outcome: 'Created document {object}',
+    object: { key: 'path', style: 'chip' },
+    fact: documentCreateFact,
+  },
   // Command-as-sentence (D1): the command IS the one-liner, verbatim, no
   // wrapping — the card's tool name already says "Shell".
   execute: {
@@ -151,6 +166,36 @@ export const SENTENCE_TABLE: Record<string, SentenceTableEntry> = {
         intent: 'Reading {object}',
         outcome: 'Read {object}',
         object: { key: 'path', style: 'chip' },
+      },
+    },
+  },
+  schedule: {
+    // Action-driven variants (D1): schedule's verbs follow args.action.
+    // update/delete address a schedule by id (the name is optional/absent
+    // there), so they identify the object as an id chip; create always
+    // carries the name.
+    byAction: {
+      create: {
+        intent: 'Scheduling {object}',
+        outcome: 'Scheduled {object}',
+        object: { key: 'name', style: 'quote' },
+        fact: scheduleLabelFact,
+      },
+      list: {
+        intent: 'Listing schedules',
+        outcome: 'Listed schedules',
+        fact: scheduleListFact,
+      },
+      update: {
+        intent: 'Updating schedule {object}',
+        outcome: 'Updated schedule {object}',
+        object: { key: 'id', style: 'chip' },
+        fact: scheduleLabelFact,
+      },
+      delete: {
+        intent: 'Deleting schedule {object}',
+        outcome: 'Deleted schedule {object}',
+        object: { key: 'id', style: 'chip' },
       },
     },
   },
@@ -276,6 +321,60 @@ function writeFileFact(ctx: { args: Record<string, unknown>; res?: string }): st
   return ` · ${humanBytes(content.length)}`;
 }
 
+/** document.read fact: the backend's own truncation marker inside the trusted
+ * markdown envelope — appended only when the conversion output was capped.
+ * Anything else (plain reads, failures, absent envelope) appends nothing. */
+function documentReadFact(ctx: { args: Record<string, unknown>; res?: string }): string | null {
+  const parsed = parseJsonObject(ctx.res);
+  const markdown = typeof parsed?.markdown === 'string' ? parsed.markdown : '';
+  return markdown.includes('Output truncated at') ? ' · truncated' : null;
+}
+
+/** document.create fact: the created document's format from the trusted
+ * result envelope — "Created document `invoice.xlsx` · xlsx". Absent or
+ * unparseable envelopes append nothing (D2). */
+function documentCreateFact(ctx: { args: Record<string, unknown>; res?: string }): string | null {
+  const parsed = parseJsonObject(ctx.res);
+  const format = typeof parsed?.format === 'string' ? parsed.format : '';
+  return format ? ` · ${format}` : null;
+}
+
+/** Download URL for a document.create result envelope: the capability URL the
+ * backend stamps on successful delivery, or null when absent/unparseable. */
+export function createdDocumentURL(rawResult: string | undefined | null): string | null {
+  const parsed = parseJsonObject(rawResult);
+  const url = typeof parsed?.url === 'string' ? parsed.url : '';
+  return url ? url : null;
+}
+
+/** schedule create/update fact: the trusted envelope's backend-derived
+ * schedule label ("09:00 · Mon–Fri", or the one-shot RFC3339 instant), plus
+ * the channel target when the call delivered to one — "Scheduled
+ * 'morning-digest' · 09:00 · Mon–Fri → `ch-ops`". */
+function scheduleLabelFact(ctx: { args: Record<string, unknown>; res?: string }): string | null {
+  const parsed = parseJsonObject(ctx.res);
+  const label = typeof parsed?.schedule === 'string' ? parsed.schedule : '';
+  if (!label) return null;
+  let fact = ` · ${label}`;
+  if (
+    ctx.args.delivery === 'channel' &&
+    typeof ctx.args.channel_id === 'string' &&
+    ctx.args.channel_id
+  ) {
+    fact += ` → \`${ctx.args.channel_id}\``;
+  }
+  return fact;
+}
+
+/** schedule list fact: the workspace schedule count from the trusted list
+ * envelope; absent (null) when the list is empty. */
+function scheduleListFact(ctx: { args: Record<string, unknown>; res?: string }): string | null {
+  const parsed = parseJsonObject(ctx.res);
+  if (!parsed || !Array.isArray(parsed.schedules) || parsed.schedules.length === 0) return null;
+  const n = parsed.schedules.length;
+  return ` — ${n} schedule${n === 1 ? '' : 's'}`;
+}
+
 /** "Wrote `notes.md` · 1.2 kB" size format: B below 1 kB, one decimal above
  * (trailing .0 trimmed). */
 function humanBytes(n: number): string {
@@ -356,11 +455,29 @@ const FIELD_SPECS: Record<string, FieldSpec[]> = {
     { key: 'path', label: 'Path', kind: 'chip' },
   ],
   delete_file: [{ key: 'file_path', label: 'File', kind: 'chip' }],
+  'document.read': [{ key: 'path', label: 'Path', kind: 'chip' }],
+  'document.create': [
+    { key: 'path', label: 'Path', kind: 'chip' },
+    { key: 'format', label: 'Format', kind: 'enum' },
+    { key: 'template', label: 'Template', kind: 'chip' },
+  ],
   execute: [{ key: 'command', label: 'Command', kind: 'chip' }],
   memory: [
     { key: 'action', label: 'Action', kind: 'enum' },
     { key: 'path', label: 'Path', kind: 'chip' },
     { key: 'content', label: 'Content', kind: 'content' },
+  ],
+  schedule: [
+    { key: 'action', label: 'Action', kind: 'enum' },
+    { key: 'name', label: 'Name', kind: 'quote' },
+    { key: 'kind', label: 'Kind', kind: 'enum' },
+    { key: 'expression', label: 'Expression', kind: 'quote' },
+    { key: 'run_at', label: 'Run At', kind: 'plain' },
+    { key: 'delivery', label: 'Delivery', kind: 'enum' },
+    { key: 'channel_id', label: 'Channel', kind: 'chip' },
+    { key: 'enabled', label: 'Enabled', kind: 'plain' },
+    { key: 'prompt', label: 'Prompt', kind: 'content' },
+    { key: 'id', label: 'ID', kind: 'chip' },
   ],
   'web.search': [
     { key: 'query', label: 'Query', kind: 'quote' },

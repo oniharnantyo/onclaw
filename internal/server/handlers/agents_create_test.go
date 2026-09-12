@@ -79,7 +79,7 @@ func TestCreateAgent_GeneratesBeforePersist(t *testing.T) {
 		promptgen.WithModelFactory(factory),
 		promptgen.WithTimeout(5*time.Second),
 	)
-	agentH := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), key, providers.NewRegistry(), nil, agentSvc, wsDir, nil, nil)
+	agentH := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), st.AgentSessions(), key, providers.NewRegistry(), nil, agentSvc, wsDir, nil, nil)
 
 	currentUser := &domain.User{ID: "user-1", Email: "owner@example.com", Name: "Owner"}
 
@@ -169,7 +169,7 @@ func TestCreateAgent_GenerationFailureAbortsCreate(t *testing.T) {
 		promptgen.WithModelFactory(factory),
 		promptgen.WithTimeout(5*time.Second),
 	)
-	agentH := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), key, providers.NewRegistry(), nil, agentSvc, wsDir, nil, nil)
+	agentH := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), st.AgentSessions(), key, providers.NewRegistry(), nil, agentSvc, wsDir, nil, nil)
 
 	currentUser := &domain.User{ID: "user-1", Email: "owner@example.com", Name: "Owner"}
 
@@ -250,7 +250,7 @@ func TestCreateAgent_SlugConflictKeepsExistingAgentWorkspace(t *testing.T) {
 		promptgen.WithModelFactory(factory),
 		promptgen.WithTimeout(5*time.Second),
 	)
-	agentH := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), key, providers.NewRegistry(), nil, agentSvc, wsDir, nil, nil)
+	agentH := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), st.AgentSessions(), key, providers.NewRegistry(), nil, agentSvc, wsDir, nil, nil)
 
 	currentUser := &domain.User{ID: "user-1", Email: "owner@example.com", Name: "Owner"}
 

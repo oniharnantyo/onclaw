@@ -80,7 +80,7 @@ func TestEventWireKeys(t *testing.T) {
 		t.Errorf("status must be omitted when empty: %s", raw)
 	}
 
-	finished := Event{Event: "run_finished", Status: "failed", Origin: "cron"}
+	finished := Event{Event: "run_finished", Status: "failed", Origin: "scheduler"}
 	raw, err = json.Marshal(finished)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)

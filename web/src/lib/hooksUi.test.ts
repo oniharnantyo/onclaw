@@ -65,7 +65,7 @@ describe('hooksUi — applies-to options', () => {
   it('serves the fixed origin and status sets for the other events', () => {
     expect(hookValueOptionsFor('user_prompt_submit', [], []).map((o) => o.value)).toEqual([
       'user',
-      'cron',
+      'scheduler',
       'channel',
     ]);
     expect(hookValueOptionsFor('run_finished', [], []).map((o) => o.value)).toEqual([
@@ -92,7 +92,7 @@ describe('hooksUi — matcher tiers (D19)', () => {
 
   it('pushes anything else into the regex tier', () => {
     expect(matcherTier('^web\\.')).toBe('regex');
-    expect(matcherTier('^(user|cron)$')).toBe('regex');
+    expect(matcherTier('^(user|scheduler)$')).toBe('regex');
     // A `*` only belongs at the end of an entry as ".*".
     expect(matcherTier('web.*extra')).toBe('regex');
   });

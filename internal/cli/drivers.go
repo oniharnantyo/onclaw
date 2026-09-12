@@ -5,5 +5,6 @@ package cli
 import (
 	_ "github.com/oniharnantyo/onclaw/internal/services"
 	_ "github.com/oniharnantyo/onclaw/internal/storage/local"
+	_ "github.com/oniharnantyo/onclaw/internal/storage/s3"
 	_ "github.com/oniharnantyo/onclaw/internal/store/postgres"
 )

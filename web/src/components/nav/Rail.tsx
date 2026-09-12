@@ -19,7 +19,7 @@ export function Rail({
   const items = [
     { id: 'chats', icon: 'chat', label: 'Chats', badge: unread },
     { id: 'agents', icon: 'bot', label: 'Agents' },
-    { id: 'cron', icon: 'clock', label: 'Cron' },
+    { id: 'schedules', icon: 'clock', label: 'Schedules' },
     { id: 'runs', icon: 'activity', label: 'Runs' },
     ...(showAdmin
       ? [

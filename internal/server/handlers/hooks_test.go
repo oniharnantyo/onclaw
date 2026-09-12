@@ -607,7 +607,7 @@ func TestHooks_TestDryRunHTTPBlockNonJSONAndOverrides(t *testing.T) {
 			"event":     "pre_tool_use",
 			"tool_name": "web.fetch",
 			"tool_args": `{"query":"x"}`,
-			"origin":    "cron",
+			"origin":    "scheduler",
 		},
 	})
 	if rec.Code != http.StatusOK {
@@ -631,7 +631,7 @@ func TestHooks_TestDryRunHTTPBlockNonJSONAndOverrides(t *testing.T) {
 	if seenDelivery == "" {
 		t.Error("dry run must send a unique delivery id header")
 	}
-	if seenBody["event"] != "pre_tool_use" || seenBody["origin"] != "cron" {
+	if seenBody["event"] != "pre_tool_use" || seenBody["origin"] != "scheduler" {
 		t.Errorf("webhook event overrides ignored: event %v origin %v", seenBody["event"], seenBody["origin"])
 	}
 	if tool, ok := seenBody["tool"].(map[string]any); !ok || tool["name"] != "web.fetch" {

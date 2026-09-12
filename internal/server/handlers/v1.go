@@ -1,15 +1,23 @@
 package handlers
 
 import (
+	"bytes"
+	"encoding/base64"
+	"errors"
 	"fmt"
+	"mime"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/oniharnantyo/onclaw/internal/agents"
+	"github.com/oniharnantyo/onclaw/internal/attachments"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/openresponses"
+	"github.com/oniharnantyo/onclaw/internal/storage"
+	"github.com/oniharnantyo/onclaw/internal/storage/resolver"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
@@ -20,6 +28,8 @@ type v1Handlers struct {
 	runner        *agents.Runner
 	agents        store.AgentStore
 	sessionEvents store.SessionEventStore
+	attachments   store.AttachmentStore
+	wsStorage     *resolver.WorkspaceStorage
 	keepAlive     time.Duration
 }
 
@@ -32,11 +42,11 @@ const defaultKeepAlive = 15 * time.Second
 
 // NewV1Handlers creates a new v1Handlers instance with injected dependencies.
 // keepAlive <= 0 falls back to the default cadence.
-func NewV1Handlers(runner *agents.Runner, agents store.AgentStore, sessionEvents store.SessionEventStore, keepAlive time.Duration) *v1Handlers {
+func NewV1Handlers(runner *agents.Runner, agents store.AgentStore, sessionEvents store.SessionEventStore, attachments store.AttachmentStore, wsStorage *resolver.WorkspaceStorage, keepAlive time.Duration) *v1Handlers {
 	if keepAlive <= 0 {
 		keepAlive = defaultKeepAlive
 	}
-	return &v1Handlers{runner: runner, agents: agents, sessionEvents: sessionEvents, keepAlive: keepAlive}
+	return &v1Handlers{runner: runner, agents: agents, sessionEvents: sessionEvents, attachments: attachments, wsStorage: wsStorage, keepAlive: keepAlive}
 }
 
 // ListModels implements GET /v1/models: the workspace's agents listed as
@@ -75,7 +85,7 @@ func (h *v1Handlers) CreateResponse(c *gin.Context) {
 		return
 	}
 
-	input, err := openresponses.FlattenInput(req.Input)
+	input, inputAtts, err := openresponses.FlattenInputParts(req.Input)
 	if err != nil {
 		respondV1InvalidParam(c, "input", err.Error())
 		return
@@ -89,9 +99,20 @@ func (h *v1Handlers) CreateResponse(c *gin.Context) {
 		return
 	}
 
+	command := compactCommand(req.Metadata)
+
+	// Compact turns are text-only (openresponses spec): an attachment on a
+	// compaction fails invalid_param before attachment resolution and before
+	// session binding, leaving the session untouched.
+	if command == agents.CommandCompact && len(inputAtts) > 0 {
+		respondV1InvalidParam(c, "input", "compaction accepts text only")
+		return
+	}
+
 	// Session binding: metadata.onclaw_session (primary), then
-	// previous_response_id, then ephemeral.
-	sessionID, err := h.resolveSession(c, key.WorkspaceID, req.Metadata, req.PreviousResponseID)
+	// previous_response_id, then ephemeral. Compact-command turns bind
+	// strictly (D2): they never birth and never run ephemeral.
+	sessionID, err := h.resolveSession(c, key.WorkspaceID, req.Metadata, req.PreviousResponseID, command)
 	if err != nil {
 		respondV1Error(c, err)
 		return
@@ -116,13 +137,40 @@ func (h *v1Handlers) CreateResponse(c *gin.Context) {
 		}
 	}
 
+	// Attachment resolution (attachments design D9): capability URLs resolve
+	// against the key's workspace; inline data URLs demote to stored
+	// attachments on arrival (D2). Any failure fails the request before a run
+	// is created.
+	var refs []agents.AttachmentRef
+	if len(inputAtts) > 0 {
+		refs, err = h.resolveAttachments(c, key.WorkspaceID, key.CreatedBy, inputAtts)
+		if err != nil {
+			switch {
+			case errors.Is(err, domain.ErrPayloadTooLarge):
+				// Oversize rides the standard payload-too-large envelope
+				// (400 invalid_request_error naming the cap).
+				respondV1Error(c, err)
+			case errors.Is(err, domain.ErrInvalid):
+				// Rejected or unresolvable reference: invalid_param, no run.
+				respondV1InvalidParam(c, "input", err.Error())
+			default:
+				// Storage/store infrastructure failures surface as the
+				// standard 5xx envelope.
+				respondV1Error(c, err)
+			}
+			return
+		}
+	}
+
 	execReq := agents.ExecRequest{
 		WorkspaceID:  key.WorkspaceID,
 		AgentID:      agent.ID,
 		SessionID:    sessionID,
 		UserID:       key.CreatedBy,
 		Input:        input,
+		Command:      command,
 		AllowedTools: allowedTools,
+		Attachments:  refs,
 	}
 
 	var stream *agents.EventStream
@@ -146,10 +194,148 @@ func (h *v1Handlers) CreateResponse(c *gin.Context) {
 	h.serveAggregated(c, stream, translator)
 }
 
+// resolveAttachments turns parsed input attachments into runner refs
+// (attachments design D9): capability URLs resolve through the attachment
+// store — the lookup is global, so the row's workspace is verified against
+// the key's (foreign and unknown fail identically) — and inline data URLs
+// demote to stored attachments (D2). Validation failures wrap
+// domain.ErrInvalid; infrastructure failures pass through bare.
+func (h *v1Handlers) resolveAttachments(c *gin.Context, workspaceID, userID string, atts []openresponses.InputAttachment) ([]agents.AttachmentRef, error) {
+	refs := make([]agents.AttachmentRef, 0, len(atts))
+	for _, att := range atts {
+		if att.Inline {
+			ref, err := h.demoteInlineAttachment(c, workspaceID, userID, att)
+			if err != nil {
+				return nil, err
+			}
+			refs = append(refs, ref)
+			continue
+		}
+
+		key, ok := att.CapabilityKey()
+		if !ok {
+			return nil, fmt.Errorf("%w: attachment reference %q is not an onclaw capability URL", domain.ErrInvalid, att.URL)
+		}
+		row, err := h.attachments.ByStorageKey(c.Request.Context(), key)
+		if err != nil {
+			return nil, fmt.Errorf("%w: attachment reference %q does not resolve in this workspace", domain.ErrInvalid, att.URL)
+		}
+		if row.WorkspaceID != workspaceID {
+			// Foreign capability keys are indistinguishable from unknown ones
+			// to the caller (tenancy) — the same invalid_param either way.
+			return nil, fmt.Errorf("%w: attachment reference %q does not resolve in this workspace", domain.ErrInvalid, att.URL)
+		}
+		refs = append(refs, agents.AttachmentRef{ID: row.ID, Name: row.Name, MimeType: row.MimeType, Lane: row.Lane, Size: row.Size})
+	}
+	return refs, nil
+}
+
+// demoteInlineAttachment stores an inline data-URL attachment on arrival
+// (attachments design D2): the decoded bytes are classified, written to the
+// workspace's backend under a fresh capability key, and recorded as an
+// attachments row — exactly the upload path's shape, so downstream sees the
+// same reference either way.
+func (h *v1Handlers) demoteInlineAttachment(c *gin.Context, workspaceID, userID string, att openresponses.InputAttachment) (agents.AttachmentRef, error) {
+	data, err := decodeDataURL(att.URL)
+	if err != nil {
+		return agents.AttachmentRef{}, fmt.Errorf("%w: %v", domain.ErrInvalid, err)
+	}
+
+	// Read the same classification head the upload handler sniffs.
+	head := data
+	if len(head) > sniffHeadBytes {
+		head = head[:sniffHeadBytes]
+	}
+
+	name := att.Filename
+	if name == "" {
+		// Mime-derived default filename: the sniff is authoritative, the
+		// declared data-URL media type is not.
+		ext := ""
+		if exts, extErr := mime.ExtensionsByType(http.DetectContentType(head)); extErr == nil && len(exts) > 0 {
+			ext = exts[0]
+		}
+		name = "attachment" + ext
+	}
+
+	sniffed, lane, err := attachments.Classify(name, int64(len(data)), head)
+	if err != nil {
+		// Classify's rejections carry the caps-matrix reasons (invalid) and
+		// oversize (*ErrTooLarge → domain.ErrPayloadTooLarge).
+		return agents.AttachmentRef{}, err
+	}
+
+	st, err := h.wsStorage.ForWorkspace(c.Request.Context(), workspaceID)
+	if err != nil {
+		return agents.AttachmentRef{}, err
+	}
+	backend, err := h.wsStorage.DriverName(c.Request.Context(), workspaceID)
+	if err != nil {
+		return agents.AttachmentRef{}, err
+	}
+
+	key, err := storage.NewKey()
+	if err != nil {
+		return agents.AttachmentRef{}, err
+	}
+
+	if err := st.Put(c.Request.Context(), key, bytes.NewReader(data), int64(len(data)), sniffed); err != nil {
+		return agents.AttachmentRef{}, err
+	}
+
+	row := &domain.Attachment{
+		WorkspaceID: workspaceID,
+		StorageKey:  key,
+		Backend:     backend,
+		Name:        name,
+		MimeType:    sniffed,
+		Size:        int64(len(data)),
+		Lane:        lane,
+		CreatedBy:   userID,
+	}
+	if err := h.attachments.Create(c.Request.Context(), row); err != nil {
+		return agents.AttachmentRef{}, err
+	}
+
+	return agents.AttachmentRef{ID: row.ID, Name: row.Name, MimeType: row.MimeType, Lane: row.Lane, Size: row.Size}, nil
+}
+
+// decodeDataURL decodes a base64 data URL into its bytes. Only base64
+// payloads are accepted — the demotion path needs the raw bytes to sniff.
+func decodeDataURL(raw string) ([]byte, error) {
+	if len(raw) < 5 || !strings.EqualFold(raw[:5], "data:") {
+		return nil, fmt.Errorf("inline attachment URL is not a data URL")
+	}
+	rest := raw[5:]
+	header, payload, ok := strings.Cut(rest, ",")
+	if !ok {
+		return nil, fmt.Errorf("inline attachment data URL is malformed")
+	}
+	if !strings.Contains(strings.ToLower(header), "base64") {
+		return nil, fmt.Errorf("inline attachment data URL must be base64-encoded")
+	}
+	data, err := base64.StdEncoding.DecodeString(strings.Join(strings.Fields(payload), ""))
+	if err != nil {
+		return nil, fmt.Errorf("inline attachment data URL: invalid base64 payload")
+	}
+	return data, nil
+}
+
 // isEphemeral reports whether the request has no session binding at all.
 func isEphemeral(req openresponses.ResponseRequest) bool {
 	sid := sessionMetadata(req.Metadata)
 	return sid == "" && req.PreviousResponseID == ""
+}
+
+// compactCommand maps metadata.onclaw_command onto the ExecRequest command
+// value (chat-compact-command D2): "compact" marks the turn as a context
+// compaction whose input is the summarizer focus text; anything else
+// (including empty) is an ordinary model turn.
+func compactCommand(md map[string]string) string {
+	if md != nil && md["onclaw_command"] == agents.CommandCompact {
+		return agents.CommandCompact
+	}
+	return ""
 }
 
 func sessionMetadata(md map[string]string) string {
@@ -166,9 +352,19 @@ func sessionMetadata(md map[string]string) string {
 // workspace (a foreign workspace's session using the same ID is untouched
 // and unreadable; the local session is independent). Chained binding
 // (previous_response_id) is strictly bind-only: malformed IDs are invalid,
-// unresolvable IDs are not-found, and the path never births.
-func (h *v1Handlers) resolveSession(c *gin.Context, workspaceID string, md map[string]string, previousResponseID string) (string, error) {
+// unresolvable IDs are not-found, and the path never births. Compact-command
+// turns are bind-only everywhere (chat-compact-command D2): a compaction
+// targets an existing history, so metadata binding loses its birth power,
+// the unbound path fails instead of going ephemeral, and only the chained
+// path behaves as for ordinary turns.
+func (h *v1Handlers) resolveSession(c *gin.Context, workspaceID string, md map[string]string, previousResponseID, command string) (string, error) {
 	if sid := sessionMetadata(md); sid != "" {
+		// Compact never births (D2): an onclaw_session with no persisted
+		// events in the key's workspace has nothing to compact and fails
+		// not-found, mirroring previous_response_id.
+		if command == agents.CommandCompact && !h.sessionExists(c, workspaceID, sid) {
+			return "", fmt.Errorf("%w: session not found", domain.ErrNotFound)
+		}
 		// Create-on-first-use: whether the session already exists or not,
 		// the turn runs on the persistent adapter under the named ID.
 		return sid, nil
@@ -183,6 +379,12 @@ func (h *v1Handlers) resolveSession(c *gin.Context, workspaceID string, md map[s
 			return "", fmt.Errorf("%w: session not found", domain.ErrNotFound)
 		}
 		return sid, nil
+	}
+
+	// A compact request with no binding at all has no session to compact
+	// (D2): fail not-found instead of running ephemeral.
+	if command == agents.CommandCompact {
+		return "", fmt.Errorf("%w: session not found", domain.ErrNotFound)
 	}
 
 	// Unbound: fresh ephemeral session. The throwaway ID is never persisted —

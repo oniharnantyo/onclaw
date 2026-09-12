@@ -65,7 +65,9 @@ export function hookEventMeta(event: string): HookEventMeta {
 // Event-aware candidate sets (D19): what a matcher's value space is per event
 // ---------------------------------------------------------------------------
 
-export const HOOK_ORIGIN_VALUES = ['user', 'cron', 'channel'];
+// Wire origin values (integrate-scheduler D1): the reserved run origin
+// renamed cron → scheduler while no consumers existed.
+export const HOOK_ORIGIN_VALUES = ['user', 'scheduler', 'channel'];
 export const HOOK_STATUS_VALUES = ['completed', 'failed', 'cancelled'];
 
 /** One candidate value the matcher counts against: exact names plus family

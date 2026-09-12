@@ -32,13 +32,26 @@ declare global {
     updated_at?: string;
   }
 
+  /** A chat attachment reference (add-chat-attachments D10/D11): mirrors the
+   * server's {name, mime, size, url} on CompletedMessage.attachments — the
+   * capability `url` is the render and wire token. `id` is the upload row id
+   * when known (regenerate re-sends references, never re-uploads). */
+  interface ChatAttachment {
+    id?: string;
+    name: string;
+    mime: string;
+    size: number;
+    url: string;
+  }
+
   interface ChatMessage {
     id: string;
     author: string;
     agentId?: string;
     ts: string;
     text: string;
-    cron?: string;
+    /** Scheduler-origin marker (integrate-scheduler D1): schedule name when known. */
+    scheduler?: string;
     tools?: any[];
     branch?: number;
     branches?: any[];
@@ -46,6 +59,7 @@ declare global {
     reasoning?: string;
     error?: string;
     parts?: any[];
+    attachments?: ChatAttachment[];
   }
 
   interface ThreadSession {
@@ -61,36 +75,17 @@ declare global {
     list: ThreadSession[];
   }
 
-  interface CronJob {
-    id: string;
-    name: string;
-    agentId: string;
-    expr: string;
-    human: string;
-    next?: string;
-    enabled: boolean;
-    last?: {
-      status: string;
-      when: string;
-      dur: string;
-    };
-  }
-
-  interface Run {
-    id: string;
-    agentId: string;
-    trigger: string;
-    when: string;
-    dur: string;
-    tokens: string;
-    status: string;
-  }
-
   interface Channel {
     id: string;
+    workspace_id?: string;
     name: string;
+    slug?: string;
     purpose: string;
-    agentId: string;
+    conventions?: string;
+    created_at?: string;
+    updated_at?: string;
+    /** Legacy primary-agent pointer (design D15 dropped it) — optional now. */
+    agentId?: string;
     unread: number;
     members: string[];
   }
@@ -140,8 +135,10 @@ declare global {
     channels: Channel[];
     people: Person[];
     threads: Record<string, ThreadState>;
-    cron: CronJob[];
-    runs: Run[];
+    /** Server-only scheduler rows (lib/schedulers Scheduler); typed loosely
+     * here to keep the global surface free of imports. */
+    schedules: any[];
+    runs: any[];
     members: Person[];
     integrations: Integration[];
     skillLib: Skill[];

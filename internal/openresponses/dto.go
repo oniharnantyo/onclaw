@@ -2,7 +2,6 @@ package openresponses
 
 import (
 	"encoding/json"
-	"fmt"
 )
 
 // ResponseRequest is the POST /v1/responses request body. Fields documented
@@ -59,10 +58,19 @@ func (r *ResponseRequest) RequestedToolNames() []string {
 	return names
 }
 
-// InputPart is one content part of an input item.
+// InputPart is one content part of an input item. The attachment-part fields
+// (input_image/input_file) stay raw JSON so their URL values can tolerate
+// both the plain-string and the {url: "..."} object form; attachments.go
+// decodes them.
 type InputPart struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type     string          `json:"type"`
+	Text     string          `json:"text"`
+	ImageURL json.RawMessage `json:"image_url"`
+	FileURL  json.RawMessage `json:"file_url"`
+	FileData string          `json:"file_data"`
+	FileID   json.RawMessage `json:"file_id"`
+	Filename string          `json:"filename"`
+	Detail   string          `json:"detail"`
 }
 
 // InputItem is one entry of an item-array input.
@@ -74,53 +82,11 @@ type InputItem struct {
 
 // FlattenInput turns the request input into the turn's text input: a string
 // passes through; an item array concatenates its input_text parts in order.
-// Unsupported part types error with the offending type name.
+// It is the text-only view of the parts-aware FlattenInput (attachments
+// design D2): malformed inputs and unsupported part types error with the
+// offending type name, and valid image/file parts parse but their references
+// are ignored here.
 func FlattenInput(raw json.RawMessage) (string, error) {
-	if len(raw) == 0 {
-		return "", nil
-	}
-
-	var s string
-	if err := json.Unmarshal(raw, &s); err == nil {
-		return s, nil
-	}
-
-	var items []InputItem
-	if err := json.Unmarshal(raw, &items); err != nil {
-		return "", fmt.Errorf("input: expected a string or an array of items")
-	}
-
-	var parts []string
-	for _, item := range items {
-		if len(item.Content) == 0 {
-			continue
-		}
-		// Content is either a plain string or an array of parts.
-		var cs string
-		if err := json.Unmarshal(item.Content, &cs); err == nil {
-			parts = append(parts, cs)
-			continue
-		}
-		var ps []InputPart
-		if err := json.Unmarshal(item.Content, &ps); err != nil {
-			return "", fmt.Errorf("input: malformed content on item of type %q", item.Type)
-		}
-		for _, p := range ps {
-			switch p.Type {
-			case "", "input_text":
-				parts = append(parts, p.Text)
-			default:
-				return "", fmt.Errorf("input: unsupported content part type %q", p.Type)
-			}
-		}
-	}
-
-	out := ""
-	for i, p := range parts {
-		if i > 0 {
-			out += "\n"
-		}
-		out += p
-	}
-	return out, nil
+	text, _, err := FlattenInputParts(raw)
+	return text, err
 }

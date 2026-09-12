@@ -22,7 +22,13 @@ import (
 )
 
 // latestSchemaVersion is the newest embedded migration number.
-const latestSchemaVersion = 29
+const latestSchemaVersion = 46
+
+// previousSchemaVersion is the migration version below latestSchemaVersion.
+// The channel-teams wave numbered its migration 000040 after v1's 000031
+// wave, leaving 000032–000039 unused (golang-migrate tolerates gaps), so one
+// step down from the latest must land on the previous EXISTING version.
+const previousSchemaVersion = 45
 
 func getTestBaseDSN(t *testing.T) string {
 	dsn := os.Getenv("TEST_DATABASE_URL")
@@ -148,13 +154,14 @@ func TestIntegration_Migration_IdempotenceAndRollback(t *testing.T) {
 		t.Fatalf("expected latest version not dirty, got v=%d, dirty=%v, err=%v", v, dirty, err)
 	}
 
-	// 4. MigrateDown 1 step
+	// 4. MigrateDown 1 step (lands on the previous EXISTING migration — the
+	// 000032–000039 gap is intentional)
 	if err := mig.Down(1); err != nil {
 		t.Fatalf("unexpected MigrateDown step error: %v", err)
 	}
 	v, dirty, err = mig.Status()
-	if err != nil || v != latestSchemaVersion-1 || dirty {
-		t.Fatalf("expected version %d, got v=%d, dirty=%v, err=%v", latestSchemaVersion-1, v, dirty, err)
+	if err != nil || v != previousSchemaVersion || dirty {
+		t.Fatalf("expected version %d, got v=%d, dirty=%v, err=%v", previousSchemaVersion, v, dirty, err)
 	}
 
 	// 5. MigrateDown all

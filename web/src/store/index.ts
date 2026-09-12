@@ -1,12 +1,19 @@
 import { create } from 'zustand';
 import { useEffect, useMemo } from 'react';
-import type { Workspace, Agent, CronJob } from '../data/types';
+import type { Workspace, Agent, Channel } from '../data/types';
 import { seedDb, blankTenant } from "../data/seed";
 import { uid, nowTime } from '../lib/helpers';
 import { useAuthStore } from './auth';
 import { useConnectionStore } from './connection';
-import { api, pollAgentPromptsStatus, formatApiError, type ApiMemberView } from '../lib/api';
-import { overlayPersistedThreads, persistAllThreads } from './threadPersistence';
+import { api, pollAgentPromptsStatus, formatApiError, listAgentSessions, deleteAgentSession, ApiError, type ApiMemberView, type ApiChannel, type ApiChannelMessage, type ApiAgentSession } from '../lib/api';
+import { schedulers, type Scheduler } from '../lib/schedulers';
+// Namespace read for optional-at-runtime members (getToken): vitest's mock
+// proxy throws when a narrow mock factory omits an export, so the session
+// refetch gate reads it through the namespace inside a try/catch — the same
+// tolerance as livechat.ts's bearerToken().
+import * as apiModule from '../lib/api';
+import type { ChannelLiveEvent } from '../lib/channelsLive';
+import { overlayPersistedThreads, persistAllThreads, THREADS_KEY } from './threadPersistence';
 
 export { useConnectionStore, type ConnectionState } from './connection';
 
@@ -47,12 +54,25 @@ export const mintSessionId = (): string => {
   return 'sess_' + hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-' + hex.slice(12, 16) + '-' + hex.slice(16, 20) + '-' + hex.slice(20);
 };
 
+// Session title rule — byte-identical to the server's birth title (D2):
+// first line of the input, trimmed, truncated at 42 chars with an ellipsis.
+// Empty or whitespace-only input yields '' so the "New chat" fallback stays.
+export const deriveSessionTitle = (text: string): string => {
+  const firstLine = (text ?? '').split('\n', 1)[0] ?? '';
+  const trimmed = firstLine.trim();
+  return trimmed.length > 42 ? trimmed.slice(0, 42) + '…' : trimmed;
+};
+
 export interface AppState {
   db: Record<string, Workspace>;
   // Per-workspace marker that loadAgents completed against the server at least
   // once — route guards hold off on "no agents" decisions until this is set so
   // a fresh load never bounces to /welcome while the fetch is in flight.
   agentsLoaded: Record<string, true>;
+  // Per-workspace marker that loadChannels completed (integrate-agent-channels):
+  // channels are server-only (never seeded), so this gates "no channels yet"
+  // decisions the same way agentsLoaded does.
+  channelsLoaded: Record<string, true>;
   pos: {
     tenantId: string;
     view: string;
@@ -62,10 +82,14 @@ export interface AppState {
   };
   ui: {
     configAgent: string | null;
-    cronEdit: any | null;
+    /** 'new' for a blank draft, a Scheduler row for edits, null when closed. */
+    scheduleEdit: any | null;
     wsOpen: boolean;
     toasts: any[];
     running: boolean;
+    // A /compact turn is in flight (chat-compact-command): the transcript
+    // shows the "Compacting context…" status row instead of the thinking row.
+    compacting?: boolean;
   };
   search: string;
 
@@ -93,9 +117,31 @@ export interface AppState {
   recordThreadUsage: (threadId: string, chatId: string, finalInput: number | null) => void;
   getLastResponse: (threadId: string) => string | null;
   deleteSession: (sid: string) => void;
+  /** Refetches the server session index for one agent chat and reconciles it
+   * into the thread list (agent-session-index D4). Triggers are coalesced:
+   * calls inside ~500ms collapse into a single fetch. */
+  refetchAgentSessions: (tenantId: string, agentChatId: string) => Promise<void>;
+  /** Opens a scheduler run's transcript inside its agent's chat
+   * (integrate-scheduler 7.4): injects (or reuses) a session entry addressed
+   * by the run's session id and makes it active. The run's session belongs to
+   * the scheduler's agent, so the caller passes that agent's chat id. */
+  openRunSession: (chatId: string, sessionId: string, title?: string, schedulerName?: string) => void;
+  /** Live schedules for the workspace (integrate-scheduler 7.2): replaces
+   * tenant.schedules with the wire rows. Resolves false on failure so the
+   * screen can render its error state. */
+  loadSchedules: (tenantId: string) => Promise<boolean>;
   switchTenant: (id: string) => void;
   upsertAgent: (values: Partial<Agent>) => string;
   loadAgents: (tenantId: string) => Promise<void>;
+  loadChannels: (tenantId: string) => Promise<void>;
+  loadChannelRoster: (tenantId: string, channelId: string) => Promise<void>;
+  /** Loads the channel feed over REST (cursor list); resolves to the last
+   * seen seq — the `lastSeq` the live stream subscribes with (design D13). */
+  loadChannelFeed: (tenantId: string, channelId: string, opts?: { after?: number; limit?: number }) => Promise<number>;
+  /** Folds one live channel event into the store; message_posted appends the
+   * wire row seq-deduped, the summon/run lifecycle events are no-ops here
+   * (room-UI concerns, task 8.1). */
+  applyChannelEvent: (tenantId: string, channelId: string, ev: ChannelLiveEvent) => void;
   pollAgent: (tenantId: string, agentId: string) => void;
   regenerateAgent: (tenantId: string, agentId: string, instruction?: string) => Promise<void>;
   setAgentPromptStatus: (
@@ -104,11 +150,6 @@ export interface AppState {
     status: 'generating' | 'ready' | 'failed',
     error?: string | null
   ) => void;
-  
-  runNow: (job: CronJob) => void;
-  toggleCron: (job: CronJob) => void;
-  deleteCron: (job: CronJob) => void;
-  saveCron: (draft: Partial<CronJob>) => void;
 }
 
 const initialPos = (() => {
@@ -128,6 +169,23 @@ const setSafeTimer = (key: string, fn: () => void, delay: number) => {
   }, delay);
 };
 
+// Wire → display mapping for the sidebar/room channel view (integrate-agent-
+// channels). `name` carries the slug so the sidebar and room header keep the
+// mock's `#handle` visual (design D6: the slug IS the #handle); unread starts
+// at 0 — live channels have no seeded backlog to badge.
+const channelFromApi = (c: ApiChannel): Channel => ({
+  id: c.id,
+  workspace_id: c.workspace_id,
+  name: c.slug,
+  slug: c.slug,
+  purpose: c.purpose,
+  conventions: c.conventions,
+  created_at: c.created_at,
+  updated_at: c.updated_at,
+  unread: 0,
+  members: [],
+});
+
 // Boot: reattach persisted threads (session bindings, resp chains, messages)
 // to the seeded tenants so a reload continues the same server sessions.
 const seededDb = seedDb();
@@ -138,14 +196,26 @@ for (const [tenantId, t] of Object.entries(seededDb)) {
 export const useStore = create<AppState>((set, get) => ({
   db: seededDb,
   agentsLoaded: {},
+  channelsLoaded: {},
   pos: initialPos,
   ui: {
-    configAgent: null, cronEdit: null,
+    configAgent: null, scheduleEdit: null,
     wsOpen: false, toasts: [], running: false
   },
   search: '',
 
-  patchUi: (p) => set((s: any) => ({ ui: { ...s.ui, ...p } })),
+  patchUi: (p) => {
+    const wasRunning = get().ui.running;
+    set((s: any) => ({ ui: { ...s.ui, ...p } }));
+    // Turn-terminal refetch trigger (agent-session-index D4): `running`
+    // true→false is the single choke point every terminal path funnels
+    // through (live bridge EOF, stream error, cancel, compact) — schedule
+    // one coalesced session-list refresh for the open chat.
+    if (wasRunning && p.running === false) {
+      const { tenantId, chatId } = get().pos;
+      if (chatId) void get().refetchAgentSessions(tenantId, chatId);
+    }
+  },
   goPos: (p) => set((s: any) => {
     const newPos = { ...s.pos, ...p };
     savePos(newPos);
@@ -198,8 +268,13 @@ export const useStore = create<AppState>((set, get) => ({
         state.active = sess.id;
       }
       sess.messages.push(msg);
+      // Optimistic title (agent-session-index spec): first user message titles
+      // the session immediately with the SAME rule the server applies at birth
+      // (first line, trimmed, ≤42 chars + ellipsis) so the two agree by
+      // construction; empty input leaves the "New chat" fallback.
       if (msg.author === 'you' && (sess.title === 'New chat' || !sess.title)) {
-        sess.title = msg.text.length > 42 ? msg.text.slice(0, 42) + '…' : msg.text;
+        const derived = deriveSessionTitle(msg.text);
+        if (derived) sess.title = derived;
       }
       sess.updated = 'just now';
       return { db: d };
@@ -239,6 +314,11 @@ export const useStore = create<AppState>((set, get) => ({
         ...tenant,
         channels: tenant.channels.map((c: any) => (c.id === id ? { ...c, unread: 0 } : c))
       }));
+    }
+    // Agent chat open (D4): paint from the local overlay, then reconcile the
+    // server session index. Coalesces with the loadAgents-gate trigger.
+    if (t.agents.some((a: any) => a.id === id || a.slug === id)) {
+      void state.refetchAgentSessions(state.pos.tenantId, id);
     }
   },
 
@@ -334,7 +414,11 @@ export const useStore = create<AppState>((set, get) => ({
     if (!th || Array.isArray(th)) return null;
     const sess = th.list.find((x: any) => x.id === th.active);
     if (!sess) return null;
-    if (sess.sess) {
+    // Only a server-bound interactive id (`sess_`/`sched_`) is a binding. A
+    // stale non-bound value (e.g. a leaked `chan_` room id from before the
+    // index filtered them) must not receive this thread's next live turn —
+    // fall through and mint a fresh session for it instead.
+    if (sess.sess && (sess.sess.startsWith('sess_') || sess.sess.startsWith('sched_'))) {
       if (!sess.id.startsWith('sess_')) {
         state.updateTenant(tid, (tenant: any) => {
           const t2 = tenant.threads[threadId];
@@ -392,6 +476,10 @@ export const useStore = create<AppState>((set, get) => ({
     if (!th || Array.isArray(th)) return null;
     const sess = th.list.find((x: any) => x.id === th.active);
     if (!sess) return null;
+    // Never chain off a session whose binding is not a server-bound
+    // interactive id — a leaked `chan_` room id would otherwise pull every
+    // later turn of this thread back into the room session.
+    if (sess.sess && !(sess.sess.startsWith('sess_') || sess.sess.startsWith('sched_'))) return null;
     for (let i = sess.messages.length - 1; i >= 0; i--) {
       const resp = sess.messages[i].resp;
       if (resp) return resp;
@@ -403,21 +491,72 @@ export const useStore = create<AppState>((set, get) => ({
     const state = get();
     const tid = state.pos.tenantId;
     const cid = state.pos.chatId;
-    state.updateTenant(tid, (tenant) => {
-      const th = tenant.threads[cid];
-      if (!th || Array.isArray(th)) return tenant;
-      th.list = th.list.filter((x: any) => x.id !== sid);
-      if (th.list.length === 0) {
-        const s = { id: uid('s'), title: 'New chat', updated: nowTime(), messages: [] };
-        th.list.push(s);
-        th.active = s.id;
-      } else if (th.active === sid) {
-        th.active = th.list[0].id;
-      }
-      return tenant;
-    });
-    state.patchUi({ running: false });
-    state.toast('Session deleted');
+    const th: any = state.db[tid]?.threads?.[cid];
+    const target = th && !Array.isArray(th) ? th.list.find((x: any) => x.id === sid) : null;
+    // The session's server address: the sess binding, or the id itself once
+    // ensureSessionBinding migrated it. Purely-local sessions (never sent)
+    // have no server row — local removal is the whole job for them.
+    const address =
+      typeof target?.sess === 'string' ? target.sess
+      : typeof target?.id === 'string' && target.id.startsWith('sess_') ? target.id
+      : null;
+    // Server first (D6): soft-delete the index row, then remove locally. Any
+    // other failure aborts the delete — the sidebar must never disagree with
+    // the index. 404 means the server has no row for this binding (pre-index
+    // history, no backfill): nothing to soft-delete, so removal completes.
+    let serverDelete: Promise<void>;
+    try {
+      serverDelete = address
+        ? deleteAgentSession(tid, cid, address).then(
+            () => {},
+            (err: unknown) => {
+              if (err instanceof ApiError && err.status === 404) return;
+              throw err;
+            }
+          )
+        : Promise.resolve();
+    } catch (err) {
+      // narrow api mocks export no deleteAgentSession — same abort path as a
+      // failed request
+      serverDelete = Promise.reject(err);
+    }
+    serverDelete
+      .then(() => {
+        get().updateTenant(tid, (tenant) => {
+          const th2 = tenant.threads[cid];
+          if (!th2 || Array.isArray(th2)) return tenant;
+          th2.list = th2.list.filter((x: any) => x.id !== sid);
+          if (th2.list.length === 0) {
+            const s = { id: uid('s'), title: 'New chat', updated: nowTime(), messages: [] };
+            th2.list.push(s);
+            th2.active = s.id;
+          } else if (th2.active === sid) {
+            th2.active = th2.list[0].id;
+          }
+          return tenant;
+        });
+        get().patchUi({ running: false });
+        get().toast('Session deleted');
+      })
+      .catch((err: unknown) => {
+        get().toast(formatApiError(err, 'Failed to delete session'), 'danger');
+      });
+  },
+
+  // Server session index for one agent chat (agent-session-index D4). No
+  // token (nobody signed in) or non-agent chat (channels/people) — there is
+  // no index to reconcile; resolve without a fetch.
+  refetchAgentSessions: (tenantId, agentChatId) => {
+    let token: string | null = null;
+    try {
+      token = (apiModule as any).getToken?.() ?? null;
+    } catch {
+      // narrow api mocks (runtime.test) export no getToken — degrade to
+      // unauthenticated instead of throwing (namespace proxy throws on reads
+      // of omitted exports).
+    }
+    if (!token || !isAgentChat(tenantId, agentChatId)) return Promise.resolve();
+    return scheduleSessionRefetch(tenantId, agentChatId);
   },
 
   switchTenant: (id) => {
@@ -452,6 +591,7 @@ export const useStore = create<AppState>((set, get) => ({
     }
     state.toast('Switched to ' + (targetWs?.name || id));
     get().loadAgents(id);
+    get().loadChannels(id);
   },
 
   loadAgents: async (tenantId) => {
@@ -483,6 +623,7 @@ export const useStore = create<AppState>((set, get) => ({
               effort: apiAgent.effort,
               effective_context_window: apiAgent.effective_context_window,
               summarization_trigger_tokens: apiAgent.summarization_trigger_tokens,
+              input_modalities: apiAgent.input_modalities,
               autonomy: apiAgent.autonomy,
               tools: apiAgent.tools || [],
               skills: apiAgent.skills || [],
@@ -509,10 +650,99 @@ export const useStore = create<AppState>((set, get) => ({
             get().pollAgent(tenantId, apiAgent.id);
           }
         });
+
+        // agentsLoaded gate (D4): if an agent chat is already open (restored
+        // position, deep link), reconcile its session index now that the
+        // agent roster landed. Coalesces with the selectChat trigger.
+        const pos = get().pos;
+        if (pos.tenantId === tenantId && pos.chatId && res.agents.some((a) => a.id === pos.chatId || a.slug === pos.chatId)) {
+          void get().refetchAgentSessions(tenantId, pos.chatId);
+        }
       }
     } catch {
       // offline / fallback
     }
+  },
+
+  // Channel hydration (integrate-agent-channels): channels are server-only —
+  // the seeded lists left the data path, so this replaces the tenant's
+  // channels with the workspace's real rows (the sidebar's data source).
+  // A failed load still sets the marker: with no seeds behind it, the sidebar
+  // empty state and any "no channels yet" decision must converge even when
+  // the endpoint answers 404 (old backend) instead of hanging guards.
+  loadChannels: async (tenantId) => {
+    set((s: any) => ({ channelsLoaded: { ...s.channelsLoaded, [tenantId]: true } }));
+    try {
+      const res = await api.channels.list(tenantId);
+      const channels = res?.channels || [];
+      get().updateTenant(tenantId, (t) => ({
+        ...t,
+        channels: channels.map(channelFromApi),
+      }));
+    } catch {
+      // offline / old backend: zero channels, marker already set
+    }
+  },
+
+  // Wire roster for one channel: rows stored verbatim under channelRoster;
+  // the display channel's `members` gets the referenced user/agent ids so the
+  // existing room member panel keeps resolving against agents/people.
+  loadChannelRoster: async (tenantId, channelId) => {
+    try {
+      const res = await api.channels.members.list(tenantId, channelId);
+      const members = res?.members || [];
+      get().updateTenant(tenantId, (t) => ({
+        ...t,
+        channelRoster: { ...(t.channelRoster || {}), [channelId]: members },
+        channels: (t.channels || []).map((c) =>
+          c.id === channelId
+            ? { ...c, members: members.map((m) => (m.member_type === 'agent' ? m.agent_id : m.user_id)).filter((x): x is string => Boolean(x)) }
+            : c
+        ),
+      }));
+    } catch {
+      // transient: the roster stays whatever the last load produced
+    }
+  },
+
+  // REST feed load (design D13: REST first, then the live stream). Stores the
+  // wire rows ascending by seq and resolves the last seen seq — the cursor
+  // the room's SSE subscription dedups against. A failed load resolves 0 so
+  // the stream still attaches; dedup is best-effort by design.
+  loadChannelFeed: async (tenantId, channelId, opts) => {
+    try {
+      const res = await api.channels.messages.list(tenantId, channelId, opts);
+      const messages = res?.messages || [];
+      get().updateTenant(tenantId, (t) => ({
+        ...t,
+        channelMessages: { ...(t.channelMessages || {}), [channelId]: messages },
+      }));
+      return messages.length ? messages[messages.length - 1].seq : opts?.after ?? 0;
+    } catch {
+      return 0;
+    }
+  },
+
+  applyChannelEvent: (tenantId, channelId, ev) => {
+    if (!ev || typeof ev.type !== 'string') return;
+    // Only message_posted mutates store data today — summon_considering /
+    // summon_decided / run_started / run_finished drive room-UI state that is
+    // gated behind the ASCII gallery (task 8.1) and stay with the subscriber.
+    if (ev.type !== 'message_posted') return;
+    const msg = ev.payload as ApiChannelMessage;
+    if (!msg || typeof msg.seq !== 'number') return;
+    get().updateTenant(tenantId, (t) => {
+      const existing = (t.channelMessages || {})[channelId] || [];
+      // Seq-keyed dedup: the stream can overlap the REST catch-up window.
+      if (existing.some((m) => m.seq === msg.seq)) return t;
+      return {
+        ...t,
+        channelMessages: {
+          ...(t.channelMessages || {}),
+          [channelId]: [...existing, msg].sort((a, b) => a.seq - b.seq),
+        },
+      };
+    });
   },
 
   pollAgent: (tenantId, agentId) => {
@@ -611,67 +841,49 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
-  runNow: (job) => {
-    const state = get();
-    const rid = 'run_' + Math.floor(1000 + Math.random() * 8999);
-    const tid = state.pos.tenantId;
-    state.updateTenant(tid, (t) => ({
-      ...t,
-      runs: [{ id: rid, agentId: job.agentId, trigger: 'manual', when: nowTime(), dur: '—', tokens: '—', status: 'running' } as any, ...t.runs]
-    }));
-    state.toast('Triggered “' + job.name + '”');
-    
-    setSafeTimer(`run-${rid}`, () => {
-      get().updateTenant(tid, (t) => ({
-        ...t,
-        runs: t.runs.map((r: any) => (r.id === rid ? { ...r, status: 'success', dur: '7s', tokens: '1.8k' } : r))
-      }));
-      get().pushMsg(tid, job.agentId, {
-        id: uid('m'),
-        author: 'agent',
-        agentId: job.agentId,
-        ts: nowTime(),
-        text: 'Scheduled execution for “' + job.name + '” completed successfully.',
-        cron: job.id
-      });
-    }, 1600);
-  },
-
-  toggleCron: (job) => {
-    const state = get();
-    state.updateTenant(state.pos.tenantId, (t) => ({
-      ...t,
-      cron: t.cron.map((j: any) => (j.id === job.id ? { ...j, enabled: !j.enabled } : j))
-    }));
-    state.toast((job.enabled ? 'Paused “' : 'Resumed “') + job.name + '”');
-  },
-
-  deleteCron: (job) => {
-    const state = get();
-    state.updateTenant(state.pos.tenantId, (t) => ({
-      ...t,
-      cron: t.cron.filter((j: any) => j.id !== job.id)
-    }));
-    state.patchUi({ cronEdit: null });
-    state.toast('Schedule “' + job.name + '” deleted');
-  },
-
-  saveCron: (draft) => {
-    const state = get();
-    if (draft.id) {
-      state.updateTenant(state.pos.tenantId, (t) => ({
-        ...t,
-        cron: t.cron.map((j: any) => (j.id === draft.id ? { ...j, ...draft } as CronJob : j))
-      }));
-      state.toast('“' + draft.name + '” saved — fires ' + (draft.human || '').toLowerCase());
-    } else {
-      state.updateTenant(state.pos.tenantId, (t) => ({
-        ...t,
-        cron: [...t.cron, { ...draft, id: uid('cron'), next: 'per expression', last: null } as any]
-      }));
-      state.toast('Schedule “' + draft.name + '” created');
+  // Live schedules (integrate-scheduler 7.2): the workspace's wire rows are
+  // the single source the schedules screen and the sidebar counts render from.
+  // Mirrors loadChannels' tolerance: a failed load keeps the last good list
+  // and resolves false so the screen can show its error state.
+  loadSchedules: async (tenantId) => {
+    try {
+      const res = await schedulers.list(tenantId);
+      const rows: Scheduler[] = res?.schedulers || [];
+      get().updateTenant(tenantId, (t) => ({ ...t, schedules: rows }));
+      return true;
+    } catch {
+      return false;
     }
-    state.patchUi({ cronEdit: null });
+  },
+
+  // Run transcript pickup (7.4): the runs table navigates to the run's agent
+  // chat with the run's session address; this injects the matching session
+  // entry (server Born sessions are never in the agent-session index by
+  // design, D7) and points the thread at it. The ChatRoute hydration effect
+  // takes over from there — sched_ ids hydrate like sess_ ids.
+  openRunSession: (chatId, sessionId, title, schedulerName) => {
+    const state = get();
+    const tid = state.pos.tenantId;
+    state.updateTenant(tid, (tenant: any) => {
+      const raw = tenant.threads[chatId];
+      const th = raw && !Array.isArray(raw) ? raw : (tenant.threads[chatId] = { active: null, list: [] });
+      let sess = th.list.find((x: any) => x.id === sessionId);
+      if (!sess) {
+        sess = {
+          id: sessionId,
+          sess: sessionId,
+          title: title || 'Scheduled run',
+          updated: '',
+          messages: [],
+          // Marks where the transcript's origin chip name came from; the
+          // hydration path stamps messages that lack a tag of their own.
+          ...(schedulerName !== undefined ? { schedulerName } : {}),
+        };
+        th.list.unshift(sess);
+      }
+      th.active = sessionId;
+      return tenant;
+    });
   }
 }));
 
@@ -683,6 +895,202 @@ useStore.subscribe(() => {
   if (threadPersistTimer) clearTimeout(threadPersistTimer);
   threadPersistTimer = setTimeout(() => persistAllThreads(useStore.getState().db), 350);
 });
+
+// ---------------------------------------------------------------------------
+// Agent session index (change agent-session-index, D4): the server list is
+// authoritative for the per-agent sidebar index — order (last activity,
+// newest first), titles, and the running flag. localStorage stays the
+// immediate paint plus the archive for pre-index history.
+// ---------------------------------------------------------------------------
+
+// Coarse activity stamp for server rows the local overlay has never seen.
+const relativeActivity = (iso?: string): string => {
+  const t = iso ? Date.parse(iso) : NaN;
+  if (!Number.isFinite(t)) return 'just now';
+  const mins = Math.floor((Date.now() - t) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return mins + 'm ago';
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return hours + 'h ago';
+  return Math.floor(hours / 24) + 'd ago';
+};
+
+// Server title wins only for the "New chat" fallback (and truly empty
+// titles) and for server-confirmed rows; a fresh optimistic title from a
+// session the server has not listed yet stays put — the rules agree by
+// construction (deriveSessionTitle), so this only guards against clobbering
+// with a stale or divergent payload.
+const mergeTitle = (local: any, row: ApiAgentSession): string => {
+  const serverTitle = row.title || '';
+  const localTitle = typeof local.title === 'string' ? local.title : '';
+  const serverWins = !localTitle || localTitle === 'New chat' || Boolean(local.serverBorn);
+  return serverWins && serverTitle ? serverTitle : localTitle;
+};
+
+// Does a fresh reconciliation change anything the sidebar shows? Guards
+// against pointless re-renders/persists on every trigger.
+const sameIndex = (a: any[], b: any[]): boolean =>
+  a.length === b.length &&
+  a.every((x: any, i: number) => {
+    const y = b[i];
+    return x.id === y.id && x.title === y.title && Boolean(x.running) === Boolean(y.running);
+  });
+
+// Folds one server listing into the thread state: server rows first (the API
+// delivers them last-activity-first), matched to local entries by the sess
+// binding (or the migrated id). Purely-local sessions (pre-index history)
+// keep their place below the server rows; a previously server-confirmed row
+// that the list no longer returns was soft-deleted server-side and is
+// dropped. The active pointer follows the session, not the slot, and the
+// last-session rule applies (a chat never has zero sessions).
+const applySessionIndex = (tenantId: string, chatId: string, rows: ApiAgentSession[]) => {
+  useStore.getState().updateTenant(tenantId, (tenant: any) => {
+    const raw = tenant.threads?.[chatId];
+    const th = raw && !Array.isArray(raw) ? raw : { active: null, list: [] };
+    const locals: any[] = Array.isArray(th.list) ? th.list.filter((x: any) => x && typeof x === 'object') : [];
+    const consumed = new Set<any>();
+    const serverEntries: any[] = [];
+
+    for (const row of rows || []) {
+      const sid = row?.session_id;
+      if (!sid) continue;
+      // Channel-room sessions (`chan_<channelID>_<agentID>`) belong to the
+      // channel surface; listed here only because channel participation lives
+      // in the same agent_sessions table. Adopting one would let it hijack
+      // the active pointer on a fresh load and receive the direct chat's next
+      // live turn (its binding is server-bound), leaking private turns into
+      // the room transcript — so the direct-chat thread never adopts them.
+      if (sid.startsWith('chan_')) continue;
+      const local = locals.find((x: any) => !consumed.has(x) && (x.sess === sid || x.id === sid));
+      if (!local) {
+        // Server-only row (fresh browser / another device): an empty local
+        // entry — selecting it hydrates the transcript from the events
+        // endpoint via the sess binding.
+        serverEntries.push({
+          id: sid,
+          sess: sid,
+          title: row.title || '',
+          updated: relativeActivity(row.last_active_at),
+          lastActiveAt: row.last_active_at,
+          running: Boolean(row.running),
+          serverBorn: true,
+          messages: [],
+        });
+        continue;
+      }
+      consumed.add(local);
+      serverEntries.push({
+        ...local,
+        serverBorn: true,
+        running: Boolean(row.running),
+        title: mergeTitle(local, row),
+        updated: local.updated || relativeActivity(row.last_active_at),
+        lastActiveAt: row.last_active_at || local.lastActiveAt,
+      });
+    }
+
+    const kept = locals.filter((x: any) => !consumed.has(x) && !x.serverBorn);
+    const nextList = [...serverEntries, ...kept];
+
+    let active = typeof th.active === 'string' ? th.active : null;
+    if (!active || !nextList.some((x: any) => x.id === active)) {
+      active = nextList[0]?.id ?? null;
+    }
+
+    if (!nextList.length) {
+      const fresh = { id: uid('s'), title: 'New chat', updated: nowTime(), messages: [] };
+      return { ...tenant, threads: { ...tenant.threads, [chatId]: { active: fresh.id, list: [fresh] } } };
+    }
+
+    if (active === th.active && Array.isArray(th.list) && sameIndex(th.list, nextList)) return tenant;
+    return { ...tenant, threads: { ...tenant.threads, [chatId]: { ...th, active, list: nextList } } };
+  });
+};
+
+// One debounced, coalesced fetch per (tenant, chat): triggers inside the
+// window collapse into a single request; a trigger landing while a fetch is
+// in flight schedules exactly one trailing refetch. Every caller's promise
+// resolves when the fetch that satisfies it completes.
+const REFETCH_DEBOUNCE_MS = 500;
+interface RefetchSlot { timer: ReturnType<typeof setTimeout> | null; inflight: Promise<void> | null; resolvers: Array<() => void>; }
+const refetchSlots = new Map<string, RefetchSlot>();
+const refetchKey = (tenantId: string, chatId: string) => `${tenantId}::${chatId}`;
+
+const fetchSessionIndex = async (tenantId: string, chatId: string): Promise<void> => {
+  try {
+    const res = await listAgentSessions(tenantId, chatId);
+    applySessionIndex(tenantId, chatId, res?.sessions || []);
+  } catch {
+    // offline / old backend / transient — the local overlay remains the
+    // visible truth until a listing succeeds.
+  }
+};
+
+const scheduleSessionRefetch = (tenantId: string, chatId: string): Promise<void> => {
+  const key = refetchKey(tenantId, chatId);
+  const slot: RefetchSlot = refetchSlots.get(key) || { timer: null, inflight: null, resolvers: [] };
+  refetchSlots.set(key, slot);
+  if (slot.timer) clearTimeout(slot.timer);
+  const run = async (): Promise<void> => {
+    // Claim the resolvers registered before this run started — triggers that
+    // land mid-run belong to the NEXT run (their own trailing fetch).
+    const mine = slot.resolvers.splice(0);
+    if (slot.inflight) await slot.inflight; // trailing refetch: trigger landed mid-fetch
+    const fetch = fetchSessionIndex(tenantId, chatId);
+    slot.inflight = fetch.finally(() => { slot.inflight = null; });
+    await fetch; // fetchSessionIndex never rejects
+    mine.forEach((resolve) => resolve());
+  };
+  return new Promise<void>((resolve) => {
+    slot.resolvers.push(resolve);
+    slot.timer = setTimeout(() => {
+      slot.timer = null;
+      void run();
+    }, REFETCH_DEBOUNCE_MS);
+  });
+};
+
+const isAgentChat = (tenantId: string, chatId: string): boolean => {
+  const t: any = useStore.getState().db[tenantId];
+  return Boolean(chatId && t?.agents?.some((a: any) => a.id === chatId || a.slug === chatId));
+};
+
+// Refetch triggers (D4): window focus, visibilitychange, and the `storage`
+// event other tabs fire when they write onclaw.threads.v1. Installed once per
+// document — the window-keyed flag keeps vi.resetModules() re-imports from
+// stacking duplicate listeners.
+const triggerOpenAgentSessionRefetch = () => {
+  const { tenantId, chatId } = useStore.getState().pos;
+  if (chatId) void useStore.getState().refetchAgentSessions(tenantId, chatId);
+};
+
+export const installSessionRefetchListeners = (): void => {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return;
+  const w = window as any;
+  if (w.__onclawSessionRefetchListeners) return;
+  w.__onclawSessionRefetchListeners = true;
+  window.addEventListener('focus', triggerOpenAgentSessionRefetch);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') triggerOpenAgentSessionRefetch();
+  });
+  // The payload carries every tenant the writing tab persisted — refetch the
+  // open chat of an affected tenant (or when the payload is unreadable).
+  window.addEventListener('storage', (e: StorageEvent) => {
+    if (e.key !== THREADS_KEY) return;
+    let affected = new Set<string>();
+    try {
+      const parsed = JSON.parse(e.newValue || '{}');
+      if (parsed && typeof parsed === 'object') affected = new Set(Object.keys(parsed));
+    } catch {
+      // malformed payload — treat as "unknown tenants" and just trigger
+    }
+    const { tenantId, chatId } = useStore.getState().pos;
+    if (chatId && (affected.size === 0 || affected.has(tenantId))) {
+      void useStore.getState().refetchAgentSessions(tenantId, chatId);
+    }
+  });
+};
+installSessionRefetchListeners();
 
 // Export selectors
 //

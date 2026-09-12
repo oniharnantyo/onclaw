@@ -77,3 +77,40 @@ describe('components/chat/ToolCall — hook enforcement rendering', () => {
     expect(container.textContent).not.toContain('blocked by policy');
   });
 });
+
+describe('components/chat/ToolCall — document.create download link', () => {
+  it('renders the download anchor with the capability URL when the envelope has one', () => {
+    const { container } = render(
+      <ToolCall
+        t={{
+          name: 'document.create',
+          args: '{"name":"brief.docx","content":"# Brief"}',
+          res: '{"name":"brief.docx","url":"/files/ws-1/att-1/brief.docx"}',
+          ms: 210,
+        }}
+        running={false}
+      />
+    );
+    fireEvent.click(container.querySelector('button[data-od-id="tool-document.create"]') as HTMLButtonElement);
+    const link = container.querySelector('a[download]') as HTMLAnchorElement;
+    expect(link).not.toBeNull();
+    expect(link.getAttribute('href')).toBe('/files/ws-1/att-1/brief.docx');
+    expect(link.textContent).toContain('Download document');
+  });
+
+  it('renders no download anchor when the envelope has no url', () => {
+    const { container } = render(
+      <ToolCall
+        t={{
+          name: 'document.create',
+          args: '{"name":"brief.docx","content":"# Brief"}',
+          res: '{"name":"brief.docx"}',
+          ms: 210,
+        }}
+        running={false}
+      />
+    );
+    fireEvent.click(container.querySelector('button[data-od-id="tool-document.create"]') as HTMLButtonElement);
+    expect(container.querySelector('a[download]')).toBeNull();
+  });
+});

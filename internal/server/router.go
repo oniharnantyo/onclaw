@@ -1,20 +1,30 @@
 package server
 
 import (
+	"context"
+	"fmt"
+	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/oniharnantyo/onclaw/internal/agents"
 	agenthooks "github.com/oniharnantyo/onclaw/internal/agents/hooks"
 	"github.com/oniharnantyo/onclaw/internal/agents/mcp"
+	"github.com/oniharnantyo/onclaw/internal/channels"
+	"github.com/oniharnantyo/onclaw/internal/config"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/promptgen"
 	"github.com/oniharnantyo/onclaw/internal/providers"
+	"github.com/oniharnantyo/onclaw/internal/scheduler"
 	"github.com/oniharnantyo/onclaw/internal/server/handlers"
 	"github.com/oniharnantyo/onclaw/internal/services"
 	"github.com/oniharnantyo/onclaw/internal/skills"
 	"github.com/oniharnantyo/onclaw/internal/storage"
+	"github.com/oniharnantyo/onclaw/internal/storage/resolver"
+	"github.com/oniharnantyo/onclaw/internal/storage/s3"
 	"github.com/oniharnantyo/onclaw/internal/store"
+	"github.com/oniharnantyo/onclaw/internal/teams"
 )
 
 // RouterOptions holds dependencies required by the HTTP API router.
@@ -47,6 +57,102 @@ type RouterOptions struct {
 	// ONCLAW_HOOKS_SCRIPT_ENABLED; default on). It drives the shared hook
 	// registry's runtime gate.
 	HooksScriptEnabled bool
+	// ChannelRuntime is the channel fan-out assembly (integrate-agent-channels
+	// D2/D11): the SSE hub and the single-post chokepoint, built by the
+	// composition root around the runner so both share one instance. nil builds
+	// a fresh one around the fallback runner.
+	ChannelRuntime *ChannelRuntime
+	// Scheduler is the scheduler ticker service (integrate-scheduler D3/D4),
+	// built by the composition root around the runner (RunSubmitter) and the
+	// channel chokepoint (ChannelPoster) so one runner serves every run
+	// origin. nil builds a fresh one around the fallback runner; only the
+	// composition root Start()s it, riding the server's lifecycle.
+	Scheduler *scheduler.Service
+	// ChannelStreamKeepAlive is the channel SSE idle keepalive cadence; 0 uses
+	// the handler default (15s).
+	ChannelStreamKeepAlive time.Duration
+	// DataDir is the storage driver's data directory; the channel project
+	// space (channel-teams D5, projects/<slug> mounted at /project) roots
+	// under it. Empty falls back to ./data relative to the process.
+	DataDir string
+	// WorkspaceStorage resolves per-workspace blob storage for chat
+	// attachments (attachments design D15/D16): uploads resolve the
+	// configured backend, capability serving streams from the backend
+	// recorded on the attachment row, and drop-lane runs materialize through
+	// it. nil builds a fresh resolver around the instance storage.
+	WorkspaceStorage *resolver.WorkspaceStorage
+}
+
+// ---------------------------------------------------------------------------
+// Channel runtime (design integrate-agent-channels D2/D11)
+// ---------------------------------------------------------------------------
+
+// ChannelRuntime bundles the channel fan-out assembly the composition root
+// shares between the runner and the HTTP layer: the hub fans feed events out
+// to SSE subscribers; the chokepoint is the single message pipeline that
+// persists, resolves mentions, and mints agent runs.
+//
+// The runner and the chokepoint reference each other — the runner's channel
+// context and feed ARE the chokepoint (agents.WithChannelContext /
+// WithChannelFeed), while the chokepoint's fan-out submits runs back through
+// the runner — so the RunSubmitter side is late-bound: build the runtime,
+// construct the runner with Chokepoint(), then BindRunner.
+type ChannelRuntime struct {
+	hub        *channels.Hub
+	chokepoint *channels.Chokepoint
+	binding    *lateBoundRunner
+}
+
+// lateBoundRunner breaks the runner→chokepoint→runner construction cycle by
+// holding the runner's Run until BindRunner installs it.
+type lateBoundRunner struct {
+	mu  sync.RWMutex
+	run func(ctx context.Context, req agents.ExecRequest) (*agents.EventStream, error)
+}
+
+// Run implements the chokepoint's RunSubmitter dependency.
+func (b *lateBoundRunner) Run(ctx context.Context, req agents.ExecRequest) (*agents.EventStream, error) {
+	b.mu.RLock()
+	run := b.run
+	b.mu.RUnlock()
+	if run == nil {
+		return nil, fmt.Errorf("channel fan-out reached the runner before BindRunner (composition root wiring bug)")
+	}
+	return run(ctx, req)
+}
+
+// NewChannelRuntime builds the channel hub and chokepoint around a not-yet-
+// constructed runner. The work-session store (channel-teams D1/D3) backs the
+// chokepoint's session branch — kickoff, hop accounting, and the watchdog —
+// and the store-backed handles directory resolves roster @handles for
+// mention summons.
+func NewChannelRuntime(channelStore store.ChannelStore, sessions store.WorkSessionStore, users store.UserStore, agents store.AgentStore) *ChannelRuntime {
+	hub := channels.NewHub()
+	binding := &lateBoundRunner{}
+	return &ChannelRuntime{
+		hub:     hub,
+		binding: binding,
+		chokepoint: channels.NewChokepoint(channelStore, binding, hub,
+			channels.WithWorkSessionStore(sessions),
+			channels.WithChannelHandles(newStoreChannelHandles(users, agents)),
+		),
+	}
+}
+
+// Hub returns the SSE fan-out hub.
+func (cr *ChannelRuntime) Hub() *channels.Hub { return cr.hub }
+
+// Chokepoint returns the single message pipeline (D2). It satisfies the
+// runner's ChannelContext and ChannelFeed interfaces.
+func (cr *ChannelRuntime) Chokepoint() *channels.Chokepoint { return cr.chokepoint }
+
+// BindRunner installs the runner's Run as the chokepoint's fan-out submitter;
+// *agents.Runner satisfies channels.RunSubmitter (pinned contract). Called
+// exactly once by the composition root after the runner is constructed.
+func (cr *ChannelRuntime) BindRunner(runner *agents.Runner) {
+	cr.binding.mu.Lock()
+	cr.binding.run = runner.Run
+	cr.binding.mu.Unlock()
 }
 
 // router configures and builds the HTTP API routes and handlers.
@@ -107,12 +213,32 @@ func (rt *router) Engine() *gin.Engine {
 		onClawDir = domain.DefaultOnClawDir()
 	}
 
+	// Project space root (channel-teams D5): projects/<channel-slug> under the
+	// storage data dir, mounted read-write at /project into member agents'
+	// jails through the runner option below.
+	dataDir := rt.opts.DataDir
+	if dataDir == "" {
+		dataDir = config.DefaultDataDir
+	}
+
+	// Workspace blob storage resolver (attachments design D15/D16): maps each
+	// workspace's stored configuration to a driver instance — the injected
+	// one when the composition root already built it (sharing its cache with
+	// the runner's drop-lane resolution), a fresh one over the instance
+	// storage and stores otherwise (test-assembly fallback).
+	wsStorage := rt.opts.WorkspaceStorage
+	if wsStorage == nil {
+		wsStorage = resolver.New(rt.opts.Storage, rt.opts.Store.WorkspaceStorage(), rt.opts.Store.Attachments(), rt.opts.EncryptionKey, dataDir)
+	}
+
 	authHandlers := handlers.NewAuthHandlers(authService, rt.opts.Storage)
 	workspaceHandlers := handlers.NewWorkspaceHandlers(rt.opts.Store, rt.opts.EncryptionKey, providerRegistry, modelCatalog, agentService, workspaceDir)
 	memberHandlers := handlers.NewMemberHandlers(rt.opts.Store, rt.opts.Storage)
 	roleHandlers := handlers.NewRoleHandlers(rt.opts.Store.Roles())
 	userHandlers := handlers.NewUserHandlers(rt.opts.Store.Users(), rt.opts.Storage)
-	fileHandlers := handlers.NewFileHandlers(rt.opts.Storage)
+	fileHandlers := handlers.NewFileHandlers(rt.opts.Storage, rt.opts.Store.Attachments(), wsStorage)
+	attachmentHandlers := handlers.NewAttachmentsHandlers(rt.opts.Store.Attachments(), wsStorage)
+	storageConfigHandlers := handlers.NewStorageConfigHandlers(rt.opts.Store.WorkspaceStorage(), rt.opts.EncryptionKey, s3.Probe)
 	adminWorkspaceHandlers := handlers.NewAdminWorkspaceHandlers(rt.opts.Store, rt.opts.Storage)
 	adminUserHandlers := handlers.NewAdminUserHandlers(rt.opts.Store.Users(), rt.opts.Store.Workspaces(), rt.opts.Store.Members(), rt.opts.Store.Roles())
 	adminSuperadminHandlers := handlers.NewAdminSuperadminHandlers(rt.opts.Store)
@@ -142,6 +268,19 @@ func (rt *router) Engine() *gin.Engine {
 		agenthooks.WithEvaluatorFactory(agents.NewHookEvaluatorFactory(rt.opts.Store.Providers(), rt.opts.EncryptionKey, agents.DefaultAgenticModelFactory)),
 	)
 
+	// Channel fan-out (integrate-agent-channels D2/D11): one runtime shared by
+	// the runner (channel context + feed) and the HTTP layer (post chokepoint +
+	// SSE hub). Built before the runner because the runner's channel options
+	// consume the chokepoint. The work-session store (channel-teams D1) backs
+	// the chokepoint's session branch.
+	channelRuntime := rt.opts.ChannelRuntime
+	if channelRuntime == nil && rt.opts.Store != nil {
+		channelRuntime = NewChannelRuntime(rt.opts.Store.Channels(), rt.opts.Store.WorkSessions(), rt.opts.Store.Users(), rt.opts.Store.Agents())
+	}
+
+	// Project space root (channel-teams D5) — dataDir computed above with the
+	// workspace storage resolver.
+
 	runner := rt.opts.Runner
 	if runner == nil && rt.opts.Store != nil {
 		runner = agents.NewRunner(
@@ -154,18 +293,47 @@ func (rt *router) Engine() *gin.Engine {
 			rt.opts.Store.SessionEvents(),
 			rt.opts.Store.SessionCheckpoints(),
 			rt.opts.Store.Memories(),
+			rt.opts.Store.AgentSessions(),
 			rt.opts.EncryptionKey,
 			onClawDir,
+			agents.WithToolRegistry(agents.NewDefaultToolRegistry(
+				rt.opts.Store.Memories(),
+				agents.WithSchedulerTools(rt.opts.Store.Schedulers(), rt.opts.Store.Channels()),
+			)),
 			agents.WithEnabledSkillReader(WorkspaceSkillReader(rt.opts.Store.WorkspaceSkills())),
 			agents.WithMCPPolicy(mcp.NewSettingsPolicy(mcpSettings)),
 			agents.WithMCPManager(mcpManager),
 			agents.WithMCPStatusWriter(mcp.NewSettingsStatusWriter(mcpSettings)),
 			agents.WithHooks(agenthooks.NewDispatcher(rt.opts.Store.Hooks(), hookRegistry)),
+			agents.WithChannelContext(channelRuntime.Chokepoint()),
+			agents.WithChannelFeed(channelRuntime.Chokepoint()),
+			agents.WithWorkSessions(channelRuntime.Chokepoint()),
+			agents.WithProjectSpace(channels.NewLocalProjectSpace(dataDir, rt.opts.Store.Workspaces())),
+			agents.WithAttachmentBlobs(wsStorage),
+			agents.WithInputModalityResolver(modelCatalog),
 		)
+		channelRuntime.BindRunner(runner)
 	}
 
+	// Scheduler loop (integrate-scheduler D3/D4): one service shared by the
+	// ticker (started by the composition root on its lifecycle context) and
+	// the HTTP run-now endpoint, dispatched through the same runner and
+	// posting channel delivery through the same chokepoint.
+	schedulerSvc := rt.opts.Scheduler
+	if schedulerSvc == nil && rt.opts.Store != nil {
+		schedulerSvc = scheduler.NewService(
+			rt.opts.Store.Schedulers(),
+			rt.opts.Store.Users(),
+			rt.opts.Store.Agents(),
+			runner,
+			channelRuntime.Chokepoint(),
+			slog.Default(),
+		)
+	}
+	schedulerHandlers := handlers.NewSchedulerHandlers(rt.opts.Store.Schedulers(), schedulerSvc)
+
 	providerHandlers := handlers.NewProviderHandlers(rt.opts.Store.Providers(), rt.opts.Store.Agents(), rt.opts.EncryptionKey, providerRegistry, modelCatalog)
-	agentHandlers := handlers.NewAgentHandlers(rt.opts.Store.Agents(), rt.opts.Store.Providers(), rt.opts.Store.SessionEvents(), rt.opts.EncryptionKey, providerRegistry, modelCatalog, agentService, workspaceDir, runner, runner)
+	agentHandlers := handlers.NewAgentHandlers(rt.opts.Store.Agents(), rt.opts.Store.Providers(), rt.opts.Store.SessionEvents(), rt.opts.Store.AgentSessions(), rt.opts.EncryptionKey, providerRegistry, modelCatalog, agentService, workspaceDir, runner, runner)
 	memoryHandlers := handlers.NewMemoryHandlers(rt.opts.Store.Memories())
 
 	toolSettings := rt.opts.ToolSettings
@@ -176,12 +344,44 @@ func (rt *router) Engine() *gin.Engine {
 
 	mcpServerHandlers := handlers.NewMCPServerHandlers(mcpSettings, rt.opts.Store.Agents(), mcpManager, rt.opts.MCPProbeTimeout)
 
+	// Channel surface (integrate-agent-channels D11/D12 + channel-teams
+	// tasks 6/7): posts and kickoffs ride the shared chokepoint; the SSE
+	// endpoint subscribes the shared hub; work-session reads ride the store;
+	// template materialization spawns through the shared agent creation path.
+	spawner := handlers.NewTeamsAgentSpawner(
+		handlers.AgentCreationDeps{
+			Agents:       rt.opts.Store.Agents(),
+			Providers:    rt.opts.Store.Providers(),
+			Registry:     providerRegistry,
+			ModelCatalog: modelCatalog,
+			AgentService: agentService,
+			WorkspaceDir: workspaceDir,
+		},
+		rt.opts.Store.Providers(),
+		rt.opts.Store.Workspaces(),
+	)
+	channelHandlers := handlers.NewChannelHandlers(
+		rt.opts.Store.Channels(),
+		rt.opts.Store.Agents(),
+		rt.opts.Store.Users(),
+		channelRuntime.Chokepoint(),
+		channelRuntime.Chokepoint(),
+		channelRuntime.Chokepoint(),
+		rt.opts.Store.WorkSessions(),
+		teams.NewMaterializer(rt.opts.Store.Channels(), rt.opts.Store.Agents(), spawner),
+		channelRuntime.Hub(),
+		rt.opts.ChannelStreamKeepAlive,
+	)
+
 	// Save-time match counts (D8) enumerate the workspace-visible toolset:
 	// the built-in tool surface (a fresh default registry's names — identical
 	// to the runner's; no tool is constructed) plus the workspace's enabled
 	// MCP servers' tools through the shared manager.
 	hookToolValues := handlers.NewWorkspaceHookToolValueSource(
-		agents.NewDefaultToolRegistry(rt.opts.Store.Memories()),
+		agents.NewDefaultToolRegistry(
+			rt.opts.Store.Memories(),
+			agents.WithSchedulerTools(rt.opts.Store.Schedulers(), rt.opts.Store.Channels()),
+		),
 		rt.opts.Store.WorkspaceMCPServers(),
 		mcpManager,
 	)
@@ -209,7 +409,7 @@ func (rt *router) Engine() *gin.Engine {
 	r.Use(gin.Logger())
 
 	// /v1 (OpenResponses) surface: API-key authenticated only (JWTs rejected).
-	v1Handlers := handlers.NewV1Handlers(runner, rt.opts.Store.Agents(), rt.opts.Store.SessionEvents(), rt.opts.V1StreamKeepAlive)
+	v1Handlers := handlers.NewV1Handlers(runner, rt.opts.Store.Agents(), rt.opts.Store.SessionEvents(), rt.opts.Store.Attachments(), wsStorage, rt.opts.V1StreamKeepAlive)
 	v1 := r.Group("/v1")
 	v1.Use(rt.v1mw.APIKeyAuthRequired())
 	{
@@ -281,6 +481,22 @@ func (rt *router) Engine() *gin.Engine {
 				wsGroup.GET("/memory", memoryHandlers.GetWorkspaceMemory)
 				wsGroup.PUT("/memory", rt.mw.RequirePermission(domain.WorkspaceWrite), memoryHandlers.PutWorkspaceMemory)
 
+				// Chat attachment upload (attachments design D1):
+				// membership-level auth — any workspace member attaches
+				// files to their own turns; the returned capability URL is
+				// the attachment's wire token.
+				wsGroup.POST("/attachments", attachmentHandlers.Upload)
+
+				// Workspace blob-storage configuration (attachments design
+				// D16, the settings Storage pane): viewing the masked
+				// config and changing it both require workspace settings
+				// management (workspace.write, Owner/Admin).
+				wsGroup.GET("/storage", rt.mw.RequirePermission(domain.WorkspaceWrite), storageConfigHandlers.GetStorage)
+				wsGroup.PUT("/storage", rt.mw.RequirePermission(domain.WorkspaceWrite), storageConfigHandlers.PutStorage)
+				// Probe-only "Test connection": same body and validation as
+				// PUT, never persists.
+				wsGroup.POST("/storage/probe", rt.mw.RequirePermission(domain.WorkspaceWrite), storageConfigHandlers.ProbeStorage)
+
 				wsGroup.GET("/roles", rt.mw.RequirePermission(domain.RolesRead), roleHandlers.ListRoles)
 
 				wsGroup.GET("/members", rt.mw.RequirePermission(domain.MembersRead), memberHandlers.ListMembers)
@@ -303,6 +519,12 @@ func (rt *router) Engine() *gin.Engine {
 				wsGroup.PATCH("/agents/:agent", rt.mw.RequirePermission(domain.AgentsWrite), agentHandlers.PatchAgent)
 				wsGroup.DELETE("/agents/:agent", rt.mw.RequirePermission(domain.AgentsWrite), agentHandlers.DeleteAgent)
 				wsGroup.POST("/agents/:agent/regenerate", rt.mw.RequirePermission(domain.AgentsWrite), agentHandlers.RegenerateAgent)
+				// Durable agent session index (agent-session-index D3): the
+				// requesting user's non-deleted sessions with the live-run
+				// flag, and the soft delete. Listing rides agents.read like
+				// the transcript read below; deletion is agents.write.
+				wsGroup.GET("/agents/:agent/sessions", rt.mw.RequirePermission(domain.AgentsRead), agentHandlers.ListAgentSessions)
+				wsGroup.DELETE("/agents/:agent/sessions/:session", rt.mw.RequirePermission(domain.AgentsWrite), agentHandlers.DeleteAgentSession)
 				wsGroup.GET("/agents/:agent/sessions/:session/events", rt.mw.RequirePermission(domain.AgentsRead), agentHandlers.ListSessionEvents)
 				wsGroup.POST("/agents/:agent/sessions/:session/approvals/:interruptID", rt.mw.RequirePermission(domain.AgentsWrite), agentHandlers.ResolveApproval)
 				wsGroup.POST("/agents/:agent/sessions/:session/runs/:turn/cancel", rt.mw.RequirePermission(domain.AgentsWrite), agentHandlers.CancelRun)
@@ -346,6 +568,47 @@ func (rt *router) Engine() *gin.Engine {
 				wsGroup.PATCH("/agents/:agent/mcp-servers/:id", rt.mw.RequirePermission(domain.AgentsWrite), mcpServerHandlers.PatchAgentServer)
 				wsGroup.DELETE("/agents/:agent/mcp-servers/:id", rt.mw.RequirePermission(domain.AgentsWrite), mcpServerHandlers.DeleteAgentServer)
 				wsGroup.POST("/agents/:agent/mcp-servers/:id/probe", rt.mw.RequirePermission(domain.AgentsWrite), mcpServerHandlers.ProbeAgentServer)
+
+				// Channel CRUD (integrate-agent-channels D11/D12): reads ride
+				// channels.read, writes channels.write. The static
+				// /channels/templates route is registered BEFORE /channels/:id
+				// so gin resolves it literally (no :id capture).
+				wsGroup.GET("/channels/templates", rt.mw.RequirePermission(domain.ChannelsRead), channelHandlers.ListChannelTemplates)
+				wsGroup.POST("/channels/templates/:template/materialize", rt.mw.RequirePermission(domain.ChannelsWrite), channelHandlers.MaterializeTemplate)
+				wsGroup.GET("/channels", rt.mw.RequirePermission(domain.ChannelsRead), channelHandlers.ListChannels)
+				wsGroup.POST("/channels", rt.mw.RequirePermission(domain.ChannelsWrite), channelHandlers.CreateChannel)
+				wsGroup.GET("/channels/:id", rt.mw.RequirePermission(domain.ChannelsRead), channelHandlers.GetChannel)
+				wsGroup.PATCH("/channels/:id", rt.mw.RequirePermission(domain.ChannelsWrite), channelHandlers.PatchChannel)
+				wsGroup.DELETE("/channels/:id", rt.mw.RequirePermission(domain.ChannelsWrite), channelHandlers.DeleteChannel)
+
+				// Channel membership roster.
+				wsGroup.GET("/channels/:id/members", rt.mw.RequirePermission(domain.ChannelsRead), channelHandlers.ListChannelMembers)
+				wsGroup.POST("/channels/:id/members", rt.mw.RequirePermission(domain.ChannelsWrite), channelHandlers.AddChannelMember)
+				wsGroup.PATCH("/channels/:id/members/:mid", rt.mw.RequirePermission(domain.ChannelsWrite), channelHandlers.PatchChannelMember)
+				wsGroup.DELETE("/channels/:id/members/:mid", rt.mw.RequirePermission(domain.ChannelsWrite), channelHandlers.RemoveChannelMember)
+
+				// Channel feed: cursor reads plus chokepoint posts (with the
+				// kickoff flag, channel-teams D1), work-session reads, and the
+				// live SSE event stream.
+				wsGroup.GET("/channels/:id/messages", rt.mw.RequirePermission(domain.ChannelsRead), channelHandlers.ListMessages)
+				wsGroup.POST("/channels/:id/messages", rt.mw.RequirePermission(domain.ChannelsWrite), channelHandlers.PostMessage)
+				wsGroup.GET("/channels/:id/sessions", rt.mw.RequirePermission(domain.ChannelsRead), channelHandlers.ListChannelSessions)
+				wsGroup.GET("/channels/:id/sessions/:sid", rt.mw.RequirePermission(domain.ChannelsRead), channelHandlers.GetChannelSession)
+				wsGroup.GET("/channels/:id/events", rt.mw.RequirePermission(domain.ChannelsRead), channelHandlers.StreamEvents)
+
+				// Scheduler standing orders (integrate-scheduler D11): reads
+				// ride scheduler.read, mutations and run-now scheduler.write.
+				// /scheduler-runs (workspace-wide history) is a distinct
+				// literal segment from /schedulers/:id, so registration order
+				// carries no meaning here.
+				wsGroup.GET("/schedulers", rt.mw.RequirePermission(domain.SchedulerRead), schedulerHandlers.ListSchedulers)
+				wsGroup.POST("/schedulers", rt.mw.RequirePermission(domain.SchedulerWrite), schedulerHandlers.CreateScheduler)
+				wsGroup.GET("/scheduler-runs", rt.mw.RequirePermission(domain.SchedulerRead), schedulerHandlers.ListWorkspaceSchedulerRuns)
+				wsGroup.GET("/schedulers/:id", rt.mw.RequirePermission(domain.SchedulerRead), schedulerHandlers.GetScheduler)
+				wsGroup.PATCH("/schedulers/:id", rt.mw.RequirePermission(domain.SchedulerWrite), schedulerHandlers.PatchScheduler)
+				wsGroup.DELETE("/schedulers/:id", rt.mw.RequirePermission(domain.SchedulerWrite), schedulerHandlers.DeleteScheduler)
+				wsGroup.POST("/schedulers/:id/run", rt.mw.RequirePermission(domain.SchedulerWrite), schedulerHandlers.RunSchedulerNow)
+				wsGroup.GET("/schedulers/:id/runs", rt.mw.RequirePermission(domain.SchedulerRead), schedulerHandlers.ListSchedulerRuns)
 
 				// API keys management (workspace settings; workspace.write is Owner/Admin only)
 				// Exchange is Member-level: membership via RequireWorkspace suffices,

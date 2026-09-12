@@ -58,9 +58,5 @@ export const MENTION_REPLIES = [
   'Got the ping — digging in now. If anything needs a decision I\'ll flag it with context.'
 ];
 export const COMMANDS = [
-  { cmd: '/tools', desc: 'List this agent’s tools' },
-  { cmd: '/model', desc: 'Show the model this agent runs on' },
-  { cmd: '/schedule', desc: 'Open the cron editor' },
-  { cmd: '/reset', desc: 'Clear this thread' },
-  { cmd: '/help', desc: 'Show commands' }
+  { cmd: '/compact', desc: "Compact this conversation's context" }
 ];

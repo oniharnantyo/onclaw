@@ -44,6 +44,10 @@ type Credential struct {
 	Type    string `json:"type"`
 	BaseURL string `json:"base_url,omitempty"`
 	APIKey  string `json:"api_key,omitempty"`
+	// CatalogHint carries the user-selected community-catalog provider id for
+	// compatible gateway types (openai-compatible/anthropic-compatible); the
+	// canonical provider types map on their own and ignore it.
+	CatalogHint string `json:"catalog_provider,omitempty"`
 }
 
 // Provider defines the capability interface for AI providers.
@@ -258,3 +262,29 @@ func StripVersionPath(base string) string {
 // OpenRouterDefaultEndpoint is the base URL used when an OpenRouter provider
 // has no explicit base_url configured.
 const OpenRouterDefaultEndpoint = "https://openrouter.ai/api/v1"
+
+// catalogHostHints maps known compatible-gateway hosts to the community
+// catalog provider id their API matches. Only hosts verified present in the
+// models.dev catalog are listed — a stale id would resolve unknown anyway,
+// but dropping it keeps the suggestion list honest. The user's explicit
+// catalog_provider selection always wins over these suggestions.
+var catalogHostHints = map[string]string{
+	"api.z.ai":         "zai-coding-plan",
+	"api.zhipuai.cn":   "zhipuai-coding-plan",
+	"openrouter.ai":    "openrouter",
+	"api.deepseek.com": "deepseek",
+	"api.mistral.ai":   "mistral",
+	"api.groq.com":     "groq",
+	"api.fireworks.ai": "fireworks-ai",
+}
+
+// SuggestCatalogProvider returns the community-catalog provider id matching
+// the host of baseURL, or empty when the host is unknown. Matching ignores
+// scheme, port, path, and case: it keys on the hostname alone.
+func SuggestCatalogProvider(baseURL string) string {
+	u, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return ""
+	}
+	return catalogHostHints[strings.ToLower(u.Hostname())]
+}

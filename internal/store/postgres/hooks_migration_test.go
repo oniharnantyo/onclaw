@@ -135,9 +135,9 @@ func TestIntegration_HooksPermissionBackfill(t *testing.T) {
 
 	// The backfill already ran during setup on an empty roles table; re-run
 	// the real migration (down to the pre-backfill world at version 26, then
-	// up) against the seeded rows. The down step count is computed from the
-	// current version so migrations appended above 000027 (000028, 000029, …)
-	// do not desync the test.
+	// up) against the seeded rows. MigrateToVersion targets the version
+	// directly, so appended migrations AND the intentional 000032–000039
+	// numbering gap above 000027 do not desync the step arithmetic.
 	mig := postgres.NewMigrator(schemaDSN)
 
 	rerun := func(stage string) {
@@ -149,7 +149,7 @@ func TestIntegration_HooksPermissionBackfill(t *testing.T) {
 		if before < 26 {
 			t.Fatalf("[%s] expected version >= 26 before down, got %d", stage, before)
 		}
-		if err := mig.Down(int(before) - 26); err != nil {
+		if err := mig.MigrateToVersion(26); err != nil {
 			t.Fatalf("[%s] failed to migrate down to 000026: %v", stage, err)
 		}
 		if v, dirty, err := mig.Status(); err != nil || v != 26 || dirty {

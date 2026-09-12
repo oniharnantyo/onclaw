@@ -2,7 +2,9 @@
  * @vitest-environment jsdom
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { fetchSessionTranscript, streamSessionEvents, attachCatchUpStream } from './livechat';
+import { fetchSessionTranscript, streamSessionEvents, attachCatchUpStream,
+  isBoundSessionId,
+} from './livechat';
 import { useStore } from '../store';
 import { api } from './api';
 
@@ -50,6 +52,17 @@ if (typeof (globalThis as any).localStorage === 'undefined') {
     get length() { return backing.size; },
   };
 }
+
+describe('isBoundSessionId (run sessions hydrate like any session, integrate-scheduler D7)', () => {
+  it('accepts interactive sess_ ids and scheduler-run sched_ ids', () => {
+    expect(isBoundSessionId('sess_abc-123')).toBe(true);
+    expect(isBoundSessionId('sched_sch-1_1725996000')).toBe(true);
+    expect(isBoundSessionId(null)).toBe(false);
+    expect(isBoundSessionId(undefined)).toBe(false);
+    expect(isBoundSessionId('s1')).toBe(false);
+    expect(isBoundSessionId('random')).toBe(false);
+  });
+});
 
 describe('fetchSessionTranscript', () => {
   it('folds events per turn and rebuilds the turn response id for chaining', async () => {
@@ -225,13 +238,13 @@ describe('fetchSessionTranscript — prompt_blocked notices', () => {
       const db: any = {
         ws1: {
           id: 'ws1', name: 'WS', sub: 'ws1', tz: 'UTC',
-          agents: [], channels: [], people: [], cron: [], runs: [], members: [], integrations: [], skillLib: [], keys: [],
+          agents: [], channels: [], people: [], schedules: [], runs: [], members: [], integrations: [], skillLib: [], keys: [],
           threads: { 'chat-1': { active: 'sess_cu2', list: [{ id: 'sess_cu2', title: 'Live', updated: '', messages: [] }] } },
         },
       };
       useStore.setState({
         db,
-        ui: { configAgent: null, cronEdit: null, wsOpen: false, running: false, toasts: [] },
+        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, toasts: [] },
       });
     };
     seed();
@@ -444,13 +457,13 @@ describe('attachCatchUpStream', () => {
     const db: any = {
       ws1: {
         id: 'ws1', name: 'WS', sub: 'ws1', tz: 'UTC',
-        agents: [], channels: [], people: [], cron: [], runs: [], members: [], integrations: [], skillLib: [], keys: [],
+        agents: [], channels: [], people: [], schedules: [], runs: [], members: [], integrations: [], skillLib: [], keys: [],
         threads: { 'chat-1': { active: 'sess_cu', list: [{ id: 'sess_cu', title: 'Live', updated: '', messages: [] }] } },
       },
     };
     useStore.setState({
       db,
-      ui: { configAgent: null, cronEdit: null, wsOpen: false, running: false, toasts: [] },
+      ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, toasts: [] },
     });
   };
 
@@ -530,5 +543,153 @@ describe('attachCatchUpStream', () => {
     });
     expect(useStore.getState().ui.running).toBe(false);
     expect(onDone).not.toHaveBeenCalled();
+  });
+});
+
+describe('fetchSessionTranscript — context_compacted divider (chat-compact-command)', () => {
+  it('hydrates a compaction event as a divider entry carrying the token estimates', async () => {
+    vi.mocked(api.agents.sessionEvents).mockResolvedValueOnce({
+      next: '',
+      events: [
+        { id: 'e1', kind: 'message_completed', occurred_at: 't0', turn_id: 'turn-1',
+          message: { role: 'user', content: 'long conversation' } },
+        { id: 'e2', kind: 'message_completed', occurred_at: 't1', turn_id: 'turn-1',
+          message: { role: 'assistant', content: 'long reply' } },
+        { id: 'e3', kind: 'context_compacted', occurred_at: 't2', turn_id: 'turn-2',
+          compaction: { tokens_before: 154000, tokens_after: 9200 } },
+        { id: 'e4', kind: 'turn_completed', occurred_at: 't3', turn_id: 'turn-2' },
+      ],
+    });
+
+    const { messages } = await fetchSessionTranscript('ws1', 'atlas', 'sess_h-compact');
+
+    expect(messages.map((m: any) => m.author)).toEqual(['you', 'agent', 'compaction']);
+    const divider = messages[2];
+    expect(divider.text).toBe('');
+    expect(divider.compaction).toEqual({ tokensBefore: 154000, tokensAfter: 9200 });
+    // Hydrated entries carry no summarySaved flag — the divider shows the
+    // token counts only (mockup D); no agent ack message is fabricated.
+    expect(divider.summarySaved).toBeUndefined();
+  });
+
+  it('mints the same divider shape from the live catch-up stream', async () => {
+    const db: any = {
+      ws1: {
+        id: 'ws1', name: 'WS', sub: 'ws1', tz: 'UTC',
+        agents: [], channels: [], people: [], schedules: [], runs: [], members: [], integrations: [], skillLib: [], keys: [],
+        threads: { 'chat-9': { active: 'sess_cu-c', list: [{ id: 'sess_cu-c', title: 'Live', updated: '', messages: [] }] } },
+      },
+    };
+    useStore.setState({
+      db,
+      ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, toasts: [] },
+    });
+    const encoder = new TextEncoder();
+    const frame = (ev: any) => `data: ${JSON.stringify(ev)}\n\n`;
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode(frame({ id: 'x1', kind: 'context_compacted', occurred_at: 't1', turn_id: 'turn-1', compaction: { tokens_before: 154000, tokens_after: 9200 } })));
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+      } as unknown as Response)
+    ));
+
+    attachCatchUpStream({ workspaceId: 'ws1', agentSlug: 'atlas', chatId: 'chat-9', sessionId: 'sess_cu-c' });
+
+    await vi.waitFor(() => {
+      const sess = useStore.getState().db.ws1.threads['chat-9'].list.find((x: any) => x.id === 'sess_cu-c');
+      expect(sess.messages).toHaveLength(1);
+      const entry = sess.messages[0] as any;
+      expect(entry.author).toBe('compaction');
+      expect(entry.compaction).toEqual({ tokensBefore: 154000, tokensAfter: 9200 });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Attachment metadata hydration (add-chat-attachments D10 + tasks 10.3)
+// ---------------------------------------------------------------------------
+
+describe('fetchSessionTranscript — attachment metadata on user messages', () => {
+  const image = { id: 'att-1', name: 'shot.png', mime: 'image/png', size: 12, url: '/api/v1/files/k1' };
+  const pdf = { name: 'report.pdf', mime: 'application/pdf', size: 5033164, url: '/api/v1/files/k2' };
+
+  it('hydrates message.attachments onto the user entry unchanged', async () => {
+    vi.mocked(api.agents.sessionEvents).mockResolvedValueOnce({
+      next: '',
+      events: [
+        { id: 'e1', kind: 'message_completed', occurred_at: 't0', turn_id: 'turn-1',
+          message: { role: 'user', content: "Here's the shot", attachments: [image, pdf] } },
+        { id: 'e2', kind: 'message_completed', occurred_at: 't1', turn_id: 'turn-1',
+          message: { role: 'assistant', content: 'nice' } },
+      ],
+    });
+
+    const { messages } = await fetchSessionTranscript('ws1', 'atlas', 'sess_h-att-1');
+
+    expect(messages[0].author).toBe('you');
+    expect(messages[0].attachments).toEqual([image, pdf]);
+    // Assistant entries carry no attachment field.
+    expect(messages[1].attachments).toBeUndefined();
+  });
+
+  it('keeps an attachment-only user message (empty content, non-empty attachments)', async () => {
+    vi.mocked(api.agents.sessionEvents).mockResolvedValueOnce({
+      next: '',
+      events: [
+        { id: 'e1', kind: 'message_completed', occurred_at: 't0', turn_id: 'turn-1',
+          message: { role: 'user', content: '', attachments: [image] } },
+        { id: 'e2', kind: 'message_completed', occurred_at: 't1', turn_id: 'turn-1',
+          message: { role: 'assistant', content: 'I see a screenshot.' } },
+      ],
+    });
+
+    const { messages } = await fetchSessionTranscript('ws1', 'atlas', 'sess_h-att-2');
+
+    expect(messages.map((m: any) => m.author)).toEqual(['you', 'agent']);
+    expect(messages[0].text).toBe('');
+    expect(messages[0].attachments).toEqual([image]);
+  });
+
+  it('still drops text-less attachment-less user messages (tool-result echoes)', async () => {
+    vi.mocked(api.agents.sessionEvents).mockResolvedValueOnce({
+      next: '',
+      events: [
+        { id: 'e1', kind: 'message_completed', occurred_at: 't0', turn_id: 'turn-1',
+          message: { role: 'user', content: 'real prompt' } },
+        { id: 'e2', kind: 'message_completed', occurred_at: 't1', turn_id: 'turn-1',
+          message: { role: 'user', content: '' } },
+      ],
+    });
+
+    const { messages } = await fetchSessionTranscript('ws1', 'atlas', 'sess_h-att-3');
+
+    expect(messages.map((m: any) => m.author)).toEqual(['you']);
+    expect(messages[0].text).toBe('real prompt');
+  });
+
+  it('survives a persist/restore round-trip (messages are stored whole)', async () => {
+    const { persistAllThreads, loadPersistedThreads } = await import('../store/threadPersistence');
+    const attached = { id: 'u1', author: 'you', ts: 't0', text: 'see this', attachments: [image, pdf] };
+    const db: any = {
+      t1: {
+        id: 't1', name: 'T1', sub: 't1', tz: 'UTC',
+        agents: [], channels: [], people: [], schedules: [], runs: [], members: [], integrations: [], skillLib: [], keys: [],
+        threads: { 'chat-1': { active: 's1', list: [{ id: 's1', title: 'Chat', updated: '', messages: [attached] }] } },
+      },
+    };
+
+    persistAllThreads(db);
+    const restored = loadPersistedThreads('t1');
+    const msg = restored['chat-1'].list[0].messages[0];
+
+    expect(msg.attachments).toEqual([image, pdf]);
   });
 });

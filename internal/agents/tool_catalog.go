@@ -77,8 +77,8 @@ type ToolCatalogEntry struct {
 
 // ToolCatalog returns the full tool catalog: every registry tool, the six fs
 // middleware tools, the reserved execute name, and the browser facade alias.
-// The order is stable (filesystem, shell, memory, web, browser) so surfaces
-// render deterministically.
+// The order is stable (filesystem, document, shell, memory, web, browser) so
+// surfaces render deterministically.
 func ToolCatalog() []ToolCatalogEntry {
 	return []ToolCatalogEntry{
 		{
@@ -131,6 +131,20 @@ func ToolCatalog() []ToolCatalogEntry {
 			IconKey:     "trash",
 		},
 		{
+			Key:         tools.NameDocumentRead,
+			DisplayName: "Read Document",
+			Description: "Convert PDF, Word, Excel, PowerPoint, and HTML documents to markdown.",
+			Group:       "document",
+			IconKey:     "file-text",
+		},
+		{
+			Key:         tools.NameDocumentCreate,
+			DisplayName: "Create Document",
+			Description: "Generate xlsx, PDF, Word, or PowerPoint documents from structured content.",
+			Group:       "document",
+			IconKey:     "file-plus",
+		},
+		{
 			Key:         ReservedShellTool,
 			DisplayName: "Shell",
 			Description: "Run shell commands inside the agent workspace jail.",
@@ -168,6 +182,34 @@ func ToolCatalog() []ToolCatalogEntry {
 			IconKey:      "globe",
 			Configurable: true,
 			ConfigSchema: browserConfigSchema(),
+		},
+		{
+			Key:         ChannelToolPost,
+			DisplayName: "Channel Post",
+			Description: "Post a message into the channel the agent is running in. Channel runs only.",
+			Group:       "channel",
+			IconKey:     "message",
+		},
+		{
+			Key:         ChannelToolHistory,
+			DisplayName: "Channel History",
+			Description: "Page back through the channel's earlier messages. Channel runs only.",
+			Group:       "channel",
+			IconKey:     "history",
+		},
+		{
+			Key:         SessionToolClose,
+			DisplayName: "Close Work Session",
+			Description: "Close the channel's active work session with a stored summary. Facilitator runs only.",
+			Group:       "channel",
+			IconKey:     "check-circle",
+		},
+		{
+			Key:         tools.NameSchedule,
+			DisplayName: "Schedule",
+			Description: "Create, list, update, and delete named schedules that run the agent on a cron recurrence or a one-shot time, delivering results to its thread or a channel it belongs to.",
+			Group:       "schedule",
+			IconKey:     "calendar",
 		},
 	}
 }

@@ -1,0 +1,8 @@
+-- Reverse 000045 (fix-session-event-ordering design D3): intentionally a
+-- no-op. The up migration overwrote seq on rows whose values had collapsed
+-- to ties (past-100 sessions carried dozens of rows at the same seq), and
+-- those pre-repair values are unrecoverable garbage — no backup of the
+-- collapsed order exists inside the database. Restoring them would
+-- reintroduce the corruption this repair fixes: every load orders by seq,
+-- so tied rows return in arbitrary order. Repair is one-way; sessions
+-- re-sequence identically on re-run, so nothing needs undoing.

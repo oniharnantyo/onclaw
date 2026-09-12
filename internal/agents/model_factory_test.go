@@ -132,19 +132,44 @@ func TestDefaultAgenticModelFactory_AllProviders(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			m, err := agents.DefaultAgenticModelFactory(ctx, tt.providerType, tt.cred, tt.modelName)
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("DefaultAgenticModelFactory() error = %v, wantErr %v", err, tt.wantErr)
-			}
-			if tt.wantErr {
-				if tt.errCheck != nil && !tt.errCheck(err) {
-					t.Errorf("error %v did not match expected check", err)
+			t.Run(tt.name, func(t *testing.T) {
+				m, err := agents.DefaultAgenticModelFactory(ctx, tt.providerType, tt.cred, tt.modelName)
+				if (err != nil) != tt.wantErr {
+					t.Fatalf("DefaultAgenticModelFactory() error = %v, wantErr %v", err, tt.wantErr)
 				}
-				return
-			}
-			if m == nil {
-				t.Fatalf("expected non-nil model for %s", tt.name)
+				if tt.wantErr {
+					if tt.errCheck != nil && !tt.errCheck(err) {
+						t.Errorf("error %v did not match expected check", err)
+					}
+					return
+				}
+				if m == nil {
+					t.Fatalf("expected non-nil model for %s", tt.name)
+				}
+			})
+		}
+	}
+
+func TestAcceptsFileBlocks(t *testing.T) {
+	tests := []struct {
+		providerType string
+		want         bool
+	}{
+		{providers.TypeAnthropic, true},
+		{providers.TypeAnthropicCompatible, true},
+		{providers.TypeGemini, true},
+		{providers.TypeOpenAI, false},
+		{providers.TypeOpenRouter, false},
+		{providers.TypeOpenAICompatible, false},
+		{"unknown-provider", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.providerType, func(t *testing.T) {
+			got := agents.AcceptsFileBlocks(tt.providerType)
+			if got != tt.want {
+				t.Errorf("AcceptsFileBlocks(%q) = %v, want %v", tt.providerType, got, tt.want)
 			}
 		})
 	}

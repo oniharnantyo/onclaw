@@ -50,6 +50,11 @@ type FilesystemConfig struct {
 	// under these roots become readable; Write/Edit stay AgentDir-only.
 	// Roots that do not exist on disk are skipped.
 	ReadOnlyRoots []string
+	// ProjectMountDir, when non-empty, is the channel's shared project
+	// directory, mounted read-write at backend.ProjectMountPoint inside the
+	// jail (channel-teams D5). Channel runs set it for member agents only;
+	// empty elsewhere — non-channel composition is unchanged.
+	ProjectMountDir string
 }
 
 // SkillsConfig holds the configuration for the skills capability.
@@ -94,6 +99,12 @@ type Config struct {
 	// every hook delivery is built from; it is non-nil whenever Hooks is.
 	Hooks     *agenthooks.Resolved
 	HooksBase *agenthooks.Event
+
+	// CompactionObserver receives the display-only token estimates of every
+	// summarization the composed agent performs (automatic threshold path,
+	// chat-compact-command D5). Optional; nil skips the estimates and the
+	// compaction event renders without them.
+	CompactionObserver func(tokensBefore, tokensAfter int)
 }
 
 // Compose constructs an executable ADK agent from caller-supplied configuration.
@@ -151,10 +162,11 @@ func validateConfig(cfg *Config) error {
 }
 
 // buildMiddlewares conditionally attaches capability middlewares in the verified order:
-// patchtoolcalls → reduction → summarization → skill → filesystem.
-// patchtoolcalls is always attached. Capabilities attach only when configured.
+// patchtoolcalls → reduction → summarization → skill → filesystem → attachments.
+// patchtoolcalls and the attachments placeholder policy are always attached.
+// Capabilities attach only when configured.
 func buildMiddlewares(ctx context.Context, cfg *Config) ([]adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage], error) {
-	handlers := make([]adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage], 0, 5)
+	handlers := make([]adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage], 0, 6)
 
 	// 1. patchtoolcalls: unconditional
 	patchMW, err := patchtoolcalls.NewTyped[*schema.AgenticMessage](ctx, &patchtoolcalls.Config{})
@@ -166,18 +178,30 @@ func buildMiddlewares(ctx context.Context, cfg *Config) ([]adk.TypedChatModelAge
 	// Build jail once if Filesystem is configured, shared by reduction and filesystem.
 	var jail einofs.Backend
 	if cfg.Filesystem != nil {
-		fsJail, err := backend.NewFilesystemJailedWithRoots(cfg.Filesystem.AgentDir, cfg.Filesystem.ReadOnlyRoots...)
-		if err != nil {
-			return nil, fmt.Errorf("build middlewares: filesystem jail: %w", err)
+		if cfg.Filesystem.ProjectMountDir != "" {
+			// Channel run with a shared project space (channel-teams D5):
+			// /project mounts read-write alongside the read-only roots.
+			fsJail, err := backend.NewFilesystemJailedWithMounts(cfg.Filesystem.AgentDir,
+				[]backend.WritableMount{{Mount: backend.ProjectMountPoint, Dir: cfg.Filesystem.ProjectMountDir}},
+				cfg.Filesystem.ReadOnlyRoots...)
+			if err != nil {
+				return nil, fmt.Errorf("build middlewares: filesystem jail: %w", err)
+			}
+			jail = fsJail
+		} else {
+			fsJail, err := backend.NewFilesystemJailedWithRoots(cfg.Filesystem.AgentDir, cfg.Filesystem.ReadOnlyRoots...)
+			if err != nil {
+				return nil, fmt.Errorf("build middlewares: filesystem jail: %w", err)
+			}
+			jail = fsJail
 		}
-		jail = fsJail
 	}
 
 	// 2. reduction: attached if Filesystem is configured
 	if cfg.Filesystem != nil {
 		reductionMW, err := reduction.NewTyped[*schema.AgenticMessage](ctx, &reduction.TypedConfig[*schema.AgenticMessage]{
 			Backend:          jail,
-			RootDir:          cfg.Filesystem.AgentDir,
+			RootDir:          backend.DefaultMountPoint,
 			ReadFileToolName: "read_file",
 		})
 		if err != nil {
@@ -189,11 +213,9 @@ func buildMiddlewares(ctx context.Context, cfg *Config) ([]adk.TypedChatModelAge
 	// 3. summarization: attached if Summarization is configured
 	if cfg.Summarization != nil {
 		summMW, err := einosumm.NewTyped[*schema.AgenticMessage](ctx, &einosumm.TypedConfig[*schema.AgenticMessage]{
-			Model:   cfg.ChatModel,
-			Trigger: &einosumm.TriggerCondition{ContextTokens: cfg.Summarization.TriggerTokens},
-			Callback: func(ctx context.Context, before, _ adk.TypedChatModelAgentState[*schema.AgenticMessage]) error {
-				return offloadTranscript(cfg.Filesystem.AgentDir, before.Messages)
-			},
+			Model:    cfg.ChatModel,
+			Trigger:  &einosumm.TriggerCondition{ContextTokens: cfg.Summarization.TriggerTokens},
+			Callback: newCompactionCallback(cfg.Filesystem.AgentDir, cfg.CompactionObserver),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("build middlewares: summarization: %w", err)
@@ -220,10 +242,15 @@ func buildMiddlewares(ctx context.Context, cfg *Config) ([]adk.TypedChatModelAge
 		// The fs tools contract absolute paths (the middleware's DeepAgents
 		// container mount), and the jail maps DefaultMountPoint onto the agent
 		// dir — tell the model where its workspace lives so it doesn't guess
-		// unusable host paths.
+		// unusable host paths. The shared project mount (channel-teams D5) is
+		// announced alongside it, channel runs only.
 		guidance := "Filesystem: your workspace is mounted at " + backend.DefaultMountPoint +
 			". File tool paths are absolute paths under " + backend.DefaultMountPoint +
 			" (e.g. " + backend.DefaultMountPoint + "/notes.md); relative paths and paths outside it fail."
+		if cfg.Filesystem.ProjectMountDir != "" {
+			guidance += " The channel's shared project space is mounted read-write at " + backend.ProjectMountPoint +
+				" (e.g. " + backend.ProjectMountPoint + "/PLAN.md); PLAN.md is the tracker — claim your area before writing."
+		}
 		fsConfig.CustomSystemPrompt = &guidance
 		for _, name := range cfg.Filesystem.DisabledTools {
 			switch name {
@@ -248,7 +275,14 @@ func buildMiddlewares(ctx context.Context, cfg *Config) ([]adk.TypedChatModelAge
 		handlers = append(handlers, fsMW)
 	}
 
-	// 6. hooks: the machine policy gate on tool calls (design.md D2/D3),
+	// 6. attachments: unconditional (attachments design D7). Shape-keyed at
+	// model time — byte-carrying blocks pass, URL-only references from older
+	// turns collapse to placeholders — so it takes no capability
+	// configuration. Appended after the fs middleware so it rewrites whatever
+	// the earlier capability middlewares left behind, ahead of the model call.
+	handlers = append(handlers, newAttachmentsPlaceholderMiddleware())
+
+	// 7. hooks: the machine policy gate on tool calls (design.md D2/D3),
 	// attached only when the run resolved a non-empty hook chain — a run with
 	// no applicable hooks pays nothing. Appended BEFORE the tool-error-result
 	// middleware so that wrapper stays outside it: a hook block returns the
@@ -258,13 +292,30 @@ func buildMiddlewares(ctx context.Context, cfg *Config) ([]adk.TypedChatModelAge
 		handlers = append(handlers, newHooksMiddleware(cfg.Hooks, *cfg.HooksBase))
 	}
 
-	// 7. tool-error-result: appended last so it wraps every tool endpoint —
+	// 8. tool-error-result: appended last so it wraps every tool endpoint —
 	// registry tools and middleware-registered fs/shell tools alike. A failed
 	// tool call becomes an error result the model can read and react to
 	// instead of a run-killing NodeRunError.
 	handlers = append(handlers, newToolErrorResultMiddleware())
 
 	return handlers, nil
+}
+
+// newCompactionCallback builds the summarization Callback shared by the
+// composed agent's automatic threshold path and the compact command's
+// standalone per-turn instance (chat-compact-command D3): both offload the
+// full pre-compaction transcript into the agent jail, and both surface the
+// display-only token estimates of the replacement to the given observer.
+func newCompactionCallback(agentDir string, observer func(tokensBefore, tokensAfter int)) func(context.Context, adk.TypedChatModelAgentState[*schema.AgenticMessage], adk.TypedChatModelAgentState[*schema.AgenticMessage]) error {
+	return func(_ context.Context, before, after adk.TypedChatModelAgentState[*schema.AgenticMessage]) error {
+		if err := offloadTranscript(agentDir, before.Messages); err != nil {
+			return err
+		}
+		if observer != nil {
+			observer(estimateWindowTokens(before.Messages), estimateWindowTokens(after.Messages))
+		}
+		return nil
+	}
 }
 
 // offloadTranscript writes the full pre-compaction history to transcript.md

@@ -138,7 +138,7 @@ func TestAgentRunCancelEndpoint(t *testing.T) {
 	blockingModel := newCancelBlockingModel()
 	runner := agents.NewRunner(
 		st.Workspaces(), st.Agents(), st.Users(), st.Members(), st.Roles(),
-		st.Providers(), st.SessionEvents(), st.SessionCheckpoints(), st.Memories(),
+		st.Providers(), st.SessionEvents(), st.SessionCheckpoints(), st.Memories(), st.AgentSessions(),
 		encKey, tempDir,
 		agents.WithAgenticModelFactory(func(context.Context, string, providers.Credential, string) (agents.Model, error) {
 			return blockingModel, nil

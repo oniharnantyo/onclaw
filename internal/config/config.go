@@ -19,6 +19,8 @@ const (
 	DefaultCacheDir            = ".onclaw/cache"
 	DefaultStorageDriver       = "local"
 	DefaultRunDrainWindow      = 30 * time.Second
+	DefaultSchedulerTick       = 15 * time.Second
+	DefaultSchedulerRunTimeout = 10 * time.Minute
 	DefaultHooksCommandEnabled = true
 	DefaultHooksScriptEnabled  = true
 )
@@ -38,6 +40,8 @@ type Config struct {
 	SuperadminPassword     string        `json:"-"`
 	SuperadminPasswordFile string        `json:"superadmin_password_file,omitempty"`
 	RunDrainWindow         time.Duration `json:"run_drain_window"`
+	SchedulerTick          time.Duration `json:"scheduler_tick"`
+	SchedulerRunTimeout    time.Duration `json:"scheduler_run_timeout"`
 	HooksCommandEnabled    bool          `json:"hooks_command_enabled"`
 	HooksScriptEnabled     bool          `json:"hooks_script_enabled"`
 }
@@ -122,6 +126,18 @@ func ServerFlags() []cli.Flag {
 			Usage:   "Graceful-shutdown window for in-flight agent runs to finish before cancellation",
 			Sources: cli.EnvVars("ONCLAW_RUN_DRAIN_WINDOW"),
 		},
+		&cli.DurationFlag{
+			Name:    "scheduler-tick",
+			Value:   DefaultSchedulerTick,
+			Usage:   "Scheduler claim-loop cadence (how often due standing orders are claimed and fired)",
+			Sources: cli.EnvVars("ONCLAW_SCHEDULER_TICK"),
+		},
+		&cli.DurationFlag{
+			Name:    "scheduler-run-timeout",
+			Value:   DefaultSchedulerRunTimeout,
+			Usage:   "Wall-clock budget for one scheduler run before its event tap is cancelled",
+			Sources: cli.EnvVars("ONCLAW_SCHEDULER_RUN_TIMEOUT"),
+		},
 		&cli.BoolFlag{
 			Name:    "hooks-command-enabled",
 			Value:   DefaultHooksCommandEnabled,
@@ -198,6 +214,8 @@ func FromServerContext(ctx context.Context, cmd *cli.Command) *Config {
 		SuperadminPassword:     cmd.String("superadmin-password"),
 		SuperadminPasswordFile: cmd.String("superadmin-password-file"),
 		RunDrainWindow:         cmd.Duration("run-drain-window"),
+		SchedulerTick:          cmd.Duration("scheduler-tick"),
+		SchedulerRunTimeout:    cmd.Duration("scheduler-run-timeout"),
 		HooksCommandEnabled:    cmd.Bool("hooks-command-enabled"),
 		HooksScriptEnabled:     cmd.Bool("hooks-script-enabled"),
 	}

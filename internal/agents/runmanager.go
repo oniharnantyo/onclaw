@@ -237,6 +237,29 @@ func (m *runManager) CloseSubscribers(key RunKey) {
 	}
 }
 
+// ActiveRunSessionIDs collects the session ids of live runs for the
+// workspace+agent pair under the manager mutex (agent-session-index D3): one
+// map read backs the session listing's running flag — no per-row queries. A
+// finished run whose deregistration is still in flight is not live (the same
+// liveness rule as isLive). The result is an empty slice, never nil.
+func (m *runManager) ActiveRunSessionIDs(workspaceID, agentID string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ids := make([]string, 0)
+	for key, lr := range m.live {
+		if key.WorkspaceID != workspaceID || key.AgentID != agentID {
+			continue
+		}
+		select {
+		case <-lr.done:
+			continue
+		default:
+		}
+		ids = append(ids, key.SessionID)
+	}
+	return ids
+}
+
 // isLive reports whether a run is currently registered and executing for key.
 func (m *runManager) isLive(key RunKey) bool {
 	m.mu.Lock()

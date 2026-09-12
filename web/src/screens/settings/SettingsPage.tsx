@@ -13,6 +13,7 @@ import { ToolsPane } from "./ToolsPane";
 import { HooksPane } from "./HooksPane";
 import { KeysSection } from "./KeysSection";
 import { NotificationsSection } from "./NotificationsSection";
+import { StoragePane } from "./StoragePane";
 
 export const SETTINGS_SECTIONS = [
   { id: 'workspace', label: 'Workspace', icon: 'shield' },
@@ -25,6 +26,7 @@ export const SETTINGS_SECTIONS = [
   { id: 'hooks', label: 'Hooks', icon: 'activity' },
   { id: 'keys', label: 'API keys', icon: 'key' },
   { id: 'notifications', label: 'Notifications', icon: 'bell' },
+  { id: 'storage', label: 'Storage', icon: 'db' },
 ] as const;
 
 export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]['id'];
@@ -192,6 +194,10 @@ export function SettingsPage({
               onToast={onToast}
               onUpdate={onUpdate}
             />
+          )}
+
+          {section === 'storage' && (
+            <StoragePane tenant={tenant} onToast={onToast} />
           )}
         </div>
       </div>

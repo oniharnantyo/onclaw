@@ -1,8 +1,27 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { api, type ApiModel, type ApiModelsResult } from "../../lib/api";
 import { cx } from "../../lib/helpers";
 import { inputCls, labelCls } from "./constants";
-import { Combobox } from "./Combobox";
+import { Combobox, type ComboboxOption } from "./Combobox";
+import { Icon } from "./Icon";
+
+// Capability icons (fix-image-attachment-lane D5): rendered from the catalog
+// data the models fetch already resolved — no new lookup. Each icon appears
+// only when the catalog affirmatively supports that capability; unknown or
+// unsupported rows stay quiet (no struck-through state, no placeholder).
+function capabilityIcons(m: ApiModel): ReactNode {
+  const nodes: { key: string; title: string; icon: string }[] = [];
+  if (m.image_input) nodes.push({ key: "image", title: "Accepts image input", icon: "eye" });
+  if (m.pdf_input) nodes.push({ key: "pdf", title: "Accepts PDF input", icon: "file" });
+  if (m.reasoning) nodes.push({ key: "reasoning", title: "Supports reasoning", icon: "brain" });
+  if (m.tool_call) nodes.push({ key: "tools", title: "Supports tool calling", icon: "wrench" });
+  if (nodes.length === 0) return undefined;
+  return nodes.map((n) => (
+    <span key={n.key} title={n.title} aria-label={n.title} className="flex items-center">
+      <Icon name={n.icon} size={12} />
+    </span>
+  ));
+}
 
 export interface ModelComboboxProps {
   workspaceId?: string;
@@ -12,6 +31,8 @@ export interface ModelComboboxProps {
     base_url?: string;
     key?: string;
     api_key?: string;
+    /** Catalog-mapping hint threaded to models-preview (D3). */
+    catalog_provider?: string;
   };
   model: string;
   onModelChange: (model: string) => void;
@@ -60,6 +81,7 @@ export function ModelCombobox({
             type: previewCreds.type,
             base_url: previewCreds.base_url,
             key: previewCreds.key || previewCreds.api_key,
+            catalog_provider: previewCreds.catalog_provider,
           });
           if (!cancelled) {
             setResult(res);
@@ -187,9 +209,10 @@ export function ModelCombobox({
   };
 
   const comboboxOptions = useMemo(() => {
-    const opts = models.map(m => ({
+    const opts: ComboboxOption[] = models.map(m => ({
       value: m.id,
       label: m.name || m.id,
+      icons: capabilityIcons(m),
     }));
     opts.push({ value: "__custom__", label: "Custom model ID…" });
     return opts;

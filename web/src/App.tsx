@@ -8,7 +8,7 @@ import { WorkspaceSwitcher } from './components/nav/WorkspaceSwitcher';
 import { NavDrawer } from './components/nav/NavDrawer';
 import { Toasts } from './components/ui/Toasts';
 import { AgentsView } from './screens/AgentsView';
-import { CronView } from './screens/CronView';
+import { SchedulesView } from './screens/SchedulesView';
 import { RunsView } from './screens/RunsView';
 import { OnboardingPane } from './screens/OnboardingPane';
 import { LoginView } from './screens/LoginView';
@@ -16,7 +16,7 @@ import { AdminView } from './screens/admin/AdminView';
 import { SettingsPage } from './screens/settings';
 import { ChatRoute } from './screens/ChatRoute';
 import { AgentConfigModal } from './modals/AgentConfigModal';
-import { CronEditorModal } from './modals/CronEditorModal';
+import { ScheduleEditorModal } from './modals/ScheduleEditorModal';
 import { CreateWorkspaceModal } from './modals/CreateWorkspaceModal';
 import { BootError } from './components/BootError';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -113,9 +113,9 @@ function Layout() {
     : location.pathname.startsWith('/admin/accounts') ? 'admin-accounts'
     : location.pathname.startsWith('/admin') ? 'admin-workspaces'
     : location.pathname.startsWith('/settings') ? 'settings'
-    : location.pathname.startsWith('/agents') ? 'agents' 
-    : location.pathname.startsWith('/cron') ? 'cron' 
-    : location.pathname.startsWith('/runs') ? 'runs' 
+    : location.pathname.startsWith('/agents') ? 'agents'
+    : location.pathname.startsWith('/schedules') || location.pathname.startsWith('/cron') ? 'schedules'
+    : location.pathname.startsWith('/runs') ? 'runs'
     : location.pathname.startsWith('/c/') || location.pathname === '/c' || location.pathname === '/' ? 'chats'
     : '';
 
@@ -205,14 +205,15 @@ function Layout() {
       chatId={activeChatId} 
       onSelect={handleSelectChat}
       activeIsAgent={(tenant?.agents || []).some(a => a.id === activeChatId)}
-      session={session} 
-      sessions={sessions} 
+      session={session}
+      sessions={sessions}
+      uiRunning={Boolean(ui.running)}
       onSwitchSession={handleSwitchSession}
       onNewSession={newSession} 
       onDeleteSession={deleteSession}
-      onDeploy={() => navigate('/agents')} 
-      onNewSchedule={() => {}}
-      onEditCron={() => {}}
+      onDeploy={() => navigate('/agents')}
+      onNewSchedule={() => patchUi({ scheduleEdit: 'new' })}
+      onEditSchedule={(s: any) => patchUi({ scheduleEdit: s })}
       onOpenSwitcher={() => patchUi({ wsOpen: !ui.wsOpen })}
       search={search} 
       setSearch={setSearch}
@@ -305,8 +306,10 @@ function Layout() {
                 <Route path="/c" element={<ChatRoute />} />
                 <Route path="/c/:chatId" element={<ChatRoute />} />
                 <Route path="/agents" element={<AgentsView tenant={tenant} onChat={handleSelectChat} onConfigure={(id: string) => patchUi({ configAgent: id })} onDeploy={() => patchUi({ configAgent: 'new' })} />} />
-                <Route path="/cron" element={<CronView tenant={tenant} onEdit={(j: any) => patchUi({ cronEdit: j })} onToggle={(j: any) => useStore.getState().toggleCron(j)} onRunNow={(j: any) => useStore.getState().runNow(j)} onNew={() => patchUi({ cronEdit: { id: null, name: '', agentId: tenant?.agents?.[0]?.id, expr: '0 9 * * 1-5', human: '', enabled: true } })} />} />
-                <Route path="/runs" element={<RunsView tenant={tenant} />} />
+                <Route path="/schedules" element={<SchedulesView tenant={tenant} onEdit={(s: any) => patchUi({ scheduleEdit: s })} onNew={() => patchUi({ scheduleEdit: 'new' })} onToast={useStore.getState().toast} />} />
+                {/* Pre-rename deep links land on the schedules screen. */}
+                <Route path="/cron" element={<Navigate to="/schedules" replace />} />
+                <Route path="/runs" element={<RunsView tenant={tenant} onToast={useStore.getState().toast} />} />
                 <Route path="/welcome" element={<OnboardingPane tenant={tenant} onDeploy={() => patchUi({ configAgent: 'new' })} onSettings={() => navigate('/settings')} />} />
                 {/* Home is the chat page with nothing pre-opened; pick a conversation from the sidebar. */}
                 <Route path="/" element={<Navigate to="/c" replace />} />
@@ -336,13 +339,12 @@ function Layout() {
       )}
 
       
-      {ui.cronEdit && (
-        <CronEditorModal 
-          job={ui.cronEdit} 
+      {ui.scheduleEdit && (
+        <ScheduleEditorModal
+          draft={ui.scheduleEdit === 'new' ? null : ui.scheduleEdit}
           tenant={tenant}
-          onClose={() => patchUi({ cronEdit: null })} 
-          onSave={(draft: any) => useStore.getState().saveCron(draft)} 
-          onDelete={(job: any) => useStore.getState().deleteCron(job)}
+          onClose={() => patchUi({ scheduleEdit: null })}
+          onChanged={() => useStore.getState().loadSchedules(tenant.id || tenant.sub)}
         />
       )}
 
