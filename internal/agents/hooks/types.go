@@ -21,7 +21,7 @@ import (
 type Event struct {
 	Event      string     `json:"event"`            // run_started|user_prompt_submit|pre_tool_use|post_tool_use|run_finished
 	DeliveryID string     `json:"delivery_id"`      // unique per evaluation
-	Origin     string     `json:"origin"`           // user|scheduler|channel
+	Origin     string     `json:"origin"`           // user|scheduler|channel|telegram
 	Status     string     `json:"status,omitempty"` // run_finished only: completed|failed|cancelled
 	Workspace  EventRef   `json:"workspace"`        // {id,name}
 	Agent      EventRef   `json:"agent"`            // {id,name}

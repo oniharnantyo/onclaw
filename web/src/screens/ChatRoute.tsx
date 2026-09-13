@@ -43,12 +43,12 @@ function ChatRouteActive({
   // (or reuses) the session entry in this agent's thread and activates it;
   // the state is consumed immediately so a reload doesn't re-inject.
   const openRun = (location.state as any)?.openRun as
-    | { sessionId: string; schedulerName?: string; title?: string }
+    | { sessionId: string; schedulerName?: string; title?: string; langfuseUrl?: string }
     | undefined;
   useEffect(() => {
     if (!openRun?.sessionId || !cleanId) return;
     const title = openRun.schedulerName ? 'Run · ' + openRun.schedulerName : 'Scheduled run';
-    useStore.getState().openRunSession(cleanId, openRun.sessionId, title, openRun.schedulerName);
+    useStore.getState().openRunSession(cleanId, openRun.sessionId, title, openRun.schedulerName, openRun.langfuseUrl);
     navigate(location.pathname, { replace: true, state: null });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openRun?.sessionId, cleanId]);

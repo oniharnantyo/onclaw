@@ -587,10 +587,11 @@ func (ss *schedulerStore) StartSchedulerRun(ctx context.Context, run *domain.Sch
 	return nil
 }
 
-// FinishSchedulerRun writes the run outcome and mirrors it into the
+// FinishSchedulerRun writes the run outcome — including the turn's persisted
+// Langfuse trace id (integrate-langfuse-tracing D3) — and mirrors it into the
 // scheduler's last_run column in one transaction — the drain writes both
 // once, and no reader may observe one without the other.
-func (ss *schedulerStore) FinishSchedulerRun(ctx context.Context, workspaceID, runID string, status string, durationMS int64, tokensUsed int, deliveryStatus string, errMsg string) error {
+func (ss *schedulerStore) FinishSchedulerRun(ctx context.Context, workspaceID, runID string, status string, durationMS int64, tokensUsed int, deliveryStatus string, errMsg string, traceID string) error {
 	if workspaceID == "" || runID == "" {
 		return domain.ErrNotFound
 	}
@@ -611,10 +612,11 @@ func (ss *schedulerStore) FinishSchedulerRun(ctx context.Context, workspaceID, r
 		    duration_ms = $4,
 		    tokens_used = $5,
 		    delivery_status = $6,
-		    error = $7
+		    error = $7,
+		    trace_id = $8
 		WHERE workspace_id = $1 AND id = $2
 		RETURNING scheduler_id, session_id, trigger, started_at
-	`, workspaceID, runID, status, durationMS, tokensUsed, deliveryStatus, errMsg,
+	`, workspaceID, runID, status, durationMS, tokensUsed, deliveryStatus, errMsg, traceID,
 	).Scan(&schedulerID, &sessionID, &trigger, &startedAt)
 	if err != nil {
 		return convertError(err)
@@ -655,7 +657,7 @@ func (ss *schedulerStore) ListSchedulerRuns(ctx context.Context, workspaceID, sc
 	query := `
 		SELECT id, workspace_id, scheduler_id, session_id, trigger, status,
 		       started_at, duration_ms, tokens_used, delivery_status, error,
-		       COUNT(*) OVER () AS total
+		       trace_id, COUNT(*) OVER () AS total
 		FROM scheduler_runs
 		WHERE workspace_id = $1 AND scheduler_id = $2
 		ORDER BY started_at DESC, id DESC
@@ -683,6 +685,7 @@ func (ss *schedulerStore) ListSchedulerRuns(ctx context.Context, workspaceID, sc
 			&r.TokensUsed,
 			&r.DeliveryStatus,
 			&r.Error,
+			&r.TraceID,
 			&total,
 		); err != nil {
 			return nil, 0, convertError(err)

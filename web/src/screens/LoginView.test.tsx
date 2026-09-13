@@ -1,8 +1,45 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { LoginView } from './LoginView';
 import { useAuthStore } from '../store/auth';
+import { THEME_STORAGE_KEY } from '../lib/theme';
+
+// The login screen now mounts the ThemeCycleButton, which reads localStorage
+// and (on click) applyTheme → window.matchMedia. The vitest jsdom env has
+// neither — stub both for the theme-control tests (unstubbed in afterEach).
+function stubLocalStorage(initial: Record<string, string> = {}) {
+  const map = new Map(Object.entries(initial));
+  vi.stubGlobal('localStorage', {
+    getItem: (key: string) => (map.has(key) ? map.get(key)! : null),
+    setItem: (key: string, value: string) => {
+      map.set(key, String(value));
+    },
+    removeItem: (key: string) => {
+      map.delete(key);
+    },
+  });
+}
+
+const stubMatchMedia = (matches: boolean) =>
+  vi.stubGlobal('matchMedia', () => ({
+    matches,
+    addEventListener() {},
+    removeEventListener() {},
+    addListener() {},
+    removeListener() {},
+  }));
+
+function renderLogin() {
+  return render(
+    <MemoryRouter initialEntries={['/login']}>
+      <Routes>
+        <Route path="/login" element={<LoginView />} />
+        <Route path="/" element={<div>Home Page</div>} />
+      </Routes>
+    </MemoryRouter>
+  );
+}
 
 describe('screens/LoginView', () => {
   beforeEach(() => {
@@ -12,6 +49,10 @@ describe('screens/LoginView', () => {
       status: 'unauthenticated',
     });
     vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('renders login form with inputs and disabled submit button when empty', () => {
@@ -97,5 +138,31 @@ describe('screens/LoginView', () => {
     await waitFor(() => {
       expect(screen.getByText('Invalid email or password')).not.toBeNull();
     });
+  });
+
+  it('renders the theme cycle control pinned to the top-right corner', () => {
+    stubLocalStorage({ [THEME_STORAGE_KEY]: 'light' });
+    stubMatchMedia(false);
+    renderLogin();
+
+    const themeBtn = screen.getByTestId('login-theme');
+    expect(themeBtn.getAttribute('aria-label')).toBe('Theme: light (click for dark)');
+
+    // Icon-only control in an absolutely positioned top-right wrapper
+    expect(themeBtn.closest('div.absolute')?.className).toContain('right-4 top-4');
+    expect(themeBtn.className).toContain('w-9');
+  });
+
+  it('cycles the theme preference from the login screen control', () => {
+    stubLocalStorage({ [THEME_STORAGE_KEY]: 'dark' });
+    stubMatchMedia(false);
+    renderLogin();
+
+    const themeBtn = screen.getByTestId('login-theme');
+    fireEvent.click(themeBtn);
+
+    expect(themeBtn.getAttribute('aria-label')).toBe('Theme: system (click for light)');
+    expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe('system');
+    expect(document.documentElement.dataset.theme).toBe('light');
   });
 });

@@ -385,12 +385,12 @@ func TestFakeSchedulerStore_RunRecords(t *testing.T) {
 	}
 
 	// Finishing a run of a foreign workspace is NotFound.
-	if err := st.FinishSchedulerRun(ctx, "ws-other", ids[0], domain.SchedulerRunStatusCompleted, 0, 0, "", ""); !errors.Is(err, domain.ErrNotFound) {
+	if err := st.FinishSchedulerRun(ctx, "ws-other", ids[0], domain.SchedulerRunStatusCompleted, 0, 0, "", "", ""); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound for foreign finish, got %v", err)
 	}
 
 	// Finish one and verify the last_run mirror.
-	if err := st.FinishSchedulerRun(ctx, f.WorkspaceID, ids[1], domain.SchedulerRunStatusCompleted, 1500, 42, domain.SchedulerDeliveryDelivered, ""); err != nil {
+	if err := st.FinishSchedulerRun(ctx, f.WorkspaceID, ids[1], domain.SchedulerRunStatusCompleted, 1500, 42, domain.SchedulerDeliveryDelivered, "", ""); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
 	got, _ := st.GetScheduler(ctx, f.WorkspaceID, s.ID)
@@ -434,7 +434,7 @@ func TestFakeSchedulerStore_RunRecords(t *testing.T) {
 	}
 
 	// Finishing an unknown run is NotFound.
-	if err := st.FinishSchedulerRun(ctx, f.WorkspaceID, "nope", domain.SchedulerRunStatusFailed, 0, 0, "", "boom"); !errors.Is(err, domain.ErrNotFound) {
+	if err := st.FinishSchedulerRun(ctx, f.WorkspaceID, "nope", domain.SchedulerRunStatusFailed, 0, 0, "", "boom", ""); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound finishing unknown run, got %v", err)
 	}
 }

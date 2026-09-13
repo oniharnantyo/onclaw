@@ -245,7 +245,7 @@ export function ToolCall({ t, running, approval, siblings }: any) {
         {!resolved && (
           <div className="flex items-center gap-2 border-t border-linesoft px-2.5 py-2">
             <button type="button" onClick={() => decide(true)} disabled={!!resolving}
-              className="rounded-md bg-[var(--accent)] px-2.5 py-1 text-[12px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50">
+              className="rounded-md bg-[var(--accent)] px-2.5 py-1 text-[12px] font-medium text-accenton transition-opacity hover:opacity-90 disabled:opacity-50">
               {resolving === 'approve' ? 'Approving…' : 'Approve'}
             </button>
             <button type="button" onClick={() => decide(false)} disabled={!!resolving}

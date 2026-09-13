@@ -223,7 +223,7 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
           </span>
         </div>
       )}
-      <ChatHeader target={target} agent={agent} channelMembers={channelMembers} usage={session?.usage} onToggleMembers={onToggleMembers} onConfigure={onConfigure}/>
+      <ChatHeader target={target} agent={agent} channelMembers={channelMembers} usage={session?.usage} langfuseUrl={session?.langfuseUrl} onToggleMembers={onToggleMembers} onConfigure={onConfigure}/>
       <div ref={listRef} onScroll={onScroll} role="log" aria-label="Messages" className="od-scroll relative flex-1 overflow-y-auto" data-od-id="message-list">
         {isEmpty ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center">

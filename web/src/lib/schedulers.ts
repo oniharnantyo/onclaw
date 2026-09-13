@@ -55,6 +55,11 @@ export interface SchedulerRun {
   tokens_used: number;
   delivery_status: '' | 'delivered' | 'suppressed' | 'failed';
   error?: string;
+  /** Deep link to the run's observability trace (integrate-langfuse-tracing
+   * D6): composed server-side from the configured host + persisted trace id.
+   * Null/absent when tracing is unconfigured or the run predates tracing —
+   * the client learns nothing else about the backend. */
+  langfuse_url?: string | null;
 }
 
 export interface SchedulerPayload {

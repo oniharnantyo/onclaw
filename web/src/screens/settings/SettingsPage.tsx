@@ -7,6 +7,7 @@ import { WorkspaceSection } from "./WorkspaceSection";
 import { ProvidersPane } from "./ProvidersPane";
 import { MembersSection } from "./MembersSection";
 import { IntegrationsSection } from "./IntegrationsSection";
+import { GatewaysPane } from "./GatewaysPane";
 import { McpPane } from "./McpPane";
 import { SkillsPane } from "./SkillsPane";
 import { ToolsPane } from "./ToolsPane";
@@ -19,6 +20,7 @@ export const SETTINGS_SECTIONS = [
   { id: 'workspace', label: 'Workspace', icon: 'shield' },
   { id: 'providers', label: 'Providers', icon: 'sliders' },
   { id: 'members', label: 'Members & roles', icon: 'users' },
+  { id: 'gateways', label: 'Gateways', icon: 'bot' },
   { id: 'integrations', label: 'Integrations', icon: 'link' },
   { id: 'mcp', label: 'MCP servers', icon: 'plug' },
   { id: 'skills', label: 'Skills', icon: 'spark' },
@@ -144,6 +146,14 @@ export function SettingsPage({
               tenant={tenant}
               onToast={onToast}
               onUpdate={onUpdate}
+            />
+          )}
+
+          {section === 'gateways' && (
+            <GatewaysPane
+              tenant={tenant}
+              onUpdate={onUpdate}
+              onToast={onToast}
             />
           )}
 

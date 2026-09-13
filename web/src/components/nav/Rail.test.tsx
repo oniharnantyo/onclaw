@@ -1,6 +1,32 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import { Rail } from './Rail';
+import { THEME_STORAGE_KEY } from '../../lib/theme';
+
+// ThemeCycleButton (mounted in the rail) reads localStorage and applyTheme
+// touches window.matchMedia on click — the vitest jsdom env has neither, so
+// the theme-control tests stub both (unstubbed in afterEach).
+function stubLocalStorage(initial: Record<string, string> = {}) {
+  const map = new Map(Object.entries(initial));
+  vi.stubGlobal('localStorage', {
+    getItem: (key: string) => (map.has(key) ? map.get(key)! : null),
+    setItem: (key: string, value: string) => {
+      map.set(key, String(value));
+    },
+    removeItem: (key: string) => {
+      map.delete(key);
+    },
+  });
+}
+
+const stubMatchMedia = (matches: boolean) =>
+  vi.stubGlobal('matchMedia', () => ({
+    matches,
+    addEventListener() {},
+    removeEventListener() {},
+    addListener() {},
+    removeListener() {},
+  }));
 
 describe('components/nav/Rail', () => {
   const mockTenant = {
@@ -160,5 +186,57 @@ describe('components/nav/Rail', () => {
 
     fireEvent.click(toggle);
     expect(onToggleExpand).toHaveBeenCalledTimes(1);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('renders the theme cycle control icon-only in the collapsed rail', () => {
+    stubLocalStorage({ [THEME_STORAGE_KEY]: 'light' });
+    stubMatchMedia(false);
+    render(<Rail {...defaultProps} />);
+
+    const themeBtn = screen.getByTestId('rail-theme');
+    expect(themeBtn.getAttribute('aria-label')).toBe('Theme: light (click for dark)');
+
+    // Icon-only: no visible label text in the collapsed rail
+    expect(screen.queryByText('Theme: light')).toBeNull();
+
+    // Settings-row shape, not the expanded row shape
+    expect(themeBtn.className).toContain('w-11');
+    expect(themeBtn.className).not.toContain('w-[calc(100%-16px)]');
+  });
+
+  it('renders the theme cycle control as a labeled row in the expanded rail, above Settings', () => {
+    stubLocalStorage({ [THEME_STORAGE_KEY]: 'system' });
+    stubMatchMedia(true);
+    render(<Rail {...defaultProps} expanded={true} />);
+
+    const themeBtn = screen.getByTestId('rail-theme');
+    const settingsBtn = screen.getByTestId('rail-settings');
+
+    // Visible `Theme: <mode>` label in the Settings-row shape
+    expect(screen.getByText('Theme: system')).not.toBeNull();
+    expect(themeBtn.className).toContain('w-[calc(100%-16px)]');
+    expect(themeBtn.className).toContain('text-left');
+
+    // Positioned directly above the Settings row
+    expect(
+      themeBtn.compareDocumentPosition(settingsBtn) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+  });
+
+  it('cycles the theme preference when the rail control is clicked', () => {
+    stubLocalStorage({ [THEME_STORAGE_KEY]: 'light' });
+    stubMatchMedia(false);
+    render(<Rail {...defaultProps} />);
+
+    const themeBtn = screen.getByTestId('rail-theme');
+    fireEvent.click(themeBtn);
+
+    expect(themeBtn.getAttribute('aria-label')).toBe('Theme: dark (click for system)');
+    expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe('dark');
+    expect(document.documentElement.dataset.theme).toBe('dark');
   });
 });

@@ -156,6 +156,21 @@ describe('schedulers client — run-now and run history', () => {
     expect(String(fetchMock.mock.calls[1][0])).toBe('/api/v1/workspaces/acme/scheduler-runs');
   });
 
+  it('passes langfuse_url through verbatim when present and injects nothing when absent', async () => {
+    // Traced run (integrate-langfuse-tracing D6): the deep link is composed
+    // server-side; the client carries it untouched for the runs view.
+    reply({ runs: [{ ...wireRun, langfuse_url: 'https://langfuse.acme.example.com/trace/tr-123' }], total: 1 });
+    const traced = await schedulers.listRuns('acme');
+    expect(traced.runs[0].langfuse_url).toBe('https://langfuse.acme.example.com/trace/tr-123');
+
+    // Untraced run: field absent on the wire, absent (not coerced to a
+    // string or empty link) on the parsed payload — unconfigured deployments
+    // behave exactly as before.
+    reply({ runs: [wireRun], total: 1 });
+    const untraced = await schedulers.listRuns('acme');
+    expect(untraced.runs[0].langfuse_url).toBeUndefined();
+  });
+
   it('parses validation errors into ApiError with field details like every other client call', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: false,

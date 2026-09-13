@@ -496,7 +496,7 @@ export function CreateWorkspaceModal({
             {requiresBaseURL && (
               <div>
                 <label className={labelCls} htmlFor="prov-base-url">
-                  Base URL <span className="text-accent font-normal">(required for compatible endpoint)</span>
+                  Base URL <span className="text-accenttext font-normal">(required for compatible endpoint)</span>
                 </label>
                 <input
                   id="prov-base-url"

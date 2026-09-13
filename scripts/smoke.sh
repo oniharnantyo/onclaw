@@ -34,6 +34,12 @@
 #      workspace storage config API with member gating — local driver)
 #  22. Schedulers (integrate-scheduler: permission guards, run-now with a
 #      real agent run + transcript, channel delivery, pause flow)
+#  23. Telegram gateway (integrate-telegram-gateway: auth gates, write-only
+#      bot token with secret hint, config PUT/GET roundtrip, enable/disable,
+#      group bindings with conflict 409/422, pairing token lifecycle, webhook
+#      secret enforcement)
+#      + Langfuse link-out contract (integrate-langfuse-tracing 5.2: run
+#      payloads expose langfuse_url null on unconfigured instances)
 #
 # Usage:
 #   ./scripts/smoke.sh
@@ -2011,10 +2017,22 @@ assert_status "413" "Oversize image upload rejected 413"
 assert_json_expr '.error.message | contains("5242880")' "413 message names the 5 MB image cap"
 
 # 21.4 Drop-lane document upload (report.docx) & legacy office rejection (legacy.doc).
-echo "fake docx package content" > "${TMP_DIR}/report.docx"
+# A real OOXML package (zip magic), built inline — the server sniffs magic
+# bytes, never the extension, so a text body named .docx would be refused as
+# a text/content mismatch. Lane classification itself is unit-covered; the
+# wire carries the sniffed mime, not the lane.
+python3 - "${TMP_DIR}/report.docx" <<'PYEOF'
+import sys
+import zipfile
+with zipfile.ZipFile(sys.argv[1], "w") as z:
+    z.writestr("[Content_Types].xml",
+               '<?xml version="1.0" encoding="UTF-8"?>'
+               '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>')
+    z.writestr("word/document.xml", "<doc/>")
+PYEOF
 api_upload "/api/v1/workspaces/${TENANT_SLUG}/attachments" "${ALICE_TOKEN}" "${TMP_DIR}/report.docx" "file"
-assert_status "201" "Modern office format (docx) enters the drop lane (201)"
-assert_json_expr '.lane == "drop"' "docx is classified as drop lane"
+assert_status "201" "Modern office format (docx) upload accepted (drop-lane document, 201)"
+assert_json_expr '.mime == "application/zip"' "docx mime is sniffed from OOXML magic bytes, not the extension"
 
 echo "legacy binary doc content" > "${TMP_DIR}/legacy.doc"
 api_upload "/api/v1/workspaces/${TENANT_SLUG}/attachments" "${ALICE_TOKEN}" "${TMP_DIR}/legacy.doc" "file"
@@ -2089,6 +2107,10 @@ assert_status "200" "Owner runs the scheduler now"
 assert_json_expr '.run.trigger == "manual"' "Run-now records trigger manual"
 assert_json_expr '.run.status == "running"' "Run-now returns the live run row"
 assert_json_expr ".run.session_id | startswith(\"sched_${SCHED_ID}_\")" "Run session id has the sched_<schedulerID>_<ts> shape"
+# Tracing stays invisible when disabled (integrate-langfuse-tracing 5.2): the
+# run payloads always carry langfuse_url, and it is null on this unconfigured
+# instance — present-and-null, not absent.
+assert_json_expr '.run.langfuse_url == null and (.run | has("langfuse_url"))' "Run-now payload exposes langfuse_url null without tracing"
 
 SCHED_RUNS_TERMINAL=0
 for i in {1..60}; do
@@ -2107,6 +2129,7 @@ assert_status "200" "Scheduler runs endpoint serves the history"
 assert_json_expr '.runs[0].status == "completed"' "Scheduler run completed (mock provider produced a real agent run)"
 assert_json_expr '.runs[0].trigger == "manual"' "History row records the manual trigger"
 assert_json_expr '.runs[0].tokens_used > 0' "Completed run metered token usage"
+assert_json_expr '.runs[0].langfuse_url == null and (.runs[0] | has("langfuse_url"))' "Run history rows expose langfuse_url null without tracing"
 assert_json_expr '.total >= 1' "Runs history reports its total"
 SCHED_RUN_SESSION=$(json_get '.runs[0].session_id')
 
@@ -2175,6 +2198,7 @@ api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/scheduler-runs?limit=100" "${CH
 assert_status "200" "Owner lists the workspace-wide scheduler runs"
 assert_json_expr '.total >= 2' "Workspace-wide feed counts both schedulers' runs"
 assert_json_expr '.runs[0].scheduler_name | length > 0' "Feed rows are enriched with the scheduler name"
+assert_json_expr '.runs[0].langfuse_url == null and (.runs[0] | has("langfuse_url"))' "Workspace-wide feed rows expose langfuse_url null without tracing"
 
 # 22.7 Pause flow (D9): disabling clears the derived next fire time; run-now
 # still executes a paused scheduler and never re-enables it.
@@ -2211,3 +2235,153 @@ assert_status "200" "Owner re-reads the scheduler after the paused run-now"
 assert_json_expr '.scheduler.enabled == false' "Run-now did not re-enable the paused scheduler"
 assert_json_expr '.scheduler.next_run_at == null' "Paused scheduler still has no next fire time"
 
+# -----------------------------------------------------------------------------
+# 23. Telegram Gateway: Auth Gates, Write-Only Token, Bindings, Pairing &
+#     Webhook Secret Enforcement (integrate-telegram-gateway)
+# -----------------------------------------------------------------------------
+log_step "23. Telegram Gateway: Config, Bindings, Pairing & Webhook"
+
+GW_BASE="/api/v1/workspaces/${TENANT_SLUG}/gateways/telegram"
+GW_TOKEN="123456:AAH-smoke-bot-token-9876"
+
+# 23.1 Auth gates: the ingress requires a session; a plain Member holds no
+# gateways.write, so config reads AND writes are 403 (pairing stays
+# member-level — asserted in 23.6).
+api_req "GET" "${GW_BASE}" ""
+assert_status "401" "Unauthenticated gateway config read returns 401"
+
+api_req "GET" "${GW_BASE}" "${DAVE_TOKEN}"
+assert_status "403" "Member cannot read the gateway config (gateways.write 403)"
+assert_json_expr '.error.code == "forbidden"' "Error code is forbidden"
+
+api_req "PUT" "${GW_BASE}" "${DAVE_TOKEN}" "{\"token\":\"${GW_TOKEN}\"}"
+assert_status "403" "Member cannot write the gateway config (403)"
+
+# 23.2 Unconfigured workspace answers {gateway: null}, never 404.
+api_req "GET" "${GW_BASE}" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner reads the (unconfigured) gateway config"
+assert_json_expr '.gateway == null' "Unconfigured gateway reads as null"
+
+# 23.3 Config PUT: stores the token encrypted and carries only the last-4
+# hint — never the plaintext, never the ciphertext envelope.
+api_req "PUT" "${GW_BASE}" "${CHARLIE_TOKEN}" "{\"token\":\"${GW_TOKEN}\",\"transport\":\"long_polling\"}"
+assert_status "200" "Owner connects the gateway with a bot token"
+assert_json_expr '.gateway.id != null' "Config PUT returns the gateway row"
+assert_json_expr '.gateway.platform == "telegram"' "Gateway platform is telegram"
+assert_json_expr '.gateway.enabled == false' "A fresh gateway starts disabled"
+assert_json_expr '.gateway.token_hint == "9876"' "Config carries only the last-4 token hint"
+if echo "${HTTP_BODY}" | grep -q "${GW_TOKEN}"; then
+    log_fail "Config response echoed the plaintext bot token!"
+else
+    log_pass "Config response never echoes the plaintext bot token"
+fi
+if echo "${HTTP_BODY}" | grep -q '"v1:'; then
+    log_fail "Config response leaked the token ciphertext envelope!"
+else
+    log_pass "Config response never leaks the ciphertext envelope"
+fi
+
+# 23.4 Config GET roundtrip: the hint survives; the plaintext never returns.
+api_req "GET" "${GW_BASE}" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner reads the configured gateway"
+assert_json_expr '.gateway.token_hint == "9876"' "GET carries the same last-4 hint"
+if echo "${HTTP_BODY}" | grep -q "${GW_TOKEN}"; then
+    log_fail "Config GET echoed the plaintext bot token!"
+else
+    log_pass "Config GET never echoes the plaintext bot token"
+fi
+
+# 23.5 A token-less PUT keeps the stored secret (write-only semantics) and
+# binding the default agent round-trips.
+api_req "PUT" "${GW_BASE}" "${CHARLIE_TOKEN}" '{}'
+assert_status "200" "Token-less PUT keeps the stored configuration"
+assert_json_expr '.gateway.token_hint == "9876"' "Omitted token preserves the stored secret"
+
+api_req "PUT" "${GW_BASE}" "${CHARLIE_TOKEN}" "{\"default_agent_id\":\"${AGENT_ID}\"}"
+assert_status "200" "Owner sets the gateway default agent"
+assert_json_expr ".gateway.default_agent_id == \"${AGENT_ID}\"" "Default agent round-trips"
+
+# 23.6 Pairing is member-level: a plain Member can mint and revoke tokens for
+# themselves while still unable to touch the config.
+api_req "POST" "${GW_BASE}/pairing-tokens" "${DAVE_TOKEN}" '{}'
+assert_status "201" "Member mints a pairing token (member-gated)"
+assert_json_expr '(.token.token | length) >= 32' "Pairing token carries its full crypto-random value"
+assert_json_expr '.token.expires_at != null' "Pairing token carries an expiry"
+PAIR_TOKEN=$(json_get '.token.token')
+
+api_req "GET" "${GW_BASE}/links/me" "${DAVE_TOKEN}"
+assert_status "200" "Member reads their (absent) Telegram link"
+assert_json_expr '.link == null' "Unpaired member reads a null link"
+
+api_req "DELETE" "${GW_BASE}/links/me" "${DAVE_TOKEN}"
+assert_status "404" "Self unpair with no link is 404"
+
+# Revoke lifecycle: an unconsumed token can be cancelled exactly once.
+api_req "DELETE" "${GW_BASE}/pairing-tokens/${PAIR_TOKEN}" "${DAVE_TOKEN}"
+assert_status "204" "Member revokes the minted pairing token (204)"
+api_req "DELETE" "${GW_BASE}/pairing-tokens/${PAIR_TOKEN}" "${DAVE_TOKEN}"
+assert_status "404" "Revoking an already-revoked token is 404"
+
+# 23.7 Enable / disable lifecycle: enabling flips the flag (a probe failure
+# against the fake smoke token may surface on status_error — the config is
+# still saved) and disabling is inert, preserving configuration.
+api_req "POST" "${GW_BASE}/enable" "${CHARLIE_TOKEN}" '{}'
+assert_status "200" "Owner enables the gateway"
+assert_json_expr '.gateway.enabled == true' "Enabled gateway reports enabled"
+
+api_req "POST" "${GW_BASE}/disable" "${CHARLIE_TOKEN}" '{}'
+assert_status "200" "Owner disables the gateway"
+assert_json_expr '.gateway.enabled == false' "Disabled gateway reports enabled false"
+assert_json_expr '.gateway.token_hint == "9876"' "Disable preserves the stored token"
+assert_json_expr ".gateway.default_agent_id == \"${AGENT_ID}\"" "Disable preserves the configuration"
+
+api_req "POST" "${GW_BASE}/enable" "${DAVE_TOKEN}" '{}'
+assert_status "403" "Member cannot enable the gateway (403)"
+
+# 23.8 Group bindings: create, duplicate conflict, fielded validation, list,
+# delete. The platform chat is unique per binding across ALL workspaces
+# (design D2) — a second bind of the same chat is a 409.
+api_req "POST" "${GW_BASE}/bindings" "${CHARLIE_TOKEN}" '{"agent_id":"'"${AGENT_ID}"'","platform_chat_id":"-100999","chat_title":"Smoke Ops"}'
+assert_status "201" "Owner binds a Telegram group to the smoke agent"
+assert_json_expr ".binding.agent_id == \"${AGENT_ID}\"" "Binding carries the bound agent"
+assert_json_expr '.binding.platform == "telegram"' "Binding platform is telegram"
+assert_json_expr '.binding.chat_title == "Smoke Ops"' "Create echoes the chat title"
+BINDING_ID=$(json_get '.binding.id')
+
+api_req "POST" "${GW_BASE}/bindings" "${CHARLIE_TOKEN}" '{"agent_id":"'"${AGENT_ID}"'","platform_chat_id":"-100999"}'
+assert_status "409" "Binding the same chat twice is rejected (409)"
+assert_json_expr '.error.code == "conflict"' "Binding conflict error code is conflict"
+
+api_req "POST" "${GW_BASE}/bindings" "${CHARLIE_TOKEN}" '{}'
+assert_status "422" "Binding without agent/chat ids is rejected (422)"
+assert_json_expr '[.error.details[]? | select(.field == "agent_id")] | length > 0' "Validation error fields agent_id"
+
+api_req "POST" "${GW_BASE}/bindings" "${CHARLIE_TOKEN}" '{"agent_id":"00000000-0000-0000-0000-000000000000","platform_chat_id":"-100998"}'
+assert_status "422" "Binding an unknown agent is rejected (422)"
+assert_json_expr '[.error.details[]? | select(.field == "agent_id")] | length > 0' "Unknown-agent error fields agent_id"
+
+api_req "GET" "${GW_BASE}/bindings" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists the gateway bindings"
+assert_json_expr '(.bindings | length) == 1' "Bindings list contains the created binding"
+assert_json_expr '.bindings[0].chat_title == null' "Listings carry no persisted chat title"
+
+api_req "DELETE" "${GW_BASE}/bindings/${BINDING_ID}" "${DAVE_TOKEN}"
+assert_status "403" "Member cannot delete bindings (403)"
+
+api_req "DELETE" "${GW_BASE}/bindings/${BINDING_ID}" "${CHARLIE_TOKEN}"
+assert_status "204" "Owner deletes the binding (204)"
+
+api_req "GET" "${GW_BASE}/bindings" "${CHARLIE_TOKEN}"
+assert_json_expr '(.bindings | length) == 0' "Deleted binding is gone from the list"
+
+# 23.9 The public webhook ingress authenticates on the derived secret: a
+# missing or wrong X-Telegram-Bot-Api-Secret-Token is 401 and never
+# processed (spec: "Webhook secret enforced").
+api_req "POST" "/api/v1/webhooks/telegram/${TENANT_ID}" "" '{}'
+assert_status "401" "Webhook POST without the secret token is 401"
+
+api_req "POST" "/api/v1/webhooks/telegram/${TENANT_ID}" "" '{}' "application/json"
+assert_status "401" "Webhook POST without any headers is rejected unauthenticated"
+
+api_req "POST" "/api/v1/webhooks/telegram/00000000-0000-0000-0000-000000000000" "" '{}'
+assert_status "401" "Webhook POST for an unknown workspace still demands the secret (no existence leak)"

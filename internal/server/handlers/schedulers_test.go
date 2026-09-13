@@ -136,10 +136,15 @@ type schedulerHandlerEnv struct {
 // b-side in UTC), an owner + a plain Member + a user whose role lacks the
 // scheduler permissions, one agent, and mounts the scheduler routes guarded
 // the way the router guards them.
-func newSchedulerHandlerEnv(t *testing.T) *schedulerHandlerEnv {
+func newSchedulerHandlerEnv(t *testing.T, langfuseHost ...string) *schedulerHandlerEnv {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	ctx := context.Background()
+
+	host := ""
+	if len(langfuseHost) > 0 {
+		host = langfuseHost[0]
+	}
 
 	st := storefake.New()
 	ws := &domain.Workspace{ID: "ws-acme", Slug: "acme", Name: "Acme", Timezone: "Asia/Jakarta"}
@@ -211,7 +216,7 @@ func newSchedulerHandlerEnv(t *testing.T) *schedulerHandlerEnv {
 	}
 
 	runNow := &stubRunNow{st: st}
-	h := handlers.NewSchedulerHandlers(st.Schedulers(), runNow)
+	h := handlers.NewSchedulerHandlers(st.Schedulers(), runNow, host)
 
 	var currentUser *domain.User
 	r := gin.New()
@@ -785,4 +790,96 @@ func TestSchedulerHandlers_Delete(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 after delete, got %d", rec.Code)
 	}
+}
+
+// Langfuse deep link (integrate-langfuse-tracing D6): a configured host
+// composes langfuse_url from the persisted trace id; without a trace id (or
+// without a host) the field is present and null — the client never learns
+// the backend and renders no action.
+func TestSchedulerHandlers_LangfuseURLComposition(t *testing.T) {
+	configured := newSchedulerHandlerEnv(t, "https://langfuse.example.com/")
+	configured.as(configured.owner)
+	s := configured.createScheduler(t, "morning-digest", "0 9 * * 1-5")
+
+	// A traced run composes the deep link from host + trace id.
+	configured.runNow.run = &domain.SchedulerRun{
+		ID:          "run-traced",
+		WorkspaceID: configured.ws.ID,
+		SchedulerID: s.ID,
+		SessionID:   "sched_" + s.ID + "_1",
+		Trigger:     domain.SchedulerTriggerManual,
+		Status:      domain.SchedulerRunStatusCompleted,
+		StartedAt:   time.Now().UTC(),
+		TraceID:     "tr-123",
+	}
+	rec := configured.serve(t, http.MethodPost, "/api/v1/workspaces/acme/schedulers/"+s.ID+"/run", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on run-now, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var traced struct {
+		Run struct {
+			LangfuseURL *string `json:"langfuse_url"`
+		} `json:"run"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &traced); err != nil {
+		t.Fatalf("decode traced run: %v", err)
+	}
+	if traced.Run.LangfuseURL == nil || *traced.Run.LangfuseURL != "https://langfuse.example.com/trace/tr-123" {
+		t.Fatalf("expected the composed deep link, got %+v", traced.Run.LangfuseURL)
+	}
+
+	// An untraced run on a configured host stays null.
+	configured.runNow.run.TraceID = ""
+	rec = configured.serve(t, http.MethodPost, "/api/v1/workspaces/acme/schedulers/"+s.ID+"/run", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on run-now, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !jsonKeyIsNull(t, rec.Body.Bytes(), "run", "langfuse_url") {
+		t.Fatalf("expected langfuse_url null for an untraced run, got %s", rec.Body.String())
+	}
+
+	// Unconfigured host: every run payload's langfuse_url is null — tracing
+	// stays invisible when disabled (the smoke-suite contract).
+	unconfigured := newSchedulerHandlerEnv(t)
+	unconfigured.as(unconfigured.owner)
+	u := unconfigured.createScheduler(t, "morning-digest", "0 9 * * 1-5")
+	unconfigured.runNow.run = &domain.SchedulerRun{
+		ID:          "run-untraced",
+		WorkspaceID: unconfigured.ws.ID,
+		SchedulerID: u.ID,
+		SessionID:   "sched_" + u.ID + "_1",
+		Trigger:     domain.SchedulerTriggerManual,
+		Status:      domain.SchedulerRunStatusCompleted,
+		StartedAt:   time.Now().UTC(),
+		TraceID:     "tr-456", // persisted id without a configured host still yields null
+	}
+	rec = unconfigured.serve(t, http.MethodPost, "/api/v1/workspaces/acme/schedulers/"+u.ID+"/run", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on run-now, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !jsonKeyIsNull(t, rec.Body.Bytes(), "run", "langfuse_url") {
+		t.Fatalf("expected langfuse_url null on an unconfigured host, got %s", rec.Body.String())
+	}
+}
+
+// jsonKeyIsNull reports whether body's nested key path decodes to an explicit
+// JSON null (present, not merely absent).
+func jsonKeyIsNull(t *testing.T, body []byte, path ...string) bool {
+	t.Helper()
+	var doc map[string]any
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	var cur any = doc
+	for _, key := range path {
+		obj, ok := cur.(map[string]any)
+		if !ok {
+			return false
+		}
+		cur, ok = obj[key]
+		if !ok {
+			return false
+		}
+	}
+	return cur == nil
 }

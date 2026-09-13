@@ -65,6 +65,14 @@ func (a *agentSessionStore) UpsertAgentSession(ctx context.Context, workspaceID,
 	if up.SessionID == "" {
 		return domain.ErrInvalid
 	}
+	// Binding-prefix validation (integrate-telegram-gateway design D3,
+	// channel-session-leak fix): only registered prefixes — including the
+	// gateway's tg_dm_/tg_group_ — may index rows; unknown "<word>_"-shaped
+	// ids are refused. The runner treats the failure as best-effort
+	// bookkeeping, so a bad prefix never fails a run.
+	if err := domain.ValidateAgentSessionID(up.SessionID); err != nil {
+		return err
+	}
 
 	query := `
 		INSERT INTO agent_sessions (workspace_id, agent_id, user_id, session_id, title, last_active_at)
@@ -88,12 +96,20 @@ func (a *agentSessionStore) ListAgentSessions(ctx context.Context, workspaceID, 
 	}
 
 	// Non-deleted only, most recently active first (the listing index
-	// ordering), id as the determinism tiebreak.
+	// ordering), id as the determinism tiebreak — and private-index only
+	// (design D3): channel, scheduler, and gateway group sessions are
+	// shared/automation artifacts and never surface in a per-user listing;
+	// gateway DM sessions do, under the paired member. The underscores in
+	// the LIKE patterns are escaped (they are wildcards), matching the
+	// literal prefixes.
 	query := `
 		SELECT ` + agentSessionColumns + `
 		FROM agent_sessions
 		WHERE workspace_id = $1 AND agent_id = $2 AND user_id = $3
 		  AND deleted_at IS NULL
+		  AND session_id NOT LIKE 'chan\_%'
+		  AND session_id NOT LIKE 'sched\_%'
+		  AND session_id NOT LIKE 'tg\_group\_%'
 		ORDER BY last_active_at DESC, id DESC
 	`
 	rows, err := a.db.Query(ctx, query, workspaceID, agentID, userID)

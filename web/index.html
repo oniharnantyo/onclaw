@@ -5,6 +5,16 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OnClaw — Agent Workspace</title>
+    <script>
+      // No-flash theme bootstrap (change add-dark-theme, design D4): resolves
+      // the stored preference before the app module executes. Keep in sync
+      // with src/lib/theme.ts THEME_STORAGE_KEY + resolveTheme; pinned by
+      // theme.test.ts.
+      var stored = null;
+      try { stored = localStorage.getItem('od_theme'); } catch (e) {}
+      var dark = stored === 'dark' || (stored !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+      document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+    </script>
   </head>
   <body>
     <div id="root"></div>

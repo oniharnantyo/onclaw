@@ -81,7 +81,7 @@ export function AgentCard({ a, onChat, onConfigure, onRegenerate }: AgentCardPro
       {isGenerating && (
         <div
           data-testid="generating-indicator"
-          className="mt-3 flex items-center gap-2 rounded-md border border-accent/25 bg-[color-mix(in_oklab,var(--accent)_10%,transparent)] px-2.5 py-1.5 text-[12px] font-medium text-accent"
+          className="mt-3 flex items-center gap-2 rounded-md border border-accent/25 bg-[color-mix(in_oklab,var(--accent)_10%,transparent)] px-2.5 py-1.5 text-[12px] font-medium text-accenttext"
         >
           <span className="relative flex h-2 w-2">
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent opacity-75" />
@@ -108,7 +108,7 @@ export function AgentCard({ a, onChat, onConfigure, onRegenerate }: AgentCardPro
             onClick={handleRetry}
             disabled={retrying}
             data-testid="btn-retry-generation"
-            className="shrink-0 flex items-center gap-1 rounded border border-danger/40 bg-surface px-2 py-1 text-[11px] font-semibold text-danger transition-colors hover:bg-danger hover:text-white disabled:opacity-50"
+            className="shrink-0 flex items-center gap-1 rounded border border-danger/40 bg-surface px-2 py-1 text-[11px] font-semibold text-danger transition-colors hover:bg-danger hover:text-accenton disabled:opacity-50"
           >
             <Icon name="spark" size={11} />
             {retrying ? "Retrying…" : "Retry"}

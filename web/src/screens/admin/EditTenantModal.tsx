@@ -221,7 +221,7 @@ export function EditTenantModal({
               </p>
             </div>
             {isMaster && (
-              <span className="rounded bg-[color-mix(in_oklab,var(--accent)_16%,transparent)] px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-accent">
+              <span className="rounded bg-[color-mix(in_oklab,var(--accent)_16%,transparent)] px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-accenttext">
                 Master
               </span>
             )}
@@ -341,7 +341,7 @@ export function EditTenantModal({
                           )}
                         </div>
                       </div>
-                      <span className="rounded bg-[color-mix(in_oklab,var(--accent)_14%,transparent)] px-2 py-0.5 font-mono text-[10px] font-semibold text-accent">
+                      <span className="rounded bg-[color-mix(in_oklab,var(--accent)_14%,transparent)] px-2 py-0.5 font-mono text-[10px] font-semibold text-accenttext">
                         Owner
                       </span>
                     </div>
@@ -538,7 +538,7 @@ export function EditTenantModal({
 
                       <div className="flex items-center gap-2 shrink-0">
                         {isOwner ? (
-                          <span className="rounded bg-[color-mix(in_oklab,var(--accent)_14%,transparent)] px-2 py-0.5 font-mono text-[10px] font-semibold text-accent">
+                          <span className="rounded bg-[color-mix(in_oklab,var(--accent)_14%,transparent)] px-2 py-0.5 font-mono text-[10px] font-semibold text-accenttext">
                             Owner
                           </span>
                         ) : isAdminRole ? (

@@ -46,6 +46,7 @@ const ICONS = {
   plug: [<path key="a" d="M9 2v5M15 2v5"/>, <path key="b" d="M6 7h12v4a6 6 0 0 1-12 0z"/>, <path key="c" d="M12 17v5"/>],
   spark: [<path key="a" d="M12 3l3.2 5.8L21 12l-5.8 3.2L12 21l-3.2-5.8L3 12l5.8-3.2z"/>],
   logout: [<path key="a" d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>, <polyline key="b" points="16 17 21 12 16 7"/>, <line key="c" x1="21" y1="12" x2="9" y2="12"/>],
+  "external-link": [<path key="a" d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>, <polyline key="b" points="15 3 21 3 21 9"/>, <line key="c" x1="10" y1="14" x2="21" y2="3"/>],
   "arrow-right": [<path key="a" d="M5 12h14M12 5l7 7-7 7"/>],
   "arrow-left": [<path key="a" d="M19 12H5M12 19l-7-7 7-7"/>],
   folder: [<path key="a" d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>],
@@ -57,7 +58,10 @@ const ICONS = {
   memory: [<path key="a" d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/>, <path key="b" d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/>, <path key="c" d="M12 13v5"/>],
   brain: [<path key="a" d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/>, <path key="b" d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/>, <path key="c" d="M12 8v7"/>],
   wrench: [<path key="a" d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>],
-  trash: [<path key="a" d="M3 6h18"/>, <path key="b" d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/>, <path key="c" d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>, <path key="d" d="M10 11v6"/>, <path key="e" d="M14 11v6"/>]
+  trash: [<path key="a" d="M3 6h18"/>, <path key="b" d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/>, <path key="c" d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>, <path key="d" d="M10 11v6"/>, <path key="e" d="M14 11v6"/>],
+  sun: [<circle key="a" cx="12" cy="12" r="4"/>, <path key="b" d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>],
+  moon: [<path key="a" d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>],
+  monitor: [<rect key="a" x="2" y="3" width="20" height="14" rx="2"/>, <path key="b" d="M8 21h8M12 17v4"/>]
 };
 
 

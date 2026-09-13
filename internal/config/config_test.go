@@ -341,3 +341,192 @@ func TestParseEncryptionKey(t *testing.T) {
 		})
 	}
 }
+
+func TestFromServerContextLangfuseDefaults(t *testing.T) {
+	var parsedCfg *config.Config
+
+	cmd := &cli.Command{
+		Name:  "server",
+		Flags: config.ServerFlags(),
+		Action: func(ctx context.Context, c *cli.Command) error {
+			parsedCfg = config.FromServerContext(ctx, c)
+			return nil
+		},
+	}
+
+	if err := cmd.Run(context.Background(), []string{"server"}); err != nil {
+		t.Fatalf("unexpected error running command: %v", err)
+	}
+
+	if parsedCfg.LangfuseHost != "" {
+		t.Errorf("LangfuseHost = %q, want empty (tracing disabled)", parsedCfg.LangfuseHost)
+	}
+	if parsedCfg.LangfusePublicKey != "" || parsedCfg.LangfuseSecretKey != "" {
+		t.Errorf("Langfuse keys = %q/%q, want empty (tracing disabled)", parsedCfg.LangfusePublicKey, parsedCfg.LangfuseSecretKey)
+	}
+	if parsedCfg.LangfuseSampleRate != config.DefaultLangfuseSampleRate {
+		t.Errorf("LangfuseSampleRate = %g, want %g", parsedCfg.LangfuseSampleRate, config.DefaultLangfuseSampleRate)
+	}
+	if parsedCfg.LangfuseConfigured() {
+		t.Error("LangfuseConfigured() = true for unset configuration, want false")
+	}
+	if err := parsedCfg.ValidateLangfuse(); err != nil {
+		t.Errorf("ValidateLangfuse() = %v, want nil for unset configuration", err)
+	}
+}
+
+func TestFromServerContextLangfuseFlags(t *testing.T) {
+	var parsedCfg *config.Config
+
+	args := []string{
+		"server",
+		"--langfuse-host", "https://langfuse.example.com",
+		"--langfuse-public-key", "pk-lf-test",
+		"--langfuse-secret-key", "sk-lf-test",
+		"--langfuse-sample-rate", "0.25",
+	}
+
+	cmd := &cli.Command{
+		Name:  "server",
+		Flags: config.ServerFlags(),
+		Action: func(ctx context.Context, c *cli.Command) error {
+			parsedCfg = config.FromServerContext(ctx, c)
+			return nil
+		},
+	}
+
+	if err := cmd.Run(context.Background(), args); err != nil {
+		t.Fatalf("unexpected error running command: %v", err)
+	}
+
+	if parsedCfg.LangfuseHost != "https://langfuse.example.com" {
+		t.Errorf("LangfuseHost = %q, want https://langfuse.example.com", parsedCfg.LangfuseHost)
+	}
+	if parsedCfg.LangfusePublicKey != "pk-lf-test" {
+		t.Errorf("LangfusePublicKey = %q, want pk-lf-test", parsedCfg.LangfusePublicKey)
+	}
+	if parsedCfg.LangfuseSecretKey != "sk-lf-test" {
+		t.Errorf("LangfuseSecretKey = %q, want sk-lf-test", parsedCfg.LangfuseSecretKey)
+	}
+	if parsedCfg.LangfuseSampleRate != 0.25 {
+		t.Errorf("LangfuseSampleRate = %g, want 0.25", parsedCfg.LangfuseSampleRate)
+	}
+	if !parsedCfg.LangfuseConfigured() {
+		t.Error("LangfuseConfigured() = false for fully set configuration, want true")
+	}
+	if err := parsedCfg.ValidateLangfuse(); err != nil {
+		t.Errorf("ValidateLangfuse() = %v, want nil for fully set configuration", err)
+	}
+}
+
+func TestFromServerContextLangfuseEnv(t *testing.T) {
+	var parsedCfg *config.Config
+
+	t.Setenv("ONCLAW_LANGFUSE_HOST", "https://langfuse.internal:3000")
+	t.Setenv("ONCLAW_LANGFUSE_PUBLIC_KEY", "pk-lf-env")
+	t.Setenv("ONCLAW_LANGFUSE_SECRET_KEY", "sk-lf-env")
+	t.Setenv("ONCLAW_LANGFUSE_SAMPLE_RATE", "0.5")
+
+	cmd := &cli.Command{
+		Name:  "server",
+		Flags: config.ServerFlags(),
+		Action: func(ctx context.Context, c *cli.Command) error {
+			parsedCfg = config.FromServerContext(ctx, c)
+			return nil
+		},
+	}
+
+	if err := cmd.Run(context.Background(), []string{"server"}); err != nil {
+		t.Fatalf("unexpected error running command: %v", err)
+	}
+
+	if parsedCfg.LangfuseHost != "https://langfuse.internal:3000" {
+		t.Errorf("LangfuseHost = %q, want value from ONCLAW_LANGFUSE_HOST", parsedCfg.LangfuseHost)
+	}
+	if parsedCfg.LangfusePublicKey != "pk-lf-env" {
+		t.Errorf("LangfusePublicKey = %q, want value from ONCLAW_LANGFUSE_PUBLIC_KEY", parsedCfg.LangfusePublicKey)
+	}
+	if parsedCfg.LangfuseSecretKey != "sk-lf-env" {
+		t.Errorf("LangfuseSecretKey = %q, want value from ONCLAW_LANGFUSE_SECRET_KEY", parsedCfg.LangfuseSecretKey)
+	}
+	if parsedCfg.LangfuseSampleRate != 0.5 {
+		t.Errorf("LangfuseSampleRate = %g, want value from ONCLAW_LANGFUSE_SAMPLE_RATE", parsedCfg.LangfuseSampleRate)
+	}
+	if !parsedCfg.LangfuseConfigured() {
+		t.Error("LangfuseConfigured() = false for env-configured tracing, want true")
+	}
+}
+
+func TestValidateLangfusePartialConfig(t *testing.T) {
+	tests := []struct {
+		name        string
+		cfg         config.Config
+		errContains string
+	}{
+		{
+			name:        "host only",
+			cfg:         config.Config{LangfuseHost: "https://langfuse.example.com"},
+			errContains: "ONCLAW_LANGFUSE_PUBLIC_KEY",
+		},
+		{
+			name:        "host and public key, missing secret key",
+			cfg:         config.Config{LangfuseHost: "https://langfuse.example.com", LangfusePublicKey: "pk-lf-test"},
+			errContains: "ONCLAW_LANGFUSE_SECRET_KEY",
+		},
+		{
+			name:        "keys without host",
+			cfg:         config.Config{LangfusePublicKey: "pk-lf-test", LangfuseSecretKey: "sk-lf-test"},
+			errContains: "ONCLAW_LANGFUSE_HOST",
+		},
+		{
+			name:        "full config with over-unity sample rate",
+			cfg:         config.Config{LangfuseHost: "https://langfuse.example.com", LangfusePublicKey: "pk", LangfuseSecretKey: "sk", LangfuseSampleRate: 1.5},
+			errContains: "ONCLAW_LANGFUSE_SAMPLE_RATE",
+		},
+		{
+			name:        "full config with negative sample rate",
+			cfg:         config.Config{LangfuseHost: "https://langfuse.example.com", LangfusePublicKey: "pk", LangfuseSecretKey: "sk", LangfuseSampleRate: -0.1},
+			errContains: "ONCLAW_LANGFUSE_SAMPLE_RATE",
+		},
+		{
+			name:        "bad sample rate with tracing otherwise disabled",
+			cfg:         config.Config{LangfuseSampleRate: 7},
+			errContains: "ONCLAW_LANGFUSE_SAMPLE_RATE",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.ValidateLangfuse()
+			if err == nil {
+				t.Fatalf("ValidateLangfuse() = nil, want error containing %q", tt.errContains)
+			}
+			if !strings.Contains(err.Error(), tt.errContains) {
+				t.Errorf("error %q does not contain %q", err.Error(), tt.errContains)
+			}
+		})
+	}
+}
+
+func TestValidateLangfuseBoundariesAndUnsetForms(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  config.Config
+		want bool // want nil error
+	}{
+		{name: "zero-value config", cfg: config.Config{}, want: true},
+		{name: "zero sample rate is the unset form", cfg: config.Config{LangfuseSampleRate: 0}, want: true},
+		{name: "rate 1.0 with full config", cfg: config.Config{LangfuseHost: "h", LangfusePublicKey: "pk", LangfuseSecretKey: "sk", LangfuseSampleRate: 1.0}, want: true},
+		{name: "fractional rate with full config", cfg: config.Config{LangfuseHost: "h", LangfusePublicKey: "pk", LangfuseSecretKey: "sk", LangfuseSampleRate: 0.001}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.ValidateLangfuse()
+			if tt.want && err != nil {
+				t.Fatalf("ValidateLangfuse() = %v, want nil", err)
+			}
+			if !tt.want && err == nil {
+				t.Fatal("ValidateLangfuse() = nil, want error")
+			}
+		})
+	}
+}

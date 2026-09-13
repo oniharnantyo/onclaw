@@ -394,7 +394,7 @@ export function SkillInstallWizard({
             </div>
             <div>
               <label className={labelCls} htmlFor="skill-body">
-                SKILL.md body <span className="text-accent font-normal">(markdown)</span>
+                SKILL.md body <span className="text-accenttext font-normal">(markdown)</span>
               </label>
               <textarea
                 id="skill-body"
@@ -604,7 +604,7 @@ export function SkillInstallWizard({
                               onToast("Install command copied");
                             }}
                             data-testid={"btn-copy-" + d.name}
-                            className="text-[11px] font-medium text-accent transition-colors hover:text-[var(--accent-hover)]"
+                            className="text-[11px] font-medium text-accenttext transition-colors hover:text-[var(--accent-hover)]"
                           >
                             Copy
                           </button>

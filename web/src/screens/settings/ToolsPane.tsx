@@ -290,7 +290,7 @@ export function ToolConfigDialog({ tool, wsId, saving, onClose, onSaved, onSavin
             disabled={saving}
             data-testid="btn-tool-config-save"
             onClick={handleSubmit}
-            className="h-8 rounded-md bg-accent px-3 text-[12px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+            className="h-8 rounded-md bg-accent px-3 text-[12px] font-medium text-accenton transition-opacity hover:opacity-90 disabled:opacity-50"
           >
             {saving ? 'Saving…' : 'Save configuration'}
           </button>
@@ -517,7 +517,7 @@ export function WebSearchConfigDialog({ tool, wsId, saving, onClose, onSaved, on
             disabled={saving}
             data-testid="btn-tool-config-save"
             onClick={handleSubmit}
-            className="h-8 rounded-md bg-accent px-3 text-[12px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+            className="h-8 rounded-md bg-accent px-3 text-[12px] font-medium text-accenton transition-opacity hover:opacity-90 disabled:opacity-50"
           >
             {saving ? 'Saving…' : 'Save configuration'}
           </button>
@@ -622,7 +622,7 @@ export function WebSearchConfigDialog({ tool, wsId, saving, onClose, onSaved, on
                         className={cx(
                           'whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-medium leading-4',
                           inRotation
-                            ? 'bg-[color-mix(in_oklab,var(--accent)_12%,transparent)] text-accent'
+                            ? 'bg-[color-mix(in_oklab,var(--accent)_12%,transparent)] text-accenttext'
                             : 'bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] text-muted'
                         )}
                         data-testid="web-search-rotation"
@@ -693,7 +693,7 @@ export function WebSearchConfigDialog({ tool, wsId, saving, onClose, onSaved, on
               type="button"
               data-testid="web-search-undo"
               onClick={undoRemove}
-              className="h-7 rounded-md border border-line px-2.5 text-[12px] font-medium text-accent transition-colors hover:border-accent"
+              className="h-7 rounded-md border border-line px-2.5 text-[12px] font-medium text-accenttext transition-colors hover:border-accent"
             >
               Undo
             </button>

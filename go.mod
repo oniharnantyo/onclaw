@@ -7,6 +7,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.54
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.112.0
 	github.com/cloudwego/eino v0.10.0-alpha.28
+	github.com/cloudwego/eino-ext/callbacks/langfuse v0.1.3
 	github.com/cloudwego/eino-ext/components/model/agenticclaude v0.1.5
 	github.com/cloudwego/eino-ext/components/model/agenticgemini v0.2.3
 	github.com/cloudwego/eino-ext/components/model/agenticopenai v0.2.2
@@ -66,7 +67,9 @@ require (
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic v1.15.0 // indirect
 	github.com/bytedance/sonic/loader v0.5.0 // indirect
+	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
+	github.com/cloudwego/eino-ext/libs/acl/langfuse v0.1.2-0.20260707092125-9c48c30a9c41 // indirect
 	github.com/cloudwego/eino-ext/libs/acl/openai v0.1.18-0.20260527084435-846f52bd97c6 // indirect
 	github.com/dlclark/regexp2/v2 v2.5.2 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect

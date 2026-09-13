@@ -317,7 +317,7 @@ func (s *Service) recordMissed(ctx context.Context, sched *domain.Scheduler) {
 		s.log.WarnContext(ctx, "scheduler: record missed run failed", "scheduler_id", sched.ID, "error", err)
 		return
 	}
-	s.finishRun(ctx, run, domain.SchedulerRunStatusMissed, 0, 0, "", "")
+	s.finishRun(ctx, run, domain.SchedulerRunStatusMissed, 0, 0, "", "", "")
 }
 
 // begin performs the synchronous half of a fire: the running run row, the
@@ -346,7 +346,7 @@ func (s *Service) begin(ctx context.Context, sched *domain.Scheduler, trigger st
 		if pf.autoPause {
 			s.pause(ctx, sched)
 		}
-		s.finishRun(ctx, run, pf.status, 0, 0, "", pf.errMsg)
+		s.finishRun(ctx, run, pf.status, 0, 0, "", pf.errMsg, "")
 		return run, nil
 	}
 
@@ -365,12 +365,16 @@ func (s *Service) begin(ctx context.Context, sched *domain.Scheduler, trigger st
 		Origin:           agents.OriginScheduler,
 		Input:            sched.Prompt,
 		SchedulerNoReply: noReply,
+		// The exported trace is named after the schedule, not the prompt
+		// (integrate-langfuse-tracing D2). Observational only: it rides the
+		// run's trace context and nothing else.
+		ScheduleName: sched.Name,
 	})
 	if err != nil {
 		// Synchronous submit failures are pre-model by the runner's
 		// contract — zero token spend. They are config grief, not creator
 		// grief: the scheduler is NOT paused.
-		s.finishRun(ctx, run, domain.SchedulerRunStatusBlocked, 0, 0, "", fmt.Sprintf("submit failed: %v", err))
+		s.finishRun(ctx, run, domain.SchedulerRunStatusBlocked, 0, 0, "", fmt.Sprintf("submit failed: %v", err), "")
 		return run, nil
 	}
 	return run, stream
@@ -463,6 +467,11 @@ func (s *Service) drainRun(ctx context.Context, sched *domain.Scheduler, run *do
 	tokens := 0
 	status := ""
 	errMsg := ""
+	// traceID rides the runner's terminal events (integrate-langfuse-tracing
+	// D3): the pinned trace id, present only when the turn sampled in for
+	// export — a sampled-out run persists no id, keeping the runs view
+	// consistent with what Langfuse actually holds.
+	traceID := ""
 	for {
 		ev, err := stream.Recv()
 		if err != nil {
@@ -477,6 +486,9 @@ func (s *Service) drainRun(ctx context.Context, sched *domain.Scheduler, run *do
 		}
 		if ev.Usage != nil {
 			tokens = ev.Usage.TotalTokens // provider usage accumulates over the run; the last frame is the total
+		}
+		if ev.TraceID != "" {
+			traceID = ev.TraceID
 		}
 		switch ev.Kind {
 		case agents.TranscriptEventToolCallFinished:
@@ -530,17 +542,18 @@ func (s *Service) drainRun(ctx context.Context, sched *domain.Scheduler, run *do
 		}
 	}
 
-	s.finishRun(ctx, run, status, time.Since(start).Milliseconds(), tokens, deliveryStatus, errMsg)
+	s.finishRun(ctx, run, status, time.Since(start).Milliseconds(), tokens, deliveryStatus, errMsg, traceID)
 	s.log.DebugContext(ctx, "scheduler: run finished",
 		"scheduler_id", sched.ID, "run_id", run.ID, "status", status,
 		"tokens_used", tokens, "tool_calls", toolCounts)
 }
 
-// finishRun writes the run outcome through the store (which mirrors it into
+// finishRun writes the run outcome — including the turn's persisted trace id
+// (integrate-langfuse-tracing D3) — through the store (which mirrors it into
 // the scheduler's last_run atomically) and keeps the local row in sync for
 // the RunNow caller.
-func (s *Service) finishRun(ctx context.Context, run *domain.SchedulerRun, status string, durationMS int64, tokensUsed int, deliveryStatus string, errMsg string) {
-	if err := s.schedulers.FinishSchedulerRun(ctx, run.WorkspaceID, run.ID, status, durationMS, tokensUsed, deliveryStatus, errMsg); err != nil {
+func (s *Service) finishRun(ctx context.Context, run *domain.SchedulerRun, status string, durationMS int64, tokensUsed int, deliveryStatus string, errMsg string, traceID string) {
+	if err := s.schedulers.FinishSchedulerRun(ctx, run.WorkspaceID, run.ID, status, durationMS, tokensUsed, deliveryStatus, errMsg, traceID); err != nil {
 		s.log.WarnContext(ctx, "scheduler: finish run failed", "run_id", run.ID, "status", status, "error", err)
 		return
 	}
@@ -549,6 +562,7 @@ func (s *Service) finishRun(ctx context.Context, run *domain.SchedulerRun, statu
 	run.TokensUsed = tokensUsed
 	run.DeliveryStatus = deliveryStatus
 	run.Error = errMsg
+	run.TraceID = traceID
 }
 
 // markInFlight registers a scheduler as firing; false means a run is already

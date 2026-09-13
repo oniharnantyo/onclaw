@@ -373,8 +373,35 @@ func TestToolsPermissions(t *testing.T) {
 	}
 }
 
-func TestAgentAndSkillPermissions(t *testing.T) {
-	// Owner has agents.read/write and skills.read/write
+func TestGatewaysPermissions(t *testing.T) {
+	// Owner has gateways.write
+	if !domain.HasPermission(domain.OwnerPermissions, domain.GatewaysWrite) {
+		t.Errorf("expected OwnerPermissions to have %s", domain.GatewaysWrite)
+	}
+
+	// Admin has gateways.write
+	if !domain.HasPermission(domain.AdminPermissions, domain.GatewaysWrite) {
+		t.Errorf("expected AdminPermissions to have %s", domain.GatewaysWrite)
+	}
+
+	// Member does NOT have gateways.write (pairing is member-level and not
+	// permission-gated)
+	if domain.HasPermission(domain.MemberPermissions, domain.GatewaysWrite) {
+		t.Errorf("expected MemberPermissions NOT to have %s", domain.GatewaysWrite)
+	}
+
+	// Superadmin inherits gateways.write
+	if !domain.HasPermission(domain.SuperadminPermissions, domain.GatewaysWrite) {
+		t.Errorf("expected SuperadminPermissions to have %s", domain.GatewaysWrite)
+	}
+
+	// gateways.write is part of the closed catalog
+	if !domain.IsValidPermission(domain.GatewaysWrite) {
+		t.Errorf("expected %s to be a valid permission", domain.GatewaysWrite)
+	}
+}
+
+func TestAgentAndSkillPermissions(t *testing.T) { // Owner has agents.read/write and skills.read/write
 	for _, p := range []string{domain.AgentsRead, domain.AgentsWrite, domain.SkillsRead, domain.SkillsWrite} {
 		if !domain.HasPermission(domain.OwnerPermissions, p) {
 			t.Errorf("expected OwnerPermissions to have %s", p)

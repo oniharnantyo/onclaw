@@ -19,6 +19,7 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/channels"
 	"github.com/oniharnantyo/onclaw/internal/config"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/observability"
 	"github.com/oniharnantyo/onclaw/internal/promptgen"
 	"github.com/oniharnantyo/onclaw/internal/scheduler"
 	"github.com/oniharnantyo/onclaw/internal/server"
@@ -181,24 +182,38 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	lifecycleCtx, stopWatchdog := context.WithCancel(context.Background())
 	go channelRuntime.Chokepoint().StartWatchdog(lifecycleCtx)
 
+	// Langfuse trace export (integrate-langfuse-tracing D1): constructed only
+	// when configured — the config-level gate decides, the handler constructor
+	// is the absent capability. Set-but-invalid configuration fails fast here
+	// (ValidateLangfuse names the offending ONCLAW_LANGFUSE_* variable).
+	if err := cfg.ValidateLangfuse(); err != nil {
+		stopWatchdog()
+		return err
+	}
+	var traceHandler *observability.TraceHandler
+	if cfg.LangfuseConfigured() {
+		traceHandler, err = observability.NewLangfuseTraceHandler(observability.LangfuseConfig{
+			Host:       cfg.LangfuseHost,
+			PublicKey:  cfg.LangfusePublicKey,
+			SecretKey:  cfg.LangfuseSecretKey,
+			SampleRate: cfg.LangfuseSampleRate,
+		})
+		if err != nil {
+			stopWatchdog()
+			return fmt.Errorf("langfuse configuration invalid: %w", err)
+		}
+	}
+	langfuseHost := ""
+	if traceHandler != nil {
+		langfuseHost = traceHandler.Host()
+	}
+
 	// Construct the runtime runner. ToolRegistry is built-in; NewDefaultToolRegistry
 	// registers web.search. The runner handles session history queries and execution.
 	// Run contexts derive from a process-lifetime base context, not the command
 	// context: the command context is cancelled to trigger shutdown, which would
 	// otherwise kill in-flight runs before they can drain.
-	runner := agents.NewRunner(
-		st.Workspaces(),
-		st.Agents(),
-		st.Users(),
-		st.Members(),
-		st.Roles(),
-		st.Providers(),
-		st.SessionEvents(),
-		st.SessionCheckpoints(),
-		st.Memories(),
-		st.AgentSessions(),
-		encKey,
-		cfg.OnClawDir,
+	runnerOpts := []agents.RunnerOption{
 		agents.WithBaseContext(context.Background()),
 		agents.WithToolRegistry(agents.NewDefaultToolRegistry(
 			st.Memories(),
@@ -215,6 +230,27 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		agents.WithProjectSpace(channels.NewLocalProjectSpace(cfg.DataDir, st.Workspaces())),
 		agents.WithAttachmentBlobs(wsResolver),
 		agents.WithInputModalityResolver(modelCatalog),
+	}
+	// The trace capability rides the callback chain only when configured (D1):
+	// the rate must be the handler's own so the runner's persistence gate and
+	// the upstream sampler agree (D5).
+	if traceHandler != nil {
+		runnerOpts = append(runnerOpts, agents.WithTraceHandler(traceHandler.Callback(), traceHandler.SampleRate()))
+	}
+	runner := agents.NewRunner(
+		st.Workspaces(),
+		st.Agents(),
+		st.Users(),
+		st.Members(),
+		st.Roles(),
+		st.Providers(),
+		st.SessionEvents(),
+		st.SessionCheckpoints(),
+		st.Memories(),
+		st.AgentSessions(),
+		encKey,
+		cfg.OnClawDir,
+		runnerOpts...,
 	)
 	channelRuntime.BindRunner(runner)
 
@@ -236,6 +272,43 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	)
 	schedulerSvc.Start(lifecycleCtx)
 
+	// Gateway runtime (integrate-telegram-gateway D11): the gateway service,
+	// pairing, adapter factory, and lifecycle manager assembled around the
+	// same runner. StartAll brings every enabled workspace gateway up at boot
+	// (one broken token is logged and skipped); the admin API calls Sync on
+	// config changes; Stop tears the adapters down at shutdown.
+	gatewayRuntime := server.NewGatewayRuntime(
+		st.Gateways(),
+		st.GatewayBindings(),
+		st.GatewayLinks(),
+		st.GatewayOutbox(),
+		st.SessionEvents(),
+		st.Members(),
+		st.Agents(),
+		st.Users(),
+		server.GatewayRunSubmitter(runner),
+		st.Attachments(),
+		wsResolver,
+		encKey,
+	)
+	bootWorkspaces, err := st.Workspaces().ListAll(ctx)
+	if err != nil {
+		stopWatchdog()
+		return fmt.Errorf("failed to list workspaces for gateway startup: %w", err)
+	}
+	gatewayIDs := make([]string, 0, len(bootWorkspaces))
+	for _, ws := range bootWorkspaces {
+		gatewayIDs = append(gatewayIDs, ws.ID)
+	}
+	gatewayRuntime.Manager.StartAll(ctx, gatewayIDs)
+
+	// Delivery outbox loop (integrate-telegram-gateway D9): redelivers
+	// committed-but-unsent rows — the first cycle is the startup sweep — and
+	// prunes delivered rows past retention. It rides the process-lifetime
+	// context like the scheduler loop: stopWatchdog's cancel stops it during
+	// shutdown, and undelivered rows survive for the next start.
+	go gatewayRuntime.Outbox.Start(lifecycleCtx)
+
 	router := server.NewRouter(server.RouterOptions{
 		Store:               st,
 		Storage:             stor,
@@ -254,6 +327,8 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		HooksCommandEnabled: cfg.HooksCommandEnabled,
 		HooksScriptEnabled:  cfg.HooksScriptEnabled,
 		WorkspaceStorage:    wsResolver,
+		Gateways:            gatewayRuntime,
+		LangfuseHost:        langfuseHost,
 	})
 
 	listenAddr := cfg.ListenAddr
@@ -298,6 +373,12 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("server shutdown failed: %w", err)
 	}
 
+	// Stop gateway ingestion before draining runs (design D11): with the HTTP
+	// server down no new webhook updates or config mutations can arrive, and
+	// stopping the adapters keeps long polling from minting new turns while
+	// in-flight runs drain.
+	gatewayRuntime.Manager.Stop(shutdownCtx)
+
 	// The HTTP server is down, so no new runs can arrive. Give in-flight runs
 	// the drain window to reach a terminal state; stragglers are cancelled and
 	// record their cancel markers through the existing safe-point path.
@@ -317,6 +398,15 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	case <-schedulerDone:
 	case <-time.After(cfg.RunDrainWindow):
 		slog.Warn("scheduler stop exceeded the drain window; in-flight fires keep their own deadline")
+	}
+
+	// Flush pending Langfuse exports (integrate-langfuse-tracing 3.3): after
+	// the run drain and the scheduler stop every traced turn has reached its
+	// terminal state, so one blocking flush sends whatever the batcher still
+	// queues instead of dropping it at process exit. Best-effort by design
+	// (D5) — the flush never fails startup or shutdown.
+	if traceHandler != nil {
+		traceHandler.Flush()
 	}
 
 	slog.Info("server exited cleanly")

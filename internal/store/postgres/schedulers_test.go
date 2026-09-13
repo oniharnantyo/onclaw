@@ -528,8 +528,9 @@ func TestIntegration_SchedulerStore_RunRecords(t *testing.T) {
 		t.Fatalf("expected ErrNotFound for cross-workspace run, got %v", err)
 	}
 
-	// FinishSchedulerRun writes the outcome and mirrors last_run atomically.
-	if err := st.FinishSchedulerRun(ctx, ws.ID, runIDs[1], domain.SchedulerRunStatusCompleted, 1500, 42, domain.SchedulerDeliveryDelivered, ""); err != nil {
+	// FinishSchedulerRun writes the outcome — including the run's trace id —
+	// and mirrors last_run atomically.
+	if err := st.FinishSchedulerRun(ctx, ws.ID, runIDs[1], domain.SchedulerRunStatusCompleted, 1500, 42, domain.SchedulerDeliveryDelivered, "", "tr-finish-1"); err != nil {
 		t.Fatalf("unexpected finish error: %v", err)
 	}
 	got, _ := st.GetScheduler(ctx, ws.ID, sched.ID)
@@ -545,8 +546,29 @@ func TestIntegration_SchedulerStore_RunRecords(t *testing.T) {
 		t.Fatalf("unexpected mirrored last_run: %+v", got.LastRun)
 	}
 
+	// The finished row carries its trace id; unfinished rows stay empty
+	// (integrate-langfuse-tracing D3).
+	listed, _, err := st.ListSchedulerRuns(ctx, ws.ID, sched.ID, 10, 0)
+	if err != nil {
+		t.Fatalf("unexpected list runs error: %v", err)
+	}
+	traced := false
+	for _, r := range listed {
+		if r.ID == runIDs[1] {
+			if r.TraceID != "tr-finish-1" {
+				t.Fatalf("expected the finished run to carry its trace id, got %q", r.TraceID)
+			}
+			traced = true
+		} else if r.TraceID != "" {
+			t.Fatalf("unfinished run must carry no trace id, got %q", r.TraceID)
+		}
+	}
+	if !traced {
+		t.Fatal("finished run missing from the listing")
+	}
+
 	// Finishing an unknown run is NotFound.
-	if err := st.FinishSchedulerRun(ctx, ws.ID, "00000000-0000-0000-0000-000000000003", domain.SchedulerRunStatusFailed, 0, 0, "", "boom"); !errors.Is(err, domain.ErrNotFound) {
+	if err := st.FinishSchedulerRun(ctx, ws.ID, "00000000-0000-0000-0000-000000000003", domain.SchedulerRunStatusFailed, 0, 0, "", "boom", ""); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound finishing unknown run, got %v", err)
 	}
 

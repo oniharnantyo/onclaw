@@ -335,7 +335,7 @@ export function SkillsPane({ tenant, onToast = () => {}, canWrite }: SkillsPaneP
                 onClick={() => handleUninstall(uninstalling)}
                 disabled={busy}
                 data-testid="btn-uninstall-confirm"
-                className="flex h-9 items-center rounded-md bg-danger px-4 text-[13px] font-semibold text-white transition-colors hover:opacity-90 disabled:opacity-40"
+                className="flex h-9 items-center rounded-md bg-danger px-4 text-[13px] font-semibold text-accenton transition-colors hover:opacity-90 disabled:opacity-40"
               >
                 {busy ? "Uninstalling…" : "Uninstall"}
               </button>

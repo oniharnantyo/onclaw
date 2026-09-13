@@ -350,7 +350,7 @@ func (ss *schedulerStore) StartSchedulerRun(ctx context.Context, run *domain.Sch
 	return nil
 }
 
-func (ss *schedulerStore) FinishSchedulerRun(ctx context.Context, workspaceID, runID string, status string, durationMS int64, tokensUsed int, deliveryStatus string, errMsg string) error {
+func (ss *schedulerStore) FinishSchedulerRun(ctx context.Context, workspaceID, runID string, status string, durationMS int64, tokensUsed int, deliveryStatus string, errMsg string, traceID string) error {
 	if workspaceID == "" || runID == "" {
 		return domain.ErrNotFound
 	}
@@ -368,6 +368,7 @@ func (ss *schedulerStore) FinishSchedulerRun(ctx context.Context, workspaceID, r
 	run.TokensUsed = tokensUsed
 	run.DeliveryStatus = deliveryStatus
 	run.Error = errMsg
+	run.TraceID = traceID
 
 	// Mirror the outcome into the scheduler's last_run atomically (the
 	// postgres adapter does both writes in one transaction).

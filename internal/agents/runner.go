@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/callbacks"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 	"github.com/google/uuid"
@@ -62,6 +63,20 @@ type Runner struct {
 
 	hooks      *hooks.Dispatcher
 	hooksWired bool
+
+	// Langfuse trace export (integrate-langfuse-tracing D1/D5). A nil
+	// traceHandler is the absent capability — the composition root applies
+	// WithTraceHandler only when a backend is configured — and every trace
+	// seam short-circuits on it. traceSampleRate is the handler's configured
+	// deterministic sample rate; the local SampledIn gate must agree with the
+	// upstream export decision (see trace.go). traceRuns remembers the
+	// per-turn coordinates across an approval resume so the continued turn
+	// stays inside its trace.
+	traceHandler    callbacks.Handler
+	traceSampleRate float64
+	traceMu         sync.Mutex
+	traceRuns       map[RunKey]runTrace
+	mintTurnID      func() string
 
 	// Channel-run ports (integrate-agent-channels D8). Both are required for
 	// channel runs: resolve fails a channel run when either is unset — that
@@ -372,6 +387,7 @@ func NewRunner(
 		mcpStatus:             noopMCPStatus{},
 		hooks:                 hooks.NewNoopDispatcher(),
 		hooksRuns:             make(map[RunKey]*hooks.Resolved),
+		mintTurnID:            uuid.NewString,
 		summarizationMargin:   DefaultSummarizationMargin,
 		baseCtx:               context.Background(),
 		inputModalityResolver: unknownInputModalityResolver{},
@@ -1019,7 +1035,9 @@ func (r *Runner) composeAgent(
 // from the manager via handle — the caller's context never reaches the run.
 // cancelOpt is the per-run adk.WithCancel option: it arms the ADK agent-level
 // cancel state machine so an explicit cancel persists the durable cancel
-// marker instead of a session error.
+// marker instead of a session error. When the trace capability is wired, the
+// turn's trace coordinates are minted here and the ADK's turn id is pinned
+// to them (integrate-langfuse-tracing D3, see trace.go).
 func (r *Runner) execute(
 	handle *runHandle,
 	cancelOpt adk.AgentRunOption,
@@ -1049,16 +1067,28 @@ func (r *Runner) execute(
 		cpStore = nil
 	}
 
-	runner := adk.NewTypedRunner(adk.TypedRunnerConfig[*schema.AgenticMessage]{
+	// Trace pinning (integrate-langfuse-tracing D3): the runner mints the
+	// turn id and derives the trace id only when the capability is wired; the
+	// unconfigured runner leaves the ADK config untouched.
+	var trace *runTrace
+	runnerCfg := adk.TypedRunnerConfig[*schema.AgenticMessage]{
 		Agent:           adkAgent,
 		EnableStreaming: true,
 		CheckPointStore: cpStore,
 		SessionID:       req.SessionID,
 		SessionStore:    sessionStore,
-	})
+	}
+	if r.tracingEnabled() {
+		minted := r.beginTurnTrace()
+		trace = &minted
+		runnerCfg.SessionConfig = traceSessionConfig(trace.turnID)
+		r.rememberTurnTrace(runKeyOf(req), *trace)
+	}
+
+	runner := adk.NewTypedRunner(runnerCfg)
 
 	stream := NewEventStream(128)
-	go r.streamRun(handle, cancelOpt, runner, stream, req, userMsg, hookChain, hookBase, compaction)
+	go r.streamRun(handle, cancelOpt, runner, stream, req, userMsg, hookChain, hookBase, compaction, trace)
 	return stream
 }
 
@@ -1159,9 +1189,17 @@ func sessionTitle(input string) string {
 // the session title (an empty title stores ” on birth and rewrites nothing
 // on conflict). Scheduler-origin runs return early (integrate-scheduler D7):
 // run sessions are artifacts — their transcripts persist, but they never
-// appear in the per-user chat-sidebar index.
+// appear in the per-user chat-sidebar index. Gateway group sessions
+// (`tg_group_`, integrate-telegram-gateway task 6.3) are skipped for the
+// same reason: they are shared across every member of the group and stay out
+// of every per-user listing, while `tg_dm_` sessions index under the paired
+// member exactly like web sessions (the store's IsPrivateIndexSessionID is
+// the matching read-side defense).
 func (r *Runner) indexAgentSession(ctx context.Context, req ExecRequest, title string) {
 	if normalizeOrigin(req.Origin) == OriginScheduler {
+		return
+	}
+	if strings.HasPrefix(req.SessionID, domain.SessionPrefixGatewayGroup) {
 		return
 	}
 	err := r.agentSessions.UpsertAgentSession(ctx, req.WorkspaceID, req.AgentID, req.UserID, domain.AgentSessionUpsert{
@@ -1426,6 +1464,9 @@ func runKeyOf(req ExecRequest) RunKey {
 // streamRun drives the ADK runner to completion and maps events onto the EventStream.
 // userMsg is the pre-constructed multimodal user message of a turn carrying
 // attachments (attachments design D5); nil keeps the string-input Query path.
+// trace carries the turn's Langfuse coordinates (integrate-langfuse-tracing
+// D2/D3); nil when the capability is absent — then no context stamping, no
+// callback attach, and terminal events persist no trace id.
 func (r *Runner) streamRun(
 	handle *runHandle,
 	cancelOpt adk.AgentRunOption,
@@ -1436,6 +1477,7 @@ func (r *Runner) streamRun(
 	hookChain *hooks.Resolved,
 	hookBase hooks.Event,
 	compaction *compactionState,
+	trace *runTrace,
 ) {
 	key := runKeyOf(req)
 	defer handle.finish()
@@ -1453,6 +1495,15 @@ func (r *Runner) streamRun(
 	defer r.teardownDropLane(req)
 	r.teardownBrowserSession(req)
 
+	// The run context carries the turn's trace attribution (D2) and the
+	// callback chain carries the export handler (D1) only when wired.
+	runCtx := handle.ctx
+	runOpts := []adk.AgentRunOption{cancelOpt}
+	if trace != nil {
+		runCtx = r.applyTurnTrace(runCtx, req, *trace)
+		runOpts = append(runOpts, r.traceRunOptions()...)
+	}
+
 	turnID := ""
 	var partialText string // accumulated text delta for the current streaming message
 
@@ -1461,9 +1512,9 @@ func (r *Runner) streamRun(
 	// persisting the durable cancel marker.
 	var iter *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]]
 	if userMsg != nil {
-		iter = runner.Run(handle.ctx, []*schema.AgenticMessage{userMsg}, cancelOpt)
+		iter = runner.Run(runCtx, []*schema.AgenticMessage{userMsg}, runOpts...)
 	} else {
-		iter = runner.Query(handle.ctx, req.Input, cancelOpt)
+		iter = runner.Query(runCtx, req.Input, runOpts...)
 	}
 
 	// Emit turn_started.
@@ -1474,7 +1525,7 @@ func (r *Runner) streamRun(
 		TurnID:     turnID,
 	})
 
-	r.drainAgentEvents(handle.ctx, iter, stream, key, turnID, partialText, hookChain, hookBase, compaction, userMsg)
+	r.drainAgentEvents(runCtx, iter, stream, key, turnID, partialText, hookChain, hookBase, compaction, userMsg, trace)
 }
 
 // logTapDrops emits one debug line when the live tap dropped events because
@@ -1498,7 +1549,9 @@ func (r *Runner) logTapDrops(stream *EventStream, req ExecRequest) {
 // the run. compaction carries the per-run estimates captured by the
 // composition's summarization Callback; it must be non-nil. userMsg is the
 // pre-constructed multimodal user message of a turn carrying attachments
-// (attachments design D5); nil keeps string-input turns unchanged.
+// (attachments design D5); nil keeps string-input turns unchanged. trace
+// carries the turn's Langfuse coordinates (integrate-langfuse-tracing D3/D5);
+// nil when the capability is absent.
 func (r *Runner) drainAgentEvents(
 	ctx context.Context,
 	iter *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]],
@@ -1510,6 +1563,7 @@ func (r *Runner) drainAgentEvents(
 	hookBase hooks.Event,
 	compaction *compactionState,
 	userMsg *schema.AgenticMessage,
+	trace *runTrace,
 ) {
 	var lastErr error
 	var usage UsagePayload
@@ -1536,12 +1590,14 @@ func (r *Runner) drainAgentEvents(
 	// settle is the terminal seam (design.md D2/D5): run_finished fires after
 	// the terminal transcript event settles — on the cancel path, after the
 	// durable cancel marker drains — with the outcome as status data. The
-	// per-run hook chain is forgotten here: the next run on the session
-	// resolves fresh per-run state (D4). The approval-interrupt short-circuit
-	// below deliberately never settles: a paused turn is not terminal, and
-	// the resumed turn keeps evaluating against the same chain. hookChain is
+	// per-run hook chain and trace coordinates are forgotten here: the next
+	// run on the session resolves fresh per-run state (D4). The
+	// approval-interrupt short-circuit below deliberately never settles: a
+	// paused turn is not terminal, and the resumed turn keeps evaluating
+	// against the same chain (and exports into the same trace). hookChain is
 	// nil only for direct drainAgentEvents callers without hooks (tests).
 	settle := func(status string) {
+		r.forgetTurnTrace(key)
 		r.forgetHookChain(key)
 		if hookChain == nil || !hookChain.HasHooks() {
 			return
@@ -1640,6 +1696,7 @@ func (r *Runner) drainAgentEvents(
 					TurnID:       turnID,
 					CancelReason: "execution cancelled",
 					Usage:        usageOf(usage),
+					TraceID:      trace.persistedID(),
 				})
 				drainToEOF(iter)
 				settle(hookRunStatusCancelled)
@@ -1652,6 +1709,7 @@ func (r *Runner) drainAgentEvents(
 					TurnID:       turnID,
 					CancelReason: "execution cancelled",
 					Usage:        usageOf(usage),
+					TraceID:      trace.persistedID(),
 				})
 				drainToEOF(iter)
 				settle(hookRunStatusCancelled)
@@ -1710,6 +1768,7 @@ func (r *Runner) drainAgentEvents(
 								TurnID:       turnID,
 								CancelReason: "execution cancelled",
 								Usage:        usageOf(usage),
+								TraceID:      trace.persistedID(),
 							})
 							drainToEOF(iter)
 							settle(hookRunStatusCancelled)
@@ -1734,6 +1793,7 @@ func (r *Runner) drainAgentEvents(
 								TurnID:       turnID,
 								CancelReason: "stream interrupted",
 								Usage:        usageOf(usage),
+								TraceID:      trace.persistedID(),
 							})
 							drainToEOF(iter)
 							settle(hookRunStatusCancelled)
@@ -1908,6 +1968,7 @@ func (r *Runner) drainAgentEvents(
 			TurnID:     turnID,
 			Error:      lastErr.Error(),
 			Usage:      usageOf(usage),
+			TraceID:    trace.persistedID(),
 		})
 		settle(hookRunStatusFailed)
 		return
@@ -1918,6 +1979,7 @@ func (r *Runner) drainAgentEvents(
 		OccurredAt: time.Now().UTC(),
 		TurnID:     turnID,
 		Usage:      usageOf(usage),
+		TraceID:    trace.persistedID(),
 	})
 	settle(hookRunStatusCompleted)
 }
@@ -2091,6 +2153,21 @@ func (r *Runner) Resume(ctx context.Context, req ExecRequest, approval *Approval
 	// empty title never retitles — it only refreshes last_active_at.
 	r.indexAgentSession(ctx, req, "")
 
+	// Trace continuation (integrate-langfuse-tracing D3): the resumed turn
+	// reuses the interrupted run's trace coordinates so the continued
+	// execution exports into the same trace. A fresh-process resume (no
+	// remembered trace — the in-memory decision did not survive the restart,
+	// mirroring the hook-chain rule) resolves a new trace.
+	var trace *runTrace
+	if r.tracingEnabled() {
+		if remembered, ok := r.reuseTurnTrace(runKeyOf(req)); ok {
+			trace = &remembered
+		} else {
+			minted := r.beginTurnTrace()
+			trace = &minted
+		}
+	}
+
 	adkRunner := adk.NewTypedRunner(adk.TypedRunnerConfig[*schema.AgenticMessage]{
 		Agent:           adkAgent,
 		EnableStreaming: true,
@@ -2100,13 +2177,14 @@ func (r *Runner) Resume(ctx context.Context, req ExecRequest, approval *Approval
 	})
 
 	stream := NewEventStream(128)
-	go r.streamResume(handle, cancelOpt, adkRunner, stream, req, approval, approved, hookChain, hookBase)
+	go r.streamResume(handle, cancelOpt, adkRunner, stream, req, approval, approved, hookChain, hookBase, trace)
 	return stream, nil
 }
 
 // streamResume drives the resumed ADK runner and maps events like streamRun,
 // resuming the persisted checkpoint with the approval decision as the resume
-// target data.
+// target data. trace carries the continued turn's Langfuse coordinates
+// (integrate-langfuse-tracing D3); nil when the capability is absent.
 func (r *Runner) streamResume(
 	handle *runHandle,
 	cancelOpt adk.AgentRunOption,
@@ -2117,6 +2195,7 @@ func (r *Runner) streamResume(
 	approved bool,
 	hookChain *hooks.Resolved,
 	hookBase hooks.Event,
+	trace *runTrace,
 ) {
 	key := runKeyOf(req)
 	defer handle.finish()
@@ -2133,24 +2212,36 @@ func (r *Runner) streamResume(
 	defer r.teardownDropLane(req)
 	r.teardownBrowserSession(req)
 
-	iter, err := runner.ResumeWithParams(handle.ctx, ResumeCheckpointID(req.SessionID), &adk.ResumeParams{
+	// Same run-context treatment as streamRun (D2/D1): trace attribution on
+	// the context and the export handler on the callback chain, only when
+	// wired.
+	runCtx := handle.ctx
+	runOpts := []adk.AgentRunOption{cancelOpt}
+	if trace != nil {
+		runCtx = r.applyTurnTrace(runCtx, req, *trace)
+		runOpts = append(runOpts, r.traceRunOptions()...)
+	}
+
+	iter, err := runner.ResumeWithParams(runCtx, ResumeCheckpointID(req.SessionID), &adk.ResumeParams{
 		Targets: map[string]any{approval.InterruptID: approved},
-	}, cancelOpt)
+	}, runOpts...)
 	if err != nil {
 		stream.Send(&TranscriptEvent{
 			Kind:       TranscriptEventError,
 			OccurredAt: time.Now().UTC(),
 			Error:      err.Error(),
+			TraceID:    trace.persistedID(),
 		})
 		// Terminal failure before any drain: run_finished still observes the
 		// outcome (D1: every terminal outcome fires, status failed).
+		r.forgetTurnTrace(key)
 		r.forgetHookChain(key)
 		if hookChain.HasHooks() {
 			hookChain.RunFinished(handle.ctx, hookBase, hookRunStatusFailed)
 		}
 		return
 	}
-	r.drainAgentEvents(handle.ctx, iter, stream, key, "", "", hookChain, hookBase, &compactionState{}, nil)
+	r.drainAgentEvents(runCtx, iter, stream, key, "", "", hookChain, hookBase, &compactionState{}, nil, trace)
 }
 
 // ComposeParams contains the data necessary to compose the execution instruction.

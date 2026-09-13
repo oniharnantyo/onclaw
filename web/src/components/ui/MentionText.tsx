@@ -9,7 +9,7 @@ export function MentionText({ text, members  }: any) {
     <>
       {parts.map((p, i) => (
         p.charAt(0) === '@' && handles[p.slice(1).toLowerCase()]
-          ? <span key={i} className="rounded-[4px] bg-[color-mix(in_oklab,var(--accent)_13%,transparent)] px-1 font-medium text-accent">{p}</span>
+          ? <span key={i} className="rounded-[4px] bg-[color-mix(in_oklab,var(--accent)_13%,transparent)] px-1 font-medium text-accenttext">{p}</span>
           : <span key={i}>{p}</span>
       ))}
     </>

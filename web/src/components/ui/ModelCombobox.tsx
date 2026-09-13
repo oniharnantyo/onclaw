@@ -240,7 +240,7 @@ export function ModelCombobox({
             {source === "catalog" && (
               <span
                 data-testid="badge-source-catalog"
-                className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold bg-[color-mix(in_oklab,var(--accent)_15%,transparent)] text-accent"
+                className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold bg-[color-mix(in_oklab,var(--accent)_15%,transparent)] text-accenttext"
               >
                 catalog
               </span>

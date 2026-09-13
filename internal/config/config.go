@@ -23,6 +23,9 @@ const (
 	DefaultSchedulerRunTimeout = 10 * time.Minute
 	DefaultHooksCommandEnabled = true
 	DefaultHooksScriptEnabled  = true
+	// DefaultLangfuseSampleRate exports every traced turn; fractions sample
+	// deterministically per run (integrate-langfuse-tracing D5).
+	DefaultLangfuseSampleRate = 1.0
 )
 
 // Config represents runtime configuration assembled from flags, environment variables, and defaults.
@@ -44,6 +47,10 @@ type Config struct {
 	SchedulerRunTimeout    time.Duration `json:"scheduler_run_timeout"`
 	HooksCommandEnabled    bool          `json:"hooks_command_enabled"`
 	HooksScriptEnabled     bool          `json:"hooks_script_enabled"`
+	LangfuseHost           string        `json:"langfuse_host,omitempty"`
+	LangfusePublicKey      string        `json:"-"`
+	LangfuseSecretKey      string        `json:"-"`
+	LangfuseSampleRate     float64       `json:"langfuse_sample_rate"`
 }
 
 // WorkspaceRoot returns the derived workspace root directory: <OnClawDir>/workspaces.
@@ -150,6 +157,27 @@ func ServerFlags() []cli.Flag {
 			Usage:   "Enable the script hook handler (kill switch for script-type agent hooks)",
 			Sources: cli.EnvVars("ONCLAW_HOOKS_SCRIPT_ENABLED"),
 		},
+		&cli.StringFlag{
+			Name:    "langfuse-host",
+			Usage:   "Langfuse server URL for optional trace export (e.g. https://langfuse.example.com); unset disables tracing",
+			Sources: cli.EnvVars("ONCLAW_LANGFUSE_HOST"),
+		},
+		&cli.StringFlag{
+			Name:    "langfuse-public-key",
+			Usage:   "Langfuse public API key (pk-lf-...)",
+			Sources: cli.EnvVars("ONCLAW_LANGFUSE_PUBLIC_KEY"),
+		},
+		&cli.StringFlag{
+			Name:    "langfuse-secret-key",
+			Usage:   "Langfuse secret API key (sk-lf-...)",
+			Sources: cli.EnvVars("ONCLAW_LANGFUSE_SECRET_KEY"),
+		},
+		&cli.FloatFlag{
+			Name:    "langfuse-sample-rate",
+			Value:   DefaultLangfuseSampleRate,
+			Usage:   "Fraction of turns exported to Langfuse (1.0 = all; fractions sample deterministically per run)",
+			Sources: cli.EnvVars("ONCLAW_LANGFUSE_SAMPLE_RATE"),
+		},
 	}
 }
 
@@ -218,6 +246,10 @@ func FromServerContext(ctx context.Context, cmd *cli.Command) *Config {
 		SchedulerRunTimeout:    cmd.Duration("scheduler-run-timeout"),
 		HooksCommandEnabled:    cmd.Bool("hooks-command-enabled"),
 		HooksScriptEnabled:     cmd.Bool("hooks-script-enabled"),
+		LangfuseHost:           cmd.String("langfuse-host"),
+		LangfusePublicKey:      cmd.String("langfuse-public-key"),
+		LangfuseSecretKey:      cmd.String("langfuse-secret-key"),
+		LangfuseSampleRate:     cmd.Float("langfuse-sample-rate"),
 	}
 }
 
@@ -262,4 +294,46 @@ func ParseEncryptionKey(raw string) ([]byte, error) {
 // ParsedEncryptionKey decodes and returns the configured 32-byte encryption key.
 func (c *Config) ParsedEncryptionKey() ([]byte, error) {
 	return ParseEncryptionKey(c.EncryptionKey)
+}
+
+// LangfuseConfigured reports whether Langfuse trace export is switched on:
+// all three backend coordinates (host, public key, secret key) are present.
+// With any coordinate missing, tracing is off and the composition root must
+// not wire the handler (integrate-langfuse-tracing D1).
+func (c *Config) LangfuseConfigured() bool {
+	return strings.TrimSpace(c.LangfuseHost) != "" &&
+		strings.TrimSpace(c.LangfusePublicKey) != "" &&
+		strings.TrimSpace(c.LangfuseSecretKey) != ""
+}
+
+// ValidateLangfuse checks the optional Langfuse tracing configuration:
+// completely unset means disabled (no error); a partially set configuration
+// is an error naming the missing ONCLAW_LANGFUSE_* variable so a typo cannot
+// silently half-enable tracing; the sample rate must be a fraction in (0, 1]
+// whenever it is supplied — a value of 0 is the unset form (the exporter
+// applies its 1.0 default) and negative or over-unity values are errors even
+// while tracing is otherwise disabled, because set-but-invalid configuration
+// fails fast rather than being ignored.
+func (c *Config) ValidateLangfuse() error {
+	if c.LangfuseSampleRate < 0 || c.LangfuseSampleRate > 1 {
+		return errors.New("ONCLAW_LANGFUSE_SAMPLE_RATE must be a fraction in (0, 1] (1.0 exports every turn)")
+	}
+
+	host := strings.TrimSpace(c.LangfuseHost)
+	publicKey := strings.TrimSpace(c.LangfusePublicKey)
+	secretKey := strings.TrimSpace(c.LangfuseSecretKey)
+
+	if host == "" && publicKey == "" && secretKey == "" {
+		return nil
+	}
+	if host == "" {
+		return errors.New("langfuse tracing requires ONCLAW_LANGFUSE_HOST when any ONCLAW_LANGFUSE_* variable is set")
+	}
+	if publicKey == "" {
+		return errors.New("langfuse tracing requires ONCLAW_LANGFUSE_PUBLIC_KEY when any ONCLAW_LANGFUSE_* variable is set")
+	}
+	if secretKey == "" {
+		return errors.New("langfuse tracing requires ONCLAW_LANGFUSE_SECRET_KEY when any ONCLAW_LANGFUSE_* variable is set")
+	}
+	return nil
 }

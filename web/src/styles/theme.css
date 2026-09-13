@@ -20,9 +20,11 @@
   --color-linesoft: var(--border-soft);
   --color-accent: var(--accent);
   --color-accenton: var(--accent-on);
+  --color-accenttext: var(--accent-text);
   --color-success: var(--success);
   --color-warn: var(--warn);
   --color-danger: var(--danger);
+  --color-dangertext: var(--danger-text);
 
   --font-sans: var(--font-body);
   --font-mono: var(--font-mono);

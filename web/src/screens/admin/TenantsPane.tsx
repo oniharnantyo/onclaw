@@ -140,7 +140,7 @@ export function TenantsPane({ onToast }: TenantsPaneProps) {
                     <div className="flex items-center gap-2">
                       <span className="truncate text-[14px] font-semibold text-fg">{ws.name}</span>
                       {isMaster && (
-                        <span className="rounded bg-[color-mix(in_oklab,var(--accent)_16%,transparent)] px-1.5 py-0.5 text-[10px] font-bold text-accent uppercase">
+                        <span className="rounded bg-[color-mix(in_oklab,var(--accent)_16%,transparent)] px-1.5 py-0.5 text-[10px] font-bold text-accenttext uppercase">
                           Master
                         </span>
                       )}
@@ -167,7 +167,7 @@ export function TenantsPane({ onToast }: TenantsPaneProps) {
                     <span className="text-[10px] uppercase tracking-wider text-muted md:hidden">Status</span>
                     <div>
                       {isSuspended ? (
-                        <span className="inline-flex items-center gap-1.5 font-mono text-[11px] text-danger">
+                        <span className="inline-flex items-center gap-1.5 font-mono text-[11px] text-dangertext">
                           <Icon name="x" size={12} /> Suspended
                         </span>
                       ) : (
@@ -203,7 +203,7 @@ export function TenantsPane({ onToast }: TenantsPaneProps) {
                           'flex h-7 items-center rounded-md border px-2.5 text-[11.5px] font-medium transition-colors disabled:opacity-50',
                           isSuspended
                             ? 'border-line text-fg2 hover:border-accent hover:text-accent'
-                            : 'border-[color-mix(in_oklab,var(--danger)_35%,transparent)] text-danger hover:bg-[color-mix(in_oklab,var(--danger)_10%,transparent)]'
+                            : 'border-[color-mix(in_oklab,var(--danger)_35%,transparent)] text-dangertext hover:bg-[color-mix(in_oklab,var(--danger)_10%,transparent)]'
                         )}
                       >
                         {busy ? '…' : isSuspended ? 'Restore' : 'Suspend'}

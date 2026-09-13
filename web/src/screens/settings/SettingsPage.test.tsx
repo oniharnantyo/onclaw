@@ -115,6 +115,11 @@ describe('screens/settings/SettingsPage', () => {
     vi.spyOn(api.hooks, 'list').mockResolvedValue({ instance: [], hooks: [] });
     vi.spyOn(api.hooks, 'executions').mockResolvedValue({ executions: [] });
     vi.spyOn(api.storage, 'get').mockResolvedValue({ driver: 'local' });
+    // The Gateways pane fetches the gateway config + bindings + the member's
+    // pairing link (admin surfaces skipped for 403-free member loads).
+    vi.spyOn(api.gateways.telegram, 'getConfig').mockResolvedValue({ gateway: null });
+    vi.spyOn(api.gateways.telegram.bindings, 'list').mockResolvedValue({ bindings: [] });
+    vi.spyOn(api.gateways.telegram.links, 'getMine').mockResolvedValue({ link: null });
   });
 
   function renderSettingsPage(initialPath = '/settings/workspace', overrides = {}) {
@@ -162,19 +167,20 @@ describe('screens/settings/SettingsPage', () => {
   }
 
   describe('Navigation & Routing', () => {
-    it('renders the eleven section tab labels with active highlighting and switches section on click', async () => {
+    it('renders the twelve section tab labels with active highlighting and switches section on click', async () => {
       renderSettingsPage('/settings/workspace');
 
       const tablist = screen.getByRole('tablist');
       expect(tablist).not.toBeNull();
 
       const tabs = screen.getAllByRole('tab');
-      expect(tabs.length).toBe(11);
+      expect(tabs.length).toBe(12);
 
       const expectedLabels = [
         'Workspace',
         'Providers',
         'Members & roles',
+        'Gateways',
         'Integrations',
         'MCP servers',
         'Skills',
@@ -209,6 +215,7 @@ describe('screens/settings/SettingsPage', () => {
         { path: '/settings/workspace', paneTestId: 'pane-workspace' },
         { path: '/settings/providers', paneTestId: 'pane-providers' },
         { path: '/settings/members', paneTestId: 'pane-members' },
+        { path: '/settings/gateways', paneTestId: 'pane-gateways' },
         { path: '/settings/integrations', paneTestId: 'pane-integrations' },
         { path: '/settings/mcp', paneTestId: 'pane-mcp' },
         { path: '/settings/skills', paneTestId: 'pane-skills' },

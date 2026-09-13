@@ -51,6 +51,13 @@ type fakeStore struct {
 	workspaceStorage        map[string]*domain.WorkspaceStorageConfig // key: workspaceID -> config
 	schedulers              map[string]*domain.Scheduler              // key: ID
 	schedulerRuns           map[string]*domain.SchedulerRun           // key: ID
+	gateways                map[string]*domain.GatewayConfig          // key: workspaceID + ":" + platform
+	gatewayChatBindings     map[string]*domain.ChatBinding            // key: ID
+	gatewayBindingsByChat   map[string]string                         // key: platform + ":" + platformChatID -> binding ID
+	gatewayUserLinks        map[string]*domain.UserLink               // key: platform + ":" + platformUserID + ":" + workspaceID
+	gatewayPairingTokens    map[string]*domain.PairingToken           // key: workspaceID + ":" + token
+	gatewayActiveSessions   map[string]int64                          // key: platform + ":" + platformChatID + ":" + agentID -> suffix
+	gatewayOutbox           map[string]*domain.OutboxEntry            // key: ID
 }
 
 // New creates a new in-memory fake store.
@@ -92,6 +99,13 @@ func newStore() *fakeStore {
 		workspaceStorage:        make(map[string]*domain.WorkspaceStorageConfig),
 		schedulers:              make(map[string]*domain.Scheduler),
 		schedulerRuns:           make(map[string]*domain.SchedulerRun),
+		gateways:                make(map[string]*domain.GatewayConfig),
+		gatewayChatBindings:     make(map[string]*domain.ChatBinding),
+		gatewayBindingsByChat:   make(map[string]string),
+		gatewayUserLinks:        make(map[string]*domain.UserLink),
+		gatewayPairingTokens:    make(map[string]*domain.PairingToken),
+		gatewayActiveSessions:   make(map[string]int64),
+		gatewayOutbox:           make(map[string]*domain.OutboxEntry),
 	}
 }
 
@@ -183,6 +197,26 @@ func (s *fakeStore) WorkspaceStorage() store.WorkspaceStorageStore {
 // Schedulers returns the SchedulerStore sub-port.
 func (s *fakeStore) Schedulers() store.SchedulerStore {
 	return &schedulerStore{s: s}
+}
+
+// Gateways returns the GatewayStore sub-port.
+func (s *fakeStore) Gateways() store.GatewayStore {
+	return &gatewayStore{s: s}
+}
+
+// GatewayBindings returns the GatewayBindings sub-port.
+func (s *fakeStore) GatewayBindings() store.GatewayBindings {
+	return &gatewayBindingStore{s: s}
+}
+
+// GatewayLinks returns the GatewayLinks sub-port.
+func (s *fakeStore) GatewayLinks() store.GatewayLinks {
+	return &gatewayLinkStore{s: s}
+}
+
+// GatewayOutbox returns the GatewayOutbox sub-port.
+func (s *fakeStore) GatewayOutbox() store.GatewayOutbox {
+	return &gatewayOutboxStore{s: s}
 }
 
 // WithTx executes the given function in an isolated transaction.
@@ -303,6 +337,27 @@ func (s *fakeStore) clone() *fakeStore {
 	for id, run := range s.schedulerRuns {
 		cp.schedulerRuns[id] = cloneSchedulerRun(run)
 	}
+	for key, g := range s.gateways {
+		cp.gateways[key] = cloneGatewayConfig(g)
+	}
+	for id, b := range s.gatewayChatBindings {
+		cp.gatewayChatBindings[id] = cloneChatBinding(b)
+	}
+	for chat, id := range s.gatewayBindingsByChat {
+		cp.gatewayBindingsByChat[chat] = id
+	}
+	for key, l := range s.gatewayUserLinks {
+		cp.gatewayUserLinks[key] = cloneUserLink(l)
+	}
+	for key, tok := range s.gatewayPairingTokens {
+		cp.gatewayPairingTokens[key] = clonePairingToken(tok)
+	}
+	for key, suffix := range s.gatewayActiveSessions {
+		cp.gatewayActiveSessions[key] = suffix
+	}
+	for id, e := range s.gatewayOutbox {
+		cp.gatewayOutbox[id] = cloneOutboxEntry(e)
+	}
 	return cp
 }
 
@@ -339,6 +394,13 @@ func (s *fakeStore) apply(other *fakeStore) {
 	s.workspaceStorage = other.workspaceStorage
 	s.schedulers = other.schedulers
 	s.schedulerRuns = other.schedulerRuns
+	s.gateways = other.gateways
+	s.gatewayChatBindings = other.gatewayChatBindings
+	s.gatewayBindingsByChat = other.gatewayBindingsByChat
+	s.gatewayUserLinks = other.gatewayUserLinks
+	s.gatewayPairingTokens = other.gatewayPairingTokens
+	s.gatewayActiveSessions = other.gatewayActiveSessions
+	s.gatewayOutbox = other.gatewayOutbox
 }
 
 func cloneUser(u *domain.User) *domain.User {
@@ -2738,6 +2800,13 @@ func (a *agentSessionStore) UpsertAgentSession(ctx context.Context, workspaceID,
 	if up.SessionID == "" {
 		return domain.ErrInvalid
 	}
+	// Binding-prefix validation (integrate-telegram-gateway design D3,
+	// channel-session-leak fix): only registered prefixes — including the
+	// gateway's tg_dm_/tg_group_ — may index rows; unknown "<word>_"-shaped
+	// ids are refused.
+	if err := domain.ValidateAgentSessionID(up.SessionID); err != nil {
+		return err
+	}
 
 	a.s.mu.Lock()
 	defer a.s.mu.Unlock()
@@ -2790,8 +2859,11 @@ func (a *agentSessionStore) ListAgentSessions(ctx context.Context, workspaceID, 
 
 	sessions := make([]domain.AgentSession, 0)
 	for _, session := range a.s.agentSessions {
-		// Non-deleted only, scoped to the requesting user (privacy boundary).
-		if session.WorkspaceID == workspaceID && session.AgentID == agentID && session.UserID == userID && session.DeletedAt == nil {
+		// Non-deleted only, scoped to the requesting user (privacy boundary),
+		// and private-index only (design D3): channel, scheduler, and gateway
+		// group sessions are shared/automation artifacts and never surface in
+		// a per-user listing; gateway DM sessions do, under the paired member.
+		if session.WorkspaceID == workspaceID && session.AgentID == agentID && session.UserID == userID && session.DeletedAt == nil && domain.IsPrivateIndexSessionID(session.SessionID) {
 			sessions = append(sessions, *cloneAgentSession(session))
 		}
 	}

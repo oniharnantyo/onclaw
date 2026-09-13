@@ -563,7 +563,7 @@ func TestDrain_MessagesReplacedCarriesCompactionEstimates(t *testing.T) {
 	r := &Runner{runMgr: newRunManager(context.Background(), 0)}
 	estimates := &compactionState{}
 	estimates.record(154000, 9200)
-	r.drainAgentEvents(t.Context(), iter, stream, RunKey{}, "turn-1", "", nil, hooks.Event{}, estimates, nil)
+	r.drainAgentEvents(t.Context(), iter, stream, RunKey{}, "turn-1", "", nil, hooks.Event{}, estimates, nil, nil)
 	stream.Close()
 
 	var events []TranscriptEvent
@@ -797,4 +797,3 @@ func TestCompact_ExpandsStaleAttachmentBlocks(t *testing.T) {
 		t.Errorf("first event file block altered: %+v", ev1.Message.ContentBlocks[2])
 	}
 }
-

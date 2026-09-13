@@ -125,7 +125,7 @@ export interface AppState {
    * (integrate-scheduler 7.4): injects (or reuses) a session entry addressed
    * by the run's session id and makes it active. The run's session belongs to
    * the scheduler's agent, so the caller passes that agent's chat id. */
-  openRunSession: (chatId: string, sessionId: string, title?: string, schedulerName?: string) => void;
+  openRunSession: (chatId: string, sessionId: string, title?: string, schedulerName?: string, langfuseUrl?: string) => void;
   /** Live schedules for the workspace (integrate-scheduler 7.2): replaces
    * tenant.schedules with the wire rows. Resolves false on failure so the
    * screen can render its error state. */
@@ -861,7 +861,7 @@ export const useStore = create<AppState>((set, get) => ({
   // entry (server Born sessions are never in the agent-session index by
   // design, D7) and points the thread at it. The ChatRoute hydration effect
   // takes over from there — sched_ ids hydrate like sess_ ids.
-  openRunSession: (chatId, sessionId, title, schedulerName) => {
+  openRunSession: (chatId, sessionId, title, schedulerName, langfuseUrl) => {
     const state = get();
     const tid = state.pos.tenantId;
     state.updateTenant(tid, (tenant: any) => {
@@ -878,6 +878,9 @@ export const useStore = create<AppState>((set, get) => ({
           // Marks where the transcript's origin chip name came from; the
           // hydration path stamps messages that lack a tag of their own.
           ...(schedulerName !== undefined ? { schedulerName } : {}),
+          // Observability deep link (integrate-langfuse-tracing D6): the
+          // transcript header offers "Open in Langfuse" only when present.
+          ...(langfuseUrl ? { langfuseUrl } : {}),
         };
         th.list.unshift(sess);
       }

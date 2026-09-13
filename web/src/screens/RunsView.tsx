@@ -88,6 +88,12 @@ export function RunsView({ tenant, onToast }: {
   const schedulerName = (r: SchedulerRun): string =>
     r.scheduler_name || schedules.find((s) => s.id === r.scheduler_id)?.name || '';
 
+  // Langfuse deep link (integrate-langfuse-tracing D6): the action renders
+  // only when the run payload carries a non-empty URL — null/absent (tracing
+  // unconfigured or the run predates tracing) means no action at all.
+  const langfuseUrl = (r: SchedulerRun): string =>
+    typeof r.langfuse_url === 'string' && r.langfuse_url ? r.langfuse_url : '';
+
   const openRun = (r: SchedulerRun) => {
     // A run's transcript is a session of the scheduler's agent (D7) — open it
     // through the normal chat route; ChatRoute consumes the run handoff,
@@ -97,8 +103,15 @@ export function RunsView({ tenant, onToast }: {
       onToast("This run's agent is no longer available", 'danger');
       return;
     }
+    const lf = langfuseUrl(r);
     navigate('/c/' + encodeURIComponent(agentId), {
-      state: { openRun: { sessionId: r.session_id, schedulerName: schedulerName(r) } },
+      state: { openRun: {
+        sessionId: r.session_id,
+        schedulerName: schedulerName(r),
+        // Traced runs carry the deep link so the transcript view can offer
+        // the same action; untraced runs omit the key entirely.
+        ...(lf ? { langfuseUrl: lf } : {}),
+      } },
     });
   };
 
@@ -153,7 +166,17 @@ export function RunsView({ tenant, onToast }: {
 
                 {/* Mobile top row: Run ID and Status */}
                 <div className="flex items-center justify-between md:contents">
-                  <span className="font-mono text-[12px] text-fg2 md:text-left"><span className="md:hidden text-[10px] uppercase tracking-wider text-muted mr-2">Run</span>{r.id}</span>
+                  <span className="flex items-center gap-1.5 font-mono text-[12px] text-fg2 md:text-left">
+                    <span><span className="md:hidden text-[10px] uppercase tracking-wider text-muted mr-2">Run</span>{r.id}</span>
+                    {langfuseUrl(r) && (
+                      <a href={langfuseUrl(r)} target="_blank" rel="noopener"
+                        data-od-id={'run-langfuse-' + r.id} title="Open in Langfuse" aria-label="Open in Langfuse"
+                        onClick={(e) => e.stopPropagation()}
+                        className="flex h-5 w-5 items-center justify-center rounded text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg2">
+                        <Icon name="external-link" size={12}/>
+                      </a>
+                    )}
+                  </span>
                   <span className={cx('flex items-center gap-1.5 font-mono text-[11px] md:justify-self-start', st?.cls)}>
                     <Icon name={st?.icon || 'clock'} size={12}/>{r.status}
                   </span>

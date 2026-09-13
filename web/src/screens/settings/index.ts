@@ -1,6 +1,7 @@
 export * from "./WorkspaceSection";
 export * from "./MembersSection";
 export * from "./IntegrationsSection";
+export * from "./GatewaysPane";
 export * from "./KeysSection";
 export * from "./NotificationsSection";
 export * from "./ProvidersPane";

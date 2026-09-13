@@ -226,7 +226,7 @@ export function UsersPane({ onToast }: UsersPaneProps) {
                         <span
                           data-od-id={'badge-superadmin-' + u.id}
                           data-testid={'badge-superadmin-' + u.id}
-                          className="inline-flex items-center gap-1.5 rounded-full bg-[color-mix(in_oklab,var(--accent)_16%,transparent)] px-2.5 py-0.5 font-mono text-[11px] font-semibold text-accent"
+                          className="inline-flex items-center gap-1.5 rounded-full bg-[color-mix(in_oklab,var(--accent)_16%,transparent)] px-2.5 py-0.5 font-mono text-[11px] font-semibold text-accenttext"
                         >
                           <Icon name="shield" size={12} /> Superadmin
                         </span>
@@ -257,7 +257,7 @@ export function UsersPane({ onToast }: UsersPaneProps) {
                     <span className="text-[10px] uppercase tracking-wider text-muted md:hidden">Status</span>
                     <div>
                       {isDisabled ? (
-                        <span className="inline-flex items-center gap-1.5 font-mono text-[11px] text-danger">
+                        <span className="inline-flex items-center gap-1.5 font-mono text-[11px] text-dangertext">
                           <Icon name="x" size={12} /> Disabled
                         </span>
                       ) : (
@@ -277,7 +277,7 @@ export function UsersPane({ onToast }: UsersPaneProps) {
                         onClick={() => handleDemote(u)}
                         data-od-id={'btn-demote-user-' + u.id}
                         data-testid={'btn-demote-user-' + u.id}
-                        className="flex h-7 items-center rounded-md border border-[color-mix(in_oklab,var(--danger)_35%,transparent)] px-2.5 text-[11.5px] font-medium text-danger transition-colors hover:bg-[color-mix(in_oklab,var(--danger)_10%,transparent)] disabled:opacity-50"
+                        className="flex h-7 items-center rounded-md border border-[color-mix(in_oklab,var(--danger)_35%,transparent)] px-2.5 text-[11.5px] font-medium text-dangertext transition-colors hover:bg-[color-mix(in_oklab,var(--danger)_10%,transparent)] disabled:opacity-50"
                       >
                         {actionInProgress === `demote-${u.id}` ? '…' : 'Demote'}
                       </button>
@@ -306,8 +306,8 @@ export function UsersPane({ onToast }: UsersPaneProps) {
                         isDisabled
                           ? 'border-line text-fg2 hover:border-accent hover:text-accent'
                           : isConfirming
-                          ? 'border-danger bg-danger text-white hover:bg-[color-mix(in_oklab,var(--danger)_90%,black)]'
-                          : 'border-[color-mix(in_oklab,var(--danger)_35%,transparent)] text-danger hover:bg-[color-mix(in_oklab,var(--danger)_10%,transparent)]'
+                          ? 'border-danger bg-danger text-accenton hover:bg-[color-mix(in_oklab,var(--danger)_90%,black)]'
+                          : 'border-[color-mix(in_oklab,var(--danger)_35%,transparent)] text-dangertext hover:bg-[color-mix(in_oklab,var(--danger)_10%,transparent)]'
                       )}
                     >
                       {actionInProgress === `disable-${u.id}` ? '…' : isDisabled ? 'Enable' : isConfirming ? 'Confirm disable' : 'Disable'}

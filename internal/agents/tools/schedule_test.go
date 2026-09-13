@@ -133,7 +133,7 @@ func (f *fakeSchedulerStore) StartSchedulerRun(context.Context, *domain.Schedule
 	return errors.New("not implemented")
 }
 
-func (f *fakeSchedulerStore) FinishSchedulerRun(context.Context, string, string, string, int64, int, string, string) error {
+func (f *fakeSchedulerStore) FinishSchedulerRun(context.Context, string, string, string, int64, int, string, string, string) error {
 	return errors.New("not implemented")
 }
 

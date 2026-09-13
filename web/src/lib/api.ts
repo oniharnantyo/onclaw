@@ -828,6 +828,74 @@ export interface PostChannelMessagePayload {
   body: string;
 }
 
+// ---------------------------------------------------------------------------
+// Workspace Telegram gateway (change integrate-telegram-gateway): one gateway
+// per workspace under /workspaces/:slug/gateways/telegram. The bot token is a
+// write-only secret — every read carries only the last-4 `token_hint`; a PUT
+// with an omitted or empty `token` keeps the stored secret server-side.
+// ---------------------------------------------------------------------------
+
+export type GatewayTransport = 'webhook' | 'long_polling';
+
+export interface ApiGatewayConfig {
+  id: string;
+  workspace_id: string;
+  /** Platform key — 'telegram' for this change's adapter. */
+  platform: string;
+  enabled: boolean;
+  /** Server-resolved from the stored token via the platform API. */
+  bot_username?: string | null;
+  /** Last-4 hint of the stored token; present on configured gateways only. */
+  token_hint?: string;
+  /** Agent that answers untargeted direct messages (member default wins). */
+  default_agent_id?: string | null;
+  transport: GatewayTransport;
+  /** webhook transport: the public HTTPS ingress URL. */
+  webhook_url?: string;
+  status_error?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface GatewayConfigPayload {
+  /** Write-only: omitted or empty keeps the stored token. */
+  token?: string;
+  default_agent_id?: string | null;
+  transport?: GatewayTransport;
+  webhook_url?: string;
+}
+
+export interface ApiGatewayBinding {
+  id: string;
+  platform: string;
+  /** Telegram group chat id (numeric id as string). */
+  platform_chat_id: string;
+  /** Group title as reported at bind time; display-only. */
+  chat_title?: string | null;
+  agent_id: string;
+  created_at: string;
+}
+
+export interface CreateGatewayBindingPayload {
+  agent_id: string;
+  platform_chat_id: string;
+  chat_title?: string;
+}
+
+export interface ApiGatewayLink {
+  /** Immutable platform user id — usernames are display-only (design D6). */
+  platform_user_id: string;
+  username?: string | null;
+  display_name?: string | null;
+  linked_at: string;
+}
+
+export interface ApiPairingToken {
+  /** One-time crypto-random token, single-use, consumed on use. */
+  token: string;
+  expires_at: string;
+}
+
 
 type UnauthorizedHandler = () => void;
 const unauthorizedHandlers = new Set<UnauthorizedHandler>();
@@ -1253,6 +1321,92 @@ export const api = {
           method: 'POST',
           body,
         }),
+    },
+  },
+  // Workspace Telegram gateway (integrate-telegram-gateway): config CRUD +
+  // enable/disable/test and bindings are admin-gated server-side; the pairing
+  // token mint/revoke and the self unpair are member-gated (any membership).
+  gateways: {
+    telegram: {
+      // Unconfigured workspaces answer `{ gateway: null }`, not 404.
+      getConfig: (ws: string) =>
+        request<{ gateway: ApiGatewayConfig | null }>(
+          `/workspaces/${encodeURIComponent(ws)}/gateways/telegram`,
+          { method: 'GET' }
+        ),
+      updateConfig: (ws: string, body: GatewayConfigPayload) =>
+        request<{ gateway: ApiGatewayConfig }>(
+          `/workspaces/${encodeURIComponent(ws)}/gateways/telegram`,
+          { method: 'PUT', body }
+        ),
+      enable: (ws: string) =>
+        request<{ gateway: ApiGatewayConfig }>(
+          `/workspaces/${encodeURIComponent(ws)}/gateways/telegram/enable`,
+          { method: 'POST', body: {} }
+        ),
+      disable: (ws: string) =>
+        request<{ gateway: ApiGatewayConfig }>(
+          `/workspaces/${encodeURIComponent(ws)}/gateways/telegram/disable`,
+          { method: 'POST', body: {} }
+        ),
+      // Verifies the stored (or freshly submitted) token against the platform
+      // API and persists nothing.
+      test: (ws: string) =>
+        request<{ ok: boolean; bot_username?: string; error?: string }>(
+          `/workspaces/${encodeURIComponent(ws)}/gateways/telegram/test`,
+          { method: 'POST', body: {} }
+        ),
+      bindings: {
+        list: (ws: string) =>
+          request<{ bindings: ApiGatewayBinding[] }>(
+            `/workspaces/${encodeURIComponent(ws)}/gateways/telegram/bindings`,
+            { method: 'GET' }
+          ),
+        create: (ws: string, body: CreateGatewayBindingPayload) =>
+          request<{ binding: ApiGatewayBinding }>(
+            `/workspaces/${encodeURIComponent(ws)}/gateways/telegram/bindings`,
+            { method: 'POST', body }
+          ),
+        remove: (ws: string, id: string) =>
+          request<void>(
+            `/workspaces/${encodeURIComponent(ws)}/gateways/telegram/bindings/${encodeURIComponent(id)}`,
+            { method: 'DELETE' }
+          ),
+      },
+      // One-time pairing token for the signed-in member; revoke cancels a
+      // minted-but-unused token.
+      pairing: {
+        create: (ws: string) =>
+          request<{ token: ApiPairingToken }>(
+            `/workspaces/${encodeURIComponent(ws)}/gateways/telegram/pairing-tokens`,
+            { method: 'POST', body: {} }
+          ),
+        revoke: (ws: string, token: string) =>
+          request<void>(
+            `/workspaces/${encodeURIComponent(ws)}/gateways/telegram/pairing-tokens/${encodeURIComponent(token)}`,
+            { method: 'DELETE' }
+          ),
+      },
+      links: {
+        // The signed-in member's current Telegram link, or `{ link: null }`.
+        getMine: (ws: string) =>
+          request<{ link: ApiGatewayLink | null }>(
+            `/workspaces/${encodeURIComponent(ws)}/gateways/telegram/links/me`,
+            { method: 'GET' }
+          ),
+        // Member-gated self unpair.
+        removeMine: (ws: string) =>
+          request<void>(
+            `/workspaces/${encodeURIComponent(ws)}/gateways/telegram/links/me`,
+            { method: 'DELETE' }
+          ),
+        // Admin per-member unpair.
+        remove: (ws: string, userId: string) =>
+          request<void>(
+            `/workspaces/${encodeURIComponent(ws)}/gateways/telegram/links/${encodeURIComponent(userId)}`,
+            { method: 'DELETE' }
+          ),
+      },
     },
   },
   agents: {

@@ -188,3 +188,65 @@ describe('screens/RunsView — transcript handoff and per-scheduler view', () =>
     expect(navigate).not.toHaveBeenCalled();
   });
 });
+
+describe('screens/RunsView — Langfuse link (integrate-langfuse-tracing 4.1)', () => {
+  it('offers "Open in Langfuse" on the row when langfuse_url is set, opening a new tab', async () => {
+    listRunsMock.mockResolvedValue({
+      runs: [run({ langfuse_url: 'https://langfuse.acme.example.com/trace/tr-123' })],
+      total: 1,
+    });
+    view();
+    await findByOdId('run-row-run-1');
+    const link = document.querySelector('a[data-od-id="run-langfuse-run-1"]') as HTMLAnchorElement | null;
+    expect(link).not.toBeNull();
+    expect(link!.getAttribute('href')).toBe('https://langfuse.acme.example.com/trace/tr-123');
+    expect(link!.getAttribute('target')).toBe('_blank');
+    expect(link!.getAttribute('rel')).toBe('noopener');
+    expect(link!.getAttribute('aria-label')).toBe('Open in Langfuse');
+  });
+
+  it("clicking the Langfuse action opens the trace, not the run's transcript", async () => {
+    listRunsMock.mockResolvedValue({
+      runs: [run({ langfuse_url: 'https://langfuse.acme.example.com/trace/tr-123' })],
+      total: 1,
+    });
+    view();
+    await findByOdId('run-row-run-1');
+    fireEvent.click(document.querySelector('a[data-od-id="run-langfuse-run-1"]') as Element);
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('carries the deep link through the transcript handoff for traced runs', async () => {
+    listRunsMock.mockResolvedValue({
+      runs: [run({ langfuse_url: 'https://langfuse.acme.example.com/trace/tr-123' })],
+      total: 1,
+    });
+    view();
+    await findByOdId('run-row-run-1');
+    fireEvent.click(odId('run-row-run-1'));
+    expect(navigate).toHaveBeenCalledWith('/c/a-atlas', {
+      state: { openRun: {
+        sessionId: 'sched_sch-1_1',
+        schedulerName: 'Morning ops digest',
+        langfuseUrl: 'https://langfuse.acme.example.com/trace/tr-123',
+      } },
+    });
+  });
+
+  it('renders no Langfuse action anywhere when langfuse_url is absent or null', async () => {
+    listRunsMock.mockResolvedValue({
+      runs: [run({}), run({ id: 'run-2', langfuse_url: null })],
+      total: 2,
+    });
+    view();
+    await findByOdId('run-row-run-1');
+    expect(document.querySelector('[data-od-id="run-langfuse-run-1"]')).toBeNull();
+    expect(document.querySelector('[data-od-id="run-langfuse-run-2"]')).toBeNull();
+    expect(document.querySelector('a[title="Open in Langfuse"]')).toBeNull();
+    // Neither row's transcript handoff carries a link.
+    fireEvent.click(odId('run-row-run-1'));
+    expect(navigate).toHaveBeenCalledWith('/c/a-atlas', {
+      state: { openRun: { sessionId: 'sched_sch-1_1', schedulerName: 'Morning ops digest' } },
+    });
+  });
+});

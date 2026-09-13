@@ -21,6 +21,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/observability"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
@@ -96,19 +97,26 @@ func schedulerViewOf(s *domain.Scheduler, tz *time.Location) schedulerView {
 // schedulerRunView is the run read view: the raw row plus the enrichment the
 // runs screens use to open transcripts and label rows (agent_id resolves the
 // run's agent; scheduler_name labels the workspace-wide feed). Optional, so
-// omitted when unknown.
+// omitted when unknown. LangfuseURL is the server-composed observability deep
+// link (integrate-langfuse-tracing D6): nil — serialized null — when the run
+// carries no trace id (tracing unconfigured or sampled out), so the client
+// learns nothing about the backend and renders no action.
 type schedulerRunView struct {
 	domain.SchedulerRun
-	AgentID       string `json:"agent_id,omitempty"`
-	SchedulerName string `json:"scheduler_name,omitempty"`
-	AgentName     string `json:"agent_name,omitempty"`
+	AgentID       string  `json:"agent_id,omitempty"`
+	SchedulerName string  `json:"scheduler_name,omitempty"`
+	AgentName     string  `json:"agent_name,omitempty"`
+	LangfuseURL   *string `json:"langfuse_url"`
 }
 
-func schedulerRunViewOf(run domain.SchedulerRun, sched *domain.Scheduler) schedulerRunView {
+func schedulerRunViewOf(run domain.SchedulerRun, sched *domain.Scheduler, langfuseHost string) schedulerRunView {
 	v := schedulerRunView{SchedulerRun: run}
 	if sched != nil {
 		v.AgentID = sched.AgentID
 		v.SchedulerName = sched.Name
+	}
+	if url := observability.TraceURL(langfuseHost, run.TraceID); url != "" {
+		v.LangfuseURL = &url
 	}
 	return v
 }
@@ -213,15 +221,19 @@ func parseSchedulerRunsPage(c *gin.Context) (limit, offset int, ok bool) {
 // schedulerHandlers serves the workspace scheduler surface (integrate-scheduler
 // D11): CRUD, run-now, and the run-history reads. Dependencies are granular:
 // the scheduler store for reads/writes and the run-now dispatch face (the
-// scheduler service) for the run endpoint.
+// scheduler service) for the run endpoint. langfuseHost is the configured
+// Langfuse backend the run views compose deep links from
+// (integrate-langfuse-tracing D6); empty — tracing unconfigured — keeps every
+// langfuse_url null.
 type schedulerHandlers struct {
-	schedulers store.SchedulerStore
-	runNow     SchedulerRunNow
+	schedulers   store.SchedulerStore
+	runNow       SchedulerRunNow
+	langfuseHost string
 }
 
 // NewSchedulerHandlers creates a new schedulerHandlers instance.
-func NewSchedulerHandlers(schedulers store.SchedulerStore, runNow SchedulerRunNow) *schedulerHandlers {
-	return &schedulerHandlers{schedulers: schedulers, runNow: runNow}
+func NewSchedulerHandlers(schedulers store.SchedulerStore, runNow SchedulerRunNow, langfuseHost string) *schedulerHandlers {
+	return &schedulerHandlers{schedulers: schedulers, runNow: runNow, langfuseHost: langfuseHost}
 }
 
 // ListSchedulers returns the workspace's schedulers in creation order, each
@@ -428,7 +440,7 @@ func (h *schedulerHandlers) RunSchedulerNow(c *gin.Context) {
 		RespondError(c, err)
 		return
 	}
-	RespondOK(c, gin.H{"run": schedulerRunViewOf(*run, nil)})
+	RespondOK(c, gin.H{"run": schedulerRunViewOf(*run, nil, h.langfuseHost)})
 }
 
 // ListSchedulerRuns returns one scheduler's run history, newest-first with
@@ -450,7 +462,7 @@ func (h *schedulerHandlers) ListSchedulerRuns(c *gin.Context) {
 	}
 	views := make([]schedulerRunView, 0, len(runs))
 	for _, run := range runs {
-		views = append(views, schedulerRunViewOf(run, s))
+		views = append(views, schedulerRunViewOf(run, s, h.langfuseHost))
 	}
 	RespondOK(c, gin.H{"runs": views, "total": total})
 }
@@ -511,7 +523,7 @@ func (h *schedulerHandlers) ListWorkspaceSchedulerRuns(c *gin.Context) {
 
 	views := make([]schedulerRunView, 0, len(merged))
 	for _, m := range merged {
-		views = append(views, schedulerRunViewOf(m.run, m.sched))
+		views = append(views, schedulerRunViewOf(m.run, m.sched, h.langfuseHost))
 	}
 	RespondOK(c, gin.H{"runs": views, "total": total})
 }

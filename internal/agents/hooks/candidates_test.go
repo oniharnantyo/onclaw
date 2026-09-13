@@ -90,7 +90,7 @@ func TestMatchedValue(t *testing.T) {
 }
 
 func TestOriginValuesAndStatusValues(t *testing.T) {
-	if got, want := OriginValues(), []string{"user", "scheduler", "channel"}; len(got) != len(want) {
+	if got, want := OriginValues(), []string{"user", "scheduler", "channel", "telegram"}; len(got) != len(want) {
 		t.Errorf("OriginValues() = %v, want %v", got, want)
 	} else {
 		for i := range want {
@@ -167,7 +167,7 @@ func TestCountMatches(t *testing.T) {
 			matcher:     "scheduler",
 			src:         nil,
 			wantMatched: 1,
-			wantTotal:   3,
+			wantTotal:   4,
 		},
 		{
 			name:        "user_prompt_submit list tier counts against the origin enum",
@@ -175,7 +175,15 @@ func TestCountMatches(t *testing.T) {
 			matcher:     "user|channel",
 			src:         nil,
 			wantMatched: 2,
-			wantTotal:   3,
+			wantTotal:   4,
+		},
+		{
+			name:        "telegram origin counts against the origin enum (integrate-telegram-gateway 6.3)",
+			event:       domain.HookEventRunStarted,
+			matcher:     "telegram",
+			src:         nil,
+			wantMatched: 1,
+			wantTotal:   4,
 		},
 		{
 			name:        "run_finished counts against the status enum",

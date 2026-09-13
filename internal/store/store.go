@@ -53,6 +53,10 @@ type Store interface {
 	Attachments() AttachmentStore
 	WorkspaceStorage() WorkspaceStorageStore
 	Schedulers() SchedulerStore
+	Gateways() GatewayStore
+	GatewayBindings() GatewayBindings
+	GatewayLinks() GatewayLinks
+	GatewayOutbox() GatewayOutbox
 	WithTx(ctx context.Context, fn func(Store) error) error
 	Close() error
 }
@@ -280,9 +284,11 @@ type SchedulerStore interface {
 	// anchored at the passed now.
 	ClaimDueSchedulers(ctx context.Context, now time.Time, limit int) ([]SchedulerClaim, error)
 	StartSchedulerRun(ctx context.Context, run *domain.SchedulerRun) error // inserts with status running
-	// FinishSchedulerRun writes the run outcome and mirrors it into the
-	// scheduler's last_run column atomically.
-	FinishSchedulerRun(ctx context.Context, workspaceID, runID string, status string, durationMS int64, tokensUsed int, deliveryStatus string, errMsg string) error
+	// FinishSchedulerRun writes the run outcome — including the turn's
+	// persisted Langfuse trace id (integrate-langfuse-tracing D3; "" when
+	// untraced) — and mirrors it into the scheduler's last_run column
+	// atomically.
+	FinishSchedulerRun(ctx context.Context, workspaceID, runID string, status string, durationMS int64, tokensUsed int, deliveryStatus string, errMsg string, traceID string) error
 	ListSchedulerRuns(ctx context.Context, workspaceID, schedulerID string, limit, offset int) ([]domain.SchedulerRun, int, error) // newest-first + total
 }
 

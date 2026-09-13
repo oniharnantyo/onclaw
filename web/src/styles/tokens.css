@@ -12,9 +12,11 @@
   --accent-on: #ffffff; /* fg when accent is the bg (e.g. button label) */
   --accent-hover: color-mix(in oklab, var(--accent), black 8%);
   --accent-active: color-mix(in oklab, var(--accent), black 14%);
+  --accent-text: var(--accent);   /* alias — light keeps brand accent for accent-colored text */
   --success: #17a34a;
   --warn: #eab308;
   --danger: #dc2626;
+  --danger-text: var(--danger);
   --font-display: "Inter", -apple-system, system-ui, sans-serif;
   --font-body: "Inter", -apple-system, system-ui, sans-serif;
   --font-mono: ui-monospace, "JetBrains Mono", monospace;
@@ -56,4 +58,19 @@
   --container-gutter-desktop: 24px;
   --container-gutter-tablet: 16px;
   --container-gutter-phone: 12px;
+}
+
+/* Dark override — accent, status hues, fonts, radii, motion, spacing, and
+   color-mix-derived tokens adapt automatically; aliases follow their parents. */
+:root[data-theme="dark"] {
+  --bg: #111111;
+  --surface: #1a1a1a;
+  --surface-warm: #222222;   /* was alias — dark has a real warm tier */
+  --fg: #ededed;
+  --fg-2: #c9c9c9;           /* was alias — dark has a real secondary tier */
+  --muted: #9a9a9a;
+  --border: #2c2c2c;
+  --border-soft: #232323;    /* was alias — dark has a real soft tier */
+  --accent-text: #6b93f2;    /* lifted tier — 6.37:1 on #111111, ≈5.0:1 on 16% tints */
+  --danger-text: #f87171;    /* lifted tier — 6.29:1 on #1a1a1a */
 }

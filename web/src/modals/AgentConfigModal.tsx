@@ -1014,7 +1014,7 @@ export function AgentConfigModal({
               {/* Goal & behavior brief (Generation driver) */}
               <div>
                 <label className={labelCls} htmlFor="ac-brief">
-                  Goal &amp; behavior brief <span className="text-accent font-normal">(drives prompt generation)</span>
+                  Goal &amp; behavior brief <span className="text-accenttext font-normal">(drives prompt generation)</span>
                 </label>
                 <textarea
                   id="ac-brief"
@@ -1629,7 +1629,7 @@ export function AgentConfigModal({
               <MicroLabel>Generated Prompts</MicroLabel>
               <div className="flex items-center gap-2">
                 {promptStatus === 'generating' && (
-                  <span className="flex items-center gap-1.5 text-[12px] text-accent font-medium">
+                  <span className="flex items-center gap-1.5 text-[12px] text-accenttext font-medium">
                     <span className="h-2 w-2 animate-ping rounded-full bg-accent" />
                     Generating prompts…
                   </span>
@@ -1932,7 +1932,7 @@ function AgentSkillAddDialog({
         </div>
         <div>
           <label className={labelCls} htmlFor="agent-skill-body">
-            SKILL.md body <span className="text-accent font-normal">(markdown)</span>
+            SKILL.md body <span className="text-accenttext font-normal">(markdown)</span>
           </label>
           <textarea
             id="agent-skill-body"

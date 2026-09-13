@@ -103,6 +103,10 @@ type SchedulerRun struct {
 	TokensUsed     int       `json:"tokens_used"`
 	DeliveryStatus string    `json:"delivery_status"`
 	Error          string    `json:"error,omitempty"`
+	// TraceID is the run's pinned Langfuse trace id
+	// (integrate-langfuse-tracing D3), empty when the turn sampled out or
+	// predates tracing — the runs surface composes the deep link from it.
+	TraceID string `json:"trace_id,omitempty"`
 }
 
 // ValidateScheduler validates a scheduler for persistence. When creating, a

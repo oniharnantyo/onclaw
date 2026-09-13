@@ -1,6 +1,7 @@
 import { cx } from "../../lib/helpers";
 import { Icon } from "../ui/Icon";
 import { Tooltip } from "../ui/Tooltip";
+import { ThemeCycleButton } from "../ui/ThemeCycleButton";
 import { UserMenu } from "./UserMenu";
 
 export function Rail({
@@ -117,7 +118,7 @@ export function Rail({
                   ? 'w-[calc(100%-16px)] mx-2 px-3 gap-3 text-left'
                   : 'w-11 justify-center',
                 isActive
-                  ? 'bg-[color-mix(in_oklab,var(--accent)_16%,transparent)] text-accent font-semibold'
+                  ? 'bg-[color-mix(in_oklab,var(--accent)_16%,transparent)] text-accenttext font-semibold'
                   : 'text-muted hover:bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] hover:text-fg2'
               )}
             >
@@ -154,6 +155,8 @@ export function Rail({
           <Icon name="menu" size={20} />
         </button>
       </Tooltip>
+
+      <ThemeCycleButton variant="rail" expanded={expanded} testId="rail-theme" odId="rail-theme" />
 
       <Tooltip content="Workspace settings" placement="right" disabled={expanded}>
         <button

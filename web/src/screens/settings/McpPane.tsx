@@ -419,7 +419,7 @@ export function McpPane({ tenant, onToast = () => {}, canWrite }: McpPaneProps) 
                 onClick={() => void handleDelete(deleting)}
                 disabled={busy}
                 data-testid="btn-mcp-delete-confirm"
-                className="flex h-9 items-center rounded-md bg-danger px-4 text-[13px] font-semibold text-white transition-colors hover:opacity-90 disabled:opacity-40"
+                className="flex h-9 items-center rounded-md bg-danger px-4 text-[13px] font-semibold text-accenton transition-colors hover:opacity-90 disabled:opacity-40"
               >
                 {busy ? 'Deleting…' : 'Delete'}
               </button>

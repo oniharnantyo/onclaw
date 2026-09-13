@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../store/auth';
 import { Icon } from '../components/ui/Icon';
+import { ThemeCycleButton } from '../components/ui/ThemeCycleButton';
 
 export function LoginView() {
   const navigate = useNavigate();
@@ -52,7 +53,12 @@ export function LoginView() {
   }
 
   return (
-    <div className="flex min-h-[100dvh] w-full items-center justify-center bg-bg p-4 antialiased">
+    <div className="relative flex min-h-[100dvh] w-full items-center justify-center bg-bg p-4 antialiased">
+      {/* Theme cycle control (change add-dark-theme): icon-only, pinned to the
+          viewport's top-right corner, tooltip below. */}
+      <div className="absolute right-4 top-4 z-10">
+        <ThemeCycleButton variant="icon" testId="login-theme" />
+      </div>
       <div className="od-pop w-full max-w-[380px] rounded-lg border border-line bg-surface p-8 shadow-[var(--elev-raised)]">
         {/* Brand Header */}
         <div className="mb-6 flex flex-col items-center text-center">

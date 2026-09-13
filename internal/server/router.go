@@ -68,6 +68,17 @@ type RouterOptions struct {
 	// origin. nil builds a fresh one around the fallback runner; only the
 	// composition root Start()s it, riding the server's lifecycle.
 	Scheduler *scheduler.Service
+	// Gateways is the gateway runtime (integrate-telegram-gateway D11, task
+	// 6.2): the gateway service + lifecycle manager + pairing service built
+	// by the composition root around the runner. nil builds a fresh one for
+	// test assembly; the composition root drives Manager.StartAll/Stop on the
+	// server lifecycle, and the handlers call Manager.Sync after config
+	// changes.
+	Gateways *GatewayRuntime
+	// LangfuseHost is the configured Langfuse backend the scheduler-run views
+	// compose their deep links from (integrate-langfuse-tracing D6). Empty —
+	// tracing unconfigured — keeps every run payload's langfuse_url null.
+	LangfuseHost string
 	// ChannelStreamKeepAlive is the channel SSE idle keepalive cadence; 0 uses
 	// the handler default (15s).
 	ChannelStreamKeepAlive time.Duration
@@ -330,7 +341,41 @@ func (rt *router) Engine() *gin.Engine {
 			slog.Default(),
 		)
 	}
-	schedulerHandlers := handlers.NewSchedulerHandlers(rt.opts.Store.Schedulers(), schedulerSvc)
+	schedulerHandlers := handlers.NewSchedulerHandlers(rt.opts.Store.Schedulers(), schedulerSvc, rt.opts.LangfuseHost)
+
+	// Gateway runtime (integrate-telegram-gateway D11, task 6.2): the
+	// composition root builds it around the same runner; the fallback assembles
+	// a fresh one for tests. Handlers reconcile the manager after config
+	// mutations; the composition root owns StartAll/Stop.
+	gatewayRuntime := rt.opts.Gateways
+	if gatewayRuntime == nil && rt.opts.Store != nil {
+		gatewayRuntime = NewGatewayRuntime(
+			rt.opts.Store.Gateways(),
+			rt.opts.Store.GatewayBindings(),
+			rt.opts.Store.GatewayLinks(),
+			rt.opts.Store.GatewayOutbox(),
+			rt.opts.Store.SessionEvents(),
+			rt.opts.Store.Members(),
+			rt.opts.Store.Agents(),
+			rt.opts.Store.Users(),
+			GatewayRunSubmitter(runner),
+			rt.opts.Store.Attachments(),
+			wsStorage,
+			rt.opts.EncryptionKey,
+		)
+	}
+	gatewayHandlers := handlers.NewGatewayHandlers(
+		rt.opts.Store.Gateways(),
+		rt.opts.Store.GatewayBindings(),
+		rt.opts.Store.GatewayLinks(),
+		rt.opts.Store.Agents(),
+		rt.opts.Store.Users(),
+		gatewayRuntime.Pairing,
+		gatewayRuntime.Manager,
+		gatewayRuntime.Service,
+		gatewayRuntime.Verifier,
+		rt.opts.EncryptionKey,
+	)
 
 	providerHandlers := handlers.NewProviderHandlers(rt.opts.Store.Providers(), rt.opts.Store.Agents(), rt.opts.EncryptionKey, providerRegistry, modelCatalog)
 	agentHandlers := handlers.NewAgentHandlers(rt.opts.Store.Agents(), rt.opts.Store.Providers(), rt.opts.Store.SessionEvents(), rt.opts.Store.AgentSessions(), rt.opts.EncryptionKey, providerRegistry, modelCatalog, agentService, workspaceDir, runner, runner)
@@ -442,6 +487,12 @@ func (rt *router) Engine() *gin.Engine {
 			authGroup.POST("/login", authHandlers.Login)
 			authGroup.POST("/logout", authHandlers.Logout)
 		}
+
+		// Public Telegram webhook ingress (integrate-telegram-gateway task
+		// 6.2): no auth middleware — the request authenticates with the
+		// per-workspace derived secret in X-Telegram-Bot-Api-Secret-Token
+		// (validated inside the handler before any processing).
+		api.POST("/webhooks/telegram/:ws", gatewayHandlers.WebhookUpdate)
 
 		// Authenticated endpoints
 		authed := api.Group("")
@@ -639,6 +690,31 @@ func (rt *router) Engine() *gin.Engine {
 				wsGroup.POST("/agents/:agent/hooks/reorder", rt.mw.RequirePermission(domain.HooksWrite), hookHandlers.ReorderAgentHooks)
 				wsGroup.PATCH("/agents/:agent/hooks/:id", rt.mw.RequirePermission(domain.HooksWrite), hookHandlers.PatchAgentHook)
 				wsGroup.DELETE("/agents/:agent/hooks/:id", rt.mw.RequirePermission(domain.HooksWrite), hookHandlers.DeleteAgentHook)
+
+				// Telegram gateway (integrate-telegram-gateway D11, task 6.1):
+				// config CRUD, enable/disable/test, bindings, and the admin
+				// per-member unpair are gateways.write (Owner/Admin; the web
+				// pane mirrors the same check). Pairing-token mint/revoke and
+				// the member's own link are member-level — the workspace
+				// context gate suffices, matching the api-keys/exchange
+				// precedent. /links/me resolves literally before
+				// /links/:uid; registration order carries no meaning.
+				gatewayGroup := wsGroup.Group("/gateways/telegram")
+				{
+					gatewayGroup.GET("", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.GetConfig)
+					gatewayGroup.PUT("", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.PutConfig)
+					gatewayGroup.POST("/enable", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.EnableGateway)
+					gatewayGroup.POST("/disable", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.DisableGateway)
+					gatewayGroup.POST("/test", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.TestGateway)
+					gatewayGroup.GET("/bindings", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.ListBindings)
+					gatewayGroup.POST("/bindings", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.CreateBinding)
+					gatewayGroup.DELETE("/bindings/:id", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.DeleteBinding)
+					gatewayGroup.POST("/pairing-tokens", gatewayHandlers.CreatePairingToken)
+					gatewayGroup.DELETE("/pairing-tokens/:token", gatewayHandlers.RevokePairingToken)
+					gatewayGroup.GET("/links/me", gatewayHandlers.GetMyLink)
+					gatewayGroup.DELETE("/links/me", gatewayHandlers.UnpairMyLink)
+					gatewayGroup.DELETE("/links/:uid", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.UnpairMemberLink)
+				}
 			}
 
 			// Instance Admin route group (master tenant control plane)

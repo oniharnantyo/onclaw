@@ -72,7 +72,7 @@ function ContextMeter({ usage, effective, trigger }: { usage: any; effective: nu
   );
 }
 
-export function ChatHeader({ target, agent, channelMembers, usage, onToggleMembers, onConfigure  }: any) {
+export function ChatHeader({ target, agent, channelMembers, usage, langfuseUrl, onToggleMembers, onConfigure  }: any) {
   const t = target;
   const meterVisible = t.kind === 'agent' && usage && usage.finalInput > 0 && agent.effective_context_window > 0;
   return (
@@ -99,6 +99,16 @@ export function ChatHeader({ target, agent, channelMembers, usage, onToggleMembe
         </p>
       </div>
       <div className="ml-auto flex items-center gap-3">
+        {/* Observability deep link (integrate-langfuse-tracing D6): rendered
+            only when the opened run carries a langfuse_url — untraced runs
+            (tracing unconfigured or pre-dating export) see no action. */}
+        {langfuseUrl && (
+          <a href={langfuseUrl} target="_blank" rel="noopener" data-od-id="btn-open-langfuse"
+            title="Open in Langfuse" aria-label="Open in Langfuse"
+            className="flex h-8 w-8 items-center justify-center rounded-md text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg2">
+            <Icon name="external-link" size={16}/>
+          </a>
+        )}
         {meterVisible && <ContextMeter usage={usage} effective={agent.effective_context_window} trigger={agent.summarization_trigger_tokens || 0}/>}
         {channelMembers && channelMembers.length > 0 && (
           <button type="button" onClick={onToggleMembers} data-od-id="btn-channel-members"

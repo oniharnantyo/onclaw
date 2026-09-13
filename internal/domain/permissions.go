@@ -42,6 +42,11 @@ const (
 	SchedulerRead  = "scheduler.read"
 	SchedulerWrite = "scheduler.write"
 
+	// Gateways permissions (workspace platform gateways — the Telegram bot
+	// connection, bindings, and admin unpair; pairing is member-level).
+	// Reads ride the same write permission: the pane is admin-only surface.
+	GatewaysWrite = "gateways.write"
+
 	// Admin permissions (master tenant control plane)
 	AdminWorkspacesRead   = "admin.workspaces.read"
 	AdminWorkspacesWrite  = "admin.workspaces.write"
@@ -51,7 +56,7 @@ const (
 )
 
 var (
-	// OwnerPermissions contains all standard workspace permissions (20 permissions).
+	// OwnerPermissions contains all standard workspace permissions (21 permissions).
 	OwnerPermissions = []string{
 		WorkspaceRead,
 		WorkspaceWrite,
@@ -73,9 +78,10 @@ var (
 		ChannelsWrite,
 		SchedulerRead,
 		SchedulerWrite,
+		GatewaysWrite,
 	}
 
-	// AdminPermissions contains all standard workspace permissions except roles.write (19 permissions).
+	// AdminPermissions contains all standard workspace permissions except roles.write (20 permissions).
 	AdminPermissions = []string{
 		WorkspaceRead,
 		WorkspaceWrite,
@@ -96,6 +102,7 @@ var (
 		ChannelsWrite,
 		SchedulerRead,
 		SchedulerWrite,
+		GatewaysWrite,
 	}
 
 	// MemberPermissions contains only read permissions (7 permissions).
@@ -109,7 +116,7 @@ var (
 		SchedulerRead,
 	}
 
-	// SuperadminPermissions contains all workspace permissions plus all instance-admin permissions (25 permissions).
+	// SuperadminPermissions contains all workspace permissions plus all instance-admin permissions (26 permissions).
 	SuperadminPermissions = []string{
 		WorkspaceRead,
 		WorkspaceWrite,
@@ -131,6 +138,7 @@ var (
 		ChannelsWrite,
 		SchedulerRead,
 		SchedulerWrite,
+		GatewaysWrite,
 		AdminWorkspacesRead,
 		AdminWorkspacesWrite,
 		AdminUsersRead,
@@ -162,6 +170,7 @@ func AllPermissions() []string {
 		ChannelsWrite,
 		SchedulerRead,
 		SchedulerWrite,
+		GatewaysWrite,
 		AdminWorkspacesRead,
 		AdminWorkspacesWrite,
 		AdminUsersRead,
@@ -183,6 +192,7 @@ func IsValidPermission(p string) bool {
 		HooksRead, HooksWrite,
 		ChannelsRead, ChannelsWrite,
 		SchedulerRead, SchedulerWrite,
+		GatewaysWrite,
 		AdminWorkspacesRead, AdminWorkspacesWrite,
 		AdminUsersRead, AdminUsersWrite,
 		AdminSuperadminsWrite:

@@ -166,6 +166,26 @@ func (s *store) Schedulers() storeport.SchedulerStore {
 	return NewSchedulerStore(s.db)
 }
 
+// Gateways returns the GatewayStore sub-port.
+func (s *store) Gateways() storeport.GatewayStore {
+	return NewGatewayStore(s.db)
+}
+
+// GatewayBindings returns the GatewayBindings sub-port.
+func (s *store) GatewayBindings() storeport.GatewayBindings {
+	return NewGatewayBindingStore(s.db)
+}
+
+// GatewayLinks returns the GatewayLinks sub-port.
+func (s *store) GatewayLinks() storeport.GatewayLinks {
+	return NewGatewayLinkStore(s.db)
+}
+
+// GatewayOutbox returns the GatewayOutbox sub-port.
+func (s *store) GatewayOutbox() storeport.GatewayOutbox {
+	return NewGatewayOutboxStore(s.db)
+}
+
 // WithTx executes the provided function within a database transaction.
 // If the store is already in a transaction, a SAVEPOINT is used for nested isolation.
 func (s *store) WithTx(ctx context.Context, fn func(storeport.Store) error) error {

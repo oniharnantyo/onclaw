@@ -180,6 +180,12 @@ type TranscriptEvent struct {
 	CancelReason   string                `json:"cancel_reason,omitempty"`
 	RetryAttempt   int                   `json:"retry_attempt,omitempty"`
 	Usage          *UsagePayload         `json:"usage,omitempty"`
+	// TraceID carries the turn's pinned Langfuse trace id on terminal events
+	// (integrate-langfuse-tracing D3/D5), set only when the turn sampled in
+	// for export — a sampled-out turn carries no id, so a persisted run
+	// record always targets a real trace. Run-record owners (the scheduler
+	// drain) read it off the terminal event; every other consumer ignores it.
+	TraceID string `json:"trace_id,omitempty"`
 }
 
 // AttachmentRef identifies one attachment carried on a turn (attachments
@@ -202,9 +208,11 @@ type ExecRequest struct {
 	Input       string
 
 	// Origin identifies what triggered the run (hooks design.md D1):
-	// OriginUser, OriginScheduler, or OriginChannel. Empty selects
-	// OriginUser — every current caller is user-initiated; the scheduler
-	// service sets OriginScheduler when a scheduled run is submitted.
+	// OriginUser, OriginScheduler, OriginChannel, or OriginTelegram. Empty
+	// selects OriginUser — every current caller is user-initiated; the
+	// scheduler service sets OriginScheduler when a scheduled run is
+	// submitted, and the Telegram gateway sets OriginTelegram for every
+	// paired-member turn (integrate-telegram-gateway task 6.3).
 	Origin string
 
 	// Channel-run coordinates (OriginChannel). ChannelID is required when
@@ -245,6 +253,13 @@ type ExecRequest struct {
 	// targets (the contract then asks for a plain "Nothing to report."). NonEmpty
 	// only when Origin normalizes to OriginScheduler.
 	SchedulerNoReply string
+
+	// ScheduleName names the scheduler a scheduler-origin run fires for
+	// (integrate-langfuse-tracing D2): it becomes the exported trace's name —
+	// "trace name = schedule name for scheduler fires, first input line
+	// otherwise". Purely observational: it rides the run's trace context
+	// only, and every non-scheduler origin ignores it.
+	ScheduleName string
 }
 
 // Run origins (hooks design.md D1). ExecRequest.Origin carries one; empty
@@ -253,6 +268,10 @@ const (
 	OriginUser      = "user"
 	OriginScheduler = "scheduler"
 	OriginChannel   = "channel"
+	// OriginTelegram marks gateway-submitted runs (integrate-telegram-gateway
+	// task 6.3): Telegram turns ride the same event and hook-payload origin
+	// contract as scheduler and channel runs.
+	OriginTelegram = "telegram"
 )
 
 // Built-in slash commands executed as turns (chat-compact-command D2).
@@ -274,7 +293,7 @@ func normalizeCommand(command string) string {
 // user-initiated.
 func normalizeOrigin(origin string) string {
 	switch origin {
-	case OriginScheduler, OriginChannel:
+	case OriginScheduler, OriginChannel, OriginTelegram:
 		return origin
 	default:
 		return OriginUser

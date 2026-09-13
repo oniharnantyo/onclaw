@@ -63,7 +63,7 @@ export function Avatar({
   const tone = kind === 'agent'
     ? 'bg-[color-mix(in_oklab,var(--accent)_16%,transparent)] text-accent'
     : kind === 'you'
-      ? 'bg-[color-mix(in_oklab,var(--fg)_88%,transparent)] text-[var(--accent-on)]'
+      ? 'bg-[color-mix(in_oklab,var(--fg)_88%,transparent)] text-[var(--bg)]'
       : 'bg-[color-mix(in_oklab,var(--fg)_9%,transparent)] text-fg';
 
   return (

@@ -121,3 +121,26 @@ describe('components/chat/ChatHeader context meter', () => {
     expect(h.details()).toBeNull();
   });
 });
+
+describe('components/chat/ChatHeader — Langfuse link (integrate-langfuse-tracing 4.1)', () => {
+  let utils: ReturnType<typeof renderHeader>;
+  const lfUrl = () => utils.container.querySelector('a[data-od-id="btn-open-langfuse"]') as HTMLAnchorElement | null;
+
+  it('offers "Open in Langfuse" when the opened run carries a langfuse_url', () => {
+    utils = renderHeader({ target: agentTarget, agent, usage, langfuseUrl: 'https://langfuse.acme.example.com/trace/tr-123' });
+    const link = lfUrl();
+    expect(link).not.toBeNull();
+    expect(link!.getAttribute('href')).toBe('https://langfuse.acme.example.com/trace/tr-123');
+    expect(link!.getAttribute('target')).toBe('_blank');
+    expect(link!.getAttribute('rel')).toBe('noopener');
+    expect(link!.getAttribute('aria-label')).toBe('Open in Langfuse');
+  });
+
+  it('renders no Langfuse action when the run has none (absent / null / empty)', () => {
+    for (const langfuseUrl of [undefined, null, '']) {
+      utils = renderHeader({ target: agentTarget, agent, usage, langfuseUrl });
+      expect(lfUrl()).toBeNull();
+      expect(utils.container.textContent).not.toContain('Langfuse');
+    }
+  });
+});
