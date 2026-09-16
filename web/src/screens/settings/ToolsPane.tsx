@@ -3,6 +3,7 @@ import { cx } from "../../lib/helpers";
 import { Icon } from "../../components/ui/Icon";
 import { Toggle } from "../../components/ui/Toggle";
 import { Modal } from "../../components/ui/Modal";
+import { MicroLabel } from "../../components/ui/MicroLabel";
 import { inputCls, labelCls } from "../../components/ui/constants";
 import { ErrorState } from "../../components/ErrorState";
 import { api, formatApiError, ApiError, type ApiToolSettings, type ApiToolConfigField } from "../../lib/api";
@@ -82,6 +83,86 @@ export function ToolsPane({ tenant, onToast = () => {} }: ToolsPaneProps) {
     onToast(`Saved ${updated.display_name} configuration`);
   };
 
+  // Design D5: section membership is purely payload-driven — every entry the
+  // endpoint marks non-toggleable goes to the always-on section, everything
+  // else stays in the flat list. Both derive from the single `tools` state on
+  // each render, so replaceTool keeps patching by key regardless of section.
+  const alwaysOnTools = tools.filter((t) => !t.toggleable);
+  const toggleableTools = tools.filter((t) => t.toggleable);
+
+  // Badge copy is a display special case for one key plus a safe fallback, so
+  // a future always-on tool lands in the section without frontend edits.
+  const alwaysOnBadgeText = (tool: ApiToolSettings): string =>
+    tool.key === 'session.close' ? 'Always on · facilitator only' : 'Always on · channel runs';
+
+  const renderToolRow = (tool: ApiToolSettings) => {
+    const alwaysOn = !tool.toggleable;
+    return (
+      <div
+        key={tool.key}
+        className={cx(
+          'flex items-center gap-3 rounded-md border border-line bg-[color-mix(in_oklab,var(--bg)_30%,var(--surface))] p-3.5 transition-colors',
+          !alwaysOn && !tool.enabled && 'opacity-70'
+        )}
+        data-od-id={'tool-' + tool.key}
+        data-testid={'tool-' + tool.key}
+      >
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[color-mix(in_oklab,var(--accent)_15%,transparent)] text-accent">
+          <Icon name={tool.icon_key || 'plug'} size={16} />
+        </span>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="truncate text-[14px] font-medium text-fg">{tool.display_name}</p>
+            {alwaysOn ? null : tool.key === WEB_SEARCH_TOOL_KEY && searchEntryCount(tool.config) > 0 ? (
+              <span className="font-mono text-[11px] text-muted" data-testid="web-search-summary">
+                {searchEntryCount(tool.config)} configured · {Math.min(SEARCH_ROTATION_WINDOW, searchEntryCount(tool.config))} stacked
+              </span>
+            ) : tool.configurable && !tool.configured ? (
+              <span className="text-[11px] text-[color-mix(in_oklab,var(--warn),black_38%)]">
+                Not configured — enable after setup
+              </span>
+            ) : null}
+          </div>
+          <p className="truncate text-[12px] text-muted">{tool.description}</p>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {alwaysOn ? (
+            // Always-on rows carry the badge in place of the toggle — no gear
+            // even when configurable, and never dimmed on enabled state.
+            <span
+              className="whitespace-nowrap rounded-full bg-[color-mix(in_oklab,var(--accent)_12%,transparent)] px-2 py-0.5 text-[10px] font-medium leading-4 text-accenttext"
+              data-testid={'tool-always-on-badge-' + tool.key}
+            >
+              {alwaysOnBadgeText(tool)}
+            </span>
+          ) : (
+            <>
+              {tool.configurable ? (
+                <button
+                  type="button"
+                  aria-label={'Configure ' + tool.display_name}
+                  data-od-id={'btn-tool-config-' + tool.key}
+                  data-testid={'btn-tool-config-' + tool.key}
+                  onClick={() => setConfigTool(tool)}
+                  className="flex h-8 w-8 items-center justify-center rounded-md border border-line text-muted transition-colors hover:border-accent hover:text-fg"
+                >
+                  <Icon name="cog" size={15} />
+                </button>
+              ) : null}
+              <Toggle
+                on={tool.enabled}
+                label={'Enable ' + tool.display_name}
+                onChange={() => handleToggle(tool)}
+              />
+            </>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div data-od-id="pane-tools" data-testid="pane-tools">
       <div className="mb-4 flex items-center justify-between">
@@ -110,57 +191,16 @@ export function ToolsPane({ tenant, onToast = () => {} }: ToolsPaneProps) {
         </div>
       ) : (
         <div className="space-y-3">
-          {tools.map((tool) => (
-            <div
-              key={tool.key}
-              className={cx(
-                'flex items-center gap-3 rounded-md border border-line bg-[color-mix(in_oklab,var(--bg)_30%,var(--surface))] p-3.5 transition-colors',
-                !tool.enabled && 'opacity-70'
-              )}
-              data-od-id={'tool-' + tool.key}
-              data-testid={'tool-' + tool.key}
-            >
-              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[color-mix(in_oklab,var(--accent)_15%,transparent)] text-accent">
-                <Icon name={tool.icon_key || 'plug'} size={16} />
-              </span>
-
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2">
-                  <p className="truncate text-[14px] font-medium text-fg">{tool.display_name}</p>
-                  {tool.key === WEB_SEARCH_TOOL_KEY && searchEntryCount(tool.config) > 0 ? (
-                    <span className="font-mono text-[11px] text-muted" data-testid="web-search-summary">
-                      {searchEntryCount(tool.config)} configured · {Math.min(SEARCH_ROTATION_WINDOW, searchEntryCount(tool.config))} stacked
-                    </span>
-                  ) : tool.configurable && !tool.configured ? (
-                    <span className="text-[11px] text-[color-mix(in_oklab,var(--warn),black_38%)]">
-                      Not configured — enable after setup
-                    </span>
-                  ) : null}
-                </div>
-                <p className="truncate text-[12px] text-muted">{tool.description}</p>
+          {alwaysOnTools.length > 0 ? (
+            <div data-testid="channel-tool-section">
+              <MicroLabel>Channel Tool</MicroLabel>
+              <div className="mt-2 space-y-3">
+                {alwaysOnTools.map(renderToolRow)}
               </div>
-
-              <div className="flex items-center gap-2">
-                {tool.configurable ? (
-                  <button
-                    type="button"
-                    aria-label={'Configure ' + tool.display_name}
-                    data-od-id={'btn-tool-config-' + tool.key}
-                    data-testid={'btn-tool-config-' + tool.key}
-                    onClick={() => setConfigTool(tool)}
-                    className="flex h-8 w-8 items-center justify-center rounded-md border border-line text-muted transition-colors hover:border-accent hover:text-fg"
-                  >
-                    <Icon name="cog" size={15} />
-                  </button>
-                ) : null}
-                <Toggle
-                  on={tool.enabled}
-                  label={'Enable ' + tool.display_name}
-                  onChange={() => handleToggle(tool)}
-                />
-              </div>
+              {toggleableTools.length > 0 ? <div className="mt-3 border-t border-line" /> : null}
             </div>
-          ))}
+          ) : null}
+          {toggleableTools.map(renderToolRow)}
         </div>
       )}
 

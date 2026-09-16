@@ -406,3 +406,94 @@ func TestTools_SecretIsHintedNotEchoed(t *testing.T) {
 		}
 	}
 }
+
+// toolsToggleView decodes the per-tool key/enabled/toggleable state of a
+// tools list response.
+type toolsToggleView struct {
+	Key        string `json:"key"`
+	Enabled    bool   `json:"enabled"`
+	Toggleable bool   `json:"toggleable"`
+}
+
+func listToolsToggleView(t *testing.T, r *gin.Engine) map[string]toolsToggleView {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/workspaces/acme/tools", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list tools: expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Tools []toolsToggleView `json:"tools"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	byKey := make(map[string]toolsToggleView, len(body.Tools))
+	for _, tool := range body.Tools {
+		byKey[tool.Key] = tool
+	}
+	return byKey
+}
+
+func TestTools_ListMarksAlwaysOnNonToggleable(t *testing.T) {
+	r, _, _ := newToolsTestEnv(t)
+
+	byKey := listToolsToggleView(t, r)
+	for _, key := range []string{"channel.post", "channel.history", "session.close"} {
+		tool, present := byKey[key]
+		if !present {
+			t.Fatalf("%s missing from list", key)
+		}
+		if tool.Toggleable {
+			t.Errorf("%s must not be toggleable", key)
+		}
+		if !tool.Enabled {
+			t.Errorf("%s must default to enabled", key)
+		}
+	}
+	for _, key := range []string{"ls", "web.search"} {
+		if !byKey[key].Toggleable {
+			t.Errorf("%s must be toggleable", key)
+		}
+	}
+}
+
+func TestTools_PatchEnabledOnAlwaysOnIs422(t *testing.T) {
+	r, _, _ := newToolsTestEnv(t)
+
+	// An enabled patch on an always-on tool is rejected, never ignored
+	// (always-on-channel-tools D4).
+	rec := patchTool(t, r, "channel.post", map[string]any{"enabled": false})
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d: %s", rec.Code, rec.Body.String())
+	}
+	te := decodeToolError(t, rec.Body.Bytes())
+	if !strings.Contains(te.Error.Message, "always active") {
+		t.Errorf("422 must explain the always-on policy: %s", rec.Body.String())
+	}
+
+	// The rejected patch stored nothing and the list still reads the tool
+	// enabled and non-toggleable.
+	byKey := listToolsToggleView(t, r)
+	tool := byKey["channel.post"]
+	if !tool.Enabled {
+		t.Error("channel.post must read enabled after the rejected patch")
+	}
+	if tool.Toggleable {
+		t.Error("channel.post must read non-toggleable after the rejected patch")
+	}
+}
+
+func TestTools_PatchConfigOnlyOnAlwaysOnSucceeds(t *testing.T) {
+	r, _, _ := newToolsTestEnv(t)
+
+	// Config-only patches keep today's behavior: the upsert stores an
+	// enabled=true row (config is nilled for non-configurable tools).
+	rec := patchTool(t, r, "channel.post", map[string]any{"config": map[string]any{}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"enabled":true`) {
+		t.Errorf("config-only patch response must read enabled: %s", rec.Body.String())
+	}
+}

@@ -269,8 +269,8 @@ describe('screens/settings/HooksPane', () => {
     vi.spyOn(api.hooks, 'list').mockResolvedValue({ instance: [], hooks: [] });
     vi.spyOn(api.tools, 'list').mockResolvedValue({
       tools: [
-        { key: 'web.fetch', display_name: 'Web Fetch', description: '', group: 'web', icon_key: 'link', configurable: false, enabled: true, configured: false, config: {} },
-        { key: 'execute', display_name: 'Shell', description: '', group: 'core', icon_key: 'terminal', configurable: false, enabled: true, configured: false, config: {} },
+        { key: 'web.fetch', display_name: 'Web Fetch', description: '', group: 'web', icon_key: 'link', configurable: false, enabled: true, configured: false, config: {}, toggleable: true },
+        { key: 'execute', display_name: 'Shell', description: '', group: 'core', icon_key: 'terminal', configurable: false, enabled: true, configured: false, config: {}, toggleable: true },
       ],
     });
     vi.spyOn(api.mcp, 'list').mockResolvedValue({ servers: [] });
@@ -320,7 +320,7 @@ describe('screens/settings/HooksPane', () => {
     const matcher = screen.getByTestId('input-hook-matcher');
     fireEvent.change(matcher, { target: { value: 'web.*' } });
     await waitFor(() => {
-      expect(screen.getByTestId('hook-match-count').textContent).toBe('Matches 2 of 13 tools');
+      expect(screen.getByTestId('hook-match-count').textContent).toBe('Matches 2 of 19 tools');
     });
     // The static syntax helper sits under the input.
     expect(screen.getByTestId('hook-matcher-helper').textContent).toContain('Empty or * = every occurrence');

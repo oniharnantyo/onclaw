@@ -73,6 +73,10 @@ type ToolCatalogEntry struct {
 	IconKey      string        `json:"icon_key"`
 	Configurable bool          `json:"configurable"`
 	ConfigSchema []ConfigField `json:"config_schema,omitempty"`
+	// AlwaysOn marks a tool the workspace tool gate never strips: workspace
+	// settings cannot disable it and the tools API rejects enabled patches.
+	// The zero value keeps ordinary tools toggleable by default.
+	AlwaysOn bool `json:"always_on"`
 }
 
 // ToolCatalog returns the full tool catalog: every registry tool, the six fs
@@ -189,6 +193,7 @@ func ToolCatalog() []ToolCatalogEntry {
 			Description: "Post a message into the channel the agent is running in. Channel runs only.",
 			Group:       "channel",
 			IconKey:     "message",
+			AlwaysOn:    true,
 		},
 		{
 			Key:         ChannelToolHistory,
@@ -196,6 +201,7 @@ func ToolCatalog() []ToolCatalogEntry {
 			Description: "Page back through the channel's earlier messages. Channel runs only.",
 			Group:       "channel",
 			IconKey:     "history",
+			AlwaysOn:    true,
 		},
 		{
 			Key:         SessionToolClose,
@@ -203,6 +209,7 @@ func ToolCatalog() []ToolCatalogEntry {
 			Description: "Close the channel's active work session with a stored summary. Facilitator runs only.",
 			Group:       "channel",
 			IconKey:     "check-circle",
+			AlwaysOn:    true,
 		},
 		{
 			Key:         tools.NameSchedule,

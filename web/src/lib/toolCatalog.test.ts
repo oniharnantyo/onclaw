@@ -59,6 +59,7 @@ describe('toolCatalog displayName', () => {
         enabled: true,
         configured: false,
         config: {},
+        toggleable: true,
       }],
     });
     await toolCatalog.ensure('ws-catalog-override');
@@ -118,6 +119,7 @@ describe('toolCatalog icon (design D8)', () => {
           enabled: true,
           configured: false,
           config: {},
+          toggleable: true,
         },
       ],
     });
@@ -244,6 +246,15 @@ describe('static built-in mirror (card names/icons resolve before the catalog lo
     expect(toolCatalog.icon('web.search')).toBe('search');
     expect(toolCatalog.icon('execute')).toBe('terminal');
     expect(toolCatalog.icon('memory')).toBe('memory');
+  });
+
+  it('resolves channel/session tool names and icons without any catalog fetch', () => {
+    expect(toolCatalog.displayName('channel.post')).toBe('Channel Post');
+    expect(toolCatalog.displayName('channel.history')).toBe('Channel History');
+    expect(toolCatalog.displayName('session.close')).toBe('Close Work Session');
+    expect(toolCatalog.icon('channel.post')).toBe('message');
+    expect(toolCatalog.icon('channel.history')).toBe('history');
+    expect(toolCatalog.icon('session.close')).toBe('check-circle');
   });
 
   it('still returns null for ids outside the built-in set', () => {

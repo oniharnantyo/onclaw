@@ -749,6 +749,9 @@ func TestChannelCatalogEntries(t *testing.T) {
 		if entry.DisplayName == "" || entry.Group != "channel" {
 			t.Fatalf("catalog entry for %s = %+v", name, entry)
 		}
+		if !entry.AlwaysOn {
+			t.Fatalf("%s must be AlwaysOn", name)
+		}
 	}
 }
 

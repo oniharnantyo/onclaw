@@ -16,6 +16,7 @@ const catalogTools = (): ApiToolSettings[] => [
     enabled: true,
     configured: false,
     config: {},
+    toggleable: true,
   },
   {
     key: 'web.search',
@@ -27,6 +28,7 @@ const catalogTools = (): ApiToolSettings[] => [
     enabled: false,
     configured: false,
     config: {},
+    toggleable: true,
   },
   {
     key: 'browser',
@@ -43,6 +45,43 @@ const catalogTools = (): ApiToolSettings[] => [
       { key: 'max_pages', label: 'Max pages', type: 'number', required: false },
       { key: 'api_key', label: 'API key', type: 'secret', required: false },
     ],
+    toggleable: true,
+  },
+  {
+    key: 'channel.post',
+    display_name: 'Channel Post',
+    description: 'Post a message into the channel the agent is running in.',
+    group: 'channel',
+    icon_key: 'message',
+    configurable: false,
+    enabled: true,
+    configured: false,
+    config: {},
+    toggleable: false,
+  },
+  {
+    key: 'channel.history',
+    display_name: 'Channel History',
+    description: "Page back through the channel's earlier messages.",
+    group: 'channel',
+    icon_key: 'history',
+    configurable: false,
+    enabled: true,
+    configured: false,
+    config: {},
+    toggleable: false,
+  },
+  {
+    key: 'session.close',
+    display_name: 'Close Work Session',
+    description: "Close the channel's active work session with a stored summary.",
+    group: 'channel',
+    icon_key: 'check-circle',
+    configurable: false,
+    enabled: true,
+    configured: false,
+    config: {},
+    toggleable: false,
   },
 ];
 
@@ -89,6 +128,79 @@ describe('screens/settings/ToolsPane', () => {
     // Non-configurable tools have no gear button.
     expect(screen.queryByTestId('btn-tool-config-ls')).toBeNull();
     expect(screen.getByTestId('btn-tool-config-web.search')).not.toBeNull();
+  });
+
+  it('renders the Channel Tool section with always-on badges and no toggle or gear', async () => {
+    const tools = catalogTools();
+    // Even a configurable non-toggleable entry must render no gear.
+    tools[3].configurable = true;
+    vi.spyOn(api.tools, 'list').mockResolvedValue({ tools });
+
+    render(<ToolsPane tenant={mockTenant} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tool-channel.post')).not.toBeNull();
+    });
+
+    // Exactly the non-toggleable payload entries, under the section header.
+    const section = screen.getByTestId('channel-tool-section');
+    expect(within(section).getByText('Channel Tool')).not.toBeNull();
+    expect(within(section).getByTestId('tool-channel.post')).not.toBeNull();
+    expect(within(section).getByTestId('tool-channel.history')).not.toBeNull();
+    expect(within(section).getByTestId('tool-session.close')).not.toBeNull();
+    expect(within(section).queryByTestId('tool-ls')).toBeNull();
+    expect(within(section).queryByTestId('tool-web.search')).toBeNull();
+
+    // Badge copy: the facilitator-only special case for session.close.
+    expect(within(section).getByTestId('tool-always-on-badge-channel.post').textContent).toBe('Always on · channel runs');
+    expect(within(section).getByTestId('tool-always-on-badge-channel.history').textContent).toBe('Always on · channel runs');
+    expect(within(section).getByTestId('tool-always-on-badge-session.close').textContent).toBe('Always on · facilitator only');
+
+    // Badge rows carry neither a toggle nor a gear — always.
+    for (const key of ['channel.post', 'channel.history', 'session.close']) {
+      const row = screen.getByTestId('tool-' + key);
+      expect(within(row).queryByRole('switch')).toBeNull();
+      expect(within(row).queryByTestId('btn-tool-config-' + key)).toBeNull();
+    }
+  });
+
+  it('renders the always-on badge even when the payload reports a stale disabled row', async () => {
+    const tools = catalogTools();
+    tools[4].enabled = false; // channel.history — stale row from before the flag
+    vi.spyOn(api.tools, 'list').mockResolvedValue({ tools });
+
+    render(<ToolsPane tenant={mockTenant} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tool-channel.history')).not.toBeNull();
+    });
+
+    // Membership and badge come from toggleable, not enabled.
+    expect(screen.getByTestId('channel-tool-section')).not.toBeNull();
+    expect(screen.getByTestId('tool-always-on-badge-channel.history')).not.toBeNull();
+    // Badge rows never dim on enabled state.
+    expect(screen.getByTestId('tool-channel.history').className).not.toContain('opacity-70');
+  });
+
+  it('renders the flat list below the section from the toggleable entries only', async () => {
+    vi.spyOn(api.tools, 'list').mockResolvedValue({ tools: catalogTools() });
+
+    render(<ToolsPane tenant={mockTenant} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tool-ls')).not.toBeNull();
+    });
+
+    // Toggleable rows keep their toggles and carry no badge.
+    const lsRow = screen.getByTestId('tool-ls');
+    expect(within(lsRow).getByRole('switch', { name: 'Enable List Files' })).not.toBeNull();
+    expect(within(lsRow).queryByTestId('tool-always-on-badge-ls')).toBeNull();
+
+    // Every toggleable row renders outside the Channel Tool section.
+    const section = screen.getByTestId('channel-tool-section');
+    for (const key of ['ls', 'web.search', 'browser']) {
+      expect(within(section).queryByTestId('tool-' + key)).toBeNull();
+    }
   });
 
   it('toggle drives PATCH and reports failures as toasts', async () => {

@@ -18,7 +18,9 @@ func errInvalidToolKey(key string) error {
 
 // ToolSettingsResponse is one tool's catalog metadata merged with the
 // workspace's setting state. Secret config values are replaced by hints —
-// ciphertext never crosses the HTTP boundary.
+// ciphertext never crosses the HTTP boundary. Toggleable is false exactly
+// for the catalog's always-on tools, whose enabled state the workspace
+// cannot change.
 type ToolSettingsResponse struct {
 	Key          string               `json:"key"`
 	DisplayName  string               `json:"display_name"`
@@ -27,6 +29,7 @@ type ToolSettingsResponse struct {
 	IconKey      string               `json:"icon_key"`
 	Configurable bool                 `json:"configurable"`
 	ConfigSchema []agents.ConfigField `json:"config_schema,omitempty"`
+	Toggleable   bool                 `json:"toggleable"`
 	Enabled      bool                 `json:"enabled"`
 	Configured   bool                 `json:"configured"`
 	Config       map[string]any       `json:"config"`
@@ -63,6 +66,7 @@ func (h *toolSettingsHandlers) ListTools(c *gin.Context) {
 			IconKey:      entry.IconKey,
 			Configurable: entry.Configurable,
 			ConfigSchema: entry.ConfigSchema,
+			Toggleable:   !entry.AlwaysOn,
 			Enabled:      view.Enabled,
 			Configured:   view.Configured,
 			Config:       view.Config,
@@ -84,7 +88,8 @@ func (h *toolSettingsHandlers) PatchTool(c *gin.Context) {
 	ws := MustCurrentWorkspace(c)
 	key := c.Param("key")
 
-	if _, known := agents.ToolCatalogEntryByKey(key); !known {
+	entry, known := agents.ToolCatalogEntryByKey(key)
+	if !known {
 		RespondError(c, errInvalidToolKey(key))
 		return
 	}
@@ -96,6 +101,15 @@ func (h *toolSettingsHandlers) PatchTool(c *gin.Context) {
 	}
 	if req.Enabled == nil && req.Config == nil {
 		RespondError(c, errInvalidToolKey(key))
+		return
+	}
+	// Always-on tools are not toggleable: an enabled patch is rejected, not
+	// ignored, so the API never pretends the write landed
+	// (always-on-channel-tools D4). Config-only patches keep today's
+	// behavior — the upsert stores the enabled=true row.
+	if req.Enabled != nil && entry.AlwaysOn {
+		AbortWithError(c, http.StatusUnprocessableEntity, CodeInvalidRequest,
+			"channel tools are always active and cannot be disabled")
 		return
 	}
 
@@ -130,7 +144,6 @@ func (h *toolSettingsHandlers) PatchTool(c *gin.Context) {
 		RespondError(c, err)
 		return
 	}
-	entry, _ := agents.ToolCatalogEntryByKey(key)
 	view := views[key]
 	RespondOK(c, gin.H{"tool": ToolSettingsResponse{
 		Key:          entry.Key,
@@ -140,6 +153,7 @@ func (h *toolSettingsHandlers) PatchTool(c *gin.Context) {
 		IconKey:      entry.IconKey,
 		Configurable: entry.Configurable,
 		ConfigSchema: entry.ConfigSchema,
+		Toggleable:   !entry.AlwaysOn,
 		Enabled:      view.Enabled,
 		Configured:   view.Configured,
 		Config:       view.Config,

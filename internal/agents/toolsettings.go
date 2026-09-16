@@ -39,7 +39,9 @@ func NewToolSettingsService(settings store.ToolSettingsStore, encKey []byte) *To
 }
 
 // EnabledTools implements ToolPolicy. Every catalog key not explicitly
-// disabled by a settings row is enabled.
+// disabled by a settings row is enabled. Always-on tools are exempt: their
+// exposure is governed by the run's execution context, so a stale or hostile
+// disabled row never strips them (always-on-channel-tools D2).
 func (s *ToolSettingsService) EnabledTools(ctx context.Context, workspaceID string) (map[string]bool, error) {
 	rows, err := s.settings.List(ctx, workspaceID)
 	if err != nil {
@@ -53,6 +55,10 @@ func (s *ToolSettingsService) EnabledTools(ctx context.Context, workspaceID stri
 	}
 	enabled := make(map[string]bool)
 	for _, entry := range ToolCatalog() {
+		if entry.AlwaysOn {
+			enabled[entry.Key] = true
+			continue
+		}
 		enabled[entry.Key] = !disabled[entry.Key]
 	}
 	return enabled, nil
@@ -220,7 +226,10 @@ func (s *ToolSettingsService) ViewForWorkspace(ctx context.Context, workspaceID 
 	for _, entry := range ToolCatalog() {
 		view := ConfigView{Enabled: true, Config: map[string]any{}}
 		row, stored := byKey[entry.Key]
-		if stored {
+		// Always-on tools read as enabled regardless of the stored row, so
+		// what the UI shows is what the runtime does (always-on-channel-tools
+		// D3) — a stale disabled row never surfaces.
+		if stored && !entry.AlwaysOn {
 			view.Enabled = row.Enabled
 		}
 		if entry.Configurable {

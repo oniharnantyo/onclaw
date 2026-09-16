@@ -35,7 +35,7 @@ const MCP_DEFAULT_ICON = 'plug';
 
 // Built-in catalog entries mirrored statically (names and icons from the
 // backend's ToolCatalog, internal/agents/tool_catalog.go). The workspace
-// catalog fetch stays the source of truth for anything beyond these fifteen,
+// catalog fetch stays the source of truth for anything beyond these eighteen,
 // but transcript cards must never flash raw ids while it loads — or drop to
 // them when it fails — so built-ins resolve before the network does. The
 // static values equal the server's by construction.
@@ -55,6 +55,9 @@ const builtinToolNames: Record<string, string> = {
   'web.fetch': 'Web Fetch',
   browser: 'Browser',
   schedule: 'Schedule',
+  'channel.post': 'Channel Post',
+  'channel.history': 'Channel History',
+  'session.close': 'Close Work Session',
 };
 
 const builtinToolIcons: Record<string, string> = {
@@ -73,6 +76,9 @@ const builtinToolIcons: Record<string, string> = {
   'web.fetch': 'link',
   browser: 'globe',
   schedule: 'calendar',
+  'channel.post': 'message',
+  'channel.history': 'history',
+  'session.close': 'check-circle',
 };
 
 export const toolCatalog = {

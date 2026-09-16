@@ -200,6 +200,9 @@ func TestSessionCloseCatalogEntry(t *testing.T) {
 	if entry.DisplayName != "Close Work Session" || entry.Group != "channel" {
 		t.Fatalf("catalog entry for session.close = %+v", entry)
 	}
+	if !entry.AlwaysOn {
+		t.Fatalf("session.close must be AlwaysOn")
+	}
 }
 
 // Hooks target tools by exact dotted name (hooks D8): the session.close list

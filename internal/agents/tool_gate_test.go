@@ -107,3 +107,82 @@ func TestToolEnabledByPolicy(t *testing.T) {
 		t.Error("explicitly disabled tool must be off")
 	}
 }
+
+// TestApplyToolGate_AlwaysOnSurvivesStaleDisabledRows pins the gate half of
+// the always-on exemption (always-on-channel-tools 2.1). The exemption lives
+// in ToolSettingsService.EnabledTools, so the full gate path a channel run
+// uses — scope the toolset in, then the gate — must not strip an always-on
+// key even while stale enabled=false rows sit in the workspace's settings.
+func TestApplyToolGate_AlwaysOnSurvivesStaleDisabledRows(t *testing.T) {
+	ctx := context.Background()
+	svc, tstore, wsID := toolSettingsFixture(t)
+
+	// enabled=false rows for all three keys, written straight through the
+	// store — the stale shape the exemption must ignore.
+	for _, key := range []string{ChannelToolPost, ChannelToolHistory, SessionToolClose} {
+		seedDisabledRow(t, tstore, wsID, key)
+	}
+
+	runner := NewRunner(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, []byte("k"), "/tmp/o",
+		WithToolPolicy(svc))
+
+	// Channel-run composition (runner.go resolve): the channel toolset rides
+	// the scoped-in allowlist through the gate.
+	gated, err := runner.applyToolGate(ctx, wsID, scopeChannelToolsIn([]string{"memory"}, true))
+	if err != nil {
+		t.Fatalf("applyToolGate: %v", err)
+	}
+	for _, name := range ChannelToolNames {
+		if !slices.Contains(gated, name) {
+			t.Errorf("stale disabled row must not strip %s from a channel run: %v", name, gated)
+		}
+	}
+
+	// Facilitator inside an open work session (exposeSessionClose): the same
+	// stale rows must not strip session.close either.
+	sessionGated, err := runner.applyToolGate(ctx, wsID,
+		scopeSessionToolsIn(scopeChannelToolsIn([]string{"memory"}, true), true))
+	if err != nil {
+		t.Fatalf("applyToolGate session: %v", err)
+	}
+	if !slices.Contains(sessionGated, SessionToolClose) {
+		t.Errorf("stale disabled row must not strip %s from a facilitator session run: %v", SessionToolClose, sessionGated)
+	}
+}
+
+// TestApplyToolGate_NonChannelRunsStillStrip pins the existing context
+// guarantee (always-on-channel-tools 2.2): always-on only exempts a tool from
+// the workspace enabled set — it never widens where the toolset is exposed.
+// A non-channel run strips all three keys even when the agent allowlisted
+// them and the workspace policy would allow them.
+func TestApplyToolGate_NonChannelRunsStillStrip(t *testing.T) {
+	ctx := context.Background()
+	// A policy that explicitly allows every key: the strip must come from the
+	// run's execution context, not the gate.
+	runner := NewRunner(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, []byte("k"), "/tmp/o",
+		WithToolPolicy(&fakeToolPolicy{enabled: map[string]bool{
+			ChannelToolPost:    true,
+			ChannelToolHistory: true,
+			SessionToolClose:   true,
+		}}))
+
+	// Non-channel composition (runner.go resolve): nothing scoped in, the
+	// gate passes the allowlisted keys, then both context strips apply.
+	allowlist := scopeChannelToolsIn([]string{"memory", ChannelToolPost, ChannelToolHistory, SessionToolClose}, false)
+	allowlist = scopeSessionToolsIn(allowlist, false)
+	gated, err := runner.applyToolGate(ctx, "ws-1", allowlist)
+	if err != nil {
+		t.Fatalf("applyToolGate: %v", err)
+	}
+	gated = withoutChannelTools(gated)
+	gated = withoutSessionTools(gated)
+
+	for _, name := range []string{ChannelToolPost, ChannelToolHistory, SessionToolClose} {
+		if slices.Contains(gated, name) {
+			t.Errorf("non-channel run must strip %s despite the allowlist and an allowing policy: %v", name, gated)
+		}
+	}
+	if !slices.Contains(gated, "memory") {
+		t.Errorf("non-channel run must keep ungoverned tools: %v", gated)
+	}
+}

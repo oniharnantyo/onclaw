@@ -404,3 +404,57 @@ func TestToolConfigs_EnvProviderWithoutKeyErrors(t *testing.T) {
 		t.Fatal("env selecting an api-key provider without a key must error")
 	}
 }
+
+// seedDisabledRow writes an enabled=false row directly through the store,
+// bypassing the service — the stale-row shape the always-on exemption must
+// ignore.
+func seedDisabledRow(t *testing.T, tstore store.ToolSettingsStore, wsID, toolKey string) {
+	t.Helper()
+	if err := tstore.Upsert(context.Background(), &domain.WorkspaceToolSetting{
+		WorkspaceID: wsID,
+		ToolKey:     toolKey,
+		Enabled:     false,
+	}); err != nil {
+		t.Fatalf("seed disabled row for %s: %v", toolKey, err)
+	}
+}
+
+func TestEnabledTools_AlwaysOnIgnoresDisabledRows(t *testing.T) {
+	svc, tstore, wsID := toolSettingsFixture(t)
+
+	for _, key := range []string{ChannelToolPost, ChannelToolHistory, SessionToolClose} {
+		seedDisabledRow(t, tstore, wsID, key)
+	}
+	seedDisabledRow(t, tstore, wsID, "ls")
+
+	enabled, err := svc.EnabledTools(context.Background(), wsID)
+	if err != nil {
+		t.Fatalf("enabled tools: %v", err)
+	}
+	for _, key := range []string{ChannelToolPost, ChannelToolHistory, SessionToolClose} {
+		if !enabled[key] {
+			t.Errorf("%s must stay enabled despite a disabled row", key)
+		}
+	}
+	if enabled["ls"] {
+		t.Error("ls must honor its disabled row")
+	}
+}
+
+func TestViewForWorkspace_AlwaysOnReadsEnabledDespiteRows(t *testing.T) {
+	svc, tstore, wsID := toolSettingsFixture(t)
+
+	for _, key := range []string{ChannelToolPost, ChannelToolHistory, SessionToolClose} {
+		seedDisabledRow(t, tstore, wsID, key)
+	}
+
+	views, err := svc.ViewForWorkspace(context.Background(), wsID)
+	if err != nil {
+		t.Fatalf("views: %v", err)
+	}
+	for _, key := range []string{ChannelToolPost, ChannelToolHistory, SessionToolClose} {
+		if !views[key].Enabled {
+			t.Errorf("%s must read enabled despite a disabled row", key)
+		}
+	}
+}
