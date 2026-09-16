@@ -21,6 +21,14 @@ var BasePrompt string
 //go:embed BOOTSTRAP.md
 var BootstrapTemplate string
 
+// HeartbeatTemplate is the embedded default HEARTBEAT checklist seeded onto a
+// new heartbeat (add-agent-heartbeat D3). Its top section carries the silence
+// contract the tick runner enforces (add-agent-heartbeat D7): a whole reply
+// of NO_REPLY completes the tick as suppressed.
+//
+//go:embed HEARTBEAT.md
+var HeartbeatTemplate string
+
 // Workspace prompt document file names.
 const (
 	basePromptFileName     = "AGENTS.md"

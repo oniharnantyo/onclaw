@@ -208,11 +208,13 @@ type ExecRequest struct {
 	Input       string
 
 	// Origin identifies what triggered the run (hooks design.md D1):
-	// OriginUser, OriginScheduler, OriginChannel, or OriginTelegram. Empty
-	// selects OriginUser — every current caller is user-initiated; the
-	// scheduler service sets OriginScheduler when a scheduled run is
-	// submitted, and the Telegram gateway sets OriginTelegram for every
-	// paired-member turn (integrate-telegram-gateway task 6.3).
+	// OriginUser, OriginScheduler, OriginChannel, OriginTelegram, or
+	// OriginHeartbeat. Empty selects OriginUser — every current caller is
+	// user-initiated; the scheduler service sets OriginScheduler when a
+	// scheduled run is submitted, the Telegram gateway sets OriginTelegram for
+	// every paired-member turn (integrate-telegram-gateway task 6.3), and the
+	// heartbeat ticker sets OriginHeartbeat for every tick
+	// (add-agent-heartbeat D11/D14).
 	Origin string
 
 	// Channel-run coordinates (OriginChannel). ChannelID is required when
@@ -260,6 +262,20 @@ type ExecRequest struct {
 	// otherwise". Purely observational: it rides the run's trace context
 	// only, and every non-scheduler origin ignores it.
 	ScheduleName string
+
+	// HeartbeatChecklist is the agent's HEARTBEAT checklist prompt for
+	// heartbeat-origin runs (add-agent-heartbeat D3/D9): it composes into the
+	// instruction's checklist section, never the user input. Only read when
+	// Origin normalizes to OriginHeartbeat.
+	HeartbeatChecklist string
+
+	// HeartbeatDigest is the pre-composed workspace-activity digest section
+	// body for heartbeat-origin runs (add-agent-heartbeat D9): channel message
+	// previews and scheduler run outcomes since the heartbeat's previous tick.
+	// Empty means nothing happened — the composer then renders the
+	// no-recent-activity fallback itself. Only read when Origin normalizes to
+	// OriginHeartbeat.
+	HeartbeatDigest string
 }
 
 // Run origins (hooks design.md D1). ExecRequest.Origin carries one; empty
@@ -272,6 +288,10 @@ const (
 	// task 6.3): Telegram turns ride the same event and hook-payload origin
 	// contract as scheduler and channel runs.
 	OriginTelegram = "telegram"
+	// OriginHeartbeat marks heartbeat-ticker-submitted runs
+	// (add-agent-heartbeat D11): heartbeat ticks ride the same event and
+	// hook-payload origin contract as scheduler and channel runs.
+	OriginHeartbeat = "heartbeat"
 )
 
 // Built-in slash commands executed as turns (chat-compact-command D2).
@@ -293,7 +313,7 @@ func normalizeCommand(command string) string {
 // user-initiated.
 func normalizeOrigin(origin string) string {
 	switch origin {
-	case OriginScheduler, OriginChannel, OriginTelegram:
+	case OriginScheduler, OriginChannel, OriginTelegram, OriginHeartbeat:
 		return origin
 	default:
 		return OriginUser

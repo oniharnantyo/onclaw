@@ -131,6 +131,21 @@ func TestSeedBootstrapDocumentWritesTemplate(t *testing.T) {
 	}
 }
 
+// TestHeartbeatTemplateCarriesSilenceContract pins the seeded checklist's
+// load-bearing wording (add-agent-heartbeat D3/D7): the exact NO_REPLY token
+// and the "what to check" section the user fills in.
+func TestHeartbeatTemplateCarriesSilenceContract(t *testing.T) {
+	if strings.TrimSpace(HeartbeatTemplate) == "" {
+		t.Fatal("HeartbeatTemplate = empty, want embedded template")
+	}
+	if !strings.Contains(HeartbeatTemplate, "NO_REPLY") {
+		t.Error("HeartbeatTemplate missing the exact NO_REPLY silence token")
+	}
+	if !strings.Contains(HeartbeatTemplate, "What to check") {
+		t.Error("HeartbeatTemplate missing the user-editable \"What to check\" section")
+	}
+}
+
 func TestReadPromptDocumentsMissingDirComposesEmpty(t *testing.T) {
 	identity, soul, bootstrap, err := ReadPromptDocuments(filepath.Join(t.TempDir(), "does-not-exist"))
 	if err != nil {

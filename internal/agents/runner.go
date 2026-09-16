@@ -603,11 +603,12 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 	if !exposeSessionClose {
 		effective = withoutSessionTools(effective)
 	}
-	// Scheduler runs run unattended (integrate-scheduler D6): the strip
+	// Unattended runs share the anti-runaway strip (scheduler
+	// integrate-scheduler D6; heartbeat add-agent-heartbeat D10): the strip
 	// applies after the allowlist and the workspace gate, so neither can
-	// re-expose the excluded tools — a scheduled run cannot mint schedulers
-	// and cannot silently edit a human's memory.
-	if normalizeOrigin(req.Origin) == OriginScheduler {
+	// re-expose the excluded tools — an unattended run cannot mint schedulers
+	// and cannot silently edit or destroy a human's memory.
+	if origin := normalizeOrigin(req.Origin); origin == OriginScheduler || origin == OriginHeartbeat {
 		effective = withoutSchedulerTools(effective)
 	}
 
@@ -778,11 +779,12 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 	return cfg, resolvedTools, nil
 }
 
-// schedulerExcludedTools are the tool names a scheduler-origin run never
-// carries, regardless of its allowlist or the workspace gate
-// (integrate-scheduler D6): the schedule tool is filtered by its registry
-// name — a scheduled run must never mint schedulers — and the memory tools
-// are excluded so an unattended run cannot silently edit a human's memory.
+// schedulerExcludedTools are the tool names an unattended run never carries,
+// regardless of its allowlist or the workspace gate — scheduler-origin runs
+// (integrate-scheduler D6) and heartbeat-origin runs (add-agent-heartbeat
+// D10): the schedule tool is filtered by its registry name — an unattended
+// run must never mint schedulers — and the memory tools are excluded so an
+// unattended run cannot silently edit a human's memory.
 var schedulerExcludedTools = map[string]struct{}{
 	tools.NameSchedule:   {},
 	tools.NameMemory:     {},
@@ -790,7 +792,8 @@ var schedulerExcludedTools = map[string]struct{}{
 }
 
 // withoutSchedulerTools strips the scheduler-excluded tool names from an
-// effective allowlist (integrate-scheduler D6).
+// effective allowlist (integrate-scheduler D6; heartbeat D10 shares the same
+// anti-runaway set).
 func withoutSchedulerTools(names []string) []string {
 	out := make([]string, 0, len(names))
 	for _, name := range names {
@@ -977,18 +980,19 @@ func (r *Runner) composeAgent(
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
-	// Scheduler runs execute under the trimmed unattended profile
-	// (integrate-scheduler D6); every other origin composes exactly as
-	// before.
+	// Unattended runs execute under trimmed profiles (scheduler
+	// integrate-scheduler D6; heartbeat add-agent-heartbeat D9); every other
+	// origin composes exactly as before.
 	schedulerRun := normalizeOrigin(req.Origin) == OriginScheduler
+	heartbeatRun := normalizeOrigin(req.Origin) == OriginHeartbeat
 
 	// Channel context docs (integrate-agent-channels D8). Read failures fail
 	// the run — the room context is the run's grounding, not a nice-to-have.
-	// The branch is additionally guarded on origin: scheduler runs never
-	// carry ChannelID, but a malformed request must not compose channel docs
-	// into the unattended profile.
+	// The branch is additionally guarded on origin: scheduler and heartbeat
+	// runs never carry ChannelID, but a malformed request must not compose
+	// channel docs into an unattended profile.
 	var channelDocs []string
-	if req.ChannelID != "" && !schedulerRun {
+	if req.ChannelID != "" && !schedulerRun && !heartbeatRun {
 		docs, err := r.composeChannelDocs(ctx, req, domainAgent)
 		if err != nil {
 			return nil, fmt.Errorf("compose channel context: %w", err)
@@ -997,14 +1001,17 @@ func (r *Runner) composeAgent(
 	}
 
 	instruction, err := r.instructionComposer.Compose(ctx, ComposeParams{
-		AgentDir:         cfg.Filesystem.AgentDir,
-		Workspace:        ws,
-		User:             user,
-		RoleName:         role.Name,
-		Memories:         r.memories,
-		ChannelDocs:      channelDocs,
-		SchedulerProfile: schedulerRun,
-		NoReplyToken:     req.SchedulerNoReply,
+		AgentDir:           cfg.Filesystem.AgentDir,
+		Workspace:          ws,
+		User:               user,
+		RoleName:           role.Name,
+		Memories:           r.memories,
+		ChannelDocs:        channelDocs,
+		SchedulerProfile:   schedulerRun,
+		NoReplyToken:       req.SchedulerNoReply,
+		HeartbeatProfile:   heartbeatRun,
+		HeartbeatChecklist: req.HeartbeatChecklist,
+		HeartbeatDigest:    req.HeartbeatDigest,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("compose instruction: %w", err)
@@ -1062,7 +1069,9 @@ func (r *Runner) execute(
 	// The ADK tolerates a nil CheckPointStore cleanly — every checkpoint
 	// load/save/delete path guards on the nil store while session-event
 	// persistence stays enabled — so the transcript still persists without
-	// the checkpoint write amplification.
+	// the checkpoint write amplification. Heartbeat-origin runs deliberately
+	// keep the checkpoint store (add-agent-heartbeat D2): the shared hb_
+	// session must resume across ticks for continuity.
 	if !ephemeral && normalizeOrigin(req.Origin) == OriginScheduler {
 		cpStore = nil
 	}
@@ -1138,6 +1147,15 @@ func (r *Runner) ActiveRunSessionIDs(workspaceID, agentID string) []string {
 	return r.runMgr.ActiveRunSessionIDs(workspaceID, agentID)
 }
 
+// AgentBusy reports whether the agent has ANY run in flight — any session,
+// not just the heartbeat's hb_ session. Consumed by the heartbeat ticker's
+// busy guard (add-agent-heartbeat D12): a due tick whose agent has any run
+// in flight defers — the design chose agent-level, not session-level, so a
+// live user chat blocks the ambient tick. Read-only; one mutex-held map scan.
+func (r *Runner) AgentBusy(workspaceID, agentID string) bool {
+	return r.runMgr.agentBusy(workspaceID, agentID)
+}
+
 // CancelRun cancels the live run for the given session. The run unwinds at
 // the next safe point and records a cancel marker in the session history.
 // It returns false when no run is live for the session.
@@ -1187,8 +1205,10 @@ func sessionTitle(input string) string {
 // failed upsert is logged and the run proceeds. Compact-command turns pass an
 // empty title — their input is summarizer focus text that must never become
 // the session title (an empty title stores ” on birth and rewrites nothing
-// on conflict). Scheduler-origin runs return early (integrate-scheduler D7):
-// run sessions are artifacts — their transcripts persist, but they never
+// on conflict). Unattended runs return early (scheduler integrate-scheduler
+// D7; heartbeat add-agent-heartbeat D2 and the spec's "Session index stays
+// human-only"): their transcripts persist as artifacts — run sessions and the
+// ambient hb_ shared session are not human conversations, so they never
 // appear in the per-user chat-sidebar index. Gateway group sessions
 // (`tg_group_`, integrate-telegram-gateway task 6.3) are skipped for the
 // same reason: they are shared across every member of the group and stay out
@@ -1196,7 +1216,7 @@ func sessionTitle(input string) string {
 // member exactly like web sessions (the store's IsPrivateIndexSessionID is
 // the matching read-side defense).
 func (r *Runner) indexAgentSession(ctx context.Context, req ExecRequest, title string) {
-	if normalizeOrigin(req.Origin) == OriginScheduler {
+	if origin := normalizeOrigin(req.Origin); origin == OriginScheduler || origin == OriginHeartbeat {
 		return
 	}
 	if strings.HasPrefix(req.SessionID, domain.SessionPrefixGatewayGroup) {
@@ -2270,6 +2290,23 @@ type ComposeParams struct {
 	// for thread targets, where the contract asks for a plain
 	// "Nothing to report." instead. Only read when SchedulerProfile is true.
 	NoReplyToken string
+	// HeartbeatProfile selects the heartbeat composition (add-agent-heartbeat
+	// D9): the scheduler-trimmed document stack extended with the HEARTBEAT
+	// checklist section and the workspace-activity digest, closed by the
+	// heartbeat silence contract. USER.md, BOOTSTRAP.md, the shared-memory
+	// subsection, and channel docs are omitted exactly as in the scheduler
+	// profile. False keeps the ordinary and scheduler compositions
+	// byte-identical.
+	HeartbeatProfile bool
+	// HeartbeatChecklist is the agent's HEARTBEAT checklist prompt; it renders
+	// as the checklist section body, with a graceful placeholder replacing an
+	// empty checklist. Only read when HeartbeatProfile is true.
+	HeartbeatChecklist string
+	// HeartbeatDigest is the pre-composed workspace-activity digest section
+	// body — a full section body or ""; empty renders the
+	// "No recent workspace activity." fallback. Only read when
+	// HeartbeatProfile is true.
+	HeartbeatDigest string
 }
 
 // InstructionComposer defines the interface for composing agent execution instructions.
@@ -2291,6 +2328,12 @@ func (c *DefaultInstructionComposer) Compose(ctx context.Context, params Compose
 	// unattended composition replaces the ordinary document stack entirely.
 	if params.SchedulerProfile {
 		return c.composeSchedulerProfile(ctx, params)
+	}
+	// Heartbeat execution profile (add-agent-heartbeat D9): the trimmed stack
+	// plus the checklist and digest sections, likewise replacing the ordinary
+	// document stack entirely.
+	if params.HeartbeatProfile {
+		return c.composeHeartbeatProfile(ctx, params)
 	}
 
 	var docs []string
@@ -2355,13 +2398,13 @@ func (c *DefaultInstructionComposer) Compose(ctx context.Context, params Compose
 	return strings.Join(docs, "\n\n"), nil
 }
 
-// composeSchedulerProfile builds the trimmed unattended-run instruction
-// (integrate-scheduler D6): AGENTS/IDENTITY/SOUL plus the workspace metadata
-// document WITHOUT the shared-memory subsection — the workspace memory read
-// is skipped entirely — closed by the unattended-run contract as the last
-// document. USER.md, BOOTSTRAP.md, and channel docs are omitted entirely:
-// an unattended run has no calling user and no room to catch up on.
-func (c *DefaultInstructionComposer) composeSchedulerProfile(_ context.Context, params ComposeParams) (string, error) {
+// trimmedUnattendedDocs renders the document stack both unattended profiles
+// share (scheduler integrate-scheduler D6; heartbeat add-agent-heartbeat D9):
+// AGENTS/IDENTITY/SOUL plus the workspace metadata document WITHOUT the
+// shared-memory subsection — params.Memories is never consulted. USER.md,
+// BOOTSTRAP.md, and channel docs are omitted entirely: an unattended run has
+// no calling user and no room to catch up on.
+func trimmedUnattendedDocs(params ComposeParams) []string {
 	var docs []string
 
 	// 1. AGENTS.md
@@ -2385,25 +2428,96 @@ func (c *DefaultInstructionComposer) composeSchedulerProfile(_ context.Context, 
 		docs = append(docs, wsDoc)
 	}
 
-	// 5. Unattended-run contract — always last.
-	docs = append(docs, unattendedRunContract(params.NoReplyToken))
+	return docs
+}
 
+// composeSchedulerProfile builds the trimmed unattended-run instruction
+// (integrate-scheduler D6): the shared trimmed stack closed by the
+// unattended-run contract as the last document.
+func (c *DefaultInstructionComposer) composeSchedulerProfile(_ context.Context, params ComposeParams) (string, error) {
+	docs := append(trimmedUnattendedDocs(params), unattendedRunContract(params.NoReplyToken))
 	return strings.Join(docs, "\n\n"), nil
 }
+
+// composeHeartbeatProfile builds the heartbeat instruction (add-agent-heartbeat
+// D9, spec agent-runtime "Heartbeat execution profile"): the shared trimmed
+// stack extended with the agent's HEARTBEAT checklist and the
+// workspace-activity digest, closed by the heartbeat silence contract as the
+// last document. USER.md, BOOTSTRAP.md, the shared-memory subsection, and
+// channel docs are omitted exactly as in the scheduler profile.
+func (c *DefaultInstructionComposer) composeHeartbeatProfile(_ context.Context, params ComposeParams) (string, error) {
+	docs := append(trimmedUnattendedDocs(params),
+		heartbeatChecklistDoc(params.HeartbeatChecklist),
+		heartbeatDigestDoc(params.HeartbeatDigest),
+		heartbeatSilenceContract())
+	return strings.Join(docs, "\n\n"), nil
+}
+
+// noReplyToken is the whole-reply suppression token both unattended run
+// contracts teach (scheduler integrate-scheduler D8; heartbeat
+// add-agent-heartbeat D7): a final reply equal to it, compared
+// case-insensitively after trimming, means "nothing to report" — the reply is
+// suppressed, never delivered.
+const noReplyToken = "NO_REPLY"
 
 // unattendedRunContract renders the closing document of the scheduler
 // execution profile (integrate-scheduler D6/D8): the run executes unattended,
 // the final reply is the deliverable, and nothing worth reporting is stated
 // plainly — or, when the run's delivery carries the suppression token, by
 // replying with exactly that token.
-func unattendedRunContract(noReplyToken string) string {
+func unattendedRunContract(token string) string {
 	var sb strings.Builder
 	sb.WriteString("## Unattended run\n\nThis run executes unattended on a schedule — nobody is watching live. Your final reply is the deliverable: report the outcome plainly and completely, including any failures.")
-	if noReplyToken != "" {
-		sb.WriteString(" If there is nothing worth reporting, reply with exactly NO_REPLY and nothing else.")
+	if token != "" {
+		sb.WriteString(" If there is nothing worth reporting, reply with exactly " + noReplyToken + " and nothing else.")
 	} else {
 		sb.WriteString(` If there is nothing worth reporting, say so plainly (for example: "Nothing to report.").`)
 	}
+	return sb.String()
+}
+
+// heartbeatChecklistDoc renders the HEARTBEAT checklist section
+// (add-agent-heartbeat D3/D9): the agent's checklist prompt verbatim (trimmed
+// like every readPromptFile body), or the explicit empty-checklist placeholder
+// so the section never renders as bare whitespace.
+func heartbeatChecklistDoc(checklist string) string {
+	var sb strings.Builder
+	sb.WriteString("## HEARTBEAT checklist\n\n")
+	if body := strings.TrimSpace(checklist); body != "" {
+		sb.WriteString(body)
+	} else {
+		sb.WriteString("(The checklist is empty. This tick has nothing specific to check — report only on anything that clearly needs attention, or stay silent.)")
+	}
+	return sb.String()
+}
+
+// heartbeatNoActivity is the workspace-activity digest fallback: what an
+// empty digest renders so the section never disappears (add-agent-heartbeat
+// D9, spec agent-runtime: "no recent activity" when empty).
+const heartbeatNoActivity = "No recent workspace activity."
+
+// heartbeatDigestDoc renders the workspace-activity digest section
+// (add-agent-heartbeat D9): the ticker's pre-composed digest body since the
+// heartbeat's previous tick, or the no-activity fallback when nothing
+// happened.
+func heartbeatDigestDoc(digest string) string {
+	var sb strings.Builder
+	sb.WriteString("## Workspace activity\n\n")
+	if body := strings.TrimSpace(digest); body != "" {
+		sb.WriteString(body)
+	} else {
+		sb.WriteString(heartbeatNoActivity)
+	}
+	return sb.String()
+}
+
+// heartbeatSilenceContract renders the closing document of the heartbeat
+// execution profile (add-agent-heartbeat D7, spec agent-heartbeat "Silence
+// contract"): the tick is an unattended periodic self-check, silence is the
+// expected outcome, and any other reply is delivered to a human.
+func heartbeatSilenceContract() string {
+	var sb strings.Builder
+	sb.WriteString("## Heartbeat\n\nThis run is an unattended periodic self-check — nobody is waiting for a report, and silence is the expected outcome. If nothing needs attention, your ENTIRE final reply must be exactly " + noReplyToken + " (capitalization does not matter) and nothing else. Any other reply is delivered to a human: keep reports short and actionable.")
 	return sb.String()
 }
 

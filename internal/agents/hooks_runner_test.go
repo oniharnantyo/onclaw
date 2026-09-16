@@ -317,7 +317,22 @@ func TestHooks_OriginGatesPromptSubmit(t *testing.T) {
 			Enabled:     true,
 		},
 	}
-	st, runner, _, ag, req := setupHooksRunner(t, nil, mdl, hook)
+	// The heartbeat gate (add-agent-heartbeat D11): origin heartbeat joins the
+	// origin-matched events, so a heartbeat tick is blockable exactly like a
+	// scheduler fire — and neither gate matches the other's origin.
+	heartbeatHook := &domain.WorkspaceHook{
+		HookBase: domain.HookBase{
+			Name:        "heartbeat-gate",
+			Event:       domain.HookEventUserPromptSubmit,
+			Matcher:     "heartbeat",
+			HandlerType: domain.HookHandlerCommand,
+			Config:      mustHookJSON(t, map[string]any{"command": "sh", "args": []string{"-c", "echo no heartbeat checks at night >&2; exit 2"}}),
+			TimeoutMS:   5000,
+			OnFailure:   domain.HookFailureAllow,
+			Enabled:     true,
+		},
+	}
+	st, runner, _, ag, req := setupHooksRunner(t, nil, mdl, hook, heartbeatHook)
 
 	// Origin scheduler: the hook's matcher selects scheduler → blocked before
 	// the model.
@@ -333,7 +348,25 @@ func TestHooks_OriginGatesPromptSubmit(t *testing.T) {
 		t.Fatalf("scheduler-origin run must be blocked before the model, got %+v", schedulerEvents)
 	}
 
-	// Origin user (default): the hook does not match → normal turn.
+	// Origin heartbeat: the heartbeat gate's matcher selects heartbeat →
+	// blocked before the model, same as scheduler (add-agent-heartbeat D11).
+	hbReq := req
+	hbReq.SessionID = "sess-heartbeat"
+	hbReq.Origin = OriginHeartbeat
+	stream, err = runner.Run(context.Background(), hbReq)
+	if err != nil {
+		t.Fatalf("Run (heartbeat): %v", err)
+	}
+	hbEvents := collectStream(t, stream)
+	blocked := findPromptBlocked(hbEvents)
+	if blocked == nil || blocked.PromptBlocked == nil || blocked.PromptBlocked.Hook != "heartbeat-gate" {
+		t.Fatalf("heartbeat-origin run must be blocked by the heartbeat gate before the model, got %+v", hbEvents)
+	}
+	if mdl.callCount(t) != 0 {
+		t.Fatal("a heartbeat-origin block must never reach the model")
+	}
+
+	// Origin user (default): neither gate matches → normal turn.
 	userReq := req
 	userReq.SessionID = "sess-user"
 	stream, err = runner.Run(context.Background(), userReq)

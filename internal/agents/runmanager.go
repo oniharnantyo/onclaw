@@ -260,6 +260,28 @@ func (m *runManager) ActiveRunSessionIDs(workspaceID, agentID string) []string {
 	return ids
 }
 
+// agentBusy reports whether ANY run is currently executing for the
+// workspace+agent pair, regardless of session (add-agent-heartbeat D12's
+// agent-level liveness). One mutex-held map read backs the heartbeat
+// ticker's busy guard — the same liveness rule as isLive: a finished run
+// whose deregistration is still in flight is not busy.
+func (m *runManager) agentBusy(workspaceID, agentID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for key, lr := range m.live {
+		if key.WorkspaceID != workspaceID || key.AgentID != agentID {
+			continue
+		}
+		select {
+		case <-lr.done:
+			continue
+		default:
+			return true
+		}
+	}
+	return false
+}
+
 // isLive reports whether a run is currently registered and executing for key.
 func (m *runManager) isLive(key RunKey) bool {
 	m.mu.Lock()

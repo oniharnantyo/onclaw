@@ -30,9 +30,11 @@ func MatchedValue(ev Event) string {
 // OriginValues is the fixed origin value set (D1). Fixed enums are also the
 // candidate set for run_started / user_prompt_submit match counts. Telegram
 // joined with the gateway integration (integrate-telegram-gateway task 6.3):
-// origin matchers can target gateway turns like any other origin.
+// origin matchers can target gateway turns like any other origin. Heartbeat
+// joined with the agent heartbeat (add-agent-heartbeat D11): origin matchers
+// gate ambient heartbeat ticks like any other origin.
 func OriginValues() []string {
-	return []string{"user", "scheduler", "channel", "telegram"}
+	return []string{"user", "scheduler", "channel", "telegram", "heartbeat"}
 }
 
 // StatusValues is the fixed run_finished status value set (D1).
