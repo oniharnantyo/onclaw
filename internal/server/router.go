@@ -14,6 +14,7 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/channels"
 	"github.com/oniharnantyo/onclaw/internal/config"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/heartbeat"
 	"github.com/oniharnantyo/onclaw/internal/promptgen"
 	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/scheduler"
@@ -68,6 +69,12 @@ type RouterOptions struct {
 	// origin. nil builds a fresh one around the fallback runner; only the
 	// composition root Start()s it, riding the server's lifecycle.
 	Scheduler *scheduler.Service
+	// Heartbeat is the heartbeat ticker service (add-agent-heartbeat D14),
+	// built by the composition root around the same runner (RunSubmitter +
+	// AgentBusyChecker) and the channel chokepoint (ChannelPoster). nil builds
+	// a fresh one around the fallback runner; only the composition root
+	// Start()s it, riding the server's lifecycle.
+	Heartbeat *heartbeat.Service
 	// Gateways is the gateway runtime (integrate-telegram-gateway D11, task
 	// 6.2): the gateway service + lifecycle manager + pairing service built
 	// by the composition root around the runner. nil builds a fresh one for
@@ -75,6 +82,15 @@ type RouterOptions struct {
 	// server lifecycle, and the handlers call Manager.Sync after config
 	// changes.
 	Gateways *GatewayRuntime
+	// DatabaseURL is the PostgreSQL DSN the multi-device WhatsApp lane
+	// bridges whatsmeow's sqlstore over (add-whatsapp-gateway design D6) —
+	// the same DSN the store uses. Empty keeps the md lane unconstructable
+	// (its adapter factory fails loudly; no other behavior changes).
+	DatabaseURL string
+	// WhatsAppCloudAPIBase overrides the Cloud API endpoint for the WhatsApp
+	// cloud lane (add-whatsapp-gateway design D10; ONCLAW_WHATSAPP_CLOUD_API_BASE).
+	// Empty keeps the public graph.facebook.com endpoint.
+	WhatsAppCloudAPIBase string
 	// LangfuseHost is the configured Langfuse backend the scheduler-run views
 	// compose their deep links from (integrate-langfuse-tracing D6). Empty —
 	// tracing unconfigured — keeps every run payload's langfuse_url null.
@@ -343,6 +359,33 @@ func (rt *router) Engine() *gin.Engine {
 	}
 	schedulerHandlers := handlers.NewSchedulerHandlers(rt.opts.Store.Schedulers(), schedulerSvc, rt.opts.LangfuseHost)
 
+	// Heartbeat loop (add-agent-heartbeat D14): one service shared by the
+	// ticker (started by the composition root on its lifecycle context) and
+	// the run-now/resume endpoints, dispatched through the same runner — whose
+	// agent-level liveness is the busy guard (D12) — with channel delivery
+	// through the same chokepoint and creator-DM delivery through the gateway
+	// stores (D8). The channels + schedulers stores feed the activity digest
+	// composer (D9).
+	heartbeatSvc := rt.opts.Heartbeat
+	if heartbeatSvc == nil && rt.opts.Store != nil {
+		heartbeatSvc = heartbeat.NewService(
+			rt.opts.Store.Heartbeats(),
+			rt.opts.Store.Users(),
+			rt.opts.Store.Agents(),
+			rt.opts.Store.Workspaces(),
+			rt.opts.Store.Channels(),
+			rt.opts.Store.Schedulers(),
+			runner,
+			runner,
+			channelRuntime.Chokepoint(),
+			rt.opts.Store.Gateways(),
+			rt.opts.Store.GatewayLinks(),
+			rt.opts.Store.GatewayOutbox(),
+			slog.Default(),
+		)
+	}
+	heartbeatHandlers := handlers.NewAgentHeartbeatHandlers(rt.opts.Store.Agents(), rt.opts.Store.Heartbeats(), rt.opts.Store.Workspaces(), heartbeatSvc)
+
 	// Gateway runtime (integrate-telegram-gateway D11, task 6.2): the
 	// composition root builds it around the same runner; the fallback assembles
 	// a fresh one for tests. Handlers reconcile the manager after config
@@ -362,12 +405,15 @@ func (rt *router) Engine() *gin.Engine {
 			rt.opts.Store.Attachments(),
 			wsStorage,
 			rt.opts.EncryptionKey,
+			rt.opts.DatabaseURL,
+			rt.opts.WhatsAppCloudAPIBase,
 		)
 	}
 	gatewayHandlers := handlers.NewGatewayHandlers(
 		rt.opts.Store.Gateways(),
 		rt.opts.Store.GatewayBindings(),
 		rt.opts.Store.GatewayLinks(),
+		rt.opts.Store.GatewayOutbox(),
 		rt.opts.Store.Agents(),
 		rt.opts.Store.Users(),
 		gatewayRuntime.Pairing,
@@ -375,6 +421,8 @@ func (rt *router) Engine() *gin.Engine {
 		gatewayRuntime.Service,
 		gatewayRuntime.Verifier,
 		rt.opts.EncryptionKey,
+		gatewayRuntime,
+		gatewayRuntime,
 	)
 
 	providerHandlers := handlers.NewProviderHandlers(rt.opts.Store.Providers(), rt.opts.Store.Agents(), rt.opts.EncryptionKey, providerRegistry, modelCatalog)
@@ -488,11 +536,19 @@ func (rt *router) Engine() *gin.Engine {
 			authGroup.POST("/logout", authHandlers.Logout)
 		}
 
-		// Public Telegram webhook ingress (integrate-telegram-gateway task
-		// 6.2): no auth middleware — the request authenticates with the
-		// per-workspace derived secret in X-Telegram-Bot-Api-Secret-Token
-		// (validated inside the handler before any processing).
-		api.POST("/webhooks/telegram/:ws", gatewayHandlers.WebhookUpdate)
+			// Public Telegram webhook ingress (multi-bot-gateways):
+			// no auth middleware — the request authenticates with the
+			// derived secret in X-Telegram-Bot-Api-Secret-Token
+			// (validated inside the handler before any processing).
+			api.POST("/webhooks/telegram/:gatewayId", gatewayHandlers.WebhookUpdate)
+
+			// Public WhatsApp webhook ingress (multi-bot-gateways):
+			// no auth middleware — POST authenticates on the
+			// X-Hub-Signature-256 HMAC over the raw body (app secret from the
+			// gateway's decrypted envelope, validated before any parsing); GET
+			// answers the Meta verification handshake (hub.challenge echo).
+			api.GET("/webhooks/whatsapp/:gatewayId", gatewayHandlers.WhatsAppWebhookVerify)
+			api.POST("/webhooks/whatsapp/:gatewayId", gatewayHandlers.WhatsAppWebhookUpdate)
 
 		// Authenticated endpoints
 		authed := api.Group("")
@@ -661,6 +717,18 @@ func (rt *router) Engine() *gin.Engine {
 				wsGroup.POST("/schedulers/:id/run", rt.mw.RequirePermission(domain.SchedulerWrite), schedulerHandlers.RunSchedulerNow)
 				wsGroup.GET("/schedulers/:id/runs", rt.mw.RequirePermission(domain.SchedulerRead), schedulerHandlers.ListSchedulerRuns)
 
+				// Agent heartbeat (add-agent-heartbeat D13): agent sub-resource
+				// riding the agents permissions — read agents.read, every
+				// mutation (create/update, run-now, resume) agents.write; no
+				// new permission catalog entries. Literal segments
+				// (heartbeat/run-now, heartbeat/resume) are siblings of
+				// /agents/:agent/* reads, so registration order carries no
+				// meaning.
+				wsGroup.GET("/agents/:agent/heartbeat", rt.mw.RequirePermission(domain.AgentsRead), heartbeatHandlers.GetAgentHeartbeat)
+				wsGroup.PUT("/agents/:agent/heartbeat", rt.mw.RequirePermission(domain.AgentsWrite), heartbeatHandlers.PutAgentHeartbeat)
+				wsGroup.POST("/agents/:agent/heartbeat/run-now", rt.mw.RequirePermission(domain.AgentsWrite), heartbeatHandlers.RunAgentHeartbeatNow)
+				wsGroup.POST("/agents/:agent/heartbeat/resume", rt.mw.RequirePermission(domain.AgentsWrite), heartbeatHandlers.ResumeAgentHeartbeat)
+
 				// API keys management (workspace settings; workspace.write is Owner/Admin only)
 				// Exchange is Member-level: membership via RequireWorkspace suffices,
 				// like the other member-readable routes (e.g. GET /tools).
@@ -691,30 +759,59 @@ func (rt *router) Engine() *gin.Engine {
 				wsGroup.PATCH("/agents/:agent/hooks/:id", rt.mw.RequirePermission(domain.HooksWrite), hookHandlers.PatchAgentHook)
 				wsGroup.DELETE("/agents/:agent/hooks/:id", rt.mw.RequirePermission(domain.HooksWrite), hookHandlers.DeleteAgentHook)
 
-				// Telegram gateway (integrate-telegram-gateway D11, task 6.1):
-				// config CRUD, enable/disable/test, bindings, and the admin
-				// per-member unpair are gateways.write (Owner/Admin; the web
-				// pane mirrors the same check). Pairing-token mint/revoke and
-				// the member's own link are member-level — the workspace
-				// context gate suffices, matching the api-keys/exchange
-				// precedent. /links/me resolves literally before
-				// /links/:uid; registration order carries no meaning.
-				gatewayGroup := wsGroup.Group("/gateways/telegram")
-				{
-					gatewayGroup.GET("", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.GetConfig)
-					gatewayGroup.PUT("", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.PutConfig)
-					gatewayGroup.POST("/enable", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.EnableGateway)
-					gatewayGroup.POST("/disable", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.DisableGateway)
-					gatewayGroup.POST("/test", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.TestGateway)
-					gatewayGroup.GET("/bindings", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.ListBindings)
-					gatewayGroup.POST("/bindings", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.CreateBinding)
-					gatewayGroup.DELETE("/bindings/:id", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.DeleteBinding)
-					gatewayGroup.POST("/pairing-tokens", gatewayHandlers.CreatePairingToken)
-					gatewayGroup.DELETE("/pairing-tokens/:token", gatewayHandlers.RevokePairingToken)
-					gatewayGroup.GET("/links/me", gatewayHandlers.GetMyLink)
-					gatewayGroup.DELETE("/links/me", gatewayHandlers.UnpairMyLink)
-					gatewayGroup.DELETE("/links/:uid", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.UnpairMemberLink)
-				}
+					// Telegram gateway (multi-bot-gateways):
+					// account CRUD, enable/disable/test, bindings, and the admin
+					// per-member unpair are gateways.write (Owner/Admin; the web
+					// pane mirrors the same check). Pairing-token mint/revoke and
+					// the member's own link are member-level — the workspace
+					// context gate suffices, matching the api-keys/exchange
+					// precedent. /links/me resolves literally before
+					// /links/:uid; registration order carries no meaning.
+					gatewayGroup := wsGroup.Group("/gateways/telegram")
+					{
+						gatewayGroup.GET("", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.ListTelegramGateways)
+						gatewayGroup.POST("", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.CreateTelegramGateway)
+						gatewayGroup.GET("/:gatewayId", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.GetTelegramGateway)
+						gatewayGroup.PUT("/:gatewayId", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.UpdateTelegramGateway)
+						gatewayGroup.POST("/:gatewayId/enable", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.EnableTelegramGateway)
+						gatewayGroup.POST("/:gatewayId/disable", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.DisableTelegramGateway)
+						gatewayGroup.POST("/:gatewayId/test", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.TestTelegramGateway)
+						gatewayGroup.DELETE("/:gatewayId", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.DeleteTelegramGateway)
+						gatewayGroup.GET("/bindings", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.ListBindings)
+						gatewayGroup.POST("/bindings", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.CreateBinding)
+						gatewayGroup.DELETE("/bindings/:id", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.DeleteBinding)
+						gatewayGroup.POST("/pairing-tokens", gatewayHandlers.CreatePairingToken)
+						gatewayGroup.DELETE("/pairing-tokens/:token", gatewayHandlers.RevokePairingToken)
+						gatewayGroup.GET("/links/me", gatewayHandlers.GetMyLink)
+						gatewayGroup.DELETE("/links/me", gatewayHandlers.UnpairMyLink)
+						gatewayGroup.DELETE("/links/:uid", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.UnpairMemberLink)
+					}
+
+					// WhatsApp gateway (multi-bot-gateways):
+					// lane-scoped account CRUD, enable/disable, health, and the
+					// multi-device pairing state machine are gateways.write
+					// (Owner/Admin); pairing tokens and the member's own link are
+					// member-level — the same split as the telegram group above,
+					// mirrored by the web pane (api.gateways.whatsapp).
+					whatsappGroup := wsGroup.Group("/gateways/whatsapp")
+					{
+						whatsappGroup.GET("", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.ListWhatsAppGateways)
+						whatsappGroup.POST("", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.CreateWhatsAppGateway)
+						whatsappGroup.GET("/:gatewayId", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.GetWhatsAppGateway)
+						whatsappGroup.PUT("/:gatewayId", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.UpdateWhatsAppGateway)
+						whatsappGroup.POST("/:gatewayId/enable", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.EnableWhatsAppGateway)
+						whatsappGroup.POST("/:gatewayId/disable", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.DisableWhatsAppGateway)
+						whatsappGroup.GET("/:gatewayId/health", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.GetWhatsAppHealth)
+						whatsappGroup.POST("/:gatewayId/pairing/start", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.StartWhatsAppPairing)
+						whatsappGroup.GET("/:gatewayId/pairing/status", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.GetWhatsAppPairingStatus)
+						whatsappGroup.POST("/:gatewayId/pairing/regenerate", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.RegenerateWhatsAppPairing)
+						whatsappGroup.POST("/:gatewayId/pairing/logout", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.LogoutWhatsAppDevice)
+						whatsappGroup.DELETE("/:gatewayId", rt.mw.RequirePermission(domain.GatewaysWrite), gatewayHandlers.DeleteWhatsAppGateway)
+						whatsappGroup.POST("/pairing-tokens", gatewayHandlers.CreatePairingToken)
+						whatsappGroup.DELETE("/pairing-tokens/:token", gatewayHandlers.RevokePairingToken)
+						whatsappGroup.GET("/links/me", gatewayHandlers.GetMyWhatsAppLink)
+						whatsappGroup.DELETE("/links/me", gatewayHandlers.UnpairMyWhatsAppLink)
+					}
 			}
 
 			// Instance Admin route group (master tenant control plane)

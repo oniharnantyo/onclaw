@@ -8,11 +8,64 @@ import (
 
 // Telegram wire-format limits (design D5). Telegram rejects messages over
 // 4,096 characters; the splitter budgets 4,000 to leave margin for the
-// duplicate-warning prefix and entity overhead.
+// duplicate-warning prefix and entity overhead. WhatsApp carries the same
+// 4,096-character text cap (add-whatsapp-gateway design D9) and shares the
+// budget machinery.
 const (
 	telegramHardLimit   = 4096
 	telegramChunkBudget = 4000
+	whatsappHardLimit   = 4096
+	whatsappChunkBudget = 4000
 )
+
+// RenderFlavor is a platform's wire format (add-whatsapp-gateway design D9):
+// how GFM markdown becomes a sendable body, how a body degrades back to
+// plain text when the platform rejects formatted content, and the
+// per-message budget the split machinery enforces. The flavor is selected
+// per gateway platform by the service; SplitMarkdown stays platform-neutral
+// underneath.
+type RenderFlavor struct {
+	// Name is the flavor tag carried on outbox payloads and send calls
+	// (one of the Flavor* constants).
+	Name string
+	// Render converts GFM markdown into the platform's wire body.
+	Render func(markdown string) string
+	// PlainFallback strips formatting from a rendered body — the retry
+	// format when a platform refuses the formatted text (Telegram's
+	// "can't parse entities"). Platforms whose format cannot be rejected
+	// use the identity fallback.
+	PlainFallback func(body string) string
+	// Budget is the per-message character budget in runes.
+	Budget int
+}
+
+// TelegramFlavor renders Telegram-compatible HTML (design D5); the default
+// flavor and the one every pre-WhatsApp row was written in.
+var TelegramFlavor = RenderFlavor{
+	Name:          FlavorTelegramHTML,
+	Render:        RenderTelegramHTML,
+	PlainFallback: PlainTextFallback,
+	Budget:        telegramChunkBudget,
+}
+
+// WhatsAppFlavor renders the WhatsApp markdown subset (design D9). The
+// format cannot be rejected by the wire — WhatsApp renders unknown markup
+// literally — so the plain fallback is the identity.
+var WhatsAppFlavor = RenderFlavor{
+	Name:          FlavorWhatsAppMD,
+	Render:        RenderWhatsAppMarkdown,
+	PlainFallback: func(body string) string { return body },
+	Budget:        whatsappChunkBudget,
+}
+
+// platformRenderFlavor maps a gateway platform to its render flavor;
+// unknown platforms default to Telegram (the historical wire format).
+func platformRenderFlavor(platform string) RenderFlavor {
+	if platform == PlatformWhatsApp {
+		return WhatsAppFlavor
+	}
+	return TelegramFlavor
+}
 
 // RenderTelegramHTML converts GFM markdown into Telegram-compatible HTML:
 // bold/italic/strikethrough, inline code, fenced code blocks (with language
@@ -100,23 +153,31 @@ func (r *StreamRenderer) HTML() string {
 	return RenderTelegramHTML(r.Markdown())
 }
 
-// SplitForTelegram splits markdown into rendered HTML chunks each within the
-// platform budget, preferring paragraph → line → sentence → space cut
-// boundaries, and closing/reopening code fences across parts (design D5).
-// The result is never empty: empty input yields one empty part so callers
-// always have a message body.
+// SplitForTelegram splits markdown into rendered Telegram HTML chunks each
+// within the platform budget (design D5) — the Telegram specialization of
+// SplitForFlavor.
 func SplitForTelegram(markdown string) []string {
+	return SplitForFlavor(markdown, TelegramFlavor)
+}
+
+// SplitForFlavor splits markdown into rendered chunks each within the
+// flavor's budget, preferring paragraph → line → sentence → space cut
+// boundaries, and closing/reopening code fences across parts (design D5,
+// generalized per platform in add-whatsapp-gateway design D9). The result is
+// never empty: empty input yields one empty part so callers always have a
+// message body.
+func SplitForFlavor(markdown string, flavor RenderFlavor) []string {
 	out := []string{}
-	queue := SplitMarkdown(markdown, telegramChunkBudget)
+	queue := SplitMarkdown(markdown, flavor.Budget)
 	if len(queue) == 0 {
 		queue = []string{""}
 	}
 	for len(queue) > 0 {
 		p := queue[0]
 		queue = queue[1:]
-		html := RenderTelegramHTML(p)
-		if runeLen(html) <= telegramChunkBudget || runeLen(p) <= 1 {
-			out = append(out, html)
+		body := flavor.Render(p)
+		if runeLen(body) <= flavor.Budget || runeLen(p) <= 1 {
+			out = append(out, body)
 			continue
 		}
 		// Emphasis/link markup expands when rendered; re-split a part whose
@@ -125,7 +186,7 @@ func SplitForTelegram(markdown string) []string {
 		// text rather than an unparseable half-tag.
 		sub := SplitMarkdown(p, runeLen(p)/2)
 		if len(sub) == 1 {
-			out = append(out, hardCut(PlainTextFallback(html), telegramChunkBudget))
+			out = append(out, hardCut(flavor.PlainFallback(body), flavor.Budget))
 			continue
 		}
 		queue = append(sub, queue...)

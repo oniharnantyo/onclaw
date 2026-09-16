@@ -50,40 +50,42 @@ func NewGatewayStore(db Executor) storeport.GatewayStore {
 	return &gatewayStore{db: db}
 }
 
+// lane is read through COALESCE: migration 000051 adds the column nullable
+// and deliberately does no backfill, so every pre-migration row carries SQL
+// NULL — scanning it into a plain string would fail the whole load
+// ("cannot scan NULL into *string") and the lifecycle manager would
+// log-and-skip the gateway, silently dead on upgraded deployments. Telegram
+// rows read Lane="" which its validation ignores (design D1: lane is never
+// inferred from credential shape).
 const gatewayColumns = `
-	id, workspace_id, platform, bot_token_ciphertext, bot_username, enabled,
-	transport, webhook_url, default_agent_id, created_at, updated_at
+	id, workspace_id, platform, COALESCE(lane, '') AS lane, identity, agent_id,
+	bot_token_ciphertext, bot_username, enabled, transport, webhook_url, created_at, updated_at
 `
 
 func scanGateway(row pgx.Row) (*domain.GatewayConfig, error) {
 	var g domain.GatewayConfig
-	var defaultAgentID *string
 	err := row.Scan(
 		&g.ID,
 		&g.WorkspaceID,
 		&g.Platform,
+		&g.Lane,
+		&g.Identity,
+		&g.AgentID,
 		&g.BotTokenCiphertext,
 		&g.BotUsername,
 		&g.Enabled,
 		&g.Transport,
 		&g.WebhookURL,
-		&defaultAgentID,
 		&g.CreatedAt,
 		&g.UpdatedAt,
 	)
 	if err != nil {
 		return nil, convertError(err)
 	}
-	g.DefaultAgentID = defaultAgentID
 	return &g, nil
 }
 
-// UpsertGateway inserts the configuration; on conflict (workspace_id,
-// platform) the connection fields are rewritten while the row's id,
-// created_at, and enabled flag survive (re-saving a bot token never
-// disables a live gateway). The RETURNING clause keeps the caller's struct
-// faithful on both paths.
-func (gs *gatewayStore) UpsertGateway(ctx context.Context, workspaceID string, g *domain.GatewayConfig) error {
+func (gs *gatewayStore) CreateGateway(ctx context.Context, workspaceID string, g *domain.GatewayConfig) error {
 	if g == nil {
 		return domain.ErrInvalid
 	}
@@ -93,9 +95,7 @@ func (gs *gatewayStore) UpsertGateway(ctx context.Context, workspaceID string, g
 		return err
 	}
 
-	// FK parity: the workspace must exist, and a set default agent must
-	// belong to this workspace (the plain agent FK alone would admit
-	// cross-workspace references).
+	// FK parity: workspace and agent must exist in workspace.
 	var one bool
 	err := gs.db.QueryRow(ctx, `SELECT true FROM workspaces WHERE id = $1`, workspaceID).Scan(&one)
 	if err != nil {
@@ -104,63 +104,66 @@ func (gs *gatewayStore) UpsertGateway(ctx context.Context, workspaceID string, g
 		}
 		return convertError(err)
 	}
-	if g.DefaultAgentID != nil && *g.DefaultAgentID != "" {
-		err = gs.db.QueryRow(ctx,
-			`SELECT true FROM agents WHERE workspace_id = $1 AND id = $2`,
-			workspaceID, *g.DefaultAgentID,
-		).Scan(&one)
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return fmt.Errorf("%w: agent not found in workspace", domain.ErrNotFound)
-			}
-			return convertError(err)
+	err = gs.db.QueryRow(ctx,
+		`SELECT true FROM agents WHERE workspace_id = $1 AND id = $2`,
+		workspaceID, g.AgentID,
+	).Scan(&one)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("%w: agent not found in workspace", domain.ErrNotFound)
 		}
+		return convertError(err)
+	}
+
+	if g.ID == "" {
+		g.ID = uuid.NewString()
+	}
+	if g.CreatedAt.IsZero() {
+		g.CreatedAt = now
+	}
+	if g.UpdatedAt.IsZero() {
+		g.UpdatedAt = now
 	}
 
 	query := `
 		INSERT INTO workspace_gateways (
-			workspace_id, platform, bot_token_ciphertext, bot_username,
-			enabled, transport, webhook_url, default_agent_id, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		ON CONFLICT (workspace_id, platform) DO UPDATE SET
-			bot_token_ciphertext = EXCLUDED.bot_token_ciphertext,
-			bot_username = EXCLUDED.bot_username,
-			transport = EXCLUDED.transport,
-			webhook_url = EXCLUDED.webhook_url,
-			default_agent_id = EXCLUDED.default_agent_id,
-			updated_at = $11
-		RETURNING id, created_at, updated_at, enabled
+			id, workspace_id, platform, lane, identity, agent_id, bot_token_ciphertext,
+			bot_username, enabled, transport, webhook_url, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		RETURNING id, created_at, updated_at
 	`
 	err = gs.db.QueryRow(ctx, query,
+		g.ID,
 		g.WorkspaceID,
 		g.Platform,
+		g.Lane,
+		g.Identity,
+		g.AgentID,
 		g.BotTokenCiphertext,
 		g.BotUsername,
 		g.Enabled,
 		g.Transport,
 		g.WebhookURL,
-		g.DefaultAgentID,
-		now,
-		now,
-		now,
-	).Scan(&g.ID, &g.CreatedAt, &g.UpdatedAt, &g.Enabled)
+		g.CreatedAt,
+		g.UpdatedAt,
+	).Scan(&g.ID, &g.CreatedAt, &g.UpdatedAt)
 	if err != nil {
 		return convertError(err)
 	}
 	return nil
 }
 
-func (gs *gatewayStore) GetGateway(ctx context.Context, workspaceID, platform string) (*domain.GatewayConfig, error) {
-	if workspaceID == "" || platform == "" {
+func (gs *gatewayStore) GetGateway(ctx context.Context, workspaceID, id string) (*domain.GatewayConfig, error) {
+	if workspaceID == "" || id == "" {
 		return nil, nil
 	}
 
 	query := `
 		SELECT ` + gatewayColumns + `
 		FROM workspace_gateways
-		WHERE workspace_id = $1 AND platform = $2
+		WHERE workspace_id = $1 AND id = $2
 	`
-	g, err := scanGateway(gs.db.QueryRow(ctx, query, workspaceID, platform))
+	g, err := scanGateway(gs.db.QueryRow(ctx, query, workspaceID, id))
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
 			return nil, nil
@@ -201,16 +204,104 @@ func (gs *gatewayStore) ListGateways(ctx context.Context, workspaceID string) ([
 	return gateways, nil
 }
 
-func (gs *gatewayStore) SetGatewayEnabled(ctx context.Context, workspaceID, platform string, enabled bool) error {
+func (gs *gatewayStore) ListGatewaysByPlatform(ctx context.Context, workspaceID, platform string) ([]domain.GatewayConfig, error) {
 	if workspaceID == "" || platform == "" {
+		return []domain.GatewayConfig{}, nil
+	}
+
+	query := `
+		SELECT ` + gatewayColumns + `
+		FROM workspace_gateways
+		WHERE workspace_id = $1 AND platform = $2
+		ORDER BY created_at ASC, id ASC
+	`
+	rows, err := gs.db.Query(ctx, query, workspaceID, platform)
+	if err != nil {
+		return nil, convertError(err)
+	}
+	defer rows.Close()
+
+	gateways := make([]domain.GatewayConfig, 0)
+	for rows.Next() {
+		g, err := scanGateway(rows)
+		if err != nil {
+			return nil, err
+		}
+		gateways = append(gateways, *g)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, convertError(err)
+	}
+	return gateways, nil
+}
+
+func (gs *gatewayStore) UpdateGateway(ctx context.Context, workspaceID string, g *domain.GatewayConfig) error {
+	if g == nil || g.ID == "" {
+		return domain.ErrInvalid
+	}
+	now := time.Now().UTC()
+	g.WorkspaceID = workspaceID
+	if err := domain.ValidateGatewayConfig(g); err != nil {
+		return err
+	}
+
+	// FK parity: workspace and agent must exist.
+	var one bool
+	err := gs.db.QueryRow(ctx, `SELECT true FROM workspaces WHERE id = $1`, workspaceID).Scan(&one)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("%w: workspace not found", domain.ErrNotFound)
+		}
+		return convertError(err)
+	}
+	err = gs.db.QueryRow(ctx,
+		`SELECT true FROM agents WHERE workspace_id = $1 AND id = $2`,
+		workspaceID, g.AgentID,
+	).Scan(&one)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("%w: agent not found in workspace", domain.ErrNotFound)
+		}
+		return convertError(err)
+	}
+
+	query := `
+		UPDATE workspace_gateways
+		SET platform = $3, lane = $4, identity = $5, agent_id = $6, bot_token_ciphertext = $7,
+		    bot_username = $8, enabled = $9, transport = $10, webhook_url = $11, updated_at = $12
+		WHERE workspace_id = $1 AND id = $2
+		RETURNING created_at, updated_at
+	`
+	err = gs.db.QueryRow(ctx, query,
+		workspaceID,
+		g.ID,
+		g.Platform,
+		g.Lane,
+		g.Identity,
+		g.AgentID,
+		g.BotTokenCiphertext,
+		g.BotUsername,
+		g.Enabled,
+		g.Transport,
+		g.WebhookURL,
+		now,
+	).Scan(&g.CreatedAt, &g.UpdatedAt)
+	if err != nil {
+		return convertError(err)
+	}
+	return nil
+}
+
+func (gs *gatewayStore) SetGatewayEnabled(ctx context.Context, workspaceID, id string, enabled bool) error {
+	if workspaceID == "" || id == "" {
 		return domain.ErrNotFound
 	}
 
 	tag, err := gs.db.Exec(ctx, `
 		UPDATE workspace_gateways
 		SET enabled = $3, updated_at = $4
-		WHERE workspace_id = $1 AND platform = $2
-	`, workspaceID, platform, enabled, time.Now().UTC())
+		WHERE workspace_id = $1 AND id = $2
+	`, workspaceID, id, enabled, time.Now().UTC())
 	if err != nil {
 		return convertError(err)
 	}
@@ -220,15 +311,15 @@ func (gs *gatewayStore) SetGatewayEnabled(ctx context.Context, workspaceID, plat
 	return nil
 }
 
-func (gs *gatewayStore) DeleteGateway(ctx context.Context, workspaceID, platform string) error {
-	if workspaceID == "" || platform == "" {
+func (gs *gatewayStore) DeleteGateway(ctx context.Context, workspaceID, id string) error {
+	if workspaceID == "" || id == "" {
 		return domain.ErrNotFound
 	}
 
 	tag, err := gs.db.Exec(ctx, `
 		DELETE FROM workspace_gateways
-		WHERE workspace_id = $1 AND platform = $2
-	`, workspaceID, platform)
+		WHERE workspace_id = $1 AND id = $2
+	`, workspaceID, id)
 	if err != nil {
 		return convertError(err)
 	}
@@ -253,7 +344,7 @@ func NewGatewayBindingStore(db Executor) storeport.GatewayBindings {
 }
 
 const gatewayChatBindingColumns = `
-	id, workspace_id, platform, platform_chat_id, agent_id, created_by, created_at
+	id, workspace_id, COALESCE(gateway_id::text, '') AS gateway_id, platform, platform_chat_id, agent_id, created_by, created_at
 `
 
 func scanChatBinding(row pgx.Row) (*domain.ChatBinding, error) {
@@ -261,6 +352,7 @@ func scanChatBinding(row pgx.Row) (*domain.ChatBinding, error) {
 	err := row.Scan(
 		&b.ID,
 		&b.WorkspaceID,
+		&b.GatewayID,
 		&b.Platform,
 		&b.PlatformChatID,
 		&b.AgentID,
@@ -292,6 +384,18 @@ func (gb *gatewayBindingStore) CreateChatBinding(ctx context.Context, workspaceI
 		}
 		return convertError(err)
 	}
+	if b.GatewayID != "" {
+		err = gb.db.QueryRow(ctx,
+			`SELECT true FROM workspace_gateways WHERE workspace_id = $1 AND id = $2`,
+			workspaceID, b.GatewayID,
+		).Scan(&one)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("%w: gateway not found in workspace", domain.ErrNotFound)
+			}
+			return convertError(err)
+		}
+	}
 	err = gb.db.QueryRow(ctx,
 		`SELECT true FROM agents WHERE workspace_id = $1 AND id = $2`,
 		workspaceID, b.AgentID,
@@ -318,14 +422,21 @@ func (gb *gatewayBindingStore) CreateChatBinding(ctx context.Context, workspaceI
 	if b.CreatedAt.IsZero() {
 		b.CreatedAt = now
 	}
+
+	var gatewayIDParam *string
+	if b.GatewayID != "" {
+		gatewayIDParam = &b.GatewayID
+	}
+
 	query := `
 		INSERT INTO gateway_chat_bindings (
-			id, workspace_id, platform, platform_chat_id, agent_id, created_by, created_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7)
+			id, workspace_id, gateway_id, platform, platform_chat_id, agent_id, created_by, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`
 	_, err = gb.db.Exec(ctx, query,
 		b.ID,
 		b.WorkspaceID,
+		gatewayIDParam,
 		b.Platform,
 		b.PlatformChatID,
 		b.AgentID,
@@ -506,7 +617,7 @@ func NewGatewayLinkStore(db Executor) storeport.GatewayLinks {
 }
 
 const gatewayUserLinkColumns = `
-	platform, platform_user_id, workspace_id, user_id, platform_username, default_agent_id, created_at
+	platform, platform_user_id, workspace_id, user_id, platform_username, created_at
 `
 
 func scanUserLink(row pgx.Row) (*domain.UserLink, error) {
@@ -517,7 +628,6 @@ func scanUserLink(row pgx.Row) (*domain.UserLink, error) {
 		&l.WorkspaceID,
 		&l.UserID,
 		&l.PlatformUsername,
-		&l.DefaultAgentID,
 		&l.CreatedAt,
 	)
 	if err != nil {
@@ -578,8 +688,8 @@ func (gl *gatewayLinkStore) CreateUserLink(ctx context.Context, workspaceID stri
 	}
 	query := `
 		INSERT INTO gateway_user_links (
-			platform, platform_user_id, workspace_id, user_id, platform_username, default_agent_id, created_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7)
+			platform, platform_user_id, workspace_id, user_id, platform_username, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6)
 	`
 	_, err = gl.db.Exec(ctx, query,
 		l.Platform,
@@ -587,7 +697,6 @@ func (gl *gatewayLinkStore) CreateUserLink(ctx context.Context, workspaceID stri
 		l.WorkspaceID,
 		l.UserID,
 		l.PlatformUsername,
-		l.DefaultAgentID,
 		l.CreatedAt,
 	)
 	if err != nil {
@@ -680,42 +789,6 @@ func (gl *gatewayLinkStore) DeleteUserLink(ctx context.Context, workspaceID, pla
 		DELETE FROM gateway_user_links
 		WHERE workspace_id = $1 AND platform = $2 AND platform_user_id = $3
 	`, workspaceID, platform, platformUserID)
-	if err != nil {
-		return convertError(err)
-	}
-	if tag.RowsAffected() == 0 {
-		return domain.ErrNotFound
-	}
-	return nil
-}
-
-// SetUserLinkDefaultAgent writes the per-user default agent choice
-// (000048, design D3). FK parity: a non-nil agent must exist in the
-// workspace (the column's FK is ON DELETE SET NULL, so a stale id never
-// blocks the write — but a never-existed one should not silently no-op).
-func (gl *gatewayLinkStore) SetUserLinkDefaultAgent(ctx context.Context, workspaceID, platform, platformUserID string, agentID *string) error {
-	if workspaceID == "" || platform == "" || platformUserID == "" {
-		return domain.ErrNotFound
-	}
-	if agentID != nil && *agentID == "" {
-		agentID = nil
-	}
-	if agentID != nil {
-		var one bool
-		err := gl.db.QueryRow(ctx, `SELECT true FROM agents WHERE id = $1 AND workspace_id = $2`, *agentID, workspaceID).Scan(&one)
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return fmt.Errorf("%w: agent not found", domain.ErrNotFound)
-			}
-			return convertError(err)
-		}
-	}
-
-	tag, err := gl.db.Exec(ctx, `
-		UPDATE gateway_user_links
-		SET default_agent_id = $4
-		WHERE workspace_id = $1 AND platform = $2 AND platform_user_id = $3
-	`, workspaceID, platform, platformUserID, agentID)
 	if err != nil {
 		return convertError(err)
 	}
@@ -1023,6 +1096,27 @@ func (goStore *gatewayOutboxStore) MarkDead(ctx context.Context, workspaceID, id
 		return domain.ErrNotFound
 	}
 	return nil
+}
+
+// CountDead counts the workspace gateway's dead entries (design D4: the
+// health probe's dead-delivery signal). The generating gateway id lives in
+// the payload JSON — the row carries only workspace/session — so the filter
+// reaches into it; a corrupt payload can never match and is invisible here
+// exactly as it is undeliverable in the worker.
+func (goStore *gatewayOutboxStore) CountDead(ctx context.Context, workspaceID, gatewayID string) (int64, error) {
+	if workspaceID == "" || gatewayID == "" {
+		return 0, nil
+	}
+
+	var n int64
+	err := goStore.db.QueryRow(ctx, `
+		SELECT count(*) FROM gateway_outbox
+		WHERE workspace_id = $1 AND status = $2 AND payload->>'gateway_id' = $3
+	`, workspaceID, domain.GatewayOutboxStatusDead, gatewayID).Scan(&n)
+	if err != nil {
+		return 0, convertError(err)
+	}
+	return n, nil
 }
 
 func (goStore *gatewayOutboxStore) PruneDelivered(ctx context.Context, before time.Time) (int64, error) {

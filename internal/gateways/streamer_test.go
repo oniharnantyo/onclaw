@@ -42,7 +42,7 @@ func TestStreamerFinalFlushCarriesFullReply(t *testing.T) {
 		textDelta("Hello "),
 		textDelta("**world**"),
 		&agents.TranscriptEvent{
-			Kind:      agents.TranscriptEventToolCallFinished,
+			Kind:       agents.TranscriptEventToolCallFinished,
 			ToolResult: &agents.ToolResultPayload{Name: "grafana.query", Latency: 1200 * time.Millisecond},
 		},
 		&agents.TranscriptEvent{Kind: agents.TranscriptEventTurnCompleted},
@@ -306,7 +306,7 @@ type outboxOrderAdapter struct {
 	rowFirst bool
 }
 
-func (a *outboxOrderAdapter) EditMessage(ctx context.Context, chatID, messageID, html string) error {
+func (a *outboxOrderAdapter) EditMessage(ctx context.Context, chatID, messageID, body, flavor string) error {
 	entries, err := a.outbox.ClaimDue(ctx, time.Now().UTC().Add(time.Hour), 10)
 	if err != nil {
 		return err
@@ -314,7 +314,7 @@ func (a *outboxOrderAdapter) EditMessage(ctx context.Context, chatID, messageID,
 	if len(entries) > 0 {
 		a.rowFirst = true
 	}
-	return a.testPlatformAdapter.EditMessage(ctx, chatID, messageID, html)
+	return a.testPlatformAdapter.EditMessage(ctx, chatID, messageID, body, flavor)
 }
 
 func TestStreamerFinalReplyLandsInOutboxBeforeSend(t *testing.T) {

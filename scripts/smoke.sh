@@ -40,6 +40,15 @@
 #      secret enforcement)
 #      + Langfuse link-out contract (integrate-langfuse-tracing 5.2: run
 #      payloads expose langfuse_url null on unconfigured instances)
+#  24. WhatsApp gateway (add-whatsapp-gateway: lane validation, write-only
+#      cloud credential envelope with no echo, Meta verification handshake
+#      GET, X-Hub-Signature-256 rejection, message → run → outbox delivery
+#      through a stubbed Meta endpoint, pairing-token lifecycle, multi-device
+#      pairing surface without WhatsApp connectivity)
+#  25. Agent heartbeat (add-agent-heartbeat: create with the seeded default
+#      checklist, run-now silence contract (NO_REPLY → suppressed), channel
+#      delivery of a report, active-hours skip, five-failure auto-pause and
+#      resume — via a dedicated steerable mock provider)
 #
 # Usage:
 #   ./scripts/smoke.sh
@@ -62,6 +71,24 @@ SUPERADMIN_EMAIL="${SUPERADMIN_EMAIL:-admin@onclaw.local}"
 SUPERADMIN_PASSWORD="${SUPERADMIN_PASSWORD:-SmokeSuperAdminSecret123!}"
 JWT_SECRET="${JWT_SECRET:-smoke-test-jwt-secret-at-least-32-chars-long!}"
 ENCRYPTION_KEY="${ONCLAW_ENCRYPTION_KEY:-$(openssl rand -hex 32 2>/dev/null || echo "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")}"
+
+# WhatsApp Cloud API stub (section 24, add-whatsapp-gateway): the server's
+# cloud-lane adapters talk to this stub instead of graph.facebook.com via
+# ONCLAW_WHATSAPP_CLOUD_API_BASE. When the server is started by this script
+# the stub port is picked here (it must ride the server's env at boot); when
+# an external server is reused, its ONCLAW_WHATSAPP_CLOUD_API_BASE is honored
+# and the stub binds to that port. The stub itself launches in section 24.
+if [[ -n "${ONCLAW_WHATSAPP_CLOUD_API_BASE:-}" ]]; then
+    WA_STUB_BASE="${ONCLAW_WHATSAPP_CLOUD_API_BASE}"
+    WA_STUB_PORT="${WA_STUB_BASE##*:}"
+else
+    WA_STUB_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+    WA_STUB_BASE="http://127.0.0.1:${WA_STUB_PORT}"
+fi
+WA_STUB_PID=""
+HB_MOCK_PID=""
+MOCK_PID=""
+SERVER_PID=""
 
 # Colors
 C_RESET="\033[0m"
@@ -86,6 +113,10 @@ log_pass() {
 
 log_fail() {
     printf "${C_RED}✗ FAIL:${C_RESET} %s\n" "$1" >&2
+    if [[ -f "${TMP_DIR}/server.log" ]]; then
+        printf "${C_YELLOW}--- Last 20 lines of server.log ---${C_RESET}\n" >&2
+        tail -20 "${TMP_DIR}/server.log" >&2
+    fi
     exit 1
 }
 
@@ -101,6 +132,7 @@ WS_ROOT="${ONCLAW_BASE_DIR}/workspaces"
 
 SERVER_PID=""
 MOCK_PID=""
+WA_STUB_PID=""
 
 cleanup() {
     local exit_code=$?
@@ -112,6 +144,14 @@ cleanup() {
     if [[ -n "${MOCK_PID}" ]]; then
         kill "${MOCK_PID}" 2>/dev/null || true
         wait "${MOCK_PID}" 2>/dev/null || true
+    fi
+    if [[ -n "${WA_STUB_PID}" ]]; then
+        kill "${WA_STUB_PID}" 2>/dev/null || true
+        wait "${WA_STUB_PID}" 2>/dev/null || true
+    fi
+    if [[ -n "${HB_MOCK_PID}" ]]; then
+        kill "${HB_MOCK_PID}" 2>/dev/null || true
+        wait "${HB_MOCK_PID}" 2>/dev/null || true
     fi
     rm -rf "${TMP_DIR}"
     if [[ $exit_code -eq 0 ]]; then
@@ -133,6 +173,7 @@ api_req() {
     local token="${3:-}"
     local body="${4:-}"
     local content_type="${5:-application/json}"
+    local extra_header="${6:-}"   # optional "Name: value" header (section 24's X-Forwarded-Proto)
 
     local url="${SERVER_URL}${path}"
     local headers_file="${TMP_DIR}/headers.tmp"
@@ -148,13 +189,22 @@ api_req() {
         args+=(-H "Content-Type: ${content_type}" --data "${body}")
     fi
 
-    curl "${args[@]}" "${url}" || log_fail "curl failed to reach ${url}"
+    if [[ -n "${extra_header}" ]]; then
+        args+=(-H "${extra_header}")
+    fi
+
+    if ! curl "${args[@]}" "${url}"; then
+        log_fail "curl failed to reach ${url}"
+    fi
 
     # Extract the FINAL HTTP status code — large bodies get an interim
     # "HTTP/1.1 100 Continue" header block from curl's Expect handshake, so
     # the first header line is not necessarily the response status.
     HTTP_STATUS=$(awk '/^HTTP\/[0-9.]+/ {code=$2} END {print code}' "${headers_file}")
     HTTP_BODY=$(cat "${body_file}")
+    if [[ "${HTTP_STATUS}" == "400" && "${HTTP_BODY}" == *"Bad Request"* ]]; then
+        printf "${C_YELLOW}DEBUG: curl args: %s | URL: %s | headers: %s${C_RESET}\n" "${args[*]}" "${url}" "$(cat "${headers_file}")" >&2
+    fi
 }
 
 api_upload() {
@@ -242,6 +292,7 @@ else
     ONCLAW_DATA_DIR="${DATA_DIR}" \
     ONCLAW_DIR="${ONCLAW_BASE_DIR}" \
     ONCLAW_LISTEN_ADDR="${SERVER_HOST}:${SERVER_PORT}" \
+    ONCLAW_WHATSAPP_CLOUD_API_BASE="${WA_STUB_BASE}" \
     "${TMP_DIR}/onclaw-smoke-bin" server --database-url "${DATABASE_URL}" --listen-addr "${SERVER_HOST}:${SERVER_PORT}" --encryption-key "${ENCRYPTION_KEY}" >"${TMP_DIR}/server.log" 2>&1 &
 
     SERVER_PID=$!
@@ -1094,6 +1145,23 @@ if echo "${HTTP_BODY}" | grep -q "tvly-smoke-secret-key-9876"; then
 else
     log_pass "Tool config response never echoes the secret"
 fi
+
+# Always-on channel tools: the catalog marks the three channel tools
+# non-toggleable (always-on) while ordinary tools stay toggleable, and
+# PATCHing enabled on one is rejected instead of stored.
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/tools" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists workspace tools for toggleability"
+assert_json_expr '.tools | map(select(.key == "channel.post")) | .[0].toggleable == false' "channel.post is non-toggleable (always-on)"
+assert_json_expr '.tools | map(select(.key == "channel.history")) | .[0].toggleable == false' "channel.history is non-toggleable (always-on)"
+assert_json_expr '.tools | map(select(.key == "session.close")) | .[0].toggleable == false' "session.close is non-toggleable (always-on)"
+assert_json_expr '.tools | map(select(.key == "ls")) | .[0].toggleable == true' "Ordinary tool ls stays toggleable"
+assert_json_expr '.tools | map(select(.key == "web.search")) | .[0].toggleable == true' "Ordinary tool web.search stays toggleable"
+
+api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/tools/channel.post" "${CHARLIE_TOKEN}" '{"enabled":false}'
+assert_status "422" "Disabling an always-on channel tool is rejected"
+
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/tools" "${CHARLIE_TOKEN}"
+assert_json_expr '.tools | map(select(.key == "channel.post")) | .[0].enabled == true' "Rejected patch left the channel tool enabled"
 
 # 13.3 Delete in-use provider 409 (the agent references the mock provider)
 api_req "DELETE" "/api/v1/workspaces/${TENANT_SLUG}/providers/${MOCK_PROV_ID}" "${CHARLIE_TOKEN}"
@@ -2236,13 +2304,19 @@ assert_json_expr '.scheduler.enabled == false' "Run-now did not re-enable the pa
 assert_json_expr '.scheduler.next_run_at == null' "Paused scheduler still has no next fire time"
 
 # -----------------------------------------------------------------------------
-# 23. Telegram Gateway: Auth Gates, Write-Only Token, Bindings, Pairing &
-#     Webhook Secret Enforcement (integrate-telegram-gateway)
+# 23. Telegram Gateway: Multi-Bot Accounts, Write-Only Token, Bindings, Pairing &
+#     Webhook Secret Enforcement (multi-bot-gateways)
 # -----------------------------------------------------------------------------
-log_step "23. Telegram Gateway: Config, Bindings, Pairing & Webhook"
+log_step "23. Telegram Gateway: Multi-Bot Config, Bindings, Pairing & Webhook"
 
 GW_BASE="/api/v1/workspaces/${TENANT_SLUG}/gateways/telegram"
-GW_TOKEN="123456:AAH-smoke-bot-token-9876"
+GW_TOKEN_1="123456:AAH-smoke-bot-token-9876"
+GW_TOKEN_2="654321:BBH-smoke-bot-token-5432"
+
+# Create a second agent in the workspace to test multi-bot binding
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/agents" "${CHARLIE_TOKEN}" "{\"name\":\"Beacon\",\"slug\":\"beacon\",\"role\":\"Assistant\",\"description\":\"Second agent\",\"brief\":\"Second agent\",\"model\":\"gpt-4\",\"provider_id\":\"${MOCK_PROV_ID}\"}"
+assert_status "201" "Owner creates a second agent (Beacon) for multi-bot tests"
+AGENT_2_ID=$(json_get '.agent.id')
 
 # 23.1 Auth gates: the ingress requires a session; a plain Member holds no
 # gateways.write, so config reads AND writes are 403 (pairing stays
@@ -2254,23 +2328,30 @@ api_req "GET" "${GW_BASE}" "${DAVE_TOKEN}"
 assert_status "403" "Member cannot read the gateway config (gateways.write 403)"
 assert_json_expr '.error.code == "forbidden"' "Error code is forbidden"
 
-api_req "PUT" "${GW_BASE}" "${DAVE_TOKEN}" "{\"token\":\"${GW_TOKEN}\"}"
+api_req "POST" "${GW_BASE}" "${DAVE_TOKEN}" "{\"token\":\"${GW_TOKEN_1}\",\"agent_id\":\"${AGENT_ID}\"}"
 assert_status "403" "Member cannot write the gateway config (403)"
 
-# 23.2 Unconfigured workspace answers {gateway: null}, never 404.
+# 23.2 Initially no accounts are configured: GET returns empty list []
 api_req "GET" "${GW_BASE}" "${CHARLIE_TOKEN}"
-assert_status "200" "Owner reads the (unconfigured) gateway config"
-assert_json_expr '.gateway == null' "Unconfigured gateway reads as null"
+assert_status "200" "Owner lists gateway accounts (initially empty)"
+assert_json_expr '(. | length) == 0' "No accounts configured initially"
 
-# 23.3 Config PUT: stores the token encrypted and carries only the last-4
-# hint — never the plaintext, never the ciphertext envelope.
-api_req "PUT" "${GW_BASE}" "${CHARLIE_TOKEN}" "{\"token\":\"${GW_TOKEN}\",\"transport\":\"long_polling\"}"
-assert_status "200" "Owner connects the gateway with a bot token"
-assert_json_expr '.gateway.id != null' "Config PUT returns the gateway row"
-assert_json_expr '.gateway.platform == "telegram"' "Gateway platform is telegram"
-assert_json_expr '.gateway.enabled == false' "A fresh gateway starts disabled"
-assert_json_expr '.gateway.token_hint == "9876"' "Config carries only the last-4 token hint"
-if echo "${HTTP_BODY}" | grep -q "${GW_TOKEN}"; then
+# 23.2a Validation: missing agent_id or token is rejected (422)
+api_req "POST" "${GW_BASE}" "${CHARLIE_TOKEN}" "{\"token\":\"${GW_TOKEN_1}\"}"
+assert_status "422" "Connecting bot without agent_id is rejected (422)"
+assert_json_expr '[.error.details[]? | select(.field == "agent_id")] | length > 0' "Validation error fields agent_id"
+
+# 23.3 Create first bot account (bound to AGENT_ID)
+api_req "POST" "${GW_BASE}" "${CHARLIE_TOKEN}" "{\"token\":\"${GW_TOKEN_1}\",\"agent_id\":\"${AGENT_ID}\",\"transport\":\"long_polling\"}"
+assert_status "201" "Owner creates first gateway account bound to agent 1"
+assert_json_expr '.id != null' "Create POST returns the gateway row id"
+assert_json_expr '.platform == "telegram"' "Gateway platform is telegram"
+assert_json_expr '.enabled == true' "A fresh gateway starts enabled"
+assert_json_expr '.token_hint == "9876"' "Config carries only the last-4 token hint"
+assert_json_expr ".agent_id == \"${AGENT_ID}\"" "Gateway carries the bound agent id"
+GW1_ID=$(json_get '.id')
+
+if echo "${HTTP_BODY}" | grep -q "${GW_TOKEN_1}"; then
     log_fail "Config response echoed the plaintext bot token!"
 else
     log_pass "Config response never echoes the plaintext bot token"
@@ -2281,25 +2362,33 @@ else
     log_pass "Config response never leaks the ciphertext envelope"
 fi
 
-# 23.4 Config GET roundtrip: the hint survives; the plaintext never returns.
+# 23.4 Create second bot account (bound to AGENT_2_ID)
+api_req "POST" "${GW_BASE}" "${CHARLIE_TOKEN}" "{\"token\":\"${GW_TOKEN_2}\",\"agent_id\":\"${AGENT_2_ID}\",\"transport\":\"long_polling\"}"
+assert_status "201" "Owner creates second gateway account bound to agent 2"
+assert_json_expr '.id != null' "Second gateway row id returned"
+assert_json_expr ".agent_id == \"${AGENT_2_ID}\"" "Second gateway bound to agent 2"
+assert_json_expr '.token_hint == "5432"' "Second gateway carries hint 5432"
+GW2_ID=$(json_get '.id')
+
+# 23.4b List accounts: both bot accounts appear in the workspace list
 api_req "GET" "${GW_BASE}" "${CHARLIE_TOKEN}"
-assert_status "200" "Owner reads the configured gateway"
-assert_json_expr '.gateway.token_hint == "9876"' "GET carries the same last-4 hint"
-if echo "${HTTP_BODY}" | grep -q "${GW_TOKEN}"; then
-    log_fail "Config GET echoed the plaintext bot token!"
-else
-    log_pass "Config GET never echoes the plaintext bot token"
-fi
+assert_status "200" "Owner lists all gateway accounts"
+assert_json_expr '(. | length) == 2' "Both gateway accounts are listed"
 
-# 23.5 A token-less PUT keeps the stored secret (write-only semantics) and
-# binding the default agent round-trips.
-api_req "PUT" "${GW_BASE}" "${CHARLIE_TOKEN}" '{}'
-assert_status "200" "Token-less PUT keeps the stored configuration"
-assert_json_expr '.gateway.token_hint == "9876"' "Omitted token preserves the stored secret"
+# 23.4c Get specific account
+api_req "GET" "${GW_BASE}/${GW1_ID}" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner reads account 1"
+assert_json_expr '.token_hint == "9876"' "GET carries the last-4 hint"
 
-api_req "PUT" "${GW_BASE}" "${CHARLIE_TOKEN}" "{\"default_agent_id\":\"${AGENT_ID}\"}"
-assert_status "200" "Owner sets the gateway default agent"
-assert_json_expr ".gateway.default_agent_id == \"${AGENT_ID}\"" "Default agent round-trips"
+# 23.5 Account update (change bound agent or rotate token)
+api_req "PUT" "${GW_BASE}/${GW1_ID}" "${CHARLIE_TOKEN}" '{"transport":"webhook","webhook_url":"https://example.com/smoke-webhook"}'
+assert_status "200" "Owner updates account 1 transport to webhook"
+assert_json_expr '.transport == "webhook"' "Account 1 transport is webhook"
+assert_json_expr '.webhook_url == "https://example.com/smoke-webhook"' "Webhook URL stored"
+
+api_req "PUT" "${GW_BASE}/${GW1_ID}" "${CHARLIE_TOKEN}" '{"transport":"long_polling"}'
+assert_status "200" "Owner updates account 1 transport back to long_polling"
+assert_json_expr '.transport == "long_polling"' "Account 1 transport is long_polling"
 
 # 23.6 Pairing is member-level: a plain Member can mint and revoke tokens for
 # themselves while still unable to touch the config.
@@ -2322,48 +2411,41 @@ assert_status "204" "Member revokes the minted pairing token (204)"
 api_req "DELETE" "${GW_BASE}/pairing-tokens/${PAIR_TOKEN}" "${DAVE_TOKEN}"
 assert_status "404" "Revoking an already-revoked token is 404"
 
-# 23.7 Enable / disable lifecycle: enabling flips the flag (a probe failure
-# against the fake smoke token may surface on status_error — the config is
-# still saved) and disabling is inert, preserving configuration.
-api_req "POST" "${GW_BASE}/enable" "${CHARLIE_TOKEN}" '{}'
-assert_status "200" "Owner enables the gateway"
-assert_json_expr '.gateway.enabled == true' "Enabled gateway reports enabled"
+# 23.7 Enable / disable lifecycle per account: enabling flips the flag on that account
+api_req "POST" "${GW_BASE}/${GW1_ID}/enable" "${CHARLIE_TOKEN}" '{}'
+assert_status "200" "Owner enables bot account 1"
 
-api_req "POST" "${GW_BASE}/disable" "${CHARLIE_TOKEN}" '{}'
-assert_status "200" "Owner disables the gateway"
-assert_json_expr '.gateway.enabled == false' "Disabled gateway reports enabled false"
-assert_json_expr '.gateway.token_hint == "9876"' "Disable preserves the stored token"
-assert_json_expr ".gateway.default_agent_id == \"${AGENT_ID}\"" "Disable preserves the configuration"
+api_req "GET" "${GW_BASE}/${GW1_ID}" "${CHARLIE_TOKEN}"
+assert_json_expr '.enabled == true' "Enabled account 1 reports enabled true"
 
-api_req "POST" "${GW_BASE}/enable" "${DAVE_TOKEN}" '{}'
+api_req "POST" "${GW_BASE}/${GW1_ID}/disable" "${CHARLIE_TOKEN}" '{}'
+assert_status "200" "Owner disables bot account 1"
+
+api_req "GET" "${GW_BASE}/${GW1_ID}" "${CHARLIE_TOKEN}"
+assert_json_expr '.enabled == false' "Disabled account 1 reports enabled false"
+
+api_req "POST" "${GW_BASE}/${GW1_ID}/enable" "${DAVE_TOKEN}" '{}'
 assert_status "403" "Member cannot enable the gateway (403)"
 
-# 23.8 Group bindings: create, duplicate conflict, fielded validation, list,
-# delete. The platform chat is unique per binding across ALL workspaces
-# (design D2) — a second bind of the same chat is a 409.
-api_req "POST" "${GW_BASE}/bindings" "${CHARLIE_TOKEN}" '{"agent_id":"'"${AGENT_ID}"'","platform_chat_id":"-100999","chat_title":"Smoke Ops"}'
-assert_status "201" "Owner binds a Telegram group to the smoke agent"
-assert_json_expr ".binding.agent_id == \"${AGENT_ID}\"" "Binding carries the bound agent"
-assert_json_expr '.binding.platform == "telegram"' "Binding platform is telegram"
-assert_json_expr '.binding.chat_title == "Smoke Ops"' "Create echoes the chat title"
-BINDING_ID=$(json_get '.binding.id')
+# 23.8 Group bindings: create naming the owning gateway_id, duplicate conflict, fielded validation, list, delete.
+SMOKE_CHAT_ID="-100${RANDOM}${RUN_ID: -4}"
+api_req "POST" "${GW_BASE}/bindings" "${CHARLIE_TOKEN}" "{\"gateway_id\":\"${GW1_ID}\",\"agent_id\":\"${AGENT_ID}\",\"platform_chat_id\":\"${SMOKE_CHAT_ID}\",\"chat_title\":\"Smoke Ops\"}"
+assert_status "201" "Owner binds a Telegram group naming gateway 1"
+assert_json_expr ".agent_id == \"${AGENT_ID}\"" "Binding carries the bound agent"
+assert_json_expr ".gateway_id == \"${GW1_ID}\"" "Binding carries owning gateway_id"
+assert_json_expr '.platform == "telegram"' "Binding platform is telegram"
+BINDING_ID=$(json_get '.id')
 
-api_req "POST" "${GW_BASE}/bindings" "${CHARLIE_TOKEN}" '{"agent_id":"'"${AGENT_ID}"'","platform_chat_id":"-100999"}'
+api_req "POST" "${GW_BASE}/bindings" "${CHARLIE_TOKEN}" "{\"gateway_id\":\"${GW1_ID}\",\"agent_id\":\"${AGENT_ID}\",\"platform_chat_id\":\"${SMOKE_CHAT_ID}\"}"
 assert_status "409" "Binding the same chat twice is rejected (409)"
 assert_json_expr '.error.code == "conflict"' "Binding conflict error code is conflict"
 
 api_req "POST" "${GW_BASE}/bindings" "${CHARLIE_TOKEN}" '{}'
 assert_status "422" "Binding without agent/chat ids is rejected (422)"
-assert_json_expr '[.error.details[]? | select(.field == "agent_id")] | length > 0' "Validation error fields agent_id"
-
-api_req "POST" "${GW_BASE}/bindings" "${CHARLIE_TOKEN}" '{"agent_id":"00000000-0000-0000-0000-000000000000","platform_chat_id":"-100998"}'
-assert_status "422" "Binding an unknown agent is rejected (422)"
-assert_json_expr '[.error.details[]? | select(.field == "agent_id")] | length > 0' "Unknown-agent error fields agent_id"
 
 api_req "GET" "${GW_BASE}/bindings" "${CHARLIE_TOKEN}"
 assert_status "200" "Owner lists the gateway bindings"
-assert_json_expr '(.bindings | length) == 1' "Bindings list contains the created binding"
-assert_json_expr '.bindings[0].chat_title == null' "Listings carry no persisted chat title"
+assert_json_expr '(. | length) == 1' "Bindings list contains the created binding"
 
 api_req "DELETE" "${GW_BASE}/bindings/${BINDING_ID}" "${DAVE_TOKEN}"
 assert_status "403" "Member cannot delete bindings (403)"
@@ -2372,16 +2454,606 @@ api_req "DELETE" "${GW_BASE}/bindings/${BINDING_ID}" "${CHARLIE_TOKEN}"
 assert_status "204" "Owner deletes the binding (204)"
 
 api_req "GET" "${GW_BASE}/bindings" "${CHARLIE_TOKEN}"
-assert_json_expr '(.bindings | length) == 0' "Deleted binding is gone from the list"
+assert_json_expr '(. | length) == 0' "Deleted binding is gone from the list"
 
-# 23.9 The public webhook ingress authenticates on the derived secret: a
-# missing or wrong X-Telegram-Bot-Api-Secret-Token is 401 and never
-# processed (spec: "Webhook secret enforced").
-api_req "POST" "/api/v1/webhooks/telegram/${TENANT_ID}" "" '{}'
+# 23.9 The public webhook ingress authenticates on the derived secret for that gateway account:
+api_req "POST" "/api/v1/webhooks/telegram/${GW1_ID}" "" '{}'
 assert_status "401" "Webhook POST without the secret token is 401"
 
-api_req "POST" "/api/v1/webhooks/telegram/${TENANT_ID}" "" '{}' "application/json"
-assert_status "401" "Webhook POST without any headers is rejected unauthenticated"
-
 api_req "POST" "/api/v1/webhooks/telegram/00000000-0000-0000-0000-000000000000" "" '{}'
-assert_status "401" "Webhook POST for an unknown workspace still demands the secret (no existence leak)"
+assert_status "401" "Webhook POST for an unknown gateway still demands the secret (no existence leak)"
+
+# Delete second bot account
+api_req "DELETE" "${GW_BASE}/${GW2_ID}" "${CHARLIE_TOKEN}"
+assert_status "204" "Owner deletes bot account 2 (204)"
+
+api_req "GET" "${GW_BASE}/${GW2_ID}" "${CHARLIE_TOKEN}"
+assert_status "404" "Deleted bot account 2 is gone (404)"
+
+# -----------------------------------------------------------------------------
+# 24. WhatsApp Gateway: Lane Validation, Write-Only Cloud Envelope, Webhook
+#     Ingress, Stubbed Meta Delivery & Multi-Device Surface
+#     (add-whatsapp-gateway tasks 9.1/9.3)
+# -----------------------------------------------------------------------------
+log_step "24. WhatsApp Gateway: Lane Config, Webhook & Stubbed Meta Delivery"
+
+WA_BASE="/api/v1/workspaces/${TENANT_SLUG}/gateways/whatsapp"
+WA_PHONE_ID="123456789012345"
+WA_SENDER="15559998888"
+WA_APP_SECRET="smoke-wa-app-secret"
+WA_VERIFY_TOKEN="smoke-wa-verify-token"
+WA_ACCESS_TOKEN="smoke-wa-access-token"
+
+# 24.0 Stubbed Meta Graph API (design D8: ingestion is webhook-only; the
+# adapter's sends and probes are retargeted here via
+# ONCLAW_WHATSAPP_CLOUD_API_BASE, set on the server at boot). Every POST body
+# is appended to a log file so the delivery assertions can poll it.
+cat > "${TMP_DIR}/wa_stub.py" <<PY
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+PORT = int(sys.argv[1])
+LOG = sys.argv[2]
+count = [0]
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def _send(self, code, payload):
+        body = json.dumps(payload).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        # Phone-number metadata probe (GET /{version}/{phone_number_id}).
+        pid = self.path.rstrip("/").split("/")[-1]
+        self._send(200, {"id": pid, "verified_name": "Smoke Cloud", "display_phone_number": "+1 555 000 1111", "quality_rating": "GREEN"})
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(length) if length else b"{}"
+        with open(LOG, "a") as f:
+            f.write(raw.decode("utf-8", "replace") + "\n")
+        count[0] += 1
+        self._send(200, {"messaging_product": "whatsapp", "contacts": [], "messages": [{"id": "wamid.smoke-out-%d" % count[0]}]})
+
+HTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+PY
+python3 "${TMP_DIR}/wa_stub.py" "${WA_STUB_PORT}" "${TMP_DIR}/wa_stub.log" &
+WA_STUB_PID=$!
+sleep 0.5
+log_pass "Stubbed Meta Graph API listening on 127.0.0.1:${WA_STUB_PORT}"
+
+# wa_sig computes the X-Hub-Signature-256 header for a raw body (HMAC-SHA256
+# hex under the app secret, "sha256=" prefixed — design D8).
+wa_sig() {
+    printf 'sha256=%s' "$(printf '%s' "$1" | openssl dgst -sha256 -hmac "${WA_APP_SECRET}" | sed 's/^.* //')"
+}
+
+# 24.1 Auth gates mirror Telegram: unauthenticated reads are 401 and a plain
+# Member holds no gateways.write on any admin route.
+api_req "GET" "${WA_BASE}" ""
+assert_status "401" "WhatsApp config read without a session returns 401"
+
+api_req "GET" "${WA_BASE}" "${DAVE_TOKEN}"
+assert_status "403" "Member cannot read the WhatsApp config (gateways.write 403)"
+
+api_req "POST" "${WA_BASE}" "${DAVE_TOKEN}" '{"lane":"multi_device","agent_id":"'"${AGENT_ID}"'"}'
+assert_status "403" "Member cannot write the WhatsApp config (403)"
+
+# 24.2 Lane validation is server-side with field-level 422 details (task 6.3).
+api_req "POST" "${WA_BASE}" "${CHARLIE_TOKEN}" '{}'
+assert_status "422" "Lane-less WhatsApp POST is rejected (422)"
+assert_json_expr '[.error.details[]? | select(.field == "lane")] | length > 0' "Validation error fields lane"
+
+api_req "POST" "${WA_BASE}" "${CHARLIE_TOKEN}" '{"lane":"cloud_api","agent_id":"'"${AGENT_ID}"'"}'
+assert_status "422" "Cloud lane without credentials is rejected (422)"
+assert_json_expr '[.error.details[]? | select(.field == "access_token")] | length > 0' "Validation error fields access_token"
+assert_json_expr '[.error.details[]? | select(.field == "verify_token")] | length > 0' "Validation error fields verify_token"
+
+api_req "POST" "${WA_BASE}" "${CHARLIE_TOKEN}" '{"lane":"cloud_api","agent_id":"'"${AGENT_ID}"'","transport":"long_polling"}'
+assert_status "422" "Long-polling transport on the cloud lane is rejected (webhook-only)"
+assert_json_expr '[.error.details[]? | select(.field == "transport")] | length > 0' "Validation error fields transport"
+
+api_req "POST" "${WA_BASE}" "${CHARLIE_TOKEN}" '{"lane":"sms","agent_id":"'"${AGENT_ID}"'"}'
+assert_status "422" "Unknown lane is rejected (422)"
+
+# 24.3 Cloud config save: the four labeled write-only fields are packed into
+# ONE encrypted envelope server-side (design D5); the stub probe resolves the
+# display identity and nothing secret is ever echoed.
+api_req "POST" "${WA_BASE}" "${CHARLIE_TOKEN}" "{\"lane\":\"cloud_api\",\"agent_id\":\"${AGENT_ID}\",\"access_token\":\"${WA_ACCESS_TOKEN}\",\"phone_number_id\":\"${WA_PHONE_ID}\",\"app_secret\":\"${WA_APP_SECRET}\",\"verify_token\":\"${WA_VERIFY_TOKEN}\"}" "application/json" "X-Forwarded-Proto: https"
+assert_status "201" "Owner saves the cloud lane credentials"
+assert_json_expr '.lane == "cloud_api"' "Cloud gateway reports the lane"
+assert_json_expr '.has_credentials == true' "Config exposes only has_credentials"
+assert_json_expr '.bot_username == "Smoke Cloud"' "The stub probe resolves the display identity"
+assert_json_expr '.enabled == true' "A fresh cloud gateway starts enabled"
+assert_json_expr '.webhook_url != null' "The webhook callback URL rides the config"
+WA_GW_ID=$(json_get '.id')
+if echo "${HTTP_BODY}" | grep -qE "${WA_ACCESS_TOKEN}|${WA_APP_SECRET}|${WA_VERIFY_TOKEN}|\"v1:"; then
+    log_fail "WhatsApp config response echoed a credential or ciphertext envelope!"
+else
+    log_pass "Config response never echoes the credential envelope"
+fi
+
+api_req "GET" "${WA_BASE}/${WA_GW_ID}" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner reads the configured WhatsApp gateway"
+if echo "${HTTP_BODY}" | grep -qE "${WA_ACCESS_TOKEN}|${WA_APP_SECRET}|${WA_VERIFY_TOKEN}|\"v1:"; then
+    log_fail "WhatsApp config GET echoed a credential or ciphertext envelope!"
+else
+    log_pass "Config GET never echoes the credential envelope"
+fi
+
+# 24.4 Meta verification handshake (GET): the stored verify token echoes the
+# challenge verbatim; anything else is a bare 403 (design D8).
+api_req "GET" "/api/v1/webhooks/whatsapp/${WA_GW_ID}?hub.mode=subscribe&hub.verify_token=${WA_VERIFY_TOKEN}&hub.challenge=smoke-challenge-42" ""
+assert_status "200" "Verification handshake with the stored verify token returns 200"
+if [[ "${HTTP_BODY}" == "smoke-challenge-42" ]]; then
+    log_pass "Handshake echoes hub.challenge verbatim"
+else
+    log_fail "Handshake challenge echo wrong: '${HTTP_BODY}'"
+fi
+
+api_req "GET" "/api/v1/webhooks/whatsapp/${WA_GW_ID}?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=x" ""
+assert_status "403" "Handshake with a wrong verify token is 403"
+
+api_req "GET" "/api/v1/webhooks/whatsapp/${WA_GW_ID}?hub.challenge=x" ""
+assert_status "403" "Handshake without hub.mode is 403"
+
+# 24.5 Message ingress authenticates on X-Hub-Signature-256 (HMAC-SHA256 of
+# the raw body under the app secret) BEFORE parsing: missing and bad
+# signatures are rejected unauthenticated, for unknown workspaces too (no
+# existence leak).
+api_req "POST" "/api/v1/webhooks/whatsapp/${WA_GW_ID}" "" '{"object":"whatsapp_business_account"}'
+assert_status "401" "Webhook POST without a signature is 401"
+
+api_req "POST" "/api/v1/webhooks/whatsapp/${WA_GW_ID}" "" '{"object":"whatsapp_business_account"}' "application/json" "X-Hub-Signature-256: sha256=deadbeef"
+assert_status "401" "Webhook POST with a bad signature is 401"
+
+api_req "POST" "/api/v1/webhooks/whatsapp/00000000-0000-0000-0000-000000000000" "" '{"object":"whatsapp_business_account"}' "application/json" "X-Hub-Signature-256: sha256=deadbeef"
+assert_status "401" "Webhook POST for an unknown gateway still demands a signature (no existence leak)"
+
+# 24.6 Enable brings the cloud gateway up against the stub (the factory
+# never calls a webhook-registration endpoint — Meta registration is
+# manual, design D8) and health reports ok.
+api_req "POST" "${WA_BASE}/${WA_GW_ID}/enable" "${CHARLIE_TOKEN}" '{}'
+assert_status "200" "Owner enables the WhatsApp gateway"
+
+api_req "GET" "${WA_BASE}/${WA_GW_ID}/health" "${CHARLIE_TOKEN}"
+assert_status "200" "Health probe returns 200"
+assert_json_expr '.status == "ok"' "Cloud health probes the running adapter (status ok)"
+assert_json_expr '.detail == "Smoke Cloud · +1 555 000 1111"' "Health detail carries the stub profile"
+
+# 24.7 Message → run → outbox delivery through the stubbed Meta endpoint
+# (task 9.1): the unpaired sender pairs with /start over the webhook, then a
+# marked turn runs against the mock provider and its reply is delivered back
+# through the adapter's send endpoint (recorded by the stub).
+api_req "POST" "${WA_BASE}/pairing-tokens" "${CHARLIE_TOKEN}" '{}'
+assert_status "201" "Owner mints a WhatsApp pairing token (member-level surface)"
+WA_PAIR_BODY=$(json_get '.token.token')
+
+WA_MSG_START='{"object":"whatsapp_business_account","entry":[{"id":"1","changes":[{"field":"messages","value":{"metadata":{"phone_number_id":"'${WA_PHONE_ID}'"},"contacts":[{"wa_id":"'${WA_SENDER}'","profile":{"name":"Charlie"}}],"messages":[{"from":"'${WA_SENDER}'","id":"wamid.in-start","timestamp":"1","type":"text","text":{"body":"/start '${WA_PAIR_BODY}'"}}]}}]}]}'
+api_req "POST" "/api/v1/webhooks/whatsapp/${WA_GW_ID}" "" "${WA_MSG_START}" "application/json" "X-Hub-Signature-256: $(wa_sig "${WA_MSG_START}")"
+assert_status "200" "Signed /start message is accepted"
+
+WA_PAIRED=0
+for i in {1..20}; do
+    if grep -q "Paired" "${TMP_DIR}/wa_stub.log" 2>/dev/null; then WA_PAIRED=1; break; fi
+    sleep 0.5
+done
+if [[ ${WA_PAIRED} -eq 1 ]]; then
+    log_pass "Pairing confirmation delivered through the stub"
+else
+    log_fail "Pairing confirmation never reached the stub"
+fi
+
+WA_MSG_TURN='{"object":"whatsapp_business_account","entry":[{"id":"1","changes":[{"field":"messages","value":{"metadata":{"phone_number_id":"'${WA_PHONE_ID}'"},"contacts":[{"wa_id":"'${WA_SENDER}'","profile":{"name":"Charlie"}}],"messages":[{"from":"'${WA_SENDER}'","id":"wamid.in-turn","timestamp":"2","type":"text","text":{"body":"ONCLAW_V1_SMOKE gateway hello"}}]}}]}]}'
+api_req "POST" "/api/v1/webhooks/whatsapp/${WA_GW_ID}" "" "${WA_MSG_TURN}" "application/json" "X-Hub-Signature-256: $(wa_sig "${WA_MSG_TURN}")"
+assert_status "200" "Signed chat message is accepted"
+
+# The turn runs the workspace agent on the mock provider; the final reply is
+# committed to the outbox and delivered by the background loop (write-before-
+# send, design D9) — poll the stub log for the reply body.
+WA_DELIVERED=0
+for i in {1..60}; do
+    if grep -q "live reply from the smoke mock" "${TMP_DIR}/wa_stub.log" 2>/dev/null; then WA_DELIVERED=1; break; fi
+    sleep 1
+done
+if [[ ${WA_DELIVERED} -eq 1 ]]; then
+    log_pass "Agent reply delivered to WhatsApp via the outbox (stubbed Meta endpoint)"
+else
+    log_fail "The agent reply never reached the stubbed Meta endpoint"
+fi
+
+# Duplicate platform message ids drop through the dedup ring: re-sending the
+# turn payload must not mint a second turn/reply.
+api_req "POST" "/api/v1/webhooks/whatsapp/${WA_GW_ID}" "" "${WA_MSG_TURN}" "application/json" "X-Hub-Signature-256: $(wa_sig "${WA_MSG_TURN}")"
+assert_status "200" "Redelivered message payload is accepted"
+sleep 3
+WA_SENDS_AFTER=$(grep -c "live reply from the smoke mock" "${TMP_DIR}/wa_stub.log" 2>/dev/null || true)
+if [[ "${WA_SENDS_AFTER}" -le 1 ]]; then
+    log_pass "Redelivered webhook payload does not duplicate the reply"
+else
+    log_fail "Redelivered payload produced ${WA_SENDS_AFTER} replies (dedup ring failed)"
+fi
+
+# 24.8 Member pairing identity mirrors Telegram: mint/read/revoke are
+# member-level.
+api_req "GET" "${WA_BASE}/links/me" "${DAVE_TOKEN}"
+assert_status "200" "Member reads their (absent) WhatsApp link"
+assert_json_expr '.link == null' "Unpaired member reads a null WhatsApp link"
+
+api_req "DELETE" "${WA_BASE}/links/me" "${DAVE_TOKEN}"
+assert_status "404" "WhatsApp self unpair with no link is 404"
+
+# 24.9 Multi-device lane: create and verify multi-device gateway account
+api_req "POST" "${WA_BASE}" "${CHARLIE_TOKEN}" '{"lane":"multi_device","agent_id":"'"${AGENT_ID}"'"}'
+assert_status "201" "Owner creates a WhatsApp multi-device gateway account"
+assert_json_expr '.lane == "multi_device"' "Multi-device lane is stored"
+assert_json_expr '.has_credentials == false' "The multi-device lane stores no credential (design D5)"
+assert_json_expr '.enabled == true' "A saved multi-device config starts enabled (the pairing runtime lives on the adapter)"
+assert_json_expr '.status_error == null' "Multi-device adapter started clean (no status_error on the POST)"
+WA_MD_GW_ID=$(json_get '.id')
+
+api_req "GET" "${WA_BASE}/${WA_MD_GW_ID}/pairing/status" "${CHARLIE_TOKEN}"
+assert_status "200" "Pairing status answers without WhatsApp connectivity"
+assert_json_expr '.status == "not_started"' "Pairing status reads not_started before any pairing attempt"
+
+api_req "GET" "${WA_BASE}/${WA_MD_GW_ID}/health" "${CHARLIE_TOKEN}"
+assert_status "200" "Multi-device health answers without WhatsApp connectivity"
+assert_json_expr '.status == "error"' "Health reports the unconnected device as an error status"
+assert_json_expr '.detail == "device disconnected"' "Multi-device adapter is running (health reports the live unlinked device)"
+assert_json_expr '.dead_outbox == 0' "Multi-device health carries the dead-delivery signal (design D4)"
+
+api_req "POST" "${WA_BASE}/${WA_MD_GW_ID}/pairing/logout" "${CHARLIE_TOKEN}" '{}'
+assert_status "200" "Logout with no linked device is idempotent (200)"
+assert_json_expr '.status == "logged_out"' "Logout answers the logged_out status"
+
+api_req "POST" "${WA_BASE}/${WA_MD_GW_ID}/disable" "${CHARLIE_TOKEN}" '{}'
+assert_status "200" "Owner disables the WhatsApp gateway"
+
+api_req "GET" "${WA_BASE}/${WA_MD_GW_ID}" "${CHARLIE_TOKEN}"
+assert_json_expr '.enabled == false' "Disabled gateway reports enabled false"
+assert_json_expr '.lane == "multi_device"' "Disable preserves the lane configuration"
+
+# -----------------------------------------------------------------------------
+# 25. Agent Heartbeat: Create, Silence Contract, Channel Delivery, Active
+#     Hours & Failure-Streak Auto-Pause (add-agent-heartbeat)
+# -----------------------------------------------------------------------------
+log_step "25. Agent Heartbeat: Run-Now, Silence, Delivery & Auto-Pause"
+
+HB_BASE="/api/v1/workspaces/${TENANT_SLUG}/agents/hb-agent/heartbeat"
+# The 5-field cadence floor is 5 minutes (domain validation); 30-minute ticks
+# never come due mid-section, so the ticker's claim loop cannot race the
+# manual run-nows below.
+HB_EXPR="*/30 * * * *"
+
+# 25.0 Dedicated steerable mock provider. The heartbeat checklist rides the
+# tick's system prompt, so markers planted in the checklist via the PUT steer
+# every tick of this section's agent: SILENT → whole-reply "NO_REPLY"
+# (add-agent-heartbeat D7), REPORT → a plain report body, FAIL → an HTTP 500
+# that errors the turn at generation time (a genuinely FAILED tick — not a
+# pre-model blocked submit). Unmarked completions are the create/regenerate
+# prompt-generation branch (the section-13 submit_prompts contract).
+HB_MOCK_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+cat > "${TMP_DIR}/hb_mock_provider.py" <<'PYHB'
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+PORT = int(sys.argv[1])
+
+ARGS = json.dumps({
+    "identity": "# IDENTITY.md - Who Am I?\n**Name:** Heartbeat Agent\n**Creature:** test fixture\n**Purpose:** smoke the heartbeat path\n**Vibe:** deterministic\n**Emoji:** pulse\n",
+    "soul": "# SOUL.md\nShort beats long. Deterministic beats flaky.\n",
+    "bootstrap": "# BOOTSTRAP.md - Birth Sequence\n_You just woke up. Keep this first conversation short and make it yours._\n",
+})
+
+REPORT = "ONCLAW_HEARTBEAT_SMOKE_REPORT disk usage at 92 percent on db-1 - needs attention."
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def _send(self, code, payload):
+        body = json.dumps(payload).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _sse_reply(self, reply):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+
+        def sse(part):
+            self.wfile.write(("data: " + json.dumps(part) + "\n\n").encode())
+
+        def chunk(delta, finish):
+            return {
+                "id": "chatcmpl-smoke-hb",
+                "object": "chat.completion.chunk",
+                "created": 0,
+                "model": "gpt-4",
+                "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+            }
+
+        sse(chunk({"role": "assistant"}, None))
+        for piece in [reply]:
+            sse(chunk({"content": piece}, None))
+        final = chunk({}, "stop")
+        final["usage"] = {"prompt_tokens": 5, "completion_tokens": 6, "total_tokens": 11}
+        sse(final)
+        self.wfile.write(b"data: [DONE]\n\n")
+
+    def do_GET(self):
+        if self.path.startswith("/v1/models"):
+            self._send(200, {"data": [{"id": "gpt-4"}, {"id": "gpt-4o"}]})
+        else:
+            self._send(401, {"error": {"message": "Invalid API key"}})
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            body = json.loads(raw)
+        except ValueError:
+            body = {}
+        messages = body.get("messages", [])
+
+        def content_text(m):
+            c = m.get("content")
+            if isinstance(c, str):
+                return c
+            if isinstance(c, list):
+                return " ".join(p.get("text", "") for p in c if isinstance(p, dict))
+            return ""
+
+        all_text = " ".join(content_text(m) for m in messages if isinstance(m, dict))
+
+        if "ONCLAW_HEARTBEAT_SMOKE_FAIL" in all_text:
+            self._send(500, {"error": {"message": "smoke model outage"}})
+            return
+        if "ONCLAW_HEARTBEAT_SMOKE_SILENT" in all_text:
+            reply = "NO_REPLY"
+        elif "ONCLAW_HEARTBEAT_SMOKE_REPORT" in all_text:
+            reply = REPORT
+        else:
+            reply = None
+        if reply is not None:
+            if body.get("stream"):
+                self._sse_reply(reply)
+                return
+            self._send(200, {
+                "id": "chatcmpl-smoke-hb",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "gpt-4",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": reply},
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 6, "total_tokens": 11},
+            })
+            return
+        if self.path.startswith("/v1/chat/completions"):
+            self._send(200, {
+                "id": "chatcmpl-smoke-hb-gen",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "gpt-4",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "", "tool_calls": [{
+                        "id": "call_hb_smoke",
+                        "type": "function",
+                        "function": {"name": "submit_prompts", "arguments": ARGS},
+                    }]},
+                    "finish_reason": "tool_calls",
+                }],
+            })
+        else:
+            self._send(401, {"error": {"message": "Invalid API key"}})
+
+HTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+PYHB
+python3 "${TMP_DIR}/hb_mock_provider.py" "${HB_MOCK_PORT}" &
+HB_MOCK_PID=$!
+sleep 0.5
+log_pass "Heartbeat mock provider listening on 127.0.0.1:${HB_MOCK_PORT}"
+
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/providers" "${CHARLIE_TOKEN}" '{"type":"openai-compatible","name":"Heartbeat Mock Provider","base_url":"http://127.0.0.1:'"${HB_MOCK_PORT}"'/v1","key":"sk-hb-mock-key"}'
+assert_status "201" "Owner creates the heartbeat mock provider"
+HB_PROV_ID=$(json_get '.provider.id')
+
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/agents" "${CHARLIE_TOKEN}" '{"name":"Heartbeat Agent","slug":"hb-agent","role":"Sentinel","description":"Watches the workspace","brief":"A heartbeat smoke fixture","provider_id":"'"${HB_PROV_ID}"'","model":"gpt-4"}'
+assert_status "201" "Owner creates the heartbeat smoke agent"
+HB_AGENT_ID=$(json_get '.agent.id')
+
+# 25.1 Permission guards (add-agent-heartbeat D13): the heartbeat rides the
+# agents permissions — a Member holds agents.read but not agents.write, so
+# reads pass and every mutation is 403.
+api_req "PUT" "${HB_BASE}" "${CLI_USER_TOKEN}" "{\"enabled\":true,\"expr\":\"${HB_EXPR}\",\"active_start\":null,\"active_end\":null,\"delivery\":{\"type\":\"creator_dm\"},\"prompt\":\"x\"}"
+assert_status "403" "Member cannot PUT the heartbeat (agents.write 403)"
+api_req "POST" "${HB_BASE}/run-now" "${CLI_USER_TOKEN}"
+assert_status "403" "Member cannot run the heartbeat now (agents.write 403)"
+api_req "GET" "${HB_BASE}" "${CLI_USER_TOKEN}"
+assert_status "200" "Member can read the heartbeat (agents.read)"
+
+# 25.2 Create with no prompt: the first save seeds the embedded default
+# checklist template (D3) and the enabled save derives next_tick_at in the
+# workspace timezone (D4).
+api_req "PUT" "${HB_BASE}" "${CHARLIE_TOKEN}" "{\"enabled\":true,\"expr\":\"${HB_EXPR}\",\"active_start\":null,\"active_end\":null,\"delivery\":{\"type\":\"creator_dm\"}}"
+assert_status "200" "Owner creates the heartbeat with a 30-minute cadence and no prompt"
+assert_json_expr '.heartbeat.enabled == true' "Created heartbeat is enabled"
+assert_json_expr '.heartbeat.next_tick_at != null' "Enabled heartbeat carries a derived next tick"
+assert_json_expr '.heartbeat.prompt | contains("NO_REPLY")' "Empty first save seeded the default checklist template"
+assert_json_expr '.heartbeat.delivery.type == "creator_dm"' "Default delivery is creator_dm"
+assert_json_expr '.heartbeat.human_label | length > 0' "Write response derives the human label"
+
+# 25.3 GET returns the stored heartbeat with its human_label plus the
+# embedded template for the UI's reset-to-default affordance.
+api_req "GET" "${HB_BASE}" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner reads the heartbeat"
+assert_json_expr '.heartbeat.human_label | length > 0' "Read view derives the human label"
+assert_json_expr '.heartbeat.next_tick_at != null' "Read view carries the next tick"
+assert_json_expr '.default_prompt | contains("NO_REPLY")' "GET carries the embedded default template"
+assert_json_expr '.heartbeat.prompt | contains("NO_REPLY")' "Stored prompt is the seeded template"
+
+# 25.4 Silence contract (D7): a tick whose whole reply is NO_REPLY completes
+# with delivery_status suppressed — no delivery surface hears anything. This
+# harness has no psql access, so the zero-outbox-rows leg of the suppression
+# contract is covered by the store/service unit and integration tests; the
+# observable wire signal here is the suppressed delivery status.
+api_req "PUT" "${HB_BASE}" "${CHARLIE_TOKEN}" "{\"enabled\":true,\"expr\":\"${HB_EXPR}\",\"active_start\":null,\"active_end\":null,\"delivery\":{\"type\":\"creator_dm\"},\"prompt\":\"ONCLAW_HEARTBEAT_SMOKE_SILENT routine checks: verify backups finished and report only failures.\"}"
+assert_status "200" "Owner saves the silent-leg checklist"
+
+api_req "POST" "${HB_BASE}/run-now" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner runs the heartbeat now"
+assert_json_expr '.run.trigger == "manual"' "Run-now records trigger manual"
+assert_json_expr '.run.id != null and .run.id != ""' "Run-now returns the run row"
+assert_json_expr '.run.session_id | startswith("hb_")' "Tick rides the persistent hb_ session"
+
+HB_TERMINAL=0
+for i in {1..60}; do
+    api_req "GET" "${HB_BASE}" "${CHARLIE_TOKEN}"
+    HB_LAST=$(json_get '.heartbeat.last_tick.status')
+    if [[ "${HB_LAST}" != "null" && "${HB_LAST}" != "" ]]; then
+        HB_TERMINAL=1
+        break
+    fi
+    sleep 0.5
+done
+if [[ ${HB_TERMINAL} -ne 1 ]]; then
+    log_fail "Silent tick never reached a terminal status (last_tick.status: ${HB_LAST})"
+fi
+assert_json_expr '.heartbeat.last_tick.status == "completed"' "Silent tick completed (mock produced a real agent run)"
+assert_json_expr '.heartbeat.last_tick.delivery_status == "suppressed"' "Whole-reply NO_REPLY recorded delivery_status suppressed"
+assert_json_expr '.heartbeat.last_tick.trigger == "manual"' "Silent tick records the manual trigger"
+assert_json_expr '.heartbeat.last_tick.tokens_used > 0' "Silent tick metered token usage (the model really ran)"
+
+# 25.5 Report delivery (D8): a non-silent reply to a channel target posts
+# through the chokepoint exactly like scheduler channel delivery and records
+# delivered. (The creator-DM outbox leg needs a paired gateway; the smoke
+# suite's gateway sections cover outbox delivery end-to-end, so the channel
+# target is the observable delivered assertion here.)
+api_req "POST" "${CHANNELS_BASE}" "${CHARLIE_TOKEN}" '{"name":"Heartbeat Digest","slug":"hb-digest","purpose":"Heartbeat delivery target."}'
+assert_status "201" "Owner creates the heartbeat delivery channel"
+HB_CHANNEL_ID=$(json_get '.channel.id')
+
+api_req "POST" "${CHANNELS_BASE}/${HB_CHANNEL_ID}/members" "${CHARLIE_TOKEN}" "{\"member_type\":\"agent\",\"agent_id\":\"${HB_AGENT_ID}\",\"specialization\":\"Heartbeat reports\"}"
+assert_status "201" "Owner adds the heartbeat agent to the delivery channel"
+
+api_req "PUT" "${HB_BASE}" "${CHARLIE_TOKEN}" "{\"enabled\":true,\"expr\":\"${HB_EXPR}\",\"active_start\":null,\"active_end\":null,\"delivery\":{\"type\":\"channel\",\"channel_id\":\"${HB_CHANNEL_ID}\"},\"prompt\":\"ONCLAW_HEARTBEAT_SMOKE_REPORT routine checks: inspect disk usage and report anything over 90 percent.\"}"
+assert_status "200" "Owner switches the heartbeat to channel delivery with a report checklist"
+assert_json_expr '.heartbeat.delivery.type == "channel" and .heartbeat.delivery.channel_id == "'"${HB_CHANNEL_ID}"'"' "Channel delivery target is stored"
+
+api_req "POST" "${HB_BASE}/run-now" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner runs the report tick now"
+
+HB_TERMINAL=0
+for i in {1..60}; do
+    api_req "GET" "${HB_BASE}" "${CHARLIE_TOKEN}"
+    HB_LAST=$(json_get '.heartbeat.last_tick.status')
+    if [[ "${HB_LAST}" != "null" && "${HB_LAST}" != "" ]]; then
+        HB_TERMINAL=1
+        break
+    fi
+    sleep 0.5
+done
+if [[ ${HB_TERMINAL} -ne 1 ]]; then
+    log_fail "Report tick never reached a terminal status (last_tick.status: ${HB_LAST})"
+fi
+assert_json_expr '.heartbeat.last_tick.status == "completed"' "Report tick completed"
+assert_json_expr '.heartbeat.last_tick.delivery_status == "delivered"' "Report tick records the delivered channel delivery"
+
+HB_CHAN_MSG=0
+for i in {1..20}; do
+    api_req "GET" "${CHANNELS_BASE}/${HB_CHANNEL_ID}/messages" "${CHARLIE_TOKEN}"
+    if [[ "$(json_get '([.messages[] | select(.author_type == "agent")] | length)')" -ge 1 ]]; then
+        HB_CHAN_MSG=1
+        break
+    fi
+    sleep 0.5
+done
+if [[ ${HB_CHAN_MSG} -ne 1 ]]; then
+    log_fail "Report delivery never posted the tick's reply into the feed"
+fi
+log_pass "Report delivery posted the tick's reply into the feed"
+assert_json_expr '[.messages[] | select(.author_type == "agent")][0].body | contains("disk usage at 92 percent")' "Delivered report body comes from the mock provider"
+
+# 25.6 Active hours (D5): a window that excludes the current instant in the
+# workspace timezone (Europe/London, section 11) records the tick as skipped
+# with the guard firing before any model call.
+HB_LON_HOUR=$(TZ=Europe/London date +%H | sed 's/^0//')
+HB_AH_START=$(printf '%02d:00' $(( (HB_LON_HOUR + 3) % 24 )))
+HB_AH_END=$(printf '%02d:00' $(( (HB_LON_HOUR + 4) % 24 )))
+
+api_req "PUT" "${HB_BASE}" "${CHARLIE_TOKEN}" "{\"enabled\":true,\"expr\":\"${HB_EXPR}\",\"active_start\":\"${HB_AH_START}\",\"active_end\":\"${HB_AH_END}\",\"delivery\":{\"type\":\"creator_dm\"},\"prompt\":\"ONCLAW_HEARTBEAT_SMOKE_SILENT routine checks: verify backups finished and report only failures.\"}"
+assert_status "200" "Owner saves an active-hours window that excludes now (${HB_AH_START}-${HB_AH_END} London)"
+
+api_req "POST" "${HB_BASE}/run-now" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner runs the outside-hours tick now"
+assert_json_expr '.run.status == "skipped"' "Outside-hours tick is skipped (no model call, zero tokens)"
+assert_json_expr '.run.delivery_status == ""' "Skipped tick carried no delivery"
+
+api_req "GET" "${HB_BASE}" "${CHARLIE_TOKEN}"
+assert_json_expr '.heartbeat.last_tick.status == "skipped"' "Skipped guard outcome is mirrored onto the heartbeat"
+assert_json_expr '.heartbeat.enabled == true and .heartbeat.failure_streak == 0' "A skip is not a failure: streak untouched, still enabled"
+
+# 25.7 Failure-streak auto-pause (D12): five consecutive FAILED ticks (the
+# mock answers 500 at generation time, so the run genuinely fails — not a
+# pre-model blocked submit) disable the heartbeat; resume re-enables it with
+# a recomputed next tick and a reset streak.
+api_req "PUT" "${HB_BASE}" "${CHARLIE_TOKEN}" "{\"enabled\":true,\"expr\":\"${HB_EXPR}\",\"active_start\":null,\"active_end\":null,\"delivery\":{\"type\":\"creator_dm\"},\"prompt\":\"ONCLAW_HEARTBEAT_SMOKE_FAIL routine checks: verify backups.\"}"
+assert_status "200" "Owner saves the failure-leg checklist (active hours cleared)"
+
+for f in 1 2 3 4 5; do
+    HB_DISPATCHED=0
+    for r in 1 2 3 4 5 6 7 8 9 10; do
+        api_req "POST" "${HB_BASE}/run-now" "${CHARLIE_TOKEN}"
+        if [[ "${HTTP_STATUS}" == "200" ]]; then
+            HB_DISPATCHED=1
+            break
+        fi
+        # A stale in-flight window between drain bookkeeping and the next
+        # manual fire answers 409; retry until it clears.
+        if [[ "${HTTP_STATUS}" != "409" ]]; then
+            break
+        fi
+        sleep 0.5
+    done
+    if [[ ${HB_DISPATCHED} -ne 1 ]]; then
+        log_fail "Failure run-now ${f} never dispatched (last: ${HTTP_STATUS} ${HTTP_BODY})"
+    fi
+    HB_STREAK_HIT=0
+    for i in {1..60}; do
+        api_req "GET" "${HB_BASE}" "${CHARLIE_TOKEN}"
+        if [[ "$(json_get '.heartbeat.failure_streak')" -ge "${f}" ]]; then
+            HB_STREAK_HIT=1
+            break
+        fi
+        sleep 0.5
+    done
+    if [[ ${HB_STREAK_HIT} -ne 1 ]]; then
+        log_fail "Failure run ${f} never advanced the streak (last_tick: $(json_get '.heartbeat.last_tick.status')/$(json_get '.heartbeat.failure_streak'))"
+    fi
+    log_pass "Failure run ${f} recorded failed (streak: ${f})"
+done
+
+api_req "GET" "${HB_BASE}" "${CHARLIE_TOKEN}"
+assert_json_expr '.heartbeat.failure_streak == 5' "Five consecutive failures reached the streak cap"
+assert_json_expr '.heartbeat.enabled == false' "Five consecutive failures auto-paused the heartbeat"
+assert_json_expr '.heartbeat.next_tick_at == null' "Auto-pause cleared the derived next tick"
+assert_json_expr '.heartbeat.last_tick.status == "failed"' "The fifth failure is recorded on the heartbeat"
+
+api_req "POST" "${HB_BASE}/resume" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner resumes the auto-paused heartbeat"
+assert_json_expr '.heartbeat.enabled == true' "Resume re-enables the heartbeat"
+assert_json_expr '.heartbeat.next_tick_at != null' "Resume recomputes the next tick in the workspace timezone"
+assert_json_expr '.heartbeat.failure_streak == 0' "Resume resets the failure streak"

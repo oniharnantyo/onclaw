@@ -121,14 +121,14 @@ func NewAdapter(gatewayID, botToken string, handler gateways.InboundHandler, opt
 	}
 	httpTransport := newHTTPTransport(botToken, DefaultAPIBase, nil)
 	a := &Adapter{
-		gatewayID:      gatewayID,
-		handler:        handler,
-		transport:      httpTransport,
+		gatewayID:        gatewayID,
+		handler:          handler,
+		transport:        httpTransport,
 		defaultTransport: httpTransport,
-		mode:           TransportModeLongPolling,
-		pollTimeout:    30 * time.Second,
-		seen:           make(map[int64]struct{}),
-		seenMax:        512,
+		mode:             TransportModeLongPolling,
+		pollTimeout:      30 * time.Second,
+		seen:             make(map[int64]struct{}),
+		seenMax:          512,
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -234,12 +234,30 @@ func (a *Adapter) identity() (int64, string) {
 	return a.botID, a.botUsername
 }
 
+// Capabilities implements PlatformAdapter: Telegram supports in-place edits
+// and inline approval buttons (add-whatsapp-gateway design D2); typing is
+// universal and carries no flag.
+func (a *Adapter) Capabilities() gateways.AdapterCapabilities {
+	return gateways.AdapterCapabilities{CanEdit: true, CanButton: true}
+}
+
+// flavorMatches reports whether body is rendered in the format this adapter
+// speaks (design D9). An empty flavor means the core's format-agnostic copy
+// paths and is accepted as this adapter's own HTML wire format.
+func flavorMatches(flavor string) bool {
+	return flavor == "" || flavor == gateways.FlavorTelegramHTML
+}
+
 // SendMessage implements PlatformAdapter: post an HTML message, falling back
-// once to plain text when Telegram rejects the entities (design D5).
-func (a *Adapter) SendMessage(ctx context.Context, chatID, htmlText string, opts gateways.SendOptions) (string, error) {
+// once to plain text when Telegram rejects the entities (design D5). A body
+// rendered in another platform's flavor is refused, never misparsed.
+func (a *Adapter) SendMessage(ctx context.Context, chatID, body, flavor string, opts gateways.SendOptions) (string, error) {
+	if !flavorMatches(flavor) {
+		return "", fmt.Errorf("telegram adapter: cannot deliver %q body", flavor)
+	}
 	params := url.Values{}
 	params.Set("chat_id", chatID)
-	params.Set("text", htmlText)
+	params.Set("text", body)
 	params.Set("parse_mode", "HTML")
 	if opts.DisablePreview {
 		params.Set("link_preview_options", `{"is_disabled":true}`)
@@ -252,17 +270,20 @@ func (a *Adapter) SendMessage(ctx context.Context, chatID, htmlText string, opts
 	// Single plain-text retry (spec: parse failure falls back rather than
 	// dropping the message).
 	params.Del("parse_mode")
-	params.Set("text", stripHTML(htmlText))
+	params.Set("text", stripHTML(body))
 	return a.sendText(ctx, "sendMessage", params)
 }
 
 // EditMessage implements PlatformAdapter: rewrite a sent message in place,
-// with the same parse-failure fallback.
-func (a *Adapter) EditMessage(ctx context.Context, chatID, messageID, htmlText string) error {
+// with the same parse-failure fallback and flavor contract.
+func (a *Adapter) EditMessage(ctx context.Context, chatID, messageID, body, flavor string) error {
+	if !flavorMatches(flavor) {
+		return fmt.Errorf("telegram adapter: cannot deliver %q body", flavor)
+	}
 	params := url.Values{}
 	params.Set("chat_id", chatID)
 	params.Set("message_id", messageID)
-	params.Set("text", htmlText)
+	params.Set("text", body)
 	params.Set("parse_mode", "HTML")
 
 	err := a.editText(ctx, params)
@@ -270,7 +291,7 @@ func (a *Adapter) EditMessage(ctx context.Context, chatID, messageID, htmlText s
 		return err
 	}
 	params.Del("parse_mode")
-	params.Set("text", stripHTML(htmlText))
+	params.Set("text", stripHTML(body))
 	return a.editText(ctx, params)
 }
 

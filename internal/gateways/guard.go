@@ -15,8 +15,8 @@ const (
 
 // loopState is one chat's runaway-loop tracking.
 type loopState struct {
-	consecutive int
-	windowStart time.Time
+	consecutive  int
+	windowStart  time.Time
 	blockedUntil time.Time
 }
 

@@ -125,9 +125,10 @@ func (b *ApprovalBridge) Pending(sessionID string) bool {
 // legitimate, resumes the interrupted turn (the same path the web UI uses).
 // The actor must be a paired member of the workspace the card belongs to,
 // and the callback data must address the chat's pending interrupt. On
-// success the card is updated to record the decision and actor, the pending
-// state is cleared, and the resumed turn's stream is returned for the caller
-// to drain.
+// success the decision is recorded on the card — edited in place when the
+// platform can edit, otherwise posted as a receipt follow-up message
+// (add-whatsapp-gateway design D2) — the pending state is cleared, and the
+// resumed turn's stream is returned for the caller to drain.
 func (b *ApprovalBridge) HandleCallback(ctx context.Context, cb Callback) (*agents.EventStream, error) {
 	interruptID, approved, ok := DecodeApprovalCallback(cb.Data)
 	if !ok {
@@ -160,33 +161,60 @@ func (b *ApprovalBridge) HandleCallback(ctx context.Context, cb Callback) (*agen
 		return nil, ErrApprovalUnpaired
 	}
 
+	caps := b.adapter.Capabilities()
+
 	stream, err := b.submitter.Resume(ctx, found.req, found.payload, approved)
 	if err != nil {
 		// The interrupt stays pending: it may still be resumable, and the
 		// card remains the only path forward.
 		slog.Error("gateway approvals: resume failed", "interrupt", interruptID, "error", err)
-		b.editCard(ctx, cb.ChatID, found.cardMessageID, approvalCardHTML(approved, cb, true))
+		b.recordDecision(ctx, cb, found.cardMessageID, approvalCardHTML(approved, cb, true), caps)
 		return nil, fmt.Errorf("gateway approvals: resume: %w", err)
 	}
 
 	b.mu.Lock()
 	delete(b.pending, sessionKey)
 	b.mu.Unlock()
-	b.editCard(ctx, cb.ChatID, found.cardMessageID, approvalCardHTML(approved, cb, false))
+	b.recordDecision(ctx, cb, found.cardMessageID, approvalCardHTML(approved, cb, false), caps)
 	return stream, nil
 }
 
-// refuse posts a refusal notice (best-effort).
+// PendingTextDecision reports the session's pending approval card when the
+// platform decides approvals by text reply — CanButton=false, where the
+// card instructs replying APPROVE or DENY and the router intercepts that
+// reply (add-whatsapp-gateway design D3). Button platforms return ok=false:
+// their decisions arrive as callbacks, never as chat text.
+func (b *ApprovalBridge) PendingTextDecision(sessionID string) (interruptID, cardMessageID string, ok bool) {
+	b.mu.Lock()
+	p, found := b.pending[sessionID]
+	b.mu.Unlock()
+	if !found || b.adapter.Capabilities().CanButton {
+		return "", "", false
+	}
+	return p.payload.InterruptID, p.cardMessageID, true
+}
+
+// refuse posts a refusal notice (best-effort). The copy is format-agnostic
+// (no markup), so the empty flavor defers the wire format to the adapter.
 func (b *ApprovalBridge) refuse(ctx context.Context, cb Callback, text string) {
-	if _, err := b.adapter.SendMessage(ctx, cb.ChatID, RenderTelegramHTML(text), SendOptions{DisablePreview: true}); err != nil {
+	if _, err := b.adapter.SendMessage(ctx, cb.ChatID, RenderTelegramHTML(text), "", SendOptions{DisablePreview: true}); err != nil {
 		slog.Warn("gateway approvals: refusal notice failed", "chat", cb.ChatID, "error", err)
 	}
 }
 
-// editCard rewrites the approval card message (best-effort).
-func (b *ApprovalBridge) editCard(ctx context.Context, chatID, messageID, html string) {
-	if err := b.adapter.EditMessage(ctx, chatID, messageID, html); err != nil {
-		slog.Warn("gateway approvals: card update failed", "chat", chatID, "error", err)
+// recordDecision records a card's decision: the card message is rewritten
+// in place when the platform can edit; otherwise the decision goes out as a
+// receipt follow-up message (add-whatsapp-gateway design D2/D3), leaving
+// the original card untouched.
+func (b *ApprovalBridge) recordDecision(ctx context.Context, cb Callback, cardMessageID, body string, caps AdapterCapabilities) {
+	if caps.CanEdit {
+		if err := b.adapter.EditMessage(ctx, cb.ChatID, cardMessageID, body, ""); err != nil {
+			slog.Warn("gateway approvals: card update failed", "chat", cb.ChatID, "error", err)
+		}
+		return
+	}
+	if _, err := b.adapter.SendMessage(ctx, cb.ChatID, body, "", SendOptions{DisablePreview: true}); err != nil {
+		slog.Warn("gateway approvals: decision receipt failed", "chat", cb.ChatID, "error", err)
 	}
 }
 

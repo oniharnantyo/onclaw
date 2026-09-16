@@ -19,7 +19,7 @@ type outboxSender struct {
 	sendErr []error
 }
 
-func (s *outboxSender) SendMessage(ctx context.Context, chatID, html string, opts SendOptions) (string, error) {
+func (s *outboxSender) SendMessage(ctx context.Context, chatID, body, flavor string, opts SendOptions) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.sendErr) > 0 {
@@ -29,7 +29,7 @@ func (s *outboxSender) SendMessage(ctx context.Context, chatID, html string, opt
 			return "", err
 		}
 	}
-	s.sends = append(s.sends, testSentMessage{ChatID: chatID, HTML: html, Opts: opts})
+	s.sends = append(s.sends, testSentMessage{ChatID: chatID, HTML: body, Flavor: flavor, Opts: opts})
 	return "sent-" + string(rune('a'+len(s.sends))), nil
 }
 
@@ -61,7 +61,7 @@ func TestOutboxCrashBetweenGenerateAndSendRedelivers(t *testing.T) {
 	// the process crashes before any delivery cycle runs.
 	firstSender := &outboxSender{}
 	first := NewOutbox(outboxStore, staticSenders(firstSender))
-	if _, err := first.Enqueue(ctx, "gw1", "ws1", "sess1", "chat-42", "<b>The answer</b>", SendOptions{}); err != nil {
+	if _, err := first.Enqueue(ctx, "gw1", "ws1", "sess1", "chat-42", "<b>The answer</b>", FlavorTelegramHTML, SendOptions{}); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 	if len(firstSender.sent()) != 0 {
@@ -99,7 +99,7 @@ func TestOutboxDuplicateWarningOnAmbiguousRedelivery(t *testing.T) {
 	// that attempt is ambiguous, so the redelivery warns in the chat.
 	sender := &outboxSender{sendErr: []error{errors.New("boom")}}
 	o := NewOutbox(outboxStore, staticSenders(sender), WithOutboxBackoff(time.Second))
-	if _, err := o.Enqueue(ctx, "gw1", "ws1", "sess1", "chat-42", "the reply", SendOptions{}); err != nil {
+	if _, err := o.Enqueue(ctx, "gw1", "ws1", "sess1", "chat-42", "the reply", FlavorTelegramHTML, SendOptions{}); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 
@@ -134,7 +134,7 @@ func TestOutboxAttemptBudgetExhausts(t *testing.T) {
 		errors.New("1"), errors.New("2"), errors.New("3"), errors.New("4"), errors.New("5"),
 	}}
 	o := NewOutbox(outboxStore, staticSenders(sender), WithOutboxBackoff(time.Second))
-	if _, err := o.Enqueue(ctx, "gw1", "ws1", "sess1", "chat-42", "payload", SendOptions{}); err != nil {
+	if _, err := o.Enqueue(ctx, "gw1", "ws1", "sess1", "chat-42", "payload", FlavorTelegramHTML, SendOptions{}); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 
@@ -165,7 +165,7 @@ func TestOutboxFreshnessWindowMarksDead(t *testing.T) {
 	ctx := context.Background()
 
 	o := NewOutbox(outboxStore, staticSenders(&outboxSender{}))
-	if _, err := o.Enqueue(ctx, "gw1", "ws1", "sess1", "chat-42", "stale reply", SendOptions{}); err != nil {
+	if _, err := o.Enqueue(ctx, "gw1", "ws1", "sess1", "chat-42", "stale reply", FlavorTelegramHTML, SendOptions{}); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 
@@ -194,7 +194,7 @@ func TestOutboxPruneDeliveredAfterRetention(t *testing.T) {
 	ctx := context.Background()
 
 	o := NewOutbox(outboxStore, staticSenders(&outboxSender{}))
-	if _, err := o.Enqueue(ctx, "gw1", "ws1", "sess1", "chat-42", "old reply", SendOptions{}); err != nil {
+	if _, err := o.Enqueue(ctx, "gw1", "ws1", "sess1", "chat-42", "old reply", FlavorTelegramHTML, SendOptions{}); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 	if _, err := o.DeliverDue(ctx, time.Now().UTC().Add(time.Minute)); err != nil {
@@ -222,7 +222,7 @@ func TestOutboxPayloadRoundTrip(t *testing.T) {
 
 	sender := &outboxSender{}
 	o := NewOutbox(outboxStore, staticSenders(sender))
-	if _, err := o.Enqueue(ctx, "gw1", "ws1", "sess1", "chat-7", "<i>html</i>", SendOptions{DisablePreview: true}); err != nil {
+	if _, err := o.Enqueue(ctx, "gw1", "ws1", "sess1", "chat-7", "<i>html</i>", FlavorTelegramHTML, SendOptions{DisablePreview: true}); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 	if _, err := o.DeliverDue(ctx, time.Now().UTC().Add(time.Minute)); err != nil {

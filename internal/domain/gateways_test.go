@@ -10,6 +10,7 @@ import (
 func TestValidateGatewayConfig_AcceptsLongPollingAndNormalizes(t *testing.T) {
 	g := &GatewayConfig{
 		Platform:           " telegram ",
+		AgentID:            " agent_123 ",
 		BotTokenCiphertext: "v1:bm9uY2U=:Y2lwaGVydGV4dA==",
 		BotUsername:        " onclaw_bot ",
 		Transport:          GatewayTransportLongPolling,
@@ -21,8 +22,14 @@ func TestValidateGatewayConfig_AcceptsLongPollingAndNormalizes(t *testing.T) {
 	if g.Platform != GatewayPlatformTelegram {
 		t.Fatalf("expected platform trimmed to telegram, got %q", g.Platform)
 	}
+	if g.AgentID != "agent_123" {
+		t.Fatalf("expected agent_id trimmed to agent_123, got %q", g.AgentID)
+	}
 	if g.BotUsername != "onclaw_bot" {
 		t.Fatalf("expected username trimmed, got %q", g.BotUsername)
+	}
+	if g.Identity != "onclaw_bot" {
+		t.Fatalf("expected identity defaulted to bot username, got %q", g.Identity)
 	}
 	if g.WebhookURL != "" {
 		t.Fatalf("expected long-polling to clear webhook_url, got %q", g.WebhookURL)
@@ -30,16 +37,25 @@ func TestValidateGatewayConfig_AcceptsLongPollingAndNormalizes(t *testing.T) {
 }
 
 func TestValidateGatewayConfig_WebhookRequiresHTTPSURL(t *testing.T) {
+	for _, bad := range []string{"", "http://example.com/hook", "ftp://example.com", "example.com/hook"} {
+		g := &GatewayConfig{
+			Platform:           GatewayPlatformTelegram,
+			AgentID:            "agent_1",
+			BotTokenCiphertext: "v1:bm9uY2U=:Y2lwaGVydGV4dA==",
+			Transport:          GatewayTransportWebhook,
+			WebhookURL:         bad,
+		}
+		if err := ValidateGatewayConfig(g); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("expected ErrInvalid for invalid webhook url %q, got %v", bad, err)
+		}
+	}
 	g := &GatewayConfig{
 		Platform:           GatewayPlatformTelegram,
+		AgentID:            "agent_1",
 		BotTokenCiphertext: "v1:bm9uY2U=:Y2lwaGVydGV4dA==",
 		Transport:          GatewayTransportWebhook,
-		WebhookURL:         "http://example.com/hook",
+		WebhookURL:         "https://example.com/hook",
 	}
-	if err := ValidateGatewayConfig(g); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("expected ErrInvalid for non-https webhook url, got %v", err)
-	}
-	g.WebhookURL = "https://example.com/hook"
 	if err := ValidateGatewayConfig(g); err != nil {
 		t.Fatalf("unexpected error for valid webhook url: %v", err)
 	}
@@ -49,6 +65,7 @@ func TestValidateGatewayConfig_RejectsPlaintextToken(t *testing.T) {
 	for _, ct := range []string{"", "123456:ABC-DEF", "v1:only-two", "v2:a:b"} {
 		g := &GatewayConfig{
 			Platform:           GatewayPlatformTelegram,
+			AgentID:            "agent_1",
 			BotTokenCiphertext: ct,
 			Transport:          GatewayTransportLongPolling,
 		}
@@ -58,20 +75,175 @@ func TestValidateGatewayConfig_RejectsPlaintextToken(t *testing.T) {
 	}
 }
 
-func TestValidateGatewayConfig_DefaultAgentWhitespaceCleared(t *testing.T) {
-	agent := "   "
-	g := &GatewayConfig{
-		Platform:           GatewayPlatformTelegram,
-		BotTokenCiphertext: "v1:bm9uY2U=:Y2lwaGVydGV4dA==",
-		Transport:          GatewayTransportLongPolling,
-		DefaultAgentID:     &agent,
+func TestValidateGatewayConfig_RequiresAgentID(t *testing.T) {
+	for _, badAgent := range []string{"", "   "} {
+		g := &GatewayConfig{
+			Platform:           GatewayPlatformTelegram,
+			AgentID:            badAgent,
+			BotTokenCiphertext: "v1:bm9uY2U=:Y2lwaGVydGV4dA==",
+			Transport:          GatewayTransportLongPolling,
+		}
+		if err := ValidateGatewayConfig(g); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("expected ErrInvalid for empty agent_id, got %v", err)
+		}
 	}
-	if err := ValidateGatewayConfig(g); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if g.DefaultAgentID != nil {
-		t.Fatalf("expected whitespace-only default agent cleared, got %q", *g.DefaultAgentID)
-	}
+}
+
+func TestValidateGatewayConfig_LaneRules(t *testing.T) {
+	cloudToken := "v1:bm9uY2U=:Y2lwaGVydGV4dA=="
+
+	t.Run("telegram ignores lane entirely", func(t *testing.T) {
+		g := &GatewayConfig{
+			Platform:           GatewayPlatformTelegram,
+			AgentID:            "agent_1",
+			Lane:               GatewayLaneCloudAPI,
+			BotTokenCiphertext: cloudToken,
+			Transport:          GatewayTransportLongPolling,
+		}
+		if err := ValidateGatewayConfig(g); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if g.Lane != "" {
+			t.Fatalf("expected telegram row to normalize lane to empty, got %q", g.Lane)
+		}
+	})
+
+	t.Run("whatsapp requires a lane", func(t *testing.T) {
+		g := &GatewayConfig{
+			Platform:           GatewayPlatformWhatsApp,
+			AgentID:            "agent_1",
+			BotTokenCiphertext: cloudToken,
+			Transport:          GatewayTransportWebhook,
+			WebhookURL:         "https://example.com/hook",
+		}
+		if err := ValidateGatewayConfig(g); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("expected ErrInvalid for missing whatsapp lane, got %v", err)
+		}
+	})
+
+	t.Run("cloud_api requires webhook transport", func(t *testing.T) {
+		g := &GatewayConfig{
+			Platform:           GatewayPlatformWhatsApp,
+			AgentID:            "agent_1",
+			Lane:               GatewayLaneCloudAPI,
+			BotTokenCiphertext: cloudToken,
+			Transport:          GatewayTransportLongPolling,
+		}
+		if err := ValidateGatewayConfig(g); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("expected ErrInvalid for long-polling cloud_api, got %v", err)
+		}
+	})
+
+	t.Run("cloud_api requires a credential envelope", func(t *testing.T) {
+		g := &GatewayConfig{
+			Platform:   GatewayPlatformWhatsApp,
+			AgentID:    "agent_1",
+			Lane:       GatewayLaneCloudAPI,
+			Transport:  GatewayTransportWebhook,
+			WebhookURL: "https://example.com/hook",
+		}
+		if err := ValidateGatewayConfig(g); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("expected ErrInvalid for missing cloud credential, got %v", err)
+		}
+	})
+
+	t.Run("cloud_api valid", func(t *testing.T) {
+		g := &GatewayConfig{
+			Platform:           GatewayPlatformWhatsApp,
+			AgentID:            "agent_1",
+			Lane:               GatewayLaneCloudAPI,
+			BotTokenCiphertext: cloudToken,
+			Transport:          GatewayTransportWebhook,
+			WebhookURL:         "https://example.com/hook",
+		}
+		if err := ValidateGatewayConfig(g); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("multi_device stores no token and ignores transport", func(t *testing.T) {
+		g := &GatewayConfig{
+			Platform:           GatewayPlatformWhatsApp,
+			AgentID:            "agent_1",
+			Lane:               GatewayLaneMultiDevice,
+			BotTokenCiphertext: cloudToken, // must be refused
+			Transport:          GatewayTransportWebhook,
+			WebhookURL:         "https://example.com/hook",
+		}
+		if err := ValidateGatewayConfig(g); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("expected ErrInvalid for multi_device with a token, got %v", err)
+		}
+
+		g.BotTokenCiphertext = ""
+		if err := ValidateGatewayConfig(g); err != nil {
+			t.Fatalf("unexpected error for tokenless multi_device: %v", err)
+		}
+		if g.Transport != GatewayTransportLongPolling || g.WebhookURL != "" {
+			t.Fatalf("expected transport normalized to the inert shape, got %q %q", g.Transport, g.WebhookURL)
+		}
+	})
+
+	t.Run("unknown lane rejected", func(t *testing.T) {
+		g := &GatewayConfig{
+			Platform:           GatewayPlatformWhatsApp,
+			AgentID:            "agent_1",
+			Lane:               "baileys",
+			BotTokenCiphertext: cloudToken,
+			Transport:          GatewayTransportWebhook,
+			WebhookURL:         "https://example.com/hook",
+		}
+		if err := ValidateGatewayConfig(g); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("expected ErrInvalid for unknown lane, got %v", err)
+		}
+	})
+
+	t.Run("unknown platform rejected", func(t *testing.T) {
+		g := &GatewayConfig{
+			Platform:           "slack",
+			AgentID:            "agent_1",
+			BotTokenCiphertext: cloudToken,
+			Transport:          GatewayTransportLongPolling,
+		}
+		if err := ValidateGatewayConfig(g); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("expected ErrInvalid for unknown platform, got %v", err)
+		}
+	})
+}
+
+func TestValidateGatewayConfig_IdentityPreservedOrInferred(t *testing.T) {
+	t.Run("explicit identity preserved", func(t *testing.T) {
+		g := &GatewayConfig{
+			Platform:           GatewayPlatformTelegram,
+			AgentID:            "agent_1",
+			Identity:           " @my_bot ",
+			BotUsername:        "my_bot",
+			BotTokenCiphertext: "v1:bm9uY2U=:Y2lwaGVydGV4dA==",
+			Transport:          GatewayTransportLongPolling,
+		}
+		if err := ValidateGatewayConfig(g); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if g.Identity != "@my_bot" {
+			t.Fatalf("expected identity '@my_bot', got %q", g.Identity)
+		}
+	})
+
+	t.Run("identity inferred from bot username if empty", func(t *testing.T) {
+		g := &GatewayConfig{
+			Platform:           GatewayPlatformTelegram,
+			AgentID:            "agent_1",
+			Identity:           "   ",
+			BotUsername:        " my_bot ",
+			BotTokenCiphertext: "v1:bm9uY2U=:Y2lwaGVydGV4dA==",
+			Transport:          GatewayTransportLongPolling,
+		}
+		if err := ValidateGatewayConfig(g); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if g.Identity != "my_bot" {
+			t.Fatalf("expected identity 'my_bot', got %q", g.Identity)
+		}
+	})
 }
 
 func TestValidateUserLink(t *testing.T) {
@@ -139,11 +311,11 @@ func TestValidatePairingTokenShape(t *testing.T) {
 }
 
 func TestValidateChatBinding(t *testing.T) {
-	b := &ChatBinding{Platform: " telegram ", PlatformChatID: " -1001234567890 ", AgentID: " agent "}
+	b := &ChatBinding{GatewayID: " gw_1 ", Platform: " telegram ", PlatformChatID: " -1001234567890 ", AgentID: " agent "}
 	if err := ValidateChatBinding(b); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if b.PlatformChatID != "-1001234567890" || b.AgentID != "agent" {
+	if b.GatewayID != "gw_1" || b.PlatformChatID != "-1001234567890" || b.AgentID != "agent" {
 		t.Fatalf("expected trimmed fields, got %+v", b)
 	}
 
@@ -152,7 +324,7 @@ func TestValidateChatBinding(t *testing.T) {
 		func(c *ChatBinding) { c.PlatformChatID = "" },
 		func(c *ChatBinding) { c.AgentID = "" },
 	} {
-		bad := &ChatBinding{Platform: "telegram", PlatformChatID: "1", AgentID: "a"}
+		bad := &ChatBinding{GatewayID: "gw_1", Platform: "telegram", PlatformChatID: "1", AgentID: "a"}
 		mutate(bad)
 		if err := ValidateChatBinding(bad); !errors.Is(err, ErrInvalid) {
 			t.Fatalf("expected ErrInvalid for %+v, got %v", bad, err)

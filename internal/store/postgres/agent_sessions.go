@@ -97,11 +97,11 @@ func (a *agentSessionStore) ListAgentSessions(ctx context.Context, workspaceID, 
 
 	// Non-deleted only, most recently active first (the listing index
 	// ordering), id as the determinism tiebreak — and private-index only
-	// (design D3): channel, scheduler, and gateway group sessions are
-	// shared/automation artifacts and never surface in a per-user listing;
-	// gateway DM sessions do, under the paired member. The underscores in
-	// the LIKE patterns are escaped (they are wildcards), matching the
-	// literal prefixes.
+	// (design D3): channel, scheduler, heartbeat, and gateway group sessions
+	// are shared/automation artifacts and never surface in a per-user
+	// listing; gateway DM sessions do, under the paired member. The
+	// underscores in the LIKE patterns are escaped (they are wildcards),
+	// matching the literal prefixes.
 	query := `
 		SELECT ` + agentSessionColumns + `
 		FROM agent_sessions
@@ -109,6 +109,7 @@ func (a *agentSessionStore) ListAgentSessions(ctx context.Context, workspaceID, 
 		  AND deleted_at IS NULL
 		  AND session_id NOT LIKE 'chan\_%'
 		  AND session_id NOT LIKE 'sched\_%'
+		  AND session_id NOT LIKE 'hb\_%'
 		  AND session_id NOT LIKE 'tg\_group\_%'
 		ORDER BY last_active_at DESC, id DESC
 	`

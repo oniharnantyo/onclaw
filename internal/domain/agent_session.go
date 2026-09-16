@@ -11,13 +11,18 @@ import (
 // registered binding prefixes. Registering a new prefix here (and only here)
 // is the deliberate act that lets a store accept the shape — unknown
 // "<word>_"-shaped ids are refused (integrate-telegram-gateway design D3,
-// channel-session-leak fix).
+// channel-session-leak fix). Gateway prefixes are per platform
+// (add-whatsapp-gateway design D7): tg_dm_/tg_group_ for Telegram,
+// wa_dm_ for WhatsApp direct messages. The heartbeat's persistent shared
+// session is hb_<agentID> (add-agent-heartbeat design D2).
 const (
 	SessionPrefixWeb          = "sess_"
 	SessionPrefixChannel      = "chan_"
 	SessionPrefixScheduler    = "sched_"
+	SessionPrefixHeartbeat    = "hb_"
 	SessionPrefixGatewayDM    = "tg_dm_"
 	SessionPrefixGatewayGroup = "tg_group_"
+	SessionPrefixGatewayWADM  = "wa_dm_"
 )
 
 // agentSessionBindingPrefixes is the registry of accepted prefixes.
@@ -25,8 +30,10 @@ var agentSessionBindingPrefixes = []string{
 	SessionPrefixWeb,
 	SessionPrefixChannel,
 	SessionPrefixScheduler,
+	SessionPrefixHeartbeat,
 	SessionPrefixGatewayDM,
 	SessionPrefixGatewayGroup,
+	SessionPrefixGatewayWADM,
 }
 
 // ValidateAgentSessionID validates a session id for the durable session
@@ -53,15 +60,17 @@ func ValidateAgentSessionID(sessionID string) error {
 
 // IsPrivateIndexSessionID reports whether a session belongs in the per-user
 // session index (the listing the web sidebar reads). Chat sessions — web
-// ("sess_") and gateway direct messages ("tg_dm_", indexed under the paired
-// member) — are listed. Automation and shared artifacts are not:
+// ("sess_") and gateway direct messages ("tg_dm_", "wa_dm_", indexed under
+// the paired member) — are listed. Automation and shared artifacts are not:
 // channel sessions ("chan_"), scheduler run sessions ("sched_", which the
-// runner also never upserts), and gateway group sessions ("tg_group_",
-// shared across every member of the group — design D3) are excluded even if
-// a row exists.
+// runner also never upserts), heartbeat tick sessions ("hb_", ambient agent
+// state in the agent's one persistent transcript — add-agent-heartbeat D2),
+// and gateway group sessions ("tg_group_", shared across every member of the
+// group — design D3) are excluded even if a row exists.
 func IsPrivateIndexSessionID(sessionID string) bool {
 	return !(strings.HasPrefix(sessionID, SessionPrefixChannel) ||
 		strings.HasPrefix(sessionID, SessionPrefixScheduler) ||
+		strings.HasPrefix(sessionID, SessionPrefixHeartbeat) ||
 		strings.HasPrefix(sessionID, SessionPrefixGatewayGroup))
 }
 

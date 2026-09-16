@@ -13,7 +13,7 @@ import (
 // validators (integrate-telegram-gateway design D3, channel-session-leak
 // fix): unknown "<word>_"-prefixed session ids are refused on upsert, and
 // the per-user listing indexes chat sessions (web + gateway DM) while
-// excluding channel, scheduler, and gateway group artifacts.
+// excluding channel, scheduler, heartbeat, and gateway group artifacts.
 func TestFakeAgentSessions_BindingPrefixRules(t *testing.T) {
 	ctx := context.Background()
 	s := fake.New()
@@ -37,11 +37,13 @@ func TestFakeAgentSessions_BindingPrefixRules(t *testing.T) {
 
 	st := s.AgentSessions()
 
-	// 1. Registered prefixes are accepted, including the new gateway ones.
+	// 1. Registered prefixes are accepted, including the new gateway ones
+	// and the heartbeat tick session (add-agent-heartbeat D2).
 	registered := []string{
 		"sess_d2b1f0a2-6a63-4e4e-9f2f-9e4a6d1f7b33",
 		"chan_ab12cd34-1111-2222-3333-444455556666_" + a.ID,
 		"sched_" + a.ID + "_1726142400",
+		"hb_" + a.ID,
 		"tg_dm_593821092_" + a.ID,
 		"tg_group_-1001234567890_" + a.ID,
 	}
@@ -76,6 +78,7 @@ func TestFakeAgentSessions_BindingPrefixRules(t *testing.T) {
 	for _, hidden := range []string{
 		"chan_ab12cd34-1111-2222-3333-444455556666_" + a.ID,
 		"sched_" + a.ID + "_1726142400",
+		"hb_" + a.ID,
 		"tg_group_-1001234567890_" + a.ID,
 	} {
 		if ids[hidden] {

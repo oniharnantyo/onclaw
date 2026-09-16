@@ -6,10 +6,22 @@ import (
 	"time"
 )
 
-// Gateway platforms. v1 ships Telegram only; the field exists on every
-// gateway row so the next adapter (Slack) is a data change, not a schema one
-// (integrate-telegram-gateway design D1).
-const GatewayPlatformTelegram = "telegram"
+// Gateway platforms. The field exists on every gateway row so the next
+// adapter is a data change, not a schema one (integrate-telegram-gateway
+// design D1); WhatsApp is the second platform (add-whatsapp-gateway).
+const (
+	GatewayPlatformTelegram = "telegram"
+	GatewayPlatformWhatsApp = "whatsapp"
+)
+
+// Gateway lanes discriminate a platform's connection modes (add-whatsapp-gateway
+// design D1): WhatsApp runs either the official Cloud API (webhook-only,
+// credential envelope) or the multi-device protocol client (no credential,
+// pairing-based). Telegram carries no lane — its rows keep lane empty.
+const (
+	GatewayLaneCloudAPI    = "cloud_api"
+	GatewayLaneMultiDevice = "multi_device"
+)
 
 // Gateway transport modes: a public HTTPS webhook URL, or in-process long
 // polling that works behind NAT (integrate-telegram-gateway design D12).
@@ -59,19 +71,23 @@ const (
 // the encrypted bot credential (an AES-256-GCM secrets envelope, AAD-bound
 // to the workspace — the web-search provider credential pattern), the
 // resolved bot username (display-only), the enable toggle, the transport
-// mode, and the default agent for direct messages that have no per-user
-// choice. Exactly one row per (workspace, platform). The plaintext token
-// never persists and never leaves the write path.
+// mode, identity, and the bound workspace agent.
+// Plural gateways per workspace+platform are keyed on identity. The plaintext token
+// never persists and never leaves the write path. Lane selects the
+// connection mode for platforms with more than one (add-whatsapp-gateway
+// design D1); empty means the platform default (Telegram).
 type GatewayConfig struct {
 	ID                 string    `json:"id"`
 	WorkspaceID        string    `json:"workspace_id"`
 	Platform           string    `json:"platform"`
-	BotTokenCiphertext string    `json:"-"` // secrets v1 envelope; never serialized
+	Lane               string    `json:"lane,omitempty"` // cloud_api | multi_device (whatsapp); empty for telegram
+	Identity           string    `json:"identity"`       // @bot_username for TG / phone or identifier for WA
+	AgentID            string    `json:"agent_id"`       // Required! Bound workspace agent
+	BotTokenCiphertext string    `json:"-"`              // secrets v1 envelope; never serialized
 	BotUsername        string    `json:"bot_username"`
 	Enabled            bool      `json:"enabled"`
 	Transport          string    `json:"transport"` // webhook | long_polling
 	WebhookURL         string    `json:"webhook_url,omitempty"`
-	DefaultAgentID     *string   `json:"default_agent_id,omitempty"` // nullable; ON DELETE SET NULL
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
 }
@@ -86,12 +102,7 @@ type UserLink struct {
 	WorkspaceID      string    `json:"workspace_id"`
 	UserID           string    `json:"user_id"`
 	PlatformUsername string    `json:"platform_username"` // display-only; never used for identity
-	// DefaultAgentID is the member's per-user default agent choice for
-	// gateway direct messages (design D3), set with /agent <name>. nil falls
-	// back to the gateway's configured default agent. Nullable; ON DELETE
-	// SET NULL.
-	DefaultAgentID *string   `json:"default_agent_id,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
+	CreatedAt        time.Time `json:"created_at"`
 }
 
 // PairingToken is a single-use, crypto-random, expiring credential a member
@@ -113,6 +124,7 @@ type PairingToken struct {
 type ChatBinding struct {
 	ID             string    `json:"id"`
 	WorkspaceID    string    `json:"workspace_id"`
+	GatewayID      string    `json:"gateway_id"`
 	Platform       string    `json:"platform"`
 	PlatformChatID string    `json:"platform_chat_id"`
 	AgentID        string    `json:"agent_id"`
@@ -136,9 +148,15 @@ type OutboxEntry struct {
 }
 
 // ValidateGatewayConfig validates a gateway configuration for persistence.
-// The struct is normalized in place: platform and transport are trimmed,
-// long-polling clears the webhook URL. The bot token ciphertext must carry
-// the AES-256-GCM envelope shape ("v1:<nonce>:<ciphertext>" — the secrets
+// The struct is normalized in place: platform, lane, and transport are
+// trimmed, long-polling clears the webhook URL. Lane rules are scoped per
+// platform (add-whatsapp-gateway design D1): Telegram ignores the lane
+// entirely (rows keep it empty), WhatsApp requires one of the two lanes —
+// cloud_api must use webhook transport with a credential envelope,
+// multi_device stores no credential at all and ignores the transport
+// (normalized to long_polling, the inert shape, so the row satisfies the
+// schema's transport CHECK). The bot token ciphertext must carry the
+// AES-256-GCM envelope shape ("v1:<nonce>:<ciphertext>" — the secrets
 // package's Version1Prefix, matched literally here because domain cannot
 // import secrets without an import cycle). Uniqueness (one gateway per
 // workspace+platform) is a store concern.
@@ -152,38 +170,76 @@ func ValidateGatewayConfig(g *GatewayConfig) error {
 		return fmt.Errorf("%w: gateway platform is required", ErrInvalid)
 	}
 
-	g.BotTokenCiphertext = strings.TrimSpace(g.BotTokenCiphertext)
-	if g.BotTokenCiphertext == "" {
-		return fmt.Errorf("%w: bot token ciphertext is required", ErrInvalid)
+	g.AgentID = strings.TrimSpace(g.AgentID)
+	if g.AgentID == "" {
+		return fmt.Errorf("%w: gateway agent_id is required", ErrInvalid)
 	}
-	parts := strings.Split(g.BotTokenCiphertext, ":")
-	if len(parts) != 3 || parts[0] != "v1" || parts[1] == "" || parts[2] == "" {
-		return fmt.Errorf("%w: bot token ciphertext must be a v1 secrets envelope", ErrInvalid)
+
+	multiDevice := false
+	switch g.Platform {
+	case GatewayPlatformTelegram:
+		// Telegram ignores the lane entirely (design D1).
+		g.Lane = ""
+	case GatewayPlatformWhatsApp:
+		g.Lane = strings.TrimSpace(g.Lane)
+		switch g.Lane {
+		case GatewayLaneCloudAPI:
+			if g.Transport != GatewayTransportWebhook {
+				return fmt.Errorf("%w: whatsapp %q gateway requires %q transport", ErrInvalid, GatewayLaneCloudAPI, GatewayTransportWebhook)
+			}
+		case GatewayLaneMultiDevice:
+			multiDevice = true
+			// Transport is not meaningful on the multi-device lane — ingestion
+			// rides the device connection (design D1). Normalized to the inert
+			// long-polling shape so the row satisfies the transport CHECK.
+			g.Transport = GatewayTransportLongPolling
+			g.WebhookURL = ""
+		default:
+			return fmt.Errorf("%w: whatsapp gateway lane %q must be %q or %q", ErrInvalid, g.Lane, GatewayLaneCloudAPI, GatewayLaneMultiDevice)
+		}
+	default:
+		return fmt.Errorf("%w: gateway platform %q must be %q or %q", ErrInvalid, g.Platform, GatewayPlatformTelegram, GatewayPlatformWhatsApp)
+	}
+
+	g.BotTokenCiphertext = strings.TrimSpace(g.BotTokenCiphertext)
+	if multiDevice {
+		// The multi-device lane stores no credential (design D5): the device
+		// session lives in the protocol client's own store.
+		if g.BotTokenCiphertext != "" {
+			return fmt.Errorf("%w: whatsapp %q gateway stores no bot token", ErrInvalid, GatewayLaneMultiDevice)
+		}
+	} else {
+		if g.BotTokenCiphertext == "" {
+			return fmt.Errorf("%w: bot token ciphertext is required", ErrInvalid)
+		}
+		parts := strings.Split(g.BotTokenCiphertext, ":")
+		if len(parts) != 3 || parts[0] != "v1" || parts[1] == "" || parts[2] == "" {
+			return fmt.Errorf("%w: bot token ciphertext must be a v1 secrets envelope", ErrInvalid)
+		}
 	}
 
 	g.BotUsername = strings.TrimSpace(g.BotUsername)
-
-	switch g.Transport {
-	case GatewayTransportWebhook:
-		g.WebhookURL = strings.TrimSpace(g.WebhookURL)
-		if !strings.HasPrefix(g.WebhookURL, "https://") {
-			return fmt.Errorf("%w: webhook transport requires an https:// webhook_url", ErrInvalid)
-		}
-	case GatewayTransportLongPolling:
-		g.WebhookURL = ""
-	default:
-		return fmt.Errorf("%w: gateway transport %q must be %q or %q", ErrInvalid, g.Transport, GatewayTransportWebhook, GatewayTransportLongPolling)
+	g.Identity = strings.TrimSpace(g.Identity)
+	if g.Identity == "" && g.BotUsername != "" {
+		g.Identity = g.BotUsername
 	}
 
-	if g.DefaultAgentID != nil {
-		*g.DefaultAgentID = strings.TrimSpace(*g.DefaultAgentID)
-		if *g.DefaultAgentID == "" {
-			g.DefaultAgentID = nil
+	if !multiDevice {
+		switch g.Transport {
+		case GatewayTransportWebhook:
+			g.WebhookURL = strings.TrimSpace(g.WebhookURL)
+			if !strings.HasPrefix(g.WebhookURL, "https://") {
+				return fmt.Errorf("%w: webhook transport requires an https:// webhook_url", ErrInvalid)
+			}
+		case GatewayTransportLongPolling:
+			g.WebhookURL = ""
+			default:
+				return fmt.Errorf("%w: gateway transport %q must be %q or %q", ErrInvalid, g.Transport, GatewayTransportWebhook, GatewayTransportLongPolling)
+			}
 		}
-	}
 
-	return nil
-}
+		return nil
+	}
 
 // ValidateUserLink validates an identity link for persistence: the immutable
 // platform id, workspace, and member are required; the username is
@@ -206,12 +262,6 @@ func ValidateUserLink(l *UserLink) error {
 		return fmt.Errorf("%w: member user_id is required", ErrInvalid)
 	}
 	l.PlatformUsername = strings.TrimSpace(l.PlatformUsername)
-	if l.DefaultAgentID != nil {
-		*l.DefaultAgentID = strings.TrimSpace(*l.DefaultAgentID)
-		if *l.DefaultAgentID == "" {
-			l.DefaultAgentID = nil
-		}
-	}
 
 	return nil
 }
@@ -269,6 +319,7 @@ func ValidateChatBinding(b *ChatBinding) error {
 		return fmt.Errorf("%w: chat binding is required", ErrInvalid)
 	}
 
+	b.GatewayID = strings.TrimSpace(b.GatewayID)
 	b.Platform = strings.TrimSpace(b.Platform)
 	b.PlatformChatID = strings.TrimSpace(b.PlatformChatID)
 	b.AgentID = strings.TrimSpace(b.AgentID)

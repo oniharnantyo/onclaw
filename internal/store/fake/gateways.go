@@ -2,6 +2,7 @@ package fake
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"time"
@@ -21,8 +22,8 @@ import (
 // precedent).
 // -------------------------------------------------------------------------
 
-func gatewayKey(workspaceID, platform string) string {
-	return workspaceID + ":" + platform
+func gatewayIdentityKey(workspaceID, platform, identity string) string {
+	return workspaceID + ":" + platform + ":" + identity
 }
 
 func userLinkKey(platform, platformUserID, workspaceID string) string {
@@ -34,10 +35,6 @@ func cloneGatewayConfig(g *domain.GatewayConfig) *domain.GatewayConfig {
 		return nil
 	}
 	cp := *g
-	if g.DefaultAgentID != nil {
-		agentID := *g.DefaultAgentID
-		cp.DefaultAgentID = &agentID
-	}
 	return &cp
 }
 
@@ -90,7 +87,7 @@ type gatewayStore struct {
 	s *fakeStore
 }
 
-func (gs *gatewayStore) UpsertGateway(ctx context.Context, workspaceID string, g *domain.GatewayConfig) error {
+func (gs *gatewayStore) CreateGateway(ctx context.Context, workspaceID string, g *domain.GatewayConfig) error {
 	if g == nil {
 		return domain.ErrInvalid
 	}
@@ -106,25 +103,14 @@ func (gs *gatewayStore) UpsertGateway(ctx context.Context, workspaceID string, g
 	if _, exists := gs.s.workspaces[workspaceID]; !exists {
 		return fmt.Errorf("%w: workspace not found", domain.ErrNotFound)
 	}
-	if g.DefaultAgentID != nil && *g.DefaultAgentID != "" {
-		agent, exists := gs.s.agents[*g.DefaultAgentID]
-		if !exists || agent.WorkspaceID != workspaceID {
-			return fmt.Errorf("%w: agent not found in workspace", domain.ErrNotFound)
-		}
+	agent, exists := gs.s.agents[g.AgentID]
+	if !exists || agent.WorkspaceID != workspaceID {
+		return fmt.Errorf("%w: agent not found in workspace", domain.ErrNotFound)
 	}
 
-	key := gatewayKey(workspaceID, g.Platform)
-	if existing, exists := gs.s.gateways[key]; exists {
-		// Conflict path: connection fields are rewritten; id, created_at,
-		// and the enabled flag survive (a token re-save never disables a
-		// live gateway).
-		existing.BotTokenCiphertext = g.BotTokenCiphertext
-		existing.BotUsername = g.BotUsername
-		existing.Transport = g.Transport
-		existing.WebhookURL = g.WebhookURL
-		existing.DefaultAgentID = g.DefaultAgentID
-		existing.UpdatedAt = now
-		return nil
+	identKey := gatewayIdentityKey(workspaceID, g.Platform, g.Identity)
+	if _, exists := gs.s.gatewayIdentities[identKey]; exists {
+		return fmt.Errorf("%w: gateway identity %s already exists on platform %s", domain.ErrConflict, g.Identity, g.Platform)
 	}
 
 	if g.ID == "" {
@@ -134,20 +120,21 @@ func (gs *gatewayStore) UpsertGateway(ctx context.Context, workspaceID string, g
 		g.CreatedAt = now
 	}
 	g.UpdatedAt = now
-	gs.s.gateways[key] = cloneGatewayConfig(g)
+	gs.s.gateways[g.ID] = cloneGatewayConfig(g)
+	gs.s.gatewayIdentities[identKey] = g.ID
 	return nil
 }
 
-func (gs *gatewayStore) GetGateway(ctx context.Context, workspaceID, platform string) (*domain.GatewayConfig, error) {
-	if workspaceID == "" || platform == "" {
+func (gs *gatewayStore) GetGateway(ctx context.Context, workspaceID, id string) (*domain.GatewayConfig, error) {
+	if workspaceID == "" || id == "" {
 		return nil, nil
 	}
 
 	gs.s.mu.RLock()
 	defer gs.s.mu.RUnlock()
 
-	g, exists := gs.s.gateways[gatewayKey(workspaceID, platform)]
-	if !exists {
+	g, exists := gs.s.gateways[id]
+	if !exists || g.WorkspaceID != workspaceID {
 		return nil, nil
 	}
 	return cloneGatewayConfig(g), nil
@@ -162,8 +149,8 @@ func (gs *gatewayStore) ListGateways(ctx context.Context, workspaceID string) ([
 	defer gs.s.mu.RUnlock()
 
 	gateways := make([]domain.GatewayConfig, 0)
-	for key, g := range gs.s.gateways {
-		if prefix := workspaceID + ":"; len(key) > len(prefix) && key[:len(prefix)] == prefix {
+	for _, g := range gs.s.gateways {
+		if g.WorkspaceID == workspaceID {
 			gateways = append(gateways, *cloneGatewayConfig(g))
 		}
 	}
@@ -176,16 +163,86 @@ func (gs *gatewayStore) ListGateways(ctx context.Context, workspaceID string) ([
 	return gateways, nil
 }
 
-func (gs *gatewayStore) SetGatewayEnabled(ctx context.Context, workspaceID, platform string, enabled bool) error {
+func (gs *gatewayStore) ListGatewaysByPlatform(ctx context.Context, workspaceID, platform string) ([]domain.GatewayConfig, error) {
 	if workspaceID == "" || platform == "" {
+		return []domain.GatewayConfig{}, nil
+	}
+
+	gs.s.mu.RLock()
+	defer gs.s.mu.RUnlock()
+
+	gateways := make([]domain.GatewayConfig, 0)
+	for _, g := range gs.s.gateways {
+		if g.WorkspaceID == workspaceID && g.Platform == platform {
+			gateways = append(gateways, *cloneGatewayConfig(g))
+		}
+	}
+	sort.Slice(gateways, func(i, j int) bool {
+		if gateways[i].CreatedAt.Equal(gateways[j].CreatedAt) {
+			return gateways[i].ID < gateways[j].ID
+		}
+		return gateways[i].CreatedAt.Before(gateways[j].CreatedAt)
+	})
+	return gateways, nil
+}
+
+func (gs *gatewayStore) UpdateGateway(ctx context.Context, workspaceID string, g *domain.GatewayConfig) error {
+	if g == nil || g.ID == "" {
+		return domain.ErrInvalid
+	}
+	now := time.Now().UTC()
+	g.WorkspaceID = workspaceID
+	if err := domain.ValidateGatewayConfig(g); err != nil {
+		return err
+	}
+
+	gs.s.mu.Lock()
+	defer gs.s.mu.Unlock()
+
+	existing, exists := gs.s.gateways[g.ID]
+	if !exists || existing.WorkspaceID != workspaceID {
+		return domain.ErrNotFound
+	}
+	agent, exists := gs.s.agents[g.AgentID]
+	if !exists || agent.WorkspaceID != workspaceID {
+		return fmt.Errorf("%w: agent not found in workspace", domain.ErrNotFound)
+	}
+
+	oldIdentKey := gatewayIdentityKey(workspaceID, existing.Platform, existing.Identity)
+	newIdentKey := gatewayIdentityKey(workspaceID, g.Platform, g.Identity)
+	if oldIdentKey != newIdentKey {
+		if otherID, exists := gs.s.gatewayIdentities[newIdentKey]; exists && otherID != g.ID {
+			return fmt.Errorf("%w: gateway identity %s already exists on platform %s", domain.ErrConflict, g.Identity, g.Platform)
+		}
+		delete(gs.s.gatewayIdentities, oldIdentKey)
+		gs.s.gatewayIdentities[newIdentKey] = g.ID
+	}
+
+	existing.Platform = g.Platform
+	existing.Lane = g.Lane
+	existing.Identity = g.Identity
+	existing.AgentID = g.AgentID
+	existing.BotTokenCiphertext = g.BotTokenCiphertext
+	existing.BotUsername = g.BotUsername
+	existing.Enabled = g.Enabled
+	existing.Transport = g.Transport
+	existing.WebhookURL = g.WebhookURL
+	existing.UpdatedAt = now
+
+	*g = *cloneGatewayConfig(existing)
+	return nil
+}
+
+func (gs *gatewayStore) SetGatewayEnabled(ctx context.Context, workspaceID, id string, enabled bool) error {
+	if workspaceID == "" || id == "" {
 		return domain.ErrNotFound
 	}
 
 	gs.s.mu.Lock()
 	defer gs.s.mu.Unlock()
 
-	g, exists := gs.s.gateways[gatewayKey(workspaceID, platform)]
-	if !exists {
+	g, exists := gs.s.gateways[id]
+	if !exists || g.WorkspaceID != workspaceID {
 		return domain.ErrNotFound
 	}
 	g.Enabled = enabled
@@ -193,19 +250,30 @@ func (gs *gatewayStore) SetGatewayEnabled(ctx context.Context, workspaceID, plat
 	return nil
 }
 
-func (gs *gatewayStore) DeleteGateway(ctx context.Context, workspaceID, platform string) error {
-	if workspaceID == "" || platform == "" {
+func (gs *gatewayStore) DeleteGateway(ctx context.Context, workspaceID, id string) error {
+	if workspaceID == "" || id == "" {
 		return domain.ErrNotFound
 	}
 
 	gs.s.mu.Lock()
 	defer gs.s.mu.Unlock()
 
-	key := gatewayKey(workspaceID, platform)
-	if _, exists := gs.s.gateways[key]; !exists {
+	g, exists := gs.s.gateways[id]
+	if !exists || g.WorkspaceID != workspaceID {
 		return domain.ErrNotFound
 	}
-	delete(gs.s.gateways, key)
+	identKey := gatewayIdentityKey(workspaceID, g.Platform, g.Identity)
+	delete(gs.s.gatewayIdentities, identKey)
+	delete(gs.s.gateways, id)
+
+	// Cascade delete chat bindings associated with this gateway
+	for bindingID, b := range gs.s.gatewayChatBindings {
+		if b.GatewayID == id {
+			delete(gs.s.gatewayChatBindings, bindingID)
+			delete(gs.s.gatewayBindingsByChat, b.Platform+":"+b.PlatformChatID)
+		}
+	}
+
 	return nil
 }
 
@@ -488,25 +556,6 @@ func (gl *gatewayLinkStore) DeleteUserLink(ctx context.Context, workspaceID, pla
 	return nil
 }
 
-func (gl *gatewayLinkStore) SetUserLinkDefaultAgent(ctx context.Context, workspaceID, platform, platformUserID string, agentID *string) error {
-	if workspaceID == "" || platform == "" || platformUserID == "" {
-		return domain.ErrNotFound
-	}
-
-	gl.s.mu.Lock()
-	defer gl.s.mu.Unlock()
-
-	l, exists := gl.s.gatewayUserLinks[userLinkKey(platform, platformUserID, workspaceID)]
-	if !exists {
-		return domain.ErrNotFound
-	}
-	if agentID != nil && *agentID == "" {
-		agentID = nil
-	}
-	l.DefaultAgentID = agentID
-	return nil
-}
-
 func (gl *gatewayLinkStore) CreatePairingToken(ctx context.Context, t *domain.PairingToken) error {
 	if t == nil {
 		return domain.ErrInvalid
@@ -696,6 +745,35 @@ func (goStore *gatewayOutboxStore) MarkDead(ctx context.Context, workspaceID, id
 	}
 	e.Status = domain.GatewayOutboxStatusDead
 	return nil
+}
+
+// CountDead counts the workspace gateway's dead entries by decoding each
+// payload (the postgres adapter filters on payload->>'gateway_id'; the fake
+// mirrors that with the JSON field, legacy html-shape rows included).
+func (goStore *gatewayOutboxStore) CountDead(ctx context.Context, workspaceID, gatewayID string) (int64, error) {
+	if workspaceID == "" || gatewayID == "" {
+		return 0, nil
+	}
+
+	goStore.s.mu.Lock()
+	defer goStore.s.mu.Unlock()
+
+	var n int64
+	for _, e := range goStore.s.gatewayOutbox {
+		if e.WorkspaceID != workspaceID || e.Status != domain.GatewayOutboxStatusDead {
+			continue
+		}
+		var probe struct {
+			GatewayID string `json:"gateway_id"`
+		}
+		if err := json.Unmarshal(e.Payload, &probe); err != nil {
+			continue
+		}
+		if probe.GatewayID == gatewayID {
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (goStore *gatewayOutboxStore) PruneDelivered(ctx context.Context, before time.Time) (int64, error) {

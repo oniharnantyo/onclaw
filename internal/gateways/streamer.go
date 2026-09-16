@@ -53,22 +53,32 @@ type StreamResult struct {
 // and the final flush that splits oversized replies across messages
 // (design D5). NEW message deliveries — final replies and mid-stream
 // rollover parts — ride the durable outbox (design D9); debounced edits are
-// direct adapter refreshes.
+// direct adapter refreshes. The delivery shape adapts to the platform's
+// capabilities (add-whatsapp-gateway design D2): without CanEdit the
+// placeholder/edit stream is skipped entirely — nothing is sent
+// mid-stream, the typing heartbeat stays, and the final reply rides the
+// outbox as one message.
 type Streamer struct {
 	adapter  PlatformAdapter
 	outbox   *Outbox
 	debounce time.Duration
 	typing   time.Duration
+	flavor   RenderFlavor
+	caps     AdapterCapabilities
 }
 
 // NewStreamer creates a Streamer over the platform adapter and the delivery
-// outbox the final replies are committed to.
+// outbox the final replies are committed to. The render flavor defaults to
+// the Telegram wire format (byte-identical historical behavior); platform
+// compositions override it with WithRenderFlavor.
 func NewStreamer(adapter PlatformAdapter, outbox *Outbox, opts ...StreamerOption) *Streamer {
 	s := &Streamer{
 		adapter:  adapter,
 		outbox:   outbox,
 		debounce: DefaultDebounceInterval,
 		typing:   DefaultTypingInterval,
+		flavor:   TelegramFlavor,
+		caps:     adapter.Capabilities(),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -94,6 +104,14 @@ func WithTypingInterval(d time.Duration) StreamerOption {
 		if d > 0 {
 			s.typing = d
 		}
+	}
+}
+
+// WithRenderFlavor overrides the wire format the turn is rendered and
+// delivered in (add-whatsapp-gateway design D9).
+func WithRenderFlavor(f RenderFlavor) StreamerOption {
+	return func(s *Streamer) {
+		s.flavor = f
 	}
 }
 
@@ -146,9 +164,16 @@ func (m *messageBuffer) addToolFinished(name string, latency time.Duration) {
 func (s *Streamer) Stream(ctx context.Context, session StreamSession, stream *agents.EventStream) StreamResult {
 	chat := session.ChatID
 
-	placeholder, err := s.adapter.SendMessage(ctx, chat, RenderTelegramHTML(placeholderText), SendOptions{DisablePreview: true})
-	if err != nil {
-		return StreamResult{Err: fmt.Errorf("gateway stream: send placeholder: %w", err)}
+	// Capability negotiation (add-whatsapp-gateway design D2): editable
+	// platforms open with a placeholder message that the debounced edits
+	// rewrite; elsewhere the reply is delivered once, at the end.
+	placeholder := ""
+	if s.caps.CanEdit {
+		var err error
+		placeholder, err = s.adapter.SendMessage(ctx, chat, s.flavor.Render(placeholderText), s.flavor.Name, SendOptions{DisablePreview: true})
+		if err != nil {
+			return StreamResult{Err: fmt.Errorf("gateway stream: send placeholder: %w", err)}
+		}
 	}
 
 	// Typing heartbeat for the whole drain: best-effort, failures never
@@ -238,12 +263,18 @@ func (s *Streamer) Stream(ctx context.Context, session StreamSession, stream *ag
 			break
 		}
 
+		// Mid-stream delivery only exists on editable platforms (design D2):
+		// without CanEdit the buffer accumulates until the final flush.
+		if !s.caps.CanEdit {
+			continue
+		}
+
 		// Mid-stream rollover: a buffer approaching the platform limit is
 		// finalized and a fresh buffer continues the reply, so intermediate
-		// edits can never overshoot 4,096 (design D5). The continuation
+		// edits can never overshoot the budget (design D5). The continuation
 		// message is created lazily by the next flush — no eager placeholder
 		// that could end up empty if the turn ended here.
-		if runeLen(cur.markdown()) > telegramChunkBudget-256 {
+		if runeLen(cur.markdown()) > s.flavor.Budget-256 {
 			s.flush(ctx, session, chat, cur, true)
 			done = append(done, cur.markdown())
 			cur = &messageBuffer{text: NewStreamRenderer()}
@@ -293,21 +324,21 @@ func (s *Streamer) runHeartbeat(ctx context.Context, chat string) {
 // are idempotent UI refreshes of a message still being built — only NEW
 // message deliveries need the at-least-once guarantee.
 func (s *Streamer) flush(ctx context.Context, session StreamSession, chat string, m *messageBuffer, final bool) {
-	htmlParts := SplitForTelegram(m.markdown())
+	bodyParts := SplitForFlavor(m.markdown(), s.flavor)
 
 	// An empty body has nothing to edit and nothing to send — a
 	// continuation buffer that never received text (the turn ended right
 	// after a rollover) must not wipe a placeholder or emit an empty
 	// message.
-	if len(htmlParts) == 1 && runeLen(htmlParts[0]) == 0 {
+	if len(bodyParts) == 1 && runeLen(bodyParts[0]) == 0 {
 		return
 	}
 
 	// Write-before-send: commit every part, then attempt the sends.
-	recorded := make([]*domain.OutboxEntry, len(htmlParts))
+	recorded := make([]*domain.OutboxEntry, len(bodyParts))
 	if final {
-		for i, part := range htmlParts {
-			entry, err := s.outbox.Enqueue(ctx, session.GatewayID, session.WorkspaceID, session.SessionID, chat, part, SendOptions{DisablePreview: true})
+		for i, part := range bodyParts {
+			entry, err := s.outbox.Enqueue(ctx, session.GatewayID, session.WorkspaceID, session.SessionID, chat, part, s.flavor.Name, SendOptions{DisablePreview: true})
 			if err != nil {
 				// Without the durable record the part cannot be redelivered;
 				// deliver it best-effort anyway — liveness over the guarantee.
@@ -331,7 +362,7 @@ func (s *Streamer) flush(ctx context.Context, session StreamSession, chat string
 
 	edited := false
 	if m.msgID != "" {
-		if err := s.adapter.EditMessage(ctx, chat, m.msgID, htmlParts[0]); err == nil {
+		if err := s.adapter.EditMessage(ctx, chat, m.msgID, bodyParts[0], s.flavor.Name); err == nil {
 			edited = true
 		} else if final {
 			slog.Warn("gateway stream: final edit failed", "chat", chat, "error", err)
@@ -340,7 +371,7 @@ func (s *Streamer) flush(ctx context.Context, session StreamSession, chat string
 		}
 	}
 	if !edited {
-		id, err := s.adapter.SendMessage(ctx, chat, htmlParts[0], SendOptions{DisablePreview: true})
+		id, err := s.adapter.SendMessage(ctx, chat, bodyParts[0], s.flavor.Name, SendOptions{DisablePreview: true})
 		if err != nil {
 			slog.Error("gateway stream: body delivery failed", "chat", chat, "final", final, "error", err)
 			return // keep the buffer; the next flush retries — final parts stay committed for redelivery
@@ -353,8 +384,8 @@ func (s *Streamer) flush(ctx context.Context, session StreamSession, chat string
 	m.lastEdit = time.Now()
 
 	if final {
-		for i, part := range htmlParts[1:] {
-			if _, err := s.adapter.SendMessage(ctx, chat, part, SendOptions{DisablePreview: true}); err != nil {
+		for i, part := range bodyParts[1:] {
+			if _, err := s.adapter.SendMessage(ctx, chat, part, s.flavor.Name, SendOptions{DisablePreview: true}); err != nil {
 				slog.Error("gateway stream: overflow part delivery failed", "chat", chat, "error", err)
 				break // the committed row is redelivered by the delivery loop
 			}

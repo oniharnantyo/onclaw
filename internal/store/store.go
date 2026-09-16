@@ -53,6 +53,7 @@ type Store interface {
 	Attachments() AttachmentStore
 	WorkspaceStorage() WorkspaceStorageStore
 	Schedulers() SchedulerStore
+	Heartbeats() HeartbeatStore
 	Gateways() GatewayStore
 	GatewayBindings() GatewayBindings
 	GatewayLinks() GatewayLinks
@@ -290,6 +291,63 @@ type SchedulerStore interface {
 	// atomically.
 	FinishSchedulerRun(ctx context.Context, workspaceID, runID string, status string, durationMS int64, tokensUsed int, deliveryStatus string, errMsg string, traceID string) error
 	ListSchedulerRuns(ctx context.Context, workspaceID, schedulerID string, limit, offset int) ([]domain.SchedulerRun, int, error) // newest-first + total
+}
+
+// HeartbeatClaim is one result of a due-claim batch. A heartbeat has no once
+// kind — a catch-up tick fires once and reschedules without replaying — so
+// there is no Missed concept (add-agent-heartbeat D14).
+type HeartbeatClaim struct {
+	Heartbeat *domain.Heartbeat
+}
+
+// HeartbeatStore manages workspace-scoped agent heartbeats (exactly one per
+// agent, add-agent-heartbeat D1) and their per-tick run records. Every method
+// is workspace-scoped — no query runs without a workspace scope — except
+// ClaimDueHeartbeats, which is intentionally global: it serves the ticker,
+// and every claimed row still carries its workspace.
+type HeartbeatStore interface {
+	// GetHeartbeat returns the agent's heartbeat; (nil, nil) when the agent
+	// has none — absence is a normal state, not an error.
+	GetHeartbeat(ctx context.Context, workspaceID, agentID string) (*domain.Heartbeat, error)
+	// PutHeartbeat create-or-replaces the agent's single heartbeat
+	// (INSERT ... ON CONFLICT (workspace_id, agent_id) DO UPDATE), enforcing
+	// the exactly-one-per-agent invariant at the data layer. The store
+	// persists the struct as given — enabled, next_tick_at, failure_streak
+	// and the last_tick snapshot included — because derivation is
+	// caller-side: validation and the next-tick computation run in the
+	// domain/service layers, which then persist the recomputed state
+	// (add-agent-heartbeat D4: derived fields are never stored from request
+	// input). Identity is immutable on replace: id, created_by and
+	// created_at stay as stored, and the input struct is written back with
+	// them so it stays faithful.
+	PutHeartbeat(ctx context.Context, workspaceID, agentID string, hb *domain.Heartbeat) error
+	// DeleteHeartbeat removes the agent's heartbeat; its run records die
+	// with it (ON DELETE CASCADE). An absent heartbeat returns
+	// domain.ErrNotFound, matching DeleteScheduler semantics.
+	DeleteHeartbeat(ctx context.Context, workspaceID, agentID string) error
+	// ClaimDueHeartbeats atomically claims up to limit enabled heartbeats
+	// whose next_tick_at is due at now, so concurrent claimers never fire the
+	// same tick twice: rows are selected FOR UPDATE SKIP LOCKED inside one
+	// transaction and each row's next_tick_at is advanced to its next future
+	// occurrence (computed in the workspace timezone via domain.NextRun) in
+	// that same transaction — a missed catch-up fires once and reschedules,
+	// never replaying skipped occurrences (add-agent-heartbeat D14). A row
+	// whose expression no longer parses fails the batch, mirroring
+	// ClaimDueSchedulers. Uses DB now() semantics anchored at the passed now.
+	ClaimDueHeartbeats(ctx context.Context, now time.Time, limit int) ([]HeartbeatClaim, error)
+	StartHeartbeatRun(ctx context.Context, run *domain.HeartbeatRun) error // inserts with status running
+	// FinishHeartbeatRun writes the tick outcome — including the turn's
+	// persisted Langfuse trace id (000050 precedent; "" when untraced) — and
+	// mirrors it into the heartbeat's last_tick snapshot atomically.
+	FinishHeartbeatRun(ctx context.Context, workspaceID, runID string, status string, durationMS int64, tokensUsed int, deliveryStatus string, errMsg string, traceID string) error
+	// ApplyHeartbeatOutcome applies failure-streak accounting in one atomic
+	// statement (add-agent-heartbeat D12): status completed resets the
+	// streak; status failed increments it and, when it reaches five
+	// consecutive failures, auto-pauses the heartbeat (enabled=false,
+	// next_tick_at=NULL) returning paused=true. Every other status — blocked
+	// policy grief, cancelled, skipped guards — leaves the streak untouched.
+	ApplyHeartbeatOutcome(ctx context.Context, workspaceID, heartbeatID string, status string) (paused bool, err error)
+	ListHeartbeatRuns(ctx context.Context, workspaceID, heartbeatID string, limit, offset int) ([]domain.HeartbeatRun, int, error) // newest-first + total
 }
 
 // DSNConfig holds connection parameters for store drivers.

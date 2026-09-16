@@ -166,6 +166,11 @@ func (s *store) Schedulers() storeport.SchedulerStore {
 	return NewSchedulerStore(s.db)
 }
 
+// Heartbeats returns the HeartbeatStore sub-port.
+func (s *store) Heartbeats() storeport.HeartbeatStore {
+	return NewHeartbeatStore(s.db)
+}
+
 // Gateways returns the GatewayStore sub-port.
 func (s *store) Gateways() storeport.GatewayStore {
 	return NewGatewayStore(s.db)

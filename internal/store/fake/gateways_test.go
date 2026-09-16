@@ -55,6 +55,8 @@ func newGatewayConfig(f gatewayFixture) *domain.GatewayConfig {
 	return &domain.GatewayConfig{
 		WorkspaceID:        f.WorkspaceID,
 		Platform:           domain.GatewayPlatformTelegram,
+		Identity:           "@onclaw_bot",
+		AgentID:            f.AgentID,
 		BotTokenCiphertext: "v1:bm9uY2U=:Y2lwaGVydGV4dA==",
 		BotUsername:        "onclaw_bot",
 		Enabled:            true,
@@ -71,103 +73,129 @@ func newPairingToken(f gatewayFixture) *domain.PairingToken {
 	}
 }
 
-func TestFakeGatewayStore_UpsertGetListEnableDelete(t *testing.T) {
+func TestFakeGatewayStore_CRUDAndMultiBot(t *testing.T) {
 	f := seedGatewayFixture(t)
 	ctx := context.Background()
 	st := f.Store.Gateways()
 
 	// 1. Unknown workspace fails as NotFound (FK parity).
 	ghost := newGatewayConfig(f)
-	if err := st.UpsertGateway(ctx, "00000000-0000-0000-0000-000000000000", ghost); !errors.Is(err, domain.ErrNotFound) {
+	if err := st.CreateGateway(ctx, "00000000-0000-0000-0000-000000000000", ghost); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound for unknown workspace, got %v", err)
 	}
 
-	// 2. Create: id and timestamps assigned, read back intact.
-	g := newGatewayConfig(f)
-	if err := st.UpsertGateway(ctx, f.WorkspaceID, g); err != nil {
-		t.Fatalf("unexpected upsert error: %v", err)
+	// 2. Unknown or foreign agent fails as NotFound (FK parity).
+	foreignAgentCfg := newGatewayConfig(f)
+	foreignAgentCfg.AgentID = "00000000-0000-0000-0000-000000000001"
+	if err := st.CreateGateway(ctx, f.WorkspaceID, foreignAgentCfg); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for unknown agent, got %v", err)
 	}
-	if g.ID == "" || g.CreatedAt.IsZero() || g.UpdatedAt.IsZero() {
-		t.Fatalf("expected id/timestamps assigned, got %+v", g)
+
+	// 3. Create: id and timestamps assigned, read back intact.
+	g1 := newGatewayConfig(f)
+	if err := st.CreateGateway(ctx, f.WorkspaceID, g1); err != nil {
+		t.Fatalf("unexpected create error: %v", err)
 	}
-	got, err := st.GetGateway(ctx, f.WorkspaceID, domain.GatewayPlatformTelegram)
+	if g1.ID == "" || g1.CreatedAt.IsZero() || g1.UpdatedAt.IsZero() {
+		t.Fatalf("expected id/timestamps assigned, got %+v", g1)
+	}
+	got, err := st.GetGateway(ctx, f.WorkspaceID, g1.ID)
 	if err != nil || got == nil {
 		t.Fatalf("unexpected get result: (%v, %v)", got, err)
 	}
-	if got.BotTokenCiphertext != g.BotTokenCiphertext || got.BotUsername != "onclaw_bot" || !got.Enabled {
+	if got.BotTokenCiphertext != g1.BotTokenCiphertext || got.BotUsername != "onclaw_bot" || got.Identity != "@onclaw_bot" || !got.Enabled || got.AgentID != f.AgentID {
 		t.Fatalf("expected round-tripped config, got %+v", got)
 	}
 
-	// 3. Absent platform and foreign workspace read as (nil, nil) — no leak.
-	absent, err := st.GetGateway(ctx, f.WorkspaceID, domain.GatewayPlatformTelegram)
-	if err != nil || absent == nil {
-		t.Fatalf("expected telegram config present, got (%v, %v)", absent, err)
-	}
-	if none, err := st.GetGateway(ctx, f.WorkspaceID, "slack"); err != nil || none != nil {
-		t.Fatalf("expected (nil, nil) for absent platform, got (%v, %v)", none, err)
-	}
-	foreign, err := st.GetGateway(ctx, "00000000-0000-0000-0000-000000000001", domain.GatewayPlatformTelegram)
-	if err != nil || foreign != nil {
-		t.Fatalf("expected (nil, nil) for foreign workspace, got (%v, %v)", foreign, err)
+	// 4. Same workspace, same platform, same identity -> Conflict!
+	dup := newGatewayConfig(f)
+	if err := st.CreateGateway(ctx, f.WorkspaceID, dup); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("expected ErrConflict on duplicate identity in same workspace+platform, got %v", err)
 	}
 
-	// 4. Upsert conflict rewrites connection fields but keeps id,
-	// created_at, and the enabled flag.
-	reconnect := newGatewayConfig(f)
-	reconnect.BotTokenCiphertext = "v1:bm9uY2Uy:Y2lwaGVydGV4dDI="
-	reconnect.BotUsername = "onclaw_bot_v2"
-	reconnect.Enabled = false // must NOT clobber the stored flag
-	reconnect.DefaultAgentID = &f.AgentID
-	if err := st.UpsertGateway(ctx, f.WorkspaceID, reconnect); err != nil {
-		t.Fatalf("unexpected reconnect error: %v", err)
-	}
-	reloaded, _ := st.GetGateway(ctx, f.WorkspaceID, domain.GatewayPlatformTelegram)
-	if reloaded.ID != g.ID {
-		t.Fatalf("expected stable id across upsert, got %s then %s", g.ID, reloaded.ID)
-	}
-	if reloaded.BotTokenCiphertext != reconnect.BotTokenCiphertext || reloaded.BotUsername != "onclaw_bot_v2" {
-		t.Fatalf("expected connection fields rewritten, got %+v", reloaded)
-	}
-	if reloaded.DefaultAgentID == nil || *reloaded.DefaultAgentID != f.AgentID {
-		t.Fatalf("expected default agent rewritten, got %+v", reloaded.DefaultAgentID)
-	}
-	if !reloaded.Enabled {
-		t.Fatal("expected stored enabled flag to survive the upsert")
-	}
-	if !reloaded.CreatedAt.Equal(g.CreatedAt) {
-		t.Fatalf("expected created_at preserved, got %v then %v", g.CreatedAt, reloaded.CreatedAt)
+	// 5. Same workspace, same platform, different identity (multi-bot) -> Success!
+	g2 := newGatewayConfig(f)
+	g2.Identity = "@second_bot"
+	g2.BotUsername = "second_bot"
+	if err := st.CreateGateway(ctx, f.WorkspaceID, g2); err != nil {
+		t.Fatalf("unexpected create second bot error: %v", err)
 	}
 
-	// 5. Enable toggle is standalone.
-	if err := st.SetGatewayEnabled(ctx, f.WorkspaceID, domain.GatewayPlatformTelegram, false); err != nil {
+	// 6. Two workspaces, same bot name/identity -> Success!
+	ws2 := &domain.Workspace{Slug: "gw-ws-2", Name: "Gateway WS 2"}
+	if err := f.Store.Workspaces().Create(ctx, ws2); err != nil {
+		t.Fatalf("seed ws2: %v", err)
+	}
+	p2 := &domain.ProviderConfig{WorkspaceID: ws2.ID, Name: "main2", Type: "openai"}
+	if err := f.Store.Providers().Create(ctx, p2); err != nil {
+		t.Fatalf("seed provider2: %v", err)
+	}
+	a2 := &domain.Agent{WorkspaceID: ws2.ID, Slug: "agent2", Name: "Agent 2", ProviderID: p2.ID, Model: "gpt"}
+	if err := f.Store.Agents().Create(ctx, a2); err != nil {
+		t.Fatalf("seed agent2: %v", err)
+	}
+	gWs2 := &domain.GatewayConfig{
+		WorkspaceID:        ws2.ID,
+		Platform:           domain.GatewayPlatformTelegram,
+		Identity:           "@onclaw_bot", // same identity as g1 in ws1
+		AgentID:            a2.ID,
+		BotTokenCiphertext: "v1:bm9uY2U=:Y2lwaGVydGV4dA==",
+		BotUsername:        "onclaw_bot",
+		Enabled:            true,
+		Transport:          domain.GatewayTransportLongPolling,
+	}
+	if err := st.CreateGateway(ctx, ws2.ID, gWs2); err != nil {
+		t.Fatalf("expected cross-workspace same identity allowed, got %v", err)
+	}
+
+	// 7. ListGateways and ListGatewaysByPlatform
+	list, err := st.ListGateways(ctx, f.WorkspaceID)
+	if err != nil || len(list) != 2 {
+		t.Fatalf("expected 2 gateways in ws1, got %d (%v)", len(list), err)
+	}
+	tgList, err := st.ListGatewaysByPlatform(ctx, f.WorkspaceID, domain.GatewayPlatformTelegram)
+	if err != nil || len(tgList) != 2 {
+		t.Fatalf("expected 2 telegram gateways in ws1, got %d (%v)", len(tgList), err)
+	}
+	waList, err := st.ListGatewaysByPlatform(ctx, f.WorkspaceID, domain.GatewayPlatformWhatsApp)
+	if err != nil || len(waList) != 0 {
+		t.Fatalf("expected 0 whatsapp gateways in ws1, got %d (%v)", len(waList), err)
+	}
+
+	// 8. Update gateway
+	g1.BotUsername = "onclaw_bot_renamed"
+	g1.Identity = "@onclaw_bot_renamed"
+	if err := st.UpdateGateway(ctx, f.WorkspaceID, g1); err != nil {
+		t.Fatalf("unexpected update error: %v", err)
+	}
+	reloaded, _ := st.GetGateway(ctx, f.WorkspaceID, g1.ID)
+	if reloaded.Identity != "@onclaw_bot_renamed" || reloaded.BotUsername != "onclaw_bot_renamed" {
+		t.Fatalf("expected updated identity, got %+v", reloaded)
+	}
+
+	// 9. Update identity collision with g2
+	g1.Identity = "@second_bot"
+	if err := st.UpdateGateway(ctx, f.WorkspaceID, g1); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("expected ErrConflict on update identity collision, got %v", err)
+	}
+
+	// 10. Enable toggle
+	if err := st.SetGatewayEnabled(ctx, f.WorkspaceID, g1.ID, false); err != nil {
 		t.Fatalf("unexpected disable error: %v", err)
 	}
-	reloaded, _ = st.GetGateway(ctx, f.WorkspaceID, domain.GatewayPlatformTelegram)
+	reloaded, _ = st.GetGateway(ctx, f.WorkspaceID, g1.ID)
 	if reloaded.Enabled {
 		t.Fatal("expected gateway disabled")
 	}
-	if err := st.SetGatewayEnabled(ctx, f.WorkspaceID, "slack", true); !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("expected ErrNotFound for absent platform, got %v", err)
-	}
 
-	// 6. List is workspace-scoped.
-	list, err := st.ListGateways(ctx, f.WorkspaceID)
-	if err != nil || len(list) != 1 {
-		t.Fatalf("expected 1 gateway, got %d (%v)", len(list), err)
-	}
-	foreignList, err := st.ListGateways(ctx, "00000000-0000-0000-0000-000000000002")
-	if err != nil || len(foreignList) != 0 {
-		t.Fatalf("expected empty foreign list, got %d (%v)", len(foreignList), err)
-	}
-
-	// 7. Delete; absent rows afterwards are ErrNotFound.
-	if err := st.DeleteGateway(ctx, f.WorkspaceID, domain.GatewayPlatformTelegram); err != nil {
+	// 11. Delete
+	if err := st.DeleteGateway(ctx, f.WorkspaceID, g1.ID); err != nil {
 		t.Fatalf("unexpected delete error: %v", err)
 	}
-	if err := st.DeleteGateway(ctx, f.WorkspaceID, domain.GatewayPlatformTelegram); !errors.Is(err, domain.ErrNotFound) {
+	if err := st.DeleteGateway(ctx, f.WorkspaceID, g1.ID); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound re-deleting, got %v", err)
 	}
-	if none, err := st.GetGateway(ctx, f.WorkspaceID, domain.GatewayPlatformTelegram); err != nil || none != nil {
+	if none, err := st.GetGateway(ctx, f.WorkspaceID, g1.ID); err != nil || none != nil {
 		t.Fatalf("expected (nil, nil) after delete, got (%v, %v)", none, err)
 	}
 }
@@ -395,5 +423,46 @@ func TestFakeGatewayOutbox_WriteClaimDeliverRedeliverPrune(t *testing.T) {
 	pruned, err := st.PruneDelivered(ctx, now.Add(24*time.Hour))
 	if err != nil || pruned != 1 {
 		t.Fatalf("expected 1 pruned delivered row, got %d (%v)", pruned, err)
+	}
+}
+
+// TestFakeGatewayOutbox_CountDead mirrors the postgres adapter's
+// dead-delivery count (add-whatsapp-gateway design D4): status AND payload
+// gateway_id decide, foreign workspaces and pending entries never count.
+func TestFakeGatewayOutbox_CountDead(t *testing.T) {
+	f := seedGatewayFixture(t)
+	ctx := context.Background()
+	st := f.Store.GatewayOutbox()
+
+	deadA := &domain.OutboxEntry{WorkspaceID: f.WorkspaceID, SessionID: "wa_dm_111", Payload: []byte(`{"gateway_id":"gw-a","chat_id":"111"}`)}
+	deadA2 := &domain.OutboxEntry{WorkspaceID: f.WorkspaceID, SessionID: "wa_dm_112", Payload: []byte(`{"gateway_id":"gw-a","chat_id":"112"}`)}
+	deadB := &domain.OutboxEntry{WorkspaceID: f.WorkspaceID, SessionID: "wa_dm_121", Payload: []byte(`{"gateway_id":"gw-b","chat_id":"121"}`)}
+	pendingA := &domain.OutboxEntry{WorkspaceID: f.WorkspaceID, SessionID: "wa_dm_113", Payload: []byte(`{"gateway_id":"gw-a","chat_id":"113"}`)}
+	for _, e := range []*domain.OutboxEntry{deadA, deadA2, deadB, pendingA} {
+		if err := st.Enqueue(ctx, e); err != nil {
+			t.Fatalf("unexpected enqueue error: %v", err)
+		}
+	}
+	for _, e := range []*domain.OutboxEntry{deadA, deadA2, deadB} {
+		if err := st.MarkDead(ctx, f.WorkspaceID, e.ID); err != nil {
+			t.Fatalf("unexpected dead error: %v", err)
+		}
+	}
+
+	n, err := st.CountDead(ctx, f.WorkspaceID, "gw-a")
+	if err != nil || n != 2 {
+		t.Fatalf("expected 2 dead entries for gw-a, got %d (%v)", n, err)
+	}
+	n, err = st.CountDead(ctx, f.WorkspaceID, "gw-b")
+	if err != nil || n != 1 {
+		t.Fatalf("expected 1 dead entry for gw-b, got %d (%v)", n, err)
+	}
+	n, err = st.CountDead(ctx, f.WorkspaceID, "gw-unknown")
+	if err != nil || n != 0 {
+		t.Fatalf("expected 0 dead entries for an unknown gateway, got %d (%v)", n, err)
+	}
+	n, err = st.CountDead(ctx, "00000000-0000-0000-0000-000000000009", "gw-a")
+	if err != nil || n != 0 {
+		t.Fatalf("expected 0 dead entries in a foreign workspace, got %d (%v)", n, err)
 	}
 }

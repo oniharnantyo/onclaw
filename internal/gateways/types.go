@@ -8,6 +8,7 @@ package gateways
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/oniharnantyo/onclaw/internal/agents"
@@ -15,7 +16,10 @@ import (
 
 // Platform identifies a gateway platform. Session bindings and user links
 // are keyed on it.
-const PlatformTelegram = "telegram"
+const (
+	PlatformTelegram = "telegram"
+	PlatformWhatsApp = "whatsapp"
+)
 
 // InboundKind classifies the chat surface an inbound message arrived on.
 type InboundKind string
@@ -85,10 +89,43 @@ type Callback struct {
 	Data string
 }
 
+// Render flavor tags: the wire format a body was rendered in. They ride
+// outbox payloads and send calls so a delivery to the wrong platform's
+// adapter is refused instead of misparsed (add-whatsapp-gateway design D9).
+const (
+	FlavorTelegramHTML = "telegram_html"
+	FlavorWhatsAppMD   = "whatsapp_md"
+)
+
+// ErrPermanentDelivery marks a send failure that can never succeed on retry —
+// the WhatsApp Cloud API's 24-hour window expiry and 4xx family (design D4).
+// The outbox dead-letters the entry when its sender's error chain carries
+// this sentinel (errors.Is) instead of rescheduling. Platform adapters own
+// the classification: an adapter wraps this core sentinel so the dependency
+// direction stays adapter→core (the whatsappcloud package re-exports it).
+var ErrPermanentDelivery = errors.New("permanent delivery failure")
+
 // SendOptions carries per-send presentation flags.
 type SendOptions struct {
-	// DisablePreview suppresses link previews.
+	// DisablePreview suppresses link previews (platforms without a preview
+	// toggle ignore it — add-whatsapp-gateway design D9).
 	DisablePreview bool
+}
+
+// AdapterCapabilities reports the platform features an adapter honestly
+// implements (add-whatsapp-gateway design D2). Callers adapt instead of
+// assuming Telegram's abilities: the streamer skips the placeholder/edit
+// stream when CanEdit is false, and the approval bridge resolves cards with
+// a receipt follow-up instead of an edit. Typing is universal — every
+// adapter implements SendTyping or no-ops — so it has no capability flag.
+type AdapterCapabilities struct {
+	// CanEdit reports whether sent messages can be rewritten in place.
+	CanEdit bool
+	// CanButton reports whether approval cards can carry interactive buttons
+	// (button ids are EncodeApprovalCallback verbatim). When false, the
+	// platform decides approvals by text reply — the card must instruct
+	// replying APPROVE or DENY, and the router intercepts that reply.
+	CanButton bool
 }
 
 // PlatformAdapter is the narrow seam each platform implements: lifecycle,
@@ -101,16 +138,25 @@ type PlatformAdapter interface {
 	// call once per adapter instance.
 	Start(ctx context.Context) error
 	Stop(ctx context.Context) error
-	// SendMessage posts a new chat message rendered as Telegram-compatible
-	// HTML and returns the platform message id. Implementations apply the
-	// plain-text fallback and rate-limit backoff themselves.
-	SendMessage(ctx context.Context, chatID, html string, opts SendOptions) (string, error)
-	// EditMessage rewrites a previously sent message in place.
-	EditMessage(ctx context.Context, chatID, messageID, html string) error
+	// Capabilities reports the platform's feature surface (design D2).
+	Capabilities() AdapterCapabilities
+	// SendMessage posts a new chat message and returns the platform message
+	// id. body is rendered in flavor (one of the Flavor* tags); a flavor the
+	// adapter does not speak must be refused with an error, never misparsed —
+	// an empty flavor means the adapter's own format (the core's
+	// format-agnostic copy paths). Implementations apply the plain-text
+	// fallback and rate-limit backoff themselves.
+	SendMessage(ctx context.Context, chatID, body, flavor string, opts SendOptions) (string, error)
+	// EditMessage rewrites a previously sent message in place. Only honest
+	// when Capabilities().CanEdit; body/flavor follow SendMessage's contract.
+	EditMessage(ctx context.Context, chatID, messageID, body, flavor string) error
 	// SendTyping flashes the chat action indicator (best-effort).
 	SendTyping(ctx context.Context, chatID string) error
-	// SendApprovalCard posts the approve/deny inline keyboard for one
-	// pending interrupt and returns the card message id.
+	// SendApprovalCard posts the approve/deny card for one pending interrupt
+	// and returns the card message id. The card carries interactive buttons
+	// (callback_data = EncodeApprovalCallback verbatim) only when
+	// Capabilities().CanButton; otherwise its body instructs replying
+	// APPROVE or DENY in the chat (add-whatsapp-gateway design D3).
 	SendApprovalCard(ctx context.Context, chatID string, interrupt agents.ApprovalPayload) (string, error)
 	// DownloadFile fetches a file by its platform reference.
 	DownloadFile(ctx context.Context, fileID string) ([]byte, error)
@@ -133,10 +179,11 @@ type RunSubmitter interface {
 	Resume(ctx context.Context, req agents.ExecRequest, approval agents.ApprovalPayload, approved bool) (*agents.EventStream, error)
 }
 
-// RenderedPart is one final outbound chunk: HTML body plus the send
-// timestamp the outbox records.
+// RenderedPart is one final outbound chunk: a body rendered in its platform
+// flavor plus the send timestamp the outbox records.
 type RenderedPart struct {
-	HTML string
+	Body   string
+	Flavor string
 }
 
 // OutboxRecord is the delivery unit the outbox persists before sending.

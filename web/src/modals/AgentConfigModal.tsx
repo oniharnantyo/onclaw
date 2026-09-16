@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { cx, providerOf, slugify } from "../lib/helpers";
 import { Modal } from "../components/ui/Modal";
 import { inputCls, labelCls } from "../components/ui/constants";
@@ -37,6 +37,7 @@ import {
 } from "../lib/hooksUi";
 import { McpServerDialog } from "./McpServerDialog";
 import { HookDialog } from "./HookDialog";
+import { HeartbeatPane, type HeartbeatPaneHandle } from "./HeartbeatPane";
 import { useWorkspace, useStore } from "../store";
 
 // The browser facade: the catalog exposes one Browser chip whose stored
@@ -129,8 +130,8 @@ export function AgentConfigModal({
   // Step in wizard (1 = Identity, 2 = Model, 3 = Capabilities)
   const [step, setStep] = useState<1 | 2 | 3>(1);
 
-  // Tab in edit mode ('identity' | 'capabilities' | 'prompts' | 'hooks')
-  const [editTab, setEditTab] = useState<'identity' | 'model' | 'capabilities' | 'prompts' | 'hooks'>('identity');
+  // Tab in edit mode ('identity' | 'model' | 'capabilities' | 'prompts' | 'hooks' | 'heartbeat')
+  const [editTab, setEditTab] = useState<'identity' | 'model' | 'capabilities' | 'prompts' | 'hooks' | 'heartbeat'>('identity');
 
   // Loading detail state for edit mode
   const [loadingDetail, setLoadingDetail] = useState(isEdit);
@@ -155,6 +156,11 @@ export function AgentConfigModal({
     { mode: 'add' } | { mode: 'edit'; server: ApiMcpServer } | null
   >(null);
   const agentsWritable = useCanWriteAgents(tenant || currentWs);
+
+  // Heartbeat (add-agent-heartbeat 6.3): the pane owns the heartbeat form and
+  // rides the modal's Save through this handle — heartbeat edits PUT only
+  // when the user touched them, after the agent PATCH succeeds.
+  const heartbeatPaneRef = useRef<HeartbeatPaneHandle | null>(null);
 
   // Agent lifecycle hooks (edit mode, D13): the agent's private hooks (CRUD,
   // same editor contract as the workspace pane) plus the instance/workspace
@@ -534,7 +540,16 @@ export function AgentConfigModal({
       if (targetWsId && agentId) {
         const res = await api.agents.patch(targetWsId, agentId, patchPayload);
         if (res?.agent) {
+          // The agent save lands first and is never rolled back by a
+          // heartbeat failure: a rejected heartbeat PUT keeps the modal open
+          // on the Heartbeat tab with the field errors inline.
           onSave(res.agent);
+          const heartbeatSave = heartbeatPaneRef.current?.save();
+          if (heartbeatSave && !(await heartbeatSave)) {
+            setEditTab('heartbeat');
+            setSubmitting(false);
+            return;
+          }
           onClose();
           return;
         }
@@ -897,6 +912,19 @@ export function AgentConfigModal({
             </button>
             <button
               type="button"
+              onClick={() => setEditTab('heartbeat')}
+              data-testid="tab-heartbeat"
+              className={cx(
+                "border-b-2 px-4 py-2 text-[13px] font-medium transition-colors",
+                editTab === 'heartbeat'
+                  ? "border-accent text-fg font-semibold"
+                  : "border-transparent text-muted hover:text-fg"
+              )}
+            >
+              Heartbeat
+            </button>
+            <button
+              type="button"
               onClick={() => setEditTab('prompts')}
               className={cx(
                 "border-b-2 px-4 py-2 text-[13px] font-medium transition-colors",
@@ -1214,7 +1242,11 @@ export function AgentConfigModal({
               <span className={labelCls}>Built-in Tools</span>
               {toolCatalog.length > 0 ? (
                 <OptionChips
-                  options={toolCatalog.map((t) => ({ id: t.key, label: t.display_name }))}
+                  // Non-toggleable (always-on) tools render no chip — exposure
+                  // is context-granted at runtime, not agent-selectable. Stored
+                  // allowlist keys for them stay in `tools` and save back
+                  // harmlessly (they never become chips).
+                  options={toolCatalog.filter((t) => t.toggleable).map((t) => ({ id: t.key, label: t.display_name }))}
                   value={tools}
                   onChange={setTools}
                   iconOf={(o: any) => toolCatalog.find((t) => t.key === o.id)?.icon_key || "plug"}
@@ -1620,6 +1652,21 @@ export function AgentConfigModal({
               </p>
             </div>
           </div>
+        )}
+
+        {/* Edit Tab Heartbeat — one opt-in scheduled check-in per agent
+            (add-agent-heartbeat 6.3). Keep-alive mounted in edit mode (hidden
+            when another tab is active) so cadence/delivery/checklist edits
+            survive tab switches and ride the modal's Save. */}
+        {isEdit && (
+          <HeartbeatPane
+            ref={heartbeatPaneRef}
+            ws={targetWsId}
+            agentId={draft?.id || draft?.slug || ''}
+            tz={tenant?.tz || currentWs?.tz || 'UTC'}
+            canWrite={agentsWritable}
+            hidden={editTab !== 'heartbeat'}
+          />
         )}
 
         {/* Edit Tab Prompts — generated prompt files, list left / preview right */}

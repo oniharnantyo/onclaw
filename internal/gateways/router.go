@@ -11,13 +11,17 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
-// OriginTelegram is the ExecRequest.Origin value for gateway-submitted runs.
-// The runner's origin normalizer currently coerces unknown values to
-// OriginUser, so behavior is identical until the runner integration wave
-// lands agents.OriginTelegram (integrate-telegram-gateway task 6.3); this
-// constant is defined here, not in agents, to keep the gateway package
+// OriginTelegram / OriginWhatsApp are the ExecRequest.Origin values for
+// gateway-submitted runs (add-whatsapp-gateway design D10). The runner's
+// origin normalizer currently coerces unknown values to OriginUser, so
+// behavior is identical until the runner integration wave lands the
+// agents-side constants (integrate-telegram-gateway task 6.3); these
+// constants are defined here, not in agents, to keep the gateway package
 // dependency-shaped like an ordinary ingress client.
-const OriginTelegram = "telegram"
+const (
+	OriginTelegram = "telegram"
+	OriginWhatsApp = "whatsapp"
+)
 
 // TurnPlan is one routed turn ready for submission: everything
 // ExecRequest needs plus the chat coordinates the delivery side uses.
@@ -41,17 +45,21 @@ type TurnPlan struct {
 }
 
 // ReplyPlan is a plain-text chat reply produced by routing (pairing hints,
-// command confirmations, refusals). Sent as-is — the service HTML-escapes it
-// for the wire.
+// command confirmations, refusals). Sent as-is — the service renders it for
+// the platform's wire format.
 type ReplyPlan struct {
 	Text string
 }
 
 // RouteResult is the outcome of routing one inbound message: at most one of
-// Turn or Reply is set; both nil means the message is dropped silently.
+// Turn, Reply, or Callback is set; all nil means the message is dropped
+// silently. Callback is a synthesized approval decision — the text-reply
+// interception of add-whatsapp-gateway design D3 — delivered to the same
+// bridge path a button press takes.
 type RouteResult struct {
-	Turn  *TurnPlan
-	Reply *ReplyPlan
+	Turn     *TurnPlan
+	Reply    *ReplyPlan
+	Callback *Callback
 }
 
 // SessionUsageReader supplies the /usage command its context-meter numbers.
@@ -80,15 +88,26 @@ type IngressStage interface {
 // unknown commands ride through as ordinary turn input so agent-defined
 // slash commands keep working.
 type Router struct {
-	gateways store.GatewayStore
-	bindings store.GatewayBindings
-	links    store.GatewayLinks
-	agents   store.AgentStore
-	members  store.MemberStore
-	users    store.UserStore
-	pairing  *PairingService
-	usage    SessionUsageReader
-	ingress  IngressStage
+	gateways  store.GatewayStore
+	bindings  store.GatewayBindings
+	links     store.GatewayLinks
+	agents    store.AgentStore
+	members   store.MemberStore
+	users     store.UserStore
+	pairing   *PairingService
+	usage     SessionUsageReader
+	ingress   IngressStage
+	intercept ApprovalInterceptSource
+}
+
+// ApprovalInterceptSource is the router's seam to the approval bridge's
+// pending state (add-whatsapp-gateway design D3): it reports the session's
+// pending card only when the platform decides approvals by text reply
+// (CanButton=false). The interception itself lives here, in the
+// message-classification layer, so the bridge's callback contract stays
+// untouched.
+type ApprovalInterceptSource interface {
+	PendingTextDecision(sessionID string) (interruptID, cardMessageID string, ok bool)
 }
 
 // RouterOption customizes a Router.
@@ -98,6 +117,13 @@ type RouterOption func(*Router)
 // router passes message text through untouched and ignores media.
 func WithIngress(stage IngressStage) RouterOption {
 	return func(r *Router) { r.ingress = stage }
+}
+
+// WithApprovalIntercept attaches the approval-bridge pending lookup that
+// powers the text-reply decision interception (design D3). Without it the
+// router never intercepts — button platforms do not need it.
+func WithApprovalIntercept(src ApprovalInterceptSource) RouterOption {
+	return func(r *Router) { r.intercept = src }
 }
 
 // NewRouter builds the router. Every dependency is required and resolved by
@@ -173,6 +199,22 @@ func (r *Router) Route(ctx context.Context, gateway *domain.GatewayConfig, msg I
 		return nil, fmt.Errorf("gateway router: resolve member: %w", err)
 	}
 
+		// Text-reply approval interception (add-whatsapp-gateway design D3):
+		// while a card is pending on a CanButton=false platform, the DM belongs
+		// to the approval — a case-insensitive APPROVE/DENY becomes the decision,
+		// anything else gets the pending notice. Button platforms never land
+		// here (PendingTextDecision reports no pending card for them).
+		if r.intercept != nil && msg.Kind == InboundDM {
+			agentID := gateway.AgentID
+			if agentID != "" {
+				suffix := r.currentSuffix(ctx, msg.Platform, msg.FromUserID, agentID)
+				sessionID := gatewayDMSessionKeyFor(msg.Platform, msg.FromUserID, agentID, suffix)
+				if interruptID, cardMessageID, pending := r.intercept.PendingTextDecision(sessionID); pending {
+					return r.routeApprovalTextReply(msg, interruptID, cardMessageID), nil
+				}
+			}
+		}
+
 	if cmd, args := parseCommand(msg.Text); cmd != "" {
 		res, err := r.routeCommand(ctx, gateway, msg, link, cmd, args)
 		if err != nil || res != nil {
@@ -205,7 +247,7 @@ func (r *Router) routeCommand(ctx context.Context, gateway *domain.GatewayConfig
 			// refuse identically; a re-pair attempt surfaces its own conflict.
 			return &RouteResult{Reply: &ReplyPlan{Text: "Pairing failed: the token is invalid, expired, or already used."}}, nil
 		}
-		return &RouteResult{Reply: &ReplyPlan{Text: fmt.Sprintf("Paired %s to this workspace. You can now chat with your workspace agents.", mentionName(msg.FromUsername))}}, nil
+		return &RouteResult{Reply: &ReplyPlan{Text: fmt.Sprintf("Paired %s to this workspace. You can now chat with your workspace agents.", mentionName(msg.Platform, msg.FromUsername))}}, nil
 
 	case "new":
 		// Archive the current session by minting the next suffix (design D3).
@@ -241,10 +283,7 @@ func (r *Router) routeCommand(ctx context.Context, gateway *domain.GatewayConfig
 		if msg.Kind != InboundDM {
 			return &RouteResult{Reply: &ReplyPlan{Text: "/usage is available in direct messages."}}, nil
 		}
-		agentID, err := r.resolveDMAgent(ctx, gateway, link)
-		if err != nil {
-			return nil, err
-		}
+		agentID := gateway.AgentID
 		if agentID == "" {
 			return &RouteResult{Reply: &ReplyPlan{Text: noDefaultAgentText()}}, nil
 		}
@@ -259,29 +298,40 @@ func (r *Router) routeCommand(ctx context.Context, gateway *domain.GatewayConfig
 		return &RouteResult{Reply: &ReplyPlan{Text: usageText(usage)}}, nil
 
 	case "agent":
-		// Per-user default agent choice (design D3), DM-only.
-		if msg.Kind != InboundDM {
-			return &RouteResult{Reply: &ReplyPlan{Text: "/agent is available in direct messages."}}, nil
-		}
-		if len(args) == 0 {
-			return &RouteResult{Reply: &ReplyPlan{Text: "Usage: /agent <agent name>"}}, nil
-		}
-		name := strings.Join(args, " ")
-		agent, err := r.agents.BySlug(ctx, workspaceID, name)
-		if err != nil {
-			if errors.Is(err, domain.ErrNotFound) {
-				return &RouteResult{Reply: &ReplyPlan{Text: fmt.Sprintf("No agent named %q in this workspace.", name)}}, nil
-			}
-			return nil, fmt.Errorf("gateway router: resolve agent %q: %w", name, err)
-		}
-		agentID := agent.ID
-		if err := r.links.SetUserLinkDefaultAgent(ctx, workspaceID, msg.Platform, msg.FromUserID, &agentID); err != nil {
-			return nil, fmt.Errorf("gateway router: set default agent: %w", err)
-		}
-		return &RouteResult{Reply: &ReplyPlan{Text: fmt.Sprintf("Your default agent for direct messages is now %s.", agent.Name)}}, nil
+		// Per-user DM agent override was removed; the bot you message IS the agent selection.
+		// /agent command in direct messages is retired. When /agent is received, reply with a hint:
+		return &RouteResult{Reply: &ReplyPlan{Text: "The bot you message selects the agent. To talk to other agents, message their respective bots in this workspace."}}, nil
 	}
 
 	return nil, nil
+}
+
+// routeApprovalTextReply classifies a DM that landed on a session with a
+// pending text-reply approval card (design D3): a case-insensitive
+// APPROVE/DENY synthesizes the callback a button press would have carried
+// — EncodeApprovalCallback verbatim, addressed to the card's message id —
+// and any other text gets the pending-approval notice.
+func (r *Router) routeApprovalTextReply(msg InboundMessage, interruptID, cardMessageID string) *RouteResult {
+	switch strings.ToUpper(strings.TrimSpace(msg.Text)) {
+	case "APPROVE":
+		return &RouteResult{Callback: &Callback{
+			Platform:   msg.Platform,
+			ChatID:     msg.ChatID,
+			MessageID:  cardMessageID,
+			FromUserID: msg.FromUserID,
+			Data:       EncodeApprovalCallback(interruptID, true),
+		}}
+	case "DENY":
+		return &RouteResult{Callback: &Callback{
+			Platform:   msg.Platform,
+			ChatID:     msg.ChatID,
+			MessageID:  cardMessageID,
+			FromUserID: msg.FromUserID,
+			Data:       EncodeApprovalCallback(interruptID, false),
+		}}
+	default:
+		return &RouteResult{Reply: &ReplyPlan{Text: PendingApprovalTextReply}}
+	}
 }
 
 // routeTurn builds the ordinary model turn for a message: DM or group.
@@ -305,11 +355,7 @@ func (r *Router) buildTurnPlan(ctx context.Context, gateway *domain.GatewayConfi
 	var agentID string
 	switch msg.Kind {
 	case InboundDM:
-		var err error
-		agentID, err = r.resolveDMAgent(ctx, gateway, link)
-		if err != nil {
-			return nil, nil, err
-		}
+		agentID = gateway.AgentID
 		if agentID == "" {
 			return nil, &ReplyPlan{Text: noDefaultAgentText()}, nil
 		}
@@ -321,6 +367,11 @@ func (r *Router) buildTurnPlan(ctx context.Context, gateway *domain.GatewayConfi
 		if binding == nil {
 			// Not bound: the bot sits in an unbound group. Drop silently —
 			// bindings are admin-created and confirmed in-chat.
+			return nil, &ReplyPlan{}, nil
+		}
+		if binding.GatewayID != "" && binding.GatewayID != gateway.ID {
+			// Second bot in a bound group! The group is bound to gateway A, but message was received by bot B (gateway.ID).
+			// According to spec: "Adding a second workspace bot to an already-bound group SHALL surface a configuration warning, and the second bot SHALL NOT answer in that group."
 			return nil, &ReplyPlan{}, nil
 		}
 		if _, err := r.agents.ByID(ctx, workspaceID, binding.AgentID); err != nil {
@@ -379,42 +430,13 @@ func (r *Router) buildTurnPlan(ctx context.Context, gateway *domain.GatewayConfi
 	}, nil, nil
 }
 
-// resolveDMAgent resolves the DM routing agent: the member's per-user choice
-// when set, otherwise the gateway's configured default agent (spec: "DM uses
-// member default agent" / "DM falls back to gateway default"). Empty means
-// neither is configured.
-func (r *Router) resolveDMAgent(ctx context.Context, gateway *domain.GatewayConfig, link *domain.UserLink) (string, error) {
-	if link.DefaultAgentID != nil && *link.DefaultAgentID != "" {
-		if _, err := r.agents.ByID(ctx, gateway.WorkspaceID, *link.DefaultAgentID); err != nil {
-			if errors.Is(err, domain.ErrNotFound) {
-				// The per-user choice was deleted (SET NULL lag): fall through
-				// to the gateway default rather than refusing.
-				return r.gatewayDefaultAgent(gateway), nil
-			}
-			return "", fmt.Errorf("gateway router: resolve per-user agent: %w", err)
-		}
-		return *link.DefaultAgentID, nil
-	}
-	return r.gatewayDefaultAgent(gateway), nil
-}
-
-func (r *Router) gatewayDefaultAgent(gateway *domain.GatewayConfig) string {
-	if gateway.DefaultAgentID != nil {
-		return *gateway.DefaultAgentID
-	}
-	return ""
-}
-
 // resolveGroupOrDMAgent resolves the agent a command targets (used by /new,
 // which must work in both DMs and bound groups). A non-nil reply is a
 // refusal or an already-sent response.
 func (r *Router) resolveGroupOrDMAgent(ctx context.Context, gateway *domain.GatewayConfig, msg InboundMessage, link *domain.UserLink) (string, *ReplyPlan, error) {
 	switch msg.Kind {
 	case InboundDM:
-		agentID, err := r.resolveDMAgent(ctx, gateway, link)
-		if err != nil {
-			return "", nil, err
-		}
+		agentID := gateway.AgentID
 		if agentID == "" {
 			return "", &ReplyPlan{Text: noDefaultAgentText()}, nil
 		}
@@ -425,6 +447,9 @@ func (r *Router) resolveGroupOrDMAgent(ctx context.Context, gateway *domain.Gate
 			return "", nil, fmt.Errorf("gateway router: resolve binding: %w", err)
 		}
 		if binding == nil {
+			return "", &ReplyPlan{}, nil
+		}
+		if binding.GatewayID != "" && binding.GatewayID != gateway.ID {
 			return "", &ReplyPlan{}, nil
 		}
 		return binding.AgentID, nil, nil
@@ -452,8 +477,14 @@ func (r *Router) displayName(ctx context.Context, workspaceID string, link *doma
 	return link.PlatformUserID
 }
 
-func mentionName(username string) string {
+// mentionName names the paired sender in the pairing confirmation:
+// the platform handle when known, else the per-platform account phrase
+// (add-whatsapp-gateway design D10).
+func mentionName(platform, username string) string {
 	if username == "" {
+		if platform == domain.GatewayPlatformWhatsApp {
+			return "your WhatsApp account"
+		}
 		return "your Telegram account"
 	}
 	return "@" + username
@@ -483,10 +514,23 @@ func gatewayChatID(msg InboundMessage) string {
 	return msg.ChatID
 }
 
-// GatewayDMSessionKey derives the deterministic DM session key (design D3):
-// tg_dm_<telegram_user_id>_<agent_id>, with the "_<n>" suffix when n > 0.
+// GatewayDMSessionKey derives the deterministic Telegram DM session key
+// (design D3): tg_dm_<telegram_user_id>_<agent_id>, with the "_<n>" suffix
+// when n > 0.
 func GatewayDMSessionKey(platformUserID, agentID string, suffix int64) string {
-	return suffixedKey(fmt.Sprintf("%s%s_%s", domain.SessionPrefixGatewayDM, platformUserID, agentID), suffix)
+	return gatewayDMSessionKeyFor(domain.GatewayPlatformTelegram, platformUserID, agentID, suffix)
+}
+
+// gatewayDMSessionKeyFor derives the DM session key for one platform
+// (add-whatsapp-gateway design D7): tg_dm_<uid>_<agent> for Telegram,
+// wa_dm_<uid>_<agent> for WhatsApp — bare digits normalize the identity so
+// lane switches keep the session.
+func gatewayDMSessionKeyFor(platform, platformUserID, agentID string, suffix int64) string {
+	prefix := domain.SessionPrefixGatewayDM
+	if platform == domain.GatewayPlatformWhatsApp {
+		prefix = domain.SessionPrefixGatewayWADM
+	}
+	return suffixedKey(fmt.Sprintf("%s%s_%s", prefix, platformUserID, agentID), suffix)
 }
 
 // GatewayGroupSessionKey derives the deterministic group session key:
@@ -497,7 +541,7 @@ func GatewayGroupSessionKey(chatID, agentID string, suffix int64) string {
 
 func gatewaySessionKey(kind InboundKind, msg InboundMessage, agentID string, suffix int64) string {
 	if kind == InboundDM {
-		return GatewayDMSessionKey(msg.FromUserID, agentID, suffix)
+		return gatewayDMSessionKeyFor(msg.Platform, msg.FromUserID, agentID, suffix)
 	}
 	return GatewayGroupSessionKey(msg.ChatID, agentID, suffix)
 }

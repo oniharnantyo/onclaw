@@ -115,11 +115,13 @@ describe('screens/settings/SettingsPage', () => {
     vi.spyOn(api.hooks, 'list').mockResolvedValue({ instance: [], hooks: [] });
     vi.spyOn(api.hooks, 'executions').mockResolvedValue({ executions: [] });
     vi.spyOn(api.storage, 'get').mockResolvedValue({ driver: 'local' });
-    // The Gateways pane fetches the gateway config + bindings + the member's
+    // The Gateways pane fetches the gateway config list + bindings + the member's
     // pairing link (admin surfaces skipped for 403-free member loads).
-    vi.spyOn(api.gateways.telegram, 'getConfig').mockResolvedValue({ gateway: null });
-    vi.spyOn(api.gateways.telegram.bindings, 'list').mockResolvedValue({ bindings: [] });
+    vi.spyOn(api.gateways.telegram, 'list').mockResolvedValue([]);
+    vi.spyOn(api.gateways.whatsapp, 'list').mockResolvedValue([]);
+    vi.spyOn(api.gateways.telegram.bindings, 'list').mockResolvedValue([]);
     vi.spyOn(api.gateways.telegram.links, 'getMine').mockResolvedValue({ link: null });
+    vi.spyOn(api.gateways.whatsapp.links, 'getMine').mockResolvedValue({ link: null });
   });
 
   function renderSettingsPage(initialPath = '/settings/workspace', overrides = {}) {
@@ -588,6 +590,7 @@ describe('screens/settings/SettingsPage', () => {
           type: 'openai-compatible',
           name: 'Custom Prox',
           base_url: 'https://custom.api.com',
+          catalog_provider: '',
           enabled: true,
         });
       });

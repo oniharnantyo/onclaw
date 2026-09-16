@@ -7,32 +7,20 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/domain"
 )
 
-// GatewayStore manages workspace-scoped gateway configuration (design D12):
-// exactly one row per (workspace, platform), carrying the encrypted bot
-// credential (an AES-256-GCM secrets envelope — the plaintext token never
+// GatewayStore manages workspace-scoped gateway configuration:
+// plural rows per workspace, keyed on (workspace, platform, identity),
+// carrying the encrypted bot credential (an AES-256-GCM secrets envelope — the plaintext token never
 // persists and is never returned by any read), the resolved bot username,
-// the enable toggle, the transport mode, and the default agent for direct
-// messages. Every query is workspace-scoped.
+// the enable toggle, the transport mode, and the bound agent.
+// Every query is workspace-scoped.
 type GatewayStore interface {
-	// UpsertGateway inserts the configuration, or on conflict
-	// (workspace_id, platform) rewrites the connection fields — token
-	// ciphertext, bot username, transport, webhook URL, default agent —
-	// while keeping the existing row's id, created_at, and enabled flag
-	// (re-saving a bot token must not silently disable a live gateway).
-	UpsertGateway(ctx context.Context, workspaceID string, g *domain.GatewayConfig) error
-	// GetGateway returns the workspace's configuration for the platform,
-	// or (nil, nil) when none is stored.
-	GetGateway(ctx context.Context, workspaceID, platform string) (*domain.GatewayConfig, error)
-	// ListGateways returns every gateway configuration in the workspace.
+	CreateGateway(ctx context.Context, workspaceID string, g *domain.GatewayConfig) error
+	GetGateway(ctx context.Context, workspaceID, id string) (*domain.GatewayConfig, error)
 	ListGateways(ctx context.Context, workspaceID string) ([]domain.GatewayConfig, error)
-	// SetGatewayEnabled flips the enable toggle without touching any other
-	// field (disabling is inert: configuration, bindings, links, and
-	// sessions survive). Absent rows return domain.ErrNotFound.
-	SetGatewayEnabled(ctx context.Context, workspaceID, platform string, enabled bool) error
-	// DeleteGateway removes the configuration. Absent rows return
-	// domain.ErrNotFound. Bindings, identity links, and pairing tokens are
-	// workspace rows and survive a gateway re-connect by design.
-	DeleteGateway(ctx context.Context, workspaceID, platform string) error
+	ListGatewaysByPlatform(ctx context.Context, workspaceID, platform string) ([]domain.GatewayConfig, error)
+	UpdateGateway(ctx context.Context, workspaceID string, g *domain.GatewayConfig) error
+	SetGatewayEnabled(ctx context.Context, workspaceID, id string, enabled bool) error
+	DeleteGateway(ctx context.Context, workspaceID, id string) error
 }
 
 // GatewayBindings manages the chat-to-agent routing table (design D2):
@@ -60,11 +48,12 @@ type GatewayBindings interface {
 	DeleteChatBinding(ctx context.Context, workspaceID, id string) error
 	// ActiveSessionSuffix reads the active deterministic session-key suffix
 	// for one (platform, platform chat, agent) triple (design D3): 0 means
-	// the base key (tg_dm_<uid>_<agent> / tg_group_<chat>_<agent>) is
-	// active; n > 0 means the key carries the "_<n>" suffix. Absence is 0,
-	// never an error. Direct-message chats key on the platform user id as
-	// the chat id. The row persists across restarts so a restarted gateway
-	// resumes the highest suffix instead of rewinding onto a live transcript.
+	// the base key (tg_dm_<uid>_<agent> / tg_group_<chat>_<agent> /
+	// wa_dm_<uid>_<agent>) is active; n > 0 means the key carries the "_<n>"
+	// suffix. Absence is 0, never an error. Direct-message chats key on the
+	// platform user id as the chat id. The row persists across restarts so a
+	// restarted gateway resumes the highest suffix instead of rewinding onto
+	// a live transcript.
 	ActiveSessionSuffix(ctx context.Context, platform, platformChatID, agentID string) (int64, error)
 	// BumpActiveSessionSuffix mints the next session for the triple (the
 	// /new archive step): it upserts the cursor row with suffix = suffix+1
@@ -93,11 +82,6 @@ type GatewayLinks interface {
 	// DeleteUserLink unpairs a platform identity. Absent links return
 	// domain.ErrNotFound.
 	DeleteUserLink(ctx context.Context, workspaceID, platform, platformUserID string) error
-	// SetUserLinkDefaultAgent writes (or clears, agentID == nil) the member's
-	// per-user default agent choice for gateway direct messages
-	// (integrate-telegram-gateway design D3, /agent <name>). Absent links
-	// return domain.ErrNotFound.
-	SetUserLinkDefaultAgent(ctx context.Context, workspaceID, platform, platformUserID string, agentID *string) error
 	// CreatePairingToken mints a single-use pairing token. The store
 	// validates the token shape and pre-checks the member reference.
 	CreatePairingToken(ctx context.Context, t *domain.PairingToken) error
@@ -136,6 +120,12 @@ type GatewayOutbox interface {
 	// MarkDead exhausts an entry (attempt budget spent): dead entries are
 	// never claimed again. Absent entries return domain.ErrNotFound.
 	MarkDead(ctx context.Context, workspaceID, id string) error
+	// CountDead returns the number of dead entries belonging to one gateway
+	// within the workspace (payload gateway_id match) — the health probe's
+	// dead-delivery signal (add-whatsapp-gateway design D4: window-expired
+	// deliveries die observably). The gateway id rides the payload, the only
+	// place the generating gateway is recorded.
+	CountDead(ctx context.Context, workspaceID, gatewayID string) (int64, error)
 	// PruneDelivered deletes delivered entries created before the retention
 	// horizon and returns how many rows went away.
 	PruneDelivered(ctx context.Context, before time.Time) (int64, error)

@@ -51,7 +51,11 @@ type fakeStore struct {
 	workspaceStorage        map[string]*domain.WorkspaceStorageConfig // key: workspaceID -> config
 	schedulers              map[string]*domain.Scheduler              // key: ID
 	schedulerRuns           map[string]*domain.SchedulerRun           // key: ID
-	gateways                map[string]*domain.GatewayConfig          // key: workspaceID + ":" + platform
+	heartbeats              map[string]*domain.Heartbeat              // key: ID
+	heartbeatsByAgent       map[string]string                         // key: workspaceID + ":" + agentID -> heartbeat ID
+	heartbeatRuns           map[string]*domain.HeartbeatRun           // key: ID
+	gateways                map[string]*domain.GatewayConfig          // key: ID
+	gatewayIdentities       map[string]string                         // key: workspaceID + ":" + platform + ":" + identity -> ID
 	gatewayChatBindings     map[string]*domain.ChatBinding            // key: ID
 	gatewayBindingsByChat   map[string]string                         // key: platform + ":" + platformChatID -> binding ID
 	gatewayUserLinks        map[string]*domain.UserLink               // key: platform + ":" + platformUserID + ":" + workspaceID
@@ -99,7 +103,11 @@ func newStore() *fakeStore {
 		workspaceStorage:        make(map[string]*domain.WorkspaceStorageConfig),
 		schedulers:              make(map[string]*domain.Scheduler),
 		schedulerRuns:           make(map[string]*domain.SchedulerRun),
+		heartbeats:              make(map[string]*domain.Heartbeat),
+		heartbeatsByAgent:       make(map[string]string),
+		heartbeatRuns:           make(map[string]*domain.HeartbeatRun),
 		gateways:                make(map[string]*domain.GatewayConfig),
+		gatewayIdentities:       make(map[string]string),
 		gatewayChatBindings:     make(map[string]*domain.ChatBinding),
 		gatewayBindingsByChat:   make(map[string]string),
 		gatewayUserLinks:        make(map[string]*domain.UserLink),
@@ -197,6 +205,11 @@ func (s *fakeStore) WorkspaceStorage() store.WorkspaceStorageStore {
 // Schedulers returns the SchedulerStore sub-port.
 func (s *fakeStore) Schedulers() store.SchedulerStore {
 	return &schedulerStore{s: s}
+}
+
+// Heartbeats returns the HeartbeatStore sub-port.
+func (s *fakeStore) Heartbeats() store.HeartbeatStore {
+	return &heartbeatStore{s: s}
 }
 
 // Gateways returns the GatewayStore sub-port.
@@ -337,9 +350,21 @@ func (s *fakeStore) clone() *fakeStore {
 	for id, run := range s.schedulerRuns {
 		cp.schedulerRuns[id] = cloneSchedulerRun(run)
 	}
-	for key, g := range s.gateways {
-		cp.gateways[key] = cloneGatewayConfig(g)
+	for id, hb := range s.heartbeats {
+		cp.heartbeats[id] = cloneHeartbeat(hb)
 	}
+	for key, id := range s.heartbeatsByAgent {
+		cp.heartbeatsByAgent[key] = id
+	}
+	for id, run := range s.heartbeatRuns {
+		cp.heartbeatRuns[id] = cloneHeartbeatRun(run)
+	}
+		for id, g := range s.gateways {
+			cp.gateways[id] = cloneGatewayConfig(g)
+		}
+		for key, id := range s.gatewayIdentities {
+			cp.gatewayIdentities[key] = id
+		}
 	for id, b := range s.gatewayChatBindings {
 		cp.gatewayChatBindings[id] = cloneChatBinding(b)
 	}
@@ -394,8 +419,12 @@ func (s *fakeStore) apply(other *fakeStore) {
 	s.workspaceStorage = other.workspaceStorage
 	s.schedulers = other.schedulers
 	s.schedulerRuns = other.schedulerRuns
-	s.gateways = other.gateways
-	s.gatewayChatBindings = other.gatewayChatBindings
+	s.heartbeats = other.heartbeats
+	s.heartbeatsByAgent = other.heartbeatsByAgent
+		s.heartbeatRuns = other.heartbeatRuns
+		s.gateways = other.gateways
+		s.gatewayIdentities = other.gatewayIdentities
+		s.gatewayChatBindings = other.gatewayChatBindings
 	s.gatewayBindingsByChat = other.gatewayBindingsByChat
 	s.gatewayUserLinks = other.gatewayUserLinks
 	s.gatewayPairingTokens = other.gatewayPairingTokens
@@ -1590,6 +1619,20 @@ func (as *agentStore) Delete(ctx context.Context, workspaceID, id string) error 
 			for runID, run := range as.s.schedulerRuns {
 				if run.SchedulerID == schedID {
 					delete(as.s.schedulerRuns, runID)
+				}
+			}
+		}
+	}
+
+	// The agent's heartbeat and its tick records die with the agent
+	// (ON DELETE CASCADE, add-agent-heartbeat D1).
+	for hbID, hb := range as.s.heartbeats {
+		if hb.AgentID == id {
+			delete(as.s.heartbeats, hbID)
+			delete(as.s.heartbeatsByAgent, workspaceID+":"+id)
+			for runID, run := range as.s.heartbeatRuns {
+				if run.HeartbeatID == hbID {
+					delete(as.s.heartbeatRuns, runID)
 				}
 			}
 		}
@@ -2802,8 +2845,8 @@ func (a *agentSessionStore) UpsertAgentSession(ctx context.Context, workspaceID,
 	}
 	// Binding-prefix validation (integrate-telegram-gateway design D3,
 	// channel-session-leak fix): only registered prefixes — including the
-	// gateway's tg_dm_/tg_group_ — may index rows; unknown "<word>_"-shaped
-	// ids are refused.
+	// gateways' tg_dm_/tg_group_/wa_dm_ — may index rows; unknown
+	// "<word>_"-shaped ids are refused.
 	if err := domain.ValidateAgentSessionID(up.SessionID); err != nil {
 		return err
 	}

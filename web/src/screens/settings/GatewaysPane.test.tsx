@@ -8,6 +8,8 @@ import {
   type ApiGatewayBinding,
   type ApiGatewayConfig,
   type ApiGatewayLink,
+  type ApiWhatsAppGatewayConfig,
+  type ApiWhatsAppHealth,
 } from '../../lib/api';
 
 const mockTenant = { id: 'acme', sub: 'acme', name: 'Acme Corp' };
@@ -16,10 +18,28 @@ const gateway = (overrides: Partial<ApiGatewayConfig> = {}): ApiGatewayConfig =>
   id: 'gw1',
   workspace_id: 'acme',
   platform: 'telegram',
-  enabled: true,
+  identity: 'onclaw_bot',
   bot_username: 'onclaw_bot',
   token_hint: 'ab12',
-  default_agent_id: 'a_atlas',
+  agent_id: 'a_atlas',
+  enabled: true,
+  transport: 'long_polling',
+  webhook_url: '',
+  status_error: null,
+  created_at: '',
+  updated_at: '',
+  ...overrides,
+});
+
+const gateway2 = (overrides: Partial<ApiGatewayConfig> = {}): ApiGatewayConfig => ({
+  id: 'gw2',
+  workspace_id: 'acme',
+  platform: 'telegram',
+  identity: 'beacon_bot',
+  bot_username: 'beacon_bot',
+  token_hint: 'cd34',
+  agent_id: 'a_beacon',
+  enabled: true,
   transport: 'long_polling',
   webhook_url: '',
   status_error: null,
@@ -58,6 +78,7 @@ const agents = (): ApiAgent[] =>
 const bindings = (): ApiGatewayBinding[] => [
   {
     id: 'b1',
+    gateway_id: 'gw1',
     platform: 'telegram',
     platform_chat_id: '-100123',
     chat_title: 'Ops',
@@ -73,22 +94,74 @@ const myLink = (): ApiGatewayLink => ({
   linked_at: '2026-09-12T00:00:00Z',
 });
 
+const waConfig = (overrides: Partial<ApiWhatsAppGatewayConfig> = {}): ApiWhatsAppGatewayConfig => ({
+  id: 'wa1',
+  platform: 'whatsapp',
+  lane: 'cloud_api',
+  identity: 'wa_bot',
+  agent_id: 'a_atlas',
+  enabled: true,
+  bot_username: null,
+  transport: null,
+  webhook_url: '',
+  has_credentials: true,
+  ...overrides,
+});
+
+const waLink = (): ApiGatewayLink => ({
+  platform_user_id: '6281234567890',
+  username: null,
+  display_name: 'Oni',
+  linked_at: '2026-09-12T00:00:00Z',
+});
+
 function mockGatewayApis(overrides: {
-  gateway?: ApiGatewayConfig | null;
+  tgGateways?: ApiGatewayConfig[];
   bindings?: ApiGatewayBinding[];
   link?: ApiGatewayLink | null;
+  waGateways?: ApiWhatsAppGatewayConfig[];
+  waHealthMap?: Record<string, ApiWhatsAppHealth>;
+  waLink?: ApiGatewayLink | null;
 } = {}) {
-  vi.spyOn(api.gateways.telegram, 'getConfig').mockResolvedValue({
-    gateway: overrides.gateway === undefined ? gateway() : overrides.gateway,
+  const tgList = overrides.tgGateways === undefined ? [gateway()] : overrides.tgGateways;
+  const waList = overrides.waGateways === undefined ? [] : overrides.waGateways;
+
+  vi.spyOn(api.gateways.telegram, 'list').mockResolvedValue(tgList);
+  vi.spyOn(api.gateways.telegram, 'get').mockImplementation(async (_ws, id) => {
+    const found = tgList.find((g) => g.id === id);
+    if (found) return found;
+    throw new ApiError(404, 'not_found', 'gateway not found');
   });
-  vi.spyOn(api.gateways.telegram.bindings, 'list').mockResolvedValue({
-    bindings: overrides.bindings ?? [],
-  });
+  vi.spyOn(api.gateways.telegram.bindings, 'list').mockResolvedValue(overrides.bindings ?? []);
   vi.spyOn(api.gateways.telegram.links, 'getMine').mockResolvedValue({
     link: overrides.link === undefined ? null : overrides.link,
   });
+
+  vi.spyOn(api.gateways.whatsapp, 'list').mockResolvedValue(waList);
+  vi.spyOn(api.gateways.whatsapp, 'get').mockImplementation(async (_ws, id) => {
+    const found = waList.find((g) => g.id === id);
+    if (found) return found;
+    throw new ApiError(404, 'not_found', 'gateway not found');
+  });
+  vi.spyOn(api.gateways.whatsapp, 'health').mockImplementation(async (_ws, id) => {
+    if (overrides.waHealthMap && overrides.waHealthMap[id]) {
+      return overrides.waHealthMap[id];
+    }
+    return { status: 'unconfigured' };
+  });
+  vi.spyOn(api.gateways.whatsapp.links, 'getMine').mockResolvedValue({
+    link: overrides.waLink === undefined ? null : overrides.waLink,
+  });
   vi.spyOn(api.agents, 'list').mockResolvedValue({ agents: agents() });
 }
+
+const openWhatsAppTab = async () => {
+  const btn = screen.getByTestId('tab-whatsapp') || screen.queryByTestId(/tab-whatsapp-/);
+  fireEvent.click(btn);
+  await waitFor(() => {
+    expect(screen.getByTestId('wa-pairing-section')).not.toBeNull();
+  });
+};
 
 describe('screens/settings/GatewaysPane', () => {
   beforeEach(() => {
@@ -113,54 +186,135 @@ describe('screens/settings/GatewaysPane', () => {
     expect(screen.getByTestId('select-default-agent')).not.toBeNull();
   });
 
-  it('renders the disabled status when the gateway is configured but disabled', async () => {
-    mockGatewayApis({ gateway: gateway({ enabled: false }) });
+  it('renders the paused status when the gateway is configured but disabled', async () => {
+    mockGatewayApis({ tgGateways: [gateway({ enabled: false })] });
 
     render(<GatewaysPane tenant={mockTenant} />);
 
     await waitFor(() => {
-      expect(screen.getByTestId('gateway-status').textContent).toBe('Disabled');
+      expect(screen.getByTestId('gateway-status').textContent).toBe('Paused');
     });
   });
 
-  it('requires a token before connecting and saves it write-only', async () => {
-    mockGatewayApis({ gateway: null });
-    const updateSpy = vi
-      .spyOn(api.gateways.telegram, 'updateConfig')
-      .mockResolvedValue({ gateway: gateway() });
+  it('sidebar lists multiple bot rows with status dots and @usernames, switching between them', async () => {
+    mockGatewayApis({
+      tgGateways: [
+        gateway({ id: 'gw1', bot_username: 'bot_one', token_hint: '1111', agent_id: 'a_atlas', enabled: true }),
+        gateway2({ id: 'gw2', bot_username: 'bot_two', token_hint: '2222', agent_id: 'a_beacon', enabled: false }),
+      ],
+    });
+
+    render(<GatewaysPane tenant={mockTenant} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('sidebar-item-telegram-gw1')).not.toBeNull();
+      expect(screen.getByTestId('sidebar-item-telegram-gw2')).not.toBeNull();
+    });
+
+    // Both bots listed with usernames
+    expect(screen.getByTestId('sidebar-item-telegram-gw1').textContent).toContain('@bot_one');
+    expect(screen.getByTestId('sidebar-item-telegram-gw2').textContent).toContain('@bot_two');
+
+    // Status dots
+    expect(screen.getByTestId('sidebar-dot-telegram-gw1').className).toContain('bg-success');
+    expect(screen.getByTestId('sidebar-dot-telegram-gw2').className).toContain('bg-muted');
+
+    // Initially gw1 is selected
+    expect(screen.getByTestId('gateway-username').textContent).toBe('@bot_one');
+
+    // Click gw2 in sidebar to switch
+    fireEvent.click(screen.getByTestId('sidebar-item-telegram-gw2'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('gateway-username').textContent).toBe('@bot_two');
+      expect(screen.getByTestId('gateway-status').textContent).toBe('Paused');
+    });
+  });
+
+  it('＋ Add a bot opens Telegram Connect Wizard modal requiring agent selection before saving', async () => {
+    mockGatewayApis();
+    const createSpy = vi
+      .spyOn(api.gateways.telegram, 'create')
+      .mockResolvedValue(gateway2({ bot_username: 'new_bot' }));
     const onToast = vi.fn();
 
     render(<GatewaysPane tenant={mockTenant} onToast={onToast} />);
 
     await waitFor(() => {
-      expect(screen.getByTestId('btn-connect-bot')).not.toBeNull();
+      expect(screen.getByTestId('btn-add-telegram-bot')).not.toBeNull();
     });
 
-    // Empty submit is blocked inline, not via a disabled button
-    fireEvent.click(screen.getByTestId('btn-connect-bot'));
-    expect(screen.getByTestId('gateway-token-error').textContent).toContain('required');
-    expect(updateSpy).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('btn-add-telegram-bot'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('modal-telegram-wizard')).not.toBeNull();
+    });
+
+    // Clear agent to test validation
+    fireEvent.change(screen.getByTestId('wizard-select-telegram-agent'), {
+      target: { value: '' },
+    });
+    fireEvent.click(screen.getByTestId('btn-submit-telegram-wizard'));
+
+    expect(screen.getByTestId('wizard-token-error').textContent).toContain('required');
+    expect(screen.getByTestId('wizard-agent-error').textContent).toContain('required');
+    expect(createSpy).not.toHaveBeenCalled();
+
+    // Fill in valid details
+    fireEvent.change(screen.getByTestId('wizard-input-telegram-token'), {
+      target: { value: '123456:NEW_BOT_TOKEN' },
+    });
+    fireEvent.change(screen.getByTestId('wizard-select-telegram-agent'), {
+      target: { value: 'a_beacon' },
+    });
+
+    fireEvent.click(screen.getByTestId('btn-submit-telegram-wizard'));
+
+    await waitFor(() => {
+      expect(createSpy).toHaveBeenCalledWith('acme', {
+        token: '123456:NEW_BOT_TOKEN',
+        agent_id: 'a_beacon',
+        transport: 'long_polling',
+        webhook_url: undefined,
+      });
+    });
+
+    await waitFor(() => {
+      expect(onToast).toHaveBeenCalledWith('Bot connected as @new_bot');
+      expect(screen.queryByTestId('modal-telegram-wizard')).toBeNull();
+    });
+  });
+
+  it('rotates bot token for the currently selected bot', async () => {
+    mockGatewayApis();
+    const updateSpy = vi
+      .spyOn(api.gateways.telegram, 'update')
+      .mockResolvedValue(gateway({ token_hint: '9999' }));
+    const onToast = vi.fn();
+
+    render(<GatewaysPane tenant={mockTenant} onToast={onToast} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('input-gateway-token')).not.toBeNull();
+    });
 
     fireEvent.change(screen.getByTestId('input-gateway-token'), {
-      target: { value: '123:ABC' },
+      target: { value: '123:NEW_TOKEN' },
     });
-    fireEvent.click(screen.getByTestId('btn-connect-bot'));
+    fireEvent.click(screen.getByTestId('btn-rotate-token'));
 
     await waitFor(() => {
-      expect(updateSpy).toHaveBeenCalledWith('acme', { token: '123:ABC' });
+      expect(updateSpy).toHaveBeenCalledWith('acme', 'gw1', { token: '123:NEW_TOKEN' });
+      expect(onToast).toHaveBeenCalledWith('Bot token updated');
     });
-    await waitFor(() => {
-      expect(onToast).toHaveBeenCalledWith('Bot connected as @onclaw_bot');
-    });
-    // Write-only: the field is cleared after saving
     expect((screen.getByTestId('input-gateway-token') as HTMLInputElement).value).toBe('');
   });
 
-  it('saves the default agent choice', async () => {
+  it('saves the bound agent change calling update with agent_id', async () => {
     mockGatewayApis();
     const updateSpy = vi
-      .spyOn(api.gateways.telegram, 'updateConfig')
-      .mockResolvedValue({ gateway: gateway({ default_agent_id: 'a_beacon' }) });
+      .spyOn(api.gateways.telegram, 'update')
+      .mockResolvedValue(gateway({ agent_id: 'a_beacon' }));
 
     render(<GatewaysPane tenant={mockTenant} />);
 
@@ -172,19 +326,60 @@ describe('screens/settings/GatewaysPane', () => {
     });
 
     await waitFor(() => {
-      expect(updateSpy).toHaveBeenCalledWith('acme', { default_agent_id: 'a_beacon' });
+      expect(updateSpy).toHaveBeenCalledWith('acme', 'gw1', { agent_id: 'a_beacon' });
     });
   });
 
-  it('switches transport to webhook and reveals the webhook URL field', async () => {
+  it('tests bot connection via test button', async () => {
     mockGatewayApis();
-    const updateSpy = vi
-      .spyOn(api.gateways.telegram, 'updateConfig')
-      .mockResolvedValue({
-        gateway: gateway({ transport: 'webhook', webhook_url: 'https://example.com/hook' }),
-      });
+    const testSpy = vi
+      .spyOn(api.gateways.telegram, 'test')
+      .mockResolvedValue({ ok: true, bot_username: 'onclaw_bot' });
+    const onToast = vi.fn();
 
-    render(<GatewaysPane tenant={mockTenant} />);
+    render(<GatewaysPane tenant={mockTenant} onToast={onToast} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('btn-test-gateway')).not.toBeNull();
+    });
+
+    fireEvent.click(screen.getByTestId('btn-test-gateway'));
+
+    await waitFor(() => {
+      expect(testSpy).toHaveBeenCalledWith('acme', 'gw1');
+      expect(onToast).toHaveBeenCalledWith('Connection verified — bot is @onclaw_bot');
+    });
+  });
+
+  it('deletes a bot via delete button', async () => {
+    mockGatewayApis();
+    const deleteSpy = vi.spyOn(api.gateways.telegram, 'delete').mockResolvedValue(undefined);
+    const onToast = vi.fn();
+
+    render(<GatewaysPane tenant={mockTenant} onToast={onToast} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('btn-delete-bot')).not.toBeNull();
+    });
+
+    fireEvent.click(screen.getByTestId('btn-delete-bot'));
+
+    await waitFor(() => {
+      expect(deleteSpy).toHaveBeenCalledWith('acme', 'gw1');
+      expect(onToast).toHaveBeenCalledWith('Telegram bot deleted');
+    });
+  });
+
+  it('switches transport to webhook immediately when valid https URL is stored', async () => {
+    mockGatewayApis({
+      tgGateways: [gateway({ transport: 'long_polling', webhook_url: 'https://example.com/hook' })],
+    });
+    const updateSpy = vi
+      .spyOn(api.gateways.telegram, 'update')
+      .mockResolvedValue(gateway({ transport: 'webhook', webhook_url: 'https://example.com/hook' }));
+    const onToast = vi.fn();
+
+    render(<GatewaysPane tenant={mockTenant} onToast={onToast} />);
 
     await waitFor(() => {
       expect(screen.getByTestId('seg-webhook')).not.toBeNull();
@@ -192,21 +387,57 @@ describe('screens/settings/GatewaysPane', () => {
     fireEvent.click(screen.getByTestId('seg-webhook'));
 
     await waitFor(() => {
-      expect(updateSpy).toHaveBeenCalledWith('acme', { transport: 'webhook' });
+      expect(updateSpy).toHaveBeenCalledWith('acme', 'gw1', {
+        transport: 'webhook',
+        webhook_url: 'https://example.com/hook',
+      });
     });
     await waitFor(() => {
+      expect(onToast).toHaveBeenCalledWith('Transport switched to webhook');
       expect(screen.getByTestId('input-webhook-url')).not.toBeNull();
     });
   });
 
-  it('enable and disable hit the dedicated endpoints', async () => {
+  it('reveals inline URL input without immediate PUT when switching to webhook without stored URL, then saves', async () => {
+    mockGatewayApis({
+      tgGateways: [gateway({ transport: 'long_polling', webhook_url: '' })],
+    });
+    const updateSpy = vi
+      .spyOn(api.gateways.telegram, 'update')
+      .mockResolvedValue(gateway({ transport: 'webhook', webhook_url: 'https://example.com/api/v1/webhooks/telegram/gw1' }));
+    const onToast = vi.fn();
+
+    render(<GatewaysPane tenant={mockTenant} onToast={onToast} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('seg-webhook')).not.toBeNull();
+    });
+    fireEvent.click(screen.getByTestId('seg-webhook'));
+
+    expect(updateSpy).not.toHaveBeenCalled();
+    expect(screen.getByTestId('input-webhook-url')).not.toBeNull();
+
+    fireEvent.click(screen.getByTestId('btn-save-webhook'));
+    expect(screen.getByTestId('webhook-error').textContent).toContain('required');
+
+    fireEvent.change(screen.getByTestId('input-webhook-url'), {
+      target: { value: 'https://example.com/api/v1/webhooks/telegram/gw1' },
+    });
+    fireEvent.click(screen.getByTestId('btn-save-webhook'));
+
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalledWith('acme', 'gw1', {
+        transport: 'webhook',
+        webhook_url: 'https://example.com/api/v1/webhooks/telegram/gw1',
+      });
+      expect(onToast).toHaveBeenCalledWith('Transport switched to webhook');
+    });
+  });
+
+  it('enable and disable hit dedicated endpoints with account id', async () => {
     mockGatewayApis();
-    const enableSpy = vi
-      .spyOn(api.gateways.telegram, 'enable')
-      .mockResolvedValue({ gateway: gateway() });
-    const disableSpy = vi
-      .spyOn(api.gateways.telegram, 'disable')
-      .mockResolvedValue({ gateway: gateway({ enabled: false }) });
+    const enableSpy = vi.spyOn(api.gateways.telegram, 'enable').mockResolvedValue(undefined);
+    const disableSpy = vi.spyOn(api.gateways.telegram, 'disable').mockResolvedValue(undefined);
 
     render(<GatewaysPane tenant={mockTenant} />);
 
@@ -216,7 +447,7 @@ describe('screens/settings/GatewaysPane', () => {
     fireEvent.click(screen.getByRole('switch', { name: 'Enable gateway' }));
 
     await waitFor(() => {
-      expect(disableSpy).toHaveBeenCalledWith('acme');
+      expect(disableSpy).toHaveBeenCalledWith('acme', 'gw1');
     });
 
     await waitFor(() => {
@@ -225,11 +456,11 @@ describe('screens/settings/GatewaysPane', () => {
     fireEvent.click(screen.getByRole('switch', { name: 'Enable gateway' }));
 
     await waitFor(() => {
-      expect(enableSpy).toHaveBeenCalledWith('acme');
+      expect(enableSpy).toHaveBeenCalledWith('acme', 'gw1');
     });
   });
 
-  it('lists group bindings with the bound agent and unlinks via DELETE', async () => {
+  it('lists group bindings displaying owning bot and unlinks via DELETE', async () => {
     mockGatewayApis({ bindings: bindings() });
     const removeSpy = vi.spyOn(api.gateways.telegram.bindings, 'remove').mockResolvedValue(undefined);
     const onToast = vi.fn();
@@ -239,6 +470,7 @@ describe('screens/settings/GatewaysPane', () => {
     await waitFor(() => {
       expect(screen.getByTestId('binding-b1')).not.toBeNull();
     });
+    expect(screen.getByTestId('binding-bot-b1').textContent).toBe('@onclaw_bot');
     const row = screen.getByTestId('binding-b1').textContent || '';
     expect(row).toContain('Ops');
     expect(row).toContain('-100123');
@@ -248,38 +480,58 @@ describe('screens/settings/GatewaysPane', () => {
 
     await waitFor(() => {
       expect(removeSpy).toHaveBeenCalledWith('acme', 'b1');
-    });
-    await waitFor(() => {
       expect(onToast).toHaveBeenCalledWith('Ops unlinked');
-    });
-    await waitFor(() => {
       expect(screen.queryByTestId('binding-b1')).toBeNull();
     });
   });
 
-  it('surfaces a binding conflict as a danger toast', async () => {
-    mockGatewayApis({ bindings: bindings() });
-    vi.spyOn(api.gateways.telegram.bindings, 'remove').mockRejectedValue(
-      new ApiError(409, 'conflict', 'That group is already bound')
-    );
+  it('creates a group binding selecting owning bot, agent, and chat ID', async () => {
+    mockGatewayApis({
+      tgGateways: [gateway(), gateway2()],
+    });
+    const createSpy = vi.spyOn(api.gateways.telegram.bindings, 'create').mockResolvedValue({
+      id: 'b2',
+      gateway_id: 'gw2',
+      platform: 'telegram',
+      platform_chat_id: '-100999',
+      chat_title: 'Support',
+      agent_id: 'a_beacon',
+      created_at: '',
+    });
     const onToast = vi.fn();
 
     render(<GatewaysPane tenant={mockTenant} onToast={onToast} />);
 
     await waitFor(() => {
-      expect(screen.getByTestId('btn-unlink-b1')).not.toBeNull();
+      expect(screen.getByTestId('btn-open-add-binding')).not.toBeNull();
     });
-    fireEvent.click(screen.getByTestId('btn-unlink-b1'));
+
+    fireEvent.click(screen.getByTestId('btn-open-add-binding'));
 
     await waitFor(() => {
-      expect(onToast).toHaveBeenCalledWith(
-        'Binding conflict — the group is bound to another agent. Reload and retry.',
-        'danger'
-      );
+      expect(screen.getByTestId('modal-create-binding')).not.toBeNull();
+    });
+
+    fireEvent.change(screen.getByTestId('select-create-binding-bot'), { target: { value: 'gw2' } });
+    fireEvent.change(screen.getByTestId('select-create-binding-agent'), { target: { value: 'a_beacon' } });
+    fireEvent.change(screen.getByTestId('input-binding-chat-id'), { target: { value: '-100999' } });
+    fireEvent.change(screen.getByTestId('input-binding-chat-title'), { target: { value: 'Support' } });
+
+    fireEvent.click(screen.getByTestId('btn-submit-binding'));
+
+    await waitFor(() => {
+      expect(createSpy).toHaveBeenCalledWith('acme', {
+        gateway_id: 'gw2',
+        agent_id: 'a_beacon',
+        platform_chat_id: '-100999',
+        chat_title: 'Support',
+      });
+      expect(onToast).toHaveBeenCalledWith('Group bound successfully');
+      expect(screen.queryByTestId('modal-create-binding')).toBeNull();
     });
   });
 
-  it('shows the copyable bind command for the selected agent', async () => {
+  it('shows the copyable bind command with bot username', async () => {
     mockGatewayApis();
     const onToast = vi.fn();
 
@@ -320,9 +572,7 @@ describe('screens/settings/GatewaysPane', () => {
         expect(createSpy).toHaveBeenCalledWith('acme');
         expect(screen.getByTestId('pairing-command').textContent).toBe('/start pt_abc123');
       });
-      // Live expiry countdown in mm:ss, under the one-hour bound
       expect(screen.getByTestId('pairing-countdown').textContent).toMatch(/Expires in \d{2}:\d{2}/);
-      expect(screen.queryByTestId('btn-regenerate-pairing')).toBeNull();
 
       fireEvent.click(screen.getByTestId('btn-copy-pairing'));
       await waitFor(() => {
@@ -356,31 +606,6 @@ describe('screens/settings/GatewaysPane', () => {
         expect(revokeSpy).toHaveBeenCalledWith('acme', 'pt_abc123');
         expect(onToast).toHaveBeenCalledWith('Pairing token revoked');
         expect(screen.queryByTestId('modal-pairing')).toBeNull();
-      });
-    });
-
-    it('offers regeneration once the token expires', async () => {
-      mockGatewayApis();
-      const createSpy = vi
-        .spyOn(api.gateways.telegram.pairing, 'create')
-        .mockResolvedValue({
-          token: { token: 'pt_abc123', expires_at: new Date(Date.now() - 1000).toISOString() },
-        });
-
-      render(<GatewaysPane tenant={mockTenant} />);
-
-      await waitFor(() => {
-        expect(screen.getByTestId('btn-open-pairing')).not.toBeNull();
-      });
-      fireEvent.click(screen.getByTestId('btn-open-pairing'));
-
-      await waitFor(() => {
-        expect(screen.getByTestId('pairing-countdown').textContent).toContain('Expired');
-        expect(screen.getByTestId('btn-regenerate-pairing')).not.toBeNull();
-      });
-      fireEvent.click(screen.getByTestId('btn-regenerate-pairing'));
-      await waitFor(() => {
-        expect(createSpy).toHaveBeenCalledTimes(2);
       });
     });
   });
@@ -418,5 +643,219 @@ describe('screens/settings/GatewaysPane', () => {
     expect(screen.queryByTestId('input-gateway-token')).toBeNull();
     expect(screen.queryByRole('switch', { name: 'Enable gateway' })).toBeNull();
     expect(screen.getByTestId('btn-open-pairing')).not.toBeNull();
+  });
+
+  describe('whatsapp pane', () => {
+    it('renders the idle unconfigured state behind the WhatsApp tab and allows opening wizard', async () => {
+      mockGatewayApis();
+
+      render(<GatewaysPane tenant={mockTenant} />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('gateway-admin-section')).not.toBeNull();
+      });
+      expect(screen.queryByTestId('wa-gateway-admin-section')).toBeNull();
+
+      fireEvent.click(screen.getByTestId('tab-whatsapp'));
+
+      await waitFor(() => {
+        expect(screen.getByTestId('wa-unconfigured')).not.toBeNull();
+      });
+      expect(screen.getByTestId('btn-connect-wa')).not.toBeNull();
+    });
+
+    it('WhatsApp Connect Wizard creates account requiring lane and agent', async () => {
+      mockGatewayApis();
+      const createSpy = vi.spyOn(api.gateways.whatsapp, 'create').mockResolvedValue(waConfig());
+      const onToast = vi.fn();
+
+      render(<GatewaysPane tenant={mockTenant} onToast={onToast} />);
+      await openWhatsAppTab();
+
+      fireEvent.click(screen.getByTestId('btn-connect-wa'));
+
+      await waitFor(() => {
+        expect(screen.getByTestId('modal-whatsapp-wizard')).not.toBeNull();
+      });
+
+      // Clear agent
+      fireEvent.change(screen.getByTestId('wizard-select-wa-agent'), { target: { value: '' } });
+      fireEvent.click(screen.getByTestId('btn-submit-wa-wizard'));
+
+      expect(screen.getByTestId('wizard-wa-agent-error').textContent).toContain('required');
+      expect(screen.getByTestId('wizard-wa-cred-error').textContent).toContain('required');
+      expect(createSpy).not.toHaveBeenCalled();
+
+      // Fill in
+      fireEvent.change(screen.getByTestId('wizard-select-wa-agent'), { target: { value: 'a_atlas' } });
+      fireEvent.change(screen.getByTestId('wizard-input-wa-access-token'), { target: { value: 'EAAG123' } });
+      fireEvent.change(screen.getByTestId('wizard-input-wa-phone-number-id'), { target: { value: '12345' } });
+      fireEvent.change(screen.getByTestId('wizard-input-wa-app-secret'), { target: { value: 'secret' } });
+      fireEvent.change(screen.getByTestId('wizard-input-wa-verify-token'), { target: { value: 'verify' } });
+
+      fireEvent.click(screen.getByTestId('btn-submit-wa-wizard'));
+
+      await waitFor(() => {
+        expect(createSpy).toHaveBeenCalledWith('acme', {
+          lane: 'cloud_api',
+          agent_id: 'a_atlas',
+          access_token: 'EAAG123',
+          phone_number_id: '12345',
+          app_secret: 'secret',
+          verify_token: 'verify',
+        });
+        expect(onToast).toHaveBeenCalledWith('WhatsApp account connected');
+        expect(screen.queryByTestId('modal-whatsapp-wizard')).toBeNull();
+      });
+    });
+
+    it('renders the connected cloud lane: form, webhook block, and updates credentials', async () => {
+      mockGatewayApis({
+        waGateways: [waConfig()],
+        waHealthMap: { wa1: { status: 'ok' } },
+      });
+      const updateSpy = vi
+        .spyOn(api.gateways.whatsapp, 'update')
+        .mockResolvedValue(waConfig());
+      const onToast = vi.fn();
+
+      render(<GatewaysPane tenant={mockTenant} onToast={onToast} />);
+      await openWhatsAppTab();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('wa-gateway-status').textContent).toBe('Connected');
+      });
+      expect(screen.getByTestId('wa-cloud-form')).not.toBeNull();
+      expect(screen.getByTestId('wa-webhook-url').textContent).toBe(
+        `${window.location.origin}/api/v1/webhooks/whatsapp/wa1`
+      );
+
+      fireEvent.change(screen.getByTestId('wa-input-access-token'), { target: { value: 'EAAG-new' } });
+      fireEvent.click(screen.getByTestId('wa-btn-save'));
+
+      await waitFor(() => {
+        expect(updateSpy).toHaveBeenCalledWith('acme', 'wa1', {
+          access_token: 'EAAG-new',
+        });
+        expect(onToast).toHaveBeenCalledWith('WhatsApp gateway updated');
+      });
+    });
+
+    it('updates the bound agent for WhatsApp account', async () => {
+      mockGatewayApis({ waGateways: [waConfig()] });
+      const updateSpy = vi
+        .spyOn(api.gateways.whatsapp, 'update')
+        .mockResolvedValue(waConfig({ agent_id: 'a_beacon' }));
+
+      render(<GatewaysPane tenant={mockTenant} />);
+      await openWhatsAppTab();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('wa-select-default-agent')).not.toBeNull();
+      });
+      fireEvent.change(screen.getByTestId('wa-select-default-agent'), { target: { value: 'a_beacon' } });
+
+      await waitFor(() => {
+        expect(updateSpy).toHaveBeenCalledWith('acme', 'wa1', { agent_id: 'a_beacon' });
+      });
+    });
+
+    it('renders the md pairing state: ban-risk notice, QR, pair code, live status', async () => {
+      mockGatewayApis({
+        waGateways: [waConfig({ id: 'wa_md', lane: 'multi_device', has_credentials: false })],
+        waHealthMap: { wa_md: { status: 'error', detail: 'device disconnected' } },
+      });
+      vi.spyOn(api.gateways.whatsapp.pairing, 'status').mockResolvedValue({
+        status: 'waiting',
+        qr_data_url: 'data:image/png;base64,qq',
+        pair_code: '4821-9376',
+      });
+      const regenerateSpy = vi
+        .spyOn(api.gateways.whatsapp.pairing, 'regenerate')
+        .mockResolvedValue({ status: 'waiting', qr_data_url: 'data:image/png;base64,qq2', pair_code: '1111-2222' });
+
+      render(<GatewaysPane tenant={mockTenant} />);
+      await openWhatsAppTab();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('wa-md-card')).not.toBeNull();
+      });
+      expect(screen.getByTestId('wa-md-warning').textContent).toContain('Meta may ban the account');
+      const qr = await screen.findByTestId('wa-qr-image');
+      expect((qr as HTMLImageElement).src).toContain('data:image/png');
+      expect(screen.getByTestId('wa-pair-code').textContent).toBe('4821-9376');
+      expect(screen.getByTestId('wa-pairing-status').textContent).toContain('Waiting for scan');
+
+      fireEvent.click(screen.getByTestId('wa-btn-regenerate'));
+      await waitFor(() => {
+        expect(regenerateSpy).toHaveBeenCalledWith('acme', 'wa_md');
+        expect(screen.getByTestId('wa-pair-code').textContent).toBe('1111-2222');
+      });
+    });
+
+    it('deletes WhatsApp account', async () => {
+      mockGatewayApis({ waGateways: [waConfig()] });
+      const deleteSpy = vi.spyOn(api.gateways.whatsapp, 'delete').mockResolvedValue(undefined);
+      const onToast = vi.fn();
+
+      render(<GatewaysPane tenant={mockTenant} onToast={onToast} />);
+      await openWhatsAppTab();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('wa-btn-delete')).not.toBeNull();
+      });
+
+      fireEvent.click(screen.getByTestId('wa-btn-delete'));
+
+      await waitFor(() => {
+        expect(deleteSpy).toHaveBeenCalledWith('acme', 'wa1');
+        expect(onToast).toHaveBeenCalledWith('WhatsApp account deleted');
+      });
+    });
+  });
+
+  describe('sidebar frame, status synchronization, and responsive collapse', () => {
+    it('mobile chip row carries status dots and switches active platform', async () => {
+      mockGatewayApis({
+        tgGateways: [gateway({ enabled: false })],
+        waGateways: [waConfig({ lane: 'cloud_api', enabled: true })],
+        waHealthMap: { wa1: { status: 'ok' } },
+      });
+
+      render(<GatewaysPane tenant={mockTenant} />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('tab-telegram-gw1')).not.toBeNull();
+        expect(screen.getByTestId('tab-whatsapp-wa1')).not.toBeNull();
+      });
+
+      expect(screen.getByTestId('tab-telegram-gw1').textContent).toContain('Paused');
+      expect(screen.getByTestId('tab-whatsapp-wa1').textContent).toContain('Connected');
+
+      fireEvent.click(screen.getByTestId('tab-whatsapp-wa1'));
+      await waitFor(() => {
+        expect(screen.getByTestId('wa-gateway-admin-section')).not.toBeNull();
+      });
+
+      fireEvent.click(screen.getByTestId('tab-telegram-gw1'));
+      await waitFor(() => {
+        expect(screen.getByTestId('gateway-admin-section')).not.toBeNull();
+      });
+    });
+
+    it('problem-first default lands on the platform with an error', async () => {
+      mockGatewayApis({
+        tgGateways: [gateway({ enabled: true })],
+        waGateways: [waConfig({ lane: 'cloud_api', enabled: true })],
+        waHealthMap: { wa1: { status: 'error', detail: 'Token expired' } },
+      });
+
+      render(<GatewaysPane tenant={mockTenant} />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('wa-gateway-admin-section')).not.toBeNull();
+      });
+      expect(screen.getByTestId('wa-gateway-status').textContent).toBe('Error');
+    });
   });
 });

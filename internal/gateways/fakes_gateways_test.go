@@ -33,6 +33,9 @@ func domainUser(id string) *domain.User {
 type testSentMessage struct {
 	ChatID string
 	HTML   string
+	// Flavor is the wire-format tag the send carried
+	// (add-whatsapp-gateway design D9).
+	Flavor string
 	Opts   SendOptions
 }
 
@@ -40,12 +43,18 @@ type testEditMessage struct {
 	ChatID    string
 	MessageID string
 	HTML      string
+	Flavor    string
 }
 
 // testPlatformAdapter records every outbound call and serves canned
-// downloads. Send/edit failures are injectable per call.
+// downloads. Send/edit failures are injectable per call. Its capability
+// matrix (CanEdit × CanButton, design D2) is constructor-parameterized so
+// the same double drives every platform cell; the default constructor is
+// the Telegram cell (both true).
 type testPlatformAdapter struct {
 	mu        sync.Mutex
+	canEdit   bool
+	canButton bool
 	nextID    int
 	sent      []testSentMessage
 	edits     []testEditMessage
@@ -58,13 +67,30 @@ type testPlatformAdapter struct {
 }
 
 func newTestPlatformAdapter() *testPlatformAdapter {
-	return &testPlatformAdapter{nextID: 100, downloads: map[string][]byte{}}
+	return newTestPlatformAdapterWithCaps(true, true)
+}
+
+// newTestPlatformAdapterWithCaps builds the double for one capability-matrix
+// cell (add-whatsapp-gateway design D2).
+func newTestPlatformAdapterWithCaps(canEdit, canButton bool) *testPlatformAdapter {
+	return &testPlatformAdapter{
+		canEdit:   canEdit,
+		canButton: canButton,
+		nextID:    100,
+		downloads: map[string][]byte{},
+	}
 }
 
 func (a *testPlatformAdapter) Start(ctx context.Context) error { return nil }
 func (a *testPlatformAdapter) Stop(ctx context.Context) error  { return nil }
 
-func (a *testPlatformAdapter) SendMessage(ctx context.Context, chatID, html string, opts SendOptions) (string, error) {
+func (a *testPlatformAdapter) Capabilities() AdapterCapabilities {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return AdapterCapabilities{CanEdit: a.canEdit, CanButton: a.canButton}
+}
+
+func (a *testPlatformAdapter) SendMessage(ctx context.Context, chatID, body, flavor string, opts SendOptions) (string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if len(a.sendErrs) > 0 {
@@ -76,11 +102,11 @@ func (a *testPlatformAdapter) SendMessage(ctx context.Context, chatID, html stri
 	}
 	a.nextID++
 	id := "msg-" + strconv.Itoa(a.nextID)
-	a.sent = append(a.sent, testSentMessage{ChatID: chatID, HTML: html, Opts: opts})
+	a.sent = append(a.sent, testSentMessage{ChatID: chatID, HTML: body, Flavor: flavor, Opts: opts})
 	return id, nil
 }
 
-func (a *testPlatformAdapter) EditMessage(ctx context.Context, chatID, messageID, html string) error {
+func (a *testPlatformAdapter) EditMessage(ctx context.Context, chatID, messageID, body, flavor string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if len(a.editErrs) > 0 {
@@ -90,7 +116,7 @@ func (a *testPlatformAdapter) EditMessage(ctx context.Context, chatID, messageID
 			return err
 		}
 	}
-	a.edits = append(a.edits, testEditMessage{ChatID: chatID, MessageID: messageID, HTML: html})
+	a.edits = append(a.edits, testEditMessage{ChatID: chatID, MessageID: messageID, HTML: body, Flavor: flavor})
 	return nil
 }
 

@@ -101,6 +101,10 @@ Notes:
 
 Frontend values are read when the dev server or build starts; restart after changing.
 
+## WhatsApp gateway
+
+WhatsApp runs as a second gateway platform beside Telegram, on one of two lanes: the **official Cloud API** (production: webhook ingestion, 24-hour customer-service window, quick-reply approval buttons) or the unofficial **multi-device** lane (self-hosted: QR/pair-code pairing, streaming edits, ban risk). Configure it under Settings → Gateways → WhatsApp; the zero-to-first-DM guide for both lanes, including the Meta app setup and the manual webhook registration, is in [docs/whatsapp-gateway.md](docs/whatsapp-gateway.md).
+
 ## CLI reference
 
 ```bash

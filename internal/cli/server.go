@@ -19,6 +19,7 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/channels"
 	"github.com/oniharnantyo/onclaw/internal/config"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/heartbeat"
 	"github.com/oniharnantyo/onclaw/internal/observability"
 	"github.com/oniharnantyo/onclaw/internal/promptgen"
 	"github.com/oniharnantyo/onclaw/internal/scheduler"
@@ -272,11 +273,40 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	)
 	schedulerSvc.Start(lifecycleCtx)
 
+	// Heartbeat loop (add-agent-heartbeat D14): the ticker claims due agent
+	// heartbeats and fires them through the same runner the interactive
+	// surfaces use — the runner's agent-level liveness is the busy guard
+	// (D12) — with channel delivery through the chokepoint (D8) and
+	// creator-DM delivery through the gateway stores. Its lifecycle rides the
+	// same process-lifetime context as the scheduler loop: shutdown cancels
+	// the ticker while Stop() waits for in-flight fires.
+	heartbeatSvc := heartbeat.NewService(
+		st.Heartbeats(),
+		st.Users(),
+		st.Agents(),
+		st.Workspaces(),
+		st.Channels(),
+		st.Schedulers(),
+		runner,
+		runner,
+		channelRuntime.Chokepoint(),
+		st.Gateways(),
+		st.GatewayLinks(),
+		st.GatewayOutbox(),
+		slog.Default(),
+		heartbeat.WithTick(cfg.HeartbeatTick),
+		heartbeat.WithRunTimeout(cfg.HeartbeatRunTimeout),
+		heartbeat.WithConcurrency(cfg.HeartbeatConcurrency),
+	)
+	heartbeatSvc.Start(lifecycleCtx)
+
 	// Gateway runtime (integrate-telegram-gateway D11): the gateway service,
 	// pairing, adapter factory, and lifecycle manager assembled around the
 	// same runner. StartAll brings every enabled workspace gateway up at boot
 	// (one broken token is logged and skipped); the admin API calls Sync on
-	// config changes; Stop tears the adapters down at shutdown.
+	// config changes; Stop tears the adapters down at shutdown. The WhatsApp
+	// seams ride the same DSN (multi-device device store, add-whatsapp-gateway
+	// design D6) and the configured Cloud API base override.
 	gatewayRuntime := server.NewGatewayRuntime(
 		st.Gateways(),
 		st.GatewayBindings(),
@@ -290,6 +320,8 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		st.Attachments(),
 		wsResolver,
 		encKey,
+		cfg.DatabaseURL,
+		cfg.WhatsAppCloudAPIBase,
 	)
 	bootWorkspaces, err := st.Workspaces().ListAll(ctx)
 	if err != nil {
@@ -398,6 +430,21 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	case <-schedulerDone:
 	case <-time.After(cfg.RunDrainWindow):
 		slog.Warn("scheduler stop exceeded the drain window; in-flight fires keep their own deadline")
+	}
+
+	// Stop the heartbeat loop (add-agent-heartbeat D14) in the same bounded
+	// pattern: the ticker halts and in-flight ticks keep their own
+	// run-timeout-plus-drain-grace deadline beyond the window.
+	slog.Info("stopping heartbeat loop", "window", cfg.RunDrainWindow)
+	heartbeatDone := make(chan struct{})
+	go func() {
+		heartbeatSvc.Stop()
+		close(heartbeatDone)
+	}()
+	select {
+	case <-heartbeatDone:
+	case <-time.After(cfg.RunDrainWindow):
+		slog.Warn("heartbeat stop exceeded the drain window; in-flight ticks keep their own deadline")
 	}
 
 	// Flush pending Langfuse exports (integrate-langfuse-tracing 3.3): after

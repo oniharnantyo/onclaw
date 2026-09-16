@@ -25,11 +25,11 @@ type apiUpdate struct {
 }
 
 type apiUser struct {
-	ID          int64  `json:"id"`
-	IsBot       bool   `json:"is_bot"`
-	Username    string `json:"username"`
-	FirstName   string `json:"first_name"`
-	LastName    string `json:"last_name"`
+	ID        int64  `json:"id"`
+	IsBot     bool   `json:"is_bot"`
+	Username  string `json:"username"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
 }
 
 type apiChat struct {
@@ -46,10 +46,10 @@ type apiPhotoSize struct {
 }
 
 type apiDocument struct {
-	FileID     string `json:"file_id"`
-	FileName   string `json:"file_name"`
-	MimeType   string `json:"mime_type"`
-	FileSize   int64  `json:"file_size"`
+	FileID   string `json:"file_id"`
+	FileName string `json:"file_name"`
+	MimeType string `json:"mime_type"`
+	FileSize int64  `json:"file_size"`
 }
 
 type apiVoice struct {
@@ -60,26 +60,26 @@ type apiVoice struct {
 }
 
 type apiMessage struct {
-	MessageID int64    `json:"message_id"`
-	From      *apiUser `json:"from"`
-	Chat      apiChat  `json:"chat"`
-	Text      string   `json:"text"`
-	Caption   string   `json:"caption"`
+	MessageID int64          `json:"message_id"`
+	From      *apiUser       `json:"from"`
+	Chat      apiChat        `json:"chat"`
+	Text      string         `json:"text"`
+	Caption   string         `json:"caption"`
 	Photo     []apiPhotoSize `json:"photo"`
 	Document  *apiDocument   `json:"document"`
 	Voice     *apiVoice      `json:"voice"`
 	// migrate_to_chat_id rides a service message when a group upgrades to a
 	// supergroup (design D10): the binding must be remapped, the message
 	// itself dropped.
-	MigrateToChatID int64        `json:"migrate_to_chat_id"`
-	ReplyToMessage  *apiMessage  `json:"reply_to_message"`
+	MigrateToChatID int64       `json:"migrate_to_chat_id"`
+	ReplyToMessage  *apiMessage `json:"reply_to_message"`
 }
 
 type apiCallbackQuery struct {
-	ID      string     `json:"id"`
-	From    apiUser    `json:"from"`
+	ID      string      `json:"id"`
+	From    apiUser     `json:"from"`
 	Message *apiMessage `json:"message"`
-	Data    string     `json:"data"`
+	Data    string      `json:"data"`
 }
 
 // gatewayCommands is the set of gateway-owned commands accepted in groups
@@ -156,9 +156,9 @@ func (a *Adapter) normalizeMessage(msg *apiMessage) gateways.InboundMessage {
 		ChatID:   chatID,
 		Kind:     kind,
 		// Caption-inclusive text (spec: photos arrive with caption questions).
-		Text:         strings.TrimSpace(msg.Text),
-		FromBot:      msg.From != nil && msg.From.IsBot,
-		MessageID:    strconv.FormatInt(msg.MessageID, 10),
+		Text:            strings.TrimSpace(msg.Text),
+		FromBot:         msg.From != nil && msg.From.IsBot,
+		MessageID:       strconv.FormatInt(msg.MessageID, 10),
 		MigrateToChatID: strconv.FormatInt(msg.MigrateToChatID, 10),
 	}
 	if msg.From != nil {

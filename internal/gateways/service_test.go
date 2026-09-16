@@ -67,19 +67,19 @@ func newFixture(t *testing.T) *gwFixture {
 	atlas := newAgent("Atlas", "atlas")
 	beacon := newAgent("Beacon", "beacon")
 
-	gateway := &domain.GatewayConfig{
-		WorkspaceID:        ws.ID,
-		Platform:           domain.GatewayPlatformTelegram,
-		BotTokenCiphertext: "v1:bm9uY2U6MTIzNDU2Nzg:Y2lwaGVydGV4dA",
-		BotUsername:        "onclaw_bot",
-		Enabled:            true,
-		Transport:          domain.GatewayTransportLongPolling,
-	}
-	defaultAgent := atlas.ID
-	gateway.DefaultAgentID = &defaultAgent
-	if err := st.Gateways().UpsertGateway(ctx, ws.ID, gateway); err != nil {
-		t.Fatalf("upsert gateway: %v", err)
-	}
+		gateway := &domain.GatewayConfig{
+			WorkspaceID:        ws.ID,
+			Platform:           domain.GatewayPlatformTelegram,
+			Identity:           "onclaw_bot",
+			AgentID:            atlas.ID,
+			BotTokenCiphertext: "v1:bm9uY2U6MTIzNDU2Nzg:Y2lwaGVydGV4dA",
+			BotUsername:        "onclaw_bot",
+			Enabled:            true,
+			Transport:          domain.GatewayTransportLongPolling,
+		}
+		if err := st.Gateways().CreateGateway(ctx, ws.ID, gateway); err != nil {
+			t.Fatalf("create gateway: %v", err)
+		}
 
 	f := &gwFixture{
 		t:       t,
@@ -116,6 +116,21 @@ func (f *gwFixture) pairUser(platformUserID, username string) *domain.UserLink {
 	return link
 }
 
+// pairUserWhatsApp links a WhatsApp identity (bare phone digits,
+// add-whatsapp-gateway design D7) to the fixture's member.
+func (f *gwFixture) pairUserWhatsApp(platformUserID, username string) *domain.UserLink {
+	f.t.Helper()
+	token, err := f.pairing.MintToken(f.ctx, f.ws.ID, f.user.ID)
+	if err != nil {
+		f.t.Fatalf("mint token: %v", err)
+	}
+	link, err := f.pairing.Pair(f.ctx, f.ws.ID, domain.GatewayPlatformWhatsApp, platformUserID, username, token.Token)
+	if err != nil {
+		f.t.Fatalf("pair: %v", err)
+	}
+	return link
+}
+
 // fakeUsageReader satisfies SessionUsageReader deterministically.
 type fakeUsageReader struct {
 	usage *agents.UsagePayload
@@ -128,10 +143,10 @@ func (r fakeUsageReader) LatestUsage(context.Context, string, string) (*agents.U
 
 // fakeRunSubmitter records ExecRequests and scripts responses.
 type fakeRunSubmitter struct {
-	mu     sync.Mutex
-	reqs   []agents.ExecRequest
-	next   func(call int, req agents.ExecRequest) (*agents.EventStream, error)
-	calls  int
+	mu    sync.Mutex
+	reqs  []agents.ExecRequest
+	next  func(call int, req agents.ExecRequest) (*agents.EventStream, error)
+	calls int
 }
 
 func (s *fakeRunSubmitter) Run(_ context.Context, req agents.ExecRequest) (*agents.EventStream, error) {
@@ -166,30 +181,59 @@ func (s *fakeRunSubmitter) requestCount() int {
 }
 
 // fakeChatAdapter is a PlatformAdapter that records sends and serves the
-// service tests without network.
+// service tests without network. Its capability matrix is
+// constructor-parameterized (add-whatsapp-gateway design D2); the zero
+// value is the Telegram cell (both capabilities on).
 type fakeChatAdapter struct {
-	mu     sync.Mutex
-	sent   []fakeChatSend
-	typing []string
-	cards  []agents.ApprovalPayload
+	mu        sync.Mutex
+	canEdit   bool
+	canButton bool
+	sent      []fakeChatSend
+	edits     []fakeChatEdit
+	typing    []string
+	cards     []agents.ApprovalPayload
 }
 
 type fakeChatSend struct {
 	ChatID string
 	HTML   string
+	Flavor string
+}
+
+type fakeChatEdit struct {
+	ChatID    string
+	MessageID string
+	HTML      string
+	Flavor    string
+}
+
+// newFakeChatAdapterWithCaps builds the double for one capability cell.
+func newFakeChatAdapterWithCaps(canEdit, canButton bool) *fakeChatAdapter {
+	return &fakeChatAdapter{canEdit: canEdit, canButton: canButton}
 }
 
 func (a *fakeChatAdapter) Start(context.Context) error { return nil }
 func (a *fakeChatAdapter) Stop(context.Context) error  { return nil }
 
-func (a *fakeChatAdapter) SendMessage(_ context.Context, chatID, html string, _ SendOptions) (string, error) {
+func (a *fakeChatAdapter) Capabilities() AdapterCapabilities {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.sent = append(a.sent, fakeChatSend{ChatID: chatID, HTML: html})
+	return AdapterCapabilities{CanEdit: a.canEdit, CanButton: a.canButton}
+}
+
+func (a *fakeChatAdapter) SendMessage(_ context.Context, chatID, body, flavor string, _ SendOptions) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.sent = append(a.sent, fakeChatSend{ChatID: chatID, HTML: body, Flavor: flavor})
 	return "msg-" + string(rune('0'+len(a.sent))), nil
 }
 
-func (a *fakeChatAdapter) EditMessage(context.Context, string, string, string) error { return nil }
+func (a *fakeChatAdapter) EditMessage(_ context.Context, chatID, messageID, body, flavor string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.edits = append(a.edits, fakeChatEdit{ChatID: chatID, MessageID: messageID, HTML: body, Flavor: flavor})
+	return nil
+}
 
 func (a *fakeChatAdapter) SendTyping(_ context.Context, chatID string) error {
 	a.mu.Lock()
@@ -293,7 +337,7 @@ func TestServiceRoutesDMRunUnderPairedIdentity(t *testing.T) {
 func TestServiceDisabledGatewayIsInert(t *testing.T) {
 	f, svc, submitter, adapter := newServiceFixture(t)
 	f.pairUser("593821092", "onih")
-	if err := f.st.Gateways().SetGatewayEnabled(f.ctx, f.ws.ID, domain.GatewayPlatformTelegram, false); err != nil {
+	if err := f.st.Gateways().SetGatewayEnabled(f.ctx, f.ws.ID, f.gateway.ID, false); err != nil {
 		t.Fatalf("disable gateway: %v", err)
 	}
 
@@ -422,4 +466,60 @@ func TestServiceApprovalCallbackDrainsResumedTurn(t *testing.T) {
 		t.Fatalf("pending approval not cleared after callback")
 	}
 	_ = adapter
+}
+
+// TestServiceTextReplyApprovalDecision drives the full interception path
+// (add-whatsapp-gateway design D3, task 2.4): on a CanButton=false platform,
+// a DM reading APPROVE resolves the pending card through the same bridge
+// path a button press takes.
+func TestServiceTextReplyApprovalDecision(t *testing.T) {
+	f := newFixture(t)
+	f.pairUser("593821092", "onih")
+
+	adapter := newFakeChatAdapterWithCaps(false, false) // multi-device-style cell
+	submitter := &fakeRunSubmitter{}
+	bridge := NewApprovalBridge(submitter, adapter, f.st.GatewayLinks())
+	router := NewRouter(
+		f.st.Gateways(), f.st.GatewayBindings(), f.st.GatewayLinks(), f.st.Agents(),
+		f.st.Members(), f.st.Users(), nil, fakeUsageReader{},
+		WithApprovalIntercept(bridge),
+	)
+	router.pairing = f.pairing
+	var svc *Service
+	outbox := NewOutbox(f.st.GatewayOutbox(), func(gatewayID string) (MessageSender, bool) {
+		return svc.Adapter(gatewayID)
+	})
+	svc = NewService(router, submitter, bridge, f.st.Gateways(), outbox)
+	svc.AttachGateway(f.gateway.ID, f.ws.ID, f.gateway.Platform, adapter)
+
+	sessionID := GatewayDMSessionKey("593821092", f.atlas.ID, 0)
+	if err := bridge.Present(f.ctx, StreamSession{
+		GatewayID: f.gateway.ID, WorkspaceID: f.ws.ID,
+		SessionID: sessionID, ChatID: "593821092",
+	}, agents.ExecRequest{}, agents.ApprovalPayload{InterruptID: "int-5", Command: "deploy.sh"}); err != nil {
+		t.Fatalf("present approval: %v", err)
+	}
+
+	// Non-matching text gets the pending notice and decides nothing.
+	svc.HandleMessage(f.ctx, f.gateway.ID, f.dmMsg("593821092", "well... maybe"))
+	if submitter.requestCount() != 0 {
+		t.Fatalf("non-decision text must not resume the turn")
+	}
+	sends := adapter.sends()
+	if len(sends) == 0 || !strings.Contains(sends[len(sends)-1].HTML, PendingApprovalTextReply) {
+		t.Fatalf("expected the text-reply pending notice, got %v", sends)
+	}
+
+	// The decision text resolves the card and resumes the run.
+	svc.HandleMessage(f.ctx, f.gateway.ID, f.dmMsg("593821092", "approve"))
+	waitFor(t, "resumed run after text decision", func() bool { return submitter.requestCount() >= 1 })
+	if bridge.Pending(sessionID) {
+		t.Fatalf("text decision must clear the pending approval")
+	}
+	submitter.mu.Lock()
+	approved := submitter.calls >= 1
+	submitter.mu.Unlock()
+	if !approved {
+		t.Fatalf("expected the resumed submission")
+	}
 }

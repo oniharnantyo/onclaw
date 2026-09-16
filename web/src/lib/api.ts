@@ -251,6 +251,9 @@ export interface ApiToolSettings {
   enabled: boolean;
   configured: boolean;
   config: Record<string, unknown>;
+  /** False for always-on tools (design D1): the pane sections them with an
+   * always-on badge, the agent picker drops them, and they cannot be disabled. */
+  toggleable: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -829,54 +832,57 @@ export interface PostChannelMessagePayload {
 }
 
 // ---------------------------------------------------------------------------
-// Workspace Telegram gateway (change integrate-telegram-gateway): one gateway
-// per workspace under /workspaces/:slug/gateways/telegram. The bot token is a
-// write-only secret — every read carries only the last-4 `token_hint`; a PUT
-// with an omitted or empty `token` keeps the stored secret server-side.
+// Workspace Telegram gateway (change integrate-telegram-gateway and multi-bot-gateways):
+// multiple bot gateway accounts per workspace under /workspaces/:slug/gateways/telegram.
+// The bot token is a write-only secret — every read carries only the last-4 `token_hint`;
+// a PUT with an omitted or empty `token` keeps the stored secret server-side.
 // ---------------------------------------------------------------------------
 
 export type GatewayTransport = 'webhook' | 'long_polling';
 
 export interface ApiGatewayConfig {
   id: string;
-  workspace_id: string;
-  /** Platform key — 'telegram' for this change's adapter. */
+  workspace_id?: string;
   platform: string;
-  enabled: boolean;
-  /** Server-resolved from the stored token via the platform API. */
+  identity: string;
+  agent_id: string;
   bot_username?: string | null;
-  /** Last-4 hint of the stored token; present on configured gateways only. */
   token_hint?: string;
-  /** Agent that answers untargeted direct messages (member default wins). */
-  default_agent_id?: string | null;
+  enabled: boolean;
   transport: GatewayTransport;
-  /** webhook transport: the public HTTPS ingress URL. */
   webhook_url?: string;
   status_error?: string | null;
   created_at?: string;
   updated_at?: string;
 }
 
-export interface GatewayConfigPayload {
-  /** Write-only: omitted or empty keeps the stored token. */
+export interface CreateGatewayPayload {
+  token: string;
+  agent_id: string;
+  transport?: GatewayTransport;
+  webhook_url?: string;
+}
+
+export interface UpdateGatewayPayload {
   token?: string;
-  default_agent_id?: string | null;
+  agent_id?: string | null;
   transport?: GatewayTransport;
   webhook_url?: string;
 }
 
 export interface ApiGatewayBinding {
   id: string;
+  gateway_id: string;
   platform: string;
-  /** Telegram group chat id (numeric id as string). */
   platform_chat_id: string;
-  /** Group title as reported at bind time; display-only. */
   chat_title?: string | null;
   agent_id: string;
+  created_by?: string | null;
   created_at: string;
 }
 
 export interface CreateGatewayBindingPayload {
+  gateway_id: string;
   agent_id: string;
   platform_chat_id: string;
   chat_title?: string;
@@ -894,6 +900,70 @@ export interface ApiPairingToken {
   /** One-time crypto-random token, single-use, consumed on use. */
   token: string;
   expires_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// Workspace WhatsApp gateway (change add-whatsapp-gateway and multi-bot-gateways):
+// multiple WhatsApp gateway accounts per workspace under /workspaces/:slug/gateways/whatsapp
+// with an explicit lane — 'cloud_api' or 'multi_device'.
+// Secrets are never echoed: reads carry only `has_credentials`; a PUT with
+// omitted or empty credential fields keeps the stored envelope.
+// ---------------------------------------------------------------------------
+
+export type GatewayLane = 'cloud_api' | 'multi_device';
+
+export interface ApiWhatsAppGatewayConfig {
+  id: string;
+  platform: string;
+  lane?: GatewayLane | null;
+  identity: string;
+  agent_id: string;
+  enabled: boolean;
+  bot_username?: string | null;
+  transport?: GatewayTransport | null;
+  webhook_url?: string;
+  has_credentials?: boolean;
+  status_error?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface CreateWhatsAppGatewayPayload {
+  lane: GatewayLane;
+  agent_id: string;
+  access_token?: string;
+  phone_number_id?: string;
+  app_secret?: string;
+  verify_token?: string;
+  transport?: GatewayTransport;
+  webhook_url?: string;
+}
+
+export interface UpdateWhatsAppGatewayPayload {
+  agent_id?: string;
+  access_token?: string;
+  phone_number_id?: string;
+  app_secret?: string;
+  verify_token?: string;
+  transport?: GatewayTransport;
+  webhook_url?: string;
+}
+
+export interface ApiWhatsAppHealth {
+  status: 'ok' | 'error' | 'unconfigured';
+  detail?: string;
+  /** Dead deliveries for this gateway (design D4) — absent when unconfigured. */
+  dead_outbox?: number;
+}
+
+export interface ApiWhatsAppPairing {
+  status: 'waiting' | 'connected' | 'logged_out' | 'not_started';
+  /** QR image as a data URL while a pairing session is live. */
+  qr_data_url?: string;
+  /** Raw QR payload when no data URL is provided. */
+  qr?: string;
+  /** 8-digit pairing code, e.g. "4821-9376". */
+  pair_code?: string;
 }
 
 
@@ -1323,47 +1393,58 @@ export const api = {
         }),
     },
   },
-  // Workspace Telegram gateway (integrate-telegram-gateway): config CRUD +
-  // enable/disable/test and bindings are admin-gated server-side; the pairing
-  // token mint/revoke and the self unpair are member-gated (any membership).
+  // Workspace Gateways (multi-bot-gateways): plural accounts per platform,
+  // bound agents, per-account CRUD and lifecycle under /workspaces/:slug/gateways/...
   gateways: {
     telegram: {
-      // Unconfigured workspaces answer `{ gateway: null }`, not 404.
-      getConfig: (ws: string) =>
-        request<{ gateway: ApiGatewayConfig | null }>(
+      list: (ws: string) =>
+        request<ApiGatewayConfig[]>(
           `/workspaces/${encodeURIComponent(ws)}/gateways/telegram`,
           { method: 'GET' }
         ),
-      updateConfig: (ws: string, body: GatewayConfigPayload) =>
-        request<{ gateway: ApiGatewayConfig }>(
+      create: (ws: string, body: CreateGatewayPayload) =>
+        request<ApiGatewayConfig>(
           `/workspaces/${encodeURIComponent(ws)}/gateways/telegram`,
+          { method: 'POST', body }
+        ),
+      get: (ws: string, id: string) =>
+        request<ApiGatewayConfig>(
+          `/workspaces/${encodeURIComponent(ws)}/gateways/telegram/${encodeURIComponent(id)}`,
+          { method: 'GET' }
+        ),
+      update: (ws: string, id: string, body: UpdateGatewayPayload) =>
+        request<ApiGatewayConfig>(
+          `/workspaces/${encodeURIComponent(ws)}/gateways/telegram/${encodeURIComponent(id)}`,
           { method: 'PUT', body }
         ),
-      enable: (ws: string) =>
-        request<{ gateway: ApiGatewayConfig }>(
-          `/workspaces/${encodeURIComponent(ws)}/gateways/telegram/enable`,
+      enable: (ws: string, id: string) =>
+        request<void>(
+          `/workspaces/${encodeURIComponent(ws)}/gateways/telegram/${encodeURIComponent(id)}/enable`,
           { method: 'POST', body: {} }
         ),
-      disable: (ws: string) =>
-        request<{ gateway: ApiGatewayConfig }>(
-          `/workspaces/${encodeURIComponent(ws)}/gateways/telegram/disable`,
+      disable: (ws: string, id: string) =>
+        request<void>(
+          `/workspaces/${encodeURIComponent(ws)}/gateways/telegram/${encodeURIComponent(id)}/disable`,
           { method: 'POST', body: {} }
         ),
-      // Verifies the stored (or freshly submitted) token against the platform
-      // API and persists nothing.
-      test: (ws: string) =>
+      test: (ws: string, id: string) =>
         request<{ ok: boolean; bot_username?: string; error?: string }>(
-          `/workspaces/${encodeURIComponent(ws)}/gateways/telegram/test`,
+          `/workspaces/${encodeURIComponent(ws)}/gateways/telegram/${encodeURIComponent(id)}/test`,
           { method: 'POST', body: {} }
+        ),
+      delete: (ws: string, id: string) =>
+        request<void>(
+          `/workspaces/${encodeURIComponent(ws)}/gateways/telegram/${encodeURIComponent(id)}`,
+          { method: 'DELETE' }
         ),
       bindings: {
         list: (ws: string) =>
-          request<{ bindings: ApiGatewayBinding[] }>(
+          request<ApiGatewayBinding[]>(
             `/workspaces/${encodeURIComponent(ws)}/gateways/telegram/bindings`,
             { method: 'GET' }
           ),
         create: (ws: string, body: CreateGatewayBindingPayload) =>
-          request<{ binding: ApiGatewayBinding }>(
+          request<ApiGatewayBinding>(
             `/workspaces/${encodeURIComponent(ws)}/gateways/telegram/bindings`,
             { method: 'POST', body }
           ),
@@ -1404,6 +1485,104 @@ export const api = {
         remove: (ws: string, userId: string) =>
           request<void>(
             `/workspaces/${encodeURIComponent(ws)}/gateways/telegram/links/${encodeURIComponent(userId)}`,
+            { method: 'DELETE' }
+          ),
+      },
+    },
+    // WhatsApp gateway (multi-bot-gateways): config CRUD + enable/disable +
+    // health are gateways.write server-side; pairing start/status/regenerate/
+    // logout drive the multi-device QR flow; pairing tokens and the self link
+    // are member-gated — the same split as Telegram.
+    whatsapp: {
+      list: (ws: string) =>
+        request<ApiWhatsAppGatewayConfig[]>(
+          `/workspaces/${encodeURIComponent(ws)}/gateways/whatsapp`,
+          { method: 'GET' }
+        ),
+      create: (ws: string, body: CreateWhatsAppGatewayPayload) =>
+        request<ApiWhatsAppGatewayConfig>(
+          `/workspaces/${encodeURIComponent(ws)}/gateways/whatsapp`,
+          { method: 'POST', body }
+        ),
+      get: (ws: string, id: string) =>
+        request<ApiWhatsAppGatewayConfig>(
+          `/workspaces/${encodeURIComponent(ws)}/gateways/whatsapp/${encodeURIComponent(id)}`,
+          { method: 'GET' }
+        ),
+      update: (ws: string, id: string, body: UpdateWhatsAppGatewayPayload) =>
+        request<ApiWhatsAppGatewayConfig>(
+          `/workspaces/${encodeURIComponent(ws)}/gateways/whatsapp/${encodeURIComponent(id)}`,
+          { method: 'PUT', body }
+        ),
+      enable: (ws: string, id: string) =>
+        request<void>(
+          `/workspaces/${encodeURIComponent(ws)}/gateways/whatsapp/${encodeURIComponent(id)}/enable`,
+          { method: 'POST', body: {} }
+        ),
+      disable: (ws: string, id: string) =>
+        request<void>(
+          `/workspaces/${encodeURIComponent(ws)}/gateways/whatsapp/${encodeURIComponent(id)}/disable`,
+          { method: 'POST', body: {} }
+        ),
+      delete: (ws: string, id: string) =>
+        request<void>(
+          `/workspaces/${encodeURIComponent(ws)}/gateways/whatsapp/${encodeURIComponent(id)}`,
+          { method: 'DELETE' }
+        ),
+      // Cloud: Meta phone-number probe; multi-device: device connection state.
+      health: (ws: string, id: string) =>
+        request<ApiWhatsAppHealth>(
+          `/workspaces/${encodeURIComponent(ws)}/gateways/whatsapp/${encodeURIComponent(id)}/health`,
+          { method: 'GET' }
+        ),
+      pairing: {
+        // start runs the md pairing flow — QR-only by default; with the
+        // account's phone digits the server answers an 8-digit pair_code
+        // (design D12: "Pair code: 4821-9376" beside the QR).
+        start: (ws: string, id: string, phone?: string) =>
+          request<ApiWhatsAppPairing>(
+            `/workspaces/${encodeURIComponent(ws)}/gateways/whatsapp/${encodeURIComponent(id)}/pairing/start`,
+            { method: 'POST', body: phone ? { phone } : {} }
+          ),
+        status: (ws: string, id: string) =>
+          request<ApiWhatsAppPairing>(
+            `/workspaces/${encodeURIComponent(ws)}/gateways/whatsapp/${encodeURIComponent(id)}/pairing/status`,
+            { method: 'GET' }
+          ),
+        regenerate: (ws: string, id: string) =>
+          request<ApiWhatsAppPairing>(
+            `/workspaces/${encodeURIComponent(ws)}/gateways/whatsapp/${encodeURIComponent(id)}/pairing/regenerate`,
+            { method: 'POST', body: {} }
+          ),
+        logout: (ws: string, id: string) =>
+          request<{ status: string }>(
+            `/workspaces/${encodeURIComponent(ws)}/gateways/whatsapp/${encodeURIComponent(id)}/pairing/logout`,
+            { method: 'POST', body: {} }
+          ),
+      },
+      pairingTokens: {
+        create: (ws: string) =>
+          request<{ token: ApiPairingToken }>(
+            `/workspaces/${encodeURIComponent(ws)}/gateways/whatsapp/pairing-tokens`,
+            { method: 'POST', body: {} }
+          ),
+        revoke: (ws: string, token: string) =>
+          request<void>(
+            `/workspaces/${encodeURIComponent(ws)}/gateways/whatsapp/pairing-tokens/${encodeURIComponent(token)}`,
+            { method: 'DELETE' }
+          ),
+      },
+      links: {
+        // The signed-in member's current WhatsApp link, or `{ link: null }`.
+        getMine: (ws: string) =>
+          request<{ link: ApiGatewayLink | null }>(
+            `/workspaces/${encodeURIComponent(ws)}/gateways/whatsapp/links/me`,
+            { method: 'GET' }
+          ),
+        // Member-gated self unpair.
+        removeMine: (ws: string) =>
+          request<void>(
+            `/workspaces/${encodeURIComponent(ws)}/gateways/whatsapp/links/me`,
             { method: 'DELETE' }
           ),
       },

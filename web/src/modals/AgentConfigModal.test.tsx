@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { AgentConfigModal } from './AgentConfigModal';
-import { api, type ApiMcpServer, type ApiWorkspaceSkill } from '../lib/api';
+import { api, ApiError, type ApiMcpServer, type ApiWorkspaceSkill } from '../lib/api';
+import { heartbeats, type ApiHeartbeat } from '../lib/heartbeats';
 import { useStore } from '../store';
 import { useAuthStore } from '../store/auth';
 
@@ -126,16 +127,19 @@ describe('modals/AgentConfigModal', () => {
     vi.spyOn(api.mcp, 'list').mockResolvedValue({ servers: [] });
     vi.spyOn(api.tools, 'list').mockResolvedValue({
       tools: [
-        { key: 'ls', display_name: 'List Files', description: '', group: 'filesystem', icon_key: 'folder', configurable: false, enabled: true, configured: false, config: {} },
-        { key: 'read_file', display_name: 'Read File', description: '', group: 'filesystem', icon_key: 'file', configurable: false, enabled: true, configured: false, config: {} },
-        { key: 'write_file', display_name: 'Write File', description: '', group: 'filesystem', icon_key: 'file-plus', configurable: false, enabled: true, configured: false, config: {} },
-        { key: 'edit_file', display_name: 'Edit File', description: '', group: 'filesystem', icon_key: 'edit', configurable: false, enabled: true, configured: false, config: {} },
-        { key: 'glob', display_name: 'Glob', description: '', group: 'filesystem', icon_key: 'scan', configurable: false, enabled: true, configured: false, config: {} },
-        { key: 'grep', display_name: 'Grep', description: '', group: 'filesystem', icon_key: 'compass', configurable: false, enabled: true, configured: false, config: {} },
-        { key: 'execute', display_name: 'Shell', description: '', group: 'shell', icon_key: 'terminal', configurable: false, enabled: true, configured: false, config: {} },
-        { key: 'web.search', display_name: 'Web Search', description: '', group: 'web', icon_key: 'search', configurable: true, enabled: true, configured: false, config: {} },
-        { key: 'web.fetch', display_name: 'Web Fetch', description: '', group: 'web', icon_key: 'link', configurable: false, enabled: true, configured: false, config: {} },
-        { key: 'browser', display_name: 'Browser', description: '', group: 'browser', icon_key: 'globe', configurable: true, enabled: true, configured: false, config: {} },
+        { key: 'ls', display_name: 'List Files', description: '', group: 'filesystem', icon_key: 'folder', configurable: false, enabled: true, configured: false, config: {}, toggleable: true },
+        { key: 'read_file', display_name: 'Read File', description: '', group: 'filesystem', icon_key: 'file', configurable: false, enabled: true, configured: false, config: {}, toggleable: true },
+        { key: 'write_file', display_name: 'Write File', description: '', group: 'filesystem', icon_key: 'file-plus', configurable: false, enabled: true, configured: false, config: {}, toggleable: true },
+        { key: 'edit_file', display_name: 'Edit File', description: '', group: 'filesystem', icon_key: 'edit', configurable: false, enabled: true, configured: false, config: {}, toggleable: true },
+        { key: 'glob', display_name: 'Glob', description: '', group: 'filesystem', icon_key: 'scan', configurable: false, enabled: true, configured: false, config: {}, toggleable: true },
+        { key: 'grep', display_name: 'Grep', description: '', group: 'filesystem', icon_key: 'compass', configurable: false, enabled: true, configured: false, config: {}, toggleable: true },
+        { key: 'execute', display_name: 'Shell', description: '', group: 'shell', icon_key: 'terminal', configurable: false, enabled: true, configured: false, config: {}, toggleable: true },
+        { key: 'web.search', display_name: 'Web Search', description: '', group: 'web', icon_key: 'search', configurable: true, enabled: true, configured: false, config: {}, toggleable: true },
+        { key: 'web.fetch', display_name: 'Web Fetch', description: '', group: 'web', icon_key: 'link', configurable: false, enabled: true, configured: false, config: {}, toggleable: true },
+        { key: 'browser', display_name: 'Browser', description: '', group: 'browser', icon_key: 'globe', configurable: true, enabled: true, configured: false, config: {}, toggleable: true },
+        { key: 'channel.post', display_name: 'Channel Post', description: '', group: 'channel', icon_key: 'message', configurable: false, enabled: true, configured: false, config: {}, toggleable: false },
+        { key: 'channel.history', display_name: 'Channel History', description: '', group: 'channel', icon_key: 'history', configurable: false, enabled: true, configured: false, config: {}, toggleable: false },
+        { key: 'session.close', display_name: 'Close Work Session', description: '', group: 'channel', icon_key: 'check-circle', configurable: false, enabled: true, configured: false, config: {}, toggleable: false },
       ],
     });
   });
@@ -769,8 +773,8 @@ describe('modals/AgentConfigModal', () => {
   it('renders workspace-disabled tools greyed and unselectable', async () => {
     vi.spyOn(api.tools, 'list').mockResolvedValue({
       tools: [
-        { key: 'web.search', display_name: 'Web Search', description: '', group: 'web', icon_key: 'search', configurable: true, enabled: false, configured: false, config: {} },
-        { key: 'web.fetch', display_name: 'Web Fetch', description: '', group: 'web', icon_key: 'link', configurable: false, enabled: true, configured: false, config: {} },
+        { key: 'web.search', display_name: 'Web Search', description: '', group: 'web', icon_key: 'search', configurable: true, enabled: false, configured: false, config: {}, toggleable: true },
+        { key: 'web.fetch', display_name: 'Web Fetch', description: '', group: 'web', icon_key: 'link', configurable: false, enabled: true, configured: false, config: {}, toggleable: true },
       ],
     });
     vi.spyOn(api.agents, 'create').mockResolvedValue({
@@ -798,6 +802,65 @@ describe('modals/AgentConfigModal', () => {
       expect(api.agents.create).toHaveBeenCalledWith('acme', expect.objectContaining({
         tools: ['web.fetch'],
       }));
+    });
+  });
+
+  it('renders no chips for the non-toggleable channel tools', async () => {
+    render(<AgentConfigModal tenant={mockTenant} onClose={vi.fn()} onSave={vi.fn()} />);
+
+    await waitFor(() => { expect(screen.getByTestId('input-agent-name')).not.toBeNull(); });
+    await goToStep2();
+    await goToStep3();
+
+    // Always-on tools are context-granted at runtime — never agent-selectable.
+    expect(screen.queryByText('Channel Post')).toBeNull();
+    expect(screen.queryByText('Channel History')).toBeNull();
+    expect(screen.queryByText('Close Work Session')).toBeNull();
+
+    // The toggleable set still renders as chips.
+    expect(screen.getByText('Web Search')).not.toBeNull();
+    expect(screen.getByText('Browser')).not.toBeNull();
+  });
+
+  it('keeps a stored channel.post allowlist key invisibly and preserves it on save', async () => {
+    const summaryDraft = {
+      id: 'radar', workspace_id: 'acme', slug: 'radar', name: 'Radar', role: 'Reviewer',
+      description: 'PR Reviewer', model: 'claude-3-7-sonnet', status: 'idle',
+    };
+    const detailAgent = {
+      id: 'radar', workspace_id: 'acme', slug: 'radar', name: 'Radar Detail', role: 'Code Reviewer',
+      description: 'PR Reviewer Detail', brief: 'Review all pull requests thoroughly',
+      identity: '', soul: '', bootstrap: '',
+      provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet', temperature: 1.0,
+      autonomy: 'approval' as const,
+      tools: ['web.search', 'channel.post'],
+      skills: [], enabled_mcps: [], avatar: {}, prompts_status: 'ready' as const,
+      created_at: '', updated_at: '',
+    };
+    vi.spyOn(api.agents, 'get').mockResolvedValue({ agent: detailAgent });
+    vi.spyOn(api.agents, 'patch').mockResolvedValue({ agent: detailAgent });
+
+    render(<AgentConfigModal draft={summaryDraft} tenant={mockTenant} onClose={vi.fn()} onSave={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('agent-modal-loading')).toBeNull();
+    });
+
+    // No chip renders for the stored always-on key; toggleable chips hydrate.
+    fireEvent.click(screen.getByText('Capabilities'));
+    expect(screen.queryByText('Channel Post')).toBeNull();
+    expect(screen.getByText('Web Search')).not.toBeNull();
+
+    // Saving keeps the stored key instead of scrubbing it.
+    fireEvent.click(screen.getByTestId('btn-agent-save-modal'));
+    await waitFor(() => {
+      expect(api.agents.patch).toHaveBeenCalledWith(
+        'acme',
+        'radar',
+        expect.objectContaining({
+          tools: ['web.search', 'channel.post'],
+        })
+      );
     });
   });
 
@@ -1314,5 +1377,154 @@ describe('modals/AgentConfigModal — Hooks section (integrate-agent-hooks)', ()
       expect(screen.queryByTestId('modal-hook')).toBeNull();
       expect(screen.getByTestId('agent-hook-hook-new')).not.toBeNull();
     });
+  });
+});
+
+describe('modals/AgentConfigModal — Heartbeat section (add-agent-heartbeat)', () => {
+  const hbTenant = {
+    id: 'acme',
+    sub: 'acme',
+    name: 'Acme Corp',
+    tz: 'UTC',
+    providers: [],
+  };
+
+  const hbDetailAgent = {
+    id: 'radar', workspace_id: 'acme', slug: 'radar', name: 'Radar', role: 'Reviewer',
+    description: '', brief: 'Review all PRs', identity: '', soul: '', bootstrap: '',
+    provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet', temperature: 1.0,
+    autonomy: 'approval' as const, tools: [], skills: [], enabled_mcps: [],
+    avatar: {}, prompts_status: 'ready' as const, created_at: '', updated_at: '',
+  };
+
+  const savedHeartbeat = (overrides: Partial<ApiHeartbeat> = {}): ApiHeartbeat => ({
+    id: 'hb-1',
+    workspace_id: 'acme',
+    agent_id: 'radar',
+    prompt: 'TEMPLATE',
+    expr: '*/30 * * * *',
+    human_label: 'every 30 minutes',
+    active_start: null,
+    active_end: null,
+    delivery: { type: 'creator_dm' },
+    enabled: true,
+    next_tick_at: '2026-09-15T15:30:00Z',
+    last_tick: null,
+    failure_streak: 0,
+    created_at: '',
+    updated_at: '',
+    ...overrides,
+  });
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useAuthStore.setState({ memberships: [] });
+    vi.spyOn(api.providers, 'list').mockResolvedValue({ providers: [] });
+    vi.spyOn(api.providers, 'models').mockResolvedValue({ source: 'none', models: [] });
+    vi.spyOn(api.skills, 'list').mockResolvedValue({ skills: [] });
+    vi.spyOn(api.agents, 'listSkills').mockResolvedValue({ skills: [] });
+    vi.spyOn(api.agents, 'listMcpServers').mockResolvedValue({ servers: [] });
+    vi.spyOn(api.agents, 'listHooks').mockResolvedValue({ instance: [], workspace: [], agent: [] });
+    vi.spyOn(api.mcp, 'list').mockResolvedValue({ servers: [] });
+    vi.spyOn(api.tools, 'list').mockResolvedValue({ tools: [] });
+    vi.spyOn(api.channels, 'list').mockResolvedValue({ channels: [] });
+    vi.spyOn(heartbeats, 'get').mockResolvedValue({ heartbeat: null, default_prompt: 'TEMPLATE' });
+  });
+
+  /** Renders the edit modal with the agent detail resolved. */
+  async function renderEditModal(opts: { onClose?: () => void; onSave?: () => void } = {}) {
+    vi.spyOn(api.agents, 'get').mockResolvedValue({ agent: hbDetailAgent });
+    vi.spyOn(api.agents, 'patch').mockResolvedValue({ agent: hbDetailAgent });
+    render(
+      <AgentConfigModal
+        draft={{ id: 'radar', name: 'Radar' }}
+        tenant={hbTenant}
+        onClose={opts.onClose || vi.fn()}
+        onSave={opts.onSave || vi.fn()}
+      />
+    );
+    await waitFor(() => {
+      expect(screen.queryByTestId('agent-modal-loading')).toBeNull();
+    });
+  }
+
+  it('places the Heartbeat tab between Hooks and Prompts in edit mode', async () => {
+    await renderEditModal();
+
+    const tab = screen.getByTestId('tab-heartbeat');
+    expect(tab.textContent).toBe('Heartbeat');
+    expect(tab.previousElementSibling?.textContent).toBe('Hooks');
+    expect(tab.nextElementSibling?.textContent).toBe('Prompts');
+  });
+
+  it('has no Heartbeat tab in create/wizard mode', async () => {
+    render(<AgentConfigModal tenant={hbTenant} onClose={vi.fn()} onSave={vi.fn()} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('input-agent-name')).not.toBeNull();
+    });
+    expect(screen.queryByTestId('tab-heartbeat')).toBeNull();
+  });
+
+  it('rides Save: never PUTs for a pristine pane, PUTs once once the toggle is touched', async () => {
+    const putSpy = vi.spyOn(heartbeats, 'update').mockResolvedValue({ heartbeat: savedHeartbeat() });
+    const onClose = vi.fn();
+    await renderEditModal({ onClose });
+
+    fireEvent.click(screen.getByTestId('tab-heartbeat'));
+    // The never-created pane seeds its checklist from the server template.
+    await waitFor(() => {
+      expect((screen.getByTestId('heartbeat-prompt') as HTMLTextAreaElement).value).toBe('TEMPLATE');
+    });
+
+    // Pristine pane + Save: agent PATCH lands, modal closes, no heartbeat row.
+    fireEvent.click(screen.getByTestId('btn-agent-save-modal'));
+    await waitFor(() => {
+      expect(api.agents.patch).toHaveBeenCalledTimes(1);
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+    expect(putSpy).not.toHaveBeenCalled();
+
+    // Enabling the heartbeat makes the pane dirty: the next Save PUTs once.
+    fireEvent.click(screen.getByRole('switch', { name: 'Enable heartbeat' }));
+    fireEvent.click(screen.getByTestId('btn-agent-save-modal'));
+    await waitFor(() => {
+      expect(putSpy).toHaveBeenCalledTimes(1);
+      expect(onClose).toHaveBeenCalledTimes(2);
+    });
+    expect(putSpy).toHaveBeenCalledWith('acme', 'radar', expect.objectContaining({
+      enabled: true,
+      expr: '*/30 * * * *',
+      prompt: 'TEMPLATE',
+      delivery: { type: 'creator_dm' },
+    }));
+  });
+
+  it('keeps the modal open on the Heartbeat tab with the field error inline when the heartbeat PUT is rejected', async () => {
+    vi.spyOn(heartbeats, 'update').mockRejectedValue(
+      new ApiError(422, 'invalid_request', 'invalid request', [
+        { field: 'expr', message: 'fires faster than every 5m' },
+      ])
+    );
+    const onClose = vi.fn();
+    const onSave = vi.fn();
+    await renderEditModal({ onClose, onSave });
+
+    fireEvent.click(screen.getByTestId('tab-heartbeat'));
+    await waitFor(() => {
+      expect((screen.getByTestId('heartbeat-prompt') as HTMLTextAreaElement).value).toBe('TEMPLATE');
+    });
+
+    // Enable + save: the agent PATCH succeeds first and is not rolled back;
+    // the heartbeat 422 keeps the modal open with the server's field message.
+    fireEvent.click(screen.getByRole('switch', { name: 'Enable heartbeat' }));
+    fireEvent.click(screen.getByTestId('btn-agent-save-modal'));
+
+    await waitFor(() => {
+      expect(heartbeats.update).toHaveBeenCalledTimes(1);
+      expect(onSave).toHaveBeenCalledTimes(1);
+    });
+    expect(onClose).not.toHaveBeenCalled();
+    const err = screen.getByTestId('heartbeat-expr-error');
+    expect(err.textContent).toContain('fires faster than every 5m');
   });
 });

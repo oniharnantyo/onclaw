@@ -16,13 +16,19 @@ import (
 )
 
 // Chat-reply copy for the orchestration paths this service owns (design
-// D4/D7): the queued-turn acknowledgment, the queue-full refusal, the
-// generic submission failure, and the pending-approval refusal.
+// D4/D7, add-whatsapp-gateway D3): the queued-turn acknowledgment, the
+// queue-full refusal, the generic submission failure, the pending-approval
+// refusal for button platforms, and its text-reply counterpart for
+// platforms without buttons.
 const (
 	QueuedAckText   = "Queued — I'll run this right after the current turn finishes."
 	QueueFullText   = "Too many messages are already waiting for this session. Please wait for the current turn to finish and send this again."
 	TurnFailedText  = "The agent run could not be started. Please try again in a moment."
 	PendingApproval = "An approval is pending on this session — use the Approve/Deny buttons on the card before sending new messages."
+	// PendingApprovalTextReply is the notice on CanButton=false platforms,
+	// where the decision itself arrives as the chat text APPROVE or DENY
+	// (add-whatsapp-gateway design D3).
+	PendingApprovalTextReply = "An approval is pending on this session — reply APPROVE or DENY to decide it before sending new messages."
 )
 
 // gatewayRegistration is one lifecycle-managed gateway: the workspace and
@@ -235,7 +241,7 @@ func (s *Service) HandleMessage(ctx context.Context, gatewayID string, msg Inbou
 	// Fresh configuration on every message: an admin can disable a gateway,
 	// switch its transport, or change its default agent between messages —
 	// a stale snapshot would keep a disabled gateway talking.
-	cfg, err := s.gateways.GetGateway(ctx, reg.workspaceID, reg.platform)
+	cfg, err := s.gateways.GetGateway(ctx, reg.workspaceID, gatewayID)
 	if err != nil {
 		slog.Error("gateway config lookup failed", "gateway_id", gatewayID, "err", err)
 		return
@@ -251,6 +257,13 @@ func (s *Service) HandleMessage(ctx context.Context, gatewayID string, msg Inbou
 	if err != nil {
 		slog.Error("gateway routing failed", "gateway_id", gatewayID, "chat_id", msg.ChatID, "err", err)
 		s.reply(ctx, gatewayID, msg.ChatID, TurnFailedText)
+		return
+	}
+	if res.Callback != nil {
+		// A synthesized approval decision (add-whatsapp-gateway design D3):
+		// the text-reply interception produces the same callback a button
+		// press would have carried, so it rides the identical bridge path.
+		s.HandleCallback(ctx, gatewayID, *res.Callback)
 		return
 	}
 	if res.Reply != nil {
@@ -313,6 +326,16 @@ func (s *Service) registration(gatewayID string) (gatewayRegistration, bool) {
 	return reg, ok
 }
 
+// originFor maps a gateway platform to the run origin stamped on its
+// ExecRequests (add-whatsapp-gateway design D10): WhatsApp runs carry
+// OriginWhatsApp; everything else keeps OriginTelegram, the historical value.
+func originFor(platform string) string {
+	if platform == domain.GatewayPlatformWhatsApp {
+		return OriginWhatsApp
+	}
+	return OriginTelegram
+}
+
 // submitTurn runs one routed turn: submit, queue on the busy guard, or
 // surface a failure. It is also the busy queue's resubmit path.
 func (s *Service) submitTurn(ctx context.Context, plan TurnPlan) {
@@ -329,7 +352,7 @@ func (s *Service) submitTurn(ctx context.Context, plan TurnPlan) {
 		SessionID:   plan.SessionID,
 		UserID:      plan.UserID,
 		Input:       plan.Input,
-		Origin:      OriginTelegram,
+		Origin:      s.runOrigin(plan.GatewayID),
 		Command:     plan.Command,
 		Attachments: plan.Attachments,
 	}
@@ -351,6 +374,16 @@ func (s *Service) submitTurn(ctx context.Context, plan TurnPlan) {
 	s.drainTurn(ctx, plan, stream)
 }
 
+// runOrigin resolves the ExecRequest origin for one gateway id: the
+// gateway's platform mapped through originFor (design D10). Unregistered
+// gateways keep OriginTelegram, the historical value.
+func (s *Service) runOrigin(gatewayID string) string {
+	if reg, ok := s.registration(gatewayID); ok {
+		return originFor(reg.platform)
+	}
+	return OriginTelegram
+}
+
 // resubmitQueued is the busy queue's resubmit callback: a queued turn goes
 // through the normal submission path, so conflict re-queues it and success
 // hands the stream to the drain.
@@ -361,7 +394,7 @@ func (s *Service) resubmitQueued(ctx context.Context, plan TurnPlan) error {
 		SessionID:   plan.SessionID,
 		UserID:      plan.UserID,
 		Input:       plan.Input,
-		Origin:      OriginTelegram,
+		Origin:      s.runOrigin(plan.GatewayID),
 		Command:     plan.Command,
 		Attachments: plan.Attachments,
 	}
@@ -391,7 +424,7 @@ func (s *Service) drainTurn(ctx context.Context, plan TurnPlan, stream *agents.E
 		SessionID:   plan.SessionID,
 		UserID:      plan.UserID,
 		Input:       plan.Input,
-		Origin:      OriginTelegram,
+		Origin:      s.runOrigin(plan.GatewayID),
 		Command:     plan.Command,
 		Attachments: plan.Attachments,
 	}
@@ -408,7 +441,14 @@ func (s *Service) drainTurn(ctx context.Context, plan TurnPlan, stream *agents.E
 			SessionID:   plan.SessionID,
 			ChatID:      plan.ChatID,
 		}
-		streamer := NewStreamer(adapter, s.outbox)
+		// The render flavor follows the gateway's platform
+		// (add-whatsapp-gateway design D9); unregistered gateways default to
+		// Telegram, the historical wire format.
+		flavor := TelegramFlavor
+		if reg, ok := s.registration(plan.GatewayID); ok {
+			flavor = platformRenderFlavor(reg.platform)
+		}
+		streamer := NewStreamer(adapter, s.outbox, WithRenderFlavor(flavor))
 		res := streamer.Stream(runCtx, session, stream)
 
 		if res.Err != nil {
@@ -444,7 +484,9 @@ func (s *Service) NotifyRunFinished(ctx context.Context, sessionID string) {
 }
 
 // reply sends a plain-text chat reply through the gateway's adapter. The
-// text is HTML-escaped (the wire format is Telegram HTML); empty text is a
+// text is rendered in the gateway platform's flavor — escaped for the
+// Telegram HTML wire, passed through for markdown flavors — and the flavor
+// tag rides the send so a misrouted adapter refuses it. Empty text is a
 // deliberate silent drop (e.g. unbound-group chatter).
 func (s *Service) reply(ctx context.Context, gatewayID, chatID, text string) {
 	if strings.TrimSpace(text) == "" {
@@ -455,7 +497,15 @@ func (s *Service) reply(ctx context.Context, gatewayID, chatID, text string) {
 		slog.Warn("gateway reply with no attached adapter", "gateway_id", gatewayID)
 		return
 	}
-	_, err := adapter.SendMessage(ctx, chatID, html.EscapeString(text), SendOptions{DisablePreview: true})
+	flavor := TelegramFlavor
+	if reg, ok := s.registration(gatewayID); ok {
+		flavor = platformRenderFlavor(reg.platform)
+	}
+	body := text
+	if flavor.Name == FlavorTelegramHTML {
+		body = html.EscapeString(text)
+	}
+	_, err := adapter.SendMessage(ctx, chatID, body, flavor.Name, SendOptions{DisablePreview: true})
 	s.RecordSendOutcome(gatewayID, err)
 	if err != nil {
 		slog.Error("gateway reply failed", "gateway_id", gatewayID, "chat_id", chatID, "err", err)

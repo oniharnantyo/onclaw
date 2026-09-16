@@ -21,8 +21,15 @@ const (
 	DefaultRunDrainWindow      = 30 * time.Second
 	DefaultSchedulerTick       = 15 * time.Second
 	DefaultSchedulerRunTimeout = 10 * time.Minute
-	DefaultHooksCommandEnabled = true
-	DefaultHooksScriptEnabled  = true
+	// DefaultHeartbeatTick / DefaultHeartbeatRunTimeout /
+	// DefaultHeartbeatConcurrency are the ambient-work defaults
+	// (add-agent-heartbeat D14): a slower claim loop than the scheduler's and
+	// half its concurrency.
+	DefaultHeartbeatTick        = 30 * time.Second
+	DefaultHeartbeatRunTimeout  = 10 * time.Minute
+	DefaultHeartbeatConcurrency = 2
+	DefaultHooksCommandEnabled  = true
+	DefaultHooksScriptEnabled   = true
 	// DefaultLangfuseSampleRate exports every traced turn; fractions sample
 	// deterministically per run (integrate-langfuse-tracing D5).
 	DefaultLangfuseSampleRate = 1.0
@@ -45,12 +52,18 @@ type Config struct {
 	RunDrainWindow         time.Duration `json:"run_drain_window"`
 	SchedulerTick          time.Duration `json:"scheduler_tick"`
 	SchedulerRunTimeout    time.Duration `json:"scheduler_run_timeout"`
+	HeartbeatTick          time.Duration `json:"heartbeat_tick"`
+	HeartbeatRunTimeout    time.Duration `json:"heartbeat_run_timeout"`
+	HeartbeatConcurrency   int           `json:"heartbeat_concurrency"`
 	HooksCommandEnabled    bool          `json:"hooks_command_enabled"`
 	HooksScriptEnabled     bool          `json:"hooks_script_enabled"`
-	LangfuseHost           string        `json:"langfuse_host,omitempty"`
-	LangfusePublicKey      string        `json:"-"`
-	LangfuseSecretKey      string        `json:"-"`
-	LangfuseSampleRate     float64       `json:"langfuse_sample_rate"`
+	// WhatsAppCloudAPIBase overrides the WhatsApp Cloud API endpoint
+	// (add-whatsapp-gateway design D10). Empty keeps graph.facebook.com.
+	WhatsAppCloudAPIBase string  `json:"whatsapp_cloud_api_base,omitempty"`
+	LangfuseHost         string  `json:"langfuse_host,omitempty"`
+	LangfusePublicKey    string  `json:"-"`
+	LangfuseSecretKey    string  `json:"-"`
+	LangfuseSampleRate   float64 `json:"langfuse_sample_rate"`
 }
 
 // WorkspaceRoot returns the derived workspace root directory: <OnClawDir>/workspaces.
@@ -145,6 +158,24 @@ func ServerFlags() []cli.Flag {
 			Usage:   "Wall-clock budget for one scheduler run before its event tap is cancelled",
 			Sources: cli.EnvVars("ONCLAW_SCHEDULER_RUN_TIMEOUT"),
 		},
+		&cli.DurationFlag{
+			Name:    "heartbeat-tick",
+			Value:   DefaultHeartbeatTick,
+			Usage:   "Heartbeat claim-loop cadence (how often due agent heartbeats are claimed and fired)",
+			Sources: cli.EnvVars("ONCLAW_HEARTBEAT_TICK"),
+		},
+		&cli.DurationFlag{
+			Name:    "heartbeat-run-timeout",
+			Value:   DefaultHeartbeatRunTimeout,
+			Usage:   "Wall-clock budget for one heartbeat tick before its event tap is cancelled",
+			Sources: cli.EnvVars("ONCLAW_HEARTBEAT_RUN_TIMEOUT"),
+		},
+		&cli.IntFlag{
+			Name:    "heartbeat-concurrency",
+			Value:   DefaultHeartbeatConcurrency,
+			Usage:   "How many heartbeat ticks may fire concurrently (ambient work stays light)",
+			Sources: cli.EnvVars("ONCLAW_HEARTBEAT_CONCURRENCY"),
+		},
 		&cli.BoolFlag{
 			Name:    "hooks-command-enabled",
 			Value:   DefaultHooksCommandEnabled,
@@ -156,6 +187,11 @@ func ServerFlags() []cli.Flag {
 			Value:   DefaultHooksScriptEnabled,
 			Usage:   "Enable the script hook handler (kill switch for script-type agent hooks)",
 			Sources: cli.EnvVars("ONCLAW_HOOKS_SCRIPT_ENABLED"),
+		},
+		&cli.StringFlag{
+			Name:    "whatsapp-cloud-api-base",
+			Usage:   "Override the WhatsApp Cloud API endpoint (tests, proxies); default is the public graph.facebook.com",
+			Sources: cli.EnvVars("ONCLAW_WHATSAPP_CLOUD_API_BASE"),
 		},
 		&cli.StringFlag{
 			Name:    "langfuse-host",
@@ -244,8 +280,12 @@ func FromServerContext(ctx context.Context, cmd *cli.Command) *Config {
 		RunDrainWindow:         cmd.Duration("run-drain-window"),
 		SchedulerTick:          cmd.Duration("scheduler-tick"),
 		SchedulerRunTimeout:    cmd.Duration("scheduler-run-timeout"),
+		HeartbeatTick:          cmd.Duration("heartbeat-tick"),
+		HeartbeatRunTimeout:    cmd.Duration("heartbeat-run-timeout"),
+		HeartbeatConcurrency:   cmd.Int("heartbeat-concurrency"),
 		HooksCommandEnabled:    cmd.Bool("hooks-command-enabled"),
 		HooksScriptEnabled:     cmd.Bool("hooks-script-enabled"),
+		WhatsAppCloudAPIBase:   cmd.String("whatsapp-cloud-api-base"),
 		LangfuseHost:           cmd.String("langfuse-host"),
 		LangfusePublicKey:      cmd.String("langfuse-public-key"),
 		LangfuseSecretKey:      cmd.String("langfuse-secret-key"),

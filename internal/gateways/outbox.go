@@ -3,6 +3,7 @@ package gateways
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -35,18 +36,71 @@ const DuplicateNoticePrefix = "⚠️ Duplicate notice: delivery was interrupted
 // OutboxPayload is the JSON body stored on an outbox entry: the chat-side
 // coordinates the delivery worker needs after a restart (the row itself
 // carries only workspace/session; platform chat coordinates live in the
-// payload, owned by the gateway service).
+// payload, owned by the gateway service). Body is platform-neutral —
+// rendered content plus the flavor tag naming its wire format
+// (add-whatsapp-gateway design D9).
 type OutboxPayload struct {
+	GatewayID      string `json:"gateway_id"`
+	ChatID         string `json:"chat_id"`
+	Body           string `json:"body"`
+	Flavor         string `json:"flavor"`
+	DisablePreview bool   `json:"disable_preview,omitempty"`
+}
+
+// outboxPayloadLegacy is the pre-rename payload shape ({\"html\": ...}) used
+// by rows written before the Body/flavor schema (add-whatsapp-gateway design
+// D9, Migration Plan step 2). Legacy rows were all Telegram HTML; the
+// startup conversion decodes them into the new shape with the
+// telegram_html flavor.
+type outboxPayloadLegacy struct {
 	GatewayID      string `json:"gateway_id"`
 	ChatID         string `json:"chat_id"`
 	HTML           string `json:"html"`
 	DisablePreview bool   `json:"disable_preview,omitempty"`
 }
 
+// decodeOutboxPayload decodes an outbox payload in the current shape,
+// converting legacy pre-rename rows ({"html": ...}) to the new Body+flavor
+// shape with FlavorTelegramHTML — the startup drain conversion (design D9
+// Migration Plan step 2). The shape is detected by key, not by zero values:
+// a genuinely empty body must not masquerade as legacy or vice versa.
+func decodeOutboxPayload(raw []byte) (OutboxPayload, error) {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return OutboxPayload{}, err
+	}
+	if _, isNew := probe["body"]; isNew {
+		var p OutboxPayload
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return OutboxPayload{}, err
+		}
+		if p.Flavor == "" {
+			// Defensive default: flavor always rides new rows, but an absent
+			// tag must not dead-letter the delivery.
+			p.Flavor = FlavorTelegramHTML
+		}
+		return p, nil
+	}
+	var legacy outboxPayloadLegacy
+	if err := json.Unmarshal(raw, &legacy); err != nil {
+		return OutboxPayload{}, err
+	}
+	return OutboxPayload{
+		GatewayID:      legacy.GatewayID,
+		ChatID:         legacy.ChatID,
+		Body:           legacy.HTML,
+		Flavor:         FlavorTelegramHTML,
+		DisablePreview: legacy.DisablePreview,
+	}, nil
+}
+
 // MessageSender is the narrow send seam the outbox delivers through
-// (PlatformAdapter satisfies it structurally).
+// (PlatformAdapter satisfies it structurally). flavor names the wire format
+// body was rendered in — the adapter refuses a flavor it does not speak, so
+// a row addressed to the wrong platform's adapter fails loudly instead of
+// being misparsed (add-whatsapp-gateway design D9).
 type MessageSender interface {
-	SendMessage(ctx context.Context, chatID, html string, opts SendOptions) (string, error)
+	SendMessage(ctx context.Context, chatID, body, flavor string, opts SendOptions) (string, error)
 }
 
 // SenderResolver resolves the send seam for one gateway id: the payload
@@ -140,14 +194,16 @@ func WithOutboxBackoff(d time.Duration) OutboxOption {
 }
 
 // Enqueue writes the delivery record before any send attempt
-// (write-before-send): the entry is born pending and due immediately. The
-// committed entry is returned so the caller can mark it delivered after its
-// own confirmed inline send (the streamer's fast path).
-func (o *Outbox) Enqueue(ctx context.Context, gatewayID, workspaceID, sessionID, chatID, html string, opts SendOptions) (*domain.OutboxEntry, error) {
+// (write-before-send): the entry is born pending and due immediately. body
+// is the rendered content in flavor's wire format (one of the Flavor* tags,
+// design D9); the committed entry is returned so the caller can mark it
+// delivered after its own confirmed inline send (the streamer's fast path).
+func (o *Outbox) Enqueue(ctx context.Context, gatewayID, workspaceID, sessionID, chatID, body, flavor string, opts SendOptions) (*domain.OutboxEntry, error) {
 	payload, err := json.Marshal(OutboxPayload{
 		GatewayID:      gatewayID,
 		ChatID:         chatID,
-		HTML:           html,
+		Body:           body,
+		Flavor:         flavor,
 		DisablePreview: opts.DisablePreview,
 	})
 	if err != nil {
@@ -196,19 +252,19 @@ func (o *Outbox) DeliverDue(ctx context.Context, now time.Time) (int, error) {
 			continue
 		}
 
-		var payload OutboxPayload
-		if err := json.Unmarshal(entry.Payload, &payload); err != nil {
+		payload, err := decodeOutboxPayload(entry.Payload)
+		if err != nil {
 			// Poison payload: undeliverable forever, never retried again.
 			slog.Error("gateway outbox: corrupt payload, marking dead", "entry", entry.ID, "error", err)
 			_ = o.outbox.MarkDead(ctx, entry.WorkspaceID, entry.ID)
 			continue
 		}
 
-		html := payload.HTML
+		body := payload.Body
 		if entry.Attempts > 1 {
 			// Ambiguous redelivery: a previous attempt was claimed and the
 			// outcome unknown (crash mid-send). Warn in the chat.
-			html = DuplicateNoticePrefix + html
+			body = DuplicateNoticePrefix + body
 		}
 
 		sender, ok := o.senders(payload.GatewayID)
@@ -225,7 +281,19 @@ func (o *Outbox) DeliverDue(ctx context.Context, now time.Time) (int, error) {
 			continue
 		}
 
-		if _, err := sender.SendMessage(ctx, payload.ChatID, html, SendOptions{DisablePreview: payload.DisablePreview}); err != nil {
+		if _, err := sender.SendMessage(ctx, payload.ChatID, body, payload.Flavor, SendOptions{DisablePreview: payload.DisablePreview}); err != nil {
+			// Permanent-delivery classification (add-whatsapp-gateway design
+			// D4): a failure that can never succeed on retry — the WhatsApp
+			// Cloud API's 24-hour window family — is dead-lettered
+			// immediately, never re-engaged. Everything else reschedules.
+			if errors.Is(err, ErrPermanentDelivery) {
+				slog.Warn("gateway outbox: permanent delivery failure, marking dead",
+					"entry", entry.ID, "attempt", entry.Attempts, "error", err)
+				if err := o.outbox.MarkDead(ctx, entry.WorkspaceID, entry.ID); err != nil {
+					slog.Warn("gateway outbox: marking dead failed", "entry", entry.ID, "error", err)
+				}
+				continue
+			}
 			after := o.rescheduleAfter(now, entry.Attempts)
 			slog.Warn("gateway outbox: delivery failed, rescheduled",
 				"entry", entry.ID, "attempt", entry.Attempts, "retry_after", after, "error", err)

@@ -11,19 +11,9 @@ import (
 
 // routerFixture reuses the service fixture's stores with a deterministic
 // pairing service.
-func TestRouterDMUsesPerUserDefaultAgent(t *testing.T) {
+func TestRouterDMRoutesToGatewayAgent(t *testing.T) {
 	f := newFixture(t)
 	f.pairUser("593821092", "onih")
-
-	beaconID := f.beacon.ID
-	link, err := f.st.GatewayLinks().GetUserLink(f.ctx, f.ws.ID, domain.GatewayPlatformTelegram, "593821092")
-	if err != nil {
-		t.Fatalf("get link: %v", err)
-	}
-	if err := f.st.GatewayLinks().SetUserLinkDefaultAgent(f.ctx, f.ws.ID, domain.GatewayPlatformTelegram, "593821092", &beaconID); err != nil {
-		t.Fatalf("set default agent: %v", err)
-	}
-	_ = link
 
 	res, err := f.router.Route(f.ctx, f.gateway, f.dmMsg("593821092", "hey"))
 	if err != nil {
@@ -32,24 +22,11 @@ func TestRouterDMUsesPerUserDefaultAgent(t *testing.T) {
 	if res.Turn == nil {
 		t.Fatalf("expected a turn, got %+v", res)
 	}
-	if res.Turn.AgentID != f.beacon.ID {
-		t.Fatalf("expected per-user agent Beacon, got %s", res.Turn.AgentID)
+	if res.Turn.AgentID != f.atlas.ID {
+		t.Fatalf("expected gateway agent Atlas, got %s", res.Turn.AgentID)
 	}
-	if res.Turn.SessionID != GatewayDMSessionKey("593821092", f.beacon.ID, 0) {
+	if res.Turn.SessionID != GatewayDMSessionKey("593821092", f.atlas.ID, 0) {
 		t.Fatalf("unexpected session key %q", res.Turn.SessionID)
-	}
-}
-
-func TestRouterDMFallsBackToGatewayDefault(t *testing.T) {
-	f := newFixture(t)
-	f.pairUser("593821092", "onih")
-
-	res, err := f.router.Route(f.ctx, f.gateway, f.dmMsg("593821092", "hey"))
-	if err != nil {
-		t.Fatalf("route: %v", err)
-	}
-	if res.Turn == nil || res.Turn.AgentID != f.atlas.ID {
-		t.Fatalf("expected gateway default agent, got %+v", res.Turn)
 	}
 }
 
@@ -85,6 +62,34 @@ func TestRouterStalePairingRefused(t *testing.T) {
 	}
 	if res.Reply == nil {
 		t.Fatalf("expected refusal hint")
+	}
+}
+
+func TestRouterGroupSecondBotSilentlyIgnored(t *testing.T) {
+	f := newFixture(t)
+	f.pairUser("593821092", "onih")
+
+	if err := f.st.GatewayBindings().CreateChatBinding(f.ctx, f.ws.ID, &domain.ChatBinding{
+		WorkspaceID:    f.ws.ID,
+		GatewayID:      "other-gateway-id",
+		Platform:       domain.GatewayPlatformTelegram,
+		PlatformChatID: "-100123",
+		AgentID:        f.atlas.ID,
+	}); err != nil {
+		t.Fatalf("bind group: %v", err)
+	}
+
+	msg := InboundMessage{
+		Platform: domain.GatewayPlatformTelegram, ChatID: "-100123", Kind: InboundGroup,
+		MessageID: "5", FromUserID: "593821092", FromUsername: "onih",
+		Text: "check the dashboard",
+	}
+	res, err := f.router.Route(f.ctx, f.gateway, msg)
+	if err != nil {
+		t.Fatalf("route: %v", err)
+	}
+	if res.Turn != nil || res.Reply == nil || res.Reply.Text != "" {
+		t.Fatalf("expected silent drop for second bot in group, got %+v", res)
 	}
 }
 
@@ -231,7 +236,7 @@ func TestRouterUsageCommand(t *testing.T) {
 	}
 }
 
-func TestRouterAgentCommandSetsPerUserChoice(t *testing.T) {
+func TestRouterAgentCommandRetiredHint(t *testing.T) {
 	f := newFixture(t)
 	f.pairUser("593821092", "onih")
 
@@ -239,25 +244,8 @@ func TestRouterAgentCommandSetsPerUserChoice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("route /agent: %v", err)
 	}
-	if res.Reply == nil || !strings.Contains(res.Reply.Text, "Beacon") {
+	if res.Reply == nil || !strings.Contains(res.Reply.Text, "The bot you message selects the agent") {
 		t.Fatalf("unexpected /agent reply: %+v", res.Reply)
-	}
-
-	link, err := f.st.GatewayLinks().GetUserLink(f.ctx, f.ws.ID, domain.GatewayPlatformTelegram, "593821092")
-	if err != nil || link == nil {
-		t.Fatalf("get link: %v %v", link, err)
-	}
-	if link.DefaultAgentID == nil || *link.DefaultAgentID != f.beacon.ID {
-		t.Fatalf("per-user default agent not stored: %+v", link.DefaultAgentID)
-	}
-
-	// Unknown agent refused.
-	res, err = f.router.Route(f.ctx, f.gateway, f.dmMsg("593821092", "/agent ghost"))
-	if err != nil {
-		t.Fatalf("route /agent: %v", err)
-	}
-	if res.Reply == nil || !strings.Contains(res.Reply.Text, "No agent named") {
-		t.Fatalf("expected unknown-agent reply, got %+v", res.Reply)
 	}
 }
 
@@ -343,5 +331,157 @@ func TestRouterAddressedCommandSuffixStripped(t *testing.T) {
 	}
 	if res.Reply == nil || !strings.Contains(res.Reply.Text, GatewayDMSessionKey("593821092", f.atlas.ID, 1)) {
 		t.Fatalf("expected /new@bot to route as /new, got %+v", res)
+	}
+}
+
+// -------------------------------------------------------------------------
+// Text-reply approval interception (add-whatsapp-gateway design D3, task
+// 2.4/2.8e): the router synthesizes a Callback from a DM while a card is
+// pending on a CanButton=false platform.
+// -------------------------------------------------------------------------
+
+// routerWithIntercept builds the fixture's router wired to an approval
+// bridge over a capability-matrix adapter.
+func routerWithIntercept(t *testing.T, f *gwFixture, canButton bool) (*Router, *ApprovalBridge) {
+	t.Helper()
+	adapter := newTestPlatformAdapterWithCaps(true, canButton)
+	submitter := &testRunSubmitter{resumeStream: agents.NewEventStream(8)}
+	bridge := NewApprovalBridge(submitter, adapter, f.st.GatewayLinks())
+	router := NewRouter(
+		f.st.Gateways(), f.st.GatewayBindings(), f.st.GatewayLinks(), f.st.Agents(),
+		f.st.Members(), f.st.Users(), nil, fakeUsageReader{},
+		WithApprovalIntercept(bridge),
+	)
+	router.pairing = f.pairing
+	return router, bridge
+}
+
+func approvalPendingSession(f *gwFixture) StreamSession {
+	return StreamSession{
+		GatewayID:   f.gateway.ID,
+		WorkspaceID: f.ws.ID,
+		SessionID:   GatewayDMSessionKey("593821092", f.atlas.ID, 0),
+		ChatID:      "593821092",
+	}
+}
+
+func TestRouterInterceptsApprovalTextReply(t *testing.T) {
+	f := newFixture(t)
+	f.pairUser("593821092", "onih")
+	router, bridge := routerWithIntercept(t, f, false)
+	if err := bridge.Present(f.ctx, approvalPendingSession(f), testExecRequest(), agents.ApprovalPayload{InterruptID: "int-7", Command: "deploy.sh"}); err != nil {
+		t.Fatalf("Present: %v", err)
+	}
+
+	cases := []struct {
+		text     string
+		approved bool
+	}{
+		{"APPROVE", true},
+		{"approve", true},
+		{"  Approve  ", true},
+		{"DENY", false},
+		{"deny", false},
+	}
+	for _, tc := range cases {
+		res, err := router.Route(f.ctx, f.gateway, f.dmMsg("593821092", tc.text))
+		if err != nil {
+			t.Fatalf("route %q: %v", tc.text, err)
+		}
+		if res.Callback == nil {
+			t.Fatalf("%q must synthesize an approval callback, got %+v", tc.text, res)
+		}
+		cb := res.Callback
+		wantData := EncodeApprovalCallback("int-7", tc.approved)
+		if cb.Data != wantData {
+			t.Fatalf("%q callback data = %q, want %q", tc.text, cb.Data, wantData)
+		}
+		if cb.Platform != domain.GatewayPlatformTelegram || cb.ChatID != "593821092" || cb.FromUserID != "593821092" {
+			t.Fatalf("callback coordinates wrong: %+v", cb)
+		}
+		if cb.MessageID != "card-101" {
+			t.Fatalf("callback must address the pending card, got message id %q", cb.MessageID)
+		}
+	}
+}
+
+func TestRouterInterceptNonMatchingTextGetsNotice(t *testing.T) {
+	f := newFixture(t)
+	f.pairUser("593821092", "onih")
+	router, bridge := routerWithIntercept(t, f, false)
+	if err := bridge.Present(f.ctx, approvalPendingSession(f), testExecRequest(), agents.ApprovalPayload{InterruptID: "int-7"}); err != nil {
+		t.Fatalf("Present: %v", err)
+	}
+
+	res, err := router.Route(f.ctx, f.gateway, f.dmMsg("593821092", "yes please do it"))
+	if err != nil {
+		t.Fatalf("route: %v", err)
+	}
+	if res.Callback != nil || res.Turn != nil {
+		t.Fatalf("non-matching text must neither decide nor mint a turn, got %+v", res)
+	}
+	if res.Reply == nil || res.Reply.Text != PendingApprovalTextReply {
+		t.Fatalf("expected the text-reply pending notice, got %+v", res.Reply)
+	}
+}
+
+func TestRouterInterceptIdleSessionRoutesNormally(t *testing.T) {
+	f := newFixture(t)
+	f.pairUser("593821092", "onih")
+	router, _ := routerWithIntercept(t, f, false)
+
+	res, err := router.Route(f.ctx, f.gateway, f.dmMsg("593821092", "APPROVE"))
+	if err != nil {
+		t.Fatalf("route: %v", err)
+	}
+	if res.Callback != nil {
+		t.Fatalf("nothing is pending: text must ride as an ordinary turn, got %+v", res.Callback)
+	}
+	if res.Turn == nil {
+		t.Fatalf("expected an ordinary turn, got %+v", res)
+	}
+}
+
+func TestRouterButtonPlatformNeverInterceptsText(t *testing.T) {
+	f := newFixture(t)
+	f.pairUser("593821092", "onih")
+	router, bridge := routerWithIntercept(t, f, true)
+	if err := bridge.Present(f.ctx, approvalPendingSession(f), testExecRequest(), agents.ApprovalPayload{InterruptID: "int-7"}); err != nil {
+		t.Fatalf("Present: %v", err)
+	}
+
+	res, err := router.Route(f.ctx, f.gateway, f.dmMsg("593821092", "APPROVE"))
+	if err != nil {
+		t.Fatalf("route: %v", err)
+	}
+	if res.Callback != nil || res.Reply != nil {
+		t.Fatalf("button platforms decide by callback, text rides as a turn: %+v", res)
+	}
+	if res.Turn == nil {
+		t.Fatalf("expected an ordinary turn, got %+v", res)
+	}
+}
+
+func TestRouterWhatsAppDMUsesWAPrefix(t *testing.T) {
+	f := newFixture(t)
+	f.pairUserWhatsApp("15551234567", "")
+
+	res, err := f.router.Route(f.ctx, f.gateway, InboundMessage{
+		Platform:   domain.GatewayPlatformWhatsApp,
+		ChatID:     "15551234567",
+		Kind:       InboundDM,
+		MessageID:  "wamid.1",
+		FromUserID: "15551234567",
+		Text:       "hello",
+	})
+	if err != nil {
+		t.Fatalf("route: %v", err)
+	}
+	if res.Turn == nil {
+		t.Fatalf("expected a turn, got %+v", res)
+	}
+	want := "wa_dm_15551234567_" + f.atlas.ID
+	if res.Turn.SessionID != want {
+		t.Fatalf("expected digits-normalized wa_dm_ session key %q, got %q", want, res.Turn.SessionID)
 	}
 }

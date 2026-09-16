@@ -11,6 +11,13 @@ import (
 )
 
 func newApprovalTestEnv(t *testing.T) (*ApprovalBridge, *testPlatformAdapter, *testRunSubmitter) {
+	return newApprovalTestEnvWithCaps(t, true, true)
+}
+
+// newApprovalTestEnvWithCaps wires the bridge to an adapter in one
+// capability-matrix cell (add-whatsapp-gateway design D2); the default env
+// is the Telegram cell.
+func newApprovalTestEnvWithCaps(t *testing.T, canEdit, canButton bool) (*ApprovalBridge, *testPlatformAdapter, *testRunSubmitter) {
 	t.Helper()
 	st := fake.New()
 	ctx := context.Background()
@@ -30,7 +37,7 @@ func newApprovalTestEnv(t *testing.T) (*ApprovalBridge, *testPlatformAdapter, *t
 		t.Fatalf("create link: %v", err)
 	}
 
-	adapter := newTestPlatformAdapter()
+	adapter := newTestPlatformAdapterWithCaps(canEdit, canButton)
 	submitter := &testRunSubmitter{resumeStream: agents.NewEventStream(8)}
 	bridge := NewApprovalBridge(submitter, adapter, st.GatewayLinks())
 	return bridge, adapter, submitter
