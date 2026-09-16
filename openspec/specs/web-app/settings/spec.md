@@ -134,11 +134,19 @@ The skills pane SHALL present the workspace skill library backed by the skills A
 - **THEN** the library and system lists render with no install, toggle, edit, or uninstall affordances
 
 ### Requirement: Tools pane (API-backed)
-The Tools pane SHALL list every tool from the workspace tools endpoint as a flat list — one row per tool with its display name, one-line description, and an enable toggle reflecting (and driving) the workspace-wide tool status; toggling requires the settings-management permission and SHALL surface guard rejections as toasts. Configurable tools SHALL additionally render a gear button opening a structured config dialog rendered from the tool's config-field schema: one labeled control per field — `secret` fields as password-style write-only inputs (existing values shown only as hints, replaced on save), `text` as inputs, `number` as numeric inputs, `boolean` as toggles, `enum` as selects fed by the schema's options — with help text and a Save action. For `web.search` the dialog SHALL additionally render a provider-stack list editor: one row per configured entry with a reorder control pair (disabled at the list bounds), a name input, a provider select fed by the registry options, the credential field that provider requires (a password-style write-only key input showing the stored last-4 hint, or a base-URL input for SearXNG), and a remove action; an Add control appends a new row, and a timeout field bounds the per-attempt request timeout. Rows in the first three positions SHALL be labeled "in rotation"; rows below SHALL render dimmed and labeled "standby", and reordering SHALL re-evaluate the labels immediately. Removing a row SHALL not persist until Save; saving SHALL submit the whole ordered list with entry ids, and a row whose credential field is left empty SHALL keep its stored credential (reorder-safe via the stable entry id). Validation failures SHALL render inline per row (empty name, missing credential for a key-requiring provider, duplicate names) and block Save. The pane SHALL NOT offer raw JSON editing for any structured value.
+The Tools pane SHALL render non-toggleable (always-on) catalog tools in a "Channel Tool" group section at the top of the pane — a section header, then one row per non-toggleable tool with its display name, one-line description, and an always-on badge where other rows carry the enable toggle ("Always on · channel runs" for Channel Post and Channel History, "Always on · facilitator only" for Close Work Session); these rows SHALL render no toggle and no gear (none is configurable), and the section SHALL reflect the endpoint payload — which reports non-toggleable tools as enabled regardless of stored rows. Every toggleable tool SHALL list as a flat list below the section — one row per tool with its display name, one-line description, and an enable toggle reflecting (and driving) the workspace-wide tool status; toggling requires the settings-management permission and SHALL surface guard rejections as toasts. Configurable tools SHALL additionally render a gear button opening a structured config dialog rendered from the tool's config-field schema: one labeled control per field — `secret` fields as password-style write-only inputs (existing values shown only as hints, replaced on save), `text` as inputs, `number` as numeric inputs, `boolean` as toggles, `enum` as selects fed by the schema's options — with help text and a Save action. For `web.search` the dialog SHALL additionally render a provider-stack list editor: one row per configured entry with a reorder control pair (disabled at the list bounds), a name input, a provider select fed by the registry options, the credential field that provider requires (a password-style write-only key input showing the stored last-4 hint, or a base-URL input for SearXNG), and a remove action; an Add control appends a new row, and a timeout field bounds the per-attempt request timeout. Rows in the first three positions SHALL be labeled "in rotation"; rows below SHALL render dimmed and labeled "standby", and reordering SHALL re-evaluate the labels immediately. Removing a row SHALL not persist until Save; saving SHALL submit the whole ordered list with entry ids, and a row whose credential field is left empty SHALL keep its stored credential (reorder-safe via the stable entry id). Validation failures SHALL render inline per row (empty name, missing credential for a key-requiring provider, duplicate names) and block Save. The pane SHALL NOT offer raw JSON editing for any structured value.
 
 #### Scenario: Flat list with toggles
 - **WHEN** a Member opens the Tools pane
-- **THEN** every catalog tool appears as a row — display name, description, toggle — with no group headings, driven by the workspace tools endpoint
+- **THEN** every toggleable catalog tool appears as a flat row — display name, description, toggle — with no group headings, driven by the workspace tools endpoint
+
+#### Scenario: Channel Tool section with always-on badges
+- **WHEN** a Member opens the Tools pane
+- **THEN** Channel Post, Channel History, and Close Work Session render under a "Channel Tool" section header above the flat list, each with its display name, description, and an always-on badge in place of a toggle, and no toggle or gear on the row
+
+#### Scenario: Badge rows ignore stale disabled state
+- **WHEN** the workspace holds a stored disabled settings row for Channel History written before the tool became non-toggleable
+- **THEN** the payload reports it enabled and the row renders the same always-on badge as the other two
 
 #### Scenario: Gear opens config dialog
 - **WHEN** the user activates the gear on "Web Search"
@@ -325,24 +333,58 @@ The agent configuration model combobox SHALL render capability icons on each mod
 - **THEN** that row shows the model name with no capability icons and no placeholder markers
 
 ### Requirement: Gateways pane
-The Gateways pane SHALL let Owners and Admins manage the workspace's Telegram gateway from the real API: connect a bot by pasting a BotFather token (write-only field, stored encrypted, shown back as a secret hint), see the resolved bot username and a connected/disabled status, set the default agent for direct messages via the agent picker, choose the transport mode (webhook URL display or long-polling), enable/disable the gateway, and manage bound Telegram groups (bind by in-chat binding command, list with the bound agent, unlink). Member-facing, the pane exposes the personal pairing flow: generate a one-time pairing token shown as a copyable `/start <token>` command with an expiry countdown, and show/unlink the current Telegram link for the signed-in member. Guard rejections (non-admin on admin actions, invalid tokens, one-binding-per-group conflicts) surface as toasts. The pane SHALL replace the mock Telegram entry in the legacy integrations list with the real surface.
+The Gateways pane SHALL present gateway platforms through a second sidebar inside the pane: a section per platform (Telegram, WhatsApp) holding one status-bearing row per gateway account, with the selected account's configuration rendered in a detail pane to the right. Each row SHALL show the platform icon, the account's identity second line (@bot_username for Telegram; the linked lane identity for WhatsApp), and a status dot drawn from a shared vocabulary — Connected, Paused, Error, Not set up (WhatsApp linked state: Linked) — kept in sync with the detail pane's status card. Each platform section SHALL offer an add affordance ("Add a bot" / "Add an account") launching the connect wizard. At widths <768px the sidebar SHALL collapse into a horizontal scrollable chip row carrying the same dots, with the detail stacked beneath; the 360×800 minimum viewport SHALL NOT overflow horizontally.
+
+The pane SHALL widen from the single `max-w-xl` column to the full settings content area (sidebar ~208px + flexing detail). Account selection SHALL be local component state; sections SHALL NOT add URL routes. The connect wizard SHALL require choosing the workspace agent the new account speaks for before it can be saved. The detail pane SHALL be per account: token (write-only, stored encrypted, shown back as a secret hint, replaceable), resolved bot username, bound agent (changeable via the agent picker), transport mode, enable/disable, status, and test message. For a WhatsApp account the detail SHALL open with a lane selection followed by lane-appropriate configuration as labeled fields (never a raw JSON textarea): the cloud lane presents access token, phone number id, app secret, and webhook verify token as write-only fields, plus the webhook callback URL and verify token to paste into the Meta dashboard and a connected status; the multi-device lane presents the pairing flow — start pairing, scan the displayed QR code or enter the displayed 8-digit pair code, live connection status, and logout — preceded by a clear account-ban risk notice. All existing management surfaces persist: bound Telegram groups (bind by in-chat binding command addressed to the owning bot, list with the bound agent and owning bot, unlink). Member-facing, each platform's detail exposes the personal pairing flow: generate a one-time pairing token shown as a copyable command with an expiry countdown, and show/unlink the current platform-wide link for the signed-in member. Guard rejections (non-admin on admin actions, invalid tokens, one-binding-per-group conflicts) surface as toasts. The pane SHALL replace the mock Telegram entry in the legacy integrations list with the real surface.
+
+#### Scenario: Sidebar lists one row per account
+- **WHEN** an admin opens the Gateways pane with two Telegram bots and one linked WhatsApp account
+- **THEN** the Telegram section lists two rows (one per bot, each with its dot and @username) and the WhatsApp section lists one Linked row
+
+#### Scenario: Add affordance starts the wizard
+- **WHEN** an admin selects "Add a bot" in the Telegram section
+- **THEN** the connect wizard opens and requires both a bot token and a workspace agent before it can save
+
+#### Scenario: Agent step is mandatory
+- **WHEN** the admin attempts to complete the connect wizard without choosing an agent
+- **THEN** the wizard refuses to save and names the agent field
+
+#### Scenario: Per-account detail and status
+- **WHEN** the admin selects one of the two Telegram rows
+- **THEN** the detail pane shows that account's token hint, bound agent, transport, enable state, and status, while the other account keeps running
+
+#### Scenario: Sidebar collapses on small viewports
+- **WHEN** the viewport is narrower than 768px
+- **THEN** the account rows render as a horizontal scrollable chip row above the stacked detail, carrying the same status dots, with no horizontal page overflow at 360px
+
+#### Scenario: Status reflects a paused account
+- **WHEN** a configured account is disabled
+- **THEN** its sidebar row dot reads Paused and the detail status card agrees
 
 #### Scenario: Admin connects a bot
-- **WHEN** an Owner pastes a valid BotFather token and saves
-- **THEN** the pane shows the gateway as connected with the bot username resolved from Telegram, and the token is never displayed again
+- **WHEN** an Owner completes the wizard with a valid BotFather token and a chosen agent
+- **THEN** the pane shows the new account row as connected with the bot username resolved from Telegram, and the token is never displayed again
+
+#### Scenario: Admin connects the WhatsApp cloud lane
+- **WHEN** an Owner selects the cloud lane for a new WhatsApp account, fills the labeled credential fields, and saves
+- **THEN** the account row shows as connected and the pane presents the webhook callback URL and verify token to paste into the Meta dashboard
+
+#### Scenario: Admin pairs a WhatsApp device
+- **WHEN** an Owner selects the multi-device lane for a WhatsApp account and starts pairing
+- **THEN** the pane shows the ban-risk notice, a QR code with an 8-digit pair code alternative, and a live connection status that settles to connected after the scan
 
 #### Scenario: Default agent picker
-- **WHEN** an admin opens the default-agent control
-- **THEN** the workspace's real agents are offered, and the saved choice drives which agent answers untargeted direct messages
+- **WHEN** an admin opens the agent control on a gateway account's detail pane
+- **THEN** the workspace's real agents are offered, and the saved choice pins that bot's direct messages to that agent
 
 #### Scenario: Group binding listed
 - **WHEN** a bound group's binding command is confirmed in Telegram
-- **THEN** the pane lists that group with its bound agent and an unlink control
+- **THEN** the pane lists that group with its bound agent and the owning bot, plus an unlink control
 
 #### Scenario: Member pairs from the pane
 - **WHEN** a signed-in member opens the pairing flow
-- **THEN** a one-time `/start <token>` command is shown with a live expiry countdown, and after pairing completes the pane shows their linked Telegram identity with an unlink control
+- **THEN** a one-time pairing command is shown with a live expiry countdown, and after pairing completes the pane shows their linked identity with an unlink control covering all workspace bots
 
 #### Scenario: Non-admin sees read-only
 - **WHEN** a Member opens the Gateways pane
-- **THEN** the admin controls (bot connection, default agent, bindings, enable/disable) are hidden or disabled, and only the personal pairing flow is offered
+- **THEN** the admin controls (account management, agent binding, transport, bindings, enable/disable) are hidden or disabled, and only the personal pairing flow is offered
