@@ -6,7 +6,7 @@ The read path for extracted memory: an intent gate that bounds retrieval cost, a
 ## Requirements
 
 ### Requirement: Intent gate
-Before composing context for a turn, the system SHALL run a bounded intent-gate classification (cheap model, hard timeout, failing open) that decides whether the turn needs deep memory and, if so, which memory buckets are relevant. A self-contained turn SHALL proceed with the always-injected documents only. A gate timeout or error SHALL be equivalent to "self-contained" — the gate is an optimization and never a correctness dependency, because the agent can always search explicitly.
+Before composing context for a turn, the system SHALL run a bounded intent-gate classification (cheap model, hard timeout, failing open) that decides whether the turn needs deep memory and, if so, which memory buckets are relevant. The gate's time budget SHALL be configurable per workspace through the memory settings record (`gate_budget_ms`, bounded to a sane range, absence = default) so deployments whose side-call model is a remote provider can afford the round trip; the shipped default SHALL be raised from 1500ms to 4000ms. A self-contained turn SHALL proceed with the always-injected documents only. A gate timeout or error SHALL be equivalent to "self-contained" — the gate is an optimization and never a correctness dependency, because the agent can always search explicitly.
 
 #### Scenario: Self-contained turn skips retrieval
 - **WHEN** a turn requires no workspace context per the gate
@@ -15,6 +15,14 @@ Before composing context for a turn, the system SHALL run a bounded intent-gate 
 #### Scenario: Gate failure fails open
 - **WHEN** the gate model times out or errors
 - **THEN** the turn proceeds immediately with the injected documents alone and the agent can still search
+
+#### Scenario: Workspace raises the gate budget
+- **WHEN** a workspace whose side-call model is a remote provider saves `gate_budget_ms` within the allowed range
+- **THEN** gate classification on subsequent turns is bounded by the configured budget instead of the default, and a classification that completes within it still prefetches
+
+#### Scenario: Out-of-range budget is rejected
+- **WHEN** the memory settings record is saved with `gate_budget_ms` outside the allowed range or of a non-integer type
+- **THEN** the save is rejected with a validation error naming the allowed range, and the previously stored budget remains in force
 
 ### Requirement: Prefetch injection
 When the gate finds a turn needs deep memory, the system SHALL retrieve a small bounded set of candidates (top-k, hard cap on injected size) from the routed buckets and inject them as cited candidates alongside the always-injected documents. Retrieved candidates SHALL carry their evidence pointers and visibility stamps.
@@ -26,6 +34,8 @@ When the gate finds a turn needs deep memory, the system SHALL retrieve a small 
 ### Requirement: Memory search tool
 Agents SHALL have exactly one read-only memory search tool exposing the notes and events stores with agent-settable filters (time window, visibility bucket, free-text query). Retrieval itself SHALL use hybrid lexical search (full-text plus trigram) and SHALL NOT require a model call. The tool SHALL be identity-bound to the executing run's workspace, user, and agent — no argument can widen what it searches. The tool SHALL NOT write under any circumstance.
 
+Multi-word free-text queries SHALL select candidates matching ANY of the query's terms rather than requiring every term, and SHALL order results best-match-first by term overlap so that top-k truncation keeps the closest matches. An exact substring match on the full query SHALL still match regardless of term overlap (verbatim identifiers, quotes). This matching semantics SHALL be uniform across every consumer of the shared search path: turn-time prefetch, the notes API free-text filter, and the search tool. Every consumer of the search tool SHALL resolve the tool call to the search tool — a model addressing the search capability SHALL never fall through to skill resolution.
+
 #### Scenario: Agent searches on demand
 - **WHEN** an agent calls the search tool with a query and a time-window filter
 - **THEN** it receives matching notes and events with provenance, without any ingestion or model side-effect
@@ -33,6 +43,22 @@ Agents SHALL have exactly one read-only memory search tool exposing the notes an
 #### Scenario: Search cannot cross identity
 - **WHEN** an agent executing for one member searches memory
 - **THEN** results exclude every other member's user-visibility rows regardless of query content
+
+#### Scenario: Partial term overlap still retrieves
+- **WHEN** a multi-word query shares only some of its terms with a stored note (e.g. the query names "payment provider billing" and the note says "billing has been migrated")
+- **THEN** the note remains in the result set, ranked by how many terms it matches, instead of being excluded for the missing terms
+
+#### Scenario: Ranking keeps the best match in top-k
+- **WHEN** a prefetch-sized candidate limit truncates the results of a multi-word query
+- **THEN** notes matching more query terms appear ahead of notes matching fewer, so the bounded injection carries the closest matches
+
+#### Scenario: Verbatim phrase still matches
+- **WHEN** the query text appears verbatim inside a note's content but its terms are not a good lexical match (e.g. an identifier or a quoted phrase)
+- **THEN** the note is still returned via the exact-substring fallback
+
+#### Scenario: Search tool resolves to the search tool
+- **WHEN** a model call addresses the memory search capability on an agent whose workspace has the memory tool enabled
+- **THEN** the call resolves to the memory search tool and returns results, never a skill-not-found error
 
 ### Requirement: Citation lock and abstention
 Answers SHALL only cite memory evidence that was actually opened during retrieval for that turn — a row merely existing in the store is not citable. When retrieval and search open nothing relevant, the agent's answer SHALL state that nothing is recorded rather than fabricating recalled content.
