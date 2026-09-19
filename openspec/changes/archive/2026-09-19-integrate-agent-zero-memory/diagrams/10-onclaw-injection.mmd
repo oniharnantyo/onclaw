@@ -1,0 +1,23 @@
+sequenceDiagram
+    autonumber
+    participant U as User<br/>(chat POST)
+    participant RUN as runner.go<br/>composeAgent + ReAct
+    participant G as Intent gate<br/>(cheap model, 1.5s max, fail-open)
+    participant STO as Postgres<br/>cores + notes + events + raw
+    participant A as Atlas<br/>(main LLM)
+
+    U->>RUN: turn arrives
+    RUN->>STO: cores injected unconditionally<br/>(USER.md + WORKSPACE.md, always)
+    RUN->>G: does this turn need deep memory?
+    alt self-contained
+        G-->>RUN: skip prefetch - cores only
+    else needs memory
+        G-->>RUN: prefetch routes
+        RUN->>STO: hybrid retrieval - max 5 cited candidates<br/>(retrieval itself is 0 LLM)
+        Note over RUN,STO: READ-ONLY - nothing written in this flow
+    end
+    RUN->>A: ReAct loop
+    A->>STO: memory.search on demand (read-only,<br/>opens raw evidence - only opened rows are citable)
+    Note over STO: empty result = honest answer<br/>"I have nothing recorded"
+    A-->>U: grounded answer, citations = source_event_id
+    Note over U,STO: this flow never saves -<br/>the only writes happen in flows 1 to 3

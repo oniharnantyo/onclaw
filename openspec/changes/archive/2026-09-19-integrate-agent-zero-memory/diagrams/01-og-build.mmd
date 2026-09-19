@@ -1,0 +1,25 @@
+sequenceDiagram
+    autonumber
+    participant MAT as Material<br/>(turns, files, connectors, agent traces)
+    participant PRE as Stage 1+2<br/>Preprocess + Index
+    participant RAW as Raw store A<br/>embedding + lexical indexes
+    participant EXT as Stage 3<br/>Extract (LLM, cheap)
+    participant STO as Stores<br/>T timeline / D HDM / G graph
+    participant CUR as Curator<br/>(human)
+
+    MAT->>PRE: artifact lands (any time - no schedule)
+    Note over PRE: normalize - type-tag (chat, file, agent)<br/>type-specific segmentation
+    PRE-->>MAT: noise / small talk dropped - never reaches a store
+
+    PRE->>RAW: store raw chunk (THE evidence anchor)
+    PRE->>RAW: embed (pgvector 3072-d cosine) + BM25 / fuzzy trigram
+    Note over RAW: raw is indexed and retrievable BEFORE any LLM runs -<br/>nothing is unrecoverable if extraction errs
+
+    PRE->>EXT: classified units
+    Note over EXT: EXTRACT (LLM)
+    EXT->>STO: events (what, when, source) - APPEND to T timeline<br/>(accumulate, never replace)
+    Note over EXT,CUR: HDM lane is NOT extraction - deterministic<br/>level-map, "cannot invent or drift"
+    CUR->>STO: curated notes => deterministic L0/L1/L2 map => D HDM (no LLM)
+    Note over EXT,STO: provenance p(x) stamped on EVERY row at birth:<br/>origin in (scan, infer, doc, dialogue, manual),<br/>immutable timestamp, evidence pointer => raw store
+    Note over EXT,STO: Stage 4 - Connect (agentic loop)
+    EXT->>STO: resolve entities across T + D => G nodes + entity-event edges

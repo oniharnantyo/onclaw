@@ -1,0 +1,19 @@
+sequenceDiagram
+    autonumber
+    participant SRC as Sources<br/>chats (session_events), files (attachments),<br/>connectors (MCP, gateways)
+    participant W as internal/memory worker<br/>(incremental, background, off hot path)
+    participant LLM as Cheap model<br/>(providers registry, Langfuse-traced)
+    participant DB as Postgres - three parallel memories<br/>memory_events, memory_notes,<br/>memory_entities + memory_edges
+    participant ED as Curator - human<br/>(workspace memory UI)
+
+    SRC->>W: new material lands
+    Note over W: 1. PREPROCESS - classify chats / files / sessions<br/>noise dropped before it costs anything
+    W->>DB: 2. INDEX - embedding (pgvector when provider exists)<br/>+ lexical (tsvector, trigram) - raw rows stay the evidence layer
+    W->>LLM: 3. EXTRACT - by LLM (per the figure)
+    LLM-->>W: events + HDM candidate facts
+    W->>DB: APPEND memory_events - episodic, one merged timeline<br/>provenance at birth: origin, event_time, learned_at, source_event_id
+    W->>DB: UPSERT memory_notes - HDM, semantic, citation-locked<br/>same provenance stamping
+    Note over W,DB: 4. CONNECT - agentic pass
+    W->>DB: entity-event graph - people, projects, events linked<br/>memory_entities + memory_edges
+    ED->>DB: curate HDM - pin, edit, promote (origin=MANUAL)
+    Note over DB: updates = new belief rows - never overwrite

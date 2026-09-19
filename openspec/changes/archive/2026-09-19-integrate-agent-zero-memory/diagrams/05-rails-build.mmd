@@ -1,0 +1,22 @@
+sequenceDiagram
+    autonumber
+    participant RUN as runner.go<br/>(run finishes)
+    participant W as internal/memory worker<br/>(queue, incremental)
+    participant SE as Postgres<br/>session_events + attachments<br/>(= raw evidence A)
+    participant LLM as Cheap model<br/>(providers registry, Langfuse-traced)
+    participant STO as Postgres<br/>memory_events - memory_notes<br/>- entities/edges (wave 3)
+    participant ED as Memory editor<br/>PUT handlers/memory.go<br/>(human curator)
+
+    RUN->>W: enqueue run's session for distillation<br/>(background, off hot path)
+    W->>SE: load new events since cursor
+    Note over W,SE: Stage 1 - classify turns / tool outputs / files<br/>trivial material dropped
+    W->>SE: write lexical index (tsvector + trigram)<br/>(pgvector when embedding provider exists)
+    Note over SE: raw stays indexed and retrievable -<br/>extraction errors lose nothing
+    W->>LLM: distill classified units
+    LLM-->>W: events (what, when, participants, source)
+    W->>STO: INSERT memory_events<br/>origin, event_time, learned_at, source_event_id
+    Note over ED,STO: HDM lane - deterministic, NOT LLM:<br/>human-curated docs via editor PUT<br/>-> memory_notes L0/L1/L2 in 6 categories
+    ED->>STO: curated notes => level-mapped D entries<br/>(provenance: origin=manual)
+    Note over W,STO: Stage 4 - Connect (agentic loop, wave 3)
+    W->>STO: resolve entities => memory_entities / memory_edges
+    Note over W,STO: every row born with provenance - <br/>updates = new belief rows (supersede), never overwrite

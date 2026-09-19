@@ -1,0 +1,33 @@
+sequenceDiagram
+    autonumber
+    participant Q as Query / turn
+    participant G as Intent gate<br/>(small LLM)
+    participant R as Source router
+    participant SA as Search agents x3<br/>(concurrent LLM tool-loops)
+    participant S as Stores T G D<br/>+ raw A
+    participant I as Integrator (LLM)
+
+    Q->>G: user query
+    alt self-contained
+        G-->>Q: pass straight through - zero added latency
+    else needs memory
+        G->>R: route (restrict which stores may be touched)
+        R->>SA: dispatch
+        par timeline search
+            SA->>S: hybrid retrieval (embedding + lexical, RRF k=60),<br/>filters: time window / tag / source / speaker
+            SA->>S: open raw chunks in A on demand
+        and graph search
+            SA->>S: walk entity-event edges in G
+            SA->>S: open raw chunks on demand
+        and documentary search
+            SA->>S: hybrid retrieval over D HDM
+            SA->>S: open L2 full text on demand
+        end
+        Note over SA,S: rerank SKIPPED for temporal queries<br/>O = the set of evidence actually OPENED
+        SA->>I: per-store grounded results + O
+        alt O is empty
+            I-->>Q: ABSTAIN - "I don't know" (citation lock: C subset of O)
+        else
+            I-->>Q: ONE merged answer, citations C subset of O,<br/>single confidence score
+        end
+    end

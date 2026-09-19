@@ -1,0 +1,9 @@
+sequenceDiagram
+    autonumber
+    participant WM as Working memory<br/>(live session)
+    participant SUM as Summarizer (LLM)
+    participant EXP as Experiential store<br/>(org-shared)
+
+    WM->>SUM: task ends with a lesson
+    SUM->>EXP: summarized lesson, tied to surrounding events
+    Note over EXP: surfaced later when a similar task appears -<br/>one agent's lesson teaches all

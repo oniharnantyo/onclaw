@@ -1,0 +1,9 @@
+sequenceDiagram
+    autonumber
+    participant MAT as New material<br/>(we migrated to Midtrans)
+    participant B as Build pipeline<br/>(stages 1-3)
+    participant S as Stores
+
+    MAT->>B: arrives, indexed, distilled
+    B->>S: NEW belief row: (Midtrans = invoice provider,<br/>t = now, supersedes: [old row], evidence: today's chunk)
+    Note over S: old row untouched - "a correction updates belief<br/>without erasing what was held"<br/>current-state queries read latest,<br/>what-changed queries read both

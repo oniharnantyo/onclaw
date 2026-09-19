@@ -1,0 +1,17 @@
+sequenceDiagram
+    autonumber
+    participant X as New fact arrives<br/>(Midtrans replaced Stripe)
+    participant G as Curation gate<br/>(turn end)
+    participant DB as Notes store
+    participant H as Version history<br/>(core .md writes)
+
+    X->>G: extracted at turn end
+    G->>DB: dedupe search finds the Stripe note
+    G->>DB: NEW row - Midtrans, supersedes=[Stripe],<br/>old note and evidence preserved
+    Note over DB: nothing overwritten - current-state reads latest,<br/>what-changed reads both
+
+    alt new fact contradicts a core .md line
+        G->>H: never overwrites the free zone -<br/>conflict flag to the morning report
+    else a writer modifies a core .md
+        X->>H: new version-history row - old doc preserved,<br/>origin AGENT or HUMAN, revertable
+    end

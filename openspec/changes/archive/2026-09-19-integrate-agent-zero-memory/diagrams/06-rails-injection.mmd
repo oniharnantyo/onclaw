@@ -1,0 +1,28 @@
+sequenceDiagram
+    autonumber
+    participant U as Sari / Budi<br/>(chat POST)
+    participant RUN as runner.go<br/>composeAgent + ReAct
+    participant G as Intent gate<br/>(cheap model, 1.5s max, fail-open)
+    participant MS as memory tool<br/>(search fan-out)
+    participant STO as Postgres<br/>hybrid indexes over<br/>events + notes + raw
+    participant A as Atlas<br/>(eino ChatModelAgent)
+
+    U->>RUN: turn arrives
+    RUN->>RUN: compose working memory (transcript + cores)
+    RUN->>G: "does this turn need deep memory? which stores?"
+    alt self-contained
+        G-->>RUN: pass-through - zero added latency
+        RUN->>A: ReAct with working memory only
+    else needs memory
+        G-->>RUN: route: which of (timeline, graph, HDM)
+        RUN->>MS: 3 concurrent agentic searches<br/>(LLM tool-loops, agent-set filters:<br/>time window / tag / source / speaker)
+        MS->>STO: hybrid retrieval (embedding + lexical, RRF k=60)<br/>temporal queries: rerank skipped
+        MS->>STO: OPEN raw session_events on demand<br/>(only opened rows become citable)
+        MS-->>RUN: grounded candidates + opened set O
+        alt O empty
+            RUN->>A: inject nothing - agent may still search itself - <br/>OG abstention = no fabricated context
+        else
+            RUN->>A: inject candidates, each citation = source_event_id,<br/>single confidence, C subset of O
+        end
+        A-->>U: grounded answer -  every claim traceable to an event id
+    end

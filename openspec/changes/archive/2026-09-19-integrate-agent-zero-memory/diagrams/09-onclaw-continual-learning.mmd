@@ -1,0 +1,19 @@
+sequenceDiagram
+    autonumber
+    participant WM as Working memory<br/>(live session)
+    participant A as Atlas<br/>(main LLM)
+    participant MD as Core .md<br/>USER.md / WORKSPACE.md
+    participant BUF as Daily log<br/>MEMORY-TODAY.md
+    participant C as Nightly consolidator<br/>(cheap LLM)
+    participant DB as Notes store
+
+    Note over WM,MD: immediate lane - the agent teaches ITSELF
+    WM->>A: lesson learned mid-turn
+    A->>MD: memory.modify - write-through in the same turn
+    A->>BUF: memory.append - raw capture
+
+    Note over BUF,MD: org-shared lane - nightly lift
+    C->>DB: drain buffers, merge cross-session patterns<br/>(invoice issues in 3 separate chats)
+    C->>DB: fold canonical notes into topics
+    C->>MD: compile pipeline zone (Consolidated insights),<br/>origin=PIPELINE, budget-capped, as-of stamped
+    Note over MD: visible to EVERY agent in the workspace -<br/>one agent's lesson teaches all

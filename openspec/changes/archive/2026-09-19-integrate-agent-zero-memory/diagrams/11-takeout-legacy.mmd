@@ -1,0 +1,13 @@
+sequenceDiagram
+    autonumber
+    participant OLD as Legacy memory - RETIRED<br/>MemoryStore 3 scopes, memory tool read/append,<br/>USER.md / WORKSPACE.md / MEMORY-DD-MM-YYYY.md
+    participant MIG as One-time migration
+    participant DB as Postgres - new three memories<br/>memory_events / memory_notes /<br/>memory_entities + memory_edges
+    participant RUN as runner.go - new bindings
+
+    Note over OLD: taken out of the runtime -<br/>no .md scopes, no read/append tool, no daily logs
+    OLD->>MIG: existing USER.md + WORKSPACE.md content
+    MIG->>DB: seed memory_notes as origin=MANUAL entries<br/>(human-curated words keep highest trust)
+    OLD->>MIG: daily-log history (append-only raw)
+    MIG->>DB: kept as raw capture history - the evidence layer
+    RUN->>DB: runtime binds only to the new stores -<br/>old memory tool replaced by memory.search

@@ -1,0 +1,39 @@
+sequenceDiagram
+    autonumber
+    participant U as User query<br/>(what did I do last week?)
+    participant RUN as runner.go<br/>composeAgent + ReAct
+    participant G as Intent gate (cheap LLM)<br/>retrieve? which kind?
+    participant R as Source router<br/>select memory buckets
+    participant S1 as Timeline search<br/>(memory_events)
+    participant S2 as Graph search<br/>(memory_entities / edges)
+    participant S3 as HDM search<br/>(memory_notes)
+    participant I as Integrate + cite<br/>(merge, union citations)
+    participant A as Atlas<br/>(main LLM)
+
+    U->>RUN: turn arrives
+    RUN->>G: classify this turn
+    alt no retrieval needed
+        G-->>RUN: pass through - zero added latency
+        RUN->>A: ReAct on working memory alone
+    else retrieval needed
+        G->>R: pick buckets
+        R->>S1: dispatch
+        R->>S2: dispatch
+        R->>S3: dispatch
+        Note over S1,S3: 3 concurrent agentic searches - one per memory<br/>dense + lexical rerank, filters, read on demand
+        par episodic - memory_events
+            S1->>S1: dense + lexical with time-window filter
+        and associative - entity graph
+            S2->>S2: seed match => relation traversal
+        and semantic - HDM
+            S3->>S3: read ladder L0 => L1 => L2, capped opens
+        end
+        S1->>I: grounded hits + opened evidence
+        S2->>I: grounded hits + opened evidence
+        S3->>I: grounded hits + opened evidence
+        I->>I: merge - union citations - one confidence score
+        Note over I: citation lock - only opened evidence citable<br/>nothing opened = abstain
+        I-->>RUN: grounded context, cited
+        RUN->>A: ReAct with grounded context
+        A-->>U: grounded answer + confidence + citations
+    end

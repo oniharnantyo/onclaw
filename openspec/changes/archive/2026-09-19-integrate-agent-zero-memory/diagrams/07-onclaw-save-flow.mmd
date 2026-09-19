@@ -1,0 +1,27 @@
+sequenceDiagram
+    autonumber
+    participant SRC as Sources<br/>(turns, session end, agent, human)
+    participant W as internal/memory worker<br/>(async, fail-soft)
+    participant G as Curation gate<br/>(cheap LLM, Langfuse-traced)
+    participant GI as Gister<br/>(cheap LLM)
+    participant DB as Postgres<br/>session_events / memory_notes /<br/>memory_events (+ lexical index)
+    participant MD as Core .md<br/>USER.md / WORKSPACE.md
+
+    Note over SRC,DB: WRITE POINT 1 - raw capture (exists today, synchronous)
+    SRC->>DB: every turn and tool call appended to session_events instantly
+
+    Note over SRC,DB: WRITE POINT 2 - extraction (turn end, async)
+    W->>G: distill turn against existing similar notes
+    G-->>W: ops ADD / UPDATE / SUPERSEDE / NOOP<br/>each with origin, event_time, learned_at, source_event_id
+    W->>DB: INSERT memory_notes + write lexical index (tsvector, trigram)
+
+    Note over SRC,DB: WRITE POINT 3 - gister (session end, async)
+    W->>GI: gist this session
+    GI-->>W: gist, outcome, participants
+    W->>DB: INSERT memory_events
+
+    Note over SRC,MD: WRITE POINT 4 - agent self-edit (mid-turn, write-through)
+    SRC->>MD: memory.modify - hooks check, since-read guard,<br/>version-history row, origin=AGENT
+
+    Note over SRC,MD: WRITE POINT 5 - human edit (editor, write-through)
+    SRC->>MD: editor PUT - origin=HUMAN, version-history row
