@@ -39,6 +39,8 @@ type Store interface {
 	Providers() ProviderStore
 	Agents() AgentStore
 	Memories() MemoryStore
+	MemoryEvents() MemoryEventStore
+	MemoryNotes() MemoryNoteStore
 	SessionEvents() SessionEventStore
 	SessionCheckpoints() SessionCheckpointStore
 	APIKeys() WorkspaceAPIKeyStore
@@ -54,6 +56,7 @@ type Store interface {
 	WorkspaceStorage() WorkspaceStorageStore
 	Schedulers() SchedulerStore
 	Heartbeats() HeartbeatStore
+	MemoryReports() MemoryReportStore
 	Gateways() GatewayStore
 	GatewayBindings() GatewayBindings
 	GatewayLinks() GatewayLinks
@@ -116,10 +119,9 @@ type AgentStore interface {
 	SweepGenerating(ctx context.Context, errMsg string) (int64, error)
 }
 
-// MemoryStore manages the three agent-memory scopes: user memory (one doc per
-// workspace+user), shared workspace memory (one doc per workspace), and agent
-// daily memory (one doc per workspace+agent+date). All operations are
-// workspace-scoped by their arguments.
+// MemoryStore manages the two agent-memory documents: user memory (USER.md —
+// one doc per workspace+user) and shared workspace memory (WORKSPACE.md — one
+// doc per workspace). All operations are workspace-scoped by their arguments.
 //
 // Get methods return (nil, nil) when no memory is stored — absence is a normal
 // state, not an error. Upsert* REPLACES the stored content (HTTP PUT
@@ -134,9 +136,168 @@ type MemoryStore interface {
 	WorkspaceMemory(ctx context.Context, workspaceID string) (*domain.Memory, error)
 	UpsertWorkspaceMemory(ctx context.Context, workspaceID, content string) error
 	AppendWorkspaceMemory(ctx context.Context, workspaceID, content string) error
-	AgentDailyMemory(ctx context.Context, workspaceID, agentID string, date time.Time) (*domain.Memory, error)
-	UpsertAgentDailyMemory(ctx context.Context, workspaceID, agentID string, date time.Time, content string) error
-	AppendAgentDailyMemory(ctx context.Context, workspaceID, agentID string, date time.Time, content string) error
+}
+
+// MemoryTimeWindow bounds a memory read to rows whose event_time — when the
+// fact was true — falls inside [From, To). Zero fields are open ends.
+type MemoryTimeWindow struct {
+	From time.Time
+	To   time.Time
+}
+
+// MemoryEventFilters narrows episodic-gist reads. Zero-value fields mean "no
+// filter"; Limit <= 0 means "no limit" (the LoadSessionEventsParams
+// convention). Tombstoned events are never returned, with or without filters.
+type MemoryEventFilters struct {
+	SessionID  string
+	AgentID    string
+	Visibility domain.MemoryVisibility
+	TimeWindow *MemoryTimeWindow
+	Limit      int
+}
+
+// MemoryNoteFilters narrows curated-note reads. Zero-value fields mean "no
+// filter"; Limit <= 0 means "no limit". History widens a listing past the
+// current-state view to include superseded rows — the what-changed view
+// (integrate-agent-zero-memory D6); tombstoned rows are hidden from every
+// read path and no flag overrides that.
+type MemoryNoteFilters struct {
+	Visibility domain.MemoryVisibility
+	Topic      string
+	TimeWindow *MemoryTimeWindow
+	History    bool
+	Limit      int
+}
+
+// MemoryEventStore manages the episodic gist timeline (D3): one row per
+// processed window of a session, written by the background gister.
+//
+// Every read is scope-filtered twice: by workspaceID (the tenant partition —
+// no query runs without it) and by caller identity (viewerUserID +
+// servingAgentID) computing visible = shared rows ∪ the viewer's own
+// user-visibility rows ∪ the serving agent's agent-visibility rows
+// structurally in the query, never by post-filtering (D4, D8). An empty
+// viewerUserID or servingAgentID simply contributes no rows of that tier.
+//
+// Absence conventions mirror MemoryStore: LatestEventForSession returns
+// (nil, nil) when the session has no gist yet, and mutations on rows that are
+// absent or already tombstoned return domain.ErrNotFound (a tombstoned row is
+// indistinguishable from an absent one — no existence leak). Writes validate
+// the provenance birth tuple and owner shape via the domain layer (D5) and
+// are rejected with wrapped sentinels.
+type MemoryEventStore interface {
+	// InsertEvent appends one gist row, assigning ID when empty.
+	InsertEvent(ctx context.Context, event *domain.MemoryEvent) error
+	// LatestEventForSession returns the newest non-tombstoned gist for the
+	// gister's incremental window cursor; (nil, nil) when none.
+	LatestEventForSession(ctx context.Context, workspaceID, sessionID string) (*domain.MemoryEvent, error)
+	// ListEventsForUI returns the caller-visible timeline, newest first.
+	ListEventsForUI(ctx context.Context, workspaceID, viewerUserID, servingAgentID string, filters MemoryEventFilters) ([]domain.MemoryEvent, error)
+	// SearchEvents runs the hybrid lexical search (tsvector OR trigram, D9)
+	// over description + outcome within the caller's visible set. An empty
+	// query is invalid input.
+	SearchEvents(ctx context.Context, workspaceID, viewerUserID, servingAgentID, query string, filters MemoryEventFilters) ([]domain.MemoryEvent, error)
+	// TombstoneEvent sets tombstoned_at, hiding the gist from every read
+	// path (D6). Absent or already-tombstoned rows return domain.ErrNotFound.
+	TombstoneEvent(ctx context.Context, workspaceID, id string) error
+	// CountByVisibility returns the non-tombstoned per-turn gist counts by
+	// visibility tier — the chip's breakdown, never content. The map is
+	// empty when nothing was stored for the turn.
+	CountByVisibility(ctx context.Context, workspaceID, sessionID, turnID string) (map[domain.MemoryVisibility]int, error)
+}
+
+// MemoryNoteStore manages the curated semantic fact store: gate-extracted
+// facts with provenance stamped at birth, supersede chains, tombstones, and
+// audited human promotion.
+//
+// Scope-filtering follows MemoryEventStore: workspaceID partition plus the
+// structural visible = shared ∪ own-user ∪ serving-agent predicate on every
+// read. Absence conventions also match: GetNote returns (nil, nil) for
+// unknown, foreign-visible, or tombstoned notes, and single-row mutations on
+// such notes return domain.ErrNotFound. All writes validate the provenance
+// birth tuple via the domain layer (D5); note writes additionally enforce the
+// caller-supplied visibility ceiling (D4) — the store is the last line of
+// defense behind the gate's own op validation.
+type MemoryNoteStore interface {
+	// InsertNote stores one fact, assigning ID when empty. The ceiling must
+	// dominate the note's proposed visibility (wrapped
+	// domain.ErrMemoryVisibilityExceeded otherwise).
+	InsertNote(ctx context.Context, note *domain.MemoryNote, ceiling domain.MemoryVisibility) error
+	// SupersedeNote atomically inserts note as the correction of oldID and
+	// stamps oldID.superseded_by with the new row's ID in one statement
+	// (D6 — nothing is overwritten, history stays answerable). The old note
+	// must exist, be visible-scope-clean (not tombstoned), and not already
+	// superseded: the first two cases return domain.ErrNotFound, the last
+	// domain.ErrConflict. The returned note carries Supersedes = oldID.
+	SupersedeNote(ctx context.Context, workspaceID, oldID string, note *domain.MemoryNote, ceiling domain.MemoryVisibility) error
+	// TombstoneNote sets tombstoned_at, hiding the note from every read path
+	// (D6). Absent or already-tombstoned notes return domain.ErrNotFound.
+	TombstoneNote(ctx context.Context, workspaceID, id string) error
+	// PromoteNote widens a note to shared — the only widening path, human
+	// initiated and audited via promoted_by/promoted_at (D4). The promoting
+	// user must be named. Absent, tombstoned, or superseded notes return
+	// domain.ErrNotFound; already-shared notes return domain.ErrConflict.
+	PromoteNote(ctx context.Context, workspaceID, id, promotedByUserID string) error
+	// GetNote returns the note by ID within the caller's visible set;
+	// (nil, nil) when no such visible non-tombstoned note exists. Superseded
+	// notes are returned — history stays queryable (D6).
+	GetNote(ctx context.Context, workspaceID, viewerUserID, servingAgentID, id string) (*domain.MemoryNote, error)
+	// ListNotesForUI returns the caller-visible notes, pinned first then
+	// newest-learned. Default lists carry the current state only; History
+	// adds superseded rows. Tombstoned rows never appear.
+	ListNotesForUI(ctx context.Context, workspaceID, viewerUserID, servingAgentID string, filters MemoryNoteFilters) ([]domain.MemoryNote, error)
+	// SearchNotes runs the hybrid lexical search (tsvector OR trigram, D9)
+	// over content within the caller's visible set, current-state only
+	// (superseded notes are dead for retrieval). An empty query is invalid
+	// input.
+	SearchNotes(ctx context.Context, workspaceID, viewerUserID, servingAgentID, query string, filters MemoryNoteFilters) ([]domain.MemoryNote, error)
+	// CountSimilar returns how many current, caller-visible notes exceed the
+	// trigram-similarity threshold (0..1) against content — the dedupe
+	// candidate count the gate decides ADD vs SUPERSEDE against.
+	CountSimilar(ctx context.Context, workspaceID, viewerUserID, servingAgentID, content string, threshold float64) (int, error)
+	// CountByVisibility returns the workspace's non-tombstoned note counts
+	// by visibility tier — aggregate counters for the memory UI, never
+	// content. The map is empty when no notes exist.
+	CountByVisibility(ctx context.Context, workspaceID string) (map[domain.MemoryVisibility]int, error)
+	// SupersedeInto stamps an existing note as superseded BY another
+	// existing current note (D6): the canonical survivor of a consolidation
+	// cluster stays exactly as it is and every folded duplicate gains
+	// superseded_by = intoID in one statement — nothing is inserted,
+	// overwritten, or deleted, so history stays answerable. Both notes must
+	// belong to the workspace; old == into is domain.ErrInvalid; a missing,
+	// tombstoned, or already-superseded survivor returns domain.ErrNotFound;
+	// a duplicate that is missing, tombstoned, or already superseded returns
+	// domain.ErrNotFound / domain.ErrConflict like SupersedeNote.
+	SupersedeInto(ctx context.Context, workspaceID, oldID, intoID string) error
+	// SetNoteTopic labels one current note for the topic fold (D12). The
+	// note must exist in the workspace and be live (not tombstoned, not
+	// superseded) — otherwise domain.ErrNotFound; an empty or blank topic is
+	// domain.ErrInvalid.
+	SetNoteTopic(ctx context.Context, workspaceID, noteID, topic string) error
+	// AddNoteEvidence links additional raw-event evidence on a note (D12's
+	// multi-evidence): one memory_note_evidence row per source event id,
+	// idempotent per (note, source event) — re-adding an existing link is a
+	// no-op, and added_at keeps the first link's timestamp. Empty ids are
+	// skipped; an absent or tombstoned note returns domain.ErrNotFound.
+	AddNoteEvidence(ctx context.Context, workspaceID, noteID string, sourceEventIDs []string) error
+	// ListNoteEvidence returns the note's multi-evidence links, oldest link
+	// first. Absent or tombstoned notes return an empty slice — the caller
+	// decides whether a missing note is an error; unknown links are simply
+	// absent. The workspace partition scopes the read.
+	ListNoteEvidence(ctx context.Context, workspaceID, noteID string) ([]domain.MemoryNoteEvidence, error)
+}
+
+// MemoryReportStore manages the per-workspace last morning report (D12):
+// the consolidator saves one report per pass and the Memory pane reads the
+// latest back. One row per workspace — Save replaces the previous report.
+// Like MemoryStore, absence is a normal state: Get returns (nil, nil) when
+// the workspace has no report yet.
+type MemoryReportStore interface {
+	// Save stores report (the marshaled MorningReport JSON, persisted
+	// verbatim) as the workspace's last report, replacing any previous one.
+	Save(ctx context.Context, workspaceID string, report []byte, generatedAt time.Time) error
+	// Get returns the workspace's last report; (nil, nil) when none.
+	Get(ctx context.Context, workspaceID string) (*domain.MemoryReport, error)
 }
 
 // LoadSessionEventsParams configures query parameters for loading session events.

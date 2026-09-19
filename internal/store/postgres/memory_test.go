@@ -7,7 +7,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/store"
@@ -192,89 +191,5 @@ func TestIntegration_MemoryStore_WorkspaceMemory(t *testing.T) {
 	// Unknown workspace returns ErrNotFound.
 	if err := mem.UpsertWorkspaceMemory(ctx, "00000000-0000-0000-0000-000000000000", "x"); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound for unknown workspace, got %v", err)
-	}
-}
-
-func TestIntegration_MemoryStore_AgentDailyMemory(t *testing.T) {
-	s, _, ctx := setupTestSchema(t)
-
-	ws1, _, a1 := seedMemoryFixtures(t, s, "pg-mem-daily-ws1", "pg-mem-d1@example.com", "atlas")
-	ws2, _, a2 := seedMemoryFixtures(t, s, "pg-mem-daily-ws2", "pg-mem-d2@example.com", "beacon")
-	mem := s.Memories()
-
-	day := time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC)
-	nextDay := time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)
-
-	// Get-absent returns (nil, nil).
-	got, err := mem.AgentDailyMemory(ctx, ws1, a1, day)
-	if err != nil || got != nil {
-		t.Fatalf("expected (nil, nil) for absent daily memory, got (%v, %v)", got, err)
-	}
-
-	// Two appends land in order in the single document for that day.
-	if err := mem.AppendAgentDailyMemory(ctx, ws1, a1, day, "Morning: triaged incidents."); err != nil {
-		t.Fatalf("unexpected AppendAgentDailyMemory error: %v", err)
-	}
-	if err := mem.AppendAgentDailyMemory(ctx, ws1, a1, day, " Afternoon: wrote postmortem."); err != nil {
-		t.Fatalf("unexpected second AppendAgentDailyMemory error: %v", err)
-	}
-	got, err = mem.AgentDailyMemory(ctx, ws1, a1, day)
-	if err != nil || got == nil {
-		t.Fatalf("expected daily memory, got (%v, %v)", got, err)
-	}
-	if got.Content != "Morning: triaged incidents. Afternoon: wrote postmortem." {
-		t.Fatalf("expected ordered concatenation, got %q", got.Content)
-	}
-
-	// Upsert REPLACES the day's document in place (one doc per day).
-	if err := mem.UpsertAgentDailyMemory(ctx, ws1, a1, day, "Rewritten summary."); err != nil {
-		t.Fatalf("unexpected UpsertAgentDailyMemory error: %v", err)
-	}
-	got, _ = mem.AgentDailyMemory(ctx, ws1, a1, day)
-	if got.Content != "Rewritten summary." {
-		t.Fatalf("expected replaced daily content, got %q", got.Content)
-	}
-
-	// A different date is a separate document.
-	got, _ = mem.AgentDailyMemory(ctx, ws1, a1, nextDay)
-	if got != nil {
-		t.Fatalf("expected nil memory for other day, got %q", got.Content)
-	}
-
-	// Scope isolation: other agent and other workspace see nothing.
-	got, _ = mem.AgentDailyMemory(ctx, ws1, a2, day)
-	if got != nil {
-		t.Fatalf("expected nil memory for other agent, got %q", got.Content)
-	}
-	got, _ = mem.AgentDailyMemory(ctx, ws2, a1, day)
-	if got != nil {
-		t.Fatalf("expected nil memory for other workspace, got %q", got.Content)
-	}
-
-	// Data-layer hardening: a daily row addressed across workspaces (right
-	// agent, wrong workspace) is unwritable via the composite FK.
-	if err := mem.AppendAgentDailyMemory(ctx, ws1, a2, day, "cross-tenant"); !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("expected ErrNotFound for cross-workspace daily append, got %v", err)
-	}
-
-	// Cap rejection on Upsert and Append (sentinel error).
-	over := strings.Repeat("a", domain.MaxMemoryContentChars+1)
-	if err := mem.UpsertAgentDailyMemory(ctx, ws1, a1, day, over); !errors.Is(err, domain.ErrMemoryCapExceeded) {
-		t.Fatalf("expected ErrMemoryCapExceeded on over-cap upsert, got %v", err)
-	}
-	if err := mem.UpsertAgentDailyMemory(ctx, ws2, a2, day, strings.Repeat("b", domain.MaxMemoryContentChars-5)); err != nil {
-		t.Fatalf("unexpected fill upsert error: %v", err)
-	}
-	if err := mem.AppendAgentDailyMemory(ctx, ws2, a2, day, strings.Repeat("c", 10)); !errors.Is(err, domain.ErrMemoryCapExceeded) {
-		t.Fatalf("expected ErrMemoryCapExceeded on over-cap append, got %v", err)
-	}
-
-	// Daily memories die with the agent (ON DELETE CASCADE).
-	if err := s.Agents().Delete(ctx, ws1, a1); err != nil {
-		t.Fatalf("unexpected Delete agent error: %v", err)
-	}
-	got, _ = mem.AgentDailyMemory(ctx, ws1, a1, day)
-	if got != nil {
-		t.Fatalf("expected daily memory to cascade-delete with agent, got %q", got.Content)
 	}
 }

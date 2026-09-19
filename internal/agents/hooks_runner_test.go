@@ -137,9 +137,12 @@ func setupHooksRunnerWithOpts(t *testing.T, tools []string, mdl *hooksModel, opt
 	}
 
 	onClawDir := t.TempDir()
+	memWorker, memSearch, memGate := newTestMemoryPipeline(st)
 	runner := NewRunner(
 		st.Workspaces(), st.Agents(), st.Users(), st.Members(), st.Roles(),
 		st.Providers(), st.SessionEvents(), st.SessionCheckpoints(), st.Memories(), st.AgentSessions(),
+		st.GatewayLinks(),
+		memWorker, memSearch, memGate,
 		[]byte("test-key-32-bytes-long-12345678"),
 		onClawDir,
 		WithAgenticModelFactory(func(context.Context, string, providers.Credential, string) (Model, error) {

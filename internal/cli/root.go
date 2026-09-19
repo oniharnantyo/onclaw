@@ -10,6 +10,7 @@ type rootCmd struct {
 	migrateCmd    *migrateCmd
 	userCmd       *userCmd
 	superadminCmd *superadminCmd
+	evalMemoryCmd *evalMemoryCmd
 }
 
 // NewRootCmd creates a new rootCmd with instantiated subcommand handlers.
@@ -19,6 +20,7 @@ func NewRootCmd() *rootCmd {
 		migrateCmd:    NewMigrateCmd(),
 		userCmd:       NewUserCmd(),
 		superadminCmd: NewSuperadminCmd(),
+		evalMemoryCmd: NewEvalMemoryCmd(),
 	}
 }
 
@@ -32,6 +34,7 @@ func (r *rootCmd) Command() *cli.Command {
 			r.migrateCmd.Command(),
 			r.userCmd.Command(),
 			r.superadminCmd.Command(),
+			r.evalMemoryCmd.Command(),
 		},
 	}
 }

@@ -147,9 +147,11 @@ func setupSchedulerRunner(t *testing.T, sessionID string, opts ...RunnerOption) 
 		WithInstructionComposer(rec),
 	}
 	runnerOpts = append(runnerOpts, opts...)
+	memWorker, memSearch, memGate := newTestMemoryPipeline(st)
 	runner := NewRunner(
 		st.Workspaces(), st.Agents(), st.Users(), st.Members(), st.Roles(),
 		st.Providers(), st.SessionEvents(), cps, st.Memories(), st.AgentSessions(),
+		st.GatewayLinks(), memWorker, memSearch, memGate,
 		[]byte("test-key-32-bytes-long-12345678"),
 		t.TempDir(),
 		runnerOpts...)

@@ -4,18 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	storeport "github.com/oniharnantyo/onclaw/internal/store"
 )
 
-// memoryStore implements storeport.MemoryStore for PostgreSQL across the three
-// memory scopes: user_memories (workspace_id, user_id), workspaces.memory (one
-// column per workspace), and agent_daily_memories (workspace_id, agent_id,
-// memory_date). Appends are single statements with an in-statement cap guard
-// (design D6) — no read-modify-write race and no partial cap bypass.
+// memoryStore implements storeport.MemoryStore for PostgreSQL across the two
+// memory documents: user_memories (workspace_id, user_id) and workspaces.memory
+// (one column per workspace). Appends are single statements with an in-statement
+// cap guard (design D6) — no read-modify-write race and no partial cap bypass.
 type memoryStore struct {
 	db Executor
 }
@@ -23,14 +21,6 @@ type memoryStore struct {
 // NewMemoryStore creates a new MemoryStore with the given database executor.
 func NewMemoryStore(db Executor) storeport.MemoryStore {
 	return &memoryStore{db: db}
-}
-
-// memoryDay truncates a date to its calendar day (in the caller's intended
-// location) at midnight UTC, so every call for one calendar day addresses the
-// same memory_date value.
-func memoryDay(date time.Time) time.Time {
-	y, m, d := date.Date()
-	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 }
 
 func (ms *memoryStore) UserMemory(ctx context.Context, workspaceID, userID string) (*domain.Memory, error) {
@@ -182,79 +172,6 @@ func (ms *memoryStore) AppendWorkspaceMemory(ctx context.Context, workspaceID, c
 		}
 		return fmt.Errorf("%w: %d + %d chars exceeds the %d char cap; trim it via the memory editor in the UI",
 			domain.ErrMemoryCapExceeded, len(current), len(content), domain.MaxMemoryContentChars)
-	}
-	return nil
-}
-
-func (ms *memoryStore) AgentDailyMemory(ctx context.Context, workspaceID, agentID string, date time.Time) (*domain.Memory, error) {
-	if workspaceID == "" || agentID == "" || date.IsZero() {
-		return nil, nil
-	}
-
-	const query = `
-		SELECT content, updated_at
-		FROM agent_daily_memories
-		WHERE workspace_id = $1 AND agent_id = $2 AND memory_date = $3
-	`
-	var m domain.Memory
-	err := ms.db.QueryRow(ctx, query, workspaceID, agentID, memoryDay(date)).Scan(&m.Content, &m.UpdatedAt)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, convertError(err)
-	}
-	return &m, nil
-}
-
-func (ms *memoryStore) UpsertAgentDailyMemory(ctx context.Context, workspaceID, agentID string, date time.Time, content string) error {
-	if workspaceID == "" || agentID == "" || date.IsZero() {
-		return domain.ErrInvalid
-	}
-	if err := domain.ValidateMemoryContent(content); err != nil {
-		return err
-	}
-
-	const query = `
-		INSERT INTO agent_daily_memories (workspace_id, agent_id, memory_date, content, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, now(), now())
-		ON CONFLICT (workspace_id, agent_id, memory_date)
-		DO UPDATE SET
-			content = EXCLUDED.content,
-			updated_at = EXCLUDED.updated_at
-	`
-	_, err := ms.db.Exec(ctx, query, workspaceID, agentID, memoryDay(date), content)
-	if err != nil {
-		return convertError(err)
-	}
-	return nil
-}
-
-func (ms *memoryStore) AppendAgentDailyMemory(ctx context.Context, workspaceID, agentID string, date time.Time, content string) error {
-	if workspaceID == "" || agentID == "" || date.IsZero() {
-		return domain.ErrInvalid
-	}
-	if err := domain.ValidateMemoryContent(content); err != nil {
-		return err
-	}
-
-	// Same single-statement atomic append as the user scope, keyed on the
-	// daily composite PK.
-	const query = `
-		INSERT INTO agent_daily_memories (workspace_id, agent_id, memory_date, content, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, now(), now())
-		ON CONFLICT (workspace_id, agent_id, memory_date)
-		DO UPDATE SET
-			content = agent_daily_memories.content || $4,
-			updated_at = now()
-		WHERE length(agent_daily_memories.content) + length($4) <= $5
-	`
-	tag, err := ms.db.Exec(ctx, query, workspaceID, agentID, memoryDay(date), content, domain.MaxMemoryContentChars)
-	if err != nil {
-		return convertError(err)
-	}
-	if tag.RowsAffected() == 0 {
-		return memoryCapExceededErr()
 	}
 	return nil
 }

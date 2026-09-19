@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -18,6 +20,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/oniharnantyo/onclaw/internal/agents"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/promptgen"
 	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/server"
@@ -137,6 +140,14 @@ func TestSmoke_ManualEngineRunAndHistoryEndpoint(t *testing.T) {
 
 	tempDir := t.TempDir()
 
+	memLog := slog.New(slog.NewTextHandler(io.Discard, nil))
+	memWorker := memory.NewWorker(
+		memory.NewGister(st.MemoryEvents(), st.SessionEvents(), st.Providers(), []byte("test-key-32-bytes-long-12345678"), agents.DefaultAgenticModelFactory),
+		memory.NewGate(st.MemoryNotes(), st.Memories(), st.Providers(), []byte("test-key-32-bytes-long-12345678"), agents.DefaultAgenticModelFactory, memLog),
+		memLog,
+	)
+	memSearch := memory.NewSearcher(st.MemoryNotes(), st.MemoryEvents())
+	memGate := memory.NewIntentGate(st.Providers(), []byte("test-key-32-bytes-long-12345678"), agents.DefaultAgenticModelFactory, memLog)
 	runner := agents.NewRunner(
 		st.Workspaces(),
 		st.Agents(),
@@ -147,6 +158,7 @@ func TestSmoke_ManualEngineRunAndHistoryEndpoint(t *testing.T) {
 		st.SessionEvents(),
 		st.SessionCheckpoints(),
 		st.Memories(), st.AgentSessions(),
+		st.GatewayLinks(), memWorker, memSearch, memGate,
 		encKey,
 		tempDir,
 		agents.WithAgenticModelFactory(agenticFactory),

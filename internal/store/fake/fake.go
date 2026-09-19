@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/oniharnantyo/onclaw/internal/domain"
@@ -31,7 +32,8 @@ type fakeStore struct {
 	agentsBySlug            map[string]string                         // key: workspaceID + ":" + slug -> ID
 	userMemories            map[string]*domain.Memory                 // key: workspaceID + ":" + userID -> Memory
 	workspaceMemories       map[string]*domain.Memory                 // key: workspaceID -> Memory
-	agentDailyMemories      map[string]*domain.Memory                 // key: workspaceID + ":" + agentID + ":" + date(2006-01-02) -> Memory
+	memoryEvents            map[string]*domain.MemoryEvent            // key: ID
+	memoryNotes             map[string]*domain.MemoryNote             // key: ID
 	sessionEvents           map[string][]domain.SessionEvent          // key: sessionID -> ordered events
 	sessionCPData           map[string][]byte                         // key: checkpointID -> data
 	apiKeys                 map[string]*domain.WorkspaceAPIKey        // key: ID
@@ -62,6 +64,8 @@ type fakeStore struct {
 	gatewayPairingTokens    map[string]*domain.PairingToken           // key: workspaceID + ":" + token
 	gatewayActiveSessions   map[string]int64                          // key: platform + ":" + platformChatID + ":" + agentID -> suffix
 	gatewayOutbox           map[string]*domain.OutboxEntry            // key: ID
+	memoryNoteEvidence      map[string]*domain.MemoryNoteEvidence     // key: noteID + ":" + sourceEventID
+	memoryReports           map[string]*domain.MemoryReport           // key: workspaceID
 }
 
 // New creates a new in-memory fake store.
@@ -83,7 +87,8 @@ func newStore() *fakeStore {
 		agentsBySlug:            make(map[string]string),
 		userMemories:            make(map[string]*domain.Memory),
 		workspaceMemories:       make(map[string]*domain.Memory),
-		agentDailyMemories:      make(map[string]*domain.Memory),
+		memoryEvents:            make(map[string]*domain.MemoryEvent),
+		memoryNotes:             make(map[string]*domain.MemoryNote),
 		sessionEvents:           make(map[string][]domain.SessionEvent),
 		sessionCPData:           make(map[string][]byte),
 		apiKeys:                 make(map[string]*domain.WorkspaceAPIKey),
@@ -114,6 +119,8 @@ func newStore() *fakeStore {
 		gatewayPairingTokens:    make(map[string]*domain.PairingToken),
 		gatewayActiveSessions:   make(map[string]int64),
 		gatewayOutbox:           make(map[string]*domain.OutboxEntry),
+		memoryNoteEvidence:      make(map[string]*domain.MemoryNoteEvidence),
+		memoryReports:           make(map[string]*domain.MemoryReport),
 	}
 }
 
@@ -150,6 +157,21 @@ func (s *fakeStore) Agents() store.AgentStore {
 // Memories returns the MemoryStore sub-port.
 func (s *fakeStore) Memories() store.MemoryStore {
 	return &memoryStore{s: s}
+}
+
+// MemoryEvents returns the MemoryEventStore sub-port.
+func (s *fakeStore) MemoryEvents() store.MemoryEventStore {
+	return &memoryEventStore{s: s}
+}
+
+// MemoryNotes returns the MemoryNoteStore sub-port.
+func (s *fakeStore) MemoryNotes() store.MemoryNoteStore {
+	return &memoryNoteStore{s: s}
+}
+
+// MemoryReports returns the MemoryReportStore sub-port.
+func (s *fakeStore) MemoryReports() store.MemoryReportStore {
+	return &memoryReportStore{s: s}
 }
 
 // SessionEvents returns the SessionEventStore sub-port.
@@ -290,8 +312,11 @@ func (s *fakeStore) clone() *fakeStore {
 	for key, m := range s.workspaceMemories {
 		cp.workspaceMemories[key] = cloneMemory(m)
 	}
-	for key, m := range s.agentDailyMemories {
-		cp.agentDailyMemories[key] = cloneMemory(m)
+	for id, e := range s.memoryEvents {
+		cp.memoryEvents[id] = cloneMemoryEvent(e)
+	}
+	for id, n := range s.memoryNotes {
+		cp.memoryNotes[id] = cloneMemoryNote(n)
 	}
 	for sid, evts := range s.sessionEvents {
 		copied := make([]domain.SessionEvent, len(evts))
@@ -359,12 +384,12 @@ func (s *fakeStore) clone() *fakeStore {
 	for id, run := range s.heartbeatRuns {
 		cp.heartbeatRuns[id] = cloneHeartbeatRun(run)
 	}
-		for id, g := range s.gateways {
-			cp.gateways[id] = cloneGatewayConfig(g)
-		}
-		for key, id := range s.gatewayIdentities {
-			cp.gatewayIdentities[key] = id
-		}
+	for id, g := range s.gateways {
+		cp.gateways[id] = cloneGatewayConfig(g)
+	}
+	for key, id := range s.gatewayIdentities {
+		cp.gatewayIdentities[key] = id
+	}
 	for id, b := range s.gatewayChatBindings {
 		cp.gatewayChatBindings[id] = cloneChatBinding(b)
 	}
@@ -383,6 +408,12 @@ func (s *fakeStore) clone() *fakeStore {
 	for id, e := range s.gatewayOutbox {
 		cp.gatewayOutbox[id] = cloneOutboxEntry(e)
 	}
+	for key, ev := range s.memoryNoteEvidence {
+		cp.memoryNoteEvidence[key] = cloneMemoryNoteEvidence(ev)
+	}
+	for key, r := range s.memoryReports {
+		cp.memoryReports[key] = cloneMemoryReport(r)
+	}
 	return cp
 }
 
@@ -399,7 +430,8 @@ func (s *fakeStore) apply(other *fakeStore) {
 	s.agentsBySlug = other.agentsBySlug
 	s.userMemories = other.userMemories
 	s.workspaceMemories = other.workspaceMemories
-	s.agentDailyMemories = other.agentDailyMemories
+	s.memoryEvents = other.memoryEvents
+	s.memoryNotes = other.memoryNotes
 	s.sessionEvents = other.sessionEvents
 	s.sessionCPData = other.sessionCPData
 	s.apiKeys = other.apiKeys
@@ -421,15 +453,17 @@ func (s *fakeStore) apply(other *fakeStore) {
 	s.schedulerRuns = other.schedulerRuns
 	s.heartbeats = other.heartbeats
 	s.heartbeatsByAgent = other.heartbeatsByAgent
-		s.heartbeatRuns = other.heartbeatRuns
-		s.gateways = other.gateways
-		s.gatewayIdentities = other.gatewayIdentities
-		s.gatewayChatBindings = other.gatewayChatBindings
+	s.heartbeatRuns = other.heartbeatRuns
+	s.gateways = other.gateways
+	s.gatewayIdentities = other.gatewayIdentities
+	s.gatewayChatBindings = other.gatewayChatBindings
 	s.gatewayBindingsByChat = other.gatewayBindingsByChat
 	s.gatewayUserLinks = other.gatewayUserLinks
 	s.gatewayPairingTokens = other.gatewayPairingTokens
 	s.gatewayActiveSessions = other.gatewayActiveSessions
 	s.gatewayOutbox = other.gatewayOutbox
+	s.memoryNoteEvidence = other.memoryNoteEvidence
+	s.memoryReports = other.memoryReports
 }
 
 func cloneUser(u *domain.User) *domain.User {
@@ -1594,15 +1628,6 @@ func (as *agentStore) Delete(ctx context.Context, workspaceID, id string) error 
 	delete(as.s.agents, id)
 	delete(as.s.agentsBySlug, workspaceID+":"+existing.Slug)
 
-	// Agent daily memories die with the agent (ON DELETE CASCADE via the
-	// composite FK to agents).
-	prefix := workspaceID + ":" + id + ":"
-	for key := range as.s.agentDailyMemories {
-		if strings.HasPrefix(key, prefix) {
-			delete(as.s.agentDailyMemories, key)
-		}
-	}
-
 	// Agent-private MCP servers die with the agent (ON DELETE CASCADE).
 	for srvID, srv := range as.s.agentMCPServers {
 		if srv.AgentID == id {
@@ -1706,13 +1731,6 @@ func (as *agentStore) SweepGenerating(ctx context.Context, errMsg string) (int64
 
 type memoryStore struct {
 	s *fakeStore
-}
-
-// memoryDayKey normalizes a date to its calendar day (in the caller's intended
-// location) so Get/Upsert/Append always address the same key for one day.
-func memoryDayKey(date time.Time) string {
-	y, m, d := date.Date()
-	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Format("2006-01-02")
 }
 
 func (ms *memoryStore) UserMemory(ctx context.Context, workspaceID, userID string) (*domain.Memory, error) {
@@ -1841,77 +1859,6 @@ func (ms *memoryStore) AppendWorkspaceMemory(ctx context.Context, workspaceID, c
 		return err
 	}
 	ms.s.workspaceMemories[workspaceID] = &domain.Memory{Content: current + content, UpdatedAt: time.Now().UTC()}
-	return nil
-}
-
-func (ms *memoryStore) AgentDailyMemory(ctx context.Context, workspaceID, agentID string, date time.Time) (*domain.Memory, error) {
-	if workspaceID == "" || agentID == "" || date.IsZero() {
-		return nil, nil
-	}
-
-	ms.s.mu.RLock()
-	defer ms.s.mu.RUnlock()
-
-	m, exists := ms.s.agentDailyMemories[workspaceID+":"+agentID+":"+memoryDayKey(date)]
-	if !exists {
-		return nil, nil
-	}
-	return cloneMemory(m), nil
-}
-
-func (ms *memoryStore) UpsertAgentDailyMemory(ctx context.Context, workspaceID, agentID string, date time.Time, content string) error {
-	if workspaceID == "" || agentID == "" || date.IsZero() {
-		return domain.ErrInvalid
-	}
-	if err := domain.ValidateMemoryContent(content); err != nil {
-		return err
-	}
-
-	ms.s.mu.Lock()
-	defer ms.s.mu.Unlock()
-
-	if _, exists := ms.s.workspaces[workspaceID]; !exists {
-		return fmt.Errorf("%w: workspace not found", domain.ErrNotFound)
-	}
-	a, exists := ms.s.agents[agentID]
-	if !exists || a.WorkspaceID != workspaceID {
-		return fmt.Errorf("%w: agent not found in workspace", domain.ErrNotFound)
-	}
-
-	key := workspaceID + ":" + agentID + ":" + memoryDayKey(date)
-	ms.s.agentDailyMemories[key] = &domain.Memory{Content: content, UpdatedAt: time.Now().UTC()}
-	return nil
-}
-
-func (ms *memoryStore) AppendAgentDailyMemory(ctx context.Context, workspaceID, agentID string, date time.Time, content string) error {
-	if workspaceID == "" || agentID == "" || date.IsZero() {
-		return domain.ErrInvalid
-	}
-	if err := domain.ValidateMemoryContent(content); err != nil {
-		return err
-	}
-
-	ms.s.mu.Lock()
-	defer ms.s.mu.Unlock()
-
-	if _, exists := ms.s.workspaces[workspaceID]; !exists {
-		return fmt.Errorf("%w: workspace not found", domain.ErrNotFound)
-	}
-	a, exists := ms.s.agents[agentID]
-	if !exists || a.WorkspaceID != workspaceID {
-		return fmt.Errorf("%w: agent not found in workspace", domain.ErrNotFound)
-	}
-
-	key := workspaceID + ":" + agentID + ":" + memoryDayKey(date)
-	existing, exists := ms.s.agentDailyMemories[key]
-	current := ""
-	if exists {
-		current = existing.Content
-	}
-	if err := domain.ValidateMemoryAppend(current, content); err != nil {
-		return err
-	}
-	ms.s.agentDailyMemories[key] = &domain.Memory{Content: current + content, UpdatedAt: time.Now().UTC()}
 	return nil
 }
 
@@ -2938,4 +2885,740 @@ func (a *agentSessionStore) SoftDeleteAgentSession(ctx context.Context, workspac
 	now := time.Now().UTC()
 	session.DeletedAt = &now
 	return nil
+}
+
+// -------------------------------------------------------------------------
+// MemoryEventStore / MemoryNoteStore implementation
+// (integrate-agent-zero-memory 2.5). Mirrors the postgres adapter: every read
+// applies the structural visibility predicate (domain.MemoryVisibleTo — the
+// same rule the postgres WHERE clause encodes) under the store mutex, writes
+// validate the birth tuple, owner shape, and ceiling through the domain
+// layer, and supersede commits both rows under one lock hold — the fake's
+// atomicity seam (the postgres adapter uses a guard CTE).
+// -------------------------------------------------------------------------
+
+type memoryEventStore struct {
+	s *fakeStore
+}
+
+type memoryNoteStore struct {
+	s *fakeStore
+}
+
+func cloneMemoryEvent(e *domain.MemoryEvent) *domain.MemoryEvent {
+	if e == nil {
+		return nil
+	}
+	cp := *e
+	if e.UserID != nil {
+		u := *e.UserID
+		cp.UserID = &u
+	}
+	if e.Participants != nil {
+		cp.Participants = make([]domain.MemoryParticipant, len(e.Participants))
+		copy(cp.Participants, e.Participants)
+	}
+	if e.TombstonedAt != nil {
+		t := *e.TombstonedAt
+		cp.TombstonedAt = &t
+	}
+	return &cp
+}
+
+func cloneMemoryNote(n *domain.MemoryNote) *domain.MemoryNote {
+	if n == nil {
+		return nil
+	}
+	cp := *n
+	if n.UserID != nil {
+		u := *n.UserID
+		cp.UserID = &u
+	}
+	if n.AgentID != nil {
+		a := *n.AgentID
+		cp.AgentID = &a
+	}
+	if n.Topic != nil {
+		t := *n.Topic
+		cp.Topic = &t
+	}
+	if n.ConflictFlag != nil {
+		c := *n.ConflictFlag
+		cp.ConflictFlag = &c
+	}
+	if n.Supersedes != nil {
+		s := *n.Supersedes
+		cp.Supersedes = &s
+	}
+	if n.SupersededBy != nil {
+		s := *n.SupersededBy
+		cp.SupersededBy = &s
+	}
+	if n.PromotedBy != nil {
+		p := *n.PromotedBy
+		cp.PromotedBy = &p
+	}
+	if n.PromotedAt != nil {
+		t := *n.PromotedAt
+		cp.PromotedAt = &t
+	}
+	if n.TombstonedAt != nil {
+		t := *n.TombstonedAt
+		cp.TombstonedAt = &t
+	}
+	return &cp
+}
+
+func cloneMemoryNoteEvidence(e *domain.MemoryNoteEvidence) *domain.MemoryNoteEvidence {
+	if e == nil {
+		return nil
+	}
+	cp := *e
+	return &cp
+}
+
+func cloneMemoryReport(r *domain.MemoryReport) *domain.MemoryReport {
+	if r == nil {
+		return nil
+	}
+	cp := *r
+	if r.Report != nil {
+		cp.Report = make([]byte, len(r.Report))
+		copy(cp.Report, r.Report)
+	}
+	return &cp
+}
+
+// memoryEventVisibleLocked applies the structural visibility predicate for an
+// event: the producing agent owns agent-visibility rows. Callers hold the
+// store lock.
+func memoryEventVisibleLocked(e *domain.MemoryEvent, viewerUserID, servingAgentID string) bool {
+	return domain.MemoryVisibleTo(e.Visibility, e.UserID, &e.AgentID, viewerUserID, servingAgentID)
+}
+
+// memoryNoteVisibleLocked applies the structural visibility predicate for a
+// note. Callers hold the store lock.
+func memoryNoteVisibleLocked(n *domain.MemoryNote, viewerUserID, servingAgentID string) bool {
+	return domain.MemoryVisibleTo(n.Visibility, n.UserID, n.AgentID, viewerUserID, servingAgentID)
+}
+
+// memoryEventNewer reports whether a sorts after b by the read ordering
+// shared with the postgres ORDER BY (event_time, learned_at, id).
+func memoryEventNewer(a, b *domain.MemoryEvent) bool {
+	if !a.EventTime.Equal(b.EventTime) {
+		return a.EventTime.After(b.EventTime)
+	}
+	if !a.LearnedAt.Equal(b.LearnedAt) {
+		return a.LearnedAt.After(b.LearnedAt)
+	}
+	return a.ID > b.ID
+}
+
+// memoryInWindow applies the [From, To) event_time bounds; zero fields are
+// open ends (mirrors the postgres predicates).
+func memoryInWindow(t time.Time, window *store.MemoryTimeWindow) bool {
+	if window == nil {
+		return true
+	}
+	if !window.From.IsZero() && t.Before(window.From) {
+		return false
+	}
+	if !window.To.IsZero() && !t.Before(window.To) {
+		return false
+	}
+	return true
+}
+
+// validateMemoryNoteForWrite runs the shared write-path validation: scope,
+// tier validity, owner shape, ceiling dominance (D4), and the provenance
+// birth tuple (D5) — the same rules the SQL CHECK constraints pin.
+func validateMemoryNoteForWrite(note *domain.MemoryNote, ceiling domain.MemoryVisibility) error {
+	if note == nil || note.WorkspaceID == "" {
+		return domain.ErrInvalid
+	}
+	if !domain.ValidMemoryVisibility(note.Visibility) {
+		return fmt.Errorf("%w: unknown memory visibility %q", domain.ErrInvalid, note.Visibility)
+	}
+	if err := domain.ValidateMemoryNoteOwner(note.Visibility, note.UserID, note.AgentID); err != nil {
+		return err
+	}
+	if err := domain.ValidateMemoryVisibilityWithin(ceiling, note.Visibility); err != nil {
+		return err
+	}
+	return domain.ValidateMemoryProvenance(note.Origin, note.EventTime, note.LearnedAt, note.SourceEventID)
+}
+
+func (es *memoryEventStore) InsertEvent(ctx context.Context, event *domain.MemoryEvent) error {
+	if event == nil || event.WorkspaceID == "" || event.AgentID == "" || event.SessionID == "" || event.TurnID == "" {
+		return domain.ErrInvalid
+	}
+	if !domain.ValidMemoryVisibility(event.Visibility) {
+		return fmt.Errorf("%w: unknown memory visibility %q", domain.ErrInvalid, event.Visibility)
+	}
+	if err := domain.ValidateMemoryEventOwner(event.Visibility, event.UserID); err != nil {
+		return err
+	}
+	if err := domain.ValidateMemoryProvenance(event.Origin, event.EventTime, event.LearnedAt, event.SourceEventID); err != nil {
+		return err
+	}
+
+	es.s.mu.Lock()
+	defer es.s.mu.Unlock()
+
+	if _, exists := es.s.workspaces[event.WorkspaceID]; !exists {
+		return fmt.Errorf("%w: workspace not found", domain.ErrNotFound)
+	}
+	if _, exists := es.s.agents[event.AgentID]; !exists {
+		return fmt.Errorf("%w: agent not found", domain.ErrNotFound)
+	}
+	if event.UserID != nil {
+		if _, exists := es.s.users[*event.UserID]; !exists {
+			return fmt.Errorf("%w: user not found", domain.ErrNotFound)
+		}
+	}
+	if event.ID == "" {
+		event.ID = uuid.NewString()
+	}
+	es.s.memoryEvents[event.ID] = cloneMemoryEvent(event)
+	return nil
+}
+
+func (es *memoryEventStore) LatestEventForSession(ctx context.Context, workspaceID, sessionID string) (*domain.MemoryEvent, error) {
+	if workspaceID == "" || sessionID == "" {
+		return nil, nil
+	}
+
+	es.s.mu.RLock()
+	defer es.s.mu.RUnlock()
+
+	var latest *domain.MemoryEvent
+	for _, e := range es.s.memoryEvents {
+		if e.WorkspaceID != workspaceID || e.SessionID != sessionID || e.TombstonedAt != nil {
+			continue
+		}
+		if latest == nil || memoryEventNewer(e, latest) {
+			latest = e
+		}
+	}
+	if latest == nil {
+		return nil, nil
+	}
+	return cloneMemoryEvent(latest), nil
+}
+
+func (es *memoryEventStore) ListEventsForUI(ctx context.Context, workspaceID, viewerUserID, servingAgentID string, filters store.MemoryEventFilters) ([]domain.MemoryEvent, error) {
+	return es.queryEvents(ctx, workspaceID, viewerUserID, servingAgentID, filters, "")
+}
+
+func (es *memoryEventStore) SearchEvents(ctx context.Context, workspaceID, viewerUserID, servingAgentID, query string, filters store.MemoryEventFilters) ([]domain.MemoryEvent, error) {
+	if strings.TrimSpace(query) == "" {
+		return nil, fmt.Errorf("%w: search query is empty", domain.ErrInvalid)
+	}
+	return es.queryEvents(ctx, workspaceID, viewerUserID, servingAgentID, filters, query)
+}
+
+// queryEvents filters the visible set (structural scope first, then the
+// optional filters, then the case-insensitive substring standing in for the
+// postgres hybrid lexical match) and orders newest first.
+func (es *memoryEventStore) queryEvents(ctx context.Context, workspaceID, viewerUserID, servingAgentID string, filters store.MemoryEventFilters, queryText string) ([]domain.MemoryEvent, error) {
+	needle := ""
+	if queryText != "" {
+		needle = strings.ToLower(queryText)
+	}
+
+	es.s.mu.RLock()
+	defer es.s.mu.RUnlock()
+
+	events := make([]domain.MemoryEvent, 0)
+	for _, e := range es.s.memoryEvents {
+		if e.WorkspaceID != workspaceID || e.TombstonedAt != nil {
+			continue
+		}
+		if !memoryEventVisibleLocked(e, viewerUserID, servingAgentID) {
+			continue
+		}
+		if filters.SessionID != "" && e.SessionID != filters.SessionID {
+			continue
+		}
+		if filters.AgentID != "" && e.AgentID != filters.AgentID {
+			continue
+		}
+		if filters.Visibility != "" && e.Visibility != filters.Visibility {
+			continue
+		}
+		if !memoryInWindow(e.EventTime, filters.TimeWindow) {
+			continue
+		}
+		if needle != "" && !strings.Contains(strings.ToLower(e.Description+" "+e.Outcome), needle) {
+			continue
+		}
+		events = append(events, *cloneMemoryEvent(e))
+	}
+	sort.Slice(events, func(i, j int) bool {
+		return memoryEventNewer(&events[i], &events[j])
+	})
+	if filters.Limit > 0 && len(events) > filters.Limit {
+		events = events[:filters.Limit]
+	}
+	return events, nil
+}
+
+func (es *memoryEventStore) TombstoneEvent(ctx context.Context, workspaceID, id string) error {
+	if workspaceID == "" || id == "" {
+		return domain.ErrInvalid
+	}
+
+	es.s.mu.Lock()
+	defer es.s.mu.Unlock()
+
+	e, exists := es.s.memoryEvents[id]
+	if !exists || e.WorkspaceID != workspaceID || e.TombstonedAt != nil {
+		// Absent and already-tombstoned are indistinguishable — no leak.
+		return domain.ErrNotFound
+	}
+	now := time.Now().UTC()
+	e.TombstonedAt = &now
+	return nil
+}
+
+func (es *memoryEventStore) CountByVisibility(ctx context.Context, workspaceID, sessionID, turnID string) (map[domain.MemoryVisibility]int, error) {
+	counts := make(map[domain.MemoryVisibility]int)
+	if workspaceID == "" || sessionID == "" || turnID == "" {
+		return counts, nil
+	}
+
+	es.s.mu.RLock()
+	defer es.s.mu.RUnlock()
+
+	for _, e := range es.s.memoryEvents {
+		if e.WorkspaceID != workspaceID || e.SessionID != sessionID || e.TurnID != turnID || e.TombstonedAt != nil {
+			continue
+		}
+		counts[e.Visibility]++
+	}
+	return counts, nil
+}
+
+// checkNoteRefsLocked mirrors the postgres FKs: the workspace must exist and
+// any set owner must resolve. Callers hold the store lock.
+func (ns *memoryNoteStore) checkNoteRefsLocked(n *domain.MemoryNote) error {
+	if _, exists := ns.s.workspaces[n.WorkspaceID]; !exists {
+		return fmt.Errorf("%w: workspace not found", domain.ErrNotFound)
+	}
+	if n.UserID != nil {
+		if _, exists := ns.s.users[*n.UserID]; !exists {
+			return fmt.Errorf("%w: user not found", domain.ErrNotFound)
+		}
+	}
+	if n.AgentID != nil {
+		if _, exists := ns.s.agents[*n.AgentID]; !exists {
+			return fmt.Errorf("%w: agent not found", domain.ErrNotFound)
+		}
+	}
+	return nil
+}
+
+func (ns *memoryNoteStore) InsertNote(ctx context.Context, note *domain.MemoryNote, ceiling domain.MemoryVisibility) error {
+	if err := validateMemoryNoteForWrite(note, ceiling); err != nil {
+		return err
+	}
+
+	ns.s.mu.Lock()
+	defer ns.s.mu.Unlock()
+
+	if err := ns.checkNoteRefsLocked(note); err != nil {
+		return err
+	}
+	if note.ID == "" {
+		note.ID = uuid.NewString()
+	}
+	ns.s.memoryNotes[note.ID] = cloneMemoryNote(note)
+	return nil
+}
+
+func (ns *memoryNoteStore) SupersedeNote(ctx context.Context, workspaceID, oldID string, note *domain.MemoryNote, ceiling domain.MemoryVisibility) error {
+	if workspaceID == "" || oldID == "" {
+		return domain.ErrInvalid
+	}
+	if err := validateMemoryNoteForWrite(note, ceiling); err != nil {
+		return err
+	}
+
+	ns.s.mu.Lock()
+	defer ns.s.mu.Unlock()
+
+	old, exists := ns.s.memoryNotes[oldID]
+	if !exists || old.WorkspaceID != workspaceID || old.TombstonedAt != nil {
+		// Hidden rows leak nothing — absent and tombstoned are one case.
+		return domain.ErrNotFound
+	}
+	if old.SupersededBy != nil {
+		return fmt.Errorf("%w: note %s already superseded", domain.ErrConflict, oldID)
+	}
+	if err := ns.checkNoteRefsLocked(note); err != nil {
+		return err
+	}
+	// Both rows commit under one lock hold — the fake's atomicity seam.
+	if note.ID == "" {
+		note.ID = uuid.NewString()
+	}
+	note.Supersedes = &oldID
+	ns.s.memoryNotes[note.ID] = cloneMemoryNote(note)
+	old.SupersededBy = &note.ID
+	return nil
+}
+
+func (ns *memoryNoteStore) TombstoneNote(ctx context.Context, workspaceID, id string) error {
+	if workspaceID == "" || id == "" {
+		return domain.ErrInvalid
+	}
+
+	ns.s.mu.Lock()
+	defer ns.s.mu.Unlock()
+
+	n, exists := ns.s.memoryNotes[id]
+	if !exists || n.WorkspaceID != workspaceID || n.TombstonedAt != nil {
+		return domain.ErrNotFound
+	}
+	now := time.Now().UTC()
+	n.TombstonedAt = &now
+	return nil
+}
+
+func (ns *memoryNoteStore) PromoteNote(ctx context.Context, workspaceID, id, promotedByUserID string) error {
+	if workspaceID == "" || id == "" || promotedByUserID == "" {
+		return domain.ErrInvalid
+	}
+
+	ns.s.mu.Lock()
+	defer ns.s.mu.Unlock()
+
+	n, exists := ns.s.memoryNotes[id]
+	if !exists || n.WorkspaceID != workspaceID || n.TombstonedAt != nil || n.SupersededBy != nil {
+		return domain.ErrNotFound
+	}
+	if n.Visibility == domain.MemoryVisibilityShared {
+		return fmt.Errorf("%w: note is already shared", domain.ErrConflict)
+	}
+	// The only widening path (D4): owner columns clear because shared rows
+	// carry no owner, and the widening is audited.
+	n.Visibility = domain.MemoryVisibilityShared
+	n.UserID = nil
+	n.AgentID = nil
+	promotedBy := promotedByUserID
+	n.PromotedBy = &promotedBy
+	now := time.Now().UTC()
+	n.PromotedAt = &now
+	return nil
+}
+
+func (ns *memoryNoteStore) GetNote(ctx context.Context, workspaceID, viewerUserID, servingAgentID, id string) (*domain.MemoryNote, error) {
+	if workspaceID == "" || id == "" {
+		return nil, nil
+	}
+
+	ns.s.mu.RLock()
+	defer ns.s.mu.RUnlock()
+
+	n, exists := ns.s.memoryNotes[id]
+	if !exists || n.WorkspaceID != workspaceID || n.TombstonedAt != nil ||
+		!memoryNoteVisibleLocked(n, viewerUserID, servingAgentID) {
+		return nil, nil
+	}
+	return cloneMemoryNote(n), nil
+}
+
+func (ns *memoryNoteStore) ListNotesForUI(ctx context.Context, workspaceID, viewerUserID, servingAgentID string, filters store.MemoryNoteFilters) ([]domain.MemoryNote, error) {
+	return ns.queryNotes(ctx, workspaceID, viewerUserID, servingAgentID, filters, "", filters.History)
+}
+
+func (ns *memoryNoteStore) SearchNotes(ctx context.Context, workspaceID, viewerUserID, servingAgentID, query string, filters store.MemoryNoteFilters) ([]domain.MemoryNote, error) {
+	if strings.TrimSpace(query) == "" {
+		return nil, fmt.Errorf("%w: search query is empty", domain.ErrInvalid)
+	}
+	// Retrieval is current-state only: a superseded note is dead for search.
+	return ns.queryNotes(ctx, workspaceID, viewerUserID, servingAgentID, filters, query, false)
+}
+
+func (ns *memoryNoteStore) queryNotes(ctx context.Context, workspaceID, viewerUserID, servingAgentID string, filters store.MemoryNoteFilters, queryText string, includeSuperseded bool) ([]domain.MemoryNote, error) {
+	needle := ""
+	if queryText != "" {
+		needle = strings.ToLower(queryText)
+	}
+
+	ns.s.mu.RLock()
+	defer ns.s.mu.RUnlock()
+
+	notes := make([]domain.MemoryNote, 0)
+	for _, n := range ns.s.memoryNotes {
+		if n.WorkspaceID != workspaceID || n.TombstonedAt != nil {
+			continue
+		}
+		if !includeSuperseded && n.SupersededBy != nil {
+			continue
+		}
+		if !memoryNoteVisibleLocked(n, viewerUserID, servingAgentID) {
+			continue
+		}
+		if filters.Visibility != "" && n.Visibility != filters.Visibility {
+			continue
+		}
+		if filters.Topic != "" && (n.Topic == nil || *n.Topic != filters.Topic) {
+			continue
+		}
+		if !memoryInWindow(n.EventTime, filters.TimeWindow) {
+			continue
+		}
+		if needle != "" && !strings.Contains(strings.ToLower(n.Content), needle) {
+			continue
+		}
+		notes = append(notes, *cloneMemoryNote(n))
+	}
+	// Pinned first, then newest-learned, id as the determinism tiebreak.
+	sort.Slice(notes, func(i, j int) bool {
+		if notes[i].Pinned != notes[j].Pinned {
+			return notes[i].Pinned
+		}
+		if !notes[i].LearnedAt.Equal(notes[j].LearnedAt) {
+			return notes[i].LearnedAt.After(notes[j].LearnedAt)
+		}
+		return notes[i].ID > notes[j].ID
+	})
+	if filters.Limit > 0 && len(notes) > filters.Limit {
+		notes = notes[:filters.Limit]
+	}
+	return notes, nil
+}
+
+// memoryNoteSimilarity is the fake's stand-in for pg_trgm's similarity():
+// the Jaccard overlap of lowercased word tokens. Threshold semantics match
+// the postgres adapter — strictly greater than.
+func memoryNoteSimilarity(a, b string) float64 {
+	tokens := func(s string) map[string]struct{} {
+		set := make(map[string]struct{})
+		for _, w := range strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+			return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+		}) {
+			set[w] = struct{}{}
+		}
+		return set
+	}
+	as, bs := tokens(a), tokens(b)
+	if len(as) == 0 || len(bs) == 0 {
+		return 0
+	}
+	shared := 0
+	for w := range as {
+		if _, ok := bs[w]; ok {
+			shared++
+		}
+	}
+	return float64(shared) / float64(len(as)+len(bs)-shared)
+}
+
+func (ns *memoryNoteStore) CountSimilar(ctx context.Context, workspaceID, viewerUserID, servingAgentID, content string, threshold float64) (int, error) {
+	if workspaceID == "" || strings.TrimSpace(content) == "" {
+		return 0, nil
+	}
+
+	ns.s.mu.RLock()
+	defer ns.s.mu.RUnlock()
+
+	count := 0
+	for _, n := range ns.s.memoryNotes {
+		if n.WorkspaceID != workspaceID || n.TombstonedAt != nil || n.SupersededBy != nil {
+			continue
+		}
+		if !memoryNoteVisibleLocked(n, viewerUserID, servingAgentID) {
+			continue
+		}
+		if memoryNoteSimilarity(content, n.Content) > threshold {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (ns *memoryNoteStore) CountByVisibility(ctx context.Context, workspaceID string) (map[domain.MemoryVisibility]int, error) {
+	counts := make(map[domain.MemoryVisibility]int)
+	if workspaceID == "" {
+		return counts, nil
+	}
+
+	ns.s.mu.RLock()
+	defer ns.s.mu.RUnlock()
+
+	for _, n := range ns.s.memoryNotes {
+		if n.WorkspaceID != workspaceID || n.TombstonedAt != nil {
+			continue
+		}
+		counts[n.Visibility]++
+	}
+	return counts, nil
+}
+
+// SupersedeInto implements the consolidation merge primitive (D12): the
+// canonical survivor keeps its row and the folded duplicate is pointed at
+// it — both rows commit under one lock hold, the fake's atomicity seam (the
+// postgres adapter uses a guard CTE). Guard order mirrors the postgres
+// disambiguation: absent/tombstoned duplicates read ErrNotFound, an
+// already-superseded duplicate reads ErrConflict, and an invalid survivor
+// reads ErrNotFound.
+func (ns *memoryNoteStore) SupersedeInto(ctx context.Context, workspaceID, oldID, intoID string) error {
+	if workspaceID == "" || oldID == "" || intoID == "" {
+		return domain.ErrInvalid
+	}
+	if oldID == intoID {
+		return fmt.Errorf("%w: a note cannot be superseded into itself", domain.ErrInvalid)
+	}
+
+	ns.s.mu.Lock()
+	defer ns.s.mu.Unlock()
+
+	old, exists := ns.s.memoryNotes[oldID]
+	if !exists || old.WorkspaceID != workspaceID {
+		// Hidden rows leak nothing — absent and tombstoned are one case.
+		return domain.ErrNotFound
+	}
+	if old.TombstonedAt != nil {
+		return domain.ErrNotFound
+	}
+	if old.SupersededBy != nil {
+		return fmt.Errorf("%w: note %s already superseded", domain.ErrConflict, oldID)
+	}
+	survivor, exists := ns.s.memoryNotes[intoID]
+	if !exists || survivor.WorkspaceID != workspaceID || survivor.TombstonedAt != nil || survivor.SupersededBy != nil {
+		return domain.ErrNotFound
+	}
+	pointer := intoID
+	old.SupersededBy = &pointer
+	return nil
+}
+
+// SetNoteTopic labels one live note for the consolidator's topic fold (D12).
+func (ns *memoryNoteStore) SetNoteTopic(ctx context.Context, workspaceID, noteID, topic string) error {
+	if workspaceID == "" || noteID == "" || strings.TrimSpace(topic) == "" {
+		return domain.ErrInvalid
+	}
+
+	ns.s.mu.Lock()
+	defer ns.s.mu.Unlock()
+
+	n, exists := ns.s.memoryNotes[noteID]
+	if !exists || n.WorkspaceID != workspaceID || n.TombstonedAt != nil || n.SupersededBy != nil {
+		return domain.ErrNotFound
+	}
+	label := strings.TrimSpace(topic)
+	n.Topic = &label
+	return nil
+}
+
+// AddNoteEvidence links additional raw-event evidence on a note (D12's
+// multi-evidence), idempotent per (note, source event): re-adding keeps the
+// first link's added_at.
+func (ns *memoryNoteStore) AddNoteEvidence(ctx context.Context, workspaceID, noteID string, sourceEventIDs []string) error {
+	if workspaceID == "" || noteID == "" {
+		return domain.ErrInvalid
+	}
+
+	ns.s.mu.Lock()
+	defer ns.s.mu.Unlock()
+
+	n, exists := ns.s.memoryNotes[noteID]
+	if !exists || n.WorkspaceID != workspaceID || n.TombstonedAt != nil {
+		return domain.ErrNotFound
+	}
+	now := time.Now().UTC()
+	for _, sourceEventID := range sourceEventIDs {
+		if sourceEventID == "" {
+			continue
+		}
+		key := noteID + ":" + sourceEventID
+		if _, exists := ns.s.memoryNoteEvidence[key]; exists {
+			continue
+		}
+		ns.s.memoryNoteEvidence[key] = &domain.MemoryNoteEvidence{
+			SourceEventID: sourceEventID,
+			AddedAt:       now,
+		}
+	}
+	return nil
+}
+
+// ListNoteEvidence returns the note's multi-evidence links, oldest link
+// first. The workspace partition scopes the read; absent or hidden notes
+// contribute an empty slice.
+func (ns *memoryNoteStore) ListNoteEvidence(ctx context.Context, workspaceID, noteID string) ([]domain.MemoryNoteEvidence, error) {
+	if workspaceID == "" || noteID == "" {
+		return []domain.MemoryNoteEvidence{}, nil
+	}
+
+	ns.s.mu.RLock()
+	defer ns.s.mu.RUnlock()
+
+	evidence := make([]domain.MemoryNoteEvidence, 0)
+	if n, exists := ns.s.memoryNotes[noteID]; !exists || n.WorkspaceID != workspaceID {
+		return evidence, nil
+	}
+	for key, ev := range ns.s.memoryNoteEvidence {
+		// The key is noteID + ":" + sourceEventID; the note id never carries
+		// a colon (uuid), but source event ids are arbitrary text, so the
+		// split lands on the last separator.
+		sep := strings.LastIndex(key, ":")
+		if sep < 0 || key[:sep] != noteID {
+			continue
+		}
+		evidence = append(evidence, *cloneMemoryNoteEvidence(ev))
+	}
+	sort.Slice(evidence, func(i, j int) bool {
+		if evidence[i].AddedAt.Equal(evidence[j].AddedAt) {
+			return evidence[i].SourceEventID < evidence[j].SourceEventID
+		}
+		return evidence[i].AddedAt.Before(evidence[j].AddedAt)
+	})
+	return evidence, nil
+}
+
+// -------------------------------------------------------------------------
+// MemoryReportStore implementation (integrate-agent-zero-memory D12): the
+// last morning report per workspace, replaced on every pass. Absence is a
+// normal state — Get returns (nil, nil) per the MemoryStore convention.
+// -------------------------------------------------------------------------
+
+type memoryReportStore struct {
+	s *fakeStore
+}
+
+func (rs *memoryReportStore) Save(ctx context.Context, workspaceID string, report []byte, generatedAt time.Time) error {
+	if workspaceID == "" || len(report) == 0 || generatedAt.IsZero() {
+		return domain.ErrInvalid
+	}
+
+	rs.s.mu.Lock()
+	defer rs.s.mu.Unlock()
+
+	if _, exists := rs.s.workspaces[workspaceID]; !exists {
+		return fmt.Errorf("%w: workspace not found", domain.ErrNotFound)
+	}
+	rs.s.memoryReports[workspaceID] = &domain.MemoryReport{
+		WorkspaceID: workspaceID,
+		Report:      append([]byte(nil), report...),
+		GeneratedAt: generatedAt.UTC(),
+	}
+	return nil
+}
+
+func (rs *memoryReportStore) Get(ctx context.Context, workspaceID string) (*domain.MemoryReport, error) {
+	if workspaceID == "" {
+		return nil, nil
+	}
+
+	rs.s.mu.RLock()
+	defer rs.s.mu.RUnlock()
+
+	r, exists := rs.s.memoryReports[workspaceID]
+	if !exists {
+		return nil, nil
+	}
+	return cloneMemoryReport(r), nil
 }

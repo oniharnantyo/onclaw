@@ -17,6 +17,7 @@ import (
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/oniharnantyo/onclaw/internal/agents/tools"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
@@ -117,6 +118,9 @@ type toolRegistry struct {
 	// schedule carries the optional schedule tool's dependencies (set only by
 	// WithSchedulerTools); nil means the schedule tool is not registered.
 	schedule *scheduleToolDeps
+	// memorySearch carries the optional memory.search tool's searcher (set
+	// only by WithMemorySearch); nil means the tool is not registered.
+	memorySearch *memory.Searcher
 }
 
 // scheduleToolDeps bundles the stores the schedule tool needs at construction
@@ -138,6 +142,16 @@ type ToolRegistryOption func(*toolRegistry)
 func WithSchedulerTools(schedulers store.SchedulerStore, members tools.ScheduleChannelMembers) ToolRegistryOption {
 	return func(r *toolRegistry) {
 		r.schedule = &scheduleToolDeps{schedulers: schedulers, members: members}
+	}
+}
+
+// WithMemorySearch registers the memory.search tool (integrate-agent-zero-
+// memory 4.3) backed by the scope-filtered Searcher over the extracted
+// stores. Unset, the tool is simply not registered — the deployment surfaces
+// no memory.search at all, not a broken one (the schedule-tool precedent).
+func WithMemorySearch(searcher *memory.Searcher) ToolRegistryOption {
+	return func(r *toolRegistry) {
+		r.memorySearch = searcher
 	}
 }
 
@@ -173,8 +187,18 @@ func NewDefaultToolRegistry(memories store.MemoryStore, opts ...ToolRegistryOpti
 	})
 
 	reg.Register(tools.NameMemory, func(tctx ToolContext) (tool.BaseTool, error) {
-		return tools.NewMemory(memories, tctx.WorkspaceID, tctx.AgentID, tctx.UserID, tctx.WorkspaceTZ)
+		return tools.NewMemory(memories, tctx.WorkspaceID, tctx.UserID)
 	})
+
+	// Memory search (integrate-agent-zero-memory 4.3): the read-only search
+	// over the extracted stores, registered only when the composition root
+	// wired the searcher. Identity binds per construction through the
+	// ToolContext — the query arguments carry no identity fields.
+	if s := reg.memorySearch; s != nil {
+		reg.Register(tools.NameMemorySearch, func(tctx ToolContext) (tool.BaseTool, error) {
+			return tools.NewMemorySearch(s, tctx.WorkspaceID, tctx.UserID, tctx.AgentID)
+		})
+	}
 
 	// Schedule tool (integrate-scheduler 6.1): an ordinary registration, but
 	// optional at the registry level — it registers only when wired with the

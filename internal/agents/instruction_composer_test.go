@@ -65,18 +65,6 @@ func (f *fakeMemories) AppendWorkspaceMemory(_ context.Context, workspaceID, con
 	return nil
 }
 
-func (f *fakeMemories) AgentDailyMemory(context.Context, string, string, time.Time) (*domain.Memory, error) {
-	return nil, nil
-}
-
-func (f *fakeMemories) UpsertAgentDailyMemory(context.Context, string, string, time.Time, string) error {
-	return nil
-}
-
-func (f *fakeMemories) AppendAgentDailyMemory(context.Context, string, string, time.Time, string) error {
-	return nil
-}
-
 func TestInstructionComposer_AllDocumentsPresent(t *testing.T) {
 	ctx := context.Background()
 	tempDir := t.TempDir()

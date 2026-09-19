@@ -7,6 +7,7 @@ import (
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+	"github.com/oniharnantyo/onclaw/internal/memory"
 )
 
 // Model is the Eino chat-model interface used by the ADK runtime agent.
@@ -38,6 +39,16 @@ const (
 	// tool_call_finished pair (their ToolResultPayload.Result carries the
 	// block JSON) — this kind is only for the prompt gate.
 	TranscriptEventPromptBlocked TranscriptEventKind = "prompt_blocked"
+	// TranscriptEventMemoryIngested is the post-turn memory chip
+	// (integrate-agent-zero-memory D11, task 3.6): the count and visibility
+	// breakdown of what the background pipeline committed for the turn —
+	// never the content. It is emitted asynchronously after the run has
+	// terminalized, so live consumers see it via the run broadcast only while
+	// the run is still registered; the durable form is the x.memory_ingested
+	// session event the hydrated History projection renders identically.
+	// Scheduled and heartbeat runs never emit it (spec agent-memory-pipeline,
+	// Ingested-chip event).
+	TranscriptEventMemoryIngested TranscriptEventKind = "memory_ingested"
 	// TranscriptEventRunActive is a synthetic status frame the streaming
 	// session-events endpoint writes when its tap attaches to a live run —
 	// never persisted or broadcast by the runner. It tells a reconnected
@@ -176,10 +187,15 @@ type TranscriptEvent struct {
 	Compaction     *CompactionPayload    `json:"compaction,omitempty"`
 	Approval       *ApprovalPayload      `json:"approval,omitempty"`
 	PromptBlocked  *PromptBlockedPayload `json:"prompt_blocked,omitempty"`
-	Error          string                `json:"error,omitempty"`
-	CancelReason   string                `json:"cancel_reason,omitempty"`
-	RetryAttempt   int                   `json:"retry_attempt,omitempty"`
-	Usage          *UsagePayload         `json:"usage,omitempty"`
+	// MemoryIngested carries the post-turn memory chip payload
+	// (integrate-agent-zero-memory D11): committed ids + visibility counts,
+	// never content. The type is the memory package's own registered payload
+	// so the live event and the persisted session event serialize identically.
+	MemoryIngested *memory.MemoryIngestedPayload `json:"memory_ingested,omitempty"`
+	Error          string                        `json:"error,omitempty"`
+	CancelReason   string                        `json:"cancel_reason,omitempty"`
+	RetryAttempt   int                           `json:"retry_attempt,omitempty"`
+	Usage          *UsagePayload                 `json:"usage,omitempty"`
 	// TraceID carries the turn's pinned Langfuse trace id on terminal events
 	// (integrate-langfuse-tracing D3/D5), set only when the turn sampled in
 	// for export — a sampled-out turn carries no id, so a persisted run

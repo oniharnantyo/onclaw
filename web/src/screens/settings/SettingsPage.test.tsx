@@ -169,19 +169,20 @@ describe('screens/settings/SettingsPage', () => {
   }
 
   describe('Navigation & Routing', () => {
-    it('renders the twelve section tab labels with active highlighting and switches section on click', async () => {
+    it('renders the thirteen section tab labels with active highlighting and switches section on click', async () => {
       renderSettingsPage('/settings/workspace');
 
       const tablist = screen.getByRole('tablist');
       expect(tablist).not.toBeNull();
 
       const tabs = screen.getAllByRole('tab');
-      expect(tabs.length).toBe(12);
+      expect(tabs.length).toBe(13);
 
       const expectedLabels = [
         'Workspace',
         'Providers',
         'Members & roles',
+        'Memory',
         'Gateways',
         'Integrations',
         'MCP servers',

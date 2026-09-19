@@ -20,10 +20,12 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/config"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/heartbeat"
+	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/observability"
 	"github.com/oniharnantyo/onclaw/internal/promptgen"
 	"github.com/oniharnantyo/onclaw/internal/scheduler"
 	"github.com/oniharnantyo/onclaw/internal/server"
+	"github.com/oniharnantyo/onclaw/internal/server/handlers"
 	"github.com/oniharnantyo/onclaw/internal/services"
 	"github.com/oniharnantyo/onclaw/internal/storage"
 	"github.com/oniharnantyo/onclaw/internal/storage/resolver"
@@ -209,6 +211,59 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		langfuseHost = traceHandler.Host()
 	}
 
+	// Memory pipeline (integrate-agent-zero-memory 3.1/3.6/4.1): the worker,
+	// the searcher, and the intent gate share the runner's side-call seam —
+	// granular stores, the workspace provider catalog, and the instance
+	// encryption key for per-workspace credential resolution. Side-calls are
+	// Langfuse-traced only when the trace handler is configured (the same
+	// `if traceHandler != nil` gate the runner's option uses). The chip sink
+	// is late-bound to the runner (the channelRuntime.BindRunner pattern): the
+	// worker is built first because the runner consumes it, and the chip
+	// persist+broadcast live on the runner — the closure below reads `runner`
+	// at chip time, after NewRunner has assigned it.
+	memoryLog := slog.Default()
+	var memoryTraceOpts []memory.SideCallOption
+	if traceHandler != nil {
+		memoryTraceOpts = append(memoryTraceOpts, memory.WithTraceCallback(traceHandler.Callback()))
+	}
+	var runner *agents.Runner
+	memoryWorker := memory.NewWorker(
+		memory.NewGister(st.MemoryEvents(), st.SessionEvents(), st.Providers(), encKey, agents.DefaultAgenticModelFactory,
+			append(memoryTraceOpts, memory.WithAgentModelSource(st.Agents()), memory.WithWorkspaceModelSource(st.ToolSettings()))...),
+		memory.NewGate(st.MemoryNotes(), st.Memories(), st.Providers(), encKey, agents.DefaultAgenticModelFactory, memoryLog,
+			append(memoryTraceOpts, memory.WithAgentModelSource(st.Agents()), memory.WithWorkspaceModelSource(st.ToolSettings()))...),
+		memoryLog,
+		memory.WithChipSink(func(ctx context.Context, job memory.IngestJob, payload memory.MemoryIngestedPayload) {
+			runner.AppendMemoryChip(ctx, job, payload)
+		}),
+		// Workspace posture (integrate-agent-zero-memory D4): the per-workspace
+		// visibility-default switch (narrow | org-shared) read from the memory
+		// settings record; absence or read failure is the safe narrow default.
+		memory.WithPostureFunc(func(ctx context.Context, workspaceID string) memory.Posture {
+			return handlers.MemoryPostureForWorkspace(ctx, st.ToolSettings(), workspaceID)
+		}),
+	)
+	memorySearcher := memory.NewSearcher(st.MemoryNotes(), st.MemoryEvents())
+	intentGate := memory.NewIntentGate(st.Providers(), encKey, agents.DefaultAgenticModelFactory, memoryLog,
+		append(memoryTraceOpts, memory.WithAgentModelSource(st.Agents()), memory.WithWorkspaceModelSource(st.ToolSettings()))...)
+
+	// Memory consolidator (integrate-agent-zero-memory 6.1–6.3, D12): the
+	// nightly per-workspace pass aligns to ~02:00 in each workspace's local
+	// time and reads the worker's Stats counters for the morning report's
+	// extraction-failure deltas. The consolidate-now endpoint reaches the same
+	// code path through the router's narrow RunNow seam.
+	memoryConsolidator := memory.NewConsolidator(
+		st.MemoryNotes(),
+		st.MemoryReports(),
+		st.Workspaces(),
+		st.Providers(),
+		encKey,
+		agents.DefaultAgenticModelFactory,
+		memoryWorker.Stats,
+		memoryLog,
+		memory.WithSideCall(append(memoryTraceOpts, memory.WithAgentModelSource(st.Agents()), memory.WithWorkspaceModelSource(st.ToolSettings()))...),
+	)
+
 	// Construct the runtime runner. ToolRegistry is built-in; NewDefaultToolRegistry
 	// registers web.search. The runner handles session history queries and execution.
 	// Run contexts derive from a process-lifetime base context, not the command
@@ -219,6 +274,7 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		agents.WithToolRegistry(agents.NewDefaultToolRegistry(
 			st.Memories(),
 			agents.WithSchedulerTools(st.Schedulers(), st.Channels()),
+			agents.WithMemorySearch(memorySearcher),
 		)),
 		agents.WithToolPolicy(toolSettings),
 		agents.WithMCPPolicy(mcp.NewSettingsPolicy(mcpSettings)),
@@ -238,7 +294,7 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	if traceHandler != nil {
 		runnerOpts = append(runnerOpts, agents.WithTraceHandler(traceHandler.Callback(), traceHandler.SampleRate()))
 	}
-	runner := agents.NewRunner(
+	runner = agents.NewRunner(
 		st.Workspaces(),
 		st.Agents(),
 		st.Users(),
@@ -249,11 +305,27 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		st.SessionCheckpoints(),
 		st.Memories(),
 		st.AgentSessions(),
+		st.GatewayLinks(),
+		memoryWorker,
+		memorySearcher,
+		intentGate,
 		encKey,
 		cfg.OnClawDir,
 		runnerOpts...,
 	)
 	channelRuntime.BindRunner(runner)
+
+	// Memory worker drain loop (integrate-agent-zero-memory 3.1): rides the
+	// process-lifetime context like the scheduler and heartbeat loops — the
+	// drain goroutines exit on shutdown cancel, and Stop() below waits for
+	// in-flight jobs before the process exits.
+	memoryWorker.Start(lifecycleCtx)
+
+	// Consolidator loop (integrate-agent-zero-memory 6.1): the nightly
+	// per-workspace pass rides the same process-lifetime context as the
+	// scheduler and heartbeat loops — shutdown cancels the loop while Stop()
+	// below waits for in-flight passes.
+	memoryConsolidator.Start(lifecycleCtx)
 
 	// Scheduler loop (integrate-scheduler D3/D4): the ticker claims due
 	// standing orders from the store and dispatches them through the same
@@ -360,6 +432,7 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		HooksScriptEnabled:  cfg.HooksScriptEnabled,
 		WorkspaceStorage:    wsResolver,
 		Gateways:            gatewayRuntime,
+		MemoryConsolidator:  memoryConsolidator,
 		LangfuseHost:        langfuseHost,
 	})
 
@@ -446,6 +519,20 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	case <-time.After(cfg.RunDrainWindow):
 		slog.Warn("heartbeat stop exceeded the drain window; in-flight ticks keep their own deadline")
 	}
+
+	// Stop the memory worker (integrate-agent-zero-memory 3.1): enqueue
+	// acceptance halts (no runs are left to mint jobs) and in-flight jobs keep
+	// the worker's own stop grace before the process exits. Queued-but-
+	// unstarted jobs are abandoned — the raw session events stay intact for
+	// the next start's reprocessing.
+	slog.Info("stopping memory worker")
+	memoryWorker.Stop()
+
+	// Stop the memory consolidator (integrate-agent-zero-memory 6.1): the
+	// nightly loop halts and in-flight passes keep the consolidator's own
+	// stop grace before the process exits.
+	slog.Info("stopping memory consolidator")
+	memoryConsolidator.Stop()
 
 	// Flush pending Langfuse exports (integrate-langfuse-tracing 3.3): after
 	// the run drain and the scheduler stop every traced turn has reached its

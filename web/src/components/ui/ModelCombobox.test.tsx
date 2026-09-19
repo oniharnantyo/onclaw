@@ -214,4 +214,41 @@ describe('components/ui/ModelCombobox', () => {
     expect(within(unknownRow).queryByTitle('Supports reasoning')).toBeNull();
     expect(within(unknownRow).queryByTitle('Supports tool calling')).toBeNull();
   });
+
+  it('marks embedding-classified models with the embedding icon', async () => {
+    // The wire carries no embedding flag, so the marker rides the shared
+    // name classifier (lib/embedding) — embedding rows are spottable in
+    // chat-model dropdowns where they would be inert as chat models.
+    vi.spyOn(api.providers, 'models').mockResolvedValue({
+      source: 'live',
+      models: [
+        { id: 'nvidia/nemotron-3-embed-1b', name: 'nemotron-3-embed-1b' },
+        { id: 'snowflake/arctic-embed-l', name: 'arctic-embed-l' },
+        { id: 'glm-5', name: 'GLM 5' },
+      ],
+    });
+
+    render(
+      <ModelCombobox
+        workspaceId="acme"
+        providerId="prov-1"
+        model="glm-5"
+        onModelChange={vi.fn()}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('badge-source-live')).not.toBeNull();
+    });
+
+    // Closed combobox stays quiet — icons live in the dropdown rows only.
+    expect(screen.queryByTitle('Embedding model')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('select-model-trigger'));
+
+    expect(within(screen.getByTestId('combobox-option-nvidia/nemotron-3-embed-1b')).getByTitle('Embedding model')).not.toBeNull();
+    expect(within(screen.getByTestId('combobox-option-snowflake/arctic-embed-l')).getByTitle('Embedding model')).not.toBeNull();
+    // Chat-classified rows carry no embedding marker.
+    expect(within(screen.getByTestId('combobox-option-glm-5')).queryByTitle('Embedding model')).toBeNull();
+  });
 });

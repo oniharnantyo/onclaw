@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +19,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/oniharnantyo/onclaw/internal/agents"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/openresponses"
 	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/server"
@@ -99,9 +102,18 @@ func setupV1EnvOpts(t *testing.T, release chan struct{}, keepAlive time.Duration
 	})
 
 	onClawDir := t.TempDir()
+	memLog := slog.New(slog.NewTextHandler(io.Discard, nil))
+	memWorker := memory.NewWorker(
+		memory.NewGister(st.MemoryEvents(), st.SessionEvents(), st.Providers(), []byte("test-key-32-bytes-long-12345678"), agents.DefaultAgenticModelFactory),
+		memory.NewGate(st.MemoryNotes(), st.Memories(), st.Providers(), []byte("test-key-32-bytes-long-12345678"), agents.DefaultAgenticModelFactory, memLog),
+		memLog,
+	)
+	memSearch := memory.NewSearcher(st.MemoryNotes(), st.MemoryEvents())
+	memGate := memory.NewIntentGate(st.Providers(), []byte("test-key-32-bytes-long-12345678"), agents.DefaultAgenticModelFactory, memLog)
 	runner := agents.NewRunner(
 		st.Workspaces(), st.Agents(), st.Users(), st.Members(), st.Roles(),
 		st.Providers(), st.SessionEvents(), st.SessionCheckpoints(), st.Memories(), st.AgentSessions(),
+		st.GatewayLinks(), memWorker, memSearch, memGate,
 		[]byte("test-key-32-bytes-long-12345678"),
 		onClawDir,
 		agents.WithAgenticModelFactory(func(_ context.Context, _ string, _ providers.Credential, _ string) (model.BaseModel[*schema.AgenticMessage], error) {

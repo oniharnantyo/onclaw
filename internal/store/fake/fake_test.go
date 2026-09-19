@@ -1188,84 +1188,6 @@ func TestMemoryStore_WorkspaceMemory(t *testing.T) {
 	}
 }
 
-func TestMemoryStore_AgentDailyMemory(t *testing.T) {
-	ctx := context.Background()
-	s := fake.New()
-
-	ws1, _, a1 := seedMemoryFixtures(t, s, "mem-daily-ws1", "mem-d1@example.com", "atlas")
-	ws2, _, a2 := seedMemoryFixtures(t, s, "mem-daily-ws2", "mem-d2@example.com", "beacon")
-	mem := s.Memories()
-
-	day := time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC)
-	nextDay := time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)
-
-	// Get-absent returns (nil, nil).
-	got, err := mem.AgentDailyMemory(ctx, ws1, a1, day)
-	if err != nil || got != nil {
-		t.Fatalf("expected (nil, nil) for absent daily memory, got (%v, %v)", got, err)
-	}
-
-	// First append to a nonexistent day creates the document.
-	if err := mem.AppendAgentDailyMemory(ctx, ws1, a1, day, "Morning: triaged incidents."); err != nil {
-		t.Fatalf("unexpected AppendAgentDailyMemory error: %v", err)
-	}
-
-	// Two appends land in order in one document.
-	if err := mem.AppendAgentDailyMemory(ctx, ws1, a1, day, " Afternoon: wrote postmortem."); err != nil {
-		t.Fatalf("unexpected second AppendAgentDailyMemory error: %v", err)
-	}
-	got, err = mem.AgentDailyMemory(ctx, ws1, a1, day)
-	if err != nil || got == nil {
-		t.Fatalf("expected daily memory, got (%v, %v)", got, err)
-	}
-	if got.Content != "Morning: triaged incidents. Afternoon: wrote postmortem." {
-		t.Fatalf("expected ordered concatenation, got %q", got.Content)
-	}
-
-	// Upsert REPLACES the day's document in place (one doc per day).
-	if err := mem.UpsertAgentDailyMemory(ctx, ws1, a1, day, "Rewritten summary."); err != nil {
-		t.Fatalf("unexpected UpsertAgentDailyMemory error: %v", err)
-	}
-	got, _ = mem.AgentDailyMemory(ctx, ws1, a1, day)
-	if got.Content != "Rewritten summary." {
-		t.Fatalf("expected replaced daily content, got %q", got.Content)
-	}
-
-	// A different date is a separate document.
-	got, _ = mem.AgentDailyMemory(ctx, ws1, a1, nextDay)
-	if got != nil {
-		t.Fatalf("expected nil memory for other day, got %q", got.Content)
-	}
-
-	// Scope isolation: other agent and other workspace see nothing.
-	got, _ = mem.AgentDailyMemory(ctx, ws1, a2, day)
-	if got != nil {
-		t.Fatalf("expected nil memory for other agent, got %q", got.Content)
-	}
-	got, _ = mem.AgentDailyMemory(ctx, ws2, a1, day)
-	if got != nil {
-		t.Fatalf("expected nil memory for other workspace, got %q", got.Content)
-	}
-
-	// Cap rejection on Upsert and Append.
-	over := strings.Repeat("a", domain.MaxMemoryContentChars+1)
-	if err := mem.UpsertAgentDailyMemory(ctx, ws1, a1, day, over); !errors.Is(err, domain.ErrMemoryCapExceeded) {
-		t.Fatalf("expected ErrMemoryCapExceeded on over-cap upsert, got %v", err)
-	}
-	if err := mem.AppendAgentDailyMemory(ctx, ws1, a1, day, over); !errors.Is(err, domain.ErrMemoryCapExceeded) {
-		t.Fatalf("expected ErrMemoryCapExceeded on over-cap append, got %v", err)
-	}
-
-	// Daily memories die with the agent (ON DELETE CASCADE).
-	if err := s.Agents().Delete(ctx, ws1, a1); err != nil {
-		t.Fatalf("unexpected Delete agent error: %v", err)
-	}
-	got, _ = mem.AgentDailyMemory(ctx, ws1, a1, day)
-	if got != nil {
-		t.Fatalf("expected daily memory to cascade-delete with agent, got %q", got.Content)
-	}
-}
-
 func TestWithTx_Memories(t *testing.T) {
 	ctx := context.Background()
 	s := fake.New()
@@ -1729,4 +1651,616 @@ func TestWithTx_MCPServers(t *testing.T) {
 	if err != nil || len(list) != 1 || list[0].Name != "Committed" {
 		t.Fatalf("committed server must persist, got %+v err %v", list, err)
 	}
+}
+
+// seedMemoryScopes creates one workspace with two members and two agents so
+// the visibility tiers (shared / user / agent) can be exercised for
+// cross-member and cross-agent exclusion.
+func seedMemoryScopes(t *testing.T, s store.Store) (wsID, userA, userB, agentX, agentY string) {
+	t.Helper()
+	ctx := context.Background()
+
+	ws := &domain.Workspace{Slug: "mem-scopes-ws", Name: "Mem Scopes WS"}
+	if err := s.Workspaces().Create(ctx, ws); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	uA := &domain.User{Email: "member-a@example.com", Name: "Member A"}
+	if err := s.Users().Create(ctx, uA); err != nil {
+		t.Fatalf("create user A: %v", err)
+	}
+	uB := &domain.User{Email: "member-b@example.com", Name: "Member B"}
+	if err := s.Users().Create(ctx, uB); err != nil {
+		t.Fatalf("create user B: %v", err)
+	}
+	p := &domain.ProviderConfig{WorkspaceID: ws.ID, Type: "openai", Name: "P", Enabled: true}
+	if err := s.Providers().Create(ctx, p); err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	aX := &domain.Agent{WorkspaceID: ws.ID, Slug: "atlas", Name: "Atlas", ProviderID: p.ID, Model: "gpt-4o"}
+	if err := s.Agents().Create(ctx, aX); err != nil {
+		t.Fatalf("create agent X: %v", err)
+	}
+	aY := &domain.Agent{WorkspaceID: ws.ID, Slug: "beacon", Name: "Beacon", ProviderID: p.ID, Model: "gpt-4o"}
+	if err := s.Agents().Create(ctx, aY); err != nil {
+		t.Fatalf("create agent Y: %v", err)
+	}
+	return ws.ID, uA.ID, uB.ID, aX.ID, aY.ID
+}
+
+// newMemoryNote builds a write-valid note owned per its tier (ownerID is the
+// user or agent owner depending on visibility).
+func newMemoryNote(wsID string, visibility domain.MemoryVisibility, ownerID, content string) *domain.MemoryNote {
+	n := &domain.MemoryNote{
+		WorkspaceID:   wsID,
+		Visibility:    visibility,
+		Origin:        domain.MemoryOriginDialogue,
+		EventTime:     time.Date(2026, 9, 15, 10, 0, 0, 0, time.UTC),
+		LearnedAt:     time.Date(2026, 9, 15, 10, 0, 1, 0, time.UTC),
+		SourceEventID: "evt_test_1",
+		Content:       content,
+	}
+	switch visibility {
+	case domain.MemoryVisibilityUser:
+		n.UserID = &ownerID
+	case domain.MemoryVisibilityAgent:
+		n.AgentID = &ownerID
+	}
+	return n
+}
+
+// newMemoryEvent builds a write-valid gist event owned per its tier
+// (ownerID is the user owner for user-visibility rows, else "").
+func newMemoryEvent(wsID, agentID, sessionID, turnID string, visibility domain.MemoryVisibility, ownerID, description string) *domain.MemoryEvent {
+	e := &domain.MemoryEvent{
+		WorkspaceID:   wsID,
+		AgentID:       agentID,
+		SessionID:     sessionID,
+		TurnID:        turnID,
+		Visibility:    visibility,
+		Origin:        domain.MemoryOriginDialogue,
+		EventTime:     time.Date(2026, 9, 15, 10, 0, 0, 0, time.UTC),
+		LearnedAt:     time.Date(2026, 9, 15, 10, 0, 1, 0, time.UTC),
+		SourceEventID: "evt_test_1",
+		Description:   description,
+	}
+	if visibility == domain.MemoryVisibilityUser {
+		e.UserID = &ownerID
+	}
+	return e
+}
+
+func TestMemoryNotes_VisibilityScoping(t *testing.T) {
+	ctx := context.Background()
+	s := fake.New()
+	ws, userA, userB, agentX, agentY := seedMemoryScopes(t, s)
+
+	// Seed one note per tier/owner combination.
+	notes := s.MemoryNotes()
+	shared := newMemoryNote(ws, domain.MemoryVisibilityShared, "", "Deploy freeze on Fridays.")
+	if err := notes.InsertNote(ctx, shared, domain.MemoryVisibilityShared); err != nil {
+		t.Fatalf("insert shared note: %v", err)
+	}
+	noteA := newMemoryNote(ws, domain.MemoryVisibilityUser, userA, "Alice deploys the payments service.")
+	if err := notes.InsertNote(ctx, noteA, domain.MemoryVisibilityUser); err != nil {
+		t.Fatalf("insert user A note: %v", err)
+	}
+	noteB := newMemoryNote(ws, domain.MemoryVisibilityUser, userB, "Bob owns the on-call rota.")
+	if err := notes.InsertNote(ctx, noteB, domain.MemoryVisibilityUser); err != nil {
+		t.Fatalf("insert user B note: %v", err)
+	}
+	noteX := newMemoryNote(ws, domain.MemoryVisibilityAgent, agentX, "Atlas retries failed webhooks twice.")
+	if err := notes.InsertNote(ctx, noteX, domain.MemoryVisibilityAgent); err != nil {
+		t.Fatalf("insert agent X note: %v", err)
+	}
+	noteY := newMemoryNote(ws, domain.MemoryVisibilityAgent, agentY, "Beacon drafts incident timelines.")
+	if err := notes.InsertNote(ctx, noteY, domain.MemoryVisibilityAgent); err != nil {
+		t.Fatalf("insert agent Y note: %v", err)
+	}
+
+	// Viewer A served by X sees shared + own-user + serving-agent rows only.
+	list, err := notes.ListNotesForUI(ctx, ws, userA, agentX, store.MemoryNoteFilters{})
+	if err != nil {
+		t.Fatalf("list for A/X: %v", err)
+	}
+	if len(list) != 3 {
+		t.Fatalf("expected 3 visible notes for A/X, got %d: %+v", len(list), list)
+	}
+	seen := map[string]bool{}
+	for _, n := range list {
+		seen[n.ID] = true
+	}
+	if !seen[shared.ID] || !seen[noteA.ID] || !seen[noteX.ID] {
+		t.Fatalf("expected shared + own-user + serving-agent notes, got %+v", list)
+	}
+
+	// Cross-member exclusion: B served by X sees shared + own-user + agent X
+	// (3) — noteA must be absent.
+	list, _ = notes.ListNotesForUI(ctx, ws, userB, agentX, store.MemoryNoteFilters{})
+	if len(list) != 3 {
+		t.Fatalf("expected 3 visible notes for B/X, got %d", len(list))
+	}
+	for _, n := range list {
+		if n.ID == noteA.ID {
+			t.Fatalf("B must not see A's user-visibility note, got %+v", list)
+		}
+	}
+
+	// Cross-agent exclusion: A served by Y sees shared + own-user + agent Y
+	// (3) — noteX must be absent.
+	list, _ = notes.ListNotesForUI(ctx, ws, userA, agentY, store.MemoryNoteFilters{})
+	if len(list) != 3 {
+		t.Fatalf("expected 3 visible notes for A/Y, got %d", len(list))
+	}
+	for _, n := range list {
+		if n.ID == noteX.ID {
+			t.Fatalf("A served by Y must not see agent X's note, got %+v", list)
+		}
+	}
+
+	// Search applies the same structural filter: B searching for A's note
+	// content finds nothing; A finds it.
+	found, err := notes.SearchNotes(ctx, ws, userB, agentX, "payments service", store.MemoryNoteFilters{})
+	if err != nil {
+		t.Fatalf("search for B: %v", err)
+	}
+	if len(found) != 0 {
+		t.Fatalf("expected 0 search hits for B on A's note, got %d", len(found))
+	}
+	found, err = notes.SearchNotes(ctx, ws, userA, agentX, "payments service", store.MemoryNoteFilters{})
+	if err != nil {
+		t.Fatalf("search for A: %v", err)
+	}
+	if len(found) != 1 || found[0].ID != noteA.ID {
+		t.Fatalf("expected A's note, got %+v", found)
+	}
+
+	// Direct fetch by ID is scope-filtered too: a foreign note is
+	// indistinguishable from an absent one.
+	got, err := notes.GetNote(ctx, ws, userA, agentX, noteB.ID)
+	if err != nil || got != nil {
+		t.Fatalf("expected (nil, nil) for foreign note, got (%+v, %v)", got, err)
+	}
+	got, err = notes.GetNote(ctx, ws, userB, agentX, noteB.ID)
+	if err != nil || got == nil || got.ID != noteB.ID {
+		t.Fatalf("expected own note, got (%+v, %v)", got, err)
+	}
+
+	// Events obey the same rule.
+	events := s.MemoryEvents()
+	evShared := newMemoryEvent(ws, agentX, "sess_1", "turn_1", domain.MemoryVisibilityShared, "", "Channel triaged the outage.")
+	if err := events.InsertEvent(ctx, evShared); err != nil {
+		t.Fatalf("insert shared event: %v", err)
+	}
+	evA := newMemoryEvent(ws, agentX, "sess_1", "turn_2", domain.MemoryVisibilityUser, userA, "Alice walked through the migration.")
+	if err := events.InsertEvent(ctx, evA); err != nil {
+		t.Fatalf("insert user event: %v", err)
+	}
+	evX := newMemoryEvent(ws, agentX, "sess_1", "turn_3", domain.MemoryVisibilityAgent, "", "Atlas finished the sweep.")
+	if err := events.InsertEvent(ctx, evX); err != nil {
+		t.Fatalf("insert agent event: %v", err)
+	}
+
+	// B served by Y sees only the shared gist; A served by X sees all three.
+	evList, err := events.ListEventsForUI(ctx, ws, userB, agentY, store.MemoryEventFilters{})
+	if err != nil || len(evList) != 1 || evList[0].ID != evShared.ID {
+		t.Fatalf("expected only the shared event for B/Y, got (%d, %v)", len(evList), err)
+	}
+	evList, err = events.ListEventsForUI(ctx, ws, userA, agentX, store.MemoryEventFilters{})
+	if err != nil || len(evList) != 3 {
+		t.Fatalf("expected 3 events for A/X, got (%d, %v)", len(evList), err)
+	}
+	evFound, err := events.SearchEvents(ctx, ws, userB, agentY, "migration", store.MemoryEventFilters{})
+	if err != nil {
+		t.Fatalf("event search for B: %v", err)
+	}
+	if len(evFound) != 0 {
+		t.Fatalf("expected 0 event hits for B on A's gist, got %d", len(evFound))
+	}
+
+	// Workspace partition: ws1 caller identity scoped into ws2 sees nothing.
+	ws2, _, _, _, _ := seedMemoryScopes2(t, s)
+	list, _ = notes.ListNotesForUI(ctx, ws2, userA, agentX, store.MemoryNoteFilters{})
+	if len(list) != 0 {
+		t.Fatalf("expected no notes across the workspace partition, got %d", len(list))
+	}
+}
+
+// seedMemoryScopes2 creates a second workspace for partition tests.
+func seedMemoryScopes2(t *testing.T, s store.Store) (wsID, userA, userB, agentX, agentY string) {
+	t.Helper()
+	ctx := context.Background()
+
+	ws := &domain.Workspace{Slug: "mem-scopes-ws-2", Name: "Mem Scopes WS 2"}
+	if err := s.Workspaces().Create(ctx, ws); err != nil {
+		t.Fatalf("create workspace 2: %v", err)
+	}
+	u := &domain.User{Email: "member-c@example.com", Name: "Member C"}
+	if err := s.Users().Create(ctx, u); err != nil {
+		t.Fatalf("create user C: %v", err)
+	}
+	p := &domain.ProviderConfig{WorkspaceID: ws.ID, Type: "openai", Name: "P2", Enabled: true}
+	if err := s.Providers().Create(ctx, p); err != nil {
+		t.Fatalf("create provider 2: %v", err)
+	}
+	a := &domain.Agent{WorkspaceID: ws.ID, Slug: "cobalt", Name: "Cobalt", ProviderID: p.ID, Model: "gpt-4o"}
+	if err := s.Agents().Create(ctx, a); err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	return ws.ID, u.ID, u.ID, a.ID, a.ID
+}
+
+func TestMemoryNotes_CeilingRejection(t *testing.T) {
+	ctx := context.Background()
+	s := fake.New()
+	ws, userA, _, agentX, _ := seedMemoryScopes(t, s)
+	notes := s.MemoryNotes()
+
+	// The domain ordering: agent < user < shared. Widening beyond the
+	// ceiling is rejected; equal or narrower proposals pass.
+	if err := domain.ValidateMemoryVisibilityWithin(domain.MemoryVisibilityUser, domain.MemoryVisibilityShared); !errors.Is(err, domain.ErrMemoryVisibilityExceeded) {
+		t.Fatalf("expected ErrMemoryVisibilityExceeded for shared over user, got %v", err)
+	}
+	if err := domain.ValidateMemoryVisibilityWithin(domain.MemoryVisibilityShared, domain.MemoryVisibilityUser); err != nil {
+		t.Fatalf("expected user under shared ceiling to pass, got %v", err)
+	}
+	if err := domain.ValidateMemoryVisibilityWithin(domain.MemoryVisibilityUser, domain.MemoryVisibilityAgent); err != nil {
+		t.Fatalf("expected agent under user ceiling to pass, got %v", err)
+	}
+	if err := domain.ValidateMemoryVisibilityWithin(domain.MemoryVisibilityUser, domain.MemoryVisibilityUser); err != nil {
+		t.Fatalf("expected equal ceiling to pass, got %v", err)
+	}
+
+	// A DM-ceiling write proposing shared is rejected at the store boundary.
+	note := newMemoryNote(ws, domain.MemoryVisibilityShared, "", "Share everything with everyone.")
+	if err := notes.InsertNote(ctx, note, domain.MemoryVisibilityUser); !errors.Is(err, domain.ErrMemoryVisibilityExceeded) {
+		t.Fatalf("expected ErrMemoryVisibilityExceeded inserting shared under user ceiling, got %v", err)
+	}
+
+	// Supersede proposals are ceiling-checked the same way.
+	old := newMemoryNote(ws, domain.MemoryVisibilityUser, userA, "Provider is Stripe.")
+	if err := notes.InsertNote(ctx, old, domain.MemoryVisibilityUser); err != nil {
+		t.Fatalf("insert old note: %v", err)
+	}
+	correction := newMemoryNote(ws, domain.MemoryVisibilityShared, "", "Provider is Midtrans, share it.")
+	if err := notes.SupersedeNote(ctx, ws, old.ID, correction, domain.MemoryVisibilityUser); !errors.Is(err, domain.ErrMemoryVisibilityExceeded) {
+		t.Fatalf("expected ErrMemoryVisibilityExceeded superseding with shared under user ceiling, got %v", err)
+	}
+
+	// Unknown tiers are invalid input, not ceiling violations.
+	if err := domain.ValidateMemoryVisibilityWithin("bogus", domain.MemoryVisibilityUser); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for unknown ceiling, got %v", err)
+	}
+
+	// The agent-tier pipeline can never birth user- or shared-visibility rows.
+	agentNote := newMemoryNote(ws, domain.MemoryVisibilityAgent, agentX, "Scheduled sweep finished clean.")
+	if err := notes.InsertNote(ctx, agentNote, domain.MemoryVisibilityAgent); err != nil {
+		t.Fatalf("insert agent note: %v", err)
+	}
+	if err := notes.InsertNote(ctx, newMemoryNote(ws, domain.MemoryVisibilityUser, userA, "From a scheduled run."), domain.MemoryVisibilityAgent); !errors.Is(err, domain.ErrMemoryVisibilityExceeded) {
+		t.Fatalf("expected ErrMemoryVisibilityExceeded inserting user under agent ceiling, got %v", err)
+	}
+}
+
+func TestMemoryNotes_SupersedeTombstonePromote(t *testing.T) {
+	ctx := context.Background()
+	s := fake.New()
+	ws, userA, userB, _, _ := seedMemoryScopes(t, s)
+	notes := s.MemoryNotes()
+
+	// Birth a fact from a DM (user ceiling, user owner).
+	old := newMemoryNote(ws, domain.MemoryVisibilityUser, userA, "The payment provider is Stripe.")
+	if err := notes.InsertNote(ctx, old, domain.MemoryVisibilityUser); err != nil {
+		t.Fatalf("insert old note: %v", err)
+	}
+
+	// Correction: new row supersedes, nothing is overwritten (D6).
+	correction := newMemoryNote(ws, domain.MemoryVisibilityUser, userA, "The payment provider is Midtrans.")
+	if err := notes.SupersedeNote(ctx, ws, old.ID, correction, domain.MemoryVisibilityUser); err != nil {
+		t.Fatalf("supersede: %v", err)
+	}
+	if correction.ID == "" || correction.Supersedes == nil || *correction.Supersedes != old.ID {
+		t.Fatalf("expected correction linked to old note, got %+v", correction)
+	}
+
+	// Default list carries the current state only; history shows both.
+	list, err := notes.ListNotesForUI(ctx, ws, userA, "", store.MemoryNoteFilters{})
+	if err != nil || len(list) != 1 || list[0].ID != correction.ID {
+		t.Fatalf("expected only the correction in the default list, got (%+v, %v)", list, err)
+	}
+	history, err := notes.ListNotesForUI(ctx, ws, userA, "", store.MemoryNoteFilters{History: true})
+	if err != nil || len(history) != 2 {
+		t.Fatalf("expected both rows in the history view, got (%d, %v)", len(history), err)
+	}
+
+	// The superseded row stays queryable as history by ID.
+	got, err := notes.GetNote(ctx, ws, userA, "", old.ID)
+	if err != nil || got == nil || got.SupersededBy == nil || *got.SupersededBy != correction.ID {
+		t.Fatalf("expected superseded row retrievable with pointer, got (%+v, %v)", got, err)
+	}
+
+	// A superseded row cannot be superseded twice, nor promoted.
+	second := newMemoryNote(ws, domain.MemoryVisibilityUser, userA, "Second correction.")
+	if err := notes.SupersedeNote(ctx, ws, old.ID, second, domain.MemoryVisibilityUser); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("expected ErrConflict double-superseding, got %v", err)
+	}
+	if err := notes.PromoteNote(ctx, ws, old.ID, userA); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound promoting superseded note, got %v", err)
+	}
+
+	// Tombstoning hides the row from every read path; tombstoned is
+	// indistinguishable from absent on re-delete.
+	if err := notes.TombstoneNote(ctx, ws, correction.ID); err != nil {
+		t.Fatalf("tombstone: %v", err)
+	}
+	got, err = notes.GetNote(ctx, ws, userA, "", correction.ID)
+	if err != nil || got != nil {
+		t.Fatalf("expected tombstoned note invisible to GetNote, got (%+v, %v)", got, err)
+	}
+	list, _ = notes.ListNotesForUI(ctx, ws, userA, "", store.MemoryNoteFilters{History: true})
+	if len(list) != 1 || list[0].ID != old.ID {
+		t.Fatalf("expected tombstoned note excluded even from history, got %+v", list)
+	}
+	found, _ := notes.SearchNotes(ctx, ws, userA, "", "Midtrans", store.MemoryNoteFilters{})
+	if len(found) != 0 {
+		t.Fatalf("expected tombstoned note excluded from search, got %d", len(found))
+	}
+	if err := notes.TombstoneNote(ctx, ws, correction.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound re-tombstoning, got %v", err)
+	}
+
+	// Promotion widens (the only human widening path) and is audited.
+	promoted := newMemoryNote(ws, domain.MemoryVisibilityUser, userA, "The staging window is 02:00-04:00 UTC.")
+	if err := notes.InsertNote(ctx, promoted, domain.MemoryVisibilityUser); err != nil {
+		t.Fatalf("insert promoted note: %v", err)
+	}
+	if err := notes.PromoteNote(ctx, ws, promoted.ID, userA); err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	got, err = notes.GetNote(ctx, ws, userB, "", promoted.ID)
+	if err != nil || got == nil || got.Visibility != domain.MemoryVisibilityShared {
+		t.Fatalf("expected promoted note visible to B as shared, got (%+v, %v)", got, err)
+	}
+	if got.UserID != nil || got.AgentID != nil || got.PromotedBy == nil || *got.PromotedBy != userA || got.PromotedAt == nil {
+		t.Fatalf("expected owner cleared and promotion audited, got %+v", got)
+	}
+	if err := notes.PromoteNote(ctx, ws, promoted.ID, userA); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("expected ErrConflict promoting an already-shared note, got %v", err)
+	}
+	if err := notes.PromoteNote(ctx, ws, "00000000-0000-0000-0000-000000000000", userA); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound promoting unknown note, got %v", err)
+	}
+
+	// Workspace-wide counters reflect tombstones and the promotion.
+	counts, err := notes.CountByVisibility(ctx, ws)
+	if err != nil {
+		t.Fatalf("count by visibility: %v", err)
+	}
+	// old is superseded but alive (history), promoted is shared, correction
+	// is tombstoned — only tombstones leave the counters.
+	if counts[domain.MemoryVisibilityShared] != 1 || counts[domain.MemoryVisibilityUser] != 1 {
+		t.Fatalf("expected 1 shared and 1 user note, got %+v", counts)
+	}
+
+	// Dedupe candidate count (current notes only — superseded rows are dead
+	// candidates): the fresh fact overlaps the stored one, an unrelated
+	// proposal does not.
+	current := newMemoryNote(ws, domain.MemoryVisibilityUser, userA, "The payment provider is Midtrans.")
+	if err := notes.InsertNote(ctx, current, domain.MemoryVisibilityUser); err != nil {
+		t.Fatalf("insert current note: %v", err)
+	}
+	similar, err := notes.CountSimilar(ctx, ws, userA, "", "The payment provider is Midtrans, launched yesterday.", 0.3)
+	if err != nil {
+		t.Fatalf("count similar: %v", err)
+	}
+	if similar != 1 {
+		t.Fatalf("expected 1 similar candidate, got %d", similar)
+	}
+	// A proposal matching an already-stored current fact finds it — that is
+	// the ADD-vs-SUPERSEDE decision input.
+	similar, err = notes.CountSimilar(ctx, ws, userA, "", "The staging window is 02:00-04:00 UTC.", 0.3)
+	if err != nil {
+		t.Fatalf("count exact similar: %v", err)
+	}
+	if similar != 1 {
+		t.Fatalf("expected 1 candidate for the already-stored fact, got %d", similar)
+	}
+}
+
+func TestMemoryEvents_CursorCountsAndTombstone(t *testing.T) {
+	ctx := context.Background()
+	s := fake.New()
+	ws, userA, _, agentX, _ := seedMemoryScopes(t, s)
+	events := s.MemoryEvents()
+
+	// The gister's incremental cursor: the newest non-tombstoned gist for
+	// the session, (nil, nil) before any gist exists.
+	latest, err := events.LatestEventForSession(ctx, ws, "sess_cursor")
+	if err != nil || latest != nil {
+		t.Fatalf("expected (nil, nil) for ungisted session, got (%+v, %v)", latest, err)
+	}
+
+	first := newMemoryEvent(ws, agentX, "sess_cursor", "turn_1", domain.MemoryVisibilityUser, userA, "Window one.")
+	first.EventTime = time.Date(2026, 9, 15, 9, 0, 0, 0, time.UTC)
+	if err := events.InsertEvent(ctx, first); err != nil {
+		t.Fatalf("insert first: %v", err)
+	}
+	second := newMemoryEvent(ws, agentX, "sess_cursor", "turn_2", domain.MemoryVisibilityUser, userA, "Window two.")
+	second.EventTime = time.Date(2026, 9, 15, 9, 30, 0, 0, time.UTC)
+	if err := events.InsertEvent(ctx, second); err != nil {
+		t.Fatalf("insert second: %v", err)
+	}
+
+	latest, err = events.LatestEventForSession(ctx, ws, "sess_cursor")
+	if err != nil || latest == nil || latest.ID != second.ID {
+		t.Fatalf("expected the newest gist as cursor, got (%+v, %v)", latest, err)
+	}
+
+	// Per-turn counts back the chip's breakdown.
+	counts, err := events.CountByVisibility(ctx, ws, "sess_cursor", "turn_2")
+	if err != nil || counts[domain.MemoryVisibilityUser] != 1 {
+		t.Fatalf("expected 1 user gist for turn_2, got (%+v, %v)", counts, err)
+	}
+	counts, err = events.CountByVisibility(ctx, ws, "sess_cursor", "turn_unknown")
+	if err != nil || len(counts) != 0 {
+		t.Fatalf("expected empty counts for unknown turn, got (%+v, %v)", counts, err)
+	}
+
+	// Tombstoning the latest gist makes the previous one the cursor again.
+	if err := events.TombstoneEvent(ctx, ws, second.ID); err != nil {
+		t.Fatalf("tombstone: %v", err)
+	}
+	latest, err = events.LatestEventForSession(ctx, ws, "sess_cursor")
+	if err != nil || latest == nil || latest.ID != first.ID {
+		t.Fatalf("expected first gist after tombstoning second, got (%+v, %v)", latest, err)
+	}
+	list, _ := events.ListEventsForUI(ctx, ws, userA, agentX, store.MemoryEventFilters{})
+	if len(list) != 1 {
+		t.Fatalf("expected tombstoned event hidden from list, got %d", len(list))
+	}
+	if err := events.TombstoneEvent(ctx, ws, second.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound re-tombstoning, got %v", err)
+	}
+
+	// Empty search queries are invalid input on both stores.
+	if _, err := events.SearchEvents(ctx, ws, userA, agentX, "  ", store.MemoryEventFilters{}); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for empty event query, got %v", err)
+	}
+	if _, err := s.MemoryNotes().SearchNotes(ctx, ws, userA, agentX, "", store.MemoryNoteFilters{}); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for empty note query, got %v", err)
+	}
+
+	// Topic and time-window filters narrow the note listing.
+	notes := s.MemoryNotes()
+	topic := "deployments"
+	n := newMemoryNote(ws, domain.MemoryVisibilityUser, userA, "Staging redeploys nightly.")
+	n.Topic = &topic
+	n.EventTime = time.Date(2026, 9, 15, 8, 0, 0, 0, time.UTC)
+	if err := notes.InsertNote(ctx, n, domain.MemoryVisibilityUser); err != nil {
+		t.Fatalf("insert topic note: %v", err)
+	}
+	noteList, err := notes.ListNotesForUI(ctx, ws, userA, "", store.MemoryNoteFilters{Topic: "deployments"})
+	if err != nil || len(noteList) != 1 {
+		t.Fatalf("expected 1 topic-filtered note, got (%d, %v)", len(noteList), err)
+	}
+	noteList, err = notes.ListNotesForUI(ctx, ws, userA, "", store.MemoryNoteFilters{
+		TimeWindow: &store.MemoryTimeWindow{From: time.Date(2026, 9, 15, 9, 0, 0, 0, time.UTC)},
+	})
+	if err != nil || len(noteList) != 0 {
+		t.Fatalf("expected 0 notes before the window, got (%d, %v)", len(noteList), err)
+	}
+}
+
+func TestMemoryNotes_ProvenanceAndOwnerRejection(t *testing.T) {
+	ctx := context.Background()
+	s := fake.New()
+	ws, userA, _, agentX, _ := seedMemoryScopes(t, s)
+	notes := s.MemoryNotes()
+
+	// Birth-tuple completeness (D5): each missing member blocks the write.
+	incomplete := newMemoryNote(ws, domain.MemoryVisibilityUser, userA, "No evidence pointer.")
+	incomplete.SourceEventID = ""
+	if err := notes.InsertNote(ctx, incomplete, domain.MemoryVisibilityUser); !errors.Is(err, domain.ErrMemoryProvenanceIncomplete) {
+		t.Fatalf("expected ErrMemoryProvenanceIncomplete for empty source_event_id, got %v", err)
+	}
+	incomplete = newMemoryNote(ws, domain.MemoryVisibilityUser, userA, "No event time.")
+	incomplete.EventTime = time.Time{}
+	if err := notes.InsertNote(ctx, incomplete, domain.MemoryVisibilityUser); !errors.Is(err, domain.ErrMemoryProvenanceIncomplete) {
+		t.Fatalf("expected ErrMemoryProvenanceIncomplete for zero event_time, got %v", err)
+	}
+	incomplete = newMemoryNote(ws, domain.MemoryVisibilityUser, userA, "No learned time.")
+	incomplete.LearnedAt = time.Time{}
+	if err := notes.InsertNote(ctx, incomplete, domain.MemoryVisibilityUser); !errors.Is(err, domain.ErrMemoryProvenanceIncomplete) {
+		t.Fatalf("expected ErrMemoryProvenanceIncomplete for zero learned_at, got %v", err)
+	}
+	incomplete = newMemoryNote(ws, domain.MemoryVisibilityUser, userA, "Unknown origin.")
+	incomplete.Origin = "whispered"
+	if err := notes.InsertNote(ctx, incomplete, domain.MemoryVisibilityUser); !errors.Is(err, domain.ErrMemoryProvenanceIncomplete) {
+		t.Fatalf("expected ErrMemoryProvenanceIncomplete for unknown origin, got %v", err)
+	}
+
+	// Owner shape mirrors the SQL CHECKs.
+	badOwner := newMemoryNote(ws, domain.MemoryVisibilityUser, "", "No owner.")
+	badOwner.UserID = nil
+	if err := notes.InsertNote(ctx, badOwner, domain.MemoryVisibilityUser); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for user-visibility note without owner, got %v", err)
+	}
+	badShared := newMemoryNote(ws, domain.MemoryVisibilityShared, "", "Shared with a stray owner.")
+	badShared.UserID = &userA
+	if err := notes.InsertNote(ctx, badShared, domain.MemoryVisibilityShared); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for shared note with user owner, got %v", err)
+	}
+
+	// Events enforce the same rules.
+	events := s.MemoryEvents()
+	badEvent := newMemoryEvent(ws, agentX, "sess_p", "turn_1", domain.MemoryVisibilityUser, userA, "No provenance.")
+	badEvent.LearnedAt = time.Time{}
+	if err := events.InsertEvent(ctx, badEvent); !errors.Is(err, domain.ErrMemoryProvenanceIncomplete) {
+		t.Fatalf("expected ErrMemoryProvenanceIncomplete for event without learned_at, got %v", err)
+	}
+	badEvent = newMemoryEvent(ws, agentX, "sess_p", "turn_1", domain.MemoryVisibilityUser, userA, "No owner.")
+	badEvent.UserID = nil
+	if err := events.InsertEvent(ctx, badEvent); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for user-visibility event without owner, got %v", err)
+	}
+}
+
+func TestMemoryNotes_WithTxSnapshotIsolation(t *testing.T) {
+	ctx := context.Background()
+	s := fake.New()
+	ws, userA, _, _, _ := seedMemoryScopes(t, s)
+	notes := s.MemoryNotes()
+
+	// Rollback discards memory writes (exercises the clone/apply snapshot).
+	if err := s.WithTx(ctx, func(txStore store.Store) error {
+		n := newMemoryNote(ws, domain.MemoryVisibilityUser, userA, "Rolled back fact.")
+		if err := txStore.MemoryNotes().InsertNote(ctx, n, domain.MemoryVisibilityUser); err != nil {
+			return err
+		}
+		e := newMemoryEvent(ws, agentIDForTx(t, txStore, ws), "sess_tx", "turn_1", domain.MemoryVisibilityUser, userA, "Rolled back gist.")
+		if err := txStore.MemoryEvents().InsertEvent(ctx, e); err != nil {
+			return err
+		}
+		return errors.New("abort the transaction")
+	}); err == nil {
+		t.Fatal("expected the transaction to fail")
+	}
+	list, _ := notes.ListNotesForUI(ctx, ws, userA, "", store.MemoryNoteFilters{})
+	if len(list) != 0 {
+		t.Fatalf("expected rolled-back note to be discarded, got %d", len(list))
+	}
+	events, _ := s.MemoryEvents().ListEventsForUI(ctx, ws, userA, "", store.MemoryEventFilters{})
+	if len(events) != 0 {
+		t.Fatalf("expected rolled-back event to be discarded, got %d", len(events))
+	}
+
+	// Commit persists both writes.
+	if err := s.WithTx(ctx, func(txStore store.Store) error {
+		n := newMemoryNote(ws, domain.MemoryVisibilityUser, userA, "Committed fact.")
+		if err := txStore.MemoryNotes().InsertNote(ctx, n, domain.MemoryVisibilityUser); err != nil {
+			return err
+		}
+		e := newMemoryEvent(ws, agentIDForTx(t, txStore, ws), "sess_tx", "turn_1", domain.MemoryVisibilityUser, userA, "Committed gist.")
+		return txStore.MemoryEvents().InsertEvent(ctx, e)
+	}); err != nil {
+		t.Fatalf("unexpected WithTx error: %v", err)
+	}
+	list, _ = notes.ListNotesForUI(ctx, ws, userA, "", store.MemoryNoteFilters{})
+	if len(list) != 1 {
+		t.Fatalf("expected committed note to persist, got %d", len(list))
+	}
+	events, _ = s.MemoryEvents().ListEventsForUI(ctx, ws, userA, "", store.MemoryEventFilters{})
+	if len(events) != 1 {
+		t.Fatalf("expected committed event to persist, got %d", len(events))
+	}
+}
+
+// agentIDForTx resolves the workspace's first agent inside a transaction —
+// events require a producing agent.
+func agentIDForTx(t *testing.T, s store.Store, wsID string) string {
+	t.Helper()
+	agents, err := s.Agents().ListForWorkspace(context.Background(), wsID)
+	if err != nil || len(agents) == 0 {
+		t.Fatalf("expected a seeded agent, got (%d, %v)", len(agents), err)
+	}
+	return agents[0].ID
 }

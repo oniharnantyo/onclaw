@@ -13,6 +13,7 @@ import { OtherMessage } from "./OtherMessage";
 import { AgentMessage } from "./AgentMessage";
 import { ErrorEntry } from "./ErrorEntry";
 import { PromptBlockedNotice } from "./PromptBlockedNotice";
+import { MemoryIngestedChip } from "./MemoryIngestedChip";
 import { ThinkingRow } from "./ThinkingRow";
 import { CompactionDivider } from "./CompactionDivider";
 import { toolCatalog } from "../../lib/toolCatalog";
@@ -260,6 +261,11 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
               // `prompt_blocked` transcript entry renders in place of the
               // assistant reply that never came — live and hydrated alike.
               if (m.author === 'notice') return <PromptBlockedNotice key={m.id} m={m}/>;
+              // Post-turn memory chip (integrate-agent-zero-memory D11):
+              // counts + visibility breakdown only, with the provenance
+              // drawer — live events and hydrated history entries share it.
+              if (m.author === 'memory')
+                return <MemoryIngestedChip key={m.id} m={m} workspaceId={workspaceId}/>;
               // Context compaction marker (chat-compact-command): live events
               // and hydrated history entries share this divider component.
               if (m.author === 'compaction') return <CompactionDivider key={m.id} m={m}/>;

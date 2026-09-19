@@ -49,7 +49,7 @@ func TestExpandBrowserAlias(t *testing.T) {
 }
 
 func TestApplyToolGate(t *testing.T) {
-	runner := NewRunner(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, []byte("k"), "/tmp/o",
+	runner := NewRunner(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, []byte("k"), "/tmp/o",
 		WithToolPolicy(&fakeToolPolicy{enabled: map[string]bool{
 			"web.search": false,
 			"browser":    false,
@@ -123,7 +123,7 @@ func TestApplyToolGate_AlwaysOnSurvivesStaleDisabledRows(t *testing.T) {
 		seedDisabledRow(t, tstore, wsID, key)
 	}
 
-	runner := NewRunner(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, []byte("k"), "/tmp/o",
+	runner := NewRunner(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, []byte("k"), "/tmp/o",
 		WithToolPolicy(svc))
 
 	// Channel-run composition (runner.go resolve): the channel toolset rides
@@ -159,7 +159,7 @@ func TestApplyToolGate_NonChannelRunsStillStrip(t *testing.T) {
 	ctx := context.Background()
 	// A policy that explicitly allows every key: the strip must come from the
 	// run's execution context, not the gate.
-	runner := NewRunner(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, []byte("k"), "/tmp/o",
+	runner := NewRunner(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, []byte("k"), "/tmp/o",
 		WithToolPolicy(&fakeToolPolicy{enabled: map[string]bool{
 			ChannelToolPost:    true,
 			ChannelToolHistory: true,

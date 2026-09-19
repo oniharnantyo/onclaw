@@ -11,6 +11,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/oniharnantyo/onclaw/internal/agents/backend"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
@@ -307,6 +308,22 @@ func (r *Runner) History(ctx context.Context, req HistoryRequest) (*HistoryResul
 						OccurredAt:    occurredAt,
 						TurnID:        turnID,
 						PromptBlocked: &PromptBlockedPayload{Hook: blocked.Hook, Reason: blocked.Reason},
+					})
+				}
+			}
+		case memory.SessionEventKindMemoryIngested:
+			// Post-turn memory chip (integrate-agent-zero-memory D11): render
+			// the counts payload exactly as the live event carried it. The
+			// payload type is the registered concrete struct, so the
+			// serializer hands it back whole.
+			if se.Extension != nil {
+				if chip, ok := se.Extension.Data.(memory.MemoryIngestedPayload); ok {
+					events = append(events, TranscriptEvent{
+						ID:             id,
+						Kind:           TranscriptEventMemoryIngested,
+						OccurredAt:     occurredAt,
+						TurnID:         turnID,
+						MemoryIngested: &chip,
 					})
 				}
 			}

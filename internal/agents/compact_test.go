@@ -125,9 +125,11 @@ func setupCompactRunner(t *testing.T, mdl *compactModel, hookList ...*domain.Wor
 	}
 
 	onClawDir := t.TempDir()
+	memWorker, memSearch, memGate := newTestMemoryPipeline(st)
 	runner := NewRunner(
 		st.Workspaces(), st.Agents(), st.Users(), st.Members(), st.Roles(),
 		st.Providers(), st.SessionEvents(), st.SessionCheckpoints(), st.Memories(), st.AgentSessions(),
+		st.GatewayLinks(), memWorker, memSearch, memGate,
 		[]byte("test-key-32-bytes-long-12345678"),
 		onClawDir,
 		WithAgenticModelFactory(func(context.Context, string, providers.Credential, string) (Model, error) {
@@ -560,10 +562,10 @@ func TestDrain_MessagesReplacedCarriesCompactionEstimates(t *testing.T) {
 	}()
 
 	stream := NewEventStream(16)
-	r := &Runner{runMgr: newRunManager(context.Background(), 0)}
+	r := &Runner{runMgr: newRunManager(context.Background(), 0), memoryWorker: newQueuedMemoryWorker()}
 	estimates := &compactionState{}
 	estimates.record(154000, 9200)
-	r.drainAgentEvents(t.Context(), iter, stream, RunKey{}, "turn-1", "", nil, hooks.Event{}, estimates, nil, nil)
+	r.drainAgentEvents(t.Context(), iter, stream, RunKey{}, "turn-1", "", nil, hooks.Event{}, estimates, nil, nil, ExecRequest{}, false)
 	stream.Close()
 
 	var events []TranscriptEvent

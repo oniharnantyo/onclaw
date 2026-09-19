@@ -282,6 +282,81 @@ describe('fetchSessionTranscript — prompt_blocked notices', () => {
   });
 });
 
+describe('fetchSessionTranscript — memory_ingested chip (integrate-agent-zero-memory D11)', () => {
+  it('hydrates the chip as a standalone post-turn entry carrying counts, never content', async () => {
+    vi.mocked(api.agents.sessionEvents).mockResolvedValueOnce({
+      next: '',
+      events: [
+        { id: 'e1', kind: 'message_completed', occurred_at: 't0', turn_id: 'turn-1',
+          message: { role: 'user', content: 'remember the Stripe migration' } },
+        { id: 'e2', kind: 'memory_ingested', occurred_at: 't1', turn_id: 'turn-1',
+          memory_ingested: { note_ids: ['n-1', 'n-2'], event_ids: ['g-1'], counts: { shared: 2, user: 1, agent: 0 } } },
+        { id: 'e3', kind: 'turn_completed', occurred_at: 't2', turn_id: 'turn-1' },
+      ],
+    });
+
+    const { messages } = await fetchSessionTranscript('ws1', 'atlas', 'sess_h-mem');
+
+    // The chip is its own post-turn entry after the user message.
+    expect(messages.map((m: any) => m.author)).toEqual(['you', 'memory']);
+    expect(messages[1].memory).toEqual({
+      noteIds: ['n-1', 'n-2'],
+      eventIds: ['g-1'],
+      counts: { shared: 2, user: 1, agent: 0 },
+    });
+    expect(messages[1].text).toBe('');
+  });
+
+  it('mints the same chip shape from the live catch-up stream (identical rendering after reload)', async () => {
+    const seed = () => {
+      const db: any = {
+        ws1: {
+          id: 'ws1', name: 'WS', sub: 'ws1', tz: 'UTC',
+          agents: [], channels: [], people: [], schedules: [], runs: [], members: [], integrations: [], skillLib: [], keys: [],
+          threads: { 'chat-1': { active: 'sess_cu3', list: [{ id: 'sess_cu3', title: 'Live', updated: '', messages: [] }] } },
+        },
+      };
+      useStore.setState({
+        db,
+        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, toasts: [] },
+      });
+    };
+    seed();
+    const enc = new TextEncoder();
+    const fr = (ev: any) => `data: ${JSON.stringify(ev)}\n\n`;
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(enc.encode(fr({ id: 'm1', kind: 'memory_ingested', occurred_at: 't1', turn_id: 'turn-9',
+              memory_ingested: { note_ids: ['n-9'], event_ids: [], counts: { shared: 0, user: 1, agent: 0 } } })));
+            controller.enqueue(enc.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+      } as unknown as Response)
+    ));
+
+    attachCatchUpStream({
+      workspaceId: 'ws1', agentSlug: 'atlas', chatId: 'chat-1', sessionId: 'sess_cu3',
+    });
+
+    await vi.waitFor(() => {
+      const sess = useStore.getState().db.ws1.threads['chat-1'].list.find((x: any) => x.id === 'sess_cu3');
+      expect(sess.messages).toHaveLength(1);
+    });
+    const sess = useStore.getState().db.ws1.threads['chat-1'].list.find((x: any) => x.id === 'sess_cu3');
+    const chip = sess.messages[0] as any;
+    expect(chip.author).toBe('memory');
+    expect(chip.memory.counts).toEqual({ shared: 0, user: 1, agent: 0 });
+    expect(useStore.getState().ui.running).toBe(false);
+    vi.unstubAllGlobals();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // streamSessionEvents — resilient SSE consumer for the catch-up stream (D4)
 // ---------------------------------------------------------------------------

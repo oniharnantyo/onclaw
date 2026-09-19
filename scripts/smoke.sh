@@ -49,6 +49,9 @@
 #      checklist, run-now silence contract (NO_REPLY → suppressed), channel
 #      delivery of a report, active-hours skip, five-failure auto-pause and
 #      resume — via a dedicated steerable mock provider)
+#  26. Extracted memory (integrate-agent-zero-memory: notes/events listings,
+#      provider-pinned settings record, connection-test failure
+#      shapes, promote/tombstone 404 paths, empty morning report)
 #
 # Usage:
 #   ./scripts/smoke.sh
@@ -3057,3 +3060,112 @@ assert_status "200" "Owner resumes the auto-paused heartbeat"
 assert_json_expr '.heartbeat.enabled == true' "Resume re-enables the heartbeat"
 assert_json_expr '.heartbeat.next_tick_at != null' "Resume recomputes the next tick in the workspace timezone"
 assert_json_expr '.heartbeat.failure_streak == 0' "Resume resets the failure streak"
+
+# -----------------------------------------------------------------------------
+# 26. Extracted memory management (integrate-agent-zero-memory 8.4, script
+#     side): the deterministic UI endpoints — notes/events listings, the
+#     memory settings record with its write-only API key, the connection-test
+#     failure shapes, promotion/tombstone 404 paths, and the empty morning
+#     report. TODO(model-dependent): the turn-produces-chip leg, the
+#     memory.search tool round-trip, and scheduled-run chip non-ingestion
+#     need a steerable extraction model — leave them for the manual pass.
+# -----------------------------------------------------------------------------
+log_step "26. Extracted Memory: Notes, Events, Settings, Consolidate & Report"
+
+MEM_BASE="/api/v1/workspaces/${TENANT_SLUG}/memory"
+
+# 26.1 Permission split (tasks 5.4): reads ride membership, writes are
+# workspace.write — a Member reads but cannot promote/delete/consolidate or
+# touch the settings record.
+api_req "GET" "${MEM_BASE}/notes" "${DAVE_TOKEN}"
+assert_status "200" "Member lists memory notes (membership read)"
+
+api_req "GET" "${MEM_BASE}/settings" "${DAVE_TOKEN}"
+assert_status "200" "Member reads the memory settings view (membership read)"
+
+api_req "PUT" "${MEM_BASE}/settings" "${DAVE_TOKEN}" '{"ingestion_enabled":false}'
+assert_status "403" "Member cannot PUT memory settings (workspace.write 403)"
+
+api_req "POST" "${MEM_BASE}/consolidate" "${DAVE_TOKEN}"
+assert_status "403" "Member cannot consolidate (workspace.write 403)"
+
+api_req "POST" "${MEM_BASE}/notes/00000000-0000-0000-0000-000000000000/promote" "${DAVE_TOKEN}" '{}'
+assert_status "403" "Member cannot promote (workspace.write 403)"
+
+api_req "DELETE" "${MEM_BASE}/notes/00000000-0000-0000-0000-000000000000" "${DAVE_TOKEN}"
+assert_status "403" "Member cannot tombstone-delete (workspace.write 403)"
+
+# 26.2 Empty listings before any pipeline output.
+api_req "GET" "${MEM_BASE}/notes" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists memory notes"
+assert_json_expr '.notes == []' "Notes list starts empty"
+assert_json_expr '.counts.shared == 0 and .counts.user == 0 and .counts.agent == 0' "Visibility counts start at zero"
+
+api_req "GET" "${MEM_BASE}/events" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists memory events"
+assert_json_expr '.events == []' "Events list starts empty"
+
+api_req "GET" "${MEM_BASE}/notes?visibility=shared&topic=nope&q=anything&include_tombstoned=true" "${CHARLIE_TOKEN}"
+assert_status "200" "Notes filters combine without error"
+
+# 26.3 Morning report before any consolidation: the empty shape (silence
+# names itself).
+api_req "GET" "${MEM_BASE}/report" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner reads the morning report"
+assert_json_expr '.report.generated_at == null and .report.conflicts == [] and .report.merges == [] and .report.extraction_failures == 0' "Report is the explicit empty shape before consolidation"
+
+# 26.4 Memory settings record (D16): the embedding provider IS a workspace
+# provider — the record pins provider+model+dimension and no embedding
+# endpoint/api_key exists. The fixture provider points at a refused port so
+# the connection-test legs stay offline-deterministic.
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/providers" "${CHARLIE_TOKEN}" '{"type":"openai-compatible","name":"Embedding Fixture","base_url":"http://127.0.0.1:9/v1","key":"sk-smoke-embedding-key"}'
+assert_status "201" "Owner creates the embedding fixture provider"
+EMBED_PROV_ID=$(json_get '.provider.id')
+
+api_req "PUT" "${MEM_BASE}/settings" "${CHARLIE_TOKEN}" '{"visibility_posture":"org-shared","ingestion_enabled":true,"embedding":{"provider_id":"'${EMBED_PROV_ID}'","model":"text-embedding-fixture","dimension":1536}}'
+assert_status "200" "Owner PUTs the memory settings record"
+assert_json_expr '.settings.visibility_posture == "org-shared"' "PUT stores the org-shared posture"
+assert_json_expr '.settings.ingestion_enabled == true' "PUT stores the ingestion toggle"
+assert_json_expr '.settings.embedding.provider_id == "'${EMBED_PROV_ID}'"' "Embedding record pins the workspace provider"
+assert_json_expr '.settings.embedding | (has("endpoint") or has("api_key") or has("api_key_set")) | not' "Embedding record carries no endpoint or key fields"
+if echo "${HTTP_BODY}" | grep -q "sk-smoke-embedding-key"; then
+    log_fail "Settings PUT response leaked the embedding api key"
+else
+    log_pass "Settings PUT response carries no key material"
+fi
+
+api_req "GET" "${MEM_BASE}/settings" "${CHARLIE_TOKEN}"
+assert_json_expr '.settings.embedding.provider_id == "'${EMBED_PROV_ID}'" and .settings.embedding.dimension == 1536' "GET round-trips the provider-pinned embedding record"
+
+api_req "PUT" "${MEM_BASE}/settings" "${CHARLIE_TOKEN}" '{"embedding":{"provider_id":"00000000-0000-0000-0000-000000000000"}}'
+assert_status "400" "Unknown embedding provider is invalid input (400)"
+
+api_req "PUT" "${MEM_BASE}/settings" "${CHARLIE_TOKEN}" '{"visibility_posture":"everyone"}'
+assert_status "400" "Unknown posture is invalid input (400)"
+
+api_req "PUT" "${MEM_BASE}/settings" "${CHARLIE_TOKEN}" '{"embedding":{"dimension":0}}'
+assert_status "400" "Non-positive dimension is invalid input (400)"
+
+# 26.5 Connection test (D16): the probe resolves endpoint + credential from
+# the pinned provider. A refused connection is a 422 naming the failure;
+# missing fields and unknown providers are a 400.
+api_req "POST" "${MEM_BASE}/settings/test" "${CHARLIE_TOKEN}" '{"provider_id":"'${EMBED_PROV_ID}'","model":"text-embedding-fixture"}'
+assert_status "422" "Connection test surfaces the endpoint failure as 422"
+assert_json_expr '.error.code == "invalid_request"' "Connection-test failure carries the structured envelope"
+
+api_req "POST" "${MEM_BASE}/settings/test" "${CHARLIE_TOKEN}" '{"model":"text-embedding-fixture"}'
+assert_status "400" "Connection test without a provider is invalid input (400)"
+
+# 26.6 Promotion and tombstone 404 paths (unknown ids — a real note needs the
+# extraction pipeline).
+api_req "POST" "${MEM_BASE}/notes/00000000-0000-0000-0000-000000000000/promote" "${CHARLIE_TOKEN}" '{}'
+assert_status "404" "Promoting an unknown note is 404"
+
+api_req "DELETE" "${MEM_BASE}/notes/00000000-0000-0000-0000-000000000000" "${CHARLIE_TOKEN}"
+assert_status "404" "Tombstone-deleting an unknown note is 404"
+
+# 26.7 Restore the default posture so later sections (and reruns) start
+# narrow — the fail-safe default.
+api_req "PUT" "${MEM_BASE}/settings" "${CHARLIE_TOKEN}" '{"visibility_posture":"narrow"}'
+assert_status "200" "Owner restores the narrow posture"
+assert_json_expr '.settings.visibility_posture == "narrow"' "Posture round-trips back to narrow"

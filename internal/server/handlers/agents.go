@@ -238,7 +238,10 @@ type CreateAgentRequest struct {
 	Brief         string                `json:"brief"`
 	ProviderID    string                `json:"provider_id"`
 	Model         string                `json:"model"`
-	Temperature   *float64              `json:"temperature,omitempty"`
+	// Memory side-call override (both empty = inherit); validated as a pair.
+	MemorySidecallProviderID string                `json:"memory_sidecall_provider_id,omitempty"`
+	MemorySidecallModel      string                `json:"memory_sidecall_model,omitempty"`
+	Temperature              *float64              `json:"temperature,omitempty"`
 	MaxTokens     *int                  `json:"max_tokens,omitempty"`
 	Effort        *string               `json:"effort,omitempty"`
 	Autonomy      *domain.AgentAutonomy `json:"autonomy,omitempty"`
@@ -343,7 +346,11 @@ type PatchAgentRequest struct {
 	Soul          *string               `json:"soul,omitempty"`
 	ProviderID    *string               `json:"provider_id,omitempty"`
 	Model         *string               `json:"model,omitempty"`
-	Temperature   *float64              `json:"temperature,omitempty"`
+	// Memory side-call override: both pointers nil = untouched; empty strings
+	// clear back to inherit (the workspace memory setting then agent default).
+	MemorySidecallProviderID *string               `json:"memory_sidecall_provider_id,omitempty"`
+	MemorySidecallModel      *string               `json:"memory_sidecall_model,omitempty"`
+	Temperature              *float64              `json:"temperature,omitempty"`
 	MaxTokens     *int                  `json:"max_tokens,omitempty"`
 	Effort        *string               `json:"effort,omitempty"`
 	Autonomy      *domain.AgentAutonomy `json:"autonomy,omitempty"`
@@ -367,7 +374,8 @@ func (h *agentHandlers) PatchAgent(c *gin.Context) {
 
 	if req.Name == nil && req.Role == nil && req.Description == nil &&
 		req.Brief == nil && req.Identity == nil && req.Soul == nil && req.ProviderID == nil &&
-		req.Model == nil && req.Temperature == nil && req.MaxTokens == nil && req.Effort == nil &&
+		req.Model == nil && req.MemorySidecallProviderID == nil && req.MemorySidecallModel == nil &&
+		req.Temperature == nil && req.MaxTokens == nil && req.Effort == nil &&
 		req.Autonomy == nil && req.ContextWindow == nil && req.Tools == nil &&
 		req.EnabledMCPS == nil && req.Avatar == nil {
 		RespondError(c, fmt.Errorf("%w: no fields to update", domain.ErrInvalid))
@@ -428,6 +436,31 @@ func (h *agentHandlers) PatchAgent(c *gin.Context) {
 			return
 		}
 	}
+
+	// Memory side-call override: validated as a pair (both set or both
+	// cleared); a set provider must exist in the workspace. Resolution order
+	// lives in the memory package: agent override > workspace memory setting
+	// > the model the agent runs.
+	targetSidecallProvider := existing.MemorySidecallProviderID
+	if req.MemorySidecallProviderID != nil {
+		targetSidecallProvider = strings.TrimSpace(*req.MemorySidecallProviderID)
+	}
+	targetSidecallModel := existing.MemorySidecallModel
+	if req.MemorySidecallModel != nil {
+		targetSidecallModel = strings.TrimSpace(*req.MemorySidecallModel)
+	}
+	if err := domain.ValidateAgentMemorySidecall(targetSidecallProvider, targetSidecallModel); err != nil {
+		RespondError(c, err)
+		return
+	}
+	if targetSidecallProvider != "" {
+		if _, err := h.providers.ByID(c.Request.Context(), ws.ID, targetSidecallProvider); err != nil {
+			RespondError(c, fmt.Errorf("%w: memory side-call provider not found in workspace", domain.ErrInvalid))
+			return
+		}
+	}
+	existing.MemorySidecallProviderID = targetSidecallProvider
+	existing.MemorySidecallModel = targetSidecallModel
 
 	provider, err := h.providers.ByID(c.Request.Context(), ws.ID, targetProviderID)
 	if err != nil {
@@ -853,6 +886,18 @@ func buildAgentFromCreateRequest(ctx context.Context, wsID, userID string, req *
 		return nil, fmt.Errorf("%w: model is required", domain.ErrInvalid)
 	}
 
+	// Memory side-call override (both empty = inherit), validated as a pair.
+	sidecallProvider := strings.TrimSpace(req.MemorySidecallProviderID)
+	sidecallModel := strings.TrimSpace(req.MemorySidecallModel)
+	if err := domain.ValidateAgentMemorySidecall(sidecallProvider, sidecallModel); err != nil {
+		return nil, err
+	}
+	if sidecallProvider != "" {
+		if _, err := providers.ByID(ctx, wsID, sidecallProvider); err != nil {
+			return nil, fmt.Errorf("%w: memory side-call provider not found in workspace", domain.ErrInvalid)
+		}
+	}
+
 	// Validate provider belongs to workspace
 	provider, err := providers.ByID(ctx, wsID, providerID)
 	if err != nil {
@@ -943,9 +988,11 @@ func buildAgentFromCreateRequest(ctx context.Context, wsID, userID string, req *
 		Role:          role,
 		Description:   strings.TrimSpace(req.Description),
 		Brief:         brief,
-		ProviderID:    providerID,
-		Model:         model,
-		Temperature:   temp,
+		ProviderID:                 providerID,
+		Model:                      model,
+		MemorySidecallProviderID:   sidecallProvider,
+		MemorySidecallModel:        sidecallModel,
+		Temperature:                temp,
 		MaxTokens:     req.MaxTokens,
 		Effort:        effort,
 		Autonomy:      autonomy,

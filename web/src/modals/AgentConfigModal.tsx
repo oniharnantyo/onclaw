@@ -211,6 +211,11 @@ export function AgentConfigModal({
 
   const [provider, setProvider] = useState<string>(initialProvider);
   const [model, setModel] = useState<string>("");
+  // Memory side-call model (integrate-agent-zero-memory follow-up): inherit
+  // follows the workspace memory settings, custom pins this agent's own.
+  const [memorySidecallMode, setMemorySidecallMode] = useState<'inherit' | 'custom'>('inherit');
+  const [memorySidecallProvider, setMemorySidecallProvider] = useState('');
+  const [memorySidecallModel, setMemorySidecallModel] = useState('');
   const [temp, setTemp] = useState<number>(1.0);
   const [maxTokens, setMaxTokens] = useState<string>("");
   const [contextWindow, setContextWindow] = useState<string>("");
@@ -259,6 +264,15 @@ export function AgentConfigModal({
               setProvider(a.provider_id);
             }
             setModel(a.model || "");
+            if (a.memory_sidecall_provider_id && a.memory_sidecall_model) {
+              setMemorySidecallMode('custom');
+              setMemorySidecallProvider(a.memory_sidecall_provider_id);
+              setMemorySidecallModel(a.memory_sidecall_model);
+            } else {
+              setMemorySidecallMode('inherit');
+              setMemorySidecallProvider('');
+              setMemorySidecallModel('');
+            }
             setTemp(a.temperature ?? 1.0);
             setMaxTokens(a.max_tokens !== undefined && a.max_tokens !== null ? String(a.max_tokens) : "");
             // The stored value is authoritative in edit mode; the client
@@ -434,6 +448,9 @@ export function AgentConfigModal({
         step2Errors.contextWindow = "Context window must be a positive integer";
       }
     }
+    if (memorySidecallMode === 'custom' && (!memorySidecallProvider || !memorySidecallModel.trim())) {
+      step2Errors.memorySidecall = "Pick a provider and model, or switch back to inherit";
+    }
     if (Object.keys(step2Errors).length > 0) {
       setFieldErrors(step2Errors);
       if (step2Errors.temp || step2Errors.maxTokens || step2Errors.effort || step2Errors.contextWindow) {
@@ -477,6 +494,8 @@ export function AgentConfigModal({
       brief: brief.trim(),
       provider_id: provider,
       model: model.trim(),
+      memory_sidecall_provider_id: memorySidecallMode === 'custom' ? memorySidecallProvider : '',
+      memory_sidecall_model: memorySidecallMode === 'custom' ? memorySidecallModel.trim() : '',
       temperature: temp,
       max_tokens: parsedMaxTokens,
       context_window: parsedContextWindow,
@@ -525,6 +544,8 @@ export function AgentConfigModal({
       soul: soul,
       provider_id: provider,
       model: model.trim(),
+      memory_sidecall_provider_id: memorySidecallMode === 'custom' ? memorySidecallProvider : '',
+      memory_sidecall_model: memorySidecallMode === 'custom' ? memorySidecallModel.trim() : '',
       temperature: temp,
       max_tokens: parsedMaxTokens,
       context_window: parsedContextWindow,
@@ -1113,6 +1134,75 @@ export function AgentConfigModal({
                 modelError={fieldErrors.model}
                 effortError={fieldErrors.effort}
               />
+
+              {/* Memory side-call model: inherit the workspace memory
+                  setting or pin this agent's own provider+model. */}
+              <div>
+                <p className="mb-1.5 text-[12px] font-medium text-fg2">Memory side-call model</p>
+                <div className="inline-flex rounded-md border border-line p-0.5" role="group" aria-label="Memory side-call model">
+                  {(['inherit', 'custom'] as const).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      data-testid={'ac-memory-sidecall-' + m}
+                      aria-pressed={memorySidecallMode === m}
+                      onClick={() => setMemorySidecallMode(m)}
+                      className={cx(
+                        'h-7 rounded-[6px] px-3 text-[12px] font-medium transition-colors',
+                        memorySidecallMode === m
+                          ? 'bg-[color-mix(in_oklab,var(--accent)_14%,transparent)] text-fg'
+                          : 'text-muted hover:text-fg2'
+                      )}
+                    >
+                      {m === 'inherit' ? 'Inherit' : 'Custom'}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-1.5 text-[11px] leading-5 text-muted">
+                  {memorySidecallMode === 'inherit'
+                    ? 'Memory extraction and search follow the workspace memory settings — agent default model there, or its pinned choice.'
+                    : 'This agent always runs the memory pipeline on the provider and model below.'}
+                </p>
+                {memorySidecallMode === 'custom' && (
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className="mb-1.5 block text-[12px] font-medium text-fg2" htmlFor="ac-memory-sidecall-provider">
+                        Provider
+                      </label>
+                      <select
+                        id="ac-memory-sidecall-provider"
+                        data-testid="ac-memory-sidecall-provider"
+                        value={memorySidecallProvider}
+                        onChange={(e) => setMemorySidecallProvider(e.target.value)}
+                        className="h-9 w-full rounded-md border border-line bg-surface px-2 text-[13px] text-fg2 focus:border-accent"
+                      >
+                        <option value="">Select a provider…</option>
+                        {configuredProviders.map((pr) => (
+                          <option key={pr.id} value={pr.id}>
+                            {pr.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="mb-1.5 block text-[12px] font-medium text-fg2" htmlFor="ac-memory-sidecall-model">
+                        Model
+                      </label>
+                      <input
+                        id="ac-memory-sidecall-model"
+                        data-testid="ac-memory-sidecall-model"
+                        value={memorySidecallModel}
+                        onChange={(e) => setMemorySidecallModel(e.target.value)}
+                        placeholder="e.g. glm-4.5-air — the cheap tier for this agent"
+                        className="h-9 w-full rounded-md border border-line bg-surface px-2 font-mono text-[13px] text-fg2 placeholder:text-muted focus:border-accent"
+                      />
+                    </div>
+                  </div>
+                )}
+                {fieldErrors.memorySidecall && (
+                  <p className="mt-1 text-[12px] text-danger">{fieldErrors.memorySidecall}</p>
+                )}
+              </div>
 
               {/* Collapsed Advanced Model Configuration Section */}
               <div className="rounded-lg border border-line p-3">

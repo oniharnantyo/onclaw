@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,6 +24,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/oniharnantyo/onclaw/internal/agents"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/server/handlers"
 	"github.com/oniharnantyo/onclaw/internal/storage"
@@ -118,9 +120,18 @@ func newV1aEnv(t *testing.T) v1aEnv {
 
 	wsStorage := resolver.New(strg, st.WorkspaceStorage(), st.Attachments(), v1aEncKey, dataDir)
 
+	memLog := slog.New(slog.NewTextHandler(io.Discard, nil))
+	memWorker := memory.NewWorker(
+		memory.NewGister(st.MemoryEvents(), st.SessionEvents(), st.Providers(), v1aEncKey, agents.DefaultAgenticModelFactory),
+		memory.NewGate(st.MemoryNotes(), st.Memories(), st.Providers(), v1aEncKey, agents.DefaultAgenticModelFactory, memLog),
+		memLog,
+	)
+	memSearch := memory.NewSearcher(st.MemoryNotes(), st.MemoryEvents())
+	memGate := memory.NewIntentGate(st.Providers(), v1aEncKey, agents.DefaultAgenticModelFactory, memLog)
 	runner := agents.NewRunner(
 		st.Workspaces(), st.Agents(), st.Users(), st.Members(), st.Roles(),
 		st.Providers(), st.SessionEvents(), st.SessionCheckpoints(), st.Memories(), st.AgentSessions(),
+		st.GatewayLinks(), memWorker, memSearch, memGate,
 		v1aEncKey, onClawDir,
 		agents.WithAgenticModelFactory(func(_ context.Context, _ string, _ providers.Credential, _ string) (model.BaseModel[*schema.AgenticMessage], error) {
 			return v1aStubModel{}, nil

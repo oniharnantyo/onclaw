@@ -101,6 +101,21 @@ func (s *store) Memories() storeport.MemoryStore {
 	return NewMemoryStore(s.db)
 }
 
+// MemoryEvents returns the MemoryEventStore sub-port.
+func (s *store) MemoryEvents() storeport.MemoryEventStore {
+	return NewMemoryEventStore(s.db)
+}
+
+// MemoryNotes returns the MemoryNoteStore sub-port.
+func (s *store) MemoryNotes() storeport.MemoryNoteStore {
+	return NewMemoryNoteStore(s.db)
+}
+
+// MemoryReports returns the MemoryReportStore sub-port.
+func (s *store) MemoryReports() storeport.MemoryReportStore {
+	return NewMemoryReportStore(s.db)
+}
+
 // SessionEvents returns the SessionEventStore sub-port.
 func (s *store) SessionEvents() storeport.SessionEventStore {
 	return NewSessionEventStore(s.db)

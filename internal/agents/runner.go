@@ -23,6 +23,7 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/agents/mcp"
 	"github.com/oniharnantyo/onclaw/internal/agents/tools"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/secrets"
 	"github.com/oniharnantyo/onclaw/internal/services"
@@ -45,6 +46,10 @@ type Runner struct {
 	checkpoints   store.SessionCheckpointStore
 	memories      store.MemoryStore
 	agentSessions store.AgentSessionStore
+	// gatewayLinks resolves gateway identity pairing at enqueue time
+	// (integrate-agent-zero-memory 3.2): an OriginTelegram/WhatsApp direct
+	// chat's human participant count is "linked member or not".
+	gatewayLinks store.GatewayLinks
 
 	encryptionKey []byte
 	onClawDir     string
@@ -56,6 +61,16 @@ type Runner struct {
 	enabledSkillReader  backend.EnabledSkillReader
 	summarizationMargin float64
 	maxIterations       int
+
+	// Memory pipeline seam (integrate-agent-zero-memory 3.2/4.1/4.2): the
+	// worker enqueues turn-end ingest jobs off the hot path, the searcher
+	// serves scope-filtered prefetch, and the intent gate decides whether a
+	// turn needs retrieval at all. All three are composition-root wiring
+	// (never nil in production); every stage they drive fails open or
+	// fire-and-forget, so nothing here can fail a run.
+	memoryWorker *memory.Worker
+	memorySearch *memory.Searcher
+	intentGate   *memory.IntentGate
 
 	mcpPolicy  mcp.MCPPolicy
 	mcpManager mcp.ToolSource
@@ -349,7 +364,10 @@ func (unknownInputModalityResolver) SupportsInput(context.Context, string, strin
 // NewRunner creates a new production runner instance from explicit per-store
 // dependencies. Each granular store sub-interface is a positional parameter;
 // pass the aggregate's accessors (e.g. st.Agents(), st.Users()) at the call
-// site. Defaultable behaviors are set through RunnerOptions.
+// site. The memory pipeline seam (integrate-agent-zero-memory) rides the same
+// rule: the worker, the searcher, and the intent gate are positional wiring
+// resolved by the composition root. Defaultable behaviors are set through
+// RunnerOptions.
 func NewRunner(
 	workspaces store.WorkspaceStore,
 	agents store.AgentStore,
@@ -361,6 +379,10 @@ func NewRunner(
 	checkpoints store.SessionCheckpointStore,
 	memories store.MemoryStore,
 	agentSessions store.AgentSessionStore,
+	gatewayLinks store.GatewayLinks,
+	memoryWorker *memory.Worker,
+	memorySearch *memory.Searcher,
+	intentGate *memory.IntentGate,
 	encryptionKey []byte,
 	onClawDir string,
 	opts ...RunnerOption,
@@ -376,6 +398,10 @@ func NewRunner(
 		checkpoints:           checkpoints,
 		memories:              memories,
 		agentSessions:         agentSessions,
+		gatewayLinks:          gatewayLinks,
+		memoryWorker:          memoryWorker,
+		memorySearch:          memorySearch,
+		intentGate:            intentGate,
 		encryptionKey:         encryptionKey,
 		onClawDir:             onClawDir,
 		agenticFactory:        DefaultAgenticModelFactory,
@@ -571,9 +597,9 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 	}
 	exposeSessionClose := isMember && req.WorkSessionID != "" && memberRole == domain.ChannelMemberRoleFacilitator
 
-	// Workspace-local clock for tools that resolve dates (the memory tool's
-	// MEMORY-TODAY.md). An empty identifier loads as UTC; an invalid one
-	// degrades to UTC without failing the run.
+	// Workspace-local clock for tools that resolve dates (the schedule tool's
+	// cron and next-run math). An empty identifier loads as UTC; an invalid
+	// one degrades to UTC without failing the run.
 	workspaceTZ, tzErr := time.LoadLocation(ws.Timezone)
 	if tzErr != nil {
 		workspaceTZ = time.UTC
@@ -1000,6 +1026,12 @@ func (r *Runner) composeAgent(
 		channelDocs = docs
 	}
 
+	// Memory prefetch (integrate-agent-zero-memory 4.1/4.2): the intent gate
+	// classifies the turn, and a hit injects the bounded cited candidate set.
+	// Fail-open end to end — gate errors, prefetch errors, and empty sets all
+	// compose without the section; nothing here can fail or block the run.
+	memoryDocs := r.composeMemoryDocs(ctx, req)
+
 	instruction, err := r.instructionComposer.Compose(ctx, ComposeParams{
 		AgentDir:           cfg.Filesystem.AgentDir,
 		Workspace:          ws,
@@ -1007,6 +1039,7 @@ func (r *Runner) composeAgent(
 		RoleName:           role.Name,
 		Memories:           r.memories,
 		ChannelDocs:        channelDocs,
+		MemoryDocs:         memoryDocs,
 		SchedulerProfile:   schedulerRun,
 		NoReplyToken:       req.SchedulerNoReply,
 		HeartbeatProfile:   heartbeatRun,
@@ -1097,7 +1130,7 @@ func (r *Runner) execute(
 	runner := adk.NewTypedRunner(runnerCfg)
 
 	stream := NewEventStream(128)
-	go r.streamRun(handle, cancelOpt, runner, stream, req, userMsg, hookChain, hookBase, compaction, trace)
+	go r.streamRun(handle, cancelOpt, runner, stream, req, userMsg, hookChain, hookBase, compaction, trace, ephemeral)
 	return stream
 }
 
@@ -1417,9 +1450,15 @@ func (r *Runner) blockedPromptTurn(
 	}
 
 	// Observers see the full lifecycle (D1): the run started and finished
-	// completed — its terminal event is a well-formed turn_completed.
+	// completed — its terminal event is a well-formed turn_completed. Turn-end
+	// ingestion rides the same completed status (integrate-agent-zero-memory
+	// 3.2): the blocked prompt itself was never persisted as a message, so the
+	// gate sees no new material — but the job still distills any window a
+	// prior job missed (the gister cursor makes that a quiet no-op when
+	// nothing is pending).
 	chain.ObserveRunStarted(ctx, base)
 	chain.RunFinished(ctx, base, hookRunStatusCompleted)
+	r.enqueueTurnIngest(ctx, req, turnID, hookRunStatusCompleted, ephemeral)
 
 	_ = stream.Close()
 	return stream
@@ -1440,6 +1479,205 @@ func persistPromptBlocked(ctx context.Context, adapter *ADKSessionAdapter, sessi
 		slog.WarnContext(ctx, "hooks: persist prompt_blocked notice failed (best-effort)",
 			"session_id", sessionID, "error", err)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Memory pipeline seam (integrate-agent-zero-memory 3.2/3.6/4.1/4.2)
+// ---------------------------------------------------------------------------
+
+// enqueueTurnIngest builds the turn-end IngestJob and hands it to the
+// background worker (task 3.2, D2). Only the completed and failed statuses
+// ingest — a failed run still contains a real user turn, the gate filters
+// noise, and a cancelled run was interrupted mid-flight rather than finishing
+// a turn. Ephemeral turns never enqueue: their material never persisted, so
+// the raw-log-stays-intact invariant the pipeline reprocesses from cannot
+// hold. Enqueue is fire-and-forget: the worker's queue absorbs bursts and
+// drops on overflow, so this never blocks or fails the run.
+//
+// The session shape (HumanParticipants) is captured here, at enqueue time,
+// per the participant rule — never re-derived from the transcript:
+//   - user origins: exactly one human (the calling member; load() proved the
+//     membership);
+//   - scheduler/heartbeat origins: zero humans (agent ceiling);
+//   - channel runs: the roster's human member count, read through the channel
+//     context the run already requires (the cheapest reliable source — the
+//     same roster read composition uses; a failed read narrows to zero, the
+//     asymmetric-cost default);
+//   - telegram/whatsapp origins: a direct-message session counts one human
+//     when the calling member has a gateway identity link (runs execute under
+//     the linked member's id, so this is the mapped/unmapped decision), zero
+//     when unlinked or unreadable; group sessions are shared externally and
+//     count zero (conservative agent ceiling — external group membership
+//     never widens a workspace tier).
+func (r *Runner) enqueueTurnIngest(ctx context.Context, req ExecRequest, turnID, status string, ephemeral bool) {
+	if status != hookRunStatusCompleted && status != hookRunStatusFailed {
+		return
+	}
+	if ephemeral {
+		return
+	}
+	if turnID == "" {
+		// Terminal paths that never observed a turn-scoped event (failed
+		// before the first drain, or event shapes without a variant turn id)
+		// still ingest the user turn. The job's turn id is metadata — the
+		// citation targets are the session event ids in the provenance.
+		turnID = uuid.NewString()
+	}
+	r.memoryWorker.Enqueue(memory.IngestJob{
+		WorkspaceID:       req.WorkspaceID,
+		AgentID:           req.AgentID,
+		UserID:            req.UserID,
+		SessionID:         req.SessionID,
+		TurnID:            turnID,
+		Origin:            normalizeOrigin(req.Origin),
+		HumanParticipants: r.ingestHumanParticipants(ctx, req),
+		Status:            status,
+	})
+}
+
+// ingestHumanParticipants resolves the session-shape human count for the
+// visibility ceiling; see enqueueTurnIngest for the per-origin rule.
+func (r *Runner) ingestHumanParticipants(ctx context.Context, req ExecRequest) int {
+	switch normalizeOrigin(req.Origin) {
+	case OriginScheduler, OriginHeartbeat:
+		return 0
+	case OriginChannel:
+		members, err := r.channelContext.ListChannelMembers(ctx, req.WorkspaceID, req.ChannelID)
+		if err != nil {
+			slog.WarnContext(ctx, "memory: channel roster read failed; narrowing the ingest ceiling",
+				"session_id", req.SessionID, "error", err)
+			return 0
+		}
+		humans := 0
+		for _, m := range members {
+			if m.MemberType != domain.ChannelMemberTypeAgent {
+				humans++
+			}
+		}
+		return humans
+	case OriginTelegram:
+		// Gateway group sessions are shared across external participants; the
+		// conservative ceiling is agent-visibility (zero humans).
+		if strings.HasPrefix(req.SessionID, domain.SessionPrefixGatewayGroup) {
+			return 0
+		}
+		return r.gatewayLinkedHumanCount(ctx, req)
+	default:
+		// Empty and unknown origins normalize to a direct user chat: the
+		// calling member is the one human.
+		return 1
+	}
+}
+
+// gatewayLinkedHumanCount decides mapped-vs-unmapped for a gateway direct
+// chat: the calling member's gateway identity link (any platform — a DM
+// session's single human participant is that member either way). Unlinked
+// members (0 humans) narrow the ceiling to agent-visibility.
+func (r *Runner) gatewayLinkedHumanCount(ctx context.Context, req ExecRequest) int {
+	links, err := r.gatewayLinks.ListUserLinksForMember(ctx, req.WorkspaceID, req.UserID)
+	if err != nil {
+		slog.WarnContext(ctx, "memory: gateway link read failed; narrowing the ingest ceiling",
+			"session_id", req.SessionID, "error", err)
+		return 0
+	}
+	if len(links) == 0 {
+		return 0
+	}
+	return 1
+}
+
+// composeMemoryDocs runs the pre-compose retrieval seam (tasks 4.1/4.2): the
+// intent gate classifies the turn text, and a hit prefetches the bounded
+// candidate set into one cited document section. The whole path fails open —
+// gate errors, prefetch errors, and empty candidate sets all compose without
+// the section — and the unattended origins skip it entirely: scheduler and
+// heartbeat profiles deliberately carry no memory document tier (their
+// trimmed stacks omit even the shared-memory subsection), so injecting
+// derived memory there would contradict the profile contract. Compact turns
+// carry no user prompt to classify. The hard 1.5s classification budget is
+// enforced inside the gate, so a slow side-call model can never delay
+// composition beyond it.
+func (r *Runner) composeMemoryDocs(ctx context.Context, req ExecRequest) []string {
+	origin := normalizeOrigin(req.Origin)
+	if origin == OriginScheduler || origin == OriginHeartbeat {
+		return nil
+	}
+	if normalizeCommand(req.Command) == CommandCompact {
+		return nil
+	}
+	text := strings.TrimSpace(req.Input)
+	if text == "" {
+		return nil
+	}
+	verdict, err := r.intentGate.Classify(ctx, req.WorkspaceID, req.AgentID, text)
+	if err != nil || !verdict.NeedsDeepMemory {
+		// Fail-open: the gate logged its reason; the always-injected documents
+		// are the complete context, and memory.search remains available.
+		return nil
+	}
+	candidates, err := r.memorySearch.Prefetch(ctx, memory.Caller{
+		WorkspaceID: req.WorkspaceID,
+		UserID:      req.UserID,
+		AgentID:     req.AgentID,
+	}, text)
+	if err != nil || len(candidates) == 0 {
+		return nil
+	}
+	return []string{renderMemoryCandidatesDoc(candidates)}
+}
+
+// renderMemoryCandidatesDoc renders the prefetch injection section: every
+// candidate carries its evidence pointer (source event id) and visibility
+// stamp, closed by the citation lock and the abstention contract (spec
+// agent-memory-retrieval, Citation lock and abstention).
+func renderMemoryCandidatesDoc(candidates []memory.Candidate) string {
+	var sb strings.Builder
+	sb.WriteString("## Retrieved memory (opened evidence for this turn)\n\n")
+	sb.WriteString("The entries below were retrieved from this workspace's extracted memory for this turn's question. Each carries its visibility tier and the raw session event it was extracted from.\n\n")
+	for _, c := range candidates {
+		fmt.Fprintf(&sb, "- [%s %s · %s · source event %s] %s\n",
+			c.Kind, c.ID, c.Visibility, c.SourceEventID, c.Text)
+	}
+	sb.WriteString("\nCitation rule: only memory you actually opened — the candidates above or memory.search results from this turn — is citable, and every memory-backed claim must name its source event id. ")
+	sb.WriteString("If nothing above is relevant and memory.search finds nothing, say that nothing is recorded rather than inventing recalled content.")
+	return sb.String()
+}
+
+// AppendMemoryChip is the memory worker's ChipSink (task 3.6, D11): after the
+// gate commits ops for a turn, persist the chip as an application-owned
+// session event (the x.prompt_blocked convention — hydrated transcripts
+// render it identically to the live stream) and broadcast the live event to
+// the run's subscribers. Scheduled and heartbeat runs never emit chips (spec
+// agent-memory-pipeline, Ingested-chip event). Best-effort end to end: a
+// failing append is logged and never surfaces; the broadcast is a no-op once
+// the run has deregistered (the persisted event covers rehydration).
+func (r *Runner) AppendMemoryChip(ctx context.Context, job memory.IngestJob, payload memory.MemoryIngestedPayload) {
+	origin := normalizeOrigin(job.Origin)
+	if origin == OriginScheduler || origin == OriginHeartbeat {
+		return
+	}
+	adapter := NewADKSessionAdapter(r.sessionEvents, r.checkpoints, job.WorkspaceID)
+	ev := &adk.SessionEvent[*schema.AgenticMessage]{
+		EventID:   uuid.NewString(),
+		TurnID:    job.TurnID,
+		Timestamp: time.Now().UTC(),
+		Kind:      memory.SessionEventKindMemoryIngested,
+		Extension: &adk.SessionExtensionEvent{Data: payload},
+	}
+	if err := adapter.AppendEvents(ctx, job.SessionID, []*adk.SessionEvent[*schema.AgenticMessage]{ev}); err != nil {
+		slog.WarnContext(ctx, "memory: persist memory_ingested chip failed (best-effort)",
+			"session_id", job.SessionID, "turn_id", job.TurnID, "error", err)
+	}
+	r.runMgr.Broadcast(RunKey{
+		WorkspaceID: job.WorkspaceID,
+		AgentID:     job.AgentID,
+		SessionID:   job.SessionID,
+	}, &TranscriptEvent{
+		Kind:           TranscriptEventMemoryIngested,
+		OccurredAt:     time.Now().UTC(),
+		TurnID:         job.TurnID,
+		MemoryIngested: &payload,
+	})
 }
 
 // rememberHookChain stores the run's hook chain for a later approval Resume
@@ -1498,6 +1736,7 @@ func (r *Runner) streamRun(
 	hookBase hooks.Event,
 	compaction *compactionState,
 	trace *runTrace,
+	ephemeral bool,
 ) {
 	key := runKeyOf(req)
 	defer handle.finish()
@@ -1545,7 +1784,7 @@ func (r *Runner) streamRun(
 		TurnID:     turnID,
 	})
 
-	r.drainAgentEvents(runCtx, iter, stream, key, turnID, partialText, hookChain, hookBase, compaction, userMsg, trace)
+	r.drainAgentEvents(runCtx, iter, stream, key, turnID, partialText, hookChain, hookBase, compaction, userMsg, trace, req, ephemeral)
 }
 
 // logTapDrops emits one debug line when the live tap dropped events because
@@ -1571,7 +1810,9 @@ func (r *Runner) logTapDrops(stream *EventStream, req ExecRequest) {
 // pre-constructed multimodal user message of a turn carrying attachments
 // (attachments design D5); nil keeps string-input turns unchanged. trace
 // carries the turn's Langfuse coordinates (integrate-langfuse-tracing D3/D5);
-// nil when the capability is absent.
+// nil when the capability is absent. req and ephemeral carry the turn-end
+// ingestion coordinates (integrate-agent-zero-memory 3.2): settle enqueues
+// the IngestJob off the hot path.
 func (r *Runner) drainAgentEvents(
 	ctx context.Context,
 	iter *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]],
@@ -1584,6 +1825,8 @@ func (r *Runner) drainAgentEvents(
 	compaction *compactionState,
 	userMsg *schema.AgenticMessage,
 	trace *runTrace,
+	req ExecRequest,
+	ephemeral bool,
 ) {
 	var lastErr error
 	var usage UsagePayload
@@ -1611,18 +1854,20 @@ func (r *Runner) drainAgentEvents(
 	// the terminal transcript event settles — on the cancel path, after the
 	// durable cancel marker drains — with the outcome as status data. The
 	// per-run hook chain and trace coordinates are forgotten here: the next
-	// run on the session resolves fresh per-run state (D4). The
-	// approval-interrupt short-circuit below deliberately never settles: a
-	// paused turn is not terminal, and the resumed turn keeps evaluating
-	// against the same chain (and exports into the same trace). hookChain is
-	// nil only for direct drainAgentEvents callers without hooks (tests).
+	// run on the session resolves fresh per-run state (D4). Turn-end ingestion
+	// enqueues at the same seam, after the hook observation, fire-and-forget
+	// (integrate-agent-zero-memory 3.2/D2). The approval-interrupt
+	// short-circuit below deliberately never settles: a paused turn is not
+	// terminal, and the resumed turn keeps evaluating against the same chain
+	// (and exports into the same trace). hookChain is nil only for direct
+	// drainAgentEvents callers without hooks (tests).
 	settle := func(status string) {
 		r.forgetTurnTrace(key)
 		r.forgetHookChain(key)
-		if hookChain == nil || !hookChain.HasHooks() {
-			return
+		if hookChain != nil && hookChain.HasHooks() {
+			hookChain.RunFinished(ctx, hookBase, status)
 		}
-		hookChain.RunFinished(ctx, hookBase, status)
+		r.enqueueTurnIngest(ctx, req, turnID, status, ephemeral)
 	}
 
 	recordToolStart := func(callID string, at time.Time) {
@@ -2253,15 +2498,19 @@ func (r *Runner) streamResume(
 			TraceID:    trace.persistedID(),
 		})
 		// Terminal failure before any drain: run_finished still observes the
-		// outcome (D1: every terminal outcome fires, status failed).
+		// outcome (D1: every terminal outcome fires, status failed), and the
+		// turn-end ingest job enqueues with it — the resumed window's
+		// unprocessed material distills at the next job (the empty turn id
+		// makes the worker fall back to the whole window).
 		r.forgetTurnTrace(key)
 		r.forgetHookChain(key)
 		if hookChain.HasHooks() {
 			hookChain.RunFinished(handle.ctx, hookBase, hookRunStatusFailed)
 		}
+		r.enqueueTurnIngest(handle.ctx, req, "", hookRunStatusFailed, false)
 		return
 	}
-	r.drainAgentEvents(runCtx, iter, stream, key, "", "", hookChain, hookBase, &compactionState{}, nil, trace)
+	r.drainAgentEvents(runCtx, iter, stream, key, "", "", hookChain, hookBase, &compactionState{}, nil, trace, req, false)
 }
 
 // ComposeParams contains the data necessary to compose the execution instruction.
@@ -2279,6 +2528,15 @@ type ComposeParams struct {
 	// inserted in fixed position between USER.md and BOOTSTRAP.md. Empty for
 	// non-channel runs — composition is byte-identical without them.
 	ChannelDocs []string
+	// MemoryDocs are the pre-rendered memory prefetch documents
+	// (integrate-agent-zero-memory 4.2): the bounded, cited candidate section
+	// the intent gate routed, inserted in fixed position after the channel
+	// docs and before BOOTSTRAP.md. Empty unless the gate found the turn
+	// needs deep memory and prefetch returned candidates. The scheduler and
+	// heartbeat profiles omit it entirely — unattended runs carry no memory
+	// document tier (their trimmed stacks drop even the shared-memory
+	// subsection), and the runner never gates those origins.
+	MemoryDocs []string
 	// SchedulerProfile selects the trimmed unattended-run composition
 	// (integrate-scheduler D6): AGENTS/IDENTITY/SOUL plus the workspace
 	// metadata doc without the shared-memory subsection, closed by the
@@ -2390,7 +2648,12 @@ func (c *DefaultInstructionComposer) Compose(ctx context.Context, params Compose
 	// between USER.md and BOOTSTRAP.md. Empty for non-channel runs.
 	docs = append(docs, params.ChannelDocs...)
 
-	// 7. BOOTSTRAP.md
+	// 7. Memory prefetch (integrate-agent-zero-memory 4.2): the cited
+	// candidate section, pre-rendered by the runner, after the channel docs
+	// and before BOOTSTRAP.md. Empty unless the intent gate routed the turn.
+	docs = append(docs, params.MemoryDocs...)
+
+	// 8. BOOTSTRAP.md
 	if content := readPromptFile(params.AgentDir, "BOOTSTRAP.md"); content != "" {
 		docs = append(docs, content)
 	}

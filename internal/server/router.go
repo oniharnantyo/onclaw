@@ -15,6 +15,7 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/config"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/heartbeat"
+	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/promptgen"
 	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/scheduler"
@@ -75,6 +76,13 @@ type RouterOptions struct {
 	// a fresh one around the fallback runner; only the composition root
 	// Start()s it, riding the server's lifecycle.
 	Heartbeat *heartbeat.Service
+	// MemoryConsolidator is the composition root's consolidator (integrate-
+	// agent-zero-memory 6.1/6.2): when set, the memory handlers' consolidate-
+	// now shares the same instance the nightly ticker drives — one code path
+	// with the worker's extraction-failure counters. Nil (fallback assembly)
+	// builds a ticker-less consolidator with an unwired stats source.
+	MemoryConsolidator *memory.Consolidator
+
 	// Gateways is the gateway runtime (integrate-telegram-gateway D11, task
 	// 6.2): the gateway service + lifecycle manager + pairing service built
 	// by the composition root around the runner. nil builds a fresh one for
@@ -308,8 +316,31 @@ func (rt *router) Engine() *gin.Engine {
 	// Project space root (channel-teams D5) — dataDir computed above with the
 	// workspace storage resolver.
 
+	// Memory pipeline (integrate-agent-zero-memory): the fallback assembly
+	// mirrors the composition root's construction — worker, searcher, and
+	// intent gate over the same stores, with the chip sink late-bound to the
+	// runner built below. The worker is Started by the composition root; the
+	// fallback path never drains, like the fallback scheduler/heartbeat.
+	memoryLog := slog.Default()
+
 	runner := rt.opts.Runner
 	if runner == nil && rt.opts.Store != nil {
+		memoryWorker := memory.NewWorker(
+			memory.NewGister(rt.opts.Store.MemoryEvents(), rt.opts.Store.SessionEvents(), rt.opts.Store.Providers(), rt.opts.EncryptionKey, agents.DefaultAgenticModelFactory),
+			memory.NewGate(rt.opts.Store.MemoryNotes(), rt.opts.Store.Memories(), rt.opts.Store.Providers(), rt.opts.EncryptionKey, agents.DefaultAgenticModelFactory, memoryLog),
+			memoryLog,
+			memory.WithChipSink(func(ctx context.Context, job memory.IngestJob, payload memory.MemoryIngestedPayload) {
+				runner.AppendMemoryChip(ctx, job, payload)
+			}),
+			// Workspace visibility posture (D4's policy switch): read off the
+			// memory settings record per job, failing safe to narrow.
+			memory.WithPostureFunc(func(ctx context.Context, workspaceID string) memory.Posture {
+				return handlers.MemoryPostureForWorkspace(ctx, rt.opts.Store.ToolSettings(), workspaceID)
+			}),
+		)
+		memorySearcher := memory.NewSearcher(rt.opts.Store.MemoryNotes(), rt.opts.Store.MemoryEvents())
+		intentGate := memory.NewIntentGate(rt.opts.Store.Providers(), rt.opts.EncryptionKey, agents.DefaultAgenticModelFactory, memoryLog)
+
 		runner = agents.NewRunner(
 			rt.opts.Store.Workspaces(),
 			rt.opts.Store.Agents(),
@@ -321,11 +352,16 @@ func (rt *router) Engine() *gin.Engine {
 			rt.opts.Store.SessionCheckpoints(),
 			rt.opts.Store.Memories(),
 			rt.opts.Store.AgentSessions(),
+			rt.opts.Store.GatewayLinks(),
+			memoryWorker,
+			memorySearcher,
+			intentGate,
 			rt.opts.EncryptionKey,
 			onClawDir,
 			agents.WithToolRegistry(agents.NewDefaultToolRegistry(
 				rt.opts.Store.Memories(),
 				agents.WithSchedulerTools(rt.opts.Store.Schedulers(), rt.opts.Store.Channels()),
+				agents.WithMemorySearch(memorySearcher),
 			)),
 			agents.WithEnabledSkillReader(WorkspaceSkillReader(rt.opts.Store.WorkspaceSkills())),
 			agents.WithMCPPolicy(mcp.NewSettingsPolicy(mcpSettings)),
@@ -428,6 +464,38 @@ func (rt *router) Engine() *gin.Engine {
 	providerHandlers := handlers.NewProviderHandlers(rt.opts.Store.Providers(), rt.opts.Store.Agents(), rt.opts.EncryptionKey, providerRegistry, modelCatalog)
 	agentHandlers := handlers.NewAgentHandlers(rt.opts.Store.Agents(), rt.opts.Store.Providers(), rt.opts.Store.SessionEvents(), rt.opts.Store.AgentSessions(), rt.opts.EncryptionKey, providerRegistry, modelCatalog, agentService, workspaceDir, runner, runner)
 	memoryHandlers := handlers.NewMemoryHandlers(rt.opts.Store.Memories())
+
+	// Memory notes/events surface (integrate-agent-zero-memory tasks 5.4):
+	// the extracted-facts browser, episodic timeline, consolidate-now, the
+	// morning report, and the workspace memory settings record. The fallback
+	// assembly builds the same consolidator the composition root's nightly
+	// ticker drives (loop never Started here — like the fallback scheduler,
+	// only the composition root runs tickers); the handlers only ever call
+	// RunNow through the narrow seam, so one code path serves both triggers
+	// (tasks 6.2).
+	memoryConsolidator := rt.opts.MemoryConsolidator
+	if memoryConsolidator == nil {
+		memoryConsolidator = memory.NewConsolidator(
+			rt.opts.Store.MemoryNotes(),
+			rt.opts.Store.MemoryReports(),
+			rt.opts.Store.Workspaces(),
+			rt.opts.Store.Providers(),
+			rt.opts.EncryptionKey,
+			agents.DefaultAgenticModelFactory,
+			nil, // stats: the fallback has no worker to read counters from
+			memoryLog,
+		)
+	}
+	memoryNoteHandlers := handlers.NewMemoryNoteHandlers(
+		rt.opts.Store.MemoryNotes(),
+		rt.opts.Store.MemoryEvents(),
+		rt.opts.Store.MemoryReports(),
+		rt.opts.Store.ToolSettings(),
+		rt.opts.Store.Providers(),
+		memoryConsolidator,
+		rt.opts.EncryptionKey,
+		providerRegistry,
+	)
 
 	toolSettings := rt.opts.ToolSettings
 	if toolSettings == nil {
@@ -587,6 +655,25 @@ func (rt *router) Engine() *gin.Engine {
 				wsGroup.PUT("/me/memory", memoryHandlers.PutUserMemory)
 				wsGroup.GET("/memory", memoryHandlers.GetWorkspaceMemory)
 				wsGroup.PUT("/memory", rt.mw.RequirePermission(domain.WorkspaceWrite), memoryHandlers.PutWorkspaceMemory)
+
+				// Extracted memory management (integrate-agent-zero-memory
+				// tasks 5.4): reads — the notes browser, note provenance, the
+				// episodic timeline, and the settings view — ride membership
+				// like the shared GET above, scope-filtered structurally by
+				// the store (viewer = the HTTP caller, no agent impersonation).
+				// Writes — audited promotion, tombstone delete, consolidate-
+				// now, settings PUT, and the connection test — sit behind the
+				// same workspace.write gate.
+				wsGroup.GET("/memory/notes", memoryNoteHandlers.ListNotes)
+				wsGroup.GET("/memory/notes/:id", memoryNoteHandlers.GetNote)
+				wsGroup.POST("/memory/notes/:id/promote", rt.mw.RequirePermission(domain.WorkspaceWrite), memoryNoteHandlers.PromoteNote)
+				wsGroup.DELETE("/memory/notes/:id", rt.mw.RequirePermission(domain.WorkspaceWrite), memoryNoteHandlers.DeleteNote)
+				wsGroup.GET("/memory/events", memoryNoteHandlers.ListEvents)
+				wsGroup.POST("/memory/consolidate", rt.mw.RequirePermission(domain.WorkspaceWrite), memoryNoteHandlers.ConsolidateNow)
+				wsGroup.GET("/memory/report", memoryNoteHandlers.GetReport)
+				wsGroup.GET("/memory/settings", memoryNoteHandlers.GetSettings)
+				wsGroup.PUT("/memory/settings", rt.mw.RequirePermission(domain.WorkspaceWrite), memoryNoteHandlers.PutSettings)
+				wsGroup.POST("/memory/settings/test", rt.mw.RequirePermission(domain.WorkspaceWrite), memoryNoteHandlers.TestMemorySettings)
 
 				// Chat attachment upload (attachments design D1):
 				// membership-level auth — any workspace member attaches

@@ -44,6 +44,11 @@ type Agent struct {
 	Bootstrap     string          `json:"bootstrap"`
 	ProviderID    string          `json:"provider_id"`
 	Model         string          `json:"model"`
+	// Memory side-call override: both empty (the default) inherits the
+	// workspace memory settings' side_call_model, then the model the agent
+	// itself runs. Both set pins the memory pipeline's cheap-model calls.
+	MemorySidecallProviderID string `json:"memory_sidecall_provider_id,omitempty"`
+	MemorySidecallModel      string `json:"memory_sidecall_model,omitempty"`
 	Temperature   float64         `json:"temperature"`
 	MaxTokens     *int            `json:"max_tokens,omitempty"`
 	Effort        *string         `json:"effort,omitempty"`
@@ -69,6 +74,15 @@ func ValidateAgentAutonomy(autonomy AgentAutonomy) error {
 	default:
 		return fmt.Errorf("%w: invalid autonomy %q, must be approval, suggest, or full", ErrInvalid, autonomy)
 	}
+}
+
+// ValidateAgentMemorySidecall enforces the override pair: inherit (both
+// empty) or a fully-specified model (both set) — never half.
+func ValidateAgentMemorySidecall(providerID, model string) error {
+	if (providerID == "") != (model == "") {
+		return fmt.Errorf("%w: memory side-call override needs both provider and model, or neither", ErrInvalid)
+	}
+	return nil
 }
 
 // ValidateAgentTemperature validates that temperature is within the [0.0, 2.0] range.

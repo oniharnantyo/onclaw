@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { api, type ApiModel, type ApiModelsResult } from "../../lib/api";
+import { classifyEmbeddingModel } from "../../lib/embedding";
 import { cx } from "../../lib/helpers";
 import { inputCls, labelCls } from "./constants";
 import { Combobox, type ComboboxOption } from "./Combobox";
@@ -8,9 +9,16 @@ import { Icon } from "./Icon";
 // Capability icons (fix-image-attachment-lane D5): rendered from the catalog
 // data the models fetch already resolved — no new lookup. Each icon appears
 // only when the catalog affirmatively supports that capability; unknown or
-// unsupported rows stay quiet (no struck-through state, no placeholder).
+// unsupported rows stay quiet (no struck-through state, no placeholder). The
+// embedding marker is the one name-based exception: the wire carries no
+// embedding flag, so rows classify via lib/embedding (memory D16) — the
+// marker makes embedding models spottable in chat-model dropdowns (they are
+// inert as chat models and only meaningful for the memory pipeline).
 function capabilityIcons(m: ApiModel): ReactNode {
   const nodes: { key: string; title: string; icon: string }[] = [];
+  if (classifyEmbeddingModel(m) === "embedding") {
+    nodes.push({ key: "embedding", title: "Embedding model", icon: "embed" });
+  }
   if (m.image_input) nodes.push({ key: "image", title: "Accepts image input", icon: "eye" });
   if (m.pdf_input) nodes.push({ key: "pdf", title: "Accepts PDF input", icon: "file" });
   if (m.reasoning) nodes.push({ key: "reasoning", title: "Supports reasoning", icon: "brain" });

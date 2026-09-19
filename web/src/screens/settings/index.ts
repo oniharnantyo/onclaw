@@ -8,6 +8,7 @@ export * from "./ProvidersPane";
 export * from "./McpPane";
 export * from "./SkillsPane";
 export * from "./HooksPane";
+export * from "./MemoryPane";
 export * from "./StoragePane";
 export * from "./KeyRow";
 export * from "./SettingsPage";

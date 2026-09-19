@@ -78,10 +78,12 @@ func setupApprovalRunner(t *testing.T, sessionID string) (store.Store, *Runner, 
 	}
 
 	model := newScriptedToolCallModel()
+	memWorker, memSearch, memGate := newTestMemoryPipeline(st)
 	runner := NewRunner(
 		st.Workspaces(), st.Agents(), st.Users(), st.Members(), st.Roles(),
 		st.Providers(), st.SessionEvents(), st.SessionCheckpoints(),
 		st.Memories(), st.AgentSessions(),
+		st.GatewayLinks(), memWorker, memSearch, memGate,
 		[]byte("test-key-32-bytes-long-12345678"),
 		t.TempDir(),
 		WithAgenticModelFactory(func(context.Context, string, providers.Credential, string) (Model, error) {
@@ -233,10 +235,12 @@ func TestApprovalFlow_ResumeSurvivesRunnerRestart(t *testing.T) {
 
 	// A fresh Runner over the same durable store resumes the persisted
 	// checkpoint — checkpoints survive process restarts.
+	memWorker, memSearch, memGate := newTestMemoryPipeline(st)
 	restarted := NewRunner(
 		st.Workspaces(), st.Agents(), st.Users(), st.Members(), st.Roles(),
 		st.Providers(), st.SessionEvents(), st.SessionCheckpoints(),
 		st.Memories(), st.AgentSessions(),
+		st.GatewayLinks(), memWorker, memSearch, memGate,
 		[]byte("test-key-32-bytes-long-12345678"),
 		runner.onClawDir,
 		WithAgenticModelFactory(func(context.Context, string, providers.Credential, string) (Model, error) {

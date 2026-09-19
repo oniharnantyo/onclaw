@@ -287,7 +287,7 @@ func TestRunner_UnwiredResolverFailsOpen(t *testing.T) {
 	if got := blockTypes(msg); len(got) != 1 || got[0] != schema.ContentBlockTypeUserInputImage {
 		t.Fatalf("block types = %v, want the image block on the default resolver", got)
 	}
-	if NewRunner(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, []byte("k"), t.TempDir()).inputModalityResolver == nil {
+	if NewRunner(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, []byte("k"), t.TempDir()).inputModalityResolver == nil {
 		t.Fatal("NewRunner must default the input-modality resolver (fail-open unknown)")
 	}
 }

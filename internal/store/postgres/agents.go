@@ -78,12 +78,13 @@ func (as *agentStore) Create(ctx context.Context, a *domain.Agent) error {
 			id, workspace_id, slug, name, role, description, brief,
 			provider_id, model, temperature, max_tokens, effort, autonomy,
 			context_window, tools, enabled_mcps,
+			memory_sidecall_provider_id, memory_sidecall_model,
 			avatar, prompts_status, prompts_error, created_by, updated_by, created_at, updated_at
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7,
 			$8, $9, $10, $11, $12, $13,
-			$14, $15, $16,
-			$17, $18, $19, $20, $21, $22, $23
+			$14, $15, $16, $17, $18,
+			$19, $20, $21, $22, $23, $24, $25
 		)
 	`
 	_, err := as.db.Exec(ctx, query,
@@ -103,6 +104,8 @@ func (as *agentStore) Create(ctx context.Context, a *domain.Agent) error {
 		a.ContextWindow,
 		a.Tools,
 		a.EnabledMCPS,
+		a.MemorySidecallProviderID,
+		a.MemorySidecallModel,
 		[]byte(a.Avatar),
 		string(a.PromptsStatus),
 		a.PromptsError,
@@ -126,6 +129,7 @@ func (as *agentStore) ByID(ctx context.Context, workspaceID, id string) (*domain
 		SELECT id, workspace_id, slug, name, role, description, brief,
 		       provider_id, model, temperature, max_tokens, effort, autonomy,
 		       context_window, tools, enabled_mcps,
+		       memory_sidecall_provider_id, memory_sidecall_model,
 		       avatar, prompts_status, prompts_error, created_by, updated_by, created_at, updated_at
 		FROM agents
 		WHERE workspace_id = $1 AND id = $2
@@ -150,6 +154,8 @@ func (as *agentStore) ByID(ctx context.Context, workspaceID, id string) (*domain
 		&a.ContextWindow,
 		&a.Tools,
 		&a.EnabledMCPS,
+		&a.MemorySidecallProviderID,
+		&a.MemorySidecallModel,
 		&avatarBytes,
 		&promptsStatusStr,
 		&a.PromptsError,
@@ -186,6 +192,7 @@ func (as *agentStore) BySlug(ctx context.Context, workspaceID, slug string) (*do
 		SELECT id, workspace_id, slug, name, role, description, brief,
 		       provider_id, model, temperature, max_tokens, effort, autonomy,
 		       context_window, tools, enabled_mcps,
+		       memory_sidecall_provider_id, memory_sidecall_model,
 		       avatar, prompts_status, prompts_error, created_by, updated_by, created_at, updated_at
 		FROM agents
 		WHERE workspace_id = $1 AND slug = $2
@@ -210,6 +217,8 @@ func (as *agentStore) BySlug(ctx context.Context, workspaceID, slug string) (*do
 		&a.ContextWindow,
 		&a.Tools,
 		&a.EnabledMCPS,
+		&a.MemorySidecallProviderID,
+		&a.MemorySidecallModel,
 		&avatarBytes,
 		&promptsStatusStr,
 		&a.PromptsError,
@@ -246,6 +255,7 @@ func (as *agentStore) ListForWorkspace(ctx context.Context, workspaceID string) 
 		SELECT id, workspace_id, slug, name, role, description, brief,
 		       provider_id, model, temperature, max_tokens, effort, autonomy,
 		       context_window, tools, enabled_mcps,
+		       memory_sidecall_provider_id, memory_sidecall_model,
 		       avatar, prompts_status, prompts_error, created_by, updated_by, created_at, updated_at
 		FROM agents
 		WHERE workspace_id = $1
@@ -279,6 +289,8 @@ func (as *agentStore) ListForWorkspace(ctx context.Context, workspaceID string) 
 			&a.ContextWindow,
 			&a.Tools,
 			&a.EnabledMCPS,
+		&a.MemorySidecallProviderID,
+		&a.MemorySidecallModel,
 			&avatarBytes,
 			&promptsStatusStr,
 			&a.PromptsError,
@@ -365,11 +377,13 @@ func (as *agentStore) Update(ctx context.Context, a *domain.Agent) error {
 		    autonomy = $11,
 		    context_window = $12,
 		    tools = $13,
-			    enabled_mcps = $14,
-			    avatar = $15,
-			    updated_by = $16,
-			    updated_at = $17
-			WHERE workspace_id = $18 AND id = $19
+		    enabled_mcps = $14,
+		    memory_sidecall_provider_id = $15,
+		    memory_sidecall_model = $16,
+		    avatar = $17,
+		    updated_by = $18,
+		    updated_at = $19
+			WHERE workspace_id = $20 AND id = $21
 		RETURNING prompts_status, prompts_error, created_by, created_at
 	`
 	var promptsStatusStr string
@@ -388,6 +402,8 @@ func (as *agentStore) Update(ctx context.Context, a *domain.Agent) error {
 		a.ContextWindow,
 		a.Tools,
 		a.EnabledMCPS,
+		a.MemorySidecallProviderID,
+		a.MemorySidecallModel,
 		[]byte(a.Avatar),
 		a.UpdatedBy,
 		now,

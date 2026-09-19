@@ -296,6 +296,10 @@ export interface ApiAgent {
   bootstrap: string;
   provider_id: string;
   model: string;
+  /** Memory side-call override: both empty = inherit the workspace memory
+   * setting, then the model this agent runs. */
+  memory_sidecall_provider_id?: string;
+  memory_sidecall_model?: string;
   temperature: number;
   max_tokens?: number | null;
   effort?: string | null;
@@ -334,6 +338,8 @@ export interface CreateAgentPayload {
   brief: string;
   provider_id?: string;
   model: string;
+  memory_sidecall_provider_id?: string;
+  memory_sidecall_model?: string;
   temperature?: number;
   max_tokens?: number;
   effort?: string;
@@ -355,6 +361,10 @@ export interface PatchAgentPayload {
   soul?: string;
   provider_id?: string;
   model?: string;
+  /** Both fields set pins a memory side-call model; both empty clears back
+   * to inherit. Send neither to leave the current choice untouched. */
+  memory_sidecall_provider_id?: string;
+  memory_sidecall_model?: string;
   temperature?: number;
   max_tokens?: number;
   effort?: string;
@@ -447,6 +457,162 @@ export interface ApiMemory {
   content: string;
   max_chars: number;
   updated_at: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Extracted memory (integrate-agent-zero-memory tasks 5.1): the curated fact
+// store, the episodic timeline, the consolidator's morning report, and the
+// workspace memory settings record. Shapes mirror the handler JSON exactly.
+// ---------------------------------------------------------------------------
+
+/** Within-tenant visibility tier (D4): shared = tenant-wide, user = one
+ * member, agent = one agent. */
+export type ApiMemoryVisibility = 'shared' | 'user' | 'agent';
+
+export type ApiMemoryOrigin = 'manual' | 'dialogue' | 'infer' | 'doc';
+
+/** One curated fact with its provenance birth tuple (D5) and update
+ * pointers (D6). */
+export interface ApiMemoryNote {
+  id: string;
+  workspace_id: string;
+  visibility: ApiMemoryVisibility;
+  user_id: string | null;
+  agent_id: string | null;
+  origin: ApiMemoryOrigin;
+  event_time: string;
+  learned_at: string;
+  source_event_id: string;
+  content: string;
+  importance: number;
+  pinned: boolean;
+  topic: string | null;
+  conflict_flag: string | null;
+  supersedes: string | null;
+  superseded_by: string | null;
+  promoted_by: string | null;
+  promoted_at: string | null;
+  tombstoned_at: string | null;
+}
+
+/** One raw-evidence link on a note (D12's multi-evidence). */
+export interface ApiMemoryNoteEvidence {
+  source_event_id: string;
+  added_at: string;
+}
+
+/** Workspace-wide per-tier counts — chips, never content. */
+export interface ApiMemoryNoteCounts {
+  shared: number;
+  user: number;
+  agent: number;
+}
+
+export interface ApiMemoryNoteList {
+  notes: ApiMemoryNote[];
+  counts: ApiMemoryNoteCounts;
+  viewer_user_id: string;
+}
+
+export interface ApiMemoryNoteDetail {
+  note: ApiMemoryNote;
+  evidence: ApiMemoryNoteEvidence[];
+}
+
+export interface ApiMemoryNotesQuery {
+  q?: string;
+  visibility?: ApiMemoryVisibility;
+  topic?: string;
+  from?: string;
+  until?: string;
+  include_superseded?: boolean;
+}
+
+/** One episodic gist (D3): the summarized window of a session. */
+export interface ApiMemoryEvent {
+  id: string;
+  workspace_id: string;
+  agent_id: string;
+  session_id: string;
+  turn_id: string;
+  visibility: ApiMemoryVisibility;
+  user_id: string | null;
+  origin: ApiMemoryOrigin;
+  event_time: string;
+  learned_at: string;
+  source_event_id: string;
+  description: string;
+  outcome: string;
+  participants: { kind: string; id: string }[];
+  tombstoned_at: string | null;
+}
+
+export interface ApiMemoryEventsQuery {
+  session_id?: string;
+  visibility?: ApiMemoryVisibility;
+  from?: string;
+  until?: string;
+}
+
+/** One doc-over-notes precedence review item (D7). */
+export interface ApiMemoryConflictFlag {
+  note_id: string;
+  document: string;
+  excerpt: string;
+  flagged_at: string;
+}
+
+/** One consolidation merge (D12). */
+export interface ApiMemoryMergeRecord {
+  canonical_id: string;
+  merged_ids: string[];
+}
+
+/** The consolidator's morning report (tasks 6.3). */
+export interface ApiMorningReport {
+  generated_at: string;
+  conflicts: ApiMemoryConflictFlag[];
+  merges: ApiMemoryMergeRecord[];
+  extraction_failures: number;
+}
+
+/** The workspace memory settings record (D16). The embedding provider IS a
+ * workspace provider — endpoint and credential live on the provider record;
+ * the settings pin provider, model, and the known dimension only. */
+export interface ApiMemorySettings {
+  visibility_posture: 'narrow' | 'org-shared';
+  ingestion_enabled: boolean;
+  /** The workspace-level memory side-call model; null = agent default
+   * (each agent's own run model, or its own override). */
+  side_call_model: { provider_id: string; model: string } | null;
+  embedding: {
+    provider_id: string;
+    model: string;
+    dimension: number;
+  } | null;
+}
+
+export interface ApiMemorySettingsUpdate {
+  visibility_posture?: 'narrow' | 'org-shared';
+  ingestion_enabled?: boolean;
+  /** Absent leaves the stored choice; null clears to agent default. */
+  side_call_model?: { provider_id: string; model: string } | null;
+  embedding?: {
+    provider_id?: string;
+    model?: string;
+    dimension?: number;
+  };
+}
+
+export interface ApiMemorySettingsTest {
+  provider_id: string;
+  model: string;
+  dimension?: number;
+}
+
+export interface ApiMemorySettingsTestResult {
+  ok: boolean;
+  dimension: number;
 }
 
 export interface ApiModel {
@@ -1817,6 +1983,75 @@ export const api = {
         method: 'PUT',
         body,
       }),
+    // Extracted memory (integrate-agent-zero-memory tasks 5.1). Reads ride
+    // membership; promotion, delete, consolidate, and the settings writes
+    // are workspace.write server-side (Members get 403).
+    notes: (ws: string, query: ApiMemoryNotesQuery = {}) => {
+      const params = new URLSearchParams();
+      if (query.q) params.set('q', query.q);
+      if (query.visibility) params.set('visibility', query.visibility);
+      if (query.topic) params.set('topic', query.topic);
+      if (query.from) params.set('from', query.from);
+      if (query.until) params.set('until', query.until);
+      if (query.include_superseded) params.set('include_superseded', 'true');
+      const qs = params.toString();
+      return request<ApiMemoryNoteList>(
+        `/workspaces/${encodeURIComponent(ws)}/memory/notes${qs ? `?${qs}` : ''}`,
+        { method: 'GET' }
+      );
+    },
+    note: (ws: string, id: string) =>
+      request<ApiMemoryNoteDetail>(
+        `/workspaces/${encodeURIComponent(ws)}/memory/notes/${encodeURIComponent(id)}`,
+        { method: 'GET' }
+      ),
+    promoteNote: (ws: string, id: string, note?: string) =>
+      request<{ note: ApiMemoryNote }>(
+        `/workspaces/${encodeURIComponent(ws)}/memory/notes/${encodeURIComponent(id)}/promote`,
+        { method: 'POST', body: note ? { note } : {} }
+      ),
+    deleteNote: (ws: string, id: string) =>
+      request<void>(
+        `/workspaces/${encodeURIComponent(ws)}/memory/notes/${encodeURIComponent(id)}`,
+        { method: 'DELETE' }
+      ),
+    events: (ws: string, query: ApiMemoryEventsQuery = {}) => {
+      const params = new URLSearchParams();
+      if (query.session_id) params.set('session_id', query.session_id);
+      if (query.visibility) params.set('visibility', query.visibility);
+      if (query.from) params.set('from', query.from);
+      if (query.until) params.set('until', query.until);
+      const qs = params.toString();
+      return request<{ events: ApiMemoryEvent[] }>(
+        `/workspaces/${encodeURIComponent(ws)}/memory/events${qs ? `?${qs}` : ''}`,
+        { method: 'GET' }
+      );
+    },
+    consolidate: (ws: string) =>
+      request<{ report: ApiMorningReport }>(
+        `/workspaces/${encodeURIComponent(ws)}/memory/consolidate`,
+        { method: 'POST' }
+      ),
+    report: (ws: string) =>
+      request<{ report: ApiMorningReport }>(
+        `/workspaces/${encodeURIComponent(ws)}/memory/report`,
+        { method: 'GET' }
+      ),
+    getSettings: (ws: string) =>
+      request<{ settings: ApiMemorySettings }>(
+        `/workspaces/${encodeURIComponent(ws)}/memory/settings`,
+        { method: 'GET' }
+      ),
+    updateSettings: (ws: string, body: ApiMemorySettingsUpdate) =>
+      request<{ settings: ApiMemorySettings }>(
+        `/workspaces/${encodeURIComponent(ws)}/memory/settings`,
+        { method: 'PUT', body }
+      ),
+    testSettings: (ws: string, body: ApiMemorySettingsTest) =>
+      request<ApiMemorySettingsTestResult>(
+        `/workspaces/${encodeURIComponent(ws)}/memory/settings/test`,
+        { method: 'POST', body }
+      ),
   },
   admin: {
     workspaces: {

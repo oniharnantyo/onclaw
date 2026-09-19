@@ -382,6 +382,29 @@ class TranscriptTranslator {
         });
         break;
       }
+      case 'memory_ingested': {
+        // Post-turn memory chip (integrate-agent-zero-memory D11): the
+        // background pipeline's committed counts — never content. The chip
+        // is its own post-turn entry: the turn accumulated so far flushes
+        // first, then the chip lands exactly where it sat in the event
+        // stream. Hydrated history and the catch-up replay share this case,
+        // so the chip renders identically after a reload (it is just
+        // another session event).
+        if (this.turnUser || this.turnAgent) this.flushTurn();
+        this.messages.push({
+          id: ev.id || `${this.idPrefix}-mem-${this.messages.length}`,
+          author: 'memory',
+          ts: ev.occurred_at || '',
+          text: '',
+          memory: {
+            noteIds: ev.memory_ingested?.note_ids || [],
+            eventIds: ev.memory_ingested?.event_ids || [],
+            counts: ev.memory_ingested?.counts || { shared: 0, user: 0, agent: 0 },
+          },
+        });
+        this.noteInterruptActivity();
+        break;
+      }
       case 'turn_started':
       case 'cancelled':
       case 'error':

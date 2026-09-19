@@ -316,6 +316,7 @@ func TestComposeChannelDocs(t *testing.T) {
 	}
 
 	runner := NewRunner(nil, st.Agents(), st.Users(), nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil,
 		[]byte("k"), "/tmp/onclaw")
 	// Splice the channel ports directly: composeChannelDocs reads them (the
 	// constructor options are covered by the wiring tests below).
@@ -432,6 +433,7 @@ func TestComposeChannelDocs_SessionBlock(t *testing.T) {
 		},
 	}
 	runner := NewRunner(nil, st.Agents(), st.Users(), nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil,
 		[]byte("k"), "/tmp/onclaw")
 	runner.channelContext = fcc
 
@@ -695,7 +697,7 @@ func TestChannelHistoryTool(t *testing.T) {
 
 func TestChannelTools_ChannelRunOnlyExposure(t *testing.T) {
 	ctx := context.Background()
-	runner := NewRunner(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, []byte("k"), "/tmp/onclaw")
+	runner := NewRunner(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, []byte("k"), "/tmp/onclaw")
 
 	// Channel runs carry the channel toolset through the gate.
 	gated, err := runner.applyToolGate(ctx, "ws-1", scopeChannelToolsIn([]string{"memory"}, true))
@@ -709,7 +711,7 @@ func TestChannelTools_ChannelRunOnlyExposure(t *testing.T) {
 	}
 
 	// The workspace gate still wins: a disabled channel tool is filtered.
-	governed := NewRunner(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, []byte("k"), "/tmp/onclaw",
+	governed := NewRunner(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, []byte("k"), "/tmp/onclaw",
 		WithToolPolicy(&fakeToolPolicy{enabled: map[string]bool{ChannelToolPost: false}}))
 	gated, err = governed.applyToolGate(ctx, "ws-1", scopeChannelToolsIn([]string{}, true))
 	if err != nil {

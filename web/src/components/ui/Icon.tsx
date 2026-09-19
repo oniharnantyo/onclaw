@@ -64,7 +64,8 @@ const ICONS = {
   trash: [<path key="a" d="M3 6h18"/>, <path key="b" d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/>, <path key="c" d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>, <path key="d" d="M10 11v6"/>, <path key="e" d="M14 11v6"/>],
   sun: [<circle key="a" cx="12" cy="12" r="4"/>, <path key="b" d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>],
   moon: [<path key="a" d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>],
-  monitor: [<rect key="a" x="2" y="3" width="20" height="14" rx="2"/>, <path key="b" d="M8 21h8M12 17v4"/>]
+  monitor: [<rect key="a" x="2" y="3" width="20" height="14" rx="2"/>, <path key="b" d="M8 21h8M12 17v4"/>],
+  embed: [<path key="a" d="M8 12h8M8 12 5 6M8 12l-3 6M16 12l3-6M16 12l3 6"/>, <circle key="b" cx="4" cy="5" r="1.6"/>, <circle key="c" cx="4" cy="19" r="1.6"/>, <circle key="d" cx="20" cy="5" r="1.6"/>, <circle key="e" cx="20" cy="19" r="1.6"/>, <circle key="f" cx="12" cy="12" r="2"/>]
 };
 
 

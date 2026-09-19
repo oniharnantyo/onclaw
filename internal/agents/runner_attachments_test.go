@@ -173,10 +173,12 @@ func setupAttachmentsRunner(t *testing.T, mdl Model, opts ...RunnerOption) (*Run
 		}),
 		WithInstructionComposer(stubComposer{}),
 	}, opts...)
+	memWorker, memSearch, memGate := newTestMemoryPipeline(st)
 	runner := NewRunner(
 		st.Workspaces(), st.Agents(), st.Users(), st.Members(), st.Roles(),
 		st.Providers(), st.SessionEvents(), st.SessionCheckpoints(),
 		st.Memories(), st.AgentSessions(),
+		st.GatewayLinks(), memWorker, memSearch, memGate,
 		[]byte("test-key-32-bytes-long-12345678"),
 		onClawDir,
 		allOpts...,
@@ -335,6 +337,7 @@ func TestRunner_SweepsStaleDropLaneDirsAtConstruction(t *testing.T) {
 
 	NewRunner(
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil,
 		[]byte("dummy-key"),
 		onClawDir,
 	)

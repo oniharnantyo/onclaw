@@ -158,7 +158,7 @@ func ToolCatalog() []ToolCatalogEntry {
 		{
 			Key:         tools.NameMemory,
 			DisplayName: "Memory",
-			Description: "Persistent memory across conversations: read and append the user's memory, the shared workspace memory, and daily agent logs.",
+			Description: "Persistent memory across conversations: read and append the user's memory and the shared workspace memory.",
 			Group:       "memory",
 			IconKey:     "memory",
 		},

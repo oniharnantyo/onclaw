@@ -195,10 +195,12 @@ func setupMCPRunner(t *testing.T, agentTools []string) (*Runner, *domain.Workspa
 		t.Fatalf("create agent: %v", err)
 	}
 
+	memWorker, memSearch, memGate := newTestMemoryPipeline(st)
 	runner := NewRunner(
 		st.Workspaces(), st.Agents(), st.Users(), st.Members(), st.Roles(),
 		st.Providers(), st.SessionEvents(), st.SessionCheckpoints(),
 		st.Memories(), st.AgentSessions(),
+		st.GatewayLinks(), memWorker, memSearch, memGate,
 		[]byte("test-key-32-bytes-long-12345678"),
 		t.TempDir(),
 		WithAgenticModelFactory(func(context.Context, string, providers.Credential, string) (Model, error) {
@@ -546,7 +548,7 @@ func TestRunnerResolveMCPPolicyErrorFailsResolution(t *testing.T) {
 
 func TestNewRunnerMCPOptions(t *testing.T) {
 	// Defaults: non-nil no-op seams (no nil guards at use sites).
-	r := NewRunner(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, []byte("k"), "/tmp/x")
+	r := NewRunner(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, []byte("k"), "/tmp/x")
 	if _, ok := r.mcpPolicy.(noopMCPPolicy); !ok {
 		t.Fatalf("default policy = %T, want noopMCPPolicy", r.mcpPolicy)
 	}
@@ -561,12 +563,12 @@ func TestNewRunnerMCPOptions(t *testing.T) {
 	policy := &mcpStubPolicy{}
 	manager := &mcpStubManager{}
 	status := &mcpStubStatus{}
-	r = NewRunner(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, []byte("k"), "/tmp/x",
+	r = NewRunner(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, []byte("k"), "/tmp/x",
 		WithMCPPolicy(policy), WithMCPManager(manager), WithMCPStatusWriter(status))
 	if r.mcpPolicy != mcp.MCPPolicy(policy) || r.mcpManager != mcp.ToolSource(manager) || r.mcpStatus != mcp.StatusWriter(status) {
 		t.Fatal("WithMCP* options did not wire the seams")
 	}
-	r = NewRunner(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, []byte("k"), "/tmp/x",
+	r = NewRunner(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, []byte("k"), "/tmp/x",
 		WithMCPPolicy(nil), WithMCPManager(nil), WithMCPStatusWriter(nil))
 	if _, ok := r.mcpPolicy.(noopMCPPolicy); !ok {
 		t.Fatalf("nil policy overrode the default: %T", r.mcpPolicy)
