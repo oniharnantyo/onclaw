@@ -499,6 +499,10 @@ func cloneWorkspace(ws *domain.Workspace) *domain.Workspace {
 		t := *ws.DisabledAt
 		cp.DisabledAt = &t
 	}
+	if ws.DefaultModel != nil {
+		pair := *ws.DefaultModel
+		cp.DefaultModel = &pair
+	}
 	return &cp
 }
 
@@ -957,6 +961,12 @@ func (ws *workspaceStore) Update(ctx context.Context, w *domain.Workspace) error
 	}
 	existing.IsMaster = w.IsMaster
 	existing.DisabledAt = w.DisabledAt
+	if w.DefaultModel == nil {
+		existing.DefaultModel = nil
+	} else {
+		pair := *w.DefaultModel
+		existing.DefaultModel = &pair
+	}
 	existing.UpdatedAt = time.Now().UTC()
 
 	*w = *cloneWorkspace(existing)
@@ -1393,8 +1403,12 @@ type agentStore struct {
 }
 
 func (as *agentStore) Create(ctx context.Context, a *domain.Agent) error {
-	if a == nil || a.WorkspaceID == "" || a.Name == "" || a.Slug == "" || a.ProviderID == "" || a.Model == "" {
+	if a == nil || a.WorkspaceID == "" || a.Name == "" || a.Slug == "" {
 		return fmt.Errorf("%w: missing required agent fields", domain.ErrInvalid)
+	}
+	// Pair rule mirrors the postgres adapter: fully pinned or fully empty.
+	if err := domain.ValidateDefaultModelPair(a.ProviderID, a.Model); err != nil {
+		return err
 	}
 	if err := domain.ValidateAgentSlug(a.Slug); err != nil {
 		return err
@@ -1439,9 +1453,13 @@ func (as *agentStore) Create(ctx context.Context, a *domain.Agent) error {
 		return fmt.Errorf("%w: workspace not found", domain.ErrNotFound)
 	}
 
-	p, exists := as.s.providers[a.ProviderID]
-	if !exists || p.WorkspaceID != a.WorkspaceID {
-		return fmt.Errorf("%w: provider not found in workspace", domain.ErrNotFound)
+	// An inherit agent (empty pair) references no provider; a pinned one must
+	// name a provider of its own workspace.
+	if a.ProviderID != "" {
+		p, exists := as.s.providers[a.ProviderID]
+		if !exists || p.WorkspaceID != a.WorkspaceID {
+			return fmt.Errorf("%w: provider not found in workspace", domain.ErrNotFound)
+		}
 	}
 
 	slugKey := a.WorkspaceID + ":" + a.Slug
@@ -1529,8 +1547,12 @@ func (as *agentStore) ListForWorkspace(ctx context.Context, workspaceID string) 
 }
 
 func (as *agentStore) Update(ctx context.Context, a *domain.Agent) error {
-	if a == nil || a.ID == "" || a.WorkspaceID == "" || a.Name == "" || a.Slug == "" || a.ProviderID == "" || a.Model == "" {
+	if a == nil || a.ID == "" || a.WorkspaceID == "" || a.Name == "" || a.Slug == "" {
 		return fmt.Errorf("%w: missing required agent fields", domain.ErrInvalid)
+	}
+	// Pair rule mirrors the postgres adapter: fully pinned or fully empty.
+	if err := domain.ValidateDefaultModelPair(a.ProviderID, a.Model); err != nil {
+		return err
 	}
 	if err := domain.ValidateAgentSlug(a.Slug); err != nil {
 		return err
@@ -1565,9 +1587,11 @@ func (as *agentStore) Update(ctx context.Context, a *domain.Agent) error {
 		return domain.ErrNotFound
 	}
 
-	p, exists := as.s.providers[a.ProviderID]
-	if !exists || p.WorkspaceID != a.WorkspaceID {
-		return fmt.Errorf("%w: provider not found in workspace", domain.ErrNotFound)
+	if a.ProviderID != "" {
+		p, exists := as.s.providers[a.ProviderID]
+		if !exists || p.WorkspaceID != a.WorkspaceID {
+			return fmt.Errorf("%w: provider not found in workspace", domain.ErrNotFound)
+		}
 	}
 
 	if a.Slug != existing.Slug {
@@ -1677,6 +1701,25 @@ func (as *agentStore) CountByProvider(ctx context.Context, workspaceID, provider
 	count := 0
 	for _, a := range as.s.agents {
 		if a.WorkspaceID == workspaceID && a.ProviderID == providerID {
+			count++
+		}
+	}
+	return count, nil
+}
+
+// CountInheriting counts the workspace's inherit agents (empty provider/model
+// pair), mirroring the postgres adapter's provider_id IS NULL scan.
+func (as *agentStore) CountInheriting(ctx context.Context, workspaceID string) (int, error) {
+	if workspaceID == "" {
+		return 0, nil
+	}
+
+	as.s.mu.RLock()
+	defer as.s.mu.RUnlock()
+
+	count := 0
+	for _, a := range as.s.agents {
+		if a.WorkspaceID == workspaceID && a.ProviderID == "" && a.Model == "" {
 			count++
 		}
 	}
@@ -3029,6 +3072,94 @@ func memoryInWindow(t time.Time, window *store.MemoryTimeWindow) bool {
 	return true
 }
 
+// memorySearchTermCap bounds the term list, mirroring the postgres shaper's
+// memoryQueryTermCap: a long turn text must not grow the predicate without
+// limit, and membership parity keeps the fake aligned with the capped
+// postgres match.
+const memorySearchTermCap = 16
+
+// memoryStopwords is the PostgreSQL 'english' text-search stopword list
+// (snowball english.stop). to_tsquery('english', …) silently drops these
+// words from the shaped tsquery, so the fake drops them too — stopword
+// handling "rides the english text-search configuration" (design risk note,
+// fix-memory-prefetch-matching) and membership parity holds on noisy
+// natural-language queries.
+var memoryStopwords = map[string]struct{}{
+	"i": {}, "me": {}, "my": {}, "myself": {}, "we": {}, "our": {}, "ours": {}, "ourselves": {},
+	"you": {}, "your": {}, "yours": {}, "yourself": {}, "yourselves": {},
+	"he": {}, "him": {}, "his": {}, "himself": {}, "she": {}, "her": {}, "hers": {}, "herself": {},
+	"it": {}, "its": {}, "itself": {},
+	"they": {}, "them": {}, "their": {}, "theirs": {}, "themselves": {},
+	"what": {}, "which": {}, "who": {}, "whom": {},
+	"this": {}, "that": {}, "these": {}, "those": {},
+	"am": {}, "is": {}, "are": {}, "was": {}, "were": {}, "be": {}, "been": {}, "being": {},
+	"have": {}, "has": {}, "had": {}, "having": {},
+	"do": {}, "does": {}, "did": {}, "doing": {},
+	"a": {}, "an": {}, "the": {},
+	"and": {}, "but": {}, "if": {}, "or": {}, "because": {},
+	"as": {}, "until": {}, "while": {},
+	"of": {}, "at": {}, "by": {}, "for": {}, "with": {}, "about": {}, "against": {},
+	"between": {}, "into": {}, "through": {}, "during": {}, "before": {}, "after": {},
+	"above": {}, "below": {}, "to": {}, "from": {}, "up": {}, "down": {}, "in": {}, "out": {},
+	"on": {}, "off": {}, "over": {}, "under": {},
+	"again": {}, "further": {}, "then": {}, "once": {},
+	"here": {}, "there": {}, "when": {}, "where": {}, "why": {}, "how": {},
+	"all": {}, "any": {}, "both": {}, "each": {}, "few": {}, "more": {}, "most": {},
+	"other": {}, "some": {}, "such": {},
+	"no": {}, "nor": {}, "not": {}, "only": {}, "own": {}, "same": {},
+	"so": {}, "than": {}, "too": {}, "very": {},
+	"s": {}, "t": {}, "can": {}, "will": {}, "just": {}, "don": {}, "should": {}, "now": {},
+}
+
+// memorySearchQuery splits a raw search query into the two matching legs of
+// the any-term semantics (fix-memory-prefetch-matching D4): the lowercased
+// whole-string needle (the exact-identifier leg, always matching) and the
+// tokenized terms — lowercase, split on non-alphanumeric, empties and
+// english stopwords dropped, capped at memorySearchTermCap — mirroring the
+// effective to_tsquery('english') shape. A query whose terms all tokenize or
+// stop away keeps only the needle leg, so a whitespace-only query can never
+// widen into a match-everything.
+func memorySearchQuery(queryText string) (needle string, terms []string) {
+	if queryText == "" {
+		return "", nil
+	}
+	needle = strings.ToLower(queryText)
+	terms = strings.FieldsFunc(needle, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	kept := terms[:0]
+	for _, term := range terms {
+		if _, stop := memoryStopwords[term]; stop {
+			continue
+		}
+		kept = append(kept, term)
+		if len(kept) == memorySearchTermCap {
+			break
+		}
+	}
+	return needle, kept
+}
+
+// memorySearchMatch reports whether a lowercased haystack satisfies a search
+// query and how many query terms it matched: any single term being a
+// substring suffices, and the whole lowercased query as a literal substring
+// always matches (verbatim identifiers). The count ranks results — more
+// matched terms first; it is 0 for empty queries and needle-only hits.
+func memorySearchMatch(haystack, needle string, terms []string) (matched bool, termCount int) {
+	if needle == "" {
+		return true, 0
+	}
+	for _, term := range terms {
+		if strings.Contains(haystack, term) {
+			termCount++
+		}
+	}
+	if termCount > 0 || strings.Contains(haystack, needle) {
+		return true, termCount
+	}
+	return false, 0
+}
+
 // validateMemoryNoteForWrite runs the shared write-path validation: scope,
 // tier validity, owner shape, ceiling dominance (D4), and the provenance
 // birth tuple (D5) — the same rules the SQL CHECK constraints pin.
@@ -3118,18 +3249,19 @@ func (es *memoryEventStore) SearchEvents(ctx context.Context, workspaceID, viewe
 }
 
 // queryEvents filters the visible set (structural scope first, then the
-// optional filters, then the case-insensitive substring standing in for the
-// postgres hybrid lexical match) and orders newest first.
+// optional filters, then the any-term lexical match standing in for the
+// postgres hybrid match: any tokenized query term hitting
+// Description+" "+Outcome, with the whole-string query kept as an
+// always-match leg) and orders by descending matched-term count before
+// newest first.
 func (es *memoryEventStore) queryEvents(ctx context.Context, workspaceID, viewerUserID, servingAgentID string, filters store.MemoryEventFilters, queryText string) ([]domain.MemoryEvent, error) {
-	needle := ""
-	if queryText != "" {
-		needle = strings.ToLower(queryText)
-	}
+	needle, terms := memorySearchQuery(queryText)
 
 	es.s.mu.RLock()
 	defer es.s.mu.RUnlock()
 
 	events := make([]domain.MemoryEvent, 0)
+	counts := make([]int, 0)
 	for _, e := range es.s.memoryEvents {
 		if e.WorkspaceID != workspaceID || e.TombstonedAt != nil {
 			continue
@@ -3149,12 +3281,18 @@ func (es *memoryEventStore) queryEvents(ctx context.Context, workspaceID, viewer
 		if !memoryInWindow(e.EventTime, filters.TimeWindow) {
 			continue
 		}
-		if needle != "" && !strings.Contains(strings.ToLower(e.Description+" "+e.Outcome), needle) {
+		matched, termCount := memorySearchMatch(strings.ToLower(e.Description+" "+e.Outcome), needle, terms)
+		if !matched {
 			continue
 		}
 		events = append(events, *cloneMemoryEvent(e))
+		counts = append(counts, termCount)
 	}
+	// Most matched terms first, then newest first.
 	sort.Slice(events, func(i, j int) bool {
+		if counts[i] != counts[j] {
+			return counts[i] > counts[j]
+		}
 		return memoryEventNewer(&events[i], &events[j])
 	})
 	if filters.Limit > 0 && len(events) > filters.Limit {
@@ -3340,16 +3478,19 @@ func (ns *memoryNoteStore) SearchNotes(ctx context.Context, workspaceID, viewerU
 	return ns.queryNotes(ctx, workspaceID, viewerUserID, servingAgentID, filters, query, false)
 }
 
+// queryNotes filters the visible set (structural scope first, then the
+// optional filters, then the any-term lexical match standing in for the
+// postgres hybrid match: any tokenized query term hitting the content, with
+// the whole-string query kept as an always-match leg) and orders by
+// descending matched-term count before pinned / newest-learned / id.
 func (ns *memoryNoteStore) queryNotes(ctx context.Context, workspaceID, viewerUserID, servingAgentID string, filters store.MemoryNoteFilters, queryText string, includeSuperseded bool) ([]domain.MemoryNote, error) {
-	needle := ""
-	if queryText != "" {
-		needle = strings.ToLower(queryText)
-	}
+	needle, terms := memorySearchQuery(queryText)
 
 	ns.s.mu.RLock()
 	defer ns.s.mu.RUnlock()
 
 	notes := make([]domain.MemoryNote, 0)
+	counts := make([]int, 0)
 	for _, n := range ns.s.memoryNotes {
 		if n.WorkspaceID != workspaceID || n.TombstonedAt != nil {
 			continue
@@ -3369,13 +3510,19 @@ func (ns *memoryNoteStore) queryNotes(ctx context.Context, workspaceID, viewerUs
 		if !memoryInWindow(n.EventTime, filters.TimeWindow) {
 			continue
 		}
-		if needle != "" && !strings.Contains(strings.ToLower(n.Content), needle) {
+		matched, termCount := memorySearchMatch(strings.ToLower(n.Content), needle, terms)
+		if !matched {
 			continue
 		}
 		notes = append(notes, *cloneMemoryNote(n))
+		counts = append(counts, termCount)
 	}
-	// Pinned first, then newest-learned, id as the determinism tiebreak.
+	// Most matched terms first, then pinned first, then newest-learned, id
+	// as the determinism tiebreak.
 	sort.Slice(notes, func(i, j int) bool {
+		if counts[i] != counts[j] {
+			return counts[i] > counts[j]
+		}
 		if notes[i].Pinned != notes[j].Pinned {
 			return notes[i].Pinned
 		}

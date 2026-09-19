@@ -22,13 +22,13 @@ import (
 )
 
 // latestSchemaVersion is the newest embedded migration number.
-const latestSchemaVersion = 56
+const latestSchemaVersion = 58
 
 // previousSchemaVersion is the migration version below latestSchemaVersion.
 // The channel-teams wave numbered its migration 000040 after v1's 000031
 // wave, leaving 000032–000039 unused (golang-migrate tolerates gaps), so one
 // step down from the latest must land on the previous EXISTING version.
-const previousSchemaVersion = 55
+const previousSchemaVersion = 57
 
 func getTestBaseDSN(t *testing.T) string {
 	dsn := os.Getenv("TEST_DATABASE_URL")

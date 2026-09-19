@@ -20,11 +20,13 @@ import (
 
 // memoryStoresSchemaVersion is the migration that introduces the memory
 // stores; beforeMemoryStoresVersion is the multi-bot gateways migration
-// below it. The shared latestSchemaVersion / previousSchemaVersion in
-// postgres_test.go track the latest waves.
+// below it; consolidatorSchemaVersion is the evidence + reports wave the
+// round-trip walk starts from. The shared latestSchemaVersion in
+// postgres_test.go tracks the latest waves.
 const (
 	memoryStoresSchemaVersion = 54
 	beforeMemoryStoresVersion = 53
+	consolidatorSchemaVersion = 56
 )
 
 // seedMemoryScopesFixtures creates one workspace with two members and two
@@ -179,13 +181,15 @@ func TestIntegration_MemoryStores_MigrationRoundTrip(t *testing.T) {
 		}
 	}
 
-	// Down one step: exactly the 000056 consolidator tables disappear —
-	// the 000055 takeout is still applied at this depth.
-	if err := mig.Down(1); err != nil {
-		t.Fatalf("migration down 1: %v", err)
+	// Down past the consolidator wave: exactly the 000056 consolidator tables
+	// disappear — the 000055 takeout is still applied at this depth. The step
+	// count is version-relative so later migrations (000057+) don't shift the
+	// walk; the following steps always land one version down.
+	if err := mig.Down(latestSchemaVersion - consolidatorSchemaVersion + 1); err != nil {
+		t.Fatalf("migration down to %d: %v", consolidatorSchemaVersion-1, err)
 	}
-	if v, dirty, err := mig.Status(); err != nil || v != previousSchemaVersion || dirty {
-		t.Fatalf("expected version %d clean after down, got v=%d dirty=%v err=%v", previousSchemaVersion, v, dirty, err)
+	if v, dirty, err := mig.Status(); err != nil || v != consolidatorSchemaVersion-1 || dirty {
+		t.Fatalf("expected version %d clean after down, got v=%d dirty=%v err=%v", consolidatorSchemaVersion-1, v, dirty, err)
 	}
 	if tableExists("memory_note_evidence") || tableExists("memory_reports") {
 		t.Fatal("expected the 000056 consolidator tables dropped by its down migration")

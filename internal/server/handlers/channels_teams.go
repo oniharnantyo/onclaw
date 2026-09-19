@@ -210,8 +210,9 @@ func (h *channelHandlers) GetChannelSession(c *gin.Context) {
 // TeamsAgentSpawner binds spawn-slots through the shared agent creation path
 // (AgentCreationDeps): template-spawned agents get the same slug pre-check,
 // workspace seeding, role-informed prompt generation, and persistence as
-// REST-created agents. When the spawn request carries no provider, the first
-// provider in the workspace is resolved with spawnedAgentDefaultModel.
+// REST-created agents. When the spawn request carries no provider, the
+// workspace default model pair is resolved when set, falling back to the
+// first workspace provider with spawnedAgentDefaultModel.
 type TeamsAgentSpawner struct {
 	deps       AgentCreationDeps
 	providers  store.ProviderStore
@@ -225,6 +226,11 @@ func NewTeamsAgentSpawner(deps AgentCreationDeps, providers store.ProviderStore,
 
 // SpawnAgent implements teams.AgentCreator.
 func (s *TeamsAgentSpawner) SpawnAgent(ctx context.Context, req teams.SpawnAgentRequest) (domain.Agent, error) {
+	ws, err := s.workspaces.ByID(ctx, req.WorkspaceID)
+	if err != nil {
+		return domain.Agent{}, err
+	}
+
 	create := CreateAgentRequest{
 		Name:        req.Name,
 		Slug:        req.Slug,
@@ -235,7 +241,7 @@ func (s *TeamsAgentSpawner) SpawnAgent(ctx context.Context, req teams.SpawnAgent
 		Model:       req.Model,
 	}
 	if create.ProviderID == "" {
-		providerID, model, err := s.defaultProvider(ctx, req.WorkspaceID, create.Model)
+		providerID, model, err := s.defaultProvider(ctx, ws, create.Model)
 		if err != nil {
 			return domain.Agent{}, err
 		}
@@ -243,22 +249,26 @@ func (s *TeamsAgentSpawner) SpawnAgent(ctx context.Context, req teams.SpawnAgent
 		create.Model = model
 	}
 
-	ws, err := s.workspaces.ByID(ctx, req.WorkspaceID)
-	if err != nil {
-		return domain.Agent{}, err
-	}
-
-	agent, err := s.deps.CreateAgentRecord(ctx, req.WorkspaceID, ws.Slug, req.UserID, &create)
+	agent, err := s.deps.CreateAgentRecord(ctx, req.WorkspaceID, ws.Slug, req.UserID, &create, ws.DefaultModel)
 	if err != nil {
 		return domain.Agent{}, err
 	}
 	return *agent, nil
 }
 
-// defaultProvider resolves the workspace's first provider and the default
-// spawned-agent model.
-func (s *TeamsAgentSpawner) defaultProvider(ctx context.Context, workspaceID, model string) (string, string, error) {
-	rows, err := s.providers.ListForWorkspace(ctx, workspaceID)
+// defaultProvider resolves the spawned agent's pinned pair when the template
+// names no provider: the workspace default model when set, else the first
+// workspace provider with spawnedAgentDefaultModel. An explicitly templated
+// model wins over both defaults.
+func (s *TeamsAgentSpawner) defaultProvider(ctx context.Context, ws *domain.Workspace, model string) (string, string, error) {
+	if ws.DefaultModel != nil && ws.DefaultModel.ProviderID != "" && ws.DefaultModel.Model != "" {
+		if strings.TrimSpace(model) == "" {
+			model = ws.DefaultModel.Model
+		}
+		return ws.DefaultModel.ProviderID, model, nil
+	}
+
+	rows, err := s.providers.ListForWorkspace(ctx, ws.ID)
 	if err != nil {
 		return "", "", err
 	}

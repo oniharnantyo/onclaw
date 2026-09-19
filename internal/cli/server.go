@@ -287,6 +287,10 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		agents.WithProjectSpace(channels.NewLocalProjectSpace(cfg.DataDir, st.Workspaces())),
 		agents.WithAttachmentBlobs(wsResolver),
 		agents.WithInputModalityResolver(modelCatalog),
+		// The intent gate's per-workspace budget (fix-memory-retrieval-lane D3):
+		// resolved from the workspace's memory settings record, falling back to
+		// the default pin when absent.
+		agents.WithMemoryGateBudget(memory.SettingsGateBudget(st.ToolSettings(), memoryLog)),
 	}
 	// The trace capability rides the callback chain only when configured (D1):
 	// the rate must be the handler's own so the runner's persistence gate and

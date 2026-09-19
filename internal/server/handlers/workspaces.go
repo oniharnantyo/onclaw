@@ -428,7 +428,9 @@ func (h *workspaceHandlers) CreateWorkspace(c *gin.Context) {
 	// Status transitions generating -> ready upon success; failure leaves
 	// the workspace and agent created with status failed.
 	if createdAgent != nil && h.agentService != nil {
-		if err := h.agentService.Generate(context.Background(), starterAgentDir, createdWs.ID, createdAgent.ID, ""); err != nil {
+		// Starter agents are always pinned (the payload requires provider and
+		// model), so no workspace default rides the generation call.
+		if err := h.agentService.Generate(context.Background(), starterAgentDir, createdWs.ID, createdAgent.ID, "", nil); err != nil {
 			log.Printf("[handlers.workspaces] prompt generation failed for starter agent %s/%s: %v", createdWs.ID, createdAgent.ID, err)
 		}
 
@@ -448,7 +450,7 @@ func (h *workspaceHandlers) CreateWorkspace(c *gin.Context) {
 		resp["provider"] = toProviderResponse(createdProvider)
 	}
 	if createdAgent != nil {
-		wrapped := newAgentResponseWith(c.Request.Context(), h.store.Providers(), h.modelCatalog, createdWs.ID, createdAgent)
+		wrapped := newAgentResponseWith(c.Request.Context(), h.store.Providers(), h.modelCatalog, createdWs.ID, createdAgent, createdWs.DefaultModel)
 		resp["starter_agent"] = wrapped
 		resp["agent"] = wrapped
 	}
@@ -470,14 +472,22 @@ func (h *workspaceHandlers) GetWorkspace(c *gin.Context) {
 	})
 }
 
-// PatchWorkspaceRequest holds editable fields for a workspace.
+// PatchWorkspaceRequest holds editable fields for a workspace. DefaultModel
+// follows the workspace default-model pair semantics (refactor-workspace-
+// settings D2), decoded tri-state from the raw JSON: absent from the payload
+// leaves the stored value untouched; the JSON literal null — like an explicit
+// pair with both fields empty — is a clear attempt (subject to the
+// inheriting-agents guard); a present pair with both fields set pins the
+// default; a half-set pair is 400 invalid_request.
 type PatchWorkspaceRequest struct {
-	Name        *string `json:"name"`
-	Description *string `json:"description"`
-	Timezone    *string `json:"timezone"`
+	Name         *string         `json:"name"`
+	Description  *string         `json:"description"`
+	Timezone     *string         `json:"timezone"`
+	DefaultModel json.RawMessage `json:"default_model"`
 }
 
-// PatchWorkspace updates name, description, and timezone of the current workspace. Slug remains immutable.
+// PatchWorkspace updates name, description, timezone, and the default model of
+// the current workspace. Slug remains immutable.
 // The master workspace is editable only by superadmins: the master tenant has no role with
 // workspace.write other than Superadmin, so the middleware permission guard enforces that rule.
 func (h *workspaceHandlers) PatchWorkspace(c *gin.Context) {
@@ -489,7 +499,7 @@ func (h *workspaceHandlers) PatchWorkspace(c *gin.Context) {
 		return
 	}
 
-	if req.Name == nil && req.Description == nil && req.Timezone == nil {
+	if req.Name == nil && req.Description == nil && req.Timezone == nil && len(req.DefaultModel) == 0 {
 		RespondError(c, fmt.Errorf("%w: no fields to update", domain.ErrInvalid))
 		return
 	}
@@ -514,6 +524,50 @@ func (h *workspaceHandlers) PatchWorkspace(c *gin.Context) {
 			return
 		}
 		ws.Timezone = trimmed
+	}
+
+	if len(req.DefaultModel) > 0 {
+		// Tri-state decode on the raw JSON: an explicit null unmarshals to a
+		// nil pointer and falls through as the empty pair — a clear attempt —
+		// while an absent key never enters this block.
+		var decoded *domain.DefaultModelPair
+		if err := json.Unmarshal(req.DefaultModel, &decoded); err != nil {
+			RespondError(c, domain.ErrInvalid)
+			return
+		}
+		pair := domain.DefaultModelPair{}
+		if decoded != nil {
+			pair = *decoded
+		}
+		pair.ProviderID = strings.TrimSpace(pair.ProviderID)
+		pair.Model = strings.TrimSpace(pair.Model)
+		if err := domain.ValidateDefaultModelPair(pair.ProviderID, pair.Model); err != nil {
+			RespondError(c, err)
+			return
+		}
+		if pair.ProviderID == "" {
+			// Clearing is a cross-entity guard: agents carrying the empty pair
+			// would lose their model at run start, so the clear is refused with
+			// the inheriting count until they are re-pinned.
+			inheriting, err := h.store.Agents().CountInheriting(c.Request.Context(), ws.ID)
+			if err != nil {
+				RespondError(c, err)
+				return
+			}
+			if inheriting > 0 {
+				RespondError(c, fmt.Errorf("%w: cannot clear the workspace default model: %d agent(s) inherit it — pin them to a provider first", domain.ErrUnprocessable, inheriting))
+				return
+			}
+			ws.DefaultModel = nil
+		} else {
+			// The default must reference a provider config of this workspace;
+			// the store's composite FK backs the check at the data layer.
+			if _, err := h.store.Providers().ByID(c.Request.Context(), ws.ID, pair.ProviderID); err != nil {
+				RespondError(c, fmt.Errorf("%w: default model provider not found in workspace", domain.ErrInvalid))
+				return
+			}
+			ws.DefaultModel = &pair
+		}
 	}
 
 	if err := h.store.Workspaces().Update(c.Request.Context(), ws); err != nil {

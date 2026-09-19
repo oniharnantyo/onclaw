@@ -15,7 +15,7 @@ import (
 
 // intentModel is a scripted intent side-call model: fixed response, records
 // the received prompt texts, and honors the context deadline (a real
-// provider's HTTP call does too) so the hard-timeout pin is testable.
+// provider's HTTP call does too) so the per-call budget is testable.
 type intentModel struct {
 	response string
 	err      error
@@ -73,7 +73,7 @@ func TestIntentGate_HitRoutesBuckets(t *testing.T) {
 	m := &intentModel{response: `{"needs_memory":true,"buckets":["notes"]}`}
 	gate := newTestIntentGate(m)
 
-	verdict, err := gate.Classify(context.Background(), "ws-1", "", "What did we decide about the vendor renewal?")
+	verdict, err := gate.Classify(context.Background(), "ws-1", "", "What did we decide about the vendor renewal?", 4*time.Second)
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestIntentGate_BothBucketsAndFences(t *testing.T) {
 	m := &intentModel{response: "Sure!\n```json\n{\"needs_memory\": true, \"buckets\": [\"notes\", \"events\"]}\n```"}
 	gate := newTestIntentGate(m)
 
-	verdict, err := gate.Classify(context.Background(), "ws-1", "", "Recap last week's incident and what we changed since.")
+	verdict, err := gate.Classify(context.Background(), "ws-1", "", "Recap last week's incident and what we changed since.", 4*time.Second)
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestIntentGate_SelfContainedQuiet(t *testing.T) {
 	m := &intentModel{response: `{"needs_memory":false,"buckets":[]}`}
 	gate := newTestIntentGate(m)
 
-	verdict, err := gate.Classify(context.Background(), "ws-1", "", "Write me a haiku about deploy pipelines.")
+	verdict, err := gate.Classify(context.Background(), "ws-1", "", "Write me a haiku about deploy pipelines.", 4*time.Second)
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestIntentGate_EmptyTextSkipsModel(t *testing.T) {
 	m := &intentModel{response: `{}`}
 	gate := newTestIntentGate(m)
 
-	verdict, err := gate.Classify(context.Background(), "ws-1", "", "   ")
+	verdict, err := gate.Classify(context.Background(), "ws-1", "", "   ", 4*time.Second)
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestIntentGate_ModelErrorFailsOpen(t *testing.T) {
 	m := &intentModel{err: errors.New("provider down")}
 	gate := newTestIntentGate(m)
 
-	verdict, err := gate.Classify(context.Background(), "ws-1", "", "What did we decide about the vendor renewal?")
+	verdict, err := gate.Classify(context.Background(), "ws-1", "", "What did we decide about the vendor renewal?", 4*time.Second)
 	if err == nil {
 		t.Fatal("expected the model error to surface")
 	}
@@ -146,7 +146,7 @@ func TestIntentGate_ModelErrorFailsOpen(t *testing.T) {
 func TestIntentGate_UndecodableFailsOpen(t *testing.T) {
 	gate := newTestIntentGate(&intentModel{response: "I think it needs memory, probably."})
 
-	verdict, err := gate.Classify(context.Background(), "ws-1", "", "What did we decide?")
+	verdict, err := gate.Classify(context.Background(), "ws-1", "", "What did we decide?", 4*time.Second)
 	if err == nil {
 		t.Fatal("expected the undecodable-output error")
 	}
@@ -155,15 +155,16 @@ func TestIntentGate_UndecodableFailsOpen(t *testing.T) {
 	}
 }
 
-// TestIntentGate_HardTimeout pins the 1.5s budget (design parameter pin): a
-// model that honors its context is abandoned at the pin and the gate fails
-// open. If Classify skipped the deadline the slow model would answer and the
-// test would see a verdict instead of the deadline error.
+// TestIntentGate_HardTimeout pins the hard-deadline contract: the caller's
+// budget is enforced with a context deadline, so a model that honors its
+// context is abandoned at it and the gate fails open. If Classify skipped the
+// deadline the slow model would answer and the test would see a verdict
+// instead of the deadline error.
 func TestIntentGate_HardTimeout(t *testing.T) {
 	gate := newTestIntentGate(&intentModel{response: `{"needs_memory":true,"buckets":["notes"]}`, delay: 3 * time.Second})
 
 	start := time.Now()
-	verdict, err := gate.Classify(context.Background(), "ws-1", "", "What did we decide?")
+	verdict, err := gate.Classify(context.Background(), "ws-1", "", "What did we decide?", 100*time.Millisecond)
 	elapsed := time.Since(start)
 
 	if !errors.Is(err, context.DeadlineExceeded) {
@@ -172,8 +173,8 @@ func TestIntentGate_HardTimeout(t *testing.T) {
 	if verdict.NeedsDeepMemory {
 		t.Fatalf("fail-open must return the self-contained verdict, got %+v", verdict)
 	}
-	if elapsed > 2*time.Second {
-		t.Fatalf("the gate must abort at the pin, took %v", elapsed)
+	if elapsed > time.Second {
+		t.Fatalf("the gate must abort at the budget, took %v", elapsed)
 	}
 }
 
@@ -183,7 +184,7 @@ func TestIntentGate_HardTimeout(t *testing.T) {
 func TestIntentGate_MissingBucketsRoutesBoth(t *testing.T) {
 	gate := newTestIntentGate(&intentModel{response: `{"needs_memory":true,"buckets":["everything"]}`})
 
-	verdict, err := gate.Classify(context.Background(), "ws-1", "", "What did we decide?")
+	verdict, err := gate.Classify(context.Background(), "ws-1", "", "What did we decide?", 4*time.Second)
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -197,11 +198,42 @@ func TestIntentGate_MissingBucketsRoutesBoth(t *testing.T) {
 func TestIntentGate_ResolverFailureFailsOpen(t *testing.T) {
 	gate := NewIntentGate(nil, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), WithModelResolver(failingResolver("no cheap tier")))
 
-	verdict, err := gate.Classify(context.Background(), "ws-1", "", "What did we decide?")
+	verdict, err := gate.Classify(context.Background(), "ws-1", "", "What did we decide?", 4*time.Second)
 	if err == nil {
 		t.Fatal("expected the resolver error")
 	}
 	if verdict.NeedsDeepMemory {
 		t.Fatalf("fail-open must return the self-contained verdict, got %+v", verdict)
+	}
+}
+
+// TestIntentGate_HonorsConfiguredBudget (fix-memory-retrieval-lane D1/D2,
+// tasks 1.4): the classification budget is the caller's per-turn value, not a
+// package pin. The same ~2s side-call is abandoned under a 100ms budget
+// (fail-open with the deadline error) and answers under the 4s default-sized
+// budget.
+func TestIntentGate_HonorsConfiguredBudget(t *testing.T) {
+	m := &intentModel{response: `{"needs_memory":true,"buckets":["notes"]}`, delay: 2 * time.Second}
+	gate := newTestIntentGate(m)
+
+	start := time.Now()
+	verdict, err := gate.Classify(context.Background(), "ws-1", "", "What did we decide?", 100*time.Millisecond)
+	elapsed := time.Since(start)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected the deadline error under the 100ms budget, got %v", err)
+	}
+	if verdict.NeedsDeepMemory {
+		t.Fatalf("fail-open must return the self-contained verdict, got %+v", verdict)
+	}
+	if elapsed >= time.Second {
+		t.Fatalf("the 100ms budget must abort early, took %v", elapsed)
+	}
+
+	verdict, err = gate.Classify(context.Background(), "ws-1", "", "What did we decide?", 4*time.Second)
+	if err != nil {
+		t.Fatalf("Classify under the 4s budget: %v", err)
+	}
+	if !verdict.NeedsDeepMemory || !verdict.Notes || verdict.Events {
+		t.Fatalf("expected the notes-routed verdict under the 4s budget, got %+v", verdict)
 	}
 }

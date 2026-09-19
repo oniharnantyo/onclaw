@@ -40,6 +40,7 @@ const defaultSettings = {
   settings: {
     visibility_posture: 'narrow' as const,
     ingestion_enabled: true,
+    gate_budget_ms: 4000,
     side_call_model: null,
     embedding: null,
   },
@@ -80,7 +81,7 @@ describe('screens/settings/MemoryPane', () => {
     vi.restoreAllMocks();
   });
 
-  it('shows Facts as the default tab; the documents stay out and the report is a tab away', async () => {
+  it('opens on Configuration; the facts browser and morning report stay a tab away', async () => {
     const getMine = vi.spyOn(api.memory, 'getMine');
     const getWorkspace = vi.spyOn(api.memory, 'getWorkspace');
     mockBase();
@@ -100,13 +101,18 @@ describe('screens/settings/MemoryPane', () => {
     expect(screen.queryByTestId('memory-user-doc')).toBeNull();
     expect(screen.queryByTestId('memory-workspace-doc')).toBeNull();
 
-    // Default tab: the notes browser shows the fact with chip + provenance.
+    // Default tab: Configuration is in view without any interaction.
+    expect(screen.getByTestId('memory-configuration')).not.toBeNull();
+    expect(screen.queryByTestId('memory-notes-browser')).toBeNull();
+    expect(screen.queryByTestId('memory-report-counts')).toBeNull();
+
+    // Facts is a tab away: the notes browser shows the fact with chip + provenance.
+    switchTab('memory-tab-facts');
     expect(screen.getByTestId('memory-notes-browser')).not.toBeNull();
     expect(screen.getByTestId('memory-note-note-1').textContent).toContain('Member prefers Go for tooling.');
     expect(screen.getByTestId('memory-visibility-user')).not.toBeNull();
     expect(screen.getByTestId('memory-note-note-1').textContent).toContain('dialogue');
     expect(screen.getByTestId('memory-note-note-1').textContent).toContain('abc12345');
-    expect(screen.queryByTestId('memory-report-counts')).toBeNull();
 
     // Morning report is its own tab and surfaces conflicts/merges/failures.
     switchTab('memory-tab-report');
@@ -123,6 +129,11 @@ describe('screens/settings/MemoryPane', () => {
     const onToast = vi.fn();
     render(<MemoryPane tenant={mockTenant} canWrite onToast={onToast} />);
 
+    // Tabs render only after the load settles.
+    await waitFor(() => {
+      expect(screen.getByTestId('memory-tab-facts')).not.toBeNull();
+    });
+    switchTab('memory-tab-facts');
     await waitFor(() => {
       expect(screen.getByTestId('btn-memory-promote-note-1')).not.toBeNull();
     });
@@ -150,6 +161,10 @@ describe('screens/settings/MemoryPane', () => {
     render(<MemoryPane tenant={mockTenant} canWrite onToast={onToast} />);
 
     await waitFor(() => {
+      expect(screen.getByTestId('memory-tab-facts')).not.toBeNull();
+    });
+    switchTab('memory-tab-facts');
+    await waitFor(() => {
       expect(screen.getByTestId('btn-memory-delete-note-1')).not.toBeNull();
     });
     fireEvent.click(screen.getByTestId('btn-memory-delete-note-1'));
@@ -172,6 +187,7 @@ describe('screens/settings/MemoryPane', () => {
       settings: {
         visibility_posture: 'org-shared',
         ingestion_enabled: false,
+        gate_budget_ms: 4000,
         side_call_model: null,
         embedding: {
           provider_id: 'prov-1',
@@ -329,6 +345,50 @@ describe('screens/settings/MemoryPane', () => {
     });
   });
 
+  it('dimension dropdown offers Auto plus the supported set; a known model preselects its dimension', async () => {
+    mockBase({
+      models: {
+        source: 'catalog',
+        models: [
+          { id: 'text-embedding-3-small', name: 'text-embedding-3-small' },
+          { id: 'weird-custom-embed', name: 'Weird' },
+        ],
+      },
+    });
+    render(<MemoryPane tenant={mockTenant} canWrite />);
+
+    // Configuration is the default tab — no interaction to reach it.
+    await waitFor(() => {
+      expect(screen.getByTestId('memory-configuration')).not.toBeNull();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('memory-embedding-provider')).not.toBeNull();
+    });
+    fireEvent.change(screen.getByTestId('memory-embedding-provider'), { target: { value: 'prov-1' } });
+    await waitFor(() => {
+      expect((screen.getByTestId('memory-embedding-model') as HTMLSelectElement).tagName).toBe('SELECT');
+    });
+
+    // Exactly "Auto — detect on test" plus OnClaw's five supported dimensions.
+    const dimSel = () => screen.getByTestId('memory-embedding-dimension') as HTMLSelectElement;
+    expect(Array.from(dimSel().options).map((o) => o.value)).toEqual(['', '768', '1024', '1536', '2048', '3072']);
+    expect(dimSel().options[0].textContent).toBe('Auto — detect on test');
+    expect(dimSel().value).toBe('');
+
+    // A model the map knows preselects its dimension.
+    fireEvent.change(screen.getByTestId('memory-embedding-model'), { target: { value: 'text-embedding-3-small' } });
+    expect(dimSel().value).toBe('1536');
+
+    // An unknown model leaves the standing dimension alone.
+    fireEvent.change(screen.getByTestId('memory-embedding-model'), { target: { value: 'weird-custom-embed' } });
+    expect(dimSel().value).toBe('1536');
+
+    // An explicit choice is never clobbered by a later known model.
+    fireEvent.change(dimSel(), { target: { value: '768' } });
+    fireEvent.change(screen.getByTestId('memory-embedding-model'), { target: { value: 'text-embedding-3-large' } });
+    expect(dimSel().value).toBe('768');
+  });
+
   it('connection test rides the chosen provider: dimension filled on success, structured error on failure', async () => {
     mockBase();
     const test = vi
@@ -363,6 +423,8 @@ describe('screens/settings/MemoryPane', () => {
     await waitFor(() => {
       expect(screen.getByTestId('memory-test-result').textContent).toContain('dimension 1536');
     });
+    // The dimension was left on Auto — the discovered value fills the dropdown.
+    expect((screen.getByTestId('memory-embedding-dimension') as HTMLSelectElement).value).toBe('1536');
 
     fireEvent.click(screen.getByTestId('btn-memory-test'));
     await waitFor(() => {
@@ -401,6 +463,10 @@ describe('screens/settings/MemoryPane', () => {
     // test env, so the member path rides the pane's canWrite override.
     render(<MemoryPane tenant={mockTenant} canWrite={false} />);
 
+    await waitFor(() => {
+      expect(screen.getByTestId('memory-tab-facts')).not.toBeNull();
+    });
+    switchTab('memory-tab-facts');
     await waitFor(() => {
       expect(screen.getByTestId('memory-note-note-1')).not.toBeNull();
     });

@@ -34,6 +34,22 @@ func AcceptsFileBlocks(providerType string) bool {
 // AgenticModelFactory builds the Eino agentic model used for agent conversations and executions.
 type AgenticModelFactory func(ctx context.Context, providerType string, cred providers.Credential, modelName string) (model.BaseModel[*schema.AgenticMessage], error)
 
+// newAgenticClaudeConfig builds the claude-family connector config. MaxTokens
+// carries DefaultMaxTokens: the connector requires a value, and the runner's
+// documented default (agents.DefaultMaxTokens, D4) applies whenever the agent
+// pins none — the save-time requirement is enforced only for pinned agents.
+func newAgenticClaudeConfig(cred providers.Credential, modelName string) *agenticclaude.Config {
+	cfg := &agenticclaude.Config{
+		APIKey:    cred.APIKey,
+		Model:     modelName,
+		MaxTokens: DefaultMaxTokens,
+	}
+	if cred.BaseURL != "" {
+		cfg.BaseURL = providers.StripVersionPath(cred.BaseURL)
+	}
+	return cfg
+}
+
 // DefaultAgenticModelFactory creates an agentic model for the 6 supported provider types.
 func DefaultAgenticModelFactory(ctx context.Context, providerType string, cred providers.Credential, modelName string) (model.BaseModel[*schema.AgenticMessage], error) {
 	switch strings.TrimSpace(providerType) {
@@ -48,15 +64,7 @@ func DefaultAgenticModelFactory(ctx context.Context, providerType string, cred p
 		return agenticopenai.NewChatModel(ctx, cfg)
 
 	case providers.TypeAnthropic:
-		cfg := &agenticclaude.Config{
-			APIKey:    cred.APIKey,
-			Model:     modelName,
-			MaxTokens: 4096,
-		}
-		if cred.BaseURL != "" {
-			cfg.BaseURL = providers.StripVersionPath(cred.BaseURL)
-		}
-		return agenticclaude.New(ctx, cfg)
+		return agenticclaude.New(ctx, newAgenticClaudeConfig(cred, modelName))
 
 	case providers.TypeGemini:
 		clientCfg := &genai.ClientConfig{
@@ -99,15 +107,7 @@ func DefaultAgenticModelFactory(ctx context.Context, providerType string, cred p
 		return agenticopenai.NewChatModel(ctx, cfg)
 
 	case providers.TypeAnthropicCompatible:
-		cfg := &agenticclaude.Config{
-			APIKey:    cred.APIKey,
-			Model:     modelName,
-			MaxTokens: 4096,
-		}
-		if cred.BaseURL != "" {
-			cfg.BaseURL = providers.StripVersionPath(cred.BaseURL)
-		}
-		return agenticclaude.New(ctx, cfg)
+		return agenticclaude.New(ctx, newAgenticClaudeConfig(cred, modelName))
 
 	default:
 		return nil, fmt.Errorf("%w: unsupported provider type %q", domain.ErrInvalid, providerType)

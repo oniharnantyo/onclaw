@@ -234,22 +234,33 @@ func (es *memoryEventStore) SearchEvents(ctx context.Context, workspaceID, viewe
 	return es.queryEvents(ctx, workspaceID, viewerUserID, servingAgentID, filters, query)
 }
 
-// queryEvents runs the shared read: filters, then the hybrid lexical
-// predicate (tsvector OR trigram, D9 — must keep the exact indexed
-// to_tsvector expression), newest first.
+// queryEvents runs the shared read: filters, then the lexical predicate
+// (any-term tsvector OR full-string ILIKE — must keep the exact indexed
+// to_tsvector expression, D9), best match first (fix-memory-prefetch-matching
+// D5: same any-term/rank construction as the notes store).
 func (es *memoryEventStore) queryEvents(ctx context.Context, workspaceID, viewerUserID, servingAgentID string, filters storeport.MemoryEventFilters, queryText string) ([]domain.MemoryEvent, error) {
 	if workspaceID == "" {
 		return []domain.MemoryEvent{}, nil
 	}
 	clause, args := memoryEventWhere(workspaceID, viewerUserID, servingAgentID, filters)
+	var shaped memoryLexicalQuery
 	if queryText != "" {
+		shaped = shapeMemoryLexicalQuery(queryText)
 		args = append(args, queryText)
-		clause += fmt.Sprintf(`
-		  AND (to_tsvector('english', description || ' ' || outcome) @@ plainto_tsquery('english', $%d)
-		       OR description ILIKE '%%' || $%d || '%%'
-		       OR outcome ILIKE '%%' || $%d || '%%')`, len(args), len(args), len(args))
+		clause += fmt.Sprintf(` AND (description ILIKE '%%' || $%d || '%%'
+		       OR outcome ILIKE '%%' || $%d || '%%'`, len(args), len(args))
+		if shaped.termCount > 0 {
+			args = append(args, shaped.tsquery)
+			clause += fmt.Sprintf(` OR to_tsvector('english', description || ' ' || outcome) @@ to_tsquery('english', $%d)`, len(args))
+		}
+		clause += `)`
 	}
-	clause += ` ORDER BY event_time DESC, learned_at DESC, id DESC`
+	if shaped.termCount > 0 {
+		args = append(args, shaped.tsquery)
+		clause += fmt.Sprintf(` ORDER BY ts_rank(to_tsvector('english', description || ' ' || outcome), to_tsquery('english', $%d)) DESC, event_time DESC, learned_at DESC, id DESC`, len(args))
+	} else {
+		clause += ` ORDER BY event_time DESC, learned_at DESC, id DESC`
+	}
 	if filters.Limit > 0 {
 		args = append(args, filters.Limit)
 		clause += fmt.Sprintf(` LIMIT $%d`, len(args))
@@ -549,13 +560,30 @@ func (ns *memoryNoteStore) queryNotes(ctx context.Context, workspaceID, viewerUs
 		clause += fmt.Sprintf(` AND topic = $%d`, len(args))
 	}
 	clause, args = appendMemoryTimeWindow(clause, args, filters.TimeWindow)
+	// Lexical match (fix-memory-prefetch-matching D2/D3): any-term semantics —
+	// the OR-joined sanitized tsquery no longer starves on a missing term,
+	// while the full-string ILIKE fallback still catches verbatim identifiers
+	// the tokenizer splits apart. A query with zero surviving terms (pure
+	// punctuation) keeps only the ILIKE leg. Rank ordering puts term overlap
+	// ahead of recency (ILIKE-only hits carry ts_rank 0 and sort last among
+	// equals), so top-k truncation keeps the closest matches.
+	var shaped memoryLexicalQuery
 	if queryText != "" {
+		shaped = shapeMemoryLexicalQuery(queryText)
 		args = append(args, queryText)
-		clause += fmt.Sprintf(`
-		  AND (to_tsvector('english', content) @@ plainto_tsquery('english', $%d)
-		       OR content ILIKE '%%' || $%d || '%%')`, len(args), len(args))
+		clause += fmt.Sprintf(` AND (content ILIKE '%%' || $%d || '%%'`, len(args))
+		if shaped.termCount > 0 {
+			args = append(args, shaped.tsquery)
+			clause += fmt.Sprintf(` OR to_tsvector('english', content) @@ to_tsquery('english', $%d)`, len(args))
+		}
+		clause += `)`
 	}
-	clause += ` ORDER BY pinned DESC, learned_at DESC, id DESC`
+	if shaped.termCount > 0 {
+		args = append(args, shaped.tsquery)
+		clause += fmt.Sprintf(` ORDER BY pinned DESC, ts_rank(to_tsvector('english', content), to_tsquery('english', $%d)) DESC, learned_at DESC, id DESC`, len(args))
+	} else {
+		clause += ` ORDER BY pinned DESC, learned_at DESC, id DESC`
+	}
 	if filters.Limit > 0 {
 		args = append(args, filters.Limit)
 		clause += fmt.Sprintf(` LIMIT $%d`, len(args))

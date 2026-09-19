@@ -15,6 +15,7 @@ import {
   api,
   formatApiError,
   type ApiProviderConfig,
+  type ApiDefaultModel,
   type ApiWorkspaceSkill,
   type ApiToolSettings,
   type ApiMcpServer,
@@ -46,6 +47,9 @@ import { useWorkspace, useStore } from "../store";
 // (workspace-tool-catalog D2).
 const BROWSER_TOOL_ALIAS = "browser";
 const BROWSER_MEMBER_PREFIX = "browser.";
+// Select value for the "Workspace default (inherit)" option (refactor-
+// workspace-settings D3). No real provider id can collide with the sentinel.
+const INHERIT_PROVIDER_VALUE = "__workspace_default__";
 const TIER_HINT: Record<string, string> = {
   system: "System skill — always attached",
   workspace: "Workspace skill — enabled for every agent. Manage in Settings → Skills.",
@@ -141,6 +145,11 @@ export function AgentConfigModal({
     tenant?.providers || currentWs?.providers || []
   );
 
+  // Workspace default model (refactor-workspace-settings D3): gates the
+  // "Workspace default (inherit)" option in the provider select. Optional
+  // context — a failed fetch leaves the modal pinned-only.
+  const [wsDefault, setWsDefault] = useState<ApiDefaultModel | null>(null);
+
   // Workspace skills (system + workspace tiers) and this agent's own skills
   const [workspaceSkills, setWorkspaceSkills] = useState<ApiWorkspaceSkill[]>([]);
   const [agentSkills, setAgentSkills] = useState<ApiWorkspaceSkill[]>([]);
@@ -210,6 +219,9 @@ export function AgentConfigModal({
   }, [configuredProviders]);
 
   const [provider, setProvider] = useState<string>(initialProvider);
+  // Inherit mode (refactor-workspace-settings D3): the agent saves the empty
+  // provider/model pair and resolves the workspace default at run start.
+  const [inheritDefault, setInheritDefault] = useState(false);
   const [model, setModel] = useState<string>("");
   // Memory side-call model (integrate-agent-zero-memory follow-up): inherit
   // follows the workspace memory settings, custom pins this agent's own.
@@ -262,6 +274,10 @@ export function AgentConfigModal({
             }
             if (a.provider_id) {
               setProvider(a.provider_id);
+              setInheritDefault(false);
+            } else {
+              // Stored empty pair = inherit-the-workspace-default (D3).
+              setInheritDefault(true);
             }
             setModel(a.model || "");
             if (a.memory_sidecall_provider_id && a.memory_sidecall_model) {
@@ -309,6 +325,15 @@ export function AgentConfigModal({
           if (mounted && res?.providers) {
             setConfiguredProviders(res.providers);
           }
+        })
+        .catch(() => {});
+
+      // The workspace payload gates the inherit option (D3): the option only
+      // exists while a default model is set.
+      api.workspaces
+        .get(targetWsId)
+        .then((res) => {
+          if (mounted) setWsDefault(res?.workspace?.default_model ?? null);
         })
         .catch(() => {});
 
@@ -433,8 +458,9 @@ export function AgentConfigModal({
 
   const validateStep2 = () => {
     const step2Errors: Record<string, string> = {};
-    if (!provider) step2Errors.provider = "Provider is required";
-    if (!model.trim()) step2Errors.model = "Model is required";
+    // Inherit agents save the empty pair — provider/model stay optional (D3).
+    if (!inheritDefault && !provider) step2Errors.provider = "Provider is required";
+    if (!inheritDefault && !model.trim()) step2Errors.model = "Model is required";
     if (temp < 0 || temp > 2) step2Errors.temp = "Temperature must be between 0.0 and 2.0";
     if (maxTokens.trim()) {
       const num = parseInt(maxTokens.trim(), 10);
@@ -492,8 +518,10 @@ export function AgentConfigModal({
       role: role.trim(),
       description: description.trim(),
       brief: brief.trim(),
-      provider_id: provider,
-      model: model.trim(),
+      // Inherit (D3): the empty pair means "resolve the workspace default
+      // at run start"; a pinned agent sends its provider and model.
+      provider_id: inheritDefault ? '' : provider,
+      model: inheritDefault ? '' : model.trim(),
       memory_sidecall_provider_id: memorySidecallMode === 'custom' ? memorySidecallProvider : '',
       memory_sidecall_model: memorySidecallMode === 'custom' ? memorySidecallModel.trim() : '',
       temperature: temp,
@@ -542,8 +570,10 @@ export function AgentConfigModal({
       brief: brief.trim(),
       identity: identity,
       soul: soul,
-      provider_id: provider,
-      model: model.trim(),
+      // Inherit (D3): the empty pair means "resolve the workspace default
+      // at run start"; a pinned agent sends its provider and model.
+      provider_id: inheritDefault ? '' : provider,
+      model: inheritDefault ? '' : model.trim(),
       memory_sidecall_provider_id: memorySidecallMode === 'custom' ? memorySidecallProvider : '',
       memory_sidecall_model: memorySidecallMode === 'custom' ? memorySidecallModel.trim() : '',
       temperature: temp,
@@ -1094,9 +1124,27 @@ export function AgentConfigModal({
                   aria-label="Provider"
                   data-testid="select-agent-provider"
                   className={inputCls}
-                  value={provider}
-                  onChange={(e) => setProvider(e.target.value)}
+                  value={inheritDefault ? INHERIT_PROVIDER_VALUE : provider}
+                  onChange={(e) => {
+                    if (e.target.value === INHERIT_PROVIDER_VALUE) {
+                      setInheritDefault(true);
+                    } else {
+                      setInheritDefault(false);
+                      setProvider(e.target.value);
+                    }
+                    // A provider-model switch invalidates stale pair errors.
+                    setFieldErrors((prev) => {
+                      if (!prev.provider && !prev.model) return prev;
+                      const { provider: _p, model: _m, ...rest } = prev;
+                      return rest;
+                    });
+                  }}
                 >
+                  {wsDefault && (
+                    <option value={INHERIT_PROVIDER_VALUE} data-testid="option-inherit-workspace-default">
+                      Workspace default (inherit)
+                    </option>
+                  )}
                   {configuredProviders.map((p) => {
                     const typeObj = PROVIDER_TYPES.find((t) => t.id === p.type);
                     const typeLabel = typeObj ? typeObj.label : p.type;
@@ -1113,7 +1161,7 @@ export function AgentConfigModal({
                       {t.label} (Configure in Settings → Providers)
                     </option>
                   ))}
-                  {configuredProviders.length === 0 && (
+                  {configuredProviders.length === 0 && !wsDefault && (
                     <option value={provider} disabled>
                       No providers configured (Settings → Providers)
                     </option>
@@ -1121,19 +1169,29 @@ export function AgentConfigModal({
                 </select>
               </div>
 
-              {/* Model Combobox & Reasoning Effort */}
-              <ModelCombobox
-                workspaceId={targetWsId}
-                providerId={provider}
-                model={model}
-                onModelChange={setModel}
+              {/* Model Combobox & Reasoning Effort — hidden on the inherit
+                  path: the pair resolves from the workspace default (D3). */}
+              {inheritDefault ? (
+                <p data-testid="inherit-default-hint" className="text-[12px] leading-5 text-muted">
+                  This agent runs on the workspace default model
+                  {wsDefault ? (
+                    <> — <span className="font-mono text-[12px]">{wsDefault.model}</span></>
+                  ) : null} — and follows changes to Settings → Workspace.
+                </p>
+              ) : (
+                <ModelCombobox
+                  workspaceId={targetWsId}
+                  providerId={provider}
+                  model={model}
+                  onModelChange={setModel}
                   onAvailableEffortsChange={setAvailableEfforts}
-                onContextLimitChange={setCatalogContextLimit}
-                effort={effort}
-                onEffortChange={setEffort}
-                modelError={fieldErrors.model}
-                effortError={fieldErrors.effort}
-              />
+                  onContextLimitChange={setCatalogContextLimit}
+                  effort={effort}
+                  onEffortChange={setEffort}
+                  modelError={fieldErrors.model}
+                  effortError={fieldErrors.effort}
+                />
+              )}
 
               {/* Memory side-call model: inherit the workspace memory
                   setting or pin this agent's own provider+model. */}

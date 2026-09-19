@@ -256,7 +256,7 @@ func TestService_Generate_TimesOut(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	err = svc.Generate(ctx, wsDir, ws.ID, agent.ID, "")
+	err = svc.Generate(ctx, wsDir, ws.ID, agent.ID, "", nil)
 	if err == nil || !strings.Contains(err.Error(), "prompt generation timed out — retry") {
 		t.Fatalf("expected timeout failure, got %v", err)
 	}
@@ -372,7 +372,7 @@ func TestService_Generate_RecordsFailureAfterContextDeath(t *testing.T) {
 	defer cancelCaller()
 	time.Sleep(20 * time.Millisecond)
 
-	err = svc.Generate(callerCtx, wsDir, ws.ID, agent.ID, "")
+	err = svc.Generate(callerCtx, wsDir, ws.ID, agent.ID, "", nil)
 	if err == nil || !strings.Contains(err.Error(), "prompt generation timed out — retry") {
 		t.Fatalf("expected timeout failure, got %v", err)
 	}
@@ -514,7 +514,7 @@ func TestService_Generate_Success(t *testing.T) {
 	}
 
 	// Generate synchronously
-	if err := svc.Generate(ctx, wsDir, ws.ID, agent.ID, ""); err != nil {
+	if err := svc.Generate(ctx, wsDir, ws.ID, agent.ID, "", nil); err != nil {
 		t.Fatalf("Generate failed: %v", err)
 	}
 
@@ -580,7 +580,7 @@ func TestService_Generate_Failures(t *testing.T) {
 		// Delete provider so it's missing
 		_ = st.Providers().Delete(ctx, ws.ID, p.ID)
 
-		err := svc.Generate(ctx, t.TempDir(), ws.ID, agent.ID, "")
+		err := svc.Generate(ctx, t.TempDir(), ws.ID, agent.ID, "", nil)
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
@@ -624,7 +624,7 @@ func TestService_Generate_Failures(t *testing.T) {
 		}
 		_ = st.Agents().Create(ctx, agent)
 
-		err := svc.Generate(ctx, t.TempDir(), ws.ID, agent.ID, "")
+		err := svc.Generate(ctx, t.TempDir(), ws.ID, agent.ID, "", nil)
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
@@ -664,7 +664,7 @@ func TestService_Generate_Failures(t *testing.T) {
 		}
 		_ = st.Agents().Create(ctx, agent)
 
-		err := svc.Generate(ctx, t.TempDir(), ws.ID, agent.ID, "")
+		err := svc.Generate(ctx, t.TempDir(), ws.ID, agent.ID, "", nil)
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
@@ -713,7 +713,7 @@ func TestService_Generate_Failures(t *testing.T) {
 		}
 		_ = st.Agents().Create(ctx, agent)
 
-		err := svc.Generate(ctx, wsDir, ws.ID, agent.ID, "")
+		err := svc.Generate(ctx, wsDir, ws.ID, agent.ID, "", nil)
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
@@ -736,7 +736,7 @@ func TestService_Generate_Failures(t *testing.T) {
 
 	t.Run("agent deleted before generation", func(t *testing.T) {
 		svc, _, _ := setupTestService(t, nil)
-		err := svc.Generate(ctx, t.TempDir(), "ws-none", "agent-none", "")
+		err := svc.Generate(ctx, t.TempDir(), "ws-none", "agent-none", "", nil)
 		if err != nil {
 			t.Fatalf("expected nil when agent not found, got %v", err)
 		}
@@ -783,7 +783,7 @@ func TestService_DeleteDuringFlight(t *testing.T) {
 	}
 	_ = st.Agents().Create(ctx, agent)
 
-	err := svc.Generate(ctx, wsDir, ws.ID, agent.ID, "")
+	err := svc.Generate(ctx, wsDir, ws.ID, agent.ID, "", nil)
 	if err != nil {
 		t.Fatalf("expected graceful no-op on delete-during-flight, got err: %v", err)
 	}
@@ -906,7 +906,7 @@ func TestService_GeneratePersistsReadyState(t *testing.T) {
 	}
 	_ = st.Agents().Create(ctx, agent)
 
-	if err := svc.Generate(ctx, wsDir, ws.ID, agent.ID, ""); err != nil {
+	if err := svc.Generate(ctx, wsDir, ws.ID, agent.ID, "", nil); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -1021,7 +1021,7 @@ func TestService_Generate_FailedRegenerationPreservesFiles(t *testing.T) {
 	}
 	_ = st.Agents().Create(ctx, agent)
 
-	if err := svc.Generate(ctx, wsDir, ws.ID, agent.ID, ""); err == nil {
+	if err := svc.Generate(ctx, wsDir, ws.ID, agent.ID, "", nil); err == nil {
 		t.Fatal("expected generation to fail")
 	}
 
@@ -1158,7 +1158,7 @@ func TestService_Generate_EnhancesExistingDocuments(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	if err := svc.Generate(ctx, wsDir, ws.ID, agent.ID, ""); err != nil {
+	if err := svc.Generate(ctx, wsDir, ws.ID, agent.ID, "", nil); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -1272,7 +1272,7 @@ func TestService_Generate_InstructionSteersEnhancement(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	if err := svc.Generate(ctx, wsDir, ws.ID, agent.ID, "focus more on incident triage"); err != nil {
+	if err := svc.Generate(ctx, wsDir, ws.ID, agent.ID, "focus more on incident triage", nil); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 

@@ -1,9 +1,28 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, beforeAll, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
-import { SettingsPage } from './SettingsPage';
+import { SettingsPage, rememberLastNonSettingsPath } from './SettingsPage';
 import { api, ApiError, type ApiWorkspaceSkill, type ApiMcpServer } from '../../lib/api';
 import { useAuthStore } from '../../store/auth';
+
+beforeAll(() => {
+  // Node's disabled `sessionStorage` global shadows jsdom's on this Node
+  // version (same workaround as App.test); the settings Back control reads it.
+  if (typeof sessionStorage === 'undefined' || !sessionStorage) {
+    const mem = new Map<string, string>();
+    const stub = {
+      getItem: (k: string) => mem.get(k) ?? null,
+      setItem: (k: string, v: string) => void mem.set(k, String(v)),
+      removeItem: (k: string) => void mem.delete(k),
+      clear: () => mem.clear(),
+      key: (i: number) => Array.from(mem.keys())[i] ?? null,
+      get length() {
+        return mem.size;
+      },
+    };
+    Object.defineProperty(globalThis, 'sessionStorage', { value: stub, configurable: true, writable: true });
+  }
+});
 
 describe('screens/settings/SettingsPage', () => {
   const mockTenant = {
@@ -101,6 +120,7 @@ describe('screens/settings/SettingsPage', () => {
 
   beforeEach(() => {
     vi.restoreAllMocks();
+    sessionStorage.clear();
     useAuthStore.setState({
       user: { id: 'u_alice', email: 'alice@acme.dev', name: 'Alice', created_at: '', updated_at: '' },
       memberships: [],
@@ -243,6 +263,56 @@ describe('screens/settings/SettingsPage', () => {
         expect(screen.getByTestId('pane-workspace')).not.toBeNull();
         expect(screen.getByTestId('settings-tab-workspace').getAttribute('aria-selected')).toBe('true');
       });
+    });
+  });
+
+  describe('Full-screen takeover header', () => {
+    it('renders a Back control and the Settings title above the section nav at every width', () => {
+      renderSettingsPage('/settings/workspace');
+
+      const back = screen.getByTestId('settings-back');
+      expect(back.tagName).toBe('BUTTON');
+      expect(back.textContent).toContain('Back');
+      expect(screen.getByText('Settings')).not.toBeNull();
+      // The section nav is untouched: thirteen tabs below the header.
+      expect(screen.getAllByRole('tab').length).toBe(13);
+      expect(screen.getByRole('tablist')).not.toBeNull();
+    });
+
+    it('Back navigates to the remembered non-settings route', () => {
+      rememberLastNonSettingsPath('/agents');
+
+      render(
+        <MemoryRouter initialEntries={['/settings/workspace']}>
+          <Routes>
+            <Route path="/agents" element={<div data-testid="agents-origin" />} />
+            <Route path="/settings" element={<SettingsPage tenant={mockTenant} />} />
+            <Route path="/settings/:section" element={<SettingsPage tenant={mockTenant} />} />
+          </Routes>
+        </MemoryRouter>
+      );
+
+      fireEvent.click(screen.getByTestId('settings-back'));
+
+      expect(screen.getByTestId('agents-origin')).not.toBeNull();
+      expect(screen.queryByTestId('settings-page')).toBeNull();
+    });
+
+    it('Back falls back to /c when there is no remembered origin (deep link)', () => {
+      render(
+        <MemoryRouter initialEntries={['/settings/keys']}>
+          <Routes>
+            <Route path="/c" element={<div data-testid="chats-origin" />} />
+            <Route path="/settings" element={<SettingsPage tenant={mockTenant} />} />
+            <Route path="/settings/:section" element={<SettingsPage tenant={mockTenant} />} />
+          </Routes>
+        </MemoryRouter>
+      );
+
+      fireEvent.click(screen.getByTestId('settings-back'));
+
+      expect(screen.getByTestId('chats-origin')).not.toBeNull();
+      expect(screen.queryByTestId('settings-page')).toBeNull();
     });
   });
 

@@ -153,6 +153,7 @@ func (ms *memberStore) ListForUser(ctx context.Context, userID string) ([]domain
 		       wm.role_id, r.name,
 		       r.id, r.workspace_id, r.name, r.is_owner, r.permissions, r.built_in, r.created_at,
 		       w.id, w.slug, w.name, w.timezone, w.is_master, w.disabled_at, w.created_at, w.updated_at,
+		       w.default_provider_id, w.default_model,
 		       (u.password_hash IS NULL OR u.password_hash = '') AS invited,
 		       wm.created_at
 		FROM workspace_members wm
@@ -173,6 +174,7 @@ func (ms *memberStore) ListForUser(ctx context.Context, userID string) ([]domain
 		var mv domain.MemberView
 		var r domain.Role
 		var ws domain.Workspace
+		var defaultProviderID, defaultModel *string
 		if err := rows.Scan(
 			&mv.WorkspaceID,
 			&mv.WorkspaceSlug,
@@ -199,6 +201,8 @@ func (ms *memberStore) ListForUser(ctx context.Context, userID string) ([]domain
 			&ws.DisabledAt,
 			&ws.CreatedAt,
 			&ws.UpdatedAt,
+			&defaultProviderID,
+			&defaultModel,
 			&mv.Invited,
 			&mv.JoinedAt,
 		); err != nil {
@@ -207,6 +211,7 @@ func (ms *memberStore) ListForUser(ctx context.Context, userID string) ([]domain
 		if r.Permissions == nil {
 			r.Permissions = []string{}
 		}
+		scanDefaultModelPair(&ws, defaultProviderID, defaultModel)
 		mv.Role = &r
 		mv.Workspace = &ws
 		views = append(views, mv)

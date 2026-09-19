@@ -2,6 +2,7 @@ package domain
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -32,38 +33,38 @@ const MaxAvatarBytes = 2048
 
 // Agent represents an autonomous persona configured in a workspace.
 type Agent struct {
-	ID            string          `json:"id"`
-	WorkspaceID   string          `json:"workspace_id"`
-	Slug          string          `json:"slug"`
-	Name          string          `json:"name"`
-	Role          string          `json:"role"`
-	Description   string          `json:"description"`
-	Brief         string          `json:"brief"`
-	Identity      string          `json:"identity"`
-	Soul          string          `json:"soul"`
-	Bootstrap     string          `json:"bootstrap"`
-	ProviderID    string          `json:"provider_id"`
-	Model         string          `json:"model"`
+	ID          string `json:"id"`
+	WorkspaceID string `json:"workspace_id"`
+	Slug        string `json:"slug"`
+	Name        string `json:"name"`
+	Role        string `json:"role"`
+	Description string `json:"description"`
+	Brief       string `json:"brief"`
+	Identity    string `json:"identity"`
+	Soul        string `json:"soul"`
+	Bootstrap   string `json:"bootstrap"`
+	ProviderID  string `json:"provider_id"`
+	Model       string `json:"model"`
 	// Memory side-call override: both empty (the default) inherits the
 	// workspace memory settings' side_call_model, then the model the agent
 	// itself runs. Both set pins the memory pipeline's cheap-model calls.
-	MemorySidecallProviderID string `json:"memory_sidecall_provider_id,omitempty"`
-	MemorySidecallModel      string `json:"memory_sidecall_model,omitempty"`
-	Temperature   float64         `json:"temperature"`
-	MaxTokens     *int            `json:"max_tokens,omitempty"`
-	Effort        *string         `json:"effort,omitempty"`
-	Autonomy      AgentAutonomy   `json:"autonomy"`
-	ContextWindow *int            `json:"context_window,omitempty"`
-	Tools         []string        `json:"tools"`
-	EnabledMCPS   []string        `json:"enabled_mcps"`
-	Avatar        json.RawMessage `json:"avatar"`
-	PromptsStatus PromptsStatus   `json:"prompts_status"`
-	PromptsError  *string         `json:"prompts_error,omitempty"`
-	MaxIterations *int            `json:"max_iterations,omitempty"`
-	CreatedBy     *string         `json:"created_by,omitempty"`
-	UpdatedBy     *string         `json:"updated_by,omitempty"`
-	CreatedAt     time.Time       `json:"created_at"`
-	UpdatedAt     time.Time       `json:"updated_at"`
+	MemorySidecallProviderID string          `json:"memory_sidecall_provider_id,omitempty"`
+	MemorySidecallModel      string          `json:"memory_sidecall_model,omitempty"`
+	Temperature              float64         `json:"temperature"`
+	MaxTokens                *int            `json:"max_tokens,omitempty"`
+	Effort                   *string         `json:"effort,omitempty"`
+	Autonomy                 AgentAutonomy   `json:"autonomy"`
+	ContextWindow            *int            `json:"context_window,omitempty"`
+	Tools                    []string        `json:"tools"`
+	EnabledMCPS              []string        `json:"enabled_mcps"`
+	Avatar                   json.RawMessage `json:"avatar"`
+	PromptsStatus            PromptsStatus   `json:"prompts_status"`
+	PromptsError             *string         `json:"prompts_error,omitempty"`
+	MaxIterations            *int            `json:"max_iterations,omitempty"`
+	CreatedBy                *string         `json:"created_by,omitempty"`
+	UpdatedBy                *string         `json:"updated_by,omitempty"`
+	CreatedAt                time.Time       `json:"created_at"`
+	UpdatedAt                time.Time       `json:"updated_at"`
 }
 
 // ValidateAgentAutonomy validates that autonomy is one of the allowed values (approval, suggest, full).
@@ -84,6 +85,16 @@ func ValidateAgentMemorySidecall(providerID, model string) error {
 	}
 	return nil
 }
+
+// InheritsModel reports whether the agent carries the empty provider/model
+// pair — at run start it resolves to the workspace default model.
+func (a *Agent) InheritsModel() bool {
+	return a.ProviderID == "" && a.Model == ""
+}
+
+// ErrNoWorkspaceDefault reports an inherit agent resolving against a workspace
+// with no default model set (save-time rejection and run-start fail-fast).
+var ErrNoWorkspaceDefault = errors.New("workspace default model is not set")
 
 // ValidateAgentTemperature validates that temperature is within the [0.0, 2.0] range.
 func ValidateAgentTemperature(temp float64) error {

@@ -13,11 +13,15 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
-// intentTimeout is the HARD classification budget (design parameter pin:
-// gate timeout 1.5s). It is enforced with a context deadline inside Classify
-// so a slow side-call model is abandoned at the pin and can never delay
-// instruction composition beyond it.
-const intentTimeout = 1500 * time.Millisecond
+// defaultGateBudget is the classification budget used when the caller passes
+// no usable one (budget <= 0). The budget itself is a configurable workspace
+// memory-setting, gate_budget_ms (fix-memory-retrieval-lane D1/D2): the
+// runner resolves it per turn from the settings record, bounded
+// [MinGateBudgetMS, MaxGateBudgetMS] with DefaultGateBudgetMS as the
+// absence-is-defaults value. Whatever budget applies is enforced with a
+// context deadline inside Classify so a slow side-call model is abandoned at
+// it and can never delay instruction composition beyond it.
+const defaultGateBudget = time.Duration(DefaultGateBudgetMS) * time.Millisecond
 
 // IntentVerdict is the gate's routing decision: whether the turn needs deep
 // memory at all and, when it does, which buckets are relevant (curated notes,
@@ -62,19 +66,26 @@ func NewIntentGate(providerStore store.ProviderStore, encryptionKey []byte, fact
 // Classify runs the one bounded classification call for the turn's text. The
 // workspace id scopes the side-call model's credential resolution — the gate
 // is a single instance shared by every workspace, so the per-call identity is
-// a parameter (the only deviation from a text-only signature).
+// a parameter (the only deviation from a text-only signature). The budget is
+// the classification deadline (fix-memory-retrieval-lane D1/D3): the caller
+// resolves it from the workspace memory settings per turn; a budget <= 0
+// falls back to defaultGateBudget. The deadline stays hard — a slow
+// side-call model is abandoned at the budget, never allowed to stretch it.
 //
 // Model-side failures (resolution, generation, timeout, undecodable output)
 // return the self-contained verdict with the error; the caller fail-opens by
 // proceeding without retrieval. An empty or whitespace turn is quietly
 // self-contained with a nil error — there is nothing to classify.
-func (g *IntentGate) Classify(ctx context.Context, workspaceID, agentID, turnText string) (IntentVerdict, error) {
+func (g *IntentGate) Classify(ctx context.Context, workspaceID, agentID, turnText string, budget time.Duration) (IntentVerdict, error) {
 	text := strings.TrimSpace(turnText)
 	if text == "" {
 		return IntentVerdict{}, nil
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, intentTimeout)
+	if budget <= 0 {
+		budget = defaultGateBudget
+	}
+	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 
 	m, err := g.resolver(ctx, workspaceID, agentID)

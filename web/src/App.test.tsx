@@ -28,11 +28,28 @@ beforeAll(() => {
     };
     Object.defineProperty(globalThis, 'localStorage', { value: stub, configurable: true, writable: true });
   }
+  // Same workaround for sessionStorage — settings remembers the last
+  // non-settings route there.
+  if (typeof sessionStorage === 'undefined' || !sessionStorage) {
+    const mem = new Map<string, string>();
+    const stub = {
+      getItem: (k: string) => mem.get(k) ?? null,
+      setItem: (k: string, v: string) => void mem.set(k, String(v)),
+      removeItem: (k: string) => void mem.delete(k),
+      clear: () => mem.clear(),
+      key: (i: number) => Array.from(mem.keys())[i] ?? null,
+      get length() {
+        return mem.size;
+      },
+    };
+    Object.defineProperty(globalThis, 'sessionStorage', { value: stub, configurable: true, writable: true });
+  }
 });
 
 describe('App & Route Guard', () => {
   beforeEach(() => {
     localStorage.clear();
+    sessionStorage.clear();
     useAuthStore.setState({
       user: null,
       memberships: [],
@@ -411,7 +428,7 @@ describe('App & Route Guard', () => {
     });
   });
 
-  it('navigates to /settings/workspace when /settings is requested, hiding the sidebar', async () => {
+  it('navigates to /settings/workspace when /settings is requested, hiding the sidebar and the rail', async () => {
     useAuthStore.setState({
       status: 'authenticated',
       user: { id: 'u1', email: 'alice@example.com', name: 'Alice', created_at: '', updated_at: '' },
@@ -426,6 +443,7 @@ describe('App & Route Guard', () => {
       expect(screen.getByTestId('settings-page')).not.toBeNull();
       expect(screen.getByTestId('pane-workspace')).not.toBeNull();
       expect(screen.queryByTestId('sidebar')).toBeNull();
+      expect(screen.queryByRole('navigation', { name: /primary/i })).toBeNull();
       expect(window.location.pathname).toBe('/settings/workspace');
     });
   });
@@ -443,6 +461,8 @@ describe('App & Route Guard', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('pane-keys')).not.toBeNull();
+      // Takeover: the rail is not rendered on deep-linked settings routes either.
+      expect(screen.queryByRole('navigation', { name: /primary/i })).toBeNull();
     });
 
     unmount();
@@ -453,6 +473,62 @@ describe('App & Route Guard', () => {
     await waitFor(() => {
       expect(screen.getByTestId('pane-workspace')).not.toBeNull();
       expect(window.location.pathname).toBe('/settings/workspace');
+    });
+  });
+
+  it('hides the rail on settings and the settings Back control returns to the origin route', async () => {
+    useAuthStore.setState({
+      status: 'authenticated',
+      user: { id: 'u1', email: 'alice@example.com', name: 'Alice', created_at: '', updated_at: '' },
+      memberships: [],
+      boot: vi.fn(),
+    });
+
+    window.history.pushState({}, '', '/agents');
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('navigation', { name: /primary/i })).not.toBeNull();
+    });
+
+    fireEvent.click(screen.getByTestId('rail-settings'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('settings-page')).not.toBeNull();
+      expect(screen.queryByRole('navigation', { name: /primary/i })).toBeNull();
+    });
+
+    fireEvent.click(screen.getByTestId('settings-back'));
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/agents');
+      expect(screen.getByTestId('agents-view')).not.toBeNull();
+      // The rail is back on the non-settings route.
+      expect(screen.getByRole('navigation', { name: /primary/i })).not.toBeNull();
+    });
+  });
+
+  it('settings Back falls back to /c for a deep link with no in-app history', async () => {
+    useAuthStore.setState({
+      status: 'authenticated',
+      user: { id: 'u1', email: 'alice@example.com', name: 'Alice', created_at: '', updated_at: '' },
+      memberships: [],
+      boot: vi.fn(),
+    });
+
+    window.history.pushState({}, '', '/settings/keys');
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('pane-keys')).not.toBeNull();
+      expect(screen.getByTestId('settings-back')).not.toBeNull();
+    });
+
+    fireEvent.click(screen.getByTestId('settings-back'));
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/c');
+      expect(screen.getByTestId('chat-empty')).not.toBeNull();
     });
   });
 

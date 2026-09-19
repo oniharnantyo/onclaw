@@ -115,6 +115,11 @@ type AgentStore interface {
 	Update(ctx context.Context, agent *domain.Agent) error
 	Delete(ctx context.Context, workspaceID, id string) error
 	CountByProvider(ctx context.Context, workspaceID, providerID string) (int, error)
+	// CountInheriting counts the workspace's agents that carry the empty
+	// provider/model pair (provider_id IS NULL) — the workspace-default-model
+	// inheritors. The workspace clear-default guard reads it to refuse the
+	// clear with the inheriting count.
+	CountInheriting(ctx context.Context, workspaceID string) (int, error)
 	SetPromptState(ctx context.Context, workspaceID, id string, status domain.PromptsStatus, promptsErr *string) error
 	SweepGenerating(ctx context.Context, errMsg string) (int64, error)
 }

@@ -51,7 +51,7 @@ flowchart TB
         WORKER["Worker<br/>queue 256 · concurrency 2<br/>per-session serialization"]:::onclaw
         GISTER["Gister<br/>per-run windowed gist"]:::onclaw
         GATE["Curation Gate<br/>ADD / UPDATE / SUPERSEDE / NOOP<br/>dedupe-before-write"]:::onclaw
-        INTENT["IntentGate<br/>hard 1.5s · fail-open"]:::onclaw
+        INTENT["IntentGate<br/>budget gate_budget_ms · fail-open"]:::onclaw
         SEARCHER["Searcher<br/>hybrid lexical · zero model calls"]:::onclaw
         CONSOL["Consolidator<br/>nightly ~02:00 local<br/>merge · topics · report"]:::onclaw
     end
@@ -274,7 +274,7 @@ sequenceDiagram
     participant MS as memory.search tool
 
     T->>IG: turn text
-    Note over IG: one cheap-model call · hard 1.5s<br/>fail-open = self-contained
+    Note over IG: one cheap-model call · bounded by gate_budget_ms (default 4s)<br/>fail-open = self-contained
     alt self-contained · timeout · model error
         IG-->>T: docs only
     else needs deep memory
@@ -290,9 +290,13 @@ sequenceDiagram
 `memory.search` is the only memory tool over the extracted stores:
 read-only, zero model calls, identity bound at construction from the run's
 `ToolContext` (arguments carry no identity fields; `visibility` can only
-narrow). Scheduler/heartbeat origins, `/compact`, and empty turns skip the
-gate entirely. The tool registers only when the composition root wires the
-searcher — unwired deployments surface no tool at all, not a broken one.
+narrow). Lexical matching is any-term: a multi-word query selects rows
+matching any of its sanitized terms, ranked best-match-first by term overlap
+(pins stay dominant on notes), with the exact-substring fallback for
+verbatim identifiers. Scheduler/heartbeat origins, `/compact`, and empty
+turns skip the gate entirely. The tool registers only when the composition
+root wires the searcher — unwired deployments surface no tool at all, not a
+broken one.
 
 ## Consolidator and morning report
 

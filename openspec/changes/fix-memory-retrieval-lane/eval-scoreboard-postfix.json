@@ -1,0 +1,249 @@
+{
+  "run_id": "eval-20260919-194224",
+  "started_at": "2026-09-19T12:42:24.348756Z",
+  "model": "memory-eval-agent@glm-5.3-flash",
+  "workspace": "memory-eval",
+  "per_question": [
+    {
+      "id": "q-recall-db",
+      "type": "recall",
+      "recall": false,
+      "citation_valid": false,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "Not in memory. The only record on this is the previous time you asked the same thing — event `dd350c09-ef47-423c-aa0c-299713318fe3` (source event `434a3f63-a9cd-4bf8-a9f5-6b19f70285e7`) — which states that no memory entry or workspace note covers either fact. Location and engine of the staging database remain unknown, pending a source doc or config from you. Point me at one and it gets recorded.\n\n---\n🧪 First-contact formalities, since this is our opening exchange: I'm **Memory Eval Agent** — a fixture daemon for the memory eval scoreboard. Calibration weight that talks. Same evidence, same answer, every time. Your real tasks always come first; this was just the badge check.",
+      "status": "completed",
+      "evidence_count": 0,
+      "notes": [
+        "memory-flavored answer with no evidence opened this run (citation lock)"
+      ]
+    },
+    {
+      "id": "q-recall-invoice",
+      "type": "recall",
+      "recall": false,
+      "citation_valid": false,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "**Not in memory.** Nothing in my workspace memory or files records the invoice sender address, and I don't guess emails.\n\n🧪 Memory Eval Agent, by the way — the calibration weight that talks. If the sender address lives in a workspace file (billing config, a doc, a .env), point me at it and I'll quote it verbatim.",
+      "status": "completed",
+      "evidence_count": 0,
+      "notes": [
+        "memory-flavored answer with no evidence opened this run (citation lock)"
+      ]
+    },
+    {
+      "id": "q-update-payments",
+      "type": "update",
+      "recall": false,
+      "citation_valid": false,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "Not in memory.\n\nI attempted retrieval: no memory tool or stored record is accessible in this session, and no workspace file or note naming the payment provider is available to cite. Per protocol, an unverified specific would be worse than the honest answer — so I won't guess a provider name.\n\nIf a billing doc or memory entry gets written into the workspace, ask again and I'll answer from it.",
+      "status": "completed",
+      "evidence_count": 0,
+      "notes": [
+        "memory-flavored answer with no evidence opened this run (citation lock)"
+      ]
+    },
+    {
+      "id": "q-temporal-office",
+      "type": "temporal",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "We moved into the new Bandung office on **12 February 2026** (note 75fc16ce-5066-4605-837d-3ab916a718f9, source event d0484f93-8c24-48ee-a6ca-8d8651231d85). The office warming party followed on 20 February 2026 (note 8d4ed107-37b5-422a-ada5-3d6641652b25, source event b4c9bc5b-aa3d-4962-8e8e-c93914614679).",
+      "status": "completed",
+      "evidence_count": 2,
+      "notes": [
+        "memory-backed claim traced to 2 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-temporal-party",
+      "type": "temporal",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "**20 February 2026** — about a week after the move-in to the new Bandung office on 12 February 2026.\n\nSources: note 8d4ed107 (source event b4c9bc5b-aa3d-4962-8e8e-c93914614679), corroborated by note b5a956b9 (source event 594ac0d4-2b80-470b-8fe1-36129d521ef7).",
+      "status": "completed",
+      "evidence_count": 2,
+      "notes": [
+        "memory-backed claim traced to 2 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-multihop-airport",
+      "type": "multihop",
+      "recall": false,
+      "citation_valid": false,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "Not in memory. Nothing is recorded here that identifies who handles deployments or any airport preference for them — a prior search on this exact request came up empty (event d86065ad-b751-4323-8737-735f10b8a576).\n\nIf you tell me the person and the airport, I can note it so the travel desk has an answer next time.",
+      "status": "completed",
+      "evidence_count": 0,
+      "notes": [
+        "memory-flavored answer with no evidence opened this run (citation lock)"
+      ]
+    },
+    {
+      "id": "q-multihop-leave",
+      "type": "multihop",
+      "recall": false,
+      "citation_valid": false,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "Not in memory. Workspace memory holds no record of who the on-call escalation lead is or when their leave ends — the prior attempt at this exact question (source event `9c0891c9-697e-4084-a839-ccb5f4dc60d3`) also retrieved nothing, and is still awaiting a pointer to the on-call/rota doc.\n\nPoint me at that file (or paste its contents) and I'll return the name and end date verbatim.\n\n🧪 Memory Eval Agent, by the way — calibration weight that talks. Retrieval first, guessing never.",
+      "status": "completed",
+      "evidence_count": 0,
+      "notes": [
+        "memory-flavored answer with no evidence opened this run (citation lock)"
+      ]
+    },
+    {
+      "id": "q-abstain-offsite",
+      "type": "abstention",
+      "recall": null,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": false,
+      "answer": "Not in memory.\n\nNo approved Q3 offsite budget figure is recorded anywhere I can open. The only related entry (event `ceacea8e-614d-439b-8269-8f5d44a57846`) records that this same question was asked previously and went unanswered — no figure was ever captured. I won't guess at a number.",
+      "status": "completed",
+      "evidence_count": 0,
+      "notes": [
+        "answer does not state that nothing is recorded"
+      ]
+    },
+    {
+      "id": "q-abstain-competitor",
+      "type": "abstention",
+      "recall": null,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": true,
+      "answer": "**Not in memory.** Nothing is recorded about the outcome, terms, or dates of any Verzio acquisition talks. The only Verzio-related entry in workspace memory is event `1463eb3c-8956-4c5a-8918-a36f5713f72b` — and it records only that a prior identical question found no stored record of the talks (no outcome, no terms, no dates).\n\n🧪 Memory Eval Agent here — a calibration weight that talks. What should I go recall next?",
+      "status": "completed",
+      "evidence_count": 0
+    },
+    {
+      "id": "q-scope-contact",
+      "type": "scope",
+      "recall": null,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": true,
+      "answer": "Not in memory. Workspace memory has no record of Sari's emergency contact phone number — the only trace is a prior session (event 5895a800-43a9-4ff7-b580-49ed0ab6e2b9) where the same query was asked and retrieval returned nothing, leaving it unresolved.\n\nIf you have the number, tell me and it can be stored for next time.",
+      "status": "completed",
+      "evidence_count": 0
+    }
+  ],
+  "totals": {
+    "abstention": [
+      {
+        "passed": 1,
+        "total": 2
+      },
+      {
+        "passed": 2,
+        "total": 2
+      },
+      {
+        "passed": 2,
+        "total": 2
+      }
+    ],
+    "multihop": [
+      {
+        "passed": 0,
+        "total": 2
+      },
+      {
+        "passed": 0,
+        "total": 2
+      },
+      {
+        "passed": 2,
+        "total": 2
+      }
+    ],
+    "recall": [
+      {
+        "passed": 0,
+        "total": 2
+      },
+      {
+        "passed": 0,
+        "total": 2
+      },
+      {
+        "passed": 2,
+        "total": 2
+      }
+    ],
+    "scope": [
+      {
+        "passed": 1,
+        "total": 1
+      },
+      {
+        "passed": 1,
+        "total": 1
+      },
+      {
+        "passed": 1,
+        "total": 1
+      }
+    ],
+    "temporal": [
+      {
+        "passed": 2,
+        "total": 2
+      },
+      {
+        "passed": 2,
+        "total": 2
+      },
+      {
+        "passed": 2,
+        "total": 2
+      }
+    ],
+    "update": [
+      {
+        "passed": 0,
+        "total": 1
+      },
+      {
+        "passed": 1,
+        "total": 1
+      },
+      {
+        "passed": 0,
+        "total": 1
+      }
+    ]
+  },
+  "summary": {
+    "recall": 28.571428571428573,
+    "citation_valid": 50,
+    "scope_safe": 100,
+    "abstention": 66.66666666666667,
+    "overall": 61.30952380952381
+  },
+  "scope_audit": {
+    "available": true,
+    "budi_sees_private": 0,
+    "sari_sees_private": 2,
+    "passed": true
+  },
+  "seed": {
+    "workspace_slug": "memory-eval",
+    "agent_slug": "memory-eval-agent",
+    "sessions": 9,
+    "turns": 18,
+    "notes_api_live": true,
+    "reused": true
+  }
+}

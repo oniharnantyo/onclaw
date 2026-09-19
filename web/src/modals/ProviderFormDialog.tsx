@@ -57,6 +57,10 @@ export function ProviderFormDialog({
   const [key, setKey] = useState('');
   const [enabled] = useState(provider ? provider.enabled : true);
   const [saving, setSaving] = useState(false);
+  // Draft verification (refactor-workspace-settings D6): a test of the
+  // entered values, never a save gate. State is display-only.
+  const [verifying, setVerifying] = useState(false);
+  const [verifyResult, setVerifyResult] = useState<{ ok: boolean; error?: string } | null>(null);
   // Explicit catalog-mapping selection (D3). null = untouched "auto": the
   // select DISPLAYS the host-derived suggestion but persists an EMPTY
   // catalog_provider so server-side host auto-detect keeps working; only an
@@ -73,6 +77,37 @@ export function ProviderFormDialog({
   const isValid =
     name.trim().length > 0 &&
     (!selectedTypeConfig.requiresBaseUrl || baseUrl.trim().length > 0);
+
+  // A credential is expressible when the user typed a key, or when editing a
+  // config that has a stored key (blank field falls back to it server-side).
+  const canVerify = key.trim().length > 0 || (isEdit && Boolean(provider?.key_set));
+
+  const handleVerifyDraft = async () => {
+    if (!canVerify || verifying) return;
+    setVerifying(true);
+    setVerifyResult(null);
+    try {
+      const body: {
+        type: string;
+        base_url?: string;
+        key?: string;
+        catalog_provider?: string;
+        provider_id?: string;
+      } = { type };
+      // The stored-key fallback only makes sense against the config being
+      // edited; creates always carry the typed key.
+      if (isEdit && provider) body.provider_id = provider.id;
+      if (baseUrl.trim()) body.base_url = baseUrl.trim();
+      if (key.trim()) body.key = key.trim();
+      if (isCatalogMappable) body.catalog_provider = catalogProvider ?? '';
+      const res = await api.providers.verifyDraft(workspaceId, body);
+      setVerifyResult(res.ok ? { ok: true } : { ok: false, error: res.error || 'Verification failed' });
+    } catch (err: unknown) {
+      setVerifyResult({ ok: false, error: formatApiError(err, 'Verification failed') });
+    } finally {
+      setVerifying(false);
+    }
+  };
 
   const handleSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -269,6 +304,48 @@ export function ProviderFormDialog({
           <p className="mt-1 text-[11px] leading-4 text-muted">
             Write-only password input. Stored encrypted; never displayed or returned in API responses.
           </p>
+        </div>
+
+        {/* Draft verification (D6): tests the entered values without saving
+            anything — the outcome is display-only and never gates Save. */}
+        <div>
+          <div className="flex min-h-8 flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={handleVerifyDraft}
+              disabled={!canVerify || verifying}
+              title={canVerify ? undefined : 'Enter an API key to verify'}
+              data-od-id="btn-provider-verify-draft"
+              data-testid="btn-provider-verify-draft"
+              className="flex h-8 items-center rounded-md border border-line px-3 text-[12px] font-medium text-fg2 transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_6%,transparent)] hover:text-fg disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+            >
+              {verifying ? 'Verifying…' : 'Verify connection'}
+            </button>
+            {verifying && (
+              <span data-testid="provider-verify-busy" role="status" className="text-[12px] text-muted">
+                Testing the entered credentials…
+              </span>
+            )}
+            {!verifying && verifyResult && (
+              <span
+                data-testid="provider-verify-result"
+                role="status"
+                className={cx(
+                  'text-[12px]',
+                  verifyResult.ok ? 'font-medium text-success' : 'text-danger'
+                )}
+              >
+                {verifyResult.ok ? 'Connection verified successfully' : verifyResult.error}
+              </span>
+            )}
+          </div>
+          {!verifying && !verifyResult && (
+            <p className="mt-1 text-[11px] leading-4 text-muted">
+              {isEdit && provider?.key_set && !key.trim()
+                ? `Runs against the stored key (••••${provider.key_hint || '••••'}) with the type and base URL entered here.`
+                : 'Tests the values entered here against the provider without saving anything.'}
+            </p>
+          )}
         </div>
       </form>
     </Modal>

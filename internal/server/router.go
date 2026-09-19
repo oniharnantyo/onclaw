@@ -374,6 +374,10 @@ func (rt *router) Engine() *gin.Engine {
 			agents.WithProjectSpace(channels.NewLocalProjectSpace(dataDir, rt.opts.Store.Workspaces())),
 			agents.WithAttachmentBlobs(wsStorage),
 			agents.WithInputModalityResolver(modelCatalog),
+			// Gate budget (fix-memory-retrieval-lane D3): read off the
+			// memory settings record per turn, absence resolving to the
+			// default.
+			agents.WithMemoryGateBudget(memory.SettingsGateBudget(rt.opts.Store.ToolSettings(), memoryLog)),
 		)
 		channelRuntime.BindRunner(runner)
 	}
@@ -704,6 +708,10 @@ func (rt *router) Engine() *gin.Engine {
 				wsGroup.PATCH("/providers/:id", rt.mw.RequirePermission(domain.ProvidersWrite), providerHandlers.PatchProvider)
 				wsGroup.DELETE("/providers/:id", rt.mw.RequirePermission(domain.ProvidersWrite), providerHandlers.DeleteProvider)
 				wsGroup.POST("/providers/:id/verify", rt.mw.RequirePermission(domain.ProvidersWrite), providerHandlers.VerifyProvider)
+				// Draft verify for the provider dialog (refactor D5): probes the
+				// unsaved form values — the stored key when editing with a blank
+				// key field — and persists nothing.
+				wsGroup.POST("/providers/verify-draft", rt.mw.RequirePermission(domain.ProvidersWrite), providerHandlers.VerifyDraft)
 				wsGroup.GET("/providers/:id/models", rt.mw.RequirePermission(domain.ProvidersRead), providerHandlers.GetProviderModels)
 
 				// Agents management

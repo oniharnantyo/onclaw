@@ -2,9 +2,17 @@ import { useEffect, useMemo, useState } from "react";
 import { cx } from "../../lib/helpers";
 import { TimezoneSelect } from "../../components/ui/TimezoneSelect";
 import { Chip } from "../../components/ui/Chip";
+import { ModelCombobox } from "../../components/ui/ModelCombobox";
 import { inputCls, labelCls } from "../../components/ui/constants";
-import { MODELS } from "../../lib/constants";
-import { api, ApiError, formatApiError, type ApiMemory } from "../../lib/api";
+import { PROVIDER_TYPES } from "../../lib/constants";
+import {
+  api,
+  ApiError,
+  formatApiError,
+  type ApiDefaultModel,
+  type ApiMemory,
+  type ApiProviderConfig,
+} from "../../lib/api";
 import { useAuthStore } from "../../store/auth";
 import { useStore } from "../../store";
 
@@ -26,7 +34,6 @@ export function WorkspaceSection({
   const [ws, setWs] = useState({
     name: tenant.name,
     tz: tenant.tz,
-    defaultModel: tenant.defaultModel,
     retention: tenant.retention,
   });
   const [confirmDel, setConfirmDel] = useState(false);
@@ -36,6 +43,49 @@ export function WorkspaceSection({
   const memberships = useAuthStore((s) => s.memberships);
 
   const targetWsId = tenant.sub || tenant.id;
+
+  // Default model pair (refactor-workspace-settings D2): picked provider-first
+  // over the workspace's configured providers, with the model from that
+  // provider's catalog. Both empty = no default; the pair rides the PATCH as
+  // `default_model` only when it differs from the hydrated value.
+  const [providers, setProviders] = useState<ApiProviderConfig[]>([]);
+  const [defaultProvider, setDefaultProvider] = useState('');
+  const [defaultModel, setDefaultModel] = useState('');
+  const [hydratedDefault, setHydratedDefault] = useState<ApiDefaultModel | null>(null);
+  const [defaultLoaded, setDefaultLoaded] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.workspaces
+      .get(targetWsId)
+      .then((res) => {
+        if (cancelled) return;
+        const dm = res?.workspace?.default_model ?? null;
+        setHydratedDefault(dm);
+        setDefaultProvider(dm?.provider_id || '');
+        setDefaultModel(dm?.model || '');
+        setDefaultLoaded(true);
+      })
+      .catch(() => {
+        // Offline / mock mode — the picker stays usable with no default.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [targetWsId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.providers
+      .list(targetWsId)
+      .then((res) => {
+        if (!cancelled && res?.providers) setProviders(res.providers);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [targetWsId]);
 
   // Shared-memory (WORKSPACE.md) editor state — fully independent of the
   // workspace-details draft above so neither save rewrites the other.
@@ -113,18 +163,33 @@ export function WorkspaceSection({
   const saveWorkspace = async () => {
     setSavingWs(true);
     try {
-      await api.workspaces.patch(targetWsId, {
+      const body: { name: string; timezone: string; default_model?: ApiDefaultModel | null } = {
         name: ws.name,
         timezone: ws.tz,
-      });
+      };
+      // The pair rides the PATCH only when it differs from the hydrated
+      // workspace payload — a save that never touched the picker leaves the
+      // stored default untouched on the wire.
+      const pair: ApiDefaultModel | null =
+        defaultProvider && defaultModel ? { provider_id: defaultProvider, model: defaultModel } : null;
+      if (defaultLoaded) {
+        const unchanged =
+          (hydratedDefault?.provider_id || '') === defaultProvider &&
+          (hydratedDefault?.model || '') === defaultModel;
+        if (!unchanged) body.default_model = pair;
+      }
+      await api.workspaces.patch(targetWsId, body);
+      if (body.default_model !== undefined) setHydratedDefault(pair);
       onUpdate((t: any) => ({ ...t, ...ws }));
+      // Mirror the server-confirmed workspace fields into the membership
+      // cache so the switcher shows the saved name immediately.
       useAuthStore.setState((s) => ({
         memberships: s.memberships.map((m) =>
           m.workspace_id === targetWsId || m.workspace_slug === targetWsId
             ? {
                 ...m,
-                workspace_name: ws.name,
-                workspace: m.workspace ? { ...m.workspace, name: ws.name, timezone: ws.tz } : m.workspace,
+                workspace_name: body.name,
+                workspace: m.workspace ? { ...m.workspace, name: body.name, timezone: body.timezone } : m.workspace,
               }
             : m
         ),
@@ -203,7 +268,7 @@ export function WorkspaceSection({
           />
         </div>
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 gap-4">
         <div>
           <label className={labelCls} htmlFor="ws-tz">
             Timezone
@@ -217,19 +282,55 @@ export function WorkspaceSection({
           />
         </div>
         <div>
-          <label className={labelCls} htmlFor="ws-model">
+          <label className={labelCls} htmlFor="ws-default-provider">
             Default model
           </label>
           <select
-            id="ws-model"
+            id="ws-default-provider"
+            data-od-id="select-ws-default-provider"
+            data-testid="select-ws-default-provider"
             className={inputCls}
-            value={ws.defaultModel}
-            onChange={(e) => setWs({ ...ws, defaultModel: e.target.value })}
+            value={defaultProvider}
+            onChange={(e) => {
+              // Provider-first (web-app/settings): switching provider
+              // re-queries that provider's catalog and drops the old model.
+              setDefaultProvider(e.target.value);
+              setDefaultModel('');
+            }}
           >
-            {MODELS.map((m: any) => (
-              <option key={m}>{m}</option>
-            ))}
+            {providers.length === 0 ? (
+              <option value="" disabled>
+                No providers configured (Settings → Providers)
+              </option>
+            ) : (
+              <option value="">No default — agents pin their own</option>
+            )}
+            {providers.map((p) => {
+              const typeObj = PROVIDER_TYPES.find((t) => t.id === p.type);
+              const typeLabel = typeObj ? typeObj.label : p.type;
+              return (
+                <option key={p.id} value={p.id}>
+                  {p.name} ({typeLabel})
+                </option>
+              );
+            })}
           </select>
+          {defaultProvider ? (
+            <div className="mt-3" data-testid="ws-default-model-picker">
+              <ModelCombobox
+                key={defaultProvider}
+                workspaceId={targetWsId}
+                providerId={defaultProvider}
+                model={defaultModel}
+                onModelChange={setDefaultModel}
+                hideEffort
+              />
+            </div>
+          ) : (
+            <p className="mt-1.5 text-[11px] leading-4 text-muted">
+              New agents can inherit this pair instead of pinning a provider and model.
+            </p>
+          )}
         </div>
       </div>
       <div>

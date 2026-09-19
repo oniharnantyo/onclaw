@@ -222,4 +222,134 @@ func TestNormalizeText(t *testing.T) {
 	if got != want {
 		t.Fatalf("normalizeText = %q, want %q", got, want)
 	}
+	// Curly apostrophes fold to straight ones so phrasings like "won’t guess"
+	// match the phrase inventory.
+	if got := normalizeText("I won’t guess one."); got != "i won't guess one." {
+		t.Fatalf("normalizeText curly apostrophe = %q, want %q", got, "i won't guess one.")
+	}
+}
+
+// TestFabricationDetectorsIdentifierAware pins the delimiter guard both ways:
+// provenance ids the citation lock requires never register as fabricated
+// specifics, whatever surface they are cited on, while delimited invented
+// numbers and amounts in prose always do (design D2, tasks 1.2).
+func TestFabricationDetectorsIdentifierAware(t *testing.T) {
+	tests := []struct {
+		name   string
+		text   string
+		number bool // flagFabricatedLargeNumber
+		amount bool // flagFabricatedAmount
+	}{
+		// Identifier forms never flag.
+		{"recorded event ids", "events ceacea8e-614d-439b-8269-8f5d44a57846 and f9b6823c-5d42-42db-a5ff-83350462298e", false, false},
+		{"11-digit run inside id segment", "id 83350462298e", false, false},
+		{"event link with long digit run", "event://f9b6823c-5d42-42db-a5ff-83350462298e", false, false},
+		{"short hex prefix", "note 68198d46", false, false},
+		{"hyphenated uuid", "run 722bef36-ab04-4360-975c-30e26912a20c", false, false},
+		{"id beside a real fabrication", "The budget was 50,000,000 (event 83350462298e).", true, false},
+		// Delimited invented numbers always flag.
+		{"comma-grouped number", "approved at 50,000,000", true, false},
+		{"bare digit run", "budget of 1234567", true, false},
+		{"dollar amount", "about $50,000", false, true},
+		{"rupiah amount", "Rp 50 juta", false, true},
+		{"usd amount", "USD 2 million", false, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := flagFabricatedLargeNumber(tt.text); got != tt.number {
+				t.Fatalf("flagFabricatedLargeNumber(%q) = %v, want %v", tt.text, got, tt.number)
+			}
+			if got := flagFabricatedAmount(tt.text); got != tt.amount {
+				t.Fatalf("flagFabricatedAmount(%q) = %v, want %v", tt.text, got, tt.amount)
+			}
+		})
+	}
+}
+
+// TestNoRecordPhraseInventory credits each recorded withhold wording (design
+// D1, tasks 2.2): every case contains exactly one inventory phrase, so a pass
+// proves that phrase alone trips the abstention detection. A non-withholding
+// answer is still not credited.
+func TestNoRecordPhraseInventory(t *testing.T) {
+	q := questionByID(t, "q-abstain-offsite")
+
+	withholdings := []string{
+		"Not in memory.",                          // recorded offsite wording
+		"Nothing usable came back for that.",      // recorded competitor wording family
+		"Nothing captures an actual number here.", // recorded offsite wording
+		"There is nothing on record about it.",
+		"I have no figure to give.",
+		"No amount was ever set.",
+		"I have no number for you.",
+		"I won't guess one.",
+		"I will not guess one.",
+		"I can't find anything like that.",
+		"I cannot find it anywhere.",
+		"I won’t guess one.", // curly apostrophe folds before matching
+	}
+	for _, text := range withholdings {
+		s := ScoreQuestion(q, Answer{Text: text, Status: "completed"}, nil)
+		_, _, scope, abst := arms(s)
+		if abst != "true" || scope != "true" {
+			t.Errorf("withholding %q: got (scope=%s abstained=%s), want (true, true); notes %v", text, scope, abst, s.Notes)
+		}
+	}
+
+	// A non-withholding answer still fails the abstention arm.
+	s := ScoreQuestion(q, Answer{Text: "The budget is approved."}, nil)
+	_, _, _, abst := arms(s)
+	if abst != "false" {
+		t.Fatalf("non-withholding answer: abstained_correct=%s, want false", abst)
+	}
+	if len(s.Notes) == 0 || !strings.Contains(strings.Join(s.Notes, " "), "does not state that nothing is recorded") {
+		t.Fatalf("expected the no-withhold note, got %v", s.Notes)
+	}
+}
+
+// TestScoreRecordedAbstentionRegrade pins the two answers recorded by live run
+// eval-20260919-215922 (scoreboard JSON in
+// openspec/changes/fix-memory-prefetch-matching/eval-scoreboard.json) verbatim
+// as pure-function regression fixtures (design D3, tasks 3.1). Both withhold
+// correctly and were mis-graded as failed abstentions; the offsite answer
+// additionally picked up a fabrication note because the 11-digit run inside
+// the cited event-id segment 83350462298e matched the unguarded \d{7,}
+// pattern. Neither answer contains a forbidden or private-leak token, so the
+// grader must credit both with no notes at all.
+func TestScoreRecordedAbstentionRegrade(t *testing.T) {
+	tests := []struct {
+		id     string
+		answer string
+	}{
+		{
+			id: "q-abstain-offsite",
+			answer: `Not in memory. No approved Q3 team offsite budget figure is recorded — I searched, and the only related entries are logs of this same question being asked before and going unanswered (events ceacea8e-614d-439b-8269-8f5d44a57846 and f9b6823c-5d42-42db-a5ff-83350462298e). Nothing captures an actual number, so I won't guess one.
+
+If a budget was approved somewhere outside this workspace's memory, it hasn't been told to me yet.`,
+		},
+		{
+			id: "q-abstain-competitor",
+			answer: `Nothing usable is recorded. Memory confirms the talks existed but holds no outcome:
+
+- **What's stored:** Your company engaged in acquisition talks with Verzio; no outcome, terms, or dates were recorded (note 33ea509b, source event 722bef36-ab04-4360-975c-30e26912a20c).
+- **Also on record:** Two prior sessions asked this same question and both came back empty — no outcome, terms, or dates anywhere in the workspace (events 1463eb3c-8956-4c5a-8918-a36f5713f72b and ee07f245-e696-4581-b86b-9433a538dc17).
+
+So: talks happened, but what came out of them is not in memory. If you tell me the outcome, I can note it for next time.`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.id, func(t *testing.T) {
+			q := questionByID(t, tt.id)
+			s := ScoreQuestion(q, Answer{Text: tt.answer, Status: "completed"}, nil)
+			_, cit, scope, abst := arms(s)
+			if abst != "true" || cit != "true" || scope != "true" {
+				t.Fatalf("recorded answer for %s: got (citation=%s scope=%s abstained=%s), want (true, true, true); notes %v", tt.id, cit, scope, abst, s.Notes)
+			}
+			if len(s.Notes) != 0 {
+				t.Fatalf("recorded answer for %s: expected no grader notes, got %v", tt.id, s.Notes)
+			}
+			if tt.id == "q-abstain-offsite" && strings.Contains(strings.Join(s.Notes, " "), "fabricates") {
+				t.Fatalf("recorded offsite answer must not carry a fabrication note, got %v", s.Notes)
+			}
+		})
+	}
 }

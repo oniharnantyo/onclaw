@@ -1096,6 +1096,46 @@ api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/agents/${AGENT_ID}" "${CHARLI
 assert_status "200" "Owner updates agent"
 assert_json_expr '.agent.name == "Updated Agent"' "Agent name updated"
 
+# 13.2a Workspace default model (refactor-workspace-settings): PATCH set/replace,
+# half-set 400, unknown provider 400, inherit agent create, clear-blocked 422
+# with the inheriting count, then clear once the inheritor is gone.
+api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}" "${CHARLIE_TOKEN}" '{"default_model":{"provider_id":"'"${MOCK_PROV_ID}"'","model":"gpt-4o"}}'
+assert_status "200" "Owner sets the workspace default model"
+assert_json_expr '.workspace.default_model.model == "gpt-4o"' "Workspace payload carries the default model pair"
+
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}" "${CHARLIE_TOKEN}"
+assert_status "200" "Workspace read returns 200"
+assert_json_expr '.workspace.default_model.model == "gpt-4o"' "Workspace GET carries the default model pair"
+
+api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}" "${CHARLIE_TOKEN}" '{"default_model":{"provider_id":"","model":"gpt-4o"}}'
+assert_status "400" "Half-set default model pair is rejected (400)"
+
+api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}" "${CHARLIE_TOKEN}" '{"default_model":{"provider_id":"00000000-0000-0000-0000-000000000000","model":"gpt-4o"}}'
+assert_status "400" "Unknown default model provider is rejected (400)"
+
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/agents" "${CHARLIE_TOKEN}" '{"name":"Inherit Agent","slug":"inherit-agent","role":"Tester","description":"Inherits the default","brief":"A short brief"}'
+assert_status "201" "Inherit agent (empty provider/model pair) creates while a default exists"
+assert_json_expr '.agent.provider_id == "" and .agent.model == ""' "Inherit agent persists with the empty pair"
+INHERIT_AGENT_ID=$(json_get '.agent.id')
+
+api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}" "${CHARLIE_TOKEN}" '{"default_model":{"provider_id":"","model":""}}'
+assert_status "422" "Clearing the default is blocked while agents inherit it (422)"
+if [[ "${HTTP_BODY}" == *"1 agent(s) inherit"* ]]; then
+    log_pass "Clear refusal names the inheriting agent count"
+else
+    log_fail "Clear refusal does not name the inheriting count: ${HTTP_BODY}"
+fi
+
+api_req "DELETE" "/api/v1/workspaces/${TENANT_SLUG}/agents/${INHERIT_AGENT_ID}" "${CHARLIE_TOKEN}"
+assert_status "204" "Inherit agent deleted"
+
+api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}" "${CHARLIE_TOKEN}" '{"default_model":{"provider_id":"","model":""}}'
+assert_status "200" "Clearing the default succeeds once no agents inherit it"
+
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}" "${CHARLIE_TOKEN}"
+assert_status "200" "Workspace read after clear returns 200"
+assert_json_expr '.workspace.default_model == null' "Workspace payload carries null default model after clear"
+
 api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/providers/${OPENAI_PROV_ID}/models" "${CHARLIE_TOKEN}"
 assert_status "200" "List models from provider"
 assert_json_expr 'has("models")' "Models endpoint returns models list"

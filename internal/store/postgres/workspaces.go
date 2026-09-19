@@ -20,6 +20,20 @@ func NewWorkspaceStore(db Executor) storeport.WorkspaceStore {
 	return &workspaceStore{db: db}
 }
 
+// defaultModelPairColumns is the workspace default-model pair's select list;
+// keep it aligned with scanDefaultModelPair.
+const defaultModelPairColumns = `w.default_provider_id, w.default_model`
+
+// scanDefaultModelPair scans the pair selected by defaultModelPairColumns into
+// the workspace: both NULL (or both set) only — the store refuses half pairs
+// on write, so a half-read degrades to unset rather than failing the query.
+func scanDefaultModelPair(w *domain.Workspace, providerID, model *string) {
+	if providerID == nil || model == nil || *providerID == "" || *model == "" {
+		return
+	}
+	w.DefaultModel = &domain.DefaultModelPair{ProviderID: *providerID, Model: *model}
+}
+
 func (ws *workspaceStore) Create(ctx context.Context, w *domain.Workspace) error {
 	if w == nil {
 		return domain.ErrInvalid
@@ -49,9 +63,14 @@ func (ws *workspaceStore) Create(ctx context.Context, w *domain.Workspace) error
 	}
 
 	query := `
-		INSERT INTO workspaces (id, slug, name, description, timezone, is_master, disabled_at, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO workspaces (id, slug, name, description, timezone, is_master, disabled_at, default_provider_id, default_model, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 	`
+	var defaultProviderID, defaultModel *string
+	if w.DefaultModel != nil {
+		defaultProviderID = &w.DefaultModel.ProviderID
+		defaultModel = &w.DefaultModel.Model
+	}
 	_, err := ws.db.Exec(ctx, query,
 		w.ID,
 		w.Slug,
@@ -60,6 +79,8 @@ func (ws *workspaceStore) Create(ctx context.Context, w *domain.Workspace) error
 		w.Timezone,
 		w.IsMaster,
 		w.DisabledAt,
+		defaultProviderID,
+		defaultModel,
 		w.CreatedAt,
 		w.UpdatedAt,
 	)
@@ -75,11 +96,13 @@ func (ws *workspaceStore) BySlug(ctx context.Context, slug string) (*domain.Work
 	}
 
 	query := `
-		SELECT id, slug, name, COALESCE(description, ''), timezone, is_master, disabled_at, created_at, updated_at
-		FROM workspaces
-		WHERE slug = $1
+		SELECT w.id, w.slug, w.name, COALESCE(w.description, ''), w.timezone, w.is_master, w.disabled_at, w.created_at, w.updated_at,
+		       w.default_provider_id, w.default_model
+		FROM workspaces w
+		WHERE w.slug = $1
 	`
 	var w domain.Workspace
+	var defaultProviderID, defaultModel *string
 	err := ws.db.QueryRow(ctx, query, slug).Scan(
 		&w.ID,
 		&w.Slug,
@@ -90,10 +113,13 @@ func (ws *workspaceStore) BySlug(ctx context.Context, slug string) (*domain.Work
 		&w.DisabledAt,
 		&w.CreatedAt,
 		&w.UpdatedAt,
+		&defaultProviderID,
+		&defaultModel,
 	)
 	if err != nil {
 		return nil, convertError(err)
 	}
+	scanDefaultModelPair(&w, defaultProviderID, defaultModel)
 	return &w, nil
 }
 
@@ -103,11 +129,13 @@ func (ws *workspaceStore) ByID(ctx context.Context, id string) (*domain.Workspac
 	}
 
 	query := `
-		SELECT id, slug, name, COALESCE(description, ''), timezone, is_master, disabled_at, created_at, updated_at
-		FROM workspaces
-		WHERE id = $1
+		SELECT w.id, w.slug, w.name, COALESCE(w.description, ''), w.timezone, w.is_master, w.disabled_at, w.created_at, w.updated_at,
+		       w.default_provider_id, w.default_model
+		FROM workspaces w
+		WHERE w.id = $1
 	`
 	var w domain.Workspace
+	var defaultProviderID, defaultModel *string
 	err := ws.db.QueryRow(ctx, query, id).Scan(
 		&w.ID,
 		&w.Slug,
@@ -118,10 +146,13 @@ func (ws *workspaceStore) ByID(ctx context.Context, id string) (*domain.Workspac
 		&w.DisabledAt,
 		&w.CreatedAt,
 		&w.UpdatedAt,
+		&defaultProviderID,
+		&defaultModel,
 	)
 	if err != nil {
 		return nil, convertError(err)
 	}
+	scanDefaultModelPair(&w, defaultProviderID, defaultModel)
 	return &w, nil
 }
 
@@ -131,6 +162,11 @@ func (ws *workspaceStore) Update(ctx context.Context, w *domain.Workspace) error
 	}
 
 	now := time.Now().UTC()
+	var defaultProviderID, defaultModel *string
+	if w.DefaultModel != nil {
+		defaultProviderID = &w.DefaultModel.ProviderID
+		defaultModel = &w.DefaultModel.Model
+	}
 	query := `
 		UPDATE workspaces
 		SET name = CASE WHEN $1 <> '' THEN $1 ELSE name END,
@@ -138,9 +174,12 @@ func (ws *workspaceStore) Update(ctx context.Context, w *domain.Workspace) error
 		    timezone = CASE WHEN $3 <> '' THEN $3 ELSE timezone END,
 		    is_master = $4,
 		    disabled_at = $5,
-		    updated_at = $6
-		WHERE id = $7
-		RETURNING slug, name, COALESCE(description, ''), timezone, is_master, disabled_at, created_at, updated_at
+		    default_provider_id = $6,
+		    default_model = $7,
+		    updated_at = $8
+		WHERE id = $9
+		RETURNING slug, name, COALESCE(description, ''), timezone, is_master, disabled_at, created_at, updated_at,
+		          default_provider_id, default_model
 	`
 	err := ws.db.QueryRow(ctx, query,
 		w.Name,
@@ -148,6 +187,8 @@ func (ws *workspaceStore) Update(ctx context.Context, w *domain.Workspace) error
 		w.Timezone,
 		w.IsMaster,
 		w.DisabledAt,
+		defaultProviderID,
+		defaultModel,
 		now,
 		w.ID,
 	).Scan(
@@ -159,10 +200,13 @@ func (ws *workspaceStore) Update(ctx context.Context, w *domain.Workspace) error
 		&w.DisabledAt,
 		&w.CreatedAt,
 		&w.UpdatedAt,
+		&defaultProviderID,
+		&defaultModel,
 	)
 	if err != nil {
 		return convertError(err)
 	}
+	scanDefaultModelPair(w, defaultProviderID, defaultModel)
 	return nil
 }
 
@@ -172,7 +216,8 @@ func (ws *workspaceStore) ListForUser(ctx context.Context, userID string) ([]dom
 	}
 
 	query := `
-		SELECT w.id, w.slug, w.name, COALESCE(w.description, ''), w.timezone, w.is_master, w.disabled_at, w.created_at, w.updated_at
+		SELECT w.id, w.slug, w.name, COALESCE(w.description, ''), w.timezone, w.is_master, w.disabled_at, w.created_at, w.updated_at,
+		       w.default_provider_id, w.default_model
 		FROM workspaces w
 		JOIN workspace_members wm ON w.id = wm.workspace_id
 		WHERE wm.user_id = $1
@@ -187,6 +232,7 @@ func (ws *workspaceStore) ListForUser(ctx context.Context, userID string) ([]dom
 	workspaces := make([]domain.Workspace, 0)
 	for rows.Next() {
 		var w domain.Workspace
+		var defaultProviderID, defaultModel *string
 		if err := rows.Scan(
 			&w.ID,
 			&w.Slug,
@@ -197,9 +243,12 @@ func (ws *workspaceStore) ListForUser(ctx context.Context, userID string) ([]dom
 			&w.DisabledAt,
 			&w.CreatedAt,
 			&w.UpdatedAt,
+			&defaultProviderID,
+			&defaultModel,
 		); err != nil {
 			return nil, convertError(err)
 		}
+		scanDefaultModelPair(&w, defaultProviderID, defaultModel)
 		workspaces = append(workspaces, w)
 	}
 	if err := rows.Err(); err != nil {
@@ -210,9 +259,10 @@ func (ws *workspaceStore) ListForUser(ctx context.Context, userID string) ([]dom
 
 func (ws *workspaceStore) ListAll(ctx context.Context) ([]domain.Workspace, error) {
 	query := `
-		SELECT id, slug, name, COALESCE(description, ''), timezone, is_master, disabled_at, created_at, updated_at
-		FROM workspaces
-		ORDER BY created_at ASC, id ASC
+		SELECT w.id, w.slug, w.name, COALESCE(w.description, ''), w.timezone, w.is_master, w.disabled_at, w.created_at, w.updated_at,
+		       w.default_provider_id, w.default_model
+		FROM workspaces w
+		ORDER BY w.created_at ASC, w.id ASC
 	`
 	rows, err := ws.db.Query(ctx, query)
 	if err != nil {
@@ -223,6 +273,7 @@ func (ws *workspaceStore) ListAll(ctx context.Context) ([]domain.Workspace, erro
 	workspaces := make([]domain.Workspace, 0)
 	for rows.Next() {
 		var w domain.Workspace
+		var defaultProviderID, defaultModel *string
 		if err := rows.Scan(
 			&w.ID,
 			&w.Slug,
@@ -233,9 +284,12 @@ func (ws *workspaceStore) ListAll(ctx context.Context) ([]domain.Workspace, erro
 			&w.DisabledAt,
 			&w.CreatedAt,
 			&w.UpdatedAt,
+			&defaultProviderID,
+			&defaultModel,
 		); err != nil {
 			return nil, convertError(err)
 		}
+		scanDefaultModelPair(&w, defaultProviderID, defaultModel)
 		workspaces = append(workspaces, w)
 	}
 	if err := rows.Err(); err != nil {

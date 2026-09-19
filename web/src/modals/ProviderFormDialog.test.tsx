@@ -1,9 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import { ProviderFormDialog } from './ProviderFormDialog';
-import { api, type ApiProviderConfig } from '../lib/api';
-
-const compatibleProvider = (over: Partial<ApiProviderConfig> = {}): ApiProviderConfig => ({
+import { api, type ApiProviderConfig } from '../lib/api';const compatibleProvider = (over: Partial<ApiProviderConfig> = {}): ApiProviderConfig => ({
   id: 'prov-gw',
   workspace_id: 'acme',
   type: 'openai-compatible',
@@ -156,6 +154,173 @@ describe('modals/ProviderFormDialog — catalog mapping (fix-image-attachment-la
         'prov-gw',
         expect.objectContaining({ catalog_provider: 'openrouter' })
       );
+    });
+  });
+});
+
+describe('modals/ProviderFormDialog — draft verify connection (refactor-workspace-settings)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function renderDialog(props: Partial<Parameters<typeof ProviderFormDialog>[0]> = {}) {
+    const onClose = vi.fn();
+    const onSaved = vi.fn();
+    const onToast = vi.fn();
+    render(
+      <ProviderFormDialog
+        workspaceId="acme"
+        provider={null}
+        onClose={onClose}
+        onSaved={onSaved}
+        onToast={onToast}
+        {...props}
+      />
+    );
+    return { onClose, onSaved, onToast };
+  }
+
+  const verifyButton = () => screen.getByTestId('btn-provider-verify-draft') as HTMLButtonElement;
+
+  it('verifies the typed key from the create dialog: busy state, success strip, dialog stays open', async () => {
+    let resolveVerify: (val: { ok: boolean }) => void = () => {};
+    const verifyDraft = vi.spyOn(api.providers, 'verifyDraft').mockImplementation(
+      () => new Promise((resolve) => { resolveVerify = resolve; }) as any
+    );
+    const { onClose } = renderDialog();
+
+    // Create mode with no typed key — no credential is expressible yet.
+    expect(verifyButton().disabled).toBe(true);
+
+    fireEvent.change(screen.getByLabelText('Provider name'), { target: { value: 'Acme Prod' } });
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'sk-draft-key' } });
+    expect(verifyButton().disabled).toBe(false);
+
+    fireEvent.click(verifyButton());
+
+    // Busy strip + in-flight body: typed key, no provider_id on create.
+    expect(screen.getByTestId('provider-verify-busy')).not.toBeNull();
+    expect(verifyDraft).toHaveBeenCalledWith(
+      'acme',
+      expect.objectContaining({ type: 'openai', key: 'sk-draft-key' })
+    );
+    const body = verifyDraft.mock.calls[0][1];
+    expect(body.provider_id).toBeUndefined();
+
+    resolveVerify({ ok: true });
+    await waitFor(() => {
+      expect(screen.getByTestId('provider-verify-result').textContent).toBe(
+        'Connection verified successfully'
+      );
+    });
+    // The dialog stays open with the entered values.
+    expect(screen.getByTestId('modal-provider')).not.toBeNull();
+    expect((screen.getByLabelText('Provider name') as HTMLInputElement).value).toBe('Acme Prod');
+    expect((screen.getByLabelText('API key') as HTMLInputElement).value).toBe('sk-draft-key');
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('renders the provider error inline when verification fails', async () => {
+    vi.spyOn(api.providers, 'verifyDraft').mockResolvedValue({ ok: false, error: 'Invalid API key' });
+    renderDialog();
+
+    fireEvent.change(screen.getByLabelText('Provider name'), { target: { value: 'Acme Prod' } });
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'sk-bad' } });
+    fireEvent.click(verifyButton());
+
+    const result = await waitFor(() => screen.getByTestId('provider-verify-result'));
+    expect(result.textContent).toBe('Invalid API key');
+  });
+
+  it('blank-key edit verifies via the stored key: provider_id rides the body, no key', async () => {
+    const verifyDraft = vi
+      .spyOn(api.providers, 'verifyDraft')
+      .mockResolvedValue({ ok: true });
+    renderDialog({ provider: compatibleProvider() });
+
+    // Stored key exists → the credential is expressible with a blank field.
+    expect(verifyButton().disabled).toBe(false);
+
+    fireEvent.click(verifyButton());
+
+    await waitFor(() => {
+      expect(verifyDraft).toHaveBeenCalledTimes(1);
+    });
+    const body = verifyDraft.mock.calls[0][1];
+    expect(body).toEqual(
+      expect.objectContaining({
+        type: 'openai-compatible',
+        base_url: 'https://api.example.com/v1',
+        provider_id: 'prov-gw',
+      })
+    );
+    expect(body.key).toBeUndefined();
+    await waitFor(() => {
+      expect(screen.getByTestId('provider-verify-result').textContent).toBe(
+        'Connection verified successfully'
+      );
+    });
+  });
+
+  it('stays disabled until a credential is expressible: typed key or edit-with-stored-key', async () => {
+    renderDialog(); // create mode, no key typed
+    expect(verifyButton().disabled).toBe(true);
+
+    // Typing a key expresses a credential.
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'sk-x' } });
+    expect(verifyButton().disabled).toBe(false);
+
+    cleanup();
+    // Edit mode without a stored key and without typing — still disabled.
+    render(
+      <ProviderFormDialog
+        workspaceId="acme"
+        provider={compatibleProvider({ key_set: false, key_hint: '' })}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+        onToast={vi.fn()}
+      />
+    );
+    expect(verifyButton().disabled).toBe(true);
+
+    // Editing a config WITH a stored key is expressible with a blank field.
+    cleanup();
+    render(
+      <ProviderFormDialog
+        workspaceId="acme"
+        provider={compatibleProvider()}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+        onToast={vi.fn()}
+      />
+    );
+    expect(verifyButton().disabled).toBe(false);
+  });
+
+  it('never gates save: a failed verify leaves the save button enabled and saving still works', async () => {
+    vi.spyOn(api.providers, 'verifyDraft').mockResolvedValue({ ok: false, error: 'Connection refused' });
+    const createSpy = vi.spyOn(api.providers, 'create').mockResolvedValue({
+      provider: compatibleProvider(),
+    });
+    const { onToast } = renderDialog();
+
+    fireEvent.change(screen.getByLabelText('Provider name'), { target: { value: 'Gateway' } });
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'sk-any' } });
+
+    fireEvent.click(verifyButton());
+    await waitFor(() => {
+      expect(screen.getByTestId('provider-verify-result').textContent).toBe('Connection refused');
+    });
+
+    // The failed test does not lock the save button — verification is not a gate.
+    const saveBtn = screen.getByTestId('btn-provider-create-confirm') as HTMLButtonElement;
+    expect(saveBtn.disabled).toBe(false);
+    fireEvent.click(saveBtn);
+
+    await waitFor(() => {
+      expect(createSpy).toHaveBeenCalledWith('acme', expect.objectContaining({ name: 'Gateway' }));
+      // The toast names the server-confirmed row ('Z.ai Gateway').
+      expect(onToast).toHaveBeenCalledWith('Provider Z.ai Gateway created');
     });
   });
 });

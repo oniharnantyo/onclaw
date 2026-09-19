@@ -71,6 +71,11 @@ type Runner struct {
 	memoryWorker *memory.Worker
 	memorySearch *memory.Searcher
 	intentGate   *memory.IntentGate
+	// gateBudget resolves the intent gate's classification budget at call
+	// time (fix-memory-retrieval-lane D3): the budget is a workspace memory
+	// setting, so it is read per turn and a settings edit applies on the next
+	// turn without rebuilding the runner.
+	gateBudget func(ctx context.Context, workspaceID string) time.Duration
 
 	mcpPolicy  mcp.MCPPolicy
 	mcpManager mcp.ToolSource
@@ -361,6 +366,24 @@ func (unknownInputModalityResolver) SupportsInput(context.Context, string, strin
 	return domain.InputUnknown
 }
 
+// defaultGateBudget is the runner's fallback budget resolver: the documented
+// default budget, used when no settings-backed resolver is wired.
+func defaultGateBudget(context.Context, string) time.Duration {
+	return time.Duration(memory.DefaultGateBudgetMS) * time.Millisecond
+}
+
+// WithMemoryGateBudget supplies the resolver for the intent gate's
+// classification budget (fix-memory-retrieval-lane D3): the runner hands the
+// resolved value to every gate call. Default: a resolver answering the
+// documented default budget.
+func WithMemoryGateBudget(resolve func(ctx context.Context, workspaceID string) time.Duration) RunnerOption {
+	return func(r *Runner) {
+		if resolve != nil {
+			r.gateBudget = resolve
+		}
+	}
+}
+
 // NewRunner creates a new production runner instance from explicit per-store
 // dependencies. Each granular store sub-interface is a positional parameter;
 // pass the aggregate's accessors (e.g. st.Agents(), st.Users()) at the call
@@ -417,6 +440,7 @@ func NewRunner(
 		summarizationMargin:   DefaultSummarizationMargin,
 		baseCtx:               context.Background(),
 		inputModalityResolver: unknownInputModalityResolver{},
+		gateBudget:            defaultGateBudget,
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -706,7 +730,15 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 	}
 	resolvedTools = append(resolvedTools, mcpTools...)
 
-	provider, err := r.providers.ByID(ctx, req.WorkspaceID, agent.ProviderID)
+	// Effective provider/model resolution (refactor-workspace-settings D3):
+	// one resolver for the pinned pair and the workspace-default inherit path.
+	// An inherit agent whose workspace has no default fails here — fast, with
+	// the missing setting named — never as a mid-run model error.
+	providerID, effectiveModel, err := EffectiveModel(agent, ws.DefaultModel)
+	if err != nil {
+		return cfg, nil, err
+	}
+	provider, err := r.providers.ByID(ctx, req.WorkspaceID, providerID)
 	if err != nil {
 		return cfg, nil, fmt.Errorf("load provider: %w", err)
 	}
@@ -734,13 +766,13 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 	cfg.InputModality = inputModality{
 		providerType: provider.Type,
 		catalogHint:  hint,
-		model:        agent.Model,
-		image:        r.inputModalityResolver.SupportsInput(ctx, provider.Type, hint, agent.Model, domain.InputKindImage),
-		pdf:          r.inputModalityResolver.SupportsInput(ctx, provider.Type, hint, agent.Model, domain.InputKindPDF),
+		model:        effectiveModel,
+		image:        r.inputModalityResolver.SupportsInput(ctx, provider.Type, hint, effectiveModel, domain.InputKindImage),
+		pdf:          r.inputModalityResolver.SupportsInput(ctx, provider.Type, hint, effectiveModel, domain.InputKindPDF),
 	}
 	cred.CatalogHint = hint
 
-	agenticModel, err := r.agenticFactory(ctx, provider.Type, cred, agent.Model)
+	agenticModel, err := r.agenticFactory(ctx, provider.Type, cred, effectiveModel)
 	if err != nil {
 		return cfg, nil, fmt.Errorf("build agentic model: %w", err)
 	}
@@ -750,7 +782,7 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 	triggerTokens := int(float64(window) * r.summarizationMargin)
 	slog.InfoContext(ctx, "agent execution starting",
 		"agent", agent.Slug,
-		"model", agent.Model,
+		"model", effectiveModel,
 		"context_window", window,
 		"summarization_margin", r.summarizationMargin,
 		"summarization_trigger_tokens", triggerTokens,
@@ -1594,7 +1626,8 @@ func (r *Runner) gatewayLinkedHumanCount(ctx context.Context, req ExecRequest) i
 // heartbeat profiles deliberately carry no memory document tier (their
 // trimmed stacks omit even the shared-memory subsection), so injecting
 // derived memory there would contradict the profile contract. Compact turns
-// carry no user prompt to classify. The hard 1.5s classification budget is
+// carry no user prompt to classify. The classification budget is resolved per
+// turn from the workspace memory settings (fix-memory-retrieval-lane D3) and
 // enforced inside the gate, so a slow side-call model can never delay
 // composition beyond it.
 func (r *Runner) composeMemoryDocs(ctx context.Context, req ExecRequest) []string {
@@ -1609,7 +1642,7 @@ func (r *Runner) composeMemoryDocs(ctx context.Context, req ExecRequest) []strin
 	if text == "" {
 		return nil
 	}
-	verdict, err := r.intentGate.Classify(ctx, req.WorkspaceID, req.AgentID, text)
+	verdict, err := r.intentGate.Classify(ctx, req.WorkspaceID, req.AgentID, text, r.gateBudget(ctx, req.WorkspaceID))
 	if err != nil || !verdict.NeedsDeepMemory {
 		// Fail-open: the gate logged its reason; the always-injected documents
 		// are the complete context, and memory.search remains available.

@@ -37,6 +37,32 @@ export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]['id'];
 
 const VALID_SECTIONS = new Set<string>(SETTINGS_SECTIONS.map((s) => s.id));
 
+const LAST_NON_SETTINGS_PATH_KEY = 'onclaw:lastNonSettingsPath';
+
+/**
+ * Remember the route to return to from settings. The layout calls this on every
+ * pathname change; settings paths are skipped so the most recent non-settings
+ * route survives navigating between sections. sessionStorage keeps the origin
+ * across reloads in the current tab.
+ */
+export function rememberLastNonSettingsPath(pathname: string): void {
+  if (pathname.startsWith('/settings')) return;
+  try {
+    sessionStorage.setItem(LAST_NON_SETTINGS_PATH_KEY, pathname);
+  } catch {
+    // sessionStorage unavailable (e.g. storage disabled) — Back falls back to /c.
+  }
+}
+
+/** The route the user came from, or `/c` for deep links with no in-app history. */
+export function getLastNonSettingsPath(): string {
+  try {
+    return sessionStorage.getItem(LAST_NON_SETTINGS_PATH_KEY) || '/c';
+  } catch {
+    return '/c';
+  }
+}
+
 export interface SettingsPageProps {
   tenant?: any;
   onToast?: (text: string, kind?: string) => void;
@@ -72,8 +98,26 @@ export function SettingsPage({
     <div
       data-od-id="settings-page"
       data-testid="settings-page"
-      className="flex h-full flex-1 flex-col md:flex-row overflow-hidden bg-surface"
+      className="flex h-full flex-1 flex-col overflow-hidden bg-surface"
     >
+      {/* Header row: explicit way back to the route the user came from.
+          Rendered at every viewport width. */}
+      <header className="flex h-12 shrink-0 items-center gap-2 border-b border-linesoft px-2 md:px-4">
+        <button
+          type="button"
+          data-od-id="settings-back"
+          data-testid="settings-back"
+          aria-label="Back"
+          onClick={() => navigate(getLastNonSettingsPath())}
+          className="flex h-8 items-center gap-1.5 rounded-md px-2 text-[13px] font-medium text-fg2 transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_6%,transparent)] hover:text-fg focus-visible:border-accent focus-visible:outline-none"
+        >
+          <Icon name="arrow-left" size={15} className="text-muted" />
+          <span>Back</span>
+        </button>
+        <h1 className="text-[13px] font-semibold text-fg">Settings</h1>
+      </header>
+
+      <div className="flex min-h-0 flex-1 flex-col md:flex-row overflow-hidden">
       {/* Section Nav: horizontal scroll tabs below md (<768px), static left column on md+ (>=768px) */}
       <nav
         className="od-scroll w-full md:w-56 shrink-0 flex md:flex-col overflow-x-auto md:overflow-x-hidden md:overflow-y-auto border-b md:border-b-0 md:border-r border-linesoft py-3 px-2 md:px-0"
@@ -220,6 +264,7 @@ export function SettingsPage({
             <StoragePane tenant={tenant} onToast={onToast} />
           )}
         </div>
+      </div>
       </div>
     </div>
   );

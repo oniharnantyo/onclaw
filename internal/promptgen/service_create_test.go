@@ -64,7 +64,7 @@ func TestService_GenerateForCreate_WritesDocumentsWithoutRow(t *testing.T) {
 		PromptsStatus: domain.PromptsStatusGenerating,
 	}
 
-	if err := svc.GenerateForCreate(ctx, wsDir, ws.ID, agent); err != nil {
+	if err := svc.GenerateForCreate(ctx, wsDir, ws.ID, agent, nil); err != nil {
 		t.Fatalf("GenerateForCreate: %v", err)
 	}
 
@@ -135,7 +135,7 @@ func TestService_GenerateForCreate_FailureReturnsErrorAndWritesNothing(t *testin
 		PromptsStatus: domain.PromptsStatusGenerating,
 	}
 
-	err = svc.GenerateForCreate(ctx, wsDir, ws.ID, agent)
+	err = svc.GenerateForCreate(ctx, wsDir, ws.ID, agent, nil)
 	if err == nil {
 		t.Fatal("expected GenerateForCreate to fail")
 	}

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import { AgentConfigModal } from './AgentConfigModal';
 import { api, ApiError, type ApiMcpServer, type ApiWorkspaceSkill } from '../lib/api';
 import { heartbeats, type ApiHeartbeat } from '../lib/heartbeats';
@@ -1526,5 +1526,191 @@ describe('modals/AgentConfigModal — Heartbeat section (add-agent-heartbeat)', 
     expect(onClose).not.toHaveBeenCalled();
     const err = screen.getByTestId('heartbeat-expr-error');
     expect(err.textContent).toContain('fires faster than every 5m');
+  });
+});
+
+describe('modals/AgentConfigModal — workspace default inherit (refactor-workspace-settings)', () => {
+  const mockTenant = {
+    id: 'acme',
+    sub: 'acme',
+    name: 'Acme Corp',
+    providers: [
+      {
+        id: 'prov_anthropic',
+        workspace_id: 'acme',
+        type: 'anthropic',
+        name: 'Anthropic Prod',
+        base_url: '',
+        key_set: true,
+        key_hint: '7f3a',
+        enabled: true,
+        created_at: '',
+        updated_at: '',
+      },
+    ],
+  };
+
+  const workspacePayload = (defaultModel: unknown) => ({
+    workspace: {
+      id: 'acme',
+      slug: 'acme',
+      name: 'Acme Corp',
+      timezone: 'America/Los_Angeles',
+      is_master: false,
+      default_model: defaultModel,
+      created_at: '',
+      updated_at: '',
+    },
+  });
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useAuthStore.setState({ memberships: [] });
+    vi.spyOn(api.providers, 'list').mockResolvedValue({ providers: mockTenant.providers });
+    vi.spyOn(api.providers, 'models').mockResolvedValue({
+      source: 'live',
+      models: [
+        { id: 'claude-3-7-sonnet', name: 'Claude 3.7 Sonnet', efforts: ['low', 'medium', 'high'] },
+        { id: 'gpt-4o', name: 'GPT-4o' },
+      ],
+    });
+    vi.spyOn(api.skills, 'list').mockResolvedValue({ skills: [] });
+    vi.spyOn(api.agents, 'listSkills').mockResolvedValue({ skills: [] });
+    vi.spyOn(api.agents, 'listMcpServers').mockResolvedValue({ servers: [] });
+    vi.spyOn(api.mcp, 'list').mockResolvedValue({ servers: [] });
+    vi.spyOn(api.tools, 'list').mockResolvedValue({ tools: [] });
+  });
+
+  async function goToStep2WithDefault(
+    defaultModel: unknown,
+    props: { onSave?: (agent: any) => void; onClose?: () => void } = {}
+  ) {
+    vi.spyOn(api.workspaces, 'get').mockResolvedValue(workspacePayload(defaultModel) as any);
+    render(
+      <AgentConfigModal
+        tenant={mockTenant}
+        onClose={props.onClose || vi.fn()}
+        onSave={props.onSave || vi.fn()}
+      />
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('input-agent-name')).not.toBeNull();
+    });
+    fireEvent.change(screen.getByTestId('input-agent-name'), { target: { value: 'Radar Agent' } });
+    fireEvent.change(screen.getByTestId('input-agent-role'), { target: { value: 'code-reviewer' } });
+    fireEvent.change(screen.getByTestId('input-agent-brief'), { target: { value: 'Review all PRs' } });
+    fireEvent.click(screen.getByTestId('btn-agent-next-step'));
+    await waitFor(() => {
+      expect(screen.getByLabelText(/provider/i)).not.toBeNull();
+    });
+    await waitFor(() => {
+      const select = screen.getByTestId('select-model') as HTMLSelectElement;
+      expect(select.value).toBe('claude-3-7-sonnet');
+    });
+  }
+
+  it('offers "Workspace default (inherit)" only while the workspace payload carries a default model', async () => {
+    await goToStep2WithDefault({ provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet' });
+
+    const providerSelect = screen.getByLabelText(/provider/i);
+    expect(
+      Array.from(providerSelect.querySelectorAll('option')).some((o) =>
+        o.textContent?.includes('Workspace default (inherit)')
+      )
+    ).toBe(true);
+
+    // No default in the payload → the option disappears.
+    vi.spyOn(api.workspaces, 'get').mockResolvedValue(workspacePayload(null) as any);
+    cleanup();
+    render(<AgentConfigModal tenant={mockTenant} onClose={vi.fn()} onSave={vi.fn()} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('input-agent-name')).not.toBeNull();
+    });
+    fireEvent.change(screen.getByTestId('input-agent-name'), { target: { value: 'Radar Agent' } });
+    fireEvent.change(screen.getByTestId('input-agent-role'), { target: { value: 'code-reviewer' } });
+    fireEvent.change(screen.getByTestId('input-agent-brief'), { target: { value: 'Review all PRs' } });
+    fireEvent.click(screen.getByTestId('btn-agent-next-step'));
+    await waitFor(() => {
+      expect((screen.getByTestId('select-model') as HTMLSelectElement).value).toBe('claude-3-7-sonnet');
+    });
+    expect(screen.queryByTestId('option-inherit-workspace-default')).toBeNull();
+    // Pinned path unchanged: a provider and model pair is required.
+    expect(screen.getByTestId('select-model')).not.toBeNull();
+  });
+
+  it('selecting inherit hides the model combobox and effort dropdown and saves the empty pair', async () => {
+    const onSave = vi.fn();
+    const create = vi.spyOn(api.agents, 'create').mockResolvedValue({
+      agent: {
+        id: 'agent-inh',
+        workspace_id: 'acme',
+        slug: 'radar-agent',
+        name: 'Radar Agent',
+        role: 'code-reviewer',
+        description: '',
+        brief: 'Review all PRs',
+        identity: '',
+        soul: '',
+        bootstrap: '',
+        provider_id: null,
+        model: '',
+        temperature: 1.0,
+        autonomy: 'approval',
+        tools: [],
+        skills: [],
+        enabled_mcps: [],
+        avatar: {},
+        prompts_status: 'generating',
+        created_at: '',
+        updated_at: '',
+      },
+    } as any);
+
+    await goToStep2WithDefault(
+      { provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet' },
+      { onSave }
+    );
+
+    // Pinned path renders the model combobox and the effort dropdown first.
+    expect(screen.getByTestId('select-effort')).not.toBeNull();
+
+    fireEvent.change(screen.getByTestId('select-agent-provider'), {
+      target: { value: '__workspace_default__' },
+    });
+
+    // Both the model combobox and the effort dropdown are gone.
+    expect(screen.queryByTestId('select-model')).toBeNull();
+    expect(screen.queryByTestId('select-effort')).toBeNull();
+    expect(screen.getByTestId('inherit-default-hint')).not.toBeNull();
+
+    fireEvent.click(screen.getByTestId('btn-agent-next-step'));
+    await waitFor(() => {
+      expect(screen.getByText('Capabilities & Integrations')).not.toBeNull();
+    });
+    fireEvent.click(screen.getByTestId('btn-agent-save-modal'));
+
+    await waitFor(() => {
+      expect(create).toHaveBeenCalledWith(
+        'acme',
+        expect.objectContaining({ provider_id: '', model: '' })
+      );
+      expect(onSave).toHaveBeenCalled();
+    });
+  });
+
+  it('keeps "Provider is required" from firing on the inherit path while still gating the pinned path', async () => {
+    await goToStep2WithDefault({ provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet' });
+
+    fireEvent.change(screen.getByTestId('select-agent-provider'), {
+      target: { value: '__workspace_default__' },
+    });
+    fireEvent.click(screen.getByTestId('btn-agent-next-step'));
+
+    // No pair errors — the wizard advances to Step 3.
+    await waitFor(() => {
+      expect(screen.getByText('Capabilities & Integrations')).not.toBeNull();
+    });
+    expect(screen.queryByText(/provider is required/i)).toBeNull();
+    expect(screen.queryByText(/model is required/i)).toBeNull();
   });
 });

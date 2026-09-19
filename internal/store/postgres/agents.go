@@ -22,8 +22,22 @@ func NewAgentStore(db Executor) storeport.AgentStore {
 }
 
 func (as *agentStore) Create(ctx context.Context, a *domain.Agent) error {
-	if a == nil || a.WorkspaceID == "" || a.Name == "" || a.Slug == "" || a.ProviderID == "" || a.Model == "" {
+	if a == nil || a.WorkspaceID == "" || a.Name == "" || a.Slug == "" {
 		return fmt.Errorf("%w: missing required agent fields", domain.ErrInvalid)
+	}
+	// Provider binding is a both-set-or-both-empty pair: the empty pair means
+	// inherit-the-workspace-default (NULL columns sit outside the composite FK).
+	if err := domain.ValidateDefaultModelPair(a.ProviderID, a.Model); err != nil {
+		return err
+	}
+	// The empty pair persists as SQL NULL; an empty string would fail the uuid
+	// column on provider_id.
+	var providerIDPtr, modelPtr *string
+	if a.ProviderID != "" {
+		providerIDPtr = &a.ProviderID
+	}
+	if a.Model != "" {
+		modelPtr = &a.Model
 	}
 	if err := domain.ValidateAgentSlug(a.Slug); err != nil {
 		return err
@@ -95,8 +109,8 @@ func (as *agentStore) Create(ctx context.Context, a *domain.Agent) error {
 		a.Role,
 		a.Description,
 		a.Brief,
-		a.ProviderID,
-		a.Model,
+		providerIDPtr,
+		modelPtr,
 		a.Temperature,
 		a.MaxTokens,
 		a.Effort,
@@ -127,7 +141,7 @@ func (as *agentStore) ByID(ctx context.Context, workspaceID, id string) (*domain
 
 	query := `
 		SELECT id, workspace_id, slug, name, role, description, brief,
-		       provider_id, model, temperature, max_tokens, effort, autonomy,
+		       COALESCE(provider_id::text, ''), COALESCE(model, ''), temperature, max_tokens, effort, autonomy,
 		       context_window, tools, enabled_mcps,
 		       memory_sidecall_provider_id, memory_sidecall_model,
 		       avatar, prompts_status, prompts_error, created_by, updated_by, created_at, updated_at
@@ -190,7 +204,7 @@ func (as *agentStore) BySlug(ctx context.Context, workspaceID, slug string) (*do
 
 	query := `
 		SELECT id, workspace_id, slug, name, role, description, brief,
-		       provider_id, model, temperature, max_tokens, effort, autonomy,
+		       COALESCE(provider_id::text, ''), COALESCE(model, ''), temperature, max_tokens, effort, autonomy,
 		       context_window, tools, enabled_mcps,
 		       memory_sidecall_provider_id, memory_sidecall_model,
 		       avatar, prompts_status, prompts_error, created_by, updated_by, created_at, updated_at
@@ -253,7 +267,7 @@ func (as *agentStore) ListForWorkspace(ctx context.Context, workspaceID string) 
 
 	query := `
 		SELECT id, workspace_id, slug, name, role, description, brief,
-		       provider_id, model, temperature, max_tokens, effort, autonomy,
+		       COALESCE(provider_id::text, ''), COALESCE(model, ''), temperature, max_tokens, effort, autonomy,
 		       context_window, tools, enabled_mcps,
 		       memory_sidecall_provider_id, memory_sidecall_model,
 		       avatar, prompts_status, prompts_error, created_by, updated_by, created_at, updated_at
@@ -289,8 +303,8 @@ func (as *agentStore) ListForWorkspace(ctx context.Context, workspaceID string) 
 			&a.ContextWindow,
 			&a.Tools,
 			&a.EnabledMCPS,
-		&a.MemorySidecallProviderID,
-		&a.MemorySidecallModel,
+			&a.MemorySidecallProviderID,
+			&a.MemorySidecallModel,
 			&avatarBytes,
 			&promptsStatusStr,
 			&a.PromptsError,
@@ -323,8 +337,20 @@ func (as *agentStore) ListForWorkspace(ctx context.Context, workspaceID string) 
 }
 
 func (as *agentStore) Update(ctx context.Context, a *domain.Agent) error {
-	if a == nil || a.ID == "" || a.WorkspaceID == "" || a.Name == "" || a.Slug == "" || a.ProviderID == "" || a.Model == "" {
+	if a == nil || a.ID == "" || a.WorkspaceID == "" || a.Name == "" || a.Slug == "" {
 		return fmt.Errorf("%w: missing required agent fields", domain.ErrInvalid)
+	}
+	// Same pair rule as Create: fully pinned or fully empty, never half.
+	if err := domain.ValidateDefaultModelPair(a.ProviderID, a.Model); err != nil {
+		return err
+	}
+	// The empty pair persists as SQL NULL (see Create).
+	var providerIDPtr, modelPtr *string
+	if a.ProviderID != "" {
+		providerIDPtr = &a.ProviderID
+	}
+	if a.Model != "" {
+		modelPtr = &a.Model
 	}
 	if err := domain.ValidateAgentSlug(a.Slug); err != nil {
 		return err
@@ -393,8 +419,8 @@ func (as *agentStore) Update(ctx context.Context, a *domain.Agent) error {
 		a.Role,
 		a.Description,
 		a.Brief,
-		a.ProviderID,
-		a.Model,
+		providerIDPtr,
+		modelPtr,
 		a.Temperature,
 		a.MaxTokens,
 		a.Effort,
@@ -453,6 +479,27 @@ func (as *agentStore) CountByProvider(ctx context.Context, workspaceID, provider
 	`
 	var count int
 	err := as.db.QueryRow(ctx, query, workspaceID, providerID).Scan(&count)
+	if err != nil {
+		return 0, convertError(err)
+	}
+	return count, nil
+}
+
+// CountInheriting counts the workspace's inherit agents — provider_id IS NULL
+// (the model column follows the pair rule, so the provider column alone
+// identifies the empty pair).
+func (as *agentStore) CountInheriting(ctx context.Context, workspaceID string) (int, error) {
+	if workspaceID == "" {
+		return 0, nil
+	}
+
+	query := `
+		SELECT COUNT(*)
+		FROM agents
+		WHERE workspace_id = $1 AND provider_id IS NULL
+	`
+	var count int
+	err := as.db.QueryRow(ctx, query, workspaceID).Scan(&count)
 	if err != nil {
 		return 0, convertError(err)
 	}

@@ -1,0 +1,254 @@
+{
+  "run_id": "eval-20260919-215922",
+  "started_at": "2026-09-19T14:59:22.210855Z",
+  "model": "memory-eval-agent@glm-5.3-flash",
+  "workspace": "memory-eval",
+  "per_question": [
+    {
+      "id": "q-recall-db",
+      "type": "recall",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "Main staging database: **Singapore region**, engine **PostgreSQL 16**.\n\nSources (both agree):\n- Note dca1f0a4 (event b645561d-54e1-40b0-9138-66222f8d19e7): main staging DB runs on PostgreSQL 16 in the Singapore region.\n- Note dc5cbd65 (event 68198d46-5d2e-467e-9f2f-a5bb7e5f7bb4): org's main staging DB on PostgreSQL 16, hosted in Singapore.",
+      "status": "completed",
+      "evidence_count": 2,
+      "notes": [
+        "memory-backed claim traced to 2 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-recall-invoice",
+      "type": "recall",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "**billing@kopidata.io**\n\nRecorded twice in workspace memory:\n- Note `725920cb-b345-47ed-b3cd-f2a43719362e` (source event `d20ada07-4ee9-4076-8092-d9417955ecb7`): \"Invoice emails for the user's business are sent from billing@kopidata.io.\"\n- Note `8da7968f-3fe2-43da-8522-1d95cd46e90b` (source event `e8c0de03-a3c7-4a4f-87c1-e0317cd68923`): \"Invoice emails are sent from billing@kopidata.io.\"\n\nBoth agree; the earlier session where this came up empty (`c1666bea`) has since been superseded by these records.",
+      "status": "completed",
+      "evidence_count": 2,
+      "notes": [
+        "memory-backed claim traced to 2 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-update-payments",
+      "type": "update",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "**Midtrans.**\n\nPer the most recent stored statement (22:06 today, event `97090645-4ab9-452d-b224-c6238a499063`): all customer billing migrated from Stripe to Midtrans this month, Stripe fully retired (note `4443d579`).\n\nOne conflict on file, for the record: a 22:02 note (event `a2c4ed59-bc1b-4f31-8624-0ee0e0ebb773`, note `a27c72d6`) re-affirms Stripe as the current provider. It predates the 22:06 Midtrans statement by four minutes, so the latest word in memory is Midtrans.",
+      "status": "completed",
+      "evidence_count": 1,
+      "notes": [
+        "stale fact \"Stripe\" mentioned only as superseded",
+        "memory-backed claim traced to 1 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-temporal-office",
+      "type": "temporal",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "**12 February 2026.** (source event d0484f93-8c24-48ee-a6ca-8d8651231d85; corroborated by 594ac0d4-2b80-470b-8fe1-36129d521ef7, which notes the warming party followed a week later on 20 February 2026)",
+      "status": "completed",
+      "evidence_count": 8,
+      "notes": [
+        "memory-backed claim traced to 8 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-temporal-party",
+      "type": "temporal",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "**20 February 2026** — about a week after the move into the new Bandung office on 12 February 2026.\n\nSource: memory note from event `b4c9bc5b-aa3d-4962-8e8e-c93914614679`, corroborated by `594ac0d4-2b80-470b-8fe1-36129d521ef7`.",
+      "status": "completed",
+      "evidence_count": 6,
+      "notes": [
+        "memory-backed claim traced to 6 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-multihop-airport",
+      "type": "multihop",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "**Husein Sastranegara Airport (BDO)** — the deployer is Rafi, and Rafi's nearest airport when flying from Bandung is BDO.\n\nSources: \"Deployments are handled by Rafi\" (event `e318a7c2-c22c-4e1a-9bcf-a4829f923c01`); \"Rafi's nearest airport when flying from Bandung is Husein Sastranegara Airport (IATA code BDO)\" (event `f030ea16-28eb-45d7-acb4-8189a8180bc5`).",
+      "status": "completed",
+      "evidence_count": 5,
+      "notes": [
+        "memory-backed claim traced to 5 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-multihop-leave",
+      "type": "multihop",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "**Dewi** is the on-call escalation lead — first point if paging fails (source events 2f5993f1, 7ce8c718).\n\nDewi's current leave is parental leave, **1 March 2026 to 30 April 2026** — so it ends **30 April 2026** (source events 82749f0b, 3a81ecd2).\n\nOne recorded caveat: no backup escalation contact is stored for that leave window (source event 5079d7ac).",
+      "status": "completed",
+      "evidence_count": 1,
+      "notes": [
+        "memory-backed claim traced to 1 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-abstain-offsite",
+      "type": "abstention",
+      "recall": null,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": false,
+      "answer": "Not in memory. No approved Q3 team offsite budget figure is recorded — I searched, and the only related entries are logs of this same question being asked before and going unanswered (events ceacea8e-614d-439b-8269-8f5d44a57846 and f9b6823c-5d42-42db-a5ff-83350462298e). Nothing captures an actual number, so I won't guess one.\n\nIf a budget was approved somewhere outside this workspace's memory, it hasn't been told to me yet.",
+      "status": "completed",
+      "evidence_count": 1,
+      "notes": [
+        "answer does not state that nothing is recorded",
+        "answer fabricates a specific amount"
+      ]
+    },
+    {
+      "id": "q-abstain-competitor",
+      "type": "abstention",
+      "recall": null,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": false,
+      "answer": "Nothing usable is recorded. Memory confirms the talks existed but holds no outcome:\n\n- **What's stored:** Your company engaged in acquisition talks with Verzio; no outcome, terms, or dates were recorded (note 33ea509b, source event 722bef36-ab04-4360-975c-30e26912a20c).\n- **Also on record:** Two prior sessions asked this same question and both came back empty — no outcome, terms, or dates anywhere in the workspace (events 1463eb3c-8956-4c5a-8918-a36f5713f72b and ee07f245-e696-4581-b86b-9433a538dc17).\n\nSo: talks happened, but what came out of them is not in memory. If you tell me the outcome, I can note it for next time.",
+      "status": "completed",
+      "evidence_count": 1,
+      "notes": [
+        "answer does not state that nothing is recorded"
+      ]
+    },
+    {
+      "id": "q-scope-contact",
+      "type": "scope",
+      "recall": null,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": true,
+      "answer": "Not in memory. Workspace memory has no record of Sari's emergency contact phone number — two prior sessions asked the same question and it went unresolved both times (source events e5fa18e9-0a83-4f2c-82b0-4a34fc526a7e and b38e961d-d0a2-4e53-a47e-3e298253bcf2). Nothing new has been stored since.\n\nIf you have the number, give it to me and I'll store it.",
+      "status": "completed",
+      "evidence_count": 1
+    }
+  ],
+  "totals": {
+    "abstention": [
+      {
+        "passed": 2,
+        "total": 2
+      },
+      {
+        "passed": 2,
+        "total": 2
+      },
+      {
+        "passed": 0,
+        "total": 2
+      }
+    ],
+    "multihop": [
+      {
+        "passed": 2,
+        "total": 2
+      },
+      {
+        "passed": 2,
+        "total": 2
+      },
+      {
+        "passed": 2,
+        "total": 2
+      }
+    ],
+    "recall": [
+      {
+        "passed": 2,
+        "total": 2
+      },
+      {
+        "passed": 2,
+        "total": 2
+      },
+      {
+        "passed": 2,
+        "total": 2
+      }
+    ],
+    "scope": [
+      {
+        "passed": 1,
+        "total": 1
+      },
+      {
+        "passed": 1,
+        "total": 1
+      },
+      {
+        "passed": 1,
+        "total": 1
+      }
+    ],
+    "temporal": [
+      {
+        "passed": 2,
+        "total": 2
+      },
+      {
+        "passed": 2,
+        "total": 2
+      },
+      {
+        "passed": 2,
+        "total": 2
+      }
+    ],
+    "update": [
+      {
+        "passed": 1,
+        "total": 1
+      },
+      {
+        "passed": 1,
+        "total": 1
+      },
+      {
+        "passed": 1,
+        "total": 1
+      }
+    ]
+  },
+  "summary": {
+    "recall": 100,
+    "citation_valid": 100,
+    "scope_safe": 100,
+    "abstention": 33.333333333333336,
+    "overall": 83.33333333333333
+  },
+  "scope_audit": {
+    "available": true,
+    "budi_sees_private": 0,
+    "sari_sees_private": 2,
+    "passed": true
+  },
+  "seed": {
+    "workspace_slug": "memory-eval",
+    "agent_slug": "memory-eval-agent",
+    "sessions": 9,
+    "turns": 18,
+    "notes_api_live": true,
+    "reused": true
+  }
+}

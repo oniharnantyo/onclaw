@@ -511,6 +511,87 @@ func (h *providerHandlers) VerifyProvider(c *gin.Context) {
 	RespondOK(c, gin.H{"ok": true})
 }
 
+// VerifyDraftRequest carries the provider dialog's current (unsaved) form
+// values for a connection probe. Key is write-only and never echoed back.
+type VerifyDraftRequest struct {
+	Type    string `json:"type"`
+	BaseURL string `json:"base_url,omitempty"`
+	Key     string `json:"key,omitempty"`
+	// CatalogProvider optionally maps a compatible gateway to a
+	// community-catalog provider id for the probe.
+	CatalogProvider string `json:"catalog_provider,omitempty"`
+	// ProviderID names an existing workspace config whose stored key is used
+	// when Key is blank (the edit dialog's keep-stored-key case).
+	ProviderID string `json:"provider_id,omitempty"`
+}
+
+// VerifyDraft tests unsaved provider form values without persisting anything
+// (design D5, the dialog's "Verify connection"). The typed key is verified
+// against the submitted type/base URL; a blank key falls back to the stored
+// key of the named workspace provider config. Provider-side auth and
+// connection failures report as 200 {ok: false, error} — never a 5xx.
+func (h *providerHandlers) VerifyDraft(c *gin.Context) {
+	ws := MustCurrentWorkspace(c)
+
+	var req VerifyDraftRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		RespondError(c, domain.ErrInvalid)
+		return
+	}
+
+	pType := strings.TrimSpace(req.Type)
+	if pType == "" {
+		RespondError(c, fmt.Errorf("%w: provider type is required", domain.ErrInvalid))
+		return
+	}
+
+	providerImpl, err := h.registry.Get(pType)
+	if err != nil {
+		RespondError(c, err)
+		return
+	}
+
+	apiKey := strings.TrimSpace(req.Key)
+	if apiKey == "" {
+		id := strings.TrimSpace(req.ProviderID)
+		if id == "" {
+			RespondError(c, fmt.Errorf("%w: no credential to verify: provide a key or a saved provider id", domain.ErrInvalid))
+			return
+		}
+
+		existing, err := h.providers.ByID(c.Request.Context(), ws.ID, id)
+		if err != nil {
+			RespondError(c, err)
+			return
+		}
+		if !existing.HasKey() {
+			RespondError(c, fmt.Errorf("%w: provider has no API key configured", domain.ErrInvalid))
+			return
+		}
+
+		plaintextKeyBytes, err := secrets.Decrypt(h.encryptionKey, []byte(ws.ID), existing.KeyCiphertext)
+		if err != nil {
+			RespondError(c, domain.ErrUndecryptable)
+			return
+		}
+		apiKey = string(plaintextKeyBytes)
+	}
+
+	verifyErr := providerImpl.Verify(c.Request.Context(), providers.Credential{
+		Type:        pType,
+		BaseURL:     strings.TrimSpace(req.BaseURL),
+		APIKey:      apiKey,
+		CatalogHint: strings.TrimSpace(req.CatalogProvider),
+	})
+
+	if verifyErr != nil {
+		RespondOK(c, gin.H{"ok": false, "error": verifyErr.Error()})
+		return
+	}
+
+	RespondOK(c, gin.H{"ok": true})
+}
+
 func validateBaseURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {

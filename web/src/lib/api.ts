@@ -99,12 +99,20 @@ export interface ApiUser {
   membership_count?: number;
 }
 
+/** Workspace default model pair (refactor-workspace-settings D2): both
+ * fields set pins the default agents may inherit; null means no default. */
+export interface ApiDefaultModel {
+  provider_id: string;
+  model: string;
+}
+
 export interface ApiWorkspace {
   id: string;
   slug: string;
   name: string;
   timezone: string;
   is_master: boolean;
+  default_model?: ApiDefaultModel | null;
   disabled_at?: string | null;
   created_at: string;
   updated_at: string;
@@ -582,6 +590,9 @@ export interface ApiMorningReport {
 export interface ApiMemorySettings {
   visibility_posture: 'narrow' | 'org-shared';
   ingestion_enabled: boolean;
+  /** The intent gate's classification budget in ms; always resolved — absent
+   * or out-of-contract stored values come back as the 4000 default. */
+  gate_budget_ms: number;
   /** The workspace-level memory side-call model; null = agent default
    * (each agent's own run model, or its own override). */
   side_call_model: { provider_id: string; model: string } | null;
@@ -595,6 +606,9 @@ export interface ApiMemorySettings {
 export interface ApiMemorySettingsUpdate {
   visibility_posture?: 'narrow' | 'org-shared';
   ingestion_enabled?: boolean;
+  /** The intent gate's classification budget in ms; must sit in
+   * [500, 20000]. Absent leaves the stored value untouched. */
+  gate_budget_ms?: number;
   /** Absent leaves the stored choice; null clears to agent default. */
   side_call_model?: { provider_id: string; model: string } | null;
   embedding?: {
@@ -1306,7 +1320,7 @@ export const api = {
       request<{ workspace: ApiWorkspace; role: ApiRole; my_role: ApiRole; member: ApiMember }>(`/workspaces/${encodeURIComponent(ws)}`, {
         method: 'GET',
       }),
-    patch: (ws: string, body: { name?: string; timezone?: string }) =>
+    patch: (ws: string, body: { name?: string; timezone?: string; default_model?: ApiDefaultModel | null }) =>
       request<{ workspace: ApiWorkspace }>(`/workspaces/${encodeURIComponent(ws)}`, {
         method: 'PATCH',
         body,
@@ -1401,6 +1415,19 @@ export const api = {
     verify: (ws: string, id: string) =>
       request<ApiProviderVerifyResult>(`/workspaces/${encodeURIComponent(ws)}/providers/${encodeURIComponent(id)}/verify`, {
         method: 'POST',
+      }),
+    /** Draft-credential verification (refactor-workspace-settings D5): tests
+     * the UNSAVED form values against the provider and persists nothing.
+     * `provider_id` names the config being edited so a blank `key` falls back
+     * to its stored key server-side; the endpoint 400s when no credential is
+     * expressible. */
+    verifyDraft: (
+      ws: string,
+      body: { type: string; base_url?: string; key?: string; catalog_provider?: string; provider_id?: string }
+    ) =>
+      request<ApiProviderVerifyResult>(`/workspaces/${encodeURIComponent(ws)}/providers/verify-draft`, {
+        method: 'POST',
+        body,
       }),
     models: (ws: string, id: string) =>
       request<ApiModelsResult>(`/workspaces/${encodeURIComponent(ws)}/providers/${encodeURIComponent(id)}/models`, {

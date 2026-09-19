@@ -18,7 +18,12 @@ import {
   type ApiModelsResult,
 } from "../../lib/api";
 import { useCanWriteTools } from "../../lib/tools";
-import { classifyEmbeddingModel } from "../../lib/embedding";
+import {
+  classifyEmbeddingModel,
+  KNOWN_MODEL_DIMS,
+  SUPPORTED_EMBEDDING_DIMS,
+  knownModelDimension,
+} from "../../lib/embedding";
 import serverErrorSvg from "../../assets/server-error.svg";
 
 export interface MemoryPaneProps {
@@ -90,7 +95,7 @@ export function MemoryPane({ tenant, onToast = () => {}, canWrite }: MemoryPaneP
   // Page tabs: the derived tier lives here; the documents stay in their own
   // homes (user menu "My memory" for USER.md, Workspace settings for
   // WORKSPACE.md).
-  const [tab, setTab] = useState<"facts" | "report" | "config">("facts");
+  const [tab, setTab] = useState<"facts" | "report" | "config">("config");
 
   // Notes browser — the derived tier.
   const [notes, setNotes] = useState<ApiMemoryNote[]>([]);
@@ -114,6 +119,11 @@ export function MemoryPane({ tenant, onToast = () => {}, canWrite }: MemoryPaneP
   const [sidecallModel, setSidecallModel] = useState("");
   const [model, setModel] = useState("");
   const [dimension, setDimension] = useState("");
+  // The model id whose known dimension we auto-preselected (D7). Cleared
+  // whenever the dimension is set by anything else — load, save sync, test
+  // discovery, or an explicit user choice — so a later model switch never
+  // clobbers a dimension the user (or the test) actually chose.
+  const [dimensionAutoFor, setDimensionAutoFor] = useState<string | null>(null);
   const [providers, setProviders] = useState<{ id: string; name: string }[]>([]);
   const [providerId, setProviderId] = useState("");
   const [modelsResult, setModelsResult] = useState<ApiModelsResult | null>(null);
@@ -195,6 +205,22 @@ export function MemoryPane({ tenant, onToast = () => {}, canWrite }: MemoryPaneP
   // Tri-state: only classified embedding models populate the dropdown; when
   // the source resolves models but none classifies, stay on free text.
   const modelDropdown = embeddingModels.length > 0;
+
+  // Known-model preselect (D7): picking a model whose dimension the map knows
+  // fills the Dimension dropdown — over Auto, or over a dimension the previous
+  // model auto-preselected — but never over an explicitly chosen or
+  // test-discovered dimension. Free-text entry (unknown catalog) never
+  // preselects; the connection test remains the authority there.
+  const handleEmbeddingModelChange = (id: string) => {
+    setModel(id);
+    const known = knownModelDimension(id);
+    if (known === undefined) return;
+    const autoDim = dimensionAutoFor ? KNOWN_MODEL_DIMS[dimensionAutoFor] : undefined;
+    if (!dimension || (autoDim !== undefined && dimension === String(autoDim))) {
+      setDimension(String(known));
+      setDimensionAutoFor(id);
+    }
+  };
 
   // Notes fetch with the current filters (search uses the server's lexical
   // query; topic and visibility ride the structured filters).
@@ -441,7 +467,7 @@ export function MemoryPane({ tenant, onToast = () => {}, canWrite }: MemoryPaneP
           </section>
           )}
 
-          {/* ------------------------------------------------ Facts (default tab) */}
+          {/* ------------------------------------------------ Facts */}
           {tab === "facts" && (
           <section data-testid="memory-notes-browser">
             <SectionHeader
@@ -724,7 +750,7 @@ export function MemoryPane({ tenant, onToast = () => {}, canWrite }: MemoryPaneP
                           data-testid="memory-embedding-model"
                           className="h-9 w-full rounded-md border border-line bg-[color-mix(in_oklab,var(--bg)_55%,var(--surface))] px-2 text-[13px] text-fg2 focus:border-accent"
                           value={model}
-                          onChange={(e) => setModel(e.target.value)}
+                          onChange={(e) => handleEmbeddingModelChange(e.target.value)}
                         >
                           <option value="">Select an embedding model…</option>
                           {embeddingModels.map((m) => (
@@ -753,16 +779,23 @@ export function MemoryPane({ tenant, onToast = () => {}, canWrite }: MemoryPaneP
                       <label className="mb-1.5 block text-[12px] font-medium text-fg2" htmlFor="memory-embedding-dimension">
                         Dimension
                       </label>
-                      <input
+                      <select
                         id="memory-embedding-dimension"
                         data-testid="memory-embedding-dimension"
-                        type="number"
-                        min={1}
-                        className="h-9 w-40 rounded-md border border-line bg-[color-mix(in_oklab,var(--bg)_55%,var(--surface))] px-3 font-mono text-[13px] text-fg2 placeholder:text-muted focus:border-accent"
-                        placeholder="auto by test"
+                        className="h-9 w-full rounded-md border border-line bg-[color-mix(in_oklab,var(--bg)_55%,var(--surface))] px-2 text-[13px] text-fg2 focus:border-accent"
                         value={dimension}
-                        onChange={(e) => setDimension(e.target.value)}
-                      />
+                        onChange={(e) => {
+                          setDimension(e.target.value);
+                          setDimensionAutoFor(null);
+                        }}
+                      >
+                        <option value="">Auto — detect on test</option>
+                        {SUPPORTED_EMBEDDING_DIMS.map((d) => (
+                          <option key={d} value={String(d)}>
+                            {d}
+                          </option>
+                        ))}
+                      </select>
                     </div>
                     <div className="flex flex-wrap items-center justify-end gap-2">
                       <button

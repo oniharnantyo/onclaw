@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/oniharnantyo/onclaw/internal/agents"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/secrets"
@@ -74,7 +75,7 @@ func NewService(agents store.AgentStore, providers store.ProviderStore, encrypti
 // changes into the model call. Delete-during-flight is safely ignored as a
 // no-op status write; a failed generation transitions the row to failed and
 // leaves any previous documents on disk untouched.
-func (s *Service) Generate(ctx context.Context, dir, workspaceID, agentID, instruction string) error {
+func (s *Service) Generate(ctx context.Context, dir, workspaceID, agentID, instruction string, wsDefault *domain.DefaultModelPair) error {
 	if workspaceID == "" || agentID == "" {
 		return domain.ErrInvalid
 	}
@@ -94,7 +95,7 @@ func (s *Service) Generate(ctx context.Context, dir, workspaceID, agentID, instr
 	// generate fresh. dir is derived by the caller from the current root and
 	// slugs; the row records no path.
 	current := readCurrentPrompts(dir)
-	identity, soul, err := s.generateDocuments(ctx, workspaceID, agent, current, instruction)
+	identity, soul, err := s.generateDocuments(ctx, workspaceID, agent, wsDefault, current, instruction)
 	if err != nil {
 		return s.fail(ctx, workspaceID, agentID, SanitizeError(err))
 	}
@@ -140,9 +141,11 @@ func (s *Service) Generate(ctx context.Context, dir, workspaceID, agentID, instr
 // and writes the documents into agent.WorkspaceDir — always fresh generation,
 // since a new agent owns no documents. It performs no store agent reads and no
 // status writes: the caller persists the row only after this succeeds, so a
-// failed generation leaves no agent behind.
-func (s *Service) GenerateForCreate(ctx context.Context, dir, workspaceID string, agent *domain.Agent) error {
-	identity, soul, err := s.generateDocuments(ctx, workspaceID, agent, nil, "")
+// failed generation leaves no agent behind. wsDefault carries the workspace
+// default model pair so an inheriting agent (empty provider/model pair)
+// generates against the model it will actually run.
+func (s *Service) GenerateForCreate(ctx context.Context, dir, workspaceID string, agent *domain.Agent, wsDefault *domain.DefaultModelPair) error {
+	identity, soul, err := s.generateDocuments(ctx, workspaceID, agent, wsDefault, nil, "")
 	if err != nil {
 		return err
 	}
@@ -169,14 +172,24 @@ func readCurrentPrompts(dir string) *GeneratedPrompts {
 	return &GeneratedPrompts{Identity: identity, Soul: soul}
 }
 
-// generateDocuments resolves the agent's provider config, decrypts its key,
-// invokes the configured model with a single forced tool so the documents
-// arrive as structured output, and parses the two documents. The current
-// documents, when non-nil, switch the call to enhance mode. It performs no
-// status writes; errors carry already-sanitized, client-safe reasons.
-func (s *Service) generateDocuments(ctx context.Context, workspaceID string, agent *domain.Agent, current *GeneratedPrompts, instruction string) (identity, soul string, err error) {
+// generateDocuments resolves the agent's effective provider/model — the
+// pinned pair, else the workspace default (agents.EffectiveModel) — decrypts
+// the provider key, invokes the model with a single forced tool so the
+// documents arrive as structured output, and parses the two documents. The
+// current documents, when non-nil, switch the call to enhance mode. It
+// performs no status writes; errors carry already-sanitized, client-safe
+// reasons.
+func (s *Service) generateDocuments(ctx context.Context, workspaceID string, agent *domain.Agent, wsDefault *domain.DefaultModelPair, current *GeneratedPrompts, instruction string) (identity, soul string, err error) {
+	// Resolve the effective pair (pinned pair, else workspace default). An
+	// inherit agent without a workspace default fails here with the named
+	// missing setting — the caller surfaces it as the generation reason.
+	providerID, modelID, err := agents.EffectiveModel(agent, wsDefault)
+	if err != nil {
+		return "", "", err
+	}
+
 	// Fetch Provider Config
-	provider, err := s.provider.ByID(ctx, workspaceID, agent.ProviderID)
+	provider, err := s.provider.ByID(ctx, workspaceID, providerID)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
 			return "", "", fmt.Errorf("provider configuration not found in workspace")
@@ -201,7 +214,7 @@ func (s *Service) generateDocuments(ctx context.Context, workspaceID string, age
 		APIKey:  apiKey,
 	}
 
-	chatModel, err := s.modelFactory(ctx, provider.Type, cred, agent.Model)
+	chatModel, err := s.modelFactory(ctx, provider.Type, cred, modelID)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to initialize model adapter: %s", SanitizeError(err))
 	}

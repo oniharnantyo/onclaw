@@ -485,11 +485,20 @@ func (h *memoryNoteHandlers) memorySettingsView(row *domain.WorkspaceToolSetting
 		sideCallModel = gin.H{"provider_id": scProvider, "model": scModel}
 	}
 
+	// The intent gate's classification budget always resolves (D1/D2): absent
+	// or out-of-contract stored values degrade to the default, the same
+	// resolution the runner's gate calls see.
+	gateBudgetMS := memory.DefaultGateBudgetMS
+	if budget, ok := memory.GateBudgetFromConfig(config); ok {
+		gateBudgetMS = int(budget / time.Millisecond)
+	}
+
 	return gin.H{
 		"visibility_posture": posture,
 		"ingestion_enabled":  ingestionEnabled,
 		"side_call_model":    sideCallModel,
 		"embedding":          embedding,
+		"gate_budget_ms":     gateBudgetMS,
 	}
 }
 
@@ -523,14 +532,18 @@ func (h *memoryNoteHandlers) storedMemorySettings(ctx context.Context, workspace
 // absent embedding object leaves the stored provider untouched, and an
 // empty api_key means "keep the stored credential" (secrets are write-only).
 type memorySettingsPut struct {
-	VisibilityPosture *string                `json:"visibility_posture"`
-	IngestionEnabled  *bool                  `json:"ingestion_enabled"`
+	VisibilityPosture *string `json:"visibility_posture"`
+	IngestionEnabled  *bool   `json:"ingestion_enabled"`
 	// SideCallModel rides RawMessage because Go decodes JSON null and an
 	// absent key into the same nil pointer, and the three cases differ here:
 	// absent = keep the stored choice; null = clear to agent default; an
 	// object pins a specific provider+model for the pipeline's cheap calls.
-	SideCallModel     json.RawMessage         `json:"side_call_model"`
-	Embedding         *memoryEmbeddingPut     `json:"embedding"`
+	SideCallModel json.RawMessage     `json:"side_call_model"`
+	Embedding     *memoryEmbeddingPut `json:"embedding"`
+	// Absent keeps the stored gate budget (the settings record's
+	// absence-is-defaults); when present it must sit inside the save-time
+	// bounds the memory package owns.
+	GateBudgetMs *int `json:"gate_budget_ms"`
 }
 
 // memorySideCallModelPut is the workspace-level side-call model choice.
@@ -592,6 +605,10 @@ func (h *memoryNoteHandlers) PutSettings(c *gin.Context) {
 		RespondError(c, fmt.Errorf("%w: embedding dimension must be a positive integer", domain.ErrInvalid))
 		return
 	}
+	if req.GateBudgetMs != nil && (*req.GateBudgetMs < memory.MinGateBudgetMS || *req.GateBudgetMs > memory.MaxGateBudgetMS) {
+		RespondError(c, fmt.Errorf("%w: gate_budget_ms must be between %d and %d milliseconds", domain.ErrUnprocessable, memory.MinGateBudgetMS, memory.MaxGateBudgetMS))
+		return
+	}
 
 	stored, err := h.storedMemorySettings(c.Request.Context(), ws.ID)
 	if err != nil {
@@ -616,6 +633,9 @@ func (h *memoryNoteHandlers) PutSettings(c *gin.Context) {
 	}
 	if req.VisibilityPosture != nil {
 		config["visibility_posture"] = strings.ToLower(strings.TrimSpace(*req.VisibilityPosture))
+	}
+	if req.GateBudgetMs != nil {
+		config["gate_budget_ms"] = *req.GateBudgetMs
 	}
 	if sideCallModelPut, err := decodeSideCallModelPut(req.SideCallModel); err != nil {
 		RespondError(c, err)

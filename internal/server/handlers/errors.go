@@ -13,6 +13,7 @@ import (
 // Standard API error codes.
 const (
 	CodeInvalidRequest     = "invalid_request"
+	CodeUnprocessable      = "unprocessable"
 	CodeUnauthenticated    = "unauthenticated"
 	CodeForbidden          = "forbidden"
 	CodeNotFound           = "not_found"
@@ -77,6 +78,8 @@ func ErrorToStatus(err error) (int, string, string) {
 		return http.StatusBadRequest, CodeUndecryptable, err.Error()
 	case errors.Is(err, domain.ErrInvalid):
 		return http.StatusBadRequest, CodeInvalidRequest, err.Error()
+	case errors.Is(err, domain.ErrUnprocessable):
+		return http.StatusUnprocessableEntity, CodeUnprocessable, err.Error()
 	case errors.Is(err, domain.ErrUnauthenticated):
 		return http.StatusUnauthorized, CodeUnauthenticated, err.Error()
 	case errors.Is(err, domain.ErrForbidden):
@@ -117,6 +120,8 @@ func CodeToStatus(code string) int {
 	switch code {
 	case CodeInvalidRequest, CodeUndecryptable:
 		return http.StatusBadRequest
+	case CodeUnprocessable:
+		return http.StatusUnprocessableEntity
 	case CodeUnauthenticated:
 		return http.StatusUnauthorized
 	case CodeForbidden:

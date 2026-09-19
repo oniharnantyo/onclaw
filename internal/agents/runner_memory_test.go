@@ -338,7 +338,7 @@ func TestRunner_MemoryGateFailOpen(t *testing.T) {
 		delay time.Duration
 	}{
 		{name: "model error", delay: 0},
-		{name: "timeout past the 1.5s pin", delay: 3 * time.Second},
+		{name: "timeout past a short budget", delay: 3 * time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, runner, _, _, req := setupHooksRunner(t, nil, &hooksModel{final: "ok"})
@@ -347,6 +347,7 @@ func TestRunner_MemoryGateFailOpen(t *testing.T) {
 				return &gateSlowModel{delay: tc.delay}, nil
 			}))
 			runner.intentGate = gate
+			runner.gateBudget = func(context.Context, string) time.Duration { return 100 * time.Millisecond }
 			composer := &memoryCaptureComposer{}
 			runner.instructionComposer = composer
 

@@ -13,7 +13,7 @@ import { RunsView } from './screens/RunsView';
 import { OnboardingPane } from './screens/OnboardingPane';
 import { LoginView } from './screens/LoginView';
 import { AdminView } from './screens/admin/AdminView';
-import { SettingsPage } from './screens/settings';
+import { SettingsPage, rememberLastNonSettingsPath } from './screens/settings';
 import { ChatRoute } from './screens/ChatRoute';
 import { AgentConfigModal } from './modals/AgentConfigModal';
 import { ScheduleEditorModal } from './modals/ScheduleEditorModal';
@@ -102,6 +102,13 @@ function Layout() {
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [createWsOpen, setCreateWsOpen] = useState(false);
+
+  // Settings takeover: remember the most recent non-settings route so the
+  // settings surface's ← Back control can return the user to where they came
+  // from (sessionStorage keeps it across reloads in this tab).
+  useEffect(() => {
+    rememberLastNonSettingsPath(location.pathname);
+  }, [location.pathname]);
 
   const handleLogout = async () => {
     await logout();
@@ -224,19 +231,22 @@ function Layout() {
     <div className="flex h-[100dvh] flex-col overflow-hidden font-sans antialiased">
       <ConnectionBanner />
       <div className="flex flex-1 min-h-0 overflow-hidden">
-        <Rail
-          view={view}
-          onNav={onNav}
-          tenant={tenant}
-          unread={unread}
-          onMenuToggle={() => setDrawerOpen(true)}
-          onOpenSwitcher={() => patchUi({ wsOpen: !ui.wsOpen })}
-          onSettings={() => navigate('/settings')}
-          onLogout={handleLogout}
-          showAdmin={isAdmin}
-          expanded={railExpanded}
-          onToggleExpand={() => goPos({ railExpanded: !railExpanded })}
-        />
+        {/* Settings renders as a full-screen takeover — the rail is not rendered on /settings routes. */}
+        {view !== 'settings' && (
+          <Rail
+            view={view}
+            onNav={onNav}
+            tenant={tenant}
+            unread={unread}
+            onMenuToggle={() => setDrawerOpen(true)}
+            onOpenSwitcher={() => patchUi({ wsOpen: !ui.wsOpen })}
+            onSettings={() => navigate('/settings')}
+            onLogout={handleLogout}
+            showAdmin={isAdmin}
+            expanded={railExpanded}
+            onToggleExpand={() => goPos({ railExpanded: !railExpanded })}
+          />
+        )}
         
         <WorkspaceSwitcher 
           open={ui.wsOpen} 

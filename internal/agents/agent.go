@@ -28,6 +28,14 @@ import (
 // stopping. Override per-agent via Config.MaxIterations.
 const DefaultMaxIterations = 25
 
+// DefaultMaxTokens is the run-time max-tokens the claude-family connectors
+// construct with when the agent pins none (refactor-workspace-settings D4):
+// inherit agents skip the save-time RequiresMaxTokens check — their effective
+// provider type is only known at run start — so a requiring type proceeds on
+// this documented default instead of failing the run. Pinned agents keep the
+// strict save-time 400 and ride the same connector default.
+const DefaultMaxTokens = 4096
+
 // ReservedShellTool is the reserved allowlist name that enables the jailed
 // shell tool. It is not a registry entry: the filesystem middleware registers
 // its execute tool when the agent's tools allowlist contains this name.

@@ -150,25 +150,31 @@ type agentResponse struct {
 
 // inputModalitiesFor resolves the agent model's input-modality capability at
 // response build time (fix-image-attachment-lane D5), alongside
-// effective_context_window. A provider lookup failure degrades to
+// effective_context_window. The pair resolves through agents.EffectiveModel —
+// a pinned agent previews its own model, an inheriting agent previews the
+// workspace default. A resolution or provider lookup failure degrades to
 // unknown/unknown — it never fails the read — and SupportsInput itself
 // resolves unknown whenever the catalog carries no evidence. A cold cache may
 // hit the network on ctx; that is the accepted read-time cost.
-func inputModalitiesFor(ctx context.Context, providerStore store.ProviderStore, mc *services.ModelCatalog, workspaceID string, a *domain.Agent) *domain.AgentInputModalities {
+func inputModalitiesFor(ctx context.Context, providerStore store.ProviderStore, mc *services.ModelCatalog, workspaceID string, a *domain.Agent, wsDefault *domain.DefaultModelPair) *domain.AgentInputModalities {
 	modalities := &domain.AgentInputModalities{
 		Image: domain.InputUnknown,
 		PDF:   domain.InputUnknown,
 	}
-	if mc == nil || a.ProviderID == "" {
+	if mc == nil {
 		return modalities
 	}
-	provider, err := providerStore.ByID(ctx, workspaceID, a.ProviderID)
+	providerID, modelID, err := agents.EffectiveModel(a, wsDefault)
+	if err != nil {
+		return modalities
+	}
+	provider, err := providerStore.ByID(ctx, workspaceID, providerID)
 	if err != nil {
 		return modalities
 	}
 	hint := services.EffectiveCatalogHint(provider.Type, provider.CatalogProvider, provider.BaseURL)
-	modalities.Image = mc.SupportsInput(ctx, provider.Type, hint, a.Model, domain.InputKindImage)
-	modalities.PDF = mc.SupportsInput(ctx, provider.Type, hint, a.Model, domain.InputKindPDF)
+	modalities.Image = mc.SupportsInput(ctx, provider.Type, hint, modelID, domain.InputKindImage)
+	modalities.PDF = mc.SupportsInput(ctx, provider.Type, hint, modelID, domain.InputKindPDF)
 	return modalities
 }
 
@@ -177,20 +183,21 @@ func inputModalitiesFor(ctx context.Context, providerStore store.ProviderStore, 
 // runner's default margin, and input-modality capability — from explicit
 // collaborators. The agent REST handler and the workspace-creation handler
 // both build it, from different dependency holders.
-func newAgentResponseWith(ctx context.Context, providerStore store.ProviderStore, mc *services.ModelCatalog, workspaceID string, a *domain.Agent) agentResponse {
+func newAgentResponseWith(ctx context.Context, providerStore store.ProviderStore, mc *services.ModelCatalog, workspaceID string, a *domain.Agent, wsDefault *domain.DefaultModelPair) agentResponse {
 	effective := domain.ResolveContextWindow(a.ContextWindow, nil)
 	return agentResponse{
 		Agent:                      *a,
 		EffectiveContextWindow:     effective,
 		SummarizationTriggerTokens: int(float64(effective) * agents.DefaultSummarizationMargin),
-		InputModalities:            inputModalitiesFor(ctx, providerStore, mc, workspaceID, a),
+		InputModalities:            inputModalitiesFor(ctx, providerStore, mc, workspaceID, a, wsDefault),
 	}
 }
 
 // newAgentResponse derives the agent's computed payload fields from the
-// handler's own collaborators.
-func (h *agentHandlers) newAgentResponse(ctx context.Context, workspaceID string, a *domain.Agent) agentResponse {
-	return newAgentResponseWith(ctx, h.providers, h.modelCatalog, workspaceID, a)
+// handler's own collaborators and the current workspace (the default-model
+// pair rides the workspace for inherit agents).
+func (h *agentHandlers) newAgentResponse(ctx context.Context, ws *domain.Workspace, a *domain.Agent) agentResponse {
+	return newAgentResponseWith(ctx, h.providers, h.modelCatalog, ws.ID, a, ws.DefaultModel)
 }
 
 // ListAgents lists all agents in the current workspace.
@@ -208,7 +215,7 @@ func (h *agentHandlers) ListAgents(c *gin.Context) {
 
 	wrapped := make([]agentResponse, 0, len(agentList))
 	for i := range agentList {
-		wrapped = append(wrapped, h.newAgentResponse(c.Request.Context(), ws.ID, &agentList[i]))
+		wrapped = append(wrapped, h.newAgentResponse(c.Request.Context(), ws, &agentList[i]))
 	}
 
 	RespondOK(c, gin.H{"agents": wrapped})
@@ -226,29 +233,29 @@ func (h *agentHandlers) GetAgent(c *gin.Context) {
 	}
 
 	composePromptDocuments(domain.AgentWorkspaceDir(h.workspaceDir, ws.Slug, agent.Slug), agent)
-	RespondOK(c, gin.H{"agent": h.newAgentResponse(c.Request.Context(), ws.ID, agent)})
+	RespondOK(c, gin.H{"agent": h.newAgentResponse(c.Request.Context(), ws, agent)})
 }
 
 // CreateAgentRequest holds payload parameters for creating a new agent.
 type CreateAgentRequest struct {
-	Name          string                `json:"name"`
-	Slug          string                `json:"slug"`
-	Role          string                `json:"role"`
-	Description   string                `json:"description"`
-	Brief         string                `json:"brief"`
-	ProviderID    string                `json:"provider_id"`
-	Model         string                `json:"model"`
+	Name        string `json:"name"`
+	Slug        string `json:"slug"`
+	Role        string `json:"role"`
+	Description string `json:"description"`
+	Brief       string `json:"brief"`
+	ProviderID  string `json:"provider_id"`
+	Model       string `json:"model"`
 	// Memory side-call override (both empty = inherit); validated as a pair.
 	MemorySidecallProviderID string                `json:"memory_sidecall_provider_id,omitempty"`
 	MemorySidecallModel      string                `json:"memory_sidecall_model,omitempty"`
 	Temperature              *float64              `json:"temperature,omitempty"`
-	MaxTokens     *int                  `json:"max_tokens,omitempty"`
-	Effort        *string               `json:"effort,omitempty"`
-	Autonomy      *domain.AgentAutonomy `json:"autonomy,omitempty"`
-	ContextWindow *int                  `json:"context_window,omitempty"`
-	Tools         []string              `json:"tools,omitempty"`
-	EnabledMCPS   []string              `json:"enabled_mcps,omitempty"`
-	Avatar        json.RawMessage       `json:"avatar,omitempty"`
+	MaxTokens                *int                  `json:"max_tokens,omitempty"`
+	Effort                   *string               `json:"effort,omitempty"`
+	Autonomy                 *domain.AgentAutonomy `json:"autonomy,omitempty"`
+	ContextWindow            *int                  `json:"context_window,omitempty"`
+	Tools                    []string              `json:"tools,omitempty"`
+	EnabledMCPS              []string              `json:"enabled_mcps,omitempty"`
+	Avatar                   json.RawMessage       `json:"avatar,omitempty"`
 }
 
 // AgentCreationDeps bundles the stores and services the shared agent creation
@@ -270,10 +277,12 @@ type AgentCreationDeps struct {
 // workspace directory, generate prompts synchronously (the request's
 // role/description/brief are the role hints promptgen's IDENTITY/SOUL
 // generation consumes), persist, and refetch so the result carries
-// store-assigned fields. Generation runs on a detached context: the caller's
+// store-assigned fields. wsDefault carries the workspace's default-model pair
+// so an inheriting request validates against it and generates prompts on the
+// model it will run. Generation runs on a detached context: the caller's
 // request dying must not strand state.
-func (d AgentCreationDeps) CreateAgentRecord(ctx context.Context, workspaceID, workspaceSlug, userID string, req *CreateAgentRequest) (*domain.Agent, error) {
-	agent, err := buildAgentFromCreateRequest(ctx, workspaceID, userID, req, d.Providers, d.Registry, d.ModelCatalog)
+func (d AgentCreationDeps) CreateAgentRecord(ctx context.Context, workspaceID, workspaceSlug, userID string, req *CreateAgentRequest, wsDefault *domain.DefaultModelPair) (*domain.Agent, error) {
+	agent, err := buildAgentFromCreateRequest(ctx, workspaceID, userID, req, d.Providers, d.Registry, d.ModelCatalog, wsDefault)
 	if err != nil {
 		return nil, err
 	}
@@ -294,7 +303,7 @@ func (d AgentCreationDeps) CreateAgentRecord(ctx context.Context, workspaceID, w
 		return nil, fmt.Errorf("failed to create agent workspace directory: %w", err)
 	}
 
-	if err := d.AgentService.GenerateForCreate(context.Background(), agentDir, workspaceID, agent); err != nil {
+	if err := d.AgentService.GenerateForCreate(context.Background(), agentDir, workspaceID, agent, wsDefault); err != nil {
 		os.RemoveAll(agentDir)
 		return nil, fmt.Errorf("%w: %v", domain.ErrInvalid, promptgen.SanitizeError(err))
 	}
@@ -326,38 +335,38 @@ func (h *agentHandlers) CreateAgent(c *gin.Context) {
 		return
 	}
 
-	agent, err := h.creationDeps().CreateAgentRecord(c.Request.Context(), ws.ID, ws.Slug, user.ID, &req)
+	agent, err := h.creationDeps().CreateAgentRecord(c.Request.Context(), ws.ID, ws.Slug, user.ID, &req, ws.DefaultModel)
 	if err != nil {
 		RespondError(c, err)
 		return
 	}
 	composePromptDocuments(domain.AgentWorkspaceDir(h.workspaceDir, ws.Slug, agent.Slug), agent)
 
-	RespondCreated(c, gin.H{"agent": h.newAgentResponse(c.Request.Context(), ws.ID, agent)})
+	RespondCreated(c, gin.H{"agent": h.newAgentResponse(c.Request.Context(), ws, agent)})
 }
 
 // PatchAgentRequest holds editable fields for updating an existing agent.
 type PatchAgentRequest struct {
-	Name          *string               `json:"name,omitempty"`
-	Role          *string               `json:"role,omitempty"`
-	Description   *string               `json:"description,omitempty"`
-	Brief         *string               `json:"brief,omitempty"`
-	Identity      *string               `json:"identity,omitempty"`
-	Soul          *string               `json:"soul,omitempty"`
-	ProviderID    *string               `json:"provider_id,omitempty"`
-	Model         *string               `json:"model,omitempty"`
+	Name        *string `json:"name,omitempty"`
+	Role        *string `json:"role,omitempty"`
+	Description *string `json:"description,omitempty"`
+	Brief       *string `json:"brief,omitempty"`
+	Identity    *string `json:"identity,omitempty"`
+	Soul        *string `json:"soul,omitempty"`
+	ProviderID  *string `json:"provider_id,omitempty"`
+	Model       *string `json:"model,omitempty"`
 	// Memory side-call override: both pointers nil = untouched; empty strings
 	// clear back to inherit (the workspace memory setting then agent default).
 	MemorySidecallProviderID *string               `json:"memory_sidecall_provider_id,omitempty"`
 	MemorySidecallModel      *string               `json:"memory_sidecall_model,omitempty"`
 	Temperature              *float64              `json:"temperature,omitempty"`
-	MaxTokens     *int                  `json:"max_tokens,omitempty"`
-	Effort        *string               `json:"effort,omitempty"`
-	Autonomy      *domain.AgentAutonomy `json:"autonomy,omitempty"`
-	ContextWindow *int                  `json:"context_window,omitempty"`
-	Tools         *[]string             `json:"tools,omitempty"`
-	EnabledMCPS   *[]string             `json:"enabled_mcps,omitempty"`
-	Avatar        *json.RawMessage      `json:"avatar,omitempty"`
+	MaxTokens                *int                  `json:"max_tokens,omitempty"`
+	Effort                   *string               `json:"effort,omitempty"`
+	Autonomy                 *domain.AgentAutonomy `json:"autonomy,omitempty"`
+	ContextWindow            *int                  `json:"context_window,omitempty"`
+	Tools                    *[]string             `json:"tools,omitempty"`
+	EnabledMCPS              *[]string             `json:"enabled_mcps,omitempty"`
+	Avatar                   *json.RawMessage      `json:"avatar,omitempty"`
 }
 
 // PatchAgent updates an existing agent's fields.
@@ -419,22 +428,28 @@ func (h *agentHandlers) PatchAgent(c *gin.Context) {
 		existing.Brief = trimmed
 	}
 
+	// Provider binding (refactor-workspace-settings D3): the pair computes from
+	// the payload over the stored row — a field absent from the payload keeps
+	// its value, both fields empty switches the agent to inherit, a half-set
+	// pair is 400 invalid_request.
 	targetProviderID := existing.ProviderID
 	if req.ProviderID != nil {
 		targetProviderID = strings.TrimSpace(*req.ProviderID)
-		if targetProviderID == "" {
-			RespondError(c, fmt.Errorf("%w: provider_id cannot be empty", domain.ErrInvalid))
-			return
-		}
 	}
 
 	targetModel := existing.Model
 	if req.Model != nil {
 		targetModel = strings.TrimSpace(*req.Model)
-		if targetModel == "" {
-			RespondError(c, fmt.Errorf("%w: model cannot be empty", domain.ErrInvalid))
-			return
-		}
+	}
+
+	if err := domain.ValidateDefaultModelPair(targetProviderID, targetModel); err != nil {
+		RespondError(c, err)
+		return
+	}
+	inherits := targetProviderID == ""
+	if inherits && (ws.DefaultModel == nil || ws.DefaultModel.ProviderID == "") {
+		RespondError(c, fmt.Errorf("%w: agent has no provider pinned and no workspace default model is set — set one in workspace settings first", domain.ErrUnprocessable))
+		return
 	}
 
 	// Memory side-call override: validated as a pair (both set or both
@@ -462,32 +477,9 @@ func (h *agentHandlers) PatchAgent(c *gin.Context) {
 	existing.MemorySidecallProviderID = targetSidecallProvider
 	existing.MemorySidecallModel = targetSidecallModel
 
-	provider, err := h.providers.ByID(c.Request.Context(), ws.ID, targetProviderID)
-	if err != nil {
-		RespondError(c, fmt.Errorf("%w: provider not found in workspace", domain.ErrInvalid))
-		return
-	}
-
 	var targetMaxTokens *int = existing.MaxTokens
 	if req.MaxTokens != nil {
 		targetMaxTokens = req.MaxTokens
-	}
-
-	providerImpl, err := h.registry.Get(provider.Type)
-	if err != nil {
-		RespondError(c, err)
-		return
-	}
-
-	if providerImpl.RequiresMaxTokens() {
-		if targetMaxTokens == nil || *targetMaxTokens <= 0 {
-			RespondError(c, fmt.Errorf("%w: max_tokens is required for provider type %q", domain.ErrInvalid, provider.Type))
-			return
-		}
-	}
-	if targetMaxTokens != nil && *targetMaxTokens <= 0 {
-		RespondError(c, fmt.Errorf("%w: max_tokens must be positive", domain.ErrInvalid))
-		return
 	}
 
 	var targetEffort *string = existing.Effort
@@ -499,12 +491,43 @@ func (h *agentHandlers) PatchAgent(c *gin.Context) {
 			targetEffort = &trimmed
 		}
 	}
-	if targetEffort != nil {
-		hint := services.EffectiveCatalogHint(provider.Type, provider.CatalogProvider, provider.BaseURL)
-		if err := validateEffort(c.Request.Context(), h.modelCatalog, provider.Type, targetModel, hint, *targetEffort); err != nil {
+
+	// Pinned-path validation only (refactor-workspace-settings D3/D4): an
+	// inherit agent resolves its provider at run start, so the type-driven
+	// max_tokens requirement and the effort-catalog check defer to the run.
+	var provider *domain.ProviderConfig
+	if !inherits {
+		var err error
+		provider, err = h.providers.ByID(c.Request.Context(), ws.ID, targetProviderID)
+		if err != nil {
+			RespondError(c, fmt.Errorf("%w: provider not found in workspace", domain.ErrInvalid))
+			return
+		}
+
+		providerImpl, err := h.registry.Get(provider.Type)
+		if err != nil {
 			RespondError(c, err)
 			return
 		}
+
+		if providerImpl.RequiresMaxTokens() {
+			if targetMaxTokens == nil || *targetMaxTokens <= 0 {
+				RespondError(c, fmt.Errorf("%w: max_tokens is required for provider type %q", domain.ErrInvalid, provider.Type))
+				return
+			}
+		}
+
+		if targetEffort != nil {
+			hint := services.EffectiveCatalogHint(provider.Type, provider.CatalogProvider, provider.BaseURL)
+			if err := validateEffort(c.Request.Context(), h.modelCatalog, provider.Type, targetModel, hint, *targetEffort); err != nil {
+				RespondError(c, err)
+				return
+			}
+		}
+	}
+	if targetMaxTokens != nil && *targetMaxTokens <= 0 {
+		RespondError(c, fmt.Errorf("%w: max_tokens must be positive", domain.ErrInvalid))
+		return
 	}
 
 	existing.ProviderID = targetProviderID
@@ -542,7 +565,9 @@ func (h *agentHandlers) PatchAgent(c *gin.Context) {
 			return
 		}
 		existing.ContextWindow = req.ContextWindow
-	} else if (req.ProviderID != nil || req.Model != nil) && h.modelCatalog != nil {
+	} else if !inherits && provider != nil && (req.ProviderID != nil || req.Model != nil) && h.modelCatalog != nil {
+		// Catalog auto-fill is pinned-only: the inherit pair is unknown at
+		// save time, so context_window stays as stored unless client-provided.
 		hint := services.EffectiveCatalogHint(provider.Type, provider.CatalogProvider, provider.BaseURL)
 		existing.ContextWindow = h.modelCatalog.ResolveContextLimit(c.Request.Context(), provider.Type, targetModel, hint)
 	}
@@ -581,7 +606,7 @@ func (h *agentHandlers) PatchAgent(c *gin.Context) {
 	}
 
 	composePromptDocuments(domain.AgentWorkspaceDir(h.workspaceDir, ws.Slug, existing.Slug), existing)
-	RespondOK(c, gin.H{"agent": h.newAgentResponse(c.Request.Context(), ws.ID, existing)})
+	RespondOK(c, gin.H{"agent": h.newAgentResponse(c.Request.Context(), ws, existing)})
 }
 
 // DeleteAgent deletes an agent and its workspace directory.
@@ -643,9 +668,11 @@ func (h *agentHandlers) RegenerateAgent(c *gin.Context) {
 	}
 
 	// Detached context: the generation service owns the budget and records the
-	// final prompt state regardless of this request's lifetime.
+	// final prompt state regardless of this request's lifetime. The workspace
+	// default-model pair rides along so an inherit agent regenerates on the
+	// model it actually runs.
 	agentDir := domain.AgentWorkspaceDir(h.workspaceDir, ws.Slug, existing.Slug)
-	if err := h.agentService.Generate(context.Background(), agentDir, ws.ID, existing.ID, req.Instruction); err != nil {
+	if err := h.agentService.Generate(context.Background(), agentDir, ws.ID, existing.ID, req.Instruction, ws.DefaultModel); err != nil {
 		log.Printf("[handlers.agents] prompt regeneration failed for agent %s/%s: %v", ws.ID, existing.ID, err)
 	}
 
@@ -655,7 +682,7 @@ func (h *agentHandlers) RegenerateAgent(c *gin.Context) {
 	}
 	composePromptDocuments(domain.AgentWorkspaceDir(h.workspaceDir, ws.Slug, existing.Slug), existing)
 
-	RespondOK(c, gin.H{"agent": h.newAgentResponse(c.Request.Context(), ws.ID, existing)})
+	RespondOK(c, gin.H{"agent": h.newAgentResponse(c.Request.Context(), ws, existing)})
 }
 
 // ListSessionEvents returns the translated transcript events for an agent session.
@@ -848,7 +875,12 @@ func isTerminalSessionEvent(kind agents.TranscriptEventKind) bool {
 }
 
 // buildAgentFromCreateRequest validates and constructs a domain.Agent from CreateAgentRequest.
-func buildAgentFromCreateRequest(ctx context.Context, wsID, userID string, req *CreateAgentRequest, providers store.ProviderStore, reg *providers.Registry, mc *services.ModelCatalog) (*domain.Agent, error) {
+// wsDefault carries the workspace's default-model pair: the empty provider/model
+// pair (inherit) is only accepted while it exists, and inherits skip the
+// pinned-only RequiresMaxTokens and effort-catalog checks — those requirements
+// are enforced at run start against the effective provider (refactor-workspace-
+// settings D3/D4).
+func buildAgentFromCreateRequest(ctx context.Context, wsID, userID string, req *CreateAgentRequest, providers store.ProviderStore, reg *providers.Registry, mc *services.ModelCatalog, wsDefault *domain.DefaultModelPair) (*domain.Agent, error) {
 	if req == nil {
 		return nil, domain.ErrInvalid
 	}
@@ -877,13 +909,19 @@ func buildAgentFromCreateRequest(ctx context.Context, wsID, userID string, req *
 	}
 
 	providerID := strings.TrimSpace(req.ProviderID)
-	if providerID == "" {
-		return nil, fmt.Errorf("%w: provider_id is required", domain.ErrInvalid)
-	}
-
 	model := strings.TrimSpace(req.Model)
-	if model == "" {
-		return nil, fmt.Errorf("%w: model is required", domain.ErrInvalid)
+
+	// Provider binding is a both-set-or-both-empty pair. The empty pair means
+	// inherit the workspace default and is refused (422) while no default is
+	// set; a half-set pair is 400 invalid_request.
+	if err := domain.ValidateDefaultModelPair(providerID, model); err != nil {
+		return nil, err
+	}
+	inherits := providerID == ""
+	if inherits {
+		if wsDefault == nil || wsDefault.ProviderID == "" || wsDefault.Model == "" {
+			return nil, fmt.Errorf("%w: agent has no provider pinned and no workspace default model is set — set one in workspace settings first", domain.ErrUnprocessable)
+		}
 	}
 
 	// Memory side-call override (both empty = inherit), validated as a pair.
@@ -898,29 +936,36 @@ func buildAgentFromCreateRequest(ctx context.Context, wsID, userID string, req *
 		}
 	}
 
-	// Validate provider belongs to workspace
-	provider, err := providers.ByID(ctx, wsID, providerID)
-	if err != nil {
-		return nil, fmt.Errorf("%w: provider not found in workspace", domain.ErrInvalid)
-	}
+	// Pinned-path validation only: an inheriting agent's provider is resolved
+	// at run start, so type-driven requirements move there too.
+	var provider *domain.ProviderConfig
+	if !inherits {
+		// Validate provider belongs to workspace
+		var err error
+		provider, err = providers.ByID(ctx, wsID, providerID)
+		if err != nil {
+			return nil, fmt.Errorf("%w: provider not found in workspace", domain.ErrInvalid)
+		}
 
-	providerImpl, err := reg.Get(provider.Type)
-	if err != nil {
-		return nil, err
-	}
+		providerImpl, err := reg.Get(provider.Type)
+		if err != nil {
+			return nil, err
+		}
 
-	// Anthropic / capability max_tokens requirement
-	if providerImpl.RequiresMaxTokens() {
-		if req.MaxTokens == nil || *req.MaxTokens <= 0 {
-			return nil, fmt.Errorf("%w: max_tokens is required for provider type %q", domain.ErrInvalid, provider.Type)
+		// Anthropic / capability max_tokens requirement
+		if providerImpl.RequiresMaxTokens() {
+			if req.MaxTokens == nil || *req.MaxTokens <= 0 {
+				return nil, fmt.Errorf("%w: max_tokens is required for provider type %q", domain.ErrInvalid, provider.Type)
+			}
 		}
 	}
 	if req.MaxTokens != nil && *req.MaxTokens <= 0 {
 		return nil, fmt.Errorf("%w: max_tokens must be positive", domain.ErrInvalid)
 	}
 
-	// Effort resolution validation
-	if req.Effort != nil && strings.TrimSpace(*req.Effort) != "" {
+	// Effort resolution validation (pinned agents only; deferred to run start
+	// for inherit agents against the effective provider/model).
+	if req.Effort != nil && strings.TrimSpace(*req.Effort) != "" && !inherits {
 		hint := services.EffectiveCatalogHint(provider.Type, provider.CatalogProvider, provider.BaseURL)
 		if err := validateEffort(ctx, mc, provider.Type, model, hint, *req.Effort); err != nil {
 			return nil, err
@@ -951,12 +996,15 @@ func buildAgentFromCreateRequest(ctx context.Context, wsID, userID string, req *
 		avatar = req.Avatar
 	}
 
+	// Context window: a client-provided value always wins; the catalog
+	// auto-fill only runs on the pinned path (the inherit pair is unknown at
+	// save time — runtime falls back to its default).
 	contextWindow := req.ContextWindow
 	if contextWindow != nil {
 		if err := domain.ValidateAgentContextWindow(contextWindow); err != nil {
 			return nil, err
 		}
-	} else if mc != nil {
+	} else if !inherits && mc != nil {
 		hint := services.EffectiveCatalogHint(provider.Type, provider.CatalogProvider, provider.BaseURL)
 		contextWindow = mc.ResolveContextLimit(ctx, provider.Type, model, hint)
 	}
@@ -982,27 +1030,27 @@ func buildAgentFromCreateRequest(ctx context.Context, wsID, userID string, req *
 	}
 
 	return &domain.Agent{
-		WorkspaceID:   wsID,
-		Slug:          slug,
-		Name:          name,
-		Role:          role,
-		Description:   strings.TrimSpace(req.Description),
-		Brief:         brief,
-		ProviderID:                 providerID,
-		Model:                      model,
-		MemorySidecallProviderID:   sidecallProvider,
-		MemorySidecallModel:        sidecallModel,
-		Temperature:                temp,
-		MaxTokens:     req.MaxTokens,
-		Effort:        effort,
-		Autonomy:      autonomy,
-		ContextWindow: contextWindow,
-		Tools:         agentTools,
-		EnabledMCPS:   enabledMCPS,
-		Avatar:        avatar,
-		PromptsStatus: domain.PromptsStatusGenerating,
-		CreatedBy:     creator,
-		UpdatedBy:     creator,
+		WorkspaceID:              wsID,
+		Slug:                     slug,
+		Name:                     name,
+		Role:                     role,
+		Description:              strings.TrimSpace(req.Description),
+		Brief:                    brief,
+		ProviderID:               providerID,
+		Model:                    model,
+		MemorySidecallProviderID: sidecallProvider,
+		MemorySidecallModel:      sidecallModel,
+		Temperature:              temp,
+		MaxTokens:                req.MaxTokens,
+		Effort:                   effort,
+		Autonomy:                 autonomy,
+		ContextWindow:            contextWindow,
+		Tools:                    agentTools,
+		EnabledMCPS:              enabledMCPS,
+		Avatar:                   avatar,
+		PromptsStatus:            domain.PromptsStatusGenerating,
+		CreatedBy:                creator,
+		UpdatedBy:                creator,
 	}, nil
 }
 

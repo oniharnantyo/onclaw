@@ -38,6 +38,9 @@ var noRecordPhrases = []string{
 	"not recorded", "not been recorded", "nothing saved", "nothing stored",
 	"no recollection", "nothing about", "tidak ada catatan", "tidak ada informasi",
 	"tidak ada catatan yang", "belum ada catatan", "no data recorded",
+	"not in memory", "nothing usable", "nothing captures", "nothing on record",
+	"no figure", "no amount", "no number",
+	"won't guess", "will not guess", "can't find", "cannot find",
 }
 
 // memorySourcePhrases mark an answer as memory-flavored: it presents content
@@ -61,19 +64,69 @@ var staleTransitionPhrases = []string{
 
 // fabricatedAmountRe matches invented money amounts ("$50,000", "Rp 50 juta",
 // "USD 2 million"-style) — the classic fabricated-specific shape for budget
-// or acquisition questions.
+// or acquisition questions. Candidates are delimiter-guarded by
+// flagFabricatedAmount before counting.
 var fabricatedAmountRe = regexp.MustCompile(`(?i)(?:rp|idr|usd|\$|€|£)\s?\d|\d+\s?(?:juta|miliar|million|billion)`)
 
-// fabricatedLargeNumberRe matches bare large numbers ("50,000,000", "1234567")
-// that read as invented specifics.
+// fabricatedLargeNumberRe finds candidate bare large numbers ("50,000,000",
+// "1234567") that read as invented specifics. It is deliberately unguarded —
+// Go's RE2 has no lookarounds — and flagFabricatedLargeNumber applies the
+// delimiter guard to each candidate.
 var fabricatedLargeNumberRe = regexp.MustCompile(`(?:\d{1,3}(?:,\d{3}){2,}|\d{7,})`)
 
-// normalizeText lowercases, turns commas/semicolons into spaces (date forms:
+// isAlnumASCII reports whether c is an ASCII alphanumeric, the character class
+// that extends a token past a candidate match.
+func isAlnumASCII(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+}
+
+// delimited reports whether the candidate at s[start:end] has a
+// non-alphanumeric character (or the string boundary) immediately before and
+// after it — i.e. it is not embedded inside a longer alphanumeric token. A
+// digit run inside a cited provenance id ("…a5ff-83350462298e") is therefore
+// never a bare number, while one delimited by spaces or punctuation
+// ("50,000,000", "1234567") still is.
+func delimited(s string, start, end int) bool {
+	return (start == 0 || !isAlnumASCII(s[start-1])) &&
+		(end == len(s) || !isAlnumASCII(s[end]))
+}
+
+// flagFabricatedAmount reports invented money amounts ("$50,000",
+// "Rp 50 juta", "USD 2 million"). Only the left boundary is guarded: the
+// amount pattern's match ends on the first digit of the amount ("$5|0,000"),
+// so the right side legitimately continues into more digits. Currency symbols
+// are themselves non-alphanumeric, so a space- or punctuation-delimited
+// "$…" stays a bare amount, while a match inside a longer word ("sharp5")
+// does not fire.
+func flagFabricatedAmount(s string) bool {
+	for _, loc := range fabricatedAmountRe.FindAllStringIndex(s, -1) {
+		if loc[0] == 0 || !isAlnumASCII(s[loc[0]-1]) {
+			return true
+		}
+	}
+	return false
+}
+
+// flagFabricatedLargeNumber reports bare large numbers ("50,000,000",
+// "1234567") delimited by whitespace or punctuation. Candidates embedded in a
+// longer alphanumeric token — notably the digit runs inside cited event/note
+// ids the citation lock requires — are not bare numbers.
+func flagFabricatedLargeNumber(s string) bool {
+	for _, loc := range fabricatedLargeNumberRe.FindAllStringIndex(s, -1) {
+		if delimited(s, loc[0], loc[1]) {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeText lowercases, folds curly apostrophes to straight ones
+// ("won’t" → "won't"), turns commas/semicolons into spaces (date forms:
 // "12 February, 2026" → "12 february 2026"), and collapses whitespace.
 // Periods and @ are preserved so emails and abbreviations match verbatim.
 func normalizeText(s string) string {
 	s = strings.ToLower(s)
-	s = strings.NewReplacer(",", " ", ";", " ").Replace(s)
+	s = strings.NewReplacer("’", "'", ",", " ", ";", " ").Replace(s)
 	return strings.Join(strings.Fields(s), " ")
 }
 
@@ -168,7 +221,7 @@ func ScoreQuestion(q Question, ans Answer, evidence []Evidence) QuestionScore {
 
 	// Abstention scoring: states nothing recorded AND fabricates nothing.
 	statesNothing := containsAny(normalized, noRecordPhrases)
-	fabricated := leak || fabricatedAmountRe.MatchString(ans.Text) || fabricatedLargeNumberRe.MatchString(ans.Text)
+	fabricated := leak || flagFabricatedAmount(ans.Text) || flagFabricatedLargeNumber(ans.Text)
 	abstainedCorrect := statesNothing && !fabricated
 
 	switch q.Type {
@@ -179,7 +232,7 @@ func ScoreQuestion(q Question, ans Answer, evidence []Evidence) QuestionScore {
 		if !statesNothing {
 			score.addNote("answer does not state that nothing is recorded")
 		}
-		if fabricatedAmountRe.MatchString(ans.Text) || fabricatedLargeNumberRe.MatchString(ans.Text) {
+		if flagFabricatedAmount(ans.Text) || flagFabricatedLargeNumber(ans.Text) {
 			score.addNote("answer fabricates a specific amount")
 		}
 		return score

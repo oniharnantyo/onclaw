@@ -11,7 +11,10 @@ import (
 // fixture actors, their memberships, the fixture agent (against an existing
 // enabled provider — live model keys are required for prompt generation),
 // every scripted session turn through the real chat path, and finally the
-// bounded wait for background ingestion (the pipeline is async by design).
+// bounded wait for background ingestion (the pipeline is async by design;
+// the wait polls the notes API as the fixture owner — design D4 — because
+// the caller-visible listing is the only HTTP surface that can observe
+// ingestion).
 //
 // Nothing is ever promoted: Sari's private facts must stay user-visibility
 // for the scope questions to mean anything.
@@ -119,8 +122,16 @@ func (s *Seeder) Seed(ctx context.Context, opts SeedOptions) (*SeedResult, error
 	}
 
 	// 5. Bounded wait for background ingestion, then the store-level scope
-	// audit through the notes API (when present).
-	notesLive := s.waitForIngestion(ctx, adminToken, ws.Slug, opts, res)
+	// audit through the notes API (when present). The wait polls as the
+	// fixture owner (design D4): the notes API filters to the caller's
+	// visible set and the admin identity holds no membership rows in the
+	// fixture workspace, so an admin-token wait can never see the corpus
+	// land. The scope audit below stays admin-driven on purpose.
+	owner, ok := actors[fixtureOwnerEmail]
+	if !ok || owner == nil {
+		return nil, fmt.Errorf("ingestion wait: fixture owner %s missing from the provisioned actors (fixture wiring bug — refusing to wait as an identity that cannot see the notes)", fixtureOwnerEmail)
+	}
+	notesLive := s.waitForIngestion(ctx, owner.Token, ws.Slug, opts, res)
 	res.NotesAPILive = notesLive
 	if notesLive {
 		res.ScopeAudit = s.scopeAudit(ctx, adminToken, ws.Slug)
@@ -161,6 +172,11 @@ func (s *Seeder) ensureActor(ctx context.Context, adminToken, wsSlug string, a A
 
 // ensureAgent creates-or-reuses the fixture agent. Creation runs live prompt
 // generation against the provider, so a missing/broken provider fails here.
+// The reuse path repairs agents provisioned before the harness carried an
+// exposed-tools allowlist (fix-memory-prefetch-matching D6): their stored
+// tools list is empty, an empty allowlist exposes zero registry tools, and the
+// self-search leg dies in `skill not found: memory` — so a stored allowlist
+// missing one of evalAgentTools is patched up to it.
 func (s *Seeder) ensureAgent(ctx context.Context, adminToken, wsSlug string, opts SeedOptions) (*Agent, error) {
 	agent, err := s.client.GetAgent(ctx, adminToken, wsSlug, opts.AgentSlug)
 	switch {
@@ -170,6 +186,12 @@ func (s *Seeder) ensureAgent(ctx context.Context, adminToken, wsSlug string, opt
 				return nil, fmt.Errorf("repointing agent %s at model %s: %w", opts.AgentSlug, opts.Model, err)
 			}
 			agent.Model = opts.Model
+		}
+		if !agentCoversTools(agent, evalAgentTools) {
+			if err := s.client.PatchAgentTools(ctx, adminToken, wsSlug, agent.ID, evalAgentTools); err != nil {
+				return nil, fmt.Errorf("exposing %v on agent %s: %w", evalAgentTools, opts.AgentSlug, err)
+			}
+			agent.Tools = evalAgentTools
 		}
 		return agent, nil
 	case isNotFound(err):
@@ -190,12 +212,19 @@ func (s *Seeder) ensureAgent(ctx context.Context, adminToken, wsSlug string, opt
 	}
 }
 
-// waitForIngestion polls the memory notes endpoint until quiescent: three
-// consecutive polls with a stable, non-zero note count, or the bounded wait
-// elapses. When the endpoint is absent the harness waits the fixed budget and
-// warns — a zero-note timeout is itself a meaningful (baseline-shaped)
-// observation, not an error.
-func (s *Seeder) waitForIngestion(ctx context.Context, token, wsSlug string, opts SeedOptions, res *SeedResult) bool {
+// waitForIngestion polls the memory notes endpoint AS THE FIXTURE OWNER
+// (design D4) until the corpus has landed or the bounded wait elapses. The
+// notes API filters to the caller's visible set (shared + own-user rows), so
+// the owner is the least-privileged principal that can actually observe
+// ingestion — the admin identity holds no membership rows in the fixture
+// workspace and would burn the whole budget believing the store empty. The
+// wait ends early once ingestFloorNotes() notes are visible; otherwise it
+// falls back to the original quiescence rule (three consecutive polls with a
+// stable, non-zero count) and finally the deadline. When the endpoint is
+// absent the harness waits the fixed budget and reports that nothing was
+// observable — a zero-visibility timeout is a meaningful observation, not an
+// error.
+func (s *Seeder) waitForIngestion(ctx context.Context, ownerToken, wsSlug string, opts SeedOptions, res *SeedResult) bool {
 	budget := opts.IngestWait
 	if budget <= 0 {
 		budget = 180 * time.Second
@@ -205,9 +234,9 @@ func (s *Seeder) waitForIngestion(ctx context.Context, token, wsSlug string, opt
 		deadline = cd
 	}
 
-	notes, live, err := s.client.ListNotes(ctx, token, wsSlug, "")
+	notes, live, err := s.client.ListNotes(ctx, ownerToken, wsSlug, "")
 	if err != nil {
-		res.Notes = append(res.Notes, fmt.Sprintf("notes listing failed (%v); proceeding after fixed wait", err))
+		res.Notes = append(res.Notes, fmt.Sprintf("notes listing failed as the fixture owner %s (%v); proceeding after fixed wait", fixtureOwnerEmail, err))
 		live = false
 	}
 	if !live {
@@ -215,8 +244,13 @@ func (s *Seeder) waitForIngestion(ctx context.Context, token, wsSlug string, opt
 		case <-time.After(budget):
 		case <-ctx.Done():
 		}
-		res.Notes = append(res.Notes, fmt.Sprintf("memory notes REST endpoint absent; waited fixed %s for ingestion", budget))
+		res.Notes = append(res.Notes, fmt.Sprintf("memory notes REST endpoint absent; waited fixed %s for ingestion (nothing was pollable as the fixture owner)", budget))
 		return false
+	}
+
+	floor := ingestFloorNotes()
+	if floor > 0 && len(notes) >= floor {
+		return true
 	}
 
 	const defaultPoll = 5 * time.Second
@@ -227,7 +261,7 @@ func (s *Seeder) waitForIngestion(ctx context.Context, token, wsSlug string, opt
 	stable, last := 0, len(notes)
 	for {
 		if time.Now().After(deadline) {
-			res.Notes = append(res.Notes, fmt.Sprintf("ingestion wait elapsed with %d notes (pipeline may be idle — expected on a pre-change baseline)", last))
+			res.Notes = append(res.Notes, fmt.Sprintf("ingestion wait elapsed with %d notes visible to the fixture owner — pipeline stored nothing or visibility hides everything", last))
 			return true
 		}
 		select {
@@ -235,9 +269,12 @@ func (s *Seeder) waitForIngestion(ctx context.Context, token, wsSlug string, opt
 		case <-ctx.Done():
 			return true
 		}
-		notes, _, err := s.client.ListNotes(ctx, token, wsSlug, "")
+		notes, _, err := s.client.ListNotes(ctx, ownerToken, wsSlug, "")
 		if err != nil {
-			res.Notes = append(res.Notes, fmt.Sprintf("notes poll failed (%v)", err))
+			res.Notes = append(res.Notes, fmt.Sprintf("notes poll failed as the fixture owner %s (%v)", fixtureOwnerEmail, err))
+			return true
+		}
+		if floor > 0 && len(notes) >= floor {
 			return true
 		}
 		if len(notes) == last && last > 0 {
@@ -249,6 +286,36 @@ func (s *Seeder) waitForIngestion(ctx context.Context, token, wsSlug string, opt
 		}
 		stable, last = 0, len(notes)
 	}
+}
+
+// fixtureOwnerEmail is the identity the ingestion wait polls as (design D4):
+// the fixture actor whose scripted private session anchors the scope test.
+// Unlike the admin, this identity owns note rows, so its notes-API view
+// actually reflects ingestion landing.
+const fixtureOwnerEmail = "sari@eval.local"
+
+// ingestFloorNotes derives the note count the ingestion wait treats as "the
+// corpus has landed" (design D4's early exit). The fixture encodes no exact
+// expected count — extraction is model-derived (the live baseline turned the
+// 18 scripted turns into 39 notes) — so the floor is a conservative
+// derivative of the fixture's scripted "remember this" turns: one note per
+// turn in the fact and private sessions, each of which states at least one
+// durable fact (the noise session states none and extraction is asked to
+// skip it). Extraction merging/dedup can push the real count below one per
+// turn, and workspace visibility can keep the polling owner's view smaller
+// than the whole corpus, so the floor is a floor, not an expectation: when
+// the owner's visible set cannot reach it, the stable-count and deadline
+// fallbacks in waitForIngestion terminate the wait instead. The floor can
+// only shorten the wait, never lengthen it.
+func ingestFloorNotes() int {
+	floor := 0
+	for _, sess := range Fixture.Sessions {
+		if sess.Kind == "noise" {
+			continue
+		}
+		floor += len(sess.Turns)
+	}
+	return floor
 }
 
 // scopeAudit drives the store-level cross-member visibility assertion through
@@ -315,6 +382,22 @@ func workspaceName(slug string) string {
 		name = "Memory Eval"
 	}
 	return name + " Workspace"
+}
+
+// agentCoversTools reports whether the agent's stored allowlist carries every
+// named tool. Registry names the allowlist omits are simply unexposed (the
+// inert-unknown rule), so coverage is the only thing the reuse path checks.
+func agentCoversTools(a *Agent, want []string) bool {
+	have := make(map[string]struct{}, len(a.Tools))
+	for _, t := range a.Tools {
+		have[t] = struct{}{}
+	}
+	for _, t := range want {
+		if _, ok := have[t]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func isNotFound(err error) bool     { return statusIs(err, 404) }

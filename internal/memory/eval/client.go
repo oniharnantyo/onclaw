@@ -264,10 +264,11 @@ func (c *APIClient) ListEnabledProviders(ctx context.Context, token, wsSlug stri
 }
 
 type Agent struct {
-	ID    string `json:"id"`
-	Slug  string `json:"slug"`
-	Name  string `json:"name"`
-	Model string `json:"model"`
+	ID    string   `json:"id"`
+	Slug  string   `json:"slug"`
+	Name  string   `json:"name"`
+	Model string   `json:"model"`
+	Tools []string `json:"tools"`
 }
 
 // GetAgent fetches an agent by slug (or id — the route accepts both).
@@ -285,9 +286,22 @@ func (c *APIClient) GetAgent(ctx context.Context, token, wsSlug, agentSlug strin
 	return out.Agent, nil
 }
 
-// CreateAgent registers the fixture agent under the given provider+model.
-// Agent creation runs live prompt generation against the provider, so this
-// fails when the workspace has no working provider (live model keys).
+// evalAgentTools is the registry-tool allowlist the fixture agent is
+// provisioned with (fix-memory-prefetch-matching D6). The runner resolves an
+// agent's tools strictly from this allowlist — an empty one exposes zero
+// registry tools, so the scoreboard's self-search leg (the model calling
+// memory.search itself) died in `skill not found: memory`: with no search
+// schema to call, the model could only reach for the skill middleware's
+// generic skill tool, which resolves skills, not tools. The harness's
+// evidence extraction (run.go extractSearchEvidence) only recognizes
+// memory.search cards, so the fixture cannot measure memory quality without
+// this tool exposed.
+var evalAgentTools = []string{"memory.search"}
+
+// CreateAgent registers the fixture agent under the given provider+model,
+// carrying evalAgentTools as its exposed-tools allowlist. Agent creation runs
+// live prompt generation against the provider, so this fails when the
+// workspace has no working provider (live model keys).
 func (c *APIClient) CreateAgent(ctx context.Context, token, wsSlug string, providerID, agentSlug, model string) (*Agent, error) {
 	var out struct {
 		Agent *Agent `json:"agent"`
@@ -300,6 +314,7 @@ func (c *APIClient) CreateAgent(ctx context.Context, token, wsSlug string, provi
 		"brief":       "Answers workspace questions for the LongMemEval-protocol scoreboard.",
 		"provider_id": providerID,
 		"model":       model,
+		"tools":       evalAgentTools,
 	}
 	path := "/api/v1/workspaces/" + url.PathEscape(wsSlug) + "/agents"
 	if err := c.do(ctx, http.MethodPost, path, token, body, &out); err != nil {
@@ -324,6 +339,18 @@ func (c *APIClient) PatchAgentModel(ctx context.Context, token, wsSlug, agentID,
 	if len(body) == 0 {
 		return nil
 	}
+	path := "/api/v1/workspaces/" + url.PathEscape(wsSlug) + "/agents/" + url.PathEscape(agentID)
+	return c.do(ctx, http.MethodPatch, path, token, body, nil)
+}
+
+// PatchAgentTools replaces the agent's registry-tool allowlist on the reuse
+// path: agents provisioned before the harness carried the allowlist store an
+// empty tools list, which exposes zero registry tools and kills the
+// self-search leg. The PATCH runs only when the stored allowlist is missing
+// one of evalAgentTools (seeder's ensureAgent), so repeated seeds stay
+// idempotent.
+func (c *APIClient) PatchAgentTools(ctx context.Context, token, wsSlug, agentID string, tools []string) error {
+	body := map[string]any{"tools": tools}
 	path := "/api/v1/workspaces/" + url.PathEscape(wsSlug) + "/agents/" + url.PathEscape(agentID)
 	return c.do(ctx, http.MethodPatch, path, token, body, nil)
 }

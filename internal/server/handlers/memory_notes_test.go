@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -25,6 +26,7 @@ type memorySettingsWire struct {
 	Settings struct {
 		VisibilityPosture string `json:"visibility_posture"`
 		IngestionEnabled  bool   `json:"ingestion_enabled"`
+		GateBudgetMs      int    `json:"gate_budget_ms"`
 		Embedding         *struct {
 			ProviderID string `json:"provider_id"`
 			Model      string `json:"model"`
@@ -610,6 +612,78 @@ func TestMemoryNotes_SettingsRoundTrip(t *testing.T) {
 	})
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for dimension 0, got %d", w.Code)
+	}
+}
+
+func TestMemoryNotes_SettingsGateBudget(t *testing.T) {
+	r, st, ws, _ := newMemoryNotesTestEnv(t)
+
+	// Fresh workspace: the default resolves on GET even though no record
+	// exists (absence-is-defaults).
+	w := doMemoryNotesRequest(r, http.MethodGet, "/api/v1/workspaces/acme/memory/settings", "member", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if s := decodeMemorySettings(t, w.Body.String()).Settings; s.GateBudgetMs != memory.DefaultGateBudgetMS {
+		t.Fatalf("expected default gate_budget_ms %d, got %d", memory.DefaultGateBudgetMS, s.GateBudgetMs)
+	}
+
+	// Below the lower bound is rejected, naming the range.
+	w = doMemoryNotesRequest(r, http.MethodPut, "/api/v1/workspaces/acme/memory/settings", "admin", map[string]any{
+		"gate_budget_ms": memory.MinGateBudgetMS - 1,
+	})
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422 for gate_budget_ms %d, got %d: %s", memory.MinGateBudgetMS-1, w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), fmt.Sprintf("between %d and %d", memory.MinGateBudgetMS, memory.MaxGateBudgetMS)) {
+		t.Fatalf("expected the error to name the bounds, got %s", w.Body.String())
+	}
+
+	// Above the upper bound is rejected too.
+	w = doMemoryNotesRequest(r, http.MethodPut, "/api/v1/workspaces/acme/memory/settings", "admin", map[string]any{
+		"gate_budget_ms": memory.MaxGateBudgetMS + 1,
+	})
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422 for gate_budget_ms %d, got %d: %s", memory.MaxGateBudgetMS+1, w.Code, w.Body.String())
+	}
+
+	// A non-integer supply fails JSON binding into the int field.
+	w = doMemoryNotesRequest(r, http.MethodPut, "/api/v1/workspaces/acme/memory/settings", "admin", map[string]any{
+		"gate_budget_ms": 1.5,
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a non-integer gate_budget_ms, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// An in-bounds value persists and reads back as the same integer.
+	w = doMemoryNotesRequest(r, http.MethodPut, "/api/v1/workspaces/acme/memory/settings", "admin", map[string]any{
+		"gate_budget_ms": 8000,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if s := decodeMemorySettings(t, w.Body.String()).Settings; s.GateBudgetMs != 8000 {
+		t.Fatalf("expected 8000 on the PUT response, got %d", s.GateBudgetMs)
+	}
+
+	// A PUT without the field leaves the stored budget untouched (absent =
+	// keep stored; there is no null-clear path).
+	w = doMemoryNotesRequest(r, http.MethodPut, "/api/v1/workspaces/acme/memory/settings", "admin", map[string]any{
+		"ingestion_enabled": false,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	w = doMemoryNotesRequest(r, http.MethodGet, "/api/v1/workspaces/acme/memory/settings", "member", nil)
+	if s := decodeMemorySettings(t, w.Body.String()).Settings; s.GateBudgetMs != 8000 {
+		t.Fatalf("expected the stored 8000 to survive a PUT without the field, got %d", s.GateBudgetMs)
+	}
+	row, err := st.ToolSettings().Get(nil, ws.ID, "memory")
+	if err != nil || row == nil {
+		t.Fatalf("expected a stored memory settings row, got %v err %v", row, err)
+	}
+	if ms, ok := row.Config["gate_budget_ms"].(int); !ok || ms != 8000 {
+		t.Fatalf("expected gate_budget_ms 8000 at rest, got %v", row.Config["gate_budget_ms"])
 	}
 }
 

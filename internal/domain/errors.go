@@ -12,6 +12,11 @@ var (
 	// ErrInvalid indicates invalid input or validation failure.
 	ErrInvalid = errors.New("invalid request")
 
+	// ErrUnprocessable indicates a well-formed request refused by cross-entity
+	// state: the workspace default model cannot be cleared while agents inherit
+	// it, and an agent cannot inherit while no workspace default model exists.
+	ErrUnprocessable = errors.New("unprocessable request")
+
 	// ErrUnauthenticated indicates missing, invalid, or expired credentials.
 	ErrUnauthenticated = errors.New("unauthenticated")
 
