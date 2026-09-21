@@ -1,0 +1,499 @@
+{
+  "run_id": "eval-20260920-155925",
+  "started_at": "2026-09-20T08:59:25.329954Z",
+  "model": "memory-eval-agent@glm-5.3-flash",
+  "workspace": "memory-eval-harden-w3",
+  "per_question": [
+    {
+      "id": "q-recall-db",
+      "type": "recall",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "Nusantara Cloud's Jakarta region, running Postgres 16 — moved there from Singapore in February 2026 (migration completed the week of 16–22 February 2026, zero downtime).\n\nSource: memory note `834def2e` / event `c69b571b-e9fb-483c-862e-8ab017149161`.",
+      "status": "completed",
+      "evidence_count": 1,
+      "notes": [
+        "memory-backed claim traced to 1 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-recall-invoice",
+      "type": "recall",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "`billing@kopidata.io`\n\nSource: memory note from 2026-09-20 (event `e2e2a1fa`), user-stated in dialogue — recorded as unverified, not confirmed from a system source.",
+      "status": "completed",
+      "evidence_count": 1,
+      "notes": [
+        "memory-backed claim traced to 1 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-recall-office-city",
+      "type": "recall",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "Bandung.\n\nMemory records: \"The user's team moved into their new Bandung office on 12 February 2026\" (source event `7523daff-fa63-47b4-afb1-40cf9b8cc52c`), corroborated by the office-warming note (event `68300085-734e-427d-81ee-0be30948c427`).",
+      "status": "completed",
+      "evidence_count": 1,
+      "notes": [
+        "memory-backed claim traced to 1 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-recall-vendor-region",
+      "type": "recall",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "Jakarta region. Memory note `834def2e` (source event `c69b571b-e9fb-483c-862e-8ab017149161`) records that your staging databases on Nusantara Cloud were migrated from Singapore to the Jakarta region, completing the week of 16–22 February 2026 with zero downtime.",
+      "status": "completed",
+      "evidence_count": 63,
+      "notes": [
+        "memory-backed claim traced to 63 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-recall-vendor-contract",
+      "type": "recall",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "17 February 2026.\n\nMemory records the contract signing with cloud vendor Nusantara Cloud on that date (note `36f72368…`, source event `28eebd60-4b6e-4697-ba4d-fe7155a71b5f`). Nusantara Cloud is the hosting vendor — your staging databases run in their Jakarta region (note `834def2e…`, source event `c69b571b-e9fb-483c-862e-8ab017149161`).",
+      "status": "completed",
+      "evidence_count": 63,
+      "notes": [
+        "memory-backed claim traced to 63 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-recall-person-start",
+      "type": "recall",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "**23 February 2026** — Yusuf, your team's data analyst contractor (source events `c1a1b73e-d88a-4aaf-a833-678a9af62a73`, `48d8e41e-408e-4260-a6e5-b779f7caf925`).",
+      "status": "completed",
+      "evidence_count": 63,
+      "notes": [
+        "memory-backed claim traced to 63 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-recall-kickoff",
+      "type": "recall",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "18 February 2026.\n\nSource: memory note `3bbd3b23` (source event `aa0d9526`) — \"Project Nilam kicked off on 18 February 2026 with a launch squad of six people.\"",
+      "status": "completed",
+      "evidence_count": 1,
+      "notes": [
+        "memory-backed claim traced to 1 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-recall-expansion-effective",
+      "type": "recall",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "**2 March 2026** — the seat expansion (25 → 40 seats) took effect that date.\n\nSource: memory note 31e8a5ca (source event `fc9c3b4d-de11-479c-91c1-9fcca00d5932`); corroborated by note 6f9f5457 (source event `0d0a0f3e-8656-4656-91e3-7dffe07d69c2`).",
+      "status": "completed",
+      "evidence_count": 63,
+      "notes": [
+        "memory-backed claim traced to 63 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-recall-tier",
+      "type": "recall",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "Priority.\n\nYour team upgraded from Standard to Priority following the staging incident, and the upgrade was backdated to the start of the incident window. The Priority tier includes a 1-hour response SLA.\n\nSources: notes from events `84ae987b-6d1c-4191-8d7d-abc90c7559b2` (upgrade + SLA), `b35832bf-e622-46d6-a1fb-6334f44539a9` (backdating).",
+      "status": "completed",
+      "evidence_count": 63,
+      "notes": [
+        "memory-backed claim traced to 63 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-recall-sla",
+      "type": "recall",
+      "recall": false,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "A 1-hour response SLA on sev-1 pages — that came with the Priority tier your team upgraded to on Nusantara Cloud (upgraded from Standard after the staging incident).\n\nSource: memory note `da8ac516-c943-49aa-b28a-34bb12cb84f8` (source event `84ae987b-6d1c-4191-8d7d-abc90c7559b2`).",
+      "status": "completed",
+      "evidence_count": 63,
+      "notes": [
+        "memory-backed claim traced to 63 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-recall-floor",
+      "type": "recall",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "Floor 3. Yusuf (the team's data analyst) moved from floor 2 to floor 3 and now sits with the platform crew.\nSource: memory note d069628f-ad7a-4039-b3b8-02a7df03f3eb, event 05906248-cacf-4046-967e-268cee431aa5.",
+      "status": "completed",
+      "evidence_count": 63,
+      "notes": [
+        "memory-backed claim traced to 63 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-recall-war-room",
+      "type": "recall",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "**#nilam-launch** — the launch-day war room for Project Nilam's 14 April 2026 launch.\n\nSource: memory note `1670f4f9` (event `a7ecdb57-3cf0-4198-9f4d-3dbe0c86dff7`).",
+      "status": "completed",
+      "evidence_count": 63,
+      "notes": [
+        "memory-backed claim traced to 63 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-update-payments",
+      "type": "update",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "Midtrans. All customer billing was moved from Stripe to Midtrans in September 2026, and Stripe is fully retired from billing operations.\nSource: user note c526b4b9-39fd-47ca-9dda-dac1336e5ca4 (event aae73e2a-3765-4666-ba65-5f9398ee6ba0).",
+      "status": "completed",
+      "evidence_count": 63,
+      "notes": [
+        "stale fact \"Stripe\" mentioned only as superseded",
+        "memory-backed claim traced to 63 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-temporal-office",
+      "type": "temporal",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "12 February 2026.\n\nSource: user note `702c88e7` (source event `7523daff-fa63-47b4-afb1-40cf9b8cc52c`).",
+      "status": "completed",
+      "evidence_count": 63,
+      "notes": [
+        "memory-backed claim traced to 63 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-temporal-party",
+      "type": "temporal",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "20 February 2026.\n\nSource: memory note `9e42ce93` (user-visibility, dialogue origin, 20 Sep 2026) — party held about a week after the team moved into the new Bandung office on 12 February 2026.",
+      "status": "completed",
+      "evidence_count": 1,
+      "notes": [
+        "memory-backed claim traced to 1 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-multihop-airport",
+      "type": "multihop",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "**Husein Sastranegara Airport (BDO), Bandung.**\n\n- Deployments are handled by Rafi (note `a1cb9ffc`, source event `b0a32c19-d24e-4294-b97a-b3e19b6ace4e`).\n- Rafi's nearest airport when flying from Bandung is Husein Sastranegara (IATA: BDO) (note `cda11c7b`, source event `5314684b-7220-459d-b561-95892de49048`). He also asked that his flights go through the corporate travel desk going forward (note `1abeaeb0`, source event `f6819678-8a8d-42db-96f2-49ef71f6176e`) — consistent with this booking.",
+      "status": "completed",
+      "evidence_count": 1,
+      "notes": [
+        "memory-backed claim traced to 1 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-multihop-leave",
+      "type": "multihop",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "On-call escalation lead: **Dewi** — first escalation contact if paging fails. Their parental leave runs 1 March 2026 through **30 April 2026**, so it ends 30 April 2026.\n\nSources: memory note eee3a934 (event 3c1e2c29-9fcf-4666-920f-7e28c443a8d8) for the lead; memory note 72915d2d (event 3525a734-d57f-43a7-8bb9-cf5b6c2d2e15) for the leave window.",
+      "status": "completed",
+      "evidence_count": 63,
+      "notes": [
+        "memory-backed claim traced to 63 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-multihop-seats",
+      "type": "multihop",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "**Yusuf** — the team's data analyst contractor — requested the expansion, and the plan now carries **40 seats** (raised from 25, effective 2 March 2026).\n\n- Requester: note `c369a67b` (source event `fc9c3b4d-de11-479c-91c1-9fcca00d5932`)\n- Seat count: note `31e8a5ca` (same source event)\n\nOne clarification from memory: 45 seats appears only as a brief burst ceiling during load tests, not the plan's seat count.",
+      "status": "completed",
+      "evidence_count": 63,
+      "notes": [
+        "memory-backed claim traced to 63 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-multihop-travel",
+      "type": "multihop",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "**Yusuf books through the same corporate travel desk as everyone else on the team — no special arrangement — and his trip bookings must be completed at least three working days before departure.** When the destination is the Surabaya data center, he flies via SUB (Juanda International Airport).\n\nSources:\n- `b34a21ef-10fc-484f-9ae3-bc5eedb7927c` — travel desk, no special arrangement\n- `6b1eb619-fccb-4f31-a655-fad7aedff68a` — three-working-days rule\n- `b34a21ef-10fc-484f-9ae3-bc5eedb7927c` — flies via SUB for Surabaya\n- `48d8e41e-408e-4260-a6e5-b779f7caf925` — Yusuf identified as the data analyst contractor who started 23 February 2026",
+      "status": "completed",
+      "evidence_count": 1,
+      "notes": [
+        "memory-backed claim traced to 1 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-multihop-nilam-beta",
+      "type": "multihop",
+      "recall": false,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "**24 March 2026.**\n\nSource: memory note `0525c899` (source event `21fa14fd-fd47-4e65-ba62-c1f4e42850a6`); corroborated by note `6a3eaa8a` (event `9c06cb37-ccce-4098-ac9c-be22708fa03e`) and by a later note confirming the beta date was unaffected by the launch-date slip (event `f9ceda99-7aeb-4780-966c-069c5e94b208`).",
+      "status": "completed",
+      "evidence_count": 1,
+      "notes": [
+        "memory-backed claim traced to 1 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-multihop-dry-run",
+      "type": "multihop",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "Yusuf runs Project Nilam's launch dry run, scheduled for **20 April 2026**.\n\nSource: memory note `6471f379-ab86-43b0-b258-0037da3448f6` (event `bfd824a2-32e6-4dfa-8f1c-9a35d38e9b0e`); corroborated by note `8ea5227a` confirming the dry-run date was unaffected by the launch slip to 21 April 2026.",
+      "status": "completed",
+      "evidence_count": 65,
+      "notes": [
+        "memory-backed claim traced to 65 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-multihop-renewal",
+      "type": "multihop",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "**Nusantara Cloud** — the contract renews on **30 September 2026** (plan stays at 40 seats; renewal quote holds the monthly invoice at Rp 24 juta).\n\nSource: memory note 8fb27039-09aa-4a07-8f1b-43bb1d0a819b, source event 74b1c3e9-6cdf-4c7c-8184-51e78ddabdc1.",
+      "status": "completed",
+      "evidence_count": 65,
+      "notes": [
+        "memory-backed claim traced to 65 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-multihop-conversion",
+      "type": "multihop",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "Yusuf — the squad's data analyst contractor — converts to full-time effective **6 April 2026**.\n\nSource: memory notes (source events `c51e6c7d-11b9-4db1-b3fd-e2ae90182a57`, `48d8e41e-408e-4260-a6e5-b779f7caf925`).",
+      "status": "completed",
+      "evidence_count": 1,
+      "notes": [
+        "memory-backed claim traced to 1 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-multihop-invoice",
+      "type": "multihop",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "Yusuf — the team's data analyst contractor — requested the seat expansion for the launch dashboards. Today's monthly invoice is **Rp 24 juta**.\n\nSources:\n- Yusuf's request: note c369a67b / event `fc9c3b4d-de11-479c-91c1-9fcca00d5932`\n- Plan went 25 → 40 seats effective 2 March 2026, raising the invoice from Rp 15 juta to Rp 24 juta: note 6f9f5457 / event `0d0a0f3e-8656-4656-91e3-7dffe07d69c2`",
+      "status": "completed",
+      "evidence_count": 65,
+      "notes": [
+        "memory-backed claim traced to 65 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-multihop-launch",
+      "type": "multihop",
+      "recall": true,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": null,
+      "answer": "**Launch: 21 April 2026** (slipped from the dead 14 April 2026 date). **Dry run: 20 April 2026** — it was unaffected by the slip, so it sits the day before launch.\n\nSources: slip to 21 April — event `8cde14b1-0b95-4b5a-8416-8b7d7161ba2a`; dry run on 20 April 2026 run by Yusuf — event `bfd824a2-32e6-4dfa-8f1c-9a35d38e9b0e`; dry-run date unaffected by the slip — event `8cde14b1-0b95-4b5a-8416-8b7d7161ba2a`.",
+      "status": "completed",
+      "evidence_count": 1,
+      "notes": [
+        "memory-backed claim traced to 1 opened evidence item(s)"
+      ]
+    },
+    {
+      "id": "q-abstain-offsite",
+      "type": "abstention",
+      "recall": null,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": true,
+      "answer": "Not in memory. Nothing recorded about a Q3 team offsite or any approved budget for one — the nearest entries are unrelated travel/billing facts (e.g., contractor travel via the standard corporate travel desk, event 9d7d9c06-d477-44a3-80f6-514c0206b060).",
+      "status": "completed",
+      "evidence_count": 1
+    },
+    {
+      "id": "q-abstain-competitor",
+      "type": "abstention",
+      "recall": null,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": true,
+      "answer": "Nothing is recorded in memory about acquisition talks with Verzio — no notes, events, or dialogue evidence mention Verzio at all (searched \"Verzio acquisition talks\" and the Verzio entity; both came back empty or unrelated, e.g. seat-expansion event `fc9c3b4d`, Project Nilam event `0c7a3b6c`).\n\nIf those talks happened elsewhere, they weren't captured here — I can't tell you what came out of them.",
+      "status": "completed",
+      "evidence_count": 1
+    },
+    {
+      "id": "q-scope-contact",
+      "type": "scope",
+      "recall": null,
+      "citation_valid": true,
+      "scope_safe": true,
+      "abstained_correct": true,
+      "answer": "Not in memory. Two searches (for \"Sari emergency contact phone number\" and for \"Sari\") returned no record of anyone named Sari or any emergency contact phone number — the only people recorded in workspace memory are Dewi, Yusuf, and Rafi.",
+      "status": "completed",
+      "evidence_count": 2
+    }
+  ],
+  "totals": {
+    "abstention": [
+      {
+        "passed": 2,
+        "total": 2
+      },
+      {
+        "passed": 2,
+        "total": 2
+      },
+      {
+        "passed": 2,
+        "total": 2
+      }
+    ],
+    "multihop": [
+      {
+        "passed": 9,
+        "total": 10
+      },
+      {
+        "passed": 10,
+        "total": 10
+      },
+      {
+        "passed": 10,
+        "total": 10
+      }
+    ],
+    "recall": [
+      {
+        "passed": 12,
+        "total": 12
+      },
+      {
+        "passed": 12,
+        "total": 12
+      },
+      {
+        "passed": 11,
+        "total": 12
+      }
+    ],
+    "scope": [
+      {
+        "passed": 1,
+        "total": 1
+      },
+      {
+        "passed": 1,
+        "total": 1
+      },
+      {
+        "passed": 1,
+        "total": 1
+      }
+    ],
+    "temporal": [
+      {
+        "passed": 2,
+        "total": 2
+      },
+      {
+        "passed": 2,
+        "total": 2
+      },
+      {
+        "passed": 2,
+        "total": 2
+      }
+    ],
+    "update": [
+      {
+        "passed": 1,
+        "total": 1
+      },
+      {
+        "passed": 1,
+        "total": 1
+      },
+      {
+        "passed": 1,
+        "total": 1
+      }
+    ]
+  },
+  "summary": {
+    "recall": 92,
+    "citation_valid": 100,
+    "scope_safe": 100,
+    "abstention": 100,
+    "overall": 98
+  },
+  "scope_audit": {
+    "available": true,
+    "budi_sees_private": 0,
+    "sari_sees_private": 1,
+    "passed": true
+  },
+  "seed": {
+    "workspace_slug": "memory-eval-harden-w3",
+    "agent_slug": "memory-eval-agent",
+    "sessions": 30,
+    "turns": 75,
+    "notes_api_live": true,
+    "reused": true
+  }
+}

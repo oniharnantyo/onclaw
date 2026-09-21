@@ -286,6 +286,56 @@ func (es *memoryEventStore) queryEvents(ctx context.Context, workspaceID, viewer
 	return events, nil
 }
 
+// GetEventsByIDs returns the caller-visible live events with the given ids,
+// newest first. The structural scope predicate applies exactly as on every
+// other read: missing, foreign-workspace, tombstoned, and invisible ids are
+// simply absent from the result, never an error. The entity traversal's
+// depth-1 expansion reads linked rows through this primitive
+// (wave3-memory-vectors-and-graph D8).
+func (es *memoryEventStore) GetEventsByIDs(ctx context.Context, workspaceID, viewerUserID, servingAgentID string, ids []string) ([]domain.MemoryEvent, error) {
+	wanted := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		wanted = append(wanted, id)
+	}
+	if len(wanted) == 0 {
+		return []domain.MemoryEvent{}, nil
+	}
+
+	query := `
+		SELECT ` + memoryEventColumns + `
+		FROM memory_events
+		WHERE workspace_id = $1 AND tombstoned_at IS NULL AND id = ANY($2)
+		  AND ` + memoryScopeClause(3, 4) + `
+		ORDER BY event_time DESC, learned_at DESC, id DESC
+	`
+	rows, err := es.db.Query(ctx, query, workspaceID, wanted, viewerUserID, servingAgentID)
+	if err != nil {
+		return nil, convertError(err)
+	}
+	defer rows.Close()
+
+	events := make([]domain.MemoryEvent, 0, len(wanted))
+	for rows.Next() {
+		e, err := scanMemoryEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, *e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, convertError(err)
+	}
+	return events, nil
+}
+
 func (es *memoryEventStore) TombstoneEvent(ctx context.Context, workspaceID, id string) error {
 	if workspaceID == "" || id == "" {
 		return domain.ErrInvalid
@@ -596,6 +646,57 @@ func (ns *memoryNoteStore) queryNotes(ctx context.Context, workspaceID, viewerUs
 	defer rows.Close()
 
 	notes := make([]domain.MemoryNote, 0)
+	for rows.Next() {
+		n, err := scanMemoryNote(rows)
+		if err != nil {
+			return nil, err
+		}
+		notes = append(notes, *n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, convertError(err)
+	}
+	return notes, nil
+}
+
+// GetNotesByIDs returns the caller-visible CURRENT notes (live, not
+// superseded — the retrieval contract SearchNotes follows) with the given
+// ids, newest-learned first. The structural scope predicate applies exactly
+// as on every other read: missing, foreign-workspace, tombstoned,
+// superseded, and invisible ids are simply absent from the result, never an
+// error. The entity traversal's depth-1 expansion reads linked rows through
+// this primitive (wave3-memory-vectors-and-graph D8).
+func (ns *memoryNoteStore) GetNotesByIDs(ctx context.Context, workspaceID, viewerUserID, servingAgentID string, ids []string) ([]domain.MemoryNote, error) {
+	wanted := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		wanted = append(wanted, id)
+	}
+	if len(wanted) == 0 {
+		return []domain.MemoryNote{}, nil
+	}
+
+	query := `
+		SELECT ` + memoryNoteColumns + `
+		FROM memory_notes
+		WHERE workspace_id = $1 AND tombstoned_at IS NULL AND superseded_by IS NULL
+		  AND id = ANY($2) AND ` + memoryScopeClause(3, 4) + `
+		ORDER BY learned_at DESC, id DESC
+	`
+	rows, err := ns.db.Query(ctx, query, workspaceID, wanted, viewerUserID, servingAgentID)
+	if err != nil {
+		return nil, convertError(err)
+	}
+	defer rows.Close()
+
+	notes := make([]domain.MemoryNote, 0, len(wanted))
 	for rows.Next() {
 		n, err := scanMemoryNote(rows)
 		if err != nil {

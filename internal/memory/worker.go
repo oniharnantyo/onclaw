@@ -17,6 +17,7 @@ import (
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
 // Run origins carried on IngestJob. The values mirror the ExecRequest Origin
@@ -107,31 +108,39 @@ const (
 	stopGrace = 30 * time.Second
 )
 
-// Worker drains turn-end ingest jobs off a bounded queue through the gister
-// and the curation gate, then emits the chip. Enqueueing never blocks the
-// caller and nothing a job does can fail a run (D2, D10). Jobs on the same
-// session are serialized — the gister's cursor is read-then-write — while
-// different sessions process concurrently.
+// Worker drains turn-end ingest jobs off a bounded queue through the raw
+// evidence embed, the gister, and the curation gate, then emits the chip.
+// Enqueueing never blocks the caller and nothing a job does can fail a run
+// (D2, D10). Jobs on the same session are serialized — the gister's cursor
+// is read-then-write — while different sessions process concurrently.
 type Worker struct {
-	gister    *Gister
-	gate      *Gate
-	log       *slog.Logger
-	chip      ChipSink
-	queue     chan IngestJob
-	queueSize int
-	workers   int
-	wg        sync.WaitGroup
-	stopCh    chan struct{}
-	stopOnce  sync.Once
+	gister     *Gister
+	gate       *Gate
+	embedder   Embedder
+	embeddings store.MemoryEmbeddingStore
+	log        *slog.Logger
+	chip       ChipSink
+	queue      chan IngestJob
+	queueSize  int
+	workers    int
+	wg         sync.WaitGroup
+	stopCh     chan struct{}
+	stopOnce   sync.Once
+
+	// rawEnabled resolves the workspace's raw-embedding toggle (the
+	// settings record's storage-pressure switch, D3 risk register); nil
+	// behaves as enabled — absence is ON.
+	rawEnabled RawEmbeddingFunc
 
 	locksMu     sync.Mutex
 	sessionLock map[string]*sync.Mutex
 
-	enqueued  atomic.Int64
-	processed atomic.Int64
-	succeeded atomic.Int64
-	failed    atomic.Int64
-	dropped   atomic.Int64
+	enqueued      atomic.Int64
+	processed     atomic.Int64
+	succeeded     atomic.Int64
+	failed        atomic.Int64
+	dropped       atomic.Int64
+	embedFailures atomic.Int64
 }
 
 // WorkerOption configures the worker; every knob has a safe default.
@@ -193,13 +202,33 @@ func WithPostureFunc(fn PostureFunc) WorkerOption {
 	}
 }
 
+// RawEmbeddingFunc resolves the workspace's raw-embedding toggle at job
+// time — the per-workspace switch for turning off raw-turn vectors under
+// storage pressure (wave3 risk register). Anything other than true skips
+// the raw stage; a nil func behaves as enabled (absence = ON).
+type RawEmbeddingFunc func(ctx context.Context, workspaceID string) bool
+
+// WithRawEmbeddingEnabled wires the raw-evidence toggle source. Unset, raw
+// turns embed whenever an embedding model is configured (absence = ON).
+func WithRawEmbeddingEnabled(fn RawEmbeddingFunc) WorkerOption {
+	return func(w *Worker) {
+		if fn != nil {
+			w.rawEnabled = fn
+		}
+	}
+}
+
 // NewWorker constructs the worker from its collaborators: the windowed
-// gister and the curation gate, each already bound to their own granular
-// stores. The composition root resolves every dependency non-nil.
-func NewWorker(gister *Gister, gate *Gate, log *slog.Logger, opts ...WorkerOption) *Worker {
+// gister, the curation gate, the embeddings lane (the vector channel's
+// port), and the vector-index store the embedding stages persist through —
+// each an explicitly injected, granular dependency the composition root
+// resolves non-nil. The composition root resolves every dependency non-nil.
+func NewWorker(gister *Gister, gate *Gate, embedder Embedder, embeddings store.MemoryEmbeddingStore, log *slog.Logger, opts ...WorkerOption) *Worker {
 	w := &Worker{
 		gister:      gister,
 		gate:        gate,
+		embedder:    embedder,
+		embeddings:  embeddings,
 		log:         log,
 		queueSize:   defaultQueueSize,
 		workers:     defaultConcurrency,
@@ -296,32 +325,38 @@ func (w *Worker) Enqueue(job IngestJob) {
 }
 
 // IngestStats is the worker's monotonic counter snapshot; the morning
-// report's extraction-failure count reads Failed from here.
+// report's extraction-failure count reads Failed from here and its
+// embedding-failure count reads EmbedFailures (wave3 D3's fail-soft
+// visibility — silent degradation surfaces in the report).
 type IngestStats struct {
-	Enqueued     int64
-	Processed    int64
-	Succeeded    int64
-	Failed       int64
-	QueueDropped int64
+	Enqueued      int64
+	Processed     int64
+	Succeeded     int64
+	Failed        int64
+	QueueDropped  int64
+	EmbedFailures int64
 }
 
 // Stats returns the current counters.
 func (w *Worker) Stats() IngestStats {
 	return IngestStats{
-		Enqueued:     w.enqueued.Load(),
-		Processed:    w.processed.Load(),
-		Succeeded:    w.succeeded.Load(),
-		Failed:       w.failed.Load(),
-		QueueDropped: w.dropped.Load(),
+		Enqueued:      w.enqueued.Load(),
+		Processed:     w.processed.Load(),
+		Succeeded:     w.succeeded.Load(),
+		Failed:        w.failed.Load(),
+		QueueDropped:  w.dropped.Load(),
+		EmbedFailures: w.embedFailures.Load(),
 	}
 }
 
-// process runs one job: the windowed gister, then the curation gate, then
-// the chip. The stages fail soft independently — a gist failure never
-// blocks the gate, and nothing escapes to the caller (D10). A job with an
+// process runs one job: the raw evidence embed, the windowed gister, then
+// the curation gate, then the row embed, then the chip. The stages fail
+// soft independently — a gist failure never blocks the gate, and an
+// embedding failure never blocks anything (D3/D4: the vector channel is the
+// additive lane) — and nothing escapes to the caller (D10). A job with an
 // empty unprocessed window is a quiet success: nothing to ingest. Jobs on
 // the same session hold the session lock for the whole body — the window
-// read, both stages, and the chip — so the incremental cursor never races.
+// read, every stage, and the chip — so the incremental cursor never races.
 func (w *Worker) process(ctx context.Context, job IngestJob) {
 	mutex := w.sessionMutex(job.WorkspaceID, job.SessionID)
 	mutex.Lock()
@@ -337,10 +372,17 @@ func (w *Worker) process(ctx context.Context, job IngestJob) {
 	}
 
 	if err == nil && len(win.events) > 0 {
-		if gist, err := w.gister.Gist(ctx, job, win); err != nil {
+		// Raw evidence first (D3 index-before-extract): the turn is
+		// retrievable through the vector channel even when every extraction
+		// stage below fails or skips.
+		w.embedRawTurn(ctx, job, win)
+
+		var gist *domain.MemoryEvent
+		if committed, err := w.gister.Gist(ctx, job, win); err != nil {
 			w.log.Warn("memory: gist failed", "session_id", job.SessionID, "error", err)
 			failed = true
 		} else {
+			gist = &committed
 			chip.EventIDs = append(chip.EventIDs, gist.ID)
 			bumpCount(&chip.Counts, gist.Visibility)
 		}
@@ -353,6 +395,10 @@ func (w *Worker) process(ctx context.Context, job IngestJob) {
 			chip.NoteIDs = append(chip.NoteIDs, result.NoteIDs...)
 			addCounts(&chip.Counts, result.Counts)
 		}
+
+		// Row embeddings last (D4): the committed rows leave this job
+		// vector-retrievable, batched into one embeddings call.
+		w.embedCommittedRows(ctx, job, gist, result)
 	}
 
 	w.processed.Add(1)

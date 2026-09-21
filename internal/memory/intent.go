@@ -25,12 +25,17 @@ const defaultGateBudget = time.Duration(DefaultGateBudgetMS) * time.Millisecond
 
 // IntentVerdict is the gate's routing decision: whether the turn needs deep
 // memory at all and, when it does, which buckets are relevant (curated notes,
-// episodic events, or both). The zero value is the self-contained verdict —
-// no retrieval.
+// episodic events, or — wave3 D8's associative route — the entity graph, in
+// which case Entity names the entity the turn is about, advisory and
+// fail-open: the searcher re-resolves it through the store's exact →
+// prefix/trigram seed resolution). The zero value is the self-contained
+// verdict — no retrieval.
 type IntentVerdict struct {
 	NeedsDeepMemory bool
 	Notes           bool
 	Events          bool
+	Associative     bool
+	Entity          string
 }
 
 // IntentGate is the pre-compose intent classification (task 4.1, design D8):
@@ -116,10 +121,13 @@ func (g *IntentGate) debugFail(ctx context.Context, stage string, err error) {
 		"stage", stage, "error", err)
 }
 
-// intentPayload is the strict JSON the side-call emits.
+// intentPayload is the strict JSON the side-call emits. Entity is the
+// associative route's advisory seed (wave3 D8) — the entity the turn is
+// about, spelled as the turn spells it.
 type intentPayload struct {
 	NeedsMemory bool     `json:"needs_memory"`
 	Buckets     []string `json:"buckets"`
+	Entity      string   `json:"entity"`
 }
 
 // parseIntent extracts the verdict from the model response: code fences and
@@ -151,24 +159,32 @@ func parseIntent(raw string) (IntentVerdict, error) {
 		case "events":
 			verdict.Events = true
 			routed = true
+		case "associative", "entity":
+			// The wave3 D8 associative route: entity-shaped queries draw
+			// graph-traversal candidates into the same shared prefetch
+			// budget. The model may spell the bucket either way; both route.
+			verdict.Associative = true
+			routed = true
 		}
 	}
 	if !routed {
 		verdict.Notes = true
 		verdict.Events = true
 	}
+	verdict.Entity = strings.TrimSpace(payload.Entity)
 	return verdict, nil
 }
 
 const intentSystemPrompt = `You are the intent gate for an AI agent workspace's memory. Given one user turn, decide whether answering it needs the workspace's extracted long-term memory (stored facts and episodic summaries beyond the documents already in your context) or whether the turn is self-contained.
 
 Emit ONLY a JSON object — no prose:
-{"needs_memory":true,"buckets":["notes","events"]}
+{"needs_memory":true,"buckets":["notes","events"],"entity":null}
 
 Rules:
 - needs_memory is false for greetings, small talk, pure reasoning, coding, and anything answerable without workspace history.
 - needs_memory is true when the turn references past discussions, decisions, people, projects, timelines, preferences, or anything previously said or done in this workspace.
-- buckets lists which stores are relevant: "notes" for durable facts, "events" for what happened and when. Omit nothing relevant; both when unsure.`
+- buckets lists which stores are relevant: "notes" for durable facts, "events" for what happened and when, "associative" when the turn is about one specific named entity (a project, person, system, or vendor) whose linked facts and events answer it. Omit nothing relevant; both notes and events when unsure.
+- entity names that entity as the turn spells it, so its linked rows can be traversed; omit it (null) whenever buckets has no "associative".`
 
 // intentUserPrompt renders the classification call's user turn: the raw turn
 // text and nothing else — the gate must stay cheap.

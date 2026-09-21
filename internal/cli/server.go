@@ -23,6 +23,7 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/observability"
 	"github.com/oniharnantyo/onclaw/internal/promptgen"
+	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/scheduler"
 	"github.com/oniharnantyo/onclaw/internal/server"
 	"github.com/oniharnantyo/onclaw/internal/server/handlers"
@@ -227,11 +228,19 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		memoryTraceOpts = append(memoryTraceOpts, memory.WithTraceCallback(traceHandler.Callback()))
 	}
 	var runner *agents.Runner
+	// The embeddings lane (wave3-memory-vectors-and-graph D4): resolves the
+	// workspace's embedding provider/model/dimension from the memory
+	// settings record and the endpoint credential from the provider catalog
+	// — the same stores the gister's side-call lane reads. The registry
+	// resolves canonical origins for providers pinned without a base URL.
+	memoryEmbedder := memory.NewProviderEmbedder(st.Providers(), st.ToolSettings(), encKey, providers.NewRegistry())
 	memoryWorker := memory.NewWorker(
-		memory.NewGister(st.MemoryEvents(), st.SessionEvents(), st.Providers(), encKey, agents.DefaultAgenticModelFactory,
+		memory.NewGister(st.MemoryEvents(), st.SessionEvents(), st.MemoryEntities(), st.Providers(), encKey, agents.DefaultAgenticModelFactory, memoryLog,
 			append(memoryTraceOpts, memory.WithAgentModelSource(st.Agents()), memory.WithWorkspaceModelSource(st.ToolSettings()))...),
-		memory.NewGate(st.MemoryNotes(), st.Memories(), st.Providers(), encKey, agents.DefaultAgenticModelFactory, memoryLog,
+		memory.NewGate(st.MemoryNotes(), st.MemoryEntities(), st.Memories(), st.Providers(), encKey, agents.DefaultAgenticModelFactory, memoryLog,
 			append(memoryTraceOpts, memory.WithAgentModelSource(st.Agents()), memory.WithWorkspaceModelSource(st.ToolSettings()))...),
+		memoryEmbedder,
+		st.MemoryEmbeddings(),
 		memoryLog,
 		memory.WithChipSink(func(ctx context.Context, job memory.IngestJob, payload memory.MemoryIngestedPayload) {
 			runner.AppendMemoryChip(ctx, job, payload)
@@ -242,8 +251,25 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		memory.WithPostureFunc(func(ctx context.Context, workspaceID string) memory.Posture {
 			return handlers.MemoryPostureForWorkspace(ctx, st.ToolSettings(), workspaceID)
 		}),
+		// Raw-embedding toggle (wave3): the per-workspace switch for the
+		// raw-turn vector channel; absence or read failure is ON.
+		memory.WithRawEmbeddingEnabled(func(ctx context.Context, workspaceID string) bool {
+			return handlers.RawEmbeddingEnabledForWorkspace(ctx, st.ToolSettings(), workspaceID)
+		}),
 	)
-	memorySearcher := memory.NewSearcher(st.MemoryNotes(), st.MemoryEvents())
+	// The fused searcher (wave3 task 3.3): the runner's prefetch, the
+	// memory.search tool, and the notes API free-text filter all read through
+	// this one instance — lexical and vector channels fused with RRF over the
+	// extracted stores, entity traversal over the graph, and raw-evidence
+	// hydration through the session event log.
+	memorySearcher := memory.NewSearcher(
+		st.MemoryNotes(),
+		st.MemoryEvents(),
+		st.MemoryEmbeddings(),
+		st.MemoryEntities(),
+		st.SessionEvents(),
+		memoryEmbedder,
+	)
 	intentGate := memory.NewIntentGate(st.Providers(), encKey, agents.DefaultAgenticModelFactory, memoryLog,
 		append(memoryTraceOpts, memory.WithAgentModelSource(st.Agents()), memory.WithWorkspaceModelSource(st.ToolSettings()))...)
 
@@ -256,6 +282,7 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		st.MemoryNotes(),
 		st.MemoryReports(),
 		st.Workspaces(),
+		st.MemoryEntities(),
 		st.Providers(),
 		encKey,
 		agents.DefaultAgenticModelFactory,

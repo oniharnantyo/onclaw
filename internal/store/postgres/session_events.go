@@ -147,6 +147,67 @@ func (s *sessionEventStore) LoadEvents(ctx context.Context, params storeport.Loa
 	return events, nil
 }
 
+// EventsByIDs returns the workspace-scoped events with the given ids,
+// ordered deterministically by (session_id, seq). Absent and
+// foreign-workspace ids are simply absent; duplicate ids collapse. The
+// memory searcher's raw-evidence hydration reads through this primitive
+// (wave3-memory-vectors-and-graph D9: the raw citation pointer is the source
+// event id).
+func (s *sessionEventStore) EventsByIDs(ctx context.Context, workspaceID string, eventIDs []string) ([]domain.SessionEvent, error) {
+	if workspaceID == "" || len(eventIDs) == 0 {
+		return []domain.SessionEvent{}, nil
+	}
+	wanted := make([]string, 0, len(eventIDs))
+	seen := make(map[string]struct{}, len(eventIDs))
+	for _, id := range eventIDs {
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		wanted = append(wanted, id)
+	}
+	if len(wanted) == 0 {
+		return []domain.SessionEvent{}, nil
+	}
+
+	const query = `
+		SELECT session_id, event_id, turn_id, seq, kind, payload, occurred_at, workspace_id
+		FROM session_events
+		WHERE workspace_id = $1 AND event_id = ANY($2)
+		ORDER BY session_id ASC, seq ASC, event_id ASC
+	`
+	rows, err := s.db.Query(ctx, query, workspaceID, wanted)
+	if err != nil {
+		return nil, convertError(err)
+	}
+	defer rows.Close()
+
+	events := make([]domain.SessionEvent, 0)
+	for rows.Next() {
+		var e domain.SessionEvent
+		if err := rows.Scan(
+			&e.SessionID,
+			&e.EventID,
+			&e.TurnID,
+			&e.Seq,
+			&e.Kind,
+			&e.Payload,
+			&e.OccurredAt,
+			&e.WorkspaceID,
+		); err != nil {
+			return nil, convertError(err)
+		}
+		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, convertError(err)
+	}
+	return events, nil
+}
+
 // NextEventSeq returns the next append position for the session's event log:
 // MAX(seq)+1 over its rows, or 0 when the log is empty.
 func (s *sessionEventStore) NextEventSeq(ctx context.Context, workspaceID, sessionID string) (int64, error) {

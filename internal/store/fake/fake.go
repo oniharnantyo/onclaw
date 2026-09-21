@@ -66,6 +66,10 @@ type fakeStore struct {
 	gatewayOutbox           map[string]*domain.OutboxEntry            // key: ID
 	memoryNoteEvidence      map[string]*domain.MemoryNoteEvidence     // key: noteID + ":" + sourceEventID
 	memoryReports           map[string]*domain.MemoryReport           // key: workspaceID
+	memoryEmbeddings        map[string]*domain.MemoryEmbedding        // key: ID
+	memoryEntities          map[string]*domain.MemoryEntity           // key: ID
+	memoryEntitiesByNorm    map[string]string                         // key: workspaceID + ":" + normalizedLabel -> ID
+	memoryEntityEdges       map[string]*domain.MemoryEntityEdge       // key: ID
 }
 
 // New creates a new in-memory fake store.
@@ -121,6 +125,10 @@ func newStore() *fakeStore {
 		gatewayOutbox:           make(map[string]*domain.OutboxEntry),
 		memoryNoteEvidence:      make(map[string]*domain.MemoryNoteEvidence),
 		memoryReports:           make(map[string]*domain.MemoryReport),
+		memoryEmbeddings:        make(map[string]*domain.MemoryEmbedding),
+		memoryEntities:          make(map[string]*domain.MemoryEntity),
+		memoryEntitiesByNorm:    make(map[string]string),
+		memoryEntityEdges:       make(map[string]*domain.MemoryEntityEdge),
 	}
 }
 
@@ -172,6 +180,16 @@ func (s *fakeStore) MemoryNotes() store.MemoryNoteStore {
 // MemoryReports returns the MemoryReportStore sub-port.
 func (s *fakeStore) MemoryReports() store.MemoryReportStore {
 	return &memoryReportStore{s: s}
+}
+
+// MemoryEmbeddings returns the MemoryEmbeddingStore sub-port.
+func (s *fakeStore) MemoryEmbeddings() store.MemoryEmbeddingStore {
+	return &memoryEmbeddingStore{s: s}
+}
+
+// MemoryEntities returns the MemoryEntityStore sub-port.
+func (s *fakeStore) MemoryEntities() store.MemoryEntityStore {
+	return &memoryEntityStore{s: s}
 }
 
 // SessionEvents returns the SessionEventStore sub-port.
@@ -414,6 +432,18 @@ func (s *fakeStore) clone() *fakeStore {
 	for key, r := range s.memoryReports {
 		cp.memoryReports[key] = cloneMemoryReport(r)
 	}
+	for id, e := range s.memoryEmbeddings {
+		cp.memoryEmbeddings[id] = cloneMemoryEmbedding(e)
+	}
+	for id, e := range s.memoryEntities {
+		cp.memoryEntities[id] = cloneMemoryEntity(e)
+	}
+	for key, id := range s.memoryEntitiesByNorm {
+		cp.memoryEntitiesByNorm[key] = id
+	}
+	for id, e := range s.memoryEntityEdges {
+		cp.memoryEntityEdges[id] = cloneMemoryEntityEdge(e)
+	}
 	return cp
 }
 
@@ -464,6 +494,10 @@ func (s *fakeStore) apply(other *fakeStore) {
 	s.gatewayOutbox = other.gatewayOutbox
 	s.memoryNoteEvidence = other.memoryNoteEvidence
 	s.memoryReports = other.memoryReports
+	s.memoryEmbeddings = other.memoryEmbeddings
+	s.memoryEntities = other.memoryEntities
+	s.memoryEntitiesByNorm = other.memoryEntitiesByNorm
+	s.memoryEntityEdges = other.memoryEntityEdges
 }
 
 func cloneUser(u *domain.User) *domain.User {
@@ -2024,6 +2058,50 @@ func (se *sessionEventStore) LoadEvents(_ context.Context, params store.LoadSess
 	return scoped, nil
 }
 
+// EventsByIDs returns the workspace-scoped events with the given ids,
+// ordered deterministically by (session_id, seq). Absent and
+// foreign-workspace ids are simply absent; duplicate ids collapse.
+func (se *sessionEventStore) EventsByIDs(_ context.Context, workspaceID string, eventIDs []string) ([]domain.SessionEvent, error) {
+	if workspaceID == "" || len(eventIDs) == 0 {
+		return []domain.SessionEvent{}, nil
+	}
+	wanted := make(map[string]struct{}, len(eventIDs))
+	for _, id := range eventIDs {
+		if id != "" {
+			wanted[id] = struct{}{}
+		}
+	}
+
+	se.s.mu.RLock()
+	defer se.s.mu.RUnlock()
+
+	var found []domain.SessionEvent
+	for _, events := range se.s.sessionEvents {
+		for _, e := range events {
+			if e.WorkspaceID != workspaceID {
+				continue
+			}
+			if _, ok := wanted[e.EventID]; !ok {
+				continue
+			}
+			found = append(found, e)
+		}
+	}
+	sort.Slice(found, func(i, j int) bool {
+		if found[i].SessionID != found[j].SessionID {
+			return found[i].SessionID < found[j].SessionID
+		}
+		if found[i].Seq != found[j].Seq {
+			return found[i].Seq < found[j].Seq
+		}
+		return found[i].EventID < found[j].EventID
+	})
+	if found == nil {
+		return []domain.SessionEvent{}, nil
+	}
+	return found, nil
+}
+
 // NextEventSeq returns the next append position for the session's event log:
 // MAX(seq)+1 over its rows, or 0 when the log is empty.
 func (se *sessionEventStore) NextEventSeq(_ context.Context, workspaceID, sessionID string) (int64, error) {
@@ -3253,15 +3331,19 @@ func (es *memoryEventStore) SearchEvents(ctx context.Context, workspaceID, viewe
 // postgres hybrid match: any tokenized query term hitting
 // Description+" "+Outcome, with the whole-string query kept as an
 // always-match leg) and orders by descending matched-term count before
-// newest first.
+// newest first. Events and their matched-term counts ride one slice so the
+// sort comparator can never read a count that a swap left behind.
 func (es *memoryEventStore) queryEvents(ctx context.Context, workspaceID, viewerUserID, servingAgentID string, filters store.MemoryEventFilters, queryText string) ([]domain.MemoryEvent, error) {
 	needle, terms := memorySearchQuery(queryText)
 
 	es.s.mu.RLock()
 	defer es.s.mu.RUnlock()
 
-	events := make([]domain.MemoryEvent, 0)
-	counts := make([]int, 0)
+	type ranked struct {
+		event domain.MemoryEvent
+		count int
+	}
+	rankedEvents := make([]ranked, 0)
 	for _, e := range es.s.memoryEvents {
 		if e.WorkspaceID != workspaceID || e.TombstonedAt != nil {
 			continue
@@ -3285,19 +3367,60 @@ func (es *memoryEventStore) queryEvents(ctx context.Context, workspaceID, viewer
 		if !matched {
 			continue
 		}
-		events = append(events, *cloneMemoryEvent(e))
-		counts = append(counts, termCount)
+		rankedEvents = append(rankedEvents, ranked{event: *cloneMemoryEvent(e), count: termCount})
 	}
 	// Most matched terms first, then newest first.
-	sort.Slice(events, func(i, j int) bool {
-		if counts[i] != counts[j] {
-			return counts[i] > counts[j]
+	sort.Slice(rankedEvents, func(i, j int) bool {
+		if rankedEvents[i].count != rankedEvents[j].count {
+			return rankedEvents[i].count > rankedEvents[j].count
 		}
-		return memoryEventNewer(&events[i], &events[j])
+		return memoryEventNewer(&rankedEvents[i].event, &rankedEvents[j].event)
 	})
+	events := make([]domain.MemoryEvent, 0, len(rankedEvents))
+	for _, r := range rankedEvents {
+		events = append(events, r.event)
+	}
 	if filters.Limit > 0 && len(events) > filters.Limit {
 		events = events[:filters.Limit]
 	}
+	return events, nil
+}
+
+// GetEventsByIDs returns the caller-visible live events with the given ids,
+// newest first. The structural visible-set predicate applies exactly as on
+// queryEvents; missing, foreign, tombstoned, and invisible ids are absent.
+func (es *memoryEventStore) GetEventsByIDs(ctx context.Context, workspaceID, viewerUserID, servingAgentID string, ids []string) ([]domain.MemoryEvent, error) {
+	wanted := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			wanted[id] = struct{}{}
+		}
+	}
+	if len(wanted) == 0 {
+		return []domain.MemoryEvent{}, nil
+	}
+
+	es.s.mu.RLock()
+	defer es.s.mu.RUnlock()
+
+	events := make([]domain.MemoryEvent, 0, len(wanted))
+	for _, e := range es.s.memoryEvents {
+		if e.WorkspaceID != workspaceID || e.TombstonedAt != nil {
+			continue
+		}
+		if _, ok := wanted[e.ID]; !ok {
+			continue
+		}
+		if !memoryEventVisibleLocked(e, viewerUserID, servingAgentID) {
+			continue
+		}
+		events = append(events, *cloneMemoryEvent(e))
+	}
+	// Newest first, id as the determinism tiebreak (the ListEventsForUI
+	// ordering without the term ranking).
+	sort.Slice(events, func(i, j int) bool {
+		return memoryEventNewer(&events[i], &events[j])
+	})
 	return events, nil
 }
 
@@ -3466,6 +3589,46 @@ func (ns *memoryNoteStore) GetNote(ctx context.Context, workspaceID, viewerUserI
 	return cloneMemoryNote(n), nil
 }
 
+// GetNotesByIDs returns the caller-visible CURRENT notes (live, not
+// superseded — the retrieval contract SearchNotes follows) with the given
+// ids, newest-learned first. Missing, foreign, tombstoned, superseded, and
+// invisible ids are simply absent from the result.
+func (ns *memoryNoteStore) GetNotesByIDs(ctx context.Context, workspaceID, viewerUserID, servingAgentID string, ids []string) ([]domain.MemoryNote, error) {
+	wanted := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			wanted[id] = struct{}{}
+		}
+	}
+	if len(wanted) == 0 {
+		return []domain.MemoryNote{}, nil
+	}
+
+	ns.s.mu.RLock()
+	defer ns.s.mu.RUnlock()
+
+	notes := make([]domain.MemoryNote, 0, len(wanted))
+	for _, n := range ns.s.memoryNotes {
+		if n.WorkspaceID != workspaceID || n.TombstonedAt != nil || n.SupersededBy != nil {
+			continue
+		}
+		if _, ok := wanted[n.ID]; !ok {
+			continue
+		}
+		if !memoryNoteVisibleLocked(n, viewerUserID, servingAgentID) {
+			continue
+		}
+		notes = append(notes, *cloneMemoryNote(n))
+	}
+	sort.Slice(notes, func(i, j int) bool {
+		if !notes[i].LearnedAt.Equal(notes[j].LearnedAt) {
+			return notes[i].LearnedAt.After(notes[j].LearnedAt)
+		}
+		return notes[i].ID > notes[j].ID
+	})
+	return notes, nil
+}
+
 func (ns *memoryNoteStore) ListNotesForUI(ctx context.Context, workspaceID, viewerUserID, servingAgentID string, filters store.MemoryNoteFilters) ([]domain.MemoryNote, error) {
 	return ns.queryNotes(ctx, workspaceID, viewerUserID, servingAgentID, filters, "", filters.History)
 }
@@ -3482,15 +3645,20 @@ func (ns *memoryNoteStore) SearchNotes(ctx context.Context, workspaceID, viewerU
 // optional filters, then the any-term lexical match standing in for the
 // postgres hybrid match: any tokenized query term hitting the content, with
 // the whole-string query kept as an always-match leg) and orders by
-// descending matched-term count before pinned / newest-learned / id.
+// descending matched-term count before pinned / newest-learned / id. Notes
+// and their matched-term counts ride one slice so the sort comparator can
+// never read a count that a swap left behind.
 func (ns *memoryNoteStore) queryNotes(ctx context.Context, workspaceID, viewerUserID, servingAgentID string, filters store.MemoryNoteFilters, queryText string, includeSuperseded bool) ([]domain.MemoryNote, error) {
 	needle, terms := memorySearchQuery(queryText)
 
 	ns.s.mu.RLock()
 	defer ns.s.mu.RUnlock()
 
-	notes := make([]domain.MemoryNote, 0)
-	counts := make([]int, 0)
+	type ranked struct {
+		note  domain.MemoryNote
+		count int
+	}
+	rankedNotes := make([]ranked, 0)
 	for _, n := range ns.s.memoryNotes {
 		if n.WorkspaceID != workspaceID || n.TombstonedAt != nil {
 			continue
@@ -3514,23 +3682,26 @@ func (ns *memoryNoteStore) queryNotes(ctx context.Context, workspaceID, viewerUs
 		if !matched {
 			continue
 		}
-		notes = append(notes, *cloneMemoryNote(n))
-		counts = append(counts, termCount)
+		rankedNotes = append(rankedNotes, ranked{note: *cloneMemoryNote(n), count: termCount})
 	}
 	// Most matched terms first, then pinned first, then newest-learned, id
 	// as the determinism tiebreak.
-	sort.Slice(notes, func(i, j int) bool {
-		if counts[i] != counts[j] {
-			return counts[i] > counts[j]
+	sort.Slice(rankedNotes, func(i, j int) bool {
+		if rankedNotes[i].count != rankedNotes[j].count {
+			return rankedNotes[i].count > rankedNotes[j].count
 		}
-		if notes[i].Pinned != notes[j].Pinned {
-			return notes[i].Pinned
+		if rankedNotes[i].note.Pinned != rankedNotes[j].note.Pinned {
+			return rankedNotes[i].note.Pinned
 		}
-		if !notes[i].LearnedAt.Equal(notes[j].LearnedAt) {
-			return notes[i].LearnedAt.After(notes[j].LearnedAt)
+		if !rankedNotes[i].note.LearnedAt.Equal(rankedNotes[j].note.LearnedAt) {
+			return rankedNotes[i].note.LearnedAt.After(rankedNotes[j].note.LearnedAt)
 		}
-		return notes[i].ID > notes[j].ID
+		return rankedNotes[i].note.ID > rankedNotes[j].note.ID
 	})
+	notes := make([]domain.MemoryNote, 0, len(rankedNotes))
+	for _, r := range rankedNotes {
+		notes = append(notes, r.note)
+	}
 	if filters.Limit > 0 && len(notes) > filters.Limit {
 		notes = notes[:filters.Limit]
 	}

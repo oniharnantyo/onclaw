@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -35,21 +36,24 @@ type gistWindow struct {
 
 // Gister is the per-run windowed gister (task 3.5, D3): at each job it
 // summarizes everything in the session since the last gist into one
-// memory_events row, stamped by the participant rule. Gisting is
-// incremental — the cursor is the latest gist, no window is reprocessed.
-// Failures return; the worker owns the logging.
+// memory_events row, stamped by the participant rule, and links the gist to
+// the entities it mentions (wave3 D6 — the same side-call, zero extra model
+// cost). Gisting is incremental — the cursor is the latest gist, no window
+// is reprocessed. Failures return; the worker owns the logging.
 type Gister struct {
 	events   store.MemoryEventStore
 	sessions store.SessionEventStore
+	entities store.MemoryEntityStore
 	resolver ModelResolver
 	trace    callbacks.Handler
+	log      *slog.Logger
 }
 
 // NewGister constructs the gister from its granular dependencies: the gist
-// timeline store, the raw session-event store, the workspace provider
-// catalog, the instance encryption key, and the shared agentic model
-// factory.
-func NewGister(events store.MemoryEventStore, sessions store.SessionEventStore, providerStore store.ProviderStore, encryptionKey []byte, factory ModelFactory, opts ...SideCallOption) *Gister {
+// timeline store, the raw session-event store, the associative entity store
+// (wave3 D6/D7 event links), the workspace provider catalog, the instance
+// encryption key, and the shared agentic model factory.
+func NewGister(events store.MemoryEventStore, sessions store.SessionEventStore, entities store.MemoryEntityStore, providerStore store.ProviderStore, encryptionKey []byte, factory ModelFactory, log *slog.Logger, opts ...SideCallOption) *Gister {
 	var cfg sideCallConfig
 	for _, opt := range opts {
 		opt(&cfg)
@@ -57,8 +61,10 @@ func NewGister(events store.MemoryEventStore, sessions store.SessionEventStore, 
 	return &Gister{
 		events:   events,
 		sessions: sessions,
+		entities: entities,
 		resolver: newSideCallResolver(providerStore, encryptionKey, factory, cfg),
 		trace:    cfg.trace,
+		log:      log,
 	}
 }
 
@@ -109,7 +115,7 @@ func (g *Gister) Gist(ctx context.Context, job IngestJob, win gistWindow) (domai
 	if err != nil {
 		return domain.MemoryEvent{}, fmt.Errorf("memory gister: model call: %w", err)
 	}
-	description, outcome, err := parseGist(raw)
+	description, outcome, proposedEntities, err := parseGist(raw)
 	if err != nil {
 		return domain.MemoryEvent{}, err
 	}
@@ -138,6 +144,12 @@ func (g *Gister) Gist(ctx context.Context, job IngestJob, win gistWindow) (domai
 	if err := g.events.InsertEvent(ctx, &event); err != nil {
 		return domain.MemoryEvent{}, fmt.Errorf("memory gister: insert gist: %w", err)
 	}
+
+	// Entity links ride the same call that committed the gist (wave3 D6,
+	// zero extra side-calls). The edge inherits the gist's tier — the
+	// narrowest endpoint (D7). Fail-soft: a rejected proposal or edge never
+	// uncommits the gist.
+	linkEntities(ctx, g.entities, g.log, job.WorkspaceID, event.SourceEventID, proposedEntities, domain.MemoryTargetEvent, event.ID, event.Visibility, now)
 	return event, nil
 }
 
@@ -153,33 +165,36 @@ func gistParticipants(job IngestJob) []domain.MemoryParticipant {
 	return participants
 }
 
-// parseGist extracts the summary pair from the model response; fences and
-// surrounding prose are tolerated, an empty description is a failure.
-func parseGist(raw string) (description, outcome string, err error) {
+// parseGist extracts the summary pair and the optional entity mentions from
+// the model response; fences and surrounding prose are tolerated, an empty
+// description is a failure. Malformed entity proposals skip individually
+// downstream (D6) — parsing carries them through as proposals.
+func parseGist(raw string) (description, outcome string, entities []entityProposal, err error) {
 	start := strings.Index(raw, "{")
 	end := strings.LastIndex(raw, "}")
 	if start < 0 || end <= start {
-		return "", "", errors.New("memory gister: no JSON object in response")
+		return "", "", nil, errors.New("memory gister: no JSON object in response")
 	}
 	var gist struct {
-		Description string `json:"description"`
-		Outcome     string `json:"outcome"`
+		Description string           `json:"description"`
+		Outcome     string           `json:"outcome"`
+		Entities    []entityProposal `json:"entities"`
 	}
 	if err := json.Unmarshal([]byte(raw[start:end+1]), &gist); err != nil {
-		return "", "", fmt.Errorf("memory gister: decode gist: %w", err)
+		return "", "", nil, fmt.Errorf("memory gister: decode gist: %w", err)
 	}
 	if strings.TrimSpace(gist.Description) == "" {
-		return "", "", errors.New("memory gister: empty gist description")
+		return "", "", nil, errors.New("memory gister: empty gist description")
 	}
-	return strings.TrimSpace(gist.Description), strings.TrimSpace(gist.Outcome), nil
+	return strings.TrimSpace(gist.Description), strings.TrimSpace(gist.Outcome), gist.Entities, nil
 }
 
 const gistSystemPrompt = `Summarize the given slice of an AI agent workspace session into one episodic gist.
 
 Emit ONLY a JSON object — no prose:
-{"description":"what happened, one or two sentences","outcome":"the result or current state, one sentence"}
+{"description":"what happened, one or two sentences","outcome":"the result or current state, one sentence","entities":[{"label":"Acme","normalized_label":"acme"}]}
 
-Cover every distinct thing that happened in the slice; keep each fact concrete and self-contained.`
+Cover every distinct thing that happened in the slice; keep each fact concrete and self-contained. The entities array names the people, projects, systems, and vendors the slice mentions: "label" exactly as the material spells it, "normalized_label" its lowercase trimmed singular form. Omit the array when none appear; skip anything you are unsure is an entity.`
 
 // gistUserPrompt renders the gister call's user turn: the raw window.
 func gistUserPrompt(material string) string {

@@ -122,11 +122,13 @@ func newV1aEnv(t *testing.T) v1aEnv {
 
 	memLog := slog.New(slog.NewTextHandler(io.Discard, nil))
 	memWorker := memory.NewWorker(
-		memory.NewGister(st.MemoryEvents(), st.SessionEvents(), st.Providers(), v1aEncKey, agents.DefaultAgenticModelFactory),
-		memory.NewGate(st.MemoryNotes(), st.Memories(), st.Providers(), v1aEncKey, agents.DefaultAgenticModelFactory, memLog),
+		memory.NewGister(st.MemoryEvents(), st.SessionEvents(), st.MemoryEntities(), st.Providers(), v1aEncKey, agents.DefaultAgenticModelFactory, memLog),
+		memory.NewGate(st.MemoryNotes(), st.MemoryEntities(), st.Memories(), st.Providers(), v1aEncKey, agents.DefaultAgenticModelFactory, memLog),
+		memory.NewProviderEmbedder(st.Providers(), st.ToolSettings(), v1aEncKey, providers.NewRegistry()),
+		st.MemoryEmbeddings(),
 		memLog,
 	)
-	memSearch := memory.NewSearcher(st.MemoryNotes(), st.MemoryEvents())
+	memSearch := newTestMemorySearcher(st)
 	memGate := memory.NewIntentGate(st.Providers(), v1aEncKey, agents.DefaultAgenticModelFactory, memLog)
 	runner := agents.NewRunner(
 		st.Workspaces(), st.Agents(), st.Users(), st.Members(), st.Roles(),

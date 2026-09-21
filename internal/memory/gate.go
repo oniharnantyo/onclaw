@@ -282,10 +282,13 @@ const (
 // Gate is the curation gate (tasks 3.3/3.4): one cheap-model call per turn
 // that proposes ADD/UPDATE/SUPERSEDE/NOOP ops, applied through the notes
 // store with dedupe-before-write and the session's visibility ceiling
-// clamping every proposal. Any failure fails soft: the error returns, the
-// raw session events stay untouched.
+// clamping every proposal. Each op may carry entity mentions (wave3 D6),
+// resolved and linked to the committed notes at zero extra model cost. Any
+// failure fails soft: the error returns, the raw session events stay
+// untouched.
 type Gate struct {
 	notes    store.MemoryNoteStore
+	entities store.MemoryEntityStore
 	docs     store.MemoryStore
 	resolver ModelResolver
 	trace    callbacks.Handler
@@ -297,16 +300,18 @@ type Gate struct {
 }
 
 // NewGate constructs the gate from its granular dependencies: the curated
-// notes store, the kept documents (conflict context only — never written),
-// the workspace provider catalog, the instance encryption key, and the
-// shared agentic model factory.
-func NewGate(notes store.MemoryNoteStore, docs store.MemoryStore, providerStore store.ProviderStore, encryptionKey []byte, factory ModelFactory, log *slog.Logger, opts ...SideCallOption) *Gate {
+// notes store, the associative entity store (wave3 D6/D7 note links), the
+// kept documents (conflict context only — never written), the workspace
+// provider catalog, the instance encryption key, and the shared agentic
+// model factory.
+func NewGate(notes store.MemoryNoteStore, entities store.MemoryEntityStore, docs store.MemoryStore, providerStore store.ProviderStore, encryptionKey []byte, factory ModelFactory, log *slog.Logger, opts ...SideCallOption) *Gate {
 	var cfg sideCallConfig
 	for _, opt := range opts {
 		opt(&cfg)
 	}
 	return &Gate{
 		notes:    notes,
+		entities: entities,
 		docs:     docs,
 		resolver: newSideCallResolver(providerStore, encryptionKey, factory, cfg),
 		trace:    cfg.trace,
@@ -315,22 +320,28 @@ func NewGate(notes store.MemoryNoteStore, docs store.MemoryStore, providerStore 
 }
 
 // gateOp is one curation-gate operation — the strict JSON the side-call
-// emits per candidate fact.
+// emits per candidate fact. The optional entities array (wave3 D6) names the
+// people, projects, systems, and vendors the fact mentions; each becomes an
+// entity→note edge on commit.
 type gateOp struct {
-	Op              string  `json:"op"`
-	Content         string  `json:"content"`
-	Visibility      string  `json:"visibility"`
-	Importance      int     `json:"importance"`
-	Pin             bool    `json:"pin"`
-	ExplicitRequest bool    `json:"explicit_request"`
-	Supersedes      *string `json:"supersedes"`
-	Topic           *string `json:"topic"`
-	ConflictWithDoc bool    `json:"conflict_with_doc"`
+	Op              string           `json:"op"`
+	Content         string           `json:"content"`
+	Visibility      string           `json:"visibility"`
+	Importance      int              `json:"importance"`
+	Pin             bool             `json:"pin"`
+	ExplicitRequest bool             `json:"explicit_request"`
+	Supersedes      *string          `json:"supersedes"`
+	Topic           *string          `json:"topic"`
+	ConflictWithDoc bool             `json:"conflict_with_doc"`
+	Entities        []entityProposal `json:"entities"`
 }
 
-// GateResult is the committed-op summary the chip counts.
+// GateResult is the committed-op summary the chip counts. Notes carries the
+// committed note rows so the worker's row-embedding stage can index content
+// without re-reading the store.
 type GateResult struct {
 	NoteIDs []string
+	Notes   []domain.MemoryNote
 	Counts  MemoryIngestedCounts
 }
 
@@ -379,7 +390,14 @@ func (g *Gate) Curate(ctx context.Context, job IngestJob, material []domain.Sess
 			continue
 		}
 		result.NoteIDs = append(result.NoteIDs, note.ID)
+		result.Notes = append(result.Notes, *note)
 		bumpCount(&result.Counts, note.Visibility)
+
+		// Entity links ride the same call that committed the note (wave3
+		// D6, zero extra side-calls). The edge inherits the note's tier —
+		// the narrowest endpoint (D7). Fail-soft: a rejected proposal or
+		// edge never uncommits the note.
+		linkEntities(ctx, g.entities, g.log, job.WorkspaceID, endEventID, op.Entities, domain.MemoryTargetNote, note.ID, note.Visibility, now)
 	}
 	return result, nil
 }
@@ -559,7 +577,7 @@ func parseGateOps(raw string) ([]gateOp, error) {
 const gateSystemPrompt = `You are the memory curation gate for an AI agent workspace. From the turn material, decide which durable facts are worth storing and how.
 
 Emit ONLY a JSON array — no prose — with one object per candidate fact:
-[{"op":"ADD","content":"the fact, one self-contained sentence","visibility":"user","importance":5,"pin":false,"explicit_request":false,"supersedes":null,"topic":null,"conflict_with_doc":false}]
+[{"op":"ADD","content":"the fact, one self-contained sentence","visibility":"user","importance":5,"pin":false,"explicit_request":false,"supersedes":null,"topic":null,"conflict_with_doc":false,"entities":[{"label":"Sari","normalized_label":"sari"}]}]
 
 Rules:
 - op is ADD (new fact), UPDATE or SUPERSEDE (corrects or materially extends a listed existing note — always name it in "supersedes"), or NOOP ({"op":"NOOP","content":"","visibility":"user",...}).
@@ -567,6 +585,7 @@ Rules:
 - visibility is who the fact is true for: "user" for facts about the individual, "agent" for facts about this agent's own configuration or behavior, "shared" only for facts the whole workspace needs. When ambiguous, choose the narrowest tier. Proposals wider than the stated ceiling are clamped.
 - explicit_request is true when the user asked to remember something ("remember this", "note that ..."); such facts get importance >= 8.
 - conflict_with_doc is true when the fact contradicts the workspace documents below. Never propose editing the documents.
+- entities lists the named people, projects, systems, and vendors the fact mentions: "label" exactly as the material spells it, "normalized_label" its lowercase trimmed singular form. Omit the array when the fact names none; skip anything you are unsure is an entity.
 - content must be self-contained: a reader with no transcript must understand it.`
 
 // gateUserPrompt renders the curation call's user turn: the ceiling, the

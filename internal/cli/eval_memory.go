@@ -117,9 +117,11 @@ const evalMemoryHelp = `Wave-0 memory evaluation harness (integrate-agent-zero-m
 
 WHAT IT MEASURES
   Seeds a fixture workspace (members Budi and Sari, one fixture agent) with
-  scripted multi-session chat history, then drives ten LongMemEval-protocol
+  scripted multi-session chat history, then drives the LongMemEval-protocol
   questions through the REAL chat path (POST /v1/responses against a live
-  model) and scores each answer:
+  model) and scores each answer. The hardened fixture carries 30 sessions /
+  75 turns and 28 questions (10 multihop, 12 recall, 1 update, 2 temporal,
+  2 abstention, 1 scope):
 
     recall       known facts surface again (single-session)
     update       superseded facts answer with the NEW fact, not the stale one
@@ -135,8 +137,30 @@ WHAT IT MEASURES
   cards in the /v1 transcript, or the notes REST API as a fallback). The
   scoreboard is written as JSON to --out.
 
+RETRIEVAL BEHAVIOR (post-wave-3)
+  - With an embedding model configured on the fixture workspace's memory
+    settings (the post-wave-3 configuration), the vector channel and the
+    raw-evidence index are live: notes, gists, and raw turns embed at
+    ingestion (the raw turn BEFORE extraction), and free-text retrieval
+    fuses the lexical and vector channels with Reciprocal Rank Fusion
+    (k=60).
+  - Fusion is an enhancement, never a dependency: with no embedding model
+    configured the vector channel is absent and lexical fallback is the
+    whole read path.
+  - Dimension-exclusion semantics: only rows embedded at the CURRENT
+    configured dimension participate in the vector channel. Configure the
+    model BEFORE seeding — rows written at an older dimension stay
+    lexical-retrievable but are never vector-returned and are never
+    re-embedded.
+  - Entity/associative questions route through depth-1 graph traversal
+    (exact normalized label first, then prefix/trigram seeds, one hop to
+    the linked rows) — zero model calls on the read path.
+  - Raw turns surface as cited raw-evidence hits only when they lead the
+    vector ranking.
+
 LIVE-RUN REQUIREMENTS
-  - A running onclaw server (--base-url) with its PostgreSQL database migrated.
+  - A running onclaw server (--base-url) with its PostgreSQL database
+    migrated (the pgvector extension is part of the migration chain).
   - LIVE MODEL KEYS: the workspace must have an enabled provider whose keys
     actually work. Agent creation runs real prompt generation, and every
     fixture turn and question is a real model run — nothing is mocked.
@@ -144,9 +168,12 @@ LIVE-RUN REQUIREMENTS
     fixture users Budi and Sari) or the owner credentials of an existing
     fixture workspace. Fixture users log in with the harness's fixed
     passwords, so re-runs against the same workspace are deterministic.
-  - The run takes minutes: seeding posts ~18 turns plus ~10 questions, each a
-    live model call, followed by a bounded wait for the async ingestion
-    pipeline (--ingest-wait).
+  - For a post-wave-3 scoreboard, pin the embedding model on the fixture
+    workspace (Settings -> Memory -> Configuration) before seeding so the
+    whole corpus embeds at one dimension.
+  - The run takes minutes: seeding posts 30 sessions / 75 turns plus 28
+    questions, each a live model call, followed by a bounded wait for the
+    async ingestion pipeline (--ingest-wait).
 
 RECORDING THE BASELINE (task 1.3)
   1. Build the harness from HEAD: go build -o /tmp/onclaw-eval .
@@ -161,8 +188,10 @@ RECORDING THE BASELINE (task 1.3)
   4. Apply the change, restart the server, and re-run with
      --out eval-scoreboard.post.json (use a FRESH --workspace slug so the
      corpus re-seeds cleanly).
-  5. Record both scoreboards in the change folder; waves 1-3 are gated on
-     these numbers (D15), notably before the wave-3 vector investment.
+  5. Record both scoreboards in the change folder; the hardened fixture is
+     the standing gate — its pre-registered decision rule and the recorded
+     runs (the wave-3 D11 override and the pre-wave-3 baseline) live as
+     hardened-run.md in the change folders.
 
 MODES
   default          seed (create-or-reuse workspace/agent, post all scripted

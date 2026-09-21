@@ -141,11 +141,13 @@ func TestAgentRunCancelEndpoint(t *testing.T) {
 	blockingModel := newCancelBlockingModel()
 	memLog := slog.New(slog.NewTextHandler(io.Discard, nil))
 	memWorker := memory.NewWorker(
-		memory.NewGister(st.MemoryEvents(), st.SessionEvents(), st.Providers(), encKey, agents.DefaultAgenticModelFactory),
-		memory.NewGate(st.MemoryNotes(), st.Memories(), st.Providers(), encKey, agents.DefaultAgenticModelFactory, memLog),
+		memory.NewGister(st.MemoryEvents(), st.SessionEvents(), st.MemoryEntities(), st.Providers(), encKey, agents.DefaultAgenticModelFactory, memLog),
+		memory.NewGate(st.MemoryNotes(), st.MemoryEntities(), st.Memories(), st.Providers(), encKey, agents.DefaultAgenticModelFactory, memLog),
+		memory.NewProviderEmbedder(st.Providers(), st.ToolSettings(), encKey, providers.NewRegistry()),
+		st.MemoryEmbeddings(),
 		memLog,
 	)
-	memSearch := memory.NewSearcher(st.MemoryNotes(), st.MemoryEvents())
+	memSearch := newTestMemorySearcher(st)
 	memGate := memory.NewIntentGate(st.Providers(), encKey, agents.DefaultAgenticModelFactory, memLog)
 	runner := agents.NewRunner(
 		st.Workspaces(), st.Agents(), st.Users(), st.Members(), st.Roles(),

@@ -57,6 +57,8 @@ type Store interface {
 	Schedulers() SchedulerStore
 	Heartbeats() HeartbeatStore
 	MemoryReports() MemoryReportStore
+	MemoryEmbeddings() MemoryEmbeddingStore
+	MemoryEntities() MemoryEntityStore
 	Gateways() GatewayStore
 	GatewayBindings() GatewayBindings
 	GatewayLinks() GatewayLinks
@@ -202,6 +204,14 @@ type MemoryEventStore interface {
 	// over description + outcome within the caller's visible set. An empty
 	// query is invalid input.
 	SearchEvents(ctx context.Context, workspaceID, viewerUserID, servingAgentID, query string, filters MemoryEventFilters) ([]domain.MemoryEvent, error)
+	// GetEventsByIDs returns the caller-visible live events with the given
+	// ids, newest first. The structural visible-set predicate applies exactly
+	// as on every other read: missing, foreign-workspace, tombstoned, and
+	// invisible ids are simply absent from the result, never an error.
+	// Duplicate ids collapse; an empty id list returns an empty slice. The
+	// batch read the entity traversal's depth-1 expansion rides
+	// (wave3-memory-vectors-and-graph D8).
+	GetEventsByIDs(ctx context.Context, workspaceID, viewerUserID, servingAgentID string, ids []string) ([]domain.MemoryEvent, error)
 	// TombstoneEvent sets tombstoned_at, hiding the gist from every read
 	// path (D6). Absent or already-tombstoned rows return domain.ErrNotFound.
 	TombstoneEvent(ctx context.Context, workspaceID, id string) error
@@ -247,6 +257,15 @@ type MemoryNoteStore interface {
 	// (nil, nil) when no such visible non-tombstoned note exists. Superseded
 	// notes are returned — history stays queryable (D6).
 	GetNote(ctx context.Context, workspaceID, viewerUserID, servingAgentID, id string) (*domain.MemoryNote, error)
+	// GetNotesByIDs returns the caller-visible CURRENT notes (live, not
+	// superseded — the retrieval contract SearchNotes follows) with the given
+	// ids, newest-learned first. The structural visible-set predicate applies
+	// exactly as on every other read: missing, foreign-workspace, tombstoned,
+	// superseded, and invisible ids are simply absent from the result, never
+	// an error. Duplicate ids collapse; an empty id list returns an empty
+	// slice. The batch read the entity traversal's depth-1 expansion rides
+	// (wave3-memory-vectors-and-graph D8).
+	GetNotesByIDs(ctx context.Context, workspaceID, viewerUserID, servingAgentID string, ids []string) ([]domain.MemoryNote, error)
 	// ListNotesForUI returns the caller-visible notes, pinned first then
 	// newest-learned. Default lists carry the current state only; History
 	// adds superseded rows. Tombstoned rows never appear.
@@ -305,6 +324,107 @@ type MemoryReportStore interface {
 	Get(ctx context.Context, workspaceID string) (*domain.MemoryReport, error)
 }
 
+// MemoryEmbeddingFilters narrows vector-search reads. Zero-value fields mean
+// "no filter"; Limit <= 0 means "no limit" (the LoadSessionEventsParams
+// convention) — callers in practice always carry the shared prefetch budget.
+type MemoryEmbeddingFilters struct {
+	// Visibility restricts results to one tier ("" = any visible tier).
+	Visibility domain.MemoryVisibility
+}
+
+// MemoryEmbeddingStore manages the polymorphic vector evidence index
+// (wave3-memory-vectors-and-graph D1): embeddings of extracted notes,
+// episodic events, and raw turn text in one table, with a per-row dimension
+// so an embedding-model change never migrates data — the vector channel
+// filters to one dimension and stale-dimension rows simply stay
+// lexical-retrievable (D5).
+//
+// Scope-filtering follows MemoryNoteStore: workspaceID partition plus the
+// structural visible = shared ∪ own-user ∪ serving-agent predicate computed
+// in the query, never by post-filtering. For note/event targets the owners
+// come from the LIVE linked row (promotion widens through the row, never
+// through a snapshot); raw targets carry their own visibility snapshot and
+// owner columns and filter the same way. Note/event embeddings whose target
+// row is missing or tombstoned are dead at read time — tombstone semantics
+// are modeled by exclusion in the read, not by triggers (raw rows have no
+// tombstone of their own). Search results carry each row's scope fields and
+// target pointer but never the vector itself.
+type MemoryEmbeddingStore interface {
+	// InsertEmbeddings writes one ingestion job's batch in one statement.
+	// Each row is validated (target kind, dimension/vector length, owner
+	// shape, evidence stamp — wrapped domain sentinels name the fault), and
+	// the write is an upsert per (workspace, target, dimension): a re-embed
+	// at the same dimension replaces the vector while created_at and id stay
+	// as stored. An empty batch is a no-op.
+	InsertEmbeddings(ctx context.Context, embeddings []domain.MemoryEmbedding) error
+	// DeleteByTarget drops every embedding of one target — the primitive the
+	// pipeline uses when a note is superseded or tombstoned. Returns the
+	// number of rows removed.
+	DeleteByTarget(ctx context.Context, workspaceID string, targetType domain.MemoryTargetType, targetID string) (int64, error)
+	// SearchByVector orders the workspace's embeddings of the given target
+	// kinds (nil = all kinds) at the given dimension by cosine distance to
+	// query, nearest first, within the caller's visible set. dimension must
+	// be positive and query must match it in length (wrapped domain.ErrInvalid
+	// otherwise) — the D5 exclusion is the caller naming the workspace's
+	// current dimension. Results carry TargetType, TargetID, the visibility
+	// snapshot, SourceEventID (the raw citation pointer), and timestamps.
+	SearchByVector(ctx context.Context, workspaceID, viewerUserID, servingAgentID string, targetTypes []domain.MemoryTargetType, dimension int, query []float32, filters MemoryEmbeddingFilters, limit int) ([]domain.MemoryEmbedding, error)
+}
+
+// MemoryEntityStore manages the associative graph's two halves (wave3
+// D7/D8/D10): tenant-scoped entity labels — pointers, not content, with NO
+// visibility tier; all gating lives on edges and linked rows — and the
+// bipartite edges connecting them to extracted notes and events.
+//
+// Entity identity is (workspaceID, NormalizeEntityLabel(label)): resolving
+// the same label twice yields one row. Edge visibility is stamped at birth
+// as the narrowest endpoint and never widened; edge reads take scope from
+// the LIVE linked row through the same structural predicate as direct reads,
+// so traversal reaches exactly as far as the direct read path does. Rows are
+// never deleted: a fold re-points edges onto the surviving entity and leaves
+// the folded duplicate in place (copy-out, D10).
+type MemoryEntityStore interface {
+	// ResolveEntity inserts entity when its normalized label is new to the
+	// workspace and loads the stored row when it is not — idempotent per
+	// (workspace, normalized label). On return the struct carries the stored
+	// row: the FIRST label's spelling wins at birth, and identity fields are
+	// never rewritten. Write-shape validation runs through the domain layer
+	// (label/normalization parity, provenance stamp).
+	ResolveEntity(ctx context.Context, entity *domain.MemoryEntity) error
+	// GetEntityByLabel resolves the exact normalized label; (nil, nil) when
+	// the workspace has no such entity.
+	GetEntityByLabel(ctx context.Context, workspaceID, normalizedLabel string) (*domain.MemoryEntity, error)
+	// FindEntitiesByLabelPrefix is the D8 seed fallback: exact normalized
+	// match first, then normalized-label prefix, then trigram similarity on
+	// the label — best candidates first. limit <= 0 means no limit.
+	FindEntitiesByLabelPrefix(ctx context.Context, workspaceID, label string, limit int) ([]domain.MemoryEntity, error)
+	// ListEntities lists the workspace's entities ordered by normalized label
+	// then id — the consolidator's hygiene pass (wave3 D10) reads it to group
+	// duplicate normalized labels before folding. limit <= 0 means no limit.
+	ListEntities(ctx context.Context, workspaceID string, limit int) ([]domain.MemoryEntity, error)
+	// AddEdges inserts one ingestion job's edge batch in one statement.
+	// Edges referencing an entity absent from the workspace are dropped
+	// (the pipeline always resolves entities first; the count reports what
+	// landed), and the write is idempotent per (entity, target): re-mentioning
+	// the same row links nothing twice. Each edge is validated through the
+	// domain layer (note/event targets only, tier validity, provenance).
+	AddEdges(ctx context.Context, workspaceID string, edges []domain.MemoryEntityEdge) (int64, error)
+	// ListEdgesForEntities returns the caller-visible live edges of the given
+	// entities: each edge is scope-filtered through its linked note/event row
+	// (shared ∪ own-user ∪ serving-agent, computed in the query) and dies
+	// with that row — edges to missing or tombstoned targets are excluded.
+	// Empty entityIDs return an empty slice.
+	ListEdgesForEntities(ctx context.Context, workspaceID, viewerUserID, servingAgentID string, entityIDs []string) ([]domain.MemoryEntityEdge, error)
+	// FoldEntity re-points every edge of duplicateID onto intoID (D10
+	// copy-out): edge rows move, keeping their visibility, origin, and
+	// source stamps; an edge the survivor already holds is left on the
+	// duplicate rather than duplicated or deleted; the duplicate entity row
+	// itself stays in place — no edge or provenance row is ever deleted.
+	// Returns the number of edges re-pointed. Unknown or foreign entities
+	// return domain.ErrNotFound; duplicate == into is domain.ErrInvalid.
+	FoldEntity(ctx context.Context, workspaceID, duplicateID, intoID string) (int64, error)
+}
+
 // LoadSessionEventsParams configures query parameters for loading session events.
 type LoadSessionEventsParams struct {
 	WorkspaceID  string
@@ -329,6 +449,15 @@ type SessionEventStore interface {
 	// stored for the session (indexed existence check — not an error when
 	// absent).
 	EventExists(ctx context.Context, workspaceID, sessionID, eventID string) (bool, error)
+	// EventsByIDs returns the workspace-scoped events with the given ids,
+	// ordered deterministically by (session_id, seq). Absent and
+	// foreign-workspace ids are simply absent from the result, never an
+	// error; duplicate ids collapse; an empty id list returns an empty slice.
+	// The read-side hydration primitive the memory searcher uses to resolve a
+	// raw-evidence hit's source event id to its turn window
+	// (wave3-memory-vectors-and-graph D9: the raw citation pointer IS the
+	// source event id).
+	EventsByIDs(ctx context.Context, workspaceID string, eventIDs []string) ([]domain.SessionEvent, error)
 }
 
 // SessionCheckpointStore manages execution checkpoints.

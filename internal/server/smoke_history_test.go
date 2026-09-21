@@ -142,11 +142,13 @@ func TestSmoke_ManualEngineRunAndHistoryEndpoint(t *testing.T) {
 
 	memLog := slog.New(slog.NewTextHandler(io.Discard, nil))
 	memWorker := memory.NewWorker(
-		memory.NewGister(st.MemoryEvents(), st.SessionEvents(), st.Providers(), []byte("test-key-32-bytes-long-12345678"), agents.DefaultAgenticModelFactory),
-		memory.NewGate(st.MemoryNotes(), st.Memories(), st.Providers(), []byte("test-key-32-bytes-long-12345678"), agents.DefaultAgenticModelFactory, memLog),
+		memory.NewGister(st.MemoryEvents(), st.SessionEvents(), st.MemoryEntities(), st.Providers(), []byte("test-key-32-bytes-long-12345678"), agents.DefaultAgenticModelFactory, memLog),
+		memory.NewGate(st.MemoryNotes(), st.MemoryEntities(), st.Memories(), st.Providers(), []byte("test-key-32-bytes-long-12345678"), agents.DefaultAgenticModelFactory, memLog),
+		memory.NewProviderEmbedder(st.Providers(), st.ToolSettings(), []byte("test-key-32-bytes-long-12345678"), providers.NewRegistry()),
+		st.MemoryEmbeddings(),
 		memLog,
 	)
-	memSearch := memory.NewSearcher(st.MemoryNotes(), st.MemoryEvents())
+	memSearch := newTestMemorySearcher(st)
 	memGate := memory.NewIntentGate(st.Providers(), []byte("test-key-32-bytes-long-12345678"), agents.DefaultAgenticModelFactory, memLog)
 	runner := agents.NewRunner(
 		st.Workspaces(),

@@ -247,19 +247,29 @@ func NewMemorySearch(searcher *memory.Searcher, workspaceID, userID, agentID str
 
 // Info returns the tool schema. The description carries the read-only,
 // provenance-bearing contract; the arguments are filters only — no identity,
-// no write surface.
+// no write surface. Retrieval fuses lexical and vector channels via rank
+// fusion, and the optional entity filter traverses the entity graph —
+// results reached either way carry the same provenance tuple and cite the
+// same way (wave3-memory-vectors-and-graph D2/D8/D9).
 func (t *memorySearchTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name: NameMemorySearch,
 		Desc: "Search the workspace's extracted long-term memory: curated facts (notes) and episodic summaries (events), filtered to what you are allowed to see. " +
+			"Free-text retrieval fuses exact word matching with semantic (embedding) similarity, so paraphrases also surface. " +
+			"The optional entity filter names a stored entity (a project, person, system, or vendor); it returns that entity's linked notes and events by graph traversal, fused with any query — pass it when the question is about one named thing. " +
 			"Read-only: it never stores anything and has no side effects. " +
 			"Results carry provenance — origin, timestamps, the source session event id, and visibility — cite the source event id for anything you use. " +
+			"Raw-evidence hits cite their source event id the same way, as do traversed rows. " +
 			"An empty result means nothing is recorded: say so rather than inventing recalled content.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"query": {
 				Type:     schema.String,
-				Desc:     "Free-text search over note content and event descriptions/outcomes. Required.",
-				Required: true,
+				Desc:     "Free-text search over note content and event descriptions/outcomes. Required unless entity is provided.",
+				Required: false,
+			},
+			"entity": {
+				Type: schema.String,
+				Desc: "Optional name of a stored entity; results include its linked notes and events reached by traversal (exact match first, then name prefix).",
 			},
 			"from": {
 				Type: schema.String,
@@ -289,6 +299,7 @@ func (t *memorySearchTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 // carries no identity fields: the caller is the only scope input (D8).
 type memorySearchArgs struct {
 	Query      string `json:"query"`
+	Entity     string `json:"entity"`
 	From       string `json:"from"`
 	Until      string `json:"until"`
 	Visibility string `json:"visibility"`
@@ -322,25 +333,40 @@ type memorySearchEvent struct {
 	SourceEventID string    `json:"source_event_id"`
 }
 
+// memorySearchRaw is one raw-evidence hit: the source turn's text citing its
+// source session event id — a raw hit has no extracted row of its own, so
+// the source event id is its whole citation pointer (wave3 D9). It carries
+// the provenance the raw row actually holds (visibility, learned_at) and no
+// identity fields.
+type memorySearchRaw struct {
+	SourceEventID string    `json:"source_event_id"`
+	Text          string    `json:"text"`
+	Visibility    string    `json:"visibility"`
+	LearnedAt     time.Time `json:"learned_at"`
+}
+
 // memorySearchResult is the structured answer. When nothing matched, Hint
 // states the empty result in words the model reads as "nothing is recorded".
 type memorySearchResult struct {
 	Notes  []memorySearchNote  `json:"notes"`
 	Events []memorySearchEvent `json:"events"`
+	Raw    []memorySearchRaw   `json:"raw,omitempty"`
 	Hint   string              `json:"hint,omitempty"`
 }
 
-// InvokableRun satisfies tool.InvokableTool. Failures return errors: the
+// InvokableRun satisfies tool.InvokableRun. Failures return errors: the
 // runtime's tool-error middleware converts them into JSON error results the
-// model reads, so the run continues.
+// model reads, so the run continues. The query is required unless the entity
+// filter is provided — a pure entity filter runs pure traversal.
 func (t *memorySearchTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
 	var args memorySearchArgs
 	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
 		return "", fmt.Errorf("memory.search: %w", err)
 	}
 	query := strings.TrimSpace(args.Query)
-	if query == "" {
-		return "", errors.New("memory.search: query is required")
+	entity := strings.TrimSpace(args.Entity)
+	if query == "" && entity == "" {
+		return "", errors.New("memory.search: query is required unless entity is provided")
 	}
 
 	window, err := memorySearchTimeWindow(args.From, args.Until)
@@ -364,6 +390,7 @@ func (t *memorySearchTool) InvokableRun(ctx context.Context, argumentsInJSON str
 
 	result, err := t.searcher.Search(ctx, t.caller, memory.Query{
 		Text:             query,
+		Entity:           entity,
 		TimeWindow:       window,
 		VisibilityFilter: visibility,
 		Topic:            strings.TrimSpace(args.Topic),
@@ -373,7 +400,7 @@ func (t *memorySearchTool) InvokableRun(ctx context.Context, argumentsInJSON str
 		return "", fmt.Errorf("memory.search: %w", err)
 	}
 
-	out := memorySearchResult{Notes: []memorySearchNote{}, Events: []memorySearchEvent{}}
+	out := memorySearchResult{Notes: []memorySearchNote{}, Events: []memorySearchEvent{}, Raw: []memorySearchRaw{}}
 	for _, n := range result.Notes {
 		topic := ""
 		if n.Topic != nil {
@@ -402,7 +429,15 @@ func (t *memorySearchTool) InvokableRun(ctx context.Context, argumentsInJSON str
 			SourceEventID: e.SourceEventID,
 		})
 	}
-	if len(out.Notes) == 0 && len(out.Events) == 0 {
+	for _, r := range result.Raw {
+		out.Raw = append(out.Raw, memorySearchRaw{
+			SourceEventID: r.SourceEventID,
+			Text:          r.Text,
+			Visibility:    string(r.Visibility),
+			LearnedAt:     r.LearnedAt,
+		})
+	}
+	if len(out.Notes) == 0 && len(out.Events) == 0 && len(out.Raw) == 0 {
 		out.Hint = memorySearchEmptyHint
 	}
 	encoded, err := json.Marshal(out)

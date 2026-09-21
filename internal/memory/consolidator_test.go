@@ -21,6 +21,7 @@ func newTestConsolidator(s store.Store, m Model, stats StatsFunc, opts ...Consol
 		s.MemoryNotes(),
 		s.MemoryReports(),
 		s.Workspaces(),
+		s.MemoryEntities(),
 		s.Providers(),
 		nil,
 		nil,
@@ -186,7 +187,7 @@ func TestConsolidatorFailSoftWithoutModel(t *testing.T) {
 	seedSharedNote(t, s, "note-b", "The staging database resets nightly", "evt-b", 9)
 
 	c := NewConsolidator(
-		s.MemoryNotes(), s.MemoryReports(), s.Workspaces(), s.Providers(), nil, nil,
+		s.MemoryNotes(), s.MemoryReports(), s.Workspaces(), s.MemoryEntities(), s.Providers(), nil, nil,
 		func() IngestStats { return IngestStats{} }, testLogger,
 		WithSideCall(WithModelResolver(failingResolver("down"))),
 	)

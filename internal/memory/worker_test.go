@@ -15,6 +15,7 @@ import (
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/store"
 	"github.com/oniharnantyo/onclaw/internal/store/fake"
 )
@@ -201,12 +202,23 @@ func failingResolver(string) ModelResolver {
 	return func(context.Context, string, string) (Model, error) { return nil, errors.New("model provider down") }
 }
 
+// unconfiguredEmbedder is the no-model world (wave3 D4): the embedder
+// resolves no embedding config, so both embedding stages no-op quietly and
+// worker behavior stays byte-identical to the lexical-only pipeline.
+func unconfiguredEmbedder() Embedder {
+	return NewProviderEmbedder(nil, nil, nil, providers.NewRegistry())
+}
+
 func newTestGister(s store.Store, m Model) *Gister {
-	return NewGister(s.MemoryEvents(), s.SessionEvents(), nil, nil, nil, WithModelResolver(staticResolver(m)))
+	return NewGister(s.MemoryEvents(), s.SessionEvents(), s.MemoryEntities(), nil, nil, nil, testLogger, WithModelResolver(staticResolver(m)))
 }
 
 func newTestGate(s store.Store, m Model) *Gate {
-	return NewGate(s.MemoryNotes(), s.Memories(), nil, nil, nil, testLogger, WithModelResolver(staticResolver(m)))
+	return NewGate(s.MemoryNotes(), s.MemoryEntities(), s.Memories(), nil, nil, nil, testLogger, WithModelResolver(staticResolver(m)))
+}
+
+func newTestWorker(s store.Store, gister *Gister, gate *Gate, opts ...WorkerOption) *Worker {
+	return NewWorker(gister, gate, unconfiguredEmbedder(), s.MemoryEmbeddings(), testLogger, opts...)
 }
 
 // waitFor polls cond until it holds or the deadline passes.
@@ -258,7 +270,7 @@ func TestWorkerProcessesBothStatuses(t *testing.T) {
 	}}
 	gister := newTestGister(s, gistModel)
 	gate := newTestGate(s, gistModel)
-	w := NewWorker(gister, gate, testLogger)
+	w := newTestWorker(s, gister, gate)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	w.Start(ctx)
@@ -301,9 +313,9 @@ func TestWorkerModelDownFailsSoft(t *testing.T) {
 		chatEvent(t, "e1", "turn-1", 1, time.Now().UTC().Add(-time.Hour), schema.AgenticRoleTypeUser, "Remember that the staging database resets nightly."),
 	)
 
-	gister := NewGister(s.MemoryEvents(), s.SessionEvents(), nil, nil, nil, WithModelResolver(failingResolver("down")))
-	gate := NewGate(s.MemoryNotes(), s.Memories(), nil, nil, nil, testLogger, WithModelResolver(failingResolver("down")))
-	w := NewWorker(gister, gate, testLogger)
+	gister := NewGister(s.MemoryEvents(), s.SessionEvents(), s.MemoryEntities(), nil, nil, nil, testLogger, WithModelResolver(failingResolver("down")))
+	gate := NewGate(s.MemoryNotes(), s.MemoryEntities(), s.Memories(), nil, nil, nil, testLogger, WithModelResolver(failingResolver("down")))
+	w := newTestWorker(s, gister, gate)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	w.Start(ctx)
@@ -338,7 +350,7 @@ func TestWorkerQueueOverflowNeverBlocks(t *testing.T) {
 	s := seedWorld(t)
 	gister := newTestGister(s, &scriptedModel{})
 	gate := newTestGate(s, &scriptedModel{})
-	w := NewWorker(gister, gate, testLogger, WithQueueSize(1)) // never started — nothing drains
+	w := newTestWorker(s, gister, gate, WithQueueSize(1)) // never started — nothing drains
 
 	start := time.Now()
 	for i := 0; i < 4; i++ {
@@ -360,7 +372,7 @@ func TestWorkerQueueOverflowNeverBlocks(t *testing.T) {
 // dropped instead of parking them in the queue.
 func TestWorkerEnqueueAfterStopDrops(t *testing.T) {
 	s := seedWorld(t)
-	w := NewWorker(newTestGister(s, &scriptedModel{}), newTestGate(s, &scriptedModel{}), testLogger, WithQueueSize(4))
+	w := newTestWorker(s, newTestGister(s, &scriptedModel{}), newTestGate(s, &scriptedModel{}), WithQueueSize(4))
 	w.Start(context.Background())
 	w.Stop()
 
@@ -393,7 +405,7 @@ func TestWorkerEmitsChipAfterCommit(t *testing.T) {
 	var mu sync.Mutex
 	var chips []MemoryIngestedPayload
 	var chipJobs []IngestJob
-	w := NewWorker(gister, gate, testLogger, WithChipSink(func(_ context.Context, job IngestJob, payload MemoryIngestedPayload) {
+	w := newTestWorker(s, gister, gate, WithChipSink(func(_ context.Context, job IngestJob, payload MemoryIngestedPayload) {
 		mu.Lock()
 		defer mu.Unlock()
 		chips = append(chips, payload)

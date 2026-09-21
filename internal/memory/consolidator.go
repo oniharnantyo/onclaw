@@ -78,6 +78,7 @@ type Consolidator struct {
 	notes      store.MemoryNoteStore
 	reports    store.MemoryReportStore
 	workspaces store.WorkspaceStore
+	entities   store.MemoryEntityStore
 	stats      StatsFunc
 	log        *slog.Logger
 	resolver   ModelResolver
@@ -137,13 +138,16 @@ func WithSideCall(opts ...SideCallOption) ConsolidatorOption {
 // NewConsolidator constructs the consolidator from its granular
 // dependencies: the curated notes store, the morning-report store, the
 // workspace catalog (the nightly sweep's tenant enumeration and the
-// per-workspace timezone), the workspace provider catalog, the instance
-// encryption key, and the shared agentic model factory for the cheap-model
-// side-calls — plus the ingestion worker's Stats snapshotter.
+// per-workspace timezone), the associative entity store (wave3 D10's
+// duplicate fold — still NO document store anywhere on the type, D12), the
+// workspace provider catalog, the instance encryption key, and the shared
+// agentic model factory for the cheap-model side-calls — plus the ingestion
+// worker's Stats snapshotter.
 func NewConsolidator(
 	notes store.MemoryNoteStore,
 	reports store.MemoryReportStore,
 	workspaces store.WorkspaceStore,
+	entities store.MemoryEntityStore,
 	providerStore store.ProviderStore,
 	encryptionKey []byte,
 	factory ModelFactory,
@@ -155,6 +159,7 @@ func NewConsolidator(
 		notes:      notes,
 		reports:    reports,
 		workspaces: workspaces,
+		entities:   entities,
 		stats:      stats,
 		log:        log,
 		interval:   defaultConsolidationInterval,
@@ -330,7 +335,8 @@ func (c *Consolidator) RunNow(ctx context.Context, workspaceID string) (MorningR
 		c.foldTopics(ctx, workspaceID, notes, model)
 	}
 	report.Conflicts = conflictFlags(notes)
-	report.ExtractionFailures = c.failureDelta(workspaceID)
+	report.ExtractionFailures, report.EmbeddingFailures = c.counterDeltas(workspaceID)
+	report.EntityMerges = c.foldDuplicateEntities(ctx, workspaceID)
 
 	if raw, err := json.Marshal(report); err != nil {
 		c.log.Warn("memory consolidator: marshal report", "workspace_id", workspaceID, "error", err)
@@ -499,25 +505,91 @@ func conflictFlags(notes []domain.MemoryNote) []ConflictFlag {
 	return flags
 }
 
-// failureDelta reports this period's extraction failures: the delta between
-// the pass's global counter snapshot and the workspace's last-seen one
-// (counters are process-global; per-workspace snapshots attribute the delta
-// to the pass that observes it). A counter reset is clamped to zero.
-func (c *Consolidator) failureDelta(workspaceID string) int {
+// counterDeltas reports this period's worker-counter deltas — the
+// extraction-failure and embedding-failure counts the report carries. The
+// snapshot happens once per pass: counters are process-global, and both
+// fields must compare against the workspace's SAME last-seen snapshot (two
+// sequential snapshots would let the second field see the first's write). A
+// counter reset is clamped to zero.
+func (c *Consolidator) counterDeltas(workspaceID string) (extractionFailures, embeddingFailures int) {
 	// stats is an optional capability (nil = no worker wired — the fallback
 	// assembly); an unwired counter reads as all-zero, never a panic.
 	if c.stats == nil {
-		return 0
+		return 0, 0
 	}
 	current := c.stats()
 	c.marksMu.Lock()
 	defer c.marksMu.Unlock()
 	previous := c.lastStats[workspaceID]
 	c.lastStats[workspaceID] = current
-	if current.Failed < previous.Failed {
+	extractionFailures = monotonicDelta(previous.Failed, current.Failed)
+	embeddingFailures = monotonicDelta(previous.EmbedFailures, current.EmbedFailures)
+	return extractionFailures, embeddingFailures
+}
+
+// monotonicDelta is current-minus-previous, clamped at zero for counter
+// resets.
+func monotonicDelta(previous, current int64) int {
+	if current < previous {
 		return 0
 	}
-	return int(current.Failed - previous.Failed)
+	return int(current - previous)
+}
+
+// maxFoldEntities bounds one hygiene pass's entity listing (a
+// workspace-sized batch like maxConsolidationNotes).
+const maxFoldEntities = 5000
+
+// foldDuplicateEntities is the nightly entity hygiene (wave3 D10): entity
+// rows whose normalized labels match are folded onto one survivor — the
+// store's FoldEntity re-points every edge, copy-out-only (no edge or
+// provenance row is ever deleted), so evidence stamps survive the merge.
+// The survivor is deterministic (oldest first, id last). Per-fold failures
+// log and skip; the count of folded duplicates rides the morning report.
+func (c *Consolidator) foldDuplicateEntities(ctx context.Context, workspaceID string) int {
+	if c.entities == nil {
+		return 0
+	}
+	entities, err := c.entities.ListEntities(ctx, workspaceID, maxFoldEntities)
+	if err != nil {
+		c.log.Warn("memory consolidator: entity hygiene skipped", "workspace_id", workspaceID, "error", err)
+		return 0
+	}
+
+	// Group by normalized label in listing order (normalized label, then
+	// id). Within a group the survivor is the deterministic earliest
+	// observation — oldest learned_at, id last — so the fold preserves the
+	// earliest provenance and repeats identically across runs.
+	var merged int
+	start := 0
+	for i := 1; i <= len(entities); i++ {
+		if i < len(entities) && entities[i].NormalizedLabel == entities[start].NormalizedLabel {
+			continue
+		}
+		group := entities[start:i]
+		survivor := group[0]
+		for _, candidate := range group[1:] {
+			if candidate.LearnedAt.Before(survivor.LearnedAt) ||
+				(candidate.LearnedAt.Equal(survivor.LearnedAt) && candidate.ID < survivor.ID) {
+				survivor = candidate
+			}
+		}
+		for _, duplicate := range group {
+			if duplicate.ID == survivor.ID {
+				continue
+			}
+			moved, err := c.entities.FoldEntity(ctx, workspaceID, duplicate.ID, survivor.ID)
+			if err != nil {
+				c.log.Warn("memory consolidator: entity fold skipped", "workspace_id", workspaceID, "error", err)
+				continue
+			}
+			c.log.Info("memory consolidator: duplicate entity folded",
+				"workspace_id", workspaceID, "edges_repointed", moved)
+			merged++
+		}
+		start = i
+	}
+	return merged
 }
 
 // mark records the pass's attempt time so the nightly loop never re-fires

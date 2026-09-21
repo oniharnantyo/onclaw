@@ -1648,11 +1648,18 @@ func (r *Runner) composeMemoryDocs(ctx context.Context, req ExecRequest) []strin
 		// are the complete context, and memory.search remains available.
 		return nil
 	}
+	// The associative route (wave3 D8): an entity-shaped turn seeds graph
+	// traversal alongside the fused text channels, all merged into the same
+	// shared prefetch budget by the searcher.
+	query := memory.Query{Text: text}
+	if verdict.Associative {
+		query.Entity = strings.TrimSpace(verdict.Entity)
+	}
 	candidates, err := r.memorySearch.Prefetch(ctx, memory.Caller{
 		WorkspaceID: req.WorkspaceID,
 		UserID:      req.UserID,
 		AgentID:     req.AgentID,
-	}, text)
+	}, query)
 	if err != nil || len(candidates) == 0 {
 		return nil
 	}

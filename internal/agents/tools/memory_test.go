@@ -12,6 +12,7 @@ import (
 
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/memory"
+	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/store"
 	"github.com/oniharnantyo/onclaw/internal/store/fake"
 )
@@ -486,7 +487,8 @@ func (w *searchWorld) seedEvent(t *testing.T, visibility domain.MemoryVisibility
 
 func newSearchToolForTest(t *testing.T, w *searchWorld, userID, agentID string) *memorySearchTool {
 	t.Helper()
-	searcher := memory.NewSearcher(w.store.MemoryNotes(), w.store.MemoryEvents())
+	searcher := memory.NewSearcher(w.store.MemoryNotes(), w.store.MemoryEvents(), w.store.MemoryEmbeddings(), w.store.MemoryEntities(), w.store.SessionEvents(),
+		memory.NewProviderEmbedder(w.store.Providers(), w.store.ToolSettings(), []byte("test-key-32-bytes-long-12345678"), providers.NewRegistry()))
 	impl, err := NewMemorySearch(searcher, w.workspace, userID, agentID)
 	if err != nil {
 		t.Fatalf("NewMemorySearch: %v", err)
@@ -667,5 +669,81 @@ func TestMemorySearch_StructuredErrors(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), tc.message) {
 			t.Errorf("%s: expected error containing %q, got %v", tc.args, tc.message, err)
 		}
+	}
+}
+
+// TestMemorySearch_EntityFilterTraverses (wave3 task 5.2, spec: entity
+// filter traverses without leaking): the optional entity argument returns the
+// entity's linked rows fused with the query results, visible-set only, and a
+// pure entity call (no query) runs pure traversal; both empty is a
+// structured error.
+func TestMemorySearch_EntityFilterTraverses(t *testing.T) {
+	w := seedSearchWorld(t)
+	ctx := context.Background()
+
+	entity := &domain.MemoryEntity{
+		WorkspaceID:     w.workspace,
+		Label:           "ProjectX",
+		NormalizedLabel: domain.NormalizeEntityLabel("ProjectX"),
+		Origin:          domain.MemoryOriginDialogue,
+		SourceEventID:   "ev-entity",
+		LearnedAt:       time.Now().UTC().Add(-time.Hour),
+	}
+	if err := w.store.MemoryEntities().ResolveEntity(ctx, entity); err != nil {
+		t.Fatalf("seed entity: %v", err)
+	}
+	linked := w.seedNote(t, domain.MemoryVisibilityShared, "", "unlinked phrasing zebra", "")
+	saris := w.seedNote(t, domain.MemoryVisibilityUser, w.sari, "ProjectX private zebra of Sari", "")
+	lexical := w.seedNote(t, domain.MemoryVisibilityShared, "", "the zebra lexicon", "")
+	for _, edge := range []domain.MemoryEntityEdge{
+		{EntityID: entity.ID, TargetType: domain.MemoryTargetNote, TargetID: linked.ID, Visibility: domain.MemoryVisibilityShared, Origin: domain.MemoryOriginDialogue, SourceEventID: "ev-edge"},
+		{EntityID: entity.ID, TargetType: domain.MemoryTargetNote, TargetID: saris.ID, Visibility: domain.MemoryVisibilityUser, Origin: domain.MemoryOriginDialogue, SourceEventID: "ev-edge"},
+	} {
+		if _, err := w.store.MemoryEntities().AddEdges(ctx, w.workspace, []domain.MemoryEntityEdge{edge}); err != nil {
+			t.Fatalf("seed edge: %v", err)
+		}
+	}
+
+	impl := newSearchToolForTest(t, w, w.budi, w.atlas)
+
+	// Entity + query: the traversed row and the lexical row both surface,
+	// Sari's private row never does.
+	out, err := impl.InvokableRun(ctx, `{"query":"zebra","entity":"ProjectX"}`)
+	if err != nil {
+		t.Fatalf("entity+query search: %v", err)
+	}
+	var result memorySearchResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("decode result %q: %v", out, err)
+	}
+	seen := map[string]bool{}
+	for _, n := range result.Notes {
+		seen[n.ID] = true
+	}
+	if !seen[linked.ID] || !seen[lexical.ID] {
+		t.Fatalf("entity+query must surface the traversed and lexical rows, got %+v", result.Notes)
+	}
+	if seen[saris.ID] {
+		t.Fatalf("traversal leaked Sari's user-visibility row: %+v", result.Notes)
+	}
+
+	// Entity only: pure traversal, no query needed.
+	out, err = impl.InvokableRun(ctx, `{"entity":"projectx"}`)
+	if err != nil {
+		t.Fatalf("entity-only search: %v", err)
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if len(result.Notes) != 1 || result.Notes[0].ID != linked.ID {
+		t.Fatalf("entity-only must traverse to the visible linked row, got %+v", result.Notes)
+	}
+	if result.Notes[0].SourceEventID == "" || result.Notes[0].Visibility != string(domain.MemoryVisibilityShared) {
+		t.Fatalf("traversed rows carry the same provenance tuple, got %+v", result.Notes[0])
+	}
+
+	// Neither query nor entity: the structured argument error.
+	if _, err := impl.InvokableRun(ctx, `{}`); err == nil || !strings.Contains(err.Error(), "query is required unless entity is provided") {
+		t.Fatalf("expected the both-empty argument error, got %v", err)
 	}
 }

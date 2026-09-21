@@ -4,13 +4,17 @@ import "time"
 
 // MorningReport is the consolidator wave's output surface (tasks 6.1–6.3):
 // what conflicted with the kept documents, what merged, and how many
-// extractions failed overnight — surfaced in the Memory pane. The JSON tags
-// are the API contract.
+// extractions failed overnight — surfaced in the Memory pane. The wave-3
+// fields extend the same contract: embedding failures the vector channel
+// skipped (wave3 D3's fail-soft visibility) and duplicate entities folded
+// overnight (wave3 D10). The JSON tags are the API contract.
 type MorningReport struct {
 	GeneratedAt        time.Time      `json:"generated_at"`
 	Conflicts          []ConflictFlag `json:"conflicts"`
 	Merges             []MergeRecord  `json:"merges"`
 	ExtractionFailures int            `json:"extraction_failures"`
+	EmbeddingFailures  int            `json:"embedding_failures"`
+	EntityMerges       int            `json:"entity_merges"`
 }
 
 // ConflictFlag is one doc-over-notes precedence review item (D7): the note

@@ -193,6 +193,35 @@ func TestIntentGate_MissingBucketsRoutesBoth(t *testing.T) {
 	}
 }
 
+// TestIntentGate_AssociativeBucketRoutesTraversal (wave3 task 5.3, D8): the
+// associative bucket routes the entity-shaped query to the traversal-bearing
+// prefetch, carrying the model's entity spelling as the advisory seed; the
+// "entity" bucket spelling routes identically (fail-open generosity), and a
+// null entity leaves the seed empty for the searcher's own resolution.
+func TestIntentGate_AssociativeBucketRoutesTraversal(t *testing.T) {
+	gate := newTestIntentGate(&intentModel{response: `{"needs_memory":true,"buckets":["associative"],"entity":"ProjectX"}`})
+
+	verdict, err := gate.Classify(context.Background(), "ws-1", "", "What is the status of ProjectX?", 4*time.Second)
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if !verdict.NeedsDeepMemory || !verdict.Associative {
+		t.Fatalf("expected the associative route, got %+v", verdict)
+	}
+	if verdict.Entity != "ProjectX" {
+		t.Fatalf("the verdict must carry the entity seed, got %+v", verdict)
+	}
+
+	gate = newTestIntentGate(&intentModel{response: `{"needs_memory":true,"buckets":["entity"]}`})
+	verdict, err = gate.Classify(context.Background(), "ws-1", "", "What about Beta?", 4*time.Second)
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if !verdict.Associative || verdict.Entity != "" {
+		t.Fatalf("the entity bucket spelling must route associative with an empty seed, got %+v", verdict)
+	}
+}
+
 // TestIntentGate_ResolverFailureFailsOpen covers the unwired side-call tier:
 // a resolution failure is a fail-open classification, not a panic.
 func TestIntentGate_ResolverFailureFailsOpen(t *testing.T) {

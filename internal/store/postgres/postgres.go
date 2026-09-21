@@ -116,6 +116,16 @@ func (s *store) MemoryReports() storeport.MemoryReportStore {
 	return NewMemoryReportStore(s.db)
 }
 
+// MemoryEmbeddings returns the MemoryEmbeddingStore sub-port.
+func (s *store) MemoryEmbeddings() storeport.MemoryEmbeddingStore {
+	return NewMemoryEmbeddingStore(s.db)
+}
+
+// MemoryEntities returns the MemoryEntityStore sub-port.
+func (s *store) MemoryEntities() storeport.MemoryEntityStore {
+	return NewMemoryEntityStore(s.db)
+}
+
 // SessionEvents returns the SessionEventStore sub-port.
 func (s *store) SessionEvents() storeport.SessionEventStore {
 	return NewSessionEventStore(s.db)

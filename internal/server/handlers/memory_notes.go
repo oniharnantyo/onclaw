@@ -63,9 +63,13 @@ const memoryEmbeddingProbeTimeout = 10 * time.Second
 
 // memoryNoteHandlers serves the extracted-memory management endpoints.
 type memoryNoteHandlers struct {
-	providers    store.ProviderStore
-	notes        store.MemoryNoteStore
-	events       store.MemoryEventStore
+	providers store.ProviderStore
+	notes     store.MemoryNoteStore
+	events    store.MemoryEventStore
+	// searcher serves the fused free-text read (wave3 task 3.3): the notes
+	// API's q filter rides the same lexical+vector fusion as turn-time
+	// prefetch and the search tool — uniform semantics on one path.
+	searcher     *memory.Searcher
 	reports      store.MemoryReportStore
 	settings     store.ToolSettingsStore
 	consolidator MemoryConsolidator
@@ -94,11 +98,13 @@ func WithEmbeddingProbe(fn func(ctx context.Context, endpoint, apiKey, model str
 
 // NewMemoryNoteHandlers creates a new memoryNoteHandlers instance with its
 // granular dependencies injected: the notes/events/report/settings stores,
-// the consolidator seam, the instance encryption key, and the provider
-// registry (canonical-origin lookup for the embedding connection test).
+// the fused memory searcher (the q filter's read path), the consolidator
+// seam, the instance encryption key, and the provider registry
+// (canonical-origin lookup for the embedding connection test).
 func NewMemoryNoteHandlers(
 	notes store.MemoryNoteStore,
 	events store.MemoryEventStore,
+	searcher *memory.Searcher,
 	reports store.MemoryReportStore,
 	settings store.ToolSettingsStore,
 	providers store.ProviderStore,
@@ -111,6 +117,7 @@ func NewMemoryNoteHandlers(
 		providers:    providers,
 		notes:        notes,
 		events:       events,
+		searcher:     searcher,
 		reports:      reports,
 		settings:     settings,
 		consolidator: consolidator,
@@ -164,6 +171,8 @@ func emptyMorningReportView() gin.H {
 		"conflicts":           []memory.ConflictFlag{},
 		"merges":              []memory.MergeRecord{},
 		"extraction_failures": 0,
+		"embedding_failures":  0,
+		"entity_merges":       0,
 	}
 }
 
@@ -201,15 +210,27 @@ func (h *memoryNoteHandlers) ListNotes(c *gin.Context) {
 	// include_tombstoned accepted but inert: tombstones are hidden from every
 	// read path by store contract (D6 — no flag overrides that).
 
-	// A free-text query routes through the hybrid lexical search over the
-	// same filtered visible set; without one, the default listing applies.
+	// A free-text query routes through the fused search path (wave3 task
+	// 3.3): the same lexical+vector fusion the prefetch and the search tool
+	// use, over the same filtered visible set — uniform matching semantics
+	// on every consumer of the shared path. The listing is unbounded (no
+	// limit filter on this API), and only the notes half of the fused result
+	// renders here: this endpoint browses the curated store.
 	if q := strings.TrimSpace(c.Query("q")); q != "" {
-		notes, err := h.notes.SearchNotes(c.Request.Context(), ws.ID, user.ID, "", q, filters)
+		result, err := h.searcher.Search(c.Request.Context(), memory.Caller{
+			WorkspaceID: ws.ID,
+			UserID:      user.ID,
+		}, memory.Query{
+			Text:             q,
+			TimeWindow:       filters.TimeWindow,
+			VisibilityFilter: filters.Visibility,
+			Topic:            filters.Topic,
+		})
 		if err != nil {
 			RespondError(c, err)
 			return
 		}
-		h.respondNotePage(c, ws.ID, user.ID, notes)
+		h.respondNotePage(c, ws.ID, user.ID, result.Notes)
 		return
 	}
 
@@ -452,6 +473,12 @@ func (h *memoryNoteHandlers) memorySettingsView(row *domain.WorkspaceToolSetting
 	if v, ok := config["ingestion_enabled"].(bool); ok {
 		ingestionEnabled = v
 	}
+	// Raw-embedding toggle (wave3: the per-workspace switch for raw-turn
+	// vectors under storage pressure); absence is the ON default.
+	rawEmbeddingEnabled := true
+	if v, ok := config["raw_embedding_enabled"].(bool); ok {
+		rawEmbeddingEnabled = v
+	}
 
 	var embedding gin.H
 	providerID, _ := config["embedding_provider_id"].(string)
@@ -494,11 +521,12 @@ func (h *memoryNoteHandlers) memorySettingsView(row *domain.WorkspaceToolSetting
 	}
 
 	return gin.H{
-		"visibility_posture": posture,
-		"ingestion_enabled":  ingestionEnabled,
-		"side_call_model":    sideCallModel,
-		"embedding":          embedding,
-		"gate_budget_ms":     gateBudgetMS,
+		"visibility_posture":    posture,
+		"ingestion_enabled":     ingestionEnabled,
+		"raw_embedding_enabled": rawEmbeddingEnabled,
+		"side_call_model":       sideCallModel,
+		"embedding":             embedding,
+		"gate_budget_ms":        gateBudgetMS,
 	}
 }
 
@@ -534,6 +562,9 @@ func (h *memoryNoteHandlers) storedMemorySettings(ctx context.Context, workspace
 type memorySettingsPut struct {
 	VisibilityPosture *string `json:"visibility_posture"`
 	IngestionEnabled  *bool   `json:"ingestion_enabled"`
+	// RawEmbeddingEnabled toggles the raw-turn vector channel (wave3);
+	// absent keeps the stored choice, and absence-in-storage is ON.
+	RawEmbeddingEnabled *bool `json:"raw_embedding_enabled"`
 	// SideCallModel rides RawMessage because Go decodes JSON null and an
 	// absent key into the same nil pointer, and the three cases differ here:
 	// absent = keep the stored choice; null = clear to agent default; an
@@ -630,6 +661,9 @@ func (h *memoryNoteHandlers) PutSettings(c *gin.Context) {
 	}
 	if req.IngestionEnabled != nil {
 		config["ingestion_enabled"] = *req.IngestionEnabled
+	}
+	if req.RawEmbeddingEnabled != nil {
+		config["raw_embedding_enabled"] = *req.RawEmbeddingEnabled
 	}
 	if req.VisibilityPosture != nil {
 		config["visibility_posture"] = strings.ToLower(strings.TrimSpace(*req.VisibilityPosture))
@@ -868,6 +902,21 @@ func MemoryPostureForWorkspace(ctx context.Context, settings store.ToolSettingsS
 		return memory.PostureNarrow
 	}
 	return MemoryPostureFromToolSetting(row)
+}
+
+// RawEmbeddingEnabledForWorkspace resolves the workspace's raw-embedding
+// toggle (wave3) from the settings store. Absent row, absent key, or a read
+// error all mean ON — absence is the default, and storage trouble must
+// never silently change what gets indexed, only what was explicitly asked.
+func RawEmbeddingEnabledForWorkspace(ctx context.Context, settings store.ToolSettingsStore, workspaceID string) bool {
+	row, err := settings.Get(ctx, workspaceID, memorySettingsToolKey)
+	if err != nil || row == nil || row.Config == nil {
+		return true
+	}
+	if v, ok := row.Config["raw_embedding_enabled"].(bool); ok {
+		return v
+	}
+	return true
 }
 
 // derefOrEmpty reads an optional string pointer as a plain string.

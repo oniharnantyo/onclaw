@@ -24,10 +24,11 @@ import (
 // memorySettingsWire is the settings GET/PUT response shape.
 type memorySettingsWire struct {
 	Settings struct {
-		VisibilityPosture string `json:"visibility_posture"`
-		IngestionEnabled  bool   `json:"ingestion_enabled"`
-		GateBudgetMs      int    `json:"gate_budget_ms"`
-		Embedding         *struct {
+		VisibilityPosture   string `json:"visibility_posture"`
+		IngestionEnabled    bool   `json:"ingestion_enabled"`
+		RawEmbeddingEnabled bool   `json:"raw_embedding_enabled"`
+		GateBudgetMs        int    `json:"gate_budget_ms"`
+		Embedding           *struct {
 			ProviderID string `json:"provider_id"`
 			Model      string `json:"model"`
 			Dimension  int    `json:"dimension"`
@@ -110,6 +111,7 @@ func newMemoryNotesTestEnv(t *testing.T) (*gin.Engine, store.Store, *domain.Work
 	h := handlers.NewMemoryNoteHandlers(
 		st.MemoryNotes(),
 		st.MemoryEvents(),
+		newTestMemorySearcher(st),
 		st.MemoryReports(),
 		st.ToolSettings(),
 		st.Providers(),
@@ -615,6 +617,70 @@ func TestMemoryNotes_SettingsRoundTrip(t *testing.T) {
 	}
 }
 
+// TestMemoryNotes_RawEmbeddingToggle (wave3): the raw-embedding setting
+// round-trips through PUT/GET; absence is the ON default and the stored
+// record carries the structured key.
+func TestMemoryNotes_RawEmbeddingToggle(t *testing.T) {
+	r, st, ws, _ := newMemoryNotesTestEnv(t)
+
+	// Absence is ON: no record exists yet, and the view defaults enabled.
+	w := doMemoryNotesRequest(r, http.MethodGet, "/api/v1/workspaces/acme/memory/settings", "member", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if s := decodeMemorySettings(t, w.Body.String()).Settings; !s.RawEmbeddingEnabled {
+		t.Fatalf("absence must read as enabled, got %+v", s)
+	}
+
+	// PUT false disables the raw channel.
+	w = doMemoryNotesRequest(r, http.MethodPut, "/api/v1/workspaces/acme/memory/settings", "admin", map[string]any{
+		"raw_embedding_enabled": false,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if s := decodeMemorySettings(t, w.Body.String()).Settings; s.RawEmbeddingEnabled {
+		t.Fatalf("expected the response to carry the disabled toggle, got %+v", s)
+	}
+	row, err := st.ToolSettings().Get(nil, ws.ID, "memory")
+	if err != nil || row == nil {
+		t.Fatalf("expected a stored settings row, got %v err %v", row, err)
+	}
+	if v, ok := row.Config["raw_embedding_enabled"].(bool); !ok || v {
+		t.Fatalf("expected raw_embedding_enabled false at rest, got %v", row.Config["raw_embedding_enabled"])
+	}
+
+	// A GET (not just the PUT echo) reads the stored toggle back.
+	w = doMemoryNotesRequest(r, http.MethodGet, "/api/v1/workspaces/acme/memory/settings", "member", nil)
+	if s := decodeMemorySettings(t, w.Body.String()).Settings; s.RawEmbeddingEnabled {
+		t.Fatalf("expected the stored disabled toggle on GET, got %+v", s)
+	}
+
+	// A partial PUT without the key keeps the stored choice.
+	w = doMemoryNotesRequest(r, http.MethodPut, "/api/v1/workspaces/acme/memory/settings", "admin", map[string]any{
+		"ingestion_enabled": true,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	w = doMemoryNotesRequest(r, http.MethodGet, "/api/v1/workspaces/acme/memory/settings", "member", nil)
+	if s := decodeMemorySettings(t, w.Body.String()).Settings; s.RawEmbeddingEnabled {
+		t.Fatalf("the stored toggle must survive a partial PUT, got %+v", s)
+	}
+
+	// Re-enabling round-trips too.
+	w = doMemoryNotesRequest(r, http.MethodPut, "/api/v1/workspaces/acme/memory/settings", "admin", map[string]any{
+		"raw_embedding_enabled": true,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	w = doMemoryNotesRequest(r, http.MethodGet, "/api/v1/workspaces/acme/memory/settings", "member", nil)
+	if s := decodeMemorySettings(t, w.Body.String()).Settings; !s.RawEmbeddingEnabled {
+		t.Fatalf("expected the re-enabled toggle on GET, got %+v", s)
+	}
+}
+
 func TestMemoryNotes_SettingsGateBudget(t *testing.T) {
 	r, st, ws, _ := newMemoryNotesTestEnv(t)
 
@@ -725,7 +791,7 @@ func TestMemoryNotes_SettingsTestConnection(t *testing.T) {
 		return 1536, nil
 	}
 	h := handlers.NewMemoryNoteHandlers(
-		st.MemoryNotes(), st.MemoryEvents(), st.MemoryReports(), st.ToolSettings(),
+		st.MemoryNotes(), st.MemoryEvents(), newTestMemorySearcher(st), st.MemoryReports(), st.ToolSettings(),
 		st.Providers(), &stubConsolidator{}, []byte("0123456789abcdef0123456789abcdef"),
 		providers.NewRegistry(),
 		handlers.WithEmbeddingProbe(probe),

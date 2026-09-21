@@ -24,6 +24,22 @@ import (
 // Shared memory-pipeline test helpers
 // ---------------------------------------------------------------------------
 
+// newTestMemorySearcher builds the fused searcher over st with the
+// composition root's production wiring: the provider-backed embedding lane.
+// These test worlds configure no embedding model, so the vector channel
+// degrades to lexical-only exactly as production does without one (wave3
+// D4).
+func newTestMemorySearcher(st store.Store) *memory.Searcher {
+	return memory.NewSearcher(
+		st.MemoryNotes(),
+		st.MemoryEvents(),
+		st.MemoryEmbeddings(),
+		st.MemoryEntities(),
+		st.SessionEvents(),
+		memory.NewProviderEmbedder(st.Providers(), st.ToolSettings(), []byte("test-key-32-bytes-long-12345678"), providers.NewRegistry()),
+	)
+}
+
 // newTestMemoryPipeline builds the memory seam triplet over st: the worker,
 // the searcher, and the intent gate. The worker is deliberately NOT started —
 // tests that assert processed jobs construct their own worker with an
@@ -34,12 +50,14 @@ import (
 func newTestMemoryPipeline(st store.Store) (*memory.Worker, *memory.Searcher, *memory.IntentGate) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	worker := memory.NewWorker(
-		memory.NewGister(st.MemoryEvents(), st.SessionEvents(), st.Providers(), []byte("test-key-32-bytes-long-12345678"), DefaultAgenticModelFactory),
-		memory.NewGate(st.MemoryNotes(), st.Memories(), st.Providers(), []byte("test-key-32-bytes-long-12345678"), DefaultAgenticModelFactory, logger),
+		memory.NewGister(st.MemoryEvents(), st.SessionEvents(), st.MemoryEntities(), st.Providers(), []byte("test-key-32-bytes-long-12345678"), DefaultAgenticModelFactory, logger),
+		memory.NewGate(st.MemoryNotes(), st.MemoryEntities(), st.Memories(), st.Providers(), []byte("test-key-32-bytes-long-12345678"), DefaultAgenticModelFactory, logger),
+		memory.NewProviderEmbedder(st.Providers(), st.ToolSettings(), []byte("test-key-32-bytes-long-12345678"), providers.NewRegistry()),
+		st.MemoryEmbeddings(),
 		logger,
 	)
 	return worker,
-		memory.NewSearcher(st.MemoryNotes(), st.MemoryEvents()),
+		newTestMemorySearcher(st),
 		memory.NewIntentGate(st.Providers(), []byte("test-key-32-bytes-long-12345678"), DefaultAgenticModelFactory, logger)
 }
 
@@ -49,8 +67,12 @@ func newTestMemoryPipeline(st store.Store) (*memory.Worker, *memory.Searcher, *m
 func newQueuedMemoryWorker() *memory.Worker {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return memory.NewWorker(
-		memory.NewGister(nil, nil, nil, nil, nil),
-		memory.NewGate(nil, nil, nil, nil, nil, logger),
+		memory.NewGister(nil, nil, nil, nil, nil, nil, logger),
+		memory.NewGate(nil, nil, nil, nil, nil, nil, logger),
+		// No settings store: the embedder resolves no config and both
+		// embedding stages no-op even if a job ever drained.
+		memory.NewProviderEmbedder(nil, nil, nil, providers.NewRegistry()),
+		nil,
 		logger,
 	)
 }
@@ -172,12 +194,14 @@ func TestRunner_EnqueuesIngestOnBothStatuses(t *testing.T) {
 	st, runner, _, _, req := setupHooksRunner(t, nil, &hooksModel{final: "done"})
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	worker := memory.NewWorker(
-		memory.NewGister(st.MemoryEvents(), st.SessionEvents(), nil, nil, nil, memory.WithModelResolver(func(context.Context, string, string) (memory.Model, error) {
+		memory.NewGister(st.MemoryEvents(), st.SessionEvents(), st.MemoryEntities(), nil, nil, nil, logger, memory.WithModelResolver(func(context.Context, string, string) (memory.Model, error) {
 			return nil, errors.New("side-call tier unwired")
 		})),
-		memory.NewGate(st.MemoryNotes(), st.Memories(), nil, nil, nil, logger, memory.WithModelResolver(func(context.Context, string, string) (memory.Model, error) {
+		memory.NewGate(st.MemoryNotes(), st.MemoryEntities(), st.Memories(), nil, nil, nil, logger, memory.WithModelResolver(func(context.Context, string, string) (memory.Model, error) {
 			return nil, errors.New("side-call tier unwired")
 		})),
+		memory.NewProviderEmbedder(st.Providers(), st.ToolSettings(), []byte("test-key-32-bytes-long-12345678"), providers.NewRegistry()),
+		st.MemoryEmbeddings(),
 		logger,
 	)
 	runner.memoryWorker = worker
@@ -267,7 +291,7 @@ func TestRunner_IngestSessionShapePerOrigin(t *testing.T) {
 
 	_, _, memGate := newTestMemoryPipeline(st)
 	runner := NewRunner(nil, nil, st.Users(), nil, nil, nil, nil, nil, nil, nil, st.GatewayLinks(),
-		newQueuedMemoryWorker(), memory.NewSearcher(st.MemoryNotes(), st.MemoryEvents()), memGate,
+		newQueuedMemoryWorker(), newTestMemorySearcher(st), memGate,
 		[]byte("k"), "/tmp/onclaw")
 
 	// Two humans and one agent in the channel roster.
@@ -573,12 +597,14 @@ func TestWorkerChipFlowsThroughRunnerSink(t *testing.T) {
 		`[{"op":"ADD","content":"The deploy window is Tuesday morning","visibility":"shared","importance":5,"pin":false,"explicit_request":false,"supersedes":null,"topic":null,"conflict_with_doc":false}]`,
 	}}
 	worker := memory.NewWorker(
-		memory.NewGister(st.MemoryEvents(), st.SessionEvents(), nil, nil, nil, memory.WithModelResolver(func(context.Context, string, string) (memory.Model, error) {
+		memory.NewGister(st.MemoryEvents(), st.SessionEvents(), st.MemoryEntities(), nil, nil, nil, logger, memory.WithModelResolver(func(context.Context, string, string) (memory.Model, error) {
 			return sidecall, nil
 		})),
-		memory.NewGate(st.MemoryNotes(), st.Memories(), nil, nil, nil, logger, memory.WithModelResolver(func(context.Context, string, string) (memory.Model, error) {
+		memory.NewGate(st.MemoryNotes(), st.MemoryEntities(), st.Memories(), nil, nil, nil, logger, memory.WithModelResolver(func(context.Context, string, string) (memory.Model, error) {
 			return sidecall, nil
 		})),
+		memory.NewProviderEmbedder(st.Providers(), st.ToolSettings(), []byte("test-key-32-bytes-long-12345678"), providers.NewRegistry()),
+		st.MemoryEmbeddings(),
 		logger,
 		memory.WithChipSink(runner.AppendMemoryChip),
 	)
@@ -631,4 +657,70 @@ func TestWorkerChipFlowsThroughRunnerSink(t *testing.T) {
 		time.Sleep(2 * time.Millisecond)
 	}
 	t.Fatalf("the chip never hydrated through the runner sink (stats %+v)", worker.Stats())
+}
+
+// TestRunner_AssociativeRouteInjectsTraversalCandidates (wave3 tasks 5.3,
+// spec: associative route draws from traversal): a gate verdict routing the
+// associative bucket with an entity seed injects the entity's linked rows
+// alongside the fused text candidates — within the same bounded section —
+// and never another member's linked row.
+func TestRunner_AssociativeRouteInjectsTraversalCandidates(t *testing.T) {
+	st, runner, ws, _, req := setupHooksRunner(t, nil, &hooksModel{final: "ok"})
+	ctx := context.Background()
+
+	// The entity graph: ProjectX links a visible shared row and Sari's
+	// private row — only the visible one may inject.
+	entity := &domain.MemoryEntity{
+		WorkspaceID:     ws.ID,
+		Label:           "ProjectX",
+		NormalizedLabel: domain.NormalizeEntityLabel("ProjectX"),
+		Origin:          domain.MemoryOriginDialogue,
+		SourceEventID:   "ev-entity",
+		LearnedAt:       time.Now().UTC().Add(-time.Hour),
+	}
+	if err := st.MemoryEntities().ResolveEntity(ctx, entity); err != nil {
+		t.Fatalf("seed entity: %v", err)
+	}
+	linked := seedMemoryNote(t, st, ws.ID, domain.MemoryVisibilityShared, "", "", "ProjectX rollout is on track")
+	sari := &domain.User{Email: "sari@example.com", Name: "Sari"}
+	if err := st.Users().Create(ctx, sari); err != nil {
+		t.Fatalf("create sari: %v", err)
+	}
+	private := seedMemoryNote(t, st, ws.ID, domain.MemoryVisibilityUser, sari.ID, "", "Private rollout note for ProjectX")
+	for _, edge := range []domain.MemoryEntityEdge{
+		{EntityID: entity.ID, TargetType: domain.MemoryTargetNote, TargetID: linked.ID, Visibility: domain.MemoryVisibilityShared, Origin: domain.MemoryOriginDialogue, SourceEventID: "ev-edge"},
+		{EntityID: entity.ID, TargetType: domain.MemoryTargetNote, TargetID: private.ID, Visibility: domain.MemoryVisibilityUser, Origin: domain.MemoryOriginDialogue, SourceEventID: "ev-edge"},
+	} {
+		if _, err := st.MemoryEntities().AddEdges(ctx, ws.ID, []domain.MemoryEntityEdge{edge}); err != nil {
+			t.Fatalf("seed edge: %v", err)
+		}
+	}
+
+	req.Input = "what is the status of ProjectX"
+
+	gate := memory.NewIntentGate(nil, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)),
+		memory.WithModelResolver(func(context.Context, string, string) (memory.Model, error) {
+			return &staticTextModel{responses: []string{`{"needs_memory":true,"buckets":["associative"],"entity":"ProjectX"}`}}, nil
+		}))
+	runner.intentGate = gate
+	composer := &memoryCaptureComposer{}
+	runner.instructionComposer = composer
+
+	stream, err := runner.Run(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	collectStream(t, stream)
+
+	docs := composer.snapshot().MemoryDocs
+	if len(docs) != 1 {
+		t.Fatalf("expected exactly one memory section, got %d", len(docs))
+	}
+	doc := docs[0]
+	if !strings.Contains(doc, linked.SourceEventID) {
+		t.Fatalf("the associative route must inject the linked row's evidence pointer %q:\n%s", linked.SourceEventID, doc)
+	}
+	if strings.Contains(doc, private.SourceEventID) || strings.Contains(doc, private.Content) {
+		t.Fatalf("the associative route must never inject another member's row:\n%s", doc)
+	}
 }

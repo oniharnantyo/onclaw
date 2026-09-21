@@ -72,7 +72,7 @@ func TestSearchIdentityPassThrough(t *testing.T) {
 	seedNote(t, s, domain.MemoryVisibilityUser, otherUser, "", "Bob prefers Slack over calls")
 	seedNote(t, s, domain.MemoryVisibilityAgent, "", testAgentID, "Atlas joins calls in English by default")
 
-	searcher := NewSearcher(s.MemoryNotes(), s.MemoryEvents())
+	searcher := NewSearcher(s.MemoryNotes(), s.MemoryEvents(), s.MemoryEmbeddings(), s.MemoryEntities(), s.SessionEvents(), lexicalOnlyEmbedder())
 	ctx := context.Background()
 
 	alice := Caller{WorkspaceID: testWorkspaceID, UserID: testUserID, AgentID: testAgentID}
@@ -112,7 +112,7 @@ func TestSearchEventsScoped(t *testing.T) {
 	seedGist(t, s, domain.MemoryVisibilityUser, otherUser, "Bob discussed the deploy window")
 	seedGist(t, s, domain.MemoryVisibilityAgent, "", "Atlas summarized the deploy window run")
 
-	searcher := NewSearcher(s.MemoryNotes(), s.MemoryEvents())
+	searcher := NewSearcher(s.MemoryNotes(), s.MemoryEvents(), s.MemoryEmbeddings(), s.MemoryEntities(), s.SessionEvents(), lexicalOnlyEmbedder())
 	res, err := searcher.Search(context.Background(),
 		Caller{WorkspaceID: testWorkspaceID, UserID: testUserID, AgentID: testAgentID},
 		Query{Text: "deploy window"})
@@ -134,7 +134,7 @@ func TestSearchEventsScoped(t *testing.T) {
 // invalid-input contract.
 func TestSearchZeroResultIsStructured(t *testing.T) {
 	s := seedWorld(t)
-	searcher := NewSearcher(s.MemoryNotes(), s.MemoryEvents())
+	searcher := NewSearcher(s.MemoryNotes(), s.MemoryEvents(), s.MemoryEmbeddings(), s.MemoryEntities(), s.SessionEvents(), lexicalOnlyEmbedder())
 
 	res, err := searcher.Search(context.Background(), Caller{WorkspaceID: testWorkspaceID, UserID: testUserID, AgentID: testAgentID}, Query{Text: "  "})
 	if err != nil {
@@ -162,7 +162,7 @@ func TestSearchFiltersAndLimit(t *testing.T) {
 	s := seedWorld(t)
 	seedNote(t, s, domain.MemoryVisibilityUser, testUserID, "", "Deploy windows topic note")
 	seedNote(t, s, domain.MemoryVisibilityAgent, "", testAgentID, "Deploy windows agent note")
-	searcher := NewSearcher(s.MemoryNotes(), s.MemoryEvents())
+	searcher := NewSearcher(s.MemoryNotes(), s.MemoryEvents(), s.MemoryEmbeddings(), s.MemoryEntities(), s.SessionEvents(), lexicalOnlyEmbedder())
 	caller := Caller{WorkspaceID: testWorkspaceID, UserID: testUserID, AgentID: testAgentID}
 	ctx := context.Background()
 
@@ -191,9 +191,9 @@ func TestPrefetchCaps(t *testing.T) {
 	for i := 0; i < 7; i++ {
 		seedNote(t, s, domain.MemoryVisibilityShared, "", "", long)
 	}
-	searcher := NewSearcher(s.MemoryNotes(), s.MemoryEvents())
+	searcher := NewSearcher(s.MemoryNotes(), s.MemoryEvents(), s.MemoryEmbeddings(), s.MemoryEntities(), s.SessionEvents(), lexicalOnlyEmbedder())
 
-	candidates, err := searcher.Prefetch(context.Background(), Caller{WorkspaceID: testWorkspaceID, UserID: testUserID, AgentID: testAgentID}, "deploy window")
+	candidates, err := searcher.Prefetch(context.Background(), Caller{WorkspaceID: testWorkspaceID, UserID: testUserID, AgentID: testAgentID}, Query{Text: "deploy window"})
 	if err != nil {
 		t.Fatalf("prefetch: %v", err)
 	}
@@ -221,8 +221,8 @@ func TestPrefetchCaps(t *testing.T) {
 // TestPrefetchEmptyTextReturnsNothing: no query, no candidates, no error.
 func TestPrefetchEmptyTextReturnsNothing(t *testing.T) {
 	s := seedWorld(t)
-	searcher := NewSearcher(s.MemoryNotes(), s.MemoryEvents())
-	candidates, err := searcher.Prefetch(context.Background(), Caller{WorkspaceID: testWorkspaceID, UserID: testUserID, AgentID: testAgentID}, "   ")
+	searcher := NewSearcher(s.MemoryNotes(), s.MemoryEvents(), s.MemoryEmbeddings(), s.MemoryEntities(), s.SessionEvents(), lexicalOnlyEmbedder())
+	candidates, err := searcher.Prefetch(context.Background(), Caller{WorkspaceID: testWorkspaceID, UserID: testUserID, AgentID: testAgentID}, Query{Text: "   "})
 	if err != nil {
 		t.Fatalf("empty prefetch must not error: %v", err)
 	}
@@ -237,9 +237,9 @@ func TestPrefetchPrefersNotesAndFitsBudget(t *testing.T) {
 	s := seedWorld(t)
 	seedNote(t, s, domain.MemoryVisibilityUser, testUserID, "", "deploy "+strings.Repeat("a", 400))
 	seedNote(t, s, domain.MemoryVisibilityUser, testUserID, "", "deploy "+strings.Repeat("b", 300))
-	searcher := NewSearcher(s.MemoryNotes(), s.MemoryEvents())
+	searcher := NewSearcher(s.MemoryNotes(), s.MemoryEvents(), s.MemoryEmbeddings(), s.MemoryEntities(), s.SessionEvents(), lexicalOnlyEmbedder())
 
-	candidates, err := searcher.Prefetch(context.Background(), Caller{WorkspaceID: testWorkspaceID, UserID: testUserID, AgentID: testAgentID}, "deploy")
+	candidates, err := searcher.Prefetch(context.Background(), Caller{WorkspaceID: testWorkspaceID, UserID: testUserID, AgentID: testAgentID}, Query{Text: "deploy"})
 	if err != nil {
 		t.Fatalf("prefetch: %v", err)
 	}
