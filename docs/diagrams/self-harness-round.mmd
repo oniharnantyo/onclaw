@@ -1,0 +1,79 @@
+sequenceDiagram
+    autonumber
+    participant CLI as harness-evolve CLI
+    participant Driver as Loop driver
+    participant Eval as Eval harness
+    participant API as OnClaw server
+    participant Agent as Live agent h_t
+    participant Mine as Miner
+    participant LLM as Side-call LLM
+    participant Prop as Proposer
+    participant Shadow as Shadow builder
+    participant DB as HarnessStore
+
+    Note over CLI,DB: Round t of T — stages 1, 2, 3 in order
+
+    CLI->>Driver: start agent, suite, rounds, repeats
+    Driver->>DB: load active lineage h_t
+
+    rect rgb(230, 244, 255)
+        Note over Driver,Eval: STAGE 1 — Weakness Mining
+        Driver->>Eval: eval baseline h_t on D_in + D_ho
+        Eval->>API: seed scripted fixture sessions (once)
+        loop each split, each repeat
+            Eval->>API: drive question via /v1/responses
+            API->>Agent: compose docs + prefetch, run turn
+            Agent-->>API: answer + tool cards + trace
+            API-->>Eval: transcript
+        end
+        Eval->>Eval: grade answers (ScoreQuestion arms)
+        Eval->>DB: persist eval rounds per split
+        Eval-->>Driver: scoreboard, P_in and P_ho
+        loop each failed question
+            Driver->>Mine: attribute (question, trace, failing arm)
+            Mine->>LLM: forced-JSON attribution call
+            LLM-->>Mine: signature (cause, causal status, mechanism)
+        end
+        Mine->>Mine: exact-match clustering by signature
+        Mine->>DB: persist signatures + evidence bundle B_t
+    end
+
+    rect rgb(235, 255, 235)
+        Note over Driver,Prop: STAGE 2 — Harness Proposal
+        Driver->>Prop: propose (B_t, declared surfaces, passing set, edit history)
+        loop K parallel proposal branches (fan-out)
+            Prop->>LLM: proposal call j
+            LLM-->>Prop: delta Δj + audit record aj
+        end
+        Prop->>Prop: distinctness + addressability filters
+        Prop->>DB: persist proposals, status proposed
+    end
+
+    rect rgb(255, 246, 230)
+        Note over Driver,Shadow: STAGE 3 — Proposal Validation
+        loop each surviving candidate Δj
+            Driver->>Shadow: apply Δj to snapshot copy
+            Shadow->>API: create temp agent, write prompt docs, set knobs
+            Shadow-->>Driver: candidate harness materialized
+            Driver->>Eval: eval candidate on D_in + D_ho, 2 repeats
+            Eval->>API: drive questions against shadow agent
+            Eval->>DB: persist candidate eval rounds
+            Eval-->>Driver: P_in(j), P_ho(j)
+            Driver->>Driver: acceptance rule: Δin ≥ 0 and Δho ≥ 0 and max > 0
+            alt accepted, autonomy full
+                Driver->>DB: proposal accepted
+            else accepted, autonomy approval or suggest
+                Driver->>DB: stays proposed, waits for human promote
+            else rejected or no-op
+                Driver->>DB: proposal rejected, logged only
+            end
+            Driver->>Shadow: delete shadow agent
+        end
+    end
+
+    opt when at least one accepted, autonomy full
+        Driver->>API: write merged docs and knobs to live agent
+        Driver->>DB: lineage h_t+1 active, h_t retired
+    end
+
+    Driver-->>CLI: round summary (lineage, accepted, rejected)
