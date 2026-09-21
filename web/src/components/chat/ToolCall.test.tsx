@@ -256,7 +256,12 @@ describe('components/chat/ToolCall — todo checklist card (6.1)', () => {
   });
 });
 
-describe('components/chat/ToolCall — $type echo envelopes (7.x)', () => {
+// LEGACY PATH PIN (markdown-fences): the ui.* echo tools were removed from the
+// backend catalog — rich cards now arrive via markdown fences. The $type
+// envelope dispatch below is retained only so OLD transcripts that stored echo
+// results from the removed tools still render their cards. The live transport
+// is markdown fences, not tool results.
+describe('components/chat/ToolCall — legacy $type echo envelopes (7.x, removed-tool transcripts)', () => {
   it('a chart envelope renders the chart card instead of the generic result', () => {
     const { container } = render(
       <ToolCall

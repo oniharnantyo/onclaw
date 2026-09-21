@@ -7,6 +7,7 @@ import (
 
 	"github.com/oniharnantyo/onclaw/internal/agents/tools"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/promptdocs"
 	"github.com/oniharnantyo/onclaw/internal/store/fake"
 )
 
@@ -66,7 +67,8 @@ func TestRun_HeartbeatProfileComposition(t *testing.T) {
 	}
 
 	for _, marker := range []string{
-		"AGENTS-CONTENT-MARKER",
+		promptdocs.BasePrompt,
+		"## Rich cards",
 		"IDENTITY-CONTENT-MARKER",
 		"SOUL-CONTENT-MARKER",
 		"# Workspace",
@@ -78,7 +80,7 @@ func TestRun_HeartbeatProfileComposition(t *testing.T) {
 		"DIGEST-BODY-MARKER",
 	} {
 		if !strings.Contains(instruction, marker) {
-			t.Fatalf("heartbeat instruction must contain %s, got:\n%s", marker, instruction)
+			t.Fatalf("heartbeat instruction must contain the base prompt and %s, got:\n%s", marker, instruction)
 		}
 	}
 	for _, absent := range []string{
@@ -322,7 +324,7 @@ func TestRun_HeartbeatProfileOtherOriginsUnchanged(t *testing.T) {
 		t.Fatalf("scheduler compose params = %+v, want SchedulerProfile only", sParams)
 	}
 	for _, marker := range []string{
-		"AGENTS-CONTENT-MARKER",
+		promptdocs.BasePrompt,
 		"IDENTITY-CONTENT-MARKER",
 		"SOUL-CONTENT-MARKER",
 		"# Workspace",
@@ -366,7 +368,8 @@ func TestRun_HeartbeatProfileOtherOriginsUnchanged(t *testing.T) {
 		t.Fatalf("user compose params = %+v, want neither unattended profile", uParams)
 	}
 	for _, marker := range []string{
-		"AGENTS-CONTENT-MARKER",
+		promptdocs.BasePrompt,
+		"## Rich cards",
 		"IDENTITY-CONTENT-MARKER",
 		"SOUL-CONTENT-MARKER",
 		"BOOTSTRAP-CONTENT-MARKER",

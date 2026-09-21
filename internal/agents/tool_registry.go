@@ -243,19 +243,10 @@ func NewDefaultToolRegistry(memories store.MemoryStore, opts ...ToolRegistryOpti
 		})
 	}
 
-	// Generative-UI echo tools (adopt-assistant-ui-elements D3): real tools
-	// that validate their input schema and echo the args back as the result
-	// envelope the transcript renders. No dependencies, no side effects —
-	// ordinary unconditional registrations like web.fetch.
-	reg.Register(tools.NameUIChart, func(ToolContext) (tool.BaseTool, error) {
-		return tools.NewUIChart()
-	})
-	reg.Register(tools.NameUITimeline, func(ToolContext) (tool.BaseTool, error) {
-		return tools.NewUITimeline()
-	})
-	reg.Register(tools.NameUIPreview, func(ToolContext) (tool.BaseTool, error) {
-		return tools.NewUIPreview()
-	})
+	// Generative-UI cards (markdown-card-elements D1): the echo tools
+	// (ui.chart/ui.timeline/ui.preview) are deleted — the model renders cards
+	// by writing tagged code fences in its replies, taught by the injected
+	// base prompt's rich-cards section. No tool round trip.
 
 	reg.Register(tools.NameDeleteFile, func(tctx ToolContext) (tool.BaseTool, error) {
 		return tools.NewDeleteFile(tctx.AgentDir)

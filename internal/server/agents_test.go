@@ -274,12 +274,16 @@ func TestAgents_CRUD_And_Validation(t *testing.T) {
 		if _, err := os.Stat(expectedDir); err != nil {
 			t.Errorf("expected agent workspace directory on disk: %v", err)
 		}
-		// Creation seeds the base prompt; generation writes the three documents
-		// before the ready transition.
-		for _, name := range []string{"AGENTS.md", "IDENTITY.md", "SOUL.md", "BOOTSTRAP.md"} {
+		// Creation seeds no base prompt (markdown-card-elements D8 — the L1
+		// prompt is injected per build, never materialized); generation writes
+		// the three documents before the ready transition.
+		for _, name := range []string{"IDENTITY.md", "SOUL.md", "BOOTSTRAP.md"} {
 			if _, err := os.Stat(filepath.Join(expectedDir, name)); err != nil {
 				t.Errorf("expected %s in agent workspace dir: %v", name, err)
 			}
+		}
+		if _, err := os.Stat(filepath.Join(expectedDir, "AGENTS.md")); !os.IsNotExist(err) {
+			t.Errorf("agent workspace must not carry a seeded AGENTS.md, stat err: %v", err)
 		}
 		// Generation runs synchronously with a stubbed model factory, so the
 		// create response already carries the final prompt state.

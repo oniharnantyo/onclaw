@@ -76,6 +76,39 @@ func TestToolRegistry_FilterAllowlist(t *testing.T) {
 	if len(avail) != 1 || avail[0] != "web.search" {
 		t.Errorf("unknown allowed name should be inert; expected [web.search], got %v", avail)
 	}
+
+	// A removed generative-UI echo tool name is inert like any unknown name
+	// (markdown-card-elements 3.6): stored agent configs still carrying the
+	// deleted keys resolve nothing for them.
+	avail = reg.Filter().Available([]string{"web.search", "ui.chart"})
+	if len(avail) != 1 || avail[0] != "web.search" {
+		t.Errorf("stale ui.chart allowlist key should be inert; expected [web.search], got %v", avail)
+	}
+}
+
+// TestNewDefaultToolRegistry_RemovedEchoToolsInert pins the echo-tool removal
+// end to end (markdown-card-elements D1, task 3.6): ui.chart/ui.timeline/
+// ui.preview are no longer registered in the default registry, and a stored
+// allowlist naming them resolves only the surviving tools — silently, never
+// an error — through create/update/execute.
+func TestNewDefaultToolRegistry_RemovedEchoToolsInert(t *testing.T) {
+	st := fake.New()
+	reg := NewDefaultToolRegistry(st.Memories())
+
+	for _, name := range []string{"ui.chart", "ui.timeline", "ui.preview"} {
+		if _, ok := reg.Lookup(name); ok {
+			t.Fatalf("removed echo tool %s must not be registered", name)
+		}
+	}
+
+	tctx := ToolContext{WorkspaceSlug: "acme", AgentSlug: "atlas", AgentDir: t.TempDir(), SessionID: "s1"}
+	names, built, err := ResolvedTools(tctx, reg, []string{tools.NameWebFetch, "ui.chart", "ui.timeline", "ui.preview"})
+	if err != nil {
+		t.Fatalf("ResolvedTools with stale echo keys must not error: %v", err)
+	}
+	if len(names) != 1 || names[0] != tools.NameWebFetch || len(built) != 1 {
+		t.Fatalf("stale echo keys must silently drop, got names=%v built=%d", names, len(built))
+	}
 }
 
 func TestResolvedTools_BuildsAndFilters(t *testing.T) {

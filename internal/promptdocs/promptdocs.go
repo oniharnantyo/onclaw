@@ -1,6 +1,7 @@
-// Package promptdocs manages agent workspace prompt documents: seeding the L1
-// base prompt, atomically writing generated documents with backups, and
-// reading them back for instruction composition.
+// Package promptdocs manages agent workspace prompt documents: the embedded
+// L1 base prompt (injected per build, never materialized), atomically written
+// generated documents with backups, and reading them back for instruction
+// composition.
 package promptdocs
 
 import (
@@ -40,21 +41,15 @@ const (
 	backupFileSuffix       = ".bak"
 )
 
-// SeedWorkspace creates the agent workspace directory if needed, seeds it with
-// the L1 base prompt, and clears any generated documents left behind by a
-// previous agent that lived in the same slug-derived directory — a newly
-// created agent owns no generated documents yet. It is idempotent: an existing
-// AGENTS.md is never overwritten.
+// SeedWorkspace creates the agent workspace directory if needed and clears
+// any generated documents left behind by a previous agent that lived in the
+// same slug-derived directory — a newly created agent owns no generated
+// documents yet. The L1 base prompt is deliberately not materialized here
+// (markdown-card-elements D8): the composer injects promptdocs.BasePrompt
+// per build, so a seeded file would go stale as the template evolves.
 func SeedWorkspace(dir string) error {
 	if err := os.MkdirAll(dir, workspaceDirPerm); err != nil {
 		return fmt.Errorf("create agent workspace dir: %w", err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, basePromptFileName)); errors.Is(err, fs.ErrNotExist) {
-		if err := WritePromptDocument(dir, basePromptFileName, BasePrompt); err != nil {
-			return fmt.Errorf("seed %s: %w", basePromptFileName, err)
-		}
-	} else if err != nil {
-		return fmt.Errorf("stat %s: %w", basePromptFileName, err)
 	}
 	for _, name := range []string{
 		identityFileName, soulFileName, bootstrapFileName,

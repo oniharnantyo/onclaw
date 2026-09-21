@@ -59,14 +59,11 @@ export const CATALOG_TOOL_KEYS = [
   'web.fetch',
   'browser',
   'schedule',
-  // Todos + echo-UI tools (adopt-assistant-ui-elements): todo_write/todo_read
-  // back the checklist card; ui.* validate + echo their args for the
-  // generative-UI registry.
+  // Todos (adopt-assistant-ui-elements): todo_write/todo_read back the
+  // checklist card. The echo-UI tools (ui.chart/ui.timeline/ui.preview) were
+  // removed — rich cards now come from markdown fences (markdown-fences).
   'todo_write',
   'todo_read',
-  'ui.chart',
-  'ui.timeline',
-  'ui.preview',
 ] as const;
 
 /** Browser facade member ids (runtime expansions of the `browser` alias). */
@@ -260,9 +257,9 @@ export const SENTENCE_TABLE: Record<string, SentenceTableEntry> = {
     outcome: 'Selected in {object}',
     object: { key: 'ref', style: 'chip' },
   },
-  // Todos + echo-UI tools (adopt-assistant-ui-elements). These tools render
-  // dedicated generative-UI cards when their envelopes parse; the sentences
-  // below carry the collapsed/error fallbacks so the coverage guard holds.
+  // Todos (adopt-assistant-ui-elements). These tools render dedicated
+  // generative-UI cards when their envelopes parse; the sentences below carry
+  // the collapsed/error fallbacks so the coverage guard holds.
   todo_write: {
     intent: 'Updating the plan',
     outcome: 'Updated the plan',
@@ -272,20 +269,6 @@ export const SENTENCE_TABLE: Record<string, SentenceTableEntry> = {
     intent: 'Reading the plan',
     outcome: 'Read the plan',
     fact: todoReadFact,
-  },
-  'ui.chart': {
-    intent: 'Charting {object}',
-    outcome: 'Charted {object}',
-    object: { key: 'label', style: 'quote' },
-  },
-  'ui.timeline': {
-    intent: 'Building the timeline',
-    outcome: 'Built the timeline',
-    fact: timelineEventFact,
-  },
-  'ui.preview': {
-    intent: 'Rendering the preview',
-    outcome: 'Rendered the preview',
   },
 };
 
@@ -423,12 +406,6 @@ function todoReadFact(ctx: { args: Record<string, unknown>; res?: string }): str
   const parsed = parseJsonObject(ctx.res);
   const n = parsed && Array.isArray(parsed.items) ? parsed.items.length : 0;
   return n > 0 ? ` — ${n} item${n === 1 ? '' : 's'}` : null;
-}
-
-/** ui.timeline fact: the event count from the args the timeline card renders. */
-function timelineEventFact(ctx: { args: Record<string, unknown>; res?: string }): string | null {
-  const n = Array.isArray(ctx.args.events) ? ctx.args.events.length : 0;
-  return n > 0 ? ` — ${n} event${n === 1 ? '' : 's'}` : null;
 }
 
 /** "Wrote `notes.md` · 1.2 kB" size format: B below 1 kB, one decimal above
@@ -569,23 +546,6 @@ const FIELD_SPECS: Record<string, FieldSpec[]> = {
     { key: 'revision', label: 'Revision', kind: 'plain' },
   ],
   todo_read: [],
-  'ui.chart': [
-    { key: 'label', label: 'Label', kind: 'quote' },
-    { key: 'value', label: 'Value', kind: 'plain' },
-    { key: 'delta', label: 'Delta', kind: 'plain' },
-    { key: 'variant', label: 'Variant', kind: 'enum' },
-    { key: 'visible', label: 'Visible', kind: 'plain' },
-    { key: 'points', label: 'Points', kind: 'content' },
-  ],
-  'ui.timeline': [
-    { key: 'title', label: 'Title', kind: 'quote' },
-    { key: 'events', label: 'Events', kind: 'content' },
-  ],
-  'ui.preview': [
-    { key: 'url', label: 'URL', kind: 'chip' },
-    { key: 'title', label: 'Title', kind: 'quote' },
-    { key: 'html', label: 'HTML', kind: 'content' },
-  ],
 };
 
 /** Per-tool expanded field spec; null for tools without an entry (renderer

@@ -10,6 +10,11 @@
     "strict": false,
     "noImplicitAny": false,
 
+    /* Path alias for shadcn-installed sources (components.json "aliases") */
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+
     /* Bundler mode */
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,

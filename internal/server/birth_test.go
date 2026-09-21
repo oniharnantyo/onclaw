@@ -75,12 +75,16 @@ func TestWorkspaces_AtomicBirth(t *testing.T) {
 		if _, err := os.Stat(expectedDir); err != nil {
 			t.Errorf("expected agent workspace directory on disk: %v", err)
 		}
-		// Birth seeds the base prompt and the synchronous generation writes the
-		// three documents before the ready transition.
-		for _, name := range []string{"AGENTS.md", "IDENTITY.md", "SOUL.md", "BOOTSTRAP.md"} {
+		// Birth seeds no base prompt (markdown-card-elements D8 — the L1
+		// prompt is injected per build, never materialized); the synchronous
+		// generation writes the three documents before the ready transition.
+		for _, name := range []string{"IDENTITY.md", "SOUL.md", "BOOTSTRAP.md"} {
 			if _, err := os.Stat(filepath.Join(expectedDir, name)); err != nil {
 				t.Errorf("expected %s in starter agent workspace dir: %v", name, err)
 			}
+		}
+		if _, err := os.Stat(filepath.Join(expectedDir, "AGENTS.md")); !os.IsNotExist(err) {
+			t.Errorf("starter agent workspace must not carry a seeded AGENTS.md, stat err: %v", err)
 		}
 		// The birth response composes the prompt documents from those files.
 		if res.StarterAgent.Identity != "# Identity\nStub identity" ||

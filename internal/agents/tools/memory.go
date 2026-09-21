@@ -53,7 +53,7 @@ func NewMemory(memories store.MemoryStore, workspaceID, userID string) (tool.Bas
 
 // Info returns the tool schema surfaced to agentic models. The description is
 // the only instruction surface guaranteed to reach every agent regardless of
-// AGENTS.md vintage (design.md D11) — it carries the full contract.
+// prompt composition — it carries the full contract.
 func (t *memoryTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name: NameMemory,

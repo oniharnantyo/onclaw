@@ -339,14 +339,14 @@ func TestComposeAgent_StampsContextMeasure(t *testing.T) {
 		t.Fatalf("toolSchemaBytes = %d, want 0 without tools", sizes.toolSchemaBytes)
 	}
 
-	// An agent exposing ui.chart stamps the marshaled schema bytes too.
+	// An agent exposing web.fetch stamps the marshaled schema bytes too.
 	chart := &domain.Agent{
 		WorkspaceID: ws.ID,
 		Slug:        "beacon",
 		Name:        "Beacon",
 		ProviderID:  ag.ProviderID,
 		Model:       ag.Model,
-		Tools:       []string{tools.NameUIChart},
+		Tools:       []string{tools.NameWebFetch},
 	}
 	if err := st.Agents().Create(ctx, chart); err != nil {
 		t.Fatalf("create chart agent: %v", err)

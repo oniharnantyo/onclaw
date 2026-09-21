@@ -24,6 +24,7 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/agents/tools"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/memory"
+	"github.com/oniharnantyo/onclaw/internal/promptdocs"
 	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/secrets"
 	"github.com/oniharnantyo/onclaw/internal/services"
@@ -2718,10 +2719,11 @@ type ComposeParams struct {
 	// subsection), and the runner never gates those origins.
 	MemoryDocs []string
 	// SchedulerProfile selects the trimmed unattended-run composition
-	// (integrate-scheduler D6): AGENTS/IDENTITY/SOUL plus the workspace
-	// metadata doc without the shared-memory subsection, closed by the
-	// unattended-run contract. USER.md, BOOTSTRAP.md, and channel docs are
-	// omitted entirely. False keeps the ordinary composition byte-identical.
+	// (integrate-scheduler D6): the embedded base prompt plus IDENTITY/SOUL
+	// and the workspace metadata doc without the shared-memory subsection,
+	// closed by the unattended-run contract. USER.md, BOOTSTRAP.md, and
+	// channel docs are omitted entirely. False keeps the ordinary composition
+	// byte-identical.
 	SchedulerProfile bool
 	// NoReplyToken is the literal suppression token the unattended-run
 	// contract teaches for channel-target scheduler runs ("NO_REPLY"); empty
@@ -2760,7 +2762,8 @@ func NewInstructionComposer() *DefaultInstructionComposer {
 	return &DefaultInstructionComposer{}
 }
 
-// Compose constructs the system instruction from disk prompt files and virtual documents.
+// Compose constructs the system instruction from the embedded base prompt,
+// the on-disk prompt documents, and the virtual documents.
 func (c *DefaultInstructionComposer) Compose(ctx context.Context, params ComposeParams) (string, error) {
 	// Scheduler execution profile (integrate-scheduler D6): the trimmed
 	// unattended composition replaces the ordinary document stack entirely.
@@ -2776,10 +2779,11 @@ func (c *DefaultInstructionComposer) Compose(ctx context.Context, params Compose
 
 	var docs []string
 
-	// 1. AGENTS.md
-	if content := readPromptFile(params.AgentDir, "AGENTS.md"); content != "" {
-		docs = append(docs, content)
-	}
+	// 1. Base prompt (markdown-card-elements D8): the embedded L1 template is
+	// injected per build — never materialized or read from the workspace — so
+	// template updates reach every agent on the next start and no seeded copy
+	// can go stale. It carries the rich-cards fence conventions.
+	docs = append(docs, promptdocs.BasePrompt)
 
 	// 2. IDENTITY.md
 	if content := readPromptFile(params.AgentDir, "IDENTITY.md"); content != "" {
@@ -2843,17 +2847,17 @@ func (c *DefaultInstructionComposer) Compose(ctx context.Context, params Compose
 
 // trimmedUnattendedDocs renders the document stack both unattended profiles
 // share (scheduler integrate-scheduler D6; heartbeat add-agent-heartbeat D9):
-// AGENTS/IDENTITY/SOUL plus the workspace metadata document WITHOUT the
-// shared-memory subsection — params.Memories is never consulted. USER.md,
-// BOOTSTRAP.md, and channel docs are omitted entirely: an unattended run has
-// no calling user and no room to catch up on.
+// the embedded base prompt (markdown-card-elements D8 — injected per build,
+// never read from the workspace) plus IDENTITY/SOUL and the workspace
+// metadata document WITHOUT the shared-memory subsection — params.Memories is
+// never consulted. USER.md, BOOTSTRAP.md, and channel docs are omitted
+// entirely: an unattended run has no calling user and no room to catch up on.
 func trimmedUnattendedDocs(params ComposeParams) []string {
 	var docs []string
 
-	// 1. AGENTS.md
-	if content := readPromptFile(params.AgentDir, "AGENTS.md"); content != "" {
-		docs = append(docs, content)
-	}
+	// 1. Base prompt — embedded per build (markdown-card-elements D8), same
+	// injection as the ordinary composition.
+	docs = append(docs, promptdocs.BasePrompt)
 
 	// 2. IDENTITY.md
 	if content := readPromptFile(params.AgentDir, "IDENTITY.md"); content != "" {

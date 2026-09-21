@@ -22,6 +22,7 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/heartbeat"
 	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/observability"
+	"github.com/oniharnantyo/onclaw/internal/promptdocs"
 	"github.com/oniharnantyo/onclaw/internal/promptgen"
 	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/scheduler"
@@ -153,6 +154,31 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	// disk is a self-healing cache.
 	if err := systemskills.SyncSystemSkills(domain.SystemSkillsDir(cfg.OnClawDir)); err != nil {
 		return fmt.Errorf("sync system skills: %w", err)
+	}
+
+	// Stray seeded base prompts (markdown-card-elements D8): the L1 base
+	// prompt is injected into every instruction per build now, so a seeded
+	// AGENTS.md left in an existing agent workspace would surface stale
+	// content to the agent at /workspace/AGENTS.md through the jailed mount.
+	// Enumerate every agent's workspace dir and sweep the seeded files out.
+	wsList, err := st.Workspaces().ListAll(ctx)
+	if err != nil {
+		return fmt.Errorf("list workspaces for base-prompt sweep: %w", err)
+	}
+	var agentDirs []string
+	for _, ws := range wsList {
+		wsAgents, err := st.Agents().ListForWorkspace(ctx, ws.ID)
+		if err != nil {
+			return fmt.Errorf("list agents for base-prompt sweep (workspace %s): %w", ws.Slug, err)
+		}
+		for _, ag := range wsAgents {
+			agentDirs = append(agentDirs, domain.AgentWorkspaceDir(domain.WorkspaceRoot(cfg.OnClawDir), ws.Slug, ag.Slug))
+		}
+	}
+	if removed, err := promptdocs.SweepSeededBasePrompts(agentDirs); err != nil {
+		return fmt.Errorf("sweep seeded base prompts: %w", err)
+	} else if len(removed) > 0 {
+		slog.Info("swept seeded base prompts from agent workspaces", "count", len(removed))
 	}
 
 	// Workspace tool settings back the runtime's tool gate and the settings

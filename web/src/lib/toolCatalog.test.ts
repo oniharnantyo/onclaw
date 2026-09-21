@@ -261,4 +261,13 @@ describe('static built-in mirror (card names/icons resolve before the catalog lo
     expect(toolCatalog.displayName('totally.unknown')).toBeNull();
     expect(toolCatalog.icon('totally.unknown')).toBeNull();
   });
+
+  it('no longer mirrors the removed ui.* echo tools (markdown-fences)', () => {
+    expect(toolCatalog.displayName('ui.chart')).toBeNull();
+    expect(toolCatalog.displayName('ui.timeline')).toBeNull();
+    expect(toolCatalog.displayName('ui.preview')).toBeNull();
+    expect(toolCatalog.icon('ui.chart')).toBeNull();
+    expect(toolCatalog.icon('ui.timeline')).toBeNull();
+    expect(toolCatalog.icon('ui.preview')).toBeNull();
+  });
 });

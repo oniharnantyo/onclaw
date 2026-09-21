@@ -7,38 +7,115 @@ import (
 	"testing"
 )
 
-func TestSeedWorkspaceSeedsBasePrompt(t *testing.T) {
+// TestSeedWorkspaceCreatesDirWithoutBasePrompt pins the seeding contract
+// after markdown-card-elements D8: the directory is created, but the L1 base
+// prompt is never materialized — the composer injects promptdocs.BasePrompt
+// per build.
+func TestSeedWorkspaceCreatesDirWithoutBasePrompt(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "agents", "atlas")
 
 	if err := SeedWorkspace(dir); err != nil {
 		t.Fatalf("SeedWorkspace() error = %v", err)
 	}
 
-	got, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
+	info, err := os.Stat(dir)
 	if err != nil {
-		t.Fatalf("read AGENTS.md: %v", err)
+		t.Fatalf("stat agent workspace dir: %v", err)
 	}
-	if string(got) != BasePrompt {
-		t.Errorf("AGENTS.md = %q, want embedded BasePrompt", string(got))
+	if !info.IsDir() {
+		t.Fatalf("SeedWorkspace must create the agent workspace directory")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "AGENTS.md")); !os.IsNotExist(err) {
+		t.Fatalf("SeedWorkspace must not write AGENTS.md, stat err: %v", err)
 	}
 }
 
-func TestSeedWorkspaceIdempotent(t *testing.T) {
+// TestSeedWorkspaceClearsGeneratedDocumentsOnly pins the rest of the seeding
+// contract: generated documents (and their backups) from a previous agent in
+// the same slug-derived directory are cleared, while every other file —
+// including a stray AGENTS.md, which is the startup sweep's job
+// (markdown-card-elements D8) — is untouched.
+func TestSeedWorkspaceClearsGeneratedDocumentsOnly(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("custom"), 0o644); err != nil {
-		t.Fatalf("seed existing AGENTS.md: %v", err)
+	seeds := map[string]string{
+		"IDENTITY.md":      "old identity",
+		"SOUL.md":          "old soul",
+		"BOOTSTRAP.md":     "old bootstrap",
+		"IDENTITY.md.bak":  "older identity",
+		"SOUL.md.bak":      "older soul",
+		"BOOTSTRAP.md.bak": "older bootstrap",
+		"AGENTS.md":        "stray seeded base prompt",
+		"HEARTBEAT.md":     "checklist",
+		"skills/README.md": "workspace skills",
+	}
+	for name, content := range seeds {
+		full := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatalf("mkdir for %s: %v", name, err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
 	}
 
 	if err := SeedWorkspace(dir); err != nil {
 		t.Fatalf("SeedWorkspace() error = %v", err)
 	}
 
-	got, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
-	if err != nil {
-		t.Fatalf("read AGENTS.md: %v", err)
+	for _, name := range []string{
+		"IDENTITY.md", "SOUL.md", "BOOTSTRAP.md",
+		"IDENTITY.md.bak", "SOUL.md.bak", "BOOTSTRAP.md.bak",
+	} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Errorf("%s must be cleared by SeedWorkspace, stat err: %v", name, err)
+		}
 	}
-	if string(got) != "custom" {
-		t.Errorf("AGENTS.md = %q, want existing content untouched", string(got))
+	for _, name := range []string{"AGENTS.md", "HEARTBEAT.md", "skills/README.md"} {
+		got, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("read %s after SeedWorkspace: %v", name, err)
+		}
+		if string(got) != seeds[name] {
+			t.Errorf("%s = %q, want untouched %q", name, string(got), seeds[name])
+		}
+	}
+}
+
+// TestBasePromptCarriesRichCards pins the rich-cards fence conventions in the
+// embedded L1 template (markdown-card-elements D7): the section heading and
+// the transport rules the renderer relies on.
+func TestBasePromptCarriesRichCards(t *testing.T) {
+	if strings.TrimSpace(BasePrompt) == "" {
+		t.Fatal("BasePrompt = empty, want embedded template")
+	}
+	for _, marker := range []string{
+		"## Rich cards",
+		"only when a visual beats prose",
+		"shows as plain code",
+		// The taught structure (live-pass fix 2026-09-21: a shape catalog of
+		// inline ```tag {json} examples taught models to write the JSON on the
+		// tag line, where markdown reads it as info-string meta, not body —
+		// the template now shows the multiline exemplar and lists shapes as
+		// bare tag bullets, and pins the never-inline rule).
+		"Never put the JSON on the same line as the tag",
+		"```chart\n{\"",
+		"- chart: {\"",
+		"- timeline: {\"",
+		"- preview: {\"",
+		"- table: {\"",
+		"- ticker: {\"",
+		"- activity: {\"",
+		"- spec: {\"",
+		"- compare: {\"",
+		"- progress: {\"",
+		"- score: {\"",
+		"- flow: {\"",
+		"- math: {\"",
+		"```diagram Payment flow",
+	} {
+		if !strings.Contains(BasePrompt, marker) {
+			t.Errorf("BasePrompt missing rich-cards marker %q", marker)
+		}
 	}
 }
 
@@ -235,5 +312,72 @@ func TestWritePromptDocumentsBackupFailureAbortsCommit(t *testing.T) {
 		if strings.Contains(e.Name(), ".tmp-") {
 			t.Errorf("staged temp file %s left behind after aborted write", e.Name())
 		}
+	}
+}
+
+// TestSweepSeededBasePromptsRemovesOnlyBasePrompt covers the startup sweep
+// (markdown-card-elements D8): a seeded AGENTS.md is removed, while the
+// generated documents, their backups, HEARTBEAT, and workspace skills files
+// stay untouched.
+func TestSweepSeededBasePromptsRemovesOnlyBasePrompt(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"AGENTS.md":       "# OnClaw Agent Base System Prompt (L1)\n\nstale seeded copy",
+		"IDENTITY.md":     "# Identity",
+		"SOUL.md":         "# Soul",
+		"BOOTSTRAP.md":    "# Bootstrap",
+		"IDENTITY.md.bak": "# Identity (previous)",
+		"SOUL.md.bak":     "# Soul (previous)",
+		"HEARTBEAT.md":    "# Heartbeat checklist",
+		"skills/feed.md":  "workspace skill body",
+	}
+	for name, content := range files {
+		full := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatalf("mkdir for %s: %v", name, err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+	}
+
+	removed, err := SweepSeededBasePrompts([]string{dir})
+	if err != nil {
+		t.Fatalf("SweepSeededBasePrompts() error = %v", err)
+	}
+	if len(removed) != 1 || removed[0] != filepath.Join(dir, "AGENTS.md") {
+		t.Fatalf("removed = %v, want exactly the seeded AGENTS.md path", removed)
+	}
+
+	for name, want := range files {
+		if name == "AGENTS.md" {
+			if _, statErr := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(statErr) {
+				t.Errorf("AGENTS.md must be removed, stat err: %v", statErr)
+			}
+			continue
+		}
+		got, readErr := os.ReadFile(filepath.Join(dir, name))
+		if readErr != nil {
+			t.Fatalf("read %s after sweep: %v", name, readErr)
+		}
+		if string(got) != want {
+			t.Errorf("%s = %q, want untouched %q", name, string(got), want)
+		}
+	}
+}
+
+// TestSweepSeededBasePromptsToleratesMissing covers the no-op cases: a
+// directory without a base prompt and a directory that does not exist at all
+// sweep nothing and return no error.
+func TestSweepSeededBasePromptsToleratesMissing(t *testing.T) {
+	empty := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "agents", "ghost")
+
+	removed, err := SweepSeededBasePrompts([]string{empty, missing})
+	if err != nil {
+		t.Fatalf("SweepSeededBasePrompts() error = %v", err)
+	}
+	if len(removed) != 0 {
+		t.Fatalf("removed = %v, want none", removed)
 	}
 }

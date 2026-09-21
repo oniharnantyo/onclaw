@@ -11,7 +11,8 @@
 //	  2. **Resolve** — resolves the tool surface from the built-in registry and the
 //	     three-tier skill resolver; validates capability flags.
 //	  3. **Compose** — assembles the system instruction via the instruction composer
-//	     (reads AGENTS.md, IDENTITY.md, SOUL.md, BOOTSTRAP.md from the agent dir),
+//	     (injects the embedded base prompt per build, reads IDENTITY.md, SOUL.md,
+//	     BOOTSTRAP.md from the agent dir),
 //	     and delegates to the pure [Compose] function (in agent.go) to wire the
 //	     middleware stack (patchtoolcalls → reduction → summarization → skill → filesystem)
 //	     and build the Eino ADK ChatModelAgent.

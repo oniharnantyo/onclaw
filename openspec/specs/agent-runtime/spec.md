@@ -22,11 +22,19 @@ An agent execution SHALL stream transcript events to its caller as they occur an
 - **THEN** the stream ends with exactly one terminal event and no events follow it
 
 ### Requirement: Instruction composition
-At execution start, the system instruction SHALL be composed in fixed order from: `AGENTS.md`, `IDENTITY.md`, `SOUL.md`, `WORKSPACE.md`, `USER.md`, `CHANNEL.md`, `BOOTSTRAP.md`. The first three and the last SHALL be read from the agent's workspace directory. `WORKSPACE.md` SHALL be rendered from the workspace record (name, description) plus a `## Shared memory` subsection carrying the workspace's shared memory content. `USER.md` SHALL be rendered from the calling user's record and workspace membership (name, email, role) plus a `## Memory` subsection carrying that user's own memory content. `CHANNEL.md` SHALL be rendered only when the execution carries channel context — from the channel record (name, slug, purpose, conventions), the member roster with specialization notes, and the channel catch-up tail as specified in the `agent-channels` capability — and SHALL occupy its fixed position between `USER.md` and `BOOTSTRAP.md`; executions without channel context SHALL omit it entirely. The memory subsections are distinct from the structured metadata (which remains free context): they carry preferences and information the structured fields do not capture. Composition SHALL happen per execution because `USER.md` varies by caller and memory may have changed since the previous turn, and missing documents and empty memory SHALL be skipped without failing the run (an empty memory omits its subsection entirely).
+At execution start, the system instruction SHALL be composed in fixed order from: `AGENTS.md`, `IDENTITY.md`, `SOUL.md`, `WORKSPACE.md`, `USER.md`, `CHANNEL.md`, `BOOTSTRAP.md`. The L1 base prompt (`AGENTS.md`) SHALL be injected from the platform-embedded template at every composition — it SHALL NOT be read from the agent's workspace directory, so template updates reach every agent on the next execution regardless of workspace age. `IDENTITY.md`, `SOUL.md`, and `BOOTSTRAP.md` SHALL be read from the agent's workspace directory. `WORKSPACE.md` SHALL be rendered from the workspace record (name, description) plus a `## Shared memory` subsection carrying the workspace's shared memory content. `USER.md` SHALL be rendered from the calling user's record and workspace membership (name, email, role) plus a `## Memory` subsection carrying that user's own memory content. `CHANNEL.md` SHALL be rendered only when the execution carries channel context — from the channel record (name, slug, purpose, conventions), the member roster with specialization notes, and the channel catch-up tail as specified in the `agent-channels` capability — and SHALL occupy its fixed position between `USER.md` and `BOOTSTRAP.md`; executions without channel context SHALL omit it entirely. The memory subsections are distinct from the structured metadata (which remains free context): they carry preferences and information the structured fields do not capture. Composition SHALL happen per execution because `USER.md` varies by caller and memory may have changed since the previous turn, and missing documents and empty memory SHALL be skipped without failing the run (an empty memory omits its subsection entirely). The composed instruction SHALL carry a rich-cards guidance section — the markdown fence conventions for rendering card elements, with one shape per fence tag — in attended, scheduler, and heartbeat compositions, positioned with the `AGENTS.md` base prompt.
 
 #### Scenario: Fixed document order
 - **WHEN** an execution composes its instruction with all six documents present
 - **THEN** the system instruction contains their contents in the order AGENTS, IDENTITY, SOUL, WORKSPACE, USER, BOOTSTRAP
+
+#### Scenario: Base prompt always current
+- **WHEN** the platform-embedded L1 template changes and an agent whose workspace was created before the change executes a turn
+- **THEN** the composed instruction carries the new template content, not the agent's historically seeded copy
+
+#### Scenario: Rich cards guidance in every profile
+- **WHEN** an attended chat turn, a scheduler execution, and a heartbeat tick each compose their instruction
+- **THEN** each composed instruction contains the rich-cards fence conventions
 
 #### Scenario: USER.md varies by caller
 - **WHEN** two different members execute the same agent
@@ -34,7 +42,7 @@ At execution start, the system instruction SHALL be composed in fixed order from
 
 #### Scenario: Missing documents tolerated
 - **WHEN** an agent's prompt generation failed and IDENTITY.md/SOUL.md/BOOTSTRAP.md are absent
-- **THEN** the execution still runs with the remaining documents (at minimum AGENTS.md plus the two virtual documents)
+- **THEN** the execution still runs with the remaining documents (at minimum the injected base prompt plus the two virtual documents)
 
 #### Scenario: Memory rides every turn
 - **WHEN** an agent appends to `WORKSPACE.md` during one turn and executes a second turn
@@ -308,6 +316,7 @@ The live event stream SHALL behave as a tap supporting multiple concurrent subsc
 #### Scenario: Multiple concurrent consumers receive live stream
 - **WHEN** a second client or reconnected stream subscribes to an active executing run
 - **THEN** both subscribers receive subsequent live transcript events as they occur without stalling the execution loop
+
 ### Requirement: Bounded execution loop
 An agent execution's reasoning loop SHALL be bounded by a server-configured maximum number of model iterations. When a turn would exceed the bound — the model keeps requesting tool calls without reaching a final answer — the runtime SHALL terminate the turn with an error outcome (surfaced as the terminal error transcript event) instead of continuing indefinitely. Normal turns that conclude within the bound SHALL be unaffected.
 
@@ -655,3 +664,18 @@ At run start the runner SHALL resolve the agent's effective provider and model i
 #### Scenario: Run-time max-tokens default
 - **WHEN** an inheriting agent runs on an effective provider type that requires max_tokens and the agent pins none
 - **THEN** the run proceeds with the runner's default max-tokens value rather than erroring
+
+### Requirement: Context breakdown measurement
+The runner MAY attach a `context_breakdown` block to a turn's usage when the turn's provider reported usage, splitting the final call's input into labeled segments: `instructions` (the composed instruction: persona, workspace and user docs, memory sections, channel docs, profiles), `tools` (marshaled tool schemas), `conversation` (the session window's messages), `files` (in-window attachments), and `server` (the composed share not attributable to the other segments). Section sizes SHALL be measured at composition time from the real composed strings, and the conversation segment SHALL be measured over the true session window at turn end using the same display-grade estimator the summarization middleware uses (~4 characters per token). The breakdown is display-only context diagnostics: it MUST NOT feed billing, trigger math, or summarization decisions, and a turn whose provider reported no usage SHALL omit the block entirely. Backends unable to measure a segment SHALL omit that segment rather than report zero.
+
+#### Scenario: Breakdown accompanies turn usage
+- **WHEN** a turn with a composed instruction and tool schemas completes with provider usage
+- **THEN** the turn's usage carries labeled segment counts whose sections sum to no more than the final-call input, with any unattributable share in `server`
+
+#### Scenario: Conversation measured over the true window
+- **WHEN** a turn runs after compaction replaced part of the window with a summary
+- **THEN** the `conversation` segment reflects the actual session window, not the full transcript
+
+#### Scenario: Display-only by contract
+- **WHEN** the breakdown is computed
+- **THEN** changing or removing it changes no billing, trigger, or summarization behavior

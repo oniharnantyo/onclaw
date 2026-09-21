@@ -245,27 +245,59 @@ When an agent turn fails, the transcript SHALL render an error entry in the thre
 - **THEN** the connect state with retry renders as today and no error entry is produced
 
 ### Requirement: Context meter
-For a 1:1 agent chat, the chat header SHALL render a context meter in the top-right control row — a compact bar plus a monospace percentage indicating how much of the agent's effective context window the conversation currently fills. The meter's value SHALL be the latest turn's final-call input tokens divided by the agent's `effective_context_window`, updated when a terminal response event carries usage and restored from the thread's last turn on reload. Hovering SHALL reveal the exact counts (used and window, e.g. `68k / 200k`). The meter SHALL turn amber at or above `summarization_trigger_tokens`. Channels and direct member messages SHALL NOT render a meter. When no turn has produced usage yet, or a terminal event arrives without a usage block, the meter SHALL be hidden rather than show a zero or a fabricated value.
+For a 1:1 agent chat, the composer SHALL render a context ring in its left control rail — a small donut that fills clockwise with the share of the agent's effective context window the conversation currently fills, beside a monospace percentage. The ring's value SHALL be the latest turn's final-call input tokens divided by the agent's `effective_context_window`, updated when a terminal response event carries usage and restored from the thread's last turn on reload. The ring and percentage SHALL render in the accent tone below 65% of the window, amber from 65% to 85%, and the danger tone above 85%; the summarization trigger SHALL NOT be marked anywhere on the meter. Activating the ring SHALL open a popover above the composer rail containing: the exact used/window counts (`68k / 200k`) with a count-up animation on change; a segmented breakdown bar; a legend with one row per segment plus a Headroom row (window minus used, floored at zero); the last turn's input and output token rows when the wire reported them; and a percentage caption. The breakdown's segments — Instructions, Tools & skills, Files, Conversation — SHALL be shown at face value with an "estimated" caption; the Conversation segment SHALL count only transcript entries after the latest compaction divider; and a Server context segment (used minus the estimated segments, floored at zero) SHALL be shown with a hover explanation naming what it holds (this turn's retrieved memory, persona docs, tool schemas, compaction summaries). When the wire carries a server-provided breakdown, its numbers SHALL replace the client estimate; otherwise the estimate is the fallback, always labeled as estimated. Channels and direct member conversations SHALL NOT render the ring. When no turn has produced usage yet, or a terminal event arrives without a usage block, the ring SHALL be hidden rather than show a zero or a fabricated value. The chat header SHALL NOT render a context meter.
 
 #### Scenario: Meter fills per turn
 - **WHEN** a turn completes on an agent chat whose usage reports 68,000 final-call input tokens and whose agent exposes an effective window of 200,000
-- **THEN** the header meter shows 34% and, on hover, `68k / 200k`
+- **THEN** the composer ring shows 34% and, in the popover, `68k / 200k`
 
 #### Scenario: Warn at the summarization trigger
-- **WHEN** the meter's value reaches or exceeds the agent's `summarization_trigger_tokens`
-- **THEN** the meter renders in the amber warn state
+- **WHEN** the ring's value reaches or exceeds the agent's `summarization_trigger_tokens`
+- **THEN** the ring keeps rendering the plain 65/85 severity ladder and carries no trigger tick or trigger-specific marking
 
 #### Scenario: Meter survives reload
 - **WHEN** a user reopens a thread whose last turn carried usage
-- **THEN** the meter shows that turn's final-call input against the effective window without waiting for a new turn
+- **THEN** the ring shows that turn's final-call input against the effective window without waiting for a new turn
 
 #### Scenario: Hidden outside agent chats
-- **WHEN** the header renders for a channel or a direct member conversation
-- **THEN** no context meter appears
+- **WHEN** the composer renders for a channel or a direct member conversation
+- **THEN** no context ring appears and the header renders no meter
 
 #### Scenario: Hidden without usage data
 - **WHEN** a fresh thread has no turns yet, or the latest terminal event carries no usage block
-- **THEN** the header renders no meter and no placeholder value
+- **THEN** no ring, popover, or placeholder value appears anywhere
+
+#### Scenario: Ring fills per turn with severity tiers
+- **WHEN** turns complete on an agent chat against a 200,000-token effective window, first at 68,000 then at 140,000 then at 180,000 final-call input tokens
+- **THEN** the composer ring shows 34% in the accent tone, then 70% in amber, then 90% in the danger tone
+
+#### Scenario: Breakdown popover opens upward
+- **WHEN** the user activates the ring
+- **THEN** a popover opens above the composer rail with the used/window counts, the segmented bar, the legend rows, Headroom, and the estimated caption
+
+#### Scenario: Server context row explains the unmeasured share
+- **WHEN** the popover renders with client estimates summing to less than the used total
+- **THEN** a Server context row shows the remainder with a hover explanation, and Headroom shows the window minus used
+
+#### Scenario: Server-provided breakdown wins when present
+- **WHEN** the last turn's usage carries a server-provided context breakdown
+- **THEN** the legend shows the server numbers without the estimated caption for those segments
+
+#### Scenario: Conversation segment respects compaction
+- **WHEN** the transcript contains a compaction divider followed by newer entries
+- **THEN** the Conversation estimate counts only the entries after the divider
+
+#### Scenario: Turn input and output rows render from real usage
+- **WHEN** the last terminal event reported input and output tokens
+- **THEN** the popover shows both counts, and omits the rows when the wire reported none
+
+#### Scenario: Ring survives reload
+- **WHEN** a user reopens a thread whose last turn carried usage
+- **THEN** the ring shows that turn's final-call input against the effective window without waiting for a new turn
+
+#### Scenario: Hidden outside agent chats and without usage
+- **WHEN** the composer renders for a channel or a direct member conversation, or the thread has no usage yet
+- **THEN** no ring, popover, or placeholder value appears, and the header renders no meter
 
 ### Requirement: Hook enforcement rendering
 The transcript SHALL render hook enforcement where it occurs: a tool call prevented by a hook SHALL render as a tool card marked blocked, showing the hook's reason in place of a result; a prompt prevented by a hook SHALL render as a notice entry carrying the reason in place of an assistant reply. Both renderings SHALL persist across reloads, hydrated from the same history the live stream wrote.
@@ -345,3 +377,101 @@ When the user attaches an image or PDF file to a chat whose agent's model does n
 #### Scenario: No warning for capable or unknown models
 - **WHEN** an image chip lands in a chat whose agent's model supports image input, or whose capability is unknown
 - **THEN** the chip renders without the warning
+
+### Requirement: Message queue
+While a run is active in an agent chat, a message the user sends SHALL join a visible queue rendered between the transcript and the composer: a running row naming the in-flight turn and one queued row per pending message showing its order, its text, and a remove control. Removing a queued entry SHALL cancel only that entry. When the active run finishes, the first queued message SHALL dispatch automatically in order, without user action. Queue rendering is present-only: no queue chrome appears when nothing is queued. Conflict queueing that originates outside this tab (another tab, scheduler, cron) SHALL keep the existing catch-up-and-redispatch behavior.
+
+#### Scenario: Send during a run queues visibly
+- **WHEN** the user sends two messages while a turn is streaming
+- **THEN** both appear as ordered cancelable queued rows under a running row
+
+#### Scenario: Cancel removes only that entry
+- **WHEN** the user removes the second queued message
+- **THEN** it is dropped and the first still dispatches when the run finishes
+
+#### Scenario: Automatic dispatch on completion
+- **WHEN** the active run finishes with a queued message pending
+- **THEN** the queued message dispatches as a normal turn and the queue rows clear
+
+### Requirement: Draft restore
+Unsent composer text SHALL persist per thread. Returning to a thread with a saved draft SHALL restore it into the composer; sending SHALL clear the saved draft. Drafts are local to the user's client and SHALL NOT sync across devices or appear in any API surface.
+
+#### Scenario: Draft survives leaving and returning
+- **WHEN** the user types text, navigates to another thread, and returns
+- **THEN** the composer shows the unsent text
+
+#### Scenario: Send clears the draft
+- **WHEN** a restored draft is sent
+- **THEN** the saved draft is cleared and a later visit shows an empty composer
+
+### Requirement: Message timing
+A completed assistant reply from a live turn MAY carry client-measured timing — time to first streamed token, total turn time, and streamed tokens per second — revealed on hover near the message actions. Hydrated history SHALL render no timing line. Timing SHALL NOT render while the turn is still streaming.
+
+#### Scenario: Hover reveals timing on a live turn
+- **WHEN** a turn streamed text and completes
+- **THEN** hovering the reply's action row shows first-token, total, and speed figures
+
+#### Scenario: Hydrated replies carry no timing
+- **WHEN** a thread is reloaded from history
+- **THEN** no reply shows a timing line
+
+### Requirement: Day separators and hover timestamps
+The transcript SHALL render a date divider whenever the calendar day changes between consecutive dated entries, labeling today and yesterday by name and older days by date. Entries with parseable dates SHALL expose their full date and time on hover. Entries without parseable dates SHALL render without contributing a divider.
+
+#### Scenario: Divider at a day boundary
+- **WHEN** consecutive messages fall on different calendar days
+- **THEN** a full-width divider labels the new day (Today, Yesterday, or the date) between them
+
+#### Scenario: Undated entries stay silent
+- **WHEN** a transcript entry carries no parseable date
+- **THEN** it renders without a divider and without a hover timestamp
+
+### Requirement: Tool group timeline collapse
+An assistant turn containing four or more tool calls SHALL render a collapsible timeline header instead of the inline card stack. The fold SHALL own every activity row of the turn except the reply text: expanding reveals the familiar inline cards AND the reasoning rows in stream order, nested visually under the header behind a thin left rail so the header reads as their parent; collapsed shows only the header and the reply text, with no reasoning rows visible outside the fold. The resting header summary SHALL count steps as tool calls only — folded reasoning rows SHALL NOT change the count. While the turn is streaming, the header SHALL render the live activity status defined by the Turn activity status line requirement. Turns with fewer than four tool calls SHALL render inline cards and reasoning rows directly, and cards MUST NOT be muted or hidden behind a collapse for such turns. Expanding or collapsing SHALL be user-controlled state, not automatic. A hydrated message rendered from the legacy flat reasoning field SHALL follow the same fold rule.
+
+#### Scenario: Heavy turn collapses by default
+- **WHEN** a turn executes six tool calls interleaved with reasoning segments, including two file edits
+- **THEN** the turn renders the collapsed header ("6 steps · 2 files changed") with only the reply text below it — no tool cards and no Thought rows are visible until expand
+
+#### Scenario: Expanded reveals cards and thoughts nested under the header
+- **WHEN** the user expands a heavy turn's fold
+- **THEN** the tool cards and Thought rows render interleaved in stream order, indented beneath the header behind a thin left rail — not at the same visual level as the header itself
+
+#### Scenario: Resting count ignores folded thoughts
+- **WHEN** a completed turn holds six tool calls and five reasoning segments
+- **THEN** the header reads "6 steps" (plus the file clause when file edits succeeded), not a count of all rows
+
+#### Scenario: Light turns keep inline cards
+- **WHEN** a turn executes two tool calls with reasoning
+- **THEN** the cards and Thought rows render inline exactly as before, with no collapse header
+
+#### Scenario: Legacy reasoning follows the fold
+- **WHEN** a hydrated heavy turn carries reasoning only in the legacy flat field
+- **THEN** its reasoning row is hidden while the fold is collapsed and revealed on expand, like interleaved reasoning rows
+
+### Requirement: Turn activity status line
+While an agent turn is streaming on a heavy turn, the timeline header SHALL render a live activity status: a shimmering label naming the current activity — "Thinking" when no tool call is pending, "Running" followed by the tool's human-readable display name when a tool call is pending — accompanied by the turn's client-measured elapsed time. The label SHALL update as the activity changes and the shimmer SHALL replay on each label change. When the turn stops streaming, the status SHALL yield to the resting summary and no shimmer SHALL remain. Elapsed time is present-only: it SHALL render for live turns only, and hydrated history SHALL show neither elapsed time nor shimmer. Under a reduced-motion preference the label SHALL render as static text without the shimmer animation while keeping the same wording and elapsed time. The pre-first-token row shown while the agent has produced nothing SHALL use the same vocabulary — a shimmering "Thinking" label with elapsed time — in place of a bare pulsing dot.
+
+#### Scenario: Header names the pending tool
+- **WHEN** a heavy turn is streaming with a pending shell tool call and the fold is collapsed
+- **THEN** the header shows the shimmering label "Running Shell" with elapsed time, and no orphaned rows render below it
+
+#### Scenario: Header shows thinking between tool calls
+- **WHEN** a heavy turn is streaming while the model generates with no tool call pending
+- **THEN** the header shows the shimmering label "Thinking" with elapsed time
+
+#### Scenario: Status yields at rest
+- **WHEN** a heavy streaming turn completes
+- **THEN** the header renders the resting summary ("N steps · M files changed") with no shimmer and no activity label
+
+#### Scenario: Hydrated history stays at rest
+- **WHEN** a thread reloads and renders a heavy collapsed turn from history
+- **THEN** the header shows the resting summary with no shimmer and no elapsed time
+
+#### Scenario: Reduced motion keeps the wording
+- **WHEN** the user's system prefers reduced motion and a heavy turn streams
+- **THEN** the header shows the same activity label and elapsed time as static text, without the shimmer sweep
+
+#### Scenario: Pre-first-token row joins the vocabulary
+- **WHEN** the user sends a message and the agent has produced no content yet
+- **THEN** the waiting row shows a shimmering "Thinking" label with elapsed time instead of a bare pulsing dot

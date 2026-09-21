@@ -117,16 +117,16 @@ func TestRunner_TodoSummaryInjection(t *testing.T) {
 }
 
 // TestRunner_TodoRegistryAndCatalog pins the wiring seams: WithTodoTools
-// registers both todo tools (resolvable with a ToolContext), the echo tools
-// are always registered, unwired registries surface neither todo tool, and
-// all five carry complete toggleable catalog entries.
+// registers both todo tools (resolvable with a ToolContext), unwired
+// registries surface neither, and both carry complete toggleable catalog
+// entries. The ui.* echo tools are gone (markdown-card-elements D1) — cards
+// ride tagged code fences taught by the injected base prompt.
 func TestRunner_TodoRegistryAndCatalog(t *testing.T) {
 	st := fake.New()
 	reg := NewDefaultToolRegistry(st.Memories(), WithTodoTools(st.Todos()))
 
 	newNames := []string{
 		tools.NameTodoWrite, tools.NameTodoRead,
-		tools.NameUIChart, tools.NameUITimeline, tools.NameUIPreview,
 	}
 	for _, name := range newNames {
 		ctor, ok := reg.Lookup(name)
@@ -139,8 +139,7 @@ func TestRunner_TodoRegistryAndCatalog(t *testing.T) {
 	}
 
 	// Unwired registries surface neither todo tool — the schedule-tool
-	// precedent: absent, not broken. The echo tools carry no dependencies and
-	// register unconditionally.
+	// precedent: absent, not broken.
 	bare := NewDefaultToolRegistry(st.Memories())
 	if _, ok := bare.Lookup(tools.NameTodoWrite); ok {
 		t.Fatal("todo_write must not register without WithTodoTools")
@@ -148,9 +147,9 @@ func TestRunner_TodoRegistryAndCatalog(t *testing.T) {
 	if _, ok := bare.Lookup(tools.NameTodoRead); ok {
 		t.Fatal("todo_read must not register without WithTodoTools")
 	}
-	for _, name := range []string{tools.NameUIChart, tools.NameUITimeline, tools.NameUIPreview} {
-		if _, ok := bare.Lookup(name); !ok {
-			t.Fatalf("expected %s registered unconditionally", name)
+	for _, name := range []string{"ui.chart", "ui.timeline", "ui.preview"} {
+		if _, ok := bare.Lookup(name); ok {
+			t.Fatalf("removed echo tool %s must not be registered", name)
 		}
 	}
 

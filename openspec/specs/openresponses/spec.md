@@ -77,6 +77,7 @@ With `stream: true`, the endpoint SHALL emit `text/event-stream` with `data: <js
 #### Scenario: Compaction event on the stream
 - **WHEN** a turn compacts the session context, manually or at threshold
 - **THEN** `onclaw:context_compacted` carrying the before/after token estimates arrives before the terminal event, and a client that ignores unknown event types still receives a valid lifecycle
+
 ### Requirement: Session binding and chaining
 A request SHALL bind to a session either by `metadata.onclaw_session` or by `previous_response_id` (an opaque response ID minted by the server that resolves to a prior response's session and turn). A `metadata.onclaw_session` naming a session with no persisted events in the key's workspace SHALL birth that session: the turn executes in a persistent session under the client-chosen ID, scoped to the key's workspace, and its history is persisted. `previous_response_id` SHALL remain bind-only: a malformed ID SHALL fail with `invalid_request_error`, and an ID resolving to a session with no persisted events in the key's workspace SHALL fail with not-found indistinguishable from a foreign workspace's session; it SHALL NEVER birth a session. A request with neither binding SHALL run in a fresh ephemeral session whose history is not persisted. Chained and metadata-bound requests append to the bound session's full-replay history.
 
@@ -168,6 +169,7 @@ Tool calls SHALL execute server-side per the agent's allowlist; clients SHALL NO
 #### Scenario: Tool choice none
 - **WHEN** a request sets `tool_choice: "none"`
 - **THEN** the turn runs with no tools and the model cannot invoke any
+
 ### Requirement: Approval flow over the wire
 When the run pauses for a dangerous shell-command approval, the stream SHALL emit the custom `onclaw:approval_required` event carrying the interrupt ID, command, and response/item identity, and SHALL end with [DONE] leaving the response `incomplete`. Resolution SHALL happen only through the native approval endpoint; public clients use the event payload's identifiers to route the decision out-of-band. After resolution the continued turn is a new response chained to the same session.
 
@@ -180,7 +182,7 @@ When the run pauses for a dangerous shell-command approval, the stream SHALL emi
 - **THEN** the resumed turn persists to the same session and is retrievable by chaining from the paused response's session
 
 ### Requirement: Usage reporting
-Response objects (aggregated and terminal stream events) SHALL report token usage — input, output, and total — captured for the executed turn, plus the turn's final-call input tokens (the input count of the turn's last model call). A turn whose provider reported no usage SHALL omit the `usage` block entirely rather than report zeros.
+Response objects (aggregated and terminal stream events) SHALL report token usage — input, output, and total — captured for the executed turn, plus the turn's final-call input tokens (the input count of the turn's last model call). The usage block MAY carry an optional `context_breakdown` object with labeled segment counts (`instructions`, `tools`, `conversation`, `files`, `server`) describing display-grade estimates of where the final call's input went; the field is additive and clients that ignore it remain fully functional. A turn whose provider reported no usage SHALL omit the `usage` block entirely rather than report zeros, and a breakdown SHALL NOT appear without a usage block.
 
 #### Scenario: Usage on completed response
 - **WHEN** a turn completes
@@ -193,6 +195,11 @@ Response objects (aggregated and terminal stream events) SHALL report token usag
 #### Scenario: No provider usage omits the block
 - **WHEN** a turn's provider reports no usage for any of its model calls
 - **THEN** the Response object carries no `usage` block
+
+#### Scenario: Optional breakdown is additive
+- **WHEN** a turn's usage carries a context breakdown, and a client reads only the legacy usage fields
+- **THEN** the client behaves exactly as before, and the breakdown never appears without a usage block
+
 ### Requirement: OpenResponses error envelope
 Errors on the `/v1` surface SHALL use the envelope `{error: {message, type, param, code}}` with the standard types: `invalid_request_error` (400), `not_found_error` (404), `rate_limit_error` (429), `model_error` (500, upstream model failure), `server_error` (500). Authentication and tenancy failures SHALL NOT leak workspace existence.
 

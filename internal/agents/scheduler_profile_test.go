@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/promptdocs"
 	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/store"
 	"github.com/oniharnantyo/onclaw/internal/store/fake"
@@ -181,13 +182,14 @@ func setupSchedulerRunner(t *testing.T, sessionID string, opts ...RunnerOption) 
 	return st, runner, rec, cps, req
 }
 
-// seedPromptDocs writes the four on-disk prompt documents into the agent
-// workspace directory; the WORKSPACE and USER docs are virtual and fed by
-// seeded memories instead.
+// seedPromptDocs writes the three on-disk prompt documents into the agent
+// workspace directory; the base prompt is never on disk (markdown-card-elements
+// D8 — injected per build), and the WORKSPACE and USER docs are virtual and
+// fed by seeded memories instead.
 func seedPromptDocs(t *testing.T, runner *Runner, markers map[string]string) {
 	t.Helper()
 	agentDir := domain.AgentWorkspaceDir(domain.WorkspaceRoot(runner.onClawDir), "acme", "atlas")
-	for _, name := range []string{"AGENTS.md", "IDENTITY.md", "SOUL.md", "BOOTSTRAP.md"} {
+	for _, name := range []string{"IDENTITY.md", "SOUL.md", "BOOTSTRAP.md"} {
 		content := strings.ToUpper(strings.TrimSuffix(name, ".md")) + "-CONTENT-MARKER"
 		if markers != nil {
 			if override, ok := markers[name]; ok {
@@ -244,12 +246,13 @@ func TestRun_SchedulerProfileComposition(t *testing.T) {
 	}
 
 	for _, marker := range []string{
-		"AGENTS-CONTENT-MARKER",
+		promptdocs.BasePrompt,
+		"## Rich cards",
 		"IDENTITY-CONTENT-MARKER",
 		"SOUL-CONTENT-MARKER",
 	} {
 		if !strings.Contains(instruction, marker) {
-			t.Fatalf("scheduler instruction must contain %s, got:\n%s", marker, instruction)
+			t.Fatalf("scheduler instruction must contain the base prompt and %s, got:\n%s", marker, instruction)
 		}
 	}
 	if !strings.Contains(instruction, "# Workspace") || !strings.Contains(instruction, "acme") {
@@ -333,7 +336,8 @@ func TestRun_InteractiveCompositionUnchanged(t *testing.T) {
 		t.Fatal("a user-origin run must not select the scheduler profile")
 	}
 	for _, marker := range []string{
-		"AGENTS-CONTENT-MARKER",
+		promptdocs.BasePrompt,
+		"## Rich cards",
 		"IDENTITY-CONTENT-MARKER",
 		"SOUL-CONTENT-MARKER",
 		"BOOTSTRAP-CONTENT-MARKER",

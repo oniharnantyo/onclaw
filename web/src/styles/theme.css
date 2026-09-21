@@ -8,6 +8,8 @@
  * value in tokens.css is imported after `@import "tailwindcss"` (see
  * index.css) and therefore wins the cascade. Do not reorder those imports
  * without giving the raw tokens distinct names. */
+@import "tw-shimmer"; /* `shimmer` utility for the vendored elements' ShimmerLabel (markdown-card-elements 1.3) */
+
 @theme {
   --color-bg: var(--bg);
   --color-surface: var(--surface);
@@ -32,3 +34,50 @@
   --radius-md: var(--radius-md);
   --radius-lg: var(--radius-lg);
 }
+
+/* ===== shadcn token seam (markdown-card-elements 1.2, design D4) =====
+ * Registry-installed assistant-ui elements style themselves with
+ * shadcn-standard token names (`bg-background`, `text-muted-foreground`,
+ * `border-border`, `ring-ring`, …). This inline block resolves those names
+ * onto the raw contract tokens from tokens.css, so the cards inherit the
+ * contract without per-card rewrites.
+ *
+ * `inline` is load-bearing: utilities carry the raw var itself (e.g.
+ * `background-color: var(--bg)`), so the `:root[data-theme="dark"]`
+ * overrides in tokens.css apply automatically — no duplicated dark palette
+ * lives here. Every mapping below is theme-relative; none hardcodes a
+ * light-only value.
+ *
+ * Same-name note: --color-accent and --color-muted already exist in the
+ * block above (feeding app-wide `text-accent` / `text-muted`); they are
+ * re-declared here with identical values only so this seam stays legible
+ * as the single inventory of shadcn-standard names. */
+@theme inline {
+  /* surfaces + text */
+  --color-background: var(--bg);
+  --color-foreground: var(--fg);
+  --color-card: var(--surface);
+  --color-card-foreground: var(--fg);
+  --color-popover: var(--surface);
+  --color-popover-foreground: var(--fg);
+  --color-border: var(--border);
+  --color-input: var(--border);
+
+  /* roles */
+  --color-muted: var(--muted); /* text role — app-wide; elements' bg-muted uses map to the field tint instead */
+  --color-muted-foreground: var(--muted);
+  --color-secondary: color-mix(in oklab, var(--fg) 6%, transparent);
+  --color-secondary-foreground: var(--fg);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-on);
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--accent-on);
+  --color-destructive: var(--danger);
+  --color-destructive-foreground: #ffffff; /* no raw on-danger token; white on #dc2626 holds in both themes */
+  --color-ring: var(--accent);
+}
+
+/* Elements' `dark:` utilities must follow the in-app theme toggle, not
+ * Tailwind's default prefers-color-scheme media query: the app resolves and
+ * pins `data-theme` on <html> itself (lib/theme.ts, theme.test.ts). */
+@custom-variant dark (&:is(:root[data-theme="dark"] *));

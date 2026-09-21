@@ -91,6 +91,22 @@ function resolveChildren(children: unknown, ctx: GenerativeUiCtx): React.ReactNo
   return null;
 }
 
+/** Mount decision for a validated fence body (markdown-card-elements 2.1,
+ * design D3): the fence transport and the retained `$type` tool-result path
+ * share this one registry, so a tag renders identically wherever it arrived
+ * from. Same resolution semantics as the `$type` path minus envelope
+ * unwrapping — fence bodies have no `children` to resolve. An unknown tag
+ * mints nothing (the caller keeps the ordinary code block). */
+export function renderSpecByType(
+  type: string,
+  props: Record<string, unknown>,
+  ctx: GenerativeUiCtx,
+): React.ReactNode {
+  const renderer = specRenderers.get(type);
+  if (!renderer) return null;
+  return renderer({ props, children: null, ctx });
+}
+
 /** Mount decision for one tool call: a recognized `$type` (result first, then
  * echoed arguments — D3: echo tools return their own args as the result)
  * renders its registered element; an unrecognized `$type` renders nothing

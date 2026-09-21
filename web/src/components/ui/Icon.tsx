@@ -65,7 +65,13 @@ const ICONS = {
   sun: [<circle key="a" cx="12" cy="12" r="4"/>, <path key="b" d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>],
   moon: [<path key="a" d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>],
   monitor: [<rect key="a" x="2" y="3" width="20" height="14" rx="2"/>, <path key="b" d="M8 21h8M12 17v4"/>],
-  embed: [<path key="a" d="M8 12h8M8 12 5 6M8 12l-3 6M16 12l3-6M16 12l3 6"/>, <circle key="b" cx="4" cy="5" r="1.6"/>, <circle key="c" cx="4" cy="19" r="1.6"/>, <circle key="d" cx="20" cy="5" r="1.6"/>, <circle key="e" cx="20" cy="19" r="1.6"/>, <circle key="f" cx="12" cy="12" r="2"/>]
+  embed: [<path key="a" d="M8 12h8M8 12 5 6M8 12l-3 6M16 12l3-6M16 12l3 6"/>, <circle key="b" cx="4" cy="5" r="1.6"/>, <circle key="c" cx="4" cy="19" r="1.6"/>, <circle key="d" cx="20" cy="5" r="1.6"/>, <circle key="e" cx="20" cy="19" r="1.6"/>, <circle key="f" cx="12" cy="12" r="2"/>],
+  // Added for the vendored assistant-ui elements (markdown-card-elements 1.5):
+  // keeps lucide-react out of package.json — same lucide-style 24×24 strokes.
+  minus: [<path key="a" d="M5 12h14"/>],
+  maximize: [<polyline key="a" points="15 3 21 3 21 9"/>, <polyline key="b" points="9 21 3 21 3 15"/>, <line key="c" x1="21" y1="3" x2="14" y2="10"/>, <line key="d" x1="3" y1="21" x2="10" y2="14"/>],
+  loader: [<path key="a" d="M21 12a9 9 0 1 1-6.219-8.56"/>],
+  "rotate-ccw": [<path key="a" d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>, <path key="b" d="M3 3v5h5"/>]
 };
 
 

@@ -18,6 +18,7 @@ import { MemoryIngestedChip } from "./MemoryIngestedChip";
 import { ThinkingRow } from "./ThinkingRow";
 import { CompactionDivider } from "./CompactionDivider";
 import { DayDivider, dayKeyOf, fullStamp, parseEntryDate } from "./DayDivider";
+import { ConversationRail } from "./ConversationRail";
 import { toolCatalog } from "../../lib/toolCatalog";
 
 function useResolveApproval(tenant: any, agent: any) {
@@ -263,7 +264,13 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
         </div>
       )}
       <ChatHeader target={target} agent={agent} channelMembers={channelMembers} usage={session?.usage} langfuseUrl={session?.langfuseUrl} onToggleMembers={onToggleMembers} onConfigure={onConfigure}/>
-      <div ref={listRef} onScroll={onScroll} role="log" aria-label="Messages" className="od-scroll relative flex-1 overflow-y-auto" data-od-id="message-list">
+      {/* Rail column + transcript: the conversation rail is a real flex child
+          at the LEFT edge of the chat pane (before the chat, not floating
+          beside the centered column), so it stays pinned while the transcript
+          scrolls in its own container. Hidden below md. */}
+      <div className="flex min-h-0 flex-1">
+        <ConversationRail entries={visibleMsgs} listRef={listRef}/>
+        <div ref={listRef} onScroll={onScroll} role="log" aria-label="Messages" className="od-scroll min-w-0 flex-1 overflow-y-auto" data-od-id="message-list">
         {isEmpty ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center">
             {agent && <Avatar name={agent.name} avatar={agent.avatar} kind="agent" size={44}/>}
@@ -310,7 +317,7 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
                   lastDayKey = key;
                 }
                 out.push(
-                  <div key={m.id} title={d ? fullStamp(d) : undefined}>
+                  <div key={m.id} data-msg-id={m.id} title={d ? fullStamp(d) : undefined}>
                     {renderEntry(m)}
                   </div>
                 );
@@ -333,6 +340,7 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
             {typing && !compacting && thread[thread.length - 1]?.author !== 'agent' && thread[thread.length - 1]?.author !== 'compaction' && <ThinkingRow agent={agent}/>}
           </div>
         )}
+        </div>
       </div>
       <div className="relative shrink-0">
         <button type="button" onClick={scrollToBottom} data-od-id="btn-scroll-bottom"

@@ -232,27 +232,6 @@ func ToolCatalog() []ToolCatalogEntry {
 			Group:       "todos",
 			IconKey:     "list",
 		},
-		{
-			Key:         tools.NameUIChart,
-			DisplayName: "Chart",
-			Description: "Render a structured chart card in the transcript: headline label, value, delta, and a sparkline series.",
-			Group:       "chart",
-			IconKey:     "chart",
-		},
-		{
-			Key:         tools.NameUITimeline,
-			DisplayName: "Timeline",
-			Description: "Render a structured timeline card in the transcript: an ordered sequence of settled and reference events.",
-			Group:       "timeline",
-			IconKey:     "timeline",
-		},
-		{
-			Key:         tools.NameUIPreview,
-			DisplayName: "Preview",
-			Description: "Render a sandboxed web preview card in the transcript: a URL bar with an inline frame and reload control.",
-			Group:       "preview",
-			IconKey:     "eye",
-		},
 	}
 }
 

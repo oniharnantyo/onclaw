@@ -17,7 +17,7 @@ An assistant turn containing four or more tool calls SHALL render a collapsible 
 - **WHEN** a completed turn holds six tool calls and five reasoning segments
 - **THEN** the header reads "6 steps" (plus the file clause when file edits succeeded), not a count of all rows
 
-#### Scenario: Light turns keep inline cards and thoughts
+#### Scenario: Light turns keep inline cards
 - **WHEN** a turn executes two tool calls with reasoning
 - **THEN** the cards and Thought rows render inline exactly as before, with no collapse header
 

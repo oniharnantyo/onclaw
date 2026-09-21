@@ -2,7 +2,8 @@ import { Fragment, memo, useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { cx } from "../../lib/helpers";
 import { parseArgs } from "../../lib/toolDisplay";
-import { parseTodoPlan, TodoUpdatedSummary } from "../../lib/generativeUi";
+import { GENERATIVE_UI_TYPES, parseFence, parseTodoPlan, renderSpecByType, TodoUpdatedSummary } from "../../lib/generativeUi";
+import { SyntaxHighlighter } from "@/components/assistant-ui/elements/shiki-highlighter";
 import { toolCatalog } from "../../lib/toolCatalog";
 import { Icon } from "../ui/Icon";
 import { Avatar } from "../ui/Avatar";
@@ -57,14 +58,106 @@ function withMentions(node: any, members: any[]): any {
   return node;
 }
 
+// --- block code: fences, shiki, and the plain fallback (markdown-card-elements
+// 2.5–2.7, design D1–D3/D9) ---------------------------------------------------
+// A `pre` whose code child carries `language-<tag>` for a known fence tag is
+// rich-card transport: the body is validated (parseFence) and mounted through
+// the generative-UI registry (renderSpecByType). ANY failure — unknown tag,
+// malformed or rejected body — degrades to the existing styled code block,
+// never a crash, never blank (D2). Ordinary tagged blocks route through the
+// lazy shiki highlighter: plain while the turn streams, highlighted at
+// settle, and the element degrades to plain code itself when its chunk or the
+// language is unavailable (D9). Untagged blocks (e.g. indented code) and
+// inline code are untouched. The shiki element ships no copy affordance —
+// the message-level copy action already covers it, so no chrome is added.
+
+const PRE_CLS = 'od-scroll mb-2 overflow-x-auto rounded-lg border border-line bg-[color-mix(in_oklab,var(--fg)_4%,transparent)] p-3 font-mono text-[12.5px] leading-5 text-fg2';
+
+const FENCE_TAG_SET = new Set<string>(GENERATIVE_UI_TYPES);
+
+function preCodeChild(children: any): any {
+  const list = Array.isArray(children) ? children : [children];
+  // The child is rendered through our own `code` override when one is set, so
+  // its React type is that function — identify it by its hast node's tagName.
+  return list.find(
+    (c) => c != null && typeof c === 'object' && (c.type === 'code' || c?.props?.node?.tagName === 'code'),
+  ) ?? null;
+}
+
+function codeLanguage(el: any): string | null {
+  const raw = el?.props?.className;
+  const cls = Array.isArray(raw) ? raw.join(' ') : typeof raw === 'string' ? raw : '';
+  const m = /(?:^|\s)language-([\w-]+)/.exec(cls);
+  return m ? m[1] : null;
+}
+
+function codeSource(el: any): string | null {
+  const kids = el?.props?.children;
+  const flat = Array.isArray(kids) ? kids : [kids];
+  if (!flat.every((k) => typeof k === 'string' || typeof k === 'number')) return null;
+  return flat.join('');
+}
+
+// The fence info string after the tag (```diagram Payment flow) rides the
+// code node's data.meta; react-markdown surfaces it either as a `meta` prop
+// or on the hast node — accept both.
+function codeMeta(el: any): string | null {
+  const meta = el?.props?.meta ?? el?.props?.node?.data?.meta;
+  return typeof meta === 'string' ? meta : null;
+}
+
+function renderPre(children: any, live: boolean) {
+  const code = preCodeChild(children);
+  const tag = code ? codeLanguage(code) : null;
+  if (code && tag && FENCE_TAG_SET.has(tag)) {
+    // An unreadable/empty body is NOT a rejection here: the inline form
+    // (```chart {json} on the tag line) leaves the body empty with the JSON
+    // riding the info-string meta — parseFence owns that fallback.
+    const parsed = parseFence(tag, codeSource(code) ?? '', codeMeta(code));
+    if (parsed.ok) {
+      // A fence card is complete the moment it renders (design: fences
+      // cannot stream into cards) — running stays false; `live` latches the
+      // reveal stagger (hydrated turns have live=false).
+      return renderSpecByType(tag, parsed.props, { live, running: false, error: false, tool: 'fence-' + tag });
+    }
+    // Degraded fence (D2): the existing styled block, unchanged — except when
+    // the payload rode the info string (empty body, non-empty meta): rendering
+    // the bare children would show an empty box, so the meta IS the readable
+    // source the fallback owes the user.
+    const meta = codeMeta(code);
+    if (!(codeSource(code) ?? '').trim() && meta) {
+      return <pre className={PRE_CLS}><code>{meta}</code></pre>;
+    }
+    return <pre className={PRE_CLS}>{children}</pre>;
+  }
+  if (code && tag) {
+    const source = codeSource(code);
+    if (source !== null) {
+      return (
+        <SyntaxHighlighter
+          code={source}
+          language={tag}
+          // Plain while the turn streams (tokenization costs nothing), one
+          // upgrade at settle; the element's own delay covers the close.
+          streaming={live}
+          className="mb-2 [&_pre]:rounded-t-xl [&_pre]:border-t"
+        />
+      );
+    }
+  }
+  return <pre className={PRE_CLS}>{children}</pre>;
+}
+
 // Memoized per design D6: streaming re-parses per delta, so the tree is only
-// rebuilt when the text (or member list) actually changes. No GFM plugin, no
-// rehype-raw — raw HTML stays escaped by default. Math (design D10): the
+// rebuilt when the text (or member list) actually changes. `live` (busy &&
+// isLast) participates: fences latch their reveal stagger off it and the
+// shiki highlighter holds plain code until the turn settles. No GFM plugin,
+// no rehype-raw — raw HTML stays escaped by default. Math (design D10): the
 // remark-math + rehype-katex plugins and KaTeX's stylesheet (~300KB gz) load
 // lazily, only when the message actually carries math delimiters — until
 // they land (or on a failed chunk load) the raw delimiters render as plain
 // text, exactly as before. Non-math messages never touch the bundle.
-const MarkdownBody = memo(function MarkdownBody({ text, members }: { text: string; members?: any[] }) {
+const MarkdownBody = memo(function MarkdownBody({ text, members, live }: { text: string; members?: any[]; live?: boolean }) {
   const components = useMemo(() => ({
     p: ({ children }) => <p className="mb-2 last:mb-0">{withMentions(children, members)}</p>,
     li: ({ children }) => <li className="mb-1 ml-5 list-disc">{withMentions(children, members)}</li>,
@@ -73,10 +166,8 @@ const MarkdownBody = memo(function MarkdownBody({ text, members }: { text: strin
     code: ({ children }) => (
       <code className="rounded-[4px] bg-[color-mix(in_oklab,var(--fg)_6%,transparent)] px-1 py-0.5 font-mono text-[13px]">{children}</code>
     ),
-    pre: ({ children }) => (
-      <pre className="od-scroll mb-2 overflow-x-auto rounded-lg border border-line bg-[color-mix(in_oklab,var(--fg)_4%,transparent)] p-3 font-mono text-[12.5px] leading-5 text-fg2">{children}</pre>
-    ),
-  }), [members]);
+    pre: ({ children }) => renderPre(children, live === true),
+  }), [members, live]);
   const hasMath = useMemo(() => containsMathDelimiters(text), [text]);
   const [math, setMath] = useState<{ remark: any; rehype: any } | null>(null);
   useEffect(() => {
@@ -299,7 +390,7 @@ export function AgentMessage({ m, agent, inChannel, busy, isLast, onCopy, onRefr
         <div className="md-body text-[15px] leading-relaxed text-fg">
           {n > 0 ? (
             <>
-              <MarkdownBody text={shown} members={members}/>
+              <MarkdownBody text={shown} members={members} live={streaming}/>
               {busy && isLast && <span className="od-caret" aria-hidden="true"/>}
             </>
           ) : busy && isLast ? (
