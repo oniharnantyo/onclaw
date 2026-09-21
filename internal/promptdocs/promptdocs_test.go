@@ -112,10 +112,32 @@ func TestBasePromptCarriesRichCards(t *testing.T) {
 		"- flow: {\"",
 		"- math: {\"",
 		"```diagram Payment flow",
+		// The `ui` composition tag (generative-ui adoption): the tree shape, the
+		// sparing-use rule, and the two numeric/enum traps the validator guards
+		// (0-8 tokens, the closed icon set) are all taught explicitly.
+		"### Composing several cards: the `ui` tag",
+		"```ui\n{\"$type\"",
+		"ONLY when the arrangement carries meaning",
+		"never wrap a single card in `ui`",
+		"`gap` and `padding` are 0-8",
+		"`Icon.name` must be one of:",
+		// The Chart variant enum must match the schema's zod enum exactly
+		// (live-pass fix 2026-09-22: the doc taught "bars" — with an s — which
+		// the schema rejects, so every doc-following Chart node silently
+		// dropped under interior-tolerant semantics).
+		`Chart (variant "bar"|"line"|"area"|"sparkline"`,
+		// Select/RadioGroup options are {value,label} objects, not strings —
+		// string options fail safeParse and the node silently drops (D2).
+		"Select (label?, options [{value, label}])",
 	} {
 		if !strings.Contains(BasePrompt, marker) {
 			t.Errorf("BasePrompt missing rich-cards marker %q", marker)
 		}
+	}
+	// The superseded Chart enum must not resurface (schema enum is bar/line/
+	// area/sparkline — "bars" fails every safeParse).
+	if strings.Contains(BasePrompt, `"line"|"area"|"bars"`) {
+		t.Errorf(`BasePrompt teaches the rejected Chart variant "bars" (schema enum is "bar"|"line"|"area"|"sparkline")`)
 	}
 }
 
