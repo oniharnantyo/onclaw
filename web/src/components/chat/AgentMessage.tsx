@@ -73,6 +73,17 @@ function withMentions(node: any, members: any[]): any {
 
 const PRE_CLS = 'od-scroll mb-2 overflow-x-auto rounded-lg border border-line bg-[color-mix(in_oklab,var(--fg)_4%,transparent)] p-3 font-mono text-[12.5px] leading-5 text-fg2';
 
+// Degraded-fence caption (add-generative-ui-fence): a fence that fails
+// validation degrades to the ordinary styled block (below) plus a one-line
+// caption whose hover title carries the validator's rejection reason. The
+// mb-2 moves from the pre to the wrapper so pre → caption → following
+// content keeps the original rhythm; successfully mounted cards, ordinary
+// code blocks (tagged or untagged), and streaming fences never see it
+// (unclosed fences render no `pre` at all mid-markdown).
+const DEGRADED_CAPTION = "This card couldn't be rendered — showing source";
+const DEGRADED_WRAPPER_CLS = 'mb-2';
+const DEGRADED_PRE_CLS = PRE_CLS.replace(' mb-2', '');
+
 const FENCE_TAG_SET = new Set<string>(GENERATIVE_UI_TYPES);
 
 function preCodeChild(children: any): any {
@@ -125,10 +136,23 @@ function renderPre(children: any, live: boolean) {
     // the bare children would show an empty box, so the meta IS the readable
     // source the fallback owes the user.
     const meta = codeMeta(code);
+    // strict:false doesn't narrow the ok-discriminated union, so bind the
+    // rejected side explicitly (parsed.ok was already returned above).
+    const { reason } = parsed as { ok: false; reason: string };
     if (!(codeSource(code) ?? '').trim() && meta) {
-      return <pre className={PRE_CLS}><code>{meta}</code></pre>;
+      return (
+        <div className={DEGRADED_WRAPPER_CLS}>
+          <pre className={DEGRADED_PRE_CLS}><code>{meta}</code></pre>
+          <p className="mt-1 text-[11px] text-muted" title={reason}>{DEGRADED_CAPTION}</p>
+        </div>
+      );
     }
-    return <pre className={PRE_CLS}>{children}</pre>;
+    return (
+      <div className={DEGRADED_WRAPPER_CLS}>
+        <pre className={DEGRADED_PRE_CLS}>{children}</pre>
+        <p className="mt-1 text-[11px] text-muted" title={reason}>{DEGRADED_CAPTION}</p>
+      </div>
+    );
   }
   if (code && tag) {
     const source = codeSource(code);

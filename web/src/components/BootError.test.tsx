@@ -1,6 +1,21 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
+
+// This environment's jsdom exposes no localStorage — install the stub BEFORE
+// any store import (same mode as the other store suites).
+const backing = new Map<string, string>();
+if (typeof (globalThis as any).localStorage === 'undefined' || true) {
+  (globalThis as any).localStorage = {
+    getItem: (k: string) => (backing.has(k) ? backing.get(k)! : null),
+    setItem: (k: string, v: string) => void backing.set(k, String(v)),
+    removeItem: (k: string) => void backing.delete(k),
+    clear: () => void backing.clear(),
+    key: (i: number) => Array.from(backing.keys())[i] ?? null,
+    get length() { return backing.size; },
+  };
+}
+
 import { BootError } from './BootError';
 import { useAuthStore } from '../store/auth';
 

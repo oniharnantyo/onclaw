@@ -139,6 +139,96 @@ describe('parseFence — JSON tags (2.2)', () => {
   });
 });
 
+describe('parseFence — the `ui` composition tag', () => {
+  const ui = (body: unknown) => parseFence('ui', JSON.stringify(body));
+
+  it('accepts a well-formed composition tree', () => {
+    const r = ui({
+      $type: 'Col',
+      gap: 3,
+      children: [
+        { $type: 'Header', text: 'Briefing', size: '2xl' },
+        { $type: 'Row', gap: 3, children: [
+          { $type: 'Card', padding: 4, children: [{ $type: 'Caption', value: 'Incidents' }] },
+        ]},
+      ],
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it('strips Card.background — the prop that renders white text on a white card', () => {
+    const r = ui({ $type: 'Card', background: '#ffffff', padding: 4, children: [{ $type: 'Text', value: 'hi' }] });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const spec = (r.props as any).spec;
+    expect(spec.background).toBeUndefined();
+    expect(spec.padding).toBe(4);
+  });
+
+  it('schema gate: a required prop missing drops the node (interior) / rejects (root)', () => {
+    // Caption requires `value`; the live model wrote `text` (thread i).
+    // Interior: the caption drops, its siblings survive.
+    const inner = ui({ $type: 'Card', padding: 4, children: [
+      { $type: 'Caption', text: 'oops' },
+      { $type: 'Header', text: '3' },
+    ]});
+    expect(inner.ok).toBe(true);
+    if (!inner.ok) return;
+    const card = (inner.props as any).spec;
+    // Single surviving child unwraps to a node (upstream children convention).
+    const kids = Array.isArray(card.children) ? card.children : [card.children];
+    expect(kids).toHaveLength(1); // Header survived, Caption dropped
+    expect(kids[0].$type).toBe('Header');
+
+    // Root: strict — the fence degrades to the code block.
+    expect(ui({ $type: 'Caption', text: 'oops' }).ok).toBe(false);
+  });
+
+  it('schema gate: closed icon set and sm|md|lg size enum', () => {
+    // Root Icon with a bad name → strict reject.
+    expect(ui({ $type: 'Icon', name: 'alert' }).ok).toBe(false);
+    expect(ui({ $type: 'Icon', name: 'bell', size: 16 }).ok).toBe(false); // px, not the enum
+    // Nested: the icon drops, the branch survives.
+    const nested = ui({ $type: 'Card', children: [
+      { $type: 'Icon', name: 'alert' },
+      { $type: 'Text', value: 'kept' },
+    ]});
+    expect(nested.ok).toBe(true);
+  });
+
+  it('token clamp: out-of-range gap/padding clamps to 0-8 instead of rejecting', () => {
+    // A live model wrote gap:16 thinking in pixels; the doc says 0-8 tokens.
+    const r = ui({ $type: 'Row', gap: 12, children: [{ $type: 'Text', value: 'x' }] });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect((r.props as any).spec.gap).toBe(8);
+    const card = ui({ $type: 'Card', padding: 9, children: [{ $type: 'Text', value: 'x' }] });
+    expect(card.ok).toBe(true);
+    if (!card.ok) return;
+    expect((card.props as any).spec.padding).toBe(8);
+  });
+
+  it('root strictness: a node with no $type and an unknown $type both reject', () => {
+    expect(ui({ children: [{ $type: 'Text', value: 'x' }] }).ok).toBe(false);
+    expect(ui({ $type: 'Hologram' }).ok).toBe(false);
+    // Dropped vocabulary (Image is a security deference) is unknown to the gate.
+    expect(ui({ $type: 'Image', src: 'https://x.example/a.png', alt: 'a' }).ok).toBe(false);
+  });
+
+  it('depth guard truncates instead of rejecting; text children stay legal', () => {
+    expect(ui({ $type: 'Card', children: ['plain text'] }).ok).toBe(true);
+    let deep: any = { $type: 'Text', value: 'bottom' };
+    for (let i = 0; i < 20; i++) deep = { $type: 'Card', children: [deep] };
+    // Interior tolerance: the chain truncates at the depth guard, root survives.
+    expect(ui(deep).ok).toBe(true);
+  });
+
+  it('the vocabulary is the trimmed 24 (Image/DatePicker/Carousel excluded)', () => {
+    const r = ui({ $type: 'Image', src: 'https://x.example/a.png', alt: 'a' });
+    expect(r.ok).toBe(false);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // AgentMessage integration: the pre override (2.5–2.7).
 // ---------------------------------------------------------------------------
@@ -229,6 +319,45 @@ describe('AgentMessage — fence mounting (2.5/2.6)', () => {
     expect(container.querySelector('pre')).toBeNull();
     expect(container.querySelector('code')).not.toBeNull();
     expect(container.querySelector('[data-od-id^="tool-fence-"]')).toBeNull();
+  });
+});
+
+describe('AgentMessage — degraded fence caption (add-generative-ui-fence)', () => {
+  const CAPTION = "This card couldn't be rendered — showing source";
+
+  it('a failed ui fence shows its source followed by the exact caption', () => {
+    const { container } = renderMessage('```ui\n{"$type":"Hologram"}\n```\n');
+    const caption = container.querySelector('p[title]');
+    expect(container.querySelector('pre')?.className).toMatch(PLAIN_PRE);
+    expect(container.textContent).toContain('{"$type":"Hologram"}');
+    expect(caption?.textContent).toBe(CAPTION);
+  });
+
+  it('the caption title is the validator rejection reason', () => {
+    const bad = parseFence('ui', JSON.stringify({ $type: 'Hologram' }));
+    expect(bad.ok).toBe(false);
+    // strict:false doesn't narrow the ok-discriminated union — cast the
+    // rejected side directly; assertions below are unchanged.
+    const { reason } = bad as { ok: false; reason: string };
+    const { container } = renderMessage('```ui\n{"$type":"Hologram"}\n```\n');
+    expect(container.querySelector('p[title]')?.getAttribute('title')).toBe(reason);
+  });
+
+  it('the meta-as-source degraded branch carries the caption too', () => {
+    const { container } = renderMessage('```chart {"label": 123, "value": nope, "points": []}\n```');
+    const caption = container.querySelector('p[title]');
+    expect(caption?.textContent).toBe(CAPTION);
+    expect((caption as HTMLElement | null)?.title.length).toBeGreaterThan(0);
+  });
+
+  it('mounted cards and ordinary code blocks carry no caption', () => {
+    const ok = renderMessage('```ticker\n{"value":4200,"label":"stars"}\n```\n');
+    expect(ok.container.querySelector('p[title]')).toBeNull();
+    expect(ok.container.textContent).not.toContain(CAPTION);
+
+    const go = renderMessage('```go\npackage main\n```\n');
+    expect(go.container.querySelector('p[title]')).toBeNull();
+    expect(go.container.textContent).not.toContain(CAPTION);
   });
 });
 

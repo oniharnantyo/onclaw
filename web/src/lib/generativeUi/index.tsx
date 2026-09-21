@@ -15,6 +15,8 @@ import { JobProgress } from "@/components/assistant-ui/elements/job-progress";
 import { ScoreBreakdown } from "@/components/assistant-ui/elements/score-breakdown";
 import { FlowGraph } from "@/components/assistant-ui/elements/flow-graph";
 import { MermaidDiagram } from "@/components/assistant-ui/elements/mermaid-diagram";
+import { styledGenerativeUILibrary } from "@/components/assistant-ui/elements/generative-ui";
+import { renderGenerativeUI } from "@assistant-ui/react-generative-ui";
 import { registerSpecRenderer, registerToolRenderer } from "./registry";
 import {
   FENCE_TAGS,
@@ -31,6 +33,7 @@ import {
   specOf,
   tableOf,
   tickerOf,
+  uiOf,
 } from "./fences";
 import { ChartCard, parseChartSpec } from "./ChartCard";
 import { PreviewCard } from "./PreviewCard";
@@ -225,6 +228,22 @@ registerSpecRenderer('diagram', ({ props }) => {
   return <FenceDiagramCard title={d.title} code={d.code}/>;
 });
 
+// Composition trees (the `ui` fence): the vendored generative-ui element
+// renders the model's `{$type, ...props}` tree against the shadcn-installed
+// vocabulary library. uiOf already walked the tree (trap guards: Icon
+// name/size, gap/padding tokens, `background` dropped), so this is a pure
+// render — the upstream library validates nothing itself, by design.
+registerSpecRenderer('ui', ({ props }) => {
+  // parseFence has already run uiOf and handed us `{spec}` — re-running uiOf
+  // here would double-wrap (the wrapper has no $type, so it rejects itself)
+  // and the fence would render NOTHING, silently. Accept the validated spec;
+  // still tolerate a raw tree for the $type tool-result path.
+  const p = props as Record<string, unknown> | null;
+  const spec = p !== null && typeof p === 'object' && p.spec instanceof Object ? (p.spec as Record<string, unknown>) : p;
+  if (!spec || typeof spec.$type !== 'string') return null;
+  return <div className="mb-2">{renderGenerativeUI(spec, styledGenerativeUILibrary)}</div>;
+});
+
 // --- tool-keyed cards (envelope sniffed from the call's own args/result) ---
 
 registerToolRenderer('web.search', ({ args, res, ms, ctx }) => {
@@ -259,4 +278,4 @@ export { parseTodoPlan, todoRatio } from './TodoChecklistCard';
 export { parseTimelineEvents } from './TimelineCard';
 export { parseSearchSources } from './WebSearchCard';
 export { TodoUpdatedSummary } from './TodoChecklistCard';
-export { FENCE_TAGS, isFenceTag, parseFence } from './fences';
+export { FENCE_TAGS, isFenceTag, parseFence, uiOf } from './fences';

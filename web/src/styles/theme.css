@@ -77,6 +77,48 @@
   --color-ring: var(--accent);
 }
 
+/* Raw shadcn token names for vendored registry CSS that calls them directly
+ * (e.g. `var(--card)` in the generative-ui style item) rather than through a
+ * Tailwind utility.
+ *
+ * ONLY the names this app does not already define. `--border`, `--muted`,
+ * `--accent`, `--bg`, `--fg`, `--surface`, `--accent-on` and `--danger` are
+ * REAL tokens in styles/tokens.css (dark-aware, contract-defined) — the
+ * registry CSS calling them resolves to the contract value already, and
+ * re-declaring them here would be self-referential (`--accent: var(--accent)`)
+ * and clobber them app-wide.
+ *
+ * The aliases below are the genuinely missing names, resolved onto contract
+ * tokens. `inline` keeps the raw var so the dark overrides still apply. */
+@theme inline {
+  --card: var(--surface);
+  --card-foreground: var(--fg);
+  --popover: var(--surface);
+  --popover-foreground: var(--fg);
+  --foreground: var(--fg);
+  --background: var(--bg);
+  --input: var(--border);
+  --primary: var(--accent);
+  --primary-foreground: var(--accent-on);
+  --secondary: color-mix(in oklab, var(--fg) 6%, transparent);
+  --secondary-foreground: var(--fg);
+  --accent-foreground: var(--accent-on);
+  --muted-foreground: var(--muted);
+  --destructive: var(--danger);
+  --ring: var(--accent);
+  --chart-1: var(--accent);
+  --chart-2: var(--success);
+  --chart-3: var(--warn);
+  --chart-4: var(--danger);
+  --chart-5: var(--meta);
+  /* vendored-CSS tunables the app now owns (previously fallback-only in index.css) */
+  --aui-control-height: 2.5rem;
+  --aui-button-padding-x: 1.25rem;
+  --aui-control-font-size: 0.875rem;
+  --aui-field-padding-x: 0.875rem;
+  --radius: 12px;
+}
+
 /* Elements' `dark:` utilities must follow the in-app theme toggle, not
  * Tailwind's default prefers-color-scheme media query: the app resolves and
  * pins `data-theme` on <html> itself (lib/theme.ts, theme.test.ts). */

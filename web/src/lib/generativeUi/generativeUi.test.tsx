@@ -50,11 +50,12 @@ const CHART_ENVELOPE = {
 
 describe('generative-UI registry coverage guard (1.4)', () => {
   it('pins the registry universes', () => {
-    // markdown-card-elements 2.1: the universe IS the 14 fence tags now.
-    expect(GENERATIVE_UI_TYPES).toHaveLength(14);
+    // markdown-card-elements 2.1: the universe IS the fence tags now; the `ui`
+    // composition tag joined it with the generative-ui adoption.
+    expect(GENERATIVE_UI_TYPES).toHaveLength(15);
     expect(GENERATIVE_UI_TYPES).toEqual([
       'chart', 'timeline', 'preview', 'table', 'ticker', 'activity', 'spec',
-      'compare', 'progress', 'score', 'flow', 'math', 'mermaid', 'diagram',
+      'compare', 'progress', 'score', 'flow', 'math', 'mermaid', 'diagram', 'ui',
     ]);
     expect(GENERATIVE_UI_TOOLS).toHaveLength(2);
     expect(SNAPSHOT_TYPES).toEqual([...GENERATIVE_UI_TYPES].sort());
@@ -298,6 +299,11 @@ const FENCE_BODY: Record<string, string> = {
   math: '{"label":"Bayes","steps":[{"expression":"P(A|B)=\\\\frac{P(B|A)P(A)}{P(B)}","note":"posterior"}]}',
   mermaid: 'graph TD;A-->B',
   diagram: 'graph LR;X-->Y',
+  // The `ui` composition tag rides the same mount path: parseFence runs uiOf
+  // (which hands the renderer `{spec}`), the registered renderer renders it
+  // against the vocabulary library. Markdown is the one node that carries a
+  // stable `data-aui` attribute, so it anchors the mounted assertion.
+  ui: '{"$type":"Col","gap":2,"children":[{"$type":"Card","title":"T","children":[{"$type":"Markdown","value":"hello"}]}]}',
 };
 
 describe('fence transport mounts (2.1/2.8)', () => {
@@ -410,6 +416,17 @@ describe('fence transport mounts (2.1/2.8)', () => {
     expect(container.textContent).toContain('Payment flow');
     expect(container.querySelector('button[aria-label="Zoom in"]')).not.toBeNull();
     await waitFor(() => expect(container.querySelector('[data-slot="diagram"] svg')).not.toBeNull());
+  });
+
+  it('ui mounts the composition tree — real nodes, not a silent wrapper', () => {
+    const { container } = render(<>{mount('ui')}</>);
+    // The double-wrap trap: if the renderer re-ran uiOf on the already-wrapped
+    // `{spec}` envelope, the wrapper (no `$type`) would reject itself and the
+    // fence would render NOTHING. Asserting a real composition node mounted —
+    // not just a non-null element — is what would catch that regression.
+    expect(container.querySelector('[data-aui="markdown"]')).not.toBeNull();
+    expect(container.textContent).toContain('hello');
+    expect(container.textContent).toContain('T');
   });
 
   it('a garbage body reaching the registry mints nothing — renderer tolerance', () => {

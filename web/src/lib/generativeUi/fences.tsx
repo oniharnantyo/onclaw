@@ -23,7 +23,7 @@ import { cx } from "../helpers";
  * ordinary code blocks and has no fence of its own. */
 export const FENCE_TAGS = [
   'chart', 'timeline', 'preview', 'table', 'ticker', 'activity', 'spec',
-  'compare', 'progress', 'score', 'flow', 'math', 'mermaid', 'diagram',
+  'compare', 'progress', 'score', 'flow', 'math', 'mermaid', 'diagram', 'ui',
 ] as const;
 
 export type FenceTag = (typeof FENCE_TAGS)[number];
@@ -349,6 +349,114 @@ export function diagramOf(raw: unknown): { title: string; code: string } | null 
   return { title: raw.title, code: raw.code };
 }
 
+// --- `ui` (composition trees) ------------------------------------------------
+//
+// The `ui` fence carries a `{$type, ...props}` TREE rendered by the vendored
+// generative-ui element (uiLibrary). Unlike the flat tags above, its shape is
+// recursive, so it cannot be a per-field validator.
+//
+// The gate is SCHEMA-DRIVEN: every vocabulary component declares its props as
+// a zod schema (`properties`), and that schema is the validator. Everything I
+// would otherwise hand-write is already encoded there — enums (Icon.name,
+// Icon.size), ranges (gap/padding 0–8), required props (Text.value,
+// Button.label, …) — plus safeParse strips unknown keys by default, so an
+// invented prop can never reach a renderer. Hand-writing guards would only
+// duplicate (and drift from) the schemas.
+//
+// ONE rule survives as hand-written: `Card.background` is deleted. It is a
+// schema-VALID string, but upstream emits it as an inline CSS value AND forces
+// `color:white` on the card — `background:"#ffffff"` is white text on a white
+// card (the trap that made a gallery render blank). Host CSS owns card
+// surfaces here, so the prop is deleted; no generated validator can know that.
+//
+// Failure semantics: the ROOT node is strict (a root that fails rejects the
+// fence → the caller degrades to the ordinary code block, D2). INTERIOR
+// failures drop just that node and keep the siblings — a 400-char composition
+// missing one caption is a far better outcome than 400 chars of raw JSON, and
+// matches the fence philosophy (fail-open within a unit, fail-closed at the
+// boundary).
+
+import { uiLibrary } from "@/components/assistant-ui/elements/generative-ui";
+
+/** Depth guard: a tree nested past this is a model loop, not a layout. */
+const UI_MAX_DEPTH = 12;
+/** Node-count guard: keeps one fence from minting an unbounded DOM. */
+const UI_MAX_NODES = 400;
+
+export interface FenceUi {
+  /** The validated tree, handed to renderGenerativeUI as-is. */
+  spec: Record<string, unknown>;
+}
+
+/** `gap`/`padding` are 0–8 tokens (4px units) in the vocabulary's CSS. Models
+ * think in pixels — a live glm-4.7 turn wrote `gap: 16` for a comfortable
+ * spacing, which upstream silently ignores (no CSS rule above 8). Clamping
+ * keeps the layout intent instead of dropping the node. */
+function clampTokens(props: Record<string, unknown>): void {
+  for (const k of ['gap', 'padding']) {
+    const v = props[k];
+    if (typeof v === 'number' && Number.isFinite(v)) props[k] = Math.max(0, Math.min(8, Math.round(v)));
+  }
+}
+
+function uiNode(raw: unknown, depth: number, budget: { n: number }): Record<string, unknown> | string | null {
+  if (budget.n-- <= 0 || depth > UI_MAX_DEPTH) return null;
+  // Text children are legal (the renderer accepts primitives).
+  if (typeof raw === 'string') return raw;
+  if (!isObj(raw)) return null;
+
+  // `type` is accepted as an alias of `$type` (live-model tolerance,
+  // 2026-09-21: glm-4.7 wrote `"type"` in its first ui fence — `$`-prefixed
+  // keys are not a universal convention, and the fence failing closed on it
+  // degraded the whole composition). No component declares a `type` prop, so
+  // the fallback can never shadow a real one.
+  const type = isStr(raw.$type) && raw.$type.trim() ? raw.$type : isStr(raw.type) && raw.type.trim() ? raw.type : null;
+  if (!type) return null;
+  const entry = uiLibrary[type];
+  if (!entry) return null; // interior: this node drops; root: the fence degrades
+
+  // The schema gate. `children` recurses separately (the schemas don't declare
+  // it, and safeParse strips it); `$type`/`type` are framework keys.
+  const { $type: _t, type: _legacyType, children: _c, ...rawProps } = raw;
+  const props: Record<string, unknown> = { ...rawProps };
+  clampTokens(props);
+  const parsed = entry.properties.safeParse(props);
+  if (!parsed.success) return null;
+
+  const out: Record<string, unknown> = { $type: type, ...parsed.data };
+  if (type === 'Card') delete out.background; // the one hand-written rule (see above)
+
+  if (raw.children !== undefined) {
+    const kids = Array.isArray(raw.children) ? raw.children : [raw.children];
+    const resolved: unknown[] = [];
+    for (const kid of kids) {
+      const n = uiNode(kid, depth + 1, budget);
+      if (n !== null) resolved.push(n);
+    }
+    if (resolved.length === 1) out.children = resolved[0];
+    else if (resolved.length > 1) out.children = resolved;
+  }
+  return out;
+}
+
+/** Validate a `ui` composition tree. Strict at the root (a root that fails
+ * rejects the fence → degrade to code block); tolerant inside (a node that
+ * fails drops, its siblings render). */
+export function uiOf(raw: unknown): FenceUi | null {
+  const budget = { n: UI_MAX_NODES };
+  if (Array.isArray(raw)) {
+    const nodes: unknown[] = [];
+    for (const item of raw) {
+      const n = uiNode(item, 0, budget);
+      if (n !== null) nodes.push(n);
+    }
+    return nodes.length ? { spec: { $type: 'Col', children: nodes } } : null;
+  }
+  const node = uiNode(raw, 0, budget);
+  if (node === null || typeof node === 'string') return null;
+  return { spec: node };
+}
+
 // --- the fence gate -----------------------------------------------------------
 
 export type FenceParse =
@@ -368,6 +476,7 @@ const JSON_TAGS: Record<string, (raw: unknown) => unknown> = {
   score: scoreOf,
   flow: flowOf,
   math: mathOf,
+  ui: uiOf,
 };
 
 /** Validate one closed fence. JSON tags parse and shape-check their body;
