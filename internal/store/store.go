@@ -59,6 +59,7 @@ type Store interface {
 	MemoryReports() MemoryReportStore
 	MemoryEmbeddings() MemoryEmbeddingStore
 	MemoryEntities() MemoryEntityStore
+	Todos() TodoStore
 	Gateways() GatewayStore
 	GatewayBindings() GatewayBindings
 	GatewayLinks() GatewayLinks

@@ -1,9 +1,10 @@
 /**
  * @vitest-environment jsdom
  */
-import { describe, it, expect, vi } from 'vitest';
-import { render } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, fireEvent } from '@testing-library/react';
 import { ChatView } from './ChatView';
+import { useStore } from '../../store';
 
 vi.mock('../../lib/api', () => ({
   api: {
@@ -157,5 +158,140 @@ describe('ChatView compaction surface (chat-compact-command)', () => {
     expect(divider).not.toBeNull();
     expect(divider?.textContent).toContain('154k → 9.2k tokens');
     expect(divider?.textContent).not.toContain('summary saved to transcript');
+  });
+});
+
+describe('ChatView day separators + hover timestamps (adopt-assistant-ui-elements 9.2)', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const today = new Date();
+  const yesterday = new Date(Date.now() - DAY);
+  const older = new Date(Date.now() - 3 * DAY);
+  // Same formatting calls the component makes — identical environment, so
+  // the expected strings match whatever locale the runner resolves.
+  const dateLabel = (d: Date) => d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  const stamp = (d: Date) => d.toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+
+  const dividersOf = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll('[data-od-id="day-divider"]'));
+  const titlesInList = (container: HTMLElement) =>
+    Array.from(container.querySelector('[data-od-id="message-list"]')!.querySelectorAll('[title]'))
+      .map((el) => el.getAttribute('title'));
+  // Message rows carry their own UI titles ("Copy", "Edit"); a date+time
+  // stamp always contains an h:mm clock component.
+  const stampsInList = (container: HTMLElement) =>
+    titlesInList(container).filter((t) => t && /\d{1,2}:\d{2}/.test(t));
+
+  it('renders a divider wherever the day changes between consecutive dated entries — Today/Yesterday/date labels', () => {
+    const thread = [
+      { id: 'u1', author: 'you', text: 'yesterday msg', ts: '', at: yesterday.toISOString() },
+      // Undated entry between dated ones: silent, never contributes a divider.
+      { id: 'n1', author: 'notice', text: '', ts: '9:14 AM', notice: { hook: 'Compliance Gate', reason: 'no' } },
+      { id: 'm1', author: 'agent', agentId: 'a1', text: 'today reply', ts: '', at: today.toISOString() },
+      { id: 'm2', author: 'agent', agentId: 'a1', text: 'older reply', ts: '', at: older.toISOString() },
+      { id: 'm3', author: 'agent', agentId: 'a1', text: 'same older day', ts: '', at: older.toISOString() },
+    ];
+    const { container } = render(<ChatView {...base} thread={thread}/>);
+    const dividers = dividersOf(container);
+    expect(dividers).toHaveLength(2);
+    // yesterday → today boundary labels the new day by name; today → older
+    // by date; the same-day pair m2/m3 adds nothing.
+    expect(dividers[0].textContent).toContain('Today');
+    expect(dividers[1].textContent).toContain(dateLabel(older));
+    expect(dividers.every((d) => !d.textContent!.includes('Yesterday'))).toBe(true);
+    // Each divider sits before the entry of the new day.
+    const m1 = container.querySelector('[data-od-id="msg-m1"]')!;
+    const m2 = container.querySelector('[data-od-id="msg-m2"]')!;
+    expect(dividers[0].compareDocumentPosition(m1) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(dividers[1].compareDocumentPosition(m2) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Full-width chrome, house hairline idiom.
+    expect(dividers[0].getAttribute('role')).toBe('separator');
+    expect(dividers[0].getAttribute('aria-label')).toBe('Today');
+  });
+
+  it('undated entries stay silent: no dividers and no hover timestamps anywhere', () => {
+    const thread = [
+      { id: 'n1', author: 'notice', text: '', ts: '9:14 AM', notice: { hook: 'Compliance Gate', reason: 'no' } },
+      { id: 'u1', author: 'you', text: 'legacy display ts', ts: '9:15 AM' },
+      { id: 'e1', author: 'error', text: '', ts: 'just now', error: 'boom' },
+    ];
+    const { container } = render(<ChatView {...base} thread={thread}/>);
+    expect(dividersOf(container)).toHaveLength(0);
+    expect(stampsInList(container)).toHaveLength(0);
+  });
+
+  it('dated entries expose their full date+time on hover (title attr)', () => {
+    const thread = [
+      { id: 'u1', author: 'you', text: 'yesterday msg', ts: '', at: yesterday.toISOString() },
+      { id: 'm1', author: 'agent', agentId: 'a1', text: 'today reply', ts: '', at: today.toISOString() },
+    ];
+    const { container } = render(<ChatView {...base} thread={thread}/>);
+    expect(stampsInList(container)).toEqual([stamp(yesterday), stamp(today)]);
+  });
+
+  it('a same-day transcript renders no divider at all (divider needs a day CHANGE)', () => {
+    const thread = [
+      { id: 'u1', author: 'you', text: 'hello', ts: '', at: today.toISOString() },
+      { id: 'm1', author: 'agent', agentId: 'a1', text: 'hi there', ts: '', at: today.toISOString() },
+    ];
+    const { container } = render(<ChatView {...base} thread={thread}/>);
+    expect(dividersOf(container)).toHaveLength(0);
+    // Hover timestamps still work without dividers.
+    expect(stampsInList(container)).toEqual([stamp(today), stamp(today)]);
+  });
+});
+
+describe('ChatView message queue stack (adopt-assistant-ui-elements 8.2)', () => {
+  beforeEach(() => {
+    useStore.setState({
+      pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
+      messageQueue: {},
+    });
+  });
+
+  const seedQueue = (texts: string[]) => {
+    useStore.setState({
+      messageQueue: {
+        't1::a1': texts.map((text, i) => ({ id: 'q' + (i + 1), text, enqueuedAt: '' })),
+      },
+    });
+  };
+
+  it('shows no queue chrome when nothing is queued — even while a run is active', () => {
+    const thread = [{ id: 'u1', author: 'you', text: 'hello', ts: '' }];
+    const { container } = render(<ChatView {...base} thread={thread} typing busy />);
+    expect(container.querySelector('[data-od-id="message-queue"]')).toBeNull();
+  });
+
+  it('renders a running row naming the in-flight turn above ordered queued rows', () => {
+    seedQueue(['first queued', 'second queued']);
+    const { container } = render(<ChatView {...base} busy />);
+    const stack = container.querySelector('[data-od-id="message-queue"]');
+    expect(stack).not.toBeNull();
+    // Running row names the in-flight turn (the chat's agent).
+    expect(container.querySelector('[data-testid="queue-running-row"]')?.textContent).toContain('Atlas');
+    // Ordered cancelable rows under it.
+    const items = container.querySelectorAll('[data-od-id="queue-item"]');
+    expect(items).toHaveLength(2);
+    expect(items[0].textContent).toContain('first queued');
+    expect(items[1].textContent).toContain('second queued');
+    expect(container.querySelectorAll('[data-testid="queue-remove"]')).toHaveLength(2);
+  });
+
+  it('removing a row cancels only that entry through the store', () => {
+    seedQueue(['keep me', 'drop me']);
+    const { container } = render(<ChatView {...base} busy />);
+    const drop = container.querySelector('[data-queue-remove="q2"]');
+    expect(drop).not.toBeNull();
+    fireEvent.click(drop as Element);
+
+    const q = useStore.getState().messageQueue['t1::a1'] || [];
+    expect(q.map((x: any) => x.text)).toEqual(['keep me']);
+  });
+
+  it('the running row is gated on the run — rows without an active run carry no running row', () => {
+    seedQueue(['still queued']);
+    const { container } = render(<ChatView {...base} busy={false} />);
+    expect(container.querySelector('[data-od-id="message-queue"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="queue-running-row"]')).toBeNull();
   });
 });

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { Composer } from './Composer';
 
@@ -161,5 +161,80 @@ describe('components/chat/Composer /compact slash menu (chat-compact-command)', 
     fireEvent.keyDown(input, { key: 'Enter' });
     // add-chat-attachments D11: onSend carries the (here empty) ready chips.
     expect(onSend).toHaveBeenCalledWith('/compact', []);
+  });
+});
+
+describe('components/chat/Composer draft restore (adopt-assistant-ui-elements 9.3)', () => {
+  // This environment's jsdom may expose no localStorage (same mode behind the
+  // ~66 pre-existing failures); install a minimal stub so the lifecycle runs.
+  if (typeof (globalThis as any).localStorage === 'undefined') {
+    const backing = new Map<string, string>();
+    (globalThis as any).localStorage = {
+      getItem: (k: string) => (backing.has(k) ? backing.get(k)! : null),
+      setItem: (k: string, v: string) => void backing.set(k, String(v)),
+      removeItem: (k: string) => void backing.delete(k),
+      clear: () => void backing.clear(),
+      key: (i: number) => Array.from(backing.keys())[i] ?? null,
+      get length() { return backing.size; },
+    };
+  }
+
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  const mount = (chatId: string, onSend = vi.fn()) =>
+    render(
+      <Composer
+        agent={{ name: 'Atlas' }}
+        running={false}
+        onSend={onSend}
+        onCancel={vi.fn()}
+        chatId={chatId}
+      />
+    );
+
+  const input = () => screen.getByLabelText('Message input') as HTMLTextAreaElement;
+
+  it('typed text persists per thread and is restored when the composer remounts', () => {
+    const first = mount('a1');
+    fireEvent.change(input(), { target: { value: 'half-written reply' } });
+    expect(localStorage.getItem('onclaw.draft.a1')).toBe('half-written reply');
+    first.unmount();
+
+    // ChatRoute remounts the Composer per chat — the mount initializer is
+    // the restore point.
+    mount('a1');
+    expect(input().value).toBe('half-written reply');
+  });
+
+  it('drafts are per thread — another thread restores nothing', () => {
+    const first = mount('a1');
+    fireEvent.change(input(), { target: { value: 'for atlas only' } });
+    first.unmount();
+
+    mount('a2');
+    expect(input().value).toBe('');
+    expect(localStorage.getItem('onclaw.draft.a1')).toBe('for atlas only');
+  });
+
+  it('sending clears the saved draft — a later visit shows an empty composer', () => {
+    const onSend = vi.fn();
+    const first = mount('a1', onSend);
+    fireEvent.change(input(), { target: { value: 'ship it' } });
+    fireEvent.keyDown(input(), { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledWith('ship it', []);
+    expect(localStorage.getItem('onclaw.draft.a1')).toBeNull();
+    first.unmount();
+
+    mount('a1');
+    expect(input().value).toBe('');
+  });
+
+  it('emptying the composer clears the stored draft too', () => {
+    mount('a1');
+    fireEvent.change(input(), { target: { value: 'scratch' } });
+    fireEvent.change(input(), { target: { value: '' } });
+    expect(localStorage.getItem('onclaw.draft.a1')).toBeNull();
   });
 });

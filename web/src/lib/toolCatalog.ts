@@ -35,7 +35,7 @@ const MCP_DEFAULT_ICON = 'plug';
 
 // Built-in catalog entries mirrored statically (names and icons from the
 // backend's ToolCatalog, internal/agents/tool_catalog.go). The workspace
-// catalog fetch stays the source of truth for anything beyond these eighteen,
+// catalog fetch stays the source of truth for anything beyond these built-ins,
 // but transcript cards must never flash raw ids while it loads — or drop to
 // them when it fails — so built-ins resolve before the network does. The
 // static values equal the server's by construction.
@@ -58,6 +58,12 @@ const builtinToolNames: Record<string, string> = {
   'channel.post': 'Channel Post',
   'channel.history': 'Channel History',
   'session.close': 'Close Work Session',
+  // Todos + echo-UI tools (adopt-assistant-ui-elements).
+  todo_write: 'Write Todos',
+  todo_read: 'Read Todos',
+  'ui.chart': 'Chart',
+  'ui.timeline': 'Timeline',
+  'ui.preview': 'Web Preview',
 };
 
 const builtinToolIcons: Record<string, string> = {
@@ -79,6 +85,11 @@ const builtinToolIcons: Record<string, string> = {
   'channel.post': 'message',
   'channel.history': 'history',
   'session.close': 'check-circle',
+  todo_write: 'check-circle',
+  todo_read: 'file-text',
+  'ui.chart': 'activity',
+  'ui.timeline': 'clock',
+  'ui.preview': 'eye',
 };
 
 export const toolCatalog = {

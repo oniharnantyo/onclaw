@@ -49,6 +49,9 @@ declare global {
     author: string;
     agentId?: string;
     ts: string;
+    /** Parseable ISO wall-clock instant alongside the display `ts` — the
+     * transcript's day separators read this (adopt-assistant-ui-elements D11). */
+    at?: string;
     text: string;
     /** Scheduler-origin marker (integrate-scheduler D1): schedule name when known. */
     scheduler?: string;

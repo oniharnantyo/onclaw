@@ -121,6 +121,9 @@ type toolRegistry struct {
 	// memorySearch carries the optional memory.search tool's searcher (set
 	// only by WithMemorySearch); nil means the tool is not registered.
 	memorySearch *memory.Searcher
+	// todos carries the optional todo tools' store (set only by
+	// WithTodoTools); nil means the todo tools are not registered.
+	todos *todoToolDeps
 }
 
 // scheduleToolDeps bundles the stores the schedule tool needs at construction
@@ -128,6 +131,12 @@ type toolRegistry struct {
 type scheduleToolDeps struct {
 	schedulers store.SchedulerStore
 	members    tools.ScheduleChannelMembers
+}
+
+// todoToolDeps carries the store the todo tools need at construction time;
+// required whenever they are registered.
+type todoToolDeps struct {
+	todos store.TodoStore
 }
 
 // ToolRegistryOption configures optional built-in registrations on the default
@@ -152,6 +161,16 @@ func WithSchedulerTools(schedulers store.SchedulerStore, members tools.ScheduleC
 func WithMemorySearch(searcher *memory.Searcher) ToolRegistryOption {
 	return func(r *toolRegistry) {
 		r.memorySearch = searcher
+	}
+}
+
+// WithTodoTools registers the todo_write and todo_read tools
+// (adopt-assistant-ui-elements D5) backed by the per-session todo store.
+// Unset, the tools are simply not registered — the deployment surfaces no
+// todo tools at all, not broken ones (the schedule-tool precedent).
+func WithTodoTools(todos store.TodoStore) ToolRegistryOption {
+	return func(r *toolRegistry) {
+		r.todos = &todoToolDeps{todos: todos}
 	}
 }
 
@@ -210,6 +229,33 @@ func NewDefaultToolRegistry(memories store.MemoryStore, opts ...ToolRegistryOpti
 			return tools.NewSchedule(d.schedulers, d.members, tctx.WorkspaceID, tctx.AgentID, tctx.UserID, tctx.WorkspaceTZ)
 		})
 	}
+
+	// Todo tools (adopt-assistant-ui-elements D5): write and read the
+	// session's durable plan, registered only when wired with the todo store
+	// (the schedule-tool precedent). Identity binds per construction through
+	// the ToolContext — the arguments carry no session fields.
+	if d := reg.todos; d != nil {
+		reg.Register(tools.NameTodoWrite, func(tctx ToolContext) (tool.BaseTool, error) {
+			return tools.NewTodoWrite(d.todos, tctx.WorkspaceID, tctx.AgentID, tctx.SessionID)
+		})
+		reg.Register(tools.NameTodoRead, func(tctx ToolContext) (tool.BaseTool, error) {
+			return tools.NewTodoRead(d.todos, tctx.WorkspaceID, tctx.AgentID, tctx.SessionID)
+		})
+	}
+
+	// Generative-UI echo tools (adopt-assistant-ui-elements D3): real tools
+	// that validate their input schema and echo the args back as the result
+	// envelope the transcript renders. No dependencies, no side effects —
+	// ordinary unconditional registrations like web.fetch.
+	reg.Register(tools.NameUIChart, func(ToolContext) (tool.BaseTool, error) {
+		return tools.NewUIChart()
+	})
+	reg.Register(tools.NameUITimeline, func(ToolContext) (tool.BaseTool, error) {
+		return tools.NewUITimeline()
+	})
+	reg.Register(tools.NameUIPreview, func(ToolContext) (tool.BaseTool, error) {
+		return tools.NewUIPreview()
+	})
 
 	reg.Register(tools.NameDeleteFile, func(tctx ToolContext) (tool.BaseTool, error) {
 		return tools.NewDeleteFile(tctx.AgentDir)

@@ -107,7 +107,16 @@ function ChatRouteActive({
       // null means the fetch failed — the store is untouched so a transient
       // network miss never wipes a still-valid meter value.
       if (hydrated) {
-        useStore.getState().recordThreadUsage(workspaceId, cleanId, hydrated.finalInputTokens ?? null);
+        // Meter + popover detail rows (assistant-ui context-display adoption):
+        // the hydrated transcript's last turn_usage restores finalInput and,
+        // when the wire reported them, the turn input/output + server
+        // breakdown. finalInputTokens ?? null keeps the existing contract —
+        // a transcript without usage clears rather than shows a stale value.
+        useStore.getState().recordThreadUsage(workspaceId, cleanId, hydrated.finalInputTokens ?? null, {
+          input: hydrated.turnInputTokens,
+          output: hydrated.turnOutputTokens,
+          ...(hydrated.contextBreakdown ? { contextBreakdown: hydrated.contextBreakdown } : {}),
+        });
         // Attach unconditionally rather than sniffing the transcript for an
         // unfinished turn: history only shows committed events, so a run
         // between events (or mid-tool-call) is invisible to heuristics. The
@@ -155,8 +164,13 @@ function ChatRouteActive({
     const timer = setInterval(async () => {
       try {
         const hydrated = await fetchSessionTranscript(workspaceId, slug, boundSessionId);
-        // Transcript resolved — refresh the meter from the latest turn usage.
-        useStore.getState().recordThreadUsage(workspaceId, cleanId, hydrated.finalInputTokens ?? null);
+        // Transcript resolved — refresh the meter + popover detail rows from
+        // the latest turn usage (same contract as the hydration effect).
+        useStore.getState().recordThreadUsage(workspaceId, cleanId, hydrated.finalInputTokens ?? null, {
+          input: hydrated.turnInputTokens,
+          output: hydrated.turnOutputTokens,
+          ...(hydrated.contextBreakdown ? { contextBreakdown: hydrated.contextBreakdown } : {}),
+        });
         if (hydrated.messages.length > 0 && hydrated.pendingInterruptIds.length === 0) {
           applyServerTranscript(workspaceId, cleanId, boundSessionId, hydrated.messages);
         }

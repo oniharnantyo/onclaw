@@ -319,11 +319,12 @@ describe('humanizeKey', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4.2 coverage guard: the full expected tool universe — the 13 backend
-// catalog keys (internal/agents/tool_catalog.go) + the 10 browser facade
-// member ids (toolCatalog.ts facadeToolNames) — MUST have a sentence-table
-// entry that mints a one-liner. When the backend gains a tool, extend this
-// list AND SENTENCE_TABLE together; the lengths below make drift loud.
+// 4.2 coverage guard: the full expected tool universe — the 20 backend
+// catalog keys (internal/agents/tool_catalog.go, incl. the todos + ui.* echo
+// tools from adopt-assistant-ui-elements) + the 10 browser facade member ids
+// (toolCatalog.ts facadeToolNames) — MUST have a sentence-table entry that
+// mints a one-liner. When the backend gains a tool, extend this list AND
+// SENTENCE_TABLE together; the lengths below make drift loud.
 // ---------------------------------------------------------------------------
 
 const SUITABLE_ARGS: Record<string, Record<string, unknown>> = {
@@ -342,6 +343,11 @@ const SUITABLE_ARGS: Record<string, Record<string, unknown>> = {
   'web.fetch': { url: 'https://example.com' },
   browser: {},
   schedule: { action: 'create', name: 'morning-digest', kind: 'recurring', expression: '0 9 * * 1-5' },
+  todo_write: { revision: 2, items: [{ key: 'a', text: 'First', status: 'done' }] },
+  todo_read: {},
+  'ui.chart': { label: 'Revenue', value: '$12.4k' },
+  'ui.timeline': { title: 'Launch', events: [{ label: 'Kickoff' }] },
+  'ui.preview': { url: 'https://example.com' },
   'browser.navigate': { url: 'https://example.com' },
   'browser.act': { action: 'click', selector: '.btn' },
   'browser.read': {},
@@ -356,7 +362,7 @@ const SUITABLE_ARGS: Record<string, Record<string, unknown>> = {
 
 describe('coverage guard (4.2)', () => {
   it('pins the expected universe sizes', () => {
-    expect(CATALOG_TOOL_KEYS).toHaveLength(15);
+    expect(CATALOG_TOOL_KEYS).toHaveLength(20);
     expect(FACADE_TOOL_IDS).toHaveLength(10);
   });
 
@@ -384,6 +390,42 @@ describe('coverage guard (4.2)', () => {
     );
     // An unknown action must not invent a sentence (D1).
     expect(toolOneLiner('memory', { args: '{"action":"wipe"}' }, false)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Todos + echo-UI tools (adopt-assistant-ui-elements): one-liners back the
+// collapsed/error fallbacks of the dedicated generative-UI cards.
+// ---------------------------------------------------------------------------
+
+describe('todo + ui.* one-liners (adopt-assistant-ui-elements)', () => {
+  it('todo_write: bare verbs with the trusted item-count fact', () => {
+    const args = JSON.stringify({ items: [{ key: 'a' }, { key: 'b' }, { key: 'c' }] });
+    expect(toolOneLiner('todo_write', { args }, true)).toBe('Updating the plan');
+    expect(toolOneLiner('todo_write', { args }, false)).toBe('Updated the plan — 3 items');
+    expect(toolOneLiner('todo_write', { args: '{"revision":1}' }, false)).toBe('Updated the plan');
+  });
+
+  it('todo_read: appends the item count only from a trusted envelope', () => {
+    expect(toolOneLiner('todo_read', { args: '{}' }, true)).toBe('Reading the plan');
+    expect(toolOneLiner('todo_read', { args: '{}', res: '{"items":[{"key":"a"}]}' }, false)).toBe(
+      'Read the plan — 1 item'
+    );
+    expect(toolOneLiner('todo_read', { args: '{}', res: 'nope' }, false)).toBe('Read the plan');
+  });
+
+  it('ui.chart names the label; bare form when it is absent', () => {
+    const args = '{"$type":"chart","label":"Revenue","points":[1]}';
+    expect(toolOneLiner('ui.chart', { args }, true)).toBe("Charting 'Revenue'");
+    expect(toolOneLiner('ui.chart', { args }, false)).toBe("Charted 'Revenue'");
+    expect(toolOneLiner('ui.chart', { args: '{}' }, false)).toBe('Charted');
+  });
+
+  it('ui.timeline counts events; ui.preview stays object-less', () => {
+    const args = JSON.stringify({ events: [{ label: 'a' }, { label: 'b' }] });
+    expect(toolOneLiner('ui.timeline', { args }, false)).toBe('Built the timeline — 2 events');
+    expect(toolOneLiner('ui.preview', { args: '{"url":"https://x"}' }, true)).toBe('Rendering the preview');
+    expect(toolOneLiner('ui.preview', { args: '{"url":"https://x"}' }, false)).toBe('Rendered the preview');
   });
 });
 

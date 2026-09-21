@@ -13,7 +13,7 @@ const httpSpec = 'node:http';
 // parsing on known event types. (Data-only frames per the /v1 codec; the SDK
 // ignores `event:` lines when resolving ev.type.)
 describe('openresponses wire: unmodeled usage fields survive SDK parsing', () => {
-  it('preserves usage.final_input_tokens on response.completed', async () => {
+  it('preserves usage.final_input_tokens and usage.context_breakdown on response.completed', async () => {
     const http: any = await import(httpSpec);
     const frames = [
       { type: 'response.created', response: { id: 'resp_1', object: 'response', status: 'in_progress' } },
@@ -23,7 +23,10 @@ describe('openresponses wire: unmodeled usage fields survive SDK parsing', () =>
           id: 'resp_1',
           object: 'response',
           status: 'completed',
-          usage: { input_tokens: 135, output_tokens: 5, total_tokens: 140, final_input_tokens: 120 },
+          usage: {
+            input_tokens: 135, output_tokens: 5, total_tokens: 140, final_input_tokens: 120,
+            context_breakdown: { instructions: 1200, tools: 3400, files: 800, conversation: 12000 },
+          },
         },
       },
     ];
@@ -44,6 +47,11 @@ describe('openresponses wire: unmodeled usage fields survive SDK parsing', () =>
     const completed = seen.find((e) => e.type === 'response.completed');
     expect(completed?.response?.usage?.final_input_tokens).toBe(120);
     expect(completed?.response?.usage?.input_tokens).toBe(135);
+    // The server-provided context breakdown (D7) rides the same unmodeled-field
+    // path — usageOf() maps it through only if parsing preserves it.
+    expect(completed?.response?.usage?.context_breakdown).toEqual({
+      instructions: 1200, tools: 3400, files: 800, conversation: 12000,
+    });
     server.close();
   });
 });

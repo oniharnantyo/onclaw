@@ -138,6 +138,15 @@ export interface HydratedTranscript {
   /** The last `turn_completed` event's `usage.final_input_tokens` — reloads
    * restore the context meter from it. Undefined when no turn carries usage. */
   finalInputTokens?: number;
+  /** The last `turn_completed` event's reported turn input/output tokens —
+   * the context popover's detail rows after a reload (assistant-ui
+   * context-display adoption). Undefined when the wire did not report them. */
+  turnInputTokens?: number;
+  turnOutputTokens?: number;
+  /** The last `turn_completed` event's server-provided context breakdown
+   * (`usage.context_breakdown`, omitempty D7) — replaces the client estimate
+   * in the popover when present. */
+  contextBreakdown?: import('./contextBreakdown').ServerContextBreakdown;
   /** Id of the last event folded into this transcript — the `after` cursor a
    * catch-up stream resumes from (D4). Undefined when the transcript is empty. */
   lastEventId?: string;
@@ -180,6 +189,9 @@ class TranscriptTranslator {
   private activityAfterInterrupt = false;
   private openInterrupts = new Set<string>();
   private finalInputTokens: number | undefined;
+  private turnInputTokens: number | undefined;
+  private turnOutputTokens: number | undefined;
+  private contextBreakdown: import('./contextBreakdown').ServerContextBreakdown | undefined;
   private lastEventId: string | undefined;
   // Per-turn accumulator so user/assistant/tool events fold into one agent
   // message per turn, matching how live streaming builds the thread.
@@ -414,6 +426,13 @@ class TranscriptTranslator {
         if (typeof ev.usage?.final_input_tokens === 'number') {
           this.finalInputTokens = ev.usage.final_input_tokens;
         }
+        // Turn detail rows + server breakdown (assistant-ui context-display
+        // adoption): each kept only when the wire reported it.
+        if (typeof ev.usage?.input_tokens === 'number') this.turnInputTokens = ev.usage.input_tokens;
+        if (typeof ev.usage?.output_tokens === 'number') this.turnOutputTokens = ev.usage.output_tokens;
+        if (ev.usage?.context_breakdown && typeof ev.usage.context_breakdown === 'object') {
+          this.contextBreakdown = ev.usage.context_breakdown;
+        }
         break;
       }
     }
@@ -433,6 +452,9 @@ class TranscriptTranslator {
     messages: any[];
     tail: { turnId: string; user: any; agent: any } | null;
     finalInputTokens?: number;
+    turnInputTokens?: number;
+    turnOutputTokens?: number;
+    contextBreakdown?: import('./contextBreakdown').ServerContextBreakdown;
   } {
     const tail =
       this.turnUser || this.turnAgent
@@ -442,6 +464,9 @@ class TranscriptTranslator {
       messages: this.messages,
       tail,
       ...(this.finalInputTokens !== undefined ? { finalInputTokens: this.finalInputTokens } : {}),
+      ...(this.turnInputTokens !== undefined ? { turnInputTokens: this.turnInputTokens } : {}),
+      ...(this.turnOutputTokens !== undefined ? { turnOutputTokens: this.turnOutputTokens } : {}),
+      ...(this.contextBreakdown ? { contextBreakdown: this.contextBreakdown } : {}),
     };
   }
 
@@ -458,6 +483,9 @@ class TranscriptTranslator {
       messages: this.messages,
       pendingInterruptIds: this.pendingInterruptIds,
       ...(this.finalInputTokens !== undefined ? { finalInputTokens: this.finalInputTokens } : {}),
+      ...(this.turnInputTokens !== undefined ? { turnInputTokens: this.turnInputTokens } : {}),
+      ...(this.turnOutputTokens !== undefined ? { turnOutputTokens: this.turnOutputTokens } : {}),
+      ...(this.contextBreakdown ? { contextBreakdown: this.contextBreakdown } : {}),
       ...(this.lastEventId !== undefined ? { lastEventId: this.lastEventId } : {}),
     };
   }
@@ -771,7 +799,11 @@ export function attachCatchUpStream(opts: {
       return t;
     });
     if (typeof view.finalInputTokens === 'number') {
-      useStore.getState().recordThreadUsage(workspaceId, chatId, view.finalInputTokens);
+      useStore.getState().recordThreadUsage(workspaceId, chatId, view.finalInputTokens, {
+        input: view.turnInputTokens,
+        output: view.turnOutputTokens,
+        ...(view.contextBreakdown ? { contextBreakdown: view.contextBreakdown } : {}),
+      });
     }
   };
 

@@ -218,6 +218,41 @@ func ToolCatalog() []ToolCatalogEntry {
 			Group:       "schedule",
 			IconKey:     "calendar",
 		},
+		{
+			Key:         tools.NameTodoWrite,
+			DisplayName: "Write Todos",
+			Description: "Maintain the session's todo list: each call replaces the full item list, restyling kept keys and deleting dropped ones, so the plan survives compaction.",
+			Group:       "todos",
+			IconKey:     "list-checks",
+		},
+		{
+			Key:         tools.NameTodoRead,
+			DisplayName: "Read Todos",
+			Description: "Read the session's current todo list with statuses and revision.",
+			Group:       "todos",
+			IconKey:     "list",
+		},
+		{
+			Key:         tools.NameUIChart,
+			DisplayName: "Chart",
+			Description: "Render a structured chart card in the transcript: headline label, value, delta, and a sparkline series.",
+			Group:       "chart",
+			IconKey:     "chart",
+		},
+		{
+			Key:         tools.NameUITimeline,
+			DisplayName: "Timeline",
+			Description: "Render a structured timeline card in the transcript: an ordered sequence of settled and reference events.",
+			Group:       "timeline",
+			IconKey:     "timeline",
+		},
+		{
+			Key:         tools.NameUIPreview,
+			DisplayName: "Preview",
+			Description: "Render a sandboxed web preview card in the transcript: a URL bar with an inline frame and reload control.",
+			Group:       "preview",
+			IconKey:     "eye",
+		},
 	}
 }
 

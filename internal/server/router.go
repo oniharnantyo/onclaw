@@ -379,6 +379,7 @@ func (rt *router) Engine() *gin.Engine {
 				rt.opts.Store.Memories(),
 				agents.WithSchedulerTools(rt.opts.Store.Schedulers(), rt.opts.Store.Channels()),
 				agents.WithMemorySearch(memorySearcher),
+				agents.WithTodoTools(rt.opts.Store.Todos()),
 			)),
 			agents.WithEnabledSkillReader(WorkspaceSkillReader(rt.opts.Store.WorkspaceSkills())),
 			agents.WithMCPPolicy(mcp.NewSettingsPolicy(mcpSettings)),
@@ -391,6 +392,9 @@ func (rt *router) Engine() *gin.Engine {
 			agents.WithProjectSpace(channels.NewLocalProjectSpace(dataDir, rt.opts.Store.Workspaces())),
 			agents.WithAttachmentBlobs(wsStorage),
 			agents.WithInputModalityResolver(modelCatalog),
+			// The todo store (adopt-assistant-ui-elements D6): the open-items
+			// summary the runner composes per turn for agents exposing the tools.
+			agents.WithTodoStore(rt.opts.Store.Todos()),
 			// Gate budget (fix-memory-retrieval-lane D3): read off the
 			// memory settings record per turn, absence resolving to the
 			// default.
@@ -565,6 +569,7 @@ func (rt *router) Engine() *gin.Engine {
 		agents.NewDefaultToolRegistry(
 			rt.opts.Store.Memories(),
 			agents.WithSchedulerTools(rt.opts.Store.Schedulers(), rt.opts.Store.Channels()),
+			agents.WithTodoTools(rt.opts.Store.Todos()),
 		),
 		rt.opts.Store.WorkspaceMCPServers(),
 		mcpManager,

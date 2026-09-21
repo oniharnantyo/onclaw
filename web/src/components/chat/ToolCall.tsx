@@ -17,6 +17,7 @@ import {
   type FieldRow,
   type ResultView,
 } from "../../lib/toolDisplay";
+import { renderGenerativeUi } from "../../lib/generativeUi";
 
 // Facade members whose args point at snapshot element refs — the only ids
 // whose ref chips resolve to element names via sibling cards (design D5).
@@ -204,7 +205,7 @@ function ResultBody({ view }: { view: ResultView }) {
   }
 }
 
-export function ToolCall({ t, running, approval, siblings }: any) {
+export function ToolCall({ t, running, approval, siblings, live }: any) {
   const [open, setOpen] = useState(false);
   const [raw, setRaw] = useState(false);
   const [resolving, setResolving] = useState<'approve' | 'deny' | null>(null);
@@ -259,13 +260,39 @@ export function ToolCall({ t, running, approval, siblings }: any) {
     );
   }
 
-  // Formatted-view ingredients — pure parses that tolerate mid-stream cards
-  // (absent/partial args degrade to the raw-string fallback paths).
-  const parsed = parseArgs(t.args);
   // Hook-blocked call (integrate-agent-hooks D3): the block arrives as the
   // tool result envelope the model reads — detect it once, style the whole
   // card from it. A real error (bad) wins; a blocked call is not an error.
+  // Detected BEFORE the generative-UI mount: the block IS the result, a
+  // dedicated card must never paint over the enforcement.
   const blocked: BlockedByHook | null = bad ? null : blockedByHook(t.res);
+
+  // Generative-UI registry (adopt-assistant-ui-elements D4): a recognized
+  // `$type` envelope (result first, then echoed args) or a tool-keyed card
+  // (web.search, todo_write) replaces the generic rendering entirely; null
+  // keeps today's card — an unknown `$type` stays silent, with no raw JSON in
+  // the transcript body. Errors keep the generic card so the failure stays
+  // visible (preview renders its own failure state through ctx.error).
+  if (!blocked) {
+    const element = renderGenerativeUi({
+      tool: t.name,
+      rawArgs: t.args,
+      rawRes: t.res,
+      ms: t.ms,
+      ctx: {
+        live: !!live,
+        running: !!running,
+        error: bad,
+        errorText: bad ? String(t.error ?? '') : undefined,
+        tool: t.name,
+      },
+    });
+    if (element) return element;
+  }
+
+  // Formatted-view ingredients — pure parses that tolerate mid-stream cards
+  // (absent/partial args degrade to the raw-string fallback paths).
+  const parsed = parseArgs(t.args);
   const spec = toolFieldSpec(t.name);
   const argRows: FieldRow[] | null = parsed
     ? (spec ? fieldRows(t.name, parsed) : genericRows(parsed))

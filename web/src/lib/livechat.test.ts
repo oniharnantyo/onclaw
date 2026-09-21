@@ -175,6 +175,43 @@ describe('fetchSessionTranscript — context meter restore (chat-context-meter)'
     const hydrated = await fetchSessionTranscript('ws1', 'atlas', 'sess_h-nousage');
     expect(hydrated.finalInputTokens).toBeUndefined();
   });
+
+  it('hydrates the last turn input/output tokens and server breakdown from turn_completed usage', async () => {
+    vi.mocked(api.agents.sessionEvents).mockResolvedValueOnce({
+      next: '',
+      events: [
+        { id: 'e1', kind: 'turn_completed', occurred_at: 't0', turn_id: 'turn-1',
+          usage: { input_tokens: 1000, output_tokens: 100, total_tokens: 1100, final_input_tokens: 1000 } },
+        { id: 'e2', kind: 'turn_completed', occurred_at: 't1', turn_id: 'turn-2',
+          usage: {
+            input_tokens: 68_000, output_tokens: 1_200, total_tokens: 69_200, final_input_tokens: 68_000,
+            context_breakdown: { instructions: 1_200, tools: 3_400, conversation: 12_000 },
+          } },
+      ],
+    });
+
+    const hydrated = await fetchSessionTranscript('ws1', 'atlas', 'sess_h-turndetail');
+    // LAST terminal event wins, matching the finalInputTokens rule.
+    expect(hydrated.turnInputTokens).toBe(68_000);
+    expect(hydrated.turnOutputTokens).toBe(1_200);
+    expect(hydrated.contextBreakdown).toEqual({ instructions: 1_200, tools: 3_400, conversation: 12_000 });
+  });
+
+  it('leaves turn input/output and breakdown undefined when the wire did not report them', async () => {
+    vi.mocked(api.agents.sessionEvents).mockResolvedValueOnce({
+      next: '',
+      events: [
+        { id: 'e1', kind: 'turn_completed', occurred_at: 't0', turn_id: 'turn-1',
+          usage: { final_input_tokens: 900 } },
+      ],
+    });
+
+    const hydrated = await fetchSessionTranscript('ws1', 'atlas', 'sess_h-nodetail');
+    expect(hydrated.finalInputTokens).toBe(900);
+    expect(hydrated.turnInputTokens).toBeUndefined();
+    expect(hydrated.turnOutputTokens).toBeUndefined();
+    expect(hydrated.contextBreakdown).toBeUndefined();
+  });
 });
 
 describe('fetchSessionTranscript — live delta vocabulary (catch-up stream)', () => {

@@ -13,6 +13,7 @@ import { SlashMenu } from "./SlashMenu";
 import { MentionMenu } from "./MentionMenu";
 import { SkillMenu } from "./SkillMenu";
 import type { SkillMenuGroup } from "./SkillMenu";
+import { ContextRing } from "./ContextRing";
 
 // One tray chip, per galleries B–E: uploading (progress + cancel), ready
 // (thumbnail for images / icon + "PDF · 4.8 MB" for docs, remove), rejected
@@ -80,9 +81,46 @@ function AttachmentChipCard({ chip, warning, onRemove, onRetry }: {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Draft restore (adopt-assistant-ui-elements 9.3): unsent composer text
+// persists per thread in localStorage under `onclaw.draft.<chatId>` and is
+// restored when the thread's Composer mounts again (ChatRoute remounts the
+// Composer per chat, so the mount-time state initializer is the restore
+// point). Sending clears the saved draft. Drafts are local to this client —
+// never synced, never in any API surface.
+// ---------------------------------------------------------------------------
+
+const DRAFT_PREFIX = 'onclaw.draft.';
+
+const loadDraft = (chatId?: string): string => {
+  if (!chatId) return '';
+  try {
+    return localStorage.getItem(DRAFT_PREFIX + chatId) || '';
+  } catch {
+    // storage unavailable (private mode) — the composer just starts empty
+    return '';
+  }
+};
+
+const saveDraft = (chatId: string | undefined, value: string) => {
+  if (!chatId) return;
+  try {
+    if (value) localStorage.setItem(DRAFT_PREFIX + chatId, value);
+    else localStorage.removeItem(DRAFT_PREFIX + chatId);
+  } catch {
+    // storage unavailable — the draft just won't persist
+  }
+};
+
 export function Composer({ agent, running, onSend, onCancel, mentionOptions, allowCommands, skillGroups,
-  allowAttachments, workspaceSlug, ref }: any) {
-  const [text, setText] = useState('');
+  allowAttachments, workspaceSlug, chatId, ref }: any) {
+  const [text, setText] = useState(() => loadDraft(chatId));
+  // Every user-driven text change persists the draft; an empty value clears
+  // the stored one (send, or deleting everything typed).
+  const changeText = (v: string) => {
+    setText(v);
+    saveDraft(chatId, v);
+  };
   const [idx, setIdx] = useState(0);
   const [menuDismissed, setMenuDismissed] = useState(false);
   const ta = useRef(null);
@@ -249,24 +287,26 @@ export function Composer({ agent, running, onSend, onCancel, mentionOptions, all
   const readyChips = chips.filter((c) => c.state === 'ready');
 
   const submit = (raw?: any) => {
-    if (running) return;
+    // Deliberately no `if (running) return` here: while an agent run is active
+    // the runtime's send gate queues the message (design D9 / spec Message
+    // queue) — blocking submit would make the queue unreachable.
     if (uploadingAny) return;
     const val = (raw !== undefined ? raw : text).trim();
     if (!val && readyChips.length === 0) return;
     onSend(val, readyChips);
-    setText('');
+    changeText('');
     setChips([]);
     requestAnimationFrame(grow);
   };
 
   const pickMention = (m) => {
     const handle = m.kind === 'agent' ? m.name : m.name.split(' ')[0];
-    setText(text.replace(/@[A-Za-z]*$/, '@' + handle + ' '));
+    changeText(text.replace(/@[A-Za-z]*$/, '@' + handle + ' '));
     requestAnimationFrame(() => { if (ta.current) ta.current.focus(); });
   };
 
   const pickSkill = (name: string) => {
-    setText(text.replace(/(^|\s)\$[A-Za-z0-9-]*$/, (m0, pre) => (pre || '') + '$' + name + ' '));
+    changeText(text.replace(/(^|\s)\$[A-Za-z0-9-]*$/, (m0, pre) => (pre || '') + '$' + name + ' '));
     setIdx(0);
     requestAnimationFrame(() => { if (ta.current) ta.current.focus(); });
   };
@@ -277,7 +317,7 @@ export function Composer({ agent, running, onSend, onCancel, mentionOptions, all
     if (e.key === 'Escape' && menu) { e.preventDefault(); setMenuDismissed(true); return; }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (menu === 'slash' && slashList[idx]) { setText(slashList[idx].cmd + ' '); setIdx(0); return; }
+      if (menu === 'slash' && slashList[idx]) { changeText(slashList[idx].cmd + ' '); setIdx(0); return; }
       if (menu === 'mention' && mentionList[idx]) { pickMention(mentionList[idx]); setIdx(0); return; }
       if (menu === 'skill' && skillList[idx]) { pickSkill(skillList[idx].name); return; }
       submit(undefined as any);
@@ -286,13 +326,13 @@ export function Composer({ agent, running, onSend, onCancel, mentionOptions, all
 
   return (
     <div className="relative" data-od-id="composer">
-      {menu === 'slash' && <SlashMenu q={slashQ} idx={idx} onPick={(cmd) => { setText(cmd + ' '); setIdx(0); if (ta.current) ta.current.focus(); }}/>}
+      {menu === 'slash' && <SlashMenu q={slashQ} idx={idx} onPick={(cmd) => { changeText(cmd + ' '); setIdx(0); if (ta.current) ta.current.focus(); }}/>}
       {menu === 'mention' && <MentionMenu options={mentionList} idx={idx} onPick={pickMention}/>}
       {menu === 'skill' && <SkillMenu groups={skillGroups} query={skillQuery} idx={idx} onPick={pickSkill}/>}
       <div onClick={() => { if (ta.current) ta.current.focus(); }}
         className="cursor-text rounded-[24px] border border-line bg-surface p-2 transition-colors focus-within:border-accent">
         <textarea ref={ta} rows={1} value={text} autoFocus aria-label={'Message input'}
-          onChange={(e) => { setText(e.target.value); setMenuDismissed(false); grow(); }}
+          onChange={(e) => { changeText(e.target.value); setMenuDismissed(false); grow(); }}
           onPaste={onPaste}
           onKeyDown={onKeyDown}
           placeholder={mentionOptions ? 'Message the channel — @ to mention' : agent ? 'Message ' + agent.name + '…' : 'Send a message…'}
@@ -307,19 +347,24 @@ export function Composer({ agent, running, onSend, onCancel, mentionOptions, all
           </div>
         )}
         <div className="flex items-center justify-between pt-0.5">
-          {allowAttachments && (
-            <>
-              <input ref={fileInputRef} type="file" multiple hidden data-testid="composer-file-input" accept={PICKER_ACCEPT}
-                onChange={(e) => { addFiles(Array.from(e.target.files || [])); e.target.value = ''; }}/>
-              <button type="button" data-testid="btn-attach"
-                onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
-                aria-label="Attach a file" title="Attach a file"
-                className="flex h-7 w-7 items-center justify-center rounded-full text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg">
-                <Icon name="clip" size={14}/>
-              </button>
-            </>
-          )}
-          {!allowAttachments && <span/>}
+          {/* LEFT control rail: attach (agent chats) + the context ring
+              (adopt-assistant-ui-elements D1 — agent chats only, so the
+              allowCommands gate doubles as the surface check). */}
+          <div className="flex items-center gap-1">
+            {allowAttachments && (
+              <>
+                <input ref={fileInputRef} type="file" multiple hidden data-testid="composer-file-input" accept={PICKER_ACCEPT}
+                  onChange={(e) => { addFiles(Array.from(e.target.files || [])); e.target.value = ''; }}/>
+                <button type="button" data-testid="btn-attach"
+                  onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
+                  aria-label="Attach a file" title="Attach a file"
+                  className="flex h-7 w-7 items-center justify-center rounded-full text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg">
+                  <Icon name="clip" size={14}/>
+                </button>
+              </>
+            )}
+            <ContextRing agent={agent} enabled={Boolean(allowCommands)}/>
+          </div>
           {!running ? (
             <button type="button" onClick={(e) => { e.stopPropagation(); submit(undefined as any); }} disabled={uploadingAny || (!text.trim() && readyChips.length === 0)} data-od-id="btn-send" data-testid="btn-send"
               aria-label="Send message" title="Send message"

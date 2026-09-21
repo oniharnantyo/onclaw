@@ -27,6 +27,8 @@ body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--fo
 .od-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--fg-2); animation: od-bounce 1.2s infinite; }
 .od-dot:nth-child(2) { animation-delay: 0.15s; }
 .od-dot:nth-child(3) { animation-delay: 0.3s; }
+@keyframes od-sweep { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+.od-shimmer { background-image: linear-gradient(90deg, var(--muted) 0%, var(--fg) 50%, var(--muted) 100%); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: od-sweep 1.8s linear infinite; }
 @keyframes od-pulse { 0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--success) 45%, transparent); } 70% { box-shadow: 0 0 0 5px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
 .od-live { animation: od-pulse 2s infinite; }
 input[type="range"] { accent-color: var(--accent); }
@@ -37,6 +39,7 @@ input[type="range"] { accent-color: var(--accent); }
 @media (prefers-reduced-motion: reduce) {
   .od-pop, .od-fade { animation: none; }
   .od-caret, .od-dot, .od-live, .animate-pulse { animation: none; }
+  .od-shimmer { animation: none; background-image: none; -webkit-background-clip: initial; background-clip: initial; color: var(--muted); }
   *, ::before, ::after { transition-duration: 0.01ms !important; }
 }
 

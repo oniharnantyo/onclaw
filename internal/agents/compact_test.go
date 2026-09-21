@@ -565,7 +565,7 @@ func TestDrain_MessagesReplacedCarriesCompactionEstimates(t *testing.T) {
 	r := &Runner{runMgr: newRunManager(context.Background(), 0), memoryWorker: newQueuedMemoryWorker()}
 	estimates := &compactionState{}
 	estimates.record(154000, 9200)
-	r.drainAgentEvents(t.Context(), iter, stream, RunKey{}, "turn-1", "", nil, hooks.Event{}, estimates, nil, nil, ExecRequest{}, false)
+	r.drainAgentEvents(t.Context(), iter, stream, RunKey{}, "turn-1", "", nil, hooks.Event{}, estimates, nil, nil, nil, ExecRequest{}, false, NewEphemeralSessionAdapter())
 	stream.Close()
 
 	var events []TranscriptEvent

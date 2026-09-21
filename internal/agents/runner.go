@@ -121,6 +121,12 @@ type Runner struct {
 	// never consult it.
 	attachmentBlobs AttachmentBlobs
 
+	// Todo store (adopt-assistant-ui-elements D6): reads the session's open
+	// items for the per-turn one-line summary. An optional capability — the
+	// composition root applies WithTodoStore only where the todo tools are
+	// wired, and an unwired runner composes no todo summary.
+	todos store.TodoStore
+
 	// Input-modality resolver (fix-image-attachment-lane D4): resolves whether
 	// the turn's (provider, model) pair accepts a non-text input kind.
 	// Default: unknown-for-everything, so unwired runners fail open — the
@@ -299,6 +305,19 @@ func WithEnabledSkillReader(reader backend.EnabledSkillReader) RunnerOption {
 	return func(r *Runner) {
 		if reader != nil {
 			r.enabledSkillReader = reader
+		}
+	}
+}
+
+// WithTodoStore supplies the session todo store the runner's open-items
+// injection reads (adopt-assistant-ui-elements D6): the one-line summary lets
+// the model re-ground its plan after compaction without spending a todo_read
+// call. Unset, no summary is composed — the tool-registry half of the
+// capability (WithTodoTools) wires the tools separately.
+func WithTodoStore(todos store.TodoStore) RunnerOption {
+	return func(r *Runner) {
+		if todos != nil {
+			r.todos = todos
 		}
 	}
 }
@@ -521,6 +540,13 @@ type agentConfig struct {
 	// summarization the composed agent performs (chat-compact-command D5);
 	// wired from the per-run compaction state, nil in unit constructions.
 	CompactionObserver func(tokensBefore, tokensAfter int)
+
+	// ContextMeasure receives the compose-time section byte counts the
+	// display-only context breakdown measures from (adopt-assistant-ui-
+	// elements D7): the composed instruction string and the marshaled tool
+	// schemas, stamped by composeAgent at compose time. Wired from the
+	// per-run compose measure, nil in unit constructions.
+	ContextMeasure *contextSizes
 
 	// InputModality is the turn's resolved input-modality capability
 	// (fix-image-attachment-lane D4), consumed by attachment message
@@ -1064,6 +1090,16 @@ func (r *Runner) composeAgent(
 	// compose without the section; nothing here can fail or block the run.
 	memoryDocs := r.composeMemoryDocs(ctx, req)
 
+	// Todo re-grounding (adopt-assistant-ui-elements D6): agents exposing the
+	// todo tools get a one-line open-items summary so the plan survives
+	// compaction — the full list stays behind todo_read. Fail-open like the
+	// memory docs: a store error drops the line, never the run. Rides the
+	// same pre-BOOTSTRAP document tier, so the trimmed unattended profiles
+	// (which carry no per-turn injection tier) omit it with the memory docs.
+	if todoDoc := r.composeTodoSummary(ctx, req, domainAgent); todoDoc != "" {
+		memoryDocs = append(memoryDocs, todoDoc)
+	}
+
 	instruction, err := r.instructionComposer.Compose(ctx, ComposeParams{
 		AgentDir:           cfg.Filesystem.AgentDir,
 		Workspace:          ws,
@@ -1080,6 +1116,15 @@ func (r *Runner) composeAgent(
 	})
 	if err != nil {
 		return nil, fmt.Errorf("compose instruction: %w", err)
+	}
+
+	// Compose-time context measurement (adopt-assistant-ui-elements D7):
+	// the byte length of the real composed instruction string and of the
+	// marshaled tool schemas, captured before composition hands them to the
+	// ADK. The todo summary line above is already part of memoryDocs — the
+	// measurement rides the same composed string without touching it.
+	if cfg.ContextMeasure != nil {
+		cfg.ContextMeasure.recordCompose(len(instruction), toolSchemaBytes(ctx, resolvedTools))
 	}
 
 	adkAgent, err := Compose(ctx, &Config{
@@ -1121,6 +1166,7 @@ func (r *Runner) execute(
 	hookChain *hooks.Resolved,
 	hookBase hooks.Event,
 	compaction *compactionState,
+	sizes *contextSizes,
 ) *EventStream {
 	var sessionStore adk.SessionEventStore[*schema.AgenticMessage] = sessionAdapter
 	var cpStore adk.CheckPointStore = sessionAdapter
@@ -1162,7 +1208,7 @@ func (r *Runner) execute(
 	runner := adk.NewTypedRunner(runnerCfg)
 
 	stream := NewEventStream(128)
-	go r.streamRun(handle, cancelOpt, runner, stream, req, userMsg, hookChain, hookBase, compaction, trace, ephemeral)
+	go r.streamRun(handle, cancelOpt, runner, stream, req, userMsg, hookChain, hookBase, compaction, sizes, trace, ephemeral, sessionStore)
 	return stream
 }
 
@@ -1350,9 +1396,13 @@ func (r *Runner) run(ctx context.Context, req ExecRequest, ephemeral bool) (*Eve
 
 	// The per-run compaction state surfaces the estimates the composition's
 	// summarization Callback captures at compaction time (chat-compact-command
-	// D5) to the drain loop's MessagesReplaced seam.
+	// D5) to the drain loop's MessagesReplaced seam. The per-run compose
+	// measure carries the compose-time section byte counts the turn-end
+	// context breakdown reads (adopt-assistant-ui-elements D7).
 	compaction := &compactionState{}
 	cfg.CompactionObserver = compaction.record
+	sizes := &contextSizes{}
+	cfg.ContextMeasure = sizes
 
 	adkAgent, err := r.composeAgent(ctx, req, &cfg, ws, user, role, resolvedTools, domainAgent)
 	if err != nil {
@@ -1412,7 +1462,7 @@ func (r *Runner) run(ctx context.Context, req ExecRequest, ephemeral bool) (*Eve
 		r.indexAgentSession(ctx, req, title)
 	}
 
-	return r.execute(handle, cancelOpt, adkAgent, req, userMsg, sessionAdapter, ephemeral, hookChain, hookBase, compaction), nil
+	return r.execute(handle, cancelOpt, adkAgent, req, userMsg, sessionAdapter, ephemeral, hookChain, hookBase, compaction, sizes), nil
 }
 
 // resolveHooksChain resolves the run's hook chain (D2). A runner whose
@@ -1683,6 +1733,55 @@ func renderMemoryCandidatesDoc(candidates []memory.Candidate) string {
 	return sb.String()
 }
 
+// composeTodoSummary renders the one-line open-items summary the system
+// context carries each turn for agents exposing the todo tools
+// (adopt-assistant-ui-elements D6): counts by status plus the revision, with
+// the full list one todo_read away. Present-only — an unwired store, an
+// agent without the tools, a read failure, and a plan with nothing open all
+// compose without the line. Callers merge it into the pre-BOOTSTRAP document
+// tier, so the trimmed unattended profiles omit it with the memory docs.
+func (r *Runner) composeTodoSummary(ctx context.Context, req ExecRequest, agent *domain.Agent) string {
+	if r.todos == nil || !agentExposesTodoTools(agent, req) {
+		return ""
+	}
+	list, err := r.todos.GetBySession(ctx, req.WorkspaceID, req.AgentID, req.SessionID)
+	if err != nil {
+		// Fail-open: the summary is a re-grounding nicety, never a gate.
+		slog.WarnContext(ctx, "todo summary unavailable; skipping",
+			"workspace_id", req.WorkspaceID, "agent_id", req.AgentID, "session_id", req.SessionID, "error", err)
+		return ""
+	}
+	pending, active := 0, 0
+	for _, item := range list.Items {
+		switch item.Status {
+		case store.TodoStatusPending:
+			pending++
+		case store.TodoStatusActive:
+			active++
+		}
+	}
+	if pending == 0 && active == 0 {
+		return ""
+	}
+	return fmt.Sprintf("Open todos: %d pending, %d active, revision %d — call todo_read for the full list.", pending, active, list.Revision)
+}
+
+// agentExposesTodoTools reports whether the turn's effective allowlist names
+// either todo tool. The per-turn AllowedTools override replaces the agent
+// allowlist, mirroring the selection in resolve.
+func agentExposesTodoTools(agent *domain.Agent, req ExecRequest) bool {
+	allowlist := agent.Tools
+	if req.AllowedTools != nil {
+		allowlist = req.AllowedTools
+	}
+	for _, name := range allowlist {
+		if name == tools.NameTodoWrite || name == tools.NameTodoRead {
+			return true
+		}
+	}
+	return false
+}
+
 // AppendMemoryChip is the memory worker's ChipSink (task 3.6, D11): after the
 // gate commits ops for a turn, persist the chip as an application-owned
 // session event (the x.prompt_blocked convention — hydrated transcripts
@@ -1764,7 +1863,10 @@ func runKeyOf(req ExecRequest) RunKey {
 // attachments (attachments design D5); nil keeps the string-input Query path.
 // trace carries the turn's Langfuse coordinates (integrate-langfuse-tracing
 // D2/D3); nil when the capability is absent — then no context stamping, no
-// callback attach, and terminal events persist no trace id.
+// callback attach, and terminal events persist no trace id. sizes carries the
+// compose-time section byte counts the turn-end context breakdown measures
+// from (adopt-assistant-ui-elements D7), and sessionStore is the run's
+// session-event store the breakdown's true-window read replays.
 func (r *Runner) streamRun(
 	handle *runHandle,
 	cancelOpt adk.AgentRunOption,
@@ -1775,8 +1877,10 @@ func (r *Runner) streamRun(
 	hookChain *hooks.Resolved,
 	hookBase hooks.Event,
 	compaction *compactionState,
+	sizes *contextSizes,
 	trace *runTrace,
 	ephemeral bool,
+	sessionStore adk.SessionEventStore[*schema.AgenticMessage],
 ) {
 	key := runKeyOf(req)
 	defer handle.finish()
@@ -1824,7 +1928,7 @@ func (r *Runner) streamRun(
 		TurnID:     turnID,
 	})
 
-	r.drainAgentEvents(runCtx, iter, stream, key, turnID, partialText, hookChain, hookBase, compaction, userMsg, trace, req, ephemeral)
+	r.drainAgentEvents(runCtx, iter, stream, key, turnID, partialText, hookChain, hookBase, compaction, sizes, userMsg, trace, req, ephemeral, sessionStore)
 }
 
 // logTapDrops emits one debug line when the live tap dropped events because
@@ -1846,7 +1950,11 @@ func (r *Runner) logTapDrops(stream *EventStream, req ExecRequest) {
 // additionally fanned out via Broadcast to dynamically attached live
 // subscribers; subscriber sends are drop-new, so slow consumers never stall
 // the run. compaction carries the per-run estimates captured by the
-// composition's summarization Callback; it must be non-nil. userMsg is the
+// composition's summarization Callback; it must be non-nil. sizes carries the
+// compose-time section byte counts the terminal usage's display-only context
+// breakdown measures from (adopt-assistant-ui-elements D7), and
+// sessionStore is the run's session-event store that breakdown's
+// true-window read replays. userMsg is the
 // pre-constructed multimodal user message of a turn carrying attachments
 // (attachments design D5); nil keeps string-input turns unchanged. trace
 // carries the turn's Langfuse coordinates (integrate-langfuse-tracing D3/D5);
@@ -1863,10 +1971,12 @@ func (r *Runner) drainAgentEvents(
 	hookChain *hooks.Resolved,
 	hookBase hooks.Event,
 	compaction *compactionState,
+	sizes *contextSizes,
 	userMsg *schema.AgenticMessage,
 	trace *runTrace,
 	req ExecRequest,
 	ephemeral bool,
+	sessionStore adk.SessionEventStore[*schema.AgenticMessage],
 ) {
 	var lastErr error
 	var usage UsagePayload
@@ -1888,6 +1998,24 @@ func (r *Runner) drainAgentEvents(
 	emit := func(ev *TranscriptEvent) {
 		stream.Send(ev)
 		r.runMgr.Broadcast(key, ev)
+	}
+
+	// usageStamp resolves the usage payload a terminal seam carries, once
+	// per turn: the accumulated provider numbers via usageOf plus — only
+	// when the provider reported usage — the display-only context breakdown
+	// measured at that moment (adopt-assistant-ui-elements D7). The
+	// breakdown is a payload annotation and nothing else: no consumer of the
+	// accumulated numbers reads it, and a nil result (no provider usage,
+	// nothing measurable) leaves the terminal event exactly as before.
+	var stampedUsage *UsagePayload
+	usageStamp := func() *UsagePayload {
+		if stampedUsage == nil {
+			stampedUsage = usageOf(usage)
+			if stampedUsage != nil {
+				stampedUsage.ContextBreakdown = measureContextBreakdown(ctx, sessionStore, req.SessionID, sizes, usage)
+			}
+		}
+		return stampedUsage
 	}
 
 	// settle is the terminal seam (design.md D2/D5): run_finished fires after
@@ -2000,7 +2128,7 @@ func (r *Runner) drainAgentEvents(
 					OccurredAt:   now,
 					TurnID:       turnID,
 					CancelReason: "execution cancelled",
-					Usage:        usageOf(usage),
+					Usage:        usageStamp(),
 					TraceID:      trace.persistedID(),
 				})
 				drainToEOF(iter)
@@ -2013,7 +2141,7 @@ func (r *Runner) drainAgentEvents(
 					OccurredAt:   now,
 					TurnID:       turnID,
 					CancelReason: "execution cancelled",
-					Usage:        usageOf(usage),
+					Usage:        usageStamp(),
 					TraceID:      trace.persistedID(),
 				})
 				drainToEOF(iter)
@@ -2072,7 +2200,7 @@ func (r *Runner) drainAgentEvents(
 								OccurredAt:   time.Now().UTC(),
 								TurnID:       turnID,
 								CancelReason: "execution cancelled",
-								Usage:        usageOf(usage),
+								Usage:        usageStamp(),
 								TraceID:      trace.persistedID(),
 							})
 							drainToEOF(iter)
@@ -2097,7 +2225,7 @@ func (r *Runner) drainAgentEvents(
 								OccurredAt:   time.Now().UTC(),
 								TurnID:       turnID,
 								CancelReason: "stream interrupted",
-								Usage:        usageOf(usage),
+								Usage:        usageStamp(),
 								TraceID:      trace.persistedID(),
 							})
 							drainToEOF(iter)
@@ -2272,7 +2400,7 @@ func (r *Runner) drainAgentEvents(
 			OccurredAt: time.Now().UTC(),
 			TurnID:     turnID,
 			Error:      lastErr.Error(),
-			Usage:      usageOf(usage),
+			Usage:      usageStamp(),
 			TraceID:    trace.persistedID(),
 		})
 		settle(hookRunStatusFailed)
@@ -2283,7 +2411,7 @@ func (r *Runner) drainAgentEvents(
 		Kind:       TranscriptEventTurnCompleted,
 		OccurredAt: time.Now().UTC(),
 		TurnID:     turnID,
-		Usage:      usageOf(usage),
+		Usage:      usageStamp(),
 		TraceID:    trace.persistedID(),
 	})
 	settle(hookRunStatusCompleted)
@@ -2427,6 +2555,13 @@ func (r *Runner) Resume(ctx context.Context, req ExecRequest, approval *Approval
 		r.rememberHookChain(runKeyOf(req), hookChain)
 	}
 
+	// The resumed turn re-measures its own composed context (adopt-assistant-
+	// ui-elements D7): composition rebuilds deterministically, so the fresh
+	// compose measure carries the same byte counts the interrupted turn's
+	// composition stamped.
+	sizes := &contextSizes{}
+	cfg.ContextMeasure = sizes
+
 	adkAgent, err := r.composeAgent(ctx, req, &cfg, ws, user, role, resolvedTools, domainAgent)
 	if err != nil {
 		return nil, fmt.Errorf("agent.Resume: %w", err)
@@ -2482,14 +2617,17 @@ func (r *Runner) Resume(ctx context.Context, req ExecRequest, approval *Approval
 	})
 
 	stream := NewEventStream(128)
-	go r.streamResume(handle, cancelOpt, adkRunner, stream, req, approval, approved, hookChain, hookBase, trace)
+	go r.streamResume(handle, cancelOpt, adkRunner, stream, req, approval, approved, hookChain, hookBase, sizes, trace, sessionAdapter)
 	return stream, nil
 }
 
 // streamResume drives the resumed ADK runner and maps events like streamRun,
 // resuming the persisted checkpoint with the approval decision as the resume
 // target data. trace carries the continued turn's Langfuse coordinates
-// (integrate-langfuse-tracing D3); nil when the capability is absent.
+// (integrate-langfuse-tracing D3); nil when the capability is absent. sizes
+// carries the resumed composition's compose-time section byte counts and
+// sessionStore the session-event store the turn-end context breakdown's
+// true-window read replays (adopt-assistant-ui-elements D7).
 func (r *Runner) streamResume(
 	handle *runHandle,
 	cancelOpt adk.AgentRunOption,
@@ -2500,7 +2638,9 @@ func (r *Runner) streamResume(
 	approved bool,
 	hookChain *hooks.Resolved,
 	hookBase hooks.Event,
+	sizes *contextSizes,
 	trace *runTrace,
+	sessionStore adk.SessionEventStore[*schema.AgenticMessage],
 ) {
 	key := runKeyOf(req)
 	defer handle.finish()
@@ -2550,7 +2690,7 @@ func (r *Runner) streamResume(
 		r.enqueueTurnIngest(handle.ctx, req, "", hookRunStatusFailed, false)
 		return
 	}
-	r.drainAgentEvents(runCtx, iter, stream, key, "", "", hookChain, hookBase, &compactionState{}, nil, trace, req, false)
+	r.drainAgentEvents(runCtx, iter, stream, key, "", "", hookChain, hookBase, &compactionState{}, sizes, nil, trace, req, false, sessionStore)
 }
 
 // ComposeParams contains the data necessary to compose the execution instruction.

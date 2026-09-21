@@ -230,6 +230,47 @@ describe('runTurn — terminal-event usage capture (chat-context-meter)', () => 
     expect(onUsage).toHaveBeenCalledWith(null);
   });
 
+  it('maps the server-provided context_breakdown through to contextBreakdown (D7)', async () => {
+    const events = [
+      {
+        type: 'response.completed',
+        response: {
+          id: 'resp_x_6',
+          usage: {
+            input_tokens: 50000, output_tokens: 1200, total_tokens: 51200, final_input_tokens: 50000,
+            context_breakdown: { instructions: 1200, tools: 3400, files: 800, conversation: 12000 },
+          },
+        },
+      },
+    ];
+    createMock.mockResolvedValue(events);
+
+    const onUsage = vi.fn();
+    await runTurn(nextKey(), { agentSlug: 'atlas', input: 'hi' }, {
+      onDelta: vi.fn(), onUsage, onDone: vi.fn(), onError: vi.fn(),
+    });
+
+    expect(onUsage).toHaveBeenCalledWith({
+      inputTokens: 50000, outputTokens: 1200, totalTokens: 51200, finalInputTokens: 50000,
+      contextBreakdown: { instructions: 1200, tools: 3400, files: 800, conversation: 12000 },
+    });
+  });
+
+  it('omits contextBreakdown when the usage block carries no context_breakdown (estimate stays the fallback)', async () => {
+    const events = [
+      { type: 'response.completed', response: { id: 'resp_x_7', usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15, final_input_tokens: 10 } } },
+    ];
+    createMock.mockResolvedValue(events);
+
+    const onUsage = vi.fn();
+    await runTurn(nextKey(), { agentSlug: 'atlas', input: 'hi' }, {
+      onDelta: vi.fn(), onUsage, onDone: vi.fn(), onError: vi.fn(),
+    });
+
+    const [usage] = onUsage.mock.calls[0];
+    expect('contextBreakdown' in usage).toBe(false);
+  });
+
   it('never fires onUsage when an approval pause ends the stream without a terminal event', async () => {
     const events = [
       { type: 'onclaw:approval_required', interrupt_id: 'i1', command: 'rm -rf /', response_id: 'resp_x_5', session_id: 'sess_1' },

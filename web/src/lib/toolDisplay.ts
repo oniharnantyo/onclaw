@@ -59,6 +59,14 @@ export const CATALOG_TOOL_KEYS = [
   'web.fetch',
   'browser',
   'schedule',
+  // Todos + echo-UI tools (adopt-assistant-ui-elements): todo_write/todo_read
+  // back the checklist card; ui.* validate + echo their args for the
+  // generative-UI registry.
+  'todo_write',
+  'todo_read',
+  'ui.chart',
+  'ui.timeline',
+  'ui.preview',
 ] as const;
 
 /** Browser facade member ids (runtime expansions of the `browser` alias). */
@@ -252,6 +260,33 @@ export const SENTENCE_TABLE: Record<string, SentenceTableEntry> = {
     outcome: 'Selected in {object}',
     object: { key: 'ref', style: 'chip' },
   },
+  // Todos + echo-UI tools (adopt-assistant-ui-elements). These tools render
+  // dedicated generative-UI cards when their envelopes parse; the sentences
+  // below carry the collapsed/error fallbacks so the coverage guard holds.
+  todo_write: {
+    intent: 'Updating the plan',
+    outcome: 'Updated the plan',
+    fact: todoWriteFact,
+  },
+  todo_read: {
+    intent: 'Reading the plan',
+    outcome: 'Read the plan',
+    fact: todoReadFact,
+  },
+  'ui.chart': {
+    intent: 'Charting {object}',
+    outcome: 'Charted {object}',
+    object: { key: 'label', style: 'quote' },
+  },
+  'ui.timeline': {
+    intent: 'Building the timeline',
+    outcome: 'Built the timeline',
+    fact: timelineEventFact,
+  },
+  'ui.preview': {
+    intent: 'Rendering the preview',
+    outcome: 'Rendered the preview',
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -373,6 +408,27 @@ function scheduleListFact(ctx: { args: Record<string, unknown>; res?: string }):
   if (!parsed || !Array.isArray(parsed.schedules) || parsed.schedules.length === 0) return null;
   const n = parsed.schedules.length;
   return ` — ${n} schedule${n === 1 ? '' : 's'}`;
+}
+
+/** todo_write fact: the item count from the args the checklist card renders —
+ * the model's declared plan IS what the card shows. Empty/absent items mint
+ * nothing. */
+function todoWriteFact(ctx: { args: Record<string, unknown>; res?: string }): string | null {
+  const n = Array.isArray(ctx.args.items) ? ctx.args.items.length : 0;
+  return n > 0 ? ` — ${n} item${n === 1 ? '' : 's'}` : null;
+}
+
+/** todo_read fact: the item count from the trusted result envelope. */
+function todoReadFact(ctx: { args: Record<string, unknown>; res?: string }): string | null {
+  const parsed = parseJsonObject(ctx.res);
+  const n = parsed && Array.isArray(parsed.items) ? parsed.items.length : 0;
+  return n > 0 ? ` — ${n} item${n === 1 ? '' : 's'}` : null;
+}
+
+/** ui.timeline fact: the event count from the args the timeline card renders. */
+function timelineEventFact(ctx: { args: Record<string, unknown>; res?: string }): string | null {
+  const n = Array.isArray(ctx.args.events) ? ctx.args.events.length : 0;
+  return n > 0 ? ` — ${n} event${n === 1 ? '' : 's'}` : null;
 }
 
 /** "Wrote `notes.md` · 1.2 kB" size format: B below 1 kB, one decimal above
@@ -507,6 +563,28 @@ const FIELD_SPECS: Record<string, FieldSpec[]> = {
   'browser.select_option': [
     { key: 'ref', label: 'Ref', kind: 'chip' },
     { key: 'value', label: 'Value', kind: 'quote' },
+  ],
+  todo_write: [
+    { key: 'items', label: 'Items', kind: 'content' },
+    { key: 'revision', label: 'Revision', kind: 'plain' },
+  ],
+  todo_read: [],
+  'ui.chart': [
+    { key: 'label', label: 'Label', kind: 'quote' },
+    { key: 'value', label: 'Value', kind: 'plain' },
+    { key: 'delta', label: 'Delta', kind: 'plain' },
+    { key: 'variant', label: 'Variant', kind: 'enum' },
+    { key: 'visible', label: 'Visible', kind: 'plain' },
+    { key: 'points', label: 'Points', kind: 'content' },
+  ],
+  'ui.timeline': [
+    { key: 'title', label: 'Title', kind: 'quote' },
+    { key: 'events', label: 'Events', kind: 'content' },
+  ],
+  'ui.preview': [
+    { key: 'url', label: 'URL', kind: 'chip' },
+    { key: 'title', label: 'Title', kind: 'quote' },
+    { key: 'html', label: 'HTML', kind: 'content' },
   ],
 };
 

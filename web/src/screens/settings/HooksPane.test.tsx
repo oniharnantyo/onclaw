@@ -315,12 +315,13 @@ describe('screens/settings/HooksPane', () => {
     fireEvent.change(screen.getByTestId('input-hook-if'), { target: { value: 'read_file(secret*)' } });
 
     // Typing the matcher updates the live count over the visible candidates:
-    // the 12 built-in/catalog tools + the browser family = 13, and the
-    // "web.*" family hits web.search + web.fetch (D19).
+    // the 23 built-in/catalog tools (incl. the todos + ui.* echo tools from
+    // adopt-assistant-ui-elements) + the one mocked catalog tool = 24, and
+    // the "web.*" family hits web.search + web.fetch (D19).
     const matcher = screen.getByTestId('input-hook-matcher');
     fireEvent.change(matcher, { target: { value: 'web.*' } });
     await waitFor(() => {
-      expect(screen.getByTestId('hook-match-count').textContent).toBe('Matches 2 of 19 tools');
+      expect(screen.getByTestId('hook-match-count').textContent).toBe('Matches 2 of 24 tools');
     });
     // The static syntax helper sits under the input.
     expect(screen.getByTestId('hook-matcher-helper').textContent).toContain('Empty or * = every occurrence');

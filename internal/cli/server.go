@@ -302,6 +302,7 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 			st.Memories(),
 			agents.WithSchedulerTools(st.Schedulers(), st.Channels()),
 			agents.WithMemorySearch(memorySearcher),
+			agents.WithTodoTools(st.Todos()),
 		)),
 		agents.WithToolPolicy(toolSettings),
 		agents.WithMCPPolicy(mcp.NewSettingsPolicy(mcpSettings)),
@@ -314,6 +315,9 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		agents.WithProjectSpace(channels.NewLocalProjectSpace(cfg.DataDir, st.Workspaces())),
 		agents.WithAttachmentBlobs(wsResolver),
 		agents.WithInputModalityResolver(modelCatalog),
+		// The todo store (adopt-assistant-ui-elements D6): the open-items
+		// summary the runner composes per turn for agents exposing the tools.
+		agents.WithTodoStore(st.Todos()),
 		// The intent gate's per-workspace budget (fix-memory-retrieval-lane D3):
 		// resolved from the workspace's memory settings record, falling back to
 		// the default pin when absent.

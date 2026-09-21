@@ -3,11 +3,12 @@ import { cx } from "../../lib/helpers";
 import { Icon } from "../ui/Icon";
 import { Avatar } from "../ui/Avatar";
 import { api } from "../../lib/api";
-import { useStore } from "../../store";
+import { useStore, useMessageQueue } from "../../store";
 import { getLiveChatStatus, subscribeLiveChat, retryLiveChat } from "../../lib/livechat";
 
 import { ChatHeader } from "./ChatHeader";
 import { Composer } from "./Composer";
+import { QueueStack } from "./QueueStack";
 import { UserMessage } from "./UserMessage";
 import { OtherMessage } from "./OtherMessage";
 import { AgentMessage } from "./AgentMessage";
@@ -16,6 +17,7 @@ import { PromptBlockedNotice } from "./PromptBlockedNotice";
 import { MemoryIngestedChip } from "./MemoryIngestedChip";
 import { ThinkingRow } from "./ThinkingRow";
 import { CompactionDivider } from "./CompactionDivider";
+import { DayDivider, dayKeyOf, fullStamp, parseEntryDate } from "./DayDivider";
 import { toolCatalog } from "../../lib/toolCatalog";
 
 function useResolveApproval(tenant: any, agent: any) {
@@ -197,6 +199,11 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
   // canned mock reply.
   const liveStatus = useSyncExternalStore(subscribeLiveChat, getLiveChatStatus);
   const workspaceId = tenant?.sub || tenant?.id;
+  // Message queue rows for this chat (adopt-assistant-ui-elements 8.2): the
+  // key mirrors the runtime's enqueue addressing exactly (pos.tenantId ::
+  // chat id). Present-only — QueueStack renders nothing with an empty queue.
+  const queueTenantId = useStore((s: any) => s.pos.tenantId);
+  const queuedMessages = useMessageQueue(queueTenantId, target.obj.id);
   // Tool display names come from the per-workspace catalog cache (design D7);
   // the bump re-renders the list once names resolve so cards pick them up.
   const [, setCatalogTick] = useState(0);
@@ -211,6 +218,37 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
     'Draft a status update for the team',
     'What should I know about ' + tenant.name + ' today?'
   ] : [];
+
+  // Per-author rendering of one transcript entry — unchanged from the
+  // previous inline map; extracted so the day-separator pass below can wrap
+  // every entry kind uniformly.
+  const renderEntry = (m: any) => {
+    const isLast = m.id === (thread[thread.length - 1] || {}).id;
+    const msgAgent = (m.agentId && tenant.agents.find((a: any) => a.id === m.agentId)) || agent;
+    if (m.author === 'you') return <UserMessage m={m} onEdit={onEditSubmit} members={channelMembers}/>;
+    if (m.author === 'other') return <OtherMessage m={m} members={channelMembers}/>;
+    if (m.author === 'error') return <ErrorEntry m={m}/>;
+    // Hook-blocked prompt notice (integrate-agent-hooks): a
+    // `prompt_blocked` transcript entry renders in place of the
+    // assistant reply that never came — live and hydrated alike.
+    if (m.author === 'notice') return <PromptBlockedNotice m={m}/>;
+    // Post-turn memory chip (integrate-agent-zero-memory D11):
+    // counts + visibility breakdown only, with the provenance
+    // drawer — live events and hydrated history entries share it.
+    if (m.author === 'memory')
+      return <MemoryIngestedChip m={m} workspaceId={workspaceId}/>;
+    // Context compaction marker (chat-compact-command): live events
+    // and hydrated history entries share this divider component.
+    if (m.author === 'compaction') return <CompactionDivider m={m}/>;
+    return (
+      <AgentMessage m={m} agent={msgAgent} inChannel={target.kind === 'channel'}
+        busy={busy} isLast={isLast}
+        onCopy={onCopy}
+        onRefresh={onRefresh} onBranch={onBranch} members={channelMembers}
+        sessionId={sessionId}
+        onResolveApproval={handleResolveApproval}/>
+    );
+  };
 
   return (
     <section data-od-id="chat-view" aria-label={'Conversation with ' + (target.kind === 'channel' ? '#' + target.obj.name : target.obj.name)}
@@ -251,33 +289,34 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
             {hiddenMsgs === 0 && thread.length > 80 && session && (
               <p className="text-center text-[11px] text-muted">Beginning of “{session.title}”</p>
             )}
-            {visibleMsgs.map((m: any) => {
-              const isLast = m.id === (thread[thread.length - 1] || {}).id;
-              const msgAgent = (m.agentId && tenant.agents.find((a: any) => a.id === m.agentId)) || agent;
-              if (m.author === 'you') return <UserMessage key={m.id} m={m} onEdit={onEditSubmit} members={channelMembers}/>;
-              if (m.author === 'other') return <OtherMessage key={m.id} m={m} members={channelMembers}/>;
-              if (m.author === 'error') return <ErrorEntry key={m.id} m={m}/>;
-              // Hook-blocked prompt notice (integrate-agent-hooks): a
-              // `prompt_blocked` transcript entry renders in place of the
-              // assistant reply that never came — live and hydrated alike.
-              if (m.author === 'notice') return <PromptBlockedNotice key={m.id} m={m}/>;
-              // Post-turn memory chip (integrate-agent-zero-memory D11):
-              // counts + visibility breakdown only, with the provenance
-              // drawer — live events and hydrated history entries share it.
-              if (m.author === 'memory')
-                return <MemoryIngestedChip key={m.id} m={m} workspaceId={workspaceId}/>;
-              // Context compaction marker (chat-compact-command): live events
-              // and hydrated history entries share this divider component.
-              if (m.author === 'compaction') return <CompactionDivider key={m.id} m={m}/>;
-              return (
-                <AgentMessage key={m.id} m={m} agent={msgAgent} inChannel={target.kind === 'channel'}
-                  busy={busy} isLast={isLast}
-                  onCopy={onCopy}
-                  onRefresh={onRefresh} onBranch={onBranch} members={channelMembers}
-                  sessionId={sessionId}
-                  onResolveApproval={handleResolveApproval}/>
-              );
-            })}
+            {/* Day separators + hover timestamps (adopt-assistant-ui-elements
+                9.2, design D11): a divider renders wherever the calendar day
+                changes between consecutive DATED entries (never before the
+                first dated entry, and never from an undated one); dated
+                entries expose their full date+time as a hover title.
+                Undated entries (legacy display `ts` strings) contribute
+                neither. The compaction divider entry keeps its own dedicated
+                marker above. */}
+            {(() => {
+              let lastDayKey: string | null = null;
+              return visibleMsgs.map((m: any) => {
+                const d = parseEntryDate(m);
+                const out: any[] = [];
+                if (d) {
+                  const key = dayKeyOf(d);
+                  if (lastDayKey !== null && key !== lastDayKey) {
+                    out.push(<DayDivider key={'day-' + key} date={d}/>);
+                  }
+                  lastDayKey = key;
+                }
+                out.push(
+                  <div key={m.id} title={d ? fullStamp(d) : undefined}>
+                    {renderEntry(m)}
+                  </div>
+                );
+                return out;
+              });
+            })()}
             {/* The streaming agent message renders its own loading dots and
                 caret — the thinking row is only for a turn with no agent
                 message on the transcript yet, else the agent shows twice.
@@ -315,9 +354,15 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
             </div>
           </div>
         )}
+        {/* Message queue stack (8.2): ordered cancelable rows under the
+            running row while a turn is in flight — between the transcript
+            and the composer; hidden entirely when nothing is queued. */}
+        <QueueStack items={queuedMessages} running={busy} agentName={agent?.name}
+          onRemove={(id) => useStore.getState().removeQueuedChatMessage(queueTenantId, target.obj.id, id)}/>
         <div className="mx-auto w-full max-w-[44rem] px-4 pb-4">
           <Composer agent={agent} running={busy} onSend={onSend} onCancel={onCancel}
             ref={composerRef} allowAttachments={allowAttachments} workspaceSlug={workspaceId}
+            chatId={target.obj.id}
             mentionOptions={target.kind === 'channel' ? channelMembers : null}
             allowCommands={target.kind === 'agent'}
             skillGroups={skillGroups}/>

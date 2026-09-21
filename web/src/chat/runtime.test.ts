@@ -7,6 +7,7 @@ import { useChatRuntime } from './runtime';
 import { useStore } from '../store';
 import { runTurn } from '../lib/openresponses';
 import { getLiveChatStatus, handleV1AuthFailure } from '../lib/livechat';
+import { getTurnTiming } from './turnTiming';
 import { api } from '../lib/api';
 
 vi.mock('@assistant-ui/react', () => ({
@@ -544,7 +545,7 @@ describe('useChatRuntime — live session binding (birth → chain → reset-for
     expect(activeSession().messages.some((m: any) => m.author === 'agent')).toBe(false);
   });
 
-  it('onUsage with a usable final input records { finalInput, at } on the active session', async () => {
+  it('onUsage with a usable final input records finalInput + the turn input/output rows on the active session', async () => {
     localStorage.setItem('onclaw.api_key.t1', 'k-live');
     vi.mocked(runTurn).mockImplementation(async () => {});
     const { result } = renderHook(() => useChatRuntime('a1'));
@@ -556,7 +557,24 @@ describe('useChatRuntime — live session binding (birth → chain → reset-for
     });
 
     const sess = activeSession();
-    expect(sess.usage).toEqual({ finalInput: 50000, at: expect.any(String) });
+    expect(sess.usage).toEqual({ finalInput: 50000, input: 50000, output: 1200, at: expect.any(String) });
+  });
+
+  it('onUsage keeps a server-provided context breakdown when the wire carries one', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await send(result, 'breakdown turn');
+    const [, , cb]: any[] = vi.mocked(runTurn).mock.calls[0];
+    await act(async () => {
+      await cb.onUsage({
+        inputTokens: 50000, outputTokens: 1200, totalTokens: 51200, finalInputTokens: 50000,
+        contextBreakdown: { instructions: 1200, tools: 3400, conversation: 12000 },
+      } as any);
+    });
+
+    expect(activeSession().usage.contextBreakdown).toEqual({ instructions: 1200, tools: 3400, conversation: 12000 });
   });
 
   it('onUsage(null) clears a previously stored meter value', async () => {
@@ -569,6 +587,10 @@ describe('useChatRuntime — live session binding (birth → chain → reset-for
     await act(async () => {
       await cb.onUsage({ inputTokens: 10, outputTokens: 5, totalTokens: 15, finalInputTokens: 10 });
     });
+    // Finish the turn before the next send (message queue D9: a send while a
+    // run is active queues instead of turning) — the meter assertion below is
+    // about the SECOND turn's onUsage(null), unchanged.
+    await act(async () => { cb.onDone('resp_x_1'); });
     await send(result, 'turn two');
     const [, , cb2]: any[] = vi.mocked(runTurn).mock.calls[1];
     await act(async () => { await cb2.onUsage(null); });
@@ -758,6 +780,440 @@ describe('useChatRuntime — 409 conflict queue (live-run-reattach fix)', () => 
   });
 });
 
+describe('useChatRuntime — message queue (adopt-assistant-ui-elements 8.1–8.3, D9)', () => {
+  const encoder = new TextEncoder();
+
+  const activeSession = (): any => {
+    const th = useStore.getState().db.t1.threads.a1;
+    return th.list.find((x: any) => x.id === th.active);
+  };
+
+  const queueTexts = (): string[] =>
+    (useStore.getState().messageQueue['t1::a1'] || []).map((q: any) => q.text);
+
+  const send = (result: any, text: string) =>
+    act(async () => {
+      await result.current.onNew({ role: 'user', content: [{ type: 'text', text }] } as any);
+    });
+
+  const drain = () => act(async () => { await Promise.resolve(); });
+
+  beforeEach(() => {
+    localStorage.clear();
+    vi.mocked(runTurn).mockReset();
+    vi.mocked(handleV1AuthFailure).mockReset();
+    act(() => {
+      const mkAgent = (id: string, name: string, tools: string[]) => ({
+        id, name, model: 'claude-sonnet-5', temp: 0.4, autonomy: 'approval', channelPost: false,
+        role: 'Test agent', status: 'idle', tools, skills: ['research'], lastActive: 'now', prompt: ''
+      });
+      useStore.setState({
+        pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
+        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, toasts: [] },
+        // Reset the queue slice explicitly: setState merges, and a leftover
+        // entry from another suite in this file would dispatch spuriously.
+        messageQueue: {},
+        db: {
+          t1: {
+            id: 't1', name: 'T1', sub: 't1', tz: 'America/Los_Angeles',
+            defaultModel: 'claude-sonnet-5', retention: '90 days',
+            people: [], schedules: [], runs: [], members: [], integrations: [], skillLib: [], keys: [],
+            agents: [mkAgent('a1', 'Alice', ['search'])],
+            channels: [{ id: 'c1', name: 'general', purpose: 'Team chat', agentId: '', unread: 0, members: ['a1'] }],
+            threads: {
+              a1: {
+                active: 'sess_live-9',
+                list: [{
+                  id: 'sess_live-9', title: 'Chat', updated: '',
+                  messages: [{ id: 'm0', author: 'agent', ts: '', text: 'partial', resp: 'resp_sess_live-9_turn-1' }],
+                }],
+              },
+              c1: { active: 's2', list: [{ id: 's2', title: 'Chat', updated: '', messages: [] }] },
+            },
+          },
+        },
+      });
+    });
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('a send while a run is active enqueues locally instead of attempting the send (8.1)', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await send(result, 'first turn');
+    expect(useStore.getState().ui.running).toBe(true);
+
+    await send(result, 'queued one');
+    await send(result, 'queued two');
+
+    // Still exactly ONE turn in flight — the sends never raced the session.
+    expect(runTurn).toHaveBeenCalledTimes(1);
+    expect(queueTexts()).toEqual(['queued one', 'queued two']);
+    // Queued messages stay OUT of the transcript until they dispatch — the
+    // queue rows are their representation (spec: "both appear as ordered
+    // cancelable queued rows under a running row"). Only the ORIGINAL send's
+    // pill exists.
+    const youMsgs = activeSession().messages.filter((m: any) => m.author === 'you');
+    expect(youMsgs).toHaveLength(1);
+    expect(youMsgs[0].text).toBe('first turn');
+  });
+
+  it('auto-dispatch on completion: the first entry turns normally, rows clear as they dispatch (8.3)', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await send(result, 'first turn');
+    await send(result, 'queued one');
+    await send(result, 'queued two');
+
+    // The active run finishes → its terminal event dispatches the FIRST
+    // queued message, without user action.
+    const [, , cb]: any[] = vi.mocked(runTurn).mock.calls[0];
+    await act(async () => { cb.onDone('resp_sess_live-9_turn-2'); });
+
+    expect(runTurn).toHaveBeenCalledTimes(2);
+    const [, p2]: any[] = vi.mocked(runTurn).mock.calls[1];
+    expect(p2.input).toBe('queued one');
+    // The dispatched message entered the transcript as a NORMAL turn.
+    expect(activeSession().messages.some((m: any) => m.author === 'you' && m.text === 'queued one')).toBe(true);
+    // Its row cleared; the remaining row stays queued.
+    expect(queueTexts()).toEqual(['queued two']);
+    expect(useStore.getState().ui.running).toBe(true);
+
+    // The dispatched turn finishes → the next entry dispatches in order.
+    const [, , cb2]: any[] = vi.mocked(runTurn).mock.calls[1];
+    await act(async () => { cb2.onDone('resp_sess_live-9_turn-3'); });
+
+    expect(runTurn).toHaveBeenCalledTimes(3);
+    const [, p3]: any[] = vi.mocked(runTurn).mock.calls[2];
+    expect(p3.input).toBe('queued two');
+    expect(queueTexts()).toEqual([]);
+  });
+
+  it('auto-dispatch chains via previous_response_id like any normal turn', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await send(result, 'first turn');
+    await send(result, 'queued one');
+    const [, , cb]: any[] = vi.mocked(runTurn).mock.calls[0];
+    await act(async () => { cb.onDone('resp_sess_live-9_turn-2'); });
+
+    // The dispatched turn extends the chain the finished turn minted — the
+    // normal send path, not a bypass.
+    const [, p2]: any[] = vi.mocked(runTurn).mock.calls[1];
+    expect(p2.previousResponseId).toBe('resp_sess_live-9_turn-2');
+  });
+
+  it('removing the second queued entry cancels ONLY that entry; the first still dispatches', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await send(result, 'first turn');
+    await send(result, 'keep me');
+    await send(result, 'drop me');
+
+    const q = useStore.getState().messageQueue['t1::a1'];
+    useStore.getState().removeQueuedChatMessage('t1', 'a1', q[1].id);
+    expect(queueTexts()).toEqual(['keep me']);
+
+    const [, , cb]: any[] = vi.mocked(runTurn).mock.calls[0];
+    await act(async () => { cb.onDone('resp_sess_live-9_turn-2'); });
+
+    expect(runTurn).toHaveBeenCalledTimes(2);
+    const [, p2]: any[] = vi.mocked(runTurn).mock.calls[1];
+    expect(p2.input).toBe('keep me');
+    // The cancelled entry never turned.
+    expect(vi.mocked(runTurn).mock.calls.every(([, p]: any[]) => p.input !== 'drop me')).toBe(true);
+    expect(queueTexts()).toEqual([]);
+  });
+
+  it('a 409 on auto-dispatch falls back to the catch-up-and-redispatch flow (D9)', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    // The catch-up stream for the foreign run, then [DONE] → re-dispatch.
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+      }) as unknown as Response
+    ));
+    vi.mocked(runTurn)
+      .mockImplementationOnce(async () => {})
+      // The auto-dispatched turn conflicts: the session went busy elsewhere
+      // (another tab, cron) between the terminal event and the dispatch.
+      .mockImplementationOnce(async (_k: any, _p: any, cb: any) => {
+        cb.onError('agent.Run: conflict: a run is already active for session "sess_live-9"', { conflict: true });
+      })
+      .mockImplementationOnce(async () => {});
+
+    const { result } = renderHook(() => useChatRuntime('a1'));
+    await send(result, 'first turn');
+    await send(result, 'queued one');
+
+    const [, , cb]: any[] = vi.mocked(runTurn).mock.calls[0];
+    await act(async () => { cb.onDone('resp_sess_live-9_turn-2'); });
+    // Drain the catch-up chain (hydrate → attach → [DONE] → re-dispatch).
+    await drain();
+    await drain();
+
+    expect(runTurn).toHaveBeenCalledTimes(3);
+    const [, p3]: any[] = vi.mocked(runTurn).mock.calls[2];
+    expect(p3.input).toBe('queued one');
+    // The entry was dequeued when the dispatch STARTED — no duplicate rows,
+    // and the conflict left no error card behind (catch-up flow owns it).
+    expect(queueTexts()).toEqual([]);
+    expect(activeSession().messages.some((m: any) => m.author === 'error')).toBe(false);
+    expect(useStore.getState().ui.running).toBe(true);
+  });
+
+  it('stop finishes the run and dispatches the first queued message', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await send(result, 'first turn');
+    await send(result, 'queued one');
+
+    await act(async () => { await result.current.onCancel(); });
+
+    expect(runTurn).toHaveBeenCalledTimes(2);
+    const [, p2]: any[] = vi.mocked(runTurn).mock.calls[1];
+    expect(p2.input).toBe('queued one');
+    expect(queueTexts()).toEqual([]);
+    expect(useStore.getState().ui.running).toBe(true);
+  });
+
+  it('a cross-tab 409 (send while idle) keeps today\'s catch-up flow and never touches the queue', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+      }) as unknown as Response
+    ));
+    vi.mocked(runTurn)
+      .mockImplementationOnce(async (_k: any, _p: any, cb: any) => {
+        cb.onError('agent.Run: conflict: a run is already active for session "sess_live-9"', { conflict: true });
+      })
+      .mockImplementationOnce(async () => {});
+
+    const { result } = renderHook(() => useChatRuntime('a1'));
+    // Nothing is running in this tab: the send races a FOREIGN run and 409s.
+    await send(result, 'conflicted send');
+    await drain();
+    await drain();
+
+    // The existing catch-up-and-redispatch machinery ran, unchanged — and
+    // the local message queue stayed out of it entirely.
+    expect(runTurn).toHaveBeenCalledTimes(2);
+    const [, p2]: any[] = vi.mocked(runTurn).mock.calls[1];
+    expect(p2.input).toBe('conflicted send');
+    expect(useStore.getState().messageQueue['t1::a1'] || []).toHaveLength(0);
+  });
+
+  it('channel sends never queue, even while a run is active', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('c1'));
+    act(() => { useStore.getState().patchUi({ running: true }); });
+
+    await send(result, 'hello team');
+
+    // The queue gate is agent-chat-only: the message lands in the channel
+    // transcript as before and nothing is enqueued.
+    const msgs = useStore.getState().db.t1.threads.c1.list[0].messages;
+    expect(msgs.some((m: any) => m.author === 'you' && m.text === 'hello team')).toBe(true);
+    expect(useStore.getState().messageQueue['t1::c1'] || []).toHaveLength(0);
+  });
+});
+
+describe('useChatRuntime — message timing + entry dating (adopt-assistant-ui-elements 9.1/9.2)', () => {
+  const activeSession = (): any => {
+    const th = useStore.getState().db.t1.threads.a1;
+    return th.list.find((x: any) => x.id === th.active);
+  };
+
+  const send = (result: any, text: string) =>
+    act(async () => {
+      await result.current.onNew({ role: 'user', content: [{ type: 'text', text }] } as any);
+    });
+
+  // `ts` is a display string; `at` must be the parseable ISO instant the
+  // transcript's day separators read.
+  const parseable = (v: any) => typeof v === 'string' && !isNaN(new Date(v).getTime());
+
+  beforeEach(() => {
+    localStorage.clear();
+    vi.mocked(runTurn).mockReset();
+    vi.mocked(handleV1AuthFailure).mockReset();
+    act(() => {
+      const mkAgent = (id: string, name: string, tools: string[]) => ({
+        id, name, model: 'claude-sonnet-5', temp: 0.4, autonomy: 'approval', channelPost: false,
+        role: 'Test agent', status: 'idle', tools, skills: ['research'], lastActive: 'now', prompt: ''
+      });
+      useStore.setState({
+        pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
+        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, toasts: [] },
+        messageQueue: {},
+        db: {
+          t1: {
+            id: 't1', name: 'T1', sub: 't1', tz: 'America/Los_Angeles',
+            defaultModel: 'claude-sonnet-5', retention: '90 days',
+            people: [], schedules: [], runs: [], members: [], integrations: [], skillLib: [], keys: [],
+            agents: [mkAgent('a1', 'Alice', ['search'])],
+            channels: [{ id: 'c1', name: 'general', purpose: 'Team chat', agentId: '', unread: 0, members: ['a1'] }],
+            threads: {
+              a1: {
+                active: 'sess_live-2',
+                list: [{
+                  id: 'sess_live-2', title: 'Chat', updated: '',
+                  messages: [{ id: 'm0', author: 'agent', ts: '', text: 'partial', resp: 'resp_sess_live-2_t0' }],
+                }],
+              },
+              c1: { active: 's2', list: [{ id: 's2', title: 'Chat', updated: '', messages: [] }] },
+            },
+          },
+        },
+      });
+    });
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it('a completed live turn records client-measured timing keyed by the agent message — never on the store entry (9.1)', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    // Deterministic clock: t0=1000, first delta at 1800 (first token 800 ms),
+    // done at 7200 (total 6200 ms) → streaming window 5400 ms.
+    const nowSpy = vi.spyOn(performance, 'now')
+      .mockReturnValueOnce(1000)
+      .mockReturnValueOnce(1800)
+      .mockReturnValueOnce(7200);
+    try {
+      const { result } = renderHook(() => useChatRuntime('a1'));
+      await send(result, 'timed turn');
+      const [, , cb]: any[] = vi.mocked(runTurn).mock.calls[0];
+      // 168 chars ≈ 42 estimated tokens over 5.4 s → 8 tok/s.
+      act(() => { cb.onDelta('x'.repeat(168)); });
+      await act(async () => { cb.onDone('resp_sess_live-2_t1'); });
+
+      const msgs = activeSession().messages;
+      const agentMsg = msgs[msgs.length - 1];
+      expect(agentMsg.author).toBe('agent');
+      expect(getTurnTiming(agentMsg.id)).toEqual({ firstMs: 800, totalMs: 6200, tps: 8 });
+      // Timing stays OUT of persisted session state: a reloaded thread must
+      // render no timing line anywhere (hydrated-shows-none).
+      expect((agentMsg as any).timing).toBeUndefined();
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('a turn that never streams records no timing (present-only)', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await send(result, 'silent turn');
+    const [, , cb]: any[] = vi.mocked(runTurn).mock.calls[0];
+    await act(async () => { cb.onDone('resp_sess_live-2_t1'); });
+
+    const msgs = activeSession().messages;
+    expect(getTurnTiming(msgs[msgs.length - 1].id)).toBeUndefined();
+  });
+
+  it('timing is absent while the turn is still streaming, and lands only at completion', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await send(result, 'streaming turn');
+    const [, , cb]: any[] = vi.mocked(runTurn).mock.calls[0];
+    act(() => { cb.onDelta('partial'); });
+
+    const msgs = activeSession().messages;
+    const agentMsg = msgs[msgs.length - 1];
+    expect(useStore.getState().ui.running).toBe(true);
+    expect(getTurnTiming(agentMsg.id)).toBeUndefined();
+
+    await act(async () => { cb.onDone('resp_sess_live-2_t1'); });
+    expect(getTurnTiming(agentMsg.id)).toBeDefined();
+  });
+
+  it('live entries mint a parseable ISO `at` alongside the display `ts` (9.2) — sends, queued dispatch, and errors alike', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await send(result, 'first turn');
+    // Sent while the run is active → queued, then auto-dispatched on
+    // completion through the normal send path.
+    await send(result, 'queued one');
+    const [, , cb]: any[] = vi.mocked(runTurn).mock.calls[0];
+    await act(async () => { cb.onDone('resp_sess_live-2_t1'); });
+    // The dispatched turn fails terminally → an in-thread error entry.
+    const [, , cb2]: any[] = vi.mocked(runTurn).mock.calls[1];
+    await act(async () => { cb2.onError('Error from provider: Rate limit exceeded', {}); });
+
+    const msgs = activeSession().messages;
+    const youMsgs = msgs.filter((m: any) => m.author === 'you');
+    expect(youMsgs.map((m: any) => m.text)).toEqual(['first turn', 'queued one']);
+    for (const m of youMsgs) expect(parseable(m.at)).toBe(true);
+    // Every agent row this flow minted (the seeded `m0` fixture predates the
+    // feature and stays undated); the second turn's empty optimistic row was
+    // retracted by its terminal failure.
+    const agentMsgs = msgs.filter((m: any) => m.author === 'agent' && m.id !== 'm0');
+    expect(agentMsgs.length).toBeGreaterThanOrEqual(1);
+    for (const m of agentMsgs) expect(parseable(m.at)).toBe(true);
+    const errorEntry = msgs.find((m: any) => m.author === 'error');
+    expect(errorEntry).toBeDefined();
+    expect(parseable(errorEntry.at)).toBe(true);
+  });
+
+  it('a compact turn\'s divider entry carries a parseable `at` too', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await send(result, '/compact');
+    const [, , cb]: any[] = vi.mocked(runTurn).mock.calls[0];
+    await act(async () => { cb.onContextCompacted({ tokensBefore: 154000, tokensAfter: 9200 }); });
+
+    const divider = activeSession().messages.find((m: any) => m.author === 'compaction');
+    expect(divider).toBeDefined();
+    expect(parseable(divider.at)).toBe(true);
+  });
+});
+
 describe('useChatRuntime — /compact command (chat-compact-command)', () => {
   const activeSession = (): any => {
     const th = useStore.getState().db.t1.threads.a1;
@@ -910,6 +1366,20 @@ describe('useChatRuntime — /compact command (chat-compact-command)', () => {
     expect(useStore.getState().ui.compacting).toBe(false);
     // No divider (no compacted event), no agent row, no error entry.
     expect(activeSession().messages).toHaveLength(1);
+  });
+
+  it('the compact turn terminal usage records the meter and the turn rows (summarizer call)', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await send(result, '/compact');
+    const [, , cb]: any[] = vi.mocked(runTurn).mock.calls[0];
+    await act(async () => {
+      await cb.onUsage({ inputTokens: 9200, outputTokens: 900, totalTokens: 10100, finalInputTokens: 9200 });
+    });
+
+    expect(activeSession().usage).toEqual({ finalInput: 9200, input: 9200, output: 900, at: expect.any(String) });
   });
 
   it('failure retracts the status row and leaves nothing — no error entry', async () => {
@@ -1152,5 +1622,29 @@ describe('useChatRuntime — attachment sends (add-chat-attachments D11/D12)', (
     const [, params]: any[] = vi.mocked(runTurn).mock.calls[0];
     expect(params.input).toBe('');
     expect(params.attachments).toEqual(stored);
+  });
+
+  it('regenerate terminal usage records the meter with the turn rows (same capture as ordinary turns)', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    act(() => {
+      useStore.getState().updateTenant('t1', (t: any) => {
+        const s = t.threads.a1.list[0];
+        s.messages = [
+          { id: 'u1', author: 'you', ts: '', text: 'again' },
+          { id: 'g1', author: 'agent', ts: '', text: 'old reply', resp: 'resp_sess_live-5_t1' },
+        ];
+        return t;
+      });
+    });
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await act(async () => { await result.current.onReload('g1'); });
+    const [, , cb]: any[] = vi.mocked(runTurn).mock.calls[0];
+    await act(async () => {
+      await cb.onUsage({ inputTokens: 43000, outputTokens: 800, totalTokens: 43800, finalInputTokens: 43000 });
+    });
+
+    expect(activeSession().usage).toEqual({ finalInput: 43000, input: 43000, output: 800, at: expect.any(String) });
   });
 });

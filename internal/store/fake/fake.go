@@ -70,6 +70,7 @@ type fakeStore struct {
 	memoryEntities          map[string]*domain.MemoryEntity           // key: ID
 	memoryEntitiesByNorm    map[string]string                         // key: workspaceID + ":" + normalizedLabel -> ID
 	memoryEntityEdges       map[string]*domain.MemoryEntityEdge       // key: ID
+	agentTodos              map[string]*fakeTodoRow                   // key: sessionID + ":" + itemKey
 }
 
 // New creates a new in-memory fake store.
@@ -129,6 +130,7 @@ func newStore() *fakeStore {
 		memoryEntities:          make(map[string]*domain.MemoryEntity),
 		memoryEntitiesByNorm:    make(map[string]string),
 		memoryEntityEdges:       make(map[string]*domain.MemoryEntityEdge),
+		agentTodos:              make(map[string]*fakeTodoRow),
 	}
 }
 
@@ -190,6 +192,11 @@ func (s *fakeStore) MemoryEmbeddings() store.MemoryEmbeddingStore {
 // MemoryEntities returns the MemoryEntityStore sub-port.
 func (s *fakeStore) MemoryEntities() store.MemoryEntityStore {
 	return &memoryEntityStore{s: s}
+}
+
+// Todos returns the TodoStore sub-port.
+func (s *fakeStore) Todos() store.TodoStore {
+	return &todoStore{s: s}
 }
 
 // SessionEvents returns the SessionEventStore sub-port.
@@ -444,6 +451,10 @@ func (s *fakeStore) clone() *fakeStore {
 	for id, e := range s.memoryEntityEdges {
 		cp.memoryEntityEdges[id] = cloneMemoryEntityEdge(e)
 	}
+	for key, row := range s.agentTodos {
+		copied := *row
+		cp.agentTodos[key] = &copied
+	}
 	return cp
 }
 
@@ -498,6 +509,7 @@ func (s *fakeStore) apply(other *fakeStore) {
 	s.memoryEntities = other.memoryEntities
 	s.memoryEntitiesByNorm = other.memoryEntitiesByNorm
 	s.memoryEntityEdges = other.memoryEntityEdges
+	s.agentTodos = other.agentTodos
 }
 
 func cloneUser(u *domain.User) *domain.User {
@@ -1719,6 +1731,12 @@ func (as *agentStore) Delete(ctx context.Context, workspaceID, id string) error 
 				}
 			}
 		}
+	}
+
+	// The agent's todo rows die with the agent (ON DELETE CASCADE,
+	// adopt-assistant-ui-elements D5).
+	for _, key := range todoRowsBelongingToAgentLocked(as.s.agentTodos, workspaceID, id) {
+		delete(as.s.agentTodos, key)
 	}
 
 	return nil

@@ -269,6 +269,67 @@ func TestTranslator_NilUsageOmitsBlock(t *testing.T) {
 	}
 }
 
+// TestTranslator_ContextBreakdownWireShape pins the breakdown's wire contract
+// (openresponses spec: additive, omitempty, never without a usage block): the
+// segments ride usage.context_breakdown with only their measured members, a
+// domain usage without a breakdown carries no key, and a nil usage carries
+// nothing at all.
+func TestTranslator_ContextBreakdownWireShape(t *testing.T) {
+	type probeUsage struct {
+		ContextBreakdown *struct {
+			Instructions int `json:"instructions"`
+			Tools        int `json:"tools"`
+			Conversation int `json:"conversation"`
+			Files        int `json:"files"`
+			Server       int `json:"server"`
+		} `json:"context_breakdown"`
+	}
+	type probe struct {
+		Response struct {
+			Usage *probeUsage `json:"usage"`
+		} `json:"response"`
+	}
+
+	// Measured segments serialize; unmeasured ones stay absent.
+	_, wire := collect(t, []*agents.TranscriptEvent{
+		{Kind: agents.TranscriptEventTurnStarted},
+		{Kind: agents.TranscriptEventTurnCompleted, Usage: &agents.UsagePayload{
+			InputTokens: 4000, OutputTokens: 100, TotalTokens: 4100, FinalInputTokens: 4000,
+			ContextBreakdown: &agents.ContextBreakdown{Instructions: 800, Conversation: 900, Server: 2300},
+		}},
+	})
+	var p probe
+	if err := json.Unmarshal(JSON(wire[len(wire)-1]), &p); err != nil {
+		t.Fatalf("unmarshal terminal event: %v", err)
+	}
+	if p.Response.Usage == nil || p.Response.Usage.ContextBreakdown == nil {
+		t.Fatalf("wire usage = %+v, want a context_breakdown block", p.Response.Usage)
+	}
+	cb := p.Response.Usage.ContextBreakdown
+	if cb.Instructions != 800 || cb.Conversation != 900 || cb.Server != 2300 {
+		t.Fatalf("breakdown = %+v, want instructions 800 conversation 900 server 2300", cb)
+	}
+	raw := JSON(wire[len(wire)-1])
+	for _, zero := range []string{`"tools":0`, `"files":0`} {
+		if strings.Contains(string(raw), zero) {
+			t.Fatalf("unmeasured segment leaked into the wire form: %s", raw)
+		}
+	}
+
+	// A usage payload without a breakdown carries no key.
+	_, wire = collect(t, []*agents.TranscriptEvent{
+		{Kind: agents.TranscriptEventTurnStarted},
+		{Kind: agents.TranscriptEventTurnCompleted, Usage: &agents.UsagePayload{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}},
+	})
+	p = probe{}
+	if err := json.Unmarshal(JSON(wire[len(wire)-1]), &p); err != nil {
+		t.Fatalf("unmarshal terminal event: %v", err)
+	}
+	if p.Response.Usage == nil || p.Response.Usage.ContextBreakdown != nil {
+		t.Fatalf("wire usage = %+v, want no breakdown key without a domain breakdown", p.Response.Usage)
+	}
+}
+
 func TestTranslator_ReasoningDeltaPassthrough(t *testing.T) {
 	resp, wire := collect(t, []*agents.TranscriptEvent{
 		{Kind: agents.TranscriptEventTurnStarted},

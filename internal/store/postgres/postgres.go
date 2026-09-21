@@ -126,6 +126,11 @@ func (s *store) MemoryEntities() storeport.MemoryEntityStore {
 	return NewMemoryEntityStore(s.db)
 }
 
+// Todos returns the TodoStore sub-port.
+func (s *store) Todos() storeport.TodoStore {
+	return NewTodoStore(s.db)
+}
+
 // SessionEvents returns the SessionEventStore sub-port.
 func (s *store) SessionEvents() storeport.SessionEventStore {
 	return NewSessionEventStore(s.db)

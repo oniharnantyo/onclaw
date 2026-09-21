@@ -5,10 +5,16 @@ import { useStore, useWorkspace } from '../store';
 import { getWorkspaceKey } from '../store/workspaceKeys';
 import type { Message, Agent } from '../data/types';
 import { uid, nowTime, parseMentions, appendReasoningPart, appendToolPart } from '../lib/helpers';
-import { runTurn, sessionIdFromResponseId } from '../lib/openresponses';
+import { runTurn, sessionIdFromResponseId, type TurnUsage } from '../lib/openresponses';
 import { markLiveChatDisconnected, handleV1AuthFailure, hydrateSession, attachCatchUpStream, isBoundSessionId } from '../lib/livechat';
 import { api } from '../lib/api';
 import type { AttachmentChip } from '../lib/attachments';
+import { recordTurnTiming as stashTurnTiming } from './turnTiming';
+
+/** Parseable ISO wall-clock instant for live entries — the display `ts`
+ * (nowTime) is a locale string the transcript's day separators cannot parse,
+ * so every minted entry also carries `at` (adopt-assistant-ui-elements D11). */
+const nowIso = () => new Date().toISOString();
 
 const activeTimers: Record<string, any> = {};
 
@@ -63,6 +69,42 @@ const existingBoundSessionId = (tid: string, cid: string): string | undefined =>
 const inFlight: { responseId?: string; agentSlug?: string; sessionId?: string; mid?: string; tid?: string; cid?: string; abort?: () => void; flush?: () => void } = {};
 const clearInFlight = () => { inFlight.responseId = undefined; inFlight.agentSlug = undefined; inFlight.sessionId = undefined; inFlight.mid = undefined; inFlight.tid = undefined; inFlight.cid = undefined; inFlight.abort = undefined; inFlight.flush = undefined; };
 
+/** Terminal-event meter capture (design D5), shared by every turn path
+ * (ordinary, regenerate, compact): a usable final-call input records; no
+ * usage block (or no number) clears so the meter hides rather than showing a
+ * stale/zero value. The turn block feeds the context popover's input/output
+ * detail rows and carries the server-provided context breakdown (D7) when
+ * the wire reported one. */
+const recordTurnUsage = (tid: string, cid: string, u: TurnUsage | null) => {
+  const contextBreakdown = u?.contextBreakdown;
+  useStore.getState().recordThreadUsage(
+    tid,
+    cid,
+    u && typeof u.finalInputTokens === 'number' ? u.finalInputTokens : null,
+    u ? {
+      input: u.inputTokens,
+      output: u.outputTokens,
+      ...(contextBreakdown ? { contextBreakdown } : {}),
+    } : undefined,
+  );
+};
+
+/** Message timing (assistant-ui "message timing" element adoption):
+ * client-measured first-token latency, total turn time, and streamed speed,
+ * recorded into the runtime-local registry (turnTiming.ts) at turn
+ * completion. Never the store — persisted session state must stay timing-free
+ * so hydrated history renders no line (9.1). Present-only: no first streamed
+ * token → no record at all. Speed estimates tokens from the streamed visible
+ * text length (~4 chars/token) over the streaming window; short streams
+ * (≤250 ms) skip the noisy figure. */
+const recordTurnTiming = (mid: string | undefined, t0: number, firstStreamMs: number | undefined, streamedChars: number) => {
+  if (!mid || firstStreamMs === undefined) return;
+  const totalMs = Math.round(performance.now() - t0);
+  const streamMs = Math.max(1, totalMs - firstStreamMs);
+  const tps = streamMs > 250 ? Math.round((streamedChars / 4) / (streamMs / 1000)) : undefined;
+  stashTurnTiming(mid, { firstMs: Math.round(firstStreamMs), totalMs, ...(tps ? { tps } : {}) });
+};
+
 /** The chat's bound server session id (`sess_<uuid>`), for cancel addressing
  * before the minted response id exists. Legacy counter sessions bind nothing. */
 const activeBoundSessionId = (tid: string, cid: string): string | undefined => {
@@ -97,6 +139,26 @@ export function useChatRuntime(chatId: string) {
   const messages = session ? session.messages : [];
 
   const running = useStore(s => !!s.ui.running);
+
+  // Auto-dispatch (message queue 8.3, design D9): when the active run hits a
+  // terminal state, the FIRST queued message dispatches automatically —
+  // through the NORMAL send path (pushMsg → respondFor, exactly what onNew
+  // does), so a 409 from a session that went busy elsewhere (another tab,
+  // cron) falls back to the existing catch-up-and-redispatch flow instead of
+  // a bypass. The entry is dequeued before sending, so its row clears the
+  // moment the dispatch starts.
+  const dispatchQueuedHead = (tid: string, cid: string) => {
+    const state = useStore.getState();
+    const head = state.dequeueChatMessage(tid, cid);
+    if (!head) return;
+    const agent = state.db[tid]?.agents.find((a: any) => a.id === cid);
+    if (!agent) return;
+    state.pushMsg(tid, cid, {
+      id: uid('m'), author: 'you', ts: nowTime(), at: nowIso(), text: head.text,
+      ...(head.attachments ? { attachments: head.attachments } : {}),
+    });
+    respondFor(tid, cid, agent, head.text, { attachments: head.attachments });
+  };
 
   const convertMessage = useCallback((msg: Message): ThreadMessageLike => {
     // Note: convertMessage drops branch-variant resolution it previously had.
@@ -161,8 +223,14 @@ export function useChatRuntime(chatId: string) {
     const apiKey = getWorkspaceKey(tid);
     if (apiKey) {
       const mid = uid('m');
+      // Message-timing t0 (turn start, not first stream event) and the ISO
+      // wall-clock date for the transcript's day separators — `ts` stays the
+      // display string; `at` is the parseable one.
+      const t0 = performance.now();
+      let firstStreamMs: number | undefined;
+      let streamedChars = 0;
       useStore.getState().pushMsg(tid, cid, {
-        id: mid, author: 'agent', agentId: ag.id, ts: nowTime(), text: '',
+        id: mid, author: 'agent', agentId: ag.id, ts: nowTime(), at: nowIso(), text: '',
       });
       // Resolve birth-vs-chain AFTER the optimistic message lands so the
       // recorded `resp` chain reflects the thread's real history.
@@ -241,6 +309,8 @@ export function useChatRuntime(chatId: string) {
             inFlight.agentSlug = (ag as any).slug || ag.id;
           },
           onDelta: (delta) => {
+            if (firstStreamMs === undefined) firstStreamMs = performance.now() - t0;
+            streamedChars += delta.length;
             pendingText += delta;
             queueFlush();
           },
@@ -249,6 +319,7 @@ export function useChatRuntime(chatId: string) {
             // never leaks into the visible text. Consecutive deltas extend
             // the open segment; a delta after a tool card opens a new one,
             // so round-2 reasoning sits between the cards and the text.
+            if (firstStreamMs === undefined) firstStreamMs = performance.now() - t0;
             pendingReasoning.push(delta);
             queueFlush();
           },
@@ -285,10 +356,7 @@ export function useChatRuntime(chatId: string) {
             useStore.getState().patchUi({ running: false });
           },
           onUsage: (u) => {
-            // Terminal-event meter capture (design D5): a usable final-call
-            // input records; no usage block (or no number) clears so the
-            // meter hides rather than showing a stale/zero value.
-            useStore.getState().recordThreadUsage(tid, cid, u && typeof u.finalInputTokens === 'number' ? u.finalInputTokens : null);
+            recordTurnUsage(tid, cid, u);
           },
           onDone: (responseId) => {
             flushDeltas();
@@ -297,7 +365,11 @@ export function useChatRuntime(chatId: string) {
             // produced — this is the `previous_response_id` chain link for the
             // next turn.
             if (responseId) useStore.getState().recordResponse(cid, mid, responseId);
+            recordTurnTiming(mid, t0, firstStreamMs, streamedChars);
             useStore.getState().patchUi({ running: false });
+            // Run finished with queued messages pending (message queue 8.3):
+            // the first one dispatches automatically, in order.
+            dispatchQueuedHead(tid, cid);
           },
           onError: (message, meta) => {
             flushDeltas();
@@ -328,7 +400,7 @@ export function useChatRuntime(chatId: string) {
               if (!sessionId) {
                 // No session coordinates to reattach under — surface it.
                 useStore.getState().pushMsg(tid, cid, {
-                  id: uid('m'), author: 'error', ts: nowTime(), text: '', error: message,
+                  id: uid('m'), author: 'error', ts: nowTime(), at: nowIso(), text: '', error: message,
                 });
                 useStore.getState().toast(message, 'error');
                 useStore.getState().patchUi({ running: false });
@@ -363,10 +435,14 @@ export function useChatRuntime(chatId: string) {
             // visible where the retracted row used to be. Auth failures keep
             // the connect-state path above and never append.
             useStore.getState().pushMsg(tid, cid, {
-              id: uid('m'), author: 'error', ts: nowTime(), text: '', error: message,
+              id: uid('m'), author: 'error', ts: nowTime(), at: nowIso(), text: '', error: message,
             });
             useStore.getState().toast(message, 'error');
             useStore.getState().patchUi({ running: false });
+            // Terminal failure still ends the active run (message queue 8.3):
+            // the first queued message proceeds — through the normal send
+            // path, where its own failure handling applies.
+            dispatchQueuedHead(tid, cid);
           },
         }, { signal: turnAbort.signal });
       };
@@ -414,6 +490,9 @@ export function useChatRuntime(chatId: string) {
     const finish = () => {
       clearInFlight();
       useStore.getState().patchUi({ running: false, compacting: false });
+      // A compact turn is a real run (message queue 8.3): sends that queued
+      // behind it dispatch from its terminal state like any other.
+      dispatchQueuedHead(tid, cid);
     };
     void runTurn(apiKey, {
       agentSlug: (ag as any).slug || ag.id,
@@ -434,7 +513,7 @@ export function useChatRuntime(chatId: string) {
         // lands the summarizer usage.
         dividerId = uid('m');
         useStore.getState().pushMsg(tid, cid, {
-          id: dividerId, author: 'compaction', ts: nowTime(), text: '',
+          id: dividerId, author: 'compaction', ts: nowTime(), at: nowIso(), text: '',
           compaction: { tokensBefore, tokensAfter },
           summarySaved: true,
         } as any);
@@ -443,7 +522,7 @@ export function useChatRuntime(chatId: string) {
       onUsage: (u) => {
         // Same terminal-event meter capture as ordinary turns (design D5):
         // turn_completed carries the summarizer call's usage.
-        useStore.getState().recordThreadUsage(tid, cid, u && typeof u.finalInputTokens === 'number' ? u.finalInputTokens : null);
+        recordTurnUsage(tid, cid, u);
       },
       onDone: (responseId) => {
         // The compact turn is a real run: record its minted response id on
@@ -499,8 +578,25 @@ export function useChatRuntime(chatId: string) {
       }
     }
 
+    // Message queue (8.1, design D9): while THIS tab's run is active in an
+    // agent chat, a send joins the local queue instead of racing the session
+    // lock — ordered cancelable rows under the running row (QueueStack). The
+    // queue gate replaces only the same-tab path: cross-tab/cron conflicts
+    // still surface as 409s on a normal send and keep the existing
+    // catch-up-and-redispatch machinery. /compact turns never queue (a
+    // compact turn cannot run behind the active run — its own conflict path
+    // surfaces as a toast).
+    if (target === 'agent' && useStore.getState().ui.running) {
+      const db = useStore.getState().db[tenantId];
+      const agent = db.agents.find((a: any) => a.id === chatId);
+      if (agent) {
+        useStore.getState().enqueueChatMessage(tenantId, chatId, text, attachments);
+        return;
+      }
+    }
+
     useStore.getState().pushMsg(tenantId, chatId, {
-      id: uid('m'), author: 'you', ts: nowTime(), text,
+      id: uid('m'), author: 'you', ts: nowTime(), at: nowIso(), text,
       ...(attachments ? { attachments } : {}),
     });
 
@@ -557,6 +653,7 @@ export function useChatRuntime(chatId: string) {
     const agentSlug = inFlight.agentSlug;
     const abort = inFlight.abort;
     const flush = inFlight.flush;
+    const turnCid = inFlight.cid;
     const sessionId = sessionIdFromResponseId(rid) || inFlight.sessionId || activeBoundSessionId(tenantId, inFlight.cid || '');
     abort?.();
     // Land any coalesced deltas before the retract check: a stop after text
@@ -571,6 +668,9 @@ export function useChatRuntime(chatId: string) {
     }
     retractIfEmpty();
     clearInFlight();
+    // A stopped run is a finished run (message queue 8.3): the first queued
+    // message dispatches instead of hanging in the stack forever.
+    if (turnCid) dispatchQueuedHead(tenantId, turnCid);
   }, [patchUi, tenantId]);
 
   const onEdit = useCallback(async (msg: AppendMessage) => {
@@ -763,7 +863,7 @@ export function useChatRuntime(chatId: string) {
       },
       onUsage: (u) => {
         // Same terminal-event meter capture as the respondFor path (design D5).
-        useStore.getState().recordThreadUsage(tenantId, chatId, u && typeof u.finalInputTokens === 'number' ? u.finalInputTokens : null);
+        recordTurnUsage(tenantId, chatId, u);
       },
       onDone: (responseId) => {
         flushDeltas();
@@ -778,6 +878,9 @@ export function useChatRuntime(chatId: string) {
           });
         }
         useStore.getState().patchUi({ running: false });
+        // A regenerate is an active run too (message queue 8.3): sends that
+        // queued behind it dispatch from its terminal state.
+        dispatchQueuedHead(tenantId, chatId);
       },
       onError: (message, meta) => {
         flushDeltas();
@@ -803,10 +906,13 @@ export function useChatRuntime(chatId: string) {
         });
         // In-thread error entry (design D8) — auth failures never append.
         useStore.getState().pushMsg(tenantId, chatId, {
-          id: uid('m'), author: 'error', ts: nowTime(), text: '', error: message,
+          id: uid('m'), author: 'error', ts: nowTime(), at: nowIso(), text: '', error: message,
         });
         useStore.getState().toast(message, 'error');
         useStore.getState().patchUi({ running: false });
+        // Terminal failure ends the run (message queue 8.3): the first queued
+        // message proceeds through the normal send path.
+        dispatchQueuedHead(tenantId, chatId);
       },
     }, { signal: turnAbort.signal });
   }, [tenantId, chatId, patchUi]);

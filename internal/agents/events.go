@@ -82,6 +82,23 @@ type ToolResultPayload struct {
 	IsError bool          `json:"is_error,omitempty"`
 }
 
+// ContextBreakdown is the display-only, display-grade split of a turn's
+// final model call's input into labeled segments (adopt-assistant-ui-elements
+// D7, spec agent-runtime "Context breakdown measurement"): instructions (the
+// composed instruction), tools (marshaled tool schemas), conversation (the
+// true session window's messages), files (in-window attachment payloads), and
+// server (the composed share not attributable to the other segments). Every
+// segment is omitempty: a segment that could not be measured is omitted, never
+// reported as zero. The breakdown feeds context diagnostics only — never
+// billing, trigger math, or summarization decisions.
+type ContextBreakdown struct {
+	Instructions int `json:"instructions,omitempty"`
+	Tools        int `json:"tools,omitempty"`
+	Conversation int `json:"conversation,omitempty"`
+	Files        int `json:"files,omitempty"`
+	Server       int `json:"server,omitempty"`
+}
+
 // UsagePayload carries the token usage of one executed turn, as reported by
 // the model provider. InputTokens sums every model call of the turn;
 // FinalInputTokens is the input size of the last call — what the model's
@@ -91,6 +108,11 @@ type UsagePayload struct {
 	OutputTokens     int `json:"output_tokens"`
 	TotalTokens      int `json:"total_tokens"`
 	FinalInputTokens int `json:"final_input_tokens,omitempty"`
+	// ContextBreakdown is the optional display-only segment split of the
+	// final call's input (D7). Additive and omitempty — clients that ignore
+	// it remain fully functional — and present only on turns whose provider
+	// reported usage: the block never appears without a usage block.
+	ContextBreakdown *ContextBreakdown `json:"context_breakdown,omitempty"`
 }
 
 // AttachmentMeta is the transcript attachment identity of one user-message

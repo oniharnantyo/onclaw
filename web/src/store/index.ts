@@ -7,6 +7,10 @@ import { useAuthStore } from './auth';
 import { useConnectionStore } from './connection';
 import { api, pollAgentPromptsStatus, formatApiError, listAgentSessions, deleteAgentSession, ApiError, type ApiMemberView, type ApiChannel, type ApiChannelMessage, type ApiAgentSession } from '../lib/api';
 import { schedulers, type Scheduler } from '../lib/schedulers';
+// TurnUsageDetail (context popover, adopt-assistant-ui-elements D2/D7): the
+// last terminal turn's reported input/output and optional server-provided
+// context breakdown, kept alongside finalInput on the usage record.
+import type { TurnUsageDetail } from '../lib/contextBreakdown';
 // Namespace read for optional-at-runtime members (getToken): vitest's mock
 // proxy throws when a narrow mock factory omits an export, so the session
 // refetch gate reads it through the namespace inside a try/catch — the same
@@ -63,6 +67,24 @@ export const deriveSessionTitle = (text: string): string => {
   return trimmed.length > 42 ? trimmed.slice(0, 42) + '…' : trimmed;
 };
 
+// ---------------------------------------------------------------------------
+// Message queue (adopt-assistant-ui-elements 8.1, design D9): sends that land
+// while a run is active in an agent chat hold here, in order, until the run's
+// terminal event dispatches the first one. Per-(workspace, chat) local state —
+// cancelable rows, never persisted, never synced.
+// ---------------------------------------------------------------------------
+
+export interface QueuedMessage {
+  id: string;
+  text: string;
+  /** Ready attachment references captured at enqueue time (add-chat-attachments
+   * D11) — they ride the turn when the entry dispatches. */
+  attachments?: ChatAttachment[];
+  enqueuedAt: string;
+}
+
+const queueKey = (tenantId: string, chatId: string): string => `${tenantId}::${chatId}`;
+
 export interface AppState {
   db: Record<string, Workspace>;
   // Per-workspace marker that loadAgents completed against the server at least
@@ -92,12 +114,27 @@ export interface AppState {
     compacting?: boolean;
   };
   search: string;
+  /** Ordered queued messages per `tenantId::chatId` (message queue 8.1) —
+   * entries land while a run is active and dispatch first-in-first-out from
+   * the run's terminal path. Ephemeral local state; nothing reads this slice
+   * outside the queue actions, the ChatView stack, and the runtime dispatch. */
+  messageQueue: Record<string, QueuedMessage[]>;
 
   // actions
   patchUi: (p: Partial<AppState['ui']>) => void;
   goPos: (p: Partial<AppState['pos']>) => void;
   setSearch: (q: string) => void;
   toast: (text: string, kind?: string) => void;
+
+  /** Appends a message to the chat's queue and resolves the entry id. */
+  enqueueChatMessage: (tenantId: string, chatId: string, text: string, attachments?: ChatAttachment[]) => string;
+  /** Removes exactly one queued entry by id — cancelling it never touches
+   * the other rows (spec: "Removing a queued entry SHALL cancel only that
+   * entry"). */
+  removeQueuedChatMessage: (tenantId: string, chatId: string, id: string) => void;
+  /** Pops the first queued entry for the chat — the auto-dispatch primitive
+   * (8.3). Resolves null when nothing is queued. */
+  dequeueChatMessage: (tenantId: string, chatId: string) => QueuedMessage | null;
   
   updateTenant: (tenantId: string, fn: (t: Workspace) => Workspace) => void;
   pushMsg: (tid: string, cid: string, msg: ChatMessage) => void;
@@ -114,7 +151,7 @@ export interface AppState {
   getSessionBinding: (threadId: string) => string | null;
   ensureSessionBinding: (threadId: string) => string | null;
   recordResponse: (threadId: string, messageId: string, resp: string) => void;
-  recordThreadUsage: (threadId: string, chatId: string, finalInput: number | null) => void;
+  recordThreadUsage: (threadId: string, chatId: string, finalInput: number | null, turn?: TurnUsageDetail) => void;
   getLastResponse: (threadId: string) => string | null;
   deleteSession: (sid: string) => void;
   /** Refetches the server session index for one agent chat and reconciles it
@@ -203,6 +240,40 @@ export const useStore = create<AppState>((set, get) => ({
     wsOpen: false, toasts: [], running: false
   },
   search: '',
+  messageQueue: {},
+
+  // Ordered append (message queue 8.1): a fresh array per write keeps the
+  // useMessageQueue selector referentially stable between changes.
+  enqueueChatMessage: (tenantId, chatId, text, attachments) => {
+    const id = uid('q');
+    set((s: any) => {
+      const key = queueKey(tenantId, chatId);
+      const entry: QueuedMessage = {
+        id,
+        text,
+        ...(attachments && attachments.length ? { attachments } : {}),
+        enqueuedAt: new Date().toISOString(),
+      };
+      return { messageQueue: { ...s.messageQueue, [key]: [...(s.messageQueue[key] || []), entry] } };
+    });
+    return id;
+  },
+
+  removeQueuedChatMessage: (tenantId, chatId, id) => set((s: any) => {
+    const key = queueKey(tenantId, chatId);
+    const items = s.messageQueue[key];
+    if (!items || !items.some((q: QueuedMessage) => q.id === id)) return s;
+    return { messageQueue: { ...s.messageQueue, [key]: items.filter((q: QueuedMessage) => q.id !== id) } };
+  }),
+
+  dequeueChatMessage: (tenantId, chatId) => {
+    const key = queueKey(tenantId, chatId);
+    const items = get().messageQueue[key];
+    if (!items || items.length === 0) return null;
+    const [head] = items;
+    set((s: any) => ({ messageQueue: { ...s.messageQueue, [key]: items.slice(1) } }));
+    return head;
+  },
 
   patchUi: (p) => {
     const wasRunning = get().ui.running;
@@ -456,8 +527,11 @@ export const useStore = create<AppState>((set, get) => ({
   // Context-meter state (design D5): the latest terminal turn's final-call
   // input lives on the thread's ACTIVE session; null clears the field so the
   // meter hides instead of showing a stale/zero value. Isolation falls out of
-  // addressing by (threadId, chatId).
-  recordThreadUsage: (threadId, chatId, finalInput) => {
+  // addressing by (threadId, chatId). The optional turn block carries the
+  // last call's input/output and any server-provided context breakdown for
+  // the context popover's detail rows (assistant-ui context-display
+  // adoption) — each field present only when the wire reported it.
+  recordThreadUsage: (threadId, chatId, finalInput, turn) => {
     const state = get();
     state.updateTenant(threadId, (tenant) => {
       const th = tenant.threads[chatId];
@@ -465,7 +539,13 @@ export const useStore = create<AppState>((set, get) => ({
       const sess = th.list.find((x: any) => x.id === th.active);
       if (!sess) return tenant;
       if (finalInput === null) delete sess.usage;
-      else sess.usage = { finalInput, at: nowTime() };
+      else sess.usage = {
+        finalInput,
+        ...(turn?.input ? { input: turn.input } : {}),
+        ...(turn?.output ? { output: turn.output } : {}),
+        ...(turn?.contextBreakdown ? { contextBreakdown: turn.contextBreakdown } : {}),
+        at: nowTime(),
+      };
       return tenant;
     });
   },
@@ -1159,5 +1239,12 @@ export const useSessions = (chatId: string) => useStore((s: any) => {
   const th = s.db[s.pos.tenantId]?.threads[chatId];
   return th && !Array.isArray(th) ? th.list : EMPTY_LIST;
 });
+
+// Message queue rows for one chat (8.1/8.2). Stable EMPTY_QUEUE keeps the
+// zustand v5 selector contract (no fresh array per call → no render loop).
+const EMPTY_QUEUE: QueuedMessage[] = [];
+
+export const useMessageQueue = (tenantId: string, chatId: string): QueuedMessage[] =>
+  useStore((s) => s.messageQueue[`${tenantId}::${chatId}`] || EMPTY_QUEUE);
 
 export const useRuns = () => useStore((s: any) => s.db[s.pos.tenantId]?.runs || EMPTY_LIST);

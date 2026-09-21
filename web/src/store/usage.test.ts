@@ -77,3 +77,50 @@ describe('recordThreadUsage (chat-context-meter)', () => {
     expect(activeSession('a-beacon').usage.finalInput).toBe(2000);
   });
 });
+
+describe('recordThreadUsage turn block (assistant-ui context-display adoption)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    seedThreads({
+      'a-atlas': { active: 's1', list: [{ id: 's1', title: 'One', updated: '', messages: [] }] },
+    });
+  });
+
+  it('keeps the last turn input/output alongside finalInput when reported', () => {
+    useStore.getState().recordThreadUsage('acme', 'a-atlas', 68_000, { input: 68_000, output: 1_200 });
+
+    expect(activeSession('a-atlas').usage).toEqual({
+      finalInput: 68_000,
+      input: 68_000,
+      output: 1_200,
+      at: expect.any(String),
+    });
+  });
+
+  it('omits the turn rows when the wire did not report them (present-only)', () => {
+    useStore.getState().recordThreadUsage('acme', 'a-atlas', 68_000);
+    expect(activeSession('a-atlas').usage).toEqual({ finalInput: 68_000, at: expect.any(String) });
+
+    useStore.getState().recordThreadUsage('acme', 'a-atlas', 68_000, {});
+    expect(activeSession('a-atlas').usage).toEqual({ finalInput: 68_000, at: expect.any(String) });
+  });
+
+  it('keeps a server-provided context breakdown when the wire carries one (D7)', () => {
+    const breakdown = { instructions: 1_200, tools: 3_400, conversation: 12_000 };
+    useStore.getState().recordThreadUsage('acme', 'a-atlas', 50_000, {
+      input: 50_000, output: 900, contextBreakdown: breakdown,
+    });
+
+    const usage = activeSession('a-atlas').usage;
+    expect(usage.contextBreakdown).toEqual(breakdown);
+    // finalInput semantics unchanged — still the meter's numerator.
+    expect(usage.finalInput).toBe(50_000);
+  });
+
+  it('a later terminal event without turn rows drops them from the record', () => {
+    useStore.getState().recordThreadUsage('acme', 'a-atlas', 68_000, { input: 68_000, output: 1_200 });
+    useStore.getState().recordThreadUsage('acme', 'a-atlas', 71_000);
+
+    expect(activeSession('a-atlas').usage).toEqual({ finalInput: 71_000, at: expect.any(String) });
+  });
+});

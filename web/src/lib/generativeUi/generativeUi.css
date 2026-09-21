@@ -1,0 +1,26 @@
+/* Generative-UI shared styles (change adopt-assistant-ui-elements): stagger
+ * reveal + inline spinner. Plain CSS on the app's motion tokens — no new
+ * dependencies. The reveal animates AFTER arrival (the wire delivers results
+ * complete); reduced motion renders everything settled immediately. */
+
+@keyframes od-genui-reveal {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+.od-genui-reveal {
+  animation: od-genui-reveal var(--motion-base) var(--ease-standard) backwards;
+}
+
+@keyframes od-genui-spin {
+  to { transform: rotate(360deg); }
+}
+.od-genui-spin {
+  animation: od-genui-spin 800ms linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .od-genui-reveal,
+  .od-genui-spin {
+    animation: none;
+  }
+}

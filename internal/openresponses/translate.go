@@ -21,6 +21,24 @@ type Usage struct {
 	OutputTokens     int `json:"output_tokens"`
 	TotalTokens      int `json:"total_tokens"`
 	FinalInputTokens int `json:"final_input_tokens,omitempty"`
+	// ContextBreakdown is the optional display-only segment split of the
+	// final call's input (usage.context_breakdown, adopt-assistant-ui-
+	// elements D7). Additive and omitempty — clients reading only the legacy
+	// fields behave exactly as before — and never present without a usage
+	// block: it rides this struct, and the whole usage block is omitted when
+	// the provider reported nothing.
+	ContextBreakdown *ContextBreakdown `json:"context_breakdown,omitempty"`
+}
+
+// ContextBreakdown is the wire form of the display-only per-segment split of
+// the final call's input. Every segment is omitempty: a segment the backend
+// could not measure is absent, never zero.
+type ContextBreakdown struct {
+	Instructions int `json:"instructions,omitempty"`
+	Tools        int `json:"tools,omitempty"`
+	Conversation int `json:"conversation,omitempty"`
+	Files        int `json:"files,omitempty"`
+	Server       int `json:"server,omitempty"`
 }
 
 // UsageFromDomain converts runner usage into the wire usage block.
@@ -33,6 +51,23 @@ func UsageFromDomain(u *agents.UsagePayload) *Usage {
 		OutputTokens:     u.OutputTokens,
 		TotalTokens:      u.TotalTokens,
 		FinalInputTokens: u.FinalInputTokens,
+		ContextBreakdown: ContextBreakdownFromDomain(u.ContextBreakdown),
+	}
+}
+
+// ContextBreakdownFromDomain converts the runner's breakdown into the wire
+// form. A nil domain breakdown (turns without provider usage or with nothing
+// measurable) stays nil, so a breakdown never appears without a usage block.
+func ContextBreakdownFromDomain(cb *agents.ContextBreakdown) *ContextBreakdown {
+	if cb == nil {
+		return nil
+	}
+	return &ContextBreakdown{
+		Instructions: cb.Instructions,
+		Tools:        cb.Tools,
+		Conversation: cb.Conversation,
+		Files:        cb.Files,
+		Server:       cb.Server,
 	}
 }
 

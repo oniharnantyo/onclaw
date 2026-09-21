@@ -7,6 +7,10 @@
 import OpenAI from 'openai';
 
 import { API_ORIGIN } from './api';
+// Server-provided per-segment split (wire `usage.context_breakdown`, D7):
+// when the terminal event reports it, its numbers replace the client
+// estimate in the context popover.
+import type { ServerContextBreakdown } from './contextBreakdown';
 
 export const ONCLAW_SESSION_KEY = 'onclaw_session';
 
@@ -25,6 +29,10 @@ export interface TurnUsage {
   /** The last provider call's input tokens — absent when the turn's usage
    * block carries no final-call figure. */
   finalInputTokens?: number;
+  /** The server-composed context breakdown (wire `usage.context_breakdown`,
+   * omitempty, D7) — segments instructions/tools/files/conversation; the
+   * client-estimate fallback applies when the wire omits it. */
+  contextBreakdown?: ServerContextBreakdown;
 }
 
 export interface TurnCallbacks {
@@ -73,7 +81,8 @@ export interface TurnCallbacks {
 const clients = new Map<string, OpenAI>();
 
 /** Maps a terminal event's wire usage block (snake_case) into TurnUsage —
- * null when the event carries no usage block at all. */
+ * null when the event carries no usage block at all. `context_breakdown`
+ * (D7) maps through to `contextBreakdown` when the wire carries it. */
 function usageOf(response: any): TurnUsage | null {
   const u = response?.usage;
   if (!u || typeof u !== 'object') return null;
@@ -82,6 +91,9 @@ function usageOf(response: any): TurnUsage | null {
     outputTokens: u.output_tokens ?? 0,
     totalTokens: u.total_tokens ?? 0,
     ...(typeof u.final_input_tokens === 'number' ? { finalInputTokens: u.final_input_tokens } : {}),
+    ...(u.context_breakdown && typeof u.context_breakdown === 'object'
+      ? { contextBreakdown: u.context_breakdown as ServerContextBreakdown }
+      : {}),
   };
 }
 
