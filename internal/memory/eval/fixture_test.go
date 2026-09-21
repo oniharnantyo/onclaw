@@ -12,11 +12,14 @@ func TestFixtureDataValidates(t *testing.T) {
 }
 
 func TestFixtureCoversAllQuestionTypes(t *testing.T) {
+	// Hardened fixture scale (harden-memory-eval-multihop design D1/D2/D3):
+	// multihop grows to 10 (associative-shaped included) and recall to 12 so
+	// both categories report statistically meaningful scores.
 	want := map[QuestionType]int{
-		TypeRecall:     1,
+		TypeRecall:     12,
 		TypeUpdate:     1,
 		TypeTemporal:   1,
-		TypeMultihop:   1,
+		TypeMultihop:   10,
 		TypeAbstention: 1,
 		TypeScope:      1,
 	}
@@ -29,14 +32,73 @@ func TestFixtureCoversAllQuestionTypes(t *testing.T) {
 			t.Errorf("fixture has %d %s questions, want >= %d", got[typ], typ, min)
 		}
 	}
-	if len(Fixture.Questions) != 10 {
-		t.Errorf("fixture has %d questions, want 10", len(Fixture.Questions))
+	if len(Fixture.Questions) != 28 {
+		t.Errorf("fixture has %d questions, want 28 (12 recall + 10 multihop + 1 update + 2 temporal + 2 abstention + 1 scope)", len(Fixture.Questions))
 	}
-	if len(Fixture.Sessions) < 8 || len(Fixture.Sessions) > 12 {
-		t.Errorf("fixture has %d sessions, want 8..12", len(Fixture.Sessions))
+	if len(Fixture.Sessions) != 30 {
+		t.Errorf("fixture has %d sessions, want 30", len(Fixture.Sessions))
+	}
+	turns := 0
+	for _, s := range Fixture.Sessions {
+		turns += len(s.Turns)
+	}
+	if turns != 75 {
+		t.Errorf("fixture has %d scripted turns, want 75", turns)
 	}
 	if len(Fixture.Actors) != 2 {
 		t.Errorf("fixture has %d actors, want 2 (Budi + Sari)", len(Fixture.Actors))
+	}
+}
+
+// TestFixtureRecurringEntitiesAndDecoys pins the corpus-expansion contract
+// (tasks 1.2/1.3): the three recurring entities (project, vendor, person)
+// must each appear in 3+ separate sessions so associative queries have real
+// cross-session distance, and every decoy near-miss must be grounded in the
+// corpus while differing from the scored value it shadows.
+func TestFixtureRecurringEntitiesAndDecoys(t *testing.T) {
+	sessionHits := func(token string) int {
+		n := 0
+		for _, s := range Fixture.Sessions {
+			text := ""
+			for _, turn := range s.Turns {
+				text += " " + normalizeText(turn)
+			}
+			if strings.Contains(text, normalizeText(token)) {
+				n++
+			}
+		}
+		return n
+	}
+	for _, entity := range []string{FactProjectName, FactVendorName, FactPersonName} {
+		if n := sessionHits(entity); n < 3 {
+			t.Errorf("recurring entity %q appears in %d sessions, want >= 3", entity, n)
+		}
+	}
+
+	corpus := ""
+	for _, s := range Fixture.Sessions {
+		for _, turn := range s.Turns {
+			corpus += " " + normalizeText(turn)
+		}
+	}
+	decoys := []struct {
+		name  string
+		token string
+		twin  string
+	}{
+		{"beta date", DecoyProjectBetaDate, FactProjectBetaDate},
+		{"launch date", DecoyProjectLaunchDate, FactProjectLaunchDateStale},
+		{"invoice amount", DecoyVendorAmount, FactVendorAmount},
+		{"seats", DecoyVendorSeats, FactVendorSeats},
+		{"airport", DecoyPort, FactRafiAirport},
+	}
+	for _, d := range decoys {
+		if !strings.Contains(corpus, normalizeText(d.token)) {
+			t.Errorf("decoy %s %q is not grounded in any scripted turn", d.name, d.token)
+		}
+		if d.token == d.twin {
+			t.Errorf("decoy %s %q equals its scored twin", d.name, d.token)
+		}
 	}
 }
 

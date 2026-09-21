@@ -305,6 +305,26 @@ func stubAnswerFor(q Question) (string, string) {
 		return "Your main staging database runs on Postgres 16 in Singapore.", "note-1: staging DB is Postgres 16 in Singapore"
 	case "q-recall-invoice":
 		return "Invoice emails come from billing@kopidata.io.", "note-2: invoices from billing@kopidata.io"
+	case "q-recall-office-city":
+		return "The new office is in Bandung.", "note: new office in Bandung"
+	case "q-recall-vendor-region":
+		return "Your Nusantara Cloud staging environment runs in the Jakarta region.", "note: staging in the Jakarta region"
+	case "q-recall-vendor-contract":
+		return "The Nusantara Cloud contract was signed on 17 February 2026.", "note: contract signed 17 February 2026"
+	case "q-recall-person-start":
+		return "He starts as a data analyst contractor on 23 February 2026.", "note: contractor start 23 February 2026"
+	case "q-recall-kickoff":
+		return "Project Nilam kicked off on 18 February 2026.", "note: kickoff 18 February 2026"
+	case "q-recall-expansion-effective":
+		return "The expanded seat plan took effect on 2 March 2026.", "note: expansion effective 2 March 2026"
+	case "q-recall-tier":
+		return "You are on the Priority support tier with Nusantara Cloud.", "note: tier upgraded to Priority"
+	case "q-recall-sla":
+		return "Priority support comes with a 1 hour response SLA.", "note: 1 hour response SLA"
+	case "q-recall-floor":
+		return "His desk is on floor 3 now.", "note: desk moved to floor 3"
+	case "q-recall-war-room":
+		return "The launch war room runs in #nilam-launch.", "note: war room channel #nilam-launch"
 	case "q-update-payments":
 		return "Customer billing runs through Midtrans now; you moved from Stripe.", "note-3: billing moved from Stripe to Midtrans"
 	case "q-temporal-office":
@@ -315,6 +335,22 @@ func stubAnswerFor(q Question) (string, string) {
 		return "Deployments are handled by Rafi, whose nearest airport is BDO (Husein Sastranegara).", "notes: Rafi handles deployments; Rafi flies BDO"
 	case "q-multihop-leave":
 		return "Dewi is your escalation lead; her leave ends 30 April 2026.", "notes: lead is Dewi; leave until 30 April 2026"
+	case "q-multihop-seats":
+		return "Yusuf requested the expansion; the plan now carries 40 seats.", "notes: expansion requested by Yusuf; plan at 40 seats"
+	case "q-multihop-travel":
+		return "Yusuf books his trips through the corporate travel desk.", "notes: Yusuf books via the corporate travel desk"
+	case "q-multihop-nilam-beta":
+		return "Project Nilam's internal beta is on 24 March 2026.", "note: Nilam beta 24 March 2026"
+	case "q-multihop-dry-run":
+		return "Yusuf runs the Project Nilam dry run on 20 April 2026.", "notes: dry run 20 April 2026, run by Yusuf"
+	case "q-multihop-renewal":
+		return "The Nusantara Cloud contract renews on 30 September 2026.", "note: renewal 30 September 2026"
+	case "q-multihop-conversion":
+		return "Yusuf converts to full-time effective 6 April 2026.", "note: conversion effective 6 April 2026"
+	case "q-multihop-invoice":
+		return "Yusuf requested the change; the monthly invoice is Rp 24 juta today.", "notes: change requested by Yusuf; invoice Rp 24 juta"
+	case "q-multihop-launch":
+		return "After the slip the Project Nilam launch targets 21 April 2026, with the dry run on 20 April 2026.", "notes: launch moved to 21 April 2026; dry run 20 April 2026"
 	case "q-abstain-offsite":
 		return "I have no record of a Q3 offsite budget being approved.", ""
 	case "q-abstain-competitor":
@@ -731,4 +767,107 @@ func TestFixtureAgentExposesMemorySearch(t *testing.T) {
 	if len(patches) != 0 {
 		t.Errorf("idempotent reuse issued %d tools PATCHes, want 0", len(patches))
 	}
+}
+
+// storedEvalRecordPath is the archived scoreboard of live run
+// eval-20260920-042455 (openspec change fix-memory-eval-grader), kept as the
+// determinism guard's regression input.
+const storedEvalRecordPath = "../../../openspec/changes/archive/2026-09-20-fix-memory-eval-grader/eval-scoreboard.json"
+
+// TestStoredEvalRecordRegradesIdentically is the determinism guard
+// (harden-memory-eval-multihop tasks 3.1): the stored eval-20260920-042455
+// record is re-graded with the NEW (hardened) fixture loaded, and every
+// verdict must come out identical to the recorded one. The grader is a pure
+// function of (question, answer, evidence) — this proves it is
+// fixture-independent: loading the 30-session corpus changes no verdict, so a
+// hardened-run scoreboard stays comparable to the recorded baseline.
+func TestStoredEvalRecordRegradesIdentically(t *testing.T) {
+	if err := Fixture.ValidateFixture(); err != nil {
+		t.Fatalf("hardened fixture invalid: %v", err)
+	}
+
+	raw, err := os.ReadFile(storedEvalRecordPath)
+	if err != nil {
+		t.Fatalf("stored eval record %s unreadable: %v", storedEvalRecordPath, err)
+	}
+	var recorded struct {
+		RunID       string `json:"run_id"`
+		PerQuestion []struct {
+			ID               string `json:"id"`
+			Type             string `json:"type"`
+			Recall           *bool  `json:"recall"`
+			CitationValid    *bool  `json:"citation_valid"`
+			ScopeSafe        *bool  `json:"scope_safe"`
+			AbstainedCorrect *bool  `json:"abstained_correct"`
+			Answer           string `json:"answer"`
+			Status           string `json:"status"`
+			EvidenceCount    int    `json:"evidence_count"`
+		} `json:"per_question"`
+	}
+	if err := json.Unmarshal(raw, &recorded); err != nil {
+		t.Fatalf("stored eval record JSON: %v", err)
+	}
+	if recorded.RunID != "eval-20260920-042455" {
+		t.Fatalf("stored record run_id = %q, want eval-20260920-042455", recorded.RunID)
+	}
+	if len(recorded.PerQuestion) == 0 {
+		t.Fatal("stored record carries no per-question rows")
+	}
+
+	assertArm := func(t *testing.T, id, arm string, got, want *bool) {
+		t.Helper()
+		gotStr, wantStr := "<nil>", "<nil>"
+		if got != nil {
+			gotStr = fmt.Sprintf("%v", *got)
+		}
+		if want != nil {
+			wantStr = fmt.Sprintf("%v", *want)
+		}
+		if (got == nil) != (want == nil) || (got != nil && want != nil && *got != *want) {
+			t.Errorf("%s %s: grader = %s, recorded = %s (grader must be fixture-independent)", id, arm, gotStr, wantStr)
+		}
+	}
+
+	for _, row := range recorded.PerQuestion {
+		t.Run(row.ID, func(t *testing.T) {
+			ans := Answer{Text: row.Answer, Status: row.Status}
+			var ev []Evidence
+			if row.EvidenceCount > 0 {
+				ev = make([]Evidence, row.EvidenceCount) // only len(evidence) reaches the arms
+			}
+
+			q, found := questionByIDOK(row.ID)
+			if !found {
+				// The new catalog dropped this id: grade the recorded row by
+				// its own stored data (stored-answer contract: type + answer
+				// + evidence count). Only the fixture-field-independent arms
+				// (scope safety, and the exempt-type arms) are comparable.
+				q = Question{ID: row.ID, Type: QuestionType(row.Type)}
+				got := ScoreQuestion(q, ans, ev)
+				assertArm(t, row.ID, "scope_safe", got.ScopeSafe, row.ScopeSafe)
+				if q.Type == TypeAbstention || q.Type == TypeScope {
+					assertArm(t, row.ID, "citation_valid", got.CitationValid, row.CitationValid)
+					assertArm(t, row.ID, "abstained_correct", got.AbstainedCorrect, row.AbstainedCorrect)
+				}
+				return
+			}
+
+			got := ScoreQuestion(q, ans, ev)
+			assertArm(t, row.ID, "recall", got.Recall, row.Recall)
+			assertArm(t, row.ID, "citation_valid", got.CitationValid, row.CitationValid)
+			assertArm(t, row.ID, "scope_safe", got.ScopeSafe, row.ScopeSafe)
+			assertArm(t, row.ID, "abstained_correct", got.AbstainedCorrect, row.AbstainedCorrect)
+		})
+	}
+}
+
+// questionByIDOK returns the fixture question with the given id and whether
+// it exists (the non-fatal lookup the determinism guard needs).
+func questionByIDOK(id string) (Question, bool) {
+	for _, q := range Fixture.Questions {
+		if q.ID == id {
+			return q, true
+		}
+	}
+	return Question{}, false
 }
