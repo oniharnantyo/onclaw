@@ -55,6 +55,10 @@
 #  27. Workspace files API (add-right-panel: agent jail file read/list with
 #      path confinement — traversal and absolute paths rejected as not found,
 #      attachment disposition for html/svg, nosniff on reads and listings)
+#  28. Workspace service connections (add-workspace-connections: recipe
+#      gallery with availability, integrations.write guards, connect
+#      validation envelopes, the real-upstream probe gate storing nothing on
+#      failure, and unknown-id 404 paths)
 #
 # Usage:
 #   ./scripts/smoke.sh
@@ -3305,3 +3309,93 @@ assert_json_expr '(.entries | length) == 1 and .entries[0].name == "q3.md" and .
 
 api_req "GET" "${WF_BASE}?path=notes.md&mode=list" "${CHARLIE_TOKEN}"
 assert_status "404" "Listing a regular file is not found"
+
+# -----------------------------------------------------------------------------
+# 28. Workspace service connections (add-workspace-connections: recipe gallery,
+#     integrations.write guards, connect validation envelopes, the real
+#     upstream probe gate, and disconnect-cascade hygiene)
+# -----------------------------------------------------------------------------
+log_step "28. Workspace Service Connections: Recipes, Guards, Probe Gate"
+
+# The connect flow is probe-gated against the recipe's declared endpoint
+# (frozen server-side data, design D7) — with no live GitHub/GitLab PAT in a
+# smoke run the happy-path lifecycle (connect → attach → disconnect) is
+# covered by the fake-based HTTP tests (internal/server/connections_test.go).
+# This section exercises everything that is deterministic here: the gallery,
+# the permission tier, the validation envelopes, and the probe gate itself —
+# a bogus token against the real upstream fails the gate in every environment
+# (offline: dial error; online: upstream 401), stores NOTHING, and surfaces
+# the upstream message (spec: "Probe failure blocks connect").
+CONN_BASE="/api/v1/workspaces/${TENANT_SLUG}/integrations"
+
+# 28.1 The recipe registry: gallery order, GitHub available with guided steps,
+# scopes, and the probe declaration; Atlassian declared coming-soon.
+api_req "GET" "${CONN_BASE}/recipes" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists the integration recipes"
+assert_json_expr '(.recipes | length) >= 5' "The registry declares the built-in services"
+assert_json_expr '[.recipes[] | select(.id == "github")][0].availability == "available"' "GitHub recipe is available"
+assert_json_expr '[.recipes[] | select(.id == "github")][0].auth_kind == "pat"' "GitHub recipe declares PAT auth"
+assert_json_expr '[.recipes[] | select(.id == "github")][0].transport == "streamable_http"' "GitHub recipe declares the streamable HTTP transport"
+assert_json_expr '[.recipes[] | select(.id == "github")][0].endpoint != ""' "GitHub recipe carries its endpoint"
+assert_json_expr '[.recipes[] | select(.id == "github")][0].probe.tool == "list_repositories"' "GitHub recipe declares its probe tool"
+assert_json_expr '[.recipes[] | select(.id == "github")][0].steps | length >= 3' "GitHub recipe carries guided setup steps"
+assert_json_expr '[.recipes[] | select(.id == "github")][0].access_levels[0] == "read_only"' "GitHub recipe defaults to read-only"
+assert_json_expr '[.recipes[] | select(.id == "github")][0].scopes | length >= 2' "GitHub recipe carries per-level scope guidance"
+assert_json_expr '[.recipes[] | select(.id == "atlassian")][0].availability == "coming_soon"' "Atlassian recipe is declared coming-soon"
+assert_json_expr '[.recipes[] | select(.id == "atlassian")][0].notes != ""' "Coming-soon recipes carry truthful copy"
+
+# 28.2 Permission tier: reads ride membership; connect/probe/disconnect are
+# integrations.write — the Member is 403 on every manage verb.
+api_req "GET" "${CONN_BASE}/recipes" "${CLI_USER_TOKEN}"
+assert_status "200" "Member reads the recipes gallery (membership)"
+api_req "GET" "${CONN_BASE}/connections" "${CLI_USER_TOKEN}"
+assert_status "200" "Member reads the connections list (membership)"
+assert_json_expr '(.connections | length) == 0' "Connections start empty"
+
+api_req "POST" "${CONN_BASE}/connections" "${CLI_USER_TOKEN}" '{"recipe_id":"github","access_level":"read_only","token":"tok"}'
+assert_status "403" "Member cannot connect a service (integrations.write 403)"
+assert_json_expr '.error.code == "forbidden"' "Connect rejection is forbidden"
+
+# 28.3 Connect validation envelopes: unknown recipe, coming-soon recipe, bad
+# access level, and an empty token are all 400 invalid_request — and none of
+# them reach the probe or the store.
+api_req "POST" "${CONN_BASE}/connections" "${CHARLIE_TOKEN}" '{"recipe_id":"not-a-service","token":"tok"}'
+assert_status "400" "Unknown recipe is rejected (400)"
+assert_json_expr '.error.code == "invalid_request"' "Unknown recipe code is invalid_request"
+
+api_req "POST" "${CONN_BASE}/connections" "${CHARLIE_TOKEN}" '{"recipe_id":"atlassian","token":"tok"}'
+assert_status "400" "Coming-soon recipe accepts no connect requests (400)"
+
+api_req "POST" "${CONN_BASE}/connections" "${CHARLIE_TOKEN}" '{"recipe_id":"github","access_level":"root","token":"tok"}'
+assert_status "400" "Access level outside the recipe's offer is rejected (400)"
+
+api_req "POST" "${CONN_BASE}/connections" "${CHARLIE_TOKEN}" '{"recipe_id":"github","access_level":"read_only","token":"   "}'
+assert_status "400" "Empty token is rejected (400)"
+
+# 28.4 The probe gate with a real upstream: a well-formed connect whose token
+# cannot pass the recipe's probe is rejected 400 with the upstream message
+# verbatim after the "probe failed: " prefix — and stores nothing.
+api_req "POST" "${CONN_BASE}/connections" "${CHARLIE_TOKEN}" '{"recipe_id":"github","access_level":"read_only","token":"ghp_smoke-invalid-token"}'
+assert_status "400" "A token failing the recipe probe is rejected (400)"
+assert_json_expr '.error.code == "invalid_request"' "Probe-failure code is invalid_request"
+assert_json_expr '.error.message | startswith("probe failed: ")' "Probe-failure message carries the upstream error verbatim"
+CONN_PROBE_MSG=$(json_get '.error.message')
+if [[ "${#CONN_PROBE_MSG}" -gt 20 ]]; then
+    log_pass "Upstream probe failure message is substantive: ${CONN_PROBE_MSG:0:60}..."
+else
+    log_fail "Upstream probe failure message is too short to be real: ${CONN_PROBE_MSG}"
+fi
+
+api_req "GET" "${CONN_BASE}/connections" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists connections after the failed connect"
+assert_json_expr '(.connections | length) == 0' "Probe failure stored no connection (nothing-stored hygiene)"
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/mcp-servers" "${CHARLIE_TOKEN}"
+assert_json_expr '[.servers[] | select(.name == "GitHub")] | length == 0' "Probe failure materialized no server row"
+
+# 28.5 Read paths for an unknown connection are 404 (get, probe, disconnect).
+api_req "GET" "${CONN_BASE}/connections/00000000-0000-0000-0000-000000000000" "${CHARLIE_TOKEN}"
+assert_status "404" "Unknown connection get is 404"
+api_req "POST" "${CONN_BASE}/connections/00000000-0000-0000-0000-000000000000/probe" "${CHARLIE_TOKEN}"
+assert_status "404" "Unknown connection probe is 404"
+api_req "DELETE" "${CONN_BASE}/connections/00000000-0000-0000-0000-000000000000" "${CHARLIE_TOKEN}"
+assert_status "404" "Unknown connection disconnect is 404"

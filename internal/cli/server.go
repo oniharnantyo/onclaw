@@ -194,6 +194,19 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	mcpManager := mcp.NewMCPManager()
 	defer mcpManager.Close()
 
+	// Workspace service connections (add-workspace-connections 3.3): the
+	// connections service composes the connections/MCP-server/agent stores
+	// with the MCP settings service above — the token's secret row rides the
+	// same workspace-scoped secret machinery, no second secret path (design.md
+	// D4). Probe bounds ride the same knob as the MCP registry's probes.
+	connectionsSvc := services.NewConnectionsService(
+		st.Connections(),
+		st.WorkspaceMCPServers(),
+		st.Agents(),
+		mcpSettings,
+		services.WithProbeTimeout(handlers.DefaultMCPProbeTimeout),
+	)
+
 	// Channel fan-out (integrate-agent-channels D2/D11 + channel-teams D1/D3):
 	// one runtime shared by the runner (channel context + feed + work
 	// sessions) and the HTTP layer (post chokepoint + SSE hub). Built before
@@ -488,6 +501,7 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		ToolSettings:        toolSettings,
 		MCPSettings:         mcpSettings,
 		MCPManager:          mcpManager,
+		Connections:         connectionsSvc,
 		ChannelRuntime:      channelRuntime,
 		HooksCommandEnabled: cfg.HooksCommandEnabled,
 		HooksScriptEnabled:  cfg.HooksScriptEnabled,

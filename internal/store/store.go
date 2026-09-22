@@ -48,6 +48,7 @@ type Store interface {
 	ToolSettings() ToolSettingsStore
 	WorkspaceMCPServers() WorkspaceMCPServers
 	AgentMCPServers() AgentMCPServers
+	Connections() Connections
 	Hooks() HookStore
 	Channels() ChannelStore
 	WorkSessions() WorkSessionStore

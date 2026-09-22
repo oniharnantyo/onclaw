@@ -47,6 +47,14 @@ const (
 	// Reads ride the same write permission: the pane is admin-only surface.
 	GatewaysWrite = "gateways.write"
 
+	// Integrations permissions (workspace service connections — the
+	// Integrations gallery's connect, probe, and disconnect). Reads ride
+	// membership. Same trust tier as gateways.write: credential-bearing admin
+	// surface, held by built-in Owner and Admin (Superadmin via its
+	// all-workspace-permissions set), never by Member, and by custom roles
+	// only on explicit grant.
+	IntegrationsWrite = "integrations.write"
+
 	// Admin permissions (master tenant control plane)
 	AdminWorkspacesRead   = "admin.workspaces.read"
 	AdminWorkspacesWrite  = "admin.workspaces.write"
@@ -56,7 +64,7 @@ const (
 )
 
 var (
-	// OwnerPermissions contains all standard workspace permissions (21 permissions).
+	// OwnerPermissions contains all standard workspace permissions (22 permissions).
 	OwnerPermissions = []string{
 		WorkspaceRead,
 		WorkspaceWrite,
@@ -79,9 +87,10 @@ var (
 		SchedulerRead,
 		SchedulerWrite,
 		GatewaysWrite,
+		IntegrationsWrite,
 	}
 
-	// AdminPermissions contains all standard workspace permissions except roles.write (20 permissions).
+	// AdminPermissions contains all standard workspace permissions except roles.write (21 permissions).
 	AdminPermissions = []string{
 		WorkspaceRead,
 		WorkspaceWrite,
@@ -103,6 +112,7 @@ var (
 		SchedulerRead,
 		SchedulerWrite,
 		GatewaysWrite,
+		IntegrationsWrite,
 	}
 
 	// MemberPermissions contains only read permissions (7 permissions).
@@ -116,7 +126,7 @@ var (
 		SchedulerRead,
 	}
 
-	// SuperadminPermissions contains all workspace permissions plus all instance-admin permissions (26 permissions).
+	// SuperadminPermissions contains all workspace permissions plus all instance-admin permissions (27 permissions).
 	SuperadminPermissions = []string{
 		WorkspaceRead,
 		WorkspaceWrite,
@@ -139,6 +149,7 @@ var (
 		SchedulerRead,
 		SchedulerWrite,
 		GatewaysWrite,
+		IntegrationsWrite,
 		AdminWorkspacesRead,
 		AdminWorkspacesWrite,
 		AdminUsersRead,
@@ -171,6 +182,7 @@ func AllPermissions() []string {
 		SchedulerRead,
 		SchedulerWrite,
 		GatewaysWrite,
+		IntegrationsWrite,
 		AdminWorkspacesRead,
 		AdminWorkspacesWrite,
 		AdminUsersRead,
@@ -193,6 +205,7 @@ func IsValidPermission(p string) bool {
 		ChannelsRead, ChannelsWrite,
 		SchedulerRead, SchedulerWrite,
 		GatewaysWrite,
+		IntegrationsWrite,
 		AdminWorkspacesRead, AdminWorkspacesWrite,
 		AdminUsersRead, AdminUsersWrite,
 		AdminSuperadminsWrite:

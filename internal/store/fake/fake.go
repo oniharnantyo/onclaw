@@ -45,6 +45,8 @@ type fakeStore struct {
 	wsMCPServerNames        map[string]string                         // key: workspaceID + ":" + lower(name) -> ID
 	agentMCPServers         map[string]*domain.AgentMCPServer         // key: ID
 	agentMCPServerNames     map[string]string                         // key: agentID + ":" + lower(name) -> ID
+	connections             map[string]*domain.Connection             // key: ID
+	connectionsByService    map[string]string                         // key: workspaceID + ":" + service -> ID
 	hooks                   *hookData                                 // hook state: all three levels + execution audit log
 	channels                *channelData                              // channel state: rooms, membership roster, shared feed
 	agentSessions           map[string]*domain.AgentSession           // key: workspaceID + ":" + agentID + ":" + sessionID
@@ -105,6 +107,8 @@ func newStore() *fakeStore {
 		wsMCPServerNames:        make(map[string]string),
 		agentMCPServers:         make(map[string]*domain.AgentMCPServer),
 		agentMCPServerNames:     make(map[string]string),
+		connections:             make(map[string]*domain.Connection),
+		connectionsByService:    make(map[string]string),
 		hooks:                   newHookData(),
 		channels:                newChannelData(),
 		agentSessions:           make(map[string]*domain.AgentSession),
@@ -232,6 +236,11 @@ func (s *fakeStore) WorkspaceMCPServers() store.WorkspaceMCPServers {
 // AgentMCPServers returns the AgentMCPServers sub-port.
 func (s *fakeStore) AgentMCPServers() store.AgentMCPServers {
 	return &agentMCPServerStore{s: s}
+}
+
+// Connections returns the Connections sub-port.
+func (s *fakeStore) Connections() store.Connections {
+	return &connectionStore{s: s}
 }
 
 // AgentSessions returns the AgentSessionStore sub-port.
@@ -380,6 +389,12 @@ func (s *fakeStore) clone() *fakeStore {
 	for key, id := range s.agentMCPServerNames {
 		cp.agentMCPServerNames[key] = id
 	}
+	for id, c := range s.connections {
+		cp.connections[id] = cloneConnection(c)
+	}
+	for key, id := range s.connectionsByService {
+		cp.connectionsByService[key] = id
+	}
 	cp.hooks = s.hooks.clone()
 	cp.channels = s.channels.clone()
 	for key, session := range s.agentSessions {
@@ -484,6 +499,8 @@ func (s *fakeStore) apply(other *fakeStore) {
 	s.wsMCPServerNames = other.wsMCPServerNames
 	s.agentMCPServers = other.agentMCPServers
 	s.agentMCPServerNames = other.agentMCPServerNames
+	s.connections = other.connections
+	s.connectionsByService = other.connectionsByService
 	s.hooks = other.hooks
 	s.channels = other.channels
 	s.agentSessions = other.agentSessions
@@ -713,6 +730,14 @@ func cloneMCPConnection(c domain.MCPConnection) domain.MCPConnection {
 	c.Env = cloneEnvRows(c.Env)
 	c.Headers = cloneEnvRows(c.Headers)
 	return c
+}
+
+func cloneConnection(c *domain.Connection) *domain.Connection {
+	if c == nil {
+		return nil
+	}
+	cp := *c
+	return &cp
 }
 
 func cloneAgentSession(session *domain.AgentSession) *domain.AgentSession {

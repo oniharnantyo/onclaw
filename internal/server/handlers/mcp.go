@@ -29,6 +29,14 @@ type MCPInvalidator interface {
 	Invalidate(workspaceID, serverID string)
 }
 
+// ConnectionNamer names the connection that owns a managed server for the
+// origin-marker pointer error (add-workspace-connections design.md D11).
+// *services.ConnectionsService satisfies it; the narrow interface keeps this
+// handler decoupled from the connections service.
+type ConnectionNamer interface {
+	ConnectionDisplayName(ctx context.Context, workspaceID, connectionID string) string
+}
+
 // ---------------------------------------------------------------------------
 // Payload and view shapes (web api.ts McpServerPayload / ApiMcpServer)
 // ---------------------------------------------------------------------------
@@ -243,15 +251,35 @@ type mcpServerHandlers struct {
 	agents       store.AgentStore
 	invalidator  MCPInvalidator
 	probeTimeout time.Duration
+	// connections names the owning connection for managed-server pointer
+	// errors (design.md D11); the composition root always resolves it.
+	connections ConnectionNamer
 }
 
 // NewMCPServerHandlers creates a new mcpServerHandlers instance. A probe
 // timeout of zero selects DefaultMCPProbeTimeout.
-func NewMCPServerHandlers(settings *agents.MCPSettingsService, agents store.AgentStore, invalidator MCPInvalidator, probeTimeout time.Duration) *mcpServerHandlers {
+func NewMCPServerHandlers(settings *agents.MCPSettingsService, agents store.AgentStore, invalidator MCPInvalidator, probeTimeout time.Duration, connections ConnectionNamer) *mcpServerHandlers {
 	if probeTimeout <= 0 {
 		probeTimeout = DefaultMCPProbeTimeout
 	}
-	return &mcpServerHandlers{settings: settings, agents: agents, invalidator: invalidator, probeTimeout: probeTimeout}
+	return &mcpServerHandlers{settings: settings, agents: agents, invalidator: invalidator, probeTimeout: probeTimeout, connections: connections}
+}
+
+// rejectManagedServer enforces the managed-server immutability rule
+// (add-workspace-connections design.md D11): an origin-marked server is
+// read-plus-probe only through the MCP surfaces — the connection is the
+// single authority over its URL, secret rows, and lifecycle. Edit and delete
+// requests are rejected with a 409 naming the owning connection and pointing
+// at the Integrations surface; probe and status stay allowed. Reports whether
+// the server is managed (and the request was rejected).
+func (h *mcpServerHandlers) rejectManagedServer(c *gin.Context, workspaceID, originConnectionID string) bool {
+	if originConnectionID == "" {
+		return false
+	}
+	name := h.connections.ConnectionDisplayName(c.Request.Context(), workspaceID, originConnectionID)
+	AbortWithError(c, http.StatusConflict, CodeConflict,
+		fmt.Sprintf("this mcp server is managed by the %s connection (%s); manage or disconnect it from workspace settings, Integrations", name, originConnectionID))
+	return true
 }
 
 // resolveAgent resolves an agent in the workspace by slug first, falling back
@@ -419,6 +447,12 @@ func (h *mcpServerHandlers) PatchWorkspaceServer(c *gin.Context) {
 		return
 	}
 
+	// Managed server (origin-marked): the connection owns its URL, secret
+	// rows, and lifecycle — edit is rejected with the pointer error (D11).
+	if h.rejectManagedServer(c, ws.ID, row.OriginConnectionID) {
+		return
+	}
+
 	if !applyMCPServerPatch(&row.Name, &row.MCPConnection, &row.Enabled, req) {
 		RespondError(c, fmt.Errorf("%w: no fields to update", domain.ErrInvalid))
 		return
@@ -433,10 +467,20 @@ func (h *mcpServerHandlers) PatchWorkspaceServer(c *gin.Context) {
 }
 
 // DeleteWorkspaceServer removes a registry entry; agent opt-in references
-// become inert by design.
+// become inert by design. Origin-marked (managed) servers are rejected with
+// the pointer error — disconnecting the owning connection is the delete (D11).
 func (h *mcpServerHandlers) DeleteWorkspaceServer(c *gin.Context) {
 	ws := MustCurrentWorkspace(c)
 	id := c.Param("id")
+
+	row, err := h.settings.WorkspaceServer(c.Request.Context(), ws.ID, id)
+	if err != nil {
+		RespondError(c, err)
+		return
+	}
+	if h.rejectManagedServer(c, ws.ID, row.OriginConnectionID) {
+		return
+	}
 
 	if err := h.settings.DeleteWorkspaceServer(c.Request.Context(), ws.ID, id); err != nil {
 		RespondError(c, err)

@@ -121,6 +121,12 @@ func (mss *workspaceMCPStore) Create(ctx context.Context, srv *domain.WorkspaceM
 	if srv.Args == nil {
 		srv.Args = []string{}
 	}
+	// origin_connection_id is a nullable uuid; the entity's empty-string
+	// "no origin" marker binds as SQL NULL (an empty string is not a uuid).
+	var originID *string
+	if srv.OriginConnectionID != "" {
+		originID = &srv.OriginConnectionID
+	}
 	env, err := marshalJSONB(srv.Env)
 	if err != nil {
 		return convertError(err)
@@ -147,9 +153,9 @@ func (mss *workspaceMCPStore) Create(ctx context.Context, srv *domain.WorkspaceM
 	query := `
 		INSERT INTO workspace_mcp_servers (
 			id, workspace_id, name, transport, command, args, env, url, headers,
-			enabled, status, status_error, tool_count, created_at, updated_at
+			enabled, status, status_error, tool_count, origin_connection_id, created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
 		)
 	`
 	_, err = mss.db.Exec(ctx, query,
@@ -166,6 +172,7 @@ func (mss *workspaceMCPStore) Create(ctx context.Context, srv *domain.WorkspaceM
 		srv.Status,
 		srv.StatusError,
 		srv.ToolCount,
+		originID,
 		srv.CreatedAt,
 		srv.UpdatedAt,
 	)
@@ -185,7 +192,7 @@ func (mss *workspaceMCPStore) Get(ctx context.Context, workspaceID, id string) (
 
 	query := `
 		SELECT id, workspace_id, name, transport, command, args, env, url, headers,
-		       enabled, status, status_error, tool_count, created_at, updated_at
+		       enabled, status, status_error, tool_count, origin_connection_id, created_at, updated_at
 		FROM workspace_mcp_servers
 		WHERE workspace_id = $1 AND id = $2
 	`
@@ -195,6 +202,7 @@ func (mss *workspaceMCPStore) Get(ctx context.Context, workspaceID, id string) (
 func scanWorkspaceServer(row pgx.Row) (*domain.WorkspaceMCPServer, error) {
 	var srv domain.WorkspaceMCPServer
 	var env, headers []byte
+	var originID *string // NULL uuid = the entity's empty "no origin" marker
 	err := row.Scan(
 		&srv.ID,
 		&srv.WorkspaceID,
@@ -209,6 +217,7 @@ func scanWorkspaceServer(row pgx.Row) (*domain.WorkspaceMCPServer, error) {
 		&srv.Status,
 		&srv.StatusError,
 		&srv.ToolCount,
+		&originID,
 		&srv.CreatedAt,
 		&srv.UpdatedAt,
 	)
@@ -217,6 +226,9 @@ func scanWorkspaceServer(row pgx.Row) (*domain.WorkspaceMCPServer, error) {
 	}
 	if srv.Args == nil {
 		srv.Args = []string{}
+	}
+	if originID != nil {
+		srv.OriginConnectionID = *originID
 	}
 	if srv.Env, err = unmarshalJSONB(env); err != nil {
 		return nil, err
@@ -234,7 +246,7 @@ func (mss *workspaceMCPStore) List(ctx context.Context, workspaceID string) ([]d
 
 	query := `
 		SELECT id, workspace_id, name, transport, command, args, env, url, headers,
-		       enabled, status, status_error, tool_count, created_at, updated_at
+		       enabled, status, status_error, tool_count, origin_connection_id, created_at, updated_at
 		FROM workspace_mcp_servers
 		WHERE workspace_id = $1
 		ORDER BY created_at ASC, id ASC
@@ -294,7 +306,9 @@ func (mss *workspaceMCPStore) Update(ctx context.Context, srv *domain.WorkspaceM
 	}
 
 	// Editable fields only: status, status_error, and tool_count persist until
-	// the next SetStatus; created_at is immutable.
+	// the next SetStatus; created_at is immutable; origin_connection_id is
+	// birth-stamped (design.md D11 — the connection is the managed server's
+	// single authority) and is never rewritten here.
 	query := `
 		UPDATE workspace_mcp_servers
 		SET name = $3,
@@ -307,8 +321,9 @@ func (mss *workspaceMCPStore) Update(ctx context.Context, srv *domain.WorkspaceM
 		    enabled = $10,
 		    updated_at = $11
 		WHERE workspace_id = $1 AND id = $2
-		RETURNING created_at, status, status_error, tool_count
+		RETURNING created_at, status, status_error, tool_count, origin_connection_id
 	`
+	var originID *string
 	err = mss.db.QueryRow(ctx, query,
 		srv.WorkspaceID,
 		srv.ID,
@@ -321,7 +336,14 @@ func (mss *workspaceMCPStore) Update(ctx context.Context, srv *domain.WorkspaceM
 		headers,
 		srv.Enabled,
 		time.Now().UTC(),
-	).Scan(&srv.CreatedAt, &srv.Status, &srv.StatusError, &srv.ToolCount)
+	).Scan(&srv.CreatedAt, &srv.Status, &srv.StatusError, &srv.ToolCount, &originID)
+	if err == nil {
+		if originID != nil {
+			srv.OriginConnectionID = *originID
+		} else {
+			srv.OriginConnectionID = ""
+		}
+	}
 	if err != nil {
 		if isNameTakenViolation(err) {
 			return fmt.Errorf("%w: workspace mcp server %q already exists in workspace", domain.ErrMCPServerNameTaken, srv.Name)
@@ -371,6 +393,32 @@ func (mss *workspaceMCPStore) SetStatus(ctx context.Context, workspaceID, id, st
 		return domain.ErrNotFound
 	}
 	return nil
+}
+
+// GetByOriginConnection returns the workspace MCP server materialized by the
+// given connection (add-workspace-connections design.md D1); (nil, nil) when
+// the connection has no linked server.
+func (mss *workspaceMCPStore) GetByOriginConnection(ctx context.Context, workspaceID, connectionID string) (*domain.WorkspaceMCPServer, error) {
+	if workspaceID == "" || connectionID == "" {
+		return nil, nil
+	}
+
+	query := `
+		SELECT id, workspace_id, name, transport, command, args, env, url, headers,
+		       enabled, status, status_error, tool_count, origin_connection_id, created_at, updated_at
+		FROM workspace_mcp_servers
+		WHERE workspace_id = $1 AND origin_connection_id = $2
+		ORDER BY created_at ASC, id ASC
+		LIMIT 1
+	`
+	srv, err := scanWorkspaceServer(mss.db.QueryRow(ctx, query, workspaceID, connectionID))
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return srv, nil
 }
 
 // -------------------------------------------------------------------------

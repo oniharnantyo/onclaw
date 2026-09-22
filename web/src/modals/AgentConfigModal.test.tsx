@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import { AgentConfigModal } from './AgentConfigModal';
 import { api, ApiError, type ApiMcpServer, type ApiWorkspaceSkill } from '../lib/api';
+import { connectionsApi } from '../lib/connectionsApi';
 import { heartbeats, type ApiHeartbeat } from '../lib/heartbeats';
 import { useStore } from '../store';
 import { useAuthStore } from '../store/auth';
@@ -125,6 +126,9 @@ describe('modals/AgentConfigModal', () => {
     vi.spyOn(api.agents, 'listSkills').mockResolvedValue({ skills: [] });
     vi.spyOn(api.agents, 'listMcpServers').mockResolvedValue({ servers: [] });
     vi.spyOn(api.mcp, 'list').mockResolvedValue({ servers: [] });
+    // The Integrations section lists managed connections (empty unless a test
+    // overrides it) — optional context that must not block the modal.
+    vi.spyOn(connectionsApi, 'list').mockResolvedValue({ connections: [] });
     vi.spyOn(api.tools, 'list').mockResolvedValue({
       tools: [
         { key: 'ls', display_name: 'List Files', description: '', group: 'filesystem', icon_key: 'folder', configurable: false, enabled: true, configured: false, config: {}, toggleable: true },
@@ -1292,6 +1296,9 @@ describe('modals/AgentConfigModal — Hooks section (integrate-agent-hooks)', ()
     vi.spyOn(api.agents, 'listSkills').mockResolvedValue({ skills: [] });
     vi.spyOn(api.agents, 'listMcpServers').mockResolvedValue({ servers: [] });
     vi.spyOn(api.mcp, 'list').mockResolvedValue({ servers: [] });
+    // The Integrations section lists managed connections (empty unless a test
+    // overrides it) — optional context that must not block the modal.
+    vi.spyOn(connectionsApi, 'list').mockResolvedValue({ connections: [] });
     vi.spyOn(api.tools, 'list').mockResolvedValue({ tools: [] });
   });
 
@@ -1578,6 +1585,9 @@ describe('modals/AgentConfigModal — workspace default inherit (refactor-worksp
     vi.spyOn(api.agents, 'listSkills').mockResolvedValue({ skills: [] });
     vi.spyOn(api.agents, 'listMcpServers').mockResolvedValue({ servers: [] });
     vi.spyOn(api.mcp, 'list').mockResolvedValue({ servers: [] });
+    // The Integrations section lists managed connections (empty unless a test
+    // overrides it) — optional context that must not block the modal.
+    vi.spyOn(connectionsApi, 'list').mockResolvedValue({ connections: [] });
     vi.spyOn(api.tools, 'list').mockResolvedValue({ tools: [] });
   });
 

@@ -22,6 +22,10 @@ type WorkspaceMCPServers interface {
 	Delete(ctx context.Context, workspaceID, id string) error
 	// SetStatus persists the outcome of a probe or runtime connection attempt.
 	SetStatus(ctx context.Context, workspaceID, id, status, statusError string, toolCount int) error
+	// GetByOriginConnection returns the workspace MCP server materialized by
+	// the given connection (add-workspace-connections design.md D1);
+	// (nil, nil) when the connection has no linked server. Workspace-scoped.
+	GetByOriginConnection(ctx context.Context, workspaceID, connectionID string) (*domain.WorkspaceMCPServer, error)
 }
 
 // AgentMCPServers manages agent-private MCP servers. All operations are

@@ -166,6 +166,11 @@ func (s *store) AgentMCPServers() storeport.AgentMCPServers {
 	return NewAgentMCPServerStore(s.db)
 }
 
+// Connections returns the Connections sub-port.
+func (s *store) Connections() storeport.Connections {
+	return NewConnectionStore(s.db)
+}
+
 // Hooks returns the HookStore sub-port.
 func (s *store) Hooks() storeport.HookStore {
 	return NewHookStore(s.db)

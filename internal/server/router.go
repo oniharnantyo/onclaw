@@ -45,6 +45,11 @@ type RouterOptions struct {
 	ToolSettings  *agents.ToolSettingsService
 	MCPSettings   *agents.MCPSettingsService
 	MCPManager    *mcp.MCPManager
+	// Connections is the workspace service-connections service (add-workspace-
+	// connections 3.3), built by the composition root around the MCP settings
+	// service so the token's secret row rides the one secret machinery. nil
+	// builds a fresh one over the granular stores.
+	Connections *services.ConnectionsService
 	// MCPProbeTimeout bounds each MCP probe's fresh connection attempt; 0
 	// uses the handler default (10s).
 	MCPProbeTimeout time.Duration
@@ -534,7 +539,23 @@ func (rt *router) Engine() *gin.Engine {
 	}
 	toolSettingsHandlers := handlers.NewToolSettingsHandlers(toolSettings)
 
-	mcpServerHandlers := handlers.NewMCPServerHandlers(mcpSettings, rt.opts.Store.Agents(), mcpManager, rt.opts.MCPProbeTimeout)
+	// Workspace service connections (add-workspace-connections 3.3): the
+	// connections service composes the stores with the MCP settings service —
+	// the token's secret row rides the same machinery, no second secret path
+	// (design.md D4). The composition root may inject a long-lived instance;
+	// the fallback builds a fresh one over the granular stores.
+	connectionsSvc := rt.opts.Connections
+	if connectionsSvc == nil {
+		connectionsSvc = services.NewConnectionsService(
+			rt.opts.Store.Connections(),
+			rt.opts.Store.WorkspaceMCPServers(),
+			rt.opts.Store.Agents(),
+			mcpSettings,
+			services.WithProbeTimeout(rt.opts.MCPProbeTimeout),
+		)
+	}
+	mcpServerHandlers := handlers.NewMCPServerHandlers(mcpSettings, rt.opts.Store.Agents(), mcpManager, rt.opts.MCPProbeTimeout, connectionsSvc)
+	connectionsHandlers := handlers.NewConnectionsHandlers(connectionsSvc, mcpManager)
 
 	// Channel surface (integrate-agent-channels D11/D12 + channel-teams
 	// tasks 6/7): posts and kickoffs ride the shared chokepoint; the SSE
@@ -779,6 +800,20 @@ func (rt *router) Engine() *gin.Engine {
 				wsGroup.PATCH("/mcp-servers/:id", rt.mw.RequirePermission(domain.ToolsWrite), mcpServerHandlers.PatchWorkspaceServer)
 				wsGroup.DELETE("/mcp-servers/:id", rt.mw.RequirePermission(domain.ToolsWrite), mcpServerHandlers.DeleteWorkspaceServer)
 				wsGroup.POST("/mcp-servers/:id/probe", rt.mw.RequirePermission(domain.ToolsWrite), mcpServerHandlers.ProbeWorkspaceServer)
+
+				// Workspace service connections (add-workspace-connections
+				// D9/D10): the recipes gallery and connection reads ride
+				// membership; connect, probe, and disconnect are
+				// integrations.write — the credential-bearing trust tier,
+				// held by built-in Owner/Admin (Superadmin via its all-
+				// workspace-permissions set), never Member, and by custom
+				// roles only on explicit grant.
+				wsGroup.GET("/integrations/recipes", connectionsHandlers.ListRecipes)
+				wsGroup.GET("/integrations/connections", connectionsHandlers.ListConnections)
+				wsGroup.GET("/integrations/connections/:id", connectionsHandlers.GetConnection)
+				wsGroup.POST("/integrations/connections", rt.mw.RequirePermission(domain.IntegrationsWrite), connectionsHandlers.Connect)
+				wsGroup.DELETE("/integrations/connections/:id", rt.mw.RequirePermission(domain.IntegrationsWrite), connectionsHandlers.Disconnect)
+				wsGroup.POST("/integrations/connections/:id/probe", rt.mw.RequirePermission(domain.IntegrationsWrite), connectionsHandlers.ProbeConnection)
 
 				// Workspace skill library (registry + system tier; Member reads,
 				// Owner/Admin/Superadmin manage via skills.write)

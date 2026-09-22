@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { SettingsPage, rememberLastNonSettingsPath } from './SettingsPage';
 import { api, ApiError, type ApiWorkspaceSkill, type ApiMcpServer } from '../../lib/api';
+import { connectionsApi } from '../../lib/connectionsApi';
 import { useAuthStore } from '../../store/auth';
 
 beforeAll(() => {
@@ -142,6 +143,9 @@ describe('screens/settings/SettingsPage', () => {
     vi.spyOn(api.gateways.telegram.bindings, 'list').mockResolvedValue([]);
     vi.spyOn(api.gateways.telegram.links, 'getMine').mockResolvedValue({ link: null });
     vi.spyOn(api.gateways.whatsapp.links, 'getMine').mockResolvedValue({ link: null });
+    // The Integrations pane fetches the recipe registry + connections.
+    vi.spyOn(connectionsApi, 'recipes').mockResolvedValue({ recipes: [] });
+    vi.spyOn(connectionsApi, 'list').mockResolvedValue({ connections: [] });
   });
 
   function renderSettingsPage(initialPath = '/settings/workspace', overrides = {}) {
@@ -808,22 +812,95 @@ describe('screens/settings/SettingsPage', () => {
   });
 
   describe('Integrations section', () => {
-    it('loads integrations and handles connect / disconnect with toasts', async () => {
-      const { onToast, onUpdate } = renderSettingsPage('/settings/integrations');
+    it('renders the recipe gallery and Connected section from the integrations endpoints', async () => {
+      vi.spyOn(connectionsApi, 'recipes').mockResolvedValue({
+        recipes: [
+          {
+            id: 'github',
+            service: 'GitHub',
+            icon: 'github',
+            auth_kind: 'pat',
+            availability: 'available',
+            transport: 'streamable_http',
+            access_levels: ['read_only', 'read_write'],
+            steps: [{ title: 'Create a personal access token' }],
+            scopes: [{ access_level: 'read_only', scopes: ['repo:read'] }],
+            probe: { tool: 'list-repositories' },
+          },
+          {
+            id: 'gitlab',
+            service: 'GitLab',
+            icon: 'gitlab',
+            auth_kind: 'pat',
+            availability: 'available',
+            transport: 'streamable_http',
+            access_levels: ['read_only', 'read_write'],
+            steps: [{ title: 'Create a personal access token' }],
+            scopes: [{ access_level: 'read_only', scopes: ['read_api'] }],
+            probe: { tool: 'list-projects' },
+          },
+          {
+            id: 'slack',
+            service: 'Slack',
+            icon: 'slack',
+            auth_kind: 'oauth',
+            availability: 'coming_soon',
+            transport: 'streamable_http',
+            access_levels: ['read_only'],
+            steps: [],
+            scopes: [],
+            probe: { tool: 'conversations-history' },
+            notes: 'Coming soon — requires OAuth sign-in with Slack.',
+          },
+        ],
+      });
+      vi.spyOn(connectionsApi, 'list').mockResolvedValue({
+        connections: [
+          {
+            id: 'conn-gitlab',
+            workspace_id: 'acme',
+            service: 'gitlab',
+            access_level: 'read_write',
+            status: 'connected',
+            status_error: null,
+            token_hint: '9f04',
+            server_id: 'srv-gitlab',
+            server_enabled: true,
+            tool_count: 12,
+            attached_agents: ['Atlas'],
+            created_at: '',
+            updated_at: '',
+          },
+        ],
+      });
+      const { onToast } = renderSettingsPage('/settings/integrations');
 
-      expect(screen.getByText('Slack')).not.toBeNull();
-      expect(screen.getByText('GitHub')).not.toBeNull();
-      expect(screen.getByText('Connected')).not.toBeNull();
+      await waitFor(() => {
+        expect(screen.getByTestId('recipe-github')).not.toBeNull();
+      });
+      // Gallery: available service integrates, coming-soon stays disabled.
+      expect(screen.getByTestId('btn-integrate-github')).not.toBeNull();
+      expect(screen.queryByTestId('btn-integrate-slack')).toBeNull();
 
-      // Disconnect Slack
-      fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
-      expect(onToast).toHaveBeenCalledWith('Slack disconnected');
-      expect(onUpdate).toHaveBeenCalled();
+      // Connected section: status, access level, agents, last-4 hint only.
+      expect(screen.getByTestId('connection-status-conn-gitlab').textContent).toBe('Connected');
+      expect(screen.getByText('Read & write')).not.toBeNull();
+      expect(screen.getByTestId('connection-agents-conn-gitlab').textContent).toBe('Atlas');
+      expect(screen.getByTestId('connection-hint-conn-gitlab').textContent).toContain('····9f04');
 
-      // Connect GitHub
-      fireEvent.click(screen.getByTestId('connect-github'));
-      expect(onToast).toHaveBeenCalledWith('GitHub connected');
-      expect(onUpdate).toHaveBeenCalled();
+      // Disconnect rides the confirmation, then the DELETE endpoint.
+      fireEvent.click(screen.getByTestId('btn-connection-disconnect-conn-gitlab'));
+      expect(screen.getByTestId('modal-connection-disconnect').textContent).toContain('materialized MCP server');
+      expect(onToast).not.toHaveBeenCalledWith('GitLab disconnected');
+
+      const disconnect = vi.spyOn(connectionsApi, 'disconnect').mockResolvedValue(undefined);
+      fireEvent.click(screen.getByTestId('btn-disconnect-confirm'));
+      await waitFor(() => {
+        expect(disconnect).toHaveBeenCalledWith('acme', 'conn-gitlab');
+      });
+      await waitFor(() => {
+        expect(onToast).toHaveBeenCalledWith('GitLab disconnected');
+      });
     });
   });
 

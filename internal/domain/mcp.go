@@ -94,12 +94,18 @@ type WorkspaceMCPServer struct {
 	WorkspaceID string `json:"workspace_id"`
 	Name        string `json:"name"`
 	MCPConnection
-	Enabled     bool      `json:"enabled"`
-	Status      string    `json:"status"`
-	StatusError string    `json:"status_error,omitempty"`
-	ToolCount   int       `json:"tool_count"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	Enabled     bool   `json:"enabled"`
+	Status      string `json:"status"`
+	StatusError string `json:"status_error,omitempty"`
+	ToolCount   int    `json:"tool_count"`
+	// OriginConnectionID is the connection that materialized this server
+	// (add-workspace-connections design.md D1); empty for hand-made servers.
+	// The marker is birth-stamped: the connection is the single authority over
+	// a managed server's URL, secret rows, and lifecycle (design.md D11), so
+	// it is never rewritten through Update.
+	OriginConnectionID string    `json:"origin_connection_id,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 // Validate checks the server structurally: workspace scope and name present,

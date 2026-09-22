@@ -401,6 +401,37 @@ func TestGatewaysPermissions(t *testing.T) {
 	}
 }
 
+// integrations.write defaults into built-in Owner and Admin (Superadmin via
+// its all-workspace-permissions set), is absent from Member, and reaches
+// custom roles only by explicit grant (add-workspace-connections design.md
+// D10, tasks.md 1.6).
+func TestIntegrationsPermissions(t *testing.T) {
+	// Owner has integrations.write
+	if !domain.HasPermission(domain.OwnerPermissions, domain.IntegrationsWrite) {
+		t.Errorf("expected OwnerPermissions to have %s", domain.IntegrationsWrite)
+	}
+
+	// Admin has integrations.write
+	if !domain.HasPermission(domain.AdminPermissions, domain.IntegrationsWrite) {
+		t.Errorf("expected AdminPermissions to have %s", domain.IntegrationsWrite)
+	}
+
+	// Member does NOT have integrations.write
+	if domain.HasPermission(domain.MemberPermissions, domain.IntegrationsWrite) {
+		t.Errorf("expected MemberPermissions NOT to have %s", domain.IntegrationsWrite)
+	}
+
+	// Superadmin inherits integrations.write
+	if !domain.HasPermission(domain.SuperadminPermissions, domain.IntegrationsWrite) {
+		t.Errorf("expected SuperadminPermissions to have %s", domain.IntegrationsWrite)
+	}
+
+	// integrations.write is part of the closed catalog
+	if !domain.IsValidPermission(domain.IntegrationsWrite) {
+		t.Errorf("expected %s to be a valid permission", domain.IntegrationsWrite)
+	}
+}
+
 func TestAgentAndSkillPermissions(t *testing.T) { // Owner has agents.read/write and skills.read/write
 	for _, p := range []string{domain.AgentsRead, domain.AgentsWrite, domain.SkillsRead, domain.SkillsWrite} {
 		if !domain.HasPermission(domain.OwnerPermissions, p) {

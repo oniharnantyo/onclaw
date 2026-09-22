@@ -38,6 +38,7 @@ import {
 } from "../lib/hooksUi";
 import { McpServerDialog } from "./McpServerDialog";
 import { HookDialog } from "./HookDialog";
+import { AgentConnectionsSection } from "./AgentConnectionsSection";
 import { HeartbeatPane, type HeartbeatPaneHandle } from "./HeartbeatPane";
 import { useWorkspace, useStore } from "../store";
 
@@ -1474,6 +1475,12 @@ export function AgentConfigModal({
                 {!isEdit ? " Agent-tier skills can be added after it is deployed." : ""}
               </p>
             </div>
+
+            <AgentConnectionsSection
+              targetWsId={targetWsId}
+              enabledMcps={enabledMcps}
+              onToggle={toggleMcpServer}
+            />
 
             <div data-testid="agent-mcp-section">
               <span className={labelCls}>MCP Servers</span>
