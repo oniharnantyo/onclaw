@@ -12,28 +12,171 @@ import (
 	"github.com/go-pdf/fpdf"
 )
 
-// generatePDF dispatches the pdf format's dual route (design.md D4):
-// data.source "html" renders agent-authored HTML through the injected
-// PDFHTMLRenderer (headless Chrome); "structured" (or omitted) renders an
-// invoice with pure-Go fpdf — available on every deployment.
+// generatePDF dispatches the pdf format routes:
+// 1. data.source "html" (or data.html present): renders agent-authored HTML
+//    through the injected PDFHTMLRenderer (headless Chrome).
+// 2. data.source "structured" (or data.invoice present): renders an invoice
+//    with pure-Go fpdf — available on every deployment.
+// 3. data.markdown / data.text / data.content (or source "markdown"): renders
+//    general articles, notes, reports with pure-Go fpdf.
 func generatePDF(ctx context.Context, renderer PDFHTMLRenderer, data json.RawMessage, outputPath string) error {
 	if len(data) == 0 {
-		return fmt.Errorf("pdf data is required: {\"source\":\"structured\",\"invoice\":{...}} or {\"source\":\"html\",\"html\":\"...\"}")
+		return fmt.Errorf("pdf data is required: {\"markdown\":\"# Title\\n...\"} or {\"html\":\"...\"} or {\"invoice\":{...}}")
 	}
-	var src struct {
-		Source string `json:"source"`
+	var probe struct {
+		Source   string          `json:"source"`
+		HTML     string          `json:"html"`
+		Markdown string          `json:"markdown"`
+		Text     string          `json:"text"`
+		Content  string          `json:"content"`
+		Invoice  json.RawMessage `json:"invoice"`
 	}
-	if err := json.Unmarshal(data, &src); err != nil {
+	if err := json.Unmarshal(data, &probe); err != nil {
 		return fmt.Errorf("parse pdf data: %w", err)
 	}
-	switch strings.ToLower(src.Source) {
-	case "html":
+	src := strings.ToLower(probe.Source)
+	if src == "html" || probe.HTML != "" {
 		return generatePDFHTML(ctx, renderer, data, outputPath)
-	case "", "structured":
-		return generatePDFStructured(ctx, data, outputPath)
-	default:
-		return fmt.Errorf("unknown pdf source %q; use \"structured\" (invoice data) or \"html\"", src.Source)
 	}
+	if src == "invoice" || (src == "structured" && len(probe.Invoice) > 0) || (src == "" && len(probe.Invoice) > 0) {
+		return generatePDFStructured(ctx, data, outputPath)
+	}
+	if src == "markdown" || src == "text" || src == "document" || probe.Markdown != "" || probe.Text != "" || probe.Content != "" {
+		return generatePDFMarkdown(ctx, data, outputPath)
+	}
+	if src == "structured" {
+		return generatePDFStructured(ctx, data, outputPath)
+	}
+	return generatePDFMarkdown(ctx, data, outputPath)
+}
+
+// generatePDFMarkdown renders a markdown document into an A4 PDF using pure-Go
+// fpdf (available on every deployment).
+func generatePDFMarkdown(ctx context.Context, data json.RawMessage, outputPath string) error {
+	var in struct {
+		Markdown string `json:"markdown"`
+		Text     string `json:"text"`
+		Content  string `json:"content"`
+		Title    string `json:"title"`
+	}
+	if err := json.Unmarshal(data, &in); err != nil {
+		return fmt.Errorf("parse pdf markdown data: %w", err)
+	}
+	md := in.Markdown
+	if md == "" {
+		md = in.Text
+	}
+	if md == "" {
+		md = in.Content
+	}
+	if in.Title != "" && !strings.HasPrefix(strings.TrimSpace(md), "#") {
+		md = "# " + in.Title + "\n\n" + md
+	}
+	if strings.TrimSpace(md) == "" {
+		return fmt.Errorf("pdf structured data must contain \"markdown\", \"html\", or \"invoice\" {seller, buyer, number, date, line_items, tax_rate, notes}")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	pdfBytes, err := renderMarkdownPDF(md)
+	if err != nil {
+		return fmt.Errorf("render markdown pdf: %w", err)
+	}
+	if err := os.WriteFile(outputPath, pdfBytes, 0644); err != nil {
+		return fmt.Errorf("write pdf: %w", err)
+	}
+	return nil
+}
+
+func cleanPDFText(s string) string {
+	r := strings.NewReplacer(
+		"“", "\"", "”", "\"",
+		"‘", "'", "’", "'",
+		"—", " - ", "–", "-",
+		"…", "...",
+		"\u00a0", " ",
+		"•", "-",
+	)
+	return r.Replace(s)
+}
+
+func stripSimpleMarkdown(s string) string {
+	s = strings.ReplaceAll(s, "**", "")
+	s = strings.ReplaceAll(s, "__", "")
+	s = strings.ReplaceAll(s, "`", "")
+	return s
+}
+
+func renderMarkdownPDF(markdown string) ([]byte, error) {
+	pdf := fpdf.New("P", "mm", "A4", "")
+	pdf.SetMargins(20, 20, 20)
+	pdf.SetAutoPageBreak(true, 20)
+	pdf.AddPage()
+	tr := pdf.UnicodeTranslatorFromDescriptor("")
+
+	lines := strings.Split(markdown, "\n")
+	for _, rawLine := range lines {
+		line := strings.TrimRight(rawLine, "\r ")
+		trimmed := strings.TrimSpace(line)
+
+		if trimmed == "" {
+			pdf.Ln(3)
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "# ") {
+			title := strings.TrimSpace(strings.TrimPrefix(trimmed, "# "))
+			pdf.SetFont("helvetica", "B", 18)
+			pdf.SetTextColor(17, 17, 17)
+			pdf.Ln(2)
+			pdf.MultiCell(0, 8, tr(cleanPDFText(title)), "", "L", false)
+			pdf.Ln(2)
+			continue
+		}
+		if strings.HasPrefix(trimmed, "## ") {
+			title := strings.TrimSpace(strings.TrimPrefix(trimmed, "## "))
+			pdf.SetFont("helvetica", "B", 14)
+			pdf.SetTextColor(34, 34, 34)
+			pdf.Ln(2)
+			pdf.MultiCell(0, 7, tr(cleanPDFText(title)), "", "L", false)
+			pdf.Ln(1)
+			continue
+		}
+		if strings.HasPrefix(trimmed, "### ") {
+			title := strings.TrimSpace(strings.TrimPrefix(trimmed, "### "))
+			pdf.SetFont("helvetica", "B", 12)
+			pdf.SetTextColor(51, 51, 51)
+			pdf.Ln(1)
+			pdf.MultiCell(0, 6, tr(cleanPDFText(title)), "", "L", false)
+			pdf.Ln(1)
+			continue
+		}
+		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") || strings.HasPrefix(trimmed, "• ") {
+			bulletText := strings.TrimSpace(trimmed[2:])
+			bulletText = stripSimpleMarkdown(bulletText)
+			pdf.SetFont("helvetica", "", 10)
+			pdf.SetTextColor(30, 30, 30)
+			pdf.SetX(24)
+			pdf.MultiCell(0, 5, "-  "+tr(cleanPDFText(bulletText)), "", "L", false)
+			continue
+		}
+
+		pText := stripSimpleMarkdown(trimmed)
+		pdf.SetFont("helvetica", "", 10)
+		pdf.SetTextColor(30, 30, 30)
+		pdf.MultiCell(0, 5.5, tr(cleanPDFText(pText)), "", "L", false)
+		pdf.Ln(1)
+	}
+
+	if err := pdf.Error(); err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	if err := pdf.Output(&buf); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 // generatePDFHTML renders agent-supplied HTML/CSS via the injected renderer

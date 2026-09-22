@@ -545,9 +545,39 @@ func TestDocumentCreate_PDFStructuredInvoice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("convertPDF round trip: %v", err)
 	}
-	for _, want := range []string{"INVOICE", "INV-2026-001", "OnClaw Inc", "Acme Corp", "Agent workspace license", "1,240.00", "124.00", "1,364.00", "Payment due in 30 days"} {
+		for _, want := range []string{"INVOICE", "INV-2026-001", "OnClaw Inc", "Acme Corp", "Agent workspace license", "1,240.00", "124.00", "1,364.00", "Payment due in 30 days"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("pdf text missing %q in:\n%s", want, text)
+			}
+		}
+	}
+
+func TestDocumentCreate_PDFMarkdownDocument(t *testing.T) {
+	tool, dir := newDocumentCreateForDir(t)
+	args := `{"path":"/workspace/article.pdf","format":"pdf","data":{"markdown":"# Harness Engineering for Self-Improvement\n\nBy Lilian Weng\n\n## Overview\n\n- Recursive self-improvement loops\n- Frontier research velocity\n\nThis is a full article summary rendered cleanly to PDF."}}`
+	out, err := runCreate(t, tool, args)
+	if err != nil {
+		t.Fatalf("create pdf markdown: %v", err)
+	}
+	res := decodeCreateResult(t, out)
+	if res["result"] != "Created article.pdf (pdf)" {
+		t.Errorf("unexpected result: %v", res)
+	}
+	path := filepath.Join(dir, "article.pdf")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read article.pdf: %v", err)
+	}
+	if !bytes.HasPrefix(raw, []byte("%PDF")) {
+		t.Errorf("expected PDF header, got %q", raw[:20])
+	}
+	text, err := convertDocument(context.Background(), convertPDF, path)
+	if err != nil {
+		t.Fatalf("convertPDF: %v", err)
+	}
+	for _, want := range []string{"Harness Engineering", "Self-Improvement", "Lilian Weng", "Recursive self-improvement", "Frontier research velocity"} {
 		if !strings.Contains(text, want) {
-			t.Errorf("pdf text missing %q in:\n%s", want, text)
+			t.Errorf("missing %q in converted text:\n%s", want, text)
 		}
 	}
 }

@@ -139,9 +139,9 @@ func (t *documentCreateTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 		Desc: "Generate a new document (xlsx, pdf, docx, or pptx) inside the workspace at an absolute output path under " + backend.DefaultMountPoint + ". " +
 			"Input follows the format: docx takes {\"markdown\"} (headings #/##/###, **bold**, *italic*, - bullets, | pipe tables |); " +
 			"pptx takes {\"slides\":[{\"title\",\"bullets\",\"notes\"}]}; " +
-			"xlsx takes {\"sheets\":[{\"name\",\"rows\",\"bold_first_row\"}]} or a simple {\"text\"} pipe table; " +
-			"pdf takes {\"source\":\"structured\",\"invoice\":{seller,buyer,number,date,line_items,tax_rate,notes}} or {\"source\":\"html\",\"html\":...}. " +
-			"An optional \"template\" path (a chat-attached file mount or workspace file) switches to template-fill: " +
+				"xlsx takes {\"sheets\":[{\"name\",\"rows\",\"bold_first_row\"}]} or a simple {\"text\"} pipe table; " +
+				"pdf takes {\"markdown\":\"# Title\\n...\"} or {\"source\":\"html\",\"html\":...} or {\"source\":\"structured\",\"invoice\":{seller,buyer,number,date,line_items,tax_rate,notes}}. " +
+				"An optional \"template\" path (a chat-attached file mount or workspace file) switches to template-fill: " +
 			"xlsx fills named cells {\"cells\":{\"Sheet1!B3\":\"v\"}} and appends rows; docx/pptx replace {{placeholder}} text. " +
 			"PDF templates are not supported (PDF is final-form) — use an xlsx or docx template, or the structured/HTML pdf routes. " +
 			"Generation failures return an error result naming the document; the output path must stay inside the workspace.",
