@@ -1,8 +1,8 @@
 /**
  * @vitest-environment jsdom
  */
-import { describe, it, expect } from 'vitest';
-import { render } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { fireEvent, render } from '@testing-library/react';
 import { ChatHeader } from './ChatHeader';
 
 const agent = {
@@ -13,14 +13,16 @@ const agent = {
 };
 
 const agentTarget = { kind: 'agent', obj: { id: 'a1', name: 'Atlas' } };
+const channelTarget = { kind: 'channel', obj: { id: 'ch-ops', name: 'ops', purpose: 'Ops coordination' } };
 
 // The context meter itself moved to the composer's left rail
 // (adopt-assistant-ui-elements D1) — its suites live in ContextRing.test.tsx.
-// This file pins the header's remaining contract, chiefly that it renders NO
-// meter anymore.
+// This file pins the header's remaining contract: no meter, no agent-configure
+// button (add-right-panel replaced it with the panel toggle), the toggle's
+// dot badge, and the members stack as a members-tab opener.
 
 function renderHeader(props: any) {
-  return render(<ChatHeader channelMembers={[]} onToggleMembers={() => {}} onConfigure={() => {}} {...props}/>);
+  return render(<ChatHeader channelMembers={[]} onOpenMembers={() => {}} panelOpen={false} panelBadge={false} onTogglePanel={() => {}} {...props}/>);
 }
 
 describe('components/chat/ChatHeader — no context meter (adopt-assistant-ui-elements)', () => {
@@ -32,6 +34,58 @@ describe('components/chat/ChatHeader — no context meter (adopt-assistant-ui-el
     expect(utils.container.querySelector('[data-od-id="context-meter"]')).toBeNull();
     expect(utils.container.querySelector('[data-od-id="context-meter-details"]')).toBeNull();
     expect(utils.container.textContent).not.toContain('%');
+  });
+});
+
+describe('components/chat/ChatHeader — panel toggle replaces configure (add-right-panel 1.4)', () => {
+  it('an agent chat header has the panel toggle and NO configure button', () => {
+    const onTogglePanel = vi.fn();
+    const utils = renderHeader({ target: agentTarget, agent, onTogglePanel });
+    expect(utils.container.querySelector('[data-od-id="btn-configure-agent"]')).toBeNull();
+    const toggle = utils.container.querySelector('[data-od-id="btn-panel-toggle"]') as HTMLButtonElement;
+    expect(toggle).not.toBeNull();
+    fireEvent.click(toggle);
+    expect(onTogglePanel).toHaveBeenCalledTimes(1);
+  });
+
+  it('the toggle shows in every chat kind and reflects the open state', () => {
+    const utils = renderHeader({ target: agentTarget, agent, panelOpen: true });
+    const toggle = utils.container.querySelector('[data-od-id="btn-panel-toggle"]') as HTMLButtonElement;
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    expect(toggle.getAttribute('title')).toBe('Hide panel');
+  });
+
+  it('the dot badge renders only while a badge is pending and the panel is closed', () => {
+    const pending = renderHeader({ target: agentTarget, agent, panelBadge: true, panelOpen: false });
+    expect(pending.container.querySelector('[data-od-id="panel-badge"]')).not.toBeNull();
+    // Open panel: nothing pending to reveal.
+    const open = renderHeader({ target: agentTarget, agent, panelBadge: true, panelOpen: true });
+    expect(open.container.querySelector('[data-od-id="panel-badge"]')).toBeNull();
+    // No badge pending.
+    const clear = renderHeader({ target: agentTarget, agent, panelBadge: false, panelOpen: false });
+    expect(clear.container.querySelector('[data-od-id="panel-badge"]')).toBeNull();
+  });
+});
+
+describe('components/chat/ChatHeader — members stack opens the members tab (add-right-panel 1.5)', () => {
+  const members = [
+    { id: 'a1', kind: 'agent', name: 'Atlas' },
+    { id: 'p1', kind: 'person', name: 'Alice', presence: 'online' },
+  ];
+
+  it('clicking the avatar stack opens the members tab (no more onToggleMembers)', () => {
+    const onOpenMembers = vi.fn();
+    const utils = renderHeader({ target: channelTarget, agent: null, channelMembers: members, onOpenMembers });
+    const stack = utils.container.querySelector('[data-od-id="btn-channel-members"]') as HTMLButtonElement;
+    expect(stack).not.toBeNull();
+    expect(stack.getAttribute('title')).toBe('Open members panel');
+    fireEvent.click(stack);
+    expect(onOpenMembers).toHaveBeenCalledTimes(1);
+  });
+
+  it('no members stack without members (agent chats never offer one)', () => {
+    const utils = renderHeader({ target: agentTarget, agent, channelMembers: [] });
+    expect(utils.container.querySelector('[data-od-id="btn-channel-members"]')).toBeNull();
   });
 });
 

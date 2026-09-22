@@ -1,6 +1,7 @@
 import { Fragment, useState } from "react";
 import { cx } from "../../lib/helpers";
 import { Icon } from "../ui/Icon";
+import { useStore } from "../../store";
 import { toolCatalog } from "../../lib/toolCatalog";
 import {
   blockedByHook,
@@ -18,6 +19,7 @@ import {
   type ResultView,
 } from "../../lib/toolDisplay";
 import { renderGenerativeUi } from "../../lib/generativeUi";
+import { matchPanelCandidate } from "../../lib/panel/registry";
 
 // Facade members whose args point at snapshot element refs — the only ids
 // whose ref chips resolve to element names via sibling cards (design D5).
@@ -290,6 +292,18 @@ export function ToolCall({ t, running, approval, siblings, live }: any) {
     if (element) return element;
   }
 
+  // Panel affordance (add-right-panel 1.6): a registered candidate matcher
+  // for this tool's card → an explicit open control. Derived from the folded
+  // card data ({name, args, res, ms, error}) — identical for live and
+  // hydrated transcripts by construction. A failed call produced nothing to
+  // open, an in-flight one hasn't yet, and a hook block IS the result.
+  const panelCandidate = !bad && !blocked && !running
+    ? matchPanelCandidate({ name: t.name, args: t.args, res: t.res, ms: t.ms })
+    : null;
+  const openInPanel = panelCandidate
+    ? () => useStore.getState().openPanelTab(panelCandidate)
+    : null;
+
   // Formatted-view ingredients — pure parses that tolerate mid-stream cards
   // (absent/partial args degrade to the raw-string fallback paths).
   const parsed = parseArgs(t.args);
@@ -334,34 +348,47 @@ export function ToolCall({ t, running, approval, siblings, live }: any) {
           : 'border-line bg-[color-mix(in_oklab,var(--fg)_4%,transparent)]'
       )}
     >
-      <button type="button" onClick={() => setOpen(!open)} aria-expanded={open} data-od-id={'tool-' + t.name}
-        className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_4%,transparent)]">
-        <Icon name={toolCatalog.icon(t.name) ?? 'terminal'} size={13} className={bad || blocked ? 'text-danger' : 'text-meta'}/>
-        <span className={cx('font-mono text-[12px]', bad || blocked ? 'text-danger' : 'text-fg2')}>{toolCatalog.displayName(t.name) ?? t.name}</span>
-        {blocked && (
-          <span className="shrink-0 rounded-full bg-[color-mix(in_oklab,var(--danger)_14%,transparent)] px-2 py-0.5 font-mono text-[10px] text-danger">
-            blocked
+      {/* Header row: the expand button plus — when a candidate matcher
+          matched this card — the explicit open-in-panel affordance as a
+          SIBLING control (buttons never nest). With no affordance the expand
+          button still fills the row. */}
+      <div className="flex items-center">
+        <button type="button" onClick={() => setOpen(!open)} aria-expanded={open} data-od-id={'tool-' + t.name}
+          className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_4%,transparent)]">
+          <Icon name={toolCatalog.icon(t.name) ?? 'terminal'} size={13} className={bad || blocked ? 'text-danger' : 'text-meta'}/>
+          <span className={cx('font-mono text-[12px]', bad || blocked ? 'text-danger' : 'text-fg2')}>{toolCatalog.displayName(t.name) ?? t.name}</span>
+          {blocked && (
+            <span className="shrink-0 rounded-full bg-[color-mix(in_oklab,var(--danger)_14%,transparent)] px-2 py-0.5 font-mono text-[10px] text-danger">
+              blocked
+            </span>
+          )}
+          {/* Human-readable one-liner (task 3.1); aria-live announces the
+              running→done swap for screen readers. A hook-blocked card shows
+              the enforcing hook + reason in the one-liner slot instead. */}
+          <span aria-live="polite" className={cx('min-w-0 flex-1 truncate font-mono text-[11px]', bad || blocked ? 'text-danger' : 'text-muted')}>
+            {blocked ? (
+              <>Blocked by {blocked.hook ? <Chip danger>{blocked.hook}</Chip> : 'a hook'}{blocked.reason ? ` — ${blocked.reason}` : ''}</>
+            ) : oneLiner ? <MarkupText text={oneLiner} refOverride={refOverride} danger={bad}/> : null}
           </span>
+          {running ? (
+            <span className="flex items-center gap-1.5 font-mono text-[10px] text-muted">
+              <span className="od-dot"/><span className="od-dot"/><span className="od-dot"/>
+            </span>
+          ) : bad ? (
+            <span className="font-mono text-[10px] text-danger">error · {formatLatency(t.ms)}</span>
+          ) : (
+            <span className="font-mono text-[10px] text-muted">{formatLatency(t.ms)}</span>
+          )}
+          <Icon name="chevright" size={13} className={cx('text-muted transition-transform', open && 'rotate-90')}/>
+        </button>
+        {openInPanel && (
+          <button type="button" onClick={(e) => { e.stopPropagation(); openInPanel(); }}
+            data-od-id="tool-open-panel" title="Open in panel" aria-label="Open in panel"
+            className="mr-1.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-[5px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--accent)_14%,transparent)] hover:text-fg2">
+            <Icon name="panelopen" size={13}/>
+          </button>
         )}
-        {/* Human-readable one-liner (task 3.1); aria-live announces the
-            running→done swap for screen readers. A hook-blocked card shows
-            the enforcing hook + reason in the one-liner slot instead. */}
-        <span aria-live="polite" className={cx('min-w-0 flex-1 truncate font-mono text-[11px]', bad || blocked ? 'text-danger' : 'text-muted')}>
-          {blocked ? (
-            <>Blocked by {blocked.hook ? <Chip danger>{blocked.hook}</Chip> : 'a hook'}{blocked.reason ? ` — ${blocked.reason}` : ''}</>
-          ) : oneLiner ? <MarkupText text={oneLiner} refOverride={refOverride} danger={bad}/> : null}
-        </span>
-        {running ? (
-          <span className="flex items-center gap-1.5 font-mono text-[10px] text-muted">
-            <span className="od-dot"/><span className="od-dot"/><span className="od-dot"/>
-          </span>
-        ) : bad ? (
-          <span className="font-mono text-[10px] text-danger">error · {formatLatency(t.ms)}</span>
-        ) : (
-          <span className="font-mono text-[10px] text-muted">{formatLatency(t.ms)}</span>
-        )}
-        <Icon name="chevright" size={13} className={cx('text-muted transition-transform', open && 'rotate-90')}/>
-      </button>
+      </div>
       {open && (
         <div className="border-t border-linesoft px-2.5 py-2 font-mono text-[11px] leading-5">
           <div className="mb-1.5 flex items-center justify-between gap-2">

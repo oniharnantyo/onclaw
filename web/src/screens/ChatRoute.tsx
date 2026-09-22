@@ -6,7 +6,7 @@ import { useChatRuntime } from '../chat/runtime';
 import type { AttachmentChip } from '../lib/attachments';
 import { ErrorState } from '../components/ErrorState';
 import { ChatView } from '../components/chat/ChatView';
-import { ContextPanel } from '../components/chat/ContextPanel';
+import { RightPanel } from '../components/chat/RightPanel';
 import {
   ensureWorkspaceKey,
   hydrateSession,
@@ -33,7 +33,6 @@ function ChatRouteActive({
   const navigate = useNavigate();
   const location = useLocation();
   const pos = useStore((s: any) => s.pos);
-  const goPos = useStore((s: any) => s.goPos);
   const ui = useStore((s: any) => s.ui);
   const toast = useStore((s: any) => s.toast);
   const chatRuntime = useChatRuntime(cleanId);
@@ -56,6 +55,10 @@ function ChatRouteActive({
   const addChannelMember = (id: string) => useStore.getState().addChannelMember(cleanId, id);
   const removeChannelMember = (id: string) => useStore.getState().removeChannelMember(cleanId, id);
   const openMember = (id: string) => navigate(`/c/${id}`);
+  // Channels only (add-right-panel 1.5): the header's avatar stack opens (or
+  // focuses — dedup) the panel's members tab. Agent chats never offer one.
+  const openMembersTab = () =>
+    useStore.getState().openPanelTab({ kind: 'members', title: 'Members', payload: { chatId: cleanId } });
 
   const chatAgent = agent || (channel ? (tenant?.agents || []).find((a: any) => a.id === channel.agentId) || null : null);
   const threadState = useThread(cleanId);
@@ -243,7 +246,7 @@ function ChatRouteActive({
           thread={thread}
           session={session}
           channelMembers={channelMembers}
-          onToggleMembers={() => goPos({ showContext: !pos.showContext })}
+          onOpenMembers={openMembersTab}
           typing={ui.running}
           busy={ui.running}
           compacting={ui.compacting}
@@ -258,7 +261,6 @@ function ChatRouteActive({
             )
           }
           onCancel={chatRuntime.onCancel}
-          onConfigure={() => useStore.getState().patchUi({ configAgent: chatAgent?.id })}
           onCopy={copyText}
           onRefresh={chatRuntime.onReload}
           onBranch={chatRuntime.branchNav}
@@ -271,38 +273,20 @@ function ChatRouteActive({
           }
         />
       </AssistantRuntimeProvider>
-      {pos.showContext && target.kind === 'channel' && (
-        <>
-          <div className="hidden xl:flex">
-            <ContextPanel
-              channelMembers={channelMembers}
-              candidates={memberCandidates}
-              primaryAgentId={channel?.agentId}
-              onAddMember={addChannelMember}
-              onRemoveMember={removeChannelMember}
-              onClose={() => goPos({ showContext: false })}
-              onOpenMember={openMember}
-            />
-          </div>
-          <div className="fixed inset-0 z-40 flex xl:hidden" aria-modal="true" role="dialog">
-            <div
-              className="od-fade absolute inset-0 bg-[color-mix(in_oklab,var(--fg)_32%,transparent)]"
-              onClick={() => goPos({ showContext: false })}
-            />
-            <div className="od-pop relative flex w-[300px] max-w-[85vw] ml-auto h-full flex-col bg-bg shadow-[var(--elev-raised)]">
-              <ContextPanel
-                channelMembers={channelMembers}
-                candidates={memberCandidates}
-                primaryAgentId={channel?.agentId}
-                onAddMember={addChannelMember}
-                onRemoveMember={removeChannelMember}
-                onClose={() => goPos({ showContext: false })}
-                onOpenMember={openMember}
-              />
-            </div>
-          </div>
-        </>
-      )}
+      {/* Right panel (add-right-panel 1.2/1.5): docked ≥xl, overlay sheet
+          <xl — the chrome ContextPanel established, now hosting registered
+          sources. Members data/callbacks ride along as the source context;
+          the panel itself reads its tabs from the store's panel slice. */}
+      <RightPanel
+        sourceContext={{
+          channelMembers,
+          memberCandidates,
+          primaryAgentId: channel?.agentId,
+          onAddMember: addChannelMember,
+          onRemoveMember: removeChannelMember,
+          onOpenMember: openMember,
+        }}
+      />
     </>
   );
 }
@@ -329,7 +313,8 @@ export function ChatRoute() {
     } else if (!cleanId && pos.chatId) {
       // /c is the empty picker — drop the persisted chat highlight so the
       // sidebar never shows an active conversation the URL doesn't have.
-      useStore.getState().goPos({ chatId: '', showContext: false });
+      // (The chatId change resets the panel slice via goPos.)
+      useStore.getState().goPos({ chatId: '' });
     }
   }, [cleanId, valid, pos.chatId]);
 

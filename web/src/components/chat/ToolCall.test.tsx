@@ -1,9 +1,11 @@
 /**
  * @vitest-environment jsdom
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { ToolCall } from './ToolCall';
+import { useStore } from '../../store';
+import { registerPanelCandidate, resetPanelRegistries } from '../../lib/panel/registry';
 
 const BLOCKED_RESULT = '{"blocked_by_hook":true,"hook":"Policy Gate","reason":"shell commands are blocked by policy"}';
 
@@ -292,5 +294,97 @@ describe('components/chat/ToolCall — legacy $type echo envelopes (7.x, removed
     fireEvent.click(container.querySelector('button[data-od-id="tool-mcp__x__widget"]') as HTMLButtonElement);
     fireEvent.click(screen.getByTitle('Show raw JSON'));
     expect(container.textContent).toContain('mystery');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Panel open affordance (add-right-panel 1.6): a registered candidate matcher
+// puts an explicit open control on the card — driving the store's
+// openPanelTab — for live and hydrated cards alike (both derive from the same
+// folded card data). Fake matchers prove the mechanism; the real file/browser
+// candidates register in a later slice.
+// ---------------------------------------------------------------------------
+describe('components/chat/ToolCall — panel open affordance (add-right-panel 1.6)', () => {
+  const PUBLISH_ARGS = '{"path":"docs/brief.md"}';
+
+  /** One fake matcher for an artifact flow + a clean panel before each case. */
+  const registerFakeCandidate = () => {
+    resetPanelRegistries();
+    useStore.setState({ panel: { open: false, tabs: [], activeId: null, badge: false } } as any);
+    registerPanelCandidate((card) =>
+      card.name === 'artifact.publish'
+        ? { kind: 'artifact', title: 'Published artifact', payload: { path: String(JSON.parse(card.res || '{}').path || '') } }
+        : null
+    );
+  };
+
+  afterEach(() => {
+    resetPanelRegistries();
+    useStore.setState({ panel: { open: false, tabs: [], activeId: null, badge: false } } as any);
+  });
+
+  it('a card whose tool has a registered candidate renders the open affordance', () => {
+    registerFakeCandidate();
+    const { container } = render(
+      <ToolCall t={{ name: 'artifact.publish', args: PUBLISH_ARGS, res: '{"path":"docs/brief.md"}', ms: 40 }} running={false}/>
+    );
+    expect(container.querySelector('[data-od-id="tool-open-panel"]')).not.toBeNull();
+  });
+
+  it('no candidate match → no affordance', () => {
+    registerFakeCandidate();
+    const { container } = render(
+      <ToolCall t={{ name: 'execute', args: '{}', res: 'ok', ms: 4 }} running={false}/>
+    );
+    expect(container.querySelector('[data-od-id="tool-open-panel"]')).toBeNull();
+  });
+
+  it('an in-flight or errored card offers nothing to open', () => {
+    registerFakeCandidate();
+    const running = render(
+      <ToolCall t={{ name: 'artifact.publish', args: PUBLISH_ARGS, ms: 0 }} running/>
+    );
+    expect(running.container.querySelector('[data-od-id="tool-open-panel"]')).toBeNull();
+    const failed = render(
+      <ToolCall t={{ name: 'artifact.publish', args: PUBLISH_ARGS, res: 'boom', error: 'boom', ms: 9 }} running={false}/>
+    );
+    expect(failed.container.querySelector('[data-od-id="tool-open-panel"]')).toBeNull();
+  });
+
+  it('activating the affordance opens the panel with the candidate focused', () => {
+    registerFakeCandidate();
+    const { container } = render(
+      <ToolCall t={{ name: 'artifact.publish', args: PUBLISH_ARGS, res: '{"path":"docs/brief.md"}', ms: 40 }} running={false}/>
+    );
+    fireEvent.click(container.querySelector('[data-od-id="tool-open-panel"]') as HTMLButtonElement);
+    const p = useStore.getState().panel;
+    expect(p.open).toBe(true);
+    expect(p.tabs).toHaveLength(1);
+    expect(p.tabs[0]).toMatchObject({ kind: 'artifact', title: 'Published artifact', payload: { path: 'docs/brief.md' } });
+    expect(p.activeId).toBe(p.tabs[0].id);
+  });
+
+  it('parity: the affordance derives from card data alone — a hydrated card gets the identical control', () => {
+    registerFakeCandidate();
+    // The exact card content a history replay folds (hydrated ids and
+    // timestamps differ; {callId, name, args, res, ms} do not) — the
+    // affordance is identical and both clicks land on ONE tab (dedup).
+    const card = { callId: 'c1', name: 'artifact.publish', args: PUBLISH_ARGS, res: '{"path":"docs/brief.md"}', ms: 40 };
+    const hydrated = render(<ToolCall t={card} running={false}/>);
+    const live = render(<ToolCall t={card} running={false} live/>);
+    expect(hydrated.container.querySelector('[data-od-id="tool-open-panel"]')).not.toBeNull();
+    expect(live.container.querySelector('[data-od-id="tool-open-panel"]')).not.toBeNull();
+    fireEvent.click(hydrated.container.querySelector('[data-od-id="tool-open-panel"]') as HTMLButtonElement);
+    fireEvent.click(live.container.querySelector('[data-od-id="tool-open-panel"]') as HTMLButtonElement);
+    expect(useStore.getState().panel.tabs).toHaveLength(1);
+  });
+
+  it('the affordance never swallows the card toggle: expand still works', () => {
+    registerFakeCandidate();
+    const { container } = render(
+      <ToolCall t={{ name: 'artifact.publish', args: PUBLISH_ARGS, res: '{"path":"docs/brief.md"}', ms: 40 }} running={false}/>
+    );
+    fireEvent.click(container.querySelector('button[data-od-id="tool-artifact.publish"]') as HTMLButtonElement);
+    expect(container.textContent).toContain('result');
   });
 });

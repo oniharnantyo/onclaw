@@ -488,6 +488,10 @@ func (rt *router) Engine() *gin.Engine {
 
 	providerHandlers := handlers.NewProviderHandlers(rt.opts.Store.Providers(), rt.opts.Store.Agents(), rt.opts.EncryptionKey, providerRegistry, modelCatalog)
 	agentHandlers := handlers.NewAgentHandlers(rt.opts.Store.Agents(), rt.opts.Store.Providers(), rt.opts.Store.SessionEvents(), rt.opts.Store.AgentSessions(), rt.opts.EncryptionKey, providerRegistry, modelCatalog, agentService, workspaceDir, runner, runner)
+	// Agent workspace files (add-right-panel 2.1): read-only byte reads and
+	// one-level listings over the agent jail directory; the handler owns the
+	// path confinement and content-type serving guards.
+	workspaceFilesHandlers := handlers.NewWorkspaceFilesHandlers(rt.opts.Store.Agents(), workspaceDir)
 	memoryHandlers := handlers.NewMemoryHandlers(rt.opts.Store.Memories())
 
 	// Memory notes/events surface (integrate-agent-zero-memory tasks 5.4):
@@ -754,6 +758,13 @@ func (rt *router) Engine() *gin.Engine {
 				wsGroup.GET("/agents/:agent/sessions/:session/events", rt.mw.RequirePermission(domain.AgentsRead), agentHandlers.ListSessionEvents)
 				wsGroup.POST("/agents/:agent/sessions/:session/approvals/:interruptID", rt.mw.RequirePermission(domain.AgentsWrite), agentHandlers.ResolveApproval)
 				wsGroup.POST("/agents/:agent/sessions/:session/runs/:turn/cancel", rt.mw.RequirePermission(domain.AgentsWrite), agentHandlers.CancelRun)
+
+				// Agent workspace files (add-right-panel 2.4): byte reads and
+				// one-level listings from the agent's jail directory. Reads
+				// ride agents.read like the transcript endpoints above; the
+				// workspace in scope is the authenticated member's context,
+				// never the URL slug.
+				wsGroup.GET("/agents/:agent/files", rt.mw.RequirePermission(domain.AgentsRead), workspaceFilesHandlers.ServeWorkspaceFiles)
 
 				// Tool settings (workspace settings; read covered by membership,
 				// writes are Owner/Admin via tools.write)

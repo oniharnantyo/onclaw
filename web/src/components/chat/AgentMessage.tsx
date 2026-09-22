@@ -8,6 +8,8 @@ import { toolCatalog } from "../../lib/toolCatalog";
 import { Icon } from "../ui/Icon";
 import { Avatar } from "../ui/Avatar";
 import { MentionText } from "../ui/MentionText";
+import { useStore } from "../../store";
+import { baseName, jailRelativePath } from "./panel/sources/file/candidates";
 
 import { ToolCall } from "./ToolCall";
 import { SchedulerChip } from "./SchedulerChip";
@@ -181,11 +183,56 @@ function renderPre(children: any, live: boolean) {
 // lazily, only when the message actually carries math delimiters — until
 // they land (or on a failed chunk load) the raw delimiters render as plain
 // text, exactly as before. Non-math messages never touch the bundle.
-const MarkdownBody = memo(function MarkdownBody({ text, members, live }: { text: string; members?: any[]; live?: boolean }) {
+// Exported for the right panel's file source (add-right-panel task 3.1 /
+// design D5): the panel renders file markdown through this same component, so
+// transcript and panel markdown are identical by construction. The export
+// changes nothing about transcript rendering.
+export const MarkdownBody = memo(function MarkdownBody({ text, members, live }: { text: string; members?: any[]; live?: boolean }) {
   const components = useMemo(() => ({
     p: ({ children }) => <p className="mb-2 last:mb-0">{withMentions(children, members)}</p>,
     li: ({ children }) => <li className="mb-1 ml-5 list-disc">{withMentions(children, members)}</li>,
-    a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer" className="text-accent underline underline-offset-2 hover:opacity-80">{children}</a>,
+    a: ({ href, children }: any) => {
+      const isExternal = !href || /^(https?:\/\/|\/\/|mailto:|tel:|#)/i.test(href);
+      if (isExternal) {
+        return (
+          <a href={href} target="_blank" rel="noreferrer" className="text-accent underline underline-offset-2 hover:opacity-80">
+            {children}
+          </a>
+        );
+      }
+      let relPath: string | null = null;
+      if (href.includes('/files?path=')) {
+        try {
+          const u = new URL(href, typeof window !== 'undefined' ? window.location.origin : 'http://localhost');
+          relPath = u.searchParams.get('path');
+        } catch {}
+      }
+      if (!relPath) {
+        relPath = jailRelativePath(href);
+      }
+      if (relPath) {
+        const title = baseName(relPath);
+        return (
+          <button
+            type="button"
+            data-od-id="link-open-panel"
+            onClick={(e) => {
+              e.preventDefault();
+              useStore.getState().openPanelTab({ kind: 'file', title, payload: { path: relPath } });
+            }}
+            className="inline text-accent underline underline-offset-2 hover:opacity-80 cursor-pointer font-inherit p-0 bg-transparent border-none text-left"
+            title={`Open ${title} in panel`}
+          >
+            {children}
+          </button>
+        );
+      }
+      return (
+        <a href={href} target="_blank" rel="noreferrer" className="text-accent underline underline-offset-2 hover:opacity-80">
+          {children}
+        </a>
+      );
+    },
     blockquote: ({ children }) => <blockquote className="mb-2 border-s-2 border-line ps-3 text-fg2">{children}</blockquote>,
     code: ({ children }) => (
       <code className="rounded-[4px] bg-[color-mix(in_oklab,var(--fg)_6%,transparent)] px-1 py-0.5 font-mono text-[13px]">{children}</code>

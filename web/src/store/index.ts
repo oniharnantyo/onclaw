@@ -18,6 +18,10 @@ import type { TurnUsageDetail } from '../lib/contextBreakdown';
 import * as apiModule from '../lib/api';
 import type { ChannelLiveEvent } from '../lib/channelsLive';
 import { overlayPersistedThreads, persistAllThreads, THREADS_KEY } from './threadPersistence';
+// Panel registries (add-right-panel D1/D2): the badge watcher matches finished
+// transcript tool cards against the registered candidate matchers; the tab
+// dedup key and PanelTab type live there too (registry owns the shapes).
+import { matchPanelCandidate, panelDedupKey, type PanelTab } from '../lib/panel/registry';
 
 export { useConnectionStore, type ConnectionState } from './connection';
 
@@ -102,6 +106,17 @@ export interface AppState {
     showContext: boolean;
     railExpanded?: boolean;
   };
+  /** Right panel slice (add-right-panel D1): per-chat, ephemeral — a chat
+   * change resets it (goPos) and nothing persists it. `badge` is the header
+   * toggle's dot: set ONLY by a panel-able tool finishing while the panel is
+   * closed, cleared on open. The panel never opens or mutates tabs from a
+   * tool event — every tab arrives through openPanelTab (a user click). */
+  panel: {
+    open: boolean;
+    tabs: PanelTab[];
+    activeId: string | null;
+    badge: boolean;
+  };
   ui: {
     configAgent: string | null;
     /** 'new' for a blank draft, a Scheduler row for edits, null when closed. */
@@ -125,6 +140,16 @@ export interface AppState {
   goPos: (p: Partial<AppState['pos']>) => void;
   setSearch: (q: string) => void;
   toast: (text: string, kind?: string) => void;
+
+  /** Opens (or focuses — dedup key is kind + payload identity) one panel tab
+   * and shows the panel. The only path a tab can enter the panel. */
+  openPanelTab: (entry: { kind: string; title: string; payload: Record<string, unknown> }) => void;
+  /** Focuses an existing tab; unknown ids are ignored. */
+  focusPanelTab: (id: string) => void;
+  /** Closes one tab; closing the last one closes the panel. */
+  closePanelTab: (id: string) => void;
+  /** Header toggle: show/hide the panel. Opening clears the dot badge. */
+  setPanelOpen: (open: boolean) => void;
 
   /** Appends a message to the chat's queue and resolves the entry id. */
   enqueueChatMessage: (tenantId: string, chatId: string, text: string, attachments?: ChatAttachment[]) => string;
@@ -235,6 +260,7 @@ export const useStore = create<AppState>((set, get) => ({
   agentsLoaded: {},
   channelsLoaded: {},
   pos: initialPos,
+  panel: { open: false, tabs: [], activeId: null, badge: false },
   ui: {
     configAgent: null, scheduleEdit: null,
     wsOpen: false, toasts: [], running: false
@@ -290,9 +316,49 @@ export const useStore = create<AppState>((set, get) => ({
   goPos: (p) => set((s: any) => {
     const newPos = { ...s.pos, ...p };
     savePos(newPos);
-    return { pos: newPos };
+    // Panel reset (add-right-panel D1): tabs are run artifacts and belong to
+    // the chat that opened them — a chat identity change starts the panel
+    // clean; tabs from the previous chat never carry over.
+    const chatChanged = p.chatId !== undefined && p.chatId !== s.pos.chatId;
+    return chatChanged
+      ? { pos: newPos, panel: { open: false, tabs: [], activeId: null, badge: false } }
+      : { pos: newPos };
   }),
   setSearch: (q) => set({ search: q }),
+
+  // Panel slice actions (add-right-panel D1/D7). openPanelTab dedups on
+  // kind + stable payload identity: an artifact that already has a tab is
+  // focused, never duplicated. Every open clears the badge — the user is
+  // looking at the panel now.
+  openPanelTab: (entry) => set((s: any) => {
+    const dedupKey = panelDedupKey(entry.kind, entry.payload);
+    const existing = s.panel.tabs.find((t: PanelTab) => t.dedupKey === dedupKey);
+    if (existing) {
+      return { panel: { ...s.panel, open: true, badge: false, activeId: existing.id } };
+    }
+    const tab: PanelTab = { id: uid('tab'), kind: entry.kind, title: entry.title, payload: entry.payload, dedupKey };
+    return { panel: { open: true, badge: false, activeId: tab.id, tabs: [...s.panel.tabs, tab] } };
+  }),
+
+  focusPanelTab: (id) => set((s: any) =>
+    s.panel.tabs.some((t: PanelTab) => t.id === id)
+      ? { panel: { ...s.panel, activeId: id } }
+      : s
+  ),
+
+  closePanelTab: (id) => set((s: any) => {
+    const tabs = s.panel.tabs.filter((t: PanelTab) => t.id !== id);
+    if (tabs.length === s.panel.tabs.length) return s;
+    // Last tab closed closes the panel (spec); otherwise focus falls to the
+    // nearest remaining tab when the active one went away.
+    if (tabs.length === 0) return { panel: { open: false, tabs, activeId: null, badge: false } };
+    const activeId = s.panel.activeId === id ? tabs[tabs.length - 1].id : s.panel.activeId;
+    return { panel: { ...s.panel, tabs, activeId } };
+  }),
+
+  setPanelOpen: (open) => set((s: any) => ({
+    panel: { ...s.panel, open, badge: open ? false : s.panel.badge },
+  })),
   
   toast: (text, kind) => {
     const isNetworkToast =
@@ -378,8 +444,10 @@ export const useStore = create<AppState>((set, get) => ({
     const t = state.db[state.pos.tenantId];
     if (!t) return;
     const ch = t.channels.find((c: any) => c.id === id);
-    if (ch) state.goPos({ showContext: true });
-    else state.goPos({ showContext: false });
+    // Channel entry keeps its members surface (add-right-panel 1.5): the
+    // members tab opens (or focuses — dedup keeps re-selects stable) instead
+    // of the retired showContext flag. Non-channels open no members tab.
+    if (ch) state.openPanelTab({ kind: 'members', title: 'Members', payload: { chatId: id } });
     if (ch && ch.unread) {
       state.updateTenant(state.pos.tenantId, (tenant) => ({
         ...tenant,
@@ -977,6 +1045,51 @@ let threadPersistTimer: ReturnType<typeof setTimeout> | null = null;
 useStore.subscribe(() => {
   if (threadPersistTimer) clearTimeout(threadPersistTimer);
   threadPersistTimer = setTimeout(() => persistAllThreads(useStore.getState().db), 350);
+});
+
+// ---------------------------------------------------------------------------
+// Panel badge watcher (add-right-panel, spec "Tool-card panel affordances").
+// Derives from the FOLDED transcript tool cards (`agent.tools[]` — the same
+// data live turns and hydrated history carry), never from raw live events, so
+// the affordance data is identical on either path. When a panel-able tool
+// call FINISHES while the panel is closed, the header toggle gets a dot
+// badge — and that is ALL this watcher may do: it never sets `open` and never
+// touches `tabs[]`. The badge clears when the panel opens (setPanelOpen).
+// ---------------------------------------------------------------------------
+
+// Watch state: which chat's active session the signature set belongs to. A
+// chat switch (or boot) re-baselines — the artifacts already sitting in a
+// transcript when you arrive are history, not finishes.
+let panelWatchKey: string | null = null;
+let panelWatchSigs = new Set<string>();
+
+useStore.subscribe((s: any) => {
+  const { tenantId, chatId } = s.pos;
+  const key = chatId ? `${tenantId}::${chatId}` : null;
+  if (!key) {
+    panelWatchKey = null;
+    panelWatchSigs = new Set();
+    return;
+  }
+  const th = s.db[tenantId]?.threads?.[chatId];
+  const sess = th && !Array.isArray(th) ? th.list?.find((x: any) => x.id === th.active) : null;
+  const sigs = new Set<string>();
+  for (const m of sess?.messages || []) {
+    for (const card of m?.tools || []) {
+      // Finished means the fold has a result or an error — a mid-stream card
+      // (no res/error yet) has produced nothing to open.
+      if (!card || (card.res === undefined && card.error === undefined)) continue;
+      const c = matchPanelCandidate(card);
+      if (c) sigs.add(panelDedupKey(c.kind, c.payload));
+    }
+  }
+  const switched = panelWatchKey !== key;
+  const appeared = !switched && [...sigs].some((k) => !panelWatchSigs.has(k));
+  panelWatchKey = key;
+  panelWatchSigs = sigs;
+  if (appeared && !s.panel.open && s.ui.running) {
+    useStore.setState({ panel: { ...s.panel, badge: true } });
+  }
 });
 
 // ---------------------------------------------------------------------------

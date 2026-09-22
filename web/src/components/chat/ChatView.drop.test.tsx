@@ -39,7 +39,7 @@ const renderChatView = (override: Record<string, unknown> = {}) =>
       typing={false}
       busy={false}
       compacting={false}
-      onToggleMembers={vi.fn()}
+      onOpenMembers={vi.fn()}
       onSend={vi.fn()}
       onCancel={vi.fn()}
       onCopy={vi.fn()}

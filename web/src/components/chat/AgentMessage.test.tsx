@@ -14,6 +14,7 @@ import { act, fireEvent, render, waitFor } from '@testing-library/react';
 import { AgentMessage, containsMathDelimiters } from './AgentMessage';
 import { changedFileCount } from './ToolTimelineHeader';
 import { recordTurnTiming } from '../../chat/turnTiming';
+import { useStore } from '../../store';
 
 const todoWrite = (revision: number) => ({
   name: 'todo_write',
@@ -470,3 +471,45 @@ describe('components/chat/AgentMessage — math rendering (11.1–11.2)', () => 
     expect(containsMathDelimiters('Costs $5 and $10 today.')).toBe(false);
   });
 });
+
+describe('components/chat/AgentMessage — local file links open in right panel', () => {
+  it('renders local file links as button with data-od-id="link-open-panel" and opens the panel', () => {
+    useStore.setState({ panel: { open: false, tabs: [], activeId: null, badge: false } });
+    const { container } = renderMessage({
+      id: 'm1',
+      text: 'Here is the report: [Project Report](/workspace/reports/summary.md) and an external link [GitHub](https://github.com).',
+    });
+    const panelBtn = container.querySelector('[data-od-id="link-open-panel"]');
+    expect(panelBtn).not.toBeNull();
+    expect(panelBtn?.textContent).toBe('Project Report');
+    expect(panelBtn?.getAttribute('title')).toBe('Open summary.md in panel');
+
+    const extLink = container.querySelector('a[href="https://github.com"]');
+    expect(extLink).not.toBeNull();
+    expect(extLink?.getAttribute('target')).toBe('_blank');
+
+    fireEvent.click(panelBtn!);
+    const panelState = useStore.getState().panel;
+    expect(panelState.open).toBe(true);
+    expect(panelState.tabs).toHaveLength(1);
+    expect(panelState.tabs[0].payload).toEqual({ path: 'reports/summary.md' });
+    expect(panelState.tabs[0].title).toBe('summary.md');
+  });
+
+  it('handles relative markdown links and files-api links', () => {
+    useStore.setState({ panel: { open: false, tabs: [], activeId: null, badge: false } });
+    const { container } = renderMessage({
+      id: 'm2',
+      text: 'Check [Notes](notes.txt) and [API File](/api/v1/workspaces/ws1/agents/ag1/files?path=docs/guide.md).',
+    });
+    const buttons = container.querySelectorAll('[data-od-id="link-open-panel"]');
+    expect(buttons).toHaveLength(2);
+
+    fireEvent.click(buttons[0]);
+    expect(useStore.getState().panel.tabs[0].payload).toEqual({ path: 'notes.txt' });
+
+    fireEvent.click(buttons[1]);
+    expect(useStore.getState().panel.tabs[1].payload).toEqual({ path: 'docs/guide.md' });
+  });
+});
+

@@ -82,8 +82,8 @@ function useSkillGroups(tenant: any, agent: any) {
   return groups;
 }
 
-export function ChatView({ tenant, target, agent, thread, session, channelMembers, onToggleMembers,
-  typing, busy, compacting, onConfigure, allowAttachments,
+export function ChatView({ tenant, target, agent, thread, session, channelMembers, onOpenMembers,
+  typing, busy, compacting, allowAttachments,
   onSend, onCancel, onCopy, onRefresh, onBranch, onEditSubmit  }: any) {
   const listRef = useRef(null);
   const atBottomRef = useRef(true);
@@ -205,6 +205,9 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
   // chat id). Present-only — QueueStack renders nothing with an empty queue.
   const queueTenantId = useStore((s: any) => s.pos.tenantId);
   const queuedMessages = useMessageQueue(queueTenantId, target.obj.id);
+  // Right panel slice (add-right-panel 1.4): the header toggle reflects these.
+  const panelOpen = useStore((s: any) => s.panel.open);
+  const panelBadge = useStore((s: any) => s.panel.badge);
   // Tool display names come from the per-workspace catalog cache (design D7);
   // the bump re-renders the list once names resolve so cards pick them up.
   const [, setCatalogTick] = useState(0);
@@ -263,7 +266,15 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
           </span>
         </div>
       )}
-      <ChatHeader target={target} agent={agent} channelMembers={channelMembers} usage={session?.usage} langfuseUrl={session?.langfuseUrl} onToggleMembers={onToggleMembers} onConfigure={onConfigure}/>
+      {/* Header panel wiring (add-right-panel 1.4): open state + dot badge
+          come straight from the store's panel slice; the toggle flips it.
+          onOpenMembers (channels) opens the panel with the members tab
+          focused — the configure prop is gone; configuration lives on the
+          Agents screen. */}
+      <ChatHeader target={target} agent={agent} channelMembers={channelMembers} usage={session?.usage} langfuseUrl={session?.langfuseUrl}
+        onOpenMembers={onOpenMembers}
+        panelOpen={panelOpen} panelBadge={panelBadge}
+        onTogglePanel={() => useStore.getState().setPanelOpen(!panelOpen)}/>
       {/* Rail column + transcript: the conversation rail is a real flex child
           at the LEFT edge of the chat pane (before the chat, not floating
           beside the centered column), so it stays pinned while the transcript

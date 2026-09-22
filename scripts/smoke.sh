@@ -52,6 +52,9 @@
 #  26. Extracted memory (integrate-agent-zero-memory: notes/events listings,
 #      provider-pinned settings record, connection-test failure
 #      shapes, promote/tombstone 404 paths, empty morning report)
+#  27. Workspace files API (add-right-panel: agent jail file read/list with
+#      path confinement — traversal and absolute paths rejected as not found,
+#      attachment disposition for html/svg, nosniff on reads and listings)
 #
 # Usage:
 #   ./scripts/smoke.sh
@@ -1055,19 +1058,21 @@ assert_status "201" "Owner creates an agent (generation gates persistence)"
 assert_json_expr '.agent.prompts_status == "ready"' "Create returns the agent with prompts ready (generation ran against the mock provider)"
 AGENT_ID=$(json_get '.agent.id')
 
-# The agent workspace directory is created and seeded with the L1 base prompt
-# at create time; generated documents (IDENTITY/SOUL/BOOTSTRAP.md) land in the
-# same directory once generation succeeds against a live provider.
+# The agent workspace directory is created at create time; the L1 base prompt
+# is injected at build time, never seeded to disk (markdown-card-elements D8
+# sweeps seeded AGENTS.md out of agent workspaces). Generated documents
+# (IDENTITY/SOUL/BOOTSTRAP.md) land in the same directory once generation
+# succeeds against a live provider.
 AGENT_WS_DIR="${WS_ROOT}/${TENANT_SLUG}/agents/test-agent"
 if [[ -d "${AGENT_WS_DIR}" ]]; then
     log_pass "Agent workspace directory exists (${AGENT_WS_DIR})"
 else
     log_fail "Agent workspace directory missing: ${AGENT_WS_DIR}"
 fi
-if [[ -f "${AGENT_WS_DIR}/AGENTS.md" ]]; then
-    log_pass "Agent workspace seeded with AGENTS.md base prompt"
+if [[ ! -f "${AGENT_WS_DIR}/AGENTS.md" ]]; then
+    log_pass "No seeded AGENTS.md in agent workspace (base prompt injected at build)"
 else
-    log_fail "Agent workspace missing AGENTS.md base prompt"
+    log_fail "Agent workspace still carries a seeded AGENTS.md (should be swept)"
 fi
 GENERATED_STATUS=$(json_get '.agent.prompts_status')
 if [[ "${GENERATED_STATUS}" == "ready" ]]; then
@@ -3209,3 +3214,94 @@ assert_status "404" "Tombstone-deleting an unknown note is 404"
 api_req "PUT" "${MEM_BASE}/settings" "${CHARLIE_TOKEN}" '{"visibility_posture":"narrow"}'
 assert_status "200" "Owner restores the narrow posture"
 assert_json_expr '.settings.visibility_posture == "narrow"' "Posture round-trips back to narrow"
+
+# -----------------------------------------------------------------------------
+# 27. Workspace Files API (add-right-panel: agent jail file read/list with
+#     path confinement and content-type serving guards)
+# -----------------------------------------------------------------------------
+log_step "27. Workspace Files: Jail Read/List, Path Confinement & Serving Guards"
+
+# Dedicated agent whose jail directory this section populates directly on
+# disk. The on-disk layout mirrors domain.AgentWorkspaceDir:
+#   <ONCLAW_DIR>/workspaces/<workspace-slug>/agents/<agent-slug>
+# WS_ROOT was computed from the same ONCLAW_DIR the server was started with,
+# so the API and the filesystem below address identical bytes.
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/agents" "${CHARLIE_TOKEN}" '{"name":"Files Agent","slug":"files-agent","role":"Reporter","description":"Writes workspace files","brief":"A files fixture","provider_id":"'"${MOCK_PROV_ID}"'","model":"gpt-4"}'
+assert_status "201" "Owner creates the files fixture agent"
+
+WF_DIR="${WS_ROOT}/${TENANT_SLUG}/agents/files-agent"
+WF_BASE="/api/v1/workspaces/${TENANT_SLUG}/agents/files-agent/files"
+mkdir -p "${WF_DIR}/reports"
+printf '# Smoke Report\n\nAuthored by the smoke suite.\n' > "${WF_DIR}/notes.md"
+printf '<!DOCTYPE html><html><body><script>alert("smoke")</script></body></html>' > "${WF_DIR}/page.html"
+printf '<svg xmlns="http://www.w3.org/2000/svg"><circle r="1"/></svg>' > "${WF_DIR}/logo.svg"
+printf '# Q3\n' > "${WF_DIR}/reports/q3.md"
+
+# Helper: assert the LAST response carried a header line (value regex).
+assert_header() {
+    local name="$1"
+    local value_regex="$2"
+    local msg="$3"
+    if grep -qi "^${name}:${value_regex}" "${TMP_DIR}/headers.tmp"; then
+        log_pass "${msg}"
+    else
+        log_fail "${msg}: no ${name} header matching /${value_regex}/ in the response headers"
+    fi
+}
+
+assert_no_header() {
+    local name="$1"
+    local msg="$2"
+    if grep -qi "^${name}:" "${TMP_DIR}/headers.tmp"; then
+        log_fail "${msg}: unexpected ${name} header present"
+    else
+        log_pass "${msg}"
+    fi
+}
+
+# 27.1 Read the authored markdown: exact bytes, nosniff, no attachment.
+api_req "GET" "${WF_BASE}?path=notes.md" "${CHARLIE_TOKEN}"
+assert_status "200" "Read authored markdown file (200)"
+WF_EXPECTED=$(printf '# Smoke Report\n\nAuthored by the smoke suite.\n')
+if [[ "${HTTP_BODY}" == "${WF_EXPECTED}" ]]; then
+    log_pass "Markdown read returns the authored bytes"
+else
+    log_fail "Markdown read bytes differ from the authored file"
+fi
+assert_header "X-Content-Type-Options" "[[:space:]]*nosniff" "Markdown read carries nosniff"
+assert_no_header "Content-Disposition" "Display-safe markdown serves without attachment disposition"
+
+# 27.2 Path confinement: traversal and absolute paths collapse to not found.
+api_req "GET" "${WF_BASE}?path=../../other-agent/secrets.md" "${CHARLIE_TOKEN}"
+assert_status "404" "Parent traversal request is not found"
+api_req "GET" "${WF_BASE}?path=/etc/passwd" "${CHARLIE_TOKEN}"
+assert_status "404" "Absolute path request is not found"
+api_req "GET" "${WF_BASE}?path=missing.md" "${CHARLIE_TOKEN}"
+assert_status "404" "Missing file is not found"
+
+# 27.3 Stored HTML and SVG never render inline: attachment + nosniff.
+api_req "GET" "${WF_BASE}?path=page.html" "${CHARLIE_TOKEN}"
+assert_status "200" "Read stored HTML file (200)"
+assert_header "Content-Disposition" ".*attachment" "Stored HTML carries attachment disposition"
+assert_header "X-Content-Type-Options" "[[:space:]]*nosniff" "HTML read carries nosniff"
+
+api_req "GET" "${WF_BASE}?path=logo.svg" "${CHARLIE_TOKEN}"
+assert_status "200" "Read stored SVG file (200)"
+assert_header "Content-Disposition" ".*attachment" "Stored SVG carries attachment disposition"
+
+# 27.4 List mode: exactly one directory level per response, nosniff on
+# listings too (the jail also holds the agent's generated IDENTITY/SOUL/
+# BOOTSTRAP prompt documents — assert by membership, not exact set).
+api_req "GET" "${WF_BASE}?mode=list" "${CHARLIE_TOKEN}"
+assert_status "200" "List the agent workspace root (200)"
+assert_json_expr '(.entries | map(select(.name == "notes.md" and .kind == "file")) | length) == 1' "Root listing contains notes.md as a file"
+assert_json_expr '(.entries | map(select(.name == "reports" and .kind == "directory")) | length) == 1' "Root listing contains reports as a directory"
+assert_json_expr '(.entries | map(select(.name == "q3.md")) | length) == 0' "Root listing stays at one level (no q3.md)"
+assert_header "X-Content-Type-Options" "[[:space:]]*nosniff" "Listing carries nosniff"
+
+api_req "GET" "${WF_BASE}?path=reports&mode=list" "${CHARLIE_TOKEN}"
+assert_status "200" "List a nested directory (200)"
+assert_json_expr '(.entries | length) == 1 and .entries[0].name == "q3.md" and .entries[0].kind == "file"' "Nested listing shows only that directory's children"
+
+api_req "GET" "${WF_BASE}?path=notes.md&mode=list" "${CHARLIE_TOKEN}"
+assert_status "404" "Listing a regular file is not found"

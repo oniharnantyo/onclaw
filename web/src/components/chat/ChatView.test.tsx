@@ -27,7 +27,7 @@ const agent = { id: 'a1', name: 'Atlas', slug: 'atlas', status: 'idle' };
 
 const base = {
   tenant, target, agent, channelMembers: [], thread: [],
-  onToggleMembers: vi.fn(), onConfigure: vi.fn(), onSend: vi.fn(),
+  onOpenMembers: vi.fn(), onSend: vi.fn(),
   onCancel: vi.fn(), onAttach: vi.fn(), onCopy: vi.fn(),
   onRefresh: vi.fn(), onBranch: vi.fn(), onEditSubmit: vi.fn(),
   busy: false,

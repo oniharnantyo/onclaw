@@ -7,8 +7,15 @@ import { STATUS } from "../../lib/constants";
 // The context meter moved to the composer's left rail (adopt-assistant-ui-
 // elements D1) — the header renders no meter; the ring + breakdown popover
 // live in components/chat/ContextRing.tsx.
+//
+// The top-right slot belongs to the right-panel toggle (add-right-panel D1).
+// In direct agent chats it REPLACED the configure button — agent
+// configuration stays reachable from the Agents screen, never here. In
+// channels the members avatar stack opens the panel's members tab; the dot
+// badge on the toggle marks a panel-able tool that finished while the panel
+// was closed.
 
-export function ChatHeader({ target, agent, channelMembers, langfuseUrl, onToggleMembers, onConfigure  }: any) {
+export function ChatHeader({ target, agent, channelMembers, langfuseUrl, onOpenMembers, panelOpen, panelBadge, onTogglePanel  }: any) {
   const t = target;
   return (
     <header data-od-id="chat-header"
@@ -45,8 +52,8 @@ export function ChatHeader({ target, agent, channelMembers, langfuseUrl, onToggl
           </a>
         )}
         {channelMembers && channelMembers.length > 0 && (
-          <button type="button" onClick={onToggleMembers} data-od-id="btn-channel-members"
-            title="Show members"
+          <button type="button" onClick={onOpenMembers} data-od-id="btn-channel-members"
+            title="Open members panel"
             className="flex items-center -space-x-1.5 rounded-md transition-transform hover:scale-[1.04]">
             {channelMembers.slice(0, 4).map((m: any) => (
               <span key={m.id} className="rounded-md ring-2 ring-[var(--bg)]">
@@ -60,12 +67,15 @@ export function ChatHeader({ target, agent, channelMembers, langfuseUrl, onToggl
             )}
           </button>
         )}
-        {t.kind === 'agent' && (
-          <button type="button" onClick={onConfigure} data-od-id="btn-configure-agent" title={'Configure ' + agent.name}
-            className="flex h-8 w-8 items-center justify-center rounded-md text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg2">
-            <Icon name="sliders" size={16}/>
-          </button>
-        )}
+        <button type="button" onClick={onTogglePanel} data-od-id="btn-panel-toggle"
+          title={panelOpen ? 'Hide panel' : 'Show panel'} aria-pressed={Boolean(panelOpen)}
+          className="relative flex h-8 w-8 items-center justify-center rounded-md text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg2">
+          <Icon name={panelOpen ? 'panelclose' : 'panelopen'} size={16}/>
+          {panelBadge && !panelOpen && (
+            <span data-od-id="panel-badge" title="New result in the panel"
+              className="absolute right-1 top-1 h-2 w-2 rounded-full bg-[var(--accent)] ring-2 ring-[var(--bg)]"/>
+          )}
+        </button>
       </div>
     </header>
   );
