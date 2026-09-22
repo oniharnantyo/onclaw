@@ -47,6 +47,8 @@ type fakeStore struct {
 	agentMCPServerNames     map[string]string                         // key: agentID + ":" + lower(name) -> ID
 	connections             map[string]*domain.Connection             // key: ID
 	connectionsByService    map[string]string                         // key: workspaceID + ":" + service -> ID
+	connectionWebhooks      map[string]*domain.ConnectionWebhook      // key: connection ID
+	connectionDeliveries    map[string]map[string]time.Time           // key: connection ID -> delivery ID -> recorded at
 	oauthApps               map[string]*domain.InstanceOAuthApp       // key: provider
 	hooks                   *hookData                                 // hook state: all three levels + execution audit log
 	channels                *channelData                              // channel state: rooms, membership roster, shared feed
@@ -110,6 +112,8 @@ func newStore() *fakeStore {
 		agentMCPServerNames:     make(map[string]string),
 		connections:             make(map[string]*domain.Connection),
 		connectionsByService:    make(map[string]string),
+		connectionWebhooks:      make(map[string]*domain.ConnectionWebhook),
+		connectionDeliveries:    make(map[string]map[string]time.Time),
 		oauthApps:               make(map[string]*domain.InstanceOAuthApp),
 		hooks:                   newHookData(),
 		channels:                newChannelData(),
@@ -244,6 +248,11 @@ func (s *fakeStore) AgentMCPServers() store.AgentMCPServers {
 // Connections returns the Connections sub-port.
 func (s *fakeStore) Connections() store.Connections {
 	return &connectionStore{s: s}
+}
+
+// ConnectionWebhooks returns the ConnectionWebhookStore sub-port.
+func (s *fakeStore) ConnectionWebhooks() store.ConnectionWebhookStore {
+	return &connectionWebhookStore{s: s}
 }
 
 // OAuthApps returns the OAuthApps sub-port.
@@ -403,6 +412,16 @@ func (s *fakeStore) clone() *fakeStore {
 	for key, id := range s.connectionsByService {
 		cp.connectionsByService[key] = id
 	}
+	for id, w := range s.connectionWebhooks {
+		cp.connectionWebhooks[id] = cloneConnectionWebhook(w)
+	}
+	for cid, deliveries := range s.connectionDeliveries {
+		copied := make(map[string]time.Time, len(deliveries))
+		for id, at := range deliveries {
+			copied[id] = at
+		}
+		cp.connectionDeliveries[cid] = copied
+	}
 	for provider, app := range s.oauthApps {
 		cp.oauthApps[provider] = cloneInstanceOAuthApp(app)
 	}
@@ -512,6 +531,8 @@ func (s *fakeStore) apply(other *fakeStore) {
 	s.agentMCPServerNames = other.agentMCPServerNames
 	s.connections = other.connections
 	s.connectionsByService = other.connectionsByService
+	s.connectionWebhooks = other.connectionWebhooks
+	s.connectionDeliveries = other.connectionDeliveries
 	s.oauthApps = other.oauthApps
 	s.hooks = other.hooks
 	s.channels = other.channels

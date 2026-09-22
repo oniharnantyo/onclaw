@@ -103,6 +103,12 @@ type RouterOptions struct {
 	// server lifecycle, and the handlers call Manager.Sync after config
 	// changes.
 	Gateways *GatewayRuntime
+	// Webhooks is the connection webhook runtime (add-connection-webhooks
+	// 3.2): the management service and the delivery ingress built by the
+	// composition root around the same runner, with the bounded delivery
+	// queue. nil builds a fresh one for test assembly; the composition root
+	// owns the queue's Close and the delivery-window pruner loop.
+	Webhooks *WebhookRuntime
 	// DatabaseURL is the PostgreSQL DSN the multi-device WhatsApp lane
 	// bridges whatsmeow's sqlstore over (add-whatsapp-gateway design D6) —
 	// the same DSN the store uses. Empty keeps the md lane unconstructable
@@ -537,6 +543,25 @@ func (rt *router) Engine() *gin.Engine {
 		gatewayRuntime,
 	)
 
+	// Connection webhook runtime (add-connection-webhooks 3.2): the
+	// management service and delivery ingress built by the composition root
+	// around the same runner; the fallback assembles a fresh one for tests.
+	webhookRuntime := rt.opts.Webhooks
+	if webhookRuntime == nil && rt.opts.Store != nil {
+		webhookRuntime = NewWebhookRuntime(
+			rt.opts.Store.Connections(),
+			rt.opts.Store.ConnectionWebhooks(),
+			rt.opts.Store.Agents(),
+			rt.opts.Store.Channels(),
+			rt.opts.Store.Members(),
+			rt.opts.Store.Roles(),
+			runner,
+			channelRuntime.Chokepoint(),
+			rt.opts.EncryptionKey,
+		)
+	}
+	webhookHandlers := handlers.NewWebhookHandlers(webhookRuntime.Service, webhookRuntime.Ingress, rt.opts.Store.Workspaces(), rt.opts.PublicBaseURL)
+
 	providerHandlers := handlers.NewProviderHandlers(rt.opts.Store.Providers(), rt.opts.Store.Agents(), rt.opts.EncryptionKey, providerRegistry, modelCatalog)
 	agentHandlers := handlers.NewAgentHandlers(rt.opts.Store.Agents(), rt.opts.Store.Providers(), rt.opts.Store.SessionEvents(), rt.opts.Store.AgentSessions(), rt.opts.EncryptionKey, providerRegistry, modelCatalog, agentService, workspaceDir, runner, runner)
 	// Agent workspace files (add-right-panel 2.1): read-only byte reads and
@@ -586,7 +611,10 @@ func (rt *router) Engine() *gin.Engine {
 	toolSettingsHandlers := handlers.NewToolSettingsHandlers(toolSettings)
 
 	mcpServerHandlers := handlers.NewMCPServerHandlers(mcpSettings, rt.opts.Store.Agents(), mcpManager, rt.opts.MCPProbeTimeout, connectionsSvc)
-	connectionsHandlers := handlers.NewConnectionsHandlers(connectionsSvc, mcpManager)
+	// Connection view webhook enrichment (add-connection-webhooks §4):
+	// webhook-capable connections carry their webhook object; absent when
+	// the runtime could not assemble (never in production).
+	connectionsHandlers := handlers.NewConnectionsHandlers(connectionsSvc, mcpManager, webhookRuntime.Service, rt.opts.PublicBaseURL)
 	oauthHandlers := handlers.NewOAuthHandlers(connectionsSvc, rt.opts.PublicBaseURL)
 	oauthAppsHandlers := handlers.NewOAuthAppsHandlers(oauthAppsSvc)
 
@@ -703,6 +731,15 @@ func (rt *router) Engine() *gin.Engine {
 		// answers the Meta verification handshake (hub.challenge echo).
 		api.GET("/webhooks/whatsapp/:gatewayId", gatewayHandlers.WhatsAppWebhookVerify)
 		api.POST("/webhooks/whatsapp/:gatewayId", gatewayHandlers.WhatsAppWebhookUpdate)
+
+		// Public connection-webhook ingest (add-connection-webhooks 3.1):
+		// the pinned path shape /api/ingest/webhooks/{workspace_slug}/
+		// {connection_id} — no auth middleware, the delivery's signature IS
+		// the authentication. Every rejection (unknown workspace/connection,
+		// disabled ingestion, bad signature) is one generic 404 with no
+		// enumeration help.
+		ingest := r.Group("/api/ingest")
+		ingest.POST("/webhooks/:workspaceSlug/:connectionId", webhookHandlers.IngestDelivery)
 
 		// Public OAuth callback ingress (add-connection-oauth 3.1): no auth
 		// middleware — the browser arrives from the provider's redirect, and
@@ -857,6 +894,19 @@ func (rt *router) Engine() *gin.Engine {
 				// consent flow for an existing connection — same trust tier as
 				// connect (integrations.write, the credential-bearing tier).
 				wsGroup.POST("/integrations/connections/:id/reauthorize", rt.mw.RequirePermission(domain.IntegrationsWrite), connectionsHandlers.ReauthorizeConnection)
+
+				// Connection webhooks (add-connection-webhooks 3.1): the
+				// management sub-resource rides integrations.write across the
+				// board — the secret's reveal-once is connect-tier credential
+				// material, so reads are not member-level here (pinned
+				// contract §5). The connection path param stays :id to match
+				// the sibling routes (gin wildcard-name conflict otherwise).
+				wsGroup.GET("/integrations/connections/:id/webhook", rt.mw.RequirePermission(domain.IntegrationsWrite), webhookHandlers.GetWebhook)
+				wsGroup.POST("/integrations/connections/:id/webhook/enable", rt.mw.RequirePermission(domain.IntegrationsWrite), webhookHandlers.EnableWebhook)
+				wsGroup.POST("/integrations/connections/:id/webhook/disable", rt.mw.RequirePermission(domain.IntegrationsWrite), webhookHandlers.DisableWebhook)
+				wsGroup.POST("/integrations/connections/:id/webhook/rotate", rt.mw.RequirePermission(domain.IntegrationsWrite), webhookHandlers.RotateWebhook)
+				wsGroup.PUT("/integrations/connections/:id/webhook/target", rt.mw.RequirePermission(domain.IntegrationsWrite), webhookHandlers.UpdateWebhookTarget)
+				wsGroup.PUT("/integrations/connections/:id/webhook/events", rt.mw.RequirePermission(domain.IntegrationsWrite), webhookHandlers.UpdateWebhookEvents)
 
 				// Workspace skill library (registry + system tier; Member reads,
 				// Owner/Admin/Superadmin manage via skills.write)

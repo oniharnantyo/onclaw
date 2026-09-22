@@ -49,6 +49,7 @@ type Store interface {
 	WorkspaceMCPServers() WorkspaceMCPServers
 	AgentMCPServers() AgentMCPServers
 	Connections() Connections
+	ConnectionWebhooks() ConnectionWebhookStore
 	OAuthApps() OAuthApps
 	Hooks() HookStore
 	Channels() ChannelStore

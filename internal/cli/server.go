@@ -32,6 +32,7 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/storage"
 	"github.com/oniharnantyo/onclaw/internal/storage/resolver"
 	"github.com/oniharnantyo/onclaw/internal/store"
+	"github.com/oniharnantyo/onclaw/internal/webhooks"
 	"github.com/urfave/cli/v3"
 )
 
@@ -503,6 +504,25 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	}
 	gatewayRuntime.Manager.StartAll(ctx, gatewayIDs)
 
+	// Connection webhook runtime (add-connection-webhooks 3.2): the
+	// management service and the delivery ingress assembled around the same
+	// runner, with the bounded delivery queue (D6) and the secret cipher
+	// over the instance master key. The delivery-window pruner rides the
+	// process-lifetime context like the scheduler loop; the queue's Close
+	// waits for in-flight deliveries at shutdown.
+	webhookRuntime := server.NewWebhookRuntime(
+		st.Connections(),
+		st.ConnectionWebhooks(),
+		st.Agents(),
+		st.Channels(),
+		st.Members(),
+		st.Roles(),
+		runner,
+		channelRuntime.Chokepoint(),
+		encKey,
+	)
+	go webhookRuntime.Service.PruneLoop(lifecycleCtx, webhooks.DefaultPruneInterval)
+
 	// Delivery outbox loop (integrate-telegram-gateway D9): redelivers
 	// committed-but-unsent rows — the first cycle is the startup sweep — and
 	// prunes delivered rows past retention. It rides the process-lifetime
@@ -532,6 +552,7 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		HooksScriptEnabled:  cfg.HooksScriptEnabled,
 		WorkspaceStorage:    wsResolver,
 		Gateways:            gatewayRuntime,
+		Webhooks:            webhookRuntime,
 		MemoryConsolidator:  memoryConsolidator,
 		LangfuseHost:        langfuseHost,
 	})
@@ -633,6 +654,12 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	// stop grace before the process exits.
 	slog.Info("stopping memory consolidator")
 	memoryConsolidator.Stop()
+
+	// Stop the webhook delivery queue (add-connection-webhooks 3.2): the
+	// pruner loop already halted with the lifecycle context; Close waits
+	// for in-flight deliveries to finish rendering and submitting.
+	slog.Info("stopping webhook delivery queue")
+	webhookRuntime.Close()
 
 	// Flush pending Langfuse exports (integrate-langfuse-tracing 3.3): after
 	// the run drain and the scheduler stop every traced turn has reached its

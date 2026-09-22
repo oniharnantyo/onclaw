@@ -142,20 +142,25 @@ func traceSessionConfig(turnID string) *adk.SessionConfig[*schema.AgenticMessage
 
 // applyTurnTrace stamps the run context with the turn's attribution (D2):
 // session/user identity, origin/agent/workspace tags, turn/workspace/agent/
-// origin metadata, the pinned trace id, and the trace name (schedule name
-// for scheduler fires, the input's first line otherwise). Runs for every
-// traced turn regardless of the sampling decision — the pinned id makes the
-// upstream sampler drop a sampled-out turn's whole event set atomically.
+// origin metadata, the service-authority fields for OriginService runs (the
+// webhook run's connection and event, add-connection-webhooks contract §6),
+// the pinned trace id, and the trace name (schedule name for scheduler
+// fires, the input's first line otherwise). Runs for every traced turn
+// regardless of the sampling decision — the pinned id makes the upstream
+// sampler drop a sampled-out turn's whole event set atomically.
 func (r *Runner) applyTurnTrace(ctx context.Context, req ExecRequest, trace runTrace) context.Context {
 	return observability.ApplyTraceContext(ctx, observability.TraceContext{
-		SessionID:    req.SessionID,
-		UserID:       req.UserID,
-		WorkspaceID:  req.WorkspaceID,
-		AgentID:      req.AgentID,
-		TurnID:       trace.turnID,
-		Origin:       req.Origin,
-		Input:        req.Input,
-		ScheduleName: req.ScheduleName,
+		SessionID:         req.SessionID,
+		UserID:            req.UserID,
+		WorkspaceID:       req.WorkspaceID,
+		AgentID:           req.AgentID,
+		TurnID:            trace.turnID,
+		Origin:            req.Origin,
+		Input:             req.Input,
+		ScheduleName:      req.ScheduleName,
+		ConnectionID:      req.ConnectionID,
+		ConnectionService: req.ConnectionService,
+		Event:             req.Event,
 	})
 }
 

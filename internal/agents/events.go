@@ -246,13 +246,15 @@ type ExecRequest struct {
 	Input       string
 
 	// Origin identifies what triggered the run (hooks design.md D1):
-	// OriginUser, OriginScheduler, OriginChannel, OriginTelegram, or
-	// OriginHeartbeat. Empty selects OriginUser — every current caller is
-	// user-initiated; the scheduler service sets OriginScheduler when a
-	// scheduled run is submitted, the Telegram gateway sets OriginTelegram for
-	// every paired-member turn (integrate-telegram-gateway task 6.3), and the
-	// heartbeat ticker sets OriginHeartbeat for every tick
-	// (add-agent-heartbeat D11/D14).
+	// OriginUser, OriginScheduler, OriginChannel, OriginTelegram,
+	// OriginHeartbeat, or OriginService. Empty selects OriginUser — every
+	// current caller is user-initiated; the scheduler service sets
+	// OriginScheduler when a scheduled run is submitted, the Telegram gateway
+	// sets OriginTelegram for every paired-member turn
+	// (integrate-telegram-gateway task 6.3), the heartbeat ticker sets
+	// OriginHeartbeat for every tick (add-agent-heartbeat D11/D14), and the
+	// connection-webhook ingress sets OriginService for every event-triggered
+	// run (add-connection-webhooks contract §6).
 	Origin string
 
 	// Channel-run coordinates (OriginChannel). ChannelID is required when
@@ -267,6 +269,18 @@ type ExecRequest struct {
 	// minted for (channel-teams D1/D3); "" outside sessions. Set only by the
 	// channel chokepoint, for runs whose hop was billed against the session.
 	WorkSessionID string
+
+	// Service-authority attribution (add-connection-webhooks contract §6,
+	// design.md D5): ConnectionID, ConnectionService, and Event name the
+	// exact trigger of an OriginService run — the connection whose webhook
+	// fired, its recipe service id, and the derived catalog event id
+	// ("pull_request.opened"). They ride the run's trace metadata as
+	// {authority, connection_id, connection_service, event} — the authority
+	// discriminator itself derives from the Origin. Empty for every other
+	// origin; v1 applies no new gating, so nothing else reads them.
+	ConnectionID      string
+	ConnectionService string
+	Event             string
 
 	// AllowedTools replaces the agent's tool allowlist for this turn when
 	// non-nil (an empty slice runs the turn with no tools). nil keeps the
@@ -330,6 +344,12 @@ const (
 	// (add-agent-heartbeat D11): heartbeat ticks ride the same event and
 	// hook-payload origin contract as scheduler and channel runs.
 	OriginHeartbeat = "heartbeat"
+	// OriginService marks service-authority runs (add-connection-webhooks
+	// contract §6, design.md D5): event-triggered runs carry the connection
+	// and event identity in ExecRequest.ConnectionID/ConnectionService/Event
+	// instead of a requesting user — first-class in the origin normalizer so
+	// traces, transcripts, and future gating key off the origin honestly.
+	OriginService = "service"
 )
 
 // Built-in slash commands executed as turns (chat-compact-command D2).
@@ -351,7 +371,7 @@ func normalizeCommand(command string) string {
 // user-initiated.
 func normalizeOrigin(origin string) string {
 	switch origin {
-	case OriginScheduler, OriginChannel, OriginTelegram, OriginHeartbeat:
+	case OriginScheduler, OriginChannel, OriginTelegram, OriginHeartbeat, OriginService:
 		return origin
 	default:
 		return OriginUser

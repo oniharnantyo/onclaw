@@ -1,12 +1,16 @@
 package handlers
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/services"
+	"github.com/oniharnantyo/onclaw/internal/webhooks"
 )
 
 // ---------------------------------------------------------------------------
@@ -17,6 +21,14 @@ import (
 // domain.IntegrationsWrite (design.md D10, same trust tier as gateways.write).
 // ---------------------------------------------------------------------------
 
+// WebhookViewSource is the connection-view enrichment seam (add-connection-
+// webhooks contract §4): connections whose recipe declares webhook support
+// carry a webhook object in their view; the key is omitted otherwise.
+// *webhooks.Service satisfies it.
+type WebhookViewSource interface {
+	StateForView(ctx context.Context, workspaceID, connectionID string) (state *domain.ConnectionWebhook, service string, declares bool, err error)
+}
+
 // connectionsHandlers serves the recipe registry and the connection lifecycle.
 type connectionsHandlers struct {
 	service *services.ConnectionsService
@@ -24,11 +36,23 @@ type connectionsHandlers struct {
 	// materialized server when its owning connection is disconnected, so the
 	// teardown takes effect immediately (the MCP delete convention).
 	invalidator MCPInvalidator
+	// webhookViews enriches webhook-capable connections' views with their
+	// webhook state (contract §4); publicBaseURL feeds the derived ingest
+	// URL. nil (test assembly without the webhook runtime) skips enrichment.
+	webhookViews  WebhookViewSource
+	publicBaseURL string
 }
 
-// NewConnectionsHandlers creates a new connectionsHandlers instance.
-func NewConnectionsHandlers(service *services.ConnectionsService, invalidator MCPInvalidator) *connectionsHandlers {
-	return &connectionsHandlers{service: service, invalidator: invalidator}
+// NewConnectionsHandlers creates a new connectionsHandlers instance. The
+// webhook enrichment seam is optional capability wiring: nil simply serves
+// connections without the webhook object (no defensive read anywhere).
+func NewConnectionsHandlers(service *services.ConnectionsService, invalidator MCPInvalidator, webhookViews WebhookViewSource, publicBaseURL string) *connectionsHandlers {
+	return &connectionsHandlers{
+		service:       service,
+		invalidator:   invalidator,
+		webhookViews:  webhookViews,
+		publicBaseURL: publicBaseURL,
+	}
 }
 
 // connectRequest is the connect payload — exactly (recipe id, access level,
@@ -61,7 +85,8 @@ func (h *connectionsHandlers) ListRecipes(c *gin.Context) {
 	RespondOK(c, gin.H{"recipes": h.service.EnrichRecipes(c.Request.Context())})
 }
 
-// ListConnections returns the workspace's connections as joined views.
+// ListConnections returns the workspace's connections as joined views,
+// webhook-capable connections enriched with their webhook object (§4).
 func (h *connectionsHandlers) ListConnections(c *gin.Context) {
 	ws := MustCurrentWorkspace(c)
 
@@ -70,10 +95,15 @@ func (h *connectionsHandlers) ListConnections(c *gin.Context) {
 		RespondError(c, err)
 		return
 	}
-	RespondOK(c, gin.H{"connections": views})
+	payloads := make([]any, len(views))
+	for i := range views {
+		payloads[i] = h.enrichWithWebhook(c.Request.Context(), ws, &views[i])
+	}
+	RespondOK(c, gin.H{"connections": payloads})
 }
 
-// GetConnection returns one connection as its joined view.
+// GetConnection returns one connection as its joined view, enriched with
+// the webhook object when the connection's recipe declares webhooks (§4).
 func (h *connectionsHandlers) GetConnection(c *gin.Context) {
 	ws := MustCurrentWorkspace(c)
 
@@ -82,7 +112,40 @@ func (h *connectionsHandlers) GetConnection(c *gin.Context) {
 		RespondError(c, err)
 		return
 	}
-	RespondOK(c, gin.H{"connection": view})
+	RespondOK(c, gin.H{"connection": h.enrichWithWebhook(c.Request.Context(), ws, view)})
+}
+
+// enrichWithWebhook injects the connection's webhook object into its served
+// JSON when its recipe declares webhook support (contract §4). An
+// enrichment read failure degrades to the plain view — the webhook
+// sub-resource is the authoritative read; a transient store hiccup must not
+// blank the connections list.
+func (h *connectionsHandlers) enrichWithWebhook(ctx context.Context, ws *domain.Workspace, view *services.ConnectionView) any {
+	if h.webhookViews == nil {
+		return view
+	}
+	state, _, declares, err := h.webhookViews.StateForView(ctx, ws.ID, view.ID)
+	if err != nil {
+		slog.WarnContext(ctx, "connection view webhook enrichment failed", "connection_id", view.ID, "error", err)
+		return view
+	}
+	if !declares {
+		return view
+	}
+	raw, err := json.Marshal(view)
+	if err != nil {
+		return view
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return view
+	}
+	webhookRaw, err := json.Marshal(webhooks.BuildView(state, ws.Slug, h.publicBaseURL))
+	if err != nil {
+		return view
+	}
+	obj["webhook"] = webhookRaw
+	return obj
 }
 
 // Connect runs the connect flow (tasks.md 2.1/2.2): a PAT connect probes and

@@ -192,6 +192,13 @@ type Recipe struct {
 	// agent-facing surface (add-connection-http design.md D1). Empty for mcp
 	// recipes; always an array when served.
 	Verbs []RecipeVerb `json:"verbs"`
+	// Webhooks is the recipe's webhook declaration (add-connection-webhooks
+	// tasks.md 1.1): event catalog, signature scheme, per-event prompt
+	// templates with whitelisted payload fields, and provider setup copy. Nil
+	// means the service declares no webhook support; validated as part of
+	// ValidateRecipe when non-nil. Reads hand out a deep copy — treat the
+	// returned declaration as read-only.
+	Webhooks *RecipeWebhook `json:"webhooks,omitempty"`
 	// Notes carries the card's truthful coming-soon copy or operator
 	// provisioning notes; empty for available recipes that need none.
 	Notes string `json:"notes,omitempty"`
@@ -287,6 +294,16 @@ func ValidateRecipe(r *Recipe) error {
 	// auth-kind-shaped data, not optional extras.
 	if r.AuthKind == RecipeAuthPAT && (r.AuthorizeURL != "" || r.TokenURL != "") {
 		return fmt.Errorf("%w: recipe %q declares OAuth endpoints under %s auth", ErrInvalid, r.ID, RecipeAuthPAT)
+	}
+
+	// Webhook declarations (add-connection-webhooks tasks.md 1.1) are
+	// kind-agnostic: mcp-kind recipes (GitHub, GitLab) declare them, and any
+	// future recipe may. A non-nil declaration must be complete — scheme,
+	// catalog, defaults, per-event templates, setup copy.
+	if r.Webhooks != nil {
+		if err := validateRecipeWebhook(r, r.Webhooks); err != nil {
+			return err
+		}
 	}
 
 	if len(r.AccessLevels) == 0 {
@@ -544,18 +561,43 @@ func RegisterRecipe(r Recipe) {
 			r.Verbs[i].Params = []RecipeVerbParam{}
 		}
 	}
+	// The declaration is stored detached from the caller's object so a later
+	// mutation of the caller's RecipeWebhook cannot reach the registry.
+	r.Webhooks = copyRecipeWebhooks(r.Webhooks)
 	recipeRegistry[r.ID] = r
 	recipeOrder = append(recipeOrder, r.ID)
 }
 
+// copyRecipeWebhooks deep-copies a recipe's webhook declaration — the slices
+// it carries have no shared backing arrays with the source — so neither
+// registration nor a read can hand out a mutable path into the registry (the
+// Recipes-returns-copies guarantee, extended to the declaration pointer).
+func copyRecipeWebhooks(w *RecipeWebhook) *RecipeWebhook {
+	if w == nil {
+		return nil
+	}
+	cp := *w
+	cp.Events = append([]string(nil), w.Events...)
+	cp.DefaultEvents = append([]string(nil), w.DefaultEvents...)
+	cp.Templates = make([]RecipeWebhookTemplate, len(w.Templates))
+	for i := range w.Templates {
+		cp.Templates[i] = w.Templates[i]
+		cp.Templates[i].Fields = append([]string(nil), w.Templates[i].Fields...)
+	}
+	return &cp
+}
+
 // Recipes returns all registered recipes in registration order. The returned
-// slice is a copy; mutating it does not affect the registry.
+// slice is a copy; mutating it (or its webhook declarations) does not affect
+// the registry.
 func Recipes() []Recipe {
 	recipeMu.RLock()
 	defer recipeMu.RUnlock()
 	out := make([]Recipe, 0, len(recipeOrder))
 	for _, id := range recipeOrder {
-		out = append(out, recipeRegistry[id])
+		r := recipeRegistry[id]
+		r.Webhooks = copyRecipeWebhooks(r.Webhooks)
+		out = append(out, r)
 	}
 	return out
 }
@@ -569,5 +611,6 @@ func RecipeByID(id string) *Recipe {
 	if !exists {
 		return nil
 	}
+	r.Webhooks = copyRecipeWebhooks(r.Webhooks)
 	return &r
 }

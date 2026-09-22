@@ -60,6 +60,24 @@ func TestNormalizeOriginTelegram(t *testing.T) {
 	}
 }
 
+// TestNormalizeOriginService: the service-authority origin is first-class in
+// the D1 value set (add-connection-webhooks contract §6) — webhook-triggered
+// runs keep their honest origin instead of folding back to user, while every
+// other origin's mapping is unchanged.
+func TestNormalizeOriginService(t *testing.T) {
+	if got := normalizeOrigin(OriginService); got != OriginService {
+		t.Fatalf("normalizeOrigin(service) = %q, want service", got)
+	}
+	if got := normalizeOrigin(OriginHeartbeat); got != OriginHeartbeat {
+		t.Fatalf("normalizeOrigin(heartbeat) = %q, want heartbeat", got)
+	}
+	// The literal the ingress client stamps (webhooks.OriginService) must
+	// stay the recognized value.
+	if got := normalizeOrigin("service"); got != OriginService {
+		t.Fatalf("normalizeOrigin(%q) = %q, want service", OriginService, got)
+	}
+}
+
 // TestHookOriginValuesIncludeTelegram: hook event payloads (and the save-time
 // origin matcher match-counts) expose the telegram origin.
 func TestHookOriginValuesIncludeTelegram(t *testing.T) {

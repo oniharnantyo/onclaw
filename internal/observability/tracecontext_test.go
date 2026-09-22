@@ -40,6 +40,13 @@ func TestTraceTagsSparseAndUnknownOrigin(t *testing.T) {
 	if len(got) != 1 || got[0] != "origin:scheduler" {
 		t.Fatalf("TraceTags(scheduler) = %v, want [origin:scheduler]", got)
 	}
+
+	// Service-authority runs carry their own first-class origin tag
+	// (add-connection-webhooks contract §6) — never a re-tagged user.
+	got = TraceTags(TraceContext{Origin: OriginService, AgentID: "a-1", WorkspaceID: "ws-1"})
+	if len(got) != 3 || got[0] != "origin:service" || got[1] != "agent:a-1" || got[2] != "ws:ws-1" {
+		t.Fatalf("TraceTags(service) = %v, want [origin:service agent:a-1 ws:ws-1]", got)
+	}
 }
 
 func TestTraceMetadataShape(t *testing.T) {
@@ -69,6 +76,47 @@ func TestTraceMetadataOmitsEmptyKeys(t *testing.T) {
 	got := TraceMetadata(TraceContext{})
 	if len(got) != 1 || got["origin"] != "user" {
 		t.Fatalf("TraceMetadata(empty) = %v, want only origin:user", got)
+	}
+}
+
+// TestTraceMetadataServiceAuthority pins the service-authority metadata shape
+// (add-connection-webhooks contract §6): a webhook-origin run's trace carries
+// {authority: service, connection_id, connection_service, event} alongside
+// the normal attribution, exactly naming the trigger.
+func TestTraceMetadataServiceAuthority(t *testing.T) {
+	got := TraceMetadata(TraceContext{
+		TurnID:            "turn-1",
+		WorkspaceID:       "ws-456",
+		AgentID:           "agent-123",
+		Origin:            OriginService,
+		ConnectionID:      "conn-1",
+		ConnectionService: "github",
+		Event:             "pull_request.opened",
+	})
+	want := map[string]string{
+		"turn_id":            "turn-1",
+		"workspace_id":       "ws-456",
+		"agent_id":           "agent-123",
+		"origin":             "service",
+		"authority":          "service",
+		"connection_id":      "conn-1",
+		"connection_service": "github",
+		"event":              "pull_request.opened",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("TraceMetadata keys = %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Fatalf("TraceMetadata[%q] = %q, want %q", k, got[k], v)
+		}
+	}
+
+	// Absent connection coordinates stay omitted instead of exporting blanks
+	// (the established metadata convention).
+	sparse := TraceMetadata(TraceContext{Origin: OriginService})
+	if len(sparse) != 2 || sparse["origin"] != "service" || sparse["authority"] != "service" {
+		t.Fatalf("TraceMetadata(service, sparse) = %v, want origin + authority only", sparse)
 	}
 }
 

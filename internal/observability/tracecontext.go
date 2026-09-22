@@ -15,26 +15,37 @@ import (
 // Run origins mirrored from internal/agents (ExecRequest.Origin). This
 // package cannot import internal/agents — the runner imports observability —
 // so the value set and the unknown-maps-to-"user" normalization are pinned
-// here too; agents.normalizeOrigin remains the source of truth.
+// here too; agents.normalizeOrigin remains the source of truth. Only values
+// the mirror knew at their introduction appear here: heartbeat and whatsapp
+// predate this package's mirror discipline and still normalize to "user" in
+// traces (their pinned behavior), while service ships first-class
+// (add-connection-webhooks contract §6).
 const (
 	OriginUser      = "user"
 	OriginScheduler = "scheduler"
 	OriginChannel   = "channel"
 	OriginTelegram  = "telegram"
+	OriginService   = "service"
 )
 
 // Trace attribution tag prefixes and metadata keys (D2): every exported trace
 // carries tags "origin:<origin>", "agent:<agent id>", "ws:<workspace id>" and
-// metadata {turn_id, workspace_id, agent_id, origin}.
+// metadata {turn_id, workspace_id, agent_id, origin}. Service-authority runs
+// (add-connection-webhooks contract §6) additionally carry the authority
+// discriminator and the connection/event fields naming the exact trigger.
 const (
 	tagOriginPrefix    = "origin:"
 	tagAgentPrefix     = "agent:"
 	tagWorkspacePrefix = "ws:"
 
-	metadataKeyTurnID      = "turn_id"
-	metadataKeyWorkspaceID = "workspace_id"
-	metadataKeyAgentID     = "agent_id"
-	metadataKeyOrigin      = "origin"
+	metadataKeyTurnID            = "turn_id"
+	metadataKeyWorkspaceID       = "workspace_id"
+	metadataKeyAgentID           = "agent_id"
+	metadataKeyOrigin            = "origin"
+	metadataKeyAuthority         = "authority"
+	metadataKeyConnectionID      = "connection_id"
+	metadataKeyConnectionService = "connection_service"
+	metadataKeyEvent             = "event"
 )
 
 // maxTraceNameRunes bounds the interactive trace name: the turn input's first
@@ -48,17 +59,21 @@ const traceIDNamespaceSeed = "urn:onclaw:langfuse:trace:run:"
 // TraceContext carries the per-turn coordinates the trace is attributed with
 // (D2), sourced from the runner's ExecRequest: session and user identity,
 // workspace/agent scope, the turn id (which pins the trace id), the run
-// origin, the turn input (interactive trace name), and the schedule name
-// (scheduler-fire trace name).
+// origin, the turn input (interactive trace name), the schedule name
+// (scheduler-fire trace name), and the service-authority attribution fields
+// for webhook-origin runs (add-connection-webhooks contract §6).
 type TraceContext struct {
-	SessionID    string
-	UserID       string
-	WorkspaceID  string
-	AgentID      string
-	TurnID       string
-	Origin       string
-	Input        string
-	ScheduleName string
+	SessionID         string
+	UserID            string
+	WorkspaceID       string
+	AgentID           string
+	TurnID            string
+	Origin            string
+	Input             string
+	ScheduleName      string
+	ConnectionID      string
+	ConnectionService string
+	Event             string
 }
 
 // ApplyTraceContext stamps the turn's trace context onto the run context via
@@ -139,9 +154,13 @@ func TraceTags(tc TraceContext) []string {
 }
 
 // TraceMetadata builds the trace metadata (D2): {turn_id, workspace_id,
-// agent_id, origin}, absent keys omitted rather than exported blank.
+// agent_id, origin}, absent keys omitted rather than exported blank. A
+// service-authority run (add-connection-webhooks contract §6) additionally
+// carries {authority: "service", connection_id, connection_service, event}
+// naming the exact trigger; user runs export no authority key.
 func TraceMetadata(tc TraceContext) map[string]string {
-	metadata := map[string]string{metadataKeyOrigin: NormalizeOrigin(tc.Origin)}
+	origin := NormalizeOrigin(tc.Origin)
+	metadata := map[string]string{metadataKeyOrigin: origin}
 	if tc.TurnID != "" {
 		metadata[metadataKeyTurnID] = tc.TurnID
 	}
@@ -150,6 +169,18 @@ func TraceMetadata(tc TraceContext) map[string]string {
 	}
 	if tc.AgentID != "" {
 		metadata[metadataKeyAgentID] = tc.AgentID
+	}
+	if origin == OriginService {
+		metadata[metadataKeyAuthority] = OriginService
+		if tc.ConnectionID != "" {
+			metadata[metadataKeyConnectionID] = tc.ConnectionID
+		}
+		if tc.ConnectionService != "" {
+			metadata[metadataKeyConnectionService] = tc.ConnectionService
+		}
+		if tc.Event != "" {
+			metadata[metadataKeyEvent] = tc.Event
+		}
 	}
 	return metadata
 }
@@ -203,7 +234,7 @@ func truncateRunes(s string, max int) string {
 // user-initiated — mirroring internal/agents normalizeOrigin.
 func NormalizeOrigin(origin string) string {
 	switch origin {
-	case OriginScheduler, OriginChannel, OriginTelegram:
+	case OriginScheduler, OriginChannel, OriginTelegram, OriginService:
 		return origin
 	default:
 		return OriginUser

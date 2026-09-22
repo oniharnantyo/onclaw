@@ -171,6 +171,11 @@ func (s *store) Connections() storeport.Connections {
 	return NewConnectionStore(s.db)
 }
 
+// ConnectionWebhooks returns the ConnectionWebhookStore sub-port.
+func (s *store) ConnectionWebhooks() storeport.ConnectionWebhookStore {
+	return NewConnectionWebhookStore(s.db)
+}
+
 // OAuthApps returns the OAuthApps sub-port.
 func (s *store) OAuthApps() storeport.OAuthApps {
 	return NewOAuthAppStore(s.db)
