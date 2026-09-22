@@ -26,6 +26,7 @@ export function Rail({
       ? [
           { id: 'admin-workspaces', icon: 'globe', label: 'Workspaces' },
           { id: 'admin-accounts', icon: 'users', label: 'Accounts' },
+          { id: 'admin-oauth', icon: 'key', label: 'OAuth apps' },
         ]
       : []),
   ];

@@ -61,6 +61,12 @@ const (
 	AdminUsersRead        = "admin.users.read"
 	AdminUsersWrite       = "admin.users.write"
 	AdminSuperadminsWrite = "admin.superadmins.write"
+	// AdminIntegrationsWrite guards the instance OAuth app registrations
+	// (add-connection-oauth): master-tenant rows, one app per provider,
+	// sealed with the instance key — the same trust tier as the other
+	// admin.* permissions (Superadmin only; no workspace role holds it and
+	// no workspace backfill applies).
+	AdminIntegrationsWrite = "admin.integrations.write"
 )
 
 var (
@@ -126,7 +132,7 @@ var (
 		SchedulerRead,
 	}
 
-	// SuperadminPermissions contains all workspace permissions plus all instance-admin permissions (27 permissions).
+	// SuperadminPermissions contains all workspace permissions plus all instance-admin permissions (28 permissions).
 	SuperadminPermissions = []string{
 		WorkspaceRead,
 		WorkspaceWrite,
@@ -155,6 +161,7 @@ var (
 		AdminUsersRead,
 		AdminUsersWrite,
 		AdminSuperadminsWrite,
+		AdminIntegrationsWrite,
 	}
 )
 
@@ -188,6 +195,7 @@ func AllPermissions() []string {
 		AdminUsersRead,
 		AdminUsersWrite,
 		AdminSuperadminsWrite,
+		AdminIntegrationsWrite,
 	}
 }
 
@@ -208,7 +216,8 @@ func IsValidPermission(p string) bool {
 		IntegrationsWrite,
 		AdminWorkspacesRead, AdminWorkspacesWrite,
 		AdminUsersRead, AdminUsersWrite,
-		AdminSuperadminsWrite:
+		AdminSuperadminsWrite,
+		AdminIntegrationsWrite:
 		return true
 	default:
 		return false

@@ -6,7 +6,9 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -367,6 +369,181 @@ func TestIntegration_ConnectionStore_OriginMarkerBirthStamped(t *testing.T) {
 // the workspace_connections table exists with its unique (workspace_id,
 // service) constraint, and workspace_mcp_servers carries the nullable indexed
 // origin_connection_id column with its FK to workspace_connections.
+// The OAuth token lifecycle (add-connection-oauth tasks.md 1.2/1.3): Create
+// persists the token set in one write and defaults an empty status to
+// connected; UpdateTokenLifecycle rewrites only the lifecycle columns,
+// workspace-scoped, mirroring the fake's semantics.
+func TestIntegration_ConnectionStore_TokenLifecycle(t *testing.T) {
+	s, _, ctx := setupTestSchema(t)
+	ws := pgConnSeedWorkspace(t, ctx, s, "pg-conn-lifecycle")
+
+	expires := time.Now().Add(3600 * time.Second).UTC().Truncate(time.Microsecond)
+	c := &domain.Connection{
+		WorkspaceID:       ws.ID,
+		Service:           "atlassian",
+		AccessLevel:       domain.ConnectionAccessReadWrite,
+		RefreshCiphertext: "v1:cmVmcmVzaA:ZW52ZWxvcGU",
+		ExpiresAt:         &expires,
+		GrantedScopes:     []string{"read:jira-work", "offline_access"},
+	}
+	if err := s.Connections().Create(ctx, c); err != nil {
+		t.Fatalf("unexpected create error: %v", err)
+	}
+
+	got, err := s.Connections().Get(ctx, ws.ID, c.ID)
+	if err != nil {
+		t.Fatalf("unexpected get error: %v", err)
+	}
+	if got.Status != domain.ConnectionStatusConnected {
+		t.Fatalf("expected empty status stored as connected, got %q", got.Status)
+	}
+	if got.RefreshCiphertext != c.RefreshCiphertext || got.ExpiresAt == nil || !got.ExpiresAt.Equal(expires) {
+		t.Fatalf("expected the token set to roundtrip, got %+v", got)
+	}
+	if !slices.Equal(got.GrantedScopes, c.GrantedScopes) {
+		t.Fatalf("expected granted scopes to roundtrip, got %v", got.GrantedScopes)
+	}
+	if got.GrantedScopes == nil {
+		t.Fatal("expected granted scopes to read back as an array, got nil")
+	}
+
+	// Refresh failure flips the connection expired in place; identity
+	// columns survive.
+	c.Status = domain.ConnectionStatusExpired
+	if err := s.Connections().UpdateTokenLifecycle(ctx, c); err != nil {
+		t.Fatalf("unexpected lifecycle update error: %v", err)
+	}
+	got, err = s.Connections().Get(ctx, ws.ID, c.ID)
+	if err != nil {
+		t.Fatalf("unexpected get error: %v", err)
+	}
+	if got.Status != domain.ConnectionStatusExpired {
+		t.Fatalf("expected expired status, got %q", got.Status)
+	}
+	if got.Service != "atlassian" || got.AccessLevel != domain.ConnectionAccessReadWrite {
+		t.Fatalf("expected identity columns untouched, got %+v", got)
+	}
+	if got.RefreshCiphertext != c.RefreshCiphertext {
+		t.Fatalf("expected the refresh envelope untouched by the status flip, got %q", got.RefreshCiphertext)
+	}
+
+	// Scope guards mirror the fake: nil, invalid, cross-tenant, unknown.
+	if err := s.Connections().UpdateTokenLifecycle(ctx, nil); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for nil connection, got %v", err)
+	}
+	foreign := &domain.Connection{WorkspaceID: uuid.NewString(), ID: c.ID, Service: "atlassian", AccessLevel: domain.ConnectionAccessReadOnly, Status: domain.ConnectionStatusExpired}
+	if err := s.Connections().UpdateTokenLifecycle(ctx, foreign); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for cross-tenant lifecycle update, got %v", err)
+	}
+	unknown := &domain.Connection{WorkspaceID: ws.ID, ID: uuid.NewString(), Service: "atlassian", AccessLevel: domain.ConnectionAccessReadOnly, Status: domain.ConnectionStatusExpired}
+	if err := s.Connections().UpdateTokenLifecycle(ctx, unknown); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for unknown lifecycle update, got %v", err)
+	}
+
+	// Out-of-catalog status is rejected at the boundary (the store validates
+	// before the write); the DB-level status CHECK is verified by
+	// TestIntegration_ConnectionOAuthSchema.
+	bad := &domain.Connection{WorkspaceID: ws.ID, ID: c.ID, Service: "atlassian", AccessLevel: domain.ConnectionAccessReadOnly, Status: "revoked"}
+	if err := s.Connections().UpdateTokenLifecycle(ctx, bad); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for out-of-catalog status, got %v", err)
+	}
+}
+
+// TestIntegration_ConnectionOAuthSchema covers migration 000063
+// (add-connection-oauth tasks.md 1.3): workspace_connections carries the
+// token-lifecycle columns (refresh envelope, expiry, granted scopes, status
+// with its catalog CHECK) and the provider-unique instance_oauth_apps table
+// exists.
+func TestIntegration_ConnectionOAuthSchema(t *testing.T) {
+	_, schemaDSN, ctx := setupTestSchema(t)
+
+	conn, err := pgx.Connect(ctx, schemaDSN)
+	if err != nil {
+		t.Fatalf("failed to connect to test schema: %v", err)
+	}
+	defer conn.Close(ctx)
+
+	// The lifecycle columns on workspace_connections. expires_at is the one
+	// nullable lifecycle column: PAT connections carry no expiry by design.
+	wantColumns := []struct {
+		name    string
+		notNull bool
+	}{
+		{"refresh_ciphertext", true},
+		{"expires_at", false},
+		{"granted_scopes", true},
+		{"status", true},
+	}
+	rows, err := conn.Query(ctx, `
+		SELECT attname, attnotnull FROM pg_attribute
+		WHERE attrelid = 'workspace_connections'::regclass AND attname = ANY($1)
+	`, []string{"refresh_ciphertext", "expires_at", "granted_scopes", "status"})
+	if err != nil {
+		t.Fatalf("failed to read lifecycle columns: %v", err)
+	}
+	defer rows.Close()
+	seen := make(map[string]bool, len(wantColumns))
+	for rows.Next() {
+		var name string
+		var notNull bool
+		if err := rows.Scan(&name, &notNull); err != nil {
+			t.Fatalf("failed to scan column: %v", err)
+		}
+		seen[name] = true
+		for _, want := range wantColumns {
+			if want.name != name {
+				continue
+			}
+			if notNull != want.notNull {
+				t.Errorf("expected %q notNull=%v, got %v", name, want.notNull, notNull)
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("failed to iterate columns: %v", err)
+	}
+	for _, want := range wantColumns {
+		if !seen[want.name] {
+			t.Errorf("expected workspace_connections.%s to exist", want.name)
+		}
+	}
+
+	// The status catalog CHECK.
+	var check string
+	err = conn.QueryRow(ctx, `
+		SELECT pg_get_constraintdef(oid) FROM pg_constraint
+		WHERE conrelid = 'workspace_connections'::regclass
+		  AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%status%'
+	`).Scan(&check)
+	if err != nil {
+		t.Fatalf("failed to read status check: %v", err)
+	}
+	for _, v := range []string{"connected", "error", "expired"} {
+		if !strings.Contains(check, v) {
+			t.Errorf("expected the status CHECK to allow %q, got %s", v, check)
+		}
+	}
+
+	// The provider-unique instance OAuth apps table.
+	var exists bool
+	if err := conn.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, "instance_oauth_apps").Scan(&exists); err != nil {
+		t.Fatalf("failed to probe instance_oauth_apps: %v", err)
+	}
+	if !exists {
+		t.Fatal("expected instance_oauth_apps to exist after migrations")
+	}
+	var pkColumns int
+	if err := conn.QueryRow(ctx, `
+		SELECT COUNT(*) FROM pg_constraint
+		WHERE conrelid = 'instance_oauth_apps'::regclass AND contype = 'p'
+	`).Scan(&pkColumns); err != nil {
+		t.Fatalf("failed to read primary key: %v", err)
+	}
+	if pkColumns != 1 {
+		t.Fatalf("expected a primary key on instance_oauth_apps (provider-unique), got %d", pkColumns)
+	}
+}
+
 func TestIntegration_ConnectionsSchema(t *testing.T) {
 	_, schemaDSN, ctx := setupTestSchema(t)
 

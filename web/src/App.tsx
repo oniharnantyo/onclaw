@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { useStore, useWorkspace, useSearchShortcut, useThread } from './store';
 import { useAuthStore, useAuth, useIsAdmin } from './store/auth';
 import { Rail } from './components/nav/Rail';
@@ -85,6 +85,20 @@ function NotFoundRoute() {
   );
 }
 
+// `/settings?pane=<section>` deep links (the OAuth callback redirects here,
+// add-connection-oauth) map onto the /settings/:section routes with the
+// remaining query string preserved. Unknown pane names fall through to
+// SettingsPage's own workspace redirect.
+function SettingsIndexRedirect() {
+  const [params] = useSearchParams();
+  const pane = params.get('pane');
+  const rest = new URLSearchParams(params);
+  rest.delete('pane');
+  const qs = rest.toString();
+  const target = pane ? `/settings/${encodeURIComponent(pane)}` : '/settings/workspace';
+  return <Navigate to={qs ? `${target}?${qs}` : target} replace />;
+}
+
 function Layout() {
   useSearchShortcut();
   const navigate = useNavigate();
@@ -118,6 +132,7 @@ function Layout() {
   // Map route to view string for Rail
   const view = location.pathname.startsWith('/admin/workspaces') ? 'admin-workspaces'
     : location.pathname.startsWith('/admin/accounts') ? 'admin-accounts'
+    : location.pathname.startsWith('/admin/oauth') ? 'admin-oauth'
     : location.pathname.startsWith('/admin') ? 'admin-workspaces'
     : location.pathname.startsWith('/settings') ? 'settings'
     : location.pathname.startsWith('/agents') ? 'agents'
@@ -130,6 +145,7 @@ function Layout() {
     if (v === 'chats') navigate('/c');
     else if (v === 'admin-workspaces') navigate('/admin/workspaces');
     else if (v === 'admin-accounts') navigate('/admin/accounts');
+    else if (v === 'admin-oauth') navigate('/admin/oauth-apps');
     else navigate(`/${v}`);
     setDrawerOpen(false);
   };
@@ -296,12 +312,13 @@ function Layout() {
               <Routes>
                 <Route path="/admin/workspaces" element={<AdminView screen="workspaces" tenant={tenant} />} />
                 <Route path="/admin/accounts" element={<AdminView screen="accounts" tenant={tenant} />} />
+                <Route path="/admin/oauth-apps" element={<AdminView screen="oauth-apps" tenant={tenant} />} />
                 <Route path="/admin/tenants" element={<Navigate to="/admin/workspaces" replace />} />
                 <Route path="/admin/users" element={<Navigate to="/admin/accounts" replace />} />
                 <Route path="/admin/superadmins" element={<Navigate to="/admin/accounts" replace />} />
                 <Route path="/admin" element={<Navigate to="/admin/workspaces" replace />} />
                 <Route path="/admin/:tab" element={<Navigate to="/admin/workspaces" replace />} />
-                <Route path="/settings" element={<Navigate to="/settings/workspace" replace />} />
+                <Route path="/settings" element={<SettingsIndexRedirect />} />
                 <Route
                   path="/settings/:section"
                   element={

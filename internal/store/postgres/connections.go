@@ -55,6 +55,20 @@ func (cs *connectionStore) Create(ctx context.Context, c *domain.Connection) err
 	if c.UpdatedAt.IsZero() {
 		c.UpdatedAt = now
 	}
+	// Empty status is the pre-OAuth shape (change-1 callers set none): stored
+	// as connected (add-connection-oauth design.md D6).
+	status := c.Status
+	if status == "" {
+		status = domain.ConnectionStatusConnected
+		c.Status = status
+	}
+	// granted_scopes is NOT NULL with a '{}' default, but pgx binds a nil
+	// slice as SQL NULL, not DEFAULT — normalize here so a pre-OAuth caller
+	// (no scopes) inserts an empty array.
+	grantedScopes := c.GrantedScopes
+	if grantedScopes == nil {
+		grantedScopes = []string{}
+	}
 
 	// One connection per service per workspace (design.md D6): pre-check like
 	// the fake so the conflict names the service; the schema constraint is the
@@ -73,9 +87,10 @@ func (cs *connectionStore) Create(ctx context.Context, c *domain.Connection) err
 
 	query := `
 		INSERT INTO workspace_connections (
-			id, workspace_id, service, access_level, created_at, updated_at
+			id, workspace_id, service, access_level, status,
+			refresh_ciphertext, expires_at, granted_scopes, created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10
 		)
 	`
 	_, err = cs.db.Exec(ctx, query,
@@ -83,6 +98,10 @@ func (cs *connectionStore) Create(ctx context.Context, c *domain.Connection) err
 		c.WorkspaceID,
 		c.Service,
 		c.AccessLevel,
+		status,
+		c.RefreshCiphertext,
+		c.ExpiresAt,
+		grantedScopes,
 		c.CreatedAt,
 		c.UpdatedAt,
 	)
@@ -101,7 +120,8 @@ func (cs *connectionStore) Get(ctx context.Context, workspaceID, id string) (*do
 	}
 
 	query := `
-		SELECT id, workspace_id, service, access_level, created_at, updated_at
+		SELECT id, workspace_id, service, access_level, status,
+		       refresh_ciphertext, expires_at, granted_scopes, created_at, updated_at
 		FROM workspace_connections
 		WHERE workspace_id = $1 AND id = $2
 	`
@@ -114,7 +134,8 @@ func (cs *connectionStore) GetByService(ctx context.Context, workspaceID, servic
 	}
 
 	query := `
-		SELECT id, workspace_id, service, access_level, created_at, updated_at
+		SELECT id, workspace_id, service, access_level, status,
+		       refresh_ciphertext, expires_at, granted_scopes, created_at, updated_at
 		FROM workspace_connections
 		WHERE workspace_id = $1 AND service = $2
 	`
@@ -128,13 +149,66 @@ func scanConnection(row pgx.Row) (*domain.Connection, error) {
 		&c.WorkspaceID,
 		&c.Service,
 		&c.AccessLevel,
+		&c.Status,
+		&c.RefreshCiphertext,
+		&c.ExpiresAt,
+		&c.GrantedScopes,
 		&c.CreatedAt,
 		&c.UpdatedAt,
 	)
 	if err != nil {
 		return nil, convertError(err)
 	}
+	// GrantedScopes always leaves the store as an array, never null (the
+	// served-JSON normalization the recipe registry applies too).
+	if c.GrantedScopes == nil {
+		c.GrantedScopes = []string{}
+	}
 	return &c, nil
+}
+
+// UpdateTokenLifecycle persists the OAuth token-lifecycle columns (refresh
+// envelope, expiry, granted scopes, status) in one workspace-scoped UPDATE —
+// the refresh write-through and the expired transition's write path. The
+// RETURNING re-reads the row so the caller's struct stays faithful to what is
+// stored (timestamps included).
+func (cs *connectionStore) UpdateTokenLifecycle(ctx context.Context, c *domain.Connection) error {
+	if c == nil {
+		return domain.ErrInvalid
+	}
+	if err := c.Validate(); err != nil {
+		return err
+	}
+
+	query := `
+		UPDATE workspace_connections SET
+			refresh_ciphertext = $3,
+			expires_at = $4,
+			granted_scopes = $5,
+			status = $6,
+			updated_at = $7
+		WHERE workspace_id = $1 AND id = $2
+		RETURNING created_at, updated_at
+	`
+	// pgx binds a nil slice as SQL NULL, not DEFAULT — normalize so a nil
+	// GrantedScopes stores (and reads back) as an empty array.
+	grantedScopes := c.GrantedScopes
+	if grantedScopes == nil {
+		grantedScopes = []string{}
+	}
+	err := cs.db.QueryRow(ctx, query,
+		c.WorkspaceID,
+		c.ID,
+		c.RefreshCiphertext,
+		c.ExpiresAt,
+		grantedScopes,
+		c.Status,
+		time.Now().UTC(),
+	).Scan(&c.CreatedAt, &c.UpdatedAt)
+	if err != nil {
+		return convertError(err)
+	}
+	return nil
 }
 
 func (cs *connectionStore) List(ctx context.Context, workspaceID string) ([]domain.Connection, error) {
@@ -143,7 +217,8 @@ func (cs *connectionStore) List(ctx context.Context, workspaceID string) ([]doma
 	}
 
 	query := `
-		SELECT id, workspace_id, service, access_level, created_at, updated_at
+		SELECT id, workspace_id, service, access_level, status,
+		       refresh_ciphertext, expires_at, granted_scopes, created_at, updated_at
 		FROM workspace_connections
 		WHERE workspace_id = $1
 		ORDER BY created_at ASC, id ASC

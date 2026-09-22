@@ -424,6 +424,7 @@ describe('App & Route Guard', () => {
     await waitFor(() => {
       expect(screen.getByTestId('rail-admin-workspaces')).not.toBeNull();
       expect(screen.getByTestId('rail-admin-accounts')).not.toBeNull();
+      expect(screen.getByTestId('rail-admin-oauth')).not.toBeNull();
       expect(screen.getByTestId('admin-view')).not.toBeNull();
     });
   });
@@ -445,6 +446,30 @@ describe('App & Route Guard', () => {
       expect(screen.queryByTestId('sidebar')).toBeNull();
       expect(screen.queryByRole('navigation', { name: /primary/i })).toBeNull();
       expect(window.location.pathname).toBe('/settings/workspace');
+    });
+  });
+
+  it('maps /settings?pane=<section> deep links onto the section route — the OAuth callback target', async () => {
+    useAuthStore.setState({
+      status: 'authenticated',
+      user: { id: 'u1', email: 'alice@example.com', name: 'Alice', created_at: '', updated_at: '' },
+      memberships: [],
+      boot: vi.fn(),
+    });
+
+    window.history.pushState(
+      {},
+      '',
+      '/settings?pane=integrations&oauth=atlassian&status=connected'
+    );
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('pane-integrations')).not.toBeNull();
+      // The pane param is consumed into the path; the callback params are
+      // then resolved by the integrations pane and cleaned from the URL.
+      expect(window.location.pathname).toBe('/settings/integrations');
+      expect(window.location.search).toBe('');
     });
   });
 

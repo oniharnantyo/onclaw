@@ -14,13 +14,19 @@ import (
 // per workspace — one connection per service (design.md D6); violations return
 // domain.ErrConnectionExists.
 //
-// The stored connection never carries the token: the secret lives as the
-// materialized server's encrypted header row (design.md D4), so every read of
-// a Connection is hint-free by construction — token hints ride the server row.
+// The stored connection never carries the access token: the secret lives as
+// the materialized server's encrypted header row (design.md D4), so every read
+// of a Connection is hint-free by construction — token hints ride the server
+// row. The OAuth token lifecycle (add-connection-oauth design.md D1) DOES live
+// here: the refresh-token ciphertext envelope, the access-token expiry, the
+// granted scopes, and the status (including expired).
 type Connections interface {
 	// Create stores the connection, assigning ID and timestamps when empty.
-	// A second connection for the same (workspace, service) returns
-	// domain.ErrConnectionExists; an unknown workspace returns
+	// An empty Status is stored as connected; the OAuth lifecycle fields
+	// (RefreshCiphertext, ExpiresAt, GrantedScopes) persist as given — the
+	// OAuth callback activation path creates the connection with its token
+	// set in one write. A second connection for the same (workspace, service)
+	// returns domain.ErrConnectionExists; an unknown workspace returns
 	// domain.ErrNotFound.
 	Create(ctx context.Context, c *domain.Connection) error
 	Get(ctx context.Context, workspaceID, id string) (*domain.Connection, error)
@@ -28,6 +34,14 @@ type Connections interface {
 	// GetByService resolves the workspace's connection for a service;
 	// domain.ErrNotFound when the service is not connected.
 	GetByService(ctx context.Context, workspaceID, service string) (*domain.Connection, error)
+	// UpdateTokenLifecycle persists the OAuth token-lifecycle fields of an
+	// existing connection — RefreshCiphertext, ExpiresAt, GrantedScopes, and
+	// Status — and bumps UpdatedAt. It is the refresh write-through
+	// (refresh-on-resolution, reauthorization) and the expired transition's
+	// only write path; every other column is untouched. The workspace scope
+	// rides c.WorkspaceID; unknown or cross-workspace connections return
+	// domain.ErrNotFound.
+	UpdateTokenLifecycle(ctx context.Context, c *domain.Connection) error
 	// Delete removes the connection and cascades atomically (design.md D8):
 	// the linked workspace MCP server row (origin_connection_id) and every
 	// agent's attachment reference to it die in the same transaction, leaving

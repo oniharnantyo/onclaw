@@ -198,14 +198,32 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	// connections service composes the connections/MCP-server/agent stores
 	// with the MCP settings service above — the token's secret row rides the
 	// same workspace-scoped secret machinery, no second secret path (design.md
-	// D4). Probe bounds ride the same knob as the MCP registry's probes.
+	// D4). Probe bounds ride the same knob as the MCP registry's probes. The
+	// OAuth flow dependencies (add-connection-oauth 3.3) are the instance
+	// apps store, the instance master key (state HMAC + refresh envelopes),
+	// and the public base URL the redirect URIs derive from.
 	connectionsSvc := services.NewConnectionsService(
 		st.Connections(),
 		st.WorkspaceMCPServers(),
 		st.Agents(),
 		mcpSettings,
+		st.OAuthApps(),
+		encKey,
+		cfg.PublicBaseURL,
 		services.WithProbeTimeout(handlers.DefaultMCPProbeTimeout),
 	)
+
+	// Instance OAuth app administration (add-connection-oauth 3.3): the
+	// master-tenant registry the connections gallery's OAuth availability
+	// reads; shares the same key and base URL as the flow above.
+	oauthAppsSvc := services.NewOAuthAppsService(st.OAuthApps(), encKey, cfg.PublicBaseURL)
+
+	// Runtime credential source (add-connection-oauth 2.3/D3): the settings
+	// source the MCP runtime consumes — the runner's MCP policy and status
+	// writer resolve every run's toolset through it — with refresh-on-
+	// resolution on every connection-linked row. Fail-open by design; the MCP
+	// runtime itself is untouched.
+	runtimeSource := services.NewRuntimeCredentialSource(mcpSettings, connectionsSvc)
 
 	// Channel fan-out (integrate-agent-channels D2/D11 + channel-teams D1/D3):
 	// one runtime shared by the runner (channel context + feed + work
@@ -344,9 +362,9 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 			agents.WithTodoTools(st.Todos()),
 		)),
 		agents.WithToolPolicy(toolSettings),
-		agents.WithMCPPolicy(mcp.NewSettingsPolicy(mcpSettings)),
+		agents.WithMCPPolicy(mcp.NewSettingsPolicy(runtimeSource)),
 		agents.WithMCPManager(mcpManager),
-		agents.WithMCPStatusWriter(mcp.NewSettingsStatusWriter(mcpSettings)),
+		agents.WithMCPStatusWriter(mcp.NewSettingsStatusWriter(runtimeSource)),
 		agents.WithEnabledSkillReader(server.WorkspaceSkillReader(st.WorkspaceSkills())),
 		agents.WithChannelContext(channelRuntime.Chokepoint()),
 		agents.WithChannelFeed(channelRuntime.Chokepoint()),
@@ -502,6 +520,8 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		MCPSettings:         mcpSettings,
 		MCPManager:          mcpManager,
 		Connections:         connectionsSvc,
+		OAuthApps:           oauthAppsSvc,
+		PublicBaseURL:       cfg.PublicBaseURL,
 		ChannelRuntime:      channelRuntime,
 		HooksCommandEnabled: cfg.HooksCommandEnabled,
 		HooksScriptEnabled:  cfg.HooksScriptEnabled,

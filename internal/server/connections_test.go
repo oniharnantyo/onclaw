@@ -59,6 +59,9 @@ func connectionsEnv(t *testing.T) (*testEnv, *stubProber) {
 			o.Store.WorkspaceMCPServers(),
 			o.Store.Agents(),
 			settings,
+			o.Store.OAuthApps(),
+			o.EncryptionKey,
+			"",
 			services.WithProber(prober.probe),
 			services.WithProbeTimeout(connTimeoutOpt),
 		)

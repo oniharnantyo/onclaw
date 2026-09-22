@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/store"
@@ -406,6 +407,111 @@ func TestConnectionStore_HandMadeServersUntouched(t *testing.T) {
 	}
 	if got.OriginConnectionID != "" {
 		t.Fatalf("expected empty origin marker on hand-made server, got %q", got.OriginConnectionID)
+	}
+}
+
+// The OAuth token lifecycle (add-connection-oauth tasks.md 1.2): Create
+// persists the token set in one write and defaults an empty status to
+// connected; UpdateTokenLifecycle rewrites only the lifecycle columns —
+// refresh envelope, expiry, granted scopes, status — scoped to the
+// workspace, leaving identity and timestamps' birth values alone.
+func TestConnectionStore_TokenLifecycle(t *testing.T) {
+	s := fake.New()
+	ctx := context.Background()
+	ws := connSeedWorkspace(t, ctx, s, "conn-lifecycle")
+
+	expires := time.Now().Add(3600 * time.Second).UTC().Truncate(time.Microsecond)
+	c := &domain.Connection{
+		WorkspaceID:       ws.ID,
+		Service:           "atlassian",
+		AccessLevel:       domain.ConnectionAccessReadWrite,
+		RefreshCiphertext: "v1:cmVmcmVzaA:ZW52ZWxvcGU",
+		ExpiresAt:         &expires,
+		GrantedScopes:     []string{"read:jira-work", "offline_access"},
+	}
+	// Pre-OAuth shape: no status set by the caller.
+	if err := s.Connections().Create(ctx, c); err != nil {
+		t.Fatalf("unexpected create error: %v", err)
+	}
+
+	got, err := s.Connections().Get(ctx, ws.ID, c.ID)
+	if err != nil {
+		t.Fatalf("unexpected get error: %v", err)
+	}
+	if got.Status != domain.ConnectionStatusConnected {
+		t.Fatalf("expected empty status stored as connected, got %q", got.Status)
+	}
+	if got.RefreshCiphertext != c.RefreshCiphertext || got.ExpiresAt == nil || !got.ExpiresAt.Equal(expires) {
+		t.Fatalf("expected the token set to roundtrip, got %+v", got)
+	}
+	if !slices.Equal(got.GrantedScopes, c.GrantedScopes) {
+		t.Fatalf("expected granted scopes to roundtrip, got %v", got.GrantedScopes)
+	}
+
+	// Refresh failure flips the connection expired in place.
+	c.Status = domain.ConnectionStatusExpired
+	if err := s.Connections().UpdateTokenLifecycle(ctx, c); err != nil {
+		t.Fatalf("unexpected lifecycle update error: %v", err)
+	}
+	got, err = s.Connections().Get(ctx, ws.ID, c.ID)
+	if err != nil {
+		t.Fatalf("unexpected get error: %v", err)
+	}
+	if got.Status != domain.ConnectionStatusExpired {
+		t.Fatalf("expected expired status, got %q", got.Status)
+	}
+	if !got.UpdatedAt.After(got.CreatedAt) {
+		t.Fatalf("expected updated_at to advance, got %v <= %v", got.UpdatedAt, got.CreatedAt)
+	}
+
+	// Refresh success rewrites the envelope + expiry, keeps the row's other
+	// columns (service, access level, identity).
+	newExpires := expires.Add(3600 * time.Second)
+	c.RefreshCiphertext = "v2:cmVmcmVzaA:ZW52ZWxvcGU"
+	c.ExpiresAt = &newExpires
+	c.Status = domain.ConnectionStatusConnected
+	if err := s.Connections().UpdateTokenLifecycle(ctx, c); err != nil {
+		t.Fatalf("unexpected lifecycle update error: %v", err)
+	}
+	got, err = s.Connections().Get(ctx, ws.ID, c.ID)
+	if err != nil {
+		t.Fatalf("unexpected get error: %v", err)
+	}
+	if got.Status != domain.ConnectionStatusConnected || got.RefreshCiphertext != c.RefreshCiphertext || got.ExpiresAt == nil || !got.ExpiresAt.Equal(newExpires) {
+		t.Fatalf("expected the refreshed token set, got %+v", got)
+	}
+	if got.Service != "atlassian" || got.AccessLevel != domain.ConnectionAccessReadWrite {
+		t.Fatalf("expected identity columns untouched, got %+v", got)
+	}
+
+	// Scope and validation guards.
+	if err := s.Connections().UpdateTokenLifecycle(ctx, nil); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for nil connection, got %v", err)
+	}
+	bad := &domain.Connection{WorkspaceID: ws.ID, ID: c.ID, Service: "atlassian", AccessLevel: "sudo", Status: "connected"}
+	if err := s.Connections().UpdateTokenLifecycle(ctx, bad); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for invalid connection, got %v", err)
+	}
+	foreign := &domain.Connection{WorkspaceID: "other-ws", ID: c.ID, Service: "atlassian", AccessLevel: domain.ConnectionAccessReadOnly, Status: domain.ConnectionStatusExpired}
+	if err := s.Connections().UpdateTokenLifecycle(ctx, foreign); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for cross-tenant lifecycle update, got %v", err)
+	}
+	unknown := &domain.Connection{WorkspaceID: ws.ID, ID: "no-such-id", Service: "atlassian", AccessLevel: domain.ConnectionAccessReadOnly, Status: domain.ConnectionStatusExpired}
+	if err := s.Connections().UpdateTokenLifecycle(ctx, unknown); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for unknown lifecycle update, got %v", err)
+	}
+
+	// Reads always carry GrantedScopes as an array, never nil.
+	c.GrantedScopes = nil
+	if err := s.Connections().UpdateTokenLifecycle(ctx, c); err != nil {
+		t.Fatalf("unexpected lifecycle update error: %v", err)
+	}
+	got, err = s.Connections().Get(ctx, ws.ID, c.ID)
+	if err != nil {
+		t.Fatalf("unexpected get error: %v", err)
+	}
+	if got.GrantedScopes == nil {
+		t.Fatal("expected granted scopes to read back as an empty array, got nil")
 	}
 }
 

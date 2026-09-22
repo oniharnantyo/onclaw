@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   accessLevelLabel,
+  adminOAuthAppsApi,
   canManageIntegrations,
   connectionServiceName,
   connectionStatusView,
@@ -158,6 +159,74 @@ describe('lib/connectionsApi', () => {
     expect(connectionStatusView({ status: 'error', status_error: 'x', server_enabled: true })).toMatchObject({ label: 'Error', errored: true });
     expect(connectionStatusView({ status: 'unknown', status_error: null, server_enabled: true }).label).toBe('Unknown');
     expect(connectionStatusView({ status: 'connected', status_error: null, server_enabled: false }).label).toBe('Paused');
+  });
+
+  it('maps the expired OAuth status to a distinct recoverable state (D6)', () => {
+    const view = connectionStatusView({ status: 'expired', status_error: 'token revoked', server_enabled: true });
+    expect(view.label).toBe('Expired');
+    expect(view.expired).toBe(true);
+    // Expired is not a plain error — it is amber and recoverable.
+    expect(view.errored).toBe(false);
+    expect(view.dot).toBe('bg-warn');
+    // Paused still wins over expired (master switch first).
+    expect(
+      connectionStatusView({ status: 'expired', status_error: null, server_enabled: false }).label
+    ).toBe('Paused');
+  });
+
+  it('sends the oauth connect payload as exactly {recipe_id, access_level} and returns the authorize URL', async () => {
+    mockJson({ authorize_url: 'https://auth.atlassian.com/authorize?client_id=x' });
+    const res = await connectionsApi.connect('acme', { recipe_id: 'atlassian', access_level: 'read_only' });
+    expect(res.authorize_url).toBe('https://auth.atlassian.com/authorize?client_id=x');
+    expect((globalThis.fetch as any).mock.calls[0][0]).toBe('/api/v1/workspaces/acme/integrations/connections');
+    expect((globalThis.fetch as any).mock.calls[0][1].method).toBe('POST');
+    expect((globalThis.fetch as any).mock.calls[0][1].body).toBe(
+      JSON.stringify({ recipe_id: 'atlassian', access_level: 'read_only' })
+    );
+  });
+
+  it('posts reauthorize and returns the authorize URL hand-off', async () => {
+    mockJson({ authorize_url: 'https://auth.atlassian.com/authorize?state=next' });
+    const res = await connectionsApi.reauthorize('acme', 'conn-1');
+    expect(res.authorize_url).toBe('https://auth.atlassian.com/authorize?state=next');
+    expect((globalThis.fetch as any).mock.calls[0][0]).toBe('/api/v1/workspaces/acme/integrations/connections/conn-1/reauthorize');
+    expect((globalThis.fetch as any).mock.calls[0][1].method).toBe('POST');
+  });
+
+  it('lists, gets, and saves instance OAuth apps under the admin scope', async () => {
+    const app = {
+      provider: 'atlassian',
+      client_id: 'client-123',
+      client_secret_hint: 'a1b2',
+      redirect_uri: 'https://onclaw.example.com/api/v1/integrations/oauth/callback/atlassian',
+    };
+    mockJson({ apps: [app] });
+    const list = await adminOAuthAppsApi.list();
+    expect(list).toEqual({ apps: [app] });
+    expect((globalThis.fetch as any).mock.calls[0][0]).toBe('/api/v1/admin/oauth-apps');
+    expect((globalThis.fetch as any).mock.calls[0][1].method).toBe('GET');
+
+    mockJson({ app });
+    await expect(adminOAuthAppsApi.get('atlassian')).resolves.toEqual({ app });
+    expect((globalThis.fetch as any).mock.calls[0][0]).toBe('/api/v1/admin/oauth-apps/atlassian');
+    expect((globalThis.fetch as any).mock.calls[0][1].method).toBe('GET');
+
+    const body = { client_id: 'client-123', client_secret: 'supersecret' };
+    mockJson({ app: { ...app, client_id: body.client_id } });
+    await adminOAuthAppsApi.save('atlassian', body);
+    expect((globalThis.fetch as any).mock.calls[0][0]).toBe('/api/v1/admin/oauth-apps/atlassian');
+    expect((globalThis.fetch as any).mock.calls[0][1].method).toBe('PUT');
+    expect((globalThis.fetch as any).mock.calls[0][1].body).toBe(JSON.stringify(body));
+  });
+
+  it('propagates the missing-app connect failure naming the registration', async () => {
+    mockJson(
+      { error: { code: 'invalid_request', message: 'no Atlassian app registered on this instance' } },
+      400
+    );
+    await expect(
+      connectionsApi.connect('acme', { recipe_id: 'atlassian', access_level: 'read_only' })
+    ).rejects.toMatchObject({ status: 400, message: 'no Atlassian app registered on this instance' });
   });
 
   it('derives integrations.write like the sibling write-permission helpers', () => {

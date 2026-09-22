@@ -53,11 +53,12 @@ func respondConnectionError(c *gin.Context, err error) {
 	RespondError(c, err)
 }
 
-// ListRecipes returns the recipe registry with availability (tasks.md 2.5):
-// one entry per registered service, available ones carrying the guided steps,
-// scopes, and probe declaration; coming-soon ones declared with coming_soon.
+// ListRecipes returns the recipe registry with the availability computed at
+// serve time (add-connection-oauth tasks.md 2.5): an OAuth recipe is
+// available iff its provider's instance app is registered, otherwise it stays
+// a coming-soon card — the flip needs only the registration, no code change.
 func (h *connectionsHandlers) ListRecipes(c *gin.Context) {
-	RespondOK(c, gin.H{"recipes": domain.Recipes()})
+	RespondOK(c, gin.H{"recipes": h.service.EnrichRecipes(c.Request.Context())})
 }
 
 // ListConnections returns the workspace's connections as joined views.
@@ -84,12 +85,15 @@ func (h *connectionsHandlers) GetConnection(c *gin.Context) {
 	RespondOK(c, gin.H{"connection": view})
 }
 
-// Connect runs the probe-gated connect flow (tasks.md 2.1/2.2): a probe
-// failure stores nothing and returns 400 with the upstream message; success
-// persists the connection plus its materialized server and returns the joined
-// view with the connected status and the token's last-4 hint.
+// Connect runs the connect flow (tasks.md 2.1/2.2): a PAT connect probes and
+// persists synchronously, returning 201 with the joined view; an OAuth recipe
+// dispatches to the authorize builder and returns 200 with
+// `{"authorize_url"}` — the consent round trip completes at the public
+// callback. A probe failure stores nothing and returns 400 with the upstream
+// message; a missing app registration fails with an error naming it.
 func (h *connectionsHandlers) Connect(c *gin.Context) {
 	ws := MustCurrentWorkspace(c)
+	user := MustCurrentUser(c)
 
 	var req connectRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -97,12 +101,32 @@ func (h *connectionsHandlers) Connect(c *gin.Context) {
 		return
 	}
 
-	view, err := h.service.Connect(c.Request.Context(), ws.ID, req.RecipeID, req.AccessLevel, req.Token)
+	result, err := h.service.Connect(c.Request.Context(), ws.ID, user.ID, req.RecipeID, req.AccessLevel, req.Token)
 	if err != nil {
 		respondConnectionError(c, err)
 		return
 	}
-	RespondJSON(c, http.StatusCreated, gin.H{"connection": view})
+	if result.AuthorizeURL != "" {
+		RespondOK(c, gin.H{"authorize_url": result.AuthorizeURL})
+		return
+	}
+	RespondJSON(c, http.StatusCreated, gin.H{"connection": result.Connection})
+}
+
+// ReauthorizeConnection starts a fresh consent flow for an existing OAuth
+// connection (add-connection-oauth tasks.md 2.4): the response is 200 with
+// `{"authorize_url"}`, and the callback replaces the connection's token set
+// in place — id, server, and attachments preserved.
+func (h *connectionsHandlers) ReauthorizeConnection(c *gin.Context) {
+	ws := MustCurrentWorkspace(c)
+	user := MustCurrentUser(c)
+
+	authorizeURL, err := h.service.BeginReauthorize(c.Request.Context(), ws.ID, user.ID, c.Param("id"))
+	if err != nil {
+		respondConnectionError(c, err)
+		return
+	}
+	RespondOK(c, gin.H{"authorize_url": authorizeURL})
 }
 
 // Disconnect removes the connection through the store's atomic cascade and

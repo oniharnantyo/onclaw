@@ -59,11 +59,16 @@ type Config struct {
 	HooksScriptEnabled     bool          `json:"hooks_script_enabled"`
 	// WhatsAppCloudAPIBase overrides the WhatsApp Cloud API endpoint
 	// (add-whatsapp-gateway design D10). Empty keeps graph.facebook.com.
-	WhatsAppCloudAPIBase string  `json:"whatsapp_cloud_api_base,omitempty"`
-	LangfuseHost         string  `json:"langfuse_host,omitempty"`
-	LangfusePublicKey    string  `json:"-"`
-	LangfuseSecretKey    string  `json:"-"`
-	LangfuseSampleRate   float64 `json:"langfuse_sample_rate"`
+	WhatsAppCloudAPIBase string `json:"whatsapp_cloud_api_base,omitempty"`
+	// PublicBaseURL is the instance's externally reachable base URL
+	// (add-connection-oauth D2) — the redirect-URI derivation for registered
+	// OAuth apps and the OAuth callback's absolute return address. Empty
+	// means OAuth connect flows are unavailable until an operator sets it.
+	PublicBaseURL      string  `json:"public_base_url,omitempty"`
+	LangfuseHost       string  `json:"langfuse_host,omitempty"`
+	LangfusePublicKey  string  `json:"-"`
+	LangfuseSecretKey  string  `json:"-"`
+	LangfuseSampleRate float64 `json:"langfuse_sample_rate"`
 }
 
 // WorkspaceRoot returns the derived workspace root directory: <OnClawDir>/workspaces.
@@ -194,6 +199,11 @@ func ServerFlags() []cli.Flag {
 			Sources: cli.EnvVars("ONCLAW_WHATSAPP_CLOUD_API_BASE"),
 		},
 		&cli.StringFlag{
+			Name:    "public-base-url",
+			Usage:   "Externally reachable base URL (e.g. https://onclaw.example.com); derives OAuth app redirect URIs and the OAuth callback return address",
+			Sources: cli.EnvVars("ONCLAW_PUBLIC_BASE_URL"),
+		},
+		&cli.StringFlag{
 			Name:    "langfuse-host",
 			Usage:   "Langfuse server URL for optional trace export (e.g. https://langfuse.example.com); unset disables tracing",
 			Sources: cli.EnvVars("ONCLAW_LANGFUSE_HOST"),
@@ -286,6 +296,7 @@ func FromServerContext(ctx context.Context, cmd *cli.Command) *Config {
 		HooksCommandEnabled:    cmd.Bool("hooks-command-enabled"),
 		HooksScriptEnabled:     cmd.Bool("hooks-script-enabled"),
 		WhatsAppCloudAPIBase:   cmd.String("whatsapp-cloud-api-base"),
+		PublicBaseURL:          cmd.String("public-base-url"),
 		LangfuseHost:           cmd.String("langfuse-host"),
 		LangfusePublicKey:      cmd.String("langfuse-public-key"),
 		LangfuseSecretKey:      cmd.String("langfuse-secret-key"),

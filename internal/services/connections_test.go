@@ -22,10 +22,12 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	testToken     = "ghp_smoke-token-abcd1234"
-	testTokenHint = "1234"
-	testToolCount = 3
-	testEncKey    = "01234567890123456789012345678901"
+	testToken         = "ghp_smoke-token-abcd1234"
+	testTokenHint     = "1234"
+	testToolCount     = 3
+	testEncKey        = "01234567890123456789012345678901"
+	testUserID        = "test-user-0000-0000-000000000001"
+	testPublicBaseURL = "https://onclaw.example.com"
 )
 
 // connectionsTestEnv is one fake store + real settings service + recording
@@ -66,6 +68,9 @@ func newConnectionsTestEnv(t *testing.T) *connectionsTestEnv {
 		st.WorkspaceMCPServers(),
 		st.Agents(),
 		settings,
+		st.OAuthApps(),
+		[]byte(testEncKey),
+		testPublicBaseURL,
 		services.WithProber(func(ctx context.Context, workspaceID, serverID, name string, conn domain.MCPConnection) (int, error) {
 			env.probeCalls++
 			connections, err := st.Connections().List(ctx, workspaceID)
@@ -82,11 +87,22 @@ func newConnectionsTestEnv(t *testing.T) *connectionsTestEnv {
 	return env
 }
 
+// connectView runs a PAT connect and unwraps the synchronous view (OAuth
+// connects return an authorize URL instead).
+func connectView(t *testing.T, env *connectionsTestEnv, recipeID, accessLevel, token string) (*services.ConnectionView, error) {
+	t.Helper()
+	res, err := env.svc.Connect(context.Background(), env.wsID, testUserID, recipeID, accessLevel, token)
+	if err != nil {
+		return nil, err
+	}
+	return res.Connection, nil
+}
+
 func TestConnectionsService_ConnectHappyPath(t *testing.T) {
 	env := newConnectionsTestEnv(t)
 	ctx := context.Background()
 
-	view, err := env.svc.Connect(ctx, env.wsID, "github", "", testToken)
+	view, err := connectView(t, env, "github", "", testToken)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -159,7 +175,7 @@ func TestConnectionsService_ProbeFailureStoresNothing(t *testing.T) {
 	ctx := context.Background()
 	env.probeErr = errors.New("Bad credentials")
 
-	_, err := env.svc.Connect(ctx, env.wsID, "github", domain.ConnectionAccessReadWrite, testToken)
+	_, err := connectView(t, env, "github", domain.ConnectionAccessReadWrite, testToken)
 	if !errors.Is(err, services.ErrProbeFailed) {
 		t.Fatalf("expected ErrProbeFailed, got %v", err)
 	}
@@ -184,12 +200,12 @@ func TestConnectionsService_DuplicateServiceConflict(t *testing.T) {
 	env := newConnectionsTestEnv(t)
 	ctx := context.Background()
 
-	first, err := env.svc.Connect(ctx, env.wsID, "github", "", testToken)
+	first, err := connectView(t, env, "github", "", testToken)
 	if err != nil {
 		t.Fatalf("first connect: %v", err)
 	}
 
-	_, err = env.svc.Connect(ctx, env.wsID, "github", domain.ConnectionAccessReadWrite, "another-token")
+	_, err = connectView(t, env, "github", domain.ConnectionAccessReadWrite, "another-token")
 	if !errors.Is(err, domain.ErrConnectionExists) {
 		t.Fatalf("expected ErrConnectionExists, got %v", err)
 	}
@@ -226,7 +242,7 @@ func TestConnectionsService_ConnectValidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := env.svc.Connect(ctx, env.wsID, tc.recipeID, tc.accessLevel, tc.token)
+			_, err := connectView(t, env, tc.recipeID, tc.accessLevel, tc.token)
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("expected %v, got %v", tc.wantErr, err)
 			}
@@ -243,9 +259,8 @@ func TestConnectionsService_ConnectValidation(t *testing.T) {
 
 func TestConnectionsService_ReadWriteLevelRoundTrip(t *testing.T) {
 	env := newConnectionsTestEnv(t)
-	ctx := context.Background()
 
-	view, err := env.svc.Connect(ctx, env.wsID, "gitlab", domain.ConnectionAccessReadWrite, "glpat-xyz9876")
+	view, err := connectView(t, env, "gitlab", domain.ConnectionAccessReadWrite, "glpat-xyz9876")
 	if err != nil {
 		t.Fatalf("connect gitlab read_write: %v", err)
 	}
@@ -264,7 +279,7 @@ func TestConnectionsService_HintOnlyReads(t *testing.T) {
 	env := newConnectionsTestEnv(t)
 	ctx := context.Background()
 
-	created, err := env.svc.Connect(ctx, env.wsID, "github", "", testToken)
+	created, err := connectView(t, env, "github", "", testToken)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -290,7 +305,7 @@ func TestConnectionsService_DisconnectCascade(t *testing.T) {
 	env := newConnectionsTestEnv(t)
 	ctx := context.Background()
 
-	view, err := env.svc.Connect(ctx, env.wsID, "github", "", testToken)
+	view, err := connectView(t, env, "github", "", testToken)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -351,7 +366,7 @@ func TestConnectionsService_ProbeOnDemand(t *testing.T) {
 	env := newConnectionsTestEnv(t)
 	ctx := context.Background()
 
-	view, err := env.svc.Connect(ctx, env.wsID, "github", "", testToken)
+	view, err := connectView(t, env, "github", "", testToken)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -404,7 +419,7 @@ func TestConnectionsService_MaterializationFailureCompensates(t *testing.T) {
 		t.Fatalf("seed hand-made server: %v", err)
 	}
 
-	_, err := env.svc.Connect(ctx, env.wsID, "github", "", testToken)
+	_, err := connectView(t, env, "github", "", testToken)
 	if err == nil {
 		t.Fatal("expected the name-taken materialization failure")
 	}
@@ -421,7 +436,7 @@ func TestConnectionsService_ConnectionDisplayName(t *testing.T) {
 	env := newConnectionsTestEnv(t)
 	ctx := context.Background()
 
-	view, err := env.svc.Connect(ctx, env.wsID, "github", "", testToken)
+	view, err := connectView(t, env, "github", "", testToken)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}

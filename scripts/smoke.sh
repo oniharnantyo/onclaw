@@ -59,6 +59,11 @@
 #      gallery with availability, integrations.write guards, connect
 #      validation envelopes, the real-upstream probe gate storing nothing on
 #      failure, and unknown-id 404 paths)
+#  29. Connection OAuth (add-connection-oauth: instance OAuth app registry
+#      with admin.integrations.write guards and write-only secrets, redirect
+#      URI derivation from the public base URL, the registration-driven
+#      gallery availability flip, the missing-registration connect error,
+#      and the connect dispatch to the provider consent flow)
 #
 # Usage:
 #   ./scripts/smoke.sh
@@ -77,6 +82,11 @@ SERVER_PORT="${SERVER_PORT:-8088}"
 SERVER_HOST="${SERVER_HOST:-127.0.0.1}"
 SERVER_URL="${SERVER_URL:-http://${SERVER_HOST}:${SERVER_PORT}}"
 DATABASE_URL="${DATABASE_URL:-postgres://postgres@127.0.0.1:5432/onclaw_smoke?sslmode=disable}"
+# Instance public base URL (add-connection-oauth): the OAuth app registry's
+# redirect URIs derive from it. Defaults to the smoke server's own URL; when
+# attaching to an already-running server, set PUBLIC_BASE_URL to match its
+# ONCLAW_PUBLIC_BASE_URL.
+PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-${SERVER_URL}}"
 SUPERADMIN_EMAIL="${SUPERADMIN_EMAIL:-admin@onclaw.local}"
 SUPERADMIN_PASSWORD="${SUPERADMIN_PASSWORD:-SmokeSuperAdminSecret123!}"
 JWT_SECRET="${JWT_SECRET:-smoke-test-jwt-secret-at-least-32-chars-long!}"
@@ -302,6 +312,7 @@ else
     ONCLAW_DATA_DIR="${DATA_DIR}" \
     ONCLAW_DIR="${ONCLAW_BASE_DIR}" \
     ONCLAW_LISTEN_ADDR="${SERVER_HOST}:${SERVER_PORT}" \
+    ONCLAW_PUBLIC_BASE_URL="${PUBLIC_BASE_URL}" \
     ONCLAW_WHATSAPP_CLOUD_API_BASE="${WA_STUB_BASE}" \
     "${TMP_DIR}/onclaw-smoke-bin" server --database-url "${DATABASE_URL}" --listen-addr "${SERVER_HOST}:${SERVER_PORT}" --encryption-key "${ENCRYPTION_KEY}" >"${TMP_DIR}/server.log" 2>&1 &
 
@@ -3399,3 +3410,92 @@ api_req "POST" "${CONN_BASE}/connections/00000000-0000-0000-0000-000000000000/pr
 assert_status "404" "Unknown connection probe is 404"
 api_req "DELETE" "${CONN_BASE}/connections/00000000-0000-0000-0000-000000000000" "${CHARLIE_TOKEN}"
 assert_status "404" "Unknown connection disconnect is 404"
+
+# -----------------------------------------------------------------------------
+# 29. Connection OAuth (add-connection-oauth: instance OAuth app registry with
+#     admin.integrations.write guards and write-only secrets, redirect URI
+#     derivation, the registration-driven gallery availability flip, the
+#     missing-registration connect error, and the connect dispatch)
+# -----------------------------------------------------------------------------
+log_step "29. Connection OAuth: Instance Apps, Availability Flip, Consent Dispatch"
+
+# The consent round trip itself (signed state → code exchange → probe gate →
+# refresh → expire → reauthorize) needs the provider's token endpoint, and the
+# recipes' endpoints are frozen server-side data with no stub override — so
+# that lifecycle is covered by the fake-based HTTP tests
+# (internal/server/connections_oauth_test.go: a stub token transport behind the
+# service's injectable HTTP client). This section exercises everything that is
+# deterministic against the real server.
+OAUTH_ADMIN_BASE="/api/v1/admin/oauth-apps"
+CONN_OAUTH_BASE="/api/v1/workspaces/${TENANT_SLUG}/integrations"
+
+# 29.1 Registry guards: master-tenant rows behind admin.integrations.write —
+# a workspace owner is outside the master tenant (404, enumeration defense),
+# and only the superadmin reads the (initially empty) registry.
+api_req "GET" "${OAUTH_ADMIN_BASE}" "${CHARLIE_TOKEN}"
+assert_status "404" "Workspace owner is outside the master tenant on the app registry (404)"
+api_req "GET" "${OAUTH_ADMIN_BASE}" "${SUPERADMIN_TOKEN}"
+assert_status "200" "Superadmin lists the OAuth app registry"
+assert_json_expr '(.apps | length) == 0' "No provider apps are registered yet"
+
+# 29.2 Before any registration the connect attempt fails with an error naming
+# the required instance-level registration (and the Member never gets that
+# far — integrations.write rejects first).
+api_req "POST" "${CONN_OAUTH_BASE}/connections" "${CLI_USER_TOKEN}" '{"recipe_id":"atlassian","access_level":"read_only"}'
+assert_status "403" "Member cannot start an OAuth connect (integrations.write 403)"
+api_req "POST" "${CONN_OAUTH_BASE}/connections" "${CHARLIE_TOKEN}" '{"recipe_id":"atlassian","access_level":"read_only"}'
+assert_status "400" "Connecting without a registered app is rejected (400)"
+assert_json_expr '.error.message | contains("register its OAuth app")' "The rejection names the missing instance-level registration"
+assert_json_expr '.error.message | contains("Atlassian")' "The rejection names the provider"
+
+# 29.3 PUT registers the Atlassian app: write-only secret (never echoed —
+# last-4 hint only), the client id round-trips, and the redirect URI derives
+# from the instance public base URL at read time.
+api_req "PUT" "${OAUTH_ADMIN_BASE}/atlassian" "${SUPERADMIN_TOKEN}" '{"client_id":"smoke-atlassian-client","client_secret":"smoke-atlassian-secret-4321"}'
+assert_status "200" "Superadmin registers the Atlassian OAuth app"
+assert_json_expr '.app.provider == "atlassian"' "The registry keys the app by provider"
+assert_json_expr '.app.client_id == "smoke-atlassian-client"' "The client id round-trips"
+assert_json_expr '.app.client_secret_hint == "4321"' "The secret surfaces as its last-4 hint only"
+assert_json_expr '.app | has("client_secret") | not' "The client secret is write-only (never echoed)"
+assert_json_expr '.app.redirect_uri == "'"${PUBLIC_BASE_URL}"'/api/v1/integrations/oauth/callback"' "The redirect URI derives from the public base URL"
+assert_json_expr '.app.created_at != null and .app.updated_at != null' "The app view carries timestamps"
+
+# 29.4 An update replaces the credentials: created_at is fixed at birth while
+# updated_at advances.
+OAUTH_CREATED_AT=$(json_get '.app.created_at')
+api_req "PUT" "${OAUTH_ADMIN_BASE}/atlassian" "${SUPERADMIN_TOKEN}" '{"client_id":"smoke-atlassian-client-2","client_secret":"smoke-atlassian-secret-8888"}'
+assert_status "200" "A second PUT updates the provider's app"
+assert_json_expr '.app.client_id == "smoke-atlassian-client-2"' "The client id is replaced"
+assert_json_expr '.app.client_secret_hint == "8888"' "The hint follows the new secret"
+assert_json_expr ".app.created_at == \"${OAUTH_CREATED_AT}\"" "created_at is fixed at birth"
+
+# 29.5 Non-OAuth and unknown providers are rejected with naming errors; the
+# single-app registry reads back hint-only.
+api_req "PUT" "${OAUTH_ADMIN_BASE}/github" "${SUPERADMIN_TOKEN}" '{"client_id":"x","client_secret":"y"}'
+assert_status "400" "A PAT provider accepts no OAuth app registration"
+api_req "PUT" "${OAUTH_ADMIN_BASE}/acme" "${SUPERADMIN_TOKEN}" '{"client_id":"x","client_secret":"y"}'
+assert_status "400" "An unknown provider is rejected"
+api_req "GET" "${OAUTH_ADMIN_BASE}" "${SUPERADMIN_TOKEN}"
+assert_json_expr '(.apps | length) == 1 and .apps[0].provider == "atlassian"' "The registry lists exactly the Atlassian app"
+
+# 29.6 The registration alone flips the gallery card (no code change): Slack
+# stays coming-soon while Atlassian reports available, and the recipe's
+# lifecycle tuning (refresh_margin) never crosses the wire.
+api_req "GET" "${CONN_OAUTH_BASE}/recipes" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner re-reads the recipe gallery"
+assert_json_expr '[.recipes[] | select(.id == "atlassian")][0].availability == "available"' "The Atlassian card flipped to available with the app registration"
+assert_json_expr '[.recipes[] | select(.id == "atlassian")][0].app_registration_guidance != ""' "The OAuth card carries instance-admin registration guidance"
+assert_json_expr '[.recipes[] | select(.id == "atlassian")][0] | has("refresh_margin") | not' "The refresh margin never crosses the wire"
+assert_json_expr '[.recipes[] | select(.id == "slack")][0].availability == "coming_soon"' "Slack stays coming-soon without its app"
+
+# 29.7 With the app registered the connect dispatch returns the consent
+# hand-off: the recipe's authorize endpoint, the registered client id, the
+# derived redirect URI, and a signed state — and no connection exists yet.
+api_req "POST" "${CONN_OAUTH_BASE}/connections" "${CHARLIE_TOKEN}" '{"recipe_id":"atlassian","access_level":"read_only"}'
+assert_status "200" "Connect for an OAuth recipe returns the consent hand-off"
+assert_json_expr '.authorize_url | startswith("https://auth.atlassian.com/authorize")' "The authorize URL targets the recipe's consent endpoint"
+assert_json_expr '.authorize_url | contains("client_id=smoke-atlassian-client-2")' "The authorize URL carries the registered client id"
+assert_json_expr '.authorize_url | contains("response_type=code")' "The authorize URL requests the authorization code flow"
+assert_json_expr '.authorize_url | contains("state=")' "The authorize URL carries the signed single-use state"
+api_req "GET" "${CONN_OAUTH_BASE}/connections" "${CHARLIE_TOKEN}"
+assert_json_expr '[.connections[] | select(.service == "atlassian")] | length == 0' "The consent dispatch stored no connection"

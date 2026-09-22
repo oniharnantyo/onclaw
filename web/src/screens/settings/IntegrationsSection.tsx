@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { useNavigate, useSearchParams, useLocation } from "react-router-dom";
 import { cx } from "../../lib/helpers";
 import { Icon } from "../../components/ui/Icon";
 import { Chip } from "../../components/ui/Chip";
@@ -37,16 +37,22 @@ function SectionLabel({ children }: { children: any }) {
 }
 
 /**
- * Integrations settings surface (add-workspace-connections 4.1): the recipe
- * gallery (available cards with Integrate, coming-soon cards disabled and
- * truthful, the Custom MCP advanced card leading to MCP management) above the
- * Connected section (status, access level, attached agents, last-4 hint,
- * manage/disconnect). Reads ride workspace membership; Integrate, probe, and
- * disconnect need integrations.write — everyone else sees the gallery
- * read-only.
+ * Integrations settings surface (add-workspace-connections 4.1,
+ * add-connection-oauth 4.1/4.2): the recipe gallery (available cards with
+ * Integrate, coming-soon cards disabled and truthful, the Custom MCP advanced
+ * card leading to MCP management) above the Connected section (status,
+ * access level, attached agents, last-4 hint, manage/disconnect — expired
+ * OAuth connections offer Reauthorize). Also lands the OAuth consent
+ * callback: `?oauth=<recipe_id>&status=connected|failed&detail=…` is resolved
+ * (list refreshed or failure surfaced) and cleaned from the URL so reloads
+ * don't replay it. Reads ride workspace membership; Integrate, probe,
+ * reauthorize, and disconnect need integrations.write — everyone else sees
+ * the gallery read-only.
  */
 export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canWrite }: IntegrationsSectionProps) {
   const navigate = useNavigate();
+  const routerLocation = useLocation();
+  const [searchParams] = useSearchParams();
   const derivedWriter = useCanManageIntegrations(tenant);
   const writer = canWrite !== undefined ? canWrite : derivedWriter;
 
@@ -59,10 +65,16 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
   const [disconnecting, setDisconnecting] = useState<ApiConnection | null>(null);
   const [busy, setBusy] = useState(false);
   const [probingId, setProbingId] = useState<string | null>(null);
+  const [reauthorizingId, setReauthorizingId] = useState<string | null>(null);
+
+  // OAuth callback outcome (failed only — success just refreshes the list).
+  const [oauthFailure, setOauthFailure] = useState<{ service: string; detail: string | null } | null>(null);
+  // StrictMode runs effects twice; the key guards the one-shot resolution.
+  const oauthHandled = useRef<string | null>(null);
 
   const ws = tenant?.sub || tenant?.id;
 
-  const load = async () => {
+  const load = async (): Promise<ApiIntegrationRecipe[]> => {
     setLoading(true);
     setLoadError(null);
     try {
@@ -72,11 +84,13 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
       ]);
       setRecipes(recipeRes?.recipes || []);
       setConnections(connRes?.connections || []);
+      return recipeRes?.recipes || [];
     } catch (err: unknown) {
       if (err instanceof ApiError && err.status === 0) {
-        return;
+        return recipes;
       }
       setLoadError(err instanceof Error ? err : new Error(String(err)));
+      return recipes;
     } finally {
       setLoading(false);
     }
@@ -86,6 +100,44 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
     if (ws) void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reload per workspace only
   }, [ws]);
+
+  // OAuth consent return (add-connection-oauth 4.1): the provider sent the
+  // browser back with the outcome in the query string. Resolve it exactly
+  // once, clean the params with a replace navigation so reloading the page
+  // never replays the message, then refresh the list (success) or surface
+  // the provider's failure detail inline (failure).
+  useEffect(() => {
+    const recipeId = searchParams.get('oauth');
+    if (!recipeId) return;
+    const status = searchParams.get('status');
+    const detail = searchParams.get('detail');
+    const key = `${recipeId}|${status || ''}|${detail || ''}`;
+    if (oauthHandled.current === key) return;
+    oauthHandled.current = key;
+
+    const rest = new URLSearchParams(searchParams);
+    rest.delete('oauth');
+    rest.delete('status');
+    rest.delete('detail');
+    const qs = rest.toString();
+    navigate(`${routerLocation.pathname}${qs ? `?${qs}` : ''}`, { replace: true });
+
+    // Both outcomes refresh the gallery — success shows the active connection,
+    // failure re-renders current state — and name the recipe from the fresh
+    // registry rather than the raw id.
+    void (async () => {
+      const freshRecipes = await load();
+      const name = freshRecipes.find((r) => r.id === recipeId)?.service || recipeId;
+      if (status === 'failed') {
+        setOauthFailure({ service: recipeId, detail });
+        onToast(`${name} couldn't be connected`, 'danger');
+      } else {
+        setOauthFailure(null);
+        onToast(`${name} connected`);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot resolution of the callback params
+  }, [searchParams]);
 
   const connectedByService = new Map(connections.map((c) => [c.service, c]));
   const available = recipes.filter((r) => r.availability === 'available');
@@ -129,8 +181,60 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
     }
   };
 
+  // Reauthorization (add-connection-oauth 4.2): same consent hand-off as
+  // connect — the server returns the authorize URL and the browser goes
+  // around the provider; the callback replaces the token set in place.
+  const handleReauthorize = async (c: ApiConnection) => {
+    if (reauthorizingId) return;
+    setReauthorizingId(c.id);
+    const name = serviceName(c);
+    try {
+      const res = await connectionsApi.reauthorize(ws, c.id);
+      if (res?.authorize_url) {
+        window.location.assign(res.authorize_url);
+        return; // navigation in flight
+      }
+      onToast(`No authorization URL was returned for ${name}`, 'danger');
+    } catch (err: unknown) {
+      onToast(formatApiError(err, `Failed to start reauthorization for ${name}`), 'danger');
+    } finally {
+      setReauthorizingId(null);
+    }
+  };
+
   return (
     <div className="max-w-xl space-y-8" data-od-id="pane-integrations" data-testid="pane-integrations">
+      {/* OAuth callback failure — inline and dismissible; success needs no
+          notice beyond the toast, the refreshed list shows the connection. */}
+      {oauthFailure && (
+        <div
+          role="alert"
+          data-testid="oauth-callback-failure"
+          className="flex items-start gap-2 rounded-md border border-[color-mix(in_oklab,var(--danger)_35%,transparent)] bg-[color-mix(in_oklab,var(--danger)_8%,transparent)] px-3 py-2.5"
+        >
+          <Icon name="alert" size={14} className="mt-0.5 shrink-0 text-danger" />
+          <div className="min-w-0 flex-1">
+            <p className="text-[13px] font-medium text-danger">
+              {recipes.find((r) => r.id === oauthFailure.service)?.service || oauthFailure.service}{' '}
+              couldn't be connected
+            </p>
+            {oauthFailure.detail && (
+              <p className="mt-0.5 text-[12px] leading-4 text-danger" data-testid="oauth-callback-failure-detail">
+                {oauthFailure.detail}
+              </p>
+            )}
+          </div>
+          <button
+            type="button"
+            data-testid="btn-oauth-failure-dismiss"
+            aria-label="Dismiss"
+            onClick={() => setOauthFailure(null)}
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-danger transition-colors hover:bg-[color-mix(in_oklab,var(--danger)_12%,transparent)]"
+          >
+            <Icon name="x" size={13} />
+          </button>
+        </div>
+      )}
       {loading && recipes.length === 0 && connections.length === 0 ? (
         <div className="space-y-3">
           {[0, 1, 2].map((i) => (
@@ -176,7 +280,9 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
                             'flex h-9 w-9 shrink-0 items-center justify-center rounded-md',
                             st.errored
                               ? 'bg-[color-mix(in_oklab,var(--danger)_12%,transparent)] text-danger'
-                              : 'bg-[color-mix(in_oklab,var(--accent)_15%,transparent)] text-accent'
+                              : st.expired
+                                ? 'bg-[color-mix(in_oklab,var(--warn)_14%,transparent)] text-[color-mix(in_oklab,var(--warn),black_25%)]'
+                                : 'bg-[color-mix(in_oklab,var(--accent)_15%,transparent)] text-accent'
                           )}
                         >
                           <Icon name={serviceIconKey(c.service, recipes.find((r) => r.id === c.service)?.icon)} size={16} />
@@ -190,7 +296,11 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
                             <span
                               className={cx(
                                 'inline-flex items-center gap-1.5 text-[11px]',
-                                st.errored ? 'text-danger' : 'text-[color-mix(in_oklab,var(--success),black_25%)]'
+                                st.errored
+                                  ? 'text-danger'
+                                  : st.expired
+                                    ? 'text-[color-mix(in_oklab,var(--warn),black_25%)]'
+                                    : 'text-[color-mix(in_oklab,var(--success),black_25%)]'
                               )}
                               data-testid={'connection-status-' + c.id}
                             >
@@ -215,13 +325,32 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
                               {agents.length === 0 ? 'no agents attached' : agents.join(', ')}
                             </span>
                           </div>
-                          {st.errored && c.status_error && (
-                            <p className="mt-0.5 truncate text-[11px] text-danger" title={c.status_error}>
+                          {(st.errored || st.expired) && c.status_error && (
+                            <p
+                              className={cx(
+                                'mt-0.5 truncate text-[11px]',
+                                st.errored ? 'text-danger' : 'text-[color-mix(in_oklab,var(--warn),black_38%)]'
+                              )}
+                              title={c.status_error}
+                            >
                               {c.status_error}
                             </p>
                           )}
                         </div>
                         <div className="flex shrink-0 items-center gap-1.5">
+                          {/* Expired OAuth token — recovery is re-consent, not
+                              a re-probe of the dead token (D6). */}
+                          {st.expired && writer && (
+                            <button
+                              type="button"
+                              data-testid={'btn-connection-reauthorize-' + c.id}
+                              onClick={() => void handleReauthorize(c)}
+                              disabled={reauthorizingId === c.id}
+                              className="h-8 rounded-md bg-accent px-2.5 text-[12px] font-semibold text-accenton transition-colors hover:opacity-90 disabled:opacity-50"
+                            >
+                              {reauthorizingId === c.id ? 'Redirecting…' : 'Reauthorize'}
+                            </button>
+                          )}
                           <button
                             type="button"
                             data-testid={'btn-connection-probe-' + c.id}
@@ -314,10 +443,11 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
                       <p className="text-[11px] leading-4 text-muted">
                         {/* Server-declared notes are the truthful copy; the
                             fallback keeps the card honest for recipes that
-                            ship without one. */}
+                            ship without one. An oauth recipe is coming-soon
+                            only while its provider app is unregistered. */}
                         {r.notes ||
                           (r.auth_kind === 'oauth'
-                            ? 'Needs an OAuth sign-in flow OnClaw doesn’t support yet — no dates promised.'
+                            ? 'Waiting on an instance admin to register the app under Admin → OAuth apps.'
                             : 'Not available in this deployment yet.')}
                       </p>
                     </div>

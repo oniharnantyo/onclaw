@@ -53,9 +53,46 @@ func (cs *connectionStore) Create(ctx context.Context, c *domain.Connection) err
 	if c.UpdatedAt.IsZero() {
 		c.UpdatedAt = now
 	}
+	// Empty status is the pre-OAuth shape (change-1 callers set none): stored
+	// as connected (add-connection-oauth design.md D6).
+	if c.Status == "" {
+		c.Status = domain.ConnectionStatusConnected
+	}
 
 	cs.s.connections[c.ID] = cloneConnection(c)
 	cs.s.connectionsByService[serviceKey] = c.ID
+	return nil
+}
+
+// UpdateTokenLifecycle persists the OAuth token-lifecycle fields of an
+// existing connection (refresh envelope, expiry, granted scopes, status):
+// the refresh write-through and the expired transition's write path. Under
+// the store lock it is the in-memory analogue of the postgres adapter's
+// single UPDATE ... WHERE workspace_id = $1 AND id = $2.
+func (cs *connectionStore) UpdateTokenLifecycle(ctx context.Context, c *domain.Connection) error {
+	if c == nil {
+		return domain.ErrInvalid
+	}
+	if err := c.Validate(); err != nil {
+		return err
+	}
+
+	cs.s.mu.Lock()
+	defer cs.s.mu.Unlock()
+
+	stored, exists := cs.s.connections[c.ID]
+	if !exists || stored.WorkspaceID != c.WorkspaceID {
+		return domain.ErrNotFound
+	}
+
+	now := time.Now().UTC()
+	stored.RefreshCiphertext = c.RefreshCiphertext
+	stored.ExpiresAt = c.ExpiresAt
+	stored.GrantedScopes = cloneStringSlice(c.GrantedScopes)
+	stored.Status = c.Status
+	stored.UpdatedAt = now
+	c.UpdatedAt = now
+	c.CreatedAt = stored.CreatedAt
 	return nil
 }
 

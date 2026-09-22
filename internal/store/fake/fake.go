@@ -47,6 +47,7 @@ type fakeStore struct {
 	agentMCPServerNames     map[string]string                         // key: agentID + ":" + lower(name) -> ID
 	connections             map[string]*domain.Connection             // key: ID
 	connectionsByService    map[string]string                         // key: workspaceID + ":" + service -> ID
+	oauthApps               map[string]*domain.InstanceOAuthApp       // key: provider
 	hooks                   *hookData                                 // hook state: all three levels + execution audit log
 	channels                *channelData                              // channel state: rooms, membership roster, shared feed
 	agentSessions           map[string]*domain.AgentSession           // key: workspaceID + ":" + agentID + ":" + sessionID
@@ -109,6 +110,7 @@ func newStore() *fakeStore {
 		agentMCPServerNames:     make(map[string]string),
 		connections:             make(map[string]*domain.Connection),
 		connectionsByService:    make(map[string]string),
+		oauthApps:               make(map[string]*domain.InstanceOAuthApp),
 		hooks:                   newHookData(),
 		channels:                newChannelData(),
 		agentSessions:           make(map[string]*domain.AgentSession),
@@ -239,8 +241,14 @@ func (s *fakeStore) AgentMCPServers() store.AgentMCPServers {
 }
 
 // Connections returns the Connections sub-port.
+// Connections returns the Connections sub-port.
 func (s *fakeStore) Connections() store.Connections {
 	return &connectionStore{s: s}
+}
+
+// OAuthApps returns the OAuthApps sub-port.
+func (s *fakeStore) OAuthApps() store.OAuthApps {
+	return &oauthAppStore{s: s}
 }
 
 // AgentSessions returns the AgentSessionStore sub-port.
@@ -395,6 +403,9 @@ func (s *fakeStore) clone() *fakeStore {
 	for key, id := range s.connectionsByService {
 		cp.connectionsByService[key] = id
 	}
+	for provider, app := range s.oauthApps {
+		cp.oauthApps[provider] = cloneInstanceOAuthApp(app)
+	}
 	cp.hooks = s.hooks.clone()
 	cp.channels = s.channels.clone()
 	for key, session := range s.agentSessions {
@@ -501,6 +512,7 @@ func (s *fakeStore) apply(other *fakeStore) {
 	s.agentMCPServerNames = other.agentMCPServerNames
 	s.connections = other.connections
 	s.connectionsByService = other.connectionsByService
+	s.oauthApps = other.oauthApps
 	s.hooks = other.hooks
 	s.channels = other.channels
 	s.agentSessions = other.agentSessions
@@ -737,6 +749,19 @@ func cloneConnection(c *domain.Connection) *domain.Connection {
 		return nil
 	}
 	cp := *c
+	// GrantedScopes always leaves the store as an array, never null (the
+	// served-JSON normalization the recipe registry applies too).
+	if cp.GrantedScopes == nil {
+		cp.GrantedScopes = []string{}
+	}
+	return &cp
+}
+
+func cloneInstanceOAuthApp(a *domain.InstanceOAuthApp) *domain.InstanceOAuthApp {
+	if a == nil {
+		return nil
+	}
+	cp := *a
 	return &cp
 }
 

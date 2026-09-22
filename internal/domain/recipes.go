@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Recipe availability (design.md D2): available recipes offer a working
@@ -14,13 +15,19 @@ const (
 	RecipeComingSoon = "coming_soon"
 )
 
-// Recipe auth kinds. PAT recipes connect with a pasted access token today;
-// OAuth recipes require the OAuth lifecycle change (follow-on) and are
-// declared coming-soon until it ships.
+// Recipe auth kinds. PAT recipes connect with a pasted access token; OAuth
+// recipes (add-connection-oauth) connect through an authorization-code flow
+// against an instance-registered provider app.
 const (
 	RecipeAuthPAT   = "pat"
 	RecipeAuthOAuth = "oauth"
 )
+
+// DefaultRecipeRefreshMargin is the refresh margin an OAuth recipe uses when
+// it declares none (add-connection-oauth design.md D3): a credential
+// resolution within this duration of the stored access-token expiry refreshes
+// the token first instead of yielding the possibly-stale one.
+const DefaultRecipeRefreshMargin = 10 * time.Minute
 
 // RecipeStep is one guided token-creation step shown in the connect dialog.
 // Copy is real copy, not marketing filler.
@@ -77,6 +84,23 @@ type Recipe struct {
 	// TokenScheme is the prefix composed before the token in the secret row
 	// value (e.g. "Bearer"); empty means the raw token is the row value.
 	TokenScheme string `json:"token_scheme,omitempty"`
+	// AuthorizeURL is the provider's OAuth authorization endpoint (auth kind
+	// oauth): the URL the connect flow redirects the user to, with the
+	// registered instance app's client id and the signed state attached.
+	AuthorizeURL string `json:"authorize_url,omitempty"`
+	// TokenURL is the provider's OAuth token endpoint (auth kind oauth): the
+	// URL the authorization code (and, later, the refresh token) is exchanged
+	// at.
+	TokenURL string `json:"token_url,omitempty"`
+	// RefreshMargin is how long before the stored access-token expiry a
+	// credential resolution triggers a refresh (auth kind oauth, design.md
+	// D3); zero selects DefaultRecipeRefreshMargin. Deliberately not served
+	// JSON — it is lifecycle tuning, not gallery copy.
+	RefreshMargin time.Duration `json:"-"`
+	// AppRegistrationGuidance is the instance-admin copy (auth kind oauth)
+	// explaining how to register the provider app whose client credentials
+	// the whole instance authorizes through (design.md D2).
+	AppRegistrationGuidance string `json:"app_registration_guidance,omitempty"`
 	// AccessLevels lists the supported access levels (ConnectionAccess*
 	// constants); the first entry is the flow's default.
 	AccessLevels []string       `json:"access_levels"`
@@ -128,6 +152,27 @@ func ValidateRecipe(r *Recipe) error {
 
 	if r.AuthKind == RecipeAuthPAT && r.TokenHeader == "" {
 		return fmt.Errorf("%w: recipe %q token header is required for %s auth", ErrInvalid, r.ID, RecipeAuthPAT)
+	}
+
+	// OAuth recipes (add-connection-oauth): both flow endpoints and the token
+	// row are required — the access token still materializes into the
+	// materialized server's single secret row (change-1 design.md D4), so an
+	// OAuth recipe declares its header/scheme exactly like a PAT recipe.
+	if r.AuthKind == RecipeAuthOAuth {
+		if r.AuthorizeURL == "" {
+			return fmt.Errorf("%w: recipe %q authorize url is required for %s auth", ErrInvalid, r.ID, RecipeAuthOAuth)
+		}
+		if r.TokenURL == "" {
+			return fmt.Errorf("%w: recipe %q token url is required for %s auth", ErrInvalid, r.ID, RecipeAuthOAuth)
+		}
+		if r.TokenHeader == "" {
+			return fmt.Errorf("%w: recipe %q token header is required for %s auth", ErrInvalid, r.ID, RecipeAuthOAuth)
+		}
+	}
+	// PAT recipes connect by pasted token only: OAuth flow endpoints are
+	// auth-kind-shaped data, not optional extras.
+	if r.AuthKind == RecipeAuthPAT && (r.AuthorizeURL != "" || r.TokenURL != "") {
+		return fmt.Errorf("%w: recipe %q declares OAuth endpoints under %s auth", ErrInvalid, r.ID, RecipeAuthPAT)
 	}
 
 	if len(r.AccessLevels) == 0 {

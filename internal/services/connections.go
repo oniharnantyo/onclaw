@@ -10,8 +10,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/oniharnantyo/onclaw/internal/agents/mcp"
@@ -38,6 +40,11 @@ type WorkspaceMCPSecretStore interface {
 	WorkspaceServer(ctx context.Context, workspaceID, id string) (*domain.WorkspaceMCPServer, error)
 	WorkspaceServerForRuntime(ctx context.Context, workspaceID, id string) (*domain.WorkspaceMCPServer, error)
 	SetWorkspaceServerStatus(ctx context.Context, workspaceID, id, status, statusError string, toolCount int) error
+	// UpdateWorkspaceServer replaces a server's editable fields with the
+	// name-keyed secret merge — the OAuth refresh/reauthorization write-through
+	// rides it to renew the token row without touching any other secret
+	// (add-connection-oauth D1). *agents.MCPSettingsService satisfies it.
+	UpdateWorkspaceServer(ctx context.Context, server *domain.WorkspaceMCPServer) error
 }
 
 // ConnectionProber dials one candidate MCP connection fresh (never a cache
@@ -52,15 +59,25 @@ type ConnectionProber func(ctx context.Context, workspaceID, serverID, name stri
 const DefaultConnectionProbeTimeout = 10 * time.Second
 
 // ConnectionsService implements the connection lifecycle over its granular
-// stores: connect (probe-gated, one connection per service), the joined read
-// view, disconnect (the store's atomic cascade), and probe-on-demand.
+// stores: connect (probe-gated, one connection per service, dispatching OAuth
+// recipes to the authorize builder), the joined read view, disconnect (the
+// store's atomic cascade), probe-on-demand, the OAuth consent round trip
+// (add-connection-oauth tasks 2.1–2.5, connections_oauth.go), and the
+// refresh-on-resolution credential wrapper.
 type ConnectionsService struct {
-	connections  store.Connections
-	wsServers    store.WorkspaceMCPServers
-	agents       store.AgentStore
-	settings     WorkspaceMCPSecretStore
-	probe        ConnectionProber
-	probeTimeout time.Duration
+	connections   store.Connections
+	wsServers     store.WorkspaceMCPServers
+	agents        store.AgentStore
+	settings      WorkspaceMCPSecretStore
+	probe         ConnectionProber
+	probeTimeout  time.Duration
+	apps          store.OAuthApps
+	encKey        []byte
+	publicBaseURL string
+	httpClient    *http.Client
+	stateTTL      time.Duration
+	nonces        map[string]nonceEntry
+	nonceMu       sync.Mutex
 }
 
 // ConnectionsOption configures a ConnectionsService.
@@ -87,17 +104,49 @@ func WithProber(fn ConnectionProber) ConnectionsOption {
 	}
 }
 
+// WithTokenHTTPClient overrides the HTTP client the OAuth token endpoint
+// exchanges and refreshes ride (add-connection-oauth 3.3; the unit-test seam,
+// mirroring the WithProber precedent). A nil client is ignored.
+func WithTokenHTTPClient(client *http.Client) ConnectionsOption {
+	return func(s *ConnectionsService) {
+		if client != nil {
+			s.httpClient = client
+		}
+	}
+}
+
+// WithStateTTL bounds the OAuth signed state's validity (design.md D4). Zero
+// or negative selects DefaultOAuthStateTTL.
+func WithStateTTL(d time.Duration) ConnectionsOption {
+	return func(s *ConnectionsService) {
+		if d > 0 {
+			s.stateTTL = d
+		}
+	}
+}
+
 // NewConnectionsService builds the service from its granular dependencies.
 // settings is the MCP settings service the token's secret row rides (never
-// nil — the composition root resolves it before construction).
-func NewConnectionsService(connections store.Connections, wsServers store.WorkspaceMCPServers, agents store.AgentStore, settings WorkspaceMCPSecretStore, opts ...ConnectionsOption) *ConnectionsService {
+// nil — the composition root resolves it before construction). apps is the
+// instance OAuth apps store backing the OAuth flows' registration gate, encKey
+// the instance master key (the state HMAC and the refresh-token envelopes),
+// and publicBaseURL the instance's externally reachable base URL the redirect
+// URIs derive from (empty legitimately disables OAuth connect until set —
+// validated at use, never at boot).
+func NewConnectionsService(connections store.Connections, wsServers store.WorkspaceMCPServers, agents store.AgentStore, settings WorkspaceMCPSecretStore, apps store.OAuthApps, encKey []byte, publicBaseURL string, opts ...ConnectionsOption) *ConnectionsService {
 	s := &ConnectionsService{
-		connections:  connections,
-		wsServers:    wsServers,
-		agents:       agents,
-		settings:     settings,
-		probe:        defaultProber(),
-		probeTimeout: DefaultConnectionProbeTimeout,
+		connections:   connections,
+		wsServers:     wsServers,
+		agents:        agents,
+		settings:      settings,
+		probe:         defaultProber(),
+		probeTimeout:  DefaultConnectionProbeTimeout,
+		apps:          apps,
+		encKey:        encKey,
+		publicBaseURL: publicBaseURL,
+		httpClient:    &http.Client{Timeout: DefaultTokenHTTPTimeout},
+		stateTTL:      DefaultOAuthStateTTL,
+		nonces:        make(map[string]nonceEntry),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -116,6 +165,15 @@ func defaultProber() ConnectionProber {
 // Connect (tasks 2.1/2.2)
 // ---------------------------------------------------------------------------
 
+// ConnectResult is the connect action's outcome: a PAT connect completes
+// synchronously and carries the joined view; an OAuth connect defers to the
+// browser consent flow and carries the provider authorize URL (tasks.md
+// 2.1/3.1) — exactly one of the two is set.
+type ConnectResult struct {
+	Connection   *ConnectionView
+	AuthorizeURL string
+}
+
 // Connect resolves the recipe, validates the access level and token, probes
 // the candidate connection BEFORE anything is stored, and on probe success
 // persists the connection plus its materialized workspace MCP server — the
@@ -124,13 +182,29 @@ func defaultProber() ConnectionProber {
 // duplicate returns domain.ErrConnectionExists naming the existing connection.
 // A probe failure stores nothing and returns an ErrProbeFailed error carrying
 // the upstream message (design.md D3).
-func (s *ConnectionsService) Connect(ctx context.Context, workspaceID, recipeID, accessLevel, token string) (*ConnectionView, error) {
+//
+// OAuth recipes (auth kind oauth) dispatch to the authorize-URL builder
+// BEFORE the availability check — their effective availability is the
+// instance app registration, checked there (add-connection-oauth tasks.md
+// 2.1/2.5) — and return an authorize URL; activation completes at the public
+// callback. userID is the initiating user the consent is bound to (the signed
+// state carries it, design.md D4).
+func (s *ConnectionsService) Connect(ctx context.Context, workspaceID, userID, recipeID, accessLevel, token string) (*ConnectResult, error) {
 	if workspaceID == "" {
 		return nil, fmt.Errorf("%w: workspace id cannot be empty", domain.ErrInvalid)
 	}
 	recipe := domain.RecipeByID(strings.TrimSpace(recipeID))
 	if recipe == nil {
 		return nil, fmt.Errorf("%w: %q", domain.ErrUnknownRecipe, recipeID)
+	}
+	// OAuth recipes route to the authorize builder ahead of the coming-soon
+	// rejection: their availability gate is the registered instance app.
+	if recipe.AuthKind == domain.RecipeAuthOAuth {
+		authorizeURL, err := s.beginConnect(ctx, workspaceID, userID, recipe, accessLevel)
+		if err != nil {
+			return nil, err
+		}
+		return &ConnectResult{AuthorizeURL: authorizeURL}, nil
 	}
 	// Coming-soon recipes are gallery declarations, not connectable services
 	// (tasks.md 2.5): they accept no connect requests.
@@ -196,7 +270,11 @@ func (s *ConnectionsService) Connect(ctx context.Context, workspaceID, recipeID,
 	if err := s.settings.SetWorkspaceServerStatus(ctx, workspaceID, server.ID, domain.MCPStatusConnected, "", toolCount); err != nil {
 		return nil, err
 	}
-	return s.buildView(ctx, workspaceID, conn)
+	view, err := s.buildView(ctx, workspaceID, conn)
+	if err != nil {
+		return nil, err
+	}
+	return &ConnectResult{Connection: view}, nil
 }
 
 // materializeServer builds the candidate workspace MCP server from the
@@ -311,7 +389,13 @@ func (s *ConnectionsService) buildView(ctx context.Context, workspaceID string, 
 	view.ToolCount = server.ToolCount
 	view.Status = server.Status
 	view.StatusError = server.StatusError
-	if view.Status == "" {
+	// A persisted `expired` connection status wins over the server row's
+	// status: expired is the OAuth recovery state the MCP runtime cannot
+	// write, so no later probe outcome may mask it (add-connection-oauth D6).
+	// The provider error detail still rides the server row's status_error.
+	if conn.Status == domain.ConnectionStatusExpired {
+		view.Status = domain.ConnectionStatusExpired
+	} else if view.Status == "" {
 		view.Status = connectionStatusUnknown
 	}
 	view.TokenHint = secretRowHint(hinted, tokenRowName(conn.Service))
@@ -415,6 +499,19 @@ func (s *ConnectionsService) Probe(ctx context.Context, workspaceID, id string) 
 	if server == nil {
 		return nil, fmt.Errorf("%w: connection %s has no linked mcp server", domain.ErrNotFound, conn.ID)
 	}
+
+	// Refresh-on-resolution (add-connection-oauth D3): a probe dials the
+	// connection's credentials, so an OAuth token inside its refresh margin
+	// is renewed first — the write-through renews the server's token row the
+	// runtime view below then reads. A failed refresh persists the expired
+	// transition and the provider error, and the view returns it as a status
+	// (the MCP probe convention: a failed status is not a request error).
+	if conn.RefreshCiphertext != "" {
+		if _, _, err := s.refreshIfNeeded(ctx, conn, server); err != nil {
+			return s.buildView(ctx, workspaceID, conn)
+		}
+	}
+
 	row, err := s.settings.WorkspaceServerForRuntime(ctx, workspaceID, server.ID)
 	if err != nil {
 		return nil, err

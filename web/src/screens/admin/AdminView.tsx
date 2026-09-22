@@ -6,9 +6,10 @@ import { useStore } from '../../store';
 import { useIsAdmin } from '../../store/auth';
 import { TenantsPane } from './TenantsPane';
 import { UsersPane } from './UsersPane';
+import { OAuthAppsPane } from './OAuthAppsPane';
 
 export interface AdminViewProps {
-  screen?: 'workspaces' | 'accounts' | 'tenants' | 'users';
+  screen?: 'workspaces' | 'accounts' | 'tenants' | 'users' | 'oauth-apps';
   tenant?: any;
 }
 
@@ -21,9 +22,13 @@ export function AdminView({ screen: propScreen }: AdminViewProps) {
 
   const activeScreen = useMemo(() => {
     if (propScreen) {
+      if (propScreen === 'oauth-apps') return 'oauth-apps';
       return propScreen === 'accounts' || propScreen === 'users' ? 'accounts' : 'workspaces';
     }
     const path = location.pathname.toLowerCase();
+    if (path.includes('/oauth')) {
+      return 'oauth-apps';
+    }
     if (path.includes('/accounts') || path.includes('/users') || path.includes('/superadmins')) {
       return 'accounts';
     }
@@ -65,6 +70,8 @@ export function AdminView({ screen: propScreen }: AdminViewProps) {
         <div className="mx-auto max-w-5xl">
           {activeScreen === 'workspaces' ? (
             <TenantsPane onToast={toast} />
+          ) : activeScreen === 'oauth-apps' ? (
+            <OAuthAppsPane onToast={toast} />
           ) : (
             <UsersPane onToast={toast} />
           )}

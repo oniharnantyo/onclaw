@@ -50,6 +50,14 @@ type RouterOptions struct {
 	// service so the token's secret row rides the one secret machinery. nil
 	// builds a fresh one over the granular stores.
 	Connections *services.ConnectionsService
+	// OAuthApps is the instance OAuth app administration service
+	// (add-connection-oauth 3.3). nil builds a fresh one over the granular
+	// store, encryption key, and public base URL.
+	OAuthApps *services.OAuthAppsService
+	// PublicBaseURL is the instance's externally reachable base URL the OAuth
+	// redirect URIs and callback bounces derive from (add-connection-oauth
+	// 3.3). Empty legitimately keeps OAuth connect unavailable.
+	PublicBaseURL string
 	// MCPProbeTimeout bounds each MCP probe's fresh connection attempt; 0
 	// uses the handler default (10s).
 	MCPProbeTimeout time.Duration
@@ -295,6 +303,39 @@ func (rt *router) Engine() *gin.Engine {
 		mcpManager = mcp.NewMCPManager()
 	}
 
+	// Workspace service connections (add-workspace-connections 3.3): the
+	// connections service composes the stores with the MCP settings service —
+	// the token's secret row rides the same machinery, no second secret path
+	// (design.md D4). The OAuth flow dependencies (add-connection-oauth 3.3)
+	// are the instance apps store, the instance master key, and the public
+	// base URL — all granular, never nil-defaulted. Assembled BEFORE the hook
+	// registry and the runner: the runtime credential source below wraps it.
+	// The composition root may inject a long-lived instance; the fallback
+	// builds a fresh one over the granular stores.
+	connectionsSvc := rt.opts.Connections
+	if connectionsSvc == nil {
+		connectionsSvc = services.NewConnectionsService(
+			rt.opts.Store.Connections(),
+			rt.opts.Store.WorkspaceMCPServers(),
+			rt.opts.Store.Agents(),
+			mcpSettings,
+			rt.opts.Store.OAuthApps(),
+			rt.opts.EncryptionKey,
+			rt.opts.PublicBaseURL,
+			services.WithProbeTimeout(rt.opts.MCPProbeTimeout),
+		)
+	}
+	// Instance OAuth app administration (add-connection-oauth 3.3).
+	oauthAppsSvc := rt.opts.OAuthApps
+	if oauthAppsSvc == nil {
+		oauthAppsSvc = services.NewOAuthAppsService(rt.opts.Store.OAuthApps(), rt.opts.EncryptionKey, rt.opts.PublicBaseURL)
+	}
+	// Runtime credential source (add-connection-oauth 2.3/D3): the settings
+	// source the MCP runtime consumes — policy, status writer, and the hooks
+	// invoker — with refresh-on-resolution on every connection-linked row it
+	// resolves for a dial. Fail-open by design; the MCP runtime is untouched.
+	runtimeSource := services.NewRuntimeCredentialSource(mcpSettings, connectionsSvc)
+
 	// Shared hook handler registry (D9/D10): one instance serves the REST
 	// dry-run endpoint AND the runtime dispatcher. The command kill switch
 	// rides the composition root's flag; the mcp_tool handler invokes
@@ -304,7 +345,7 @@ func (rt *router) Engine() *gin.Engine {
 		agenthooks.WithEncryptionKey(rt.opts.EncryptionKey),
 		agenthooks.WithCommandEnabled(rt.opts.HooksCommandEnabled),
 		agenthooks.WithScriptEnabled(rt.opts.HooksScriptEnabled),
-		agenthooks.WithMCPInvoker(mcp.NewHooksInvoker(mcpSettings, mcpManager)),
+		agenthooks.WithMCPInvoker(mcp.NewHooksInvoker(runtimeSource, mcpManager)),
 		agenthooks.WithEvaluatorFactory(agents.NewHookEvaluatorFactory(rt.opts.Store.Providers(), rt.opts.EncryptionKey, agents.DefaultAgenticModelFactory)),
 	)
 
@@ -387,9 +428,9 @@ func (rt *router) Engine() *gin.Engine {
 				agents.WithTodoTools(rt.opts.Store.Todos()),
 			)),
 			agents.WithEnabledSkillReader(WorkspaceSkillReader(rt.opts.Store.WorkspaceSkills())),
-			agents.WithMCPPolicy(mcp.NewSettingsPolicy(mcpSettings)),
+			agents.WithMCPPolicy(mcp.NewSettingsPolicy(runtimeSource)),
 			agents.WithMCPManager(mcpManager),
-			agents.WithMCPStatusWriter(mcp.NewSettingsStatusWriter(mcpSettings)),
+			agents.WithMCPStatusWriter(mcp.NewSettingsStatusWriter(runtimeSource)),
 			agents.WithHooks(agenthooks.NewDispatcher(rt.opts.Store.Hooks(), hookRegistry)),
 			agents.WithChannelContext(channelRuntime.Chokepoint()),
 			agents.WithChannelFeed(channelRuntime.Chokepoint()),
@@ -539,23 +580,10 @@ func (rt *router) Engine() *gin.Engine {
 	}
 	toolSettingsHandlers := handlers.NewToolSettingsHandlers(toolSettings)
 
-	// Workspace service connections (add-workspace-connections 3.3): the
-	// connections service composes the stores with the MCP settings service —
-	// the token's secret row rides the same machinery, no second secret path
-	// (design.md D4). The composition root may inject a long-lived instance;
-	// the fallback builds a fresh one over the granular stores.
-	connectionsSvc := rt.opts.Connections
-	if connectionsSvc == nil {
-		connectionsSvc = services.NewConnectionsService(
-			rt.opts.Store.Connections(),
-			rt.opts.Store.WorkspaceMCPServers(),
-			rt.opts.Store.Agents(),
-			mcpSettings,
-			services.WithProbeTimeout(rt.opts.MCPProbeTimeout),
-		)
-	}
 	mcpServerHandlers := handlers.NewMCPServerHandlers(mcpSettings, rt.opts.Store.Agents(), mcpManager, rt.opts.MCPProbeTimeout, connectionsSvc)
 	connectionsHandlers := handlers.NewConnectionsHandlers(connectionsSvc, mcpManager)
+	oauthHandlers := handlers.NewOAuthHandlers(connectionsSvc, rt.opts.PublicBaseURL)
+	oauthAppsHandlers := handlers.NewOAuthAppsHandlers(oauthAppsSvc)
 
 	// Channel surface (integrate-agent-channels D11/D12 + channel-teams
 	// tasks 6/7): posts and kickoffs ride the shared chokepoint; the SSE
@@ -670,6 +698,12 @@ func (rt *router) Engine() *gin.Engine {
 		// answers the Meta verification handshake (hub.challenge echo).
 		api.GET("/webhooks/whatsapp/:gatewayId", gatewayHandlers.WhatsAppWebhookVerify)
 		api.POST("/webhooks/whatsapp/:gatewayId", gatewayHandlers.WhatsAppWebhookUpdate)
+
+		// Public OAuth callback ingress (add-connection-oauth 3.1): no auth
+		// middleware — the browser arrives from the provider's redirect, and
+		// the signed single-use state IS the authenticator (design.md D4).
+		// Every outcome is a bounce back to the settings pane.
+		api.GET("/integrations/oauth/callback", oauthHandlers.Callback)
 
 		// Authenticated endpoints
 		authed := api.Group("")
@@ -814,6 +848,10 @@ func (rt *router) Engine() *gin.Engine {
 				wsGroup.POST("/integrations/connections", rt.mw.RequirePermission(domain.IntegrationsWrite), connectionsHandlers.Connect)
 				wsGroup.DELETE("/integrations/connections/:id", rt.mw.RequirePermission(domain.IntegrationsWrite), connectionsHandlers.Disconnect)
 				wsGroup.POST("/integrations/connections/:id/probe", rt.mw.RequirePermission(domain.IntegrationsWrite), connectionsHandlers.ProbeConnection)
+				// OAuth reauthorization (add-connection-oauth 3.1): a fresh
+				// consent flow for an existing connection — same trust tier as
+				// connect (integrations.write, the credential-bearing tier).
+				wsGroup.POST("/integrations/connections/:id/reauthorize", rt.mw.RequirePermission(domain.IntegrationsWrite), connectionsHandlers.ReauthorizeConnection)
 
 				// Workspace skill library (registry + system tier; Member reads,
 				// Owner/Admin/Superadmin manage via skills.write)
@@ -1004,6 +1042,14 @@ func (rt *router) Engine() *gin.Engine {
 				// Superadmins management
 				adminGroup.POST("/superadmins", rt.mw.RequirePermission(domain.AdminSuperadminsWrite), adminSuperadminHandlers.AdminGrantSuperadmin)
 				adminGroup.DELETE("/superadmins/:uid", rt.mw.RequirePermission(domain.AdminSuperadminsWrite), adminSuperadminHandlers.AdminRevokeSuperadmin)
+
+				// Instance OAuth apps (add-connection-oauth 3.1): one app per
+				// provider, master-tenant rows guarded by
+				// admin.integrations.write — an instance-admin permission no
+				// workspace role holds. PUT is the pinned upsert verb.
+				adminGroup.GET("/oauth-apps", rt.mw.RequirePermission(domain.AdminIntegrationsWrite), oauthAppsHandlers.ListApps)
+				adminGroup.GET("/oauth-apps/:provider", rt.mw.RequirePermission(domain.AdminIntegrationsWrite), oauthAppsHandlers.GetApp)
+				adminGroup.PUT("/oauth-apps/:provider", rt.mw.RequirePermission(domain.AdminIntegrationsWrite), oauthAppsHandlers.PutApp)
 
 				// Instance hooks (D13/D15/D17): managed rows under superadmin
 				// CRUD plus the read-only builtin listing. Hooks permissions

@@ -27,13 +27,16 @@ export interface ConnectServiceDialogProps {
 const FALLBACK_LEVELS: ConnectionAccessLevel[] = ['read_only', 'read_write'];
 
 /**
- * Guided PAT connect flow (add-workspace-connections 4.2): the recipe's
- * token-creation steps, the access-level catalog preselected to the recipe's
- * first level (read-only), the token input, and the probe-gated Connect
- * action (the server probes before persisting — a failure stores nothing and
- * surfaces the upstream message here). Success hands off to per-agent
- * attachment riding the existing enabled_mcps patch on the materialized
- * server.
+ * Guided connect flow (add-workspace-connections 4.2, add-connection-oauth
+ * 4.1): PAT recipes render the token-creation steps and token input; oauth
+ * recipes render the consent hand-off instead — no token field, the Connect
+ * action asks the server for the provider's authorize URL and redirects the
+ * browser. Both share the access-level catalog preselected to the recipe's
+ * first level (read-only). PAT connect is probe-gated server-side (a failure
+ * stores nothing and surfaces the upstream message here); oauth connect
+ * activates later, when the provider callback returns to Settings →
+ * Integrations. Success hands off to per-agent attachment riding the existing
+ * enabled_mcps patch on the materialized server.
  */
 export function ConnectServiceDialog({
   recipe,
@@ -44,6 +47,7 @@ export function ConnectServiceDialog({
 }: ConnectServiceDialogProps) {
   const ws = tenant?.sub || tenant?.id;
   const levels = recipe.access_levels.length ? recipe.access_levels : FALLBACK_LEVELS;
+  const isOAuth = recipe.auth_kind === 'oauth';
 
   const [accessLevel, setAccessLevel] = useState<ConnectionAccessLevel>(levels[0]);
   const [token, setToken] = useState('');
@@ -72,27 +76,47 @@ export function ConnectServiceDialog({
   const serverId = connected?.server_id || null;
 
   const handleConnect = async () => {
-    if (!token.trim() || connecting) return;
+    if (connecting) return;
+    if (!isOAuth && !token.trim()) return;
     setConnecting(true);
     setError(null);
     try {
-      const res = await connectionsApi.connect(ws, {
-        recipe_id: recipe.id,
-        access_level: accessLevel,
-        token: token.trim(),
-      });
+      const res = await connectionsApi.connect(
+        ws,
+        isOAuth
+          ? // OAuth: no secret crosses the wire — the server builds the
+            // authorize redirect from the recipe + registered instance app.
+            { recipe_id: recipe.id, access_level: accessLevel }
+          : { recipe_id: recipe.id, access_level: accessLevel, token: token.trim() }
+      );
+      if (isOAuth) {
+        const url = res?.authorize_url;
+        if (url) {
+          // Hand the browser to the provider; the callback lands back on
+          // Settings → Integrations with ?oauth=<recipe_id>&status=…
+          window.location.assign(url);
+          return; // navigation in flight — keep the redirecting state
+        }
+        // A contract violation rather than a user error — surface it instead
+        // of silently doing nothing.
+        setError(`No authorization URL was returned for ${recipe.service}.`);
+        setConnecting(false);
+        return;
+      }
       const connection = res?.connection;
       if (connection) {
+        setConnecting(false);
         setConnected(connection);
         onConnected?.(connection);
       } else {
+        setConnecting(false);
         onClose();
       }
     } catch (err: unknown) {
-      // Probe failures (upstream message), duplicate-service conflicts, and
-      // integrations.write rejections all arrive as error envelopes.
+      // Probe failures (upstream message), duplicate-service conflicts,
+      // missing-app registrations, and integrations.write rejections all
+      // arrive as error envelopes.
       setError(formatApiError(err, `Couldn't connect ${recipe.service}`));
-    } finally {
       setConnecting(false);
     }
   };
@@ -117,6 +141,48 @@ export function ConnectServiceDialog({
       onToast(formatApiError(err, `Couldn't update ${agent.name}`), 'danger');
     }
   };
+
+  // Shared by both variants: the access-level catalog plus the scopes the
+  // level recommends (PAT) or consent requests (oauth) — recipe-declared, D5.
+  const accessLevelSection = (
+    <div>
+      <span className={labelCls}>Access level</span>
+      <div className="flex flex-wrap gap-2">
+        {levels.map((l) => {
+          const on = accessLevel === l;
+          return (
+            <button
+              key={l}
+              type="button"
+              aria-pressed={on}
+              data-testid={'connect-access-' + l}
+              onClick={() => setAccessLevel(l)}
+              className={cx(
+                'flex h-8 items-center gap-1.5 rounded-md border px-3 text-[12px] font-medium transition-colors',
+                on
+                  ? 'border-accent bg-[color-mix(in_oklab,var(--accent)_14%,transparent)] text-fg'
+                  : 'border-line text-muted hover:border-[color-mix(in_oklab,var(--fg)_26%,transparent)] hover:text-fg2'
+              )}
+            >
+              {accessLevelLabel(l)}
+            </button>
+          );
+        })}
+      </div>
+      {selectedScopes.length > 0 && (
+        <div className="mt-2 flex flex-wrap items-center gap-1.5" data-testid="connect-scopes">
+          <span className="text-[11px] text-muted">
+            {isOAuth ? 'Scopes you’ll approve:' : 'Recommended scopes:'}
+          </span>
+          {selectedScopes.map((s) => (
+            <Chip key={s} mono>
+              {s}
+            </Chip>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <Modal
@@ -147,12 +213,18 @@ export function ConnectServiceDialog({
             <button
               type="button"
               onClick={() => void handleConnect()}
-              disabled={!token.trim() || connecting}
+              disabled={(isOAuth ? false : !token.trim()) || connecting}
               data-testid="btn-connect-confirm"
               className="flex h-9 items-center gap-2 rounded-md bg-accent px-4 text-[13px] font-semibold text-accenton transition-colors hover:opacity-90 disabled:opacity-40"
             >
               {connecting && <Icon name="loader" size={13} className="animate-spin" />}
-              {connecting ? 'Connecting…' : 'Connect'}
+              {connecting
+                ? isOAuth
+                  ? 'Redirecting…'
+                  : 'Connecting…'
+                : isOAuth
+                  ? `Continue to ${recipe.service}`
+                  : 'Connect'}
             </button>
           </>
         )
@@ -200,6 +272,44 @@ export function ConnectServiceDialog({
             )}
           </div>
         </div>
+      ) : isOAuth ? (
+        /* OAuth consent hand-off (add-connection-oauth 4.1): no token field —
+           the secret is never user-supplied; the browser round-trips the
+           provider and the callback activates the connection. */
+        <div className="space-y-5 p-5">
+          <div className="flex items-start gap-3" data-testid="connect-oauth-handoff">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[color-mix(in_oklab,var(--accent)_12%,transparent)] text-accent">
+              <Icon name="external-link" size={16} />
+            </span>
+            <div className="min-w-0">
+              <p className="text-[14px] font-medium text-fg">Sign in with {recipe.service}</p>
+              <p className="mt-1 text-[12px] leading-4 text-muted">
+                You’ll be sent to {recipe.service} to approve access — there’s no token to paste.
+                Afterwards you land back in Settings → Integrations, where the connection activates
+                on its own after a quick check.
+              </p>
+            </div>
+          </div>
+
+          {accessLevelSection}
+
+          {recipe.app_registration_guidance && (
+            <p className="text-[11px] leading-4 text-muted" data-testid="connect-oauth-guidance">
+              {recipe.app_registration_guidance}
+            </p>
+          )}
+
+          {error && (
+            <p
+              role="alert"
+              data-testid="connect-error"
+              className="flex items-start gap-1.5 rounded-md border border-[color-mix(in_oklab,var(--danger)_35%,transparent)] bg-[color-mix(in_oklab,var(--danger)_8%,transparent)] px-3 py-2 text-[12px] leading-4 text-danger"
+            >
+              <Icon name="alert" size={13} className="mt-0.5 shrink-0" />
+              {error}
+            </p>
+          )}
+        </div>
       ) : (
         <div className="space-y-5 p-5">
           {/* Guided token-creation steps — real copy from the recipe. */}
@@ -232,43 +342,7 @@ export function ConnectServiceDialog({
 
           {/* Access level — catalog-driven, first level (read-only) the
               flow default (D5). */}
-          <div>
-            <span className={labelCls}>Access level</span>
-            <div className="flex flex-wrap gap-2">
-              {levels.map((l) => {
-                const on = accessLevel === l;
-                return (
-                  <button
-                    key={l}
-                    type="button"
-                    aria-pressed={on}
-                    data-testid={'connect-access-' + l}
-                    onClick={() => setAccessLevel(l)}
-                    className={cx(
-                      'flex h-8 items-center gap-1.5 rounded-md border px-3 text-[12px] font-medium transition-colors',
-                      on
-                        ? 'border-accent bg-[color-mix(in_oklab,var(--accent)_14%,transparent)] text-fg'
-                        : 'border-line text-muted hover:border-[color-mix(in_oklab,var(--fg)_26%,transparent)] hover:text-fg2'
-                    )}
-                  >
-                    {accessLevelLabel(l)}
-                  </button>
-                );
-              })}
-            </div>
-            {/* Recommended scopes for the chosen level — the actual write
-                gate rides the token's own scopes, so show what to pick. */}
-            {selectedScopes.length > 0 && (
-              <div className="mt-2 flex flex-wrap items-center gap-1.5" data-testid="connect-scopes">
-                <span className="text-[11px] text-muted">Recommended scopes:</span>
-                {selectedScopes.map((s) => (
-                  <Chip key={s} mono>
-                    {s}
-                  </Chip>
-                ))}
-              </div>
-            )}
-          </div>
+          {accessLevelSection}
 
           <div>
             <label className={labelCls} htmlFor="connect-token">

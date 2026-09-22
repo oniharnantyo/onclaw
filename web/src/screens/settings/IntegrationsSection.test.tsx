@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { MemoryRouter, Routes, Route } from 'react-router-dom';
+import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom';
 import { IntegrationsSection } from './IntegrationsSection';
 import {
   connectionsApi,
@@ -99,6 +99,42 @@ function renderPane(canWrite?: boolean) {
       </Routes>
     </MemoryRouter>
   );
+}
+
+/** Renders the pane at a deep-linked URL (e.g. the OAuth callback return) and
+ * exposes the router location so URL-cleaning assertions can read it. */
+function renderPaneAt(url: string, opts: { canWrite?: boolean; onToast?: (t: string, k?: string) => void } = {}) {
+  function LocationProbe() {
+    const loc = useLocation();
+    return <div data-testid="location-probe" data-loc={loc.pathname + (loc.search || '')} />;
+  }
+  return render(
+    <MemoryRouter initialEntries={[url]}>
+      <Routes>
+        <Route
+          path="/settings/integrations"
+          element={
+            <>
+              <IntegrationsSection tenant={mockTenant} canWrite={opts.canWrite} onToast={opts.onToast} />
+              <LocationProbe />
+            </>
+          }
+        />
+        <Route path="/settings/mcp" element={<div data-testid="mcp-target" />} />
+      </Routes>
+    </MemoryRouter>
+  );
+}
+
+/** jsdom navigations need stubbing; same pattern as ErrorBoundary.test. */
+function stubLocationAssign() {
+  const assignMock = vi.fn();
+  Object.defineProperty(window, 'location', {
+    value: { ...window.location, assign: assignMock },
+    writable: true,
+    configurable: true,
+  });
+  return assignMock;
 }
 
 describe('screens/settings/IntegrationsSection', () => {
@@ -391,5 +427,209 @@ describe('screens/settings/IntegrationsSection', () => {
     await waitFor(() => {
       expect(screen.getByTestId('recipe-gitlab')).not.toBeNull();
     });
+  });
+
+  it('keeps the oauth coming-soon card truthful about the missing instance app', async () => {
+    vi.spyOn(connectionsApi, 'recipes').mockResolvedValue({
+      recipes: [atlassianRecipe({ notes: undefined })],
+    });
+
+    renderPane();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('recipe-coming-soon-atlassian')).not.toBeNull();
+    });
+    expect(screen.getByTestId('recipe-coming-soon-atlassian').textContent).toContain(
+      'register the app under Admin → OAuth apps'
+    );
+  });
+
+  it('connects an oauth recipe through the consent hand-off — no token field', async () => {
+    const assignMock = stubLocationAssign();
+    const authorizeUrl = 'https://auth.atlassian.com/authorize?client_id=app-1&state=s1';
+    const connect = vi.spyOn(connectionsApi, 'connect').mockResolvedValue({ authorize_url: authorizeUrl });
+    vi.spyOn(connectionsApi, 'recipes').mockResolvedValue({
+      recipes: recipesFixture().map((r) =>
+        r.id === 'atlassian'
+          ? {
+              ...r,
+              // Server-side availability: the provider app is registered.
+              availability: 'available' as const,
+              scopes: [{ access_level: 'read_only', scopes: ['read:jira-user', 'offline_access'] }],
+              app_registration_guidance: 'Create an app at developer.atlassian.com and add the redirect URI.',
+            }
+          : r
+      ),
+    });
+
+    renderPane();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('btn-integrate-atlassian')).not.toBeNull();
+    });
+    fireEvent.click(screen.getByTestId('btn-integrate-atlassian'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('modal-connect-service')).not.toBeNull();
+    });
+    // The consent hand-off replaces the PAT steps and the token input.
+    expect(screen.getByTestId('connect-oauth-handoff').textContent).toContain('Sign in with Atlassian');
+    expect(screen.queryByTestId('connect-steps')).toBeNull();
+    expect(screen.queryByTestId('input-connect-token')).toBeNull();
+    // Consent scopes come from the recipe, labeled as approval rather than a
+    // recommendation, and operator guidance renders as a note.
+    expect(screen.getByTestId('connect-scopes').textContent).toContain('read:jira-user');
+    expect(screen.getByTestId('connect-scopes').textContent).toMatch(/approve/i);
+    expect(screen.getByTestId('connect-oauth-guidance').textContent).toContain('developer.atlassian.com');
+
+    // Connect is NOT gated on a token — there isn't one.
+    expect((screen.getByTestId('btn-connect-confirm') as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByTestId('btn-connect-confirm'));
+
+    await waitFor(() => {
+      expect(connect).toHaveBeenCalledWith('acme', {
+        recipe_id: 'atlassian',
+        access_level: 'read_only',
+      });
+    });
+    await waitFor(() => {
+      expect(assignMock).toHaveBeenCalledWith(authorizeUrl);
+    });
+    // No in-dialog success hand-off — the connection activates at the callback.
+    expect(screen.queryByTestId('connect-success')).toBeNull();
+  });
+
+  it('surfaces a missing-app oauth connect failure inline', async () => {
+    vi.spyOn(connectionsApi, 'connect').mockRejectedValue(
+      new ApiError(400, 'invalid_request', 'No Atlassian app is registered on this instance')
+    );
+    vi.spyOn(connectionsApi, 'recipes').mockResolvedValue({
+      recipes: recipesFixture().map((r) =>
+        r.id === 'atlassian' ? { ...r, availability: 'available' as const } : r
+      ),
+    });
+
+    renderPane();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('btn-integrate-atlassian')).not.toBeNull();
+    });
+    fireEvent.click(screen.getByTestId('btn-integrate-atlassian'));
+    await waitFor(() => {
+      expect(screen.getByTestId('btn-connect-confirm')).not.toBeNull();
+    });
+    fireEvent.click(screen.getByTestId('btn-connect-confirm'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('connect-error').textContent).toContain(
+        'No Atlassian app is registered on this instance'
+      );
+    });
+    expect(screen.queryByTestId('connect-success')).toBeNull();
+  });
+
+  it('resolves the oauth callback return: refreshes the list, toasts, and cleans the URL', async () => {
+    const onToast = vi.fn();
+    const listSpy = vi.spyOn(connectionsApi, 'list').mockResolvedValue({
+      connections: [
+        connectionRow({ id: 'conn-atl', service: 'atlassian', token_hint: 'zz99' }),
+      ],
+    });
+
+    renderPaneAt('/settings/integrations?oauth=atlassian&status=connected', { onToast });
+
+    // The activated connection appears from the refresh.
+    await waitFor(() => {
+      expect(screen.getByTestId('connection-conn-atl')).not.toBeNull();
+    });
+    await waitFor(() => {
+      expect(listSpy.mock.calls.length).toBeGreaterThanOrEqual(2); // initial load + callback refresh
+    });
+    await waitFor(() => {
+      expect(onToast).toHaveBeenCalledWith('Atlassian (Jira & Confluence) connected');
+    });
+    // Query params cleaned with a replace — a reload cannot replay the message.
+    await waitFor(() => {
+      expect(screen.getByTestId('location-probe').getAttribute('data-loc')).toBe('/settings/integrations');
+    });
+    expect(screen.queryByTestId('oauth-callback-failure')).toBeNull();
+  });
+
+  it('surfaces the oauth callback failure inline with the provider detail and cleans the URL', async () => {
+    const onToast = vi.fn();
+
+    renderPaneAt('/settings/integrations?oauth=atlassian&status=failed&detail=Consent%20was%20denied', {
+      onToast,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('oauth-callback-failure')).not.toBeNull();
+    });
+    expect(screen.getByTestId('oauth-callback-failure').textContent).toContain(
+      "Atlassian (Jira & Confluence) couldn't be connected"
+    );
+    expect(screen.getByTestId('oauth-callback-failure-detail').textContent).toBe('Consent was denied');
+    await waitFor(() => {
+      expect(onToast).toHaveBeenCalledWith("Atlassian (Jira & Confluence) couldn't be connected", 'danger');
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('location-probe').getAttribute('data-loc')).toBe('/settings/integrations');
+    });
+
+    // The inline notice is dismissible.
+    fireEvent.click(screen.getByTestId('btn-oauth-failure-dismiss'));
+    expect(screen.queryByTestId('oauth-callback-failure')).toBeNull();
+  });
+
+  it('renders an expired OAuth connection with a Reauthorize hand-off', async () => {
+    const assignMock = stubLocationAssign();
+    const authorizeUrl = 'https://auth.atlassian.com/authorize?client_id=app-1&state=r1';
+    vi.spyOn(connectionsApi, 'list').mockResolvedValue({
+      connections: [
+        connectionRow({
+          id: 'conn-atl',
+          service: 'atlassian',
+          status: 'expired',
+          status_error: 'token revoked by provider',
+        }),
+      ],
+    });
+    const reauthorize = vi.spyOn(connectionsApi, 'reauthorize').mockResolvedValue({ authorize_url: authorizeUrl });
+
+    renderPane();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('connection-conn-atl')).not.toBeNull();
+    });
+    // Distinct expired state, not a plain error.
+    expect(screen.getByTestId('connection-status-conn-atl').textContent).toBe('Expired');
+    expect(screen.getByTestId('connection-conn-atl').textContent).toContain('token revoked by provider');
+    expect(screen.getByTestId('btn-connection-reauthorize-conn-atl')).not.toBeNull();
+
+    fireEvent.click(screen.getByTestId('btn-connection-reauthorize-conn-atl'));
+
+    await waitFor(() => {
+      expect(reauthorize).toHaveBeenCalledWith('acme', 'conn-atl');
+    });
+    await waitFor(() => {
+      expect(assignMock).toHaveBeenCalledWith(authorizeUrl);
+    });
+  });
+
+  it('keeps the Reauthorize action writer-gated like the other mutations', async () => {
+    const reauthorize = vi.spyOn(connectionsApi, 'reauthorize');
+    vi.spyOn(connectionsApi, 'list').mockResolvedValue({
+      connections: [
+        connectionRow({ id: 'conn-atl', service: 'atlassian', status: 'expired', status_error: 'expired' }),
+      ],
+    });
+
+    renderPane(false);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('connection-status-conn-atl').textContent).toBe('Expired');
+    });
+    expect(screen.queryByTestId('btn-connection-reauthorize-conn-atl')).toBeNull();
+    expect(reauthorize).not.toHaveBeenCalled();
   });
 });

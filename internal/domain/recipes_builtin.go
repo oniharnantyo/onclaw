@@ -36,7 +36,7 @@ func init() {
 					"the repositories the agents should reach, then grant the permissions listed below.",
 			},
 			{
-				Title: "Copy the token",
+				Title:  "Copy the token",
 				Detail: "Copy the token now — GitHub shows it once. Paste it into the connect dialog.",
 			},
 		},
@@ -91,7 +91,7 @@ func init() {
 					"granular PATs support read-only and read-and-write tiers.",
 			},
 			{
-				Title: "Copy the token",
+				Title:  "Copy the token",
 				Detail: "Copy the token now — GitLab shows it once. Paste it into the connect dialog.",
 			},
 		},
@@ -111,7 +111,12 @@ func init() {
 	// One recipe covering both Jira and Confluence (design.md D2): Atlassian's
 	// single remote MCP server serves both products from one OAuth 2.0 (3LO)
 	// connection, and API tokens are not accepted by that server — so there is
-	// no PAT shortcut and no reason to model two cards.
+	// no PAT shortcut and no reason to model two cards. The OAuth facts below
+	// are the reference recipe (add-connection-oauth D6); endpoints and scopes
+	// are live-pinned at apply time (tasks.md 5.3). Availability stays
+	// coming_soon in the declaration: the gallery flips the card to available
+	// when the instance registers its Atlassian app (spec: OAuth recipe
+	// availability).
 	RegisterRecipe(Recipe{
 		ID:           "atlassian",
 		Service:      "Atlassian",
@@ -120,12 +125,50 @@ func init() {
 		Availability: RecipeComingSoon,
 		Transport:    MCPTransportSSE,
 		Endpoint:     "https://mcp.atlassian.com/v1/sse",
+		TokenHeader:  "Authorization",
+		TokenScheme:  "Bearer",
+		AuthorizeURL: "https://auth.atlassian.com/authorize",
+		TokenURL:     "https://auth.atlassian.com/oauth/token",
 		AccessLevels: []string{
 			ConnectionAccessReadOnly,
 			ConnectionAccessReadWrite,
 		},
+		// Atlassian scopes are granular; offline_access is what makes the
+		// token refreshable (design.md D3), and read:me is the minimal
+		// account scope every 3LO app holds.
+		Scopes: []RecipeScopes{
+			{
+				AccessLevel: ConnectionAccessReadOnly,
+				Scopes: []string{
+					"read:jira-work",
+					"read:jira-user",
+					"read:confluence-space.summary",
+					"read:confluence-content.summary",
+					"read:me",
+					"offline_access",
+				},
+			},
+			{
+				AccessLevel: ConnectionAccessReadWrite,
+				Scopes: []string{
+					"read:jira-work",
+					"write:jira-work",
+					"read:jira-user",
+					"read:confluence-space.summary",
+					"read:confluence-content.summary",
+					"write:confluence-content",
+					"read:me",
+					"offline_access",
+				},
+			},
+		},
+		AppRegistrationGuidance: "Create an OAuth 2.0 (3LO) app at developer.atlassian.com " +
+			"(Apps → Create app → Authorization: OAuth 2.0). Add the shown redirect URI, " +
+			"grant the scopes for the access levels you intend to offer, and copy the " +
+			"client id and secret here.",
 		Probe: RecipeProbe{Tool: "list_visible_jira_projects"},
-		Notes: "Coming soon — requires OAuth sign-in with Atlassian (Jira and Confluence). " +
+		Notes: "Requires the instance admin to register the Atlassian OAuth app; " +
+			"connect signs in with Atlassian (one connection covers Jira and Confluence). " +
 			"Access tokens are not accepted by Atlassian's MCP server.",
 	})
 
@@ -137,12 +180,45 @@ func init() {
 		Availability: RecipeComingSoon,
 		Transport:    MCPTransportStreamableHTTP,
 		Endpoint:     "https://mcp.slack.com/mcp",
+		TokenHeader:  "Authorization",
+		TokenScheme:  "Bearer",
+		AuthorizeURL: "https://slack.com/oauth/v2/authorize",
+		TokenURL:     "https://slack.com/api/oauth.v2.access",
 		AccessLevels: []string{
 			ConnectionAccessReadOnly,
 			ConnectionAccessReadWrite,
 		},
+		Scopes: []RecipeScopes{
+			{
+				AccessLevel: ConnectionAccessReadOnly,
+				Scopes: []string{
+					"channels:read",
+					"groups:read",
+					"im:read",
+					"mpim:read",
+					"users:read",
+				},
+			},
+			{
+				AccessLevel: ConnectionAccessReadWrite,
+				Scopes: []string{
+					"channels:read",
+					"groups:read",
+					"im:read",
+					"mpim:read",
+					"users:read",
+					"chat:write",
+					"chat:write.public",
+				},
+			},
+		},
+		AppRegistrationGuidance: "Create a Slack app at api.slack.com/apps (From scratch). " +
+			"Under OAuth & Permissions add the shown redirect URI and request the user " +
+			"token scopes for the access levels you intend to offer, then copy the " +
+			"client id and secret here.",
 		Probe: RecipeProbe{Tool: "list_channels"},
-		Notes: "Coming soon — requires OAuth sign-in with Slack.",
+		Notes: "Requires the instance admin to register the Slack OAuth app; " +
+			"connect signs in with Slack.",
 	})
 
 	RegisterRecipe(Recipe{
@@ -153,11 +229,29 @@ func init() {
 		Availability: RecipeComingSoon,
 		Transport:    MCPTransportSSE,
 		Endpoint:     "https://mcp.linear.app/sse",
+		TokenHeader:  "Authorization",
+		TokenScheme:  "Bearer",
+		AuthorizeURL: "https://linear.app/oauth/authorize",
+		TokenURL:     "https://api.linear.app/oauth/token",
 		AccessLevels: []string{
 			ConnectionAccessReadOnly,
 			ConnectionAccessReadWrite,
 		},
+		Scopes: []RecipeScopes{
+			{
+				AccessLevel: ConnectionAccessReadOnly,
+				Scopes:      []string{"read"},
+			},
+			{
+				AccessLevel: ConnectionAccessReadWrite,
+				Scopes:      []string{"read", "write"},
+			},
+		},
+		AppRegistrationGuidance: "Create an OAuth2 application at linear.app/settings/api " +
+			"(New OAuth application). Add the shown redirect URI, request the scopes for " +
+			"the access levels you intend to offer, and copy the client id and secret here.",
 		Probe: RecipeProbe{Tool: "list_issues"},
-		Notes: "Coming soon — requires OAuth sign-in with Linear.",
+		Notes: "Requires the instance admin to register the Linear OAuth app; " +
+			"connect signs in with Linear.",
 	})
 }

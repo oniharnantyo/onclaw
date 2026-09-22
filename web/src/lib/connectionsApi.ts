@@ -30,7 +30,8 @@ export interface ApiRecipeStep {
   url?: string;
 }
 
-/** Recommended token scopes for one access level (domain.RecipeScopes). */
+/** Recommended token scopes for one access level (domain.RecipeScopes). For
+ * oauth recipes these are the scopes consent is requested for. */
 export interface ApiRecipeScopes {
   access_level: ConnectionAccessLevel;
   scopes: string[];
@@ -63,6 +64,14 @@ export interface ApiIntegrationRecipe {
   scopes: ApiRecipeScopes[];
   /** The probe declaration: the MCP tool call gating connect. */
   probe: { tool: string };
+  /** OAuth-only (add-connection-oauth): the provider's authorization endpoint
+   * the connect hand-off redirects through. Server-declared — never built
+   * client-side. */
+  authorize_url?: string;
+  /** OAuth-only: the token endpoint the backend exchanges the code at. */
+  token_url?: string;
+  /** OAuth-only: how an instance admin registers the provider app. */
+  app_registration_guidance?: string;
   /** Truthful coming-soon copy, or operator provisioning notes. */
   notes?: string;
 }
@@ -82,9 +91,16 @@ export interface ApiConnection {
   /** The recipe id (e.g. "github"), per domain.Connection.Service. */
   service: string;
   access_level: ConnectionAccessLevel;
-  /** Read through from the materialized server row: connected|ok|error|unknown. */
-  status: 'connected' | 'ok' | 'error' | 'unknown';
+  /** Read through from the materialized server row: connected|ok|error|
+   * unknown — plus `expired` (D6): the OAuth token set lapsed after a failed
+   * refresh and the connection needs reauthorization. */
+  status: 'connected' | 'ok' | 'error' | 'unknown' | 'expired';
   status_error?: string | null;
+  /** OAuth token lifecycle (add-connection-oauth): when the access token
+   * expires (refresh happens server-side within the recipe's margin). */
+  expires_at?: string | null;
+  /** Scopes the provider actually granted at consent time. */
+  granted_scopes?: string[];
   /** Last-4 of the stored token — the only secret shape any read carries. */
   token_hint?: string | null;
   /** The materialized workspace MCP server row. */
@@ -97,11 +113,22 @@ export interface ApiConnection {
   updated_at?: string;
 }
 
-/** D7: the entire connect payload — nothing else crosses the wire. */
+/** D7: the entire connect payload — nothing else crosses the wire. `token` is
+ * omitted for oauth recipes: connect starts the consent hand-off instead of
+ * storing a pasted secret. */
 export interface ConnectPayload {
   recipe_id: string;
   access_level: ConnectionAccessLevel;
-  token: string;
+  token?: string;
+}
+
+/** Connect resolves one of two ways: a PAT connect returns the created
+ * connection (probe-gated); an oauth connect returns the provider's authorize
+ * URL the browser is redirected to (the connection is created later, by the
+ * OAuth callback). */
+export interface ConnectResult {
+  connection?: ApiConnection;
+  authorize_url?: string;
 }
 
 function base(ws: string): string {
@@ -123,9 +150,10 @@ export const connectionsApi = {
     ),
 
   /** Probe-gated server-side: on failure nothing is stored and the error
-   * envelope carries the upstream probe message. */
+   * envelope carries the upstream probe message. For oauth recipes the 200
+   * instead carries { authorize_url } and the browser is redirected. */
   connect: (ws: string, body: ConnectPayload) =>
-    request<{ connection: ApiConnection }>(`${base(ws)}/connections`, {
+    request<ConnectResult>(`${base(ws)}/connections`, {
       method: 'POST',
       body,
     }),
@@ -141,6 +169,60 @@ export const connectionsApi = {
       `${base(ws)}/connections/${encodeURIComponent(id)}/probe`,
       { method: 'POST' }
     ),
+
+  /** Reauthorization (add-connection-oauth): starts a fresh consent flow for
+   * an expired connection — the token set is replaced in place on callback,
+   * keeping the connection id, materialized server, and attachments. */
+  reauthorize: (ws: string, id: string) =>
+    request<{ authorize_url: string }>(
+      `${base(ws)}/connections/${encodeURIComponent(id)}/reauthorize`,
+      { method: 'POST' }
+    ),
+};
+
+// ---------------------------------------------------------------------------
+// Instance OAuth app registration (add-connection-oauth, instance-admin
+// capability): one app per provider, instance-scoped. The client secret is
+// write-only — reads carry only the last-4 `client_secret_hint`.
+// ---------------------------------------------------------------------------
+
+/** One instance-registered OAuth app (domain.OAuthApp JSON). */
+export interface ApiOAuthApp {
+  provider: string;
+  client_id: string;
+  /** Last 4 of the stored secret — the full secret never returns. */
+  client_secret_hint?: string | null;
+  /** The exact callback URI to configure at the provider. */
+  redirect_uri: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+/** Body of the register/update PUT — both credentials, every save. */
+export interface OAuthAppPayload {
+  client_id: string;
+  client_secret: string;
+}
+
+/** Master-tenant guarded (instance admin), like api.admin.*. Lives here so
+ * every connections/OAuth shape and route stays in one client module. */
+export const adminOAuthAppsApi = {
+  /** Every supported provider row — registered ones carry client_id and the
+   * secret hint; unregistered ones are empty stubs with the redirect URI. */
+  list: () => request<{ apps: ApiOAuthApp[] }>('/admin/oauth-apps', { method: 'GET' }),
+
+  get: (provider: string) =>
+    request<{ app: ApiOAuthApp }>(`/admin/oauth-apps/${encodeURIComponent(provider)}`, {
+      method: 'GET',
+    }),
+
+  /** Registers or updates the provider app. The secret is stored encrypted;
+   * the response echoes the row with the last-4 hint only. */
+  save: (provider: string, body: OAuthAppPayload) =>
+    request<{ app: ApiOAuthApp }>(`/admin/oauth-apps/${encodeURIComponent(provider)}`, {
+      method: 'PUT',
+      body,
+    }),
 };
 
 // integrations.write holders: built-in Owner/Admin, Superadmin via its
@@ -209,14 +291,20 @@ export interface ConnectionStatusView {
   dot: string;
   label: string;
   errored: boolean;
+  /** D6: the OAuth token set lapsed — the card offers Reauthorize instead of
+   * treating the connection as plain broken. */
+  expired: boolean;
 }
 
 // Same display contract as the MCP panes: the paused master switch wins, then
-// the probed status — connected/ok green, error red, unknown gray.
+// the probed status — connected/ok green, expired amber (recoverable), error
+// red, unknown gray.
 export function connectionStatusView(c: Pick<ApiConnection, 'status' | 'status_error' | 'server_enabled'>): ConnectionStatusView {
-  if (c.server_enabled === false) return { dot: 'bg-muted', label: 'Paused', errored: false };
-  if (c.status === 'error') return { dot: 'bg-danger', label: 'Error', errored: true };
+  if (c.server_enabled === false) return { dot: 'bg-muted', label: 'Paused', errored: false, expired: false };
+  if (c.status === 'expired')
+    return { dot: 'bg-warn', label: 'Expired', errored: false, expired: true };
+  if (c.status === 'error') return { dot: 'bg-danger', label: 'Error', errored: true, expired: false };
   if (c.status === 'ok' || c.status === 'connected')
-    return { dot: 'bg-success', label: 'Connected', errored: false };
-  return { dot: 'bg-muted', label: 'Unknown', errored: false };
+    return { dot: 'bg-success', label: 'Connected', errored: false, expired: false };
+  return { dot: 'bg-muted', label: 'Unknown', errored: false, expired: false };
 }

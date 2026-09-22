@@ -92,7 +92,11 @@ export function AgentConnectionsSection({ targetWsId, enabledMcps, onToggle }: A
                     <span
                       className={cx(
                         'inline-flex items-center gap-1.5 text-[11px]',
-                        st.errored ? 'text-danger' : 'text-[color-mix(in_oklab,var(--success),black_25%)]'
+                        st.errored
+                          ? 'text-danger'
+                          : st.expired
+                            ? 'text-[color-mix(in_oklab,var(--warn),black_25%)]'
+                            : 'text-[color-mix(in_oklab,var(--success),black_25%)]'
                       )}
                       data-testid={'agent-connection-status-' + c.id}
                     >
@@ -114,6 +118,15 @@ export function AgentConnectionsSection({ targetWsId, enabledMcps, onToggle }: A
                 >
                   <Icon name="alert" size={11} />
                   Paused in Settings → Integrations — it contributes no tools until resumed.
+                </p>
+              )}
+              {attached && st.expired && (
+                <p
+                  className="mt-1.5 flex items-center gap-1 text-[11px] leading-4 text-[color-mix(in_oklab,var(--warn),black_38%)]"
+                  data-testid={'agent-connection-expired-warn-' + c.id}
+                >
+                  <Icon name="alert" size={11} />
+                  Sign-in expired — reauthorize it in Settings → Integrations to restore its tools.
                 </p>
               )}
             </div>
