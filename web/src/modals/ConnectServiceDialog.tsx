@@ -8,6 +8,7 @@ import { inputCls, labelCls } from "../components/ui/constants";
 import {
   accessLevelLabel,
   connectionsApi,
+  recipeKind,
   type ApiConnection,
   type ApiIntegrationRecipe,
   type ConnectionAccessLevel,
@@ -28,15 +29,20 @@ const FALLBACK_LEVELS: ConnectionAccessLevel[] = ['read_only', 'read_write'];
 
 /**
  * Guided connect flow (add-workspace-connections 4.2, add-connection-oauth
- * 4.1): PAT recipes render the token-creation steps and token input; oauth
- * recipes render the consent hand-off instead — no token field, the Connect
- * action asks the server for the provider's authorize URL and redirects the
- * browser. Both share the access-level catalog preselected to the recipe's
- * first level (read-only). PAT connect is probe-gated server-side (a failure
- * stores nothing and surfaces the upstream message here); oauth connect
- * activates later, when the provider callback returns to Settings →
- * Integrations. Success hands off to per-agent attachment riding the existing
- * enabled_mcps patch on the materialized server.
+ * 4.1, add-connection-http 4.1): PAT recipes render the token-creation steps
+ * and token input; oauth recipes render the consent hand-off instead — no
+ * token field, the Connect action asks the server for the provider's
+ * authorize URL and redirects the browser. HTTP-kind recipes (D6) ride the
+ * PAT flow — the recipe's guided steps already carry the API-token + scopes
+ * guidance — plus their declared verb surface: every tool the connection will
+ * add, joined to the recipe's pinned base URL (D1 verbs-only — there is no
+ * MCP wiring to describe). All variants share the access-level catalog
+ * preselected to the recipe's first level (read-only). PAT/http connect is
+ * probe-gated server-side (a failure stores nothing and surfaces the upstream
+ * message here); oauth connect activates later, when the provider callback
+ * returns to Settings → Integrations. Success hands off to per-agent
+ * attachment riding the existing enabled_mcps patch — the materialized server
+ * id when one exists, else the raw connection id for HTTP-kind connections.
  */
 export function ConnectServiceDialog({
   recipe,
@@ -48,6 +54,8 @@ export function ConnectServiceDialog({
   const ws = tenant?.sub || tenant?.id;
   const levels = recipe.access_levels.length ? recipe.access_levels : FALLBACK_LEVELS;
   const isOAuth = recipe.auth_kind === 'oauth';
+  const isHttp = recipeKind(recipe) === 'http';
+  const verbs = recipe.verbs || [];
 
   const [accessLevel, setAccessLevel] = useState<ConnectionAccessLevel>(levels[0]);
   const [token, setToken] = useState('');
@@ -73,7 +81,10 @@ export function ConnectServiceDialog({
   }, [connected, ws]);
 
   const selectedScopes = recipe.scopes.find((s) => s.access_level === accessLevel)?.scopes || [];
-  const serverId = connected?.server_id || null;
+  // The attach handle: the materialized server id when one exists (MCP kind),
+  // else the raw connection id — HTTP-kind connections have no server row
+  // (add-connection-http) and attach by their own id.
+  const attachId = connected?.server_id || connected?.id || null;
 
   const handleConnect = async () => {
     if (connecting) return;
@@ -122,13 +133,14 @@ export function ConnectServiceDialog({
   };
 
   // Attach/detach rides the existing agent MCP opt-in endpoint: the full
-  // enabled_mcps array is PATCHed with the materialized server id added or
-  // removed. A failure reverts the row and surfaces the envelope message.
+  // enabled_mcps array is PATCHed with the attach id (materialized server id,
+  // or the connection id for HTTP-kind rows) added or removed. A failure
+  // reverts the row and surfaces the envelope message.
   const toggleAttach = async (agent: ApiAgent) => {
-    if (!serverId) return;
+    if (!attachId) return;
     const current = agent.enabled_mcps ?? [];
-    const attached = current.includes(serverId);
-    const next = attached ? current.filter((x) => x !== serverId) : [...current, serverId];
+    const attached = current.includes(attachId);
+    const next = attached ? current.filter((x) => x !== attachId) : [...current, attachId];
     setAgents((prev) =>
       prev.map((a) => (a.id === agent.id ? { ...a, enabled_mcps: next } : a))
     );
@@ -253,7 +265,7 @@ export function ConnectServiceDialog({
               <p className="text-[12px] text-muted">No agents yet — create one to put {recipe.service} to work.</p>
             ) : (
               agents.map((a) => {
-                const attached = serverId ? (a.enabled_mcps ?? []).includes(serverId) : false;
+                const attached = attachId ? (a.enabled_mcps ?? []).includes(attachId) : false;
                 return (
                   <div
                     key={a.id}
@@ -312,6 +324,53 @@ export function ConnectServiceDialog({
         </div>
       ) : (
         <div className="space-y-5 p-5">
+          {/* HTTP-kind declared surface (add-connection-http): the full verb
+              list — exactly the tools this connection adds (D1 verbs-only) —
+              plus the pinned base URL and server-side credential hygiene. The
+              recipe's guided steps below carry the API-token + scopes copy;
+              there is no MCP wiring to describe. */}
+          {isHttp && (
+            <div data-testid="connect-http-surface">
+              <span className={labelCls}>Tools this connection adds</span>
+              {verbs.length === 0 ? (
+                <p className="text-[12px] leading-4 text-muted">
+                  This recipe declares no tools yet.
+                </p>
+              ) : (
+                <ul className="space-y-1.5">
+                  {verbs.map((v) => (
+                    <li
+                      key={v.name}
+                      className="flex items-start gap-2"
+                      data-testid={'connect-verb-' + v.name}
+                    >
+                      <Chip mono>{v.name}</Chip>
+                      <span className="min-w-0 pt-0.5 text-[11px] leading-4 text-muted">
+                        <span className="font-mono">
+                          {v.method} {v.path}
+                        </span>
+                        {v.description ? ` — ${v.description}` : ''}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {verbs.length > 0 && (
+                <p className="mt-2 text-[11px] leading-4 text-muted">
+                  Calls are pinned to{' '}
+                  {recipe.base_url ? (
+                    <span className="font-mono">{recipe.base_url}</span>
+                  ) : (
+                    'the service API'
+                  )}{' '}
+                  and the token is attached server-side
+                  {recipe.token_header ? ` under ${recipe.token_header}` : ''} — it never enters the
+                  agent's context.
+                </p>
+              )}
+            </div>
+          )}
+
           {/* Guided token-creation steps — real copy from the recipe. */}
           <div data-testid="connect-steps">
             <span className={labelCls}>Create a {recipe.service} token</span>

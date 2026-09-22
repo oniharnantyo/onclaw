@@ -431,6 +431,11 @@ func (rt *router) Engine() *gin.Engine {
 			agents.WithMCPPolicy(mcp.NewSettingsPolicy(runtimeSource)),
 			agents.WithMCPManager(mcpManager),
 			agents.WithMCPStatusWriter(mcp.NewSettingsStatusWriter(runtimeSource)),
+			// Connection tool source (add-connection-http 2.1/3.3): the
+			// attached http-kind connections' verb tools resolve in the same
+			// pass as MCP tools, after built-ins — one wiring shape shared
+			// with the composition root.
+			agents.WithConnectionToolSource(NewConnectionToolSource(connectionsSvc)),
 			agents.WithHooks(agenthooks.NewDispatcher(rt.opts.Store.Hooks(), hookRegistry)),
 			agents.WithChannelContext(channelRuntime.Chokepoint()),
 			agents.WithChannelFeed(channelRuntime.Chokepoint()),

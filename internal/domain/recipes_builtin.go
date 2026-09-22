@@ -2,9 +2,10 @@ package domain
 
 // The v1 built-in recipe registry contents (design.md D2, tasks.md 1.2):
 // GitHub and GitLab available (PAT), Atlassian (one recipe covering Jira and
-// Confluence), Slack, and Linear declared coming-soon (OAuth-kind). Endpoint
-// and probe facts are release-shippable recipe data; the live-verification
-// pass (tasks.md 5.3) re-confirms and pins them before release.
+// Confluence), Slack, and Linear declared coming-soon (OAuth-kind), and Figma
+// available (PAT, http kind — add-connection-http tasks.md 1.2). Endpoint and
+// probe facts are release-shippable recipe data; the live-verification pass
+// (tasks.md 5.3) re-confirms and pins them before release.
 //
 // Registration order is the gallery order.
 func init() {
@@ -253,5 +254,144 @@ func init() {
 		Probe: RecipeProbe{Tool: "list_issues"},
 		Notes: "Requires the instance admin to register the Linear OAuth app; " +
 			"connect signs in with Linear.",
+	})
+
+	// The http-kind reference recipe (add-connection-http design.md D5,
+	// tasks.md 1.2). Figma's official MCP server is desktop-local and
+	// unreachable from a deployed OnClaw, but its REST API is PAT-friendly —
+	// so the connection contributes declared verb tools over the pinned base
+	// URL instead of materializing a server.
+	//
+	// PLACEHOLDER pending tasks.md 5.3 live verification: the base URL, auth
+	// header, probe call, and verb paths are drafted from Figma's REST API
+	// documentation, not yet confirmed with a real token. Connect is
+	// probe-gated, so an unpinned value fails safely at connect instead of
+	// storing a broken connection. Task 5.3 pins the values.
+	//
+	// The verb list is the curated read surface (file/file-tree reads,
+	// comments, project listings — design.md D5): all GET, parameterized via
+	// path and query only. Extending it is a recipe release (verbs-only, no
+	// free-form request tool); write verbs would need the recipe schema's
+	// request-body extension first.
+	RegisterRecipe(Recipe{
+		ID:           "figma",
+		Service:      "Figma",
+		Icon:         "figma",
+		AuthKind:     RecipeAuthPAT,
+		Availability: RecipeAvailable,
+		Kind:         RecipeKindHTTP,
+		BaseURL:      "https://api.figma.com",
+		// The raw token rides this header (no scheme prefix — TokenScheme
+		// stays empty).
+		TokenHeader: "X-Figma-Token",
+		// Read-only is the whole declared surface: every curated verb is a
+		// GET, so a read-and-write tier would guide toward scopes the tool
+		// surface cannot exercise. Write verbs (e.g. posting comments) join
+		// with the request-body schema extension.
+		AccessLevels: []string{ConnectionAccessReadOnly},
+		Steps: []RecipeStep{
+			{
+				Title: "Open Figma personal access tokens",
+				Detail: "Sign in to Figma and go to Settings → Security → " +
+					"Personal access tokens.",
+				URL: "https://www.figma.com/settings",
+			},
+			{
+				Title: "Generate a token",
+				Detail: "Create a personal access token for this workspace. Figma " +
+					"tokens carry no scope selection — the token inherits the " +
+					"account's access to teams and files, so generate it on an " +
+					"account whose reach matches what the agents should have.",
+			},
+			{
+				Title:  "Copy the token",
+				Detail: "Copy the token now — Figma shows it once. Paste it into the connect dialog.",
+			},
+		},
+		Scopes: []RecipeScopes{
+			{
+				AccessLevel: ConnectionAccessReadOnly,
+				Scopes:      []string{"Account access: the teams and files the token's account can view"},
+			},
+		},
+		Probe: RecipeProbe{Method: "GET", Path: "/v1/me"},
+		Verbs: []RecipeVerb{
+			{
+				Tool:        "figma.get_me",
+				Method:      "GET",
+				Path:        "/v1/me",
+				Description: "Get the authenticated user's profile — the identity and team memberships the connection's token can reach.",
+			},
+			{
+				Tool:   "figma.get_file",
+				Method: "GET",
+				Path:   "/v1/files/{file_key}",
+				Params: []RecipeVerbParam{
+					{Name: "file_key", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
+					{Name: "depth", Type: RecipeParamNumber, Required: false, In: RecipeParamInQuery},
+					{Name: "geometry", Type: RecipeParamString, Required: false, In: RecipeParamInQuery},
+				},
+				Description: "Get a file's metadata and node tree. Use depth to bound how deep the returned node tree goes on large files.",
+			},
+			{
+				Tool:   "figma.get_file_nodes",
+				Method: "GET",
+				Path:   "/v1/files/{file_key}/nodes",
+				Params: []RecipeVerbParam{
+					{Name: "file_key", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
+					{Name: "ids", Type: RecipeParamString, Required: true, In: RecipeParamInQuery},
+					{Name: "depth", Type: RecipeParamNumber, Required: false, In: RecipeParamInQuery},
+				},
+				Description: "Get specific nodes of a file by comma-separated node ids — a shallow look at part of a large file.",
+			},
+			{
+				Tool:   "figma.get_file_comments",
+				Method: "GET",
+				Path:   "/v1/files/{file_key}/comments",
+				Params: []RecipeVerbParam{
+					{Name: "file_key", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
+				},
+				Description: "List the comments on a file.",
+			},
+			{
+				Tool:   "figma.get_file_versions",
+				Method: "GET",
+				Path:   "/v1/files/{file_key}/versions",
+				Params: []RecipeVerbParam{
+					{Name: "file_key", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
+				},
+				Description: "List a file's version history, newest first.",
+			},
+			{
+				Tool:   "figma.get_file_images",
+				Method: "GET",
+				Path:   "/v1/images/{file_key}",
+				Params: []RecipeVerbParam{
+					{Name: "file_key", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
+					{Name: "ids", Type: RecipeParamString, Required: true, In: RecipeParamInQuery},
+					{Name: "scale", Type: RecipeParamNumber, Required: false, In: RecipeParamInQuery},
+					{Name: "format", Type: RecipeParamString, Required: false, In: RecipeParamInQuery},
+				},
+				Description: "Render nodes of a file as images — returns image URLs for the requested comma-separated node ids.",
+			},
+			{
+				Tool:   "figma.get_project_files",
+				Method: "GET",
+				Path:   "/v1/projects/{project_id}/files",
+				Params: []RecipeVerbParam{
+					{Name: "project_id", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
+				},
+				Description: "List the files in a Figma project.",
+			},
+			{
+				Tool:   "figma.get_team_projects",
+				Method: "GET",
+				Path:   "/v1/teams/{team_id}/projects",
+				Params: []RecipeVerbParam{
+					{Name: "team_id", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
+				},
+				Description: "List the projects in a Figma team.",
+			},
+		},
 	})
 }

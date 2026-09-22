@@ -365,6 +365,11 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		agents.WithMCPPolicy(mcp.NewSettingsPolicy(runtimeSource)),
 		agents.WithMCPManager(mcpManager),
 		agents.WithMCPStatusWriter(mcp.NewSettingsStatusWriter(runtimeSource)),
+		// Connection tool source (add-connection-http 2.1/3.3): the attached
+		// http-kind connections' verb tools resolve in the same pass as MCP
+		// tools, after built-ins — the connections service is the credential
+		// seam; the server-package adapter re-shapes the attachment listing.
+		agents.WithConnectionToolSource(server.NewConnectionToolSource(connectionsSvc)),
 		agents.WithEnabledSkillReader(server.WorkspaceSkillReader(st.WorkspaceSkills())),
 		agents.WithChannelContext(channelRuntime.Chokepoint()),
 		agents.WithChannelFeed(channelRuntime.Chokepoint()),

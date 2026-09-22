@@ -26,7 +26,7 @@ func TestRecipesBuiltinRegistryContents(t *testing.T) {
 		byID[r.ID] = r
 	}
 
-	wantOrder := []string{"github", "gitlab", "atlassian", "slack", "linear"}
+	wantOrder := []string{"github", "gitlab", "atlassian", "slack", "linear", "figma"}
 	gotOrder := make([]string, 0, len(wantOrder))
 	for _, r := range recipes {
 		if slices.Contains(wantOrder, r.ID) {
@@ -168,7 +168,10 @@ func TestRecipeByID(t *testing.T) {
 	if r := domain.RecipeByID("GITHUB"); r != nil {
 		t.Fatalf("recipe ids are exact, got %+v", r)
 	}
-	if r := domain.RecipeByID("figma"); r != nil {
+	if r := domain.RecipeByID("figma"); r == nil || r.Service != "Figma" {
+		t.Fatalf("expected the figma recipe, got %+v", r)
+	}
+	if r := domain.RecipeByID("notarecipe"); r != nil {
 		t.Fatalf("expected nil for an unregistered recipe id, got %+v", r)
 	}
 }

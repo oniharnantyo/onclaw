@@ -6,6 +6,9 @@ import { labelCls } from "../components/ui/constants";
 import { Icon } from "../components/ui/Icon";
 import {
   accessLevelLabel,
+  connectionAttachId,
+  connectionKind,
+  connectionKindLabel,
   connectionServiceName,
   connectionStatusView,
   connectionsApi,
@@ -26,13 +29,15 @@ export interface AgentConnectionsSectionProps {
 /**
  * Integrations section of the agent config Capabilities tab
  * (add-workspace-connections 4.4): managed connections listed as attachable
- * entries over the existing `enabled_mcps` attach mechanism — a connection's
- * materialized server id is exactly what the toggle stores — with the access
- * level shown per attachment. Managed servers also appear in the MCP Servers
- * section below by design (materialization); this section adds the service
- * identity and access level. The read rides workspace membership and is
- * optional context: a failed fetch leaves the section out, never blocking
- * agent configuration.
+ * entries over the existing `enabled_mcps` attach mechanism — the toggle
+ * stores the materialized server id, or the raw connection id for HTTP-kind
+ * connections (add-connection-http: they contribute verb tools directly and
+ * have no server row) — with the access level shown per attachment. Managed
+ * servers also appear in the MCP Servers section below by design
+ * (materialization, MCP kind only); this section adds the service identity
+ * and access level. The read rides workspace membership and is optional
+ * context: a failed fetch leaves the section out, never blocking agent
+ * configuration.
  */
 export function AgentConnectionsSection({ targetWsId, enabledMcps, onToggle }: AgentConnectionsSectionProps) {
   const [connections, setConnections] = useState<ApiConnection[]>([]);
@@ -67,17 +72,18 @@ export function AgentConnectionsSection({ targetWsId, enabledMcps, onToggle }: A
       <span className={labelCls}>Integrations</span>
       <div className="space-y-2">
         {connections.map((c) => {
-          const st = connectionStatusView(c);
-          const serverId = c.server_id || '';
-          const attached = Boolean(serverId) && enabledMcps.includes(serverId);
+          const kind = connectionKind(c, recipes);
+          // Pausing is a materialized-server switch — HTTP-kind rows carry
+          // server_enabled: false structurally, not as a workspace pause.
+          const paused = kind === 'mcp' && c.server_enabled === false;
+          const st = connectionStatusView(c, kind);
+          const attachId = connectionAttachId(c);
+          const attached = enabledMcps.includes(attachId);
           return (
             <div
               key={c.id}
               data-testid={'agent-connection-' + c.id}
-              className={cx(
-                'rounded-md border border-line px-3 py-2.5',
-                c.server_enabled === false && 'opacity-70'
-              )}
+              className={cx('rounded-md border border-line px-3 py-2.5', paused && 'opacity-70')}
             >
               <div className="flex items-center gap-3">
                 <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-[color-mix(in_oklab,var(--accent)_12%,transparent)] text-accent">
@@ -88,6 +94,7 @@ export function AgentConnectionsSection({ targetWsId, enabledMcps, onToggle }: A
                     <p className="truncate text-[13px] font-medium text-fg">
                       {connectionServiceName(c, recipes)}
                     </p>
+                    <Chip mono>{connectionKindLabel(kind)}</Chip>
                     <Chip mono>{accessLevelLabel(c.access_level)}</Chip>
                     <span
                       className={cx(
@@ -108,10 +115,10 @@ export function AgentConnectionsSection({ targetWsId, enabledMcps, onToggle }: A
                 <Toggle
                   on={attached}
                   label={'Opt this agent into ' + connectionServiceName(c, recipes)}
-                  onChange={() => serverId && onToggle(serverId)}
+                  onChange={() => onToggle(attachId)}
                 />
               </div>
-              {attached && c.server_enabled === false && (
+              {attached && paused && (
                 <p
                   className="mt-1.5 flex items-center gap-1 text-[11px] leading-4 text-[color-mix(in_oklab,var(--warn),black_38%)]"
                   data-testid={'agent-connection-paused-warn-' + c.id}

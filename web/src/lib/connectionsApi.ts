@@ -22,6 +22,33 @@ export type RecipeAvailability = 'available' | 'coming_soon';
 
 export type RecipeAuthKind = 'pat' | 'oauth';
 
+/** Connection kind (add-connection-http, D6): declared by the recipe, never
+ * chosen by the user. "mcp" materializes a workspace MCP server; "http"
+ * contributes its declared verb tools over a pinned base URL with no server
+ * row. Absent on the wire means the original "mcp". */
+export type ConnectionKind = 'mcp' | 'http';
+
+/** One typed parameter of a declared verb (add-connection-http). `in` names
+ * where the value binds — "path" or "query". */
+export interface ApiRecipeVerbParam {
+  name: string;
+  type: string;
+  required?: boolean;
+  in: string;
+}
+
+/** One recipe-declared verb tool (D1 verbs-only surface): the entire
+ * agent-facing tool surface of an HTTP-kind connection. `name` is the
+ * service-prefixed tool name ("figma.get_comments"); `path` is a template
+ * under the recipe's base URL. */
+export interface ApiRecipeVerb {
+  name: string;
+  method: string;
+  path: string;
+  description?: string;
+  params?: ApiRecipeVerbParam[];
+}
+
 /** One guided token-creation step; `url` links the service's token page.
  * Mirrors domain.RecipeStep. */
 export interface ApiRecipeStep {
@@ -48,8 +75,9 @@ export interface ApiIntegrationRecipe {
   icon: string;
   auth_kind: 'pat' | 'oauth';
   availability: 'available' | 'coming_soon';
-  /** The materialized server's transport constant. */
-  transport: McpTransport;
+  /** The materialized server's transport constant (MCP-kind recipes). HTTP-kind
+   * recipes have no MCP transport — the field is absent. */
+  transport?: McpTransport;
   /** Remote MCP endpoint for URL transports (materialized server's URL). */
   endpoint?: string;
   /** Local command for stdio recipes. */
@@ -62,8 +90,17 @@ export interface ApiIntegrationRecipe {
   access_levels: ConnectionAccessLevel[];
   steps: ApiRecipeStep[];
   scopes: ApiRecipeScopes[];
+  /** Connection kind (add-connection-http, D6) — absent/"mcp" materializes a
+   * server; "http" contributes the declared verbs over `base_url`. */
+  kind?: ConnectionKind;
+  /** HTTP-kind only: the pinned API root every verb joins to. Server-declared
+   * recipe data — never user input (D7 SSRF property). */
+  base_url?: string;
+  /** HTTP-kind only: the header the stored token is attached under. */
+  /** HTTP-kind only: the entire declared verb tool surface (D1 verbs-only). */
+  verbs?: ApiRecipeVerb[];
   /** The probe declaration: the MCP tool call gating connect. */
-  probe: { tool: string };
+  probe: { tool?: string; method?: string; path?: string };
   /** OAuth-only (add-connection-oauth): the provider's authorization endpoint
    * the connect hand-off redirects through. Server-declared — never built
    * client-side. */
@@ -103,7 +140,10 @@ export interface ApiConnection {
   granted_scopes?: string[];
   /** Last-4 of the stored token — the only secret shape any read carries. */
   token_hint?: string | null;
-  /** The materialized workspace MCP server row. */
+  /** The materialized workspace MCP server row. HTTP-kind connections
+   * (add-connection-http) have none — the field is absent/null and
+   * `server_enabled` is structurally false (no server row exists to pause);
+   * agent attachment then rides the raw connection id. */
   server_id?: string | null;
   server_enabled?: boolean;
   tool_count?: number;
@@ -273,6 +313,46 @@ export function connectionServiceName(
   return recipes.find((r) => r.id === c.service)?.service || c.service;
 }
 
+/** D6: kind is recipe-declared; absent means the original MCP kind. */
+export function recipeKind(r: Pick<ApiIntegrationRecipe, 'kind'> | undefined): ConnectionKind {
+  return r?.kind === 'http' ? 'http' : 'mcp';
+}
+
+/** A connection's kind, resolved from its recipe registry. A connection whose
+ * recipe is unknown falls back to its shape: no materialized server = http. */
+export function connectionKind(
+  c: Pick<ApiConnection, 'service' | 'server_id'>,
+  recipes: ApiIntegrationRecipe[]
+): ConnectionKind {
+  const recipe = recipes.find((r) => r.id === c.service);
+  if (recipe) return recipeKind(recipe);
+  return c.server_id ? 'mcp' : 'http';
+}
+
+/** The handle agent attachment stores in `enabled_mcps` for a connection: the
+ * materialized server id when one exists (MCP kind), else the raw connection
+ * id (HTTP kind contributes tools directly — no server row). */
+export function connectionAttachId(c: Pick<ApiConnection, 'id' | 'server_id'>): string {
+  return c.server_id || c.id;
+}
+
+/** Chip label for a connection kind. */
+export function connectionKindLabel(kind: ConnectionKind): string {
+  return kind === 'http' ? 'HTTP' : 'MCP';
+}
+
+/** Compact declared-verb-surface copy for gallery cards:
+ * "6 tools — figma.get_comments, figma.list_files, figma.post_comment +3 more".
+ * The full verb list renders in the connect dialog. Empty for recipes that
+ * declare no verbs. */
+export function verbSurfaceCopy(r: Pick<ApiIntegrationRecipe, 'verbs'>): string {
+  const names = (r.verbs || []).map((v) => v.name);
+  if (names.length === 0) return '';
+  const head = names.slice(0, 3).join(', ');
+  const rest = names.length - 3;
+  return `${names.length} ${names.length === 1 ? 'tool' : 'tools'} — ${head}${rest > 0 ? ` +${rest} more` : ''}`;
+}
+
 // The recipe's icon identifier names the service, but the in-app glyph set
 // has no brand icons — fall back per service id, then to the generic plug.
 const SERVICE_ICONS: Record<string, string> = {
@@ -298,9 +378,15 @@ export interface ConnectionStatusView {
 
 // Same display contract as the MCP panes: the paused master switch wins, then
 // the probed status — connected/ok green, expired amber (recoverable), error
-// red, unknown gray.
-export function connectionStatusView(c: Pick<ApiConnection, 'status' | 'status_error' | 'server_enabled'>): ConnectionStatusView {
-  if (c.server_enabled === false) return { dot: 'bg-muted', label: 'Paused', errored: false, expired: false };
+// red, unknown gray. Kind-aware (add-connection-http): an HTTP-kind connection
+// has no materialized server, so its `server_enabled` is structurally false —
+// that is not a workspace pause, and the probe status alone decides.
+export function connectionStatusView(
+  c: Pick<ApiConnection, 'status' | 'status_error' | 'server_enabled'>,
+  kind: ConnectionKind = 'mcp'
+): ConnectionStatusView {
+  if (kind === 'mcp' && c.server_enabled === false)
+    return { dot: 'bg-muted', label: 'Paused', errored: false, expired: false };
   if (c.status === 'expired')
     return { dot: 'bg-warn', label: 'Expired', errored: false, expired: true };
   if (c.status === 'error') return { dot: 'bg-danger', label: 'Error', errored: true, expired: false };

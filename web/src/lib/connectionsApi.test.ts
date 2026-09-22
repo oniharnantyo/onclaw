@@ -3,12 +3,18 @@ import {
   accessLevelLabel,
   adminOAuthAppsApi,
   canManageIntegrations,
+  connectionAttachId,
+  connectionKind,
+  connectionKindLabel,
   connectionServiceName,
   connectionStatusView,
   connectionsApi,
+  recipeKind,
   serviceIconKey,
+  verbSurfaceCopy,
   type ApiConnection,
   type ApiIntegrationRecipe,
+  type ApiRecipeVerb,
 } from './connectionsApi';
 
 const recipe: ApiIntegrationRecipe = {
@@ -42,6 +48,58 @@ const connection: ApiConnection = {
   server_enabled: true,
   tool_count: 24,
   attached_agents: ['Atlas', 'Beacon'],
+  created_at: '',
+  updated_at: '',
+};
+
+// add-connection-http: an HTTP-kind recipe — pinned base URL, auth header,
+// and the entire declared verb surface (D1 verbs-only, D6 kind declaration).
+const figmaVerbs: ApiRecipeVerb[] = [
+  {
+    name: 'figma.get_me',
+    method: 'GET',
+    path: '/v1/me',
+    description: 'The authenticated user',
+  },
+  {
+    name: 'figma.get_file',
+    method: 'GET',
+    path: '/v1/files/:key',
+    description: 'One file by key',
+    params: [{ name: 'key', type: 'string', required: true, in: 'path' }],
+  },
+];
+
+const figmaRecipe: ApiIntegrationRecipe = {
+  id: 'figma',
+  service: 'Figma',
+  icon: 'figma',
+  auth_kind: 'pat',
+  availability: 'available',
+  access_levels: ['read_only', 'read_write'],
+  steps: [{ title: 'Create a personal access token', url: 'https://www.figma.com/settings' }],
+  scopes: [{ access_level: 'read_only', scopes: ['file_dev:read'] }],
+  kind: 'http',
+  base_url: 'https://api.figma.com',
+  token_header: 'X-Figma-Token',
+  verbs: figmaVerbs,
+  probe: { tool: 'figma.get_me' },
+};
+
+// The HTTP-kind joined view: no materialized server, server_enabled false
+// structurally (there is no server row to pause).
+const figmaConnection: ApiConnection = {
+  id: 'conn-figma',
+  workspace_id: 'acme',
+  service: 'figma',
+  access_level: 'read_only',
+  status: 'connected',
+  status_error: null,
+  token_hint: 'f9e8',
+  server_id: null,
+  server_enabled: false,
+  tool_count: 2,
+  attached_agents: [],
   created_at: '',
   updated_at: '',
 };
@@ -227,6 +285,56 @@ describe('lib/connectionsApi', () => {
     await expect(
       connectionsApi.connect('acme', { recipe_id: 'atlassian', access_level: 'read_only' })
     ).rejects.toMatchObject({ status: 400, message: 'no Atlassian app registered on this instance' });
+  });
+
+  it('derives the recipe/connection kind with absent meaning mcp (add-connection-http D6)', () => {
+    expect(recipeKind(figmaRecipe)).toBe('http');
+    expect(recipeKind({ ...recipe, kind: 'mcp' })).toBe('mcp');
+    // Absent kind — every pre-existing recipe — is the MCP kind.
+    expect(recipeKind(recipe)).toBe('mcp');
+    expect(recipeKind(undefined)).toBe('mcp');
+
+    expect(connectionKind(figmaConnection, [recipe, figmaRecipe])).toBe('http');
+    expect(connectionKind(connection, [recipe, figmaRecipe])).toBe('mcp');
+    // Unknown recipe falls back to the row's shape: no materialized server = http.
+    expect(connectionKind({ service: 'unknown', server_id: null }, [])).toBe('http');
+    expect(connectionKind({ service: 'unknown', server_id: 'srv-x' }, [])).toBe('mcp');
+
+    expect(connectionKindLabel('http')).toBe('HTTP');
+    expect(connectionKindLabel('mcp')).toBe('MCP');
+  });
+
+  it('attaches by server id when one exists and by connection id when it does not', () => {
+    expect(connectionAttachId(connection)).toBe('srv-mcp-1');
+    // HTTP-kind connections contribute verb tools directly — the toggle
+    // stores the raw connection id.
+    expect(connectionAttachId(figmaConnection)).toBe('conn-figma');
+    expect(connectionAttachId({ id: 'conn-x', server_id: undefined })).toBe('conn-x');
+  });
+
+  it('summarizes the declared verb surface compactly for cards', () => {
+    expect(verbSurfaceCopy(figmaRecipe)).toBe('2 tools — figma.get_me, figma.get_file');
+    // More than three verbs compact with a "+N more" tail; the full list
+    // renders in the connect dialog.
+    const many = { verbs: figmaVerbs.concat([
+      { name: 'figma.list_files', method: 'GET', path: '/v1/projects/:id/files' },
+      { name: 'figma.get_comments', method: 'GET', path: '/v1/files/:key/comments' },
+    ]) };
+    expect(verbSurfaceCopy(many)).toBe('4 tools — figma.get_me, figma.get_file, figma.list_files +1 more');
+    expect(verbSurfaceCopy({ verbs: [] })).toBe('');
+    expect(verbSurfaceCopy({})).toBe('');
+  });
+
+  it('never reports HTTP-kind connections as Paused despite server_enabled: false', () => {
+    // server_enabled is structurally false for HTTP kind (no server row) —
+    // the probe status alone decides.
+    expect(connectionStatusView(figmaConnection, 'http').label).toBe('Connected');
+    expect(connectionStatusView({ ...figmaConnection, status: 'error', status_error: 'x' }, 'http')).toMatchObject({
+      label: 'Error',
+      errored: true,
+    });
+    // The MCP kind keeps the paused master switch.
+    expect(connectionStatusView({ ...connection, server_enabled: false }, 'mcp').label).toBe('Paused');
   });
 
   it('derives integrations.write like the sibling write-permission helpers', () => {

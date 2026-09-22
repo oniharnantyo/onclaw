@@ -105,4 +105,61 @@ describe('modals/AgentConnectionsSection', () => {
     });
     expect(screen.getByTestId('agent-connection-status-conn-gh').textContent).toBe('Paused');
   });
+
+  it('attaches HTTP-kind connections by connection id and never calls them paused', async () => {
+    // add-connection-http: no materialized server — server_enabled is
+    // structurally false, the toggle stores the raw connection id.
+    vi.spyOn(connectionsApi, 'recipes').mockResolvedValue({
+      recipes: [
+        {
+          id: 'figma',
+          service: 'Figma',
+          icon: 'figma',
+          auth_kind: 'pat',
+          availability: 'available',
+          access_levels: ['read_only'],
+          steps: [],
+          scopes: [],
+          kind: 'http',
+          base_url: 'https://api.figma.com',
+          verbs: [{ name: 'figma.get_me', method: 'GET', path: '/v1/me' }],
+          probe: { tool: 'figma.get_me' },
+        },
+      ],
+    });
+    vi.spyOn(connectionsApi, 'list').mockResolvedValue({
+      connections: [
+        connectionRow({
+          id: 'conn-figma',
+          service: 'figma',
+          server_id: null,
+          server_enabled: false,
+          tool_count: 1,
+        }),
+      ],
+    });
+    const onToggle = vi.fn();
+
+    render(<AgentConnectionsSection targetWsId="acme" enabledMcps={['conn-figma']} onToggle={onToggle} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('agent-connection-conn-figma')).not.toBeNull();
+    });
+    expect(screen.getByText('Figma')).not.toBeNull();
+    // Kind chip reads HTTP, and the structural server_enabled: false is NOT
+    // reported as Paused.
+    expect(screen.getByTestId('agent-connection-conn-figma').textContent).toContain('HTTP');
+    expect(screen.getByTestId('agent-connection-status-conn-figma').textContent).toBe('Connected');
+    expect(screen.queryByTestId('agent-connection-paused-warn-conn-figma')).toBeNull();
+
+    // The draft's opt-in drives the switch from the connection id...
+    expect(
+      (screen.getByRole('switch', { name: 'Opt this agent into Figma' }).getAttribute('aria-checked'))
+    ).toBe('true');
+    // ...and the toggle stores the connection id, not a server id.
+    fireEvent.click(screen.getByRole('switch', { name: 'Opt this agent into Figma' }));
+    await waitFor(() => {
+      expect(onToggle).toHaveBeenCalledWith('conn-figma');
+    });
+  });
 });

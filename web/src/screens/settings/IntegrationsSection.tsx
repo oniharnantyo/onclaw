@@ -8,10 +8,14 @@ import { ErrorState } from "../../components/ErrorState";
 import { formatApiError, ApiError } from "../../lib/api";
 import {
   accessLevelLabel,
+  connectionKind,
+  connectionKindLabel,
   connectionServiceName,
   connectionStatusView,
   connectionsApi,
+  recipeKind,
   serviceIconKey,
+  verbSurfaceCopy,
   useCanManageIntegrations,
   type ApiConnection,
   type ApiIntegrationRecipe,
@@ -265,7 +269,8 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
             ) : (
               <div className="space-y-2.5">
                 {connections.map((c) => {
-                  const st = connectionStatusView(c);
+                  const kind = connectionKind(c, recipes);
+                  const st = connectionStatusView(c, kind);
                   const agents = c.attached_agents || [];
                   const name = serviceName(c);
                   return (
@@ -290,6 +295,10 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center gap-2">
                             <p className="text-[14px] font-medium text-fg">{name}</p>
+                            {/* Connection kind (add-connection-http): subtle
+                                mono chip — MCP materialized server vs HTTP
+                                verb tools. */}
+                            <Chip mono>{connectionKindLabel(kind)}</Chip>
                             <Chip mono>{accessLevelLabel(c.access_level)}</Chip>
                           </div>
                           <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5">
@@ -386,6 +395,7 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
               <div className="space-y-2.5">
                 {available.map((r) => {
                   const conn = connectedByService.get(r.id);
+                  const kind = recipeKind(r);
                   return (
                     <div
                       key={r.id}
@@ -396,8 +406,21 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
                         <Icon name={serviceIconKey(r.id, r.icon)} size={16} />
                       </span>
                       <div className="min-w-0 flex-1">
-                        <p className="text-[14px] font-medium text-fg">{r.service}</p>
-                        <p className="truncate font-mono text-[11px] text-muted">{r.transport}</p>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="text-[14px] font-medium text-fg">{r.service}</p>
+                          <Chip mono>{connectionKindLabel(kind)}</Chip>
+                        </div>
+                        {/* MCP recipes show the materialized server's
+                            transport; HTTP recipes name their declared verb
+                            surface instead (add-connection-http) — the
+                            transport line would be empty for them. */}
+                        {kind === 'http' ? (
+                          <p className="truncate font-mono text-[11px] text-muted">
+                            {verbSurfaceCopy(r) || r.base_url || ''}
+                          </p>
+                        ) : (
+                          <p className="truncate font-mono text-[11px] text-muted">{r.transport}</p>
+                        )}
                       </div>
                       {conn ? (
                         <span className="flex shrink-0 items-center gap-1.5 text-[12px] text-[color-mix(in_oklab,var(--success),black_25%)]">
@@ -439,7 +462,10 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
                       <Icon name={serviceIconKey(r.id, r.icon)} size={16} />
                     </span>
                     <div className="min-w-0 flex-1">
-                      <p className="text-[14px] font-medium text-fg2">{r.service}</p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="text-[14px] font-medium text-fg2">{r.service}</p>
+                        <Chip mono>{connectionKindLabel(recipeKind(r))}</Chip>
+                      </div>
                       <p className="text-[11px] leading-4 text-muted">
                         {/* Server-declared notes are the truthful copy; the
                             fallback keeps the card honest for recipes that
@@ -532,8 +558,11 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
           }
         >
           <p className="p-5 text-[13px] leading-5 text-fg2">
-            Disconnecting removes the {serviceName(disconnecting)} connection, its materialized MCP server, and the stored
-            token — the token cannot be recovered.
+            {/* Kind-aware cascade copy (add-connection-http): HTTP-kind
+                connections have no materialized server to remove. */}
+            {connectionKind(disconnecting, recipes) === 'http'
+              ? `Disconnecting removes the ${serviceName(disconnecting)} connection and the stored token — the token cannot be recovered.`
+              : `Disconnecting removes the ${serviceName(disconnecting)} connection, its materialized MCP server, and the stored token — the token cannot be recovered.`}
             {(disconnecting.attached_agents || []).length > 0
               ? ` ${(disconnecting.attached_agents || []).join(', ')} will lose its tools on the next run.`
               : ' No agents are attached to it.'}{' '}

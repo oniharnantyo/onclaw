@@ -3499,3 +3499,83 @@ assert_json_expr '.authorize_url | contains("response_type=code")' "The authoriz
 assert_json_expr '.authorize_url | contains("state=")' "The authorize URL carries the signed single-use state"
 api_req "GET" "${CONN_OAUTH_BASE}/connections" "${CHARLIE_TOKEN}"
 assert_json_expr '[.connections[] | select(.service == "atlassian")] | length == 0' "The consent dispatch stored no connection"
+
+# -----------------------------------------------------------------------------
+# 30. HTTP-Kind Connections (add-connection-http: recipes shape, figma probe
+#     gate, attachment shape, nothing-stored hygiene)
+# -----------------------------------------------------------------------------
+log_step "30. HTTP-Kind Connections: Recipes Shape, Figma Probe Gate, Attachment Shape"
+
+# A full signed-in http connection lifecycle (connect → attach → run →
+# disconnect) needs a REAL Figma personal access token — the recipe's probe is
+# the authenticated GET /v1/me and there is no stub override in a smoke run
+# (recipes are frozen server-side data). That lifecycle is covered by the
+# fake-based tests (internal/server/connections_http_test.go: an httptest
+# upstream behind a test-registered recipe). This section exercises everything
+# that is deterministic here: the http recipes' served shape (kind, base_url,
+# auth header, probe call, declared verbs), the integrations.write guard for
+# the http kind, the connect validation envelopes, and the probe gate itself —
+# a bogus token against the real api.figma.com fails the gate in every
+# environment (offline: dial error; online: upstream 401), stores NOTHING, and
+# surfaces the upstream message (spec: "Probe failure blocks connect").
+HTTP_CONN_BASE="/api/v1/workspaces/${TENANT_SLUG}/integrations"
+
+# 30.1 The http recipe's served shape: Figma declares kind http with the
+# pinned base URL, the raw-token auth header, the literal GET /v1/me probe
+# (no MCP probe tool), and the curated verb surface — service-prefixed names,
+# typed params, read-only as the only level. The mcp recipes keep their shape:
+# kind mcp, no base_url, no verbs.
+api_req "GET" "${HTTP_CONN_BASE}/recipes" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists the recipe gallery for the http shape"
+assert_json_expr '[.recipes[] | select(.id == "figma")][0].kind == "http"' "Figma recipe declares http kind"
+assert_json_expr '[.recipes[] | select(.id == "figma")][0].base_url == "https://api.figma.com"' "Figma recipe pins the api.figma.com base URL"
+assert_json_expr '[.recipes[] | select(.id == "figma")][0].token_header == "X-Figma-Token"' "Figma recipe declares the X-Figma-Token auth header"
+assert_json_expr '[.recipes[] | select(.id == "figma")][0].probe.method == "GET" and [.recipes[] | select(.id == "figma")][0].probe.path == "/v1/me"' "Figma probe is GET /v1/me"
+assert_json_expr '[.recipes[] | select(.id == "figma")][0].probe | has("tool") | not' "The http probe declares no MCP probe tool"
+assert_json_expr '[.recipes[] | select(.id == "figma")][0].verbs | length >= 8' "Figma declares its curated verb surface"
+assert_json_expr '[.recipes[] | select(.id == "figma")][0].verbs | all(.name | startswith("figma."))' "Every verb name is service-prefixed"
+assert_json_expr '[.recipes[] | select(.id == "figma")][0].verbs[0].method == "GET"' "Verbs carry their declared method"
+assert_json_expr '[.recipes[] | select(.id == "figma")][0].verbs[0].params | type == "array"' "Verb params are always an array"
+assert_json_expr '[.recipes[] | select(.id == "figma")][0].access_levels == ["read_only"]' "Figma offers read_only only"
+assert_json_expr '[.recipes[] | select(.id == "github")][0].kind == "mcp"' "MCP recipes declare kind mcp"
+assert_json_expr '[.recipes[] | select(.id == "github")][0] | has("base_url") | not' "MCP recipes carry no base_url"
+assert_json_expr '[.recipes[] | select(.id == "github")][0].verbs | length == 0' "MCP recipes declare no verbs"
+
+# 30.2 The integrations.write guard covers the http kind: the Member is 403
+# before any probe runs.
+api_req "POST" "${HTTP_CONN_BASE}/connections" "${CLI_USER_TOKEN}" '{"recipe_id":"figma","token":"fig-smoke-invalid-token"}'
+assert_status "403" "Member cannot connect the http recipe (integrations.write 403)"
+
+# 30.3 Connect validation envelopes for the http kind: an unknown recipe and
+# an access level outside Figma's read-only offer are 400 without probing.
+api_req "POST" "${HTTP_CONN_BASE}/connections" "${CHARLIE_TOKEN}" '{"recipe_id":"not-a-service","token":"tok"}'
+assert_status "400" "Unknown recipe stays rejected (400)"
+api_req "POST" "${HTTP_CONN_BASE}/connections" "${CHARLIE_TOKEN}" '{"recipe_id":"figma","access_level":"read_write","token":"fig-smoke-invalid-token"}'
+assert_status "400" "Figma rejects read_write (its only offer is read_only)"
+
+# 30.4 The http probe gate against the real upstream: a well-formed connect
+# whose token cannot pass GET /v1/me is rejected 400 with the upstream message
+# verbatim after the "probe failed: " prefix — and the token never appears in
+# the error, and NOTHING is stored (no connection row, no server row: the
+# managed-server guard has nothing to guard).
+api_req "POST" "${HTTP_CONN_BASE}/connections" "${CHARLIE_TOKEN}" '{"recipe_id":"figma","access_level":"read_only","token":"fig-smoke-invalid-token"}'
+assert_status "400" "A token failing the figma probe is rejected (400)"
+assert_json_expr '.error.code == "invalid_request"' "Probe-failure code is invalid_request"
+assert_json_expr '.error.message | startswith("probe failed: ")' "Probe-failure message carries the upstream error verbatim"
+HTTP_PROBE_MSG=$(json_get '.error.message')
+if [[ "${#HTTP_PROBE_MSG}" -gt 20 ]]; then
+    log_pass "Upstream probe failure message is substantive: ${HTTP_PROBE_MSG:0:60}..."
+else
+    log_fail "Upstream probe failure message is too short to be real: ${HTTP_PROBE_MSG}"
+fi
+if [[ "${HTTP_PROBE_MSG}" != *"fig-smoke-invalid-token"* ]]; then
+    log_pass "Probe-failure message carries no credential material"
+else
+    log_fail "Probe-failure message leaked the token"
+fi
+
+api_req "GET" "${HTTP_CONN_BASE}/connections" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists connections after the failed http connect"
+assert_json_expr '[.connections[] | select(.service == "figma")] | length == 0' "Probe failure stored no figma connection (nothing-stored hygiene)"
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/mcp-servers" "${CHARLIE_TOKEN}"
+assert_json_expr '[.servers[] | select(.name == "Figma")] | length == 0' "HTTP connect materializes no server row"

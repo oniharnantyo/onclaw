@@ -43,6 +43,34 @@ const atlassianRecipe = (overrides: Partial<ApiIntegrationRecipe> = {}): ApiInte
   ...overrides,
 });
 
+// add-connection-http: the Figma reference recipe — HTTP kind, pinned base
+// URL, auth header, declared verb surface, no MCP transport.
+const figmaRecipe = (overrides: Partial<ApiIntegrationRecipe> = {}): ApiIntegrationRecipe => ({
+  id: 'figma',
+  service: 'Figma',
+  icon: 'figma',
+  auth_kind: 'pat',
+  availability: 'available',
+  access_levels: ['read_only', 'read_write'],
+  steps: [{ title: 'Create a Figma personal access token' }],
+  scopes: [{ access_level: 'read_only', scopes: ['file_dev:read'] }],
+  kind: 'http',
+  base_url: 'https://api.figma.com',
+  token_header: 'X-Figma-Token',
+  verbs: [
+    { name: 'figma.get_me', method: 'GET', path: '/v1/me', description: 'The authenticated user' },
+    {
+      name: 'figma.get_file',
+      method: 'GET',
+      path: '/v1/files/:key',
+      description: 'One file by key',
+      params: [{ name: 'key', type: 'string', required: true, in: 'path' }],
+    },
+  ],
+  probe: { tool: 'figma.get_me' },
+  ...overrides,
+});
+
 const recipesFixture = (): ApiIntegrationRecipe[] => [
   gitlabRecipe(),
   {
@@ -526,6 +554,146 @@ describe('screens/settings/IntegrationsSection', () => {
       );
     });
     expect(screen.queryByTestId('connect-success')).toBeNull();
+  });
+
+  it('names the declared verb surface and kind on HTTP recipe cards', async () => {
+    vi.spyOn(connectionsApi, 'recipes').mockResolvedValue({
+      recipes: [...recipesFixture(), figmaRecipe()],
+    });
+
+    renderPane();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('recipe-figma')).not.toBeNull();
+    });
+    const card = screen.getByTestId('recipe-figma');
+    expect(card.textContent).toContain('HTTP');
+    // Compact verb-surface copy replaces the (absent) MCP transport line.
+    expect(card.textContent).toContain('2 tools — figma.get_me, figma.get_file');
+    expect(card.textContent).not.toContain('streamable_http');
+    expect(screen.getByTestId('btn-integrate-figma')).not.toBeNull();
+    // MCP-kind cards keep their transport and gain the kind chip.
+    expect(screen.getByTestId('recipe-gitlab').textContent).toContain('MCP');
+    expect(screen.getByTestId('recipe-gitlab').textContent).toContain('streamable_http');
+  });
+
+  it('connects an HTTP-kind recipe with the verb surface shown and attachment by connection id', async () => {
+    vi.spyOn(connectionsApi, 'recipes').mockResolvedValue({
+      recipes: [...recipesFixture(), figmaRecipe()],
+    });
+    const connect = vi.spyOn(connectionsApi, 'connect').mockResolvedValue({
+      connection: {
+        id: 'conn-figma',
+        workspace_id: 'acme',
+        service: 'figma',
+        access_level: 'read_only',
+        status: 'connected',
+        status_error: null,
+        token_hint: 'f9e8',
+        server_id: null,
+        server_enabled: false,
+        tool_count: 2,
+        attached_agents: [],
+        created_at: '',
+        updated_at: '',
+      },
+    });
+    vi.spyOn(api.agents, 'list').mockResolvedValue({
+      agents: [{ id: 'a1', slug: 'atlas', name: 'Atlas', enabled_mcps: [] }] as any[],
+    });
+
+    renderPane();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('btn-integrate-figma')).not.toBeNull();
+    });
+    fireEvent.click(screen.getByTestId('btn-integrate-figma'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('modal-connect-service')).not.toBeNull();
+    });
+    // The recipe's guided API-token steps render, and the declared verb
+    // surface lists in full with the pinned base URL — no MCP wiring copy.
+    expect(screen.getByText('Create a Figma personal access token')).not.toBeNull();
+    expect(screen.getByTestId('connect-http-surface').textContent).toContain('figma.get_me');
+    expect(screen.getByTestId('connect-verb-figma.get_file').textContent).toContain('GET /v1/files/:key');
+    expect(screen.getByTestId('connect-http-surface').textContent).toContain('api.figma.com');
+    expect(screen.queryByTestId('connect-oauth-handoff')).toBeNull();
+
+    // Connect stays probe-gated on a token, exactly like the PAT flow.
+    expect((screen.getByTestId('btn-connect-confirm') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByTestId('input-connect-token'), { target: { value: 'figd_x' } });
+    fireEvent.click(screen.getByTestId('btn-connect-confirm'));
+
+    await waitFor(() => {
+      expect(connect).toHaveBeenCalledWith('acme', {
+        recipe_id: 'figma',
+        access_level: 'read_only',
+        token: 'figd_x',
+      });
+    });
+
+    // HTTP-kind connections have no server_id — attachment stores the
+    // connection id in enabled_mcps.
+    await waitFor(() => {
+      expect(screen.getByTestId('connect-success')).not.toBeNull();
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('switch', { name: 'Attach Atlas' })).not.toBeNull();
+    });
+    fireEvent.click(screen.getByRole('switch', { name: 'Attach Atlas' }));
+    await waitFor(() => {
+      expect(api.agents.patch).toHaveBeenCalledWith('acme', 'atlas', {
+        enabled_mcps: ['conn-figma'],
+      });
+    });
+  });
+
+  it('shows an HTTP-kind connection with its kind chip and truthful cascade copy', async () => {
+    vi.spyOn(connectionsApi, 'disconnect').mockResolvedValue(undefined);
+    vi.spyOn(connectionsApi, 'recipes').mockResolvedValue({
+      recipes: [...recipesFixture(), figmaRecipe()],
+    });
+    vi.spyOn(connectionsApi, 'list').mockResolvedValue({
+      connections: [
+        {
+          id: 'conn-figma',
+          workspace_id: 'acme',
+          service: 'figma',
+          access_level: 'read_only',
+          status: 'connected',
+          status_error: null,
+          token_hint: 'f9e8',
+          server_id: null,
+          server_enabled: false, // structural for HTTP kind — NOT a pause
+          tool_count: 2,
+          attached_agents: ['Atlas'],
+          created_at: '',
+          updated_at: '',
+        },
+      ],
+    });
+
+    renderPane();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('connection-conn-figma')).not.toBeNull();
+    });
+    const card = screen.getByTestId('connection-conn-figma');
+    expect(card.textContent).toContain('HTTP');
+    expect(card.textContent).toContain('····f9e8');
+    // Structural server_enabled: false must not read as Paused.
+    expect(screen.getByTestId('connection-status-conn-figma').textContent).toBe('Connected');
+    expect(card.textContent).not.toContain('Paused');
+
+    fireEvent.click(screen.getByTestId('btn-connection-disconnect-conn-figma'));
+    const modal = screen.getByTestId('modal-connection-disconnect');
+    // No materialized server exists to remove — the copy stays truthful.
+    expect(modal.textContent).not.toContain('materialized MCP server');
+    expect(modal.textContent).toContain('cannot be recovered');
+    expect(modal.textContent).toContain('Atlas');
+    fireEvent.click(screen.getByTestId('btn-disconnect-cancel'));
+    expect(screen.queryByTestId('modal-connection-disconnect')).toBeNull();
   });
 
   it('resolves the oauth callback return: refreshes the list, toasts, and cleans the URL', async () => {

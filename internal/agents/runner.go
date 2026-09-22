@@ -82,6 +82,11 @@ type Runner struct {
 	mcpManager mcp.ToolSource
 	mcpStatus  mcp.StatusWriter
 
+	// Connection tool source (add-connection-http D1): resolves the agent's
+	// attached http-kind connections' declared verb tools in the same pass as
+	// MCP tools, after them. Default: a no-op source contributing nothing.
+	connectionSource connectionToolResolver
+
 	hooks      *hooks.Dispatcher
 	hooksWired bool
 
@@ -230,6 +235,20 @@ func WithMCPStatusWriter(w mcp.StatusWriter) RunnerOption {
 	return func(r *Runner) {
 		if w != nil {
 			r.mcpStatus = w
+		}
+	}
+}
+
+// WithConnectionToolSource supplies the connection tool source the resolver
+// draws the attached http-kind connections' declared verb tools from
+// (add-connection-http design.md D1, tasks.md 2.1). The source is consulted
+// in the same resolution pass as MCP tools, after them; attachment is its
+// only authority and per-connection failures degrade skip-and-mark. Default:
+// a no-op source that contributes nothing.
+func WithConnectionToolSource(source *ConnectionToolSource) RunnerOption {
+	return func(r *Runner) {
+		if source != nil {
+			r.connectionSource = source
 		}
 	}
 }
@@ -454,6 +473,7 @@ func NewRunner(
 		mcpPolicy:             noopMCPPolicy{},
 		mcpManager:            noopMCPTools{},
 		mcpStatus:             noopMCPStatus{},
+		connectionSource:      noopConnectionTools{},
 		hooks:                 hooks.NewNoopDispatcher(),
 		hooksRuns:             make(map[RunKey]*hooks.Resolved),
 		mintTurnID:            uuid.NewString,
@@ -756,6 +776,16 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 		return cfg, nil, fmt.Errorf("resolve mcp tools: %w", err)
 	}
 	resolvedTools = append(resolvedTools, mcpTools...)
+
+	// Connection tools append after MCP tools (add-connection-http D1/D6):
+	// same resolution pass, attachment the only authority, per-connection
+	// failures degraded skip-and-mark inside the source. Lister failures
+	// (store-level) fail the resolution like any other store error.
+	connectionTools, err := r.connectionSource.ToolsFor(ctx, req.WorkspaceID, req.AgentID, resolvedTools)
+	if err != nil {
+		return cfg, nil, fmt.Errorf("resolve connection tools: %w", err)
+	}
+	resolvedTools = append(resolvedTools, connectionTools...)
 
 	// Effective provider/model resolution (refactor-workspace-settings D3):
 	// one resolver for the pinned pair and the workspace-default inherit path.

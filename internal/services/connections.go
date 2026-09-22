@@ -74,7 +74,10 @@ type ConnectionsService struct {
 	apps          store.OAuthApps
 	encKey        []byte
 	publicBaseURL string
-	httpClient    *http.Client
+	// httpClient is the service's one outbound HTTP lane: the OAuth token
+	// endpoint's exchanges/refreshes AND the http-kind probes ride it (both
+	// bounded — the probe additionally by probeTimeout).
+	httpClient *http.Client
 	stateTTL      time.Duration
 	nonces        map[string]nonceEntry
 	nonceMu       sync.Mutex
@@ -236,6 +239,14 @@ func (s *ConnectionsService) Connect(ctx context.Context, workspaceID, userID, r
 		return nil, err
 	}
 
+	// HTTP-kind recipes skip materialization entirely (add-connection-http
+	// tasks 3.1): no workspace MCP server row and no origin marker — the
+	// recipe's declared probe call gates the connect and the token rides the
+	// connection's encrypted envelope column (connections_http.go).
+	if recipe.Kind == domain.RecipeKindHTTP {
+		return s.connectHTTP(ctx, workspaceID, recipe, accessLevel, token)
+	}
+
 	server := materializeServer(workspaceID, recipe, token)
 
 	// Probe before persist (design.md D3): a failure stores nothing — no
@@ -363,10 +374,17 @@ func (s *ConnectionsService) List(ctx context.Context, workspaceID string) ([]Co
 
 // buildView joins one connection with its materialized server (status,
 // enabled switch, tool count, token hint) and the names of the agents
-// attached to that server. A connection whose server row is absent reads as
-// unknown with no attachments — absence is a degraded state, not an error.
+// attached to that server. An http-kind connection has no server row to join:
+// its view is kind-aware (status from the persisted row, verb-count tool
+// count, attachment by connection id — connections_http.go). An mcp
+// connection whose server row is absent reads as unknown with no attachments
+// — absence is a degraded state, not an error.
 func (s *ConnectionsService) buildView(ctx context.Context, workspaceID string, conn *domain.Connection) (*ConnectionView, error) {
 	view := &ConnectionView{Connection: *conn, AttachedAgents: []string{}}
+
+	if recipe := domain.RecipeByID(conn.Service); recipe != nil && recipe.Kind == domain.RecipeKindHTTP {
+		return s.buildHTTPView(ctx, workspaceID, conn, recipe)
+	}
 
 	server, err := s.wsServers.GetByOriginConnection(ctx, workspaceID, conn.ID)
 	if err != nil {
@@ -467,6 +485,15 @@ func (s *ConnectionsService) Disconnect(ctx context.Context, workspaceID, id str
 	if err != nil {
 		return "", err
 	}
+	// HTTP-kind connections attach by CONNECTION id (there is no server id):
+	// the store cascade below strips only linked-server ids, so the connection
+	// id is stripped from every agent's enabled_mcps first (add-connection-http
+	// tasks 3.2, contract §2). MCP-kind disconnect is untouched.
+	if isHTTPConnection(conn.Service) {
+		if err := s.stripHTTPAttachments(ctx, workspaceID, conn.ID); err != nil {
+			return "", err
+		}
+	}
 	if server, err := s.wsServers.GetByOriginConnection(ctx, workspaceID, conn.ID); err != nil {
 		return "", err
 	} else if server != nil {
@@ -491,6 +518,13 @@ func (s *ConnectionsService) Probe(ctx context.Context, workspaceID, id string) 
 	conn, err := s.connections.Get(ctx, workspaceID, id)
 	if err != nil {
 		return nil, err
+	}
+	// HTTP-kind connections have no linked server: the probe re-runs the
+	// recipe's declared call against the pinned base URL with the stored
+	// credential and persists the outcome on the connection row through
+	// UpdateTokenLifecycle (add-connection-http tasks 3.2, contract §4).
+	if recipe := domain.RecipeByID(conn.Service); recipe != nil && recipe.Kind == domain.RecipeKindHTTP {
+		return s.probeHTTPConnection(ctx, workspaceID, conn, recipe)
 	}
 	server, err := s.wsServers.GetByOriginConnection(ctx, workspaceID, conn.ID)
 	if err != nil {
