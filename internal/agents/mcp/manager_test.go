@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -311,5 +313,64 @@ func TestRefString(t *testing.T) {
 	}
 	if fmt.Sprint(key{"a", "b"}) != "a/b" {
 		t.Fatal("key should render as workspace/server")
+	}
+}
+
+// TestProbeAndManagerDialConstructIdenticalEnv pins probe-vs-run parity
+// (openspec/changes/fix-stdio-env-leak task 3.2) and doubles as the automated
+// stand-in for the manual verification pass (task 4.2): Probe and the manager
+// both dial through connect, so the probe connects under the constructed env
+// (tool count > 0) and a manager-mediated dial serves a real tool call whose
+// child observes exactly what constructChildEnv builds for the same
+// connection — configured row present, parent-only canary absent.
+func TestProbeAndManagerDialConstructIdenticalEnv(t *testing.T) {
+	bin := compileMockServer(t)
+	t.Setenv(envLeakCanary, "leak-if-visible")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	conn := stdioConn(bin)
+	want := constructChildEnv(os.Environ(), conn.Env)
+	sort.Strings(want)
+
+	// Probe path: a fresh, uncached dial under the constructed env.
+	count, err := Probe(ctx, Ref{WorkspaceID: "ws-probe", ServerID: "srv-1", Name: "mock", Conn: conn})
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if count == 0 {
+		t.Fatal("probe listed zero tools")
+	}
+
+	// Run path: a manager-mediated dial of the same connection.
+	m := NewMCPManager()
+	defer m.Close()
+	if _, err := m.Tools(ctx, Ref{WorkspaceID: "ws-run", ServerID: "srv-1", Name: "mock", Conn: conn}); err != nil {
+		t.Fatalf("manager Tools: %v", err)
+	}
+	m.mu.Lock()
+	cli := m.entries[key{"ws-run", "srv-1"}].conn.client
+	m.mu.Unlock()
+
+	// A real tool call works through the constructed env.
+	if got := callTool(t, ctx, cli, "test_tool"); got != "tool result" {
+		t.Fatalf("test_tool = %q", got)
+	}
+
+	// …and the child observes exactly the shared constructor's env — the
+	// canary leaks only if the dial merged over the parent.
+	env := childEnv(t, ctx, cli)
+	got := make([]string, 0, len(env))
+	for name, value := range env {
+		got = append(got, name+"="+value)
+	}
+	sort.Strings(got)
+	if len(got) != len(want) {
+		t.Fatalf("manager-dialed child env has %d entries, want %d:\n got %v\nwant %v", len(got), len(want), got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("manager-dialed child env mismatch at entry %d:\n got %v\nwant %v", i, got, want)
+		}
 	}
 }

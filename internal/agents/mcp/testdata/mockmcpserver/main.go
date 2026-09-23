@@ -5,6 +5,8 @@
 //	test_tool  — returns a fixed text result
 //	echo_env   — returns the value of ONCLAW_MCP_TEST_MARKER (env passing)
 //	echo_args  — returns its own command-line args (args passing)
+//	dump_env   — returns its whole environment as KEY=VALUE lines (child-env
+//	             assertions: baseline present, parent-only vars absent)
 package main
 
 import (
@@ -28,6 +30,9 @@ func main() {
 	})
 	s.AddTool(mcp.NewTool("echo_args"), func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return mcp.NewToolResultText(strings.Join(os.Args[1:], " ")), nil
+	})
+	s.AddTool(mcp.NewTool("dump_env"), func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return mcp.NewToolResultText(strings.Join(os.Environ(), "\n")), nil
 	})
 
 	if err := server.ServeStdio(s); err != nil {

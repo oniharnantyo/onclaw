@@ -1406,14 +1406,15 @@ assert_status "403" "Member cannot create MCP servers (tools.write 403)"
 assert_json_expr '.error.code == "forbidden"' "Error code is forbidden"
 
 # 15.2 Owner registers a stdio server against the stub; the on-save probe
-# connects and counts the stub's 3 tools; the env secret round-trips as a
+# connects and counts the stub's 4 tools (3 protocol tools + the dump_env
+# env-echo test tool); the env secret round-trips as a
 # hint only — never plaintext.
 api_req "POST" "${MCP_BASE}" "${CHARLIE_TOKEN}" "{\"name\":\"Smoke Stub\",\"transport\":\"stdio\",\"command\":\"${MCP_STUB_BIN}\",\"args\":[\"--marker=smoke\"],\"env\":[{\"name\":\"${MCP_SECRET_NAME}\",\"value\":\"${MCP_SECRET_VALUE}\"}]}"
 assert_status "201" "Owner registers a stdio MCP server (201)"
 assert_json_expr '.server.transport == "stdio"' "Create echoes the transport"
 assert_json_expr '.server.command == "'"${MCP_STUB_BIN}"'"' "Create echoes the command"
 assert_json_expr '.server.status == "connected"' "On-save probe connects to the stub"
-assert_json_expr '.server.tool_count == 3' "Probe counts the stub's 3 tools"
+assert_json_expr '.server.tool_count == 4' "Probe counts the stub's 4 tools"
 assert_json_expr '.server.enabled == true' "Servers default to enabled"
 assert_json_expr '.server.env[0].name == "'"${MCP_SECRET_NAME}"'"' "Env row echoed by name"
 assert_json_expr '.server.env[0].value_hint == "9876"' "Env secret carries only its last-4 hint"
@@ -1443,7 +1444,7 @@ api_req "GET" "${MCP_BASE}" "${CHARLIE_TOKEN}"
 assert_status "200" "Owner lists MCP servers"
 assert_json_expr "[.servers[] | select(.id == \"${MCP_SRV_ID}\")] | length == 1" "Registry lists the registered server"
 assert_json_expr "[.servers[] | select(.id == \"${MCP_SRV_ID}\")][0].status == \"connected\"" "Connected status persists on the row"
-assert_json_expr "[.servers[] | select(.id == \"${MCP_SRV_ID}\")][0].tool_count == 3" "Tool count persists on the row"
+assert_json_expr "[.servers[] | select(.id == \"${MCP_SRV_ID}\")][0].tool_count == 4" "Tool count persists on the row"
 
 # 15.5 PATCH: change the args; then keep the stored secret via an empty env
 # value (name-keyed merge); the master switch pauses/resumes without touching
@@ -1471,7 +1472,7 @@ assert_json_expr '.server.enabled == true' "Resumed server reports enabled true"
 api_req "POST" "${MCP_BASE}/${MCP_SRV_ID}/probe" "${CHARLIE_TOKEN}"
 assert_status "200" "Owner probes the server on demand"
 assert_json_expr '.server.status == "connected"' "Re-probe reports connected"
-assert_json_expr '.server.tool_count == 3' "Re-probe counts 3 tools"
+assert_json_expr '.server.tool_count == 4' "Re-probe counts 4 tools"
 
 # 15.7 An unreachable command still persists (201) with the failed probe
 # stored as the row status; the explicit re-probe behaves identically.
@@ -1506,7 +1507,7 @@ api_req "POST" "${MCP_AGENT_BASE}" "${CHARLIE_TOKEN}" "{\"name\":\"Agent Private
 assert_status "201" "Owner attaches a private MCP server to the agent"
 assert_json_expr ".server.agent_id == \"${AGENT_ID}\"" "Private server carries the agent id"
 assert_json_expr '.server.status == "connected"' "Private server probe connects"
-assert_json_expr '.server.tool_count == 3' "Private server probe counts 3 tools"
+assert_json_expr '.server.tool_count == 4' "Private server probe counts 4 tools"
 assert_json_expr '.server.env[0].value_hint == "4321"' "Private server secret hinted"
 MCP_PRIV_ID=$(json_get '.server.id')
 

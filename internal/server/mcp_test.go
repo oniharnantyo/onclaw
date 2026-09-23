@@ -414,8 +414,11 @@ func TestWorkspaceMCPServers_ProbeAgainstStub(t *testing.T) {
 	if created.Status != domain.MCPStatusConnected {
 		t.Fatalf("expected the on-save probe to connect, got %q (%s)", created.Status, created.StatusError)
 	}
-	if created.ToolCount != 3 {
-		t.Errorf("expected the stub's 3 tools, got %d", created.ToolCount)
+	// The shared stub lists 4 tools: test_tool, echo_env, echo_args, and
+	// dump_env (added by openspec/changes/fix-stdio-env-leak for child-env
+	// assertions).
+	if created.ToolCount != 4 {
+		t.Errorf("expected the stub's 4 tools, got %d", created.ToolCount)
 	}
 	if len(created.Env) != 1 || created.Env[0].ValueHint != "-123" {
 		t.Errorf("expected the last-4 hint of the env secret, got %+v", created.Env)
@@ -426,7 +429,7 @@ func TestWorkspaceMCPServers_ProbeAgainstStub(t *testing.T) {
 
 	// Status persists: a plain list shows connected + tool count.
 	wList := doRequest(env.router, http.MethodGet, baseURL, ownerToken, nil)
-	if !strings.Contains(wList.Body.String(), `"status":"connected"`) || !strings.Contains(wList.Body.String(), `"tool_count":3`) {
+	if !strings.Contains(wList.Body.String(), `"status":"connected"`) || !strings.Contains(wList.Body.String(), `"tool_count":4`) {
 		t.Errorf("expected the probe status persisted on the row, got %s", wList.Body.String())
 	}
 
@@ -436,8 +439,8 @@ func TestWorkspaceMCPServers_ProbeAgainstStub(t *testing.T) {
 		t.Fatalf("expected 200 OK on re-probe, got %d: %s", wProbe.Code, wProbe.Body.String())
 	}
 	reprobed := decodeMCPServer(t, wProbe.Body.Bytes())
-	if reprobed.Status != domain.MCPStatusConnected || reprobed.ToolCount != 3 {
-		t.Errorf("expected connected/3 on re-probe, got %q/%d", reprobed.Status, reprobed.ToolCount)
+	if reprobed.Status != domain.MCPStatusConnected || reprobed.ToolCount != 4 {
+		t.Errorf("expected connected/4 on re-probe, got %q/%d", reprobed.Status, reprobed.ToolCount)
 	}
 }
 

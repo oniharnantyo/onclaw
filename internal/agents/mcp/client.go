@@ -7,6 +7,8 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 
 	mcpp "github.com/cloudwego/eino-ext/components/tool/mcp"
@@ -69,7 +71,19 @@ func abandonClient(cli client.MCPClient) {
 func dial(ctx context.Context, conn domain.MCPConnection) (client.MCPClient, error) {
 	switch conn.Transport {
 	case domain.MCPTransportStdio:
-		cli, err := client.NewStdioMCPClient(conn.Command, envSlice(conn.Env), conn.Args...)
+		// mcp-go v0.43.0's default launch path merges the supplied env over
+		// os.Environ() (client/transport/stdio.go spawnCommand: cmd.Env =
+		// append(os.Environ(), c.env...)), which would leak every parent
+		// variable into the child. WithCommandFunc is its replace-semantics
+		// escape hatch: the CommandFunc builds the whole exec.Cmd, so cmd.Env
+		// is exactly the constructed slice, never merged over the parent.
+		env := constructChildEnv(os.Environ(), conn.Env)
+		cli, err := client.NewStdioMCPClientWithOptions(conn.Command, env, conn.Args,
+			transport.WithCommandFunc(func(ctx context.Context, command string, cmdEnv []string, args []string) (*exec.Cmd, error) {
+				cmd := exec.CommandContext(ctx, command, args...)
+				cmd.Env = cmdEnv
+				return cmd, nil
+			}))
 		if err != nil {
 			return nil, fmt.Errorf("mcp stdio start %q: %w", conn.Command, err)
 		}
@@ -97,12 +111,67 @@ func dial(ctx context.Context, conn domain.MCPConnection) (client.MCPClient, err
 	}
 }
 
-// envSlice flattens env rows into KEY=VALUE entries. mcp-go merges them over
-// the parent environment, so configured vars win without dropping PATH.
-func envSlice(rows []domain.EnvRow) []string {
-	out := make([]string, 0, len(rows))
+// stdioEnvBaseline is the fixed allowlist of parent environment variables a
+// stdio MCP child receives beyond the connection's configured rows (design.md
+// D1 of openspec/changes/fix-stdio-env-leak): names children need to shell out
+// (PATH, HOME, TMPDIR), localize (LANG, LC_ALL, TZ), and traverse enterprise
+// proxies (upper- and lowercase forms). The baseline is deliberately not
+// configurable — a configurable allowlist reintroduces the leak via
+// misconfiguration.
+var stdioEnvBaseline = map[string]struct{}{
+	"PATH":        {},
+	"HOME":        {},
+	"TMPDIR":      {},
+	"LANG":        {},
+	"LC_ALL":      {},
+	"TZ":          {},
+	"HTTP_PROXY":  {},
+	"HTTPS_PROXY": {},
+	"ALL_PROXY":   {},
+	"NO_PROXY":    {},
+	"http_proxy":  {},
+	"https_proxy": {},
+	"all_proxy":   {},
+	"no_proxy":    {},
+}
+
+// constructChildEnv builds the stdio child environment: baseline entries
+// present in parent, overridden by the connection's configured rows (rows win
+// on name conflicts), and nothing else from the parent. Baseline entries
+// absent from parent are omitted — never synthesized as empty strings — while
+// rows keep empty values (an explicit empty row unsets nothing, it sets ""):
+// every returned entry is NAME=VALUE with a non-empty NAME.
+//
+// dial installs the result wholesale via transport.WithCommandFunc because
+// mcp-go v0.43.0's default stdio launch path merges a supplied env over
+// os.Environ() (client/transport/stdio.go spawnCommand: cmd.Env =
+// append(os.Environ(), c.env...)); passing the slice alone would still leak
+// every parent variable into the child.
+func constructChildEnv(parent []string, rows []domain.EnvRow) []string {
+	values := make(map[string]string, len(stdioEnvBaseline)+len(rows))
+	order := make([]string, 0, len(stdioEnvBaseline)+len(rows))
+	add := func(name, value string) {
+		if _, dup := values[name]; !dup {
+			order = append(order, name)
+		}
+		values[name] = value
+	}
+	for _, entry := range parent {
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok || name == "" {
+			continue
+		}
+		if _, base := stdioEnvBaseline[name]; !base {
+			continue
+		}
+		add(name, value)
+	}
 	for _, row := range rows {
-		out = append(out, row.Name+"="+row.Value)
+		add(row.Name, row.Value)
+	}
+	out := make([]string, 0, len(order))
+	for _, name := range order {
+		out = append(out, name+"="+values[name])
 	}
 	return out
 }

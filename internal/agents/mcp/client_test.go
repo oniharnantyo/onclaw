@@ -22,6 +22,11 @@ import (
 const (
 	envMarker = "ONCLAW_MCP_TEST_MARKER"
 	argsFlag  = "--marker=child-args-123"
+
+	// envLeakCanary is planted in the test process (the would-be OnClaw server
+	// parent) but never configured on the connection: the stdio child must
+	// never see it. See openspec/changes/fix-stdio-env-leak.
+	envLeakCanary = "ONCLAW_ENVLEAK_CANARY"
 )
 
 var (
@@ -138,6 +143,145 @@ func TestConnectStdioHandshakeListsTools(t *testing.T) {
 	}
 }
 
+// TestStdioEnvConstructedNotInherited pins the constructed-env contract for
+// stdio MCP children (openspec/changes/fix-stdio-env-leak): the child sees the
+// configured env rows and a safe baseline (PATH) but none of the parent
+// process's other variables, exemplified by the planted ONCLAW_ENVLEAK_CANARY.
+func TestStdioEnvConstructedNotInherited(t *testing.T) {
+	bin := compileMockServer(t)
+	t.Setenv(envLeakCanary, "leak-if-visible")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	conn, err := connect(ctx, stdioConn(bin))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer func() { _ = conn.client.Close() }()
+
+	env := childEnv(t, ctx, conn.client)
+
+	// The configured row reaches the child…
+	if got := env[envMarker]; got != "secret-123" {
+		t.Fatalf("child env %s = %q, want %q", envMarker, got, "secret-123")
+	}
+	// …a safe baseline var survives (PATH is in the fix's baseline allowlist)…
+	if got := env["PATH"]; got == "" {
+		t.Fatalf("child env missing PATH: stdio children need it to shell out")
+	}
+	// …and the parent-only canary must NOT leak: the dial replaces cmd.Env
+	// with the constructed slice instead of merging over the parent.
+	if got, ok := env[envLeakCanary]; ok {
+		t.Fatalf("parent-only canary %s leaked into stdio child env (got %q); dial must construct the child env, not merge over the parent", envLeakCanary, got)
+	}
+}
+
+// TestConstructChildEnv pins the constructor's contract directly (task 3.1):
+// baseline entries are copied from the parent when present, configured rows
+// override baseline entries, parent-only variables never reach the child,
+// missing baseline entries are omitted rather than synthesized as empty
+// strings, and rows with empty values are preserved.
+func TestConstructChildEnv(t *testing.T) {
+	parent := []string{
+		"PATH=/usr/bin:/bin",
+		"HOME=/home/onclaw",
+		"TZ=UTC",
+		"http_proxy=http://proxy.internal:3128",
+		"DATABASE_URL=postgres://secret", // parent-only, not in the allowlist
+		"ONCLAW_JWT_SECRET=hush",         // parent-only, not in the allowlist
+		"Malformed",                      // no '=': never a valid entry
+	}
+	rows := []domain.EnvRow{
+		{Name: "PATH", Value: "/custom/bin"}, // configured row overrides the baseline
+		{Name: "EMPTY", Value: ""},           // empty row values are preserved, not dropped
+	}
+
+	env := constructChildEnv(parent, rows)
+
+	got := make(map[string]string, len(env))
+	for _, entry := range env {
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok || name == "" {
+			t.Fatalf("malformed child env entry %q", entry)
+		}
+		got[name] = value
+	}
+	want := map[string]string{
+		"PATH":       "/custom/bin", // row wins over the baseline entry
+		"HOME":       "/home/onclaw",
+		"TZ":         "UTC",
+		"http_proxy": "http://proxy.internal:3128",
+		"EMPTY":      "",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("child env keys = %v, want exactly %v", got, want)
+	}
+	for name, value := range want {
+		if gotValue, ok := got[name]; !ok || gotValue != value {
+			t.Fatalf("child env %s = (%q, %v), want %q", name, gotValue, ok, value)
+		}
+	}
+	// Missing baseline entries (TMPDIR, HTTPS_PROXY, …) are absent outright,
+	// never present as NAME= — pinned by the exact key-set match above.
+}
+
+// TestStdioEnvRowOverridesBaseline drives a real stdio dial (task 3.1): a
+// configured PATH row wins over the parent's PATH, and a baseline variable
+// missing from the parent (TMPDIR is unset here) is absent from the child
+// rather than present as an empty string.
+func TestStdioEnvRowOverridesBaseline(t *testing.T) {
+	bin := compileMockServer(t)
+	t.Setenv(envLeakCanary, "leak-if-visible")
+	t.Setenv("PATH", "/usr/bin:/bin")
+	prevTmpdir, hadTmpdir := os.LookupEnv("TMPDIR")
+	os.Unsetenv("TMPDIR")
+	if hadTmpdir {
+		t.Cleanup(func() { os.Setenv("TMPDIR", prevTmpdir) })
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	conn := stdioConn(bin)
+	conn.Env = append(conn.Env, domain.EnvRow{Name: "PATH", Value: "/custom/bin"})
+
+	// The override does not stop the dial: the binary is launched by absolute
+	// path, so a broken child PATH would only break child shells, not the
+	// handshake.
+	connected, err := connect(ctx, conn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer func() { _ = connected.client.Close() }()
+
+	env := childEnv(t, ctx, connected.client)
+	if got := env["PATH"]; got != "/custom/bin" {
+		t.Fatalf("child env PATH = %q, want the configured row /custom/bin (row must override the baseline)", got)
+	}
+	if got, ok := env["TMPDIR"]; ok {
+		t.Fatalf("child env TMPDIR = %q; a baseline variable missing from the parent must be omitted, not empty", got)
+	}
+}
+
+// childEnv fetches the mock server's whole environment as a map by calling its
+// dump_env tool.
+func childEnv(t *testing.T, ctx context.Context, c interface {
+	CallTool(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)
+}) map[string]string {
+	t.Helper()
+	out := callTool(t, ctx, c, "dump_env")
+	env := make(map[string]string)
+	for _, line := range strings.Split(out, "\n") {
+		key, value, found := strings.Cut(line, "=")
+		if !found || key == "" {
+			continue
+		}
+		env[key] = value
+	}
+	return env
+}
+
 func TestConnectStdioFailedConnect(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -163,9 +307,10 @@ func TestConnectUnknownTransportRejected(t *testing.T) {
 
 func TestEnvAndHeaderFlattening(t *testing.T) {
 	rows := []domain.EnvRow{{Name: "A", Value: "1"}, {Name: "B", Value: "2"}}
-	env := envSlice(rows)
+	// With an empty parent, the constructed env is exactly the flattened rows.
+	env := constructChildEnv(nil, rows)
 	if len(env) != 2 || env[0] != "A=1" || env[1] != "B=2" {
-		t.Fatalf("envSlice = %v", env)
+		t.Fatalf("constructChildEnv = %v", env)
 	}
 	hdrs := headerMap(rows)
 	if hdrs["A"] != "1" || hdrs["B"] != "2" || len(hdrs) != 2 {
