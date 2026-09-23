@@ -49,6 +49,14 @@ type Connection struct {
 	WorkspaceID string `json:"workspace_id"`
 	// Service is the recipe id the connection was created from (e.g. "github").
 	Service string `json:"service"`
+	// Origin is the connection's resolved base-URL origin (add-recipe-base-url
+	// tasks.md 2.2): the ParseOrigin-normalized scheme://host[:port] the
+	// recipe's endpoint/verb paths resolve against (ResolveRecipeBase). Empty
+	// for recipes without an origin parameter — their endpoint is fixed. Set
+	// only at connect and immutable afterwards: every later write path (token
+	// lifecycle, refresh, reauthorization) leaves it untouched; changing
+	// origins means disconnect and reconnect.
+	Origin string `json:"origin,omitempty"`
 	// AccessLevel is one of the ConnectionAccess* constants.
 	AccessLevel string `json:"access_level"`
 	// Status is one of the ConnectionStatus* constants (empty is stored as

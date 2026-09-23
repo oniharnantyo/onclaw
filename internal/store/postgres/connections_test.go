@@ -190,6 +190,108 @@ func TestIntegration_ConnectionStore_ServiceUniqueness(t *testing.T) {
 	}
 }
 
+// Uniqueness is per (workspace, service, origin) (add-recipe-base-url
+// tasks.md 2.1, migration 000067): the same origin twice is rejected naming
+// the origin, a different origin of the same service connects side by side,
+// plain rows keep the per-service rule, and the origin round-trips and
+// survives the lifecycle write — mirroring the fake's semantics.
+func TestIntegration_ConnectionStore_OriginUniqueness(t *testing.T) {
+	s, _, ctx := setupTestSchema(t)
+	ws1 := pgConnSeedWorkspace(t, ctx, s, "pg-conn-origin-1")
+	ws2 := pgConnSeedWorkspace(t, ctx, s, "pg-conn-origin-2")
+
+	const selfHosted = "https://gitlab.self.example.com"
+	first := &domain.Connection{
+		WorkspaceID: ws1.ID,
+		Service:     "gitlab",
+		Origin:      selfHosted,
+		AccessLevel: domain.ConnectionAccessReadOnly,
+	}
+	if err := s.Connections().Create(ctx, first); err != nil {
+		t.Fatalf("unexpected create error: %v", err)
+	}
+
+	// Origin round-trips through Get and List.
+	got, err := s.Connections().Get(ctx, ws1.ID, first.ID)
+	if err != nil {
+		t.Fatalf("unexpected get error: %v", err)
+	}
+	if got.Origin != selfHosted {
+		t.Fatalf("expected origin %q to round-trip, got %q", selfHosted, got.Origin)
+	}
+
+	// The same (service, origin) is rejected; the detail names the origin.
+	dup := &domain.Connection{
+		WorkspaceID: ws1.ID,
+		Service:     "gitlab",
+		Origin:      selfHosted,
+		AccessLevel: domain.ConnectionAccessReadWrite,
+	}
+	err = s.Connections().Create(ctx, dup)
+	if !errors.Is(err, domain.ErrConnectionExists) || !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("expected ErrConnectionExists chaining ErrConflict for the same origin, got %v", err)
+	}
+	if !strings.Contains(err.Error(), selfHosted) {
+		t.Fatalf("expected the conflict to name the origin, got %q", err.Error())
+	}
+
+	// A different origin of the same service connects side by side.
+	saas := &domain.Connection{
+		WorkspaceID: ws1.ID,
+		Service:     "gitlab",
+		Origin:      "https://gitlab.com",
+		AccessLevel: domain.ConnectionAccessReadOnly,
+	}
+	if err := s.Connections().Create(ctx, saas); err != nil {
+		t.Fatalf("expected different origin to succeed, got %v", err)
+	}
+	rows, err := s.Connections().List(ctx, ws1.ID)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("expected both origins listed, got %d rows (%v)", len(rows), err)
+	}
+	saw := map[string]bool{rows[0].Origin: true, rows[1].Origin: true}
+	if !saw[selfHosted] || !saw["https://gitlab.com"] {
+		t.Fatalf("expected both origins on the rows, got %+v", rows)
+	}
+
+	// Plain rows (origin='') keep the per-service rule.
+	plain := &domain.Connection{WorkspaceID: ws1.ID, Service: "github", AccessLevel: domain.ConnectionAccessReadOnly}
+	if err := s.Connections().Create(ctx, plain); err != nil {
+		t.Fatalf("unexpected plain create error: %v", err)
+	}
+	err = s.Connections().Create(ctx, &domain.Connection{
+		WorkspaceID: ws1.ID,
+		Service:     "github",
+		AccessLevel: domain.ConnectionAccessReadWrite,
+	})
+	if !errors.Is(err, domain.ErrConnectionExists) {
+		t.Fatalf("expected ErrConnectionExists for the plain duplicate, got %v", err)
+	}
+
+	// The same service and origin in another workspace is fine.
+	if err := s.Connections().Create(ctx, &domain.Connection{
+		WorkspaceID: ws2.ID,
+		Service:     "gitlab",
+		Origin:      selfHosted,
+		AccessLevel: domain.ConnectionAccessReadOnly,
+	}); err != nil {
+		t.Fatalf("expected same origin in another workspace to succeed, got %v", err)
+	}
+
+	// The lifecycle write never rewrites the origin.
+	saas.Status = domain.ConnectionStatusExpired
+	if err := s.Connections().UpdateTokenLifecycle(ctx, saas); err != nil {
+		t.Fatalf("unexpected lifecycle update error: %v", err)
+	}
+	got, err = s.Connections().Get(ctx, ws1.ID, saas.ID)
+	if err != nil {
+		t.Fatalf("unexpected get error: %v", err)
+	}
+	if got.Origin != "https://gitlab.com" || got.Status != domain.ConnectionStatusExpired {
+		t.Fatalf("expected origin preserved through the lifecycle write, got %+v", got)
+	}
+}
+
 // Disconnect cascade (design.md D8, tasks.md 1.5): the connection row, the
 // origin-linked workspace MCP server row, and every agent's attachment
 // reference to it die in ONE transaction.
@@ -561,16 +663,47 @@ func TestIntegration_ConnectionsSchema(t *testing.T) {
 		t.Fatal("expected workspace_connections to exist after migrations")
 	}
 
-	// The unique constraint is the DB-level backstop for one-connection-per-service.
-	var constraint string
+	// The unique index is the DB-level backstop for per-(service, origin)
+	// uniqueness (add-recipe-base-url tasks.md 2.1, migration 000067). With
+	// origin NOT NULL DEFAULT '', the composite (workspace_id, service,
+	// origin) key collapses to the historical one-per-service rule for plain
+	// rows — the 000062 constraint it replaced is gone.
+	var hasUniqIndex bool
 	if err := conn.QueryRow(ctx, `
-		SELECT conname FROM pg_constraint
-		WHERE conrelid = 'workspace_connections'::regclass AND contype = 'u'
-	`).Scan(&constraint); err != nil {
-		t.Fatalf("failed to read unique constraint: %v", err)
+		SELECT EXISTS (
+			SELECT 1 FROM pg_indexes
+			WHERE tablename = 'workspace_connections'
+			  AND indexname = 'uq_workspace_connections_workspace_service_origin'
+			  AND indexdef LIKE '%UNIQUE%'
+		)
+	`).Scan(&hasUniqIndex); err != nil {
+		t.Fatalf("failed to probe unique index: %v", err)
 	}
-	if constraint != "uq_workspace_connections_workspace_id_service" {
-		t.Fatalf("expected uq_workspace_connections_workspace_id_service, got %q", constraint)
+	if !hasUniqIndex {
+		t.Fatal("expected uq_workspace_connections_workspace_service_origin to exist")
+	}
+
+	var uniqConstraints int
+	if err := conn.QueryRow(ctx, `
+		SELECT COUNT(*) FROM pg_constraint
+		WHERE conrelid = 'workspace_connections'::regclass AND contype = 'u'
+	`).Scan(&uniqConstraints); err != nil {
+		t.Fatalf("failed to count unique constraints: %v", err)
+	}
+	if uniqConstraints != 0 {
+		t.Fatalf("expected the 000062 per-service unique constraint replaced by the 000067 index, got %d unique constraints", uniqConstraints)
+	}
+
+	// The origin column: present and NOT NULL DEFAULT '' (empty = unset).
+	var originNotNull bool
+	if err := conn.QueryRow(ctx, `
+		SELECT attnotnull FROM pg_attribute
+		WHERE attrelid = 'workspace_connections'::regclass AND attname = 'origin'
+	`).Scan(&originNotNull); err != nil {
+		t.Fatalf("failed to read origin column: %v", err)
+	}
+	if !originNotNull {
+		t.Error("expected workspace_connections.origin to be NOT NULL (empty string = unset)")
 	}
 
 	// The origin marker: present, nullable, FK to workspace_connections, indexed.

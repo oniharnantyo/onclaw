@@ -10,8 +10,12 @@ import (
 // (add-workspace-connections): the product objects that own a materialized
 // workspace MCP server through the server's origin marker. All operations are
 // workspace-scoped; a connection belonging to another workspace is
-// indistinguishable from an unknown id (domain.ErrNotFound). Service is unique
-// per workspace — one connection per service (design.md D6); violations return
+// indistinguishable from an unknown id (domain.ErrNotFound). Uniqueness is per
+// (workspace, service, origin) (add-recipe-base-url tasks.md 2.1): Origin is
+// the resolved base-URL origin a parametrized recipe connected against — empty
+// for non-parametrized recipes, where the composite key therefore collapses to
+// the original one-connection-per-service rule; the same service on a
+// different origin may coexist, the same (service, origin) twice returns
 // domain.ErrConnectionExists.
 //
 // The stored connection never carries the access token: the secret lives as
@@ -19,20 +23,27 @@ import (
 // of a Connection is hint-free by construction — token hints ride the server
 // row. The OAuth token lifecycle (add-connection-oauth design.md D1) DOES live
 // here: the refresh-token ciphertext envelope, the access-token expiry, the
-// granted scopes, and the status (including expired).
+// granted scopes, and the status (including expired). Origin is deliberately
+// outside every update path — it is set at Create and immutable afterwards
+// (changing origins is disconnect and reconnect).
 type Connections interface {
 	// Create stores the connection, assigning ID and timestamps when empty.
 	// An empty Status is stored as connected; the OAuth lifecycle fields
 	// (RefreshCiphertext, ExpiresAt, GrantedScopes) persist as given — the
 	// OAuth callback activation path creates the connection with its token
-	// set in one write. A second connection for the same (workspace, service)
+	// set in one write. Origin persists as given (empty for non-parametrized
+	// recipes). A second connection for the same (workspace, service, origin)
 	// returns domain.ErrConnectionExists; an unknown workspace returns
 	// domain.ErrNotFound.
 	Create(ctx context.Context, c *domain.Connection) error
 	Get(ctx context.Context, workspaceID, id string) (*domain.Connection, error)
 	List(ctx context.Context, workspaceID string) ([]domain.Connection, error)
 	// GetByService resolves the workspace's connection for a service;
-	// domain.ErrNotFound when the service is not connected.
+	// domain.ErrNotFound when the service is not connected. For a service the
+	// recipe parametrizes by origin (several connections, add-recipe-base-url
+	// tasks.md 2.1) the lookup is inherently ambiguous and yields a
+	// deterministic row (earliest created); origin-scoped callers compare
+	// List results instead.
 	GetByService(ctx context.Context, workspaceID, service string) (*domain.Connection, error)
 	// UpdateTokenLifecycle persists the OAuth token-lifecycle fields of an
 	// existing connection — RefreshCiphertext, ExpiresAt, GrantedScopes, and

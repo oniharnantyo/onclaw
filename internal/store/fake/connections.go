@@ -33,9 +33,14 @@ func (cs *connectionStore) Create(ctx context.Context, c *domain.Connection) err
 		return fmt.Errorf("%w: workspace not found", domain.ErrNotFound)
 	}
 
-	serviceKey := c.WorkspaceID + ":" + c.Service
-	if _, exists := cs.s.connectionsByService[serviceKey]; exists {
-		return fmt.Errorf("%w: service %q already connected in workspace", domain.ErrConnectionExists, c.Service)
+	// Uniqueness is per (workspace, service, origin) (add-recipe-base-url
+	// tasks.md 2.1): the scan mirrors the postgres index — a parametrized
+	// service may hold several origins side by side, the same origin twice is
+	// rejected, and origin='' rows collapse to one-connection-per-service.
+	for _, stored := range cs.s.connections {
+		if stored.WorkspaceID == c.WorkspaceID && stored.Service == c.Service && stored.Origin == c.Origin {
+			return fmt.Errorf("%w: service %q already connected in workspace for origin %q", domain.ErrConnectionExists, c.Service, c.Origin)
+		}
 	}
 
 	if c.ID != "" {
@@ -60,7 +65,13 @@ func (cs *connectionStore) Create(ctx context.Context, c *domain.Connection) err
 	}
 
 	cs.s.connections[c.ID] = cloneConnection(c)
-	cs.s.connectionsByService[serviceKey] = c.ID
+	// The per-service index is meaningful only for origin='' rows — the
+	// composite (service, origin) rule means several rows may share a service,
+	// and they would fight over the single key. Plain rows remain indexed for
+	// the snapshot machinery; reads that miss it fall back to a scan.
+	if c.Origin == "" {
+		cs.s.connectionsByService[c.WorkspaceID+":"+c.Service] = c.ID
+	}
 	return nil
 }
 
@@ -142,15 +153,28 @@ func (cs *connectionStore) GetByService(ctx context.Context, workspaceID, servic
 	cs.s.mu.RLock()
 	defer cs.s.mu.RUnlock()
 
-	id, exists := cs.s.connectionsByService[workspaceID+":"+service]
-	if !exists {
+	// Fast path: the plain-row index (parametrized rows are never indexed).
+	if id, exists := cs.s.connectionsByService[workspaceID+":"+service]; exists {
+		if c, ok := cs.s.connections[id]; ok {
+			return cloneConnection(c), nil
+		}
+	}
+	// Fallback for multi-origin services (add-recipe-base-url tasks.md 2.1):
+	// the earliest-created row wins, mirroring the List order so the
+	// resolution is deterministic.
+	var found *domain.Connection
+	for _, c := range cs.s.connections {
+		if c.WorkspaceID != workspaceID || c.Service != service {
+			continue
+		}
+		if found == nil || c.CreatedAt.Before(found.CreatedAt) || (c.CreatedAt.Equal(found.CreatedAt) && c.ID < found.ID) {
+			found = c
+		}
+	}
+	if found == nil {
 		return nil, domain.ErrNotFound
 	}
-	c, exists := cs.s.connections[id]
-	if !exists {
-		return nil, domain.ErrNotFound
-	}
-	return cloneConnection(c), nil
+	return cloneConnection(found), nil
 }
 
 // Delete cascades the disconnect atomically (design.md D8): under one lock the
@@ -186,10 +210,18 @@ func (cs *connectionStore) Delete(ctx context.Context, workspaceID, id string) e
 		}
 		delete(cs.s.wsMCPServers, srvID)
 		delete(cs.s.wsMCPServerNames, workspaceID+":"+strings.ToLower(srv.Name))
+		// The removed server's OAuth token row dies with it (ON DELETE
+		// CASCADE, add-mcp-oauth-client design.md D4).
+		purgeMCPTokenLocked(cs.s, workspaceID, "", srvID)
 	}
 
 	delete(cs.s.connections, id)
-	delete(cs.s.connectionsByService, workspaceID+":"+c.Service)
+	// Only the indexed plain row owns the per-service key; parametrized rows
+	// (multi-origin services) are never indexed and must not drop another
+	// row's entry.
+	if key := workspaceID + ":" + c.Service; cs.s.connectionsByService[key] == id {
+		delete(cs.s.connectionsByService, key)
+	}
 	return nil
 }
 

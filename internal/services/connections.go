@@ -11,12 +11,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/oniharnantyo/onclaw/internal/agents/mcp"
+	"github.com/oniharnantyo/onclaw/internal/auth/oauthstate"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
@@ -78,9 +79,12 @@ type ConnectionsService struct {
 	// endpoint's exchanges/refreshes AND the http-kind probes ride it (both
 	// bounded — the probe additionally by probeTimeout).
 	httpClient *http.Client
-	stateTTL      time.Duration
-	nonces        map[string]nonceEntry
-	nonceMu       sync.Mutex
+	stateTTL   time.Duration
+	// state is the shared single-use signed-state machinery
+	// (internal/auth/oauthstate): the HMAC-sealed state format and the
+	// single-use nonce store, built after the options apply so WithStateTTL
+	// bounds it. The flow owns its claims shape and its generic rejection.
+	state *oauthstate.Sealer
 }
 
 // ConnectionsOption configures a ConnectionsService.
@@ -149,11 +153,11 @@ func NewConnectionsService(connections store.Connections, wsServers store.Worksp
 		publicBaseURL: publicBaseURL,
 		httpClient:    &http.Client{Timeout: DefaultTokenHTTPTimeout},
 		stateTTL:      DefaultOAuthStateTTL,
-		nonces:        make(map[string]nonceEntry),
 	}
 	for _, opt := range opts {
 		opt(s)
 	}
+	s.state = oauthstate.NewSealer(encKey, stateContext, s.stateTTL)
 	return s
 }
 
@@ -177,28 +181,42 @@ type ConnectResult struct {
 	AuthorizeURL string
 }
 
-// Connect resolves the recipe, validates the access level and token, probes
-// the candidate connection BEFORE anything is stored, and on probe success
-// persists the connection plus its materialized workspace MCP server — the
-// token encrypted as the recipe's single secret row through the MCP settings
-// machinery. One connection per service per workspace (design.md D6): a
-// duplicate returns domain.ErrConnectionExists naming the existing connection.
-// A probe failure stores nothing and returns an ErrProbeFailed error carrying
-// the upstream message (design.md D3).
+// Connect resolves the recipe, validates the access level and token, resolves
+// the base-URL origin, probes the candidate connection BEFORE anything is
+// stored, and on probe success persists the connection plus its materialized
+// workspace MCP server — the token encrypted as the recipe's single secret row
+// through the MCP settings machinery. Uniqueness is per (service, resolved
+// origin) (add-recipe-base-url tasks.md 2.1): a duplicate returns
+// domain.ErrConnectionExists naming the existing connection (and the origin it
+// collides on, for parametrized recipes). A probe failure stores nothing and
+// returns an ErrProbeFailed error carrying the upstream message (design.md
+// D3).
+//
+// origin is the connect request's base-URL value: empty selects the recipe's
+// declared default when it parametrizes one, and a submitted origin for a
+// recipe that declares none is IGNORED — the connection resolves to the
+// recipe's fixed endpoint (spec: "Undeclared recipes ignore origin");
+// resolveConnectOrigin. The resolved origin is stored on the connection and
+// immutable afterwards.
 //
 // OAuth recipes (auth kind oauth) dispatch to the authorize-URL builder
 // BEFORE the availability check — their effective availability is the
 // instance app registration, checked there (add-connection-oauth tasks.md
 // 2.1/2.5) — and return an authorize URL; activation completes at the public
 // callback. userID is the initiating user the consent is bound to (the signed
-// state carries it, design.md D4).
-func (s *ConnectionsService) Connect(ctx context.Context, workspaceID, userID, recipeID, accessLevel, token string) (*ConnectResult, error) {
+// state carries it, design.md D4). Origin parameters are PAT-only
+// (domain.ValidateRecipe), so the OAuth flow never carries one.
+func (s *ConnectionsService) Connect(ctx context.Context, workspaceID, userID, recipeID, accessLevel, token, origin string) (*ConnectResult, error) {
 	if workspaceID == "" {
 		return nil, fmt.Errorf("%w: workspace id cannot be empty", domain.ErrInvalid)
 	}
 	recipe := domain.RecipeByID(strings.TrimSpace(recipeID))
 	if recipe == nil {
 		return nil, fmt.Errorf("%w: %q", domain.ErrUnknownRecipe, recipeID)
+	}
+	resolvedOrigin, err := resolveConnectOrigin(recipe, strings.TrimSpace(origin))
+	if err != nil {
+		return nil, err
 	}
 	// OAuth recipes route to the authorize builder ahead of the coming-soon
 	// rejection: their availability gate is the registered instance app.
@@ -230,13 +248,14 @@ func (s *ConnectionsService) Connect(ctx context.Context, workspaceID, userID, r
 		return nil, fmt.Errorf("%w: token cannot be empty", domain.ErrInvalid)
 	}
 
-	// One connection per service (design.md D6): the conflict names the
-	// existing connection. The store's uniqueness constraint stays
-	// authoritative; this check is the friendly pre-read.
-	if existing, err := s.connections.GetByService(ctx, workspaceID, recipe.ID); err == nil && existing != nil {
-		return nil, fmt.Errorf("%w: %s is already connected in this workspace (connection %s)", domain.ErrConnectionExists, recipe.Service, existing.ID)
-	} else if err != nil && !errors.Is(err, domain.ErrNotFound) {
+	// One connection per (service, resolved origin) (add-recipe-base-url
+	// tasks.md 2.1): the conflict names the existing connection. The store's
+	// uniqueness index stays authoritative; this check is the friendly
+	// pre-read and precedes the probe.
+	if existing, err := s.existingConnection(ctx, workspaceID, recipe.ID, resolvedOrigin); err != nil {
 		return nil, err
+	} else if existing != nil {
+		return nil, connectionExistsError(recipe, existing)
 	}
 
 	// HTTP-kind recipes skip materialization entirely (add-connection-http
@@ -244,10 +263,13 @@ func (s *ConnectionsService) Connect(ctx context.Context, workspaceID, userID, r
 	// recipe's declared probe call gates the connect and the token rides the
 	// connection's encrypted envelope column (connections_http.go).
 	if recipe.Kind == domain.RecipeKindHTTP {
-		return s.connectHTTP(ctx, workspaceID, recipe, accessLevel, token)
+		return s.connectHTTP(ctx, workspaceID, recipe, accessLevel, token, resolvedOrigin)
 	}
 
-	server := materializeServer(workspaceID, recipe, token)
+	server, err := materializeServer(workspaceID, recipe, token, resolvedOrigin)
+	if err != nil {
+		return nil, err
+	}
 
 	// Probe before persist (design.md D3): a failure stores nothing — no
 	// connection row, no server row, no token ciphertext — and the upstream
@@ -260,6 +282,7 @@ func (s *ConnectionsService) Connect(ctx context.Context, workspaceID, userID, r
 	conn := &domain.Connection{
 		WorkspaceID: workspaceID,
 		Service:     recipe.ID,
+		Origin:      resolvedOrigin,
 		AccessLevel: accessLevel,
 	}
 	if err := s.connections.Create(ctx, conn); err != nil {
@@ -288,20 +311,75 @@ func (s *ConnectionsService) Connect(ctx context.Context, workspaceID, userID, r
 	return &ConnectResult{Connection: view}, nil
 }
 
+// resolveConnectOrigin resolves the connect request's base-URL value for the
+// recipe (add-recipe-base-url tasks.md 2.4): a recipe without an origin
+// parameter has a fixed endpoint — a submitted origin is silently ignored and
+// the connect proceeds as if empty (spec: "Undeclared recipes ignore origin");
+// a parametrized recipe validates the submission through domain.ParseOrigin
+// and falls back to the declared default when the field came back empty. The
+// resolved origin is what the connection stores and the uniqueness comparison
+// keys on.
+func resolveConnectOrigin(recipe *domain.Recipe, origin string) (string, error) {
+	if recipe.OriginParam == nil {
+		return "", nil
+	}
+	if origin == "" {
+		origin = recipe.OriginParam.Default
+	}
+	resolved, err := domain.ParseOrigin(origin)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", recipe.OriginParam.Name, err)
+	}
+	return resolved, nil
+}
+
+// existingConnection returns the workspace's stored connection colliding with
+// the candidate (service, origin) pair, or nil when the connect may proceed.
+// The workspace-scoped List keeps the pre-read at the service layer — the
+// store's composite unique index remains the concurrency backstop.
+func (s *ConnectionsService) existingConnection(ctx context.Context, workspaceID, service, origin string) (*domain.Connection, error) {
+	connections, err := s.connections.List(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range connections {
+		if connections[i].Service == service && connections[i].Origin == origin {
+			return &connections[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// connectionExistsError builds the conflict error for a colliding connect:
+// the detail names the existing connection, plus the origin it collides on
+// when the recipe parametrizes one (add-recipe-base-url tasks.md 2.1).
+func connectionExistsError(recipe *domain.Recipe, existing *domain.Connection) error {
+	if existing.Origin != "" {
+		return fmt.Errorf("%w: %s is already connected in this workspace for origin %s (connection %s)", domain.ErrConnectionExists, recipe.Service, existing.Origin, existing.ID)
+	}
+	return fmt.Errorf("%w: %s is already connected in this workspace (connection %s)", domain.ErrConnectionExists, recipe.Service, existing.ID)
+}
+
 // materializeServer builds the candidate workspace MCP server from the
 // recipe's declared facts (design.md D7 — the endpoint is never user input):
 // the recipe's transport and endpoint, the display name, and the token as the
 // single secret row (header for URL transports, env row for stdio) composed
 // with the recipe's scheme (design.md D4). The row is created enabled;
-// plaintext lives only until the settings service encrypts it.
-func materializeServer(workspaceID string, recipe *domain.Recipe, token string) *domain.WorkspaceMCPServer {
+// plaintext lives only until the settings service encrypts it. origin is the
+// connection's resolved base-URL origin (add-recipe-base-url tasks.md 2.3):
+// for URL transports the materialized URL is domain.ResolveRecipeBase's
+// resolution — the origin joined with the recipe's declared endpoint path,
+// byte-identical to the declared endpoint for recipes without an origin
+// parameter. The row is returned un-stored; an unresolvable surface is an
+// error, never a half-built server.
+func materializeServer(workspaceID string, recipe *domain.Recipe, token, origin string) (*domain.WorkspaceMCPServer, error) {
 	value := token
 	if recipe.TokenScheme != "" {
 		value = recipe.TokenScheme + " " + token
 	}
 	srv := &domain.WorkspaceMCPServer{
 		WorkspaceID: workspaceID,
-		Name:        recipe.Service,
+		Name:        materializedName(recipe, origin),
 		Enabled:     true,
 	}
 	if recipe.Transport == domain.MCPTransportStdio {
@@ -310,14 +388,35 @@ func materializeServer(workspaceID string, recipe *domain.Recipe, token string) 
 			Command:   recipe.Command,
 			Env:       []domain.EnvRow{{Name: recipe.TokenHeader, Value: value}},
 		}
-		return srv
+		return srv, nil
+	}
+	base, err := domain.ResolveRecipeBase(recipe, origin)
+	if err != nil {
+		return nil, err
 	}
 	srv.MCPConnection = domain.MCPConnection{
 		Transport: recipe.Transport,
-		URL:       recipe.Endpoint,
+		URL:       base,
 		Headers:   []domain.EnvRow{{Name: recipe.TokenHeader, Value: value}},
 	}
-	return srv
+	return srv, nil
+}
+
+// materializedName derives the materialized server's display name: the
+// recipe's service name, suffixed with the connected origin's host when the
+// connection resolved a non-default origin. Per-(service, origin) uniqueness
+// (add-recipe-base-url tasks.md 2.1) means two materialized servers of one
+// recipe may coexist in a workspace, and the settings service requires
+// distinct names; default-origin and non-parametrized connects keep the bare
+// service name byte-identically.
+func materializedName(recipe *domain.Recipe, origin string) string {
+	if origin == "" || (recipe.OriginParam != nil && origin == recipe.OriginParam.Default) {
+		return recipe.Service
+	}
+	if u, err := url.Parse(origin); err == nil && u.Host != "" {
+		return recipe.Service + " (" + u.Host + ")"
+	}
+	return recipe.Service + " (" + origin + ")"
 }
 
 // ---------------------------------------------------------------------------

@@ -47,8 +47,9 @@ func TestRecipesBuiltinRegistryContents(t *testing.T) {
 		if r.AuthKind != domain.RecipeAuthPAT {
 			t.Errorf("expected %s to be %s auth, got %q", id, domain.RecipeAuthPAT, r.AuthKind)
 		}
-		if r.Endpoint == "" {
-			t.Errorf("expected %s to declare a remote endpoint", id)
+		// The URL surface is kind-shaped: an mcp endpoint or an http base url.
+		if r.Endpoint == "" && r.BaseURL == "" {
+			t.Errorf("expected %s to declare a remote endpoint or base url", id)
 		}
 		if r.TokenHeader == "" {
 			t.Errorf("expected %s to declare the token header", id)
@@ -71,9 +72,11 @@ func TestRecipesBuiltinRegistryContents(t *testing.T) {
 		}
 	}
 
-	// GitLab targets gitlab.com (design.md D2: self-managed excluded from v1).
-	if gl := byID["gitlab"]; !strings.Contains(gl.Endpoint, "gitlab.com") {
-		t.Errorf("expected gitlab endpoint to target gitlab.com, got %q", gl.Endpoint)
+	// GitLab targets gitlab.com as its declared default origin
+	// (add-recipe-base-url tasks.md 3.1: the REST re-scope keeps the SaaS
+	// origin as the parameter default).
+	if gl := byID["gitlab"]; gl.OriginParam == nil || gl.OriginParam.Default != "https://gitlab.com" {
+		t.Errorf("expected gitlab's origin parameter to default to gitlab.com, got %+v", gl.OriginParam)
 	}
 
 	// Atlassian is one recipe covering both Jira and Confluence.
@@ -387,4 +390,368 @@ func TestRegisterRecipe(t *testing.T) {
 		}()
 		domain.RegisterRecipe(base)
 	}()
+}
+
+// ParseOrigin (add-recipe-base-url tasks.md 1.2): origin-only values —
+// scheme, host, optional port — with one deterministic normalized form,
+// because the resolved origin keys the (service, origin) connection
+// uniqueness comparison.
+func TestParseOrigin(t *testing.T) {
+	valid := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"https origin", "https://gitlab.com", "https://gitlab.com"},
+		{"http origin with port", "http://gitlab.internal:8080", "http://gitlab.internal:8080"},
+		{"trailing slash stripped", "https://gitlab.com/", "https://gitlab.com"},
+		{"scheme lowercased", "HTTPS://gitlab.com", "https://gitlab.com"},
+		{"host lowercased", "https://GitLab.Example.Com", "https://gitlab.example.com"},
+		{"port preserved across normalization", "https://gitlab.example.com:8443/", "https://gitlab.example.com:8443"},
+		{"ipv6 host", "http://[::1]:3000", "http://[::1]:3000"},
+	}
+	for _, tt := range valid {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := domain.ParseOrigin(tt.raw)
+			if err != nil {
+				t.Fatalf("expected %q to parse, got %v", tt.raw, err)
+			}
+			if got != tt.want {
+				t.Fatalf("expected %q, got %q", tt.want, got)
+			}
+		})
+	}
+
+	rejected := []struct {
+		name string
+		raw  string
+	}{
+		{"empty", ""},
+		{"missing scheme", "gitlab.example.com"},
+		{"wrong scheme", "ftp://gitlab.example.com"},
+		{"non-http scheme", "mailto:user@gitlab.com"},
+		{"missing host", "https://"},
+		{"opaque form", "http:opaque"},
+		{"path", "https://gitlab.com/api/v4"},
+		{"deeper path", "https://gitlab.com/api/v4/mcp"},
+		{"escaped path", "https://gitlab.com/%2F"},
+		{"double slash path", "https://gitlab.com//"},
+		{"query", "https://gitlab.com?x=1"},
+		{"fragment", "https://gitlab.com#frag"},
+		{"userinfo", "https://user@gitlab.com"},
+		{"userinfo with password", "https://user:pass@gitlab.com"},
+		{"space in host", "https://git lab.com"},
+	}
+	for _, tt := range rejected {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := domain.ParseOrigin(tt.raw)
+			if err == nil {
+				t.Fatalf("expected %q to be rejected, got %q", tt.raw, got)
+			}
+			if !errors.Is(err, domain.ErrInvalid) {
+				t.Fatalf("expected ErrInvalid, got %v", err)
+			}
+		})
+	}
+
+	// Different spellings of one origin normalize to the same value — the
+	// uniqueness comparison's precondition.
+	for _, spellings := range [][]string{
+		{"https://gitlab.com", "https://gitlab.com/", "HTTPS://GITLAB.COM/", "https://GITLAB.com"},
+		{"http://git.example.com:8443", "http://Git.Example.COM:8443/"},
+	} {
+		first, err := domain.ParseOrigin(spellings[0])
+		if err != nil {
+			t.Fatalf("expected %q to parse, got %v", spellings[0], err)
+		}
+		for _, s := range spellings[1:] {
+			got, err := domain.ParseOrigin(s)
+			if err != nil {
+				t.Fatalf("expected %q to parse, got %v", s, err)
+			}
+			if got != first {
+				t.Fatalf("expected %q to normalize to %q, got %q", s, first, got)
+			}
+		}
+	}
+}
+
+// The origin parameter's declared shape (add-recipe-base-url tasks.md 1.1):
+// PAT-kind recipes only, a parseable default origin, a URL surface to resolve
+// against (no stdio), and — the resolved origin replacing BaseURL wholesale
+// on http kind — a bare-origin base url there. The OAuth prohibition is the
+// change's declared non-goal.
+func TestValidateRecipeOriginParam(t *testing.T) {
+	mcp := domain.Recipe{
+		ID:           "gitea",
+		Service:      "Gitea",
+		Icon:         "gitea",
+		AuthKind:     domain.RecipeAuthPAT,
+		Availability: domain.RecipeAvailable,
+		Transport:    domain.MCPTransportStreamableHTTP,
+		Endpoint:     "https://gitea.com/mcp/",
+		TokenHeader:  "Authorization",
+		TokenScheme:  "Bearer",
+		OriginParam: &domain.RecipeOriginParam{
+			Name:    "base_url",
+			Default: "https://gitea.com",
+			Help:    "The Gitea deployment origin — gitea.com or your self-managed instance.",
+		},
+		AccessLevels: []string{domain.ConnectionAccessReadOnly},
+		Steps:        []domain.RecipeStep{{Title: "Create a token"}},
+		Probe:        domain.RecipeProbe{Tool: "ping"},
+	}
+	if err := domain.ValidateRecipe(&mcp); err != nil {
+		t.Fatalf("expected valid parametrized mcp recipe, got %v", err)
+	}
+
+	// The parameter is legal on http kind too — the GitLab REST re-scope
+	// needs exactly that combination.
+	http := validHTTPRecipe()
+	http.OriginParam = &domain.RecipeOriginParam{Name: "base_url", Default: "https://api.acme.dev", Help: "The Acme deployment origin."}
+	if err := domain.ValidateRecipe(&http); err != nil {
+		t.Fatalf("expected valid parametrized http recipe, got %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(r *domain.Recipe)
+	}{
+		{"oauth auth kind", func(r *domain.Recipe) {
+			r.AuthKind = domain.RecipeAuthOAuth
+			r.AuthorizeURL = "https://gitea.com/login/oauth/authorize"
+			r.TokenURL = "https://gitea.com/login/oauth/token"
+		}},
+		{"stdio transport", func(r *domain.Recipe) {
+			r.Transport = domain.MCPTransportStdio
+			r.Endpoint = ""
+			r.Command = "gitea-mcp"
+		}},
+		{"empty name", func(r *domain.Recipe) { r.OriginParam.Name = " " }},
+		{"empty help", func(r *domain.Recipe) { r.OriginParam.Help = "" }},
+		{"default missing scheme", func(r *domain.Recipe) { r.OriginParam.Default = "gitea.com" }},
+		{"default with path", func(r *domain.Recipe) { r.OriginParam.Default = "https://gitea.com/mcp" }},
+		{"default with userinfo", func(r *domain.Recipe) { r.OriginParam.Default = "https://user@gitea.com" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Fresh fixture per case: the recipe copy shares its OriginParam
+			// pointer with mcp, so table mutations must not alias.
+			r := mcp
+			origin := *r.OriginParam
+			r.OriginParam = &origin
+			tt.mutate(&r)
+			if err := domain.ValidateRecipe(&r); !errors.Is(err, domain.ErrInvalid) {
+				t.Fatalf("expected ErrInvalid, got %v", err)
+			}
+		})
+	}
+
+	// On http kind a path-prefixed base url under an origin parameter would
+	// lose its path at resolution — a registration-time error.
+	prefixed := validHTTPRecipe()
+	prefixed.BaseURL = "https://api.acme.dev/api"
+	prefixed.OriginParam = &domain.RecipeOriginParam{Name: "base_url", Default: "https://api.acme.dev", Help: "The Acme deployment origin."}
+	if err := domain.ValidateRecipe(&prefixed); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for a path-prefixed base url under an origin parameter, got %v", err)
+	}
+
+	// The origin parameter is served — the connect dialog renders the field
+	// from it — and stays off the wire when undeclared.
+	data, err := json.Marshal(&mcp)
+	if err != nil {
+		t.Fatalf("unexpected marshal error: %v", err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(data, &wire); err != nil {
+		t.Fatalf("unexpected unmarshal error: %v", err)
+	}
+	param, ok := wire["origin_param"].(map[string]any)
+	if !ok || param["name"] != "base_url" || param["default"] != "https://gitea.com" ||
+		param["help"] != mcp.OriginParam.Help {
+		t.Errorf("expected the origin parameter on the wire, got %s", data)
+	}
+	plain := mcp
+	plain.OriginParam = nil
+	data, err = json.Marshal(&plain)
+	if err != nil {
+		t.Fatalf("unexpected marshal error: %v", err)
+	}
+	wire = nil
+	if err := json.Unmarshal(data, &wire); err != nil {
+		t.Fatalf("unexpected unmarshal error: %v", err)
+	}
+	if _, ok := wire["origin_param"]; ok {
+		t.Errorf("expected origin_param to stay off the wire when undeclared, got %s", data)
+	}
+}
+
+// Endpoint resolution (add-recipe-base-url tasks.md 1.3): the recipe's own
+// path constants stay authoritative — the resolved origin substitutes the
+// pinned origin only — and recipes without an origin parameter resolve
+// byte-identically to their declared constants.
+func TestResolveRecipeBase(t *testing.T) {
+	parametrizedMCP := &domain.Recipe{
+		ID:          "gitea",
+		AuthKind:    domain.RecipeAuthPAT,
+		Kind:        domain.RecipeKindMCP,
+		Transport:   domain.MCPTransportStreamableHTTP,
+		Endpoint:    "https://gitea.com/mcp/",
+		OriginParam: &domain.RecipeOriginParam{Name: "base_url", Default: "https://gitea.com", Help: "The Gitea deployment origin."},
+	}
+
+	// Custom origin: the endpoint's path constant rides along verbatim,
+	// trailing slash included.
+	got, err := domain.ResolveRecipeBase(parametrizedMCP, "https://git.acme.corp")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "https://git.acme.corp/mcp/" {
+		t.Fatalf("expected the custom origin with the declared endpoint path, got %q", got)
+	}
+
+	// The connect-time origin normalizes like the default does.
+	got, err = domain.ResolveRecipeBase(parametrizedMCP, "https://git.acme.corp/")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "https://git.acme.corp/mcp/" {
+		t.Fatalf("expected the normalized origin with the declared endpoint path, got %q", got)
+	}
+
+	// An empty origin field falls back to the declared SaaS default.
+	got, err = domain.ResolveRecipeBase(parametrizedMCP, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "https://gitea.com/mcp/" {
+		t.Fatalf("expected the default-origin endpoint, got %q", got)
+	}
+
+	// A non-origin connect-time value is rejected.
+	if _, err := domain.ResolveRecipeBase(parametrizedMCP, "git.acme.corp"); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid, got %v", err)
+	}
+
+	// Http kind resolves to the base the declared probe and verb paths join
+	// against — the rooted path constants are appended unchanged.
+	parametrizedHTTP := validHTTPRecipe()
+	parametrizedHTTP.OriginParam = &domain.RecipeOriginParam{Name: "base_url", Default: "https://api.acme.dev", Help: "The Acme deployment origin."}
+	base, err := domain.ResolveRecipeBase(&parametrizedHTTP, "https://acme.eu.pvt")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if base != "https://acme.eu.pvt" {
+		t.Fatalf("expected the resolved origin as the verb base, got %q", base)
+	}
+	if full := base + parametrizedHTTP.Verbs[0].Path; full != "https://acme.eu.pvt/v1/widgets/{widget_id}/parts" {
+		t.Fatalf("expected the declared verb path joined against the base, got %q", full)
+	}
+	if full := base + parametrizedHTTP.Probe.Path; full != "https://acme.eu.pvt/v1/ping" {
+		t.Fatalf("expected the declared probe path joined against the base, got %q", full)
+	}
+	if base, err = domain.ResolveRecipeBase(&parametrizedHTTP, ""); err != nil || base != "https://api.acme.dev" {
+		t.Fatalf("expected the default origin as the verb base, got %q err %v", base, err)
+	}
+
+	// Non-parametrized recipes resolve byte-identically to their declared
+	// constants — exactly today's materialization, no normalization.
+	fixedMCP := &domain.Recipe{ID: "fixed", Transport: domain.MCPTransportStreamableHTTP, Endpoint: "https://MCP.Example.COM/mcp"}
+	got, err = domain.ResolveRecipeBase(fixedMCP, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != fixedMCP.Endpoint {
+		t.Fatalf("expected byte-identical endpoint passthrough, got %q", got)
+	}
+	fixedHTTP := validHTTPRecipe()
+	fixedHTTP.BaseURL = "https://api.acme.dev/api/prefix"
+	got, err = domain.ResolveRecipeBase(&fixedHTTP, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != fixedHTTP.BaseURL {
+		t.Fatalf("expected byte-identical base-url passthrough, got %q", got)
+	}
+
+	// Stdio recipes have no URL surface to resolve.
+	stdio := &domain.Recipe{ID: "stdioish", Kind: domain.RecipeKindMCP, Transport: domain.MCPTransportStdio, Command: "stdio-mcp"}
+	if _, err := domain.ResolveRecipeBase(stdio, ""); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid, got %v", err)
+	}
+
+	if _, err := domain.ResolveRecipeBase(nil, "https://x.example"); !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for a nil recipe, got %v", err)
+	}
+}
+
+// The registry's returns-copies guarantee extends to the origin-parameter
+// declaration pointer.
+func TestRecipesReturnsOriginParamCopy(t *testing.T) {
+	fixture := domain.Recipe{
+		ID:           "origin-copy-probe",
+		Service:      "Origin Copy Probe",
+		Icon:         "probe",
+		AuthKind:     domain.RecipeAuthPAT,
+		Availability: domain.RecipeAvailable,
+		Transport:    domain.MCPTransportStreamableHTTP,
+		Endpoint:     "https://mcp.origin-copy-probe.dev/mcp",
+		TokenHeader:  "PROBE_TOKEN",
+		OriginParam:  &domain.RecipeOriginParam{Name: "base_url", Default: "https://origin-copy-probe.dev", Help: "The probe deployment origin."},
+		AccessLevels: []string{domain.ConnectionAccessReadOnly},
+		Steps:        []domain.RecipeStep{{Title: "step"}},
+		Probe:        domain.RecipeProbe{Tool: "ping"},
+	}
+	domain.RegisterRecipe(fixture)
+	fixture.OriginParam.Default = "https://caller-mutated.example.com"
+	if got := domain.RecipeByID("origin-copy-probe"); got == nil || got.OriginParam.Default != "https://origin-copy-probe.dev" {
+		t.Fatalf("expected the registered declaration to be detached from the caller's object, got %+v", got)
+	}
+	served := domain.RecipeByID("origin-copy-probe")
+	served.OriginParam.Default = "https://served-mutated.example.com"
+	if got := domain.RecipeByID("origin-copy-probe"); got.OriginParam.Default != "https://origin-copy-probe.dev" {
+		t.Fatal("expected RecipeByID to return a copy of the origin-parameter declaration, not registry internals")
+	}
+}
+
+// The built-in github recipe declares the base-URL parameter
+// (add-recipe-base-url tasks.md 4.1/4.2): the SaaS endpoint is the default,
+// a GitHub Enterprise Cloud data-residency origin joins the fixed /mcp/ path
+// (the materialized server URL derivation), and the guidance names the
+// ghe.com pattern and GHES's missing remote MCP.
+func TestRecipesBuiltinGitHubOriginParam(t *testing.T) {
+	github := domain.RecipeByID("github")
+	if github == nil {
+		t.Fatal("expected the github recipe to be registered")
+	}
+	if github.OriginParam == nil {
+		t.Fatal("expected github to declare an origin parameter")
+	}
+	if github.OriginParam.Default != "https://api.githubcopilot.com" {
+		t.Errorf("expected the SaaS endpoint as the declared default, got %q", github.OriginParam.Default)
+	}
+	if github.OriginParam.Name == "" || github.OriginParam.Help == "" {
+		t.Errorf("expected a labeled field with help copy, got %+v", github.OriginParam)
+	}
+	// The ghe.com data-residency pattern and the GHES unsupported-remote
+	// status are the guidance's facts.
+	for _, want := range []string{"copilot-api.<subdomain>.ghe.com", "Enterprise Server"} {
+		if !strings.Contains(github.OriginParam.Help, want) {
+			t.Errorf("expected the guidance to mention %q, got %q", want, github.OriginParam.Help)
+		}
+	}
+
+	// Materialized server URL derivation (tasks.md 4.2): a ghe.com-style
+	// origin joins the endpoint's fixed /mcp/ path; the empty submission
+	// falls back to the SaaS endpoint.
+	base, err := domain.ResolveRecipeBase(github, "https://copilot-api.acme.ghe.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if base != "https://copilot-api.acme.ghe.com/mcp/" {
+		t.Errorf("expected the ghe.com origin joined with the /mcp/ path, got %q", base)
+	}
+	if base, err = domain.ResolveRecipeBase(github, ""); err != nil || base != github.Endpoint {
+		t.Errorf("expected the default-origin endpoint %q, got %q (%v)", github.Endpoint, base, err)
+	}
 }

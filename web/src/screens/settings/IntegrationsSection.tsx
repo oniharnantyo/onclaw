@@ -302,6 +302,18 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
                                 verb tools. */}
                             <Chip mono>{connectionKindLabel(kind)}</Chip>
                             <Chip mono>{accessLevelLabel(c.access_level)}</Chip>
+                            {/* add-recipe-base-url: the resolved origin rides
+                                the card as a display-only mono chip — origins
+                                are immutable after connect, so there is no
+                                edit affordance anywhere. */}
+                            {c.origin ? (
+                              <span
+                                data-testid={'connection-origin-' + c.id}
+                                title="Connected origin — fixed after connect"
+                              >
+                                <Chip mono>{c.origin}</Chip>
+                              </span>
+                            ) : null}
                           </div>
                           <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5">
                             <span

@@ -38,7 +38,12 @@ func (a connectionListerAdapter) AttachedHTTPConnections(ctx context.Context, wo
 			ConnectionID: connections[i].ID,
 			Service:      connections[i].Service,
 			Status:       connections[i].Status,
-			Recipe:       domain.RecipeByID(connections[i].Service),
+			// The stored resolved origin (empty for non-parametrized recipes):
+			// the runner resolves the verb base from it so runtime verb calls
+			// dial the connection's own instance, not the recipe default
+			// (add-recipe-base-url tasks.md 2.3).
+			Origin: connections[i].Origin,
+			Recipe: domain.RecipeByID(connections[i].Service),
 		})
 	}
 	return refs, nil

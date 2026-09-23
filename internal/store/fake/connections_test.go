@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -572,5 +573,121 @@ func attach(t *testing.T, ctx context.Context, s store.Store, agent *domain.Agen
 	a.EnabledMCPS = append(a.EnabledMCPS, serverIDs...)
 	if err := s.Agents().Update(ctx, a); err != nil {
 		t.Fatalf("unexpected agent update error: %v", err)
+	}
+}
+
+// Uniqueness is per (workspace, service, origin) (add-recipe-base-url
+// tasks.md 2.1): the same origin twice is rejected naming the origin, a
+// different origin connects side by side, plain (origin=”) rows keep the
+// one-connection-per-service rule, and the origin round-trips every read and
+// survives the lifecycle write — the write paths never rewrite it.
+func TestConnectionStore_OriginUniquenessAndRoundTrip(t *testing.T) {
+	s := fake.New()
+	ctx := context.Background()
+	ws1 := connSeedWorkspace(t, ctx, s, "conn-origin-1")
+	ws2 := connSeedWorkspace(t, ctx, s, "conn-origin-2")
+
+	const selfHosted = "https://gitlab.self.example.com"
+	first := &domain.Connection{
+		WorkspaceID: ws1.ID,
+		Service:     "gitlab",
+		Origin:      selfHosted,
+		AccessLevel: domain.ConnectionAccessReadOnly,
+	}
+	if err := s.Connections().Create(ctx, first); err != nil {
+		t.Fatalf("unexpected create error: %v", err)
+	}
+
+	// 1. Origin round-trips through Get and List.
+	got, err := s.Connections().Get(ctx, ws1.ID, first.ID)
+	if err != nil {
+		t.Fatalf("unexpected get error: %v", err)
+	}
+	if got.Origin != selfHosted {
+		t.Fatalf("expected origin %q to round-trip, got %q", selfHosted, got.Origin)
+	}
+
+	// 2. The same (service, origin) is rejected; the detail names the origin.
+	dup := &domain.Connection{
+		WorkspaceID: ws1.ID,
+		Service:     "gitlab",
+		Origin:      selfHosted,
+		AccessLevel: domain.ConnectionAccessReadWrite,
+	}
+	err = s.Connections().Create(ctx, dup)
+	if !errors.Is(err, domain.ErrConnectionExists) || !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("expected ErrConnectionExists chaining ErrConflict for the same origin, got %v", err)
+	}
+	if !strings.Contains(err.Error(), selfHosted) {
+		t.Fatalf("expected the conflict to name the origin, got %q", err.Error())
+	}
+
+	// 3. A different origin of the same service connects side by side.
+	saas := &domain.Connection{
+		WorkspaceID: ws1.ID,
+		Service:     "gitlab",
+		Origin:      "https://gitlab.com",
+		AccessLevel: domain.ConnectionAccessReadOnly,
+	}
+	if err := s.Connections().Create(ctx, saas); err != nil {
+		t.Fatalf("expected different origin to succeed, got %v", err)
+	}
+	rows, err := s.Connections().List(ctx, ws1.ID)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("expected both origins listed, got %d rows (%v)", len(rows), err)
+	}
+	origins := map[string]bool{rows[0].Origin: true, rows[1].Origin: true}
+	if !origins[selfHosted] || !origins["https://gitlab.com"] {
+		t.Fatalf("expected both origins on the rows, got %+v", rows)
+	}
+
+	// 4. Plain rows (origin='') keep the per-service rule.
+	plain := &domain.Connection{WorkspaceID: ws1.ID, Service: "github", AccessLevel: domain.ConnectionAccessReadOnly}
+	if err := s.Connections().Create(ctx, plain); err != nil {
+		t.Fatalf("unexpected plain create error: %v", err)
+	}
+	err = s.Connections().Create(ctx, &domain.Connection{
+		WorkspaceID: ws1.ID,
+		Service:     "github",
+		AccessLevel: domain.ConnectionAccessReadWrite,
+	})
+	if !errors.Is(err, domain.ErrConnectionExists) {
+		t.Fatalf("expected ErrConnectionExists for the plain duplicate, got %v", err)
+	}
+
+	// 5. The same service and origin in another workspace is fine.
+	if err := s.Connections().Create(ctx, &domain.Connection{
+		WorkspaceID: ws2.ID,
+		Service:     "gitlab",
+		Origin:      selfHosted,
+		AccessLevel: domain.ConnectionAccessReadOnly,
+	}); err != nil {
+		t.Fatalf("expected same origin in another workspace to succeed, got %v", err)
+	}
+
+	// 6. The lifecycle write never rewrites the origin.
+	saas.Status = domain.ConnectionStatusExpired
+	if err := s.Connections().UpdateTokenLifecycle(ctx, saas); err != nil {
+		t.Fatalf("unexpected lifecycle update error: %v", err)
+	}
+	got, err = s.Connections().Get(ctx, ws1.ID, saas.ID)
+	if err != nil {
+		t.Fatalf("unexpected get error: %v", err)
+	}
+	if got.Origin != "https://gitlab.com" || got.Status != domain.ConnectionStatusExpired {
+		t.Fatalf("expected origin preserved through the lifecycle write, got %+v", got)
+	}
+
+	// 7. Delete frees the origin slot for a fresh connect.
+	if err := s.Connections().Delete(ctx, ws1.ID, first.ID); err != nil {
+		t.Fatalf("unexpected delete error: %v", err)
+	}
+	if err := s.Connections().Create(ctx, &domain.Connection{
+		WorkspaceID: ws1.ID,
+		Service:     "gitlab",
+		Origin:      selfHosted,
+		AccessLevel: domain.ConnectionAccessReadOnly,
+	}); err != nil {
+		t.Fatalf("expected the freed origin slot to accept a new connect, got %v", err)
 	}
 }

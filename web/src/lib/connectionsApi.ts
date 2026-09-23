@@ -37,6 +37,16 @@ export interface ApiRecipeVerbParam {
   in: string;
 }
 
+/** add-recipe-base-url: a recipe's declared connect-time base-URL parameter —
+ * the field label the connect flow renders, the SaaS origin the input presets
+ * (empty submissions resolve to it), and the help copy shown as field
+ * guidance. Mirrors domain.RecipeOriginParam. */
+export interface ApiRecipeOriginParam {
+  name: string;
+  default: string;
+  help: string;
+}
+
 /** One recipe-declared verb tool (D1 verbs-only surface): the entire
  * agent-facing tool surface of an HTTP-kind connection. `name` is the
  * service-prefixed tool name ("figma.get_comments"); `path` is a template
@@ -96,6 +106,10 @@ export interface ApiIntegrationRecipe {
   /** HTTP-kind only: the pinned API root every verb joins to. Server-declared
    * recipe data — never user input (D7 SSRF property). */
   base_url?: string;
+  /** add-recipe-base-url: the declared connect-time base-URL parameter.
+   * Absent/null — the recipe's endpoint is fixed and the connect flow renders
+   * no origin field (spec: "Undeclared recipes ignore origin"). */
+  origin_param?: ApiRecipeOriginParam | null;
   /** HTTP-kind only: the header the stored token is attached under. */
   /** HTTP-kind only: the entire declared verb tool surface (D1 verbs-only). */
   verbs?: ApiRecipeVerb[];
@@ -145,6 +159,11 @@ export interface ApiConnection {
   granted_scopes?: string[];
   /** Last-4 of the stored token — the only secret shape any read carries. */
   token_hint?: string | null;
+  /** add-recipe-base-url: the resolved base-URL origin (normalized
+   * scheme://host[:port]) the connection is pinned to. Empty/absent — the
+   * recipe's fixed endpoint. Immutable after connect: the card displays it,
+   * nothing edits it. */
+  origin?: string;
   /** The materialized workspace MCP server row. HTTP-kind connections
    * (add-connection-http) have none — the field is absent/null and
    * `server_enabled` is structurally false (no server row exists to pause);
@@ -197,11 +216,15 @@ export interface ConnectionToolEscalation {
 
 /** D7: the entire connect payload — nothing else crosses the wire. `token` is
  * omitted for oauth recipes: connect starts the consent hand-off instead of
- * storing a pasted secret. */
+ * storing a pasted secret. `origin` (add-recipe-base-url) rides only for
+ * recipes declaring origin_param — empty resolves the declared default; the
+ * backend silently ignores it for non-parametrized recipes, so the client
+ * omits it there. */
 export interface ConnectPayload {
   recipe_id: string;
   access_level: ConnectionAccessLevel;
   token?: string;
+  origin?: string;
 }
 
 /** Connect resolves one of two ways: a PAT connect returns the created

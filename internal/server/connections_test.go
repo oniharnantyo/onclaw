@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -108,6 +111,38 @@ func connMembers(t *testing.T, env *testEnv, slug string) (ownerToken, adminToke
 	addMember(t, env, ws.ID, toolMgrUser.ID, toolMgrRole.ID)
 	addMember(t, env, ws.ID, superUser.ID, superRole.ID)
 	return ownerToken, adminToken, memberToken, toolMgrToken, superToken, outsiderToken
+}
+
+// connHTTPTestRecipeSeq mints unique recipe ids: the domain registry panics
+// on duplicate registration, and recipes are global process state.
+var connHTTPTestRecipeSeq atomic.Int64
+
+// registerConnTestHTTPRecipe registers one http-kind test recipe pinned to
+// the given base URL. The http connect gate dials the recipe's base for real
+// (the prober seam is MCP-only), so HTTP-level server tests pin their own
+// connectable recipe over a local upstream instead of a built-in card's real
+// provider — gitlab is http-kind since the REST re-scope
+// (add-recipe-base-url tasks.md 3.1).
+func registerConnTestHTTPRecipe(t *testing.T, baseURL string) string {
+	t.Helper()
+	id := fmt.Sprintf("connhttp-srv-%d", connHTTPTestRecipeSeq.Add(1))
+	domain.RegisterRecipe(domain.Recipe{
+		ID:           id,
+		Service:      "Conn HTTP Test " + id,
+		Icon:         "plug",
+		AuthKind:     domain.RecipeAuthPAT,
+		Availability: domain.RecipeAvailable,
+		Kind:         domain.RecipeKindHTTP,
+		BaseURL:      baseURL,
+		TokenHeader:  "X-Test-Token",
+		AccessLevels: []string{domain.ConnectionAccessReadOnly},
+		Steps:        []domain.RecipeStep{{Title: "Generate a test token", Detail: "Paste it into the connect dialog."}},
+		Probe:        domain.RecipeProbe{Method: "GET", Path: "/v1/me"},
+		Verbs: []domain.RecipeVerb{
+			{Tool: id + ".get_me", Method: "GET", Path: "/v1/me", Description: "Get the authenticated user.", Tier: domain.RecipeToolTierRead},
+		},
+	})
+	return id
 }
 
 type connectionRow struct {
@@ -250,25 +285,34 @@ func TestConnections_PermissionMatrix(t *testing.T) {
 
 	t.Run("admin and the superadmin set manage a second service end to end", func(t *testing.T) {
 		// Admin holds integrations.write: a full connect on a second service
-		// (gitlab) succeeds, defaulting the access level to read-only.
+		// succeeds, defaulting the access level to read-only. The service is
+		// a test-registered http-kind recipe over a local upstream — the http
+		// connect gate dials for real (no prober seam on the http lane).
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}))
+		defer upstream.Close()
+		recipeID := registerConnTestHTTPRecipe(t, upstream.URL)
+
 		w := doRequest(env.router, http.MethodPost, base+"/connections", adminToken, map[string]any{
-			"recipe_id": "gitlab", "token": "glpat-admin-token-1",
+			"recipe_id": recipeID, "token": "tok-admin-1",
 		})
 		if w.Code != http.StatusCreated {
-			t.Fatalf("admin gitlab connect expected 201, got %d: %s", w.Code, w.Body.String())
+			t.Fatalf("admin %s connect expected 201, got %d: %s", recipeID, w.Code, w.Body.String())
 		}
-		gitlabConn := decodeConnection(t, w.Body.Bytes())
-		if gitlabConn.AccessLevel != "read_only" {
-			t.Errorf("expected the recipe's read-only default, got %q", gitlabConn.AccessLevel)
+		secondConn := decodeConnection(t, w.Body.Bytes())
+		if secondConn.AccessLevel != "read_only" {
+			t.Errorf("expected the recipe's read-only default, got %q", secondConn.AccessLevel)
 		}
 
 		// The superadmin-permission holder runs the manage verbs (probe,
 		// disconnect ride integrations.write too).
-		wProbe := doRequest(env.router, http.MethodPost, base+"/connections/"+gitlabConn.ID+"/probe", superToken, nil)
+		wProbe := doRequest(env.router, http.MethodPost, base+"/connections/"+secondConn.ID+"/probe", superToken, nil)
 		if wProbe.Code != http.StatusOK {
 			t.Errorf("superadmin probe expected 200, got %d: %s", wProbe.Code, wProbe.Body.String())
 		}
-		wDel := doRequest(env.router, http.MethodDelete, base+"/connections/"+gitlabConn.ID, superToken, nil)
+		wDel := doRequest(env.router, http.MethodDelete, base+"/connections/"+secondConn.ID, superToken, nil)
 		if wDel.Code != http.StatusNoContent {
 			t.Errorf("superadmin disconnect expected 204, got %d: %s", wDel.Code, wDel.Body.String())
 		}
@@ -368,10 +412,21 @@ func TestConnections_ConnectEnvelopesAndLifecycle(t *testing.T) {
 	})
 
 	t.Run("probe failure stores nothing and carries the upstream message", func(t *testing.T) {
-		// A second service keeps the happy path's github row intact.
-		prober.err = errors.New("Bad credentials")
+		// A second service keeps the happy path's github row intact. The
+		// failing service is a test-registered http-kind recipe whose local
+		// upstream rejects the probe — the http gate dials for real (the
+		// prober seam is MCP-only), and the provider message rides the
+		// ErrProbeFailed wrap verbatim.
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"message":"Bad credentials"}`))
+		}))
+		defer upstream.Close()
+		recipeID := registerConnTestHTTPRecipe(t, upstream.URL)
+
 		w := doRequest(env.router, http.MethodPost, base+"/connections", ownerToken, map[string]any{
-			"recipe_id": "gitlab", "token": "glpat-invalid",
+			"recipe_id": recipeID, "token": "tok-invalid",
 		})
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400 on probe failure, got %d: %s", w.Code, w.Body.String())
@@ -381,7 +436,7 @@ func TestConnections_ConnectEnvelopesAndLifecycle(t *testing.T) {
 		if envErr.Error.Code != server.CodeInvalidRequest {
 			t.Errorf("expected invalid_request code, got %q", envErr.Error.Code)
 		}
-		if !strings.Contains(envErr.Error.Message, "probe failed: Bad credentials") {
+		if !strings.Contains(envErr.Error.Message, "probe failed") || !strings.Contains(envErr.Error.Message, "Bad credentials") {
 			t.Errorf("expected the upstream message verbatim, got %q", envErr.Error.Message)
 		}
 
@@ -389,11 +444,10 @@ func TestConnections_ConnectEnvelopesAndLifecycle(t *testing.T) {
 		var list connectionListResponse
 		_ = json.Unmarshal(wList.Body.Bytes(), &list)
 		for _, c := range list.Connections {
-			if c.Service == "gitlab" {
+			if c.Service == recipeID {
 				t.Error("probe failure must not store a connection row")
 			}
 		}
-		prober.err = nil
 	})
 
 	t.Run("get, list, and probe round-trips", func(t *testing.T) {

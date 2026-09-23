@@ -55,6 +55,14 @@ type HTTPConnectionRef struct {
 	// (domain.ConnectionStatus*). Empty normalizes to connected, matching the
 	// domain's stored-shape rule; any other non-connected status degrades.
 	Status string
+	// Origin is the connection's STORED resolved origin
+	// (domain.Connection.Origin, add-recipe-base-url tasks.md 2.2) — the
+	// immutable origin the connection was connected against. The verb base
+	// resolves from it at generation (domain.ResolveRecipeBase below), so a
+	// parametrized recipe's tools dial the connection's own instance and
+	// never the recipe default; recipes without an origin parameter resolve
+	// byte-identically to the declared BaseURL regardless of this value.
+	Origin string
 	// Recipe is the registered recipe behind the connection.
 	Recipe *domain.Recipe
 }
@@ -207,7 +215,18 @@ func (s *ConnectionToolSource) ToolsFor(ctx context.Context, workspaceID, agentI
 			continue
 		}
 
-		base, err := connectionBaseFor(ref.Recipe.BaseURL)
+		// The dial base resolves from the connection's STORED origin
+		// (add-recipe-base-url tasks.md 2.3 — immutability): a parametrized
+		// recipe's verbs dial the connection's own instance, non-parametrized
+		// recipes resolve byte-identically to the declared BaseURL. A stored
+		// origin that no longer parses degrades skip-and-mark like any other
+		// malformed surface.
+		resolved, err := domain.ResolveRecipeBase(ref.Recipe, ref.Origin)
+		if err != nil {
+			mark("malformed recipe surface", err)
+			continue
+		}
+		base, err := connectionBaseFor(resolved)
 		if err != nil {
 			mark("malformed recipe surface", err)
 			continue

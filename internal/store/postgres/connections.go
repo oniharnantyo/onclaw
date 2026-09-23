@@ -26,13 +26,14 @@ func NewConnectionStore(db Executor) storeport.Connections {
 }
 
 // isServiceTakenViolation reports whether the error is a unique violation on
-// the per-workspace connection service constraint
-// (uq_workspace_connections_workspace_id_service), as opposed to the primary key.
+// the per-workspace connection (service, origin) index
+// (uq_workspace_connections_workspace_service_origin, migration 000067 —
+// add-recipe-base-url tasks.md 2.1), as opposed to the primary key.
 func isServiceTakenViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
 		return pgErr.Code == pgerrcode.UniqueViolation &&
-			pgErr.ConstraintName == "uq_workspace_connections_workspace_id_service"
+			pgErr.ConstraintName == "uq_workspace_connections_workspace_service_origin"
 	}
 	return false
 }
@@ -70,33 +71,34 @@ func (cs *connectionStore) Create(ctx context.Context, c *domain.Connection) err
 		grantedScopes = []string{}
 	}
 
-	// One connection per service per workspace (design.md D6): pre-check like
-	// the fake so the conflict names the service; the schema constraint is the
-	// backstop.
+	// Uniqueness is per (workspace, service, origin) (add-recipe-base-url
+	// tasks.md 2.1): pre-check like the fake so the conflict names the service
+	// and the origin it collides on; the schema index is the backstop.
 	var exists bool
 	err := cs.db.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM workspace_connections WHERE workspace_id = $1 AND service = $2)`,
-		c.WorkspaceID, c.Service,
+		`SELECT EXISTS (SELECT 1 FROM workspace_connections WHERE workspace_id = $1 AND service = $2 AND origin = $3)`,
+		c.WorkspaceID, c.Service, c.Origin,
 	).Scan(&exists)
 	if err != nil {
 		return convertError(err)
 	}
 	if exists {
-		return fmt.Errorf("%w: service %q already connected in workspace", domain.ErrConnectionExists, c.Service)
+		return fmt.Errorf("%w: service %q already connected in workspace for origin %q", domain.ErrConnectionExists, c.Service, c.Origin)
 	}
 
 	query := `
 		INSERT INTO workspace_connections (
-			id, workspace_id, service, access_level, status,
+			id, workspace_id, service, origin, access_level, status,
 			refresh_ciphertext, expires_at, granted_scopes, created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
 		)
 	`
 	_, err = cs.db.Exec(ctx, query,
 		c.ID,
 		c.WorkspaceID,
 		c.Service,
+		c.Origin,
 		c.AccessLevel,
 		status,
 		c.RefreshCiphertext,
@@ -107,7 +109,7 @@ func (cs *connectionStore) Create(ctx context.Context, c *domain.Connection) err
 	)
 	if err != nil {
 		if isServiceTakenViolation(err) {
-			return fmt.Errorf("%w: service %q already connected in workspace", domain.ErrConnectionExists, c.Service)
+			return fmt.Errorf("%w: service %q already connected in workspace for origin %q", domain.ErrConnectionExists, c.Service, c.Origin)
 		}
 		return convertError(err)
 	}
@@ -120,7 +122,7 @@ func (cs *connectionStore) Get(ctx context.Context, workspaceID, id string) (*do
 	}
 
 	query := `
-		SELECT id, workspace_id, service, access_level, status,
+		SELECT id, workspace_id, service, origin, access_level, status,
 		       refresh_ciphertext, expires_at, granted_scopes, created_at, updated_at
 		FROM workspace_connections
 		WHERE workspace_id = $1 AND id = $2
@@ -134,7 +136,7 @@ func (cs *connectionStore) GetByService(ctx context.Context, workspaceID, servic
 	}
 
 	query := `
-		SELECT id, workspace_id, service, access_level, status,
+		SELECT id, workspace_id, service, origin, access_level, status,
 		       refresh_ciphertext, expires_at, granted_scopes, created_at, updated_at
 		FROM workspace_connections
 		WHERE workspace_id = $1 AND service = $2
@@ -148,6 +150,7 @@ func scanConnection(row pgx.Row) (*domain.Connection, error) {
 		&c.ID,
 		&c.WorkspaceID,
 		&c.Service,
+		&c.Origin,
 		&c.AccessLevel,
 		&c.Status,
 		&c.RefreshCiphertext,
@@ -217,7 +220,7 @@ func (cs *connectionStore) List(ctx context.Context, workspaceID string) ([]doma
 	}
 
 	query := `
-		SELECT id, workspace_id, service, access_level, status,
+		SELECT id, workspace_id, service, origin, access_level, status,
 		       refresh_ciphertext, expires_at, granted_scopes, created_at, updated_at
 		FROM workspace_connections
 		WHERE workspace_id = $1

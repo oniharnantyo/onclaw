@@ -48,6 +48,11 @@ const FALLBACK_LEVELS: ConnectionAccessLevel[] = ['read_only', 'read_write'];
  * attachment riding the existing enabled_mcps patch — the materialized server
  * id when one exists, else the raw connection id for HTTP-kind connections.
  *
+ * add-recipe-base-url: recipes declaring an origin parameter also render a
+ * labeled origin input preset to the SaaS default; validation failures
+ * naming the base-URL field surface on that input. Origins are immutable
+ * after connect — the field lives in the connect flow only.
+ *
  * An unregistered oauth recipe (availability lagging its instance app) opens
  * in SETUP mode first: the operator creates the provider app, registers its
  * credentials here, and the dialog switches to the ordinary consent flow.
@@ -79,7 +84,17 @@ export function ConnectServiceDialog({
 
   const [accessLevel, setAccessLevel] = useState<ConnectionAccessLevel>(levels[0]);
   const [token, setToken] = useState('');
+  // add-recipe-base-url: a recipe declaring origin_param connects through a
+  // labeled origin input preset to the SaaS default — editable/clearable;
+  // an empty submission resolves the recipe's declared default server-side.
+  // Origins are immutable after connect, so the field exists only here.
+  const originParam = recipe.origin_param;
+  const [origin, setOrigin] = useState(originParam?.default || '');
+  const [originError, setOriginError] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
+  // Verb surface starts folded — the list is exactly what lands in the
+  // agent's tool registry, so it's there to inspect on demand, not to scan.
+  const [verbsOpen, setVerbsOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Edit mode prefills the registered client id; the secret stays write-only.
@@ -129,6 +144,7 @@ export function ConnectServiceDialog({
     if (!isOAuth && !token.trim()) return;
     setConnecting(true);
     setError(null);
+    setOriginError(null);
     try {
       const res = await connectionsApi.connect(
         ws,
@@ -136,7 +152,16 @@ export function ConnectServiceDialog({
           ? // OAuth: no secret crosses the wire — the server builds the
             // authorize redirect from the recipe + registered instance app.
             { recipe_id: recipe.id, access_level: accessLevel }
-          : { recipe_id: recipe.id, access_level: accessLevel, token: token.trim() }
+          : {
+              recipe_id: recipe.id,
+              access_level: accessLevel,
+              token: token.trim(),
+              // Origin param only for recipes declaring one; empty submits
+              // empty and resolves the recipe's declared default. Recipes
+              // without the parameter omit the field entirely (the backend
+              // would ignore it — the payload stays exactly what's needed).
+              ...(originParam ? { origin: origin.trim() } : {}),
+            }
       );
       if (isOAuth) {
         const url = res?.authorize_url;
@@ -164,8 +189,16 @@ export function ConnectServiceDialog({
     } catch (err: unknown) {
       // Probe failures (upstream message), duplicate-service conflicts,
       // missing-app registrations, and integrations.write rejections all
-      // arrive as error envelopes.
-      setError(formatApiError(err, `Couldn't connect ${recipe.service}`));
+      // arrive as error envelopes. add-recipe-base-url: the backend names the
+      // base-URL field in origin-validation envelopes ("GitLab instance URL:
+      // origin … must be an absolute http(s) origin …") — those land on the
+      // origin input itself so the value can be corrected in place.
+      const message = formatApiError(err, `Couldn't connect ${recipe.service}`);
+      if (originParam && message.startsWith(originParam.name)) {
+        setOriginError(message);
+      } else {
+        setError(message);
+      }
       setConnecting(false);
     }
   };
@@ -547,42 +580,68 @@ export function ConnectServiceDialog({
               there is no MCP wiring to describe. */}
           {isHttp && (
             <div data-testid="connect-http-surface">
-              <span className={labelCls}>Tools this connection adds</span>
               {verbs.length === 0 ? (
-                <p className="text-[12px] leading-4 text-muted">
-                  This recipe declares no tools yet.
-                </p>
+                <>
+                  <span className={labelCls}>Tools this connection adds</span>
+                  <p className="text-[12px] leading-4 text-muted">
+                    This recipe declares no tools yet.
+                  </p>
+                </>
               ) : (
-                <ul className="space-y-1.5">
-                  {verbs.map((v) => (
-                    <li
-                      key={v.name}
-                      className="flex items-start gap-2"
-                      data-testid={'connect-verb-' + v.name}
-                    >
-                      <Chip mono>{v.name}</Chip>
-                      <span className="min-w-0 pt-0.5 text-[11px] leading-4 text-muted">
-                        <span className="font-mono">
-                          {v.method} {v.path}
-                        </span>
-                        {v.description ? ` — ${v.description}` : ''}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {verbs.length > 0 && (
-                <p className="mt-2 text-[11px] leading-4 text-muted">
-                  Calls are pinned to{' '}
-                  {recipe.base_url ? (
-                    <span className="font-mono">{recipe.base_url}</span>
-                  ) : (
-                    'the service API'
-                  )}{' '}
-                  and the token is attached server-side
-                  {recipe.token_header ? ` under ${recipe.token_header}` : ''} — it never enters the
-                  agent's context.
-                </p>
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setVerbsOpen((o) => !o)}
+                    aria-expanded={verbsOpen}
+                    data-testid="connect-verbs-toggle"
+                    className="flex w-full items-center gap-1.5 text-left"
+                  >
+                    <span className={labelCls}>Tools this connection adds</span>
+                    <span className="rounded-full bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] px-1.5 py-0.5 font-mono text-[10px] leading-3 text-muted">
+                      {verbs.length}
+                    </span>
+                    <Icon
+                      name="chevright"
+                      size={13}
+                      className={cx(
+                        'ml-auto shrink-0 text-muted transition-transform',
+                        verbsOpen && 'rotate-90',
+                      )}
+                    />
+                  </button>
+                  {verbsOpen && (
+                    <>
+                      <ul className="mt-2 space-y-1.5">
+                        {verbs.map((v) => (
+                          <li
+                            key={v.name}
+                            className="flex items-start gap-2"
+                            data-testid={'connect-verb-' + v.name}
+                          >
+                            <Chip mono>{v.name}</Chip>
+                            <span className="min-w-0 pt-0.5 text-[11px] leading-4 text-muted">
+                              <span className="font-mono">
+                                {v.method} {v.path}
+                              </span>
+                              {v.description ? ` — ${v.description}` : ''}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                      <p className="mt-2 text-[11px] leading-4 text-muted">
+                        Calls are pinned to{' '}
+                        {recipe.base_url ? (
+                          <span className="font-mono">{recipe.base_url}</span>
+                        ) : (
+                          'the service API'
+                        )}{' '}
+                        and the token is attached server-side
+                        {recipe.token_header ? ` under ${recipe.token_header}` : ''} — it never
+                        enters the agent's context.
+                      </p>
+                    </>
+                  )}
+                </>
               )}
             </div>
           )}
@@ -618,6 +677,39 @@ export function ConnectServiceDialog({
           {/* Access level — catalog-driven, first level (read-only) the
               flow default (D5). */}
           {accessLevelSection}
+
+          {/* add-recipe-base-url: the origin field — rendered only when the
+              recipe declares the parameter, preset to the SaaS default,
+              clearable (empty submits empty = the declared default). The
+              recipe's help copy is the field guidance. */}
+          {originParam && (
+            <div>
+              <label className={labelCls} htmlFor="connect-origin">
+                {originParam.name}
+              </label>
+              <input
+                id="connect-origin"
+                type="text"
+                autoComplete="off"
+                value={origin}
+                onChange={(e) => setOrigin(e.target.value)}
+                placeholder={originParam.default}
+                data-testid="input-connect-origin"
+                className={cx(inputCls, 'font-mono')}
+              />
+              <p className="mt-1.5 text-[11px] leading-4 text-muted">{originParam.help}</p>
+              {originError && (
+                <p
+                  role="alert"
+                  data-testid="connect-origin-error"
+                  className="mt-1.5 flex items-start gap-1.5 text-[12px] leading-4 text-danger"
+                >
+                  <Icon name="alert" size={13} className="mt-0.5 shrink-0" />
+                  {originError}
+                </p>
+              )}
+            </div>
+          )}
 
           <div>
             <label className={labelCls} htmlFor="connect-token">

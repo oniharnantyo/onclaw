@@ -130,7 +130,7 @@ func registerHTTPTestRecipe(t *testing.T, id, baseURL, tokenScheme string) *doma
 // connectHTTPStub connects the given http recipe and returns the view.
 func connectHTTPStub(t *testing.T, env *connectionsTestEnv, recipeID, token string) (*services.ConnectionView, error) {
 	t.Helper()
-	res, err := env.svc.Connect(context.Background(), env.wsID, testUserID, recipeID, "", token)
+	res, err := env.svc.Connect(context.Background(), env.wsID, testUserID, recipeID, "", token, "")
 	if err != nil {
 		return nil, err
 	}
@@ -577,5 +577,67 @@ func TestHTTPConnect_DuplicateIsConflict(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), first.ID) {
 		t.Errorf("expected the conflict to name the existing connection, got %q", err.Error())
+	}
+}
+
+// The probe resolves the connection's STORED origin (add-recipe-base-url
+// tasks.md 2.3, GitLab re-scope tasks.md 3.2): both the connect gate's probe
+// and the probe-on-demand path dial the origin the connection was connected
+// against — the GitLab REST shape below (an unreachable declared default, an
+// /api/v4/user probe) proves a self-managed origin is probed, never the
+// recipe default.
+func TestHTTPConnectAndProbe_DialStoredOrigin(t *testing.T) {
+	upstream := newStubUpstream()
+	defer upstream.srv.Close()
+	domain.RegisterRecipe(domain.Recipe{
+		ID:           "stubhttp-origin",
+		Service:      "Stub HTTP Origin",
+		Icon:         "stub",
+		AuthKind:     domain.RecipeAuthPAT,
+		Availability: domain.RecipeAvailable,
+		Kind:         domain.RecipeKindHTTP,
+		// The declared default is unreachable by construction: had the probe
+		// dialed it instead of the stored origin, connect would have failed.
+		BaseURL: "https://gitlab.example.test",
+		OriginParam: &domain.RecipeOriginParam{
+			Name:    "Instance base URL",
+			Default: "https://gitlab.example.test",
+			Help:    "The provider instance's origin (SaaS or self-managed).",
+		},
+		TokenHeader:  "X-Stub-Token",
+		AccessLevels: []string{domain.ConnectionAccessReadOnly},
+		Steps:        []domain.RecipeStep{{Title: "Generate a stub token"}},
+		Probe:        domain.RecipeProbe{Method: "GET", Path: "/api/v4/user"},
+		Verbs:        stubHTTPVerbs("stubhttp-origin"),
+	})
+	recipe := domain.RecipeByID("stubhttp-origin")
+	if recipe == nil {
+		t.Fatal("expected the parametrized http recipe to register")
+	}
+	env := newConnectionsTestEnv(t)
+	ctx := context.Background()
+
+	res, err := env.svc.Connect(ctx, env.wsID, testUserID, recipe.ID, "", httpTestToken, upstream.srv.URL)
+	if err != nil {
+		t.Fatalf("connect with origin: %v", err)
+	}
+	view := res.Connection
+	if view.Origin != upstream.srv.URL {
+		t.Errorf("expected the stored origin %q, got %q", upstream.srv.URL, view.Origin)
+	}
+	reqs := upstream.captured()
+	if len(reqs) != 1 || reqs[0].uri != "/api/v4/user" {
+		t.Fatalf("expected the connect probe on the stored origin's /api/v4/user, got %+v", reqs)
+	}
+
+	// Probe on demand dials the stored origin again — the immutability rule
+	// (a probe never dials any origin but the one the connection was
+	// connected against).
+	if _, err := env.svc.Probe(ctx, env.wsID, view.ID); err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	reqs = upstream.captured()
+	if len(reqs) != 2 || reqs[1].uri != "/api/v4/user" {
+		t.Fatalf("expected the on-demand probe on the stored origin, got %+v", reqs)
 	}
 }

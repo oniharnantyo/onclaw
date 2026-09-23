@@ -25,6 +25,12 @@ const recipe: ApiIntegrationRecipe = {
   availability: 'available',
   transport: 'streamable_http',
   endpoint: 'https://api.githubcopilot.com/mcp/',
+  // add-recipe-base-url: GitHub declares the optional base-URL parameter.
+  origin_param: {
+    name: 'GitHub API base URL',
+    default: 'https://api.githubcopilot.com',
+    help: 'GitHub Enterprise Cloud data-residency hosts follow the copilot-api.<subdomain>.ghe.com pattern (the /mcp/ path is fixed).',
+  },
   token_header: 'Authorization',
   token_scheme: 'Bearer',
   access_levels: ['read_only', 'read_write'],
@@ -162,6 +168,46 @@ describe('lib/connectionsApi', () => {
     await connectionsApi.connect('acme', { recipe_id: 'github', access_level: 'read_only', token: 'ghp_x' });
     expect((globalThis.fetch as any).mock.calls[0][0]).toBe('/api/v1/workspaces/acme/integrations/connections');
     expect((globalThis.fetch as any).mock.calls[0][1].method).toBe('POST');
+    expect((globalThis.fetch as any).mock.calls[0][1].body).toBe(
+      JSON.stringify({ recipe_id: 'github', access_level: 'read_only', token: 'ghp_x' })
+    );
+  });
+
+  it('carries origin on the connect payload only for parametrized recipes (add-recipe-base-url)', async () => {
+    // An edited origin crosses the wire verbatim.
+    mockJson({ connection });
+    await connectionsApi.connect('acme', {
+      recipe_id: 'gitlab',
+      access_level: 'read_only',
+      token: 'glpat_x',
+      origin: 'https://gitlab.example.com',
+    });
+    expect((globalThis.fetch as any).mock.calls[0][1].body).toBe(
+      JSON.stringify({
+        recipe_id: 'gitlab',
+        access_level: 'read_only',
+        token: 'glpat_x',
+        origin: 'https://gitlab.example.com',
+      })
+    );
+
+    // A cleared field submits empty — the backend resolves the declared default.
+    mockJson({ connection });
+    await connectionsApi.connect('acme', {
+      recipe_id: 'gitlab',
+      access_level: 'read_only',
+      token: 'glpat_x',
+      origin: '',
+    });
+    expect((globalThis.fetch as any).mock.calls[0][1].body).toBe(
+      JSON.stringify({ recipe_id: 'gitlab', access_level: 'read_only', token: 'glpat_x', origin: '' })
+    );
+
+    // No origin_param declared — the field stays absent from the payload
+    // (the backend would silently ignore it; the request carries only what
+    // the recipe declares).
+    mockJson({ connection });
+    await connectionsApi.connect('acme', { recipe_id: 'github', access_level: 'read_only', token: 'ghp_x' });
     expect((globalThis.fetch as any).mock.calls[0][1].body).toBe(
       JSON.stringify({ recipe_id: 'github', access_level: 'read_only', token: 'ghp_x' })
     );

@@ -433,3 +433,155 @@ func TestRegisterRecipeNormalization(t *testing.T) {
 		t.Errorf("expected access levels preserved, got %v", got.AccessLevels)
 	}
 }
+
+// The GitLab REST recipe (add-recipe-base-url tasks.md 3.1): http kind, PAT
+// auth, an origin parameter defaulting to gitlab.com, the /api/v4 path prefix
+// on every declared call, the current-user probe, and the curated read/write
+// verb split (design.md D4). This replaces the PAT-against-remote-MCP wiring
+// that could never connect.
+func TestRecipesBuiltinGitLabRecipe(t *testing.T) {
+	r := domain.RecipeByID("gitlab")
+	if r == nil {
+		t.Fatal("expected the gitlab recipe to be registered")
+	}
+	if r.Availability != domain.RecipeAvailable {
+		t.Errorf("expected gitlab to be %s, got %q", domain.RecipeAvailable, r.Availability)
+	}
+	if r.Kind != domain.RecipeKindHTTP {
+		t.Errorf("expected gitlab to declare %s kind, got %q", domain.RecipeKindHTTP, r.Kind)
+	}
+	if r.AuthKind != domain.RecipeAuthPAT {
+		t.Errorf("expected gitlab to be %s auth, got %q", domain.RecipeAuthPAT, r.AuthKind)
+	}
+	if r.BaseURL != "https://gitlab.com" {
+		t.Errorf("expected the bare gitlab.com origin as base url, got %q", r.BaseURL)
+	}
+	if r.OriginParam == nil {
+		t.Fatal("expected gitlab to declare an origin parameter")
+	}
+	if r.OriginParam.Default != "https://gitlab.com" {
+		t.Errorf("expected the SaaS origin as the declared default, got %q", r.OriginParam.Default)
+	}
+	if r.OriginParam.Name == "" || r.OriginParam.Help == "" {
+		t.Errorf("expected a labeled field with help copy, got %+v", r.OriginParam)
+	}
+	if r.TokenHeader != "PRIVATE-TOKEN" {
+		t.Errorf("expected the PRIVATE-TOKEN auth header, got %q", r.TokenHeader)
+	}
+	if r.TokenScheme != "" {
+		t.Errorf("expected the raw token (no scheme prefix) for GitLab PATs, got %q", r.TokenScheme)
+	}
+	if r.Transport != "" || r.Endpoint != "" || r.Command != "" {
+		t.Errorf("expected no mcp materialization fields on gitlab, got transport=%q endpoint=%q command=%q", r.Transport, r.Endpoint, r.Command)
+	}
+	if r.Probe.Method != "GET" || r.Probe.Path != "/api/v4/user" {
+		t.Errorf("expected the GET /api/v4/user (current-user) probe call, got %+v", r.Probe)
+	}
+	if len(r.Steps) == 0 {
+		t.Error("expected guided token-creation steps")
+	}
+	if !slices.Contains(r.AccessLevels, domain.ConnectionAccessReadOnly) ||
+		!slices.Contains(r.AccessLevels, domain.ConnectionAccessReadWrite) {
+		t.Errorf("expected both access levels on gitlab, got %v", r.AccessLevels)
+	}
+
+	// The declared verb surface (design.md D4): the curated read-only verbs
+	// and the read-write additions, every call under the /api/v4 prefix,
+	// service-prefixed and unique.
+	seen := make(map[string]bool, len(r.Verbs))
+	reads, writes := 0, 0
+	for _, v := range r.Verbs {
+		if !strings.HasPrefix(v.Path, "/api/v4/") {
+			t.Errorf("expected verb %s path %q to carry the /api/v4 prefix", v.Tool, v.Path)
+		}
+		if !strings.HasPrefix(v.Tool, "gitlab.") {
+			t.Errorf("expected verb tool %q to be service-prefixed", v.Tool)
+		}
+		if seen[v.Tool] {
+			t.Errorf("verb tool %q declared twice", v.Tool)
+		}
+		seen[v.Tool] = true
+		if v.Tier == domain.RecipeToolTierRead {
+			reads++
+		} else if v.Tier == domain.RecipeToolTierWrite {
+			writes++
+		} else {
+			t.Errorf("expected verb %s to declare an explicit tier, got %q", v.Tool, v.Tier)
+		}
+		if strings.TrimSpace(v.Description) == "" {
+			t.Errorf("expected verb %s to carry an agent-facing description", v.Tool)
+		}
+	}
+	if reads == 0 || writes == 0 {
+		t.Fatalf("expected the curated read/write split, got %d reads / %d writes", reads, writes)
+	}
+	for _, want := range []string{
+		// Read-only (design.md D4).
+		"gitlab.get_current_user",
+		"gitlab.list_projects",
+		"gitlab.get_project",
+		"gitlab.list_issues",
+		"gitlab.get_issue",
+		"gitlab.list_merge_requests",
+		"gitlab.get_merge_request",
+		"gitlab.list_branches",
+		"gitlab.list_pipelines",
+		// Read-write additions (design.md D4).
+		"gitlab.create_issue",
+		"gitlab.update_issue",
+		"gitlab.create_issue_note",
+		"gitlab.create_merge_request",
+		"gitlab.update_merge_request",
+		"gitlab.merge_merge_request",
+		"gitlab.retry_pipeline",
+		"gitlab.cancel_pipeline",
+	} {
+		if !seen[want] {
+			t.Errorf("expected curated verb %s to be declared, got %v", want, seen)
+		}
+	}
+
+	// The probe is the current-user declared call: a declared verb carries
+	// exactly the probe's method + path.
+	probeDeclared := false
+	for _, v := range r.Verbs {
+		if v.Method == r.Probe.Method && v.Path == r.Probe.Path {
+			probeDeclared = true
+		}
+	}
+	if !probeDeclared {
+		t.Errorf("expected the probe call %s %s to be a declared verb", r.Probe.Method, r.Probe.Path)
+	}
+
+	// Guidance (tasks.md 3.3): the PAT-now copy covers self-managed origins,
+	// and the OAuth MCP endpoint is tracked separately.
+	if !strings.Contains(r.Steps[0].Detail, "self-managed") {
+		t.Errorf("expected the guided steps to cover self-managed origins, got %q", r.Steps[0].Detail)
+	}
+	if !strings.Contains(r.Notes, "REST API") || !strings.Contains(r.Notes, "OAuth") {
+		t.Errorf("expected the notes to state the PAT-over-REST posture and the OAuth MCP tracking, got %q", r.Notes)
+	}
+
+	if err := domain.ValidateRecipe(r); err != nil {
+		t.Errorf("expected the registered gitlab recipe to be valid, got %v", err)
+	}
+}
+
+// Webhook compatibility (add-recipe-base-url tasks.md 3.3): the GitLab
+// re-scope leaves the webhook declaration byte-identical — the golden pins
+// the exact pre-change wire shape (catalog, default selection, secret-token
+// scheme, templates with whitelisted fields, setup copy).
+func TestRecipesBuiltinGitLabWebhooksUnchanged(t *testing.T) {
+	gl := domain.RecipeByID("gitlab")
+	if gl == nil || gl.Webhooks == nil {
+		t.Fatal("expected the gitlab recipe to declare webhook support")
+	}
+	data, err := json.Marshal(gl.Webhooks)
+	if err != nil {
+		t.Fatalf("unexpected marshal error: %v", err)
+	}
+	const golden = `{"events":["push","tag_push","merge_request.open","merge_request.merge","merge_request.close","issue.open","issue.close","note"],"default_events":["push","merge_request.open","issue.open","note"],"signature_scheme":"secret_token","templates":[{"event":"push","fields":["project.path_with_namespace","user_name","ref"],"template":"Push to {project.path_with_namespace}: {user_name} pushed {ref}."},{"event":"tag_push","fields":["project.path_with_namespace","user_name","ref"],"template":"Tag {ref} pushed to {project.path_with_namespace} by {user_name}."},{"event":"merge_request.open","fields":["project.path_with_namespace","object_attributes.iid","object_attributes.title","object_attributes.url","user.name"],"template":"Merge request !{object_attributes.iid} opened in {project.path_with_namespace} by {user.name}: \"{object_attributes.title}\" — {object_attributes.url}"},{"event":"merge_request.merge","fields":["project.path_with_namespace","object_attributes.iid","object_attributes.title","object_attributes.url","user.name"],"template":"Merge request !{object_attributes.iid} merged in {project.path_with_namespace} by {user.name}: \"{object_attributes.title}\" — {object_attributes.url}"},{"event":"merge_request.close","fields":["project.path_with_namespace","object_attributes.iid","object_attributes.title","object_attributes.url","user.name"],"template":"Merge request !{object_attributes.iid} closed in {project.path_with_namespace} by {user.name}: \"{object_attributes.title}\" — {object_attributes.url}"},{"event":"issue.open","fields":["project.path_with_namespace","object_attributes.iid","object_attributes.title","object_attributes.url","user.name"],"template":"Issue #{object_attributes.iid} opened in {project.path_with_namespace} by {user.name}: \"{object_attributes.title}\" — {object_attributes.url}"},{"event":"issue.close","fields":["project.path_with_namespace","object_attributes.iid","object_attributes.title","object_attributes.url","user.name"],"template":"Issue #{object_attributes.iid} closed in {project.path_with_namespace} by {user.name}: \"{object_attributes.title}\" — {object_attributes.url}"},{"event":"note","fields":["project.path_with_namespace","object_attributes.note","object_attributes.url","user.name"],"template":"New comment in {project.path_with_namespace} by {user.name}:\n\"{object_attributes.note}\"\n{object_attributes.url}"}],"setup":{"signature_header":"X-Gitlab-Token","event_type_header":"X-Gitlab-Event","delivery_id_header":"X-Gitlab-Event-UUID","url_path_shape":"/api/ingest/webhooks/{workspace_slug}/{connection_id}","help":"In GitLab, open the project or group, go to Settings → Webhooks. Add the ingest URL below as the URL, set the Secret token to the generated secret shown once here, and select the events this connection subscribes to."}}`
+	if string(data) != golden {
+		t.Errorf("gitlab webhook declaration drifted from the pinned pre-change shape.\nwant: %s\ngot:  %s", golden, data)
+	}
+}

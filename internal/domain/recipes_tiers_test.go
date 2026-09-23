@@ -194,10 +194,11 @@ func TestToolTierCounts(t *testing.T) {
 	}
 }
 
-// Built-in tiering (add-integration-authority tasks.md 1.2): figma all-read
-// on its verbs, github and gitlab carrying both tiers over their MCP tool
-// lists, the coming-soon mcp recipes declaring nothing (all write), and the
-// default-write spot check for an unknown tool.
+// Built-in tiering (add-integration-authority tasks.md 1.2, add-recipe-base-url
+// tasks.md 3.4): figma all-read on its verbs, github carrying both tiers over
+// its MCP tool list, gitlab carrying both tiers on its REST verbs (the stale
+// mcp-kind tier list is gone), the coming-soon mcp recipes declaring nothing
+// (all write), and the default-write spot check for an unknown tool.
 func TestRecipesBuiltinTiers(t *testing.T) {
 	figma := domain.RecipeByID("figma")
 	if figma == nil {
@@ -253,13 +254,41 @@ func TestRecipesBuiltinTiers(t *testing.T) {
 		t.Errorf("expected an unknown github tool to default to %s, got %s", domain.RecipeToolTierWrite, got)
 	}
 
+	// GitLab's curation rides its REST verbs (add-recipe-base-url tasks.md
+	// 3.4): every verb carries a catalog tier, both tiers are present, and
+	// the declared split resolves through the same gate lookup the http kind
+	// uses.
 	gitlab := domain.RecipeByID("gitlab")
 	if gitlab == nil {
 		t.Fatal("expected the gitlab recipe to be registered")
 	}
-	got := domain.ToolTierCounts(gitlab)
-	if got.Read == 0 || got.Write == 0 {
-		t.Errorf("expected gitlab's tier list to carry both tiers, got %+v", got)
+	if len(gitlab.ToolTiers) != 0 {
+		t.Errorf("expected no mcp tool-tier list on the http-kind gitlab recipe, got %d rules", len(gitlab.ToolTiers))
+	}
+	seenVerbs := make(map[string]bool, len(gitlab.Verbs))
+	gitlabHasRead, gitlabHasWrite := false, false
+	for _, v := range gitlab.Verbs {
+		if !domain.IsValidRecipeToolTier(v.Tier) {
+			t.Errorf("gitlab verb %s carries out-of-catalog tier %q", v.Tool, v.Tier)
+		}
+		if seenVerbs[v.Tool] {
+			t.Errorf("gitlab verb %s declared twice", v.Tool)
+		}
+		seenVerbs[v.Tool] = true
+		gitlabHasRead = gitlabHasRead || v.Tier == domain.RecipeToolTierRead
+		gitlabHasWrite = gitlabHasWrite || v.Tier == domain.RecipeToolTierWrite
+	}
+	if !gitlabHasRead || !gitlabHasWrite {
+		t.Errorf("expected gitlab's verbs to carry both tiers, got read=%v write=%v", gitlabHasRead, gitlabHasWrite)
+	}
+	if got := domain.ToolTierCounts(gitlab); got.Read == 0 || got.Write == 0 {
+		t.Errorf("expected gitlab's verb tiers to count both, got %+v", got)
+	}
+	if got := domain.EffectiveToolTier(gitlab, "gitlab.list_projects"); got != domain.RecipeToolTierRead {
+		t.Errorf("expected gitlab.list_projects to resolve read, got %s", got)
+	}
+	if got := domain.EffectiveToolTier(gitlab, "gitlab.merge_merge_request"); got != domain.RecipeToolTierWrite {
+		t.Errorf("expected gitlab.merge_merge_request to resolve write, got %s", got)
 	}
 
 	for _, id := range []string{"atlassian", "slack", "linear"} {

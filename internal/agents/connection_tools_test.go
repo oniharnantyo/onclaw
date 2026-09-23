@@ -433,6 +433,66 @@ func TestConnectionVerbToolJoinsBasePathPrefix(t *testing.T) {
 	}
 }
 
+// The dial base resolves from the connection's STORED origin
+// (add-recipe-base-url tasks.md 2.3; the C2b-flagged runtime gap): a
+// parametrized recipe's ref carries its origin and the runtime verb call
+// dials it — never the recipe's pinned default. Every earlier test doubles
+// as the non-parametrized regression: an empty ref.Origin resolves
+// byte-identically to the declared BaseURL. A stored origin that no longer
+// parses degrades skip-and-mark instead of dialing anything.
+func TestConnectionVerbToolDialsStoredOriginNotRecipeDefault(t *testing.T) {
+	defaultSrv := newRecordingServer(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("the recipe default origin was dialed instead of the connection's stored origin")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"wrong": true}`)
+	})
+	defer defaultSrv.Close()
+
+	srv := newRecordingServer(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"stored_origin": true}`)
+	})
+	defer srv.Close()
+
+	recipe := registerConnectionTestRecipe(t, defaultSrv.URL, func(id string) []domain.RecipeVerb {
+		return []domain.RecipeVerb{{Tool: id + ".get_me", Method: "GET", Path: "/v1/me"}}
+	}, func(r *domain.Recipe) {
+		r.OriginParam = &domain.RecipeOriginParam{
+			Name:    "Instance URL",
+			Default: defaultSrv.URL,
+			Help:    "The provider instance's origin (SaaS or self-managed).",
+		}
+	})
+
+	ref := connectionRef(recipe)
+	ref.Origin = srv.URL
+	resolved := resolveVerbs(t, []HTTPConnectionRef{ref}, &stubConnectionCreds{token: "tok"}, nil)
+	out, err := invoke(t, resolved[0], `{}`)
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if !strings.Contains(out, `"stored_origin"`) {
+		t.Fatalf("expected the stored origin to serve the call, got %q", out)
+	}
+	if got := srv.hitCount(); got != 1 {
+		t.Fatalf("stored origin saw %d calls, want 1", got)
+	}
+
+	brokenRef := connectionRef(recipe)
+	brokenRef.Origin = "not-an-origin"
+	degraded, _, err := sourceWith([]HTTPConnectionRef{brokenRef}, &stubConnectionCreds{token: "tok"}).
+		ToolsFor(context.Background(), "ws-1", "agent-1", nil)
+	if err != nil {
+		t.Fatalf("resolution must degrade, not fail: %v", err)
+	}
+	if len(degraded) != 0 {
+		t.Fatalf("broken-origin connection contributed %d tools", len(degraded))
+	}
+	if defaultSrv.hitCount() != 0 {
+		t.Fatalf("the recipe default origin saw %d calls, want 0", defaultSrv.hitCount())
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 2.2 — off-host redirects refused; same-host redirects followed.
 // ---------------------------------------------------------------------------

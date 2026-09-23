@@ -49,8 +49,16 @@ const httpBodyTruncationMarker = "…[truncated]"
 // leaves no connection row and no ciphertext), then the connection persists
 // with the token's encrypted envelope. NO workspace MCP server row and NO
 // origin marker are created; the declared verb surface is the recipe's verbs.
-func (s *ConnectionsService) connectHTTP(ctx context.Context, workspaceID string, recipe *domain.Recipe, accessLevel, token string) (*ConnectResult, error) {
-	if err := s.probeHTTPBound(ctx, recipe, token); err != nil {
+// origin is the resolved base-URL origin (add-recipe-base-url tasks.md
+// 2.3/2.4): the probe dials domain.ResolveRecipeBase's base for it — the
+// resolved origin for a parametrized recipe, the declared BaseURL
+// byte-identically otherwise — and the connection stores the origin.
+func (s *ConnectionsService) connectHTTP(ctx context.Context, workspaceID string, recipe *domain.Recipe, accessLevel, token, origin string) (*ConnectResult, error) {
+	base, err := domain.ResolveRecipeBase(recipe, origin)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.probeHTTPBound(ctx, recipe, base, token); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrProbeFailed, err)
 	}
 
@@ -61,6 +69,7 @@ func (s *ConnectionsService) connectHTTP(ctx context.Context, workspaceID string
 	conn := &domain.Connection{
 		WorkspaceID: workspaceID,
 		Service:     recipe.ID,
+		Origin:      origin,
 		AccessLevel: accessLevel,
 		Status:      domain.ConnectionStatusConnected,
 		// The http secret row: the access token's envelope rides the
@@ -81,20 +90,23 @@ func (s *ConnectionsService) connectHTTP(ctx context.Context, workspaceID string
 
 // probeHTTPBound runs the http probe within the probe bound — the same
 // DefaultConnectionProbeTimeout/WithProbeTimeout knob the MCP lane uses
-// (contract §4).
-func (s *ConnectionsService) probeHTTPBound(ctx context.Context, recipe *domain.Recipe, token string) error {
+// (contract §4). base is the origin the declared call joins onto
+// (add-recipe-base-url tasks.md 2.3).
+func (s *ConnectionsService) probeHTTPBound(ctx context.Context, recipe *domain.Recipe, base, token string) error {
 	pctx, cancel := context.WithTimeout(ctx, s.probeTimeout)
 	defer cancel()
-	return s.probeHTTP(pctx, recipe, token)
+	return s.probeHTTP(pctx, recipe, base, token)
 }
 
-// probeHTTP executes the recipe's declared probe call against the pinned base
-// URL (contract §4): recipe.Probe.Method  BaseURL + Probe.Path with the single
-// auth header composed from TokenScheme. Any 2xx succeeds; a non-2xx, a
-// transport error, or a timeout fails with the status code and the provider's
-// message — never headers, never the token.
-func (s *ConnectionsService) probeHTTP(ctx context.Context, recipe *domain.Recipe, token string) error {
-	req, err := http.NewRequestWithContext(ctx, recipe.Probe.Method, httpJoinedURL(recipe.BaseURL, recipe.Probe.Path), nil)
+// probeHTTP executes the recipe's declared probe call against the given base
+// (contract §4): recipe.Probe.Method  base + Probe.Path with the single auth
+// header composed from TokenScheme. base is domain.ResolveRecipeBase's
+// resolution for the connection's stored origin — the declared BaseURL
+// byte-identically for recipes without an origin parameter. Any 2xx succeeds;
+// a non-2xx, a transport error, or a timeout fails with the status code and
+// the provider's message — never headers, never the token.
+func (s *ConnectionsService) probeHTTP(ctx context.Context, recipe *domain.Recipe, base, token string) error {
+	req, err := http.NewRequestWithContext(ctx, recipe.Probe.Method, httpJoinedURL(base, recipe.Probe.Path), nil)
 	if err != nil {
 		return fmt.Errorf("the probe call could not be built: %v", err)
 	}
@@ -336,7 +348,14 @@ func (s *ConnectionsService) probeHTTPConnection(ctx context.Context, workspaceI
 		return nil, err
 	}
 
-	probeErr := s.probeHTTPBound(ctx, recipe, token)
+	// The base resolves from the connection's STORED origin
+	// (add-recipe-base-url tasks.md 2.3 — immutability): a probe never dials
+	// any origin but the one the connection was connected against.
+	base, err := domain.ResolveRecipeBase(recipe, conn.Origin)
+	if err != nil {
+		return nil, err
+	}
+	probeErr := s.probeHTTPBound(ctx, recipe, base, token)
 	status := domain.ConnectionStatusConnected
 	if probeErr != nil {
 		status = domain.ConnectionStatusError

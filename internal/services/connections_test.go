@@ -88,10 +88,11 @@ func newConnectionsTestEnv(t *testing.T) *connectionsTestEnv {
 }
 
 // connectView runs a PAT connect and unwraps the synchronous view (OAuth
-// connects return an authorize URL instead).
+// connects return an authorize URL instead). Origin-less: the base-URL
+// variants live in connections_origin_test.go.
 func connectView(t *testing.T, env *connectionsTestEnv, recipeID, accessLevel, token string) (*services.ConnectionView, error) {
 	t.Helper()
-	res, err := env.svc.Connect(context.Background(), env.wsID, testUserID, recipeID, accessLevel, token)
+	res, err := env.svc.Connect(context.Background(), env.wsID, testUserID, recipeID, accessLevel, token, "")
 	if err != nil {
 		return nil, err
 	}
@@ -260,9 +261,12 @@ func TestConnectionsService_ConnectValidation(t *testing.T) {
 func TestConnectionsService_ReadWriteLevelRoundTrip(t *testing.T) {
 	env := newConnectionsTestEnv(t)
 
-	view, err := connectView(t, env, "gitlab", domain.ConnectionAccessReadWrite, "glpat-xyz9876")
+	// github is the mcp-kind PAT card: the gitlab recipe is http-kind since
+	// the REST re-scope (add-recipe-base-url tasks.md 3.1), so it no longer
+	// materializes a server.
+	view, err := connectView(t, env, "github", domain.ConnectionAccessReadWrite, "ghp-xyz9876")
 	if err != nil {
-		t.Fatalf("connect gitlab read_write: %v", err)
+		t.Fatalf("connect github read_write: %v", err)
 	}
 	if view.AccessLevel != domain.ConnectionAccessReadWrite {
 		t.Errorf("expected read_write recorded, got %q", view.AccessLevel)

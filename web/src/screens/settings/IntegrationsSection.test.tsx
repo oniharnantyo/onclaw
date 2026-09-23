@@ -13,20 +13,38 @@ import { useStore } from '../../store';
 
 const mockTenant = { id: 'acme', sub: 'acme', name: 'Acme Corp' };
 
+// add-recipe-base-url re-scope: the GitLab recipe is HTTP-kind PAT over the
+// REST API with a declared origin parameter defaulting to the SaaS origin —
+// the streamable_http MCP shape it used to carry is gone.
 const gitlabRecipe = (overrides: Partial<ApiIntegrationRecipe> = {}): ApiIntegrationRecipe => ({
   id: 'gitlab',
   service: 'GitLab',
   icon: 'gitlab',
   auth_kind: 'pat',
   availability: 'available',
-  transport: 'streamable_http',
+  kind: 'http',
+  base_url: 'https://gitlab.com',
+  origin_param: {
+    name: 'GitLab instance URL',
+    default: 'https://gitlab.com',
+    help: 'The GitLab origin — gitlab.com or a self-managed instance serving its REST API under /api/v4.',
+  },
   access_levels: ['read_only', 'read_write'],
   steps: [{ title: 'Create a personal access token' }],
   scopes: [
     { access_level: 'read_only', scopes: ['read_api'] },
     { access_level: 'read_write', scopes: ['api'] },
   ],
-  probe: { tool: 'list-projects' },
+  token_header: 'PRIVATE-TOKEN',
+  verbs: [
+    {
+      name: 'gitlab.list_projects',
+      method: 'GET',
+      path: '/api/v4/projects',
+      description: 'List projects',
+    },
+  ],
+  probe: { tool: 'gitlab.current_user', method: 'GET', path: '/api/v4/user' },
   ...overrides,
 });
 
@@ -186,9 +204,10 @@ describe('screens/settings/IntegrationsSection', () => {
     await waitFor(() => {
       expect(screen.getByTestId('recipe-gitlab')).not.toBeNull();
     });
-    // Available recipe shows its Integrate affordance and its transport.
+    // Available recipe shows its Integrate affordance and its declared verb
+    // surface (HTTP kind) instead of an MCP transport line.
     expect(screen.getByTestId('btn-integrate-gitlab')).not.toBeNull();
-    expect(screen.getByTestId('recipe-gitlab').textContent).toContain('streamable_http');
+    expect(screen.getByTestId('recipe-gitlab').textContent).toContain('1 tool — gitlab.list_projects');
 
     // Already-connected service appears in the Connected section with live
     // status, access level, attached agents, and the last-4 hint only.
@@ -253,13 +272,16 @@ describe('screens/settings/IntegrationsSection', () => {
         id: 'conn-gl',
         service: 'gitlab',
         access_level: 'read_only',
-        server_id: 'srv-gl-mcp',
+        // GitLab is HTTP-kind now — no materialized server row.
+        server_id: null,
+        server_enabled: false,
+        origin: 'https://gitlab.com',
       }),
     });
     vi.spyOn(api.agents, 'list').mockResolvedValue({
       agents: [
         { id: 'a1', slug: 'atlas', name: 'Atlas', enabled_mcps: [] },
-        { id: 'a2', slug: 'beacon', name: 'Beacon', enabled_mcps: ['srv-gl-mcp'] },
+        { id: 'a2', slug: 'beacon', name: 'Beacon', enabled_mcps: ['conn-gl'] },
       ] as any[],
     });
 
@@ -278,6 +300,10 @@ describe('screens/settings/IntegrationsSection', () => {
     // Read-only is preselected with its recommended scopes displayed.
     expect(screen.getByTestId('connect-access-read_only').getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByTestId('connect-scopes').textContent).toContain('read_api');
+    // add-recipe-base-url: the origin field presets the declared SaaS default.
+    const originInput = screen.getByTestId('input-connect-origin') as HTMLInputElement;
+    expect(originInput.value).toBe('https://gitlab.com');
+    expect(screen.getByTestId('modal-connect-service').textContent).toContain('GitLab instance URL');
 
     // Connect is gated on a token.
     expect((screen.getByTestId('btn-connect-confirm') as HTMLButtonElement).disabled).toBe(true);
@@ -296,6 +322,7 @@ describe('screens/settings/IntegrationsSection', () => {
         recipe_id: 'gitlab',
         access_level: 'read_only',
         token: 'glpat-x',
+        origin: 'https://gitlab.com',
       });
     });
 
@@ -307,9 +334,10 @@ describe('screens/settings/IntegrationsSection', () => {
       expect(screen.getByRole('switch', { name: 'Attach Atlas' })).not.toBeNull();
     });
     fireEvent.click(screen.getByRole('switch', { name: 'Attach Atlas' }));
+    // HTTP-kind connection: attachment rides the connection id, not a server.
     await waitFor(() => {
       expect(api.agents.patch).toHaveBeenCalledWith('acme', 'atlas', {
-        enabled_mcps: ['srv-gl-mcp'],
+        enabled_mcps: ['conn-gl'],
       });
     });
 
@@ -652,9 +680,14 @@ describe('screens/settings/IntegrationsSection', () => {
     expect(card.textContent).toContain('2 tools — figma.get_me, figma.get_file');
     expect(card.textContent).not.toContain('streamable_http');
     expect(screen.getByTestId('btn-integrate-figma')).not.toBeNull();
+    // GitLab rides the HTTP kind too (add-recipe-base-url re-scope): the
+    // verb surface replaces the MCP transport line it used to declare.
+    expect(screen.getByTestId('recipe-gitlab').textContent).toContain('HTTP');
+    expect(screen.getByTestId('recipe-gitlab').textContent).toContain('gitlab.list_projects');
+    expect(screen.getByTestId('recipe-gitlab').textContent).not.toContain('streamable_http');
     // MCP-kind cards keep their transport and gain the kind chip.
-    expect(screen.getByTestId('recipe-gitlab').textContent).toContain('MCP');
-    expect(screen.getByTestId('recipe-gitlab').textContent).toContain('streamable_http');
+    expect(screen.getByTestId('recipe-github').textContent).toContain('MCP');
+    expect(screen.getByTestId('recipe-github').textContent).toContain('streamable_http');
   });
 
   it('connects an HTTP-kind recipe with the verb surface shown and attachment by connection id', async () => {
@@ -693,8 +726,14 @@ describe('screens/settings/IntegrationsSection', () => {
       expect(screen.getByTestId('modal-connect-service')).not.toBeNull();
     });
     // The recipe's guided API-token steps render, and the declared verb
-    // surface lists in full with the pinned base URL — no MCP wiring copy.
+    // surface unfolds from its collapsible with the pinned base URL — no MCP
+    // wiring copy.
     expect(screen.getByText('Create a Figma personal access token')).not.toBeNull();
+    const verbsToggle = screen.getByTestId('connect-verbs-toggle');
+    expect(verbsToggle.getAttribute('aria-expanded')).toBe('false');
+    expect(verbsToggle.textContent).toContain('2');
+    fireEvent.click(verbsToggle);
+    expect(screen.getByTestId('connect-verbs-toggle').getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByTestId('connect-http-surface').textContent).toContain('figma.get_me');
     expect(screen.getByTestId('connect-verb-figma.get_file').textContent).toContain('GET /v1/files/:key');
     expect(screen.getByTestId('connect-http-surface').textContent).toContain('api.figma.com');
@@ -774,6 +813,38 @@ describe('screens/settings/IntegrationsSection', () => {
     expect(modal.textContent).toContain('Atlas');
     fireEvent.click(screen.getByTestId('btn-disconnect-cancel'));
     expect(screen.queryByTestId('modal-connection-disconnect')).toBeNull();
+  });
+
+  it('shows the resolved origin as a display-only chip — no origin edit on existing connections', async () => {
+    vi.spyOn(connectionsApi, 'list').mockResolvedValue({
+      connections: [
+        // A connection resolved to a self-managed origin.
+        connectionRow({
+          id: 'conn-gl',
+          service: 'gitlab',
+          server_id: null,
+          server_enabled: false,
+          origin: 'https://gitlab.example.com',
+        }),
+        // A connection on its recipe's fixed/default endpoint — no origin.
+        connectionRow(),
+      ],
+    });
+
+    renderPane();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('connection-conn-gl')).not.toBeNull();
+    });
+    // add-recipe-base-url: the origin renders as a monospace chip.
+    const chip = screen.getByTestId('connection-origin-conn-gl');
+    expect(chip.textContent).toBe('https://gitlab.example.com');
+    // Immutability: the origin is display-only — no input or edit affordance
+    // anywhere on the card.
+    expect(screen.getByTestId('connection-conn-gl').querySelector('input')).toBeNull();
+    expect(screen.queryByTestId('input-connect-origin')).toBeNull();
+    // Connections without a resolved origin render no chip at all.
+    expect(screen.queryByTestId('connection-origin-conn-gh')).toBeNull();
   });
 
   it('resolves the oauth callback return: refreshes the list, toasts, and cleans the URL', async () => {

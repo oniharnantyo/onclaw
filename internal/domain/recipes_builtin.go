@@ -11,25 +11,33 @@ package domain
 // (add-connection-webhooks tasks.md 1.1): event catalog, signature scheme,
 // per-event prompt templates with whitelisted payload fields, and provider
 // setup copy. Their scheme headers, delivery ids, and payload field paths are
-// PLACEHOLDER pending the tasks.md 5.3 live verification, like the Figma/GitLab
-// endpoint precedents — the pipeline verifies signatures at ingest, so an
-// unpinned value fails safely at delivery instead of storing a broken
-// integration. The mcp-kind tool-tier lists (add-integration-authority
-// tasks.md 1.2) ride the same placeholder posture: fail-safe defaults keep
-// undeclared tools write-tier until the live pinning.
+// PLACEHOLDER pending the tasks.md 5.3 live verification — the pipeline
+// verifies signatures at ingest, so an unpinned value fails safely at
+// delivery instead of storing a broken integration. The mcp-kind tool-tier
+// lists (add-integration-authority tasks.md 1.2) ride the same placeholder
+// posture: fail-safe defaults keep undeclared tools write-tier until the live
+// pinning.
+//
+// Origin parameters (add-recipe-base-url): GitLab is an http-kind REST recipe
+// whose base-URL parameter covers SaaS and self-managed instances (the
+// never-connectable PAT-against-remote-MCP wiring it replaces); GitHub's
+// parameter covers the GitHub Enterprise Cloud data-residency hosts. Both are
+// PAT-kind — an OAuth recipe's authorize and token hosts are separate from
+// the API origin (add-recipe-base-url design.md non-goal).
 //
 // Registration order is the gallery order.
 //
 // MCP-kind tier declarations (add-integration-authority tasks.md 1.2): the
-// GitHub and GitLab recipes carry curated tool-tier lists over the tool names
-// their remote MCP servers assign. BOTH LISTS ARE PLACEHOLDER pending the
-// tasks.md 5.3 live verification, like every other live-pinned value — the
-// fail-safe default (undeclared = write) keeps unstated tools admin-tier, so
-// an unverified list can only over-block visibly, never under-block silently.
+// GitHub recipe carries a curated tool-tier list over the tool names its
+// remote MCP server assigns. THE LIST IS PLACEHOLDER pending the tasks.md 5.3
+// live verification, like every other live-pinned value — the fail-safe
+// default (undeclared = write) keeps unstated tools admin-tier, so an
+// unverified list can only over-block visibly, never under-block silently.
 // Curation rule: read = fetch/list/search/get verbs; write =
 // create/update/merge/delete/close/assign verbs. The write list documents
 // intent — anything the live server exposes beyond both lists already gates
-// as write. Coming-soon mcp recipes (atlassian, slack, linear) declare no
+// as write. GitLab's curation lives on its REST verbs (the http kind's tier
+// surface); coming-soon mcp recipes (atlassian, slack, linear) declare no
 // lists yet: their tool surfaces are unpinnable before the OAuth apps land,
 // and the fail-safe default is the correct tier for everything they will
 // expose until a release declares otherwise.
@@ -99,35 +107,6 @@ var (
 		"cancel_workflow_run",
 		"delete_workflow_run_logs",
 	}
-	// gitlabReadTools is GitLab's curated read surface: projects, repository
-	// trees and files, issues, merge requests, pipelines, wikis.
-	gitlabReadTools = []string{
-		"get_mcp_server_version",
-		"list_projects",
-		"get_project",
-		"search_repositories",
-		"get_repository_tree",
-		"get_file_content",
-		"get_raw_file",
-		"list_issues",
-		"get_issue",
-		"list_merge_requests",
-		"get_merge_request",
-		"list_pipelines",
-		"get_pipeline",
-		"list_wiki_pages",
-		"get_wiki_page",
-	}
-	// gitlabWriteTools is GitLab's curated write surface: issue and merge
-	// request lifecycle, notes/comments.
-	gitlabWriteTools = []string{
-		"create_issue",
-		"update_issue",
-		"create_merge_request",
-		"update_merge_request",
-		"merge_merge_request",
-		"create_note",
-	}
 )
 
 // toolTierRules builds a recipe's tool-tier list, reads first so the served
@@ -167,7 +146,20 @@ func init() {
 		Availability: RecipeAvailable,
 		Transport:    MCPTransportStreamableHTTP,
 		// Official GitHub MCP server remote endpoint (tasks.md 5.3 pins).
-		Endpoint:    "https://api.githubcopilot.com/mcp/",
+		Endpoint: "https://api.githubcopilot.com/mcp/",
+		// The MCP endpoint path is origin-stable: GitHub Enterprise Cloud
+		// data-residency hosts serve the same /mcp/ path per subdomain
+		// (copilot-api.<subdomain>.ghe.com). GitHub Enterprise Server offers
+		// no remote MCP endpoint — the parameter covers ghe.com hosts only
+		// (add-recipe-base-url tasks.md 4.1).
+		OriginParam: &RecipeOriginParam{
+			Name:    "GitHub API base URL",
+			Default: "https://api.githubcopilot.com",
+			Help: "GitHub Enterprise Cloud data-residency hosts follow the " +
+				"copilot-api.<subdomain>.ghe.com pattern (the /mcp/ path is fixed). " +
+				"GitHub Enterprise Server offers no remote MCP endpoint. " +
+				"Fixed after connect — changing origins means reconnecting.",
+		},
 		TokenHeader: "Authorization",
 		TokenScheme: "Bearer",
 		Webhooks: &RecipeWebhook{
@@ -298,114 +290,133 @@ func init() {
 		ToolTiers: toolTierRules(githubReadTools, githubWriteTools),
 	})
 
+	// The GitLab recipe is an http-kind REST recipe (add-recipe-base-url
+	// tasks.md 3.1): GitLab's remote MCP endpoint is OAuth-only and in beta —
+	// live-verified absent on self-managed instances — while the REST API +
+	// PAT works on gitlab.com and every self-managed instance today. The
+	// origin parameter substitutes the instance origin only; the /api/v4
+	// prefix and the verb paths below stay recipe constants
+	// (add-recipe-base-url design.md D1). The probe is the current-user
+	// declared call (design.md D4: cheap, read-only, exercises auth + origin).
+	//
+	// PLACEHOLDER pending tasks.md 6.3 live PAT pass: the verb paths and
+	// parameter shapes are drafted from GitLab's REST API documentation.
+	// Connect is probe-gated, so an unpinned value fails safely at connect
+	// instead of storing a broken connection.
 	RegisterRecipe(Recipe{
 		ID:           "gitlab",
 		Service:      "GitLab",
 		Icon:         "gitlab",
 		AuthKind:     RecipeAuthPAT,
 		Availability: RecipeAvailable,
-		Transport:    MCPTransportStreamableHTTP,
-	// PLACEHOLDER pending tasks.md 5.3 live pinning: hosted remote
-	// endpoint preferred over the official stdio server (a stdio recipe
-	// additionally requires the server binary in the deployment image).
-	// Self-managed GitLab rides the Custom MCP card in v1; this recipe
-	// targets gitlab.com only.
-	Endpoint:    "https://gitlab.com/api/v4/mcp",
-	TokenHeader: "Authorization",
-	TokenScheme: "Bearer",
-	// GitLab authenticates webhooks with the shared secret carried verbatim
-	// in X-Gitlab-Token (tasks.md 5.3 pins the header set and payload field
-	// paths). The v1 catalog is the read-flavored notification subset; the
-	// default selection starts narrower than the catalog.
-	Webhooks: &RecipeWebhook{
-		SignatureScheme: RecipeWebhookSchemeSecretToken,
-		Events: []string{
-			"push",
-			"tag_push",
-			"merge_request.open",
-			"merge_request.merge",
-			"merge_request.close",
-			"issue.open",
-			"issue.close",
-			"note",
+		Kind:         RecipeKindHTTP,
+		// A bare origin: the origin parameter replaces the base URL wholesale,
+		// and every verb path below carries the /api/v4 prefix.
+		BaseURL: "https://gitlab.com",
+		OriginParam: &RecipeOriginParam{
+			Name:    "GitLab instance URL",
+			Default: "https://gitlab.com",
+			Help: "The GitLab origin — gitlab.com or a self-managed instance " +
+				"(e.g. https://gitlab.example.com); every instance serves its " +
+				"REST API under /api/v4. Fixed after connect — changing " +
+				"instances means disconnecting and reconnecting.",
 		},
-		DefaultEvents: []string{
-			"push",
-			"merge_request.open",
-			"issue.open",
-			"note",
+		// GitLab REST personal access tokens ride PRIVATE-TOKEN verbatim (no
+		// scheme prefix — TokenScheme stays empty).
+		TokenHeader: "PRIVATE-TOKEN",
+		// GitLab authenticates webhooks with the shared secret carried verbatim
+		// in X-Gitlab-Token (tasks.md 5.3 pins the header set and payload field
+		// paths). The v1 catalog is the read-flavored notification subset; the
+		// default selection starts narrower than the catalog.
+		Webhooks: &RecipeWebhook{
+			SignatureScheme: RecipeWebhookSchemeSecretToken,
+			Events: []string{
+				"push",
+				"tag_push",
+				"merge_request.open",
+				"merge_request.merge",
+				"merge_request.close",
+				"issue.open",
+				"issue.close",
+				"note",
+			},
+			DefaultEvents: []string{
+				"push",
+				"merge_request.open",
+				"issue.open",
+				"note",
+			},
+			Templates: []RecipeWebhookTemplate{
+				{
+					Event:    "push",
+					Fields:   []string{"project.path_with_namespace", "user_name", "ref"},
+					Template: "Push to {project.path_with_namespace}: {user_name} pushed {ref}.",
+				},
+				{
+					Event:    "tag_push",
+					Fields:   []string{"project.path_with_namespace", "user_name", "ref"},
+					Template: "Tag {ref} pushed to {project.path_with_namespace} by {user_name}.",
+				},
+				{
+					Event: "merge_request.open",
+					Fields: []string{
+						"project.path_with_namespace", "object_attributes.iid",
+						"object_attributes.title", "object_attributes.url", "user.name",
+					},
+					Template: "Merge request !{object_attributes.iid} opened in {project.path_with_namespace} by {user.name}: \"{object_attributes.title}\" — {object_attributes.url}",
+				},
+				{
+					Event: "merge_request.merge",
+					Fields: []string{
+						"project.path_with_namespace", "object_attributes.iid",
+						"object_attributes.title", "object_attributes.url", "user.name",
+					},
+					Template: "Merge request !{object_attributes.iid} merged in {project.path_with_namespace} by {user.name}: \"{object_attributes.title}\" — {object_attributes.url}",
+				},
+				{
+					Event: "merge_request.close",
+					Fields: []string{
+						"project.path_with_namespace", "object_attributes.iid",
+						"object_attributes.title", "object_attributes.url", "user.name",
+					},
+					Template: "Merge request !{object_attributes.iid} closed in {project.path_with_namespace} by {user.name}: \"{object_attributes.title}\" — {object_attributes.url}",
+				},
+				{
+					Event: "issue.open",
+					Fields: []string{
+						"project.path_with_namespace", "object_attributes.iid",
+						"object_attributes.title", "object_attributes.url", "user.name",
+					},
+					Template: "Issue #{object_attributes.iid} opened in {project.path_with_namespace} by {user.name}: \"{object_attributes.title}\" — {object_attributes.url}",
+				},
+				{
+					Event: "issue.close",
+					Fields: []string{
+						"project.path_with_namespace", "object_attributes.iid",
+						"object_attributes.title", "object_attributes.url", "user.name",
+					},
+					Template: "Issue #{object_attributes.iid} closed in {project.path_with_namespace} by {user.name}: \"{object_attributes.title}\" — {object_attributes.url}",
+				},
+				{
+					Event: "note",
+					Fields: []string{
+						"project.path_with_namespace", "object_attributes.note",
+						"object_attributes.url", "user.name",
+					},
+					Template: "New comment in {project.path_with_namespace} by {user.name}:\n\"{object_attributes.note}\"\n{object_attributes.url}",
+				},
+			},
+			Setup: RecipeWebhookSetup{
+				SignatureHeader:  "X-Gitlab-Token",
+				EventTypeHeader:  "X-Gitlab-Event",
+				DeliveryIDHeader: "X-Gitlab-Event-UUID",
+				URLPathShape:     "/api/ingest/webhooks/{workspace_slug}/{connection_id}",
+				Help: "In GitLab, open the project or group, go to Settings → Webhooks. " +
+					"Add the ingest URL below as the URL, set the Secret token to the " +
+					"generated secret shown once here, and select the events this " +
+					"connection subscribes to.",
+			},
 		},
-		Templates: []RecipeWebhookTemplate{
-			{
-				Event:  "push",
-				Fields: []string{"project.path_with_namespace", "user_name", "ref"},
-				Template: "Push to {project.path_with_namespace}: {user_name} pushed {ref}.",
-			},
-			{
-				Event:    "tag_push",
-				Fields:   []string{"project.path_with_namespace", "user_name", "ref"},
-				Template: "Tag {ref} pushed to {project.path_with_namespace} by {user_name}.",
-			},
-			{
-				Event: "merge_request.open",
-				Fields: []string{
-					"project.path_with_namespace", "object_attributes.iid",
-					"object_attributes.title", "object_attributes.url", "user.name",
-				},
-				Template: "Merge request !{object_attributes.iid} opened in {project.path_with_namespace} by {user.name}: \"{object_attributes.title}\" — {object_attributes.url}",
-			},
-			{
-				Event: "merge_request.merge",
-				Fields: []string{
-					"project.path_with_namespace", "object_attributes.iid",
-					"object_attributes.title", "object_attributes.url", "user.name",
-				},
-				Template: "Merge request !{object_attributes.iid} merged in {project.path_with_namespace} by {user.name}: \"{object_attributes.title}\" — {object_attributes.url}",
-			},
-			{
-				Event: "merge_request.close",
-				Fields: []string{
-					"project.path_with_namespace", "object_attributes.iid",
-					"object_attributes.title", "object_attributes.url", "user.name",
-				},
-				Template: "Merge request !{object_attributes.iid} closed in {project.path_with_namespace} by {user.name}: \"{object_attributes.title}\" — {object_attributes.url}",
-			},
-			{
-				Event: "issue.open",
-				Fields: []string{
-					"project.path_with_namespace", "object_attributes.iid",
-					"object_attributes.title", "object_attributes.url", "user.name",
-				},
-				Template: "Issue #{object_attributes.iid} opened in {project.path_with_namespace} by {user.name}: \"{object_attributes.title}\" — {object_attributes.url}",
-			},
-			{
-				Event: "issue.close",
-				Fields: []string{
-					"project.path_with_namespace", "object_attributes.iid",
-					"object_attributes.title", "object_attributes.url", "user.name",
-				},
-				Template: "Issue #{object_attributes.iid} closed in {project.path_with_namespace} by {user.name}: \"{object_attributes.title}\" — {object_attributes.url}",
-			},
-			{
-				Event: "note",
-				Fields: []string{
-					"project.path_with_namespace", "object_attributes.note",
-					"object_attributes.url", "user.name",
-				},
-				Template: "New comment in {project.path_with_namespace} by {user.name}:\n\"{object_attributes.note}\"\n{object_attributes.url}",
-			},
-		},
-		Setup: RecipeWebhookSetup{
-			SignatureHeader:  "X-Gitlab-Token",
-			EventTypeHeader:  "X-Gitlab-Event",
-			DeliveryIDHeader: "X-Gitlab-Event-UUID",
-			URLPathShape:     "/api/ingest/webhooks/{workspace_slug}/{connection_id}",
-			Help: "In GitLab, open the project or group, go to Settings → Webhooks. " +
-				"Add the ingest URL below as the URL, set the Secret token to the " +
-				"generated secret shown once here, and select the events this " +
-				"connection subscribes to.",
-		},
-	},
 		AccessLevels: []string{
 			ConnectionAccessReadOnly,
 			ConnectionAccessReadWrite,
@@ -413,7 +424,8 @@ func init() {
 		Steps: []RecipeStep{
 			{
 				Title: "Open GitLab access token settings",
-				Detail: "Sign in to gitlab.com and go to Preferences → Access Tokens → " +
+				Detail: "Sign in to your GitLab instance — gitlab.com or your " +
+					"self-managed origin — and go to Preferences → Access Tokens → " +
 					"Personal access tokens.",
 				URL: "https://gitlab.com/-/user_settings/personal_access_tokens",
 			},
@@ -437,12 +449,217 @@ func init() {
 				Scopes:      []string{"api"},
 			},
 		},
-		Probe: RecipeProbe{Tool: "list_projects"},
-		// PLACEHOLDER pending tasks.md 5.3 live verification: the curated
-		// read/write split over the remote server's tool names (see the tier
-		// declaration note above the var block). Undeclared tools gate as
-		// write.
-		ToolTiers: toolTierRules(gitlabReadTools, gitlabWriteTools),
+		Probe: RecipeProbe{Method: "GET", Path: "/api/v4/user"},
+		// The curated REST verb surface (add-recipe-base-url design.md D4):
+		// read = project/issue/MR/branch/pipeline reads and the current user;
+		// write = issue and MR lifecycle, comments, pipeline retry/cancel.
+		// Everything else stays undeclared — the connection tool surface is
+		// exactly this list, and write verbs post their parameters through the
+		// query string (the declared verb schema carries no request body).
+		Verbs: []RecipeVerb{
+			{
+				Tool:        "gitlab.get_current_user",
+				Method:      "GET",
+				Path:        "/api/v4/user",
+				Description: "Get the authenticated user — the account the connection's personal access token belongs to.",
+				Tier:        RecipeToolTierRead,
+			},
+			{
+				Tool:   "gitlab.list_projects",
+				Method: "GET",
+				Path:   "/api/v4/projects",
+				Params: []RecipeVerbParam{
+					{Name: "search", Type: RecipeParamString, Required: false, In: RecipeParamInQuery},
+					{Name: "membership", Type: RecipeParamBoolean, Required: false, In: RecipeParamInQuery},
+				},
+				Description: "List projects visible to the token's account, optionally narrowed by a name search or membership.",
+				Tier:        RecipeToolTierRead,
+			},
+			{
+				Tool:   "gitlab.get_project",
+				Method: "GET",
+				Path:   "/api/v4/projects/{project_id}",
+				Params: []RecipeVerbParam{
+					{Name: "project_id", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
+				},
+				Description: "Get one project by its numeric id.",
+				Tier:        RecipeToolTierRead,
+			},
+			{
+				Tool:   "gitlab.list_issues",
+				Method: "GET",
+				Path:   "/api/v4/issues",
+				Params: []RecipeVerbParam{
+					{Name: "state", Type: RecipeParamString, Required: false, In: RecipeParamInQuery},
+					{Name: "search", Type: RecipeParamString, Required: false, In: RecipeParamInQuery},
+				},
+				Description: "List issues across the projects the token's account can see; state filters opened or closed.",
+				Tier:        RecipeToolTierRead,
+			},
+			{
+				Tool:   "gitlab.get_issue",
+				Method: "GET",
+				Path:   "/api/v4/projects/{project_id}/issues/{issue_iid}",
+				Params: []RecipeVerbParam{
+					{Name: "project_id", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
+					{Name: "issue_iid", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
+				},
+				Description: "Get one issue by project id and the issue's project-scoped iid.",
+				Tier:        RecipeToolTierRead,
+			},
+			{
+				Tool:   "gitlab.list_merge_requests",
+				Method: "GET",
+				Path:   "/api/v4/merge_requests",
+				Params: []RecipeVerbParam{
+					{Name: "state", Type: RecipeParamString, Required: false, In: RecipeParamInQuery},
+					{Name: "search", Type: RecipeParamString, Required: false, In: RecipeParamInQuery},
+				},
+				Description: "List merge requests across the projects the token's account can see; state filters opened, closed, or merged.",
+				Tier:        RecipeToolTierRead,
+			},
+			{
+				Tool:   "gitlab.get_merge_request",
+				Method: "GET",
+				Path:   "/api/v4/projects/{project_id}/merge_requests/{merge_request_iid}",
+				Params: []RecipeVerbParam{
+					{Name: "project_id", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
+					{Name: "merge_request_iid", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
+				},
+				Description: "Get one merge request by project id and the merge request's project-scoped iid.",
+				Tier:        RecipeToolTierRead,
+			},
+			{
+				Tool:   "gitlab.list_branches",
+				Method: "GET",
+				Path:   "/api/v4/projects/{project_id}/repository/branches",
+				Params: []RecipeVerbParam{
+					{Name: "project_id", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
+					{Name: "search", Type: RecipeParamString, Required: false, In: RecipeParamInQuery},
+				},
+				Description: "List a project's repository branches, optionally narrowed by a name search.",
+				Tier:        RecipeToolTierRead,
+			},
+			{
+				Tool:   "gitlab.list_pipelines",
+				Method: "GET",
+				Path:   "/api/v4/projects/{project_id}/pipelines",
+				Params: []RecipeVerbParam{
+					{Name: "project_id", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
+					{Name: "status", Type: RecipeParamString, Required: false, In: RecipeParamInQuery},
+					{Name: "ref", Type: RecipeParamString, Required: false, In: RecipeParamInQuery},
+				},
+				Description: "List a project's CI/CD pipelines, newest first; status and ref narrow the listing.",
+				Tier:        RecipeToolTierRead,
+			},
+			{
+				Tool:   "gitlab.create_issue",
+				Method: "POST",
+				Path:   "/api/v4/projects/{project_id}/issues",
+				Params: []RecipeVerbParam{
+					{Name: "project_id", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
+					{Name: "title", Type: RecipeParamString, Required: true, In: RecipeParamInQuery},
+					{Name: "description", Type: RecipeParamString, Required: false, In: RecipeParamInQuery},
+					{Name: "labels", Type: RecipeParamString, Required: false, In: RecipeParamInQuery},
+				},
+				Description: "Create an issue in a project with a title and optional description and comma-separated labels.",
+				Tier:        RecipeToolTierWrite,
+			},
+			{
+				Tool:   "gitlab.update_issue",
+				Method: "PUT",
+				Path:   "/api/v4/projects/{project_id}/issues/{issue_iid}",
+				Params: []RecipeVerbParam{
+					{Name: "project_id", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
+					{Name: "issue_iid", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
+					{Name: "title", Type: RecipeParamString, Required: false, In: RecipeParamInQuery},
+					{Name: "description", Type: RecipeParamString, Required: false, In: RecipeParamInQuery},
+					{Name: "state_event", Type: RecipeParamString, Required: false, In: RecipeParamInQuery},
+				},
+				Description: "Update an issue's title or description, or change its state with state_event close or reopen.",
+				Tier:        RecipeToolTierWrite,
+			},
+			{
+				Tool:   "gitlab.create_issue_note",
+				Method: "POST",
+				Path:   "/api/v4/projects/{project_id}/issues/{issue_iid}/notes",
+				Params: []RecipeVerbParam{
+					{Name: "project_id", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
+					{Name: "issue_iid", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
+					{Name: "body", Type: RecipeParamString, Required: true, In: RecipeParamInQuery},
+				},
+				Description: "Comment on an issue with the given body text.",
+				Tier:        RecipeToolTierWrite,
+			},
+			{
+				Tool:   "gitlab.create_merge_request",
+				Method: "POST",
+				Path:   "/api/v4/projects/{project_id}/merge_requests",
+				Params: []RecipeVerbParam{
+					{Name: "project_id", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
+					{Name: "source_branch", Type: RecipeParamString, Required: true, In: RecipeParamInQuery},
+					{Name: "target_branch", Type: RecipeParamString, Required: true, In: RecipeParamInQuery},
+					{Name: "title", Type: RecipeParamString, Required: true, In: RecipeParamInQuery},
+					{Name: "description", Type: RecipeParamString, Required: false, In: RecipeParamInQuery},
+				},
+				Description: "Open a merge request from a source branch into a target branch with a title and optional description.",
+				Tier:        RecipeToolTierWrite,
+			},
+			{
+				Tool:   "gitlab.update_merge_request",
+				Method: "PUT",
+				Path:   "/api/v4/projects/{project_id}/merge_requests/{merge_request_iid}",
+				Params: []RecipeVerbParam{
+					{Name: "project_id", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
+					{Name: "merge_request_iid", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
+					{Name: "title", Type: RecipeParamString, Required: false, In: RecipeParamInQuery},
+					{Name: "description", Type: RecipeParamString, Required: false, In: RecipeParamInQuery},
+					{Name: "state_event", Type: RecipeParamString, Required: false, In: RecipeParamInQuery},
+				},
+				Description: "Update a merge request's title or description, or change its state with state_event close or reopen.",
+				Tier:        RecipeToolTierWrite,
+			},
+			{
+				Tool:   "gitlab.merge_merge_request",
+				Method: "PUT",
+				Path:   "/api/v4/projects/{project_id}/merge_requests/{merge_request_iid}/merge",
+				Params: []RecipeVerbParam{
+					{Name: "project_id", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
+					{Name: "merge_request_iid", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
+				},
+				Description: "Merge an open merge request.",
+				Tier:        RecipeToolTierWrite,
+			},
+			{
+				Tool:   "gitlab.retry_pipeline",
+				Method: "POST",
+				Path:   "/api/v4/projects/{project_id}/pipelines/{pipeline_id}/retry",
+				Params: []RecipeVerbParam{
+					{Name: "project_id", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
+					{Name: "pipeline_id", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
+				},
+				Description: "Retry a finished pipeline.",
+				Tier:        RecipeToolTierWrite,
+			},
+			{
+				Tool:   "gitlab.cancel_pipeline",
+				Method: "POST",
+				Path:   "/api/v4/projects/{project_id}/pipelines/{pipeline_id}/cancel",
+				Params: []RecipeVerbParam{
+					{Name: "project_id", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
+					{Name: "pipeline_id", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
+				},
+				Description: "Cancel a running pipeline.",
+				Tier:        RecipeToolTierWrite,
+			},
+		},
+		// Connects today with a PAT over the REST API; GitLab's remote MCP
+		// endpoint is OAuth-only beta and returns through the MCP-via-OAuth
+		// follow-up change.
+		Notes: "Connects with a personal access token over the GitLab REST API " +
+			"(gitlab.com or a self-managed instance). GitLab's remote MCP endpoint " +
+			"is OAuth-only and in beta; MCP access will return through " +
+			"instance-registered OAuth apps.",
 	})
 
 	// One recipe covering both Jira and Confluence (design.md D2): Atlassian's

@@ -128,6 +128,19 @@ type RecipeVerb struct {
 	Tier string `json:"tier"`
 }
 
+// RecipeOriginParam is a recipe's declared base-URL parameter
+// (add-recipe-base-url proposal): the labeled origin field the connect flow
+// presents for recipes whose endpoint is origin-stable across the provider's
+// SaaS and self-managed deployments. Default is the SaaS origin the field
+// presets; Help is the field's guidance copy. PAT-kind recipes only — an
+// OAuth recipe's authorize and token hosts are separate from the API origin
+// this parameter substitutes (add-recipe-base-url design.md non-goal).
+type RecipeOriginParam struct {
+	Name    string `json:"name"`
+	Default string `json:"default"`
+	Help    string `json:"help,omitempty"`
+}
+
 // Recipe is one declared service integration: recipe knowledge is server-side
 // Go data (design.md D2) — endpoint, auth shape, guided steps, scopes, and
 // probe are release-shippable facts, never user input (design.md D7). Adding
@@ -162,6 +175,13 @@ type Recipe struct {
 	// BaseURL is the pinned API origin http-kind requests are joined against
 	// (add-connection-http design.md D2/D7): recipe data, never user input.
 	BaseURL string `json:"base_url,omitempty"`
+	// OriginParam declares the optional connect-time base-URL parameter
+	// (add-recipe-base-url tasks.md 1.1): when non-nil, the connect flow
+	// presents the labeled origin field and the recipe's endpoint/verb paths
+	// resolve against the supplied origin (ResolveRecipeBase) instead of the
+	// pinned Endpoint/BaseURL origin. Nil means the endpoint is fixed.
+	// PAT-kind URL-surfaced recipes only — enforced by ValidateRecipe.
+	OriginParam *RecipeOriginParam `json:"origin_param,omitempty"`
 	// TokenHeader is the header (URL transports) or env row (stdio) that
 	// carries the token as the single secret row (design.md D4); for http
 	// recipes it is the auth header the engine attaches the credential under
@@ -227,8 +247,9 @@ type Recipe struct {
 // availability, kind (mcp or http, add-connection-http design.md D6), and
 // per-kind surface — transport/endpoint/command and the MCP probe tool for
 // mcp kind; base URL, auth header, probe call, and the declared verb tools
-// for http kind — plus supported access levels, guided steps, scopes, and
-// the tool-tier declarations (add-integration-authority tasks.md 1.1).
+// for http kind — plus supported access levels, guided steps, scopes, the
+// tool-tier declarations (add-integration-authority tasks.md 1.1), and the
+// optional base-URL origin parameter (add-recipe-base-url tasks.md 1.1).
 // Kind-shaped data never mixes: each kind rejects the other's fields
 // (add-connection-oauth precedent). Invalid recipes are a registration-time
 // programming error, not a runtime condition.
@@ -322,10 +343,40 @@ func ValidateRecipe(r *Recipe) error {
 		return fmt.Errorf("%w: recipe %q declares OAuth endpoints under %s auth", ErrInvalid, r.ID, RecipeAuthPAT)
 	}
 
+	// Base-URL origin parameter (add-recipe-base-url tasks.md 1.1): PAT-kind
+	// recipes only — an OAuth recipe's authorize and token hosts are not the
+	// API origin being parametrized. The parameter needs a URL surface to
+	// resolve against, so a stdio recipe (no URL) cannot declare one, and on
+	// http kind the resolved origin replaces BaseURL wholesale — a
+	// path-prefixed base url there would lose its path at resolution.
+	if r.OriginParam != nil {
+		if r.AuthKind != RecipeAuthPAT {
+			return fmt.Errorf("%w: recipe %q declares an origin parameter under %s auth — origin parameters are %s-auth only", ErrInvalid, r.ID, r.AuthKind, RecipeAuthPAT)
+		}
+		if r.Transport == MCPTransportStdio {
+			return fmt.Errorf("%w: recipe %q declares an origin parameter under %s transport — there is no URL to resolve it against", ErrInvalid, r.ID, r.Transport)
+		}
+		if strings.TrimSpace(r.OriginParam.Name) == "" {
+			return fmt.Errorf("%w: recipe %q origin parameter name cannot be empty", ErrInvalid, r.ID)
+		}
+		if strings.TrimSpace(r.OriginParam.Help) == "" {
+			return fmt.Errorf("%w: recipe %q origin parameter help text cannot be empty", ErrInvalid, r.ID)
+		}
+		if _, err := ParseOrigin(r.OriginParam.Default); err != nil {
+			return fmt.Errorf("recipe %q origin parameter default: %w", r.ID, err)
+		}
+		if r.Kind == RecipeKindHTTP {
+			if u, err := url.Parse(r.BaseURL); err != nil || (u.Path != "" && u.Path != "/") {
+				return fmt.Errorf("%w: recipe %q base url %q must be a bare origin when an origin parameter is declared", ErrInvalid, r.ID, r.BaseURL)
+			}
+		}
+	}
+
 	// Webhook declarations (add-connection-webhooks tasks.md 1.1) are
-	// kind-agnostic: mcp-kind recipes (GitHub, GitLab) declare them, and any
-	// future recipe may. A non-nil declaration must be complete — scheme,
-	// catalog, defaults, per-event templates, setup copy.
+	// kind-agnostic: URL-surfaced recipes (the mcp-kind GitHub and the
+	// http-kind GitLab) declare them, and any future recipe may. A non-nil
+	// declaration must be complete — scheme, catalog, defaults, per-event
+	// templates, setup copy.
 	if r.Webhooks != nil {
 		if err := validateRecipeWebhook(r, r.Webhooks); err != nil {
 			return err
@@ -550,6 +601,80 @@ func isValidParamName(name string) bool {
 	return true
 }
 
+// ParseOrigin validates and normalizes a base-URL origin value
+// (add-recipe-base-url tasks.md 1.2): an absolute http(s) URL carrying only
+// scheme, host, and optional port — path, query, fragment, and userinfo are
+// rejected. The scheme and host are lowercased and a trailing "/" only is
+// accepted and stripped, so origins spelled differently normalize to one
+// deterministic value — the resolved origin keys the (service, origin)
+// connection uniqueness comparison.
+func ParseOrigin(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil ||
+		(u.Scheme != "http" && u.Scheme != "https") ||
+		u.Host == "" ||
+		u.User != nil ||
+		u.RawQuery != "" ||
+		u.Fragment != "" ||
+		(u.Path != "" && u.Path != "/") ||
+		(u.RawPath != "" && u.RawPath != "/") {
+		return "", fmt.Errorf("%w: origin %q must be an absolute http(s) origin (scheme://host[:port]) without path, query, fragment, or userinfo", ErrInvalid, raw)
+	}
+	return u.Scheme + "://" + strings.ToLower(u.Host), nil
+}
+
+// ResolveRecipeBase resolves a recipe's URL surface against a connect-time
+// origin (add-recipe-base-url tasks.md 1.3): for an mcp-kind recipe on a URL
+// transport it returns the materialized server's endpoint URL — the resolved
+// origin joined with the recipe's declared Endpoint path — and for an http
+// kind it returns the base the declared probe and verb paths join against.
+// The recipe's path constants stay authoritative: the parameter substitutes
+// the origin only (add-recipe-base-url design.md D1). Recipes without an
+// origin parameter resolve to their declared Endpoint/BaseURL
+// byte-identically; parametrized recipes fall back to OriginParam.Default
+// when origin is empty (an empty submission connects to the SaaS origin).
+func ResolveRecipeBase(r *Recipe, origin string) (string, error) {
+	if r == nil {
+		return "", ErrInvalid
+	}
+	switch r.Kind {
+	case "", RecipeKindMCP:
+		if r.Transport == MCPTransportStdio {
+			return "", fmt.Errorf("%w: recipe %q is a %s recipe — there is no URL to resolve", ErrInvalid, r.ID, MCPTransportStdio)
+		}
+		if r.OriginParam == nil {
+			return r.Endpoint, nil
+		}
+		base, err := resolvedOrigin(r, origin)
+		if err != nil {
+			return "", err
+		}
+		// ValidateRecipe requires only non-emptiness of an mcp Endpoint, so
+		// path extraction needs the absolute-URL check here.
+		u, err := url.Parse(r.Endpoint)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
+			return "", fmt.Errorf("%w: recipe %q endpoint %q must be an absolute http(s) URL without query or fragment", ErrInvalid, r.ID, r.Endpoint)
+		}
+		return base + u.EscapedPath(), nil
+	case RecipeKindHTTP:
+		if r.OriginParam == nil {
+			return r.BaseURL, nil
+		}
+		return resolvedOrigin(r, origin)
+	default:
+		return "", fmt.Errorf("%w: recipe %q kind %q must be %s or %s", ErrInvalid, r.ID, r.Kind, RecipeKindMCP, RecipeKindHTTP)
+	}
+}
+
+// resolvedOrigin picks a parametrized recipe's effective origin: the
+// connect-time value, or the declared default when the field came back empty.
+func resolvedOrigin(r *Recipe, origin string) (string, error) {
+	if origin == "" {
+		origin = r.OriginParam.Default
+	}
+	return ParseOrigin(origin)
+}
+
 // recipeRegistry is the in-Go recipe registry (design.md D2). Built-ins ship
 // as ordinary registrations through RegisterRecipe; a future plugin-supplied
 // recipe uses the same door. Order is insertion order — the gallery's order.
@@ -596,6 +721,7 @@ func RegisterRecipe(r Recipe) {
 	// The declaration is stored detached from the caller's object so a later
 	// mutation of the caller's RecipeWebhook cannot reach the registry.
 	r.Webhooks = copyRecipeWebhooks(r.Webhooks)
+	r.OriginParam = copyRecipeOriginParam(r.OriginParam)
 	recipeRegistry[r.ID] = r
 	recipeOrder = append(recipeOrder, r.ID)
 }
@@ -619,6 +745,18 @@ func copyRecipeWebhooks(w *RecipeWebhook) *RecipeWebhook {
 	return &cp
 }
 
+// copyRecipeOriginParam deep-copies a recipe's origin-parameter declaration —
+// a pointer-only struct with string fields — so neither registration nor a
+// read can hand out a mutable path into the registry (the
+// Recipes-returns-copies guarantee, extended to the declaration pointer).
+func copyRecipeOriginParam(p *RecipeOriginParam) *RecipeOriginParam {
+	if p == nil {
+		return nil
+	}
+	cp := *p
+	return &cp
+}
+
 // Recipes returns all registered recipes in registration order. The returned
 // slice is a copy; mutating it (or its webhook declarations) does not affect
 // the registry.
@@ -629,6 +767,7 @@ func Recipes() []Recipe {
 	for _, id := range recipeOrder {
 		r := recipeRegistry[id]
 		r.Webhooks = copyRecipeWebhooks(r.Webhooks)
+		r.OriginParam = copyRecipeOriginParam(r.OriginParam)
 		out = append(out, r)
 	}
 	return out
@@ -644,5 +783,6 @@ func RecipeByID(id string) *Recipe {
 		return nil
 	}
 	r.Webhooks = copyRecipeWebhooks(r.Webhooks)
+	r.OriginParam = copyRecipeOriginParam(r.OriginParam)
 	return &r
 }

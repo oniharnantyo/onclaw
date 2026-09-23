@@ -58,10 +58,16 @@ func NewConnectionsHandlers(service *services.ConnectionsService, invalidator MC
 // connectRequest is the connect payload — exactly (recipe id, access level,
 // token) per design.md D7: endpoints come from the recipe registry, never
 // user input. An empty access level selects the recipe's read-only default.
+// origin is the optional base-URL value (add-recipe-base-url tasks.md 2.4):
+// empty presets the recipe's declared default when it parametrizes one, and a
+// submitted origin for a recipe that declares none is ignored (fixed
+// endpoint); the service validates parametrized submissions (ParseOrigin) and
+// the response view carries the stored, resolved origin.
 type connectRequest struct {
 	RecipeID    string `json:"recipe_id"`
 	AccessLevel string `json:"access_level"`
 	Token       string `json:"token"`
+	Origin      string `json:"origin"`
 }
 
 // respondConnectionError maps probe failures to 400 invalid_request with the
@@ -164,7 +170,7 @@ func (h *connectionsHandlers) Connect(c *gin.Context) {
 		return
 	}
 
-	result, err := h.service.Connect(c.Request.Context(), ws.ID, user.ID, req.RecipeID, req.AccessLevel, req.Token)
+	result, err := h.service.Connect(c.Request.Context(), ws.ID, user.ID, req.RecipeID, req.AccessLevel, req.Token, req.Origin)
 	if err != nil {
 		respondConnectionError(c, err)
 		return
