@@ -5,6 +5,19 @@
 // building, bearer-header attachment (the same way lib/api.ts authenticates),
 // and the 404 → null mapping.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+// This environment's jsdom exposes no localStorage — install the stub BEFORE
+// the token-carrying imports (same mode as src/store/auth.test.ts).
+const backing = new Map<string, string>();
+(globalThis as any).localStorage = {
+  getItem: (k: string) => (backing.has(k) ? backing.get(k)! : null),
+  setItem: (k: string, v: string) => void backing.set(k, String(v)),
+  removeItem: (k: string) => void backing.delete(k),
+  clear: () => void backing.clear(),
+  key: (i: number) => Array.from(backing.keys())[i] ?? null,
+  get length() { return backing.size; },
+};
+
 import { agentFileUrl, fetchAgentFile, listAgentDir } from './filesApi';
 import { setToken, clearToken } from '../api';
 
