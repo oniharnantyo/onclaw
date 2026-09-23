@@ -923,9 +923,15 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 		allowedSet[t] = true
 	}
 	if allowedSet[ReservedShellTool] {
-		fsCfg.Shell = backend.NewJailedShell(agentDir,
+		shell := backend.NewJailedShell(agentDir,
 			backend.WithSkillsVenvBin(filepath.Join(skillsDir, ".venv", "bin")),
-		).WithDecisionLedger(&checkpointDecisionLedger{checkpoints: r.checkpoints})
+		)
+		// The channel's shared project space is a model-facing mount for the
+		// fs tools; the shell honors the same prefix (channel-teams D5).
+		if fsCfg.ProjectMountDir != "" {
+			shell = shell.WithMountTranslation(backend.ProjectMountPoint, fsCfg.ProjectMountDir)
+		}
+		fsCfg.Shell = shell.WithDecisionLedger(&checkpointDecisionLedger{checkpoints: r.checkpoints})
 	}
 	cfg.Filesystem = fsCfg
 	cfg.Skills = &SkillsConfig{

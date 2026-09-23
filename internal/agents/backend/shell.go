@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -60,6 +61,38 @@ type JailedShell struct {
 	pathPrefix string
 	classifier func(string) bool
 	ledger     DecisionLedger
+	mounts     []*mountBinding
+}
+
+// mountBinding rewrites one model-facing mount prefix (e.g. /workspace, the
+// fs tools' contract) to the host directory it maps onto. The shell has no
+// chroot, so an absolute model path like /workspace cannot resolve on its
+// own — without the rewrite, any command the model writes against the mount
+// contract ("cd /workspace && ...") dies on the host filesystem.
+type mountBinding struct {
+	prefix string
+	dir    string
+	re     *regexp.Regexp
+}
+
+func newMountBinding(prefix, dir string) *mountBinding {
+	// The prefix must open at a command boundary (start of string, or a
+	// character that cannot continue a path or URL: whitespace, quote, or
+	// opening bracket) and end at one (end of string, slash, or a character
+	// that closes a path argument). "x/workspace", "//workspace", and
+	// "/workspacefoo" therefore stay untouched — URLs especially. RE2 has no
+	// lookaround, so both boundary characters join the match and the apply
+	// step re-emits them around the host path.
+	b := &mountBinding{prefix: prefix, dir: dir}
+	b.re = regexp.MustCompile(`(^|[\s"'=(\[])` + regexp.QuoteMeta(prefix) + `($|/|[\s"')\],;:&|<>])`)
+	return b
+}
+
+func (b *mountBinding) apply(command string) string {
+	return b.re.ReplaceAllStringFunc(command, func(match string) string {
+		i := strings.Index(match, b.prefix)
+		return match[:i] + b.dir + match[i+len(b.prefix):]
+	})
 }
 
 // WithDecisionLedger attaches a durable approval-decision ledger.
@@ -85,6 +118,9 @@ func WithSkillsVenvBin(binDir string) ShellOption {
 }
 
 // NewJailedShell builds a shell bound to an agent workspace jail root.
+// The workspace is pre-bound to the fs tools' mount contract: the model is
+// told its workspace lives at DefaultMountPoint, so shell commands using
+// that prefix resolve to the same directory.
 func NewJailedShell(agentDir string, opts ...ShellOption) *JailedShell {
 	s := &JailedShell{
 		agentDir:   agentDir,
@@ -92,11 +128,35 @@ func NewJailedShell(agentDir string, opts ...ShellOption) *JailedShell {
 		timeout:    DefaultShellCommandTimeout,
 		outputCap:  DefaultShellOutputCap,
 		classifier: IsDangerousCommand,
+		mounts:     []*mountBinding{newMountBinding(DefaultMountPoint, agentDir)},
 	}
 	for _, opt := range opts {
 		opt(s)
 	}
 	return s
+}
+
+// WithMountTranslation teaches the shell an additional model-facing mount
+// prefix (channel-teams D5's /project) and the host directory it maps onto.
+func (s *JailedShell) WithMountTranslation(mount, dir string) *JailedShell {
+	if dir != "" {
+		// Longer prefixes first so /workspace/project beats /workspace.
+		s.mounts = append(s.mounts, newMountBinding(mount, dir))
+		sort.Slice(s.mounts, func(i, j int) bool {
+			return len(s.mounts[i].prefix) > len(s.mounts[j].prefix)
+		})
+	}
+	return s
+}
+
+// translateMounts rewrites model-facing mount prefixes to their host paths —
+// the same mapping the fs jail applies to tool paths, so both views of the
+// workspace agree.
+func (s *JailedShell) translateMounts(command string) string {
+	for _, b := range s.mounts {
+		command = b.apply(command)
+	}
+	return command
 }
 
 func defaultShellPath() string {
@@ -124,7 +184,7 @@ func scrubbedEnv(pathPrefix string) []string {
 
 // Execute implements einofs.Shell.
 func (s *JailedShell) Execute(ctx context.Context, req *einofs.ExecuteRequest) (*einofs.ExecuteResponse, error) {
-	command := req.Command
+	command := s.translateMounts(req.Command)
 
 	if s.classifier(command) {
 		// Same-process resume: the decision arrives as the resume data.
