@@ -314,6 +314,9 @@ else
     ONCLAW_LISTEN_ADDR="${SERVER_HOST}:${SERVER_PORT}" \
     ONCLAW_PUBLIC_BASE_URL="${PUBLIC_BASE_URL}" \
     ONCLAW_WHATSAPP_CLOUD_API_BASE="${WA_STUB_BASE}" \
+    ONCLAW_LANGFUSE_HOST="" \
+    ONCLAW_LANGFUSE_PUBLIC_KEY="" \
+    ONCLAW_LANGFUSE_SECRET_KEY="" \
     "${TMP_DIR}/onclaw-smoke-bin" server --database-url "${DATABASE_URL}" --listen-addr "${SERVER_HOST}:${SERVER_PORT}" --encryption-key "${ENCRYPTION_KEY}" >"${TMP_DIR}/server.log" 2>&1 &
 
     SERVER_PID=$!
