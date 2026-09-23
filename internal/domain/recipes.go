@@ -187,6 +187,12 @@ type Recipe struct {
 	// explaining how to register the provider app whose client credentials
 	// the whole instance authorizes through (design.md D2).
 	AppRegistrationGuidance string `json:"app_registration_guidance,omitempty"`
+	// OauthRedirectURI is DERIVED at serve time, not registry data (services.
+	// EnrichRecipes): the instance's public base URL + the OAuth callback
+	// path, shown in the gallery's setup flow so the operator can register it
+	// at the provider before any app exists. Empty when the base URL is
+	// unset. Never validated — it is projection copy.
+	OauthRedirectURI string `json:"oauth_redirect_uri,omitempty"`
 	// AccessLevels lists the supported access levels (ConnectionAccess*
 	// constants); the first entry is the flow's default.
 	AccessLevels []string       `json:"access_levels"`

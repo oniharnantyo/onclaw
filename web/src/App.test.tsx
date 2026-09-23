@@ -424,7 +424,6 @@ describe('App & Route Guard', () => {
     await waitFor(() => {
       expect(screen.getByTestId('rail-admin-workspaces')).not.toBeNull();
       expect(screen.getByTestId('rail-admin-accounts')).not.toBeNull();
-      expect(screen.getByTestId('rail-admin-oauth')).not.toBeNull();
       expect(screen.getByTestId('admin-view')).not.toBeNull();
     });
   });

@@ -20,6 +20,7 @@ import {
   type ApiConnection,
   type ApiIntegrationRecipe,
 } from "../../lib/connectionsApi";
+import { useIsAdmin } from "../../store/auth";
 import { ConnectServiceDialog } from "../../modals/ConnectServiceDialog";
 import serverErrorSvg from "../../assets/server-error.svg";
 
@@ -43,7 +44,8 @@ function SectionLabel({ children }: { children: any }) {
 /**
  * Integrations settings surface (add-workspace-connections 4.1,
  * add-connection-oauth 4.1/4.2): the recipe gallery (available cards with
- * Integrate, coming-soon cards disabled and truthful, the Custom MCP advanced
+ * Integrate, one-time instance-app setup riding the same dialog, the Custom
+ * MCP advanced
  * card leading to MCP management) above the Connected section (status,
  * access level, attached agents, last-4 hint, manage/disconnect — expired
  * OAuth connections offer Reauthorize). Also lands the OAuth consent
@@ -59,6 +61,7 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
   const [searchParams] = useSearchParams();
   const derivedWriter = useCanManageIntegrations(tenant);
   const writer = canWrite !== undefined ? canWrite : derivedWriter;
+  const isAdmin = useIsAdmin();
 
   const [recipes, setRecipes] = useState<ApiIntegrationRecipe[]>([]);
   const [connections, setConnections] = useState<ApiConnection[]>([]);
@@ -66,6 +69,7 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
   const [loadError, setLoadError] = useState<ApiError | Error | null>(null);
 
   const [connecting, setConnecting] = useState<ApiIntegrationRecipe | null>(null);
+  const [editingApp, setEditingApp] = useState<ApiIntegrationRecipe | null>(null);
   const [disconnecting, setDisconnecting] = useState<ApiConnection | null>(null);
   const [busy, setBusy] = useState(false);
   const [probingId, setProbingId] = useState<string | null>(null);
@@ -144,8 +148,6 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
   }, [searchParams]);
 
   const connectedByService = new Map(connections.map((c) => [c.service, c]));
-  const available = recipes.filter((r) => r.availability === 'available');
-  const comingSoon = recipes.filter((r) => r.availability !== 'available');
   const serviceName = (c: ApiConnection) => connectionServiceName(c, recipes);
 
   const handleProbe = async (c: ApiConnection) => {
@@ -263,7 +265,7 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
               <div className="rounded-md border border-dashed border-line px-4 py-5 text-center" data-testid="connections-empty">
                 <p className="text-[13px] font-medium text-fg">No services connected yet</p>
                 <p className="mx-auto mt-1 max-w-sm text-[12px] leading-4 text-muted">
-                  Pick a service below, paste an access token, and its tools become attachable to every agent.
+                  Pick a service below and connect it — its tools become attachable to every agent.
                 </p>
               </div>
             ) : (
@@ -388,14 +390,16 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
             )}
           </section>
 
-          {/* Gallery — available recipes. */}
-          {available.length > 0 && (
+          {/* Gallery — every recipe, ready or needing its one-time instance
+              app setup (the dialog guides that setup inline). */}
+          {recipes.length > 0 && (
             <section data-testid="recipes-available">
-              <SectionLabel>Available services</SectionLabel>
+              <SectionLabel>Services</SectionLabel>
               <div className="space-y-2.5">
-                {available.map((r) => {
+                {recipes.map((r) => {
                   const conn = connectedByService.get(r.id);
                   const kind = recipeKind(r);
+                  const needsSetup = r.auth_kind === 'oauth' && r.availability !== 'available';
                   return (
                     <div
                       key={r.id}
@@ -421,20 +425,37 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
                         ) : (
                           <p className="truncate font-mono text-[11px] text-muted">{r.transport}</p>
                         )}
+                        {needsSetup && (
+                          <p className="text-[11px] leading-4 text-[color-mix(in_oklab,var(--warn),black_25%)]" data-testid={'recipe-setup-needed-' + r.id}>
+                            One-time instance setup needed{r.auth_kind === 'oauth' ? ' — signs in with ' + r.service + '.' : '.'}
+                          </p>
+                        )}
                       </div>
                       {conn ? (
                         <span className="flex shrink-0 items-center gap-1.5 text-[12px] text-[color-mix(in_oklab,var(--success),black_25%)]">
                           <Icon name="check" size={13} /> Connected
                         </span>
                       ) : writer ? (
-                        <button
-                          type="button"
-                          data-testid={'btn-integrate-' + r.id}
-                          onClick={() => setConnecting(r)}
-                          className="h-8 shrink-0 rounded-md bg-accent px-3.5 text-[12px] font-semibold text-accenton transition-colors hover:opacity-90"
-                        >
-                          Integrate
-                        </button>
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          {r.auth_kind === 'oauth' && !needsSetup && isAdmin && (
+                            <button
+                              type="button"
+                              data-testid={'btn-app-settings-' + r.id}
+                              onClick={() => setEditingApp(r)}
+                              className="h-8 rounded-md px-2 text-[11px] font-medium text-muted transition-colors hover:text-fg"
+                            >
+                              App settings
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            data-testid={'btn-integrate-' + r.id}
+                            onClick={() => setConnecting(r)}
+                            className="h-8 shrink-0 rounded-md bg-accent px-3.5 text-[12px] font-semibold text-accenton transition-colors hover:opacity-90"
+                          >
+                            Integrate
+                          </button>
+                        </div>
                       ) : (
                         <span className="shrink-0 text-[11px] text-muted" title="Connecting requires integrations.write">
                           Admins manage connections
@@ -443,45 +464,6 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
                     </div>
                   );
                 })}
-              </div>
-            </section>
-          )}
-
-          {/* Coming-soon gallery — visible, disabled, truthful (D2). */}
-          {comingSoon.length > 0 && (
-            <section data-testid="recipes-coming-soon">
-              <SectionLabel>Coming soon</SectionLabel>
-              <div className="space-y-2.5">
-                {comingSoon.map((r) => (
-                  <div
-                    key={r.id}
-                    className="flex items-center gap-3 rounded-md border border-line px-4 py-3 opacity-70"
-                    data-testid={'recipe-coming-soon-' + r.id}
-                  >
-                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[color-mix(in_oklab,var(--fg)_6%,transparent)] text-muted">
-                      <Icon name={serviceIconKey(r.id, r.icon)} size={16} />
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <p className="text-[14px] font-medium text-fg2">{r.service}</p>
-                        <Chip mono>{connectionKindLabel(recipeKind(r))}</Chip>
-                      </div>
-                      <p className="text-[11px] leading-4 text-muted">
-                        {/* Server-declared notes are the truthful copy; the
-                            fallback keeps the card honest for recipes that
-                            ship without one. An oauth recipe is coming-soon
-                            only while its provider app is unregistered. */}
-                        {r.notes ||
-                          (r.auth_kind === 'oauth'
-                            ? 'Waiting on an instance admin to register the app under Admin → OAuth apps.'
-                            : 'Not available in this deployment yet.')}
-                      </p>
-                    </div>
-                    <span className="shrink-0 rounded-md border border-line px-2.5 py-1 text-[11px] font-medium text-muted">
-                      Coming soon
-                    </span>
-                  </div>
-                ))}
               </div>
             </section>
           )}
@@ -522,6 +504,18 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
             onToast(`${connecting.service} connected`);
             void load();
           }}
+          onAppSaved={() => void load()}
+          onToast={onToast}
+        />
+      )}
+
+      {editingApp && (
+        <ConnectServiceDialog
+          recipe={editingApp}
+          tenant={tenant}
+          editApp
+          onClose={() => setEditingApp(null)}
+          onAppSaved={() => void load()}
           onToast={onToast}
         />
       )}

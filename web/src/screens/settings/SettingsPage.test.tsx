@@ -878,9 +878,13 @@ describe('screens/settings/SettingsPage', () => {
       await waitFor(() => {
         expect(screen.getByTestId('recipe-github')).not.toBeNull();
       });
-      // Gallery: available service integrates, coming-soon stays disabled.
+      // Gallery: every service integrates — the unregistered oauth provider's
+      // card says so and its dialog carries the one-time setup flow.
       expect(screen.getByTestId('btn-integrate-github')).not.toBeNull();
-      expect(screen.queryByTestId('btn-integrate-slack')).toBeNull();
+      expect(screen.getByTestId('btn-integrate-slack')).not.toBeNull();
+      expect(screen.getByTestId('recipe-setup-needed-slack').textContent).toContain(
+        'One-time instance setup needed'
+      );
 
       // Connected section: status, access level, agents, last-4 hint only.
       expect(screen.getByTestId('connection-status-conn-gitlab').textContent).toBe('Connected');

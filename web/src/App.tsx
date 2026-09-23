@@ -132,7 +132,6 @@ function Layout() {
   // Map route to view string for Rail
   const view = location.pathname.startsWith('/admin/workspaces') ? 'admin-workspaces'
     : location.pathname.startsWith('/admin/accounts') ? 'admin-accounts'
-    : location.pathname.startsWith('/admin/oauth') ? 'admin-oauth'
     : location.pathname.startsWith('/admin') ? 'admin-workspaces'
     : location.pathname.startsWith('/settings') ? 'settings'
     : location.pathname.startsWith('/agents') ? 'agents'
@@ -145,7 +144,6 @@ function Layout() {
     if (v === 'chats') navigate('/c');
     else if (v === 'admin-workspaces') navigate('/admin/workspaces');
     else if (v === 'admin-accounts') navigate('/admin/accounts');
-    else if (v === 'admin-oauth') navigate('/admin/oauth-apps');
     else navigate(`/${v}`);
     setDrawerOpen(false);
   };
@@ -312,7 +310,6 @@ function Layout() {
               <Routes>
                 <Route path="/admin/workspaces" element={<AdminView screen="workspaces" tenant={tenant} />} />
                 <Route path="/admin/accounts" element={<AdminView screen="accounts" tenant={tenant} />} />
-                <Route path="/admin/oauth-apps" element={<AdminView screen="oauth-apps" tenant={tenant} />} />
                 <Route path="/admin/tenants" element={<Navigate to="/admin/workspaces" replace />} />
                 <Route path="/admin/users" element={<Navigate to="/admin/accounts" replace />} />
                 <Route path="/admin/superadmins" element={<Navigate to="/admin/accounts" replace />} />

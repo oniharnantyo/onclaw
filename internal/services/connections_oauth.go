@@ -944,6 +944,9 @@ func (s *ConnectionsService) EnrichRecipes(ctx context.Context) []domain.Recipe 
 		} else {
 			recipe.Availability = domain.RecipeComingSoon
 		}
+		if s.publicBaseURL != "" {
+			recipe.OauthRedirectURI = DeriveOAuthRedirectURI(s.publicBaseURL)
+		}
 	}
 	return recipes
 }

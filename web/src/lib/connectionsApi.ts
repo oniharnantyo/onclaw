@@ -107,6 +107,11 @@ export interface ApiIntegrationRecipe {
   authorize_url?: string;
   /** OAuth-only: the token endpoint the backend exchanges the code at. */
   token_url?: string;
+  /** Derived at serve time (services.EnrichRecipes): this instance's public
+   * base URL + the OAuth callback path. Shown in the setup flow so the
+   * operator can register it at the provider before any app exists. Absent
+   * when no public base URL is configured. */
+  oauth_redirect_uri?: string;
   /** OAuth-only: how an instance admin registers the provider app. */
   app_registration_guidance?: string;
   /** Truthful coming-soon copy, or operator provisioning notes. */

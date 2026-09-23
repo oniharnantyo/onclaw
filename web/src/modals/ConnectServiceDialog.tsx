@@ -5,8 +5,10 @@ import { Chip } from "../components/ui/Chip";
 import { Icon } from "../components/ui/Icon";
 import { Toggle } from "../components/ui/Toggle";
 import { inputCls, labelCls } from "../components/ui/constants";
+import { useIsAdmin } from "../store/auth";
 import {
   accessLevelLabel,
+  adminOAuthAppsApi,
   connectionsApi,
   recipeKind,
   type ApiConnection,
@@ -19,9 +21,13 @@ export interface ConnectServiceDialogProps {
   recipe: ApiIntegrationRecipe;
   /** Workspace slug the connection is created in. */
   tenant: any;
+  /** Instance-admin mode: manage the provider app instead of connecting. */
+  editApp?: boolean;
   onClose: () => void;
   /** Fired once after a successful connect, before the hand-off view. */
   onConnected?: (connection: ApiConnection) => void;
+  /** Fired after the provider app is registered — the gallery re-reads it. */
+  onAppSaved?: () => void;
   onToast?: (text: string, kind?: string) => void;
 }
 
@@ -30,25 +36,31 @@ const FALLBACK_LEVELS: ConnectionAccessLevel[] = ['read_only', 'read_write'];
 /**
  * Guided connect flow (add-workspace-connections 4.2, add-connection-oauth
  * 4.1, add-connection-http 4.1): PAT recipes render the token-creation steps
- * and token input; oauth recipes render the consent hand-off instead — no
- * token field, the Connect action asks the server for the provider's
- * authorize URL and redirects the browser. HTTP-kind recipes (D6) ride the
- * PAT flow — the recipe's guided steps already carry the API-token + scopes
- * guidance — plus their declared verb surface: every tool the connection will
- * add, joined to the recipe's pinned base URL (D1 verbs-only — there is no
- * MCP wiring to describe). All variants share the access-level catalog
+ * and token input; oauth recipes render the consent hand-off — no token
+ * field, the Connect action asks the server for the provider's authorize URL
+ * and redirects the browser. HTTP-kind recipes (D6) ride the PAT flow — the
+ * recipe's guided steps already carry the API-token + scopes guidance — plus
+ * their declared verb surface. All variants share the access-level catalog
  * preselected to the recipe's first level (read-only). PAT/http connect is
  * probe-gated server-side (a failure stores nothing and surfaces the upstream
  * message here); oauth connect activates later, when the provider callback
  * returns to Settings → Integrations. Success hands off to per-agent
  * attachment riding the existing enabled_mcps patch — the materialized server
  * id when one exists, else the raw connection id for HTTP-kind connections.
+ *
+ * An unregistered oauth recipe (availability lagging its instance app) opens
+ * in SETUP mode first: the operator creates the provider app, registers its
+ * credentials here, and the dialog switches to the ordinary consent flow.
+ * `editApp` opens the same form for a registered app (instance admins only —
+ * update the client id or replace a rotated secret).
  */
 export function ConnectServiceDialog({
   recipe,
   tenant,
+  editApp = false,
   onClose,
   onConnected,
+  onAppSaved,
   onToast = () => {},
 }: ConnectServiceDialogProps) {
   const ws = tenant?.sub || tenant?.id;
@@ -56,11 +68,37 @@ export function ConnectServiceDialog({
   const isOAuth = recipe.auth_kind === 'oauth';
   const isHttp = recipeKind(recipe) === 'http';
   const verbs = recipe.verbs || [];
+  const canSetupInstanceApps = useIsAdmin();
+  // An oauth recipe whose instance app is not registered opens in setup mode;
+  // once saved (here or elsewhere) the dialog drops into the consent flow.
+  const [appReady, setAppReady] = useState(isOAuth && recipe.availability === 'available');
+  const setupMode = isOAuth && !appReady && !editApp;
+  const [clientId, setClientId] = useState('');
+  const [clientSecret, setClientSecret] = useState('');
+  const [savingApp, setSavingApp] = useState(false);
 
   const [accessLevel, setAccessLevel] = useState<ConnectionAccessLevel>(levels[0]);
   const [token, setToken] = useState('');
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Edit mode prefills the registered client id; the secret stays write-only.
+  useEffect(() => {
+    if (!editApp) return;
+    let mounted = true;
+    adminOAuthAppsApi
+      .get(recipe.id)
+      .then((res) => {
+        if (mounted && res?.app) setClientId(res.app.client_id);
+      })
+      .catch((err: unknown) => {
+        onToast(formatApiError(err, `Couldn't load the ${recipe.service} app`), 'danger');
+      });
+    return () => {
+      mounted = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot prefill
+  }, [editApp, recipe.id]);
 
   // Success hand-off state: the connected row plus the agents one may attach.
   const [connected, setConnected] = useState<ApiConnection | null>(null);
@@ -132,6 +170,36 @@ export function ConnectServiceDialog({
     }
   };
 
+  // Register (setup mode) or update (edit mode) the instance provider app.
+  // The secret is stored encrypted server-side and never returned in full.
+  const handleSaveApp = async () => {
+    if (savingApp) return;
+    const firstRegistration = !editApp && !appReady;
+    if (!clientId.trim() || (firstRegistration && !clientSecret.trim())) return;
+    setSavingApp(true);
+    setError(null);
+    try {
+      await adminOAuthAppsApi.save(recipe.id, {
+        client_id: clientId.trim(),
+        // Update mode may keep the stored credential by omitting the secret.
+        client_secret: clientSecret.trim(),
+      });
+      setSavingApp(false);
+      if (editApp) {
+        onToast(`${recipe.service} app updated`);
+        onClose();
+        return;
+      }
+      setAppReady(true);
+      setClientSecret('');
+      onAppSaved?.();
+      onToast(`${recipe.service} is set up — everyone can now connect it`);
+    } catch (err: unknown) {
+      setSavingApp(false);
+      setError(formatApiError(err, `Couldn't save the ${recipe.service} app`));
+    }
+  };
+
   // Attach/detach rides the existing agent MCP opt-in endpoint: the full
   // enabled_mcps array is PATCHed with the attach id (materialized server id,
   // or the connection id for HTTP-kind rows) added or removed. A failure
@@ -196,9 +264,134 @@ export function ConnectServiceDialog({
     </div>
   );
 
+  // SETUP / EDIT — the instance provider app form. Shown when an oauth
+  // recipe's app is not registered yet (setup) or explicitly requested by an
+  // instance admin (edit). The redirect URI comes derived from the server.
+  const redirectUri = recipe.oauth_redirect_uri || '';
+  const setupForm = (
+    <div className="space-y-5 p-5" data-testid="connect-app-setup">
+      <p className="text-[12px] leading-4 text-muted">
+        {editApp
+          ? `Update the ${recipe.service} app this instance authorizes through. Every workspace's connections share it; stored tokens keep working.`
+          : `${recipe.service} signs in through an app registered once for this whole instance. After it's saved here, ${recipe.service} is ready for every workspace.`}
+      </p>
+
+      {recipe.app_registration_guidance && (
+        <div data-testid="connect-oauth-guidance">
+          <span className={labelCls}>Create the app</span>
+          <p className="text-[13px] leading-5 text-fg2">{recipe.app_registration_guidance}</p>
+        </div>
+      )}
+
+      {redirectUri ? (
+        <div>
+          <span className={labelCls}>Redirect URL</span>
+          <div
+            className="mt-1 flex items-center gap-2 rounded-md border border-line px-3 py-2"
+            data-testid="connect-redirect-uri"
+          >
+            <code className="min-w-0 flex-1 truncate font-mono text-[12px] text-fg2">{redirectUri}</code>
+            <button
+              type="button"
+              data-testid="btn-copy-redirect-uri"
+              onClick={() => {
+                void navigator.clipboard?.writeText(redirectUri);
+                onToast('Redirect URL copied');
+              }}
+              className="h-7 shrink-0 rounded-md border border-line px-2 text-[11px] font-medium text-fg2 transition-colors hover:border-accent hover:text-fg"
+            >
+              Copy
+            </button>
+          </div>
+          <p className="mt-1 text-[11px] leading-4 text-muted">
+            Add this exact URL as an allowed callback in the provider's app settings.
+          </p>
+        </div>
+      ) : (
+        <p
+          role="alert"
+          data-testid="connect-redirect-missing"
+          className="flex items-start gap-1.5 rounded-md border border-[color-mix(in_oklab,var(--warn)_35%,transparent)] bg-[color-mix(in_oklab,var(--warn)_8%,transparent)] px-3 py-2 text-[12px] leading-4 text-[color-mix(in_oklab,var(--warn),black_25%)]"
+        >
+          <Icon name="alert" size={13} className="mt-0.5 shrink-0" />
+          This instance has no public base URL configured — an operator must set
+          ONCLAW_PUBLIC_BASE_URL before {recipe.service} can be connected.
+        </p>
+      )}
+
+      {canSetupInstanceApps ? (
+        <>
+          <div>
+            <label className={labelCls} htmlFor="connect-app-client-id">
+              Client ID
+            </label>
+            <input
+              id="connect-app-client-id"
+              type="text"
+              autoComplete="off"
+              value={clientId}
+              onChange={(e) => setClientId(e.target.value)}
+              placeholder="From the provider's app settings"
+              data-testid="input-app-client-id"
+              className={cx(inputCls, 'font-mono')}
+            />
+          </div>
+          <div>
+            <label className={labelCls} htmlFor="connect-app-client-secret">
+              Client secret
+            </label>
+            <input
+              id="connect-app-client-secret"
+              type="password"
+              autoComplete="off"
+              value={clientSecret}
+              onChange={(e) => setClientSecret(e.target.value)}
+              placeholder={editApp ? 'Enter a new secret to replace it' : 'Paste the client secret'}
+              data-testid="input-app-client-secret"
+              className={cx(inputCls, 'font-mono')}
+            />
+            <p className="mt-1.5 text-[11px] leading-4 text-muted">
+              {editApp
+                ? 'Leave empty to keep the stored secret.'
+                : 'Stored encrypted and never shown again — only its last 4 characters.'}
+            </p>
+          </div>
+        </>
+      ) : (
+        <p
+          data-testid="connect-app-needs-admin"
+          className="rounded-md border border-line px-3 py-2 text-[12px] leading-4 text-muted"
+        >
+          An instance admin needs to set this up once — ask them to open this card and paste the
+          provider app's credentials.
+        </p>
+      )}
+
+      {error && (
+        <p
+          role="alert"
+          data-testid="connect-error"
+          className="flex items-start gap-1.5 rounded-md border border-[color-mix(in_oklab,var(--danger)_35%,transparent)] bg-[color-mix(in_oklab,var(--danger)_8%,transparent)] px-3 py-2 text-[12px] leading-4 text-danger"
+        >
+          <Icon name="alert" size={13} className="mt-0.5 shrink-0" />
+          {error}
+        </p>
+      )}
+    </div>
+  );
+
+  const setupReady = clientId.trim() !== '' && (editApp || appReady || clientSecret.trim() !== '');
+  const title = connected
+    ? `${recipe.service} connected`
+    : editApp
+      ? `App settings — ${recipe.service}`
+      : setupMode
+        ? `Set up ${recipe.service}`
+        : `Connect ${recipe.service}`;
+
   return (
     <Modal
-      title={connected ? `${recipe.service} connected` : `Connect ${recipe.service}`}
+      title={title}
       onClose={onClose}
       odId="modal-connect-service"
       data-testid="modal-connect-service"
@@ -212,6 +405,33 @@ export function ConnectServiceDialog({
           >
             Done
           </button>
+        ) : setupMode || editApp ? (
+          <>
+            <button
+              type="button"
+              onClick={onClose}
+              data-testid="btn-connect-cancel"
+              className="flex h-9 items-center rounded-md border border-line px-3.5 text-[13px] font-medium text-fg2 transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_6%,transparent)] hover:text-fg"
+            >
+              Cancel
+            </button>
+            {(setupMode ? canSetupInstanceApps : true) && (
+              <button
+                type="button"
+                onClick={() => void handleSaveApp()}
+                disabled={!setupReady || savingApp}
+                data-testid="btn-save-app"
+                className="flex h-9 items-center gap-2 rounded-md bg-accent px-4 text-[13px] font-semibold text-accenton transition-colors hover:opacity-90 disabled:opacity-40"
+              >
+                {savingApp && <Icon name="loader" size={13} className="animate-spin" />}
+                {savingApp
+                  ? 'Saving…'
+                  : editApp
+                    ? 'Save changes'
+                    : `Save & enable ${recipe.service}`}
+              </button>
+            )}
+          </>
         ) : (
           <>
             <button
@@ -284,6 +504,8 @@ export function ConnectServiceDialog({
             )}
           </div>
         </div>
+      ) : setupMode || editApp ? (
+        setupForm
       ) : isOAuth ? (
         /* OAuth consent hand-off (add-connection-oauth 4.1): no token field —
            the secret is never user-supplied; the browser round-trips the
@@ -304,12 +526,6 @@ export function ConnectServiceDialog({
           </div>
 
           {accessLevelSection}
-
-          {recipe.app_registration_guidance && (
-            <p className="text-[11px] leading-4 text-muted" data-testid="connect-oauth-guidance">
-              {recipe.app_registration_guidance}
-            </p>
-          )}
 
           {error && (
             <p

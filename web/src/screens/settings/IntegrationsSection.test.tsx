@@ -3,11 +3,13 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom';
 import { IntegrationsSection } from './IntegrationsSection';
 import {
+  adminOAuthAppsApi,
   connectionsApi,
   type ApiConnection,
   type ApiIntegrationRecipe,
 } from '../../lib/connectionsApi';
 import { api, ApiError } from '../../lib/api';
+import { useStore } from '../../store';
 
 const mockTenant = { id: 'acme', sub: 'acme', name: 'Acme Corp' };
 
@@ -202,11 +204,18 @@ describe('screens/settings/IntegrationsSection', () => {
     expect(screen.getByTestId('recipe-github')).not.toBeNull();
     expect(screen.queryByTestId('btn-integrate-github')).toBeNull();
 
-    // Coming-soon services render disabled and truthful — no connect flow.
-    expect(screen.getByTestId('recipe-coming-soon-atlassian')).not.toBeNull();
-    expect(screen.getByTestId('recipe-coming-soon-slack')).not.toBeNull();
-    expect(screen.getAllByText(/OAuth sign-in/).length).toBe(2);
-    expect(screen.queryByTestId('btn-integrate-atlassian')).toBeNull();
+    // Unregistered oauth services sit in the same gallery with an explicit
+    // one-time setup hint; Integrate opens the guided setup flow instead of
+    // a dead end.
+    expect(screen.getByTestId('recipe-atlassian')).not.toBeNull();
+    expect(screen.getByTestId('recipe-slack')).not.toBeNull();
+    expect(screen.getByTestId('recipe-setup-needed-atlassian').textContent).toContain(
+      'One-time instance setup needed'
+    );
+    expect(screen.getByTestId('recipe-setup-needed-slack').textContent).toContain(
+      'signs in with Slack'
+    );
+    expect(screen.getByTestId('btn-integrate-atlassian')).not.toBeNull();
 
     // The advanced path links out to MCP management.
     expect(screen.getByTestId('btn-custom-mcp')).not.toBeNull();
@@ -431,7 +440,7 @@ describe('screens/settings/IntegrationsSection', () => {
       expect(screen.getByTestId('recipe-gitlab')).not.toBeNull();
     });
     expect(screen.queryByTestId('btn-integrate-gitlab')).toBeNull();
-    expect(screen.getByText('Admins manage connections')).not.toBeNull();
+    expect(screen.getAllByText('Admins manage connections').length).toBeGreaterThan(0);
     expect(screen.queryByTestId('btn-connection-disconnect-conn-gh')).toBeNull();
     // Reads stay available.
     expect(screen.getByTestId('connection-conn-gh')).not.toBeNull();
@@ -457,7 +466,7 @@ describe('screens/settings/IntegrationsSection', () => {
     });
   });
 
-  it('keeps the oauth coming-soon card truthful about the missing instance app', async () => {
+  it('guides an unregistered oauth recipe into the inline instance-app setup', async () => {
     vi.spyOn(connectionsApi, 'recipes').mockResolvedValue({
       recipes: [atlassianRecipe({ notes: undefined })],
     });
@@ -465,11 +474,82 @@ describe('screens/settings/IntegrationsSection', () => {
     renderPane();
 
     await waitFor(() => {
-      expect(screen.getByTestId('recipe-coming-soon-atlassian')).not.toBeNull();
+      expect(screen.getByTestId('recipe-setup-needed-atlassian')).not.toBeNull();
     });
-    expect(screen.getByTestId('recipe-coming-soon-atlassian').textContent).toContain(
-      'register the app under Admin → OAuth apps'
+    expect(screen.getByTestId('recipe-setup-needed-atlassian').textContent).toContain(
+      'One-time instance setup needed'
     );
+    fireEvent.click(screen.getByTestId('btn-integrate-atlassian'));
+    await waitFor(() => {
+      expect(screen.getByTestId('modal-connect-service')).not.toBeNull();
+    });
+    // Setup mode. This viewer is a workspace admin, not a master-tenant
+    // admin, so the honest ask renders; the fixture carries no public base
+    // URL, so the operator prerequisite surfaces too.
+    expect(screen.getByTestId('connect-app-setup')).not.toBeNull();
+    expect(screen.getByTestId('connect-redirect-missing').textContent).toContain(
+      'ONCLAW_PUBLIC_BASE_URL'
+    );
+    expect(screen.getByTestId('connect-app-needs-admin')).not.toBeNull();
+    expect(screen.queryByTestId('btn-save-app')).toBeNull();
+  });
+
+  it('switches an oauth dialog from setup to the consent hand-off after the app is saved', async () => {
+    const save = vi.spyOn(adminOAuthAppsApi, 'save').mockResolvedValue({
+      app: {
+        provider: 'atlassian',
+        client_id: 'app-9',
+        client_secret_hint: 'zz99',
+        redirect_uri: 'http://localhost:3000/api/v1/integrations/oauth/callback',
+      },
+    });
+    vi.spyOn(connectionsApi, 'recipes').mockResolvedValue({
+      recipes: [
+        atlassianRecipe({
+          notes: undefined,
+          oauth_redirect_uri: 'http://localhost:3000/api/v1/integrations/oauth/callback',
+          scopes: [{ access_level: 'read_only', scopes: ['read:jira-user', 'offline_access'] }],
+        }),
+      ],
+    });
+    // The setup form is master-tenant-admin gated — render as master admin.
+    useStore.setState({
+      pos: { tenantId: 'master', view: 'chats', chatId: 'a1', showContext: false },
+      db: {
+        master: { id: 'master', sub: 'master', name: 'Master', is_master: true, isAdmin: true },
+      } as any,
+    });
+
+    renderPane();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('btn-integrate-atlassian')).not.toBeNull();
+    });
+    fireEvent.click(screen.getByTestId('btn-integrate-atlassian'));
+    await waitFor(() => {
+      expect(screen.getByTestId('input-app-client-id')).not.toBeNull();
+    });
+    expect(screen.queryByTestId('connect-app-needs-admin')).toBeNull();
+    expect((screen.getByTestId('btn-save-app') as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.change(screen.getByTestId('input-app-client-id'), { target: { value: 'app-9' } });
+    fireEvent.change(screen.getByTestId('input-app-client-secret'), {
+      target: { value: 'secret-zz99' },
+    });
+    expect((screen.getByTestId('btn-save-app') as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByTestId('btn-save-app'));
+
+    await waitFor(() => {
+      expect(save).toHaveBeenCalledWith('atlassian', {
+        client_id: 'app-9',
+        client_secret: 'secret-zz99',
+      });
+    });
+    // The dialog drops into the ordinary consent hand-off — no re-open.
+    await waitFor(() => {
+      expect(screen.getByTestId('connect-oauth-handoff')).not.toBeNull();
+    });
+    expect(screen.queryByTestId('connect-app-setup')).toBeNull();
   });
 
   it('connects an oauth recipe through the consent hand-off — no token field', async () => {
@@ -505,10 +585,10 @@ describe('screens/settings/IntegrationsSection', () => {
     expect(screen.queryByTestId('connect-steps')).toBeNull();
     expect(screen.queryByTestId('input-connect-token')).toBeNull();
     // Consent scopes come from the recipe, labeled as approval rather than a
-    // recommendation, and operator guidance renders as a note.
+    // recommendation; operator registration copy lives in setup mode only.
     expect(screen.getByTestId('connect-scopes').textContent).toContain('read:jira-user');
     expect(screen.getByTestId('connect-scopes').textContent).toMatch(/approve/i);
-    expect(screen.getByTestId('connect-oauth-guidance').textContent).toContain('developer.atlassian.com');
+    expect(screen.queryByTestId('connect-oauth-guidance')).toBeNull();
 
     // Connect is NOT gated on a token — there isn't one.
     expect((screen.getByTestId('btn-connect-confirm') as HTMLButtonElement).disabled).toBe(false);

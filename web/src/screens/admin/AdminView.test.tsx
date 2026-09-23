@@ -7,7 +7,6 @@ import { UsersPane } from './UsersPane';
 import { CreateTenantModal } from './CreateTenantModal';
 import { CreateUserModal } from './CreateUserModal';
 import { api, ApiError } from '../../lib/api';
-import { adminOAuthAppsApi } from '../../lib/connectionsApi';
 import { useAuthStore } from '../../store/auth';
 import { useStore } from '../../store';
 
@@ -219,42 +218,6 @@ describe('Admin Area', () => {
       expect(screen.getByTestId('pane-admin-users')).not.toBeNull();
     });
 
-    it('renders the OAuth apps pane at /admin/oauth-apps behind the same master-tenant gate', async () => {
-      vi.spyOn(adminOAuthAppsApi, 'list').mockResolvedValue({ apps: [] });
-
-      render(
-        <MemoryRouter initialEntries={['/admin/oauth-apps']}>
-          <Routes>
-            <Route path="/admin/oauth-apps" element={<AdminView screen="oauth-apps" tenant={mockMasterWorkspace} />} />
-          </Routes>
-        </MemoryRouter>
-      );
-
-      expect(screen.getByTestId('admin-view')).not.toBeNull();
-      await waitFor(() => {
-        expect(screen.getByTestId('pane-admin-oauth-apps')).not.toBeNull();
-      });
-      // Provider rows render even when nothing is registered.
-      expect(screen.getByTestId('oauth-app-row-atlassian')).not.toBeNull();
-      expect(screen.getByTestId('oauth-app-row-slack')).not.toBeNull();
-      expect(screen.getByTestId('oauth-app-row-linear')).not.toBeNull();
-    });
-
-    it('renders not-authorized for the OAuth apps pane outside the master workspace', () => {
-      useStore.setState({
-        pos: { tenantId: 'acme', view: 'chats', chatId: 'a1', showContext: false },
-      });
-
-      render(
-        <MemoryRouter initialEntries={['/admin/oauth-apps']}>
-          <Routes>
-            <Route path="/admin/oauth-apps" element={<AdminView tenant={mockNonMasterWorkspace} />} />
-          </Routes>
-        </MemoryRouter>
-      );
-
-      expect(screen.getByTestId('admin-unauthorized')).not.toBeNull();
-    });
   });
 
   describe('5.2 Tenants Screen & EditTenantModal', () => {
