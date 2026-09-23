@@ -320,7 +320,7 @@ func TestComposeAgent_StampsContextMeasure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	cfg, resolvedTools, err := runner.resolve(ctx, req, loadedWs, loadedAgent)
+	cfg, resolvedTools, err := runner.resolve(ctx, req, loadedWs, loadedAgent, nil)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -360,7 +360,7 @@ func TestComposeAgent_StampsContextMeasure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load chart agent: %v", err)
 	}
-	cfg, resolvedTools, err = runner.resolve(ctx, req, loadedWs, loadedAgent)
+	cfg, resolvedTools, err = runner.resolve(ctx, req, loadedWs, loadedAgent, nil)
 	if err != nil {
 		t.Fatalf("resolve chart agent: %v", err)
 	}

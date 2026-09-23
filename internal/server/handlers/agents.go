@@ -1083,6 +1083,12 @@ type ResolveApprovalRequest struct {
 // ResolveApproval resolves a pending shell-approval interrupt and resumes the
 // paused turn. The response returns once the resume has been initiated; the
 // continued turn's events appear in the session history.
+//
+// A pending TOOL approval (a service-run write escalation,
+// add-integration-authority task 2.4) additionally requires the DECIDER to
+// hold domain.IntegrationsWrite: the escalation paused the run because the
+// service authority may not write on the team's behalf, so only a user who
+// may manage integrations may grant it. Shell approvals are unchanged.
 func (h *agentHandlers) ResolveApproval(c *gin.Context) {
 	ws := MustCurrentWorkspace(c)
 	user := MustCurrentUser(c)
@@ -1112,12 +1118,37 @@ func (h *agentHandlers) ResolveApproval(c *gin.Context) {
 		return
 	}
 
-	_, err = h.runner.Resume(c.Request.Context(), agents.ExecRequest{
+	if pending.Tool != nil {
+		role, ok := CurrentRole(c)
+		if !ok || role == nil {
+			if member, mok := CurrentMember(c); mok && member != nil && member.Role != nil {
+				role = member.Role
+			}
+		}
+		if role == nil || !domain.HasPermission(role.Permissions, domain.IntegrationsWrite) {
+			AbortForbidden(c, "approving a service-run write escalation requires the "+domain.IntegrationsWrite+" permission")
+			return
+		}
+	}
+
+	// The resume request must reproduce the interrupted run's identity: a
+	// tool approval only ever belongs to a service-authority run (webhook
+	// event run), so its origin and attribution ride the resume — the runner's
+	// Resume restores the same fields from the pending payload as belt to
+	// these suspenders. Shell approvals resume exactly as before.
+	resumeReq := agents.ExecRequest{
 		WorkspaceID: ws.ID,
 		AgentID:     agent.ID,
 		SessionID:   sessionID,
 		UserID:      user.ID,
-	}, pending, *req.Approved)
+	}
+	if pending.Tool != nil {
+		resumeReq.Origin = agents.OriginService
+		resumeReq.ConnectionID = pending.Tool.ConnectionID
+		resumeReq.ConnectionService = pending.Tool.Service
+	}
+
+	_, err = h.runner.Resume(c.Request.Context(), resumeReq, pending, *req.Approved)
 	if err != nil {
 		RespondError(c, err)
 		return

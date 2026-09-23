@@ -106,6 +106,38 @@ describe('modals/AgentConnectionsSection', () => {
     expect(screen.getByTestId('agent-connection-status-conn-gh').textContent).toBe('Paused');
   });
 
+  it('shows the read/write tool-tier split beside the access level (add-integration-authority 3.1)', async () => {
+    // The counts are the API's effective-tier projection — never computed here.
+    vi.spyOn(connectionsApi, 'list').mockResolvedValue({
+      connections: [connectionRow({ tier_counts: { read: 6, write: 2 } })],
+    });
+
+    render(<AgentConnectionsSection targetWsId="acme" enabledMcps={['srv-gh-mcp']} onToggle={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('agent-connection-tiers-conn-gh')).not.toBeNull();
+    });
+    const tiers = screen.getByTestId('agent-connection-tiers-conn-gh');
+    expect(tiers.textContent).toContain('6 read');
+    expect(tiers.textContent).toContain('2 write');
+    // The split sits in the same chip row as the access level it qualifies.
+    expect(screen.getByText('Read & write')).not.toBeNull();
+  });
+
+  it('hides the tier split gracefully when the API projected no tier_counts', async () => {
+    // Legacy/unknown connections carry no tier_counts — no counts, no stubs.
+    vi.spyOn(connectionsApi, 'list').mockResolvedValue({
+      connections: [connectionRow()],
+    });
+
+    render(<AgentConnectionsSection targetWsId="acme" enabledMcps={['srv-gh-mcp']} onToggle={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('agent-connection-conn-gh')).not.toBeNull();
+    });
+    expect(screen.queryByTestId('agent-connection-tiers-conn-gh')).toBeNull();
+  });
+
   it('attaches HTTP-kind connections by connection id and never calls them paused', async () => {
     // add-connection-http: no materialized server — server_enabled is
     // structurally false, the toggle stores the raw connection id.

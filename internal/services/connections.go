@@ -339,6 +339,13 @@ type ConnectionView struct {
 	// AttachedAgents lists the names of agents whose enabled_mcps include the
 	// materialized server. Always an array, empty when none are attached.
 	AttachedAgents []string `json:"attached_agents"`
+	// TierCounts is the connection's declared exposed-tool read/write split
+	// (add-integration-authority task 2.5), projected from its recipe via
+	// domain.ToolTierCounts — declaration-derived counts (verbs for http
+	// kind, the tool-tier list for mcp kind). An unregistered recipe counts
+	// zero. Always served: the agent config integrations section reads it to
+	// show what non-admin members can drive.
+	TierCounts domain.RecipeTierCounts `json:"tier_counts"`
 }
 
 // connectionStatusUnknown is the API's status for a server that has never
@@ -381,6 +388,11 @@ func (s *ConnectionsService) List(ctx context.Context, workspaceID string) ([]Co
 // — absence is a degraded state, not an error.
 func (s *ConnectionsService) buildView(ctx context.Context, workspaceID string, conn *domain.Connection) (*ConnectionView, error) {
 	view := &ConnectionView{Connection: *conn, AttachedAgents: []string{}}
+
+	// Declaration-derived tier counts (add-integration-authority task 2.5):
+	// every view carries its recipe's read/write split; an unregistered
+	// recipe counts zero (domain.ToolTierCounts' nil rule).
+	view.TierCounts = domain.ToolTierCounts(domain.RecipeByID(conn.Service))
 
 	if recipe := domain.RecipeByID(conn.Service); recipe != nil && recipe.Kind == domain.RecipeKindHTTP {
 		return s.buildHTTPView(ctx, workspaceID, conn, recipe)
@@ -567,6 +579,20 @@ func (s *ConnectionsService) probeServer(ctx context.Context, workspaceID, serve
 	pctx, cancel := context.WithTimeout(ctx, s.probeTimeout)
 	defer cancel()
 	return s.probe(pctx, workspaceID, serverID, name, conn)
+}
+
+// ConnectionServiceOf resolves a workspace connection's recipe id (the
+// domain.Connection.Service value). It is the runner's
+// agents.ConnectionOriginLookup seam (add-integration-authority task 2.1),
+// satisfied structurally — the CredentialForConnection precedent — so the
+// MCP resolution pass can walk the origin link (server row's
+// OriginConnectionID → connection → recipe) without importing this package.
+func (s *ConnectionsService) ConnectionServiceOf(ctx context.Context, workspaceID, connectionID string) (string, error) {
+	conn, err := s.connections.Get(ctx, workspaceID, connectionID)
+	if err != nil {
+		return "", err
+	}
+	return conn.Service, nil
 }
 
 // ---------------------------------------------------------------------------

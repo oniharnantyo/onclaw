@@ -11,6 +11,10 @@ import { API_ORIGIN } from './api';
 // when the terminal event reports it, its numbers replace the client
 // estimate in the context popover.
 import type { ServerContextBreakdown } from './contextBreakdown';
+// add-integration-authority: the service-run write escalation rides the same
+// approval event as shell approvals — the shared shape lives in the one
+// connections client module.
+import type { ConnectionToolEscalation } from './connectionsApi';
 
 export const ONCLAW_SESSION_KEY = 'onclaw_session';
 
@@ -19,6 +23,11 @@ export interface OnclawApproval {
   command: string;
   response_id: string;
   session_id: string;
+  /** add-integration-authority (task 3.2): present when the paused run is a
+   * service-authority run that reached for a write-tier connection tool —
+   * the transcript renders the service escalation card instead of the shell
+   * approval card. Absent on the ordinary dangerous-command path. */
+  tool?: ConnectionToolEscalation;
 }
 
 /** Terminal-event usage block, mapped from the wire's snake_case usage. */
@@ -219,6 +228,10 @@ export async function runTurn(
             command: ev.command,
             response_id: ev.response_id,
             session_id: ev.session_id,
+            // Service-run write escalation (add-integration-authority): the
+            // backend attaches the connection tool the run paused at. Passed
+            // through untouched — the card renders server-declared truth.
+            ...(ev.tool ? { tool: ev.tool as ConnectionToolEscalation } : {}),
           };
           cb.onApprovalRequired?.(pendingApproval);
           break;

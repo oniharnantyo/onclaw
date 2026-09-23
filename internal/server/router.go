@@ -442,6 +442,10 @@ func (rt *router) Engine() *gin.Engine {
 			// pass as MCP tools, after built-ins — one wiring shape shared
 			// with the composition root.
 			agents.WithConnectionToolSource(NewConnectionToolSource(connectionsSvc)),
+			// Connection origin lookup (add-integration-authority 2.1): the
+			// origin-link half of the gate's MCP annotations, the same
+			// service satisfying the seam structurally.
+			agents.WithConnectionOriginLookup(connectionsSvc),
 			agents.WithHooks(agenthooks.NewDispatcher(rt.opts.Store.Hooks(), hookRegistry)),
 			agents.WithChannelContext(channelRuntime.Chokepoint()),
 			agents.WithChannelFeed(channelRuntime.Chokepoint()),

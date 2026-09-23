@@ -347,7 +347,9 @@ export function useChatRuntime(chatId: string) {
           onApprovalRequired: (a) => {
             flushDeltas();
             patchTools((tools, msg) => {
-              tools.push({ args: '', ms: 0, approval: { interruptId: a.interrupt_id, command: a.command, resolved: false } });
+              // tool rides only on service-run write escalations
+              // (add-integration-authority): the transcript card branches on it.
+              tools.push({ args: '', ms: 0, approval: { interruptId: a.interrupt_id, command: a.command, resolved: false, ...(a.tool ? { tool: a.tool } : {}) } });
               appendToolPart(msg, tools.length - 1);
             });
             // The turn is paused server-side until the approval card is acted
@@ -853,7 +855,9 @@ export function useChatRuntime(chatId: string) {
         flushDeltas();
         patchTarget((mm) => {
           if (!mm.tools) mm.tools = [];
-          mm.tools.push({ args: '', ms: 0, approval: { interruptId: a.interrupt_id, command: a.command, resolved: false } });
+          // tool rides only on service-run write escalations
+          // (add-integration-authority): the transcript card branches on it.
+          mm.tools.push({ args: '', ms: 0, approval: { interruptId: a.interrupt_id, command: a.command, resolved: false, ...(a.tool ? { tool: a.tool } : {}) } });
           appendToolPart(mm, mm.tools.length - 1);
           const branch = mm.branches?.[mm.branch];
           if (branch) { branch.tools = mm.tools; branch.parts = mm.parts; }

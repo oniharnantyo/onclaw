@@ -87,6 +87,14 @@ type Runner struct {
 	// MCP tools, after them. Default: a no-op source contributing nothing.
 	connectionSource connectionToolResolver
 
+	// Connection origin lookup (add-integration-authority task 2.1): resolves
+	// a connection-materialized MCP server's owning connection's recipe id —
+	// the origin-link half (server row → connection → recipe) the MCP pass
+	// cannot read from the row alone. The connections service satisfies it
+	// structurally; default nil degrades fail-safe (affected tools gate as
+	// write).
+	connectionOrigins ConnectionOriginLookup
+
 	hooks      *hooks.Dispatcher
 	hooksWired bool
 
@@ -249,6 +257,20 @@ func WithConnectionToolSource(source *ConnectionToolSource) RunnerOption {
 	return func(r *Runner) {
 		if source != nil {
 			r.connectionSource = source
+		}
+	}
+}
+
+// WithConnectionOriginLookup supplies the origin-link seam the MCP resolution
+// pass reads to annotate connection-materialized servers' tools with their
+// owning connection's identity (add-integration-authority task 2.1). The
+// composition root wires the connections service, which satisfies it
+// structurally. Default: nil — affected tools annotate with no recipe and
+// gate as write (the fail-safe direction).
+func WithConnectionOriginLookup(lookup ConnectionOriginLookup) RunnerOption {
+	return func(r *Runner) {
+		if lookup != nil {
+			r.connectionOrigins = lookup
 		}
 	}
 }
@@ -557,6 +579,13 @@ type agentConfig struct {
 	Hooks     *hooks.Resolved
 	HooksBase *hooks.Event
 
+	// Gate is the run's connection-tool gate (add-integration-authority
+	// tasks 2.2–2.4): the resolved connection tools' origin annotations, the
+	// invocation-time authority, and the service-run flag. Inactive (no
+	// attached connection tools) composes no gate middleware — runs without
+	// connections behave exactly as before.
+	Gate *connectionGateConfig
+
 	// CompactionObserver receives the display-only token estimates of every
 	// summarization the composed agent performs (chat-compact-command D5);
 	// wired from the per-run compaction state, nil in unit constructions.
@@ -614,7 +643,10 @@ func validateAgentConfig(cfg agentConfig) error {
 }
 
 // resolve builds the agentConfig from loaded entities: tools, model, capabilities.
-func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Workspace, agent *domain.Agent) (
+// role is the requesting member's CURRENT role — the connection gate reads its
+// permission set for resolution-time pruning (add-integration-authority
+// task 2.2); the invocation-time re-check re-reads the stores fresh.
+func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Workspace, agent *domain.Agent, role *domain.Role) (
 	cfg agentConfig, resolvedTools []tool.BaseTool, err error,
 ) {
 	cfg = agentConfig{
@@ -771,7 +803,9 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 	// MCP tools append after built-ins (design.md D6): governed solely by the
 	// opt-in allowlist + master switches + private attachment via the policy —
 	// deliberately independent of `effective`, the allowlist, and the gate.
-	mcpTools, err := r.resolveMCPTools(ctx, req, agent)
+	// Origin-marked (connection-materialized) servers' tools are annotated
+	// with their connection identity for the connection gate (task 2.1).
+	mcpTools, mcpOrigins, err := r.resolveMCPTools(ctx, req, agent)
 	if err != nil {
 		return cfg, nil, fmt.Errorf("resolve mcp tools: %w", err)
 	}
@@ -781,11 +815,22 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 	// same resolution pass, attachment the only authority, per-connection
 	// failures degraded skip-and-mark inside the source. Lister failures
 	// (store-level) fail the resolution like any other store error.
-	connectionTools, err := r.connectionSource.ToolsFor(ctx, req.WorkspaceID, req.AgentID, resolvedTools)
+	connectionTools, connectionOrigins, err := r.connectionSource.ToolsFor(ctx, req.WorkspaceID, req.AgentID, resolvedTools)
 	if err != nil {
 		return cfg, nil, fmt.Errorf("resolve connection tools: %w", err)
 	}
 	resolvedTools = append(resolvedTools, connectionTools...)
+
+	// The connection gate (add-integration-authority tasks 2.2–2.4): the
+	// merged origin annotations plus the invocation-time authority. On a
+	// non-service run whose requesting member holds no integrations.write,
+	// write-tier connection tools are pruned from the surface entirely (D6 —
+	// budget clarity; the invocation re-check re-reads the CURRENT set).
+	// Service-authority runs keep the write tier reachable: its first
+	// write-tier call escalates through the approval flow (task 2.4).
+	gate, prunedNames := r.buildConnectionGate(req, role, mcpOrigins, connectionOrigins)
+	resolvedTools = pruneResolvedNames(ctx, resolvedTools, prunedNames)
+	cfg.Gate = gate
 
 	// Effective provider/model resolution (refactor-workspace-settings D3):
 	// one resolver for the pinned pair and the workspace-default inherit path.
@@ -957,20 +1002,31 @@ func (noopMCPStatus) SetAgentStatus(context.Context, string, string, string, str
 // per-server failure contributes zero tools and best-effort flips the row's
 // status to error; the run proceeds. Policy failures (store-level) fail the
 // resolution like any other store error.
-func (r *Runner) resolveMCPTools(ctx context.Context, req ExecRequest, agent *domain.Agent) ([]tool.BaseTool, error) {
+//
+// Workspace servers a connection materialized (OriginConnectionID set,
+// add-connection-webhooks D1) have their tools annotated with the owning
+// connection's identity for the connection gate (add-integration-authority
+// task 2.1): the origin-link lookup recovers the connection's recipe id, and
+// an unresolvable link annotates with no recipe — every tool of that server
+// gates as write (the fail-safe direction).
+func (r *Runner) resolveMCPTools(ctx context.Context, req ExecRequest, agent *domain.Agent) ([]tool.BaseTool, map[string]connectionToolOrigin, error) {
 	wsServers, err := r.mcpPolicy.WorkspaceServers(ctx, req.WorkspaceID, agent.EnabledMCPS)
 	if err != nil {
-		return nil, fmt.Errorf("load workspace mcp servers: %w", err)
+		return nil, nil, fmt.Errorf("load workspace mcp servers: %w", err)
 	}
 	agentServers, err := r.mcpPolicy.AgentServers(ctx, req.AgentID)
 	if err != nil {
-		return nil, fmt.Errorf("load agent mcp servers: %w", err)
+		return nil, nil, fmt.Errorf("load agent mcp servers: %w", err)
 	}
 
 	var (
 		tools []tool.BaseTool
 		namer = mcp.NewNamer()
 	)
+	// originRecipes memoizes the pass's connection→recipe resolutions: one
+	// store read per connection per run.
+	originRecipes := map[string]*domain.Recipe{}
+
 	// resolveServer fetches one server's tools through the manager, renames
 	// them into the shared pass namespace, and reports the outcome
 	// best-effort. Never fails the run (design.md D8).
@@ -995,14 +1051,19 @@ func (r *Runner) resolveMCPTools(ctx context.Context, req ExecRequest, agent *do
 		return named
 	}
 
+	origins := map[string]connectionToolOrigin{}
 	for _, s := range wsServers {
 		ref := mcp.Ref{WorkspaceID: req.WorkspaceID, ServerID: s.ID, Name: s.Name, Conn: s.MCPConnection}
 		ws, wsID := req.WorkspaceID, s.ID
-		tools = append(tools, resolveServer(ref, s.Status, s.StatusError, s.ToolCount,
+		named := resolveServer(ref, s.Status, s.StatusError, s.ToolCount,
 			func(status, statusErr string, count int) {
 				reportMCPStatus(ctx, r.mcpStatus.SetWorkspaceStatus(ctx, ws, wsID, status, statusErr, count),
 					"workspace", ref.Name)
-			})...)
+			})
+		tools = append(tools, named...)
+		if s.OriginConnectionID != "" {
+			r.annotateOriginServerTools(ctx, req.WorkspaceID, s.OriginConnectionID, named, origins, originRecipes)
+		}
 	}
 	for _, s := range agentServers {
 		ref := mcp.Ref{WorkspaceID: s.WorkspaceID, ServerID: s.ID, Name: s.Name, Conn: s.MCPConnection}
@@ -1013,7 +1074,64 @@ func (r *Runner) resolveMCPTools(ctx context.Context, req ExecRequest, agent *do
 					"agent", ref.Name)
 			})...)
 	}
-	return tools, nil
+	return tools, origins, nil
+}
+
+// annotateOriginServerTools adds the connection-gate annotations for one
+// connection-materialized server's resolved tools (add-integration-authority
+// task 2.1). Each tool's APPLIED name (post-rename, collision suffixes
+// included) keys the map — that is the name the gate sees at invocation. A
+// connection whose recipe cannot be resolved annotates with a nil recipe, so
+// its tools gate as write (EffectiveToolTier's fail-safe default). The
+// originRecipes memo keeps the pass at one lookup per connection.
+func (r *Runner) annotateOriginServerTools(ctx context.Context, workspaceID, connectionID string, named []tool.BaseTool, origins map[string]connectionToolOrigin, memo map[string]*domain.Recipe) {
+	if len(named) == 0 {
+		return
+	}
+	recipe, known := memo[connectionID]
+	if !known {
+		recipe = r.originRecipeFor(ctx, workspaceID, connectionID)
+		memo[connectionID] = recipe
+	}
+	origin := connectionToolOrigin{
+		ConnectionID: connectionID,
+		Recipe:       recipe,
+	}
+	if recipe != nil {
+		origin.Service = recipe.ID
+		origin.ServiceName = recipe.Service
+	}
+	for _, t := range named {
+		if t == nil {
+			continue
+		}
+		info, err := t.Info(ctx)
+		if err != nil || info == nil || info.Name == "" {
+			continue // an unnameable tool cannot be gated or invoked by name
+		}
+		origins[info.Name] = origin
+	}
+}
+
+// originRecipeFor resolves the recipe behind a connection-materialized
+// server through the origin-link seam (task 2.1): server row's
+// OriginConnectionID → connection → recipe id → registered recipe. A nil
+// lookup (unit constructions), a gone connection row, or an unregistered
+// recipe degrades to nil — the gate treats every tool of that server as
+// write-tier (fail-safe; design.md D5).
+func (r *Runner) originRecipeFor(ctx context.Context, workspaceID, connectionID string) *domain.Recipe {
+	if r.connectionOrigins == nil {
+		return nil
+	}
+	service, err := r.connectionOrigins.ConnectionServiceOf(ctx, workspaceID, connectionID)
+	if err != nil {
+		slog.WarnContext(ctx, "connection gate: origin-link lookup failed; gating the server's tools as write",
+			"workspace_id", workspaceID,
+			"connection_id", connectionID,
+			"error", err)
+		return nil
+	}
+	return domain.RecipeByID(service)
 }
 
 // reportMCPStatus logs a failed best-effort status write; the run proceeds
@@ -1171,6 +1289,7 @@ func (r *Runner) composeAgent(
 		Hooks:              cfg.Hooks,
 		HooksBase:          cfg.HooksBase,
 		CompactionObserver: cfg.CompactionObserver,
+		gate:               cfg.Gate,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("compose agent: %w", err)
@@ -1384,7 +1503,7 @@ func (r *Runner) run(ctx context.Context, req ExecRequest, ephemeral bool) (*Eve
 		return nil, fmt.Errorf("agent.Run: %w", err)
 	}
 
-	cfg, resolvedTools, err := r.resolve(ctx, req, ws, domainAgent)
+	cfg, resolvedTools, err := r.resolve(ctx, req, ws, domainAgent, role)
 	if err != nil {
 		return nil, fmt.Errorf("agent.Run: %w", err)
 	}
@@ -2183,13 +2302,16 @@ func (r *Runner) drainAgentEvents(
 			break
 		}
 
-		// Handle interrupts: a dangerous shell command paused the turn for
-		// human approval. Emit the approval event and end the stream without
-		// a terminal event — Resume continues the turn from the checkpoint.
+		// Handle interrupts: a dangerous shell command or a service run's
+		// write-tier connection tool paused the turn for human approval. Emit
+		// the approval event (the tool object discriminates the service
+		// escalation from a shell approval) and end the stream without a
+		// terminal event — Resume continues the turn from the checkpoint.
 		if event.Action != nil && event.Action.Interrupted != nil {
 			interrupted := event.Action.Interrupted
 			approval := &ApprovalPayload{InterruptID: interruptIDOf(interrupted)}
 			approval.Command = shellCommandOf(interrupted)
+			approval.Tool = toolApprovalOf(interrupted)
 			emit(&TranscriptEvent{
 				Kind:       TranscriptEventApprovalRequired,
 				OccurredAt: now,
@@ -2550,6 +2672,23 @@ func (r *Runner) Resume(ctx context.Context, req ExecRequest, approval *Approval
 		return nil, fmt.Errorf("%w: approval with interrupt_id is required", domain.ErrInvalid)
 	}
 
+	// A tool-approval resume belongs to the interrupted service-authority run
+	// (add-integration-authority task 2.4): only service runs raise tool
+	// interrupts, and the approvals endpoint carries no origin of its own —
+	// so the rebuilt request reproduces the interrupted run's origin and
+	// attribution. Without this the resumed gate would classify the run as a
+	// user run and a DENIED write could execute on the decider's own
+	// integrations.write. Shell approvals (Tool == nil) are untouched.
+	if approval.Tool != nil {
+		req.Origin = OriginService
+		if req.ConnectionID == "" {
+			req.ConnectionID = approval.Tool.ConnectionID
+		}
+		if req.ConnectionService == "" {
+			req.ConnectionService = approval.Tool.Service
+		}
+	}
+
 	// Record the decision durably before resuming: interrupt IDs are
 	// regenerated when a checkpoint is reconstructed in a new process, so the
 	// shell consults this ledger as the cross-restart decision path.
@@ -2562,7 +2701,7 @@ func (r *Runner) Resume(ctx context.Context, req ExecRequest, approval *Approval
 		return nil, fmt.Errorf("agent.Resume: %w", err)
 	}
 
-	cfg, resolvedTools, err := r.resolve(ctx, req, ws, domainAgent)
+	cfg, resolvedTools, err := r.resolve(ctx, req, ws, domainAgent, role)
 	if err != nil {
 		return nil, fmt.Errorf("agent.Resume: %w", err)
 	}

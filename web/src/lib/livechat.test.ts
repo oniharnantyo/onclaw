@@ -270,6 +270,48 @@ describe('fetchSessionTranscript — prompt_blocked notices', () => {
     expect(messages[1].text).toBe('');
   });
 
+  it('hydrates a service-run write escalation with the tool payload intact (add-integration-authority)', async () => {
+    vi.mocked(api.agents.sessionEvents).mockResolvedValueOnce({
+      next: '',
+      events: [
+        { id: 'e1', kind: 'message_completed', occurred_at: 't0', turn_id: 'turn-1',
+          message: { role: 'user', content: 'PR 42 opened' } },
+        // The webhook run paused at a write-tier connection tool: the approval
+        // event carries the escalation instead of a shell command.
+        { id: 'e2', kind: 'approval_required', occurred_at: 't1', turn_id: 'turn-1',
+          approval: {
+            interrupt_id: 'int-gh-1',
+            tool: {
+              name: 'github.merge_pull_request',
+              service: 'github',
+              service_name: 'GitHub',
+              connection_id: 'conn-gh',
+              tier: 'write',
+            },
+          } },
+      ],
+    });
+
+    const { messages, pendingInterruptIds } = await fetchSessionTranscript('ws1', 'atlas', 'sess_h-esc');
+
+    const agent = messages.find((m: any) => m.author === 'agent');
+    expect(agent).toBeTruthy();
+    const card = agent.tools.find((t: any) => t.approval);
+    expect(card).toBeTruthy();
+    // The escalation rides the card untouched — the transcript card branches
+    // on its presence and renders server-declared truth.
+    expect(card.approval.interruptId).toBe('int-gh-1');
+    expect(card.approval.tool).toEqual({
+      name: 'github.merge_pull_request',
+      service: 'github',
+      service_name: 'GitHub',
+      connection_id: 'conn-gh',
+      tier: 'write',
+    });
+    // Never followed by turn activity → the interrupt is still pending.
+    expect(pendingInterruptIds).toContain('int-gh-1');
+  });
+
   it('mints the same notice shape from the live catch-up stream (identical rendering after reload)', async () => {
     const seed = () => {
       const db: any = {

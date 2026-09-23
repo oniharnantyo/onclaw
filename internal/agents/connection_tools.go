@@ -72,9 +72,12 @@ type AttachedConnectionLister interface {
 // resolution pass as MCP tools and after them. resolved carries the
 // already-resolved tools so verb names colliding with a built-in or private
 // MCP tool can degrade per contract §5. *ConnectionToolSource implements it;
-// the no-op default contributes nothing.
+// the no-op default contributes nothing. Alongside the tools it returns the
+// gate's origin annotations (add-integration-authority task 2.1): each
+// resolved verb keyed by its name, carrying its connection identity — the
+// connection gate consults the map at resolution and invocation.
 type connectionToolResolver interface {
-	ToolsFor(ctx context.Context, workspaceID, agentID string, resolved []tool.BaseTool) ([]tool.BaseTool, error)
+	ToolsFor(ctx context.Context, workspaceID, agentID string, resolved []tool.BaseTool) ([]tool.BaseTool, map[string]connectionToolOrigin, error)
 }
 
 // noopConnectionTools is the default source: no connections, contributes
@@ -82,8 +85,8 @@ type connectionToolResolver interface {
 // (composition-root wiring replaces it via WithConnectionToolSource).
 type noopConnectionTools struct{}
 
-func (noopConnectionTools) ToolsFor(context.Context, string, string, []tool.BaseTool) ([]tool.BaseTool, error) {
-	return nil, nil
+func (noopConnectionTools) ToolsFor(context.Context, string, string, []tool.BaseTool) ([]tool.BaseTool, map[string]connectionToolOrigin, error) {
+	return nil, nil, nil
 }
 
 // Response-discipline constants (add-connection-http D4): the cap, the read
@@ -157,17 +160,22 @@ func NewConnectionToolSource(lister AttachedConnectionLister, creds ConnectionCr
 // attached http-kind connection, after the already-resolved set. Store-level
 // lister failures fail the resolution like any other store error; every
 // per-connection failure degrades skip-and-mark (D6) and never fails the run.
-func (s *ConnectionToolSource) ToolsFor(ctx context.Context, workspaceID, agentID string, resolved []tool.BaseTool) ([]tool.BaseTool, error) {
+// Each resolved verb is annotated with its connection's identity for the
+// connection gate (add-integration-authority task 2.1) — the recipe rides the
+// annotation, so the gate's tier lookup reads the same declaration data the
+// verb generation does.
+func (s *ConnectionToolSource) ToolsFor(ctx context.Context, workspaceID, agentID string, resolved []tool.BaseTool) ([]tool.BaseTool, map[string]connectionToolOrigin, error) {
 	refs, err := s.lister.AttachedHTTPConnections(ctx, workspaceID, agentID)
 	if err != nil {
-		return nil, fmt.Errorf("list attached http connections: %w", err)
+		return nil, nil, fmt.Errorf("list attached http connections: %w", err)
 	}
 	if len(refs) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	taken := takenToolNames(ctx, resolved)
 	var out []tool.BaseTool
+	origins := map[string]connectionToolOrigin{}
 	for _, ref := range refs {
 		mark := func(reason string, err error) {
 			args := []any{
@@ -205,6 +213,12 @@ func (s *ConnectionToolSource) ToolsFor(ctx context.Context, workspaceID, agentI
 			continue
 		}
 		client := s.pinnedClient(base.host)
+		origin := connectionToolOrigin{
+			ConnectionID: ref.ConnectionID,
+			Service:      ref.Service,
+			ServiceName:  ref.Recipe.Service,
+			Recipe:       ref.Recipe,
+		}
 		for _, verb := range ref.Recipe.Verbs {
 			if _, collide := taken[verb.Tool]; collide {
 				mark("verb tool name collides with an already-resolved tool: "+verb.Tool, nil)
@@ -212,9 +226,10 @@ func (s *ConnectionToolSource) ToolsFor(ctx context.Context, workspaceID, agentI
 			}
 			taken[verb.Tool] = struct{}{}
 			out = append(out, newConnectionVerbTool(ref, verb, base.pinFor(verb.Path), workspaceID, client, s.creds))
+			origins[verb.Tool] = origin
 		}
 	}
-	return out, nil
+	return out, origins, nil
 }
 
 // pinnedClient derives the per-connection client whose redirect policy is

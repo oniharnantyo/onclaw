@@ -3337,6 +3337,19 @@ log_step "28. Workspace Service Connections: Recipes, Guards, Probe Gate"
 # a bogus token against the real upstream fails the gate in every environment
 # (offline: dial error; online: upstream 401), stores NOTHING, and surfaces
 # the upstream message (spec: "Probe failure blocks connect").
+#
+# add-integration-authority (tasks.md 4.4): the connection tool gate has NO
+# deterministic smoke leg — a connection cannot exist here (no upstream PAT,
+# and no env override for server-side test recipes exists by design), so no
+# run in smoke ever resolves connection tools and the gate is inert. The
+# member-write denial / admin allowance / webhook-run escalation behaviors
+# are covered end-to-end by the fake-based runner tests
+# (internal/agents/connection_gate_test.go: member read executes, member
+# write denied with the canonical block and no upstream dial, service-run
+# interrupt → approve → resume → tool executes, deny → graceful block
+# ending) and the decider-permission endpoint test
+# (internal/server/approvals_test.go). Same substitution posture as the
+# connect lifecycle above.
 CONN_BASE="/api/v1/workspaces/${TENANT_SLUG}/integrations"
 
 # 28.1 The recipe registry: gallery order, GitHub available with guided steps,

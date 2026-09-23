@@ -315,7 +315,7 @@ func TestRunner_MixedTurnDegradesOnlyUnsupportedKind(t *testing.T) {
 	}
 
 	// The full resolve → build thread, exactly what run() does.
-	cfg, _, err := runner.resolve(context.Background(), req, ws, ag)
+	cfg, _, err := runner.resolve(context.Background(), req, ws, ag, nil)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -465,7 +465,7 @@ func TestResolve_ThreadsCatalogHintAndModality(t *testing.T) {
 	resolver := newFakeModalityResolver(nil) // unknown everywhere; args are what matters
 	runner.inputModalityResolver = resolver
 
-	cfg, _, err := runner.resolve(context.Background(), req, ws, ag)
+	cfg, _, err := runner.resolve(context.Background(), req, ws, ag, nil)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}

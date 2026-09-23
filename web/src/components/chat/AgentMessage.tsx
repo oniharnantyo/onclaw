@@ -9,6 +9,7 @@ import { Icon } from "../ui/Icon";
 import { Avatar } from "../ui/Avatar";
 import { MentionText } from "../ui/MentionText";
 import { useStore } from "../../store";
+import { useCanManageIntegrations } from "../../lib/connectionsApi";
 import { baseName, jailRelativePath } from "./panel/sources/file/candidates";
 
 import { ToolCall } from "./ToolCall";
@@ -328,11 +329,19 @@ export function AgentMessage({ m, agent, inChannel, busy, isLast, onCopy, onRefr
   // session/interrupt ids threaded from the onclaw:approval_required
   // payload. Only cards that carry (or belong to) a bound session are
   // actionable — legacy decorative cards render read-only.
+  // Service-run write escalations (add-integration-authority 3.2) are further
+  // permission-gated: only integrations.write holders (Owner/Admin, the same
+  // trust tier that manages connections) may approve or deny, so Members see
+  // the pending card read-only. Ordinary shell approvals keep their existing
+  // actionability — the gate applies to the connection card only.
+  const canApproveConnectionWrites = useCanManageIntegrations(null);
   const approvalFor = (t: any) => {
     const approvalSession =
       t.approval && (t.approval.sessionId || t.approval.session_id
         || (typeof sessionId === 'string' && sessionId.startsWith('sess_') ? sessionId : null));
-    return onResolveApproval && t.approval && approvalSession
+    const serviceWrite = !!(t.approval && t.approval.tool);
+    const permitted = !serviceWrite || canApproveConnectionWrites;
+    return onResolveApproval && t.approval && approvalSession && permitted
       ? (interruptId: string, approved: boolean) =>
           onResolveApproval(agent?.slug || m.agentId, approvalSession, interruptId, approved)
       : undefined;
@@ -363,6 +372,9 @@ export function AgentMessage({ m, agent, inChannel, busy, isLast, onCopy, onRefr
         t={t}
         running={busy && isLast && !t.res && !t.error}
         approval={approvalFor(t)}
+        // The service-run escalation card names the agent in its copy — the
+        // same resolved name the avatar shows.
+        agentName={agent ? agent.name : 'Agent'}
         // The same message's cards feed the ref→name lookup (design D5);
         // undefined is tolerated (no siblings → refs stay ref chips).
         siblings={tools}

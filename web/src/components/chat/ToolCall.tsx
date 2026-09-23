@@ -207,7 +207,93 @@ function ResultBody({ view }: { view: ResultView }) {
   }
 }
 
-export function ToolCall({ t, running, approval, siblings, live }: any) {
+// Service-run write escalation card (add-integration-authority 3.2): a
+// webhook-triggered (service-authority) run paused at a write-tier connection
+// tool. Structure, buttons, and working states mirror the shell approval card
+// above — same resolution endpoint, same approve/deny flow — but the body is
+// the server-declared escalation (service, tool, tier), the states are explicit
+// (pending / approved / denied / expired), and actionability is gated upstream:
+// only integrations.write holders (Owner/Admin) receive the approval callback,
+// so a Member's pending card renders read-only by the same `!approval` rule
+// that keeps legacy decorative cards non-interactive.
+function ServiceApprovalCard({ a, approval, agentName }: { a: any; approval?: (interruptId: string, approved: boolean) => Promise<void>; agentName?: string }) {
+  const [resolving, setResolving] = useState<'approve' | 'deny' | null>(null);
+  const tool = a.tool;
+  // Decision precedence: this viewer's just-cast vote (`decided`, stamped on
+  // the card by the click handler) wins, then the wire's recorded outcome
+  // (`approved` on hydrated history), else the request is still open.
+  const decided = (a as any).decided as boolean | undefined;
+  const outcome = decided !== undefined ? decided : typeof a.approved === 'boolean' ? a.approved : undefined;
+  // Expired: the server marked the interrupt expired, or its deadline passed
+  // while nobody reviewed — the run ended without the call either way.
+  const deadline = typeof a.expires_at === 'string' && !Number.isNaN(Date.parse(a.expires_at)) ? Date.parse(a.expires_at) : null;
+  const expired = outcome === undefined && (a.expired === true || (deadline !== null && Date.now() > deadline));
+  const pending = outcome === undefined && !expired;
+  // Actionable only when the parent gated the callback in: session-bound AND
+  // the viewer holds integrations.write (see AgentMessage's approvalFor).
+  const actionable = pending && !!approval;
+  const serviceLabel = tool.service_name || tool.service;
+  const decide = async (want: boolean) => {
+    if (!approval || !pending || resolving) return;
+    setResolving(want ? 'approve' : 'deny');
+    try {
+      await approval(a.interruptId, want);
+      (a as any).decided = want;
+    } finally {
+      setResolving(null);
+    }
+  };
+  return (
+    <div className="mb-2 overflow-hidden rounded-md border border-line bg-[color-mix(in_oklab,var(--accent)_6%,transparent)]" data-testid={'connection-approval-' + a.interruptId} data-od-id={'approval-' + a.interruptId}>
+      <div className="flex items-center gap-2 px-2.5 py-1.5">
+        <Icon name="plug" size={13} className="text-meta"/>
+        <span className="font-mono text-[12px] text-fg2">{serviceLabel}</span>
+        <span className="rounded-full bg-[color-mix(in_oklab,var(--accent)_14%,transparent)] px-2 py-0.5 font-mono text-[10px] text-fg2">approval required</span>
+        {outcome !== undefined && (
+          <span className="font-mono text-[10px] text-muted" data-testid={'connection-approval-status-' + a.interruptId}>
+            {outcome ? 'approved' : 'denied'}
+          </span>
+        )}
+        {expired && (
+          <span className="font-mono text-[10px] text-muted" data-testid={'connection-approval-status-' + a.interruptId}>
+            expired
+          </span>
+        )}
+      </div>
+      <p className="break-all px-2.5 pb-2 text-[12px] leading-5 text-fg2">
+        {agentName || 'This agent'} paused a webhook-triggered run to call <Chip>{tool.name}</Chip> on {serviceLabel} — a write action through the workspace's connected account.
+      </p>
+      {pending && (
+        actionable ? (
+          <div className="flex items-center gap-2 border-t border-linesoft px-2.5 py-2">
+            <button type="button" onClick={() => decide(true)} disabled={!!resolving}
+              className="rounded-md bg-[var(--accent)] px-2.5 py-1 text-[12px] font-medium text-accenton transition-opacity hover:opacity-90 disabled:opacity-50">
+              {resolving === 'approve' ? 'Approving…' : 'Approve'}
+            </button>
+            <button type="button" onClick={() => decide(false)} disabled={!!resolving}
+              className="rounded-md border border-line px-2.5 py-1 text-[12px] font-medium text-fg2 transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_6%,transparent)] disabled:opacity-50">
+              {resolving === 'deny' ? 'Denying…' : 'Deny'}
+            </button>
+            <span className="text-[11px] text-muted">
+              Approving lets the run make this one call with the stored {serviceLabel} credentials, then continue. Denying ends the turn without it.
+            </span>
+          </div>
+        ) : (
+          <div className="border-t border-linesoft px-2.5 py-2" data-testid={'connection-approval-readonly-' + a.interruptId}>
+            <span className="text-[11px] text-muted">Waiting for an Owner or Admin to review this request — the run stays paused until then.</span>
+          </div>
+        )
+      )}
+      {expired && (
+        <div className="border-t border-linesoft px-2.5 py-2">
+          <span className="text-[11px] text-muted">This request expired — the run ended without making the call.</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function ToolCall({ t, running, approval, siblings, live, agentName }: any) {
   const [open, setOpen] = useState(false);
   const [raw, setRaw] = useState(false);
   const [resolving, setResolving] = useState<'approve' | 'deny' | null>(null);
@@ -219,6 +305,10 @@ export function ToolCall({ t, running, approval, siblings, live }: any) {
   // resumed turn's tool result. Resolved cards render that result directly.
   if (t.approval) {
     const a = t.approval;
+    // Service-run write escalation (add-integration-authority 3.2): the pause
+    // happened at a connection tool, not a shell command — the payload names
+    // the service/tool and the card copy changes accordingly.
+    if (a.tool) return <ServiceApprovalCard a={a} approval={approval} agentName={agentName}/>;
     const decided = (a as any).decided as boolean | undefined;
     const resolved = a.resolved === true || a.resolved === false || decided !== undefined;
     const approved = decided !== undefined ? decided : a.approved;

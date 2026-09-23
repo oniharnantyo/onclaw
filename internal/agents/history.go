@@ -49,6 +49,18 @@ func (r *Runner) PendingApproval(ctx context.Context, workspaceID, sessionID str
 				if cmd, ok := se.Interrupt.Contexts[0].Info.(backend.ShellApprovalInfo); ok {
 					approval.Command = cmd.Command
 				}
+				if ta, ok := se.Interrupt.Contexts[0].Info.(ToolApprovalInfo); ok {
+					// Service-run write escalation (add-integration-authority
+					// task 2.4): the hydrated view carries the same tool
+					// object the live stream did.
+					approval.Tool = &ApprovalToolPayload{
+						Name:         ta.Name,
+						Service:      ta.Service,
+						ServiceName:  ta.ServiceName,
+						ConnectionID: ta.ConnectionID,
+						Tier:         ta.Tier,
+					}
+				}
 			}
 			pending = approval
 		case adk.SessionEventMessage, adk.SessionEventCancel:

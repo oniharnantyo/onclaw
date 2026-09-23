@@ -147,10 +147,47 @@ export interface ApiConnection {
   server_id?: string | null;
   server_enabled?: boolean;
   tool_count?: number;
+  /** add-integration-authority (task 3.1): the exposed-tool read/write split
+   * for this connection, projected server-side. Optional — absent (legacy or
+   * not yet projected) hides the counts in the agent config section. */
+  tier_counts?: ConnectionToolTiers;
   /** Names of agents whose enabled_mcps include the materialized server. */
   attached_agents?: string[];
   created_at?: string;
   updated_at?: string;
+}
+
+/** add-integration-authority task 3.1: the connection's exposed-tool count per
+ * gate tier — read-tier tools ride membership, write-tier ones require
+ * integrations.write. Optional on the wire: absent means the backend has not
+ * projected tiers for this connection (legacy/unknown) and the UI hides the
+ * counts gracefully. The numbers are server-computed (effective-tier
+ * projection, tasks 2.5) — never derived client-side. */
+export interface ConnectionToolTiers {
+  read: number;
+  write: number;
+}
+
+/** add-integration-authority task 3.2: the service-run write escalation riding
+ * the approval event. A webhook-triggered (service-authority) run paused at a
+ * write-tier connection tool; the transcript card names the service, the tool,
+ * and what approving means. The backend emits it on the SAME approval events
+ * as shell approvals — presence of `tool` (vs `command`) is the discriminator. */
+export interface ConnectionToolEscalation {
+  /** The full connection-tool name the run paused at
+   * (e.g. "github.merge_pull_request"). */
+  name: string;
+  /** The recipe id the connection was created from (domain.Connection.Service,
+   * e.g. "github") — the display-name fallback when service_name is absent. */
+  service: string;
+  /** Server-declared display service name ("GitHub") when the emitter
+   * resolved it from the recipe. */
+  service_name?: string;
+  /** The connection the tool rides (domain.Connection id). */
+  connection_id?: string;
+  /** The tier the run needs — always "write" today: the card exists because a
+   * service run reached for the write tier. */
+  tier?: 'read' | 'write';
 }
 
 /** D7: the entire connect payload — nothing else crosses the wire. `token` is
@@ -302,6 +339,19 @@ export function useCanManageIntegrations(tenant: any): boolean {
 /** Spec vocabulary: the connection view and gallery card show "Read & write". */
 export function accessLevelLabel(level: ConnectionAccessLevel | string | undefined): string {
   return level === 'read_write' ? 'Read & write' : 'Read-only';
+}
+
+/** add-integration-authority task 3.1: the row's tier-split chip labels
+ * (["6 read", "2 write"]). Rendered only from API-projected counts — absent or
+ * malformed tier_counts yields [], hiding the chips gracefully; nothing is
+ * computed client-side (the gate's effective projection lives on the backend,
+ * tasks 2.5). */
+export function connectionTierChips(t: ConnectionToolTiers | undefined): string[] {
+  if (!t || typeof t !== 'object') return [];
+  const out: string[] = [];
+  if (typeof t.read === 'number' && Number.isFinite(t.read)) out.push(`${t.read} read`);
+  if (typeof t.write === 'number' && Number.isFinite(t.write)) out.push(`${t.write} write`);
+  return out;
 }
 
 /** Display name for a connection: the recipe's service name when the registry

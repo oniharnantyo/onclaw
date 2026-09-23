@@ -121,6 +121,11 @@ type RecipeVerb struct {
 	// Description is the tool's agent-facing description. Real copy, no
 	// credential material.
 	Description string `json:"description"`
+	// Tier classifies the verb for the connection tool gate
+	// (add-integration-authority tasks.md 1.1): one of the RecipeToolTier*
+	// constants. Empty is legal and means RecipeToolTierDefault (write) — the
+	// fail-safe default — but built-ins declare their tiers explicitly.
+	Tier string `json:"tier"`
 }
 
 // Recipe is one declared service integration: recipe knowledge is server-side
@@ -192,6 +197,14 @@ type Recipe struct {
 	// agent-facing surface (add-connection-http design.md D1). Empty for mcp
 	// recipes; always an array when served.
 	Verbs []RecipeVerb `json:"verbs"`
+	// ToolTiers is the mcp-kind connection's explicit tool-tier list
+	// (add-integration-authority tasks.md 1.1): MCP tools are
+	// runtime-discovered, so the recipe classifies the curated tool names the
+	// remote server assigns. Kind-shaped data — http recipes carry their
+	// tiers on the verbs and must not declare this list; anything an mcp
+	// recipe's list does not name gates as RecipeToolTierDefault (write).
+	// Treat the slice as read-only (the Verbs copy convention).
+	ToolTiers []RecipeToolTierRule `json:"tool_tiers,omitempty"`
 	// Webhooks is the recipe's webhook declaration (add-connection-webhooks
 	// tasks.md 1.1): event catalog, signature scheme, per-event prompt
 	// templates with whitelisted payload fields, and provider setup copy. Nil
@@ -208,7 +221,8 @@ type Recipe struct {
 // availability, kind (mcp or http, add-connection-http design.md D6), and
 // per-kind surface — transport/endpoint/command and the MCP probe tool for
 // mcp kind; base URL, auth header, probe call, and the declared verb tools
-// for http kind — plus supported access levels, guided steps, and scopes.
+// for http kind — plus supported access levels, guided steps, scopes, and
+// the tool-tier declarations (add-integration-authority tasks.md 1.1).
 // Kind-shaped data never mixes: each kind rejects the other's fields
 // (add-connection-oauth precedent). Invalid recipes are a registration-time
 // programming error, not a runtime condition.
@@ -262,6 +276,12 @@ func ValidateRecipe(r *Recipe) error {
 		}
 		if strings.TrimSpace(r.Probe.Tool) == "" {
 			return fmt.Errorf("%w: recipe %q probe tool cannot be empty", ErrInvalid, r.ID)
+		}
+		// The tool-tier list is the mcp kind's tier surface
+		// (add-integration-authority tasks.md 1.1): well-formed unique tool
+		// names with catalog tiers.
+		if err := validateRecipeToolTiers(r); err != nil {
+			return err
 		}
 	case RecipeKindHTTP:
 		if err := validateHTTPRecipe(r); err != nil {
@@ -369,6 +389,9 @@ func validateHTTPRecipe(r *Recipe) error {
 	if r.Probe.Tool != "" {
 		return fmt.Errorf("%w: recipe %q declares an mcp probe tool under %s kind", ErrInvalid, r.ID, RecipeKindHTTP)
 	}
+	if len(r.ToolTiers) > 0 {
+		return fmt.Errorf("%w: recipe %q declares an mcp tool-tier list under %s kind — verbs carry their own tiers", ErrInvalid, r.ID, RecipeKindHTTP)
+	}
 	if err := validateHTTPCall(r.ID, "probe call", r.Probe.Method, r.Probe.Path); err != nil {
 		return err
 	}
@@ -424,6 +447,9 @@ func validateRecipeVerb(r *Recipe, v *RecipeVerb) error {
 	}
 	if strings.ContainsAny(v.Tool, " \t\r\n") {
 		return fmt.Errorf("%w: recipe %q verb tool %q must not contain whitespace", ErrInvalid, r.ID, v.Tool)
+	}
+	if err := validateVerbTier(r, v); err != nil {
+		return err
 	}
 	if err := validateHTTPCall(r.ID, "verb "+v.Tool+" path", v.Method, v.Path); err != nil {
 		return err

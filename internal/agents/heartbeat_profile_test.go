@@ -238,7 +238,7 @@ func TestResolve_HeartbeatToolStrip(t *testing.T) {
 		t.Helper()
 		r := req
 		r.Origin = origin
-		_, resolved, err := runner.resolve(ctx, r, ws, agent)
+		_, resolved, err := runner.resolve(ctx, r, ws, agent, nil)
 		if err != nil {
 			t.Fatalf("resolve (%s): %v", origin, err)
 		}

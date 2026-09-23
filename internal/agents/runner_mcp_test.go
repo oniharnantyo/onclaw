@@ -274,7 +274,7 @@ func TestRunnerResolveMCPOptInFiltering(t *testing.T) {
 	ag.EnabledMCPS = []string{"srv-opted"} // opts in only to github; linear is registered but not opted
 	runner.mcpPolicy, runner.mcpManager, runner.mcpStatus = policy, manager, status
 
-	_, tools, err := runner.resolve(context.Background(), req, ws, ag)
+	_, tools, err := runner.resolve(context.Background(), req, ws, ag, nil)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -310,7 +310,7 @@ func TestRunnerResolveMCPMasterSwitchWins(t *testing.T) {
 	ag.EnabledMCPS = []string{"srv-paused"}
 	runner.mcpPolicy, runner.mcpManager, runner.mcpStatus = policy, manager, status
 
-	_, tools, err := runner.resolve(context.Background(), req, ws, ag)
+	_, tools, err := runner.resolve(context.Background(), req, ws, ag, nil)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -340,7 +340,7 @@ func TestRunnerResolveMCPDeadServerSkipsAndMarks(t *testing.T) {
 	ag.EnabledMCPS = []string{"srv-alive", "srv-dead"}
 	runner.mcpPolicy, runner.mcpManager, runner.mcpStatus = policy, manager, status
 
-	_, tools, err := runner.resolve(context.Background(), req, ws, ag)
+	_, tools, err := runner.resolve(context.Background(), req, ws, ag, nil)
 	if err != nil {
 		t.Fatalf("dead server must not fail the run: %v", err)
 	}
@@ -374,7 +374,7 @@ func TestRunnerResolveMCPStatusWriteIsBestEffort(t *testing.T) {
 	ag.EnabledMCPS = []string{"srv-alive"}
 	runner.mcpPolicy, runner.mcpManager, runner.mcpStatus = policy, manager, status
 
-	_, tools, err := runner.resolve(context.Background(), req, ws, ag)
+	_, tools, err := runner.resolve(context.Background(), req, ws, ag, nil)
 	if err != nil {
 		t.Fatalf("failing status write must not fail the run: %v", err)
 	}
@@ -398,7 +398,7 @@ func TestRunnerResolveMCPSuccessRefreshesStatus(t *testing.T) {
 	ag.EnabledMCPS = []string{"srv-1"}
 	runner.mcpPolicy, runner.mcpManager, runner.mcpStatus = policy, manager, status
 
-	if _, _, err := runner.resolve(context.Background(), req, ws, ag); err != nil {
+	if _, _, err := runner.resolve(context.Background(), req, ws, ag, nil); err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
 	write, ok := status.lastWorkspaceFor("srv-1")
@@ -412,7 +412,7 @@ func TestRunnerResolveMCPSuccessRefreshesStatus(t *testing.T) {
 	policy.workspace[ws.ID][0].Status = domain.MCPStatusConnected
 	policy.workspace[ws.ID][0].StatusError = ""
 	policy.workspace[ws.ID][0].ToolCount = 2
-	if _, _, err := runner.resolve(context.Background(), req, ws, ag); err != nil {
+	if _, _, err := runner.resolve(context.Background(), req, ws, ag, nil); err != nil {
 		t.Fatalf("second resolve: %v", err)
 	}
 	if len(status.workspace) != 1 {
@@ -440,7 +440,7 @@ func TestRunnerResolveMCPPrivateServers(t *testing.T) {
 
 	runner.mcpPolicy, runner.mcpManager, runner.mcpStatus = policy, manager, status
 
-	_, tools, err := runner.resolve(context.Background(), req, ws, ag)
+	_, tools, err := runner.resolve(context.Background(), req, ws, ag, nil)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -478,7 +478,7 @@ func TestRunnerResolveMCPNamingCollisions(t *testing.T) {
 	ag.EnabledMCPS = []string{"srv-a", "srv-b", "srv-c"}
 	runner.mcpPolicy, runner.mcpManager, runner.mcpStatus = policy, manager, status
 
-	_, tools, err := runner.resolve(context.Background(), req, ws, ag)
+	_, tools, err := runner.resolve(context.Background(), req, ws, ag, nil)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -505,7 +505,7 @@ func TestRunnerResolveMCPIgnoresToolsAllowlist(t *testing.T) {
 	ag.EnabledMCPS = []string{"srv-opted"}
 	runner.mcpPolicy, runner.mcpManager, runner.mcpStatus = policy, manager, status
 
-	_, tools, err := runner.resolve(context.Background(), req, ws, ag)
+	_, tools, err := runner.resolve(context.Background(), req, ws, ag, nil)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -524,7 +524,7 @@ func TestRunnerResolveMCPDefaultsContributeNothing(t *testing.T) {
 	// nil-dereference, exactly as before the MCP integration.
 	runner, ws, ag, req := setupMCPRunner(t, nil)
 
-	_, tools, err := runner.resolve(context.Background(), req, ws, ag)
+	_, tools, err := runner.resolve(context.Background(), req, ws, ag, nil)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -541,7 +541,7 @@ func TestRunnerResolveMCPPolicyErrorFailsResolution(t *testing.T) {
 	policy := &mcpStubPolicy{policyErr: errors.New("db down")}
 	runner.mcpPolicy = policy
 
-	if _, _, err := runner.resolve(context.Background(), req, ws, ag); err == nil {
+	if _, _, err := runner.resolve(context.Background(), req, ws, ag, nil); err == nil {
 		t.Fatal("expected policy failure to fail resolution")
 	}
 }

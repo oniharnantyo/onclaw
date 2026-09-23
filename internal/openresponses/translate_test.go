@@ -670,3 +670,55 @@ func TestFlattenInputParts_PassthroughByteForByte(t *testing.T) {
 		}
 	}
 }
+
+// The service-run write escalation's optional tool object
+// (add-integration-authority): present only when the approval carries a tool,
+// and a shell approval's payload stays exactly the pre-gate shape.
+func TestTranslatorApprovalRequiredToolObject(t *testing.T) {
+	resp := NewResponse("sess-tool", "gpt-4o", nil)
+	var wire []map[string]any
+	tr := NewTranslator(resp, func(ev map[string]any) { wire = append(wire, ev) })
+
+	tool := &agents.ApprovalToolPayload{
+		Name:         "github.merge_pull_request",
+		Service:      "github",
+		ServiceName:  "GitHub",
+		ConnectionID: "conn-1",
+		Tier:         "write",
+	}
+	if !tr.Handle(&agents.TranscriptEvent{
+		Kind:     agents.TranscriptEventApprovalRequired,
+		Approval: &agents.ApprovalPayload{InterruptID: "int-9", Tool: tool},
+	}) {
+		t.Fatal("approval should stop the stream")
+	}
+
+	last := wire[len(wire)-1]
+	if last["type"] != "onclaw:approval_required" {
+		t.Fatalf("last event = %+v", last)
+	}
+	got, ok := last["tool"].(*agents.ApprovalToolPayload)
+	if !ok || got.Name != "github.merge_pull_request" || got.Service != "github" ||
+		got.ServiceName != "GitHub" || got.ConnectionID != "conn-1" || got.Tier != "write" {
+		t.Fatalf("tool object = %+v", last["tool"])
+	}
+
+	// Shell approval: no tool key at all — byte-identical payload.
+	resp2 := NewResponse("sess-shell", "gpt-4o", nil)
+	var wire2 []map[string]any
+	tr2 := NewTranslator(resp2, func(ev map[string]any) { wire2 = append(wire2, ev) })
+	tr2.Handle(&agents.TranscriptEvent{
+		Kind:     agents.TranscriptEventTurnStarted,
+		Approval: nil,
+	})
+	if !tr2.Handle(&agents.TranscriptEvent{
+		Kind:     agents.TranscriptEventApprovalRequired,
+		Approval: &agents.ApprovalPayload{InterruptID: "int-1", Command: "sudo rm -rf /"},
+	}) {
+		t.Fatal("approval should stop the stream")
+	}
+	last2 := wire2[len(wire2)-1]
+	if _, present := last2["tool"]; present {
+		t.Fatalf("shell approval payload must not carry a tool key: %+v", last2)
+	}
+}

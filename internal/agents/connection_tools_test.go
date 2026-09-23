@@ -157,7 +157,7 @@ func sourceWith(refs []HTTPConnectionRef, creds *stubConnectionCreds) *Connectio
 // resolveVerbs runs ToolsFor and fails the test on error.
 func resolveVerbs(t *testing.T, refs []HTTPConnectionRef, creds *stubConnectionCreds, resolved []tool.BaseTool) []tool.BaseTool {
 	t.Helper()
-	out, err := sourceWith(refs, creds).ToolsFor(context.Background(), "ws-1", "agent-1", resolved)
+	out, _, err := sourceWith(refs, creds).ToolsFor(context.Background(), "ws-1", "agent-1", resolved)
 	if err != nil {
 		t.Fatalf("ToolsFor: %v", err)
 	}
@@ -547,7 +547,7 @@ func TestConnectionVerbToolCredentialHygiene(t *testing.T) {
 	// A failing credential resolution degrades at assembly instead of
 	// contributing tools.
 	ref := connectionRef(recipe)
-	degraded, err := sourceWith([]HTTPConnectionRef{ref}, &stubConnectionCreds{
+	degraded, _, err := sourceWith([]HTTPConnectionRef{ref}, &stubConnectionCreds{
 		errs: map[string]error{ref.ConnectionID: errors.New("decrypt failed")},
 	}).ToolsFor(context.Background(), "ws-1", "agent-1", nil)
 	if err != nil {
@@ -791,7 +791,7 @@ func TestConnectionToolSourceSurfaceIsExactlyDeclaredVerbs(t *testing.T) {
 }
 
 func TestConnectionToolSourceListerErrorFailsResolution(t *testing.T) {
-	_, err := NewConnectionToolSource(
+	_, _, err := NewConnectionToolSource(
 		&stubConnectionLister{err: errors.New("store down")},
 		&stubConnectionCreds{token: "tok"},
 	).ToolsFor(context.Background(), "ws-1", "agent-1", nil)
@@ -801,7 +801,7 @@ func TestConnectionToolSourceListerErrorFailsResolution(t *testing.T) {
 }
 
 func TestConnectionToolSourceEmptyAttachmentList(t *testing.T) {
-	resolved, err := sourceWith(nil, &stubConnectionCreds{token: "tok"}).ToolsFor(
+	resolved, _, err := sourceWith(nil, &stubConnectionCreds{token: "tok"}).ToolsFor(
 		context.Background(), "ws-1", "agent-1", nil)
 	if err != nil || len(resolved) != 0 {
 		t.Fatalf("no attachments = (%v, %d), want (nil, 0)", err, len(resolved))
@@ -840,7 +840,7 @@ func TestRunnerResolveConnectionToolsAfterBuiltinsAndMCP(t *testing.T) {
 		&stubConnectionCreds{token: "tok"},
 	)
 
-	_, tools, err := runner.resolve(context.Background(), req, ws, ag)
+	_, tools, err := runner.resolve(context.Background(), req, ws, ag, &domain.Role{Permissions: domain.OwnerPermissions})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -874,7 +874,7 @@ func TestWithConnectionToolSourceOption(t *testing.T) {
 
 func TestRunnerResolveConnectionToolsDefaultNoop(t *testing.T) {
 	runner, ws, ag, req := setupMCPRunner(t, nil)
-	_, tools, err := runner.resolve(context.Background(), req, ws, ag)
+	_, tools, err := runner.resolve(context.Background(), req, ws, ag, nil)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}

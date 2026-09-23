@@ -11,6 +11,7 @@ import {
   connectionKindLabel,
   connectionServiceName,
   connectionStatusView,
+  connectionTierChips,
   connectionsApi,
   serviceIconKey,
   type ApiConnection,
@@ -79,6 +80,11 @@ export function AgentConnectionsSection({ targetWsId, enabledMcps, onToggle }: A
           const st = connectionStatusView(c, kind);
           const attachId = connectionAttachId(c);
           const attached = enabledMcps.includes(attachId);
+          // add-integration-authority 3.1: the API-projected read/write tool
+          // split beside the access level — what Members can and cannot drive
+          // through this attachment. Hidden when the backend projected no
+          // tiers; the numbers are never computed here.
+          const tierChips = connectionTierChips(c.tier_counts);
           return (
             <div
               key={c.id}
@@ -96,6 +102,18 @@ export function AgentConnectionsSection({ targetWsId, enabledMcps, onToggle }: A
                     </p>
                     <Chip mono>{connectionKindLabel(kind)}</Chip>
                     <Chip mono>{accessLevelLabel(c.access_level)}</Chip>
+                    {tierChips.length > 0 && (
+                      <span
+                        className="inline-flex items-center gap-1"
+                        data-testid={'agent-connection-tiers-' + c.id}
+                      >
+                        {tierChips.map((label) => (
+                          <Chip key={label} mono>
+                            {label}
+                          </Chip>
+                        ))}
+                      </span>
+                    )}
                     <span
                       className={cx(
                         'inline-flex items-center gap-1.5 text-[11px]',

@@ -281,7 +281,7 @@ func TestRunner_JailMountsDropLaneReadOnly(t *testing.T) {
 		{ID: "att-1", Name: "report.md", MimeType: "text/markdown", Lane: attLaneDrop, Size: int64(len(content))},
 	}
 
-	cfg, _, err := runner.resolve(context.Background(), req, ws, ag)
+	cfg, _, err := runner.resolve(context.Background(), req, ws, ag, nil)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}

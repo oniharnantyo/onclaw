@@ -449,3 +449,75 @@ func TestConnectionsService_ConnectionDisplayName(t *testing.T) {
 		t.Errorf("expected id fallback, got %q", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// add-integration-authority tasks 2.5/2.1: the declaration-derived tier
+// counts on every connection view, and the origin-link lookup seam the
+// runner's MCP pass satisfies through this service.
+// ---------------------------------------------------------------------------
+
+func TestConnectionsService_TierCountsProjection(t *testing.T) {
+	env := newConnectionsTestEnv(t)
+	ctx := context.Background()
+
+	view, err := connectView(t, env, "github", "", testToken)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	// Declaration-derived: the projection is exactly the recipe's declared
+	// split (contract §4 pins github at 37 read / 17 write — both tiers must
+	// stay declared for the split to be meaningful).
+	want := domain.ToolTierCounts(domain.RecipeByID("github"))
+	if want.Read == 0 || want.Write == 0 {
+		t.Fatalf("the github tier lists must declare both tiers, got %+v", want)
+	}
+	if view.TierCounts != want {
+		t.Errorf("connect view tier_counts = %+v, want %+v", view.TierCounts, want)
+	}
+
+	// Get and List carry the same projection.
+	got, err := env.svc.Get(ctx, env.wsID, view.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.TierCounts != want {
+		t.Errorf("get view tier_counts = %+v, want %+v", got.TierCounts, want)
+	}
+	list, err := env.svc.List(ctx, env.wsID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 1 || list[0].TierCounts != want {
+		t.Errorf("list views = %+v, want the github projection %+v", list, want)
+	}
+
+	// An unregistered recipe counts zero, not garbage.
+	if zero := domain.ToolTierCounts(domain.RecipeByID("no-such-recipe")); zero != (domain.RecipeTierCounts{}) {
+		t.Errorf("unregistered recipe counts = %+v, want zero", zero)
+	}
+}
+
+func TestConnectionsService_ConnectionServiceOfLookup(t *testing.T) {
+	env := newConnectionsTestEnv(t)
+	ctx := context.Background()
+
+	view, err := connectView(t, env, "github", "", testToken)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	service, err := env.svc.ConnectionServiceOf(ctx, env.wsID, view.ID)
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if service != "github" {
+		t.Errorf("connection service = %q, want the recipe id", service)
+	}
+
+	// Unknown and cross-workspace ids are ErrNotFound — the runner's gate
+	// degrades those to the fail-safe write tier.
+	if _, err := env.svc.ConnectionServiceOf(ctx, env.wsID, "missing"); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("unknown connection: expected ErrNotFound, got %v", err)
+	}
+}

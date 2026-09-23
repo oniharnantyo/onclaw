@@ -108,6 +108,12 @@ type Config struct {
 	Hooks     *agenthooks.Resolved
 	HooksBase *agenthooks.Event
 
+	// gate is the run's connection-tool gate (add-integration-authority
+	// tasks 2.2–2.4): inactive for runs without connection tools — no
+	// middleware, byte-identical composition. Unexported: runner-internal
+	// wiring, set by composeAgent from the resolved config.
+	gate *connectionGateConfig
+
 	// CompactionObserver receives the display-only token estimates of every
 	// summarization the composed agent performs (automatic threshold path,
 	// chat-compact-command D5). Optional; nil skips the estimates and the
@@ -127,6 +133,16 @@ func Compose(ctx context.Context, cfg *Config) (adk.TypedResumableAgent[*schema.
 		maxIterations = DefaultMaxIterations
 	}
 
+	// The unknown-tool seam (add-integration-authority task 2.2): a run whose
+	// resolution pruned write-tier connection tools routes direct attempts at
+	// a pruned name through the gate's handler — the canonical block, never
+	// the engine's raw not-found run failure (D3). Every other run composes
+	// the baseline ToolsNode config untouched.
+	toolsNodeCfg := compose.ToolsNodeConfig{Tools: cfg.Tools}
+	if cfg.gate != nil {
+		toolsNodeCfg.UnknownToolsHandler = cfg.gate.unknownToolHandler()
+	}
+
 	handlers, err := buildMiddlewares(ctx, cfg)
 	if err != nil {
 		return nil, err
@@ -139,7 +155,7 @@ func Compose(ctx context.Context, cfg *Config) (adk.TypedResumableAgent[*schema.
 		Model:         cfg.ChatModel,
 		Handlers:      handlers,
 		MaxIterations: maxIterations,
-		ToolsConfig:   adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{Tools: cfg.Tools}},
+		ToolsConfig:   adk.ToolsConfig{ToolsNodeConfig: toolsNodeCfg},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("compose agent: %w", err)
@@ -300,7 +316,19 @@ func buildMiddlewares(ctx context.Context, cfg *Config) ([]adk.TypedChatModelAge
 		handlers = append(handlers, newHooksMiddleware(cfg.Hooks, *cfg.HooksBase))
 	}
 
-	// 8. tool-error-result: appended last so it wraps every tool endpoint —
+	// 8. connection gate: the user-authority gate on connection-sourced tools
+	// (add-integration-authority tasks 2.2–2.4), attached only when the run
+	// resolved connection tools — runs without connections pay nothing.
+	// Appended AFTER hooks (the gate decides before hooks see the call: a
+	// denied call never reaches workspace policy) and BEFORE the
+	// tool-error-result middleware, whose wrapper sits outside it: the gate's
+	// block returns the canonical block JSON as a successful tool result,
+	// while the escalation interrupt signal flows out untouched to the ADK.
+	if cfg.gate.active() {
+		handlers = append(handlers, newConnectionGateMiddleware(cfg.gate))
+	}
+
+	// 9. tool-error-result: appended last so it wraps every tool endpoint —
 	// registry tools and middleware-registered fs/shell tools alike. A failed
 	// tool call becomes an error result the model can read and react to
 	// instead of a run-killing NodeRunError.

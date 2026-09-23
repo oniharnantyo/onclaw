@@ -58,12 +58,37 @@ const (
 	TranscriptEventRunActive TranscriptEventKind = "run_active"
 )
 
-// ApprovalPayload carries a pending shell-approval interrupt.
+// ApprovalPayload carries a pending approval interrupt. Command is set for
+// shell approvals; Tool is set ONLY for service-run write escalations
+// (add-integration-authority task 2.4) — its presence discriminates the
+// service approval card from the shell one, and shell payloads stay
+// byte-identical (Tool is omitted when nil).
 type ApprovalPayload struct {
 	// InterruptID addresses the interrupt in the resume call.
 	InterruptID string `json:"interrupt_id"`
-	// Command is the shell command awaiting approval.
+	// Command is the shell command awaiting approval (shell approvals only).
 	Command string `json:"command"`
+	// Tool identifies the write-tier connection tool awaiting approval
+	// (service-run escalations only).
+	Tool *ApprovalToolPayload `json:"tool,omitempty"`
+}
+
+// ApprovalToolPayload is the tool identity a service-run write escalation
+// carries (add-integration-authority escalation contract): the applied tool
+// name, its originating connection, and the effective tier. The wire shape
+// the web's approval card branches on.
+type ApprovalToolPayload struct {
+	// Name is the applied tool name ("<recipe>.<verb>" or "mcp__<server>__<tool>").
+	Name string `json:"name"`
+	// Service is the recipe id.
+	Service string `json:"service"`
+	// ServiceName is the recipe's display name, when registered.
+	ServiceName string `json:"service_name,omitempty"`
+	// ConnectionID is the owning workspace connection.
+	ConnectionID string `json:"connection_id,omitempty"`
+	// Tier is the tool's effective tier (always "write" — only write-tier
+	// calls escalate).
+	Tier string `json:"tier"`
 }
 
 // ToolCallPayload carries information about a requested tool invocation.

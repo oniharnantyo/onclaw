@@ -371,6 +371,11 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		// tools, after built-ins — the connections service is the credential
 		// seam; the server-package adapter re-shapes the attachment listing.
 		agents.WithConnectionToolSource(server.NewConnectionToolSource(connectionsSvc)),
+		// Connection origin lookup (add-integration-authority 2.1): the
+		// origin-link half of the gate's MCP annotations — connection-
+		// materialized servers resolve their owning connection's recipe
+		// through the same service, structurally.
+		agents.WithConnectionOriginLookup(connectionsSvc),
 		agents.WithEnabledSkillReader(server.WorkspaceSkillReader(st.WorkspaceSkills())),
 		agents.WithChannelContext(channelRuntime.Chokepoint()),
 		agents.WithChannelFeed(channelRuntime.Chokepoint()),

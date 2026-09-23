@@ -325,12 +325,20 @@ func (t *Translator) Handle(ev *agents.TranscriptEvent) bool {
 			"command":      approvalCommand(ev),
 			"session_id":   t.SessionID(),
 		}
-		t.send("onclaw:approval_required", map[string]any{
+		// The optional tool object (add-integration-authority): present only
+		// on service-run write escalations — its presence discriminates the
+		// service approval card from a shell approval, whose payload stays
+		// byte-identical.
+		fields := map[string]any{
 			"interrupt_id": approvalID(ev),
 			"command":      approvalCommand(ev),
 			"response_id":  t.resp.ID,
 			"session_id":   t.SessionID(),
-		})
+		}
+		if tool := approvalTool(ev); tool != nil {
+			fields["tool"] = tool
+		}
+		t.send("onclaw:approval_required", fields)
 		return true
 
 	case agents.TranscriptEventTurnCompleted:
@@ -384,6 +392,15 @@ func approvalCommand(ev *agents.TranscriptEvent) string {
 		return ev.Approval.Command
 	}
 	return ""
+}
+
+// approvalTool returns the write-tier connection tool identity of a
+// service-run write escalation, nil for shell approvals.
+func approvalTool(ev *agents.TranscriptEvent) *agents.ApprovalToolPayload {
+	if ev.Approval != nil {
+		return ev.Approval.Tool
+	}
+	return nil
 }
 
 // openMessage opens the assistant message item on the first text delta.

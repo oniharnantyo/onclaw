@@ -287,6 +287,46 @@ describe('runTurn — terminal-event usage capture (chat-context-meter)', () => 
     expect(onUsage).not.toHaveBeenCalled();
     expect(onDone).not.toHaveBeenCalled();
   });
+
+  it('passes a service-run write escalation through on the approval event untouched (add-integration-authority)', async () => {
+    const tool = {
+      name: 'github.merge_pull_request',
+      service: 'github',
+      service_name: 'GitHub',
+      connection_id: 'conn-gh',
+      tier: 'write',
+    };
+    const events = [
+      { type: 'onclaw:approval_required', interrupt_id: 'i2', command: '', response_id: 'resp_x_6', session_id: 'sess_1', tool },
+      // stream ends here — the pause is terminal for this stream
+    ];
+    createMock.mockResolvedValue(events);
+
+    const onApprovalRequired = vi.fn();
+    await runTurn(nextKey(), { agentSlug: 'atlas', input: 'hi' }, {
+      onDelta: vi.fn(), onApprovalRequired, onDone: vi.fn(), onError: vi.fn(),
+    });
+
+    expect(onApprovalRequired).toHaveBeenCalledTimes(1);
+    const approval = onApprovalRequired.mock.calls[0][0];
+    expect(approval.interrupt_id).toBe('i2');
+    expect(approval.tool).toEqual(tool);
+  });
+
+  it('omits the tool field entirely on ordinary shell approval events', async () => {
+    const events = [
+      { type: 'onclaw:approval_required', interrupt_id: 'i3', command: 'rm -rf /', response_id: 'resp_x_7', session_id: 'sess_1' },
+    ];
+    createMock.mockResolvedValue(events);
+
+    const onApprovalRequired = vi.fn();
+    await runTurn(nextKey(), { agentSlug: 'atlas', input: 'hi' }, {
+      onDelta: vi.fn(), onApprovalRequired, onDone: vi.fn(), onError: vi.fn(),
+    });
+
+    const approval = onApprovalRequired.mock.calls[0][0];
+    expect('tool' in approval).toBe(false);
+  });
 });
 
 describe('runTurn — 409 conflict dispatch (live-run-reattach fix)', () => {

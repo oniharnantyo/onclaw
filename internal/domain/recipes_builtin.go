@@ -14,9 +14,135 @@ package domain
 // PLACEHOLDER pending the tasks.md 5.3 live verification, like the Figma/GitLab
 // endpoint precedents — the pipeline verifies signatures at ingest, so an
 // unpinned value fails safely at delivery instead of storing a broken
-// integration.
+// integration. The mcp-kind tool-tier lists (add-integration-authority
+// tasks.md 1.2) ride the same placeholder posture: fail-safe defaults keep
+// undeclared tools write-tier until the live pinning.
 //
 // Registration order is the gallery order.
+//
+// MCP-kind tier declarations (add-integration-authority tasks.md 1.2): the
+// GitHub and GitLab recipes carry curated tool-tier lists over the tool names
+// their remote MCP servers assign. BOTH LISTS ARE PLACEHOLDER pending the
+// tasks.md 5.3 live verification, like every other live-pinned value — the
+// fail-safe default (undeclared = write) keeps unstated tools admin-tier, so
+// an unverified list can only over-block visibly, never under-block silently.
+// Curation rule: read = fetch/list/search/get verbs; write =
+// create/update/merge/delete/close/assign verbs. The write list documents
+// intent — anything the live server exposes beyond both lists already gates
+// as write. Coming-soon mcp recipes (atlassian, slack, linear) declare no
+// lists yet: their tool surfaces are unpinnable before the OAuth apps land,
+// and the fail-safe default is the correct tier for everything they will
+// expose until a release declares otherwise.
+var (
+	// githubReadTools is GitHub's curated read surface: profile, repo file
+	// and history reads, search, PR/issue reads, notifications, security
+	// alerts, and Actions reads. list_repositories is the probe tool's
+	// PLACEHOLDER name (tasks.md 5.3 pins the live tool set).
+	githubReadTools = []string{
+		"get_me",
+		"get_octocat",
+		"list_repositories",
+		"search_repositories",
+		"search_code",
+		"search_issues",
+		"search_users",
+		"get_file_contents",
+		"get_commit",
+		"list_commits",
+		"list_branches",
+		"list_tags",
+		"get_tag",
+		"list_pull_requests",
+		"get_pull_request",
+		"get_pull_request_files",
+		"get_pull_request_diff",
+		"get_pull_request_status",
+		"get_pull_request_comments",
+		"get_pull_request_reviews",
+		"list_issues",
+		"get_issue",
+		"get_issue_comments",
+		"list_notifications",
+		"get_notification",
+		"list_code_scanning_alerts",
+		"get_code_scanning_alert",
+		"list_secret_scanning_alerts",
+		"get_secret_scanning_alert",
+		"list_dependabot_alerts",
+		"get_dependabot_alert",
+		"list_workflow_runs",
+		"get_workflow_run",
+		"list_workflow_jobs",
+		"get_job_logs",
+		"list_workflow_run_artifacts",
+		"download_workflow_run_artifact",
+	}
+	// githubWriteTools is GitHub's curated write surface: repo and branch
+	// creation, file mutation, PR lifecycle, issue lifecycle and comment,
+	// Actions triggering.
+	githubWriteTools = []string{
+		"create_repository",
+		"fork_repository",
+		"create_branch",
+		"create_or_update_file",
+		"push_files",
+		"delete_file",
+		"create_pull_request",
+		"update_pull_request",
+		"merge_pull_request",
+		"update_pull_request_branch",
+		"create_issue",
+		"update_issue",
+		"add_issue_comment",
+		"assign_copilot_to_issue",
+		"run_workflow",
+		"cancel_workflow_run",
+		"delete_workflow_run_logs",
+	}
+	// gitlabReadTools is GitLab's curated read surface: projects, repository
+	// trees and files, issues, merge requests, pipelines, wikis.
+	gitlabReadTools = []string{
+		"get_mcp_server_version",
+		"list_projects",
+		"get_project",
+		"search_repositories",
+		"get_repository_tree",
+		"get_file_content",
+		"get_raw_file",
+		"list_issues",
+		"get_issue",
+		"list_merge_requests",
+		"get_merge_request",
+		"list_pipelines",
+		"get_pipeline",
+		"list_wiki_pages",
+		"get_wiki_page",
+	}
+	// gitlabWriteTools is GitLab's curated write surface: issue and merge
+	// request lifecycle, notes/comments.
+	gitlabWriteTools = []string{
+		"create_issue",
+		"update_issue",
+		"create_merge_request",
+		"update_merge_request",
+		"merge_merge_request",
+		"create_note",
+	}
+)
+
+// toolTierRules builds a recipe's tool-tier list, reads first so the served
+// order is deterministic and reviewable (read block, then write block).
+func toolTierRules(read, write []string) []RecipeToolTierRule {
+	rules := make([]RecipeToolTierRule, 0, len(read)+len(write))
+	for _, tool := range read {
+		rules = append(rules, RecipeToolTierRule{Tool: tool, Tier: RecipeToolTierRead})
+	}
+	for _, tool := range write {
+		rules = append(rules, RecipeToolTierRule{Tool: tool, Tier: RecipeToolTierWrite})
+	}
+	return rules
+}
+
 func init() {
 	// GitHub's read-flavored v1 catalog is the whole list, so the default
 	// event set equals the catalog (spec: v1 event runs start from the
@@ -165,6 +291,11 @@ func init() {
 			},
 		},
 		Probe: RecipeProbe{Tool: "list_repositories"},
+		// PLACEHOLDER pending tasks.md 5.3 live verification: the curated
+		// read/write split over the remote server's tool names (see the tier
+		// declaration note above the var block). Undeclared tools gate as
+		// write.
+		ToolTiers: toolTierRules(githubReadTools, githubWriteTools),
 	})
 
 	RegisterRecipe(Recipe{
@@ -307,6 +438,11 @@ func init() {
 			},
 		},
 		Probe: RecipeProbe{Tool: "list_projects"},
+		// PLACEHOLDER pending tasks.md 5.3 live verification: the curated
+		// read/write split over the remote server's tool names (see the tier
+		// declaration note above the var block). Undeclared tools gate as
+		// write.
+		ToolTiers: toolTierRules(gitlabReadTools, gitlabWriteTools),
 	})
 
 	// One recipe covering both Jira and Confluence (design.md D2): Atlassian's
@@ -521,6 +657,7 @@ func init() {
 				Method:      "GET",
 				Path:        "/v1/me",
 				Description: "Get the authenticated user's profile — the identity and team memberships the connection's token can reach.",
+				Tier:        RecipeToolTierRead,
 			},
 			{
 				Tool:   "figma.get_file",
@@ -532,6 +669,7 @@ func init() {
 					{Name: "geometry", Type: RecipeParamString, Required: false, In: RecipeParamInQuery},
 				},
 				Description: "Get a file's metadata and node tree. Use depth to bound how deep the returned node tree goes on large files.",
+				Tier:        RecipeToolTierRead,
 			},
 			{
 				Tool:   "figma.get_file_nodes",
@@ -543,6 +681,7 @@ func init() {
 					{Name: "depth", Type: RecipeParamNumber, Required: false, In: RecipeParamInQuery},
 				},
 				Description: "Get specific nodes of a file by comma-separated node ids — a shallow look at part of a large file.",
+				Tier:        RecipeToolTierRead,
 			},
 			{
 				Tool:   "figma.get_file_comments",
@@ -552,6 +691,7 @@ func init() {
 					{Name: "file_key", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
 				},
 				Description: "List the comments on a file.",
+				Tier:        RecipeToolTierRead,
 			},
 			{
 				Tool:   "figma.get_file_versions",
@@ -561,6 +701,7 @@ func init() {
 					{Name: "file_key", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
 				},
 				Description: "List a file's version history, newest first.",
+				Tier:        RecipeToolTierRead,
 			},
 			{
 				Tool:   "figma.get_file_images",
@@ -573,6 +714,7 @@ func init() {
 					{Name: "format", Type: RecipeParamString, Required: false, In: RecipeParamInQuery},
 				},
 				Description: "Render nodes of a file as images — returns image URLs for the requested comma-separated node ids.",
+				Tier:        RecipeToolTierRead,
 			},
 			{
 				Tool:   "figma.get_project_files",
@@ -582,6 +724,7 @@ func init() {
 					{Name: "project_id", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
 				},
 				Description: "List the files in a Figma project.",
+				Tier:        RecipeToolTierRead,
 			},
 			{
 				Tool:   "figma.get_team_projects",
@@ -591,6 +734,7 @@ func init() {
 					{Name: "team_id", Type: RecipeParamString, Required: true, In: RecipeParamInPath},
 				},
 				Description: "List the projects in a Figma team.",
+				Tier:        RecipeToolTierRead,
 			},
 		},
 	})

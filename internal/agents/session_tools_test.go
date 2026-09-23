@@ -282,7 +282,7 @@ func TestRunner_SessionCloseExposure(t *testing.T) {
 	seedSessionFixtures(fcc, ag.ID, domain.ChannelMemberRoleFacilitator)
 	fcc.active = &domain.WorkSession{Goal: "Ship the retry queue", Status: domain.WorkSessionOpen, Budget: 12, HopsUsed: 0}
 
-	cfg, resolved, err := runner.resolve(context.Background(), sessionReq, ws, ag)
+	cfg, resolved, err := runner.resolve(context.Background(), sessionReq, ws, ag, nil)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -298,7 +298,7 @@ func TestRunner_SessionCloseExposure(t *testing.T) {
 	plainReq := sessionReq
 	plainReq.WorkSessionID = ""
 	plainReq.SessionID = "chan_ch-1_plain"
-	_, resolved, err = runner.resolve(context.Background(), plainReq, ws, ag)
+	_, resolved, err = runner.resolve(context.Background(), plainReq, ws, ag, nil)
 	if err != nil {
 		t.Fatalf("resolve plain: %v", err)
 	}
@@ -316,7 +316,7 @@ func TestRunner_SessionCloseExposure(t *testing.T) {
 	seedSessionFixtures(fcc, ag.ID, domain.ChannelMemberRoleMember)
 	memberReq := sessionReq
 	memberReq.SessionID = "chan_ch-1_member"
-	_, resolved, err = runner.resolve(context.Background(), memberReq, ws, &memberAgent)
+	_, resolved, err = runner.resolve(context.Background(), memberReq, ws, &memberAgent, nil)
 	if err != nil {
 		t.Fatalf("resolve member: %v", err)
 	}
@@ -327,7 +327,7 @@ func TestRunner_SessionCloseExposure(t *testing.T) {
 	// An allowlisted session.close outside any session run is stripped too.
 	directAgent := *ag
 	directAgent.Tools = []string{SessionToolClose}
-	_, resolved, err = runner.resolve(context.Background(), req, ws, &directAgent)
+	_, resolved, err = runner.resolve(context.Background(), req, ws, &directAgent, nil)
 	if err != nil {
 		t.Fatalf("resolve direct: %v", err)
 	}

@@ -349,6 +349,10 @@ class TranscriptTranslator {
             command: ev.approval?.command || '',
             sessionId: this.sessionId,
             resolved: false,
+            // Service-run write escalation (add-integration-authority): the
+            // paused run reached for a write-tier connection tool. Passed
+            // through untouched — the transcript card branches on its presence.
+            ...(ev.approval?.tool ? { tool: ev.approval.tool } : {}),
           },
         });
         appendToolPart(agent, agent.tools.length - 1);

@@ -15,6 +15,7 @@ import { AgentMessage, containsMathDelimiters } from './AgentMessage';
 import { changedFileCount } from './ToolTimelineHeader';
 import { recordTurnTiming } from '../../chat/turnTiming';
 import { useStore } from '../../store';
+import { useAuthStore } from '../../store/auth';
 
 const todoWrite = (revision: number) => ({
   name: 'todo_write',
@@ -510,6 +511,146 @@ describe('components/chat/AgentMessage — local file links open in right panel'
 
     fireEvent.click(buttons[1]);
     expect(useStore.getState().panel.tabs[1].payload).toEqual({ path: 'docs/guide.md' });
+  });
+});
+
+// Service-run write escalation gating (add-integration-authority 3.2): the
+// card renders for everyone in the transcript, but only integrations.write
+// holders (Owner/Admin) receive the actionable approve/deny callback —
+// Members see the pending state read-only.
+describe('components/chat/AgentMessage — service-run approval permission gate', () => {
+  // Fresh payloads per test: deciding stamps `decided` on the card object, so
+  // a shared fixture would leak the Owner's vote into later renders.
+  const serviceApprovalTool = () => ({
+    args: '',
+    ms: 0,
+    approval: {
+      interruptId: 'int-9',
+      command: '',
+      resolved: false,
+      sessionId: 'sess_9',
+      tool: {
+        name: 'github.merge_pull_request',
+        service: 'github',
+        service_name: 'GitHub',
+        connection_id: 'conn-gh',
+        tier: 'write',
+      },
+    },
+  });
+  const message = () => ({ id: 'm9', agentId: 'a1', text: '', tools: [serviceApprovalTool()] });
+
+  const renderApproval = (memberships: any[]) => {
+    useAuthStore.setState({ memberships } as any);
+    useStore.setState({ pos: { ...useStore.getState().pos, tenantId: 'acme' } });
+    const onResolveApproval = vi.fn().mockResolvedValue(undefined);
+    const { container } = render(
+      <AgentMessage
+        m={message()}
+        agent={{ id: 'a1', name: 'Atlas' }}
+        inChannel={false}
+        busy={false}
+        isLast={false}
+        onCopy={vi.fn()}
+        onRefresh={vi.fn()}
+        onBranch={vi.fn()}
+        members={[]}
+        sessionId="sess_9"
+        onResolveApproval={onResolveApproval}
+      />
+    );
+    return { container, onResolveApproval };
+  };
+
+  const findButton = (container: HTMLElement, name: string) =>
+    Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent?.trim() === name
+    ) || null;
+
+  it('gives an Owner the approve/deny actions and resolves through the callback', async () => {
+    const { container, onResolveApproval } = renderApproval([
+      { workspace_id: 'acme', role_name: 'Owner', role: { name: 'Owner', is_owner: true } },
+    ]);
+    const approve = findButton(container, 'Approve');
+    expect(approve).not.toBeNull();
+    expect(findButton(container, 'Deny')).not.toBeNull();
+
+    fireEvent.click(approve!);
+    await waitFor(() => {
+      expect(onResolveApproval).toHaveBeenCalledWith('a1', 'sess_9', 'int-9', true);
+    });
+  });
+
+  it('shows a Member the pending card read-only, with no actionable buttons', () => {
+    const { container, onResolveApproval } = renderApproval([
+      {
+        workspace_id: 'acme',
+        role_name: 'Member',
+        role: { name: 'Member', permissions: ['agents.read'] },
+      },
+    ]);
+    expect(findButton(container, 'Approve')).toBeNull();
+    expect(findButton(container, 'Deny')).toBeNull();
+    const readonly = container.querySelector('[data-testid="connection-approval-readonly-int-9"]');
+    expect(readonly).not.toBeNull();
+    expect(readonly!.textContent).toContain('Waiting for an Owner or Admin');
+    expect(onResolveApproval).not.toHaveBeenCalled();
+  });
+
+  it('keeps mock-mode (no memberships) affordances visible', () => {
+    // Offline/seed mode holds no membership rows — affordances stay visible
+    // (same rule as canManageIntegrations everywhere else).
+    const { container } = renderApproval([]);
+    expect(findButton(container, 'Approve')).not.toBeNull();
+  });
+
+  it('does not gate ordinary shell approvals', () => {
+    // The permission gate applies to the connection card only. A Member's
+    // shell approval card renders exactly as before (its own resolved-state
+    // semantics are pre-existing behavior, out of scope here).
+    useAuthStore.setState({
+      memberships: [
+        {
+          workspace_id: 'acme',
+          role_name: 'Member',
+          role: { name: 'Member', permissions: ['agents.read'] },
+        },
+      ],
+    } as any);
+    useStore.setState({ pos: { ...useStore.getState().pos, tenantId: 'acme' } });
+    const onResolveApproval = vi.fn().mockResolvedValue(undefined);
+    const shellMessage = {
+      id: 'm10',
+      agentId: 'a1',
+      text: '',
+      tools: [
+        {
+          args: '',
+          ms: 0,
+          approval: { interruptId: 'int-10', command: 'rm -rf /tmp/x', resolved: false, sessionId: 'sess_9' },
+        },
+      ],
+    };
+    const { container } = render(
+      <AgentMessage
+        m={shellMessage}
+        agent={{ id: 'a1', name: 'Atlas' }}
+        inChannel={false}
+        busy={false}
+        isLast={false}
+        onCopy={vi.fn()}
+        onRefresh={vi.fn()}
+        onBranch={vi.fn()}
+        members={[]}
+        sessionId="sess_9"
+        onResolveApproval={onResolveApproval}
+      />
+    );
+    // The shell card branch still owns command-only payloads — the service
+    // escalation card never replaces it.
+    expect(container.querySelector('[data-od-id="approval-int-10"]')).not.toBeNull();
+    expect(container.textContent).toContain('rm -rf /tmp/x');
+    expect(container.querySelector('[data-testid="connection-approval-int-10"]')).toBeNull();
   });
 });
 
