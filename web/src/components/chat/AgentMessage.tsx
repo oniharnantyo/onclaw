@@ -1,5 +1,6 @@
 import { Fragment, memo, useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { cx } from "../../lib/helpers";
 import { parseArgs } from "../../lib/toolDisplay";
 import { GENERATIVE_UI_TYPES, parseFence, parseTodoPlan, renderSpecByType, TodoUpdatedSummary } from "../../lib/generativeUi";
@@ -239,6 +240,22 @@ export const MarkdownBody = memo(function MarkdownBody({ text, members, live }: 
       <code className="rounded-[4px] bg-[color-mix(in_oklab,var(--fg)_6%,transparent)] px-1 py-0.5 font-mono text-[13px]">{children}</code>
     ),
     pre: ({ children }) => renderPre(children, live === true),
+    // GFM tables (the design contract's 360px floor): the horizontal scroll
+    // wrapper keeps wide agent tables from blowing out the transcript column.
+    table: ({ children }) => (
+      <div className="mb-2 overflow-x-auto">
+        <table className="w-full border-collapse text-[13px] leading-5">{children}</table>
+      </div>
+    ),
+    thead: ({ children }) => (
+      <thead className="bg-[color-mix(in_oklab,var(--fg)_5%,transparent)]">{children}</thead>
+    ),
+    th: ({ children }) => (
+      <th className="border-b border-line px-2.5 py-1.5 text-left font-medium text-fg">{children}</th>
+    ),
+    td: ({ children }) => (
+      <td className="border-b border-line px-2.5 py-1.5 align-top text-fg2">{children}</td>
+    ),
   }), [members, live]);
   const hasMath = useMemo(() => containsMathDelimiters(text), [text]);
   const [math, setMath] = useState<{ remark: any; rehype: any } | null>(null);
@@ -262,7 +279,9 @@ export const MarkdownBody = memo(function MarkdownBody({ text, members, live }: 
   return (
     <ReactMarkdown
       components={components}
-      remarkPlugins={math ? [math.remark] : []}
+      // GFM is what makes pipe tables (and strikethrough/task lists) parse —
+      // without it agent answers full of table syntax render as raw text.
+      remarkPlugins={math ? [remarkGfm, math.remark] : [remarkGfm]}
       rehypePlugins={math ? [math.rehype] : []}
     >{text}</ReactMarkdown>
   );

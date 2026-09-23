@@ -11,7 +11,7 @@
 // header shows the activity label with the client-measured turn elapsed.
 import { describe, it, expect, vi } from 'vitest';
 import { act, fireEvent, render, waitFor } from '@testing-library/react';
-import { AgentMessage, containsMathDelimiters } from './AgentMessage';
+import { AgentMessage, containsMathDelimiters, MarkdownBody } from './AgentMessage';
 import { changedFileCount } from './ToolTimelineHeader';
 import { recordTurnTiming } from '../../chat/turnTiming';
 import { useStore } from '../../store';
@@ -654,3 +654,21 @@ describe('components/chat/AgentMessage — service-run approval permission gate'
   });
 });
 
+
+describe('MarkdownBody — GFM tables', () => {
+  const table = [
+    '| Domain | Package |',
+    '|---|---|',
+    '| Event Token | `usecase/eventtoken` |',
+    '| SDK Version | `usecase/sdkversion` |',
+  ].join('\n');
+
+  it('renders pipe tables as a real table, not raw pipe text', () => {
+    const { getByRole, getByText } = render(<MarkdownBody text={table} />);
+    expect(getByRole('table')).not.toBeNull();
+    expect(getByText('Domain').tagName).toBe('TH');
+    expect(getByRole('cell', { name: 'Event Token' })).not.toBeNull();
+    // The separator row is table structure, never visible text.
+    expect(getByText('Event Token').closest('table')!.textContent).not.toContain('---');
+  });
+});
