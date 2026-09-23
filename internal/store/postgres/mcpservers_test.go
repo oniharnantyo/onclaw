@@ -86,6 +86,9 @@ func TestIntegration_WorkspaceMCPServerStore_CRUD(t *testing.T) {
 	if got.URL != "" || len(got.Headers) != 0 {
 		t.Fatalf("expected url transports fields empty, got: %+v", got)
 	}
+	if got.AuthMode != domain.MCPAuthModeNone || got.OAuthClientID != "" || got.OAuthClientSecret != "" {
+		t.Fatalf("expected pre-OAuth none-mode shape, got auth_mode %q with BYO rows: %+v", got.AuthMode, got.MCPConnection)
+	}
 
 	// 3. Cross-tenant and unknown lookups are indistinguishable (ErrNotFound).
 	if _, err := s.WorkspaceMCPServers().Get(ctx, ws2.ID, srv.ID); !errors.Is(err, domain.ErrNotFound) {
@@ -374,6 +377,9 @@ func TestIntegration_AgentMCPServerStore_CRUD(t *testing.T) {
 	if got.URL != "https://search.internal/mcp" {
 		t.Fatalf("unexpected url: %q", got.URL)
 	}
+	if got.AuthMode != domain.MCPAuthModeNone || got.OAuthClientID != "" || got.OAuthClientSecret != "" {
+		t.Fatalf("expected pre-OAuth none-mode shape, got auth_mode %q with BYO rows: %+v", got.AuthMode, got.MCPConnection)
+	}
 	if len(got.Headers) != 2 || got.Headers[0].Name != "Authorization" || got.Headers[0].Value != "enc:bearer_envelope" || got.Headers[1].Name != "X-Trace" || got.Headers[1].Value != "on" {
 		t.Fatalf("unexpected header rows: %+v", got.Headers)
 	}
@@ -535,5 +541,150 @@ func TestIntegration_AgentMCPServerStore_CascadeAndUniqueness(t *testing.T) {
 	}
 	if len(remaining) != 0 {
 		t.Fatalf("expected 0 servers after cascade, got %d", len(remaining))
+	}
+}
+
+// Auth mode and BYO client rows round-trip through both MCP server scope
+// tables (add-mcp-oauth-client tasks.md 2.2b, migration 000069): none-mode
+// rows read back at their pre-OAuth shape, oauth-mode BYO fields survive
+// Create/Update/List, and the stored shape always satisfies the domain rules
+// (BYO rows only in oauth mode).
+func TestIntegration_MCPServerStore_AuthModeRoundTrip(t *testing.T) {
+	s, _, ctx := setupTestSchema(t)
+	ws, agent := mcpSeedAgent(t, ctx, s, "ws-mcp-authmode")
+
+	// 1. none-mode workspace row: an empty AuthMode persists as the explicit
+	// none default and reads back with no BYO fields — the pre-OAuth shape.
+	static := &domain.WorkspaceMCPServer{
+		WorkspaceID: ws.ID,
+		Name:        "Static",
+		MCPConnection: domain.MCPConnection{
+			Transport: domain.MCPTransportStreamableHTTP,
+			URL:       "https://mcp.example.com/mcp",
+			Headers:   []domain.EnvRow{{Name: "X-Tenant", Value: "acme"}},
+		},
+	}
+	if err := s.WorkspaceMCPServers().Create(ctx, static); err != nil {
+		t.Fatalf("unexpected create error: %v", err)
+	}
+	got, err := s.WorkspaceMCPServers().Get(ctx, ws.ID, static.ID)
+	if err != nil {
+		t.Fatalf("unexpected get error: %v", err)
+	}
+	if got.AuthMode != domain.MCPAuthModeNone || got.OAuthClientID != "" || got.OAuthClientSecret != "" {
+		t.Fatalf("expected none-mode row with empty BYO fields, got: %+v", got.MCPConnection)
+	}
+
+	// 2. oauth-mode workspace row with BYO confidential-client rows survives
+	// Get and List.
+	byo := &domain.WorkspaceMCPServer{
+		WorkspaceID: ws.ID,
+		Name:        "BYO",
+		MCPConnection: domain.MCPConnection{
+			Transport:         domain.MCPTransportStreamableHTTP,
+			URL:               "https://mcp.example.com/sse",
+			AuthMode:          domain.MCPAuthModeOAuth,
+			OAuthClientID:     "pre-registered-client",
+			OAuthClientSecret: "enc:client_secret_envelope",
+		},
+	}
+	if err := s.WorkspaceMCPServers().Create(ctx, byo); err != nil {
+		t.Fatalf("unexpected create byo error: %v", err)
+	}
+	gotBYO, err := s.WorkspaceMCPServers().Get(ctx, ws.ID, byo.ID)
+	if err != nil {
+		t.Fatalf("unexpected get byo error: %v", err)
+	}
+	if gotBYO.AuthMode != domain.MCPAuthModeOAuth ||
+		gotBYO.OAuthClientID != "pre-registered-client" ||
+		gotBYO.OAuthClientSecret != "enc:client_secret_envelope" {
+		t.Fatalf("expected BYO rows to round-trip, got: %+v", gotBYO.MCPConnection)
+	}
+	list, err := s.WorkspaceMCPServers().List(ctx, ws.ID)
+	if err != nil {
+		t.Fatalf("unexpected list error: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("expected 2 servers, got %d", len(list))
+	}
+	for _, srv := range list {
+		if srv.ID != byo.ID {
+			continue
+		}
+		if srv.AuthMode != domain.MCPAuthModeOAuth || srv.OAuthClientID != "pre-registered-client" || srv.OAuthClientSecret != "enc:client_secret_envelope" {
+			t.Fatalf("expected BYO rows through list, got: %+v", srv.MCPConnection)
+		}
+	}
+
+	// 3. Update flips the row to none: the domain forbids BYO rows outside
+	// oauth mode, so the stored BYO fields clear with the mode.
+	gotBYO.AuthMode = domain.MCPAuthModeNone
+	gotBYO.OAuthClientID = ""
+	gotBYO.OAuthClientSecret = ""
+	if err := s.WorkspaceMCPServers().Update(ctx, gotBYO); err != nil {
+		t.Fatalf("unexpected update to none error: %v", err)
+	}
+	reloaded, err := s.WorkspaceMCPServers().Get(ctx, ws.ID, byo.ID)
+	if err != nil {
+		t.Fatalf("unexpected get after mode flip: %v", err)
+	}
+	if reloaded.AuthMode != domain.MCPAuthModeNone || reloaded.OAuthClientID != "" || reloaded.OAuthClientSecret != "" {
+		t.Fatalf("expected BYO fields cleared after flip to none, got: %+v", reloaded.MCPConnection)
+	}
+
+	// 4. Public-client oauth row: client id only, no secret.
+	reloaded.AuthMode = domain.MCPAuthModeOAuth
+	reloaded.OAuthClientID = "public-client"
+	if err := s.WorkspaceMCPServers().Update(ctx, reloaded); err != nil {
+		t.Fatalf("unexpected public-client update error: %v", err)
+	}
+	gotPublic, err := s.WorkspaceMCPServers().Get(ctx, ws.ID, byo.ID)
+	if err != nil {
+		t.Fatalf("unexpected get public-client error: %v", err)
+	}
+	if gotPublic.AuthMode != domain.MCPAuthModeOAuth || gotPublic.OAuthClientID != "public-client" || gotPublic.OAuthClientSecret != "" {
+		t.Fatalf("expected public-client oauth row, got: %+v", gotPublic.MCPConnection)
+	}
+
+	// 5. Agent-private oauth row round-trips the same way, including a BYO
+	// values swap through Update and the List path.
+	private := &domain.AgentMCPServer{
+		WorkspaceID: ws.ID,
+		AgentID:     agent.ID,
+		Name:        "Private OAuth",
+		MCPConnection: domain.MCPConnection{
+			Transport:         domain.MCPTransportStreamableHTTP,
+			URL:               "https://private.example.com/mcp",
+			AuthMode:          domain.MCPAuthModeOAuth,
+			OAuthClientID:     "private-client",
+			OAuthClientSecret: "enc:private_secret_envelope",
+		},
+	}
+	if err := s.AgentMCPServers().Create(ctx, private); err != nil {
+		t.Fatalf("unexpected agent create error: %v", err)
+	}
+	gotPrivate, err := s.AgentMCPServers().Get(ctx, agent.ID, private.ID)
+	if err != nil {
+		t.Fatalf("unexpected agent get error: %v", err)
+	}
+	if gotPrivate.AuthMode != domain.MCPAuthModeOAuth ||
+		gotPrivate.OAuthClientID != "private-client" ||
+		gotPrivate.OAuthClientSecret != "enc:private_secret_envelope" {
+		t.Fatalf("expected agent BYO rows to round-trip, got: %+v", gotPrivate.MCPConnection)
+	}
+	gotPrivate.OAuthClientID = "rotated-client"
+	gotPrivate.OAuthClientSecret = "enc:rotated_secret_envelope"
+	if err := s.AgentMCPServers().Update(ctx, gotPrivate); err != nil {
+		t.Fatalf("unexpected agent update error: %v", err)
+	}
+	agentList, err := s.AgentMCPServers().List(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("unexpected agent list error: %v", err)
+	}
+	if len(agentList) != 1 ||
+		agentList[0].AuthMode != domain.MCPAuthModeOAuth ||
+		agentList[0].OAuthClientID != "rotated-client" ||
+		agentList[0].OAuthClientSecret != "enc:rotated_secret_envelope" {
+		t.Fatalf("expected rotated BYO rows through agent list, got: %+v", agentList)
 	}
 }

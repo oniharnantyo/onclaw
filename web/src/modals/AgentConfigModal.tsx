@@ -72,13 +72,28 @@ function mcpRefs(a: any): string[] {
 }
 
 // Same display contract as the settings pane: the enabled master switch wins
-// (Paused), then the probed status — connected/ok green, error red, unknown gray.
-function mcpStatusView(s: ApiMcpServer): { dot: string; label: string; errored: boolean } {
-  if (!s.enabled) return { dot: 'bg-muted', label: 'Paused', errored: false };
-  if (s.status === 'error') return { dot: 'bg-danger', label: 'Error', errored: true };
+// (Paused), then the probed status — connected/ok green, expired amber (the
+// OAuth token set lapsed; recoverable through re-consent), error red, unknown
+// gray.
+function mcpStatusView(s: ApiMcpServer): { dot: string; label: string; errored: boolean; expired: boolean } {
+  if (!s.enabled) return { dot: 'bg-muted', label: 'Paused', errored: false, expired: false };
+  if (s.status === 'expired') return { dot: 'bg-warn', label: 'Expired', errored: false, expired: true };
+  if (s.status === 'error') return { dot: 'bg-danger', label: 'Error', errored: true, expired: false };
   if (s.status === 'ok' || s.status === 'connected')
-    return { dot: 'bg-success', label: 'Connected', errored: false };
-  return { dot: 'bg-muted', label: 'Unknown', errored: false };
+    return { dot: 'bg-success', label: 'Connected', errored: false, expired: false };
+  return { dot: 'bg-muted', label: 'Unknown', errored: false, expired: false };
+}
+
+// The dial seam's typed needs-authorization signal (add-mcp-oauth-client):
+// an oauth-mode row with no usable stored credential probes into this exact
+// status detail. The affordance shows for every un-connected oauth row; the
+// trimmed guidance renders for this prefix specifically.
+const MCP_OAUTH_REQUIRED_PREFIX = 'mcp server requires OAuth authorization:';
+
+function mcpNeedsAuthDetail(s: ApiMcpServer): string | null {
+  if (s.auth_mode !== 'oauth' || s.status !== 'error' || !s.status_error) return null;
+  if (!s.status_error.startsWith(MCP_OAUTH_REQUIRED_PREFIX)) return null;
+  return s.status_error.slice(MCP_OAUTH_REQUIRED_PREFIX.length).trim() || null;
 }
 
 const ROLE_SUGGESTIONS = [
@@ -165,6 +180,8 @@ export function AgentConfigModal({
   const [agentMcpDialog, setAgentMcpDialog] = useState<
     { mode: 'add' } | { mode: 'edit'; server: ApiMcpServer } | null
   >(null);
+  // Row-level OAuth sign-in in flight (add-mcp-oauth-client 7.1).
+  const [signingMcpId, setSigningMcpId] = useState<string | null>(null);
   const agentsWritable = useCanWriteAgents(tenant || currentWs);
 
   // Heartbeat (add-agent-heartbeat 6.3): the pane owns the heartbeat form and
@@ -693,6 +710,42 @@ export function AgentConfigModal({
       useStore.getState().toast(`${server.name} removed from this agent`);
     } catch (err: unknown) {
       useStore.getState().toast(formatApiError(err, `Failed to remove ${server.name}`), "danger");
+    }
+  };
+
+  // Row-level OAuth sign-in (add-mcp-oauth-client 7.1): agent-scoped authorize
+  // begin, then a top-level navigation to the provider — the sealed PKCE
+  // session rides an HttpOnly cookie through the round trip, like the
+  // workspace pane's hand-off.
+  const handleAgentMcpSignIn = async (server: ApiMcpServer) => {
+    const agentId = draft?.id || draft?.slug;
+    if (!targetWsId || !agentId) return;
+    setSigningMcpId(server.id);
+    try {
+      const res = await api.agents.authorizeMcpServer(targetWsId, agentId, server.id);
+      if (res?.authorize_url) {
+        window.location.assign(res.authorize_url);
+        return;
+      }
+      useStore.getState().toast(`Failed to start sign-in for ${server.name}`, "danger");
+    } catch (err: unknown) {
+      useStore.getState().toast(formatApiError(err, `Failed to start sign-in for ${server.name}`), "danger");
+    } finally {
+      setSigningMcpId(null);
+    }
+  };
+
+  // Re-reads the agent's private servers so a completed in-dialog flow (device
+  // paste-back) turns the row connected — the dialog owns the outcome UI, this
+  // just refreshes the rows like the workspace pane's load().
+  const refreshAgentMcpServers = async () => {
+    const agentId = draft?.id || draft?.slug;
+    if (!targetWsId || !agentId) return;
+    try {
+      const res = await api.agents.listMcpServers(targetWsId, agentId);
+      if (res?.servers) setAgentMcpServers(res.servers);
+    } catch {
+      // Keep the current rows — the dialog already reported the outcome.
     }
   };
 
@@ -1507,6 +1560,8 @@ export function AgentConfigModal({
                                   'inline-flex items-center gap-1.5 text-[11px]',
                                   st.errored
                                     ? 'text-danger'
+                                    : st.expired
+                                    ? 'text-[color-mix(in_oklab,var(--warn),black_25%)]'
                                     : s.enabled
                                     ? 'text-[color-mix(in_oklab,var(--success),black_25%)]'
                                     : 'text-muted'
@@ -1566,6 +1621,10 @@ export function AgentConfigModal({
                 <div className="space-y-2">
                   {agentMcpServers.map((s) => {
                     const st = mcpStatusView(s);
+                    // OAuth rows show the sign-in affordance until a completed
+                    // flow turns them connected (add-mcp-oauth-client 7.1).
+                    const oauthPending = s.auth_mode === 'oauth' && s.status !== 'connected';
+                    const authDetail = mcpNeedsAuthDetail(s);
                     return (
                       <div
                         key={s.id}
@@ -1580,6 +1639,8 @@ export function AgentConfigModal({
                                 'inline-flex items-center gap-1.5 text-[11px]',
                                 st.errored
                                   ? 'text-danger'
+                                  : st.expired
+                                  ? 'text-[color-mix(in_oklab,var(--warn),black_25%)]'
                                   : s.enabled
                                   ? 'text-[color-mix(in_oklab,var(--success),black_25%)]'
                                   : 'text-muted'
@@ -1593,12 +1654,28 @@ export function AgentConfigModal({
                           <p className="truncate font-mono text-[11px] text-muted">{s.transport}</p>
                           {st.errored && s.status_error && (
                             <p className="truncate text-[11px] text-danger" title={s.status_error}>
-                              {s.status_error}
+                              {authDetail || s.status_error}
                             </p>
                           )}
                         </div>
                         {isEdit && agentsWritable ? (
                           <>
+                            {oauthPending ? (
+                              <button
+                                type="button"
+                                data-testid={'agent-mcp-oauth-' + s.id}
+                                onClick={() => void handleAgentMcpSignIn(s)}
+                                disabled={signingMcpId === s.id}
+                                title={authDetail || undefined}
+                                className="h-8 shrink-0 rounded-md border border-line px-2.5 text-[12px] font-medium text-fg2 transition-colors hover:border-accent hover:text-fg disabled:opacity-50"
+                              >
+                                {signingMcpId === s.id
+                                  ? 'Redirecting…'
+                                  : st.expired
+                                  ? 'Re-authorize'
+                                  : 'Sign in'}
+                              </button>
+                            ) : null}
                             <button
                               type="button"
                               aria-label={'Edit ' + s.name}
@@ -2017,6 +2094,15 @@ export function AgentConfigModal({
           <McpServerDialog
             server={agentMcpDialog.mode === 'edit' ? agentMcpDialog.server : null}
             existingServers={agentMcpServers}
+            oauthApi={{
+              authorize: (id: string) =>
+                api.agents.authorizeMcpServer(targetWsId, draft?.id || draft?.slug, id),
+              beginDevice: (id: string) =>
+                api.agents.beginDeviceMcpServer(targetWsId, draft?.id || draft?.slug, id),
+              pollDevice: (id: string, deviceSession: string) =>
+                api.agents.pollDeviceMcpServer(targetWsId, draft?.id || draft?.slug, id, deviceSession),
+            }}
+            onAuthorized={() => void refreshAgentMcpServers()}
             onClose={() => setAgentMcpDialog(null)}
             onSave={handleAgentMcpSave}
           />

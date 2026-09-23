@@ -63,6 +63,16 @@ func unmarshalJSONB(data []byte) ([]domain.EnvRow, error) {
 	return rows, nil
 }
 
+// normalizeAuthMode maps the domain's empty auth-mode marker to the explicit
+// catalog default so the auth_mode column only ever holds catalog values
+// (its CHECK admits none/oauth) and every read returns one.
+func normalizeAuthMode(mode string) string {
+	if mode == "" {
+		return domain.MCPAuthModeNone
+	}
+	return mode
+}
+
 // isNameTakenViolation reports whether the error is a unique violation on one
 // of the per-scope MCP server name constraints (uq_workspace_mcp_servers_
 // workspace_id_name / uq_agent_mcp_servers_agent_id_name), as opposed to the
@@ -121,6 +131,9 @@ func (mss *workspaceMCPStore) Create(ctx context.Context, srv *domain.WorkspaceM
 	if srv.Args == nil {
 		srv.Args = []string{}
 	}
+	// auth_mode is NOT NULL with a catalog CHECK; the domain's empty "none"
+	// marker binds as the explicit default.
+	srv.AuthMode = normalizeAuthMode(srv.AuthMode)
 	// origin_connection_id is a nullable uuid; the entity's empty-string
 	// "no origin" marker binds as SQL NULL (an empty string is not a uuid).
 	var originID *string
@@ -153,9 +166,10 @@ func (mss *workspaceMCPStore) Create(ctx context.Context, srv *domain.WorkspaceM
 	query := `
 		INSERT INTO workspace_mcp_servers (
 			id, workspace_id, name, transport, command, args, env, url, headers,
+			auth_mode, oauth_client_id, oauth_client_secret,
 			enabled, status, status_error, tool_count, origin_connection_id, created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
 		)
 	`
 	_, err = mss.db.Exec(ctx, query,
@@ -168,6 +182,9 @@ func (mss *workspaceMCPStore) Create(ctx context.Context, srv *domain.WorkspaceM
 		env,
 		srv.URL,
 		headers,
+		srv.AuthMode,
+		srv.OAuthClientID,
+		srv.OAuthClientSecret,
 		srv.Enabled,
 		srv.Status,
 		srv.StatusError,
@@ -192,6 +209,7 @@ func (mss *workspaceMCPStore) Get(ctx context.Context, workspaceID, id string) (
 
 	query := `
 		SELECT id, workspace_id, name, transport, command, args, env, url, headers,
+		       auth_mode, oauth_client_id, oauth_client_secret,
 		       enabled, status, status_error, tool_count, origin_connection_id, created_at, updated_at
 		FROM workspace_mcp_servers
 		WHERE workspace_id = $1 AND id = $2
@@ -213,6 +231,9 @@ func scanWorkspaceServer(row pgx.Row) (*domain.WorkspaceMCPServer, error) {
 		&env,
 		&srv.URL,
 		&headers,
+		&srv.AuthMode,
+		&srv.OAuthClientID,
+		&srv.OAuthClientSecret,
 		&srv.Enabled,
 		&srv.Status,
 		&srv.StatusError,
@@ -227,6 +248,7 @@ func scanWorkspaceServer(row pgx.Row) (*domain.WorkspaceMCPServer, error) {
 	if srv.Args == nil {
 		srv.Args = []string{}
 	}
+	srv.AuthMode = normalizeAuthMode(srv.AuthMode)
 	if originID != nil {
 		srv.OriginConnectionID = *originID
 	}
@@ -246,6 +268,7 @@ func (mss *workspaceMCPStore) List(ctx context.Context, workspaceID string) ([]d
 
 	query := `
 		SELECT id, workspace_id, name, transport, command, args, env, url, headers,
+		       auth_mode, oauth_client_id, oauth_client_secret,
 		       enabled, status, status_error, tool_count, origin_connection_id, created_at, updated_at
 		FROM workspace_mcp_servers
 		WHERE workspace_id = $1
@@ -283,6 +306,9 @@ func (mss *workspaceMCPStore) Update(ctx context.Context, srv *domain.WorkspaceM
 	if srv.Args == nil {
 		srv.Args = []string{}
 	}
+	// auth_mode is NOT NULL with a catalog CHECK; the domain's empty "none"
+	// marker binds as the explicit default.
+	srv.AuthMode = normalizeAuthMode(srv.AuthMode)
 	env, err := marshalJSONB(srv.Env)
 	if err != nil {
 		return convertError(err)
@@ -318,8 +344,11 @@ func (mss *workspaceMCPStore) Update(ctx context.Context, srv *domain.WorkspaceM
 		    env = $7,
 		    url = $8,
 		    headers = $9,
-		    enabled = $10,
-		    updated_at = $11
+		    auth_mode = $10,
+		    oauth_client_id = $11,
+		    oauth_client_secret = $12,
+		    enabled = $13,
+		    updated_at = $14
 		WHERE workspace_id = $1 AND id = $2
 		RETURNING created_at, status, status_error, tool_count, origin_connection_id
 	`
@@ -334,6 +363,9 @@ func (mss *workspaceMCPStore) Update(ctx context.Context, srv *domain.WorkspaceM
 		env,
 		srv.URL,
 		headers,
+		srv.AuthMode,
+		srv.OAuthClientID,
+		srv.OAuthClientSecret,
 		srv.Enabled,
 		time.Now().UTC(),
 	).Scan(&srv.CreatedAt, &srv.Status, &srv.StatusError, &srv.ToolCount, &originID)
@@ -405,6 +437,7 @@ func (mss *workspaceMCPStore) GetByOriginConnection(ctx context.Context, workspa
 
 	query := `
 		SELECT id, workspace_id, name, transport, command, args, env, url, headers,
+		       auth_mode, oauth_client_id, oauth_client_secret,
 		       enabled, status, status_error, tool_count, origin_connection_id, created_at, updated_at
 		FROM workspace_mcp_servers
 		WHERE workspace_id = $1 AND origin_connection_id = $2
@@ -458,6 +491,9 @@ func (mss *agentMCPStore) Create(ctx context.Context, srv *domain.AgentMCPServer
 	if srv.Args == nil {
 		srv.Args = []string{}
 	}
+	// auth_mode is NOT NULL with a catalog CHECK; the domain's empty "none"
+	// marker binds as the explicit default.
+	srv.AuthMode = normalizeAuthMode(srv.AuthMode)
 	env, err := marshalJSONB(srv.Env)
 	if err != nil {
 		return convertError(err)
@@ -484,9 +520,10 @@ func (mss *agentMCPStore) Create(ctx context.Context, srv *domain.AgentMCPServer
 	query := `
 		INSERT INTO agent_mcp_servers (
 			id, workspace_id, agent_id, name, transport, command, args, env, url, headers,
+			auth_mode, oauth_client_id, oauth_client_secret,
 			enabled, status, status_error, tool_count, created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
 		)
 	`
 	_, err = mss.db.Exec(ctx, query,
@@ -500,6 +537,9 @@ func (mss *agentMCPStore) Create(ctx context.Context, srv *domain.AgentMCPServer
 		env,
 		srv.URL,
 		headers,
+		srv.AuthMode,
+		srv.OAuthClientID,
+		srv.OAuthClientSecret,
 		srv.Enabled,
 		srv.Status,
 		srv.StatusError,
@@ -523,6 +563,7 @@ func (mss *agentMCPStore) Get(ctx context.Context, agentID, id string) (*domain.
 
 	query := `
 		SELECT id, workspace_id, agent_id, name, transport, command, args, env, url, headers,
+		       auth_mode, oauth_client_id, oauth_client_secret,
 		       enabled, status, status_error, tool_count, created_at, updated_at
 		FROM agent_mcp_servers
 		WHERE agent_id = $1 AND id = $2
@@ -544,6 +585,9 @@ func scanAgentServer(row pgx.Row) (*domain.AgentMCPServer, error) {
 		&env,
 		&srv.URL,
 		&headers,
+		&srv.AuthMode,
+		&srv.OAuthClientID,
+		&srv.OAuthClientSecret,
 		&srv.Enabled,
 		&srv.Status,
 		&srv.StatusError,
@@ -557,6 +601,7 @@ func scanAgentServer(row pgx.Row) (*domain.AgentMCPServer, error) {
 	if srv.Args == nil {
 		srv.Args = []string{}
 	}
+	srv.AuthMode = normalizeAuthMode(srv.AuthMode)
 	if srv.Env, err = unmarshalJSONB(env); err != nil {
 		return nil, err
 	}
@@ -573,6 +618,7 @@ func (mss *agentMCPStore) List(ctx context.Context, agentID string) ([]domain.Ag
 
 	query := `
 		SELECT id, workspace_id, agent_id, name, transport, command, args, env, url, headers,
+		       auth_mode, oauth_client_id, oauth_client_secret,
 		       enabled, status, status_error, tool_count, created_at, updated_at
 		FROM agent_mcp_servers
 		WHERE agent_id = $1
@@ -610,6 +656,9 @@ func (mss *agentMCPStore) Update(ctx context.Context, srv *domain.AgentMCPServer
 	if srv.Args == nil {
 		srv.Args = []string{}
 	}
+	// auth_mode is NOT NULL with a catalog CHECK; the domain's empty "none"
+	// marker binds as the explicit default.
+	srv.AuthMode = normalizeAuthMode(srv.AuthMode)
 	env, err := marshalJSONB(srv.Env)
 	if err != nil {
 		return convertError(err)
@@ -643,8 +692,11 @@ func (mss *agentMCPStore) Update(ctx context.Context, srv *domain.AgentMCPServer
 		    env = $8,
 		    url = $9,
 		    headers = $10,
-		    enabled = $11,
-		    updated_at = $12
+		    auth_mode = $11,
+		    oauth_client_id = $12,
+		    oauth_client_secret = $13,
+		    enabled = $14,
+		    updated_at = $15
 		WHERE agent_id = $2 AND workspace_id = $3 AND id = $1
 		RETURNING created_at, status, status_error, tool_count
 	`
@@ -659,6 +711,9 @@ func (mss *agentMCPStore) Update(ctx context.Context, srv *domain.AgentMCPServer
 		env,
 		srv.URL,
 		headers,
+		srv.AuthMode,
+		srv.OAuthClientID,
+		srv.OAuthClientSecret,
 		srv.Enabled,
 		time.Now().UTC(),
 	).Scan(&srv.CreatedAt, &srv.Status, &srv.StatusError, &srv.ToolCount)

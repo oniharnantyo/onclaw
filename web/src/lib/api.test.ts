@@ -698,6 +698,85 @@ describe('lib/api', () => {
       }
     });
   });
+
+  describe('MCP OAuth flow endpoints (add-mcp-oauth-client)', () => {
+    const okJson = (payload: any) =>
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'Content-Type': 'application/json' }),
+        json: async () => payload,
+      } as any);
+
+    it('posts the browser authorize begin and returns the provider URL', async () => {
+      globalThis.fetch = okJson({ authorize_url: 'https://auth.example.com/authorize?x=1' });
+
+      const res = await api.mcp.authorize('acme', 'srv-1');
+      expect((globalThis.fetch as any).mock.calls[0][0]).toBe(
+        '/api/v1/workspaces/acme/mcp-servers/srv-1/oauth/authorize'
+      );
+      expect((globalThis.fetch as any).mock.calls[0][1].method).toBe('POST');
+      expect(res.authorize_url).toContain('authorize');
+    });
+
+    it('begins the device flow and echoes the sealed session to the poll', async () => {
+      globalThis.fetch = okJson({
+        device_session: 'sealed-blob',
+        user_code: 'WDJB-MJHT',
+        verification_uri: 'https://example.com/activate',
+        verification_uri_complete: 'https://example.com/activate?user_code=WDJB-MJHT',
+        expires_in: 600,
+        interval: 5,
+      });
+
+      const begin = await api.mcp.beginDevice('acme', 'srv-1');
+      expect((globalThis.fetch as any).mock.calls[0][0]).toBe(
+        '/api/v1/workspaces/acme/mcp-servers/srv-1/oauth/device'
+      );
+      expect(begin.user_code).toBe('WDJB-MJHT');
+      expect(begin.interval).toBe(5);
+
+      globalThis.fetch = okJson({ status: 'pending' });
+      const poll = await api.mcp.pollDevice('acme', 'srv-1', 'sealed-blob');
+      expect((globalThis.fetch as any).mock.calls[0][0]).toBe(
+        '/api/v1/workspaces/acme/mcp-servers/srv-1/oauth/device/poll'
+      );
+      expect((globalThis.fetch as any).mock.calls[0][1].method).toBe('POST');
+      expect(JSON.parse((globalThis.fetch as any).mock.calls[0][1].body)).toEqual({
+        device_session: 'sealed-blob',
+      });
+      expect(poll.status).toBe('pending');
+    });
+
+    it('mirrors the agent-private scope under /agents/:agent/mcp-servers', async () => {
+      globalThis.fetch = okJson({ authorize_url: 'https://auth.example.com/authorize?x=2' });
+      await api.agents.authorizeMcpServer('acme', 'atlas', 'srv-1');
+      expect((globalThis.fetch as any).mock.calls[0][0]).toBe(
+        '/api/v1/workspaces/acme/agents/atlas/mcp-servers/srv-1/oauth/authorize'
+      );
+
+      globalThis.fetch = okJson({
+        device_session: 's2',
+        user_code: 'ABCD-EFGH',
+        verification_uri: 'https://example.com/activate',
+        expires_in: 600,
+        interval: 5,
+      });
+      await api.agents.beginDeviceMcpServer('acme', 'atlas', 'srv-1');
+      expect((globalThis.fetch as any).mock.calls[0][0]).toBe(
+        '/api/v1/workspaces/acme/agents/atlas/mcp-servers/srv-1/oauth/device'
+      );
+
+      globalThis.fetch = okJson({ status: 'slow_down' });
+      await api.agents.pollDeviceMcpServer('acme', 'atlas', 'srv-1', 's2');
+      expect((globalThis.fetch as any).mock.calls[0][0]).toBe(
+        '/api/v1/workspaces/acme/agents/atlas/mcp-servers/srv-1/oauth/device/poll'
+      );
+      expect(JSON.parse((globalThis.fetch as any).mock.calls[0][1].body)).toEqual({
+        device_session: 's2',
+      });
+    });
+  });
 });
 
 

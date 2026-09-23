@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { cx } from "../../lib/helpers";
 import { Icon } from "../../components/ui/Icon";
 import { Toggle } from "../../components/ui/Toggle";
@@ -30,16 +31,34 @@ interface StatusView {
   dot: string;
   label: string;
   errored: boolean;
+  expired: boolean;
 }
 
 // Display status: the enabled master switch wins (Paused), then the probed
-// status — `connected`/`ok` green, `error` red, anything else unknown gray.
+// status — `connected`/`ok` green, `expired` amber (the OAuth token set
+// lapsed; recoverable through re-consent), `error` red, anything else
+// unknown gray.
 function statusView(s: ApiMcpServer): StatusView {
-  if (!s.enabled) return { dot: 'bg-muted', label: 'Paused', errored: false };
-  if (s.status === 'error') return { dot: 'bg-danger', label: 'Error', errored: true };
+  if (!s.enabled) return { dot: 'bg-muted', label: 'Paused', errored: false, expired: false };
+  if (s.status === 'expired')
+    return { dot: 'bg-warn', label: 'Expired', errored: false, expired: true };
+  if (s.status === 'error')
+    return { dot: 'bg-danger', label: 'Error', errored: true, expired: false };
   if (s.status === 'ok' || s.status === 'connected')
-    return { dot: 'bg-success', label: 'Connected', errored: false };
-  return { dot: 'bg-muted', label: 'Unknown', errored: false };
+    return { dot: 'bg-success', label: 'Connected', errored: false, expired: false };
+  return { dot: 'bg-muted', label: 'Unknown', errored: false, expired: false };
+}
+
+// The dial seam's typed needs-authorization signal (add-mcp-oauth-client):
+// an oauth-mode row with no usable stored credential probes into this exact
+// status detail. The affordance shows for every un-connected oauth row; the
+// trimmed guidance renders for this prefix specifically.
+const OAUTH_REQUIRED_PREFIX = 'mcp server requires OAuth authorization:';
+
+function needsAuthDetail(s: ApiMcpServer): string | null {
+  if (s.auth_mode !== 'oauth' || s.status !== 'error' || !s.status_error) return null;
+  if (!s.status_error.startsWith(OAUTH_REQUIRED_PREFIX)) return null;
+  return s.status_error.slice(OAUTH_REQUIRED_PREFIX.length).trim() || null;
 }
 
 // Design D1: agents reference opted-in MCP servers by UUID in `enabled_mcps`.
@@ -54,6 +73,9 @@ function mcpRefs(a: any): string[] {
 export function McpPane({ tenant, onToast = () => {}, canWrite }: McpPaneProps) {
   const derivedCanWrite = useCanWriteTools(tenant);
   const writer = canWrite !== undefined ? canWrite : derivedCanWrite;
+  const navigate = useNavigate();
+  const routerLocation = useLocation();
+  const [searchParams] = useSearchParams();
 
   const [servers, setServers] = useState<ApiMcpServer[]>([]);
   const [agents, setAgents] = useState<ApiAgent[]>([]);
@@ -66,11 +88,16 @@ export function McpPane({ tenant, onToast = () => {}, canWrite }: McpPaneProps) 
   >(null);
   const [deleting, setDeleting] = useState<ApiMcpServer | null>(null);
   const [probingId, setProbingId] = useState<string | null>(null);
+  const [signingId, setSigningId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // StrictMode runs effects twice; the key guards the one-shot resolution of
+  // the OAuth callback params.
+  const oauthHandled = useRef<string | null>(null);
 
   const targetWsId = tenant?.sub || tenant?.id;
 
-  const load = async () => {
+  const load = async (): Promise<ApiMcpServer[]> => {
     setLoading(true);
     setLoadError(null);
     try {
@@ -82,11 +109,13 @@ export function McpPane({ tenant, onToast = () => {}, canWrite }: McpPaneProps) 
       ]);
       setServers(mcpRes.servers || []);
       if (agentRes) setAgents(agentRes.agents || []);
+      return mcpRes.servers || [];
     } catch (err: unknown) {
       if (err instanceof ApiError && err.status === 0) {
-        return;
+        return servers;
       }
       setLoadError(err instanceof Error ? err : new Error(String(err)));
+      return servers;
     } finally {
       setLoading(false);
     }
@@ -96,6 +125,40 @@ export function McpPane({ tenant, onToast = () => {}, canWrite }: McpPaneProps) 
     if (targetWsId) void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reload per workspace only
   }, [targetWsId]);
+
+  // OAuth consent return (add-mcp-oauth-client 7.1): the provider's callback
+  // bounced to /settings?pane=mcp&mcp_oauth=<id>&status=connected|failed
+  // (detail on failure). Resolve it exactly once, clean the params with a
+  // replace navigation so reloading the page never replays the toast, then
+  // refresh the registry (success shows the connected row; failure re-renders
+  // the current state).
+  useEffect(() => {
+    const serverId = searchParams.get('mcp_oauth');
+    if (!serverId) return;
+    const status = searchParams.get('status');
+    const detail = searchParams.get('detail');
+    const key = `${serverId}|${status || ''}|${detail || ''}`;
+    if (oauthHandled.current === key) return;
+    oauthHandled.current = key;
+
+    const rest = new URLSearchParams(searchParams);
+    rest.delete('mcp_oauth');
+    rest.delete('status');
+    rest.delete('detail');
+    const qs = rest.toString();
+    navigate(`${routerLocation.pathname}${qs ? `?${qs}` : ''}`, { replace: true });
+
+    void (async () => {
+      const fresh = await load();
+      const name = fresh.find((s) => s.id === serverId)?.name || serverId;
+      if (status === 'failed') {
+        onToast(`${name} couldn't be authorized${detail ? ` — ${detail}` : ''}`, 'danger');
+      } else {
+        onToast(`${name} connected`);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot resolution of the callback params
+  }, [searchParams]);
 
   const replaceServer = (next: ApiMcpServer) => {
     setServers((prev) => prev.map((s) => (s.id === next.id ? next : s)));
@@ -135,6 +198,25 @@ export function McpPane({ tenant, onToast = () => {}, canWrite }: McpPaneProps) 
     }
   };
 
+  const handleSignIn = async (s: ApiMcpServer) => {
+    setSigningId(s.id);
+    try {
+      const res = await api.mcp.authorize(targetWsId, s.id);
+      if (res?.authorize_url) {
+        // The provider round trip carries the sealed PKCE session on an
+        // HttpOnly cookie — a top-level navigation, like the connections
+        // consent hand-off. The callback bounces back to this pane.
+        window.location.assign(res.authorize_url);
+        return;
+      }
+      onToast(`Failed to start sign-in for ${s.name}`, 'danger');
+    } catch (err: unknown) {
+      onToast(formatApiError(err, `Failed to start sign-in for ${s.name}`), 'danger');
+    } finally {
+      setSigningId(null);
+    }
+  };
+
   const handleDelete = async (s: ApiMcpServer) => {
     setBusy(true);
     try {
@@ -149,11 +231,14 @@ export function McpPane({ tenant, onToast = () => {}, canWrite }: McpPaneProps) 
     }
   };
 
-  const handleDialogSave = async (payload: McpServerPayload) => {
+  // Returns the saved row so the dialog can run its OAuth sign-in step for
+  // oauth-mode servers (the dialog keeps itself open when it does).
+  const handleDialogSave = async (payload: McpServerPayload): Promise<ApiMcpServer | undefined> => {
     if (dialogState?.mode === 'edit') {
       const res = await api.mcp.update(targetWsId, dialogState.server.id, payload);
       if (res?.server) replaceServer(res.server);
       onToast(`${payload.name} updated`);
+      return res?.server;
     } else {
       const res = await api.mcp.create(targetWsId, payload);
       if (res?.server) {
@@ -164,6 +249,7 @@ export function McpPane({ tenant, onToast = () => {}, canWrite }: McpPaneProps) 
             : `${res.server.name} added${res.server.tool_count ? ` — ${res.server.tool_count} tools exposed` : ''}`
         );
       }
+      return res?.server;
     }
   };
 
@@ -204,6 +290,10 @@ export function McpPane({ tenant, onToast = () => {}, canWrite }: McpPaneProps) 
             const st = statusView(s);
             const users = usersOf(s.id);
             const inactive = !s.enabled && users.length > 0;
+            // OAuth rows show the sign-in affordance until a completed flow
+            // turns them connected (add-mcp-oauth-client 7.1).
+            const oauthPending = s.auth_mode === 'oauth' && s.status !== 'connected';
+            const authDetail = needsAuthDetail(s);
             // The row contract carries tool_count only; richer responses may
             // include the probed names — render chips when present.
             const rawNames: unknown = (s as any).tools;
@@ -241,6 +331,8 @@ export function McpPane({ tenant, onToast = () => {}, canWrite }: McpPaneProps) 
                           'inline-flex items-center gap-1.5 text-[11px]',
                           st.errored
                             ? 'text-danger'
+                            : st.expired
+                            ? 'text-[color-mix(in_oklab,var(--warn),black_25%)]'
                             : s.enabled
                             ? 'text-[color-mix(in_oklab,var(--success),black_25%)]'
                             : 'text-muted'
@@ -254,7 +346,7 @@ export function McpPane({ tenant, onToast = () => {}, canWrite }: McpPaneProps) 
                     <p className="truncate font-mono text-[11px] text-muted">{s.transport}</p>
                     {st.errored && s.status_error && (
                       <p className="truncate text-[11px] text-danger" title={s.status_error}>
-                        {s.status_error}
+                        {authDetail || s.status_error}
                       </p>
                     )}
                   </div>
@@ -281,7 +373,7 @@ export function McpPane({ tenant, onToast = () => {}, canWrite }: McpPaneProps) 
                   </div>
                   {writer && (
                     <>
-                      {st.errored ? (
+                      {st.errored && !oauthPending ? (
                         <button
                           type="button"
                           data-od-id={'mcp-retry-' + s.id}
@@ -291,6 +383,23 @@ export function McpPane({ tenant, onToast = () => {}, canWrite }: McpPaneProps) 
                           className="h-8 shrink-0 rounded-md border border-[color-mix(in_oklab,var(--danger)_45%,transparent)] px-2.5 text-[12px] font-medium text-danger transition-colors hover:bg-[color-mix(in_oklab,var(--danger)_10%,transparent)] disabled:opacity-50"
                         >
                           {probingId === s.id ? 'Probing…' : 'Retry'}
+                        </button>
+                      ) : null}
+                      {oauthPending ? (
+                        <button
+                          type="button"
+                          data-od-id={'mcp-oauth-' + s.id}
+                          data-testid={'mcp-oauth-' + s.id}
+                          onClick={() => void handleSignIn(s)}
+                          disabled={signingId === s.id}
+                          title={authDetail || undefined}
+                          className="h-8 shrink-0 rounded-md border border-line px-2.5 text-[12px] font-medium text-fg2 transition-colors hover:border-accent hover:text-fg disabled:opacity-50"
+                        >
+                          {signingId === s.id
+                            ? 'Redirecting…'
+                            : st.expired
+                            ? 'Re-authorize'
+                            : 'Sign in'}
                         </button>
                       ) : null}
                       <Toggle
@@ -393,6 +502,13 @@ export function McpPane({ tenant, onToast = () => {}, canWrite }: McpPaneProps) 
         <McpServerDialog
           server={dialogState.mode === 'edit' ? dialogState.server : null}
           existingServers={servers}
+          oauthApi={{
+            authorize: (id: string) => api.mcp.authorize(targetWsId, id),
+            beginDevice: (id: string) => api.mcp.beginDevice(targetWsId, id),
+            pollDevice: (id: string, deviceSession: string) =>
+              api.mcp.pollDevice(targetWsId, id, deviceSession),
+          }}
+          onAuthorized={() => void load()}
           onClose={() => setDialogState(null)}
           onSave={handleDialogSave}
         />

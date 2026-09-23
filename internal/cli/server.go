@@ -14,6 +14,7 @@ import (
 
 	"github.com/oniharnantyo/onclaw/internal/agents"
 	"github.com/oniharnantyo/onclaw/internal/agents/mcp"
+	mcpoauth "github.com/oniharnantyo/onclaw/internal/agents/mcp/oauth"
 	"github.com/oniharnantyo/onclaw/internal/agents/systemskills"
 	"github.com/oniharnantyo/onclaw/internal/bootstrap"
 	"github.com/oniharnantyo/onclaw/internal/channels"
@@ -192,7 +193,34 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	// rides the composition root's lifecycle — connections outlive single
 	// sessions deliberately.
 	mcpSettings := agents.NewMCPSettingsService(st.WorkspaceMCPServers(), st.AgentMCPServers(), st.Agents(), encKey)
-	mcpManager := mcp.NewMCPManager()
+
+	// MCP OAuth machinery (add-mcp-oauth-client tasks 5.1/6.1): one shared
+	// oauth.Client — its discovery cache serves the dial seam, the
+	// refresh-on-resolution wrapper, and the HTTP flows alike. The master key
+	// is the instance encryption key, the same key the connections OAuth flow
+	// seals its states with. The dial credentials wire into the manager (and,
+	// through the router, the probe handlers); the refresher rides the
+	// runtime credential source below.
+	mcpOAuthClient := mcpoauth.NewClient(encKey)
+	mcpOAuthRefresher := services.NewMCPOAuthTokenRefresher(
+		st.MCPTokens(),
+		st.WorkspaceMCPServers(),
+		st.AgentMCPServers(),
+		mcpSettings,
+		encKey,
+		cfg.PublicBaseURL,
+		mcpOAuthClient,
+	)
+	mcpOAuthDialCreds := services.NewMCPOAuthDialCredentials(
+		st.MCPTokens(),
+		st.WorkspaceMCPServers(),
+		st.AgentMCPServers(),
+		mcpSettings,
+		encKey,
+		cfg.PublicBaseURL,
+		mcpOAuthClient,
+	)
+	mcpManager := mcp.NewMCPManager(mcp.WithOAuthCredentials(mcpOAuthDialCreds))
 	defer mcpManager.Close()
 
 	// Workspace service connections (add-workspace-connections 3.3): the
@@ -222,9 +250,10 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	// Runtime credential source (add-connection-oauth 2.3/D3): the settings
 	// source the MCP runtime consumes — the runner's MCP policy and status
 	// writer resolve every run's toolset through it — with refresh-on-
-	// resolution on every connection-linked row. Fail-open by design; the MCP
-	// runtime itself is untouched.
-	runtimeSource := services.NewRuntimeCredentialSource(mcpSettings, connectionsSvc)
+	// resolution on every connection-linked row, and the MCP OAuth token
+	// refresh on every oauth-mode row (add-mcp-oauth-client task 5.2).
+	// Fail-open by design; the MCP runtime itself is untouched.
+	runtimeSource := services.NewRuntimeCredentialSource(mcpSettings, connectionsSvc, services.WithMCPOAuthTokenRefresher(mcpOAuthRefresher))
 
 	// Channel fan-out (integrate-agent-channels D2/D11 + channel-teams D1/D3):
 	// one runtime shared by the runner (channel context + feed + work
@@ -551,6 +580,8 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		MCPManager:          mcpManager,
 		Connections:         connectionsSvc,
 		OAuthApps:           oauthAppsSvc,
+		MCPOAuthClient:      mcpOAuthClient,
+		MCPOAuthCredentials: mcpOAuthDialCreds,
 		PublicBaseURL:       cfg.PublicBaseURL,
 		ChannelRuntime:      channelRuntime,
 		HooksCommandEnabled: cfg.HooksCommandEnabled,

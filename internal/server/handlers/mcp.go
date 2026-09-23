@@ -12,6 +12,7 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/agents"
 	"github.com/oniharnantyo/onclaw/internal/agents/mcp"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/secrets"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
@@ -60,23 +61,39 @@ type mcpServerRequest struct {
 	URL       string              `json:"url,omitempty"`
 	Headers   []mcpSecretRowInput `json:"headers,omitempty"`
 	Enabled   *bool               `json:"enabled,omitempty"`
+	// Auth mode (add-mcp-oauth-client): "none" (or empty — the default) for
+	// the static rows above, "oauth" for bearer/refresh dials. An explicit
+	// non-oauth mode on a patch clears the BYO client rows (domain validation
+	// refuses them outside oauth mode).
+	AuthMode string `json:"auth_mode,omitempty"`
+	// OAuthClientID is the bring-your-own app's client id; a URL value routes
+	// to the client-id metadata document strategy. OAuthClientSecret is the
+	// confidential app's secret — write-only like the row secrets: an omitted
+	// or empty value keeps the stored secret, a plaintext value replaces it
+	// (encrypted at persistence with the workspace AAD).
+	OAuthClientID     string `json:"oauth_client_id,omitempty"`
+	OAuthClientSecret string `json:"oauth_client_secret,omitempty"`
 }
 
 // carriesConnection reports whether the payload touches the connection at all
 // (a pure {enabled} pause/resume patch must not).
 func (r *mcpServerRequest) carriesConnection() bool {
 	return r.Transport != "" || r.Command != "" || r.Args != nil ||
-		r.Env != nil || r.URL != "" || r.Headers != nil
+		r.Env != nil || r.URL != "" || r.Headers != nil ||
+		r.AuthMode != "" || r.OAuthClientID != "" || r.OAuthClientSecret != ""
 }
 
 // connection builds the domain connection for a full create or a transport
 // switch.
 func (r *mcpServerRequest) connection() domain.MCPConnection {
 	conn := domain.MCPConnection{
-		Transport: r.Transport,
-		Command:   r.Command,
-		Args:      r.Args,
-		URL:       r.URL,
+		Transport:         r.Transport,
+		Command:           r.Command,
+		Args:              r.Args,
+		URL:               r.URL,
+		AuthMode:          r.AuthMode,
+		OAuthClientID:     r.OAuthClientID,
+		OAuthClientSecret: r.OAuthClientSecret,
 	}
 	conn.Env = envInputRows(r.Env)
 	conn.Headers = envInputRows(r.Headers)
@@ -141,6 +158,27 @@ func applyMCPServerPatch(name *string, conn *domain.MCPConnection, enabled *bool
 			conn.Headers = envInputRows(req.Headers)
 			changed = true
 		}
+		// Auth mode: an explicit value switches the mode; a switch OFF oauth
+		// clears the BYO client rows (domain validation refuses them outside
+		// oauth mode). An empty value keeps the stored mode.
+		if req.AuthMode != "" && req.AuthMode != conn.AuthMode {
+			conn.AuthMode = req.AuthMode
+			changed = true
+			if req.AuthMode != domain.MCPAuthModeOAuth {
+				conn.OAuthClientID = ""
+				conn.OAuthClientSecret = ""
+			}
+		}
+		if req.OAuthClientID != "" && req.OAuthClientID != conn.OAuthClientID {
+			conn.OAuthClientID = req.OAuthClientID
+			changed = true
+		}
+		// The secret is write-only: an empty value keeps the stored envelope
+		// (the service-side plaintext rule), a plaintext value replaces it.
+		if req.OAuthClientSecret != "" && req.OAuthClientSecret != conn.OAuthClientSecret {
+			conn.OAuthClientSecret = req.OAuthClientSecret
+			changed = true
+		}
 	}
 	return changed
 }
@@ -171,6 +209,13 @@ type mcpServerView struct {
 	ToolCount   int                `json:"tool_count"`
 	CreatedAt   time.Time          `json:"created_at"`
 	UpdatedAt   time.Time          `json:"updated_at"`
+	// Auth mode (add-mcp-oauth-client): "none"/empty reads as the static
+	// default; "oauth" rows carry the BYO client id and a last-4 secret hint
+	// — never the secret itself. The web reads auth_mode + status to place
+	// the sign-in / re-authorize affordance and the expired chip.
+	AuthMode              string `json:"auth_mode,omitempty"`
+	OAuthClientID         string `json:"oauth_client_id,omitempty"`
+	OAuthClientSecretHint string `json:"oauth_client_secret_hint,omitempty"`
 }
 
 // mcpStatusView normalizes the stored status for the API: an empty status
@@ -194,16 +239,42 @@ func secretRowViews(rows []domain.EnvRow) []mcpSecretRowView {
 	return out
 }
 
-func (v *mcpServerView) fillConnection(conn domain.MCPConnection) {
+func (v *mcpServerView) fillConnection(encKey []byte, workspaceID string, conn domain.MCPConnection) {
 	v.Transport = conn.Transport
 	v.Command = conn.Command
 	v.Args = conn.Args
 	v.Env = secretRowViews(conn.Env)
 	v.URL = conn.URL
 	v.Headers = secretRowViews(conn.Headers)
+	v.AuthMode = conn.AuthMode
+	v.OAuthClientID = conn.OAuthClientID
+	v.OAuthClientSecretHint = oauthClientSecretHint(encKey, []byte(workspaceID), conn.OAuthClientSecret)
 }
 
-func newWorkspaceMCPServerView(row *domain.WorkspaceMCPServer) mcpServerView {
+// oauthClientSecretHint renders the BYO client secret's client-safe hint: a
+// stored envelope (the only writer shape — the handlers encrypt on write)
+// decrypts to recover the hinted tail, undecryptable envelopes hint empty,
+// and plaintext rows (legacy or test writes) hint from their own tail. The
+// value itself never crosses to a client.
+func oauthClientSecretHint(encKey, aad []byte, value string) string {
+	if value == "" {
+		return ""
+	}
+	plaintext := value
+	if strings.HasPrefix(value, secrets.Version1Prefix) {
+		decrypted, err := secrets.Decrypt(encKey, aad, value)
+		if err != nil {
+			return ""
+		}
+		plaintext = string(decrypted)
+	}
+	if len(plaintext) > 4 {
+		return plaintext[len(plaintext)-4:]
+	}
+	return plaintext
+}
+
+func newWorkspaceMCPServerView(encKey []byte, row *domain.WorkspaceMCPServer) mcpServerView {
 	v := mcpServerView{
 		ID:          row.ID,
 		WorkspaceID: row.WorkspaceID,
@@ -215,11 +286,11 @@ func newWorkspaceMCPServerView(row *domain.WorkspaceMCPServer) mcpServerView {
 		CreatedAt:   row.CreatedAt,
 		UpdatedAt:   row.UpdatedAt,
 	}
-	v.fillConnection(row.MCPConnection)
+	v.fillConnection(encKey, row.WorkspaceID, row.MCPConnection)
 	return v
 }
 
-func newAgentMCPServerView(row *domain.AgentMCPServer) mcpServerView {
+func newAgentMCPServerView(encKey []byte, row *domain.AgentMCPServer) mcpServerView {
 	v := mcpServerView{
 		ID:          row.ID,
 		WorkspaceID: row.WorkspaceID,
@@ -232,7 +303,7 @@ func newAgentMCPServerView(row *domain.AgentMCPServer) mcpServerView {
 		CreatedAt:   row.CreatedAt,
 		UpdatedAt:   row.UpdatedAt,
 	}
-	v.fillConnection(row.MCPConnection)
+	v.fillConnection(encKey, row.WorkspaceID, row.MCPConnection)
 	return v
 }
 
@@ -254,15 +325,39 @@ type mcpServerHandlers struct {
 	// connections names the owning connection for managed-server pointer
 	// errors (design.md D11); the composition root always resolves it.
 	connections ConnectionNamer
+	// encKey seals the BYO OAuth client secret at persistence (the
+	// workspace-AAD envelope the dial-time resolution opens) and renders the
+	// read views' secret hint.
+	encKey []byte
+	// oauthCreds resolves oauth-mode rows' probe bearers (add-mcp-oauth-client
+	// design.md D1 — probe/run parity); the composition root always wires it.
+	oauthCreds mcp.OAuthDialCredentials
 }
 
 // NewMCPServerHandlers creates a new mcpServerHandlers instance. A probe
 // timeout of zero selects DefaultMCPProbeTimeout.
-func NewMCPServerHandlers(settings *agents.MCPSettingsService, agents store.AgentStore, invalidator MCPInvalidator, probeTimeout time.Duration, connections ConnectionNamer) *mcpServerHandlers {
+func NewMCPServerHandlers(settings *agents.MCPSettingsService, agents store.AgentStore, invalidator MCPInvalidator, probeTimeout time.Duration, connections ConnectionNamer, encKey []byte, oauthCreds mcp.OAuthDialCredentials) *mcpServerHandlers {
 	if probeTimeout <= 0 {
 		probeTimeout = DefaultMCPProbeTimeout
 	}
-	return &mcpServerHandlers{settings: settings, agents: agents, invalidator: invalidator, probeTimeout: probeTimeout, connections: connections}
+	return &mcpServerHandlers{settings: settings, agents: agents, invalidator: invalidator, probeTimeout: probeTimeout, connections: connections, encKey: encKey, oauthCreds: oauthCreds}
+}
+
+// sealOAuthClientSecret encrypts a write's plaintext BYO client secret into
+// the workspace-AAD envelope before persistence (add-mcp-oauth-client task
+// 2.2b/D4: the dial-time resolution opens the envelope, so plaintext must
+// never survive a write). Envelopes pass through untouched; empty keeps the
+// stored secret through the update merge.
+func (h *mcpServerHandlers) sealOAuthClientSecret(workspaceID string, conn *domain.MCPConnection) error {
+	if conn.OAuthClientSecret == "" || strings.HasPrefix(conn.OAuthClientSecret, secrets.Version1Prefix) {
+		return nil
+	}
+	envelope, err := secrets.Encrypt(h.encKey, []byte(workspaceID), []byte(conn.OAuthClientSecret))
+	if err != nil {
+		return fmt.Errorf("seal oauth client secret: %w", err)
+	}
+	conn.OAuthClientSecret = envelope
+	return nil
 }
 
 // rejectManagedServer enforces the managed-server immutability rule
@@ -328,11 +423,14 @@ func respondSettingsError(c *gin.Context, err error) {
 
 // probeServer dials ref fresh (never the manager's cache — a probe is a new
 // connection attempt by definition) within the probe bound and reports the
-// outcome in the persisted-status vocabulary.
+// outcome in the persisted-status vocabulary. OAuth-mode rows resolve their
+// bearer through the credential seam first: a needs-authorization or
+// discovery failure surfaces as the row's error detail, exactly as the run
+// path reports it (probe/run parity, add-mcp-oauth-client design.md D1).
 func (h *mcpServerHandlers) probeServer(ctx context.Context, ref mcp.Ref) (status, statusError string, toolCount int) {
 	pctx, cancel := context.WithTimeout(ctx, h.probeTimeout)
 	defer cancel()
-	count, err := mcp.Probe(pctx, ref)
+	count, err := mcp.Probe(pctx, ref, h.oauthCreds)
 	if err != nil {
 		return domain.MCPStatusError, err.Error(), 0
 	}
@@ -358,7 +456,7 @@ func (h *mcpServerHandlers) probePersistRespondWorkspace(c *gin.Context, httpSta
 		RespondError(c, err)
 		return
 	}
-	RespondJSON(c, httpStatus, gin.H{"server": newWorkspaceMCPServerView(view)})
+	RespondJSON(c, httpStatus, gin.H{"server": newWorkspaceMCPServerView(h.encKey, view)})
 }
 
 // probePersistRespondAgent is the agent-private counterpart of
@@ -380,7 +478,7 @@ func (h *mcpServerHandlers) probePersistRespondAgent(c *gin.Context, httpStatus 
 		RespondError(c, err)
 		return
 	}
-	RespondJSON(c, httpStatus, gin.H{"server": newAgentMCPServerView(view)})
+	RespondJSON(c, httpStatus, gin.H{"server": newAgentMCPServerView(h.encKey, view)})
 }
 
 // -------------------------------------------------------------------------
@@ -399,7 +497,7 @@ func (h *mcpServerHandlers) ListWorkspaceServers(c *gin.Context) {
 	}
 	items := make([]mcpServerView, 0, len(rows))
 	for i := range rows {
-		items = append(items, newWorkspaceMCPServerView(&rows[i]))
+		items = append(items, newWorkspaceMCPServerView(h.encKey, &rows[i]))
 	}
 	RespondOK(c, gin.H{"servers": items})
 }
@@ -421,6 +519,10 @@ func (h *mcpServerHandlers) CreateWorkspaceServer(c *gin.Context) {
 	}
 	if req.Enabled != nil {
 		srv.Enabled = *req.Enabled
+	}
+	if err := h.sealOAuthClientSecret(ws.ID, &srv.MCPConnection); err != nil {
+		RespondError(c, err)
+		return
 	}
 	if err := h.settings.CreateWorkspaceServer(c.Request.Context(), srv); err != nil {
 		respondSettingsError(c, err)
@@ -458,6 +560,10 @@ func (h *mcpServerHandlers) PatchWorkspaceServer(c *gin.Context) {
 		return
 	}
 
+	if err := h.sealOAuthClientSecret(ws.ID, &row.MCPConnection); err != nil {
+		RespondError(c, err)
+		return
+	}
 	if err := h.settings.UpdateWorkspaceServer(ctx, row); err != nil {
 		respondSettingsError(c, err)
 		return
@@ -535,7 +641,7 @@ func (h *mcpServerHandlers) ListAgentServers(c *gin.Context) {
 	}
 	items := make([]mcpServerView, 0, len(rows))
 	for i := range rows {
-		items = append(items, newAgentMCPServerView(&rows[i]))
+		items = append(items, newAgentMCPServerView(h.encKey, &rows[i]))
 	}
 	RespondOK(c, gin.H{"servers": items})
 }
@@ -561,6 +667,10 @@ func (h *mcpServerHandlers) CreateAgentServer(c *gin.Context) {
 	}
 	if req.Enabled != nil {
 		srv.Enabled = *req.Enabled
+	}
+	if err := h.sealOAuthClientSecret(ws.ID, &srv.MCPConnection); err != nil {
+		RespondError(c, err)
+		return
 	}
 	if err := h.settings.CreateAgentServer(c.Request.Context(), srv); err != nil {
 		respondSettingsError(c, err)
@@ -594,6 +704,10 @@ func (h *mcpServerHandlers) PatchAgentServer(c *gin.Context) {
 		return
 	}
 
+	if err := h.sealOAuthClientSecret(ws.ID, &row.MCPConnection); err != nil {
+		RespondError(c, err)
+		return
+	}
 	if err := h.settings.UpdateAgentServer(ctx, row); err != nil {
 		respondSettingsError(c, err)
 		return

@@ -48,6 +48,7 @@ type Store interface {
 	ToolSettings() ToolSettingsStore
 	WorkspaceMCPServers() WorkspaceMCPServers
 	AgentMCPServers() AgentMCPServers
+	MCPTokens() MCPTokens
 	Connections() Connections
 	ConnectionWebhooks() ConnectionWebhookStore
 	OAuthApps() OAuthApps

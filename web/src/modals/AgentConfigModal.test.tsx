@@ -24,6 +24,37 @@ const mcpServerRow = (overrides: Partial<ApiMcpServer> = {}): ApiMcpServer => ({
   ...overrides,
 });
 
+const OAUTH_REQUIRED_DETAIL =
+  'no usable OAuth credential is stored for this server — start (or re-start) its sign-in from this agent';
+
+/** Un-connected agent-private oauth row (add-mcp-oauth-client 7.1). */
+const agentOauthRow = (overrides: Partial<ApiMcpServer> = {}): ApiMcpServer =>
+  mcpServerRow({
+    id: 'srv-notion',
+    name: 'Notion',
+    transport: 'streamable_http',
+    url: 'https://mcp.notion.com/mcp',
+    auth_mode: 'oauth',
+    status: 'unknown',
+    status_error: null,
+    command: undefined,
+    args: undefined,
+    env: undefined,
+    tool_count: 0,
+    ...overrides,
+  });
+
+/** jsdom navigations need stubbing; same pattern as McpPane.test. */
+function stubLocationAssign() {
+  const assignMock = vi.fn();
+  Object.defineProperty(window, 'location', {
+    value: { ...window.location, assign: assignMock },
+    writable: true,
+    configurable: true,
+  });
+  return assignMock;
+}
+
 /** Fill Step 1 (Identity) fields and advance to Step 2 (Model). */
 async function goToStep2(fields?: { name?: string; role?: string; brief?: string }) {
   fireEvent.change(screen.getByTestId('input-agent-name'), {
@@ -1228,6 +1259,70 @@ describe('modals/AgentConfigModal', () => {
     await waitFor(() => {
       expect(screen.queryByTestId('agent-mcp-server-srv-private')).toBeNull();
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // Agent-private OAuth rows (add-mcp-oauth-client 7.1)
+  // -------------------------------------------------------------------------
+
+  it('marks an expired agent oauth row with the expired chip and a Re-authorize action', async () => {
+    vi.spyOn(api.agents, 'listMcpServers').mockResolvedValue({
+      servers: [agentOauthRow({ status: 'expired' })],
+    });
+
+    render(<AgentConfigModal draft={{ id: 'radar', name: 'Radar' }} tenant={mockTenant} onClose={vi.fn()} onSave={vi.fn()} />);
+    await waitFor(() => { expect(screen.queryByTestId('agent-modal-loading')).toBeNull(); });
+    fireEvent.click(screen.getByText('Capabilities'));
+
+    const status = screen.getByTestId('agent-mcp-server-status-srv-notion');
+    expect(status.textContent).toBe('Expired');
+    // Warning tone, matching the settings pane's expired convention.
+    expect(status.className).toContain('warn');
+    expect(screen.getByTestId('agent-mcp-oauth-srv-notion').textContent).toBe('Re-authorize');
+  });
+
+  it('offers the sign-in affordance on an unconnected agent oauth row and calls the agent-scoped authorize endpoint', async () => {
+    const assignMock = stubLocationAssign();
+    vi.spyOn(api.agents, 'listMcpServers').mockResolvedValue({
+      servers: [agentOauthRow()],
+    });
+    const authorize = vi
+      .spyOn(api.agents, 'authorizeMcpServer')
+      .mockResolvedValue({ authorize_url: 'https://auth.notion.com/authorize?client_id=x' });
+
+    render(<AgentConfigModal draft={{ id: 'radar', name: 'Radar' }} tenant={mockTenant} onClose={vi.fn()} onSave={vi.fn()} />);
+    await waitFor(() => { expect(screen.queryByTestId('agent-modal-loading')).toBeNull(); });
+    fireEvent.click(screen.getByText('Capabilities'));
+
+    const btn = screen.getByTestId('agent-mcp-oauth-srv-notion');
+    expect(btn.textContent).toBe('Sign in');
+    fireEvent.click(btn);
+
+    // The begin runs against the agent-scoped endpoint with the agent id.
+    await waitFor(() => {
+      expect(authorize).toHaveBeenCalledWith('acme', 'radar', 'srv-notion');
+    });
+    await waitFor(() => {
+      expect(assignMock).toHaveBeenCalledWith('https://auth.notion.com/authorize?client_id=x');
+    });
+  });
+
+  it('renders the needs-authorization detail with a sign-in action on a probe without a token', async () => {
+    vi.spyOn(api.agents, 'listMcpServers').mockResolvedValue({
+      servers: [
+        agentOauthRow({ status: 'error', status_error: `mcp server requires OAuth authorization: ${OAUTH_REQUIRED_DETAIL}` }),
+      ],
+    });
+
+    render(<AgentConfigModal draft={{ id: 'radar', name: 'Radar' }} tenant={mockTenant} onClose={vi.fn()} onSave={vi.fn()} />);
+    await waitFor(() => { expect(screen.queryByTestId('agent-modal-loading')).toBeNull(); });
+    fireEvent.click(screen.getByText('Capabilities'));
+
+    expect(screen.getByTestId('agent-mcp-server-status-srv-notion').textContent).toBe('Error');
+    // The trimmed actionable guidance replaces the typed prefix; the full
+    // detail stays on the title tooltip.
+    expect(screen.getByTestId('agent-mcp-server-srv-notion').textContent).toContain(OAUTH_REQUIRED_DETAIL);
+    expect(screen.getByTestId('agent-mcp-oauth-srv-notion').textContent).toBe('Sign in');
   });
 
   it('hides private server write controls from holders without agents.write but keeps rows', async () => {

@@ -45,6 +45,7 @@ type fakeStore struct {
 	wsMCPServerNames        map[string]string                         // key: workspaceID + ":" + lower(name) -> ID
 	agentMCPServers         map[string]*domain.AgentMCPServer         // key: ID
 	agentMCPServerNames     map[string]string                         // key: agentID + ":" + lower(name) -> ID
+	mcptokens               map[string]*domain.MCPToken               // key: workspaceID + ":" + agentID + ":" + serverID (agentID empty = workspace scope)
 	connections             map[string]*domain.Connection             // key: ID
 	connectionsByService    map[string]string                         // key: workspaceID + ":" + service -> ID
 	connectionWebhooks      map[string]*domain.ConnectionWebhook      // key: connection ID
@@ -110,6 +111,7 @@ func newStore() *fakeStore {
 		wsMCPServerNames:        make(map[string]string),
 		agentMCPServers:         make(map[string]*domain.AgentMCPServer),
 		agentMCPServerNames:     make(map[string]string),
+		mcptokens:               make(map[string]*domain.MCPToken),
 		connections:             make(map[string]*domain.Connection),
 		connectionsByService:    make(map[string]string),
 		connectionWebhooks:      make(map[string]*domain.ConnectionWebhook),
@@ -242,6 +244,11 @@ func (s *fakeStore) WorkspaceMCPServers() store.WorkspaceMCPServers {
 // AgentMCPServers returns the AgentMCPServers sub-port.
 func (s *fakeStore) AgentMCPServers() store.AgentMCPServers {
 	return &agentMCPServerStore{s: s}
+}
+
+// MCPTokens returns the MCPTokens sub-port.
+func (s *fakeStore) MCPTokens() store.MCPTokens {
+	return &mcpTokenStore{s: s}
 }
 
 // Connections returns the Connections sub-port.
@@ -406,6 +413,9 @@ func (s *fakeStore) clone() *fakeStore {
 	for key, id := range s.agentMCPServerNames {
 		cp.agentMCPServerNames[key] = id
 	}
+	for key, t := range s.mcptokens {
+		cp.mcptokens[key] = cloneMCPToken(t)
+	}
 	for id, c := range s.connections {
 		cp.connections[id] = cloneConnection(c)
 	}
@@ -529,6 +539,7 @@ func (s *fakeStore) apply(other *fakeStore) {
 	s.wsMCPServerNames = other.wsMCPServerNames
 	s.agentMCPServers = other.agentMCPServers
 	s.agentMCPServerNames = other.agentMCPServerNames
+	s.mcptokens = other.mcptokens
 	s.connections = other.connections
 	s.connectionsByService = other.connectionsByService
 	s.connectionWebhooks = other.connectionWebhooks
@@ -1777,6 +1788,10 @@ func (as *agentStore) Delete(ctx context.Context, workspaceID, id string) error 
 		}
 	}
 
+	// The agent's OAuth token rows die with its private servers
+	// (ON DELETE CASCADE, add-mcp-oauth-client design.md D4).
+	purgeAgentMCPTokensLocked(as.s, workspaceID, id)
+
 	// Schedulers and their run records die with the agent
 	// (ON DELETE CASCADE).
 	for schedID, sched := range as.s.schedulers {
@@ -2792,6 +2807,9 @@ func (mss *workspaceMCPServerStore) Delete(ctx context.Context, workspaceID, id 
 
 	delete(mss.s.wsMCPServers, id)
 	delete(mss.s.wsMCPServerNames, workspaceID+":"+strings.ToLower(srv.Name))
+	// The server's OAuth token row dies with it (ON DELETE CASCADE,
+	// add-mcp-oauth-client design.md D4).
+	purgeMCPTokenLocked(mss.s, workspaceID, "", id)
 	return nil
 }
 
@@ -2955,6 +2973,9 @@ func (mss *agentMCPServerStore) Delete(ctx context.Context, agentID, id string) 
 
 	delete(mss.s.agentMCPServers, id)
 	delete(mss.s.agentMCPServerNames, agentID+":"+strings.ToLower(srv.Name))
+	// The server's OAuth token row dies with it (ON DELETE CASCADE,
+	// add-mcp-oauth-client design.md D4).
+	purgeMCPTokenLocked(mss.s, srv.WorkspaceID, agentID, id)
 	return nil
 }
 

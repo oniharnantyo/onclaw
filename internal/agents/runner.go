@@ -1066,7 +1066,9 @@ func (r *Runner) resolveMCPTools(ctx context.Context, req ExecRequest, agent *do
 		}
 	}
 	for _, s := range agentServers {
-		ref := mcp.Ref{WorkspaceID: s.WorkspaceID, ServerID: s.ID, Name: s.Name, Conn: s.MCPConnection}
+		// AgentID rides the ref so the OAuth dial credential seam can address
+		// the agent-scope token row (add-mcp-oauth-client design.md D7).
+		ref := mcp.Ref{WorkspaceID: s.WorkspaceID, AgentID: req.AgentID, ServerID: s.ID, Name: s.Name, Conn: s.MCPConnection}
 		agentID, srvID := req.AgentID, s.ID
 		tools = append(tools, resolveServer(ref, s.Status, s.StatusError, s.ToolCount,
 			func(status, statusErr string, count int) {

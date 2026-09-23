@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { McpPane } from './McpPane';
 import { canWriteTools } from '../../lib/tools';
 import { api, ApiError, type ApiMcpServer } from '../../lib/api';
@@ -32,12 +33,75 @@ const erroredRow = () =>
     tool_count: 0,
   });
 
+const OAUTH_REQUIRED_DETAIL =
+  'no usable OAuth credential is stored for this server — start (or re-start) its sign-in from the MCP servers pane';
+
+const oauthRow = (overrides: Partial<ApiMcpServer> = {}): ApiMcpServer =>
+  serverRow({
+    id: 'srv-notion',
+    name: 'Notion',
+    transport: 'streamable_http',
+    url: 'https://mcp.notion.com/mcp',
+    auth_mode: 'oauth',
+    status: 'unknown',
+    status_error: null,
+    command: undefined,
+    args: undefined,
+    env: undefined,
+    tool_count: 0,
+    ...overrides,
+  });
+
 const agentsRows = () =>
   [
     { id: 'a1', name: 'Atlas', slug: 'atlas', enabled_mcps: ['srv-gh'] },
     { id: 'a2', name: 'Beacon', slug: 'beacon', enabled_mcps: ['srv-gh'] },
     { id: 'a3', name: 'Cedar', slug: 'cedar' },
   ] as any[];
+
+/** The pane mounts inside the app's router (the OAuth callback return is
+ * resolved through the query string); every render needs the context. */
+function renderPane(opts: { canWrite?: boolean; onToast?: (t: string, k?: string) => void } = {}) {
+  return renderPaneAt('/settings/mcp', opts);
+}
+
+/** Renders the pane at a deep-linked URL (e.g. the OAuth callback return) and
+ * exposes the router location so URL-cleaning assertions can read it. */
+function renderPaneAt(
+  url: string,
+  opts: { canWrite?: boolean; onToast?: (t: string, k?: string) => void } = {}
+) {
+  function LocationProbe() {
+    const loc = useLocation();
+    return <div data-testid="location-probe" data-loc={loc.pathname + (loc.search || '')} />;
+  }
+  return render(
+    <MemoryRouter initialEntries={[url]}>
+      <Routes>
+        <Route
+          path="/settings/mcp"
+          element={
+            <>
+              <McpPane tenant={mockTenant} canWrite={opts.canWrite} onToast={opts.onToast} />
+              <LocationProbe />
+            </>
+          }
+        />
+      </Routes>
+    </MemoryRouter>
+  );
+}
+
+/** jsdom navigations need stubbing; same pattern as IntegrationsSection.test. */
+function stubLocationAssign() {
+  const assignMock = vi.fn();
+  Object.defineProperty(window, 'location', {
+    value: { ...window.location, assign: assignMock },
+    writable: true,
+    configurable: true,
+  });
+  return assignMock;
+}
 
 describe('screens/settings/McpPane', () => {
   beforeEach(() => {
@@ -49,7 +113,7 @@ describe('screens/settings/McpPane', () => {
     vi.spyOn(api.mcp, 'list').mockResolvedValue({ servers: [serverRow(), erroredRow()] });
     vi.spyOn(api.agents, 'list').mockResolvedValue({ agents: agentsRows() });
 
-    render(<McpPane tenant={mockTenant} />);
+    renderPane();
 
     await waitFor(() => {
       expect(screen.getByTestId('mcp-srv-gh')).not.toBeNull();
@@ -75,7 +139,7 @@ describe('screens/settings/McpPane', () => {
       agents: [{ id: 'a1', name: 'Atlas', slug: 'atlas', enabled_mcps: ['srv-gh'] }] as any[],
     });
 
-    render(<McpPane tenant={mockTenant} />);
+    renderPane();
 
     await waitFor(() => {
       expect(screen.getByTestId('mcp-srv-gh')).not.toBeNull();
@@ -94,7 +158,7 @@ describe('screens/settings/McpPane', () => {
     });
     const onToast = vi.fn();
 
-    render(<McpPane tenant={mockTenant} onToast={onToast} />);
+    renderPane({ onToast });
 
     await waitFor(() => {
       expect(screen.getByTestId('mcp-srv-gh')).not.toBeNull();
@@ -119,7 +183,7 @@ describe('screens/settings/McpPane', () => {
     });
     const onToast = vi.fn();
 
-    render(<McpPane tenant={mockTenant} onToast={onToast} />);
+    renderPane({ onToast });
 
     await waitFor(() => {
       expect(screen.getByTestId('mcp-retry-srv-broken')).not.toBeNull();
@@ -145,7 +209,7 @@ describe('screens/settings/McpPane', () => {
     });
     const onToast = vi.fn();
 
-    render(<McpPane tenant={mockTenant} onToast={onToast} />);
+    renderPane({ onToast });
 
     await waitFor(() => {
       expect(screen.getByTestId('mcp-retry-srv-broken')).not.toBeNull();
@@ -164,7 +228,7 @@ describe('screens/settings/McpPane', () => {
       servers: [serverRow(), serverRow({ id: 'srv-count', name: 'NoNames', tool_count: 3 })],
     });
 
-    render(<McpPane tenant={mockTenant} />);
+    renderPane();
 
     await waitFor(() => {
       expect(screen.getByTestId('mcp-srv-gh')).not.toBeNull();
@@ -187,7 +251,7 @@ describe('screens/settings/McpPane', () => {
     const del = vi.spyOn(api.mcp, 'delete').mockResolvedValue(undefined);
     const onToast = vi.fn();
 
-    render(<McpPane tenant={mockTenant} onToast={onToast} />);
+    renderPane({ onToast });
 
     await waitFor(() => {
       expect(screen.getByTestId('mcp-delete-srv-gh')).not.toBeNull();
@@ -229,7 +293,7 @@ describe('screens/settings/McpPane', () => {
       }),
     });
 
-    render(<McpPane tenant={mockTenant} />);
+    renderPane();
 
     await waitFor(() => {
       expect(screen.getByTestId('btn-mcp-add')).not.toBeNull();
@@ -260,7 +324,7 @@ describe('screens/settings/McpPane', () => {
   it('renders the empty state with an add affordance for writers', async () => {
     vi.spyOn(api.mcp, 'list').mockResolvedValue({ servers: [] });
 
-    render(<McpPane tenant={mockTenant} />);
+    renderPane();
 
     await waitFor(() => {
       expect(screen.getByTestId('mcp-empty')).not.toBeNull();
@@ -272,7 +336,7 @@ describe('screens/settings/McpPane', () => {
   it('shows the load error state with a retry action', async () => {
     vi.spyOn(api.mcp, 'list').mockRejectedValue(new ApiError(500, 'error', 'database unreachable'));
 
-    render(<McpPane tenant={mockTenant} />);
+    renderPane();
 
     await waitFor(() => {
       expect(screen.getByText("Couldn't load MCP servers")).not.toBeNull();
@@ -283,7 +347,7 @@ describe('screens/settings/McpPane', () => {
   it('hides every write control from holders without tools.write but keeps reads', async () => {
     vi.spyOn(api.mcp, 'list').mockResolvedValue({ servers: [serverRow(), erroredRow()] });
 
-    render(<McpPane tenant={mockTenant} canWrite={false} />);
+    renderPane({ canWrite: false });
 
     await waitFor(() => {
       expect(screen.getByTestId('mcp-srv-gh')).not.toBeNull();
@@ -317,5 +381,146 @@ describe('screens/settings/McpPane', () => {
     expect(canWriteTools(member, mockTenant)).toBe(false);
     expect(canWriteTools(customWriter, mockTenant)).toBe(true);
     expect(canWriteTools(member, { id: 'other' })).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // OAuth rows (add-mcp-oauth-client 7.1)
+  // -------------------------------------------------------------------------
+
+  it('offers the sign-in affordance on an unconnected oauth row and hands off to the provider', async () => {
+    const assignMock = stubLocationAssign();
+    vi.spyOn(api.mcp, 'list').mockResolvedValue({ servers: [oauthRow()] });
+    const authorize = vi
+      .spyOn(api.mcp, 'authorize')
+      .mockResolvedValue({ authorize_url: 'https://auth.notion.com/authorize?client_id=x' });
+
+    renderPane();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mcp-srv-notion')).not.toBeNull();
+    });
+    // No Retry on an oauth row that has not signed in yet — the probe cannot
+    // succeed without a token.
+    expect(screen.queryByTestId('mcp-retry-srv-notion')).toBeNull();
+
+    const btn = screen.getByTestId('mcp-oauth-srv-notion');
+    expect(btn.textContent).toBe('Sign in');
+    fireEvent.click(btn);
+
+    await waitFor(() => {
+      expect(authorize).toHaveBeenCalledWith('acme', 'srv-notion');
+    });
+    await waitFor(() => {
+      expect(assignMock).toHaveBeenCalledWith('https://auth.notion.com/authorize?client_id=x');
+    });
+  });
+
+  it('marks an expired oauth row with the expired chip and a Re-authorize action', async () => {
+    vi.spyOn(api.mcp, 'list').mockResolvedValue({ servers: [oauthRow({ status: 'expired' })] });
+
+    renderPane();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mcp-srv-notion')).not.toBeNull();
+    });
+    const status = screen.getByTestId('mcp-status-srv-notion');
+    expect(status.textContent).toBe('Expired');
+    // Warning tone, matching the connections pane's expired convention.
+    expect(status.className).toContain('warn');
+
+    expect(screen.getByTestId('mcp-oauth-srv-notion').textContent).toBe('Re-authorize');
+    // Expired is recoverable through re-consent, not a re-probe.
+    expect(screen.queryByTestId('mcp-retry-srv-notion')).toBeNull();
+  });
+
+  it('renders the needs-authorization detail with a sign-in action on a probe without a token', async () => {
+    vi.spyOn(api.mcp, 'list').mockResolvedValue({
+      servers: [oauthRow({ status: 'error', status_error: `mcp server requires OAuth authorization: ${OAUTH_REQUIRED_DETAIL}` })],
+    });
+
+    renderPane();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mcp-srv-notion')).not.toBeNull();
+    });
+    expect(screen.getByTestId('mcp-status-srv-notion').textContent).toBe('Error');
+    // The trimmed actionable guidance replaces the typed prefix; the full
+    // detail stays on the title tooltip.
+    expect(screen.getByTestId('mcp-srv-notion').textContent).toContain(OAUTH_REQUIRED_DETAIL);
+    expect(screen.getByTestId('mcp-oauth-srv-notion').textContent).toBe('Sign in');
+    expect(screen.queryByTestId('mcp-retry-srv-notion')).toBeNull();
+  });
+
+  it('surfaces a failed sign-in begin as a danger toast', async () => {
+    vi.spyOn(api.mcp, 'list').mockResolvedValue({ servers: [oauthRow()] });
+    vi.spyOn(api.mcp, 'authorize').mockRejectedValue(
+      new ApiError(422, 'unprocessable', 'discovery failed — verify the server URL')
+    );
+    const onToast = vi.fn();
+
+    renderPane({ onToast });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mcp-oauth-srv-notion')).not.toBeNull();
+    });
+    fireEvent.click(screen.getByTestId('mcp-oauth-srv-notion'));
+
+    await waitFor(() => {
+      expect(onToast).toHaveBeenCalledWith('discovery failed — verify the server URL', 'danger');
+    });
+  });
+
+  it('resolves the OAuth callback return: refreshes, toasts, and cleans the URL', async () => {
+    const onToast = vi.fn();
+    const listSpy = vi
+      .spyOn(api.mcp, 'list')
+      .mockResolvedValue({ servers: [oauthRow({ status: 'connected', tool_count: 6 })] });
+
+    renderPaneAt('/settings/mcp?mcp_oauth=srv-notion&status=connected', { onToast });
+
+    await waitFor(() => {
+      expect(onToast).toHaveBeenCalledWith('Notion connected');
+    });
+    // Initial load + the callback refresh.
+    await waitFor(() => {
+      expect(listSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+    // Query params cleaned with a replace — a reload cannot replay the toast.
+    await waitFor(() => {
+      expect(screen.getByTestId('location-probe').getAttribute('data-loc')).toBe('/settings/mcp');
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('mcp-status-srv-notion').textContent).toBe('Connected');
+    });
+  });
+
+  it('surfaces the OAuth callback failure with the provider detail and cleans the URL', async () => {
+    const onToast = vi.fn();
+    vi.spyOn(api.mcp, 'list').mockResolvedValue({ servers: [oauthRow()] });
+
+    renderPaneAt('/settings/mcp?mcp_oauth=srv-notion&status=failed&detail=Consent%20was%20denied', {
+      onToast,
+    });
+
+    await waitFor(() => {
+      expect(onToast).toHaveBeenCalledWith("Notion couldn't be authorized — Consent was denied", 'danger');
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('location-probe').getAttribute('data-loc')).toBe('/settings/mcp');
+    });
+  });
+
+  it('hides the OAuth affordance once the row is connected and from non-writers', async () => {
+    vi.spyOn(api.mcp, 'list').mockResolvedValue({
+      servers: [oauthRow({ status: 'connected', tool_count: 6 })],
+    });
+
+    renderPane({ canWrite: false });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mcp-srv-notion')).not.toBeNull();
+    });
+    expect(screen.getByTestId('mcp-status-srv-notion').textContent).toBe('Connected');
+    expect(screen.queryByTestId('mcp-oauth-srv-notion')).toBeNull();
   });
 });

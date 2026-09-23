@@ -2,9 +2,6 @@ package services
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,9 +13,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/oniharnantyo/onclaw/internal/agents/mcp"
+	"github.com/oniharnantyo/onclaw/internal/agents/mcp/oauth"
+	"github.com/oniharnantyo/onclaw/internal/auth/oauthstate"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/secrets"
+	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
 // ---------------------------------------------------------------------------
@@ -37,6 +37,13 @@ import (
 // to; the instance app's redirect URI is PublicBaseURL + this path (derived,
 // never stored — design.md D2).
 const OAuthCallbackPath = "/api/v1/integrations/oauth/callback"
+
+// MCPOAuthCallbackPath is the MCP servers' OAuth callback route (add-mcp-
+// oauth-client tasks 6.1/D5); the MCP redirect URI is PublicBaseURL + this
+// path, derived at read time and never stored. The HTTP routes bound for it
+// live in the server layer (task 6.1); the refresh path here only ever uses
+// it for metadata-document validation and registration.
+const MCPOAuthCallbackPath = "/api/v1/mcp/oauth/callback"
 
 // DefaultOAuthStateTTL bounds the signed state's validity (design.md D4: a
 // short TTL); zero selects this default.
@@ -109,10 +116,6 @@ type oauthTokenSet struct {
 	ExpiresIn    int // seconds; 0 = the provider declared no expiry
 	Scope        string
 }
-
-// nonceEntry records an issued nonce's absolute expiry; consumption deletes
-// it, making every state single-use (design.md D4).
-type nonceEntry struct{ expiresAt time.Time }
 
 // beginConnect runs the connect-time half of the OAuth dispatch (tasks.md
 // 2.1/2.5): validate the access level, enforce one-connection-per-service,
@@ -244,21 +247,23 @@ func recipeScopesForLevel(recipe *domain.Recipe, accessLevel string) []string {
 
 // DeriveOAuthRedirectURI derives the instance app's redirect URI from the
 // instance public base URL (task 2.6) — derived at read time, never stored.
+// Delegates to the shared oauthstate machinery (add-mcp-oauth-client D5).
 func DeriveOAuthRedirectURI(publicBaseURL string) string {
-	return strings.TrimRight(publicBaseURL, "/") + OAuthCallbackPath
+	return oauthstate.DeriveRedirectURI(publicBaseURL, OAuthCallbackPath)
 }
 
 // ---------------------------------------------------------------------------
-// Signed state (design.md D4)
+// Signed state (design.md D4) — the machinery lives in internal/auth/oauthstate
+// (add-mcp-oauth-client D5); this flow owns its claims shape, its required-
+// field/TTL checks, and its one generic rejection.
 // ---------------------------------------------------------------------------
 
-// sealState serializes and MACs the claims: base64url(payload).base64url(hmac)
-// with the instance encryption key as the HMAC key. The signature makes the
-// state unforgeable; the embedded expiry and the one-time nonce make it
-// short-lived and single-use.
+// sealState fills the claims' nonce and expiry defaults, serializes, and MACs
+// the claims through the shared sealer: the embedded expiry and the one-time
+// nonce make the state short-lived and single-use.
 func (s *ConnectionsService) sealState(claims oauthStateClaims) (string, error) {
 	if claims.Nonce == "" {
-		claims.Nonce = s.issueNonce()
+		claims.Nonce = s.state.Nonces().Issue()
 	}
 	if claims.ExpiresAt == 0 {
 		claims.ExpiresAt = time.Now().Add(s.stateTTL).Unix()
@@ -267,22 +272,18 @@ func (s *ConnectionsService) sealState(claims oauthStateClaims) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("marshal oauth state: %w", err)
 	}
-	encoded := base64.RawURLEncoding.EncodeToString(payload)
-	mac := hmac.New(sha256.New, s.encKey)
-	mac.Write([]byte(stateContext))
-	mac.Write([]byte(encoded))
-	return encoded + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
+	return s.state.Seal(payload), nil
 }
 
-// openState verifies the MAC, the TTL, and the nonce's single-use, consuming
-// the nonce — replay of a consumed state is rejected before any token
-// exchange (design.md D4). Every failure is the ONE generic sentinel.
+// openState verifies the state and consumes its nonce — replay of a consumed
+// state is rejected before any token exchange (design.md D4). Every failure
+// is the ONE generic sentinel.
 func (s *ConnectionsService) openState(raw string) (oauthStateClaims, error) {
 	claims, err := s.verifyState(raw)
 	if err != nil {
 		return oauthStateClaims{}, err
 	}
-	if !s.consumeNonce(claims.Nonce) {
+	if !s.state.Nonces().Consume(claims.Nonce) {
 		return oauthStateClaims{}, ErrOAuthStateInvalid
 	}
 	return claims, nil
@@ -292,18 +293,7 @@ func (s *ConnectionsService) openState(raw string) (oauthStateClaims, error) {
 // its nonce — the shared verification behind openState and the tolerant
 // RecipeIDFromState.
 func (s *ConnectionsService) verifyState(raw string) (oauthStateClaims, error) {
-	encoded, sig, ok := strings.Cut(raw, ".")
-	if !ok || encoded == "" || sig == "" {
-		return oauthStateClaims{}, ErrOAuthStateInvalid
-	}
-	mac := hmac.New(sha256.New, s.encKey)
-	mac.Write([]byte(stateContext))
-	mac.Write([]byte(encoded))
-	sum, err := base64.RawURLEncoding.DecodeString(sig)
-	if err != nil || !hmac.Equal(sum, mac.Sum(nil)) {
-		return oauthStateClaims{}, ErrOAuthStateInvalid
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(encoded)
+	payload, err := s.state.Open(raw)
 	if err != nil {
 		return oauthStateClaims{}, ErrOAuthStateInvalid
 	}
@@ -332,36 +322,6 @@ func (s *ConnectionsService) RecipeIDFromState(raw string) string {
 		return ""
 	}
 	return claims.RecipeID
-}
-
-// issueNonce mints a fresh single-use nonce and opportunistically evicts
-// expired entries.
-func (s *ConnectionsService) issueNonce() string {
-	nonce := uuid.NewString()
-	now := time.Now()
-	s.nonceMu.Lock()
-	defer s.nonceMu.Unlock()
-	for id, entry := range s.nonces {
-		if now.After(entry.expiresAt) {
-			delete(s.nonces, id)
-		}
-	}
-	s.nonces[nonce] = nonceEntry{expiresAt: now.Add(s.stateTTL)}
-	return nonce
-}
-
-// consumeNonce reports — and burns — an unconsumed, unexpired nonce.
-func (s *ConnectionsService) consumeNonce(nonce string) bool {
-	now := time.Now()
-	s.nonceMu.Lock()
-	defer s.nonceMu.Unlock()
-	entry, exists := s.nonces[nonce]
-	if !exists || now.After(entry.expiresAt) {
-		delete(s.nonces, nonce)
-		return false
-	}
-	delete(s.nonces, nonce)
-	return true
 }
 
 // ---------------------------------------------------------------------------
@@ -419,7 +379,13 @@ func (s *ConnectionsService) completeConnect(ctx context.Context, claims oauthSt
 		return OAuthCallbackResult{RecipeID: recipe.ID, Status: OAuthCallbackFailed, Detail: err.Error()}
 	}
 
-	server := materializeServer(claims.WorkspaceID, recipe, tokenSet.AccessToken)
+	// Origin parameters are PAT-only (domain.ValidateRecipe), so an OAuth
+	// connect carries none: the recipe's declared endpoint materializes
+	// byte-identically.
+	server, err := materializeServer(claims.WorkspaceID, recipe, tokenSet.AccessToken, "")
+	if err != nil {
+		return OAuthCallbackResult{RecipeID: recipe.ID, Status: OAuthCallbackFailed, Detail: err.Error()}
+	}
 	toolCount, err := s.probeServer(ctx, claims.WorkspaceID, "connection-probe", server.Name, server.MCPConnection)
 	if err != nil {
 		return OAuthCallbackResult{RecipeID: recipe.ID, Status: OAuthCallbackFailed, Detail: fmt.Sprintf("%v: %v", ErrProbeFailed, err)}
@@ -474,7 +440,13 @@ func (s *ConnectionsService) completeReauthorization(ctx context.Context, claims
 		return OAuthCallbackResult{RecipeID: recipe.ID, Status: OAuthCallbackFailed, Detail: err.Error()}
 	}
 
-	server := materializeServer(claims.WorkspaceID, recipe, tokenSet.AccessToken)
+	// The probe candidate resolves against the connection's STORED origin
+	// (add-recipe-base-url tasks.md 2.3 — immutability): reauthorization
+	// replaces the token set only, never the origin or the materialized URL.
+	server, err := materializeServer(claims.WorkspaceID, recipe, tokenSet.AccessToken, conn.Origin)
+	if err != nil {
+		return OAuthCallbackResult{RecipeID: recipe.ID, Status: OAuthCallbackFailed, Detail: err.Error()}
+	}
 	toolCount, err := s.probeServer(ctx, claims.WorkspaceID, "connection-probe", server.Name, server.MCPConnection)
 	if err != nil {
 		return OAuthCallbackResult{RecipeID: recipe.ID, Status: OAuthCallbackFailed, Detail: fmt.Sprintf("%v: %v", ErrProbeFailed, err)}
@@ -863,52 +835,431 @@ type RuntimeSettingsService interface {
 // real settings service. Any CONNECTION-LINKED server row resolved for runtime
 // first runs the within-margin refresh; the dual write-through renews the
 // connection's lifecycle row and the server's Authorization secret row, and
-// the inner read then yields the fresh credential. Everything else — ordinary
-// servers, agent-private rows, status persistence — delegates untouched.
+// the inner read then yields the fresh credential. With the MCP OAuth
+// refresher wired (WithMCPOAuthTokenRefresher), OAUTH-mode server rows ride
+// the same fail-open refresh against the MCP token store (add-mcp-oauth-client
+// tasks 4.6/5.2, design.md D6/D7). Everything else — ordinary servers, status
+// persistence — delegates untouched.
 //
 // Refresh failures are FAIL-OPEN by design (design.md: the run degrades
 // exactly as it does for an errored MCP server): the expired transition and
 // the provider error are already persisted by the refresh path, and the
 // stored credential is returned so the dial proceeds.
 type RuntimeCredentialSource struct {
-	inner RuntimeSettingsService
-	conns *ConnectionsService
+	inner    RuntimeSettingsService
+	conns    *ConnectionsService
+	mcpOAuth MCPOAuthTokenRefresher
+}
+
+// RuntimeSourceOption configures a RuntimeCredentialSource.
+type RuntimeSourceOption func(*RuntimeCredentialSource)
+
+// WithMCPOAuthTokenRefresher wires the MCP OAuth token refresh (the oauth-mode
+// half of refresh-on-resolution) into the source. Nil is ignored — an
+// unwired source keeps the connection-only behavior byte-identical.
+func WithMCPOAuthTokenRefresher(r MCPOAuthTokenRefresher) RuntimeSourceOption {
+	return func(s *RuntimeCredentialSource) {
+		if r != nil {
+			s.mcpOAuth = r
+		}
+	}
+}
+
+// MCPOAuthTokenRefresher is the MCP-oauth half of the runtime credential
+// source (add-mcp-oauth-client task 5.2): the fail-open within-margin refresh
+// of the stored OAuth token sets for oauth-mode server rows — both scopes,
+// workspace-registered (agentID empty) and agent-private. Static-mode rows
+// are a no-op; resolution never fails a dial.
+type MCPOAuthTokenRefresher interface {
+	// RefreshForServer renews one server row's token set when it is inside
+	// the refresh margin. Unknown ids, non-oauth rows, rows with no stored
+	// credential, and discovery/strategy trouble are silent no-ops; only
+	// store-level failures surface (and the callers fail open regardless).
+	RefreshForServer(ctx context.Context, workspaceID, agentID, serverID string) error
+	// RefreshForAgentByID renews every oauth-mode row of one agent
+	// (design.md D7: the agent-private path gets the same wrapper the
+	// workspace path has).
+	RefreshForAgentByID(ctx context.Context, agentID string) error
 }
 
 // NewRuntimeCredentialSource wraps a runtime settings service with the
-// connections service's refresh-on-resolution.
-func NewRuntimeCredentialSource(inner RuntimeSettingsService, conns *ConnectionsService) *RuntimeCredentialSource {
-	return &RuntimeCredentialSource{inner: inner, conns: conns}
+// connections service's refresh-on-resolution (and, when wired, the MCP
+// OAuth token refresh).
+func NewRuntimeCredentialSource(inner RuntimeSettingsService, conns *ConnectionsService, opts ...RuntimeSourceOption) *RuntimeCredentialSource {
+	s := &RuntimeCredentialSource{inner: inner, conns: conns}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // WorkspaceServerForRuntime resolves one server for a dial, refreshing its
-// linked connection first when the token is inside the margin (fail-open).
+// linked connection first when the token is inside the margin (fail-open),
+// then its MCP OAuth token set when the row is oauth-mode (fail-open).
 func (s *RuntimeCredentialSource) WorkspaceServerForRuntime(ctx context.Context, workspaceID, id string) (*domain.WorkspaceMCPServer, error) {
 	// A refresh failure has already persisted the expired transition and the
 	// provider error on the rows; the dial proceeds on the stored credential.
 	_ = s.conns.refreshForServer(ctx, workspaceID, id)
+	if s.mcpOAuth != nil {
+		// OAuth-mode rows renew through the MCP token store; every other row
+		// no-ops inside the refresher.
+		_ = s.mcpOAuth.RefreshForServer(ctx, workspaceID, "", id)
+	}
 	return s.inner.WorkspaceServerForRuntime(ctx, workspaceID, id)
 }
 
 // WorkspaceServersForRuntime resolves the workspace's server set for a run's
 // toolset, refreshing every connection-linked row inside its margin first
-// (fail-open per row).
+// (fail-open per row), then every oauth-mode row's MCP token set.
 func (s *RuntimeCredentialSource) WorkspaceServersForRuntime(ctx context.Context, workspaceID string) ([]domain.WorkspaceMCPServer, error) {
 	if rows, err := s.conns.wsServers.List(ctx, workspaceID); err == nil {
 		for i := range rows {
-			if rows[i].OriginConnectionID == "" {
+			if rows[i].OriginConnectionID != "" {
+				_ = s.conns.refreshForServer(ctx, workspaceID, rows[i].ID)
 				continue
 			}
-			_ = s.conns.refreshForServer(ctx, workspaceID, rows[i].ID)
+			if s.mcpOAuth != nil && rows[i].AuthMode == domain.MCPAuthModeOAuth {
+				_ = s.mcpOAuth.RefreshForServer(ctx, workspaceID, "", rows[i].ID)
+			}
 		}
 	}
 	return s.inner.WorkspaceServersForRuntime(ctx, workspaceID)
 }
 
-// AgentServersForRuntimeByID delegates: agent-private servers have no
-// connections.
+// AgentServersForRuntimeByID resolves an agent's private server set for a
+// run's toolset. Agent-private servers have no connections, but oauth-mode
+// private rows ride the same MCP token refresh the workspace rows get
+// (design.md D7 — probe/run parity for private servers; fail-open per row).
 func (s *RuntimeCredentialSource) AgentServersForRuntimeByID(ctx context.Context, agentID string) ([]domain.AgentMCPServer, error) {
+	if s.mcpOAuth != nil {
+		_ = s.mcpOAuth.RefreshForAgentByID(ctx, agentID)
+	}
 	return s.inner.AgentServersForRuntimeByID(ctx, agentID)
+}
+
+// ---------------------------------------------------------------------------
+// MCP OAuth token refresher (tasks 4.6/5.2): the concrete MCPOAuthTokenRefresher
+// over the token store, the two MCP server stores, and the oauth.Client — the
+// oauth package's CredentialStore and StatusSink seams implemented so that
+// package stays store-agnostic (the envelopes ride the workspace-AAD
+// derivation, the same as every workspace-scoped secret).
+// ---------------------------------------------------------------------------
+
+// mcpOAuthTokenRefresher implements MCPOAuthTokenRefresher, oauth.CredentialStore,
+// and oauth.StatusSink.
+type mcpOAuthTokenRefresher struct {
+	tokens       store.MCPTokens
+	wsServers    store.WorkspaceMCPServers
+	agentServers store.AgentMCPServers
+	settings     RuntimeSettingsService
+	encKey       []byte
+	// publicBaseURL feeds the derived redirect URI for metadata-document
+	// validation and registration; headless instances leave it empty (their
+	// BYO/DCR-persisted client ids never need it for a refresh).
+	publicBaseURL string
+	client        *oauth.Client
+}
+
+// NewMCPOAuthTokenRefresher builds the MCP OAuth token refresher from its
+// granular dependencies.
+func NewMCPOAuthTokenRefresher(tokens store.MCPTokens, wsServers store.WorkspaceMCPServers, agentServers store.AgentMCPServers, settings RuntimeSettingsService, encKey []byte, publicBaseURL string, client *oauth.Client) MCPOAuthTokenRefresher {
+	return &mcpOAuthTokenRefresher{
+		tokens:        tokens,
+		wsServers:     wsServers,
+		agentServers:  agentServers,
+		settings:      settings,
+		encKey:        encKey,
+		publicBaseURL: publicBaseURL,
+		client:        client,
+	}
+}
+
+// RefreshForServer runs the within-margin MCP OAuth refresh for one row.
+// Non-oauth rows, unknown ids, rows without a client identity or stored
+// credential, and discovery/strategy failures are silent no-ops — discovery
+// trouble is not a refresh refusal, and the needs-authorization surface is
+// the dial path's job. Store-level failures surface (callers fail open).
+func (r *mcpOAuthTokenRefresher) RefreshForServer(ctx context.Context, workspaceID, agentID, serverID string) error {
+	serverURL, clientID, clientSecret := "", "", ""
+	if agentID == "" {
+		row, err := r.wsServers.Get(ctx, workspaceID, serverID)
+		if err != nil || row == nil {
+			return err
+		}
+		if row.AuthMode != domain.MCPAuthModeOAuth {
+			return nil
+		}
+		serverURL, clientID, clientSecret = row.URL, row.OAuthClientID, row.OAuthClientSecret
+	} else {
+		row, err := r.agentServers.Get(ctx, agentID, serverID)
+		if err != nil || row == nil {
+			return err
+		}
+		if row.AuthMode != domain.MCPAuthModeOAuth {
+			return nil
+		}
+		serverURL, clientID, clientSecret = row.URL, row.OAuthClientID, row.OAuthClientSecret
+	}
+	// No client identity on the row: the flow never completed (or a DCR
+	// registration was never persisted) — there is nothing to present at the
+	// token endpoint and nothing to refresh with.
+	if clientID == "" {
+		return nil
+	}
+	redirectURI := ""
+	if r.publicBaseURL != "" {
+		redirectURI = oauthstate.DeriveRedirectURI(r.publicBaseURL, MCPOAuthCallbackPath)
+	} else if strings.HasPrefix(clientID, "https://") {
+		// A metadata-document client id cannot be validated (or registered)
+		// without a public base URL; headless instances skip the refresh
+		// rather than fail the row.
+		return nil
+	}
+	meta, err := r.client.Discovery().Discover(ctx, serverURL)
+	if err != nil {
+		// Fail-open silent: discovery trouble is not a refresh refusal; the
+		// stored token still dials and no status moves.
+		return nil
+	}
+	resolved, err := r.client.ResolveClient(ctx, meta, oauth.ClientIdentity{
+		ConfiguredClientID:     clientID,
+		ConfiguredClientSecret: r.decryptClientSecret(workspaceID, clientSecret),
+		RedirectURI:            redirectURI,
+		// A persisted DCR registration lands on the row as a client id, so
+		// it re-enters here as BYO — the register-once convention (task 4.3).
+	})
+	if err != nil {
+		// Same fail-open silence: the dial proceeds on the stored credential.
+		return nil
+	}
+	_, err = r.client.EnsureFreshCredential(ctx, oauth.EnsureCredentialParams{Meta: meta, Client: resolved}, oauth.CredentialRef{
+		WorkspaceID: workspaceID,
+		AgentID:     agentID,
+		ServerID:    serverID,
+	}, r, r)
+	return err
+}
+
+// RefreshForAgentByID renews every oauth-mode private row of one agent,
+// continuing past per-row failures (fail-open) and surfacing the first.
+func (r *mcpOAuthTokenRefresher) RefreshForAgentByID(ctx context.Context, agentID string) error {
+	if agentID == "" {
+		return nil
+	}
+	rows, err := r.agentServers.List(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	var firstErr error
+	for i := range rows {
+		if rows[i].AuthMode != domain.MCPAuthModeOAuth {
+			continue
+		}
+		if err := r.RefreshForServer(ctx, rows[i].WorkspaceID, agentID, rows[i].ID); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// decryptClientSecret opens the BYO row's secret envelope (the workspace-AAD
+// derivation). Rows written before the envelope convention landed carry
+// plaintext, which passes through — an undecryptable envelope yields no
+// secret, and the resolution then simply fails (fail-open no-op).
+func (r *mcpOAuthTokenRefresher) decryptClientSecret(workspaceID, stored string) string {
+	if stored == "" {
+		return ""
+	}
+	if strings.HasPrefix(stored, secrets.Version1Prefix) {
+		plaintext, err := secrets.Decrypt(r.encKey, []byte(workspaceID), stored)
+		if err != nil {
+			return ""
+		}
+		return string(plaintext)
+	}
+	return stored
+}
+
+// Load implements oauth.CredentialStore: the stored token set decrypted for
+// the lifecycle. Envelope decryption uses the workspace ID as AAD — the same
+// derivation every workspace-scoped secret uses.
+func (r *mcpOAuthTokenRefresher) Load(ctx context.Context, ref oauth.CredentialRef) (*oauth.Credential, error) {
+	row, err := r.tokens.Get(ctx, ref.WorkspaceID, ref.AgentID, ref.ServerID)
+	if errors.Is(err, domain.ErrNotFound) {
+		return nil, oauth.ErrNoCredential
+	}
+	if err != nil {
+		return nil, err
+	}
+	access, err := secrets.Decrypt(r.encKey, []byte(ref.WorkspaceID), row.AccessTokenCiphertext)
+	if err != nil {
+		return nil, err
+	}
+	cred := &oauth.Credential{
+		AccessToken:   string(access),
+		ExpiresAt:     row.ExpiresAt,
+		GrantedScopes: row.GrantedScopes,
+		Issuer:        row.Issuer,
+	}
+	if cred.GrantedScopes == nil {
+		cred.GrantedScopes = []string{}
+	}
+	if row.RefreshTokenCiphertext != "" {
+		if refreshToken, err := secrets.Decrypt(r.encKey, []byte(ref.WorkspaceID), row.RefreshTokenCiphertext); err == nil {
+			cred.RefreshToken = string(refreshToken)
+		} else {
+			// The envelope cannot be opened: the credential still dials, and
+			// the lifecycle treats the refresh as failed (the expired
+			// transition).
+			cred.RefreshUnreadable = true
+		}
+	}
+	return cred, nil
+}
+
+// Replace implements oauth.CredentialStore: the renewed token set re-encrypted
+// and create-or-replaced in one write (the store's Replace is the atomic
+// write the reauthorization and refresh paths share).
+func (r *mcpOAuthTokenRefresher) Replace(ctx context.Context, ref oauth.CredentialRef, cred *oauth.Credential) error {
+	aad := []byte(ref.WorkspaceID)
+	accessEnvelope, err := secrets.Encrypt(r.encKey, aad, []byte(cred.AccessToken))
+	if err != nil {
+		return err
+	}
+	row := &domain.MCPToken{
+		WorkspaceID:           ref.WorkspaceID,
+		AgentID:               ref.AgentID,
+		ServerID:              ref.ServerID,
+		AccessTokenCiphertext: accessEnvelope,
+		ExpiresAt:             cred.ExpiresAt,
+		GrantedScopes:         cred.GrantedScopes,
+		Issuer:                cred.Issuer,
+	}
+	if row.GrantedScopes == nil {
+		row.GrantedScopes = []string{}
+	}
+	if cred.RefreshToken != "" {
+		refreshEnvelope, err := secrets.Encrypt(r.encKey, aad, []byte(cred.RefreshToken))
+		if err != nil {
+			return err
+		}
+		row.RefreshTokenCiphertext = refreshEnvelope
+	}
+	return r.tokens.Replace(ctx, row)
+}
+
+// MarkExpired implements oauth.StatusSink: the refresh lifecycle's ONLY
+// status write, guarded by the design.md D6 transition rules
+// (domain.CanTransitionMCPStatus — expired is entered only from a live
+// status and held idempotently; refused moves never write).
+func (r *mcpOAuthTokenRefresher) MarkExpired(ctx context.Context, ref oauth.CredentialRef, detail string) error {
+	if ref.AgentID == "" {
+		row, err := r.wsServers.Get(ctx, ref.WorkspaceID, ref.ServerID)
+		if err != nil {
+			return err
+		}
+		if !domain.CanTransitionMCPStatus(row.Status, domain.MCPStatusExpired) {
+			return nil
+		}
+		return r.settings.SetWorkspaceServerStatus(ctx, ref.WorkspaceID, ref.ServerID, domain.MCPStatusExpired, detail, row.ToolCount)
+	}
+	row, err := r.agentServers.Get(ctx, ref.AgentID, ref.ServerID)
+	if err != nil {
+		return err
+	}
+	if !domain.CanTransitionMCPStatus(row.Status, domain.MCPStatusExpired) {
+		return nil
+	}
+	return r.settings.SetAgentServerStatusByID(ctx, ref.AgentID, ref.ServerID, domain.MCPStatusExpired, detail, row.ToolCount)
+}
+
+// NewMCPOAuthDialCredentials exposes the same token machinery as
+// NewMCPOAuthTokenRefresher under the MCP runtime's dial-time seam
+// (add-mcp-oauth-client task 5.1, design.md D1): the mcp package resolves an
+// oauth-mode dial's bearer through it before the transport opens. Same
+// granular dependencies, same stores — build both from one composition-root
+// site so the oauth.Client (and its discovery cache) is shared.
+func NewMCPOAuthDialCredentials(tokens store.MCPTokens, wsServers store.WorkspaceMCPServers, agentServers store.AgentMCPServers, settings RuntimeSettingsService, encKey []byte, publicBaseURL string, client *oauth.Client) mcp.OAuthDialCredentials {
+	return &mcpOAuthTokenRefresher{
+		tokens:        tokens,
+		wsServers:     wsServers,
+		agentServers:  agentServers,
+		settings:      settings,
+		encKey:        encKey,
+		publicBaseURL: publicBaseURL,
+		client:        client,
+	}
+}
+
+// BearerForDial implements mcp.OAuthDialCredentials: the usable access token
+// for one server row's oauth-mode dial (design.md D1).
+//
+//   - A stored token inside its refresh margin is renewed first
+//     (EnsureFreshCredential's fail-open semantics: a refused refresh
+//     persists the expired transition through the status sink and the STORED
+//     token still dials).
+//   - No usable credential → the mcp.ErrAuthorizationRequired signal the
+//     dial turns into the row's needs-authorization status detail — never a
+//     run failure.
+//   - Discovery and client-resolution failures surface as their typed errors
+//     (the spec's undiscoverable-server and registration-refusal details).
+//
+// A row with no client identity (BYO id and no persisted registration) cannot
+// run the refresh lifecycle; it fails open on a stored token directly and
+// reports needs-authorization otherwise — the authorize-begin flow is what
+// mints the client identity (DCR) or the user supplies one (BYO).
+func (r *mcpOAuthTokenRefresher) BearerForDial(ctx context.Context, workspaceID, agentID, serverID string) (string, error) {
+	serverURL, clientID, clientSecret := "", "", ""
+	if agentID == "" {
+		row, err := r.wsServers.Get(ctx, workspaceID, serverID)
+		if err != nil {
+			return "", err
+		}
+		serverURL, clientID, clientSecret = row.URL, row.OAuthClientID, row.OAuthClientSecret
+	} else {
+		row, err := r.agentServers.Get(ctx, agentID, serverID)
+		if err != nil {
+			return "", err
+		}
+		serverURL, clientID, clientSecret = row.URL, row.OAuthClientID, row.OAuthClientSecret
+	}
+	ref := oauth.CredentialRef{WorkspaceID: workspaceID, AgentID: agentID, ServerID: serverID}
+	if clientID == "" {
+		cred, err := r.Load(ctx, ref)
+		if errors.Is(err, oauth.ErrNoCredential) {
+			return "", mcp.NewAuthorizationRequiredError()
+		}
+		if err != nil {
+			return "", err
+		}
+		// Fail open: the dial only needs a bearer; the refresh lifecycle (and
+		// the needs-authorization surface when it stops working) resumes once
+		// the row carries a client identity again.
+		return cred.AccessToken, nil
+	}
+	redirectURI := ""
+	if r.publicBaseURL != "" {
+		redirectURI = oauthstate.DeriveRedirectURI(r.publicBaseURL, MCPOAuthCallbackPath)
+	}
+	meta, err := r.client.Discovery().Discover(ctx, serverURL)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := r.client.ResolveClient(ctx, meta, oauth.ClientIdentity{
+		ConfiguredClientID:     clientID,
+		ConfiguredClientSecret: r.decryptClientSecret(workspaceID, clientSecret),
+		RedirectURI:            redirectURI,
+		// A persisted DCR registration lands on the row as a client id, so
+		// it re-enters here as BYO — the register-once convention (task 4.3).
+	})
+	if err != nil {
+		return "", err
+	}
+	token, err := r.client.EnsureFreshCredential(ctx, oauth.EnsureCredentialParams{Meta: meta, Client: resolved}, ref, r, r)
+	if errors.Is(err, oauth.ErrNoCredential) {
+		return "", mcp.NewAuthorizationRequiredError()
+	}
+	return token, err
 }
 
 // SetWorkspaceServerStatus delegates to the inner service's guarded

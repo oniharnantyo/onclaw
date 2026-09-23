@@ -1,6 +1,7 @@
 package domain_test
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -188,5 +189,218 @@ func TestAgentMCPServerValidate(t *testing.T) {
 func TestMCPServerNameTakenSentinel(t *testing.T) {
 	if !errors.Is(domain.ErrMCPServerNameTaken, domain.ErrConflict) {
 		t.Fatal("ErrMCPServerNameTaken must chain to ErrConflict")
+	}
+}
+
+func TestMCPConnectionAuthModeValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		conn    *domain.MCPConnection
+		wantErr bool
+	}{
+		{
+			name: "empty auth mode on a static header row stays valid",
+			conn: &domain.MCPConnection{
+				Transport: domain.MCPTransportStreamableHTTP,
+				URL:       "https://mcp.example.com/mcp",
+				Headers:   []domain.EnvRow{{Name: "Authorization", Value: "Bearer tok"}},
+			},
+		},
+		{
+			name: "explicit none mode with static headers",
+			conn: &domain.MCPConnection{
+				Transport: domain.MCPTransportStreamableHTTP,
+				URL:       "https://mcp.example.com/mcp",
+				AuthMode:  domain.MCPAuthModeNone,
+				Headers:   []domain.EnvRow{{Name: "X-Key", Value: "k"}},
+			},
+		},
+		{
+			name: "oauth mode on streamable http",
+			conn: &domain.MCPConnection{
+				Transport: domain.MCPTransportStreamableHTTP,
+				URL:       "https://mcp.example.com/mcp",
+				AuthMode:  domain.MCPAuthModeOAuth,
+			},
+		},
+		{
+			name: "oauth mode on sse",
+			conn: &domain.MCPConnection{
+				Transport: domain.MCPTransportSSE,
+				URL:       "https://mcp.example.com/sse",
+				AuthMode:  domain.MCPAuthModeOAuth,
+			},
+		},
+		{
+			name: "oauth mode rejected on stdio",
+			conn: &domain.MCPConnection{
+				Transport: domain.MCPTransportStdio,
+				Command:   "/bin/true",
+				AuthMode:  domain.MCPAuthModeOAuth,
+			},
+			wantErr: true,
+		},
+		{
+			name: "unknown auth mode rejected",
+			conn: &domain.MCPConnection{
+				Transport: domain.MCPTransportStreamableHTTP,
+				URL:       "https://mcp.example.com/mcp",
+				AuthMode:  "bearer",
+			},
+			wantErr: true,
+		},
+		{
+			name: "BYO confidential rows in oauth mode",
+			conn: &domain.MCPConnection{
+				Transport:         domain.MCPTransportStreamableHTTP,
+				URL:               "https://mcp.example.com/mcp",
+				AuthMode:          domain.MCPAuthModeOAuth,
+				OAuthClientID:     "client-id-1",
+				OAuthClientSecret: "client-secret-1",
+			},
+		},
+		{
+			name: "public client (id without secret) in oauth mode",
+			conn: &domain.MCPConnection{
+				Transport:     domain.MCPTransportStreamableHTTP,
+				URL:           "https://mcp.example.com/mcp",
+				AuthMode:      domain.MCPAuthModeOAuth,
+				OAuthClientID: "client-id-1",
+			},
+		},
+		{
+			name: "BYO secret without an id rejected in oauth mode",
+			conn: &domain.MCPConnection{
+				Transport:         domain.MCPTransportStreamableHTTP,
+				URL:               "https://mcp.example.com/mcp",
+				AuthMode:          domain.MCPAuthModeOAuth,
+				OAuthClientSecret: "client-secret-1",
+			},
+			wantErr: true,
+		},
+		{
+			name: "BYO id outside oauth mode rejected",
+			conn: &domain.MCPConnection{
+				Transport:     domain.MCPTransportStreamableHTTP,
+				URL:           "https://mcp.example.com/mcp",
+				AuthMode:      domain.MCPAuthModeNone,
+				OAuthClientID: "client-id-1",
+			},
+			wantErr: true,
+		},
+		{
+			name: "BYO id on an empty-mode static row rejected",
+			conn: &domain.MCPConnection{
+				Transport:     domain.MCPTransportStreamableHTTP,
+				URL:           "https://mcp.example.com/mcp",
+				OAuthClientID: "client-id-1",
+			},
+			wantErr: true,
+		},
+		{
+			name: "BYO secret on stdio rejected",
+			conn: &domain.MCPConnection{
+				Transport:         domain.MCPTransportStdio,
+				Command:           "/bin/true",
+				AuthMode:          domain.MCPAuthModeNone,
+				OAuthClientSecret: "client-secret-1",
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.conn.Validate()
+			if tt.wantErr {
+				if !errors.Is(err, domain.ErrInvalid) {
+					t.Fatalf("expected ErrInvalid, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected valid, got %v", err)
+			}
+		})
+	}
+}
+
+// TestMCPConnectionStaticModeShapeUnchanged pins the byte-identical JSON
+// shape for static-mode rows: none of the OAuth fields may appear unless set
+// (spec: "Static-header connections MUST continue to dial exactly as before").
+func TestMCPConnectionStaticModeShapeUnchanged(t *testing.T) {
+	before := `{"transport":"streamable_http","url":"https://mcp.example.com/mcp","headers":[{"name":"Authorization","value":"Bearer tok"}]}`
+	var conn domain.MCPConnection
+	if err := json.Unmarshal([]byte(before), &conn); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if conn.AuthMode != "" {
+		t.Fatalf("expected an empty auth mode to decode, got %q", conn.AuthMode)
+	}
+	after, err := json.Marshal(&conn)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if string(after) != before {
+		t.Fatalf("static-mode row changed shape:\n before %s\n after  %s", before, after)
+	}
+}
+
+func TestValidateMCPAuthMode(t *testing.T) {
+	for _, mode := range []string{"", domain.MCPAuthModeNone, domain.MCPAuthModeOAuth} {
+		if !domain.IsValidMCPAuthMode(mode) {
+			t.Errorf("expected %q to be a valid auth mode", mode)
+		}
+	}
+	if domain.IsValidMCPAuthMode("kerberos") {
+		t.Error("expected an unknown auth mode to be invalid")
+	}
+}
+
+// TestCanTransitionMCPStatus mirrors the connection-status lifecycle rules
+// (add-mcp-oauth-client design.md D6): expired is entered only from a live
+// status by the refresh-failure path and left only to connected by
+// reauthorization.
+func TestCanTransitionMCPStatus(t *testing.T) {
+	live := []string{domain.MCPStatusConnected, domain.MCPStatusError}
+	for _, from := range live {
+		if !domain.CanTransitionMCPStatus(from, domain.MCPStatusExpired) {
+			t.Errorf("expected %s→expired to be legal (refresh failure enters it)", from)
+		}
+	}
+	if !domain.CanTransitionMCPStatus(domain.MCPStatusExpired, domain.MCPStatusExpired) {
+		t.Error("expected expired→expired to be legal (repeated refresh failure is idempotent)")
+	}
+	if !domain.CanTransitionMCPStatus(domain.MCPStatusExpired, domain.MCPStatusConnected) {
+		t.Error("expected expired→connected to be legal (reauthorization clears it)")
+	}
+	if domain.CanTransitionMCPStatus(domain.MCPStatusExpired, domain.MCPStatusError) {
+		t.Error("expected expired→error to be refused (a probe outcome must not mask the recovery state)")
+	}
+	for _, from := range live {
+		for _, to := range live {
+			if !domain.CanTransitionMCPStatus(from, to) {
+				t.Errorf("expected %s→%s to be legal (probe outcomes)", from, to)
+			}
+		}
+	}
+	for _, status := range []string{"", domain.MCPStatusExpired, domain.MCPStatusConnected, domain.MCPStatusError, "nonsense"} {
+		if domain.CanTransitionMCPStatus(status, domain.MCPStatusConnected) && status == "nonsense" {
+			t.Error("expected an unknown status to be refused as a transition source")
+		}
+		if domain.CanTransitionMCPStatus(domain.MCPStatusConnected, status) && status == "nonsense" {
+			t.Error("expected an unknown status to be refused as a transition target")
+		}
+	}
+}
+
+func TestValidateMCPStatus(t *testing.T) {
+	for _, status := range []string{"", domain.MCPStatusConnected, domain.MCPStatusError, domain.MCPStatusExpired} {
+		if !domain.IsValidMCPStatus(status) {
+			t.Errorf("expected %q to be a valid mcp status", status)
+		}
+	}
+	if domain.IsValidMCPStatus("degraded") {
+		t.Error("expected an unknown mcp status to be invalid")
 	}
 }

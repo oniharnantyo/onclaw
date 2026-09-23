@@ -29,6 +29,10 @@ const (
 type Ref struct {
 	WorkspaceID string
 	ServerID    string
+	// AgentID is the owning agent for agent-private servers; empty for
+	// workspace-registered rows. The OAuth dial credential seam addresses
+	// agent-scope token rows by it (add-mcp-oauth-client design.md D7).
+	AgentID string
 	// Name is the server's display name (the naming pass's <server> segment).
 	Name string
 	Conn domain.MCPConnection
@@ -83,6 +87,10 @@ type MCPManager struct {
 	// connector dials ref's connection; production wires the mcp-go factory
 	// (connect). A seam so unit tests can stub the transport layer.
 	connector func(ctx context.Context, ref Ref) (*connection, error)
+
+	// oauthCreds resolves oauth-mode rows' dial bearers (design.md D1);
+	// wired by the composition root through WithOAuthCredentials.
+	oauthCreds OAuthDialCredentials
 }
 
 // ManagerOption configures an MCPManager.
@@ -127,6 +135,16 @@ func withConnector(fn func(ctx context.Context, ref Ref) (*connection, error)) M
 	}
 }
 
+// WithOAuthCredentials wires the dial-time OAuth credential resolution
+// (add-mcp-oauth-client design.md D1). The composition root always supplies
+// it; a manager built without it fails loudly the first time an oauth-mode
+// row dials, instead of silently dialing without a bearer.
+func WithOAuthCredentials(creds OAuthDialCredentials) ManagerOption {
+	return func(m *MCPManager) {
+		m.oauthCreds = creds
+	}
+}
+
 // NewMCPManager builds the manager and starts its idle janitor.
 func NewMCPManager(opts ...ManagerOption) *MCPManager {
 	m := &MCPManager{
@@ -136,7 +154,12 @@ func NewMCPManager(opts ...ManagerOption) *MCPManager {
 		entries:        make(map[key]*cacheEntry),
 		inflight:       make(map[key]*connectCall),
 		stop:           make(chan struct{}),
-		connector:      func(ctx context.Context, ref Ref) (*connection, error) { return connect(ctx, ref.Conn) },
+	}
+	// The default connector reads m.oauthCreds lazily, so the
+	// WithOAuthCredentials option below applies to dials regardless of the
+	// option order.
+	m.connector = func(ctx context.Context, ref Ref) (*connection, error) {
+		return connectAuthorized(ctx, ref, m.oauthCreds)
 	}
 	for _, opt := range opts {
 		opt(m)

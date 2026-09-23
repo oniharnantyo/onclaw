@@ -148,11 +148,12 @@ func mergeConnectionSecrets(incoming, stored *domain.MCPConnection) {
 // Shared status guard
 // -------------------------------------------------------------------------
 
-// validateMCPStatus accepts only the persisted probe statuses (or empty —
-// not yet probed).
+// validateMCPStatus accepts only the persisted statuses (or empty — not yet
+// probed): the probe outcomes plus expired, the OAuth-lifecycle state only
+// the refresh-failure path writes (add-mcp-oauth-client design.md D6).
 func validateMCPStatus(status string) error {
 	switch status {
-	case "", domain.MCPStatusConnected, domain.MCPStatusError:
+	case "", domain.MCPStatusConnected, domain.MCPStatusError, domain.MCPStatusExpired:
 		return nil
 	default:
 		return fmt.Errorf("%w: unknown mcp status %q", domain.ErrInvalid, status)

@@ -11,8 +11,17 @@ import (
 // with a zero count. The connection is abandoned for asynchronous teardown
 // after the listing so a wedged server cannot hold the probe response past
 // the dial bound (the close watchdog reaps it).
-func Probe(ctx context.Context, ref Ref) (int, error) {
-	conn, err := connect(ctx, ref.Conn)
+//
+// Probe and the manager share the same connect path including the OAuth auth
+// step (add-mcp-oauth-client design.md D1 — probe/run parity): callers
+// probing oauth-mode rows must supply the credential resolution; the
+// connections flow's probes are static-mode only and pass none.
+func Probe(ctx context.Context, ref Ref, creds ...OAuthDialCredentials) (int, error) {
+	var oauthCreds OAuthDialCredentials
+	if len(creds) > 0 {
+		oauthCreds = creds[0]
+	}
+	conn, err := connectAuthorized(ctx, ref, oauthCreds)
 	if err != nil {
 		return 0, err
 	}

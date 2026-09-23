@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/agents"
 	agenthooks "github.com/oniharnantyo/onclaw/internal/agents/hooks"
 	"github.com/oniharnantyo/onclaw/internal/agents/mcp"
+	mcpoauth "github.com/oniharnantyo/onclaw/internal/agents/mcp/oauth"
 	"github.com/oniharnantyo/onclaw/internal/channels"
 	"github.com/oniharnantyo/onclaw/internal/config"
 	"github.com/oniharnantyo/onclaw/internal/domain"
@@ -54,6 +56,16 @@ type RouterOptions struct {
 	// (add-connection-oauth 3.3). nil builds a fresh one over the granular
 	// store, encryption key, and public base URL.
 	OAuthApps *services.OAuthAppsService
+	// MCPOAuthClient is the shared MCP OAuth client (add-mcp-oauth-client
+	// 5.1/6.1) — one instance across the dial seam, the refresh-on-resolution
+	// wrapper, and the HTTP flows so the discovery cache is shared. nil builds
+	// a fresh one over the instance encryption key.
+	MCPOAuthClient *mcpoauth.Client
+	// MCPOAuthCredentials is the dial-time credential resolution the MCP
+	// manager and the probe handlers consume (design.md D1). nil builds a
+	// fresh one over the token/server stores, the settings service, and the
+	// shared client.
+	MCPOAuthCredentials mcp.OAuthDialCredentials
 	// PublicBaseURL is the instance's externally reachable base URL the OAuth
 	// redirect URIs and callback bounces derive from (add-connection-oauth
 	// 3.3). Empty legitimately keeps OAuth connect unavailable.
@@ -304,9 +316,41 @@ func (rt *router) Engine() *gin.Engine {
 	if mcpSettings == nil {
 		mcpSettings = agents.NewMCPSettingsService(rt.opts.Store.WorkspaceMCPServers(), rt.opts.Store.AgentMCPServers(), rt.opts.Store.Agents(), rt.opts.EncryptionKey)
 	}
+	// MCP OAuth machinery (add-mcp-oauth-client tasks 5.1/6.1): one shared
+	// oauth.Client (its discovery cache serves the dial seam, the refresh
+	// wrapper, and the HTTP flows alike), the refresh-on-resolution wrapper's
+	// refresher, and the dial-time credential resolution. The master key is
+	// the instance encryption key — the same key the connections OAuth flow
+	// seals its states with. The composition root may inject both; the
+	// fallback builds fresh ones over the granular stores.
+	mcpOAuthClient := rt.opts.MCPOAuthClient
+	if mcpOAuthClient == nil {
+		mcpOAuthClient = mcpoauth.NewClient(rt.opts.EncryptionKey)
+	}
+	mcpOAuthRefresher := services.NewMCPOAuthTokenRefresher(
+		rt.opts.Store.MCPTokens(),
+		rt.opts.Store.WorkspaceMCPServers(),
+		rt.opts.Store.AgentMCPServers(),
+		mcpSettings,
+		rt.opts.EncryptionKey,
+		rt.opts.PublicBaseURL,
+		mcpOAuthClient,
+	)
+	mcpOAuthCreds := rt.opts.MCPOAuthCredentials
+	if mcpOAuthCreds == nil {
+		mcpOAuthCreds = services.NewMCPOAuthDialCredentials(
+			rt.opts.Store.MCPTokens(),
+			rt.opts.Store.WorkspaceMCPServers(),
+			rt.opts.Store.AgentMCPServers(),
+			mcpSettings,
+			rt.opts.EncryptionKey,
+			rt.opts.PublicBaseURL,
+			mcpOAuthClient,
+		)
+	}
 	mcpManager := rt.opts.MCPManager
 	if mcpManager == nil {
-		mcpManager = mcp.NewMCPManager()
+		mcpManager = mcp.NewMCPManager(mcp.WithOAuthCredentials(mcpOAuthCreds))
 	}
 
 	// Workspace service connections (add-workspace-connections 3.3): the
@@ -339,8 +383,10 @@ func (rt *router) Engine() *gin.Engine {
 	// Runtime credential source (add-connection-oauth 2.3/D3): the settings
 	// source the MCP runtime consumes — policy, status writer, and the hooks
 	// invoker — with refresh-on-resolution on every connection-linked row it
-	// resolves for a dial. Fail-open by design; the MCP runtime is untouched.
-	runtimeSource := services.NewRuntimeCredentialSource(mcpSettings, connectionsSvc)
+	// resolves for a dial, and the MCP OAuth token refresh on every oauth-mode
+	// row (add-mcp-oauth-client task 5.2). Fail-open by design; the MCP
+	// runtime is untouched.
+	runtimeSource := services.NewRuntimeCredentialSource(mcpSettings, connectionsSvc, services.WithMCPOAuthTokenRefresher(mcpOAuthRefresher))
 
 	// Shared hook handler registry (D9/D10): one instance serves the REST
 	// dry-run endpoint AND the runtime dispatcher. The command kill switch
@@ -614,7 +660,10 @@ func (rt *router) Engine() *gin.Engine {
 	}
 	toolSettingsHandlers := handlers.NewToolSettingsHandlers(toolSettings)
 
-	mcpServerHandlers := handlers.NewMCPServerHandlers(mcpSettings, rt.opts.Store.Agents(), mcpManager, rt.opts.MCPProbeTimeout, connectionsSvc)
+	mcpServerHandlers := handlers.NewMCPServerHandlers(mcpSettings, rt.opts.Store.Agents(), mcpManager, rt.opts.MCPProbeTimeout, connectionsSvc, rt.opts.EncryptionKey, mcpOAuthCreds)
+	// MCP OAuth flows (add-mcp-oauth-client 6.1/6.2): authorize begin +
+	// callback + device begin/poll bound to server rows, both scopes.
+	mcpOAuthFlowHandlers := handlers.NewMCPOAuthHandlers(mcpSettings, rt.opts.Store.WorkspaceMCPServers(), rt.opts.Store.AgentMCPServers(), rt.opts.Store.Agents(), rt.opts.Store.MCPTokens(), mcpOAuthClient, rt.opts.EncryptionKey, rt.opts.PublicBaseURL)
 	// Connection view webhook enrichment (add-connection-webhooks §4):
 	// webhook-capable connections carry their webhook object; absent when
 	// the runtime could not assemble (never in production).
@@ -751,6 +800,15 @@ func (rt *router) Engine() *gin.Engine {
 		// Every outcome is a bounce back to the settings pane.
 		api.GET("/integrations/oauth/callback", oauthHandlers.Callback)
 
+		// Public MCP OAuth callback ingress (add-mcp-oauth-client 6.1): the
+		// MCP servers' counterpart — no auth middleware, the signed
+		// single-use state (bound to the server row) is the authenticator and
+		// the sealed PKCE session rides the HTTP-only cookie begin set. Every
+		// outcome is a bounce back to the settings pane's MCP section. The
+		// path is the services layer's MCPOAuthCallbackPath constant — the
+		// redirect-URI derivation and this route must name the same path.
+		api.GET(strings.TrimPrefix(services.MCPOAuthCallbackPath, "/api/v1"), mcpOAuthFlowHandlers.Callback)
+
 		// Authenticated endpoints
 		authed := api.Group("")
 		if rt.opts.Issuer != nil && rt.opts.Store != nil {
@@ -881,6 +939,15 @@ func (rt *router) Engine() *gin.Engine {
 				wsGroup.DELETE("/mcp-servers/:id", rt.mw.RequirePermission(domain.ToolsWrite), mcpServerHandlers.DeleteWorkspaceServer)
 				wsGroup.POST("/mcp-servers/:id/probe", rt.mw.RequirePermission(domain.ToolsWrite), mcpServerHandlers.ProbeWorkspaceServer)
 
+				// MCP server OAuth (add-mcp-oauth-client 6.1/6.2): authorize
+				// begin and the device flow's begin/poll, bound to server
+				// rows and permission-gated EXACTLY like the config routes —
+				// tools.write (the registry's Owner/Admin write tier;
+				// authorization stores credential material on the row).
+				wsGroup.POST("/mcp-servers/:id/oauth/authorize", rt.mw.RequirePermission(domain.ToolsWrite), mcpOAuthFlowHandlers.BeginWorkspaceAuthorize)
+				wsGroup.POST("/mcp-servers/:id/oauth/device", rt.mw.RequirePermission(domain.ToolsWrite), mcpOAuthFlowHandlers.BeginWorkspaceDevice)
+				wsGroup.POST("/mcp-servers/:id/oauth/device/poll", rt.mw.RequirePermission(domain.ToolsWrite), mcpOAuthFlowHandlers.PollWorkspaceDevice)
+
 				// Workspace service connections (add-workspace-connections
 				// D9/D10): the recipes gallery and connection reads ride
 				// membership; connect, probe, and disconnect are
@@ -937,6 +1004,14 @@ func (rt *router) Engine() *gin.Engine {
 				wsGroup.PATCH("/agents/:agent/mcp-servers/:id", rt.mw.RequirePermission(domain.AgentsWrite), mcpServerHandlers.PatchAgentServer)
 				wsGroup.DELETE("/agents/:agent/mcp-servers/:id", rt.mw.RequirePermission(domain.AgentsWrite), mcpServerHandlers.DeleteAgentServer)
 				wsGroup.POST("/agents/:agent/mcp-servers/:id/probe", rt.mw.RequirePermission(domain.AgentsWrite), mcpServerHandlers.ProbeAgentServer)
+
+				// Agent-private MCP server OAuth (add-mcp-oauth-client
+				// 6.1/6.2): the same flows as the registry, bound to the
+				// agent-private rows and gated by agents.write — the private
+				// servers' write tier.
+				wsGroup.POST("/agents/:agent/mcp-servers/:id/oauth/authorize", rt.mw.RequirePermission(domain.AgentsWrite), mcpOAuthFlowHandlers.BeginAgentAuthorize)
+				wsGroup.POST("/agents/:agent/mcp-servers/:id/oauth/device", rt.mw.RequirePermission(domain.AgentsWrite), mcpOAuthFlowHandlers.BeginAgentDevice)
+				wsGroup.POST("/agents/:agent/mcp-servers/:id/oauth/device/poll", rt.mw.RequirePermission(domain.AgentsWrite), mcpOAuthFlowHandlers.PollAgentDevice)
 
 				// Channel CRUD (integrate-agent-channels D11/D12): reads ride
 				// channels.read, writes channels.write. The static

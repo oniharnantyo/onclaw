@@ -676,9 +676,17 @@ export interface CreateWorkspaceResult {
 
 export type McpTransport = 'stdio' | 'streamable_http' | 'sse';
 
+/** Auth mode (add-mcp-oauth-client): `none` dials with the configured static
+ * header rows exactly as before; `oauth` dials with a bearer token obtained
+ * through the MCP OAuth client (browser or device flow) and is valid only on
+ * URL transports. */
+export type McpAuthMode = 'none' | 'oauth';
+
 /** Probe outcome persisted on the row. The spec's vocabulary is `connected`;
- * `ok` is accepted as its terse alias and `unknown` marks a never-probed row. */
-export type McpServerStatus = 'connected' | 'ok' | 'error' | 'unknown';
+ * `ok` is accepted as its terse alias and `unknown` marks a never-probed row.
+ * `expired` (add-mcp-oauth-client) is the OAuth token set's failed-refresh
+ * state — it exits only through a completed reauthorization. */
+export type McpServerStatus = 'connected' | 'ok' | 'error' | 'expired' | 'unknown';
 
 /** Read view of one env-var/header row. Secret values are write-only and never
  * round-trip — reads carry only the plaintext `value_hint` beside the name. */
@@ -703,6 +711,13 @@ export interface ApiMcpServer {
   url?: string;
   /** streamable_http / sse transports: header rows (secrets hinted, never echoed). */
   headers?: ApiMcpSecretRow[];
+  /** Auth mode (add-mcp-oauth-client): absent reads as `none`. */
+  auth_mode?: McpAuthMode;
+  /** OAuth client id (BYO app or the register-once DCR result); may be a
+   * client-id metadata document URL. */
+  oauth_client_id?: string;
+  /** Last 4 of the BYO client secret — write-only, never echoed. */
+  oauth_client_secret_hint?: string;
   /** Master switch — a paused server contributes no tools despite agent opt-in. */
   enabled: boolean;
   status: McpServerStatus;
@@ -728,9 +743,53 @@ export interface McpServerPayload {
   url?: string;
   headers?: ApiMcpSecretRowInput[];
   enabled?: boolean;
+  /** Auth mode (add-mcp-oauth-client): omitted keeps `none`. An explicit
+   * non-oauth mode on a patch clears the row's stored BYO client server-side. */
+  auth_mode?: McpAuthMode;
+  /** BYO app client id; blank auto-registers (DCR) where the provider
+   * supports it. */
+  oauth_client_id?: string;
+  /** Write-only like the row secrets: omitted or empty keeps the stored
+   * secret; a plaintext value replaces it (encrypted at persistence). */
+  oauth_client_secret?: string;
 }
 
 export type PatchMcpServerPayload = Partial<McpServerPayload>;
+
+// MCP OAuth flows (add-mcp-oauth-client tasks 6.1/6.2, web section 7): the
+// browser hand-off returns the provider's authorize URL (the sealed PKCE
+// session rides an HttpOnly cookie; the callback bounces back to
+// /settings?pane=mcp with the outcome), and the RFC 8628 device flow pairs a
+// begin (code + verification URI) with an interval-driven poll.
+
+/** RFC 8628 §3.3 authorization response. `device_session` is the opaque
+ * sealed blob the UI echoes verbatim to the poll endpoint. */
+export interface ApiMcpDeviceBegin {
+  device_session: string;
+  user_code: string;
+  verification_uri: string;
+  verification_uri_complete?: string;
+  /** Seconds until the code expires. */
+  expires_in: number;
+  /** Seconds between polls. */
+  interval: number;
+}
+
+export type McpDevicePollStatus = 'pending' | 'slow_down' | 'completed' | 'expired' | 'denied';
+
+export interface ApiMcpDevicePoll {
+  status: McpDevicePollStatus;
+  detail?: string;
+}
+
+/** The three OAuth flow calls for one server, bound to a scope by the caller
+ * (workspace registry vs agent-private mirrors) — the dialog consumes this
+ * shape so it stays endpoint-agnostic, exactly like onSave owns the endpoint. */
+export interface McpOAuthFlowApi {
+  authorize: (serverId: string) => Promise<{ authorize_url: string }>;
+  beginDevice: (serverId: string) => Promise<ApiMcpDeviceBegin>;
+  pollDevice: (serverId: string, deviceSession: string) => Promise<ApiMcpDevicePoll>;
+}
 
 // ---------------------------------------------------------------------------
 // Agent lifecycle hooks (change integrate-agent-hooks): workspace/agent-level
@@ -1469,6 +1528,29 @@ export const api = {
         `/workspaces/${encodeURIComponent(ws)}/mcp-servers/${encodeURIComponent(id)}/probe`,
         { method: 'POST' }
       ),
+    // OAuth browser sign-in (add-mcp-oauth-client): mints the single-use
+    // state and the sealed PKCE session (HttpOnly cookie) and returns the
+    // provider URL the browser is redirected to; the public callback bounces
+    // back to /settings?pane=mcp with the outcome for this pane to resolve.
+    authorize: (ws: string, id: string) =>
+      request<{ authorize_url: string }>(
+        `/workspaces/${encodeURIComponent(ws)}/mcp-servers/${encodeURIComponent(id)}/oauth/authorize`,
+        { method: 'POST' }
+      ),
+    // RFC 8628 device begin (headless instances): the UI shows the user code
+    // and polls on the returned interval.
+    beginDevice: (ws: string, id: string) =>
+      request<ApiMcpDeviceBegin>(
+        `/workspaces/${encodeURIComponent(ws)}/mcp-servers/${encodeURIComponent(id)}/oauth/device`,
+        { method: 'POST' }
+      ),
+    // One device-flow poll round: pending/slow_down keep polling (slow_down
+    // backs the interval off), completed/expired/denied end the flow.
+    pollDevice: (ws: string, id: string, deviceSession: string) =>
+      request<ApiMcpDevicePoll>(
+        `/workspaces/${encodeURIComponent(ws)}/mcp-servers/${encodeURIComponent(id)}/oauth/device/poll`,
+        { method: 'POST', body: { device_session: deviceSession } }
+      ),
   },
   // Workspace agent lifecycle hooks (hooks.read / hooks.write; gating is
   // server-side). The list response also carries the read-only instance
@@ -1871,6 +1953,23 @@ export const api = {
       request<{ server: ApiMcpServer }>(
         `/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/mcp-servers/${encodeURIComponent(id)}/probe`,
         { method: 'POST' }
+      ),
+    // Agent-private OAuth flows (add-mcp-oauth-client): mirrors of the
+    // workspace registry's authorize/device pair under the agent scope.
+    authorizeMcpServer: (ws: string, agent: string, id: string) =>
+      request<{ authorize_url: string }>(
+        `/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/mcp-servers/${encodeURIComponent(id)}/oauth/authorize`,
+        { method: 'POST' }
+      ),
+    beginDeviceMcpServer: (ws: string, agent: string, id: string) =>
+      request<ApiMcpDeviceBegin>(
+        `/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/mcp-servers/${encodeURIComponent(id)}/oauth/device`,
+        { method: 'POST' }
+      ),
+    pollDeviceMcpServer: (ws: string, agent: string, id: string, deviceSession: string) =>
+      request<ApiMcpDevicePoll>(
+        `/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/mcp-servers/${encodeURIComponent(id)}/oauth/device/poll`,
+        { method: 'POST', body: { device_session: deviceSession } }
       ),
     // Agent-private lifecycle hooks (agent config modal, D13). The list
     // response carries all three sections the modal shows: read-only

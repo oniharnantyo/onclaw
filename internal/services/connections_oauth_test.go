@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/oniharnantyo/onclaw/internal/agents"
+	"github.com/oniharnantyo/onclaw/internal/agents/mcp/oauth"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/secrets"
 	"github.com/oniharnantyo/onclaw/internal/services"
@@ -161,7 +163,7 @@ func registerProviderApp(t *testing.T, env *oauthFlowEnv, provider string) {
 // authorize URL with its state parameter parsed out.
 func beginOAuthConnect(t *testing.T, env *oauthFlowEnv, recipeID, accessLevel string) (authorizeURL, state string, err error) {
 	t.Helper()
-	res, err := env.svc.Connect(context.Background(), env.wsID, env.userID, recipeID, accessLevel, "")
+	res, err := env.svc.Connect(context.Background(), env.wsID, env.userID, recipeID, accessLevel, "", "")
 	if err != nil {
 		return "", "", err
 	}
@@ -350,7 +352,7 @@ func TestOAuthFlow_StateExpiredRejected(t *testing.T) {
 		t.Fatalf("register app: %v", err)
 	}
 
-	res, err := svc.Connect(ctx, ws.ID, testUserID, "atlassian", "", "")
+	res, err := svc.Connect(ctx, ws.ID, testUserID, "atlassian", "", "", "")
 	if err != nil {
 		t.Fatalf("begin connect: %v", err)
 	}
@@ -380,7 +382,7 @@ func TestOAuthFlow_StateFromAnotherKeyRejected(t *testing.T) {
 		env.settings, env.store.OAuthApps(), []byte("another-key-3456789012345678901234"), testPublicBaseURL,
 		services.WithTokenHTTPClient(&http.Client{Transport: env.transport}),
 	)
-	res, err := forged.Connect(context.Background(), env.wsID, env.userID, "atlassian", "", "")
+	res, err := forged.Connect(context.Background(), env.wsID, env.userID, "atlassian", "", "", "")
 	if err != nil {
 		t.Fatalf("forge begin connect: %v", err)
 	}
@@ -543,7 +545,7 @@ func TestOAuthFlow_MissingAppDuplicateAndBaseURL(t *testing.T) {
 		env.store.Connections(), env.store.WorkspaceMCPServers(), env.store.Agents(),
 		env.settings, env.store.OAuthApps(), []byte(testEncKey), "",
 	)
-	if _, err := noBase.Connect(ctx, env.wsID, env.userID, "atlassian", "", ""); !errors.Is(err, services.ErrOAuthUnavailable) {
+	if _, err := noBase.Connect(ctx, env.wsID, env.userID, "atlassian", "", "", ""); !errors.Is(err, services.ErrOAuthUnavailable) {
 		t.Fatalf("expected ErrOAuthUnavailable, got %v", err)
 	}
 }
@@ -1122,5 +1124,403 @@ func TestOAuthAppsService_UpsertLifecycle(t *testing.T) {
 	}
 	if views[0].Provider != "atlassian" || views[1].Provider != "linear" {
 		t.Errorf("expected provider-ordered listing, got %q then %q", views[0].Provider, views[1].Provider)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MCP OAuth token refresh on the runtime credential source (add-mcp-oauth-
+// client tasks 4.6/5.2, design.md D6/D7): oauth-mode server rows — workspace
+// and agent-private — refresh within the margin through the MCP token store,
+// fail open on refusal, and persist the expired transition. Static rows and
+// connection-token behavior are byte-identical to before.
+// ---------------------------------------------------------------------------
+
+// mcpTokenReply is one scripted token-endpoint reply.
+type mcpTokenReply struct {
+	status int
+	body   string
+}
+
+// mcpOAuthFixture is the authorization server the oauth-mode rows point at:
+// a challenge probe, the well-known discovery documents, and a scripted token
+// endpoint recording every form.
+type mcpOAuthFixture struct {
+	srv         *httptest.Server
+	mu          sync.Mutex
+	tokenCalls  int
+	tokenForms  []url.Values
+	tokenScript []mcpTokenReply
+	// scriptFrom marks the call index the scripted replies start at (the
+	// script is relative to when it was set, not to the whole run).
+	scriptFrom int
+}
+
+func newMCPOAuthFixture(t *testing.T) *mcpOAuthFixture {
+	t.Helper()
+	f := &mcpOAuthFixture{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		f.mu.Lock()
+		idx := f.tokenCalls
+		f.tokenCalls++
+		f.tokenForms = append(f.tokenForms, r.PostForm)
+		reply := mcpTokenReply{status: http.StatusOK, body: `{"access_token":"at-mcp-new","refresh_token":"rt-mcp-new","expires_in":3600,"scope":"mcp"}`}
+		if idx >= f.scriptFrom && len(f.tokenScript) > 0 {
+			at := idx - f.scriptFrom
+			if at >= len(f.tokenScript) {
+				at = len(f.tokenScript) - 1 // the last reply repeats
+			}
+			reply = f.tokenScript[at]
+		}
+		f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(reply.status)
+		_, _ = w.Write([]byte(reply.body))
+	})
+	mux.HandleFunc("/api/v4/mcp", func(w http.ResponseWriter, r *http.Request) {
+		// The challenge probe: any status is a valid outcome; discovery only
+		// reads the headers.
+		w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="`+f.srv.URL+`/.well-known/oauth-protected-resource/api/v4/mcp"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	mux.HandleFunc("/.well-known/oauth-protected-resource/api/v4/mcp", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"resource":"` + f.srv.URL + `/api/v4/mcp","authorization_servers":["` + f.srv.URL + `"],"scopes_supported":["mcp"]}`))
+	})
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"issuer":"` + f.srv.URL + `","authorization_endpoint":"` + f.srv.URL + `/oauth/authorize","token_endpoint":"` + f.srv.URL + `/oauth/token","scopes_supported":["mcp"],"code_challenge_methods_supported":["S256"]}`))
+	})
+	f.srv = httptest.NewServer(mux)
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+func (f *mcpOAuthFixture) base() string {
+	return strings.TrimRight(f.srv.URL, "/")
+}
+
+func (f *mcpOAuthFixture) script(replies ...mcpTokenReply) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tokenScript = replies
+	f.scriptFrom = f.tokenCalls
+}
+
+func (f *mcpOAuthFixture) hits() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.tokenCalls
+}
+
+func (f *mcpOAuthFixture) forms() []url.Values {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]url.Values(nil), f.tokenForms...)
+}
+
+// mcpOAuthEnv is the oauthFlowEnv plus the MCP OAuth wiring: fixture,
+// oauth.Client, token refresher, and the fully-wired runtime credential
+// source.
+type mcpOAuthEnv struct {
+	*oauthFlowEnv
+	fixture   *mcpOAuthFixture
+	refresher services.MCPOAuthTokenRefresher
+	source    *services.RuntimeCredentialSource
+}
+
+func newMCPOAuthEnv(t *testing.T) *mcpOAuthEnv {
+	t.Helper()
+	base := newOAuthFlowEnv(t)
+	env := &mcpOAuthEnv{oauthFlowEnv: base, fixture: newMCPOAuthFixture(t)}
+	client := oauth.NewClient([]byte(testEncKey),
+		oauth.WithClientHTTPClient(env.fixture.srv.Client()),
+		oauth.WithDiscovery(oauth.NewDiscovery(oauth.WithHTTPClient(env.fixture.srv.Client()))),
+	)
+	env.refresher = services.NewMCPOAuthTokenRefresher(
+		base.store.MCPTokens(),
+		base.store.WorkspaceMCPServers(),
+		base.store.AgentMCPServers(),
+		base.settings,
+		[]byte(testEncKey),
+		"", // headless: the refresh path needs no redirect URI for BYO ids
+		client,
+	)
+	env.source = services.NewRuntimeCredentialSource(base.settings, base.svc, services.WithMCPOAuthTokenRefresher(env.refresher))
+	return env
+}
+
+// seedOAuthWorkspaceServer creates an oauth-mode workspace server row plus
+// its stored token set, marks it connected (a live status — the only shape
+// expired may be entered from), and returns the server id.
+func (e *mcpOAuthEnv) seedOAuthWorkspaceServer(t *testing.T, name string, mutate func(*domain.WorkspaceMCPServer)) string {
+	t.Helper()
+	ctx := context.Background()
+	server := &domain.WorkspaceMCPServer{
+		WorkspaceID: e.wsID,
+		Name:        name,
+		Enabled:     true,
+		MCPConnection: domain.MCPConnection{
+			Transport:     domain.MCPTransportStreamableHTTP,
+			URL:           e.fixture.base() + "/api/v4/mcp",
+			AuthMode:      domain.MCPAuthModeOAuth,
+			OAuthClientID: "byo-mcp-1",
+		},
+	}
+	if mutate != nil {
+		mutate(server)
+	}
+	if err := e.settings.CreateWorkspaceServer(ctx, server); err != nil {
+		t.Fatalf("seed oauth server: %v", err)
+	}
+	if err := e.settings.SetWorkspaceServerStatus(ctx, e.wsID, server.ID, domain.MCPStatusConnected, "", 0); err != nil {
+		t.Fatalf("mark connected: %v", err)
+	}
+	e.seedTokenRow(t, e.wsID, "", server.ID)
+	return server.ID
+}
+
+// seedTokenRow stores the inside-margin token set ("at-mcp-old" /
+// "rt-mcp-old") for the named scope.
+func (e *mcpOAuthEnv) seedTokenRow(t *testing.T, workspaceID, agentID, serverID string) {
+	t.Helper()
+	ctx := context.Background()
+	access, err := secrets.Encrypt([]byte(testEncKey), []byte(workspaceID), []byte("at-mcp-old"))
+	if err != nil {
+		t.Fatalf("seal access token: %v", err)
+	}
+	refresh, err := secrets.Encrypt([]byte(testEncKey), []byte(workspaceID), []byte("rt-mcp-old"))
+	if err != nil {
+		t.Fatalf("seal refresh token: %v", err)
+	}
+	expiresAt := time.Now().Add(5 * time.Minute) // inside the 10m margin
+	if err := e.store.MCPTokens().Replace(ctx, &domain.MCPToken{
+		WorkspaceID:            workspaceID,
+		AgentID:                agentID,
+		ServerID:               serverID,
+		AccessTokenCiphertext:  access,
+		RefreshTokenCiphertext: refresh,
+		ExpiresAt:              &expiresAt,
+		GrantedScopes:          []string{"mcp"},
+		Issuer:                 e.fixture.base(),
+	}); err != nil {
+		t.Fatalf("seed token row: %v", err)
+	}
+}
+
+func TestRuntimeCredentialSource_MCPOAuthWorkspaceRefreshesWithinMargin(t *testing.T) {
+	env := newMCPOAuthEnv(t)
+	ctx := context.Background()
+	serverID := env.seedOAuthWorkspaceServer(t, "Notion", nil)
+
+	row, err := env.source.WorkspaceServerForRuntime(ctx, env.wsID, serverID)
+	if err != nil {
+		t.Fatalf("runtime resolution: %v", err)
+	}
+	if row.ID != serverID || row.AuthMode != domain.MCPAuthModeOAuth {
+		t.Fatalf("unexpected row: %+v", row)
+	}
+	forms := env.fixture.forms()
+	if len(forms) != 1 || forms[0].Get("grant_type") != "refresh_token" || forms[0].Get("refresh_token") != "rt-mcp-old" {
+		t.Fatalf("expected one refresh grant with the stored token, got %+v", forms)
+	}
+	if forms[0].Get("client_id") != "byo-mcp-1" {
+		t.Errorf("expected the row's BYO client id, got %q", forms[0].Get("client_id"))
+	}
+
+	// The write-through: the stored envelopes and expiry advanced.
+	stored, err := env.store.MCPTokens().Get(ctx, env.wsID, "", serverID)
+	if err != nil {
+		t.Fatalf("reload token row: %v", err)
+	}
+	access, err := secrets.Decrypt([]byte(testEncKey), []byte(env.wsID), stored.AccessTokenCiphertext)
+	if err != nil || string(access) != "at-mcp-new" {
+		t.Errorf("expected the renewed access envelope, got %q (%v)", access, err)
+	}
+	refresh, err := secrets.Decrypt([]byte(testEncKey), []byte(env.wsID), stored.RefreshTokenCiphertext)
+	if err != nil || string(refresh) != "rt-mcp-new" {
+		t.Errorf("expected the rotated refresh envelope, got %q (%v)", refresh, err)
+	}
+	if stored.ExpiresAt == nil || time.Until(*stored.ExpiresAt) <= 0 {
+		t.Errorf("expected an advanced expiry, got %v", stored.ExpiresAt)
+	}
+	// The server row's status is untouched on success (expired is cleared
+	// only by reauthorization).
+	after, err := env.store.WorkspaceMCPServers().Get(ctx, env.wsID, serverID)
+	if err != nil {
+		t.Fatalf("reload server: %v", err)
+	}
+	if after.Status != domain.MCPStatusConnected {
+		t.Errorf("status = %q, want connected untouched", after.Status)
+	}
+}
+
+func TestRuntimeCredentialSource_MCPOAuthOutsideMarginIsPassthrough(t *testing.T) {
+	env := newMCPOAuthEnv(t)
+	ctx := context.Background()
+	serverID := env.seedOAuthWorkspaceServer(t, "Notion", nil)
+	// Push the token outside the margin.
+	far := time.Now().Add(time.Hour)
+	stored, err := env.store.MCPTokens().Get(ctx, env.wsID, "", serverID)
+	if err != nil {
+		t.Fatalf("load token row: %v", err)
+	}
+	stored.ExpiresAt = &far
+	if err := env.store.MCPTokens().Replace(ctx, stored); err != nil {
+		t.Fatalf("push expiry: %v", err)
+	}
+
+	if _, err := env.source.WorkspaceServerForRuntime(ctx, env.wsID, serverID); err != nil {
+		t.Fatalf("runtime resolution: %v", err)
+	}
+	if env.fixture.hits() != 0 {
+		t.Errorf("expected no token requests outside the margin, got %d", env.fixture.hits())
+	}
+}
+
+func TestRuntimeCredentialSource_MCPOAuthFailOpenAndFlipExpired(t *testing.T) {
+	env := newMCPOAuthEnv(t)
+	ctx := context.Background()
+	serverID := env.seedOAuthWorkspaceServer(t, "Notion", nil)
+	env.fixture.script(mcpTokenReply{
+		status: http.StatusBadRequest,
+		body:   `{"error":"invalid_grant","error_description":"refresh token is revoked"}`,
+	})
+
+	// FAIL-OPEN: the resolution succeeds with the STORED credential — a
+	// refresh failure must never break the dial.
+	if _, err := env.source.WorkspaceServerForRuntime(ctx, env.wsID, serverID); err != nil {
+		t.Fatalf("expected the stored credential fail-open, got error %v", err)
+	}
+	// ...while the expired transition and the provider error persisted.
+	after, err := env.store.WorkspaceMCPServers().Get(ctx, env.wsID, serverID)
+	if err != nil {
+		t.Fatalf("reload server: %v", err)
+	}
+	if after.Status != domain.MCPStatusExpired || !strings.Contains(after.StatusError, "refresh token is revoked") {
+		t.Errorf("expected expired with the provider detail, got %q/%q", after.Status, after.StatusError)
+	}
+	// The token rows are untouched by a refused refresh.
+	tok, err := env.store.MCPTokens().Get(ctx, env.wsID, "", serverID)
+	if err != nil {
+		t.Fatalf("reload token row: %v", err)
+	}
+	access, err := secrets.Decrypt([]byte(testEncKey), []byte(env.wsID), tok.AccessTokenCiphertext)
+	if err != nil || string(access) != "at-mcp-old" {
+		t.Errorf("expected the stored access envelope kept, got %q (%v)", access, err)
+	}
+}
+
+func TestRuntimeCredentialSource_MCPOAuthStaticModeUntouched(t *testing.T) {
+	env := newMCPOAuthEnv(t)
+	ctx := context.Background()
+	server := &domain.WorkspaceMCPServer{
+		WorkspaceID: env.wsID,
+		Name:        "Static",
+		Enabled:     true,
+		MCPConnection: domain.MCPConnection{
+			Transport: domain.MCPTransportStreamableHTTP,
+			URL:       env.fixture.base() + "/api/v4/mcp",
+		},
+	}
+	if err := env.settings.CreateWorkspaceServer(ctx, server); err != nil {
+		t.Fatalf("seed static server: %v", err)
+	}
+	if _, err := env.source.WorkspaceServerForRuntime(ctx, env.wsID, server.ID); err != nil {
+		t.Fatalf("runtime resolution: %v", err)
+	}
+	if env.fixture.hits() != 0 {
+		t.Errorf("static-mode rows must never touch the OAuth machinery, got %d calls", env.fixture.hits())
+	}
+}
+
+func TestRuntimeCredentialSource_MCPOAuthPluralResolution(t *testing.T) {
+	env := newMCPOAuthEnv(t)
+	ctx := context.Background()
+	env.seedOAuthWorkspaceServer(t, "Notion", nil)
+
+	rows, err := env.source.WorkspaceServersForRuntime(ctx, env.wsID)
+	if err != nil {
+		t.Fatalf("plural resolution: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected one row, got %d", len(rows))
+	}
+	if env.fixture.hits() != 1 {
+		t.Errorf("expected the oauth row refreshed once, got %d calls", env.fixture.hits())
+	}
+	stored, err := env.store.MCPTokens().Get(ctx, env.wsID, "", rows[0].ID)
+	if err != nil {
+		t.Fatalf("reload token row: %v", err)
+	}
+	access, err := secrets.Decrypt([]byte(testEncKey), []byte(env.wsID), stored.AccessTokenCiphertext)
+	if err != nil || string(access) != "at-mcp-new" {
+		t.Errorf("expected the renewed envelope persisted, got %q (%v)", access, err)
+	}
+}
+
+func TestRuntimeCredentialSource_MCPOAuthAgentPrivateRefresh(t *testing.T) {
+	env := newMCPOAuthEnv(t)
+	ctx := context.Background()
+	agent := &domain.Agent{WorkspaceID: env.wsID, Name: "Atlas", Slug: "atlas-mcp-oauth"}
+	if err := env.store.Agents().Create(ctx, agent); err != nil {
+		t.Fatalf("seed agent: %v", err)
+	}
+	server := &domain.AgentMCPServer{
+		WorkspaceID: env.wsID,
+		AgentID:     agent.ID,
+		Name:        "Private Notion",
+		Enabled:     true,
+		MCPConnection: domain.MCPConnection{
+			Transport:     domain.MCPTransportStreamableHTTP,
+			URL:           env.fixture.base() + "/api/v4/mcp",
+			AuthMode:      domain.MCPAuthModeOAuth,
+			OAuthClientID: "byo-mcp-1",
+		},
+	}
+	if err := env.settings.CreateAgentServer(ctx, server); err != nil {
+		t.Fatalf("seed agent server: %v", err)
+	}
+	if err := env.settings.SetAgentServerStatus(ctx, env.wsID, agent.ID, server.ID, domain.MCPStatusConnected, "", 0); err != nil {
+		t.Fatalf("mark connected: %v", err)
+	}
+	env.seedTokenRow(t, env.wsID, agent.ID, server.ID)
+
+	// The agent-private path rides the same refresh-on-resolution
+	// (design.md D7 — the previously-untouched delegation is wrapped).
+	rows, err := env.source.AgentServersForRuntimeByID(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("agent resolution: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected one private row, got %d", len(rows))
+	}
+	if env.fixture.hits() != 1 {
+		t.Fatalf("expected the private row refreshed, got %d calls", env.fixture.hits())
+	}
+	stored, err := env.store.MCPTokens().Get(ctx, env.wsID, agent.ID, server.ID)
+	if err != nil {
+		t.Fatalf("reload token row: %v", err)
+	}
+	access, err := secrets.Decrypt([]byte(testEncKey), []byte(env.wsID), stored.AccessTokenCiphertext)
+	if err != nil || string(access) != "at-mcp-new" {
+		t.Errorf("expected the renewed envelope persisted, got %q (%v)", access, err)
+	}
+
+	// The fail-open + expired semantics hold on the agent scope too. The
+	// happy refresh above pushed the expiry outside the margin, so re-seed
+	// the inside-margin set first.
+	env.seedTokenRow(t, env.wsID, agent.ID, server.ID)
+	env.fixture.script(mcpTokenReply{status: http.StatusBadRequest, body: `{"error":"invalid_grant","error_description":"expired"}`})
+	if _, err := env.source.AgentServersForRuntimeByID(ctx, agent.ID); err != nil {
+		t.Fatalf("expected fail-open, got error %v", err)
+	}
+	after, err := env.store.AgentMCPServers().Get(ctx, agent.ID, server.ID)
+	if err != nil {
+		t.Fatalf("reload agent server: %v", err)
+	}
+	if after.Status != domain.MCPStatusExpired {
+		t.Errorf("expected the expired transition on the private row, got %q", after.Status)
 	}
 }
