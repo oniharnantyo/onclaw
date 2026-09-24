@@ -1,0 +1,35 @@
+sequenceDiagram
+    autonumber
+    participant DOC as Raw document
+    participant PAG as Pagination LLM
+    participant GIS as Gisting LLM
+    participant MEM as Gist memory
+    participant QST as Question
+    participant AGT as Agent LLM
+
+    rect rgb(235, 243, 255)
+    note over DOC,MEM: Phase 1 - indexing, once per document
+    DOC->>PAG: chunks bounded by max_words
+    loop until end of document
+        PAG->>PAG: choose natural pause tag past min_words
+    end
+    PAG-->>DOC: semantic episode boundaries
+    par each episode, in parallel
+        DOC->>GIS: episode text
+        GIS->>GIS: shorten, do not summarize
+        GIS-->>MEM: gist with page tag
+    end
+    note over MEM: ordered gist list, 85 to 97 percent smaller
+    end
+
+    rect rgb(255, 246, 235)
+    note over QST,MEM: Phase 2 - answering, once per question
+    QST->>AGT: question, agent sees the gist list only
+    loop up to max lookups, sequential mode
+        AGT->>MEM: look up Page i
+        MEM-->>AGT: raw text of page i
+        note over AGT: gist i replaced in place, order preserved
+    end
+    AGT->>AGT: STOP when it has enough
+    AGT-->>QST: answer grounded in the pages it read
+    end
