@@ -373,6 +373,15 @@ func (rt *router) Engine() *gin.Engine {
 			rt.opts.EncryptionKey,
 			rt.opts.PublicBaseURL,
 			services.WithProbeTimeout(rt.opts.MCPProbeTimeout),
+			// Attachment tx seam (add-connection-edit D1): the composition-root
+			// adapter over store.Store.WithTx — the documented transaction
+			// seam — handing the service's attachment diff the tx-scoped
+			// AgentStore.
+			services.WithAttachmentTx(func(ctx context.Context, run func(ctx context.Context, agents store.AgentStore) error) error {
+				return rt.opts.Store.WithTx(ctx, func(s store.Store) error {
+					return run(ctx, s.Agents())
+				})
+			}),
 		)
 	}
 	// Instance OAuth app administration (add-connection-oauth 3.3).
@@ -965,6 +974,12 @@ func (rt *router) Engine() *gin.Engine {
 				// consent flow for an existing connection — same trust tier as
 				// connect (integrations.write, the credential-bearing tier).
 				wsGroup.POST("/integrations/connections/:id/reauthorize", rt.mw.RequirePermission(domain.IntegrationsWrite), connectionsHandlers.ReauthorizeConnection)
+				// Connection edit (add-connection-edit 3.1/3.2): the atomic
+				// attachment save and the in-place token replacement — both
+				// credential/attachment-bearing writes over an existing
+				// connection, the same integrations.write tier (design.md D5).
+				wsGroup.PUT("/integrations/connections/:id/agents", rt.mw.RequirePermission(domain.IntegrationsWrite), connectionsHandlers.SetConnectionAgents)
+				wsGroup.POST("/integrations/connections/:id/token", rt.mw.RequirePermission(domain.IntegrationsWrite), connectionsHandlers.ReplaceConnectionToken)
 
 				// Connection webhooks (add-connection-webhooks 3.1): the
 				// management sub-resource rides integrations.write across the

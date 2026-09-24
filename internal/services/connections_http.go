@@ -175,6 +175,48 @@ func httpProviderMessage(body []byte, cap int) string {
 }
 
 // ---------------------------------------------------------------------------
+// Token replacement (add-connection-edit tasks 2.2/2.3) — the envelope-update
+// path beside connectHTTP's create.
+// ---------------------------------------------------------------------------
+
+// replaceHTTPToken swaps an http-kind connection's token envelope in place:
+// the recipe's declared probe call reruns against the connection's STORED
+// origin with the CANDIDATE token (the connect gate, mirrored — immutability:
+// a replace never dials any origin but the one the connection was connected
+// against), and only on probe success is the new envelope re-encrypted with
+// the workspace AAD and persisted through UpdateTokenLifecycle — the row's
+// lifecycle write, which carries the new ciphertext and the guarded status
+// transition (a stored `error` from a failed probe returns to connected;
+// refused moves leave the stored status). Identity, origin, access level, and
+// attachments are untouched; a probe failure stores nothing.
+func (s *ConnectionsService) replaceHTTPToken(ctx context.Context, workspaceID string, conn *domain.Connection, recipe *domain.Recipe, token string) (*ConnectionView, error) {
+	base, err := domain.ResolveRecipeBase(recipe, conn.Origin)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.probeHTTPBound(ctx, recipe, base, token); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrProbeFailed, err)
+	}
+	envelope, err := secrets.Encrypt(s.encKey, []byte(workspaceID), []byte(token))
+	if err != nil {
+		return nil, fmt.Errorf("encrypt connection token: %w", err)
+	}
+	// The loaded row carries the other lifecycle fields, so the write
+	// replaces the envelope and nothing else.
+	conn.RefreshCiphertext = envelope
+	if conn.Status == "" {
+		conn.Status = domain.ConnectionStatusConnected
+	}
+	if domain.CanTransitionConnectionStatus(conn.Status, domain.ConnectionStatusConnected) {
+		conn.Status = domain.ConnectionStatusConnected
+	}
+	if err := s.connections.UpdateTokenLifecycle(ctx, conn); err != nil {
+		return nil, err
+	}
+	return s.buildView(ctx, workspaceID, conn)
+}
+
+// ---------------------------------------------------------------------------
 // Credential resolution (contract §3) — the seam the runner's connection
 // tool source consumes per verb-call.
 // ---------------------------------------------------------------------------

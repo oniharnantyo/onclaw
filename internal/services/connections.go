@@ -29,6 +29,21 @@ import (
 // (workspace-connections spec: "Probe failure blocks connect").
 var ErrProbeFailed = errors.New("probe failed")
 
+// ErrTokenReplaceUnsupported marks a token-replacement attempt on an
+// OAuth-kind connection: OAuth rotates its credential by reauthorization, so
+// it accepts no replacement token (add-connection-edit spec: "OAuth-kind
+// replacement refused"). Chains to domain.ErrInvalid so the generic sentinel
+// mapping produces a 400 envelope whose message directs to reauthorization.
+var ErrTokenReplaceUnsupported = fmt.Errorf("%w: this connection authorizes through OAuth — rotate its credential by reauthorizing instead of replacing the token", domain.ErrInvalid)
+
+// AttachmentTxRunner is the narrow transaction seam the atomic attachment
+// diff applies through (add-connection-edit design.md D1): it opens one
+// transaction and hands the closure the tx-scoped AgentStore, so a closure
+// error leaves every agent row exactly as it was. The composition root
+// adapts store.Store.WithTx into it (the documented transaction seam) —
+// the same shape skills.TxProvider uses.
+type AttachmentTxRunner func(ctx context.Context, fn func(ctx context.Context, agents store.AgentStore) error) error
+
 // WorkspaceMCPSecretStore is the narrow MCP-settings seam the connections
 // service composes (design.md D4): registering a workspace server with its
 // secret rows encrypted, reading hint and runtime views, and persisting probe
@@ -69,7 +84,11 @@ type ConnectionsService struct {
 	connections   store.Connections
 	wsServers     store.WorkspaceMCPServers
 	agents        store.AgentStore
-	settings      WorkspaceMCPSecretStore
+	// attachmentTx is the atomic attachment diff's transaction seam
+	// (add-connection-edit design.md D1); nil applies the diff through agents
+	// directly — the non-transactional fallback that keeps embedders honest.
+	attachmentTx AttachmentTxRunner
+	settings     WorkspaceMCPSecretStore
 	probe         ConnectionProber
 	probeTimeout  time.Duration
 	apps          store.OAuthApps
@@ -128,6 +147,21 @@ func WithStateTTL(d time.Duration) ConnectionsOption {
 	return func(s *ConnectionsService) {
 		if d > 0 {
 			s.stateTTL = d
+		}
+	}
+}
+
+// WithAttachmentTx binds the atomic attachment diff's narrow transaction seam
+// (add-connection-edit design.md D1): run opens one transaction and hands the
+// closure the tx-scoped AgentStore — the composition root adapts
+// store.Store.WithTx into it. A nil runner is ignored; without a seam
+// SetAttachedAgents applies through the plain agent store (the fallback that
+// keeps tests and embedders honest — the real installation always wires the
+// seam).
+func WithAttachmentTx(run AttachmentTxRunner) ConnectionsOption {
+	return func(s *ConnectionsService) {
+		if run != nil {
+			s.attachmentTx = run
 		}
 	}
 }
@@ -711,4 +745,227 @@ func (s *ConnectionsService) ConnectionDisplayName(ctx context.Context, workspac
 		return recipe.Service
 	}
 	return conn.Service
+}
+
+// ---------------------------------------------------------------------------
+// Attachment management (add-connection-edit tasks 1.1–1.3, design.md D1)
+// ---------------------------------------------------------------------------
+
+// SetAttachedAgents sets the COMPLETE set of agents attached to a connection
+// (add-connection-edit spec: "Connection attachment management"): it resolves
+// the connection's attach id per kind, validates every submitted agent id
+// exists in the workspace, diffs the desired set against the current
+// attachment, and applies exactly the affected agents' changes inside the
+// attachment transaction seam — every affected agent's allowlist updates or
+// none does. An empty desired set detaches everyone; re-saving the current
+// set writes nothing. Unknown or cross-workspace connections are
+// domain.ErrNotFound (the Get convention); an unknown agent id is
+// domain.ErrInvalid naming it, with nothing changed.
+//
+// The stored id per agent is the connection's materialized server id for MCP
+// kind and the connection's own id for http kind — identical to what the
+// agent-side opt-in stores, so attachment from either side is
+// indistinguishable. Each affected agent is re-read INSIDE the seam and only
+// the connection's id is added or removed in its enabled_mcps slice (order of
+// the other entries preserved), so a concurrent MCP-server opt-in cannot be
+// clobbered by a stale array write.
+func (s *ConnectionsService) SetAttachedAgents(ctx context.Context, workspaceID, connectionID string, agentIDs []string) (*ConnectionView, error) {
+	conn, err := s.connections.Get(ctx, workspaceID, connectionID)
+	if err != nil {
+		return nil, err
+	}
+	attachID, err := s.attachmentTargetID(ctx, workspaceID, conn)
+	if err != nil {
+		return nil, err
+	}
+	desired := normalizeAgentIDs(agentIDs)
+	desiredSet := make(map[string]struct{}, len(desired))
+	for _, id := range desired {
+		desiredSet[id] = struct{}{}
+	}
+
+	workspaceAgents, err := s.agents.ListForWorkspace(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	// Every submitted id must exist in the workspace BEFORE anything is
+	// diffed or written — the rejection is atomic by construction (spec:
+	// "Unknown agent rejected atomically").
+	known := make(map[string]struct{}, len(workspaceAgents))
+	for i := range workspaceAgents {
+		known[workspaceAgents[i].ID] = struct{}{}
+	}
+	for _, id := range desired {
+		if _, ok := known[id]; !ok {
+			return nil, fmt.Errorf("%w: agent %s does not exist in this workspace", domain.ErrInvalid, id)
+		}
+	}
+
+	// The diff: only agents whose membership differs get written — an
+	// idempotent re-save affects no one.
+	var affected []string
+	for i := range workspaceAgents {
+		agent := &workspaceAgents[i]
+		_, want := desiredSet[agent.ID]
+		if want != slices.Contains(agent.EnabledMCPS, attachID) {
+			affected = append(affected, agent.ID)
+		}
+	}
+
+	apply := func(ctx context.Context, agents store.AgentStore) error {
+		for _, agentID := range affected {
+			// Tx-scoped read-modify-write: re-read the row inside the seam so
+			// only the connection's id moves in the freshest array.
+			agent, err := agents.ByID(ctx, workspaceID, agentID)
+			if err != nil {
+				return err
+			}
+			_, want := desiredSet[agent.ID]
+			agent.EnabledMCPS = setAttachmentMembership(agent.EnabledMCPS, attachID, want)
+			if err := agents.Update(ctx, agent); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if s.attachmentTx != nil {
+		if err := s.attachmentTx(ctx, apply); err != nil {
+			return nil, err
+		}
+	} else if err := apply(ctx, s.agents); err != nil {
+		return nil, err
+	}
+	return s.Get(ctx, workspaceID, conn.ID)
+}
+
+// attachmentTargetID resolves the id a connection stores in an attached
+// agent's enabled_mcps — exactly the resolution buildView reads back: the
+// connection's own id for http kind (there is no server row), the linked
+// server's id otherwise. A degraded MCP connection whose server row is gone
+// has nothing to diff against and is refused (the Probe precedent) — its
+// attachments are inert references, not manageable state.
+func (s *ConnectionsService) attachmentTargetID(ctx context.Context, workspaceID string, conn *domain.Connection) (string, error) {
+	if isHTTPConnection(conn.Service) {
+		return conn.ID, nil
+	}
+	server, err := s.wsServers.GetByOriginConnection(ctx, workspaceID, conn.ID)
+	if err != nil {
+		return "", err
+	}
+	if server == nil {
+		return "", fmt.Errorf("%w: connection %s has no linked mcp server", domain.ErrNotFound, conn.ID)
+	}
+	return server.ID, nil
+}
+
+// normalizeAgentIDs trims the submitted ids, drops empties, and dedupes
+// preserving first occurrence — the desired set is order-free and
+// duplicate-tolerant.
+func normalizeAgentIDs(ids []string) []string {
+	out := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+// setAttachmentMembership adds or removes attachID in an enabled_mcps slice:
+// adding appends (the existing entries keep their order), removing keeps the
+// survivors' relative order. A membership already in the desired state is
+// returned unchanged.
+func setAttachmentMembership(ids []string, attachID string, member bool) []string {
+	if slices.Contains(ids, attachID) == member {
+		return ids
+	}
+	if member {
+		return append(ids, attachID)
+	}
+	stripped := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id != attachID {
+			stripped = append(stripped, id)
+		}
+	}
+	return stripped
+}
+
+// ---------------------------------------------------------------------------
+// Token replacement (add-connection-edit tasks 2.1–2.3, design.md D2)
+// ---------------------------------------------------------------------------
+
+// ReplaceToken swaps an existing connection's access token in place
+// (add-connection-edit spec: "Connection token replacement"): the candidate
+// credential is probed exactly the way connect probes a candidate BEFORE any
+// write, so a failed probe stores nothing and the previously stored token
+// keeps authenticating — the upstream message surfaces through the
+// ErrProbeFailed wrap. On success the token row is rewritten in place (MCP
+// kind: the materialized server's secret row through the MCP settings
+// machinery; http kind: the connection's encrypted envelope —
+// replaceHTTPToken) while identity, origin, access level, and every agent
+// attachment are untouched. The refreshed view's token hint emerges from the
+// normal view build.
+//
+// OAuth-kind connections are refused with ErrTokenReplaceUnsupported —
+// reauthorization is their credential-rotation path (an OAuth `expired`
+// status is therefore unreachable here, so a successful replace can never
+// manufacture `connected` over it). An empty token is invalid: the
+// keep-semantics live at the endpoint/dialog layer, which skips the call for
+// an empty submission (design.md D3). Unknown or cross-workspace connections
+// are domain.ErrNotFound.
+func (s *ConnectionsService) ReplaceToken(ctx context.Context, workspaceID, connectionID, token string) (*ConnectionView, error) {
+	conn, err := s.connections.Get(ctx, workspaceID, connectionID)
+	if err != nil {
+		return nil, err
+	}
+	recipe := domain.RecipeByID(conn.Service)
+	if recipe == nil {
+		return nil, fmt.Errorf("%w: %q", domain.ErrUnknownRecipe, conn.Service)
+	}
+	if recipe.AuthKind == domain.RecipeAuthOAuth {
+		return nil, ErrTokenReplaceUnsupported
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil, fmt.Errorf("%w: token cannot be empty", domain.ErrInvalid)
+	}
+	if recipe.Kind == domain.RecipeKindHTTP {
+		return s.replaceHTTPToken(ctx, workspaceID, conn, recipe, token)
+	}
+	return s.replaceMCPToken(ctx, workspaceID, conn, recipe, token)
+}
+
+// replaceMCPToken probes the candidate the way connect does —
+// materializeServer composes it into an ad-hoc MCPConnection resolved against
+// the connection's STORED origin (immutability: a replace never dials any
+// origin but the one the connection was connected against) and probeServer
+// dials it without persisting — then swaps the linked server's token secret
+// row through writeServerToken and refreshes the server status from the
+// probe's outcome: the completeReauthorization sequence minus the lifecycle
+// write a PAT row never needs (the connection row itself is untouched).
+func (s *ConnectionsService) replaceMCPToken(ctx context.Context, workspaceID string, conn *domain.Connection, recipe *domain.Recipe, token string) (*ConnectionView, error) {
+	server, err := materializeServer(workspaceID, recipe, token, conn.Origin)
+	if err != nil {
+		return nil, err
+	}
+	toolCount, err := s.probeServer(ctx, workspaceID, "connection-probe", server.Name, server.MCPConnection)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrProbeFailed, err)
+	}
+	linked, err := s.writeServerToken(ctx, workspaceID, conn.ID, recipe, token)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.settings.SetWorkspaceServerStatus(ctx, workspaceID, linked.ID, domain.MCPStatusConnected, "", toolCount); err != nil {
+		return nil, err
+	}
+	return s.buildView(ctx, workspaceID, conn)
 }

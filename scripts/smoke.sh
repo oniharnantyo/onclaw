@@ -64,6 +64,10 @@
 #      URI derivation from the public base URL, the registration-driven
 #      gallery availability flip, the missing-registration connect error,
 #      and the connect dispatch to the provider consent flow)
+#  31. Connection edit (add-connection-edit: a LIVE PAT connection against a
+#      local mock MCP service via the github recipe's origin parameter —
+#      attachment PUT with atomic rejection, probe-gated token replacement
+#      swapping in place)
 #
 # Usage:
 #   ./scripts/smoke.sh
@@ -107,6 +111,7 @@ else
 fi
 WA_STUB_PID=""
 HB_MOCK_PID=""
+CONN_MOCK_PID=""
 MOCK_PID=""
 SERVER_PID=""
 
@@ -172,6 +177,10 @@ cleanup() {
     if [[ -n "${HB_MOCK_PID}" ]]; then
         kill "${HB_MOCK_PID}" 2>/dev/null || true
         wait "${HB_MOCK_PID}" 2>/dev/null || true
+    fi
+    if [[ -n "${CONN_MOCK_PID}" ]]; then
+        kill "${CONN_MOCK_PID}" 2>/dev/null || true
+        wait "${CONN_MOCK_PID}" 2>/dev/null || true
     fi
     rm -rf "${TMP_DIR}"
     if [[ $exit_code -eq 0 ]]; then
@@ -3596,3 +3605,181 @@ assert_status "200" "Owner lists connections after the failed http connect"
 assert_json_expr '[.connections[] | select(.service == "figma")] | length == 0' "Probe failure stored no figma connection (nothing-stored hygiene)"
 api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/mcp-servers" "${CHARLIE_TOKEN}"
 assert_json_expr '[.servers[] | select(.name == "Figma")] | length == 0' "HTTP connect materializes no server row"
+
+# -----------------------------------------------------------------------------
+# 31. Connection edit (add-connection-edit 6.3, script half): attachment
+#     management + token replacement over a LIVE connection — the lifecycle
+#     sections 28-30 cannot run (their connects store nothing by design).
+#     The github recipe declares an origin parameter (add-recipe-base-url),
+#     so the connect below points the recipe's fixed /mcp/ endpoint at a
+#     local mock MCP service: a real streamable-HTTP MCP server whose
+#     handshake admits exactly the section's two tokens (anything else is
+#     401, which is what makes the bad-replacement probe fail
+#     deterministically). The OAuth-kind refusal leg needs an OAuth
+#     connection and the consent round trip is external by design — same
+#     substitution posture as sections 28/29, covered by the fake-based
+#     handler tests. The exact rejection codes on the error legs are the
+#     handler half's contract (tasks 3.1/3.2); this section pins the
+#     no-state-change behavior around them.
+# -----------------------------------------------------------------------------
+log_step "31. Connection Edit: Attachments & Token Replacement"
+
+# The mock PAT service: a minimal streamable-HTTP MCP server (initialize →
+# notifications/initialized → tools/list) exposing 4 tools, the tool-count
+# convention of the section-15 stdio stub. Token 1 connects; token 2 is the
+# valid replacement (the mock admits both, so the replacement probe passes
+# and only the stored hint moves 7733 → 8844 — a deterministic hint-change
+# leg, no skip needed).
+CONN_TOKEN_1="onclaw-smoke-mock-pat-7733"
+CONN_TOKEN_2="onclaw-smoke-mock-pat-8844"
+CONN_TOKEN_BAD="onclaw-smoke-invalid-token"
+CONN_MOCK_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+cat > "${TMP_DIR}/conn_mock_mcp.py" <<'PYCONN'
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+PORT = int(sys.argv[1])
+VALID_AUTH = ["Bearer " + token for token in sys.argv[2:]]
+
+TOOLS = [
+    {"name": "mock_ping", "description": "Liveness probe for the mock service",
+     "inputSchema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "mock_list", "description": "List the mock service's records",
+     "inputSchema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "mock_echo", "description": "Echo a message back",
+     "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}}, "required": ["message"]}},
+    {"name": "mock_fetch", "description": "Fetch one mock record by id",
+     "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}},
+]
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def _respond(self, code, body=b"", content_type=None):
+        self.send_response(code)
+        if content_type is not None:
+            self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+
+    def _json(self, code, payload):
+        self._respond(code, json.dumps(payload).encode(), "application/json")
+
+    def do_GET(self):
+        # No listening leg (POST-only messaging); the 405 says so per spec.
+        self._respond(405)
+
+    def do_POST(self):
+        # The probe gate, mirrored: the recipe's bearer token is the whole
+        # handshake's admission. A refused token is 401 with a non-JSON-RPC
+        # body, so the client reports a transport failure instead of an
+        # empty-but-successful tool list (that asymmetry keeps the
+        # bad-replacement leg honest).
+        if self.headers.get("Authorization", "") not in VALID_AUTH:
+            self._respond(401, b"invalid service token", "text/plain")
+            return
+        length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            message = json.loads(raw)
+        except ValueError:
+            message = {}
+        if message.get("id") is None:
+            # A JSON-RPC notification (notifications/initialized): accepted,
+            # nothing to answer.
+            self._respond(202)
+            return
+        if message.get("method") == "initialize":
+            result = {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "onclaw-smoke-mock-service", "version": "1.0.0"},
+            }
+        elif message.get("method") == "tools/list":
+            result = {"tools": TOOLS}
+        else:
+            self._json(200, {"jsonrpc": "2.0", "id": message["id"],
+                             "error": {"code": -32601, "message": "method not found: " + str(message.get("method"))}})
+            return
+        self._json(200, {"jsonrpc": "2.0", "id": message["id"], "result": result})
+
+HTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+PYCONN
+python3 "${TMP_DIR}/conn_mock_mcp.py" "${CONN_MOCK_PORT}" "${CONN_TOKEN_1}" "${CONN_TOKEN_2}" &
+CONN_MOCK_PID=$!
+sleep 0.5
+log_pass "Mock PAT service (streamable-HTTP MCP) listening on 127.0.0.1:${CONN_MOCK_PORT}"
+
+CONN_EDIT_BASE="/api/v1/workspaces/${TENANT_SLUG}/integrations"
+
+# 31.1 Connect the mock PAT service: the github recipe's origin parameter
+# retargets the recipe's fixed /mcp/ endpoint at the local mock, the probe
+# completes the real MCP handshake against it, and the view carries the
+# materialized server's tool count plus the token's last-4 hint only.
+api_req "POST" "${CONN_EDIT_BASE}/connections" "${CHARLIE_TOKEN}" "{\"recipe_id\":\"github\",\"access_level\":\"read_only\",\"token\":\"${CONN_TOKEN_1}\",\"origin\":\"http://127.0.0.1:${CONN_MOCK_PORT}\"}"
+assert_status "201" "Owner connects the mock PAT service through the github recipe's origin parameter"
+assert_json_expr '.connection.status == "connected"' "The mock service's probe connected"
+assert_json_expr '.connection.tool_count == 4' "The probe counted the mock service's 4 tools"
+assert_json_expr '.connection.token_hint == "7733"' "The connect view carries only the token's last-4 hint"
+CONN_EDIT_ID=$(json_get '.connection.id')
+
+# 31.2 The fixture agent the connection attaches to (13.2's payload shape —
+# the mock provider answers the create-time prompt generation).
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/agents" "${CHARLIE_TOKEN}" "{\"name\":\"Connection Edit Agent\",\"slug\":\"conn-edit-agent\",\"role\":\"Tester\",\"description\":\"Connection edit fixture\",\"brief\":\"A short brief\",\"provider_id\":\"${MOCK_PROV_ID}\",\"model\":\"gpt-4\"}"
+assert_status "201" "Owner creates the connection-edit fixture agent"
+CONN_EDIT_AGENT_ID=$(json_get '.agent.id')
+
+# 31.3 Attachment edit (spec: "Connection attachment management"): the PUT
+# names the COMPLETE desired set, and the views list the attached agents'
+# names.
+api_req "PUT" "${CONN_EDIT_BASE}/connections/${CONN_EDIT_ID}/agents" "${CHARLIE_TOKEN}" "{\"agent_ids\":[\"${CONN_EDIT_AGENT_ID}\"]}"
+assert_status "200" "Owner attaches the agent through the connection's edit surface"
+assert_json_expr '.connection.attached_agents | index("Connection Edit Agent") != null' "The connection view lists the attached agent"
+
+api_req "GET" "${CONN_EDIT_BASE}/connections" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists the connections after the attach"
+assert_json_expr "[.connections[] | select(.id == \"${CONN_EDIT_ID}\")][0].attached_agents | index(\"Connection Edit Agent\") != null" "The listing reflects the attachment"
+
+# 31.4 Atomic rejection (spec: "Unknown agent rejected atomically"): a save
+# naming an agent outside the workspace is rejected and changes nothing.
+api_req "PUT" "${CONN_EDIT_BASE}/connections/${CONN_EDIT_ID}/agents" "${CHARLIE_TOKEN}" '{"agent_ids":["not-a-real-agent-id"]}'
+if [[ "${HTTP_STATUS}" =~ ^2 ]]; then
+    log_fail "Unknown agent id was not rejected (status: ${HTTP_STATUS}): ${HTTP_BODY}"
+else
+    log_pass "Unknown agent id is rejected (status: ${HTTP_STATUS})"
+fi
+api_req "GET" "${CONN_EDIT_BASE}/connections" "${CHARLIE_TOKEN}"
+assert_json_expr "[.connections[] | select(.id == \"${CONN_EDIT_ID}\")][0].attached_agents | index(\"Connection Edit Agent\") != null" "The rejected save left the attachment intact (atomic)"
+
+# 31.5 Failed replacement keeps the stored token (spec: "Failed probe keeps
+# the stored token"): the candidate is well-formed but the mock service
+# refuses it at the handshake, so the probe fails and the old token stays.
+api_req "GET" "${CONN_EDIT_BASE}/connections" "${CHARLIE_TOKEN}"
+CONN_HINT_BEFORE=$(json_get "[.connections[] | select(.id == \"${CONN_EDIT_ID}\")][0].token_hint")
+api_req "POST" "${CONN_EDIT_BASE}/connections/${CONN_EDIT_ID}/token" "${CHARLIE_TOKEN}" "{\"token\":\"${CONN_TOKEN_BAD}\"}"
+if [[ "${HTTP_STATUS}" =~ ^2 ]]; then
+    log_fail "A token the service refuses was not rejected (status: ${HTTP_STATUS}): ${HTTP_BODY}"
+else
+    log_pass "A token failing the service's probe is rejected (status: ${HTTP_STATUS})"
+fi
+api_req "GET" "${CONN_EDIT_BASE}/connections" "${CHARLIE_TOKEN}"
+assert_json_expr "[.connections[] | select(.id == \"${CONN_EDIT_ID}\")][0].token_hint == \"${CONN_HINT_BEFORE}\"" "The failed replacement kept the stored token (hint unchanged)"
+
+# 31.6 Successful replacement swaps in place (spec: "Replacement swaps the
+# token in place"): the hint follows the new token and every attachment
+# survives untouched.
+api_req "POST" "${CONN_EDIT_BASE}/connections/${CONN_EDIT_ID}/token" "${CHARLIE_TOKEN}" "{\"token\":\"${CONN_TOKEN_2}\"}"
+assert_status "200" "Owner replaces the token with a valid one"
+assert_json_expr '.connection.token_hint == "8844"' "The replacement refreshed the last-4 hint"
+assert_json_expr '.connection.attached_agents | index("Connection Edit Agent") != null' "The replacement preserved every attachment"
+api_req "GET" "${CONN_EDIT_BASE}/connections" "${CHARLIE_TOKEN}"
+assert_json_expr "[.connections[] | select(.id == \"${CONN_EDIT_ID}\")][0].token_hint == \"8844\"" "The new token persists on the connection"
+
+# 31.7 The integrations.write guard covers the new verbs over an existing
+# connection, same tier as connect (28.2).
+api_req "PUT" "${CONN_EDIT_BASE}/connections/${CONN_EDIT_ID}/agents" "${CLI_USER_TOKEN}" "{\"agent_ids\":[\"${CONN_EDIT_AGENT_ID}\"]}"
+assert_status "403" "Member cannot manage the connection's attachments (integrations.write 403)"
+assert_json_expr '.error.code == "forbidden"' "The attachment rejection is forbidden"

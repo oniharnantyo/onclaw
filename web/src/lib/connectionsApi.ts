@@ -283,6 +283,25 @@ export const connectionsApi = {
       `${base(ws)}/connections/${encodeURIComponent(id)}/reauthorize`,
       { method: 'POST' }
     ),
+
+  /** add-connection-edit D1: set the full attached-agent set atomically —
+   * the backend validates every id, diffs against current attachment, and
+   * applies inside one transaction (unknown id rejects with nothing changed).
+   * Resolves the refreshed connection view. */
+  setAgents: (ws: string, id: string, agentIds: string[]) =>
+    request<{ connection: ApiConnection }>(
+      `${base(ws)}/connections/${encodeURIComponent(id)}/agents`,
+      { method: 'PUT', body: { agent_ids: agentIds } }
+    ),
+
+  /** add-connection-edit D2: probe-gated in-place token replacement for
+   * token-auth kinds — OAuth kinds are refused (reauthorize instead) and a
+   * failed probe stores nothing. Resolves the refreshed connection view. */
+  replaceToken: (ws: string, id: string, token: string) =>
+    request<{ connection: ApiConnection }>(
+      `${base(ws)}/connections/${encodeURIComponent(id)}/token`,
+      { method: 'POST', body: { token } }
+    ),
 };
 
 // ---------------------------------------------------------------------------

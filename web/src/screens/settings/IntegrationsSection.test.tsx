@@ -330,10 +330,14 @@ describe('screens/settings/IntegrationsSection', () => {
     await waitFor(() => {
       expect(screen.getByTestId('connect-success')).not.toBeNull();
     });
+    // Agent attachment is a multi-select picker now: open the trigger, then
+    // tick Atlas's row (keyed by agent id a1) — the popover stays open.
     await waitFor(() => {
-      expect(screen.getByRole('switch', { name: 'Attach Atlas' })).not.toBeNull();
+      expect(screen.getByTestId('attach-agents-list')).not.toBeNull();
     });
-    fireEvent.click(screen.getByRole('switch', { name: 'Attach Atlas' }));
+    fireEvent.click(screen.getByTestId('attach-agents-trigger'));
+    expect(screen.getByTestId('multiselect-option-a1').getAttribute('aria-selected')).toBe('false');
+    fireEvent.click(screen.getByTestId('multiselect-option-a1'));
     // HTTP-kind connection: attachment rides the connection id, not a server.
     await waitFor(() => {
       expect(api.agents.patch).toHaveBeenCalledWith('acme', 'atlas', {
@@ -758,9 +762,13 @@ describe('screens/settings/IntegrationsSection', () => {
       expect(screen.getByTestId('connect-success')).not.toBeNull();
     });
     await waitFor(() => {
-      expect(screen.getByRole('switch', { name: 'Attach Atlas' })).not.toBeNull();
+      expect(screen.getByTestId('attach-agents-list')).not.toBeNull();
     });
-    fireEvent.click(screen.getByRole('switch', { name: 'Attach Atlas' }));
+    // The picker starts empty for this connection; open it and tick Atlas's
+    // row (keyed by agent id a1) to attach — the popover stays open.
+    fireEvent.click(screen.getByTestId('attach-agents-trigger'));
+    expect(screen.getByTestId('multiselect-option-a1').getAttribute('aria-selected')).toBe('false');
+    fireEvent.click(screen.getByTestId('multiselect-option-a1'));
     await waitFor(() => {
       expect(api.agents.patch).toHaveBeenCalledWith('acme', 'atlas', {
         enabled_mcps: ['conn-figma'],
@@ -950,5 +958,62 @@ describe('screens/settings/IntegrationsSection', () => {
     });
     expect(screen.queryByTestId('btn-connection-reauthorize-conn-atl')).toBeNull();
     expect(reauthorize).not.toHaveBeenCalled();
+  });
+
+  it('opens the connection edit dialog from the card Edit action for a writer', async () => {
+    vi.spyOn(connectionsApi, 'list').mockResolvedValue({
+      connections: [connectionRow()],
+    });
+
+    renderPane();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('btn-connection-edit-conn-gh')).not.toBeNull();
+    });
+    fireEvent.click(screen.getByTestId('btn-connection-edit-conn-gh'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('modal-connection-edit')).not.toBeNull();
+    });
+    // The dialog is scoped to this connection.
+    expect(screen.getByTestId('modal-connection-edit').getAttribute('aria-label')).toBe('Edit GitHub');
+  });
+
+  it('keeps the Edit action writer-gated like the other mutations', async () => {
+    vi.spyOn(connectionsApi, 'list').mockResolvedValue({
+      connections: [connectionRow()],
+    });
+
+    renderPane(false);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('connection-conn-gh')).not.toBeNull();
+    });
+    // Reads stay available; the edit affordance does not.
+    expect(screen.getByTestId('btn-connection-probe-conn-gh')).not.toBeNull();
+    expect(screen.queryByTestId('btn-connection-edit-conn-gh')).toBeNull();
+  });
+
+  it('lands an oauth callback success on the activated connection edit surface', async () => {
+    vi.spyOn(connectionsApi, 'list').mockResolvedValue({
+      connections: [
+        connectionRow({ id: 'conn-atl', service: 'atlassian', server_id: 'srv-atl', token_hint: 'zz99' }),
+      ],
+    });
+
+    renderPaneAt('/settings/integrations?oauth=atlassian&status=connected', { onToast: vi.fn() });
+
+    // Connect completion offers agent selection for OAuth too (D4): the edit
+    // dialog opens for the connection the callback just activated.
+    await waitFor(() => {
+      expect(screen.getByTestId('modal-connection-edit')).not.toBeNull();
+    });
+    expect(screen.getByTestId('modal-connection-edit').getAttribute('aria-label')).toBe(
+      'Edit Atlassian (Jira & Confluence)'
+    );
+    // The URL-cleaning behavior is unchanged.
+    await waitFor(() => {
+      expect(screen.getByTestId('location-probe').getAttribute('data-loc')).toBe('/settings/integrations');
+    });
   });
 });

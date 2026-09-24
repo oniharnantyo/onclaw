@@ -227,3 +227,61 @@ func (h *connectionsHandlers) ProbeConnection(c *gin.Context) {
 	}
 	RespondOK(c, gin.H{"connection": view})
 }
+
+// ---------------------------------------------------------------------------
+// Connection edit (add-connection-edit tasks 3.1/3.2, design.md D3/D5)
+// ---------------------------------------------------------------------------
+
+// setConnectionAgentsRequest is the attachment save payload: agent_ids is the
+// COMPLETE desired set — an empty array detaches everyone (design.md D3).
+type setConnectionAgentsRequest struct {
+	AgentIDs []string `json:"agent_ids"`
+}
+
+// SetConnectionAgents atomically sets the connection's full attached-agent
+// set and returns the refreshed view. Unknown agent ids and unknown or
+// cross-workspace connections ride the service's sentinels — ErrInvalid
+// (400) and ErrNotFound (404) through the standard envelope mapping.
+func (h *connectionsHandlers) SetConnectionAgents(c *gin.Context) {
+	ws := MustCurrentWorkspace(c)
+
+	var req setConnectionAgentsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		RespondError(c, domain.ErrInvalid)
+		return
+	}
+
+	view, err := h.service.SetAttachedAgents(c.Request.Context(), ws.ID, c.Param("id"), req.AgentIDs)
+	if err != nil {
+		RespondError(c, err)
+		return
+	}
+	RespondOK(c, gin.H{"connection": view})
+}
+
+// replaceConnectionTokenRequest is the token-replacement payload.
+type replaceConnectionTokenRequest struct {
+	Token string `json:"token"`
+}
+
+// ReplaceConnectionToken probes the candidate token and swaps the stored
+// credential in place, returning the refreshed view. Error mapping rides
+// respondConnectionError: a probe failure is 400 invalid_request with the
+// upstream message verbatim, the OAuth-kind refusal chains ErrInvalid so its
+// message directs to reauthorization.
+func (h *connectionsHandlers) ReplaceConnectionToken(c *gin.Context) {
+	ws := MustCurrentWorkspace(c)
+
+	var req replaceConnectionTokenRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		RespondError(c, domain.ErrInvalid)
+		return
+	}
+
+	view, err := h.service.ReplaceToken(c.Request.Context(), ws.ID, c.Param("id"), req.Token)
+	if err != nil {
+		respondConnectionError(c, err)
+		return
+	}
+	RespondOK(c, gin.H{"connection": view})
+}

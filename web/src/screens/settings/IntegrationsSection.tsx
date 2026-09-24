@@ -22,6 +22,7 @@ import {
 } from "../../lib/connectionsApi";
 import { useIsAdmin } from "../../store/auth";
 import { ConnectServiceDialog } from "../../modals/ConnectServiceDialog";
+import { ConnectionEditDialog } from "../../modals/ConnectionEditDialog";
 import serverErrorSvg from "../../assets/server-error.svg";
 
 export interface IntegrationsSectionProps {
@@ -53,7 +54,10 @@ function SectionLabel({ children }: { children: any }) {
  * (list refreshed or failure surfaced) and cleaned from the URL so reloads
  * don't replay it. Reads ride workspace membership; Integrate, probe,
  * reauthorize, and disconnect need integrations.write — everyone else sees
- * the gallery read-only.
+ * the gallery read-only. Connection cards carry the same writer-gated Edit
+ * action (add-connection-edit) opening the attachment/token edit dialog; an
+ * OAuth callback success lands on that dialog for the activated connection
+ * (connect completion offers agent selection for both auth kinds).
  */
 export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canWrite }: IntegrationsSectionProps) {
   const navigate = useNavigate();
@@ -70,6 +74,7 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
 
   const [connecting, setConnecting] = useState<ApiIntegrationRecipe | null>(null);
   const [editingApp, setEditingApp] = useState<ApiIntegrationRecipe | null>(null);
+  const [editingConnection, setEditingConnection] = useState<ApiConnection | null>(null);
   const [disconnecting, setDisconnecting] = useState<ApiConnection | null>(null);
   const [busy, setBusy] = useState(false);
   const [probingId, setProbingId] = useState<string | null>(null);
@@ -82,7 +87,10 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
 
   const ws = tenant?.sub || tenant?.id;
 
-  const load = async (): Promise<ApiIntegrationRecipe[]> => {
+  // Returns the fresh rows (not just the state update) so callers that must
+  // act on what the refresh found — the OAuth callback resolving the activated
+  // connection — read them without a second request.
+  const load = async (): Promise<{ recipes: ApiIntegrationRecipe[]; connections: ApiConnection[] }> => {
     setLoading(true);
     setLoadError(null);
     try {
@@ -90,15 +98,17 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
         connectionsApi.recipes(ws),
         connectionsApi.list(ws),
       ]);
-      setRecipes(recipeRes?.recipes || []);
-      setConnections(connRes?.connections || []);
-      return recipeRes?.recipes || [];
+      const freshRecipes = recipeRes?.recipes || [];
+      const freshConnections = connRes?.connections || [];
+      setRecipes(freshRecipes);
+      setConnections(freshConnections);
+      return { recipes: freshRecipes, connections: freshConnections };
     } catch (err: unknown) {
       if (err instanceof ApiError && err.status === 0) {
-        return recipes;
+        return { recipes, connections };
       }
       setLoadError(err instanceof Error ? err : new Error(String(err)));
-      return recipes;
+      return { recipes, connections };
     } finally {
       setLoading(false);
     }
@@ -134,14 +144,18 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
     // failure re-renders current state — and name the recipe from the fresh
     // registry rather than the raw id.
     void (async () => {
-      const freshRecipes = await load();
-      const name = freshRecipes.find((r) => r.id === recipeId)?.service || recipeId;
+      const fresh = await load();
+      const name = fresh.recipes.find((r) => r.id === recipeId)?.service || recipeId;
       if (status === 'failed') {
         setOauthFailure({ service: recipeId, detail });
         onToast(`${name} couldn't be connected`, 'danger');
       } else {
         setOauthFailure(null);
         onToast(`${name} connected`);
+        // Connect completion offers agent selection for OAuth too (D4): land
+        // on the activated connection's edit surface, not the bare gallery.
+        const activated = fresh.connections.find((c) => c.service === recipeId);
+        if (activated) setEditingConnection(activated);
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot resolution of the callback params
@@ -374,6 +388,16 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
                               {reauthorizingId === c.id ? 'Redirecting…' : 'Reauthorize'}
                             </button>
                           )}
+                          {writer && (
+                            <button
+                              type="button"
+                              data-testid={'btn-connection-edit-' + c.id}
+                              onClick={() => setEditingConnection(c)}
+                              className="h-8 rounded-md border border-line px-2.5 text-[12px] font-medium text-fg2 transition-colors hover:border-accent hover:text-fg"
+                            >
+                              Edit
+                            </button>
+                          )}
                           <button
                             type="button"
                             data-testid={'btn-connection-probe-' + c.id}
@@ -529,6 +553,20 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
           onClose={() => setEditingApp(null)}
           onAppSaved={() => void load()}
           onToast={onToast}
+        />
+      )}
+
+      {/* Connection edit (add-connection-edit): attachments + token in one
+          all-or-nothing save; onSaved re-reads so the card's agents line and
+          hint reflect the saved state. */}
+      {editingConnection && (
+        <ConnectionEditDialog
+          tenant={tenant}
+          connection={editingConnection}
+          recipes={recipes}
+          onClose={() => setEditingConnection(null)}
+          onToast={onToast}
+          onSaved={() => void load()}
         />
       )}
 

@@ -240,6 +240,15 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		encKey,
 		cfg.PublicBaseURL,
 		services.WithProbeTimeout(handlers.DefaultMCPProbeTimeout),
+		// Attachment tx seam (add-connection-edit D1): the composition-root
+		// adapter over store.Store.WithTx — the documented transaction
+		// seam — handing the service's attachment diff the tx-scoped
+		// AgentStore.
+		services.WithAttachmentTx(func(ctx context.Context, run func(ctx context.Context, agents store.AgentStore) error) error {
+			return st.WithTx(ctx, func(s store.Store) error {
+				return run(ctx, s.Agents())
+			})
+		}),
 	)
 
 	// Instance OAuth app administration (add-connection-oauth 3.3): the

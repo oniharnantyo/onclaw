@@ -3,8 +3,8 @@ import { cx } from "../lib/helpers";
 import { Modal } from "../components/ui/Modal";
 import { Chip } from "../components/ui/Chip";
 import { Icon } from "../components/ui/Icon";
-import { Toggle } from "../components/ui/Toggle";
 import { inputCls, labelCls } from "../components/ui/constants";
+import { AttachAgentsList } from "../components/connections/AttachAgentsList";
 import { useIsAdmin } from "../store/auth";
 import {
   accessLevelLabel,
@@ -513,27 +513,15 @@ export function ConnectServiceDialog({
             </div>
           </div>
 
-          <div className="mt-4 space-y-1.5" data-testid="connect-attach-list">
+          <div className="mt-4" data-testid="connect-attach-list">
             {agents.length === 0 ? (
               <p className="text-[12px] text-muted">No agents yet — create one to put {recipe.service} to work.</p>
             ) : (
-              agents.map((a) => {
-                const attached = attachId ? (a.enabled_mcps ?? []).includes(attachId) : false;
-                return (
-                  <div
-                    key={a.id}
-                    data-testid={'connect-attach-' + (a.slug || a.id)}
-                    className="flex items-center gap-3 rounded-md border border-line px-3 py-2"
-                  >
-                    <p className="min-w-0 flex-1 truncate text-[13px] font-medium text-fg">{a.name}</p>
-                    <Toggle
-                      on={attached}
-                      label={'Attach ' + a.name}
-                      onChange={() => void toggleAttach(a)}
-                    />
-                  </div>
-                );
-              })
+              <AttachAgentsList
+                agents={agents}
+                isAttached={(a) => (attachId ? (a.enabled_mcps ?? []).includes(attachId) : false)}
+                onToggle={(a) => void toggleAttach(a)}
+              />
             )}
           </div>
         </div>
