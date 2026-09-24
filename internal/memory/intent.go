@@ -95,30 +95,32 @@ func (g *IntentGate) Classify(ctx context.Context, workspaceID, agentID, turnTex
 
 	m, err := g.resolver(ctx, workspaceID, agentID)
 	if err != nil {
-		g.debugFail(ctx, "resolve model", err)
+		g.failOpen(ctx, workspaceID, agentID, "resolve model", err)
 		return IntentVerdict{}, err
 	}
 	ctx = sideCallContext(ctx, g.trace, "memory.intent_gate")
 
 	raw, err := generateText(ctx, m, intentSystemPrompt, intentUserPrompt(text))
 	if err != nil {
-		g.debugFail(ctx, "model call", err)
+		g.failOpen(ctx, workspaceID, agentID, "model call", err)
 		return IntentVerdict{}, err
 	}
 	verdict, err := parseIntent(raw)
 	if err != nil {
-		g.debugFail(ctx, "decode verdict", err)
+		g.failOpen(ctx, workspaceID, agentID, "decode verdict", err)
 		return IntentVerdict{}, err
 	}
 	return verdict, nil
 }
 
-// debugFail logs one fail-open classification failure. The gate is an
-// optimization: the log is the only observable trace of the skip (debug, so
-// production logs stay quiet about turns that simply needed no memory).
-func (g *IntentGate) debugFail(ctx context.Context, stage string, err error) {
-	g.log.DebugContext(ctx, "memory: intent gate failed open",
-		"stage", stage, "error", err)
+// failOpen logs one failed-open classification at warn: the turn proceeds
+// without retrieval, so the log line is the only production-visible trace
+// that memory was skipped — the level that makes a misconfigured side-call
+// model (resolution failure, budget timeout, undecodable verdict) findable
+// from server logs instead of DB forensics.
+func (g *IntentGate) failOpen(ctx context.Context, workspaceID, agentID, stage string, err error) {
+	g.log.WarnContext(ctx, "memory: intent gate failed open; turn proceeds without retrieval",
+		"workspace_id", workspaceID, "agent_id", agentID, "stage", stage, "error", err)
 }
 
 // intentPayload is the strict JSON the side-call emits. Entity is the

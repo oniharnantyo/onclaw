@@ -1851,9 +1851,12 @@ func (r *Runner) composeMemoryDocs(ctx context.Context, req ExecRequest) []strin
 		return nil
 	}
 	verdict, err := r.intentGate.Classify(ctx, req.WorkspaceID, req.AgentID, text, r.gateBudget(ctx, req.WorkspaceID))
-	if err != nil || !verdict.NeedsDeepMemory {
-		// Fail-open: the gate logged its reason; the always-injected documents
-		// are the complete context, and memory.search remains available.
+	if err != nil {
+		// Fail-open: the gate logged the failure at warn; the always-injected
+		// documents are the complete context, and memory.search remains available.
+		return nil
+	}
+	if !verdict.NeedsDeepMemory {
 		return nil
 	}
 	// The associative route (wave3 D8): an entity-shaped turn seeds graph
@@ -1868,7 +1871,12 @@ func (r *Runner) composeMemoryDocs(ctx context.Context, req ExecRequest) []strin
 		UserID:      req.UserID,
 		AgentID:     req.AgentID,
 	}, query)
-	if err != nil || len(candidates) == 0 {
+	if err != nil {
+		slog.WarnContext(ctx, "memory: prefetch failed; composing without the section",
+			"workspace_id", req.WorkspaceID, "agent_id", req.AgentID, "error", err)
+		return nil
+	}
+	if len(candidates) == 0 {
 		return nil
 	}
 	return []string{renderMemoryCandidatesDoc(candidates)}
