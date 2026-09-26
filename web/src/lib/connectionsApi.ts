@@ -130,6 +130,37 @@ export interface ApiIntegrationRecipe {
   app_registration_guidance?: string;
   /** Truthful coming-soon copy, or operator provisioning notes. */
   notes?: string;
+  /** add-connection-webhooks: the service's webhook declaration — presence
+   * means the service supports webhooks and the UI offers the manage dialog. */
+  webhooks?: ApiRecipeWebhook;
+}
+
+/** Per-event template mirrors domain.RecipeWebhookTemplate. */
+export interface ApiRecipeWebhookTemplate {
+  event: string;
+  fields: string[];
+  template: string;
+}
+
+/** Provider-facing setup copy (domain.RecipeWebhookSetup) — task 4.3 renders
+ * it verbatim. */
+export interface ApiRecipeWebhookSetup {
+  signature_header: string;
+  event_type_header: string;
+  delivery_id_header: string;
+  url_path_shape: string;
+  help: string;
+}
+
+/** Recipe webhook declaration (domain.RecipeWebhook) — presence on a recipe
+ * means the service supports webhooks; `events` is the catalog in checkbox
+ * order, `default_events` the read-flavored preselection. */
+export interface ApiRecipeWebhook {
+  events: string[];
+  default_events: string[];
+  signature_scheme: string;
+  templates: ApiRecipeWebhookTemplate[];
+  setup: ApiRecipeWebhookSetup;
 }
 
 /**
@@ -177,6 +208,11 @@ export interface ApiConnection {
   tier_counts?: ConnectionToolTiers;
   /** Names of agents whose enabled_mcps include the materialized server. */
   attached_agents?: string[];
+  /** add-connection-webhooks: this connection's inbound webhook state as
+   * served by the enriched connection view and every manage response
+   * (webhooks.BuildView). Absent — the service declares no webhook surface
+   * or none is bound. */
+  webhook?: ApiConnectionWebhookView;
   created_at?: string;
   updated_at?: string;
 }
@@ -212,6 +248,18 @@ export interface ConnectionToolEscalation {
   /** The tier the run needs — always "write" today: the card exists because a
    * service run reached for the write tier. */
   tier?: 'read' | 'write';
+}
+
+/** One connection's webhook state as served by the enriched connection view
+ * and every manage response (webhooks.BuildView). The plaintext secret never
+ * rides this — only the reveal-once enable/rotate responses carry it. */
+export interface ApiConnectionWebhookView {
+  enabled: boolean;
+  secret_hint?: string;
+  ingest_url?: string;
+  target?: { agent_id: string; target_kind: string; target_id: string };
+  events?: string[];
+  last_error?: { event: string; error: string; at: string };
 }
 
 /** D7: the entire connect payload — nothing else crosses the wire. `token` is
@@ -302,6 +350,26 @@ export const connectionsApi = {
       `${base(ws)}/connections/${encodeURIComponent(id)}/token`,
       { method: 'POST', body: { token } }
     ),
+
+  /** add-connection-webhooks: the per-connection inbound webhook surface.
+   * Every route is integrations.write-gated server-side, like the connection
+   * lifecycle above. The plaintext secret is reveal-once — only enable and
+   * rotate responses carry it; every other response returns the hint-only
+   * view. */
+  webhook: {
+    get: (ws: string, id: string) =>
+      request<{ webhook: ApiConnectionWebhookView }>(`${base(ws)}/connections/${encodeURIComponent(id)}/webhook`, { method: 'GET' }),
+    enable: (ws: string, id: string, body: { agent_id: string; target_kind: string; target_id: string; events: string[] }) =>
+      request<{ secret: string; webhook: ApiConnectionWebhookView }>(`${base(ws)}/connections/${encodeURIComponent(id)}/webhook/enable`, { method: 'POST', body }),
+    disable: (ws: string, id: string) =>
+      request<{ webhook: ApiConnectionWebhookView }>(`${base(ws)}/connections/${encodeURIComponent(id)}/webhook/disable`, { method: 'POST' }),
+    rotate: (ws: string, id: string) =>
+      request<{ secret: string; webhook: ApiConnectionWebhookView }>(`${base(ws)}/connections/${encodeURIComponent(id)}/webhook/rotate`, { method: 'POST' }),
+    updateTarget: (ws: string, id: string, body: { agent_id: string; target_kind: string; target_id: string }) =>
+      request<{ webhook: ApiConnectionWebhookView }>(`${base(ws)}/connections/${encodeURIComponent(id)}/webhook/target`, { method: 'PUT', body }),
+    updateEvents: (ws: string, id: string, body: { events: string[] }) =>
+      request<{ webhook: ApiConnectionWebhookView }>(`${base(ws)}/connections/${encodeURIComponent(id)}/webhook/events`, { method: 'PUT', body }),
+  },
 };
 
 // ---------------------------------------------------------------------------

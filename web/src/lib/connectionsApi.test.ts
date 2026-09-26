@@ -13,6 +13,7 @@ import {
   serviceIconKey,
   verbSurfaceCopy,
   type ApiConnection,
+  type ApiConnectionWebhookView,
   type ApiIntegrationRecipe,
   type ApiRecipeVerb,
 } from './connectionsApi';
@@ -108,6 +109,16 @@ const figmaConnection: ApiConnection = {
   attached_agents: [],
   created_at: '',
   updated_at: '',
+};
+
+// add-connection-webhooks: the enriched view every read/manage response
+// carries — hint-only secret, the plaintext is reveal-once on enable/rotate.
+const webhookView: ApiConnectionWebhookView = {
+  enabled: true,
+  secret_hint: '9f8e',
+  ingest_url: 'https://onclaw.example.com/api/v1/integrations/webhooks/acme/github/wk_1',
+  target: { agent_id: 'agent-1', target_kind: 'channel', target_id: 'ch-1' },
+  events: ['push', 'issues.opened'],
 };
 
 describe('lib/connectionsApi', () => {
@@ -294,6 +305,74 @@ describe('lib/connectionsApi', () => {
     const res = await connectionsApi.reauthorize('acme', 'conn-1');
     expect(res.authorize_url).toBe('https://auth.atlassian.com/authorize?state=next');
     expect((globalThis.fetch as any).mock.calls[0][0]).toBe('/api/v1/workspaces/acme/integrations/connections/conn-1/reauthorize');
+    expect((globalThis.fetch as any).mock.calls[0][1].method).toBe('POST');
+  });
+
+  it('reads a connection webhook from its subresource', async () => {
+    mockJson({ webhook: webhookView });
+    await expect(connectionsApi.webhook.get('acme', 'conn-1')).resolves.toEqual({ webhook: webhookView });
+    expect((globalThis.fetch as any).mock.calls[0][0]).toBe('/api/v1/workspaces/acme/integrations/connections/conn-1/webhook');
+    expect((globalThis.fetch as any).mock.calls[0][1].method).toBe('GET');
+  });
+
+  it('enables webhooks with exactly {agent_id, target_kind, target_id, events} and reveals the secret once', async () => {
+    mockJson({ secret: 'whsec_x', webhook: webhookView });
+    const res = await connectionsApi.webhook.enable('acme', 'conn-1', {
+      agent_id: 'agent-1',
+      target_kind: 'channel',
+      target_id: 'ch-1',
+      events: ['push', 'issues.opened'],
+    });
+    expect(res).toEqual({ secret: 'whsec_x', webhook: webhookView });
+    expect((globalThis.fetch as any).mock.calls[0][0]).toBe('/api/v1/workspaces/acme/integrations/connections/conn-1/webhook/enable');
+    expect((globalThis.fetch as any).mock.calls[0][1].method).toBe('POST');
+    expect((globalThis.fetch as any).mock.calls[0][1].body).toBe(
+      JSON.stringify({ agent_id: 'agent-1', target_kind: 'channel', target_id: 'ch-1', events: ['push', 'issues.opened'] })
+    );
+  });
+
+  it('retargets the webhook with PUT and the exact target body', async () => {
+    mockJson({ webhook: { ...webhookView, target: { agent_id: 'agent-2', target_kind: 'thread', target_id: 'sess-1' } } });
+    await connectionsApi.webhook.updateTarget('acme', 'conn-1', {
+      agent_id: 'agent-2',
+      target_kind: 'thread',
+      target_id: 'sess-1',
+    });
+    expect((globalThis.fetch as any).mock.calls[0][0]).toBe('/api/v1/workspaces/acme/integrations/connections/conn-1/webhook/target');
+    expect((globalThis.fetch as any).mock.calls[0][1].method).toBe('PUT');
+    expect((globalThis.fetch as any).mock.calls[0][1].body).toBe(
+      JSON.stringify({ agent_id: 'agent-2', target_kind: 'thread', target_id: 'sess-1' })
+    );
+  });
+
+  it('re-events the webhook with PUT and exactly {events}', async () => {
+    const updatedView = { ...webhookView, events: ['push'] };
+    mockJson({ webhook: updatedView });
+    await expect(connectionsApi.webhook.updateEvents('acme', 'conn-1', { events: ['push'] })).resolves.toEqual({
+      webhook: updatedView,
+    });
+    expect((globalThis.fetch as any).mock.calls[0][0]).toBe('/api/v1/workspaces/acme/integrations/connections/conn-1/webhook/events');
+    expect((globalThis.fetch as any).mock.calls[0][1].method).toBe('PUT');
+    expect((globalThis.fetch as any).mock.calls[0][1].body).toBe(JSON.stringify({ events: ['push'] }));
+  });
+
+  it('disables and rotates the webhook over POST without a body', async () => {
+    // Stopping ingestion preserves the binding server-side — enabled flips false.
+    mockJson({ webhook: { ...webhookView, enabled: false } });
+    await expect(connectionsApi.webhook.disable('acme', 'conn-1')).resolves.toEqual({
+      webhook: { ...webhookView, enabled: false },
+    });
+    expect((globalThis.fetch as any).mock.calls[0][0]).toBe('/api/v1/workspaces/acme/integrations/connections/conn-1/webhook/disable');
+    expect((globalThis.fetch as any).mock.calls[0][1].method).toBe('POST');
+    expect((globalThis.fetch as any).mock.calls[0][1].body).toBeUndefined();
+
+    // Rotation reveals the replacement secret exactly once, like enable.
+    mockJson({ secret: 'whsec_next', webhook: webhookView });
+    await expect(connectionsApi.webhook.rotate('acme', 'conn-1')).resolves.toEqual({
+      secret: 'whsec_next',
+      webhook: webhookView,
+    });
+    expect((globalThis.fetch as any).mock.calls[0][0]).toBe('/api/v1/workspaces/acme/integrations/connections/conn-1/webhook/rotate');
     expect((globalThis.fetch as any).mock.calls[0][1].method).toBe('POST');
   });
 

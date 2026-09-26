@@ -23,6 +23,7 @@ import {
 import { useIsAdmin } from "../../store/auth";
 import { ConnectServiceDialog } from "../../modals/ConnectServiceDialog";
 import { ConnectionEditDialog } from "../../modals/ConnectionEditDialog";
+import { ConnectionWebhooksDialog } from "../../modals/ConnectionWebhooksDialog";
 import serverErrorSvg from "../../assets/server-error.svg";
 
 export interface IntegrationsSectionProps {
@@ -57,7 +58,9 @@ function SectionLabel({ children }: { children: any }) {
  * the gallery read-only. Connection cards carry the same writer-gated Edit
  * action (add-connection-edit) opening the attachment/token edit dialog; an
  * OAuth callback success lands on that dialog for the activated connection
- * (connect completion offers agent selection for both auth kinds).
+ * (connect completion offers agent selection for both auth kinds). Recipes
+ * that declare a webhook surface (add-connection-webhooks 4.2) add a
+ * writer-gated Webhooks action opening the per-connection webhooks dialog.
  */
 export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canWrite }: IntegrationsSectionProps) {
   const navigate = useNavigate();
@@ -75,6 +78,7 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
   const [connecting, setConnecting] = useState<ApiIntegrationRecipe | null>(null);
   const [editingApp, setEditingApp] = useState<ApiIntegrationRecipe | null>(null);
   const [editingConnection, setEditingConnection] = useState<ApiConnection | null>(null);
+  const [webhooksConnection, setWebhooksConnection] = useState<ApiConnection | null>(null);
   const [disconnecting, setDisconnecting] = useState<ApiConnection | null>(null);
   const [busy, setBusy] = useState(false);
   const [probingId, setProbingId] = useState<string | null>(null);
@@ -398,6 +402,18 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
                               Edit
                             </button>
                           )}
+                          {/* Webhooks (add-connection-webhooks 4.2): only for
+                              recipes that declare a webhook surface. */}
+                          {writer && recipes.find((r) => r.id === c.service)?.webhooks && (
+                            <button
+                              type="button"
+                              data-testid={'btn-connection-webhooks-' + c.id}
+                              onClick={() => setWebhooksConnection(c)}
+                              className="h-8 rounded-md border border-line px-2.5 text-[12px] font-medium text-fg2 transition-colors hover:border-accent hover:text-fg"
+                            >
+                              Webhooks
+                            </button>
+                          )}
                           <button
                             type="button"
                             data-testid={'btn-connection-probe-' + c.id}
@@ -565,6 +581,19 @@ export function IntegrationsSection({ tenant, onToast = () => {}, onUpdate, canW
           connection={editingConnection}
           recipes={recipes}
           onClose={() => setEditingConnection(null)}
+          onToast={onToast}
+          onSaved={() => void load()}
+        />
+      )}
+
+      {/* Webhooks management (add-connection-webhooks 4.2): per-connection
+          webhook events/ deliveries; onSaved re-reads like the edit dialog. */}
+      {webhooksConnection && (
+        <ConnectionWebhooksDialog
+          tenant={tenant}
+          connection={webhooksConnection}
+          recipes={recipes}
+          onClose={() => setWebhooksConnection(null)}
           onToast={onToast}
           onSaved={() => void load()}
         />

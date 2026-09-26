@@ -11,6 +11,15 @@ import {
 import { api, ApiError } from '../../lib/api';
 import { useStore } from '../../store';
 
+// add-connection-webhooks 4.2: the webhooks dialog is stubbed so these tests
+// assert the surface's wiring (button gating, prop hand-off), not the
+// dialog's own internals.
+vi.mock('../../modals/ConnectionWebhooksDialog', () => ({
+  ConnectionWebhooksDialog: ({ connection }: any) => (
+    <div data-testid="modal-connection-webhooks" data-connection-id={connection?.id} />
+  ),
+}));
+
 const mockTenant = { id: 'acme', sub: 'acme', name: 'Acme Corp' };
 
 // add-recipe-base-url re-scope: the GitLab recipe is HTTP-kind PAT over the
@@ -104,6 +113,20 @@ const recipesFixture = (): ApiIntegrationRecipe[] => [
     steps: [{ title: 'Open Developer settings' }],
     scopes: [{ access_level: 'read_only', scopes: ['repo:read'] }],
     probe: { tool: 'list-repositories' },
+    // add-connection-webhooks 4.2: GitHub declares a webhook surface.
+    webhooks: {
+      events: ['push'],
+      default_events: ['push'],
+      signature_scheme: 'hmac_sha256',
+      templates: [],
+      setup: {
+        signature_header: 'X-Hub-Signature-256',
+        event_type_header: 'X-GitHub-Event',
+        delivery_id_header: 'X-GitHub-Delivery',
+        url_path_shape: '/api/ingest/webhooks/{workspace_slug}/{connection_id}',
+        help: 'Test setup copy.',
+      },
+    },
   },
   atlassianRecipe(),
   {
@@ -992,6 +1015,60 @@ describe('screens/settings/IntegrationsSection', () => {
     // Reads stay available; the edit affordance does not.
     expect(screen.getByTestId('btn-connection-probe-conn-gh')).not.toBeNull();
     expect(screen.queryByTestId('btn-connection-edit-conn-gh')).toBeNull();
+  });
+
+  it('offers Webhooks on connections whose recipe declares webhooks and opens the dialog', async () => {
+    vi.spyOn(connectionsApi, 'list').mockResolvedValue({
+      connections: [connectionRow()],
+    });
+
+    renderPane();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('btn-connection-webhooks-conn-gh')).not.toBeNull();
+    });
+    // The GitHub recipe declares a webhook surface (add-connection-webhooks
+    // 4.2), so the writer gets the card action; clicking it opens the
+    // webhooks dialog scoped to this connection.
+    fireEvent.click(screen.getByTestId('btn-connection-webhooks-conn-gh'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('modal-connection-webhooks')).not.toBeNull();
+    });
+    expect(screen.getByTestId('modal-connection-webhooks').getAttribute('data-connection-id')).toBe('conn-gh');
+  });
+
+  it('shows no Webhooks action for connections whose recipe declares none', async () => {
+    vi.spyOn(connectionsApi, 'list').mockResolvedValue({
+      connections: [
+        connectionRow({ id: 'conn-gl', service: 'gitlab', server_id: null, server_enabled: false }),
+      ],
+    });
+
+    renderPane();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('connection-conn-gl')).not.toBeNull();
+    });
+    // The GitLab recipe carries no webhooks declaration — no affordance,
+    // even for a writer.
+    expect(screen.getByTestId('btn-connection-edit-conn-gl')).not.toBeNull();
+    expect(screen.queryByTestId('btn-connection-webhooks-conn-gl')).toBeNull();
+  });
+
+  it('keeps the Webhooks action writer-gated like the other mutations', async () => {
+    vi.spyOn(connectionsApi, 'list').mockResolvedValue({
+      connections: [connectionRow()],
+    });
+
+    renderPane(false);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('connection-conn-gh')).not.toBeNull();
+    });
+    // Reads stay available; the webhooks affordance does not.
+    expect(screen.getByTestId('btn-connection-probe-conn-gh')).not.toBeNull();
+    expect(screen.queryByTestId('btn-connection-webhooks-conn-gh')).toBeNull();
   });
 
   it('lands an oauth callback success on the activated connection edit surface', async () => {
