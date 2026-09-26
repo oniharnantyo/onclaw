@@ -166,18 +166,26 @@ export function useChatRuntime(chatId: string) {
     const content: any[] = [{ type: 'text', text: msg.text || '' }];
 
     if (msg.tools && msg.tools.length > 0) {
+      // Last line of defense against Duplicate key in useResources
+      // (fix-duplicate-tool-call-cards D3): duplicate card entries — e.g. a
+      // turn corrupted before the stream-side dedupe existed — must never
+      // produce duplicate resource keys. First occurrence wins.
+      const emitted = new Set<string>();
       msg.tools.forEach((tool: any, i: number) => {
         // Gate tool parts on the currently running message
         const isCurrentlyRunning = running && msg.id === session?.messages[session.messages.length - 1]?.id;
         if (!isCurrentlyRunning) {
+           // Real call ids are unique per invocation; legacy/seeded cards
+           // only carry a name, so disambiguate by index — two calls to the
+           // same tool in one turn (e.g. a 404 retry) must not collide in
+           // assistant-ui's useResources.
+           const toolCallId = tool.callId ? `call_${tool.callId}` : `call_${msg.id}_${tool.name}_${i}`;
+           if (emitted.has(toolCallId)) return;
+           emitted.add(toolCallId);
            content.push({
              type: 'tool-call',
              toolName: tool.name,
-             // Real call ids are unique per invocation; legacy/seeded cards
-             // only carry a name, so disambiguate by index — two calls to the
-             // same tool in one turn (e.g. a 404 retry) must not collide in
-             // assistant-ui's useResources.
-             toolCallId: tool.callId ? `call_${tool.callId}` : `call_${msg.id}_${tool.name}_${i}`,
+             toolCallId,
              args: { raw: tool.args },
            });
         }
@@ -326,10 +334,18 @@ export function useChatRuntime(chatId: string) {
           onToolCall: (name, callId, args) => {
             flushDeltas();
             patchTools((tools, msg) => {
-              // The stream client fires this twice per call (added: argless card,
-              // done: complete args) — update the existing card by call id.
-              const existing = args ? tools.find((t: any) => t.callId === callId) : undefined;
-              if (existing) { existing.args = args; return; }
+              // One card per call id for the life of the turn
+              // (fix-duplicate-tool-call-cards D3): a repeat event for an
+              // existing id mutates that card, never mints. Added fires
+              // argless (undefined must not clobber); done is the
+              // authoritative update even when its arguments string is
+              // empty — gating the lookup on truthy args let an empty-args
+              // done mint a duplicate card and crash useResources.
+              const existing = tools.find((t: any) => t.callId === callId);
+              if (existing) {
+                if (args !== undefined) existing.args = args;
+                return;
+              }
               tools.push({ callId, name, args: args || '', ms: 0 });
               appendToolPart(msg, tools.length - 1);
             });
@@ -831,9 +847,17 @@ export function useChatRuntime(chatId: string) {
         flushDeltas();
         patchTarget((mm) => {
           if (!mm.tools) mm.tools = [];
-          // Added fires argless, done carries the complete args (see respondFor).
-          const existing = args ? mm.tools.find((t: any) => t.callId === callId) : undefined;
-          if (existing) { existing.args = args; return; }
+          // One card per call id for the life of the turn
+          // (fix-duplicate-tool-call-cards D3, same contract as respondFor):
+          // a repeat event for an existing id mutates that card, never
+          // mints. Added fires argless (undefined must not clobber); done is
+          // the authoritative update even when its arguments string is
+          // empty.
+          const existing = mm.tools.find((t: any) => t.callId === callId);
+          if (existing) {
+            if (args !== undefined) existing.args = args;
+            return;
+          }
           mm.tools.push({ callId, name, args: args || '', ms: 0 });
           appendToolPart(mm, mm.tools.length - 1);
           const branch = mm.branches?.[mm.branch];

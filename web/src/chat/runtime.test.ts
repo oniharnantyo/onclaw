@@ -532,6 +532,74 @@ describe('useChatRuntime — live session binding (birth → chain → reset-for
     expect(last.tools[0]).toMatchObject({ name: 'files.list', callId: 'call_1', args: '{"path":"."}', res: '["a"]', ms: 42 });
   });
 
+  it('incident replay: mislabelled empty-args done mutates the existing card — two cards, no duplicate toolCallIds', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await send(result, 'search the web');
+    const [, , cb]: any[] = vi.mocked(runTurn).mock.calls[0];
+    // The malformed GLM wire sequence (fix-duplicate-tool-call-cards): two
+    // parallel calls added argless, then a MISLABELLED done for web.search
+    // carrying empty arguments. The old `args ?` gate skipped the call-id
+    // lookup on empty args and minted a THIRD card duplicating web.search's
+    // call id — two cards then shared one toolCallId in convertMessage and
+    // assistant-ui's useResources crashed on the duplicate key.
+    act(() => { cb.onToolCall?.('execute', 'call_exec_1'); });
+    act(() => { cb.onToolCall?.('web.search', 'call_ws_1'); });
+    act(() => { cb.onToolCall?.('web.search', 'call_ws_1', ''); });
+    // Then the outputs, and the turn ends.
+    act(() => { cb.onToolOutput?.('call_ws_1', 'web.search', '{"hits":[]}', 120, false); });
+    act(() => { cb.onToolOutput?.('call_exec_1', 'execute', 'ok', 300, false); });
+    await act(async () => { cb.onDone('resp_sess-turn_1'); });
+
+    const last = activeSession().messages[activeSession().messages.length - 1];
+    // Exactly one card per call id when the turn ends — two cards, not three.
+    expect(last.tools).toHaveLength(2);
+    expect(last.tools.map((t: any) => t.callId)).toEqual(['call_exec_1', 'call_ws_1']);
+    // The empty done was carried-but-empty: it updated the existing card in
+    // place — no phantom arguments (and nothing from the other call).
+    const ws = last.tools.find((t: any) => t.callId === 'call_ws_1');
+    expect(ws.name).toBe('web.search');
+    expect(ws.args).toBe('');
+    // convertMessage on the finished message emits every card exactly once —
+    // no duplicate toolCallId values for useResources to choke on.
+    const converted: any = result.current.convertMessage(last);
+    const ids = converted.content
+      .filter((c: any) => c.type === 'tool-call')
+      .map((c: any) => c.toolCallId);
+    expect(ids).toEqual(['call_call_exec_1', 'call_call_ws_1']);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('convertMessage dedupes duplicate call-id card entries into one tool-call part (last line of defense)', async () => {
+    act(() => {
+      useStore.getState().updateTenant('t1', (t: any) => {
+        const s = t.threads.a1.list[0];
+        s.messages = [{
+          id: 'm_dup', text: 'done', author: 'agent', ts: '',
+          tools: [
+            { name: 'web.search', callId: 'call_ws_1', args: '{"q":"a"}', ms: 10 },
+            // A corrupted duplicate of the same card (turn state minted
+            // before the stream-side dedupe existed).
+            { name: 'web.search', callId: 'call_ws_1', args: '{"q":"a"}', ms: 10 },
+          ],
+        }];
+        return t;
+      });
+    });
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    const converted: any = result.current.convertMessage(
+      useStore.getState().db.t1.threads.a1.list[0].messages[0],
+    );
+    const toolParts = converted.content.filter((c: any) => c.type === 'tool-call');
+    // Duplicate card entries must never emit two parts with the same
+    // toolCallId — assistant-ui's useResources keys on it.
+    expect(toolParts).toHaveLength(1);
+    expect(toolParts[0].toolCallId).toBe('call_call_ws_1');
+  });
+
   it('stop with nothing streamed retracts the empty optimistic row', async () => {
     localStorage.setItem('onclaw.api_key.t1', 'k-live');
     vi.mocked(runTurn).mockImplementation(async () => {});

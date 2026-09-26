@@ -2158,6 +2158,12 @@ func (r *Runner) drainAgentEvents(
 	// emitToolFinished can stamp ToolResultPayload.Latency on both the
 	// message-driven and span-driven emit paths (design D3).
 	startedAtTools := map[string]time.Time{}
+	// toolCallArgs stashes the latest non-empty arguments seen per call ID
+	// during message extraction so a span-lane start that wins the emission
+	// can join them (fix-duplicate-tool-call-cards D1). Streaming frames may
+	// deliver a call with empty arguments before the complete one arrives, so
+	// real args are never overwritten with empty.
+	toolCallArgs := map[string]string{}
 
 	// emit sends every mapped transcript event to the primary tap and, additively,
 	// to all dynamically attached live subscribers of the run.
@@ -2431,6 +2437,9 @@ func (r *Runner) drainAgentEvents(
 						})
 					}
 					for _, call := range agenticToolCalls(frame) {
+						if call.Arguments != "" {
+							toolCallArgs[call.CallID] = call.Arguments
+						}
 						emitToolStarted(call.CallID, call.Name, call.Arguments)
 					}
 				}
@@ -2465,6 +2474,9 @@ func (r *Runner) drainAgentEvents(
 					accumulateTokenUsage(&usage, mo.Message.ResponseMeta.TokenUsage)
 				}
 				for _, call := range agenticToolCalls(mo.Message) {
+					if call.Arguments != "" {
+						toolCallArgs[call.CallID] = call.Arguments
+					}
 					emitToolStarted(call.CallID, call.Name, call.Arguments)
 				}
 				for _, res := range agenticToolResults(mo.Message) {
@@ -2519,17 +2531,12 @@ func (r *Runner) drainAgentEvents(
 					usage.FinalInputTokens = mu.InputTokens
 				}
 			case adk.SessionEventSpanToolCallStart:
+				// Span starts race message-frame extraction for the same call
+				// ID, so both lanes share the emitToolStarted guard — the
+				// loser is a no-op — and a span start that wins the emission
+				// joins the stashed frame arguments (fix-duplicate-tool-call-cards D1).
 				if se.Span != nil && se.Span.Tool != nil {
-					recordToolStart(se.Span.Tool.ToolUseID, now)
-					emit(&TranscriptEvent{
-						Kind:       TranscriptEventToolCallStarted,
-						OccurredAt: now,
-						TurnID:     turnID,
-						ToolCall: &ToolCallPayload{
-							CallID: se.Span.Tool.ToolUseID,
-							Name:   se.Span.Tool.Name,
-						},
-					})
+					emitToolStarted(se.Span.Tool.ToolUseID, se.Span.Tool.Name, toolCallArgs[se.Span.Tool.ToolUseID])
 				}
 			case adk.SessionEventSpanToolCallEnd:
 				if se.Span != nil && se.Span.Tool != nil {

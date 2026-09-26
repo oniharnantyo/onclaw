@@ -47,10 +47,12 @@ export interface TurnUsage {
 export interface TurnCallbacks {
   /** Called on each assistant text chunk. */
   onDelta: (text: string) => void;
-  /** Called for each server-side tool call. Fires at output_item.added (card
-   * appears, args still streaming — `args` undefined) and again at
-   * output_item.done with the complete arguments string; callers key cards
-   * by callId so the second call updates rather than duplicates. */
+  /** Called for each server-side tool call — once at output_item.added (the
+   * card appears; the wire item may already carry the call's complete
+   * arguments, so this fire is intentionally argless) and once at
+   * output_item.done with the authoritative complete-args string, which may
+   * be empty. Callers key cards by callId and update-not-mint: a repeat
+   * fire for an existing call id mutates that card, never duplicates it. */
   onToolCall?: (name: string, callId: string, args?: string) => void;
   onToolOutput?: (callId: string, name: string, result: string, latencyMs?: number, isError?: boolean) => void;
   /** Called on each reasoning trace chunk (`onclaw:reasoning_delta`). */
@@ -200,9 +202,11 @@ export async function runTurn(
           // `onclaw.function_call_output` items (design D1) — the result is
           // only complete at .done, so outputs fire there, not here.
           if (ev.item?.type === 'function_call') {
-            // Args at .added can be partial (eino chunks tool-call arguments
-            // across frames), so the card fires argless here and picks up the
-            // complete arguments at output_item.done.
+            // The .added item is span-sourced and may already carry the
+            // call's complete joined arguments; .done is the authoritative
+            // complete-args update. Consumers key cards by call id and
+            // update-not-mint — a repeat event for an existing id mutates
+            // the card, never mints a second one.
             cb.onToolCall?.(ev.item.name, ev.item.call_id);
           }
           break;

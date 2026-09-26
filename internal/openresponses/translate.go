@@ -134,6 +134,14 @@ func responseEvent(seq int, typ string, fields map[string]any) map[string]any {
 	return ev
 }
 
+// openToolItem is one in-flight function_call output item: the output index
+// and item id its added minted, plus the call that started it.
+type openToolItem struct {
+	index int
+	id    string
+	call  *agents.ToolCallPayload
+}
+
 // Translator projects TranscriptEvents onto the OpenResponses wire. With a
 // non-nil sink it emits the SSE event stream; with a nil sink it only folds
 // items into the Response object (the aggregated path).
@@ -150,11 +158,12 @@ type Translator struct {
 	msgText     string
 	msgDedupped bool
 
-	// Open function_call item state.
-	fcOpen  bool
-	fcIndex int
-	fcID    string
-	fc      *agents.ToolCallPayload
+	// Open function_call items keyed by call id (fix-duplicate-tool-call-cards
+	// D2): each started call mints exactly one item and each finished call
+	// closes its own; fcOpenOrder preserves start order for stable output
+	// indices and closeOpenItems.
+	fcOpenOrder []string
+	fcOpen      map[string]*openToolItem
 
 	// nextIndex is the next output index to allocate.
 	nextIndex int
@@ -162,7 +171,7 @@ type Translator struct {
 
 // NewTranslator creates a translator for the given response.
 func NewTranslator(resp *Response, emit func(ev map[string]any)) *Translator {
-	return &Translator{resp: resp, emit: emit}
+	return &Translator{resp: resp, emit: emit, fcOpen: make(map[string]*openToolItem)}
 }
 
 // SetSink attaches (or replaces) the event sink after construction — used by
@@ -236,16 +245,21 @@ func (t *Translator) Handle(ev *agents.TranscriptEvent) bool {
 		if ev.ToolCall == nil {
 			return false
 		}
-		t.fcOpen = true
-		t.fcIndex = t.nextIndex
-		t.fcID = newOutputItemID(t.fcIndex)
+		// fix-duplicate-tool-call-cards D2: a re-announced call id never mints
+		// a second added — one started call, exactly one open item.
+		if _, open := t.fcOpen[ev.ToolCall.CallID]; open {
+			return false
+		}
+		idx := t.nextIndex
 		t.nextIndex++
-		t.fc = ev.ToolCall
+		item := &openToolItem{index: idx, id: newOutputItemID(idx), call: ev.ToolCall}
+		t.fcOpen[ev.ToolCall.CallID] = item
+		t.fcOpenOrder = append(t.fcOpenOrder, ev.ToolCall.CallID)
 		t.send("response.output_item.added", map[string]any{
-			"output_index": t.fcIndex,
+			"output_index": item.index,
 			"item": map[string]any{
 				"type":      "function_call",
-				"id":        t.fcID,
+				"id":        item.id,
 				"call_id":   ev.ToolCall.CallID,
 				"name":      ev.ToolCall.Name,
 				"arguments": ev.ToolCall.Arguments,
@@ -254,23 +268,27 @@ func (t *Translator) Handle(ev *agents.TranscriptEvent) bool {
 		})
 
 	case agents.TranscriptEventToolCallFinished:
-		if t.fcOpen {
-			doneItem := map[string]any{
-				"type":      "function_call",
-				"id":        t.fcID,
-				"call_id":   t.fc.CallID,
-				"name":      t.fc.Name,
-				"arguments": t.fc.Arguments,
-				"status":    "completed",
-			}
-			t.send("response.output_item.done", map[string]any{
-				"output_index": t.fcIndex,
-				"item":         doneItem,
-			})
-			t.resp.Output = append(t.resp.Output, doneItem)
-			t.fcOpen = false
-		}
 		if ev.ToolResult != nil {
+			// fix-duplicate-tool-call-cards D2: each finished call closes its
+			// OWN item — the done carries that call's id, name and arguments
+			// at its original output index, never a sibling started later.
+			if item, open := t.fcOpen[ev.ToolResult.CallID]; open {
+				doneItem := map[string]any{
+					"type":      "function_call",
+					"id":        item.id,
+					"call_id":   item.call.CallID,
+					"name":      item.call.Name,
+					"arguments": item.call.Arguments,
+					"status":    "completed",
+				}
+				t.send("response.output_item.done", map[string]any{
+					"output_index": item.index,
+					"item":         doneItem,
+				})
+				t.resp.Output = append(t.resp.Output, doneItem)
+				delete(t.fcOpen, ev.ToolResult.CallID)
+				t.removeFCOrder(ev.ToolResult.CallID)
+			}
 			idx := t.nextIndex
 			t.nextIndex++
 			itemID := newOutputItemID(idx)
@@ -499,33 +517,47 @@ func (t *Translator) appendMessageItem(text string) {
 	t.resp.Output = append(t.resp.Output, item)
 }
 
+// removeFCOrder drops a closed call id from the open-item start order.
+func (t *Translator) removeFCOrder(callID string) {
+	for i, id := range t.fcOpenOrder {
+		if id == callID {
+			t.fcOpenOrder = append(t.fcOpenOrder[:i], t.fcOpenOrder[i+1:]...)
+			return
+		}
+	}
+}
+
 // closeOpenItems finalizes items left open when the turn terminates.
 func (t *Translator) closeOpenItems() {
 	if t.msgOpen {
 		t.closeMessage()
 	}
-	if t.fcOpen {
+	// fix-duplicate-tool-call-cards D2: every still-open function_call item
+	// closes at its own index, id and arguments, in start order.
+	for _, callID := range t.fcOpenOrder {
+		item := t.fcOpen[callID]
 		t.send("response.output_item.done", map[string]any{
-			"output_index": t.fcIndex,
+			"output_index": item.index,
 			"item": map[string]any{
 				"type":      "function_call",
-				"id":        t.fcID,
-				"call_id":   t.fc.CallID,
-				"name":      t.fc.Name,
-				"arguments": t.fc.Arguments,
+				"id":        item.id,
+				"call_id":   item.call.CallID,
+				"name":      item.call.Name,
+				"arguments": item.call.Arguments,
 				"status":    "completed",
 			},
 		})
 		t.resp.Output = append(t.resp.Output, map[string]any{
 			"type":      "function_call",
-			"id":        t.fcID,
-			"call_id":   t.fc.CallID,
-			"name":      t.fc.Name,
-			"arguments": t.fc.Arguments,
+			"id":        item.id,
+			"call_id":   item.call.CallID,
+			"name":      item.call.Name,
+			"arguments": item.call.Arguments,
 			"status":    "completed",
 		})
-		t.fcOpen = false
 	}
+	t.fcOpenOrder = nil
+	t.fcOpen = make(map[string]*openToolItem)
 }
 
 // JSON serializes a wire event for an SSE data frame.

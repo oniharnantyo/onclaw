@@ -441,6 +441,236 @@ func TestTranslator_ToolTraceOmitsLatencyWhenZero(t *testing.T) {
 	t.Fatal("no onclaw.function_call_output added item found")
 }
 
+// TestTranslator_ParallelToolCallsKeepTheirOwnItems pins fix-duplicate-tool-
+// call-cards D2: with two calls started before either finishes, each call id
+// gets exactly one added and one done, every done carries its own call's id
+// and arguments at the index its added minted, no done is swallowed, and both
+// trace items pair with the two calls.
+func TestTranslator_ParallelToolCallsKeepTheirOwnItems(t *testing.T) {
+	resp, wire := collect(t, []*agents.TranscriptEvent{
+		{Kind: agents.TranscriptEventTurnStarted},
+		{Kind: agents.TranscriptEventToolCallStarted, ToolCall: &agents.ToolCallPayload{CallID: "c-exec", Name: "execute", Arguments: `{"command":"ls"}`}},
+		{Kind: agents.TranscriptEventToolCallStarted, ToolCall: &agents.ToolCallPayload{CallID: "c-search", Name: "web.search", Arguments: `{"query":"onclaw"}`}},
+		{Kind: agents.TranscriptEventToolCallFinished, ToolResult: &agents.ToolResultPayload{CallID: "c-exec", Name: "execute", Result: "listing"}},
+		{Kind: agents.TranscriptEventToolCallFinished, ToolResult: &agents.ToolResultPayload{CallID: "c-search", Name: "web.search", Result: "hits"}},
+		{Kind: agents.TranscriptEventTurnCompleted},
+	})
+
+	// One added and one done per call id; each done is its own call's item.
+	fcAdded, fcDone := map[string]map[string]any{}, map[string]map[string]any{}
+	fcAddedIdx, fcDoneIdx := map[string]any{}, map[string]any{}
+	for _, ev := range wire {
+		item, ok := ev["item"].(map[string]any)
+		if !ok || item["type"] != "function_call" {
+			continue
+		}
+		callID, _ := item["call_id"].(string)
+		switch ev["type"] {
+		case "response.output_item.added":
+			if _, dup := fcAdded[callID]; dup {
+				t.Fatalf("duplicate function_call added for %s", callID)
+			}
+			fcAdded[callID] = item
+			fcAddedIdx[callID] = ev["output_index"]
+		case "response.output_item.done":
+			if _, dup := fcDone[callID]; dup {
+				t.Fatalf("duplicate function_call done for %s", callID)
+			}
+			fcDone[callID] = item
+			fcDoneIdx[callID] = ev["output_index"]
+		}
+	}
+	if len(fcAdded) != 2 || len(fcDone) != 2 {
+		t.Fatalf("function_call added = %d, done = %d call ids, want 2 each (no swallowed done)", len(fcAdded), len(fcDone))
+	}
+	for _, id := range []string{"c-exec", "c-search"} {
+		added, ok := fcAdded[id]
+		if !ok {
+			t.Fatalf("no function_call added for %s", id)
+		}
+		done, ok := fcDone[id]
+		if !ok {
+			t.Fatalf("no function_call done for %s (a done was swallowed)", id)
+		}
+		if done["id"] != added["id"] || done["arguments"] != added["arguments"] {
+			t.Fatalf("done for %s is mislabelled: added %+v done %+v", id, added, done)
+		}
+		if fcDoneIdx[id] != fcAddedIdx[id] {
+			t.Fatalf("done for %s moved output index: added %v done %v", id, fcAddedIdx[id], fcDoneIdx[id])
+		}
+	}
+
+	// Both trace items present, one per call.
+	traceCallIDs := map[string]bool{}
+	for _, ev := range wire {
+		if ev["type"] != "response.output_item.added" {
+			continue
+		}
+		item, ok := ev["item"].(map[string]any)
+		if !ok || item["type"] != "onclaw.function_call_output" {
+			continue
+		}
+		traceCallIDs[item["call_id"].(string)] = true
+	}
+	if !traceCallIDs["c-exec"] || !traceCallIDs["c-search"] {
+		t.Fatalf("trace items = %v, want both c-exec and c-search", traceCallIDs)
+	}
+
+	// Every minted item (2 function_call + 2 trace) holds a unique output index.
+	itemIndex := map[any]any{}
+	for _, ev := range wire {
+		if ev["type"] != "response.output_item.added" {
+			continue
+		}
+		item := ev["item"].(map[string]any)
+		id := item["id"]
+		if prev, clash := itemIndex[id]; clash {
+			t.Fatalf("item %v re-added at index %v (was %v)", id, ev["output_index"], prev)
+		}
+		itemIndex[id] = ev["output_index"]
+	}
+	if len(itemIndex) != 4 {
+		t.Fatalf("minted %d items, want 4", len(itemIndex))
+	}
+	idxSeen := map[any]bool{}
+	for id, idx := range itemIndex {
+		if idxSeen[idx] {
+			t.Fatalf("output index %v reused (item %v)", idx, id)
+		}
+		idxSeen[idx] = true
+	}
+
+	// Aggregated output carries both function_call items with their own args.
+	var fcOut []map[string]any
+	for _, item := range resp.Output {
+		if item["type"] == "function_call" {
+			fcOut = append(fcOut, item)
+		}
+	}
+	if len(fcOut) != 2 {
+		t.Fatalf("aggregated output = %d function_call items, want 2", len(fcOut))
+	}
+	byCall := map[string]string{}
+	for _, item := range fcOut {
+		byCall[item["call_id"].(string)] = item["arguments"].(string)
+	}
+	if byCall["c-exec"] != `{"command":"ls"}` || byCall["c-search"] != `{"query":"onclaw"}` {
+		t.Fatalf("aggregated function_call arguments = %v", byCall)
+	}
+}
+
+// TestTranslator_ReannouncedCallIDNotDuplicated pins fix-duplicate-tool-call-
+// cards D2: a second started event for a call id already open must not mint a
+// second added — one started call, exactly one item.
+func TestTranslator_ReannouncedCallIDNotDuplicated(t *testing.T) {
+	_, wire := collect(t, []*agents.TranscriptEvent{
+		{Kind: agents.TranscriptEventTurnStarted},
+		{Kind: agents.TranscriptEventToolCallStarted, ToolCall: &agents.ToolCallPayload{CallID: "c1", Name: "execute", Arguments: `{"command":"ls"}`}},
+		{Kind: agents.TranscriptEventToolCallStarted, ToolCall: &agents.ToolCallPayload{CallID: "c1", Name: "execute", Arguments: `{"command":"ls"}`}},
+		{Kind: agents.TranscriptEventToolCallFinished, ToolResult: &agents.ToolResultPayload{CallID: "c1", Name: "execute", Result: "ok"}},
+		{Kind: agents.TranscriptEventTurnCompleted},
+	})
+
+	added, done := 0, 0
+	for _, ev := range wire {
+		item, ok := ev["item"].(map[string]any)
+		if !ok || item["type"] != "function_call" || item["call_id"] != "c1" {
+			continue
+		}
+		switch ev["type"] {
+		case "response.output_item.added":
+			added++
+		case "response.output_item.done":
+			done++
+		}
+	}
+	if added != 1 || done != 1 {
+		t.Fatalf("function_call added = %d, done = %d for c1, want 1 each", added, done)
+	}
+}
+
+// TestTranslator_IncidentReplayParallelDonesNotSwallowed replays the exact
+// failing sequence from the fix-duplicate-tool-call-cards incident — a live
+// GLM turn with two parallel calls (execute, web.search) where the first
+// output_item.done was mislabelled with the last-started call's id and the
+// second done was swallowed — and pins the repaired wire (D1 supplies the
+// arguments at added): added(execute, A), added(search, B), done(execute, A),
+// done(search, B).
+func TestTranslator_IncidentReplayParallelDonesNotSwallowed(t *testing.T) {
+	const argsExecute = `{"command":"kubectl get pods -n ops"}`
+	const argsSearch = `{"query":"onclaw duplicate tool call cards"}`
+	resp, wire := collect(t, []*agents.TranscriptEvent{
+		{Kind: agents.TranscriptEventTurnStarted},
+		{Kind: agents.TranscriptEventToolCallStarted, ToolCall: &agents.ToolCallPayload{CallID: "call-execute", Name: "execute", Arguments: argsExecute}},
+		{Kind: agents.TranscriptEventToolCallStarted, ToolCall: &agents.ToolCallPayload{CallID: "call-search", Name: "web.search", Arguments: argsSearch}},
+		{Kind: agents.TranscriptEventToolCallFinished, ToolResult: &agents.ToolResultPayload{CallID: "call-execute", Name: "execute", Result: "pod list"}},
+		{Kind: agents.TranscriptEventToolCallFinished, ToolResult: &agents.ToolResultPayload{CallID: "call-search", Name: "web.search", Result: "results"}},
+		{Kind: agents.TranscriptEventTurnCompleted},
+	})
+
+	// The four function_call wire items in emission order.
+	type wireItem struct{ typ, callID, args string }
+	want := []wireItem{
+		{"response.output_item.added", "call-execute", argsExecute},
+		{"response.output_item.added", "call-search", argsSearch},
+		{"response.output_item.done", "call-execute", argsExecute},
+		{"response.output_item.done", "call-search", argsSearch},
+	}
+	var got []wireItem
+	for _, ev := range wire {
+		item, ok := ev["item"].(map[string]any)
+		if !ok || item["type"] != "function_call" {
+			continue
+		}
+		got = append(got, wireItem{
+			typ:    ev["type"].(string),
+			callID: item["call_id"].(string),
+			args:   item["arguments"].(string),
+		})
+	}
+	if len(got) != len(want) {
+		t.Fatalf("function_call wire items = %d, want %d (a done was swallowed): %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Fatalf("wire item %d = %+v, want %v (mislabelled done)", i, got[i], w)
+		}
+	}
+
+	// No done carries one call's id with the other call's arguments.
+	for _, g := range got {
+		if g.typ != "response.output_item.done" {
+			continue
+		}
+		wantArgs := argsExecute
+		if g.callID == "call-search" {
+			wantArgs = argsSearch
+		}
+		if g.args != wantArgs {
+			t.Fatalf("done for %s carries arguments %s, want its own %s", g.callID, g.args, wantArgs)
+		}
+	}
+
+	// The aggregated output carries both function_call items with their own
+	// arguments.
+	var fcOut []map[string]any
+	for _, item := range resp.Output {
+		if item["type"] == "function_call" {
+			fcOut = append(fcOut, item)
+		}
+	}
+	if len(fcOut) != 2 {
+		t.Fatalf("aggregated output = %d function_call items, want 2", len(fcOut))
+	}
+	byCall := map[string]string{}
+	for _, item := range fcOut {
+		byCall[item["call_id"].(string)] = item["arguments"].(string)
+	}
+	if byCall["call-execute"] != argsExecute || byCall["call-search"] != argsSearch {
+		t.Fatalf("aggregated function_call arguments = %v", byCall)
+	}
+}
+
 func TestTranslator_ContextCompactedCarriesTokens(t *testing.T) {
 	resp, wire := collect(t, []*agents.TranscriptEvent{
 		{Kind: agents.TranscriptEventTurnStarted},
