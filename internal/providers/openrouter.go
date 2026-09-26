@@ -40,6 +40,10 @@ func (p *OpenRouterProvider) RequiresBaseURL() bool {
 	return false
 }
 
+func (p *OpenRouterProvider) RequiresAPIKey() bool {
+	return true
+}
+
 func (p *OpenRouterProvider) CanonicalOrigin() string {
 	return openRouterCanonicalOrigin
 }

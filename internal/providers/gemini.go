@@ -38,6 +38,10 @@ func (p *GeminiProvider) RequiresBaseURL() bool {
 	return false
 }
 
+func (p *GeminiProvider) RequiresAPIKey() bool {
+	return true
+}
+
 func (p *GeminiProvider) CanonicalOrigin() string {
 	return geminiCanonicalOrigin
 }

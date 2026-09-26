@@ -748,9 +748,14 @@ assert_status "201" "Owner creates openai-compatible provider with base_url"
 assert_json_expr '.provider.base_url == "http://127.0.0.1:8000/v1"' "Provider base_url is set"
 COMPAT_PROV_ID=$(json_get '.provider.id')
 
-# 12.6 Verify keyless provider -> 400 invalid_request
+# 12.6 Verify keyless compatible provider against a dead endpoint -> 200 {ok:false}
 api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/providers/${COMPAT_PROV_ID}/verify" "${CHARLIE_TOKEN}"
-assert_status "400" "Verifying keyless provider returns 400 invalid_request"
+assert_status "200" "Keyless compatible provider verify returns 200 with soft result"
+assert_json_expr '.ok == false' "Dead endpoint surfaces as ok: false"
+
+# 12.6a Regression: key-requiring verify-draft with no credential -> 400 invalid_request
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/providers/verify-draft" "${CHARLIE_TOKEN}" '{"type":"openai","base_url":"http://127.0.0.1:1"}'
+assert_status "400" "Key-requiring verify-draft without any credential is rejected (400)"
 assert_json_expr '.error.code == "invalid_request"' "Error code is invalid_request"
 
 # 12.7 Verify with key: returns 200 {ok: bool, error?: string}
@@ -1022,6 +1027,21 @@ log_pass "Mock provider server listening on 127.0.0.1:${MOCK_PORT}"
 api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/providers" "${CHARLIE_TOKEN}" '{"type":"openai-compatible","name":"Smoke Mock Provider","base_url":"http://127.0.0.1:'"${MOCK_PORT}"'/v1","key":"sk-mock-key"}'
 assert_status "201" "Owner creates openai-compatible provider against the mock server"
 MOCK_PROV_ID=$(json_get '.provider.id')
+
+# 13.0a Keyless stored-config verify. The mock answers /v1/models regardless
+# of auth headers, so an openai-compatible config with no key must verify.
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/providers" "${CHARLIE_TOKEN}" '{"type":"openai-compatible","name":"Keyless Mock Provider","base_url":"http://127.0.0.1:'"${MOCK_PORT}"'/v1"}'
+assert_status "201" "Owner creates keyless openai-compatible provider against the mock server"
+KEYLESS_PROV_ID=$(json_get '.provider.id')
+
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/providers/${KEYLESS_PROV_ID}/verify" "${CHARLIE_TOKEN}"
+assert_status "200" "Keyless provider verifies without a key"
+assert_json_expr '.ok == true' "Keyless stored-config verify reports ok: true"
+
+# 13.0b Keyless verify-draft: non-persisting probe with no config and no key.
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/providers/verify-draft" "${CHARLIE_TOKEN}" '{"type":"openai-compatible","base_url":"http://127.0.0.1:'"${MOCK_PORT}"'/v1"}'
+assert_status "200" "Keyless verify-draft probes the endpoint without a key"
+assert_json_expr '.ok == true' "Keyless verify-draft reports ok: true"
 
 # 13.1 Workspace skills: author install, tier-gated listing, enable/disable,
 # uninstall, and the Member write guard. The routes are part of the live

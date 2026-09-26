@@ -54,6 +54,10 @@ type Credential struct {
 type Provider interface {
 	Type() string
 	RequiresBaseURL() bool
+	// RequiresAPIKey reports whether the provider type requires an API key.
+	// Keyless-capable types (the -compatible gateways) omit the auth header
+	// when no key is configured, so they return false.
+	RequiresAPIKey() bool
 	CanonicalOrigin() string
 	RequiresMaxTokens() bool
 	ValidEfforts() []string

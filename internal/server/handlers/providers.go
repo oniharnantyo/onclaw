@@ -470,6 +470,9 @@ func (h *providerHandlers) ModelsPreview(c *gin.Context) {
 }
 
 // VerifyProvider tests connectivity and authentication with the provider using the stored encrypted key.
+// Whether a key is required is decided by the provider type itself (design D2): a keyless-capable
+// type with no stored ciphertext verifies with an empty key, delegating the auth question to the
+// endpoint's own answer.
 func (h *providerHandlers) VerifyProvider(c *gin.Context) {
 	ws := MustCurrentWorkspace(c)
 	id := c.Param("id")
@@ -480,27 +483,32 @@ func (h *providerHandlers) VerifyProvider(c *gin.Context) {
 		return
 	}
 
-	if !existing.HasKey() {
-		RespondError(c, fmt.Errorf("%w: provider has no API key configured", domain.ErrInvalid))
-		return
-	}
-
-	plaintextKeyBytes, err := secrets.Decrypt(h.encryptionKey, []byte(ws.ID), existing.KeyCiphertext)
-	if err != nil {
-		RespondError(c, domain.ErrUndecryptable)
-		return
-	}
-
 	providerImpl, err := h.registry.Get(existing.Type)
 	if err != nil {
 		RespondError(c, err)
 		return
 	}
 
+	var apiKey string
+	switch {
+	case existing.HasKey():
+		plaintextKeyBytes, err := secrets.Decrypt(h.encryptionKey, []byte(ws.ID), existing.KeyCiphertext)
+		if err != nil {
+			RespondError(c, domain.ErrUndecryptable)
+			return
+		}
+		apiKey = string(plaintextKeyBytes)
+	case providerImpl.RequiresAPIKey():
+		RespondError(c, fmt.Errorf("%w: provider has no API key configured", domain.ErrInvalid))
+		return
+	default:
+		// Keyless-capable type with no stored key: probe with an empty key.
+	}
+
 	verifyErr := providerImpl.Verify(c.Request.Context(), providers.Credential{
 		Type:    existing.Type,
 		BaseURL: existing.BaseURL,
-		APIKey:  string(plaintextKeyBytes),
+		APIKey:  apiKey,
 	})
 
 	if verifyErr != nil {
@@ -527,8 +535,11 @@ type VerifyDraftRequest struct {
 
 // VerifyDraft tests unsaved provider form values without persisting anything
 // (design D5, the dialog's "Verify connection"). The typed key is verified
-// against the submitted type/base URL; a blank key falls back to the stored
-// key of the named workspace provider config. Provider-side auth and
+// against the submitted type and base URL; for a key-requiring type a blank
+// key falls back to the stored key of the named workspace provider config.
+// A keyless-capable type skips stored-key resolution entirely (resolving one
+// would contradict the type's own declaration) and verifies with the
+// submitted key as-is — including an empty one. Provider-side auth and
 // connection failures report as 200 {ok: false, error} — never a 5xx.
 func (h *providerHandlers) VerifyDraft(c *gin.Context) {
 	ws := MustCurrentWorkspace(c)
@@ -552,7 +563,9 @@ func (h *providerHandlers) VerifyDraft(c *gin.Context) {
 	}
 
 	apiKey := strings.TrimSpace(req.Key)
-	if apiKey == "" {
+	if apiKey == "" && providerImpl.RequiresAPIKey() {
+		// Only key-requiring types resolve a stored credential; a
+		// keyless-capable type verifies with the empty key as-is (design D2).
 		id := strings.TrimSpace(req.ProviderID)
 		if id == "" {
 			RespondError(c, fmt.Errorf("%w: no credential to verify: provide a key or a saved provider id", domain.ErrInvalid))

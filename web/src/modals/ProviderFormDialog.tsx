@@ -5,12 +5,12 @@ import { cx } from "../lib/helpers";
 import { api, formatApiError, type ApiProviderConfig } from "../lib/api";
 
 export const PROVIDER_CATALOG_TYPES = [
-  { id: 'openai', label: 'OpenAI', placeholder: 'https://api.openai.com/v1 (optional override)', requiresBaseUrl: false },
-  { id: 'anthropic', label: 'Anthropic', placeholder: 'https://api.anthropic.com/v1 (optional override)', requiresBaseUrl: false },
-  { id: 'gemini', label: 'Gemini', placeholder: 'https://generativelanguage.googleapis.com/v1beta (optional override)', requiresBaseUrl: false },
-  { id: 'openrouter', label: 'OpenRouter', placeholder: 'https://openrouter.ai/api/v1 (optional override)', requiresBaseUrl: false },
-  { id: 'openai-compatible', label: 'OpenAI-compatible', placeholder: 'https://api.together.xyz/v1', requiresBaseUrl: true },
-  { id: 'anthropic-compatible', label: 'Anthropic-compatible', placeholder: 'https://api.anthropic-proxy.com/v1', requiresBaseUrl: true },
+  { id: 'openai', label: 'OpenAI', placeholder: 'https://api.openai.com/v1 (optional override)', requiresBaseUrl: false, requiresKey: true },
+  { id: 'anthropic', label: 'Anthropic', placeholder: 'https://api.anthropic.com/v1 (optional override)', requiresBaseUrl: false, requiresKey: true },
+  { id: 'gemini', label: 'Gemini', placeholder: 'https://generativelanguage.googleapis.com/v1beta (optional override)', requiresBaseUrl: false, requiresKey: true },
+  { id: 'openrouter', label: 'OpenRouter', placeholder: 'https://openrouter.ai/api/v1 (optional override)', requiresBaseUrl: false, requiresKey: true },
+  { id: 'openai-compatible', label: 'OpenAI-compatible', placeholder: 'https://api.together.xyz/v1', requiresBaseUrl: true, requiresKey: false },
+  { id: 'anthropic-compatible', label: 'Anthropic-compatible', placeholder: 'https://api.anthropic-proxy.com/v1', requiresBaseUrl: true, requiresKey: false },
 ] as const;
 
 /** Provider types that accept the optional catalog-mapping hint (D3). The
@@ -55,6 +55,10 @@ export function ProviderFormDialog({
   const [name, setName] = useState(provider?.name || '');
   const [baseUrl, setBaseUrl] = useState(provider?.base_url || '');
   const [key, setKey] = useState('');
+  // Keyless declaration (fix-keyless-provider-verify D4): local-only state,
+  // never submitted or persisted. Effectiveness is derived against the
+  // selected type so a live type switch invalidates it automatically.
+  const [noKey, setNoKey] = useState(false);
   const [enabled] = useState(provider ? provider.enabled : true);
   const [saving, setSaving] = useState(false);
   // Draft verification (refactor-workspace-settings D6): a test of the
@@ -79,8 +83,15 @@ export function ProviderFormDialog({
     (!selectedTypeConfig.requiresBaseUrl || baseUrl.trim().length > 0);
 
   // A credential is expressible when the user typed a key, or when editing a
-  // config that has a stored key (blank field falls back to it server-side).
-  const canVerify = key.trim().length > 0 || (isEdit && Boolean(provider?.key_set));
+  // config that has a stored key (blank field falls back to it server-side),
+  // or when the user explicitly declared the endpoint keyless (D4). The
+  // declaration is only effective while its checkbox is rendered: hidden for
+  // key-requiring types and when a stored key exists (unset is unsupported).
+  const storedKeyExists = isEdit && Boolean(provider?.key_set);
+  const showNoKeyCheckbox = selectedTypeConfig.requiresKey === false && !storedKeyExists;
+  const noKeyEffective = showNoKeyCheckbox && noKey;
+  const canVerify =
+    noKeyEffective || key.trim().length > 0 || (isEdit && Boolean(provider?.key_set));
 
   const handleVerifyDraft = async () => {
     if (!canVerify || verifying) return;
@@ -284,6 +295,31 @@ export function ProviderFormDialog({
           </div>
         )}
 
+        {showNoKeyCheckbox && (
+          <div>
+            <label
+              className="flex cursor-pointer items-center gap-2 text-[12px] text-fg2"
+              htmlFor="prov-no-key"
+            >
+              <input
+                id="prov-no-key"
+                type="checkbox"
+                data-od-id="prov-no-key-checkbox"
+                data-testid="prov-no-key-checkbox"
+                checked={noKey}
+                onChange={(e) => {
+                  setNoKey(e.target.checked);
+                  // While declared keyless no typed key may ride the verify
+                  // path (D4) — clear it; the field is disabled anyway.
+                  if (e.target.checked) setKey('');
+                }}
+                className="h-4 w-4 rounded border-line text-accent cursor-pointer"
+              />
+              This endpoint needs no API key
+            </label>
+          </div>
+        )}
+
         <div>
           <label className={labelCls} htmlFor="prov-key">
             API key {isEdit ? '(write-only replacement)' : ''}
@@ -300,6 +336,7 @@ export function ProviderFormDialog({
             }
             value={key}
             onChange={(e) => setKey(e.target.value)}
+            disabled={noKeyEffective}
           />
           <p className="mt-1 text-[11px] leading-4 text-muted">
             Write-only password input. Stored encrypted; never displayed or returned in API responses.
@@ -314,7 +351,13 @@ export function ProviderFormDialog({
               type="button"
               onClick={handleVerifyDraft}
               disabled={!canVerify || verifying}
-              title={canVerify ? undefined : 'Enter an API key to verify'}
+              title={
+                canVerify
+                  ? undefined
+                  : selectedTypeConfig.requiresKey === false
+                    ? "No API key needed? Tick 'This endpoint needs no API key'"
+                    : 'Enter an API key to verify'
+              }
               data-od-id="btn-provider-verify-draft"
               data-testid="btn-provider-verify-draft"
               className="flex h-8 items-center rounded-md border border-line px-3 text-[12px] font-medium text-fg2 transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_6%,transparent)] hover:text-fg disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"

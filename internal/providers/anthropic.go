@@ -39,6 +39,10 @@ func (p *AnthropicProvider) RequiresBaseURL() bool {
 	return false
 }
 
+func (p *AnthropicProvider) RequiresAPIKey() bool {
+	return true
+}
+
 func (p *AnthropicProvider) CanonicalOrigin() string {
 	return anthropicCanonicalOrigin
 }
@@ -146,6 +150,10 @@ func (p *AnthropicCompatibleProvider) Type() string {
 
 func (p *AnthropicCompatibleProvider) RequiresBaseURL() bool {
 	return true
+}
+
+func (p *AnthropicCompatibleProvider) RequiresAPIKey() bool {
+	return false
 }
 
 func (p *AnthropicCompatibleProvider) CanonicalOrigin() string {

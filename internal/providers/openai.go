@@ -38,6 +38,10 @@ func (p *OpenAIProvider) RequiresBaseURL() bool {
 	return false
 }
 
+func (p *OpenAIProvider) RequiresAPIKey() bool {
+	return true
+}
+
 func (p *OpenAIProvider) CanonicalOrigin() string {
 	return openAICanonicalOrigin
 }
@@ -143,6 +147,10 @@ func (p *OpenAICompatibleProvider) Type() string {
 
 func (p *OpenAICompatibleProvider) RequiresBaseURL() bool {
 	return true
+}
+
+func (p *OpenAICompatibleProvider) RequiresAPIKey() bool {
+	return false
 }
 
 func (p *OpenAICompatibleProvider) CanonicalOrigin() string {

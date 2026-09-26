@@ -1,10 +1,10 @@
 export const PROVIDER_TYPES = [
-  { id: 'openai', label: 'OpenAI' },
-  { id: 'anthropic', label: 'Anthropic' },
-  { id: 'gemini', label: 'Gemini' },
-  { id: 'openrouter', label: 'OpenRouter' },
-  { id: 'openai-compatible', label: 'OpenAI-compatible' },
-  { id: 'anthropic-compatible', label: 'Anthropic-compatible' },
+  { id: 'openai', label: 'OpenAI', requiresKey: true },
+  { id: 'anthropic', label: 'Anthropic', requiresKey: true },
+  { id: 'gemini', label: 'Gemini', requiresKey: true },
+  { id: 'openrouter', label: 'OpenRouter', requiresKey: true },
+  { id: 'openai-compatible', label: 'OpenAI-compatible', requiresKey: false },
+  { id: 'anthropic-compatible', label: 'Anthropic-compatible', requiresKey: false },
 ] as const;
 
 export const PROVIDER_MODELS: Record<string, string[]> = {

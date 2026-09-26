@@ -500,8 +500,10 @@ func TestProviders_Verify(t *testing.T) {
 	addMember(t, env, ws.ID, ownerUser.ID, ownerRole.ID)
 
 	t.Run("verify keyless config returns 400 invalid_request", func(t *testing.T) {
+		// A keyless config of a KEY-REQUIRING type: still 400. Keyless-capable
+		// types ("openai-compatible") verify with an empty key instead.
 		wCreate := doRequest(env.router, http.MethodPost, "/api/v1/workspaces/verify-ws/providers", ownerToken, map[string]any{
-			"type":     "openai-compatible",
+			"type":     "openai",
 			"name":     "Keyless Config",
 			"base_url": mockServer.URL,
 		})

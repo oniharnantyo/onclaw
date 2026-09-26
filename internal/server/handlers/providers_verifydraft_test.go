@@ -83,13 +83,28 @@ func newDraftMockProvider(t *testing.T) *httptest.Server {
 	return server
 }
 
+// newKeylessMockProvider serves 200 to any GET without auth: an endpoint that
+// genuinely needs no API key, for keyless-capable verify probes.
+func newKeylessMockProvider(t *testing.T) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data": [{"id": "m"}]}`))
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
 // seedDraftProvider stores a provider config directly, with the key encrypted
-// under the same workspace-scoped envelope the handler decrypts with.
-func seedDraftProvider(t *testing.T, st store.Store, wsID, name, baseURL, plaintextKey string) *domain.ProviderConfig {
+// under the same workspace-scoped envelope the handler decrypts with. The
+// provider type is a parameter: key-requiring types (e.g. "openai") exercise
+// stored-key resolution; "openai-compatible" is keyless-capable.
+func seedDraftProvider(t *testing.T, st store.Store, wsID, providerType, name, baseURL, plaintextKey string) *domain.ProviderConfig {
 	t.Helper()
 	p := &domain.ProviderConfig{
 		WorkspaceID: wsID,
-		Type:        "openai-compatible",
+		Type:        providerType,
 		Name:        name,
 		BaseURL:     baseURL,
 		Enabled:     true,
@@ -155,16 +170,18 @@ func TestProviders_VerifyDraft_TypedKey(t *testing.T) {
 
 // TestProviders_VerifyDraft_StoredKey covers the edit-dialog case: key blank
 // plus provider_id of a key-set config verifies the stored key against the
-// SUBMITTED type and base URL (not the stored ones).
+// SUBMITTED type and base URL (not the stored ones). The config is seeded as
+// "openai" — a key-requiring type — because stored-key resolution applies
+// only to those (a keyless-capable type skips resolution per design D2).
 func TestProviders_VerifyDraft_StoredKey(t *testing.T) {
 	mock := newDraftMockProvider(t)
 	r, st, ws := newVerifyDraftRouter(t, &domain.Role{Name: domain.RoleOwner, Permissions: domain.OwnerPermissions})
 
 	// Stored config points at a dead address with the valid mock key: a
 	// success can only come from the submitted base_url + the stored key.
-	seeded := seedDraftProvider(t, st, ws.ID, "Stored Key Config", "http://127.0.0.1:1", "valid-mock-key")
+	seeded := seedDraftProvider(t, st, ws.ID, "openai", "Stored Key Config", "http://127.0.0.1:1", "valid-mock-key")
 
-	w := doVerifyDraftJSON(r, `{"type":"openai-compatible","base_url":"`+mock.URL+`","provider_id":"`+seeded.ID+`"}`)
+	w := doVerifyDraftJSON(r, `{"type":"openai","base_url":"`+mock.URL+`","provider_id":"`+seeded.ID+`"}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200, body = %s", w.Code, w.Body.String())
 	}
@@ -179,46 +196,112 @@ func TestProviders_VerifyDraft_StoredKey(t *testing.T) {
 	if err := st.Workspaces().Create(context.Background(), otherWS); err != nil {
 		t.Fatalf("failed to create other workspace: %v", err)
 	}
-	foreign := seedDraftProvider(t, st, otherWS.ID, "Foreign Config", mock.URL, "valid-mock-key")
+	foreign := seedDraftProvider(t, st, otherWS.ID, "openai", "Foreign Config", mock.URL, "valid-mock-key")
 
-	w = doVerifyDraftJSON(r, `{"type":"openai-compatible","base_url":"`+mock.URL+`","provider_id":"`+foreign.ID+`"}`)
+	w = doVerifyDraftJSON(r, `{"type":"openai","base_url":"`+mock.URL+`","provider_id":"`+foreign.ID+`"}`)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("cross-tenant provider_id: status = %d, want 404, body = %s", w.Code, w.Body.String())
 	}
 }
 
-// TestProviders_VerifyDraft_NoCredential covers the 400 cases: no key and no
-// config, a blank key with no config, and a keyless config.
+// TestProviders_VerifyDraft_NoCredential covers the 400 cases for a
+// key-REQUIRING draft type ("openai"): no key and no config, a blank key with
+// no config, and a keyless config. Keyless-capable types never hit these
+// paths (they verify with an empty key — see TestProviders_VerifyDraft_Keyless).
 func TestProviders_VerifyDraft_NoCredential(t *testing.T) {
 	mock := newDraftMockProvider(t)
 	r, st, ws := newVerifyDraftRouter(t, &domain.Role{Name: domain.RoleOwner, Permissions: domain.OwnerPermissions})
-	keyless := seedDraftProvider(t, st, ws.ID, "Keyless Config", mock.URL, "")
+	keyless := seedDraftProvider(t, st, ws.ID, "openai", "Keyless Config", mock.URL, "")
 
 	t.Run("no key and no provider_id is 400", func(t *testing.T) {
-		w := doVerifyDraftJSON(r, `{"type":"openai-compatible","base_url":"`+mock.URL+`"}`)
+		w := doVerifyDraftJSON(r, `{"type":"openai","base_url":"`+mock.URL+`"}`)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want 400, body = %s", w.Code, w.Body.String())
 		}
 	})
 
 	t.Run("blank key and no provider_id is 400", func(t *testing.T) {
-		w := doVerifyDraftJSON(r, `{"type":"openai-compatible","base_url":"`+mock.URL+`","key":"   "}`)
+		w := doVerifyDraftJSON(r, `{"type":"openai","base_url":"`+mock.URL+`","key":"   "}`)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want 400, body = %s", w.Code, w.Body.String())
 		}
 	})
 
 	t.Run("keyless config is 400", func(t *testing.T) {
-		w := doVerifyDraftJSON(r, `{"type":"openai-compatible","base_url":"`+mock.URL+`","provider_id":"`+keyless.ID+`"}`)
+		w := doVerifyDraftJSON(r, `{"type":"openai","base_url":"`+mock.URL+`","provider_id":"`+keyless.ID+`"}`)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want 400, body = %s", w.Code, w.Body.String())
 		}
 	})
 
 	t.Run("unknown provider_id is 404 like the row verify", func(t *testing.T) {
-		w := doVerifyDraftJSON(r, `{"type":"openai-compatible","base_url":"`+mock.URL+`","provider_id":"no-such-id"}`)
+		w := doVerifyDraftJSON(r, `{"type":"openai","base_url":"`+mock.URL+`","provider_id":"no-such-id"}`)
 		if w.Code != http.StatusNotFound {
 			t.Fatalf("status = %d, want 404, body = %s", w.Code, w.Body.String())
+		}
+	})
+}
+
+// TestProviders_VerifyDraft_Keyless covers keyless-capable draft types
+// ("openai-compatible"): no key verifies immediately with an empty key
+// (design D2), stored-key resolution never runs, and a 401 from an endpoint
+// that does want auth stays a soft ok: false (design D5).
+func TestProviders_VerifyDraft_Keyless(t *testing.T) {
+	authMock := newDraftMockProvider(t)
+	openMock := newKeylessMockProvider(t)
+	r, st, ws := newVerifyDraftRouter(t, &domain.Role{Name: domain.RoleOwner, Permissions: domain.OwnerPermissions})
+
+	// A KEY-SET config: if the draft ever resolved its stored key, the probe
+	// against the auth mock would succeed — ok: false proves it was skipped.
+	keySet := seedDraftProvider(t, st, ws.ID, "openai", "Key Set Config", authMock.URL, "valid-mock-key")
+
+	t.Run("keyless draft with no key and no provider_id probes keyless", func(t *testing.T) {
+		w := doVerifyDraftJSON(r, `{"type":"openai-compatible","base_url":"`+openMock.URL+`"}`)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200, body = %s", w.Code, w.Body.String())
+		}
+		ok, errMsg := decodeVerifyDraftResult(t, w)
+		if !ok || errMsg != "" {
+			t.Errorf("expected {ok: true} for a keyless probe, got ok=%v error=%q", ok, errMsg)
+		}
+	})
+
+	t.Run("whitespace-only key is an empty key on a keyless type", func(t *testing.T) {
+		w := doVerifyDraftJSON(r, `{"type":"openai-compatible","base_url":"`+openMock.URL+`","key":"   "}`)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (blank key must not 400 on a keyless type), body = %s", w.Code, w.Body.String())
+		}
+		ok, errMsg := decodeVerifyDraftResult(t, w)
+		if !ok || errMsg != "" {
+			t.Errorf("expected the trimmed-empty key to probe keyless, got ok=%v error=%q", ok, errMsg)
+		}
+	})
+
+	t.Run("401 from an auth-wanting endpoint is a soft ok: false", func(t *testing.T) {
+		w := doVerifyDraftJSON(r, `{"type":"openai-compatible","base_url":"`+authMock.URL+`"}`)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (provider failure is ok: false, not a 5xx), body = %s", w.Code, w.Body.String())
+		}
+		ok, errMsg := decodeVerifyDraftResult(t, w)
+		if ok {
+			t.Errorf("expected ok: false for a keyless probe against an auth-wanting endpoint")
+		}
+		if !strings.Contains(errMsg, "Invalid credentials from mock server") {
+			t.Errorf("expected the provider error message, got %q", errMsg)
+		}
+	})
+
+	t.Run("keyless draft never consults a stored config even with provider_id", func(t *testing.T) {
+		w := doVerifyDraftJSON(r, `{"type":"openai-compatible","base_url":"`+authMock.URL+`","provider_id":"`+keySet.ID+`"}`)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200, body = %s", w.Code, w.Body.String())
+		}
+		ok, errMsg := decodeVerifyDraftResult(t, w)
+		if ok {
+			t.Errorf("expected ok: false — resolving the stored key would have authenticated and contradicted the keyless type")
+		}
+		if !strings.Contains(errMsg, "Invalid credentials from mock server") {
+			t.Errorf("expected the provider error message, got %q", errMsg)
 		}
 	})
 }
@@ -241,7 +324,9 @@ func TestProviders_VerifyDraft_MemberForbidden(t *testing.T) {
 func TestProviders_VerifyDraft_PersistsNothing(t *testing.T) {
 	mock := newDraftMockProvider(t)
 	r, st, ws := newVerifyDraftRouter(t, &domain.Role{Name: domain.RoleOwner, Permissions: domain.OwnerPermissions})
-	seeded := seedDraftProvider(t, st, ws.ID, "Untouched Config", "http://127.0.0.1:1", "valid-mock-key")
+	// "openai" (key-requiring) so the provider_id body below exercises the
+	// stored-key resolution path.
+	seeded := seedDraftProvider(t, st, ws.ID, "openai", "Untouched Config", "http://127.0.0.1:1", "valid-mock-key")
 
 	snapshot := func(t *testing.T) ([]domain.ProviderConfig, *domain.ProviderConfig) {
 		t.Helper()
@@ -258,11 +343,11 @@ func TestProviders_VerifyDraft_PersistsNothing(t *testing.T) {
 
 	beforeList, beforeRow := snapshot(t)
 
-	// A successful typed-key verify and a failing stored-key verify (dead
-	// stored base URL) — success and failure must both write nothing.
+	// A successful typed-key verify and a failing stored-key verify (the
+	// submitted dead base_url) — success and failure must both write nothing.
 	for _, body := range []string{
 		`{"type":"openai-compatible","base_url":"` + mock.URL + `","key":"valid-mock-key"}`,
-		`{"type":"openai-compatible","provider_id":"` + seeded.ID + `"}`,
+		`{"type":"openai","base_url":"http://127.0.0.1:1","provider_id":"` + seeded.ID + `"}`,
 	} {
 		w := doVerifyDraftJSON(r, body)
 		if w.Code != http.StatusOK {

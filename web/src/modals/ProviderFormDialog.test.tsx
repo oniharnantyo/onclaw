@@ -324,3 +324,133 @@ describe('modals/ProviderFormDialog — draft verify connection (refactor-worksp
     });
   });
 });
+
+describe('modals/ProviderFormDialog — keyless declaration checkbox (fix-keyless-provider-verify D4)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function renderDialog(props: Partial<Parameters<typeof ProviderFormDialog>[0]> = {}) {
+    const onClose = vi.fn();
+    const onSaved = vi.fn();
+    const onToast = vi.fn();
+    render(
+      <ProviderFormDialog
+        workspaceId="acme"
+        provider={null}
+        onClose={onClose}
+        onSaved={onSaved}
+        onToast={onToast}
+        {...props}
+      />
+    );
+    return { onClose, onSaved, onToast };
+  }
+
+  const verifyButton = () => screen.getByTestId('btn-provider-verify-draft') as HTMLButtonElement;
+  const keyInput = () => screen.getByLabelText('API key') as HTMLInputElement;
+  const noKeyCheckbox = () =>
+    screen.getByTestId('prov-no-key-checkbox') as HTMLInputElement;
+  const switchType = (type: string) =>
+    fireEvent.change(screen.getByLabelText('Provider type'), { target: { value: type } });
+
+  it('renders the checkbox only for keyless-capable types, never for key-requiring ones', () => {
+    renderDialog();
+
+    // Default create mode is 'openai' — a key-requiring type.
+    expect(screen.queryByTestId('prov-no-key-checkbox')).toBeNull();
+    for (const keyRequiring of ['openai', 'anthropic', 'gemini', 'openrouter']) {
+      switchType(keyRequiring);
+      expect(screen.queryByTestId('prov-no-key-checkbox')).toBeNull();
+    }
+
+    for (const keyless of ['openai-compatible', 'anthropic-compatible']) {
+      switchType(keyless);
+      expect(screen.queryByTestId('prov-no-key-checkbox')).not.toBeNull();
+    }
+  });
+
+  it('checking the checkbox disables the key field and enables Verify; unchecking reverses both', () => {
+    renderDialog();
+    switchType('openai-compatible');
+
+    // No credential expressible yet — Verify disabled, key field enabled.
+    expect(verifyButton().disabled).toBe(true);
+    expect(keyInput().disabled).toBe(false);
+
+    fireEvent.click(noKeyCheckbox());
+    expect(noKeyCheckbox().checked).toBe(true);
+    expect(keyInput().disabled).toBe(true);
+    expect(verifyButton().disabled).toBe(false);
+
+    fireEvent.click(noKeyCheckbox());
+    expect(noKeyCheckbox().checked).toBe(false);
+    expect(keyInput().disabled).toBe(false);
+    expect(verifyButton().disabled).toBe(true);
+  });
+
+  it('verifies a keyless declaration with NO key in the body and an empty key field', async () => {
+    const verifyDraft = vi.spyOn(api.providers, 'verifyDraft').mockResolvedValue({ ok: true });
+    renderDialog();
+    switchType('openai-compatible');
+
+    fireEvent.click(noKeyCheckbox());
+    fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: 'https://api.example.com/v1' } });
+    expect(verifyButton().disabled).toBe(false);
+
+    fireEvent.click(verifyButton());
+
+    await waitFor(() => {
+      expect(verifyDraft).toHaveBeenCalledTimes(1);
+    });
+    const body = verifyDraft.mock.calls[0][1];
+    expect(body).toEqual(
+      expect.objectContaining({
+        type: 'openai-compatible',
+        base_url: 'https://api.example.com/v1',
+      })
+    );
+    expect(body).not.toHaveProperty('key');
+    expect((screen.getByLabelText('API key') as HTMLInputElement).value).toBe('');
+    await waitFor(() => {
+      expect(screen.getByTestId('provider-verify-result').textContent).toBe(
+        'Connection verified successfully'
+      );
+    });
+  });
+
+  it('shows no checkbox for an edit with a stored key and keeps Verify enabled on a blank field', () => {
+    renderDialog({ provider: compatibleProvider() });
+
+    expect(screen.queryByTestId('prov-no-key-checkbox')).toBeNull();
+    expect(verifyButton().disabled).toBe(false);
+    expect((screen.getByLabelText('Edit API key') as HTMLInputElement).disabled).toBe(false);
+  });
+
+  it('switching from a keyless type to a key-requiring one drops the declaration: checkbox gone, key field enabled, Verify needs a key again', () => {
+    renderDialog();
+    switchType('openai-compatible');
+
+    fireEvent.click(noKeyCheckbox());
+    expect(verifyButton().disabled).toBe(false);
+
+    switchType('openai');
+    expect(screen.queryByTestId('prov-no-key-checkbox')).toBeNull();
+    expect(keyInput().disabled).toBe(false);
+    expect(keyInput().value).toBe('');
+    expect(verifyButton().disabled).toBe(true);
+  });
+
+  it('routes keyless users to the checkbox via the disabled-Verify tooltip', () => {
+    renderDialog();
+
+    // Key-requiring default type keeps the existing tooltip.
+    expect(verifyButton().title).toBe('Enter an API key to verify');
+
+    switchType('openai-compatible');
+    expect(verifyButton().disabled).toBe(true);
+    expect(verifyButton().title).toBe(
+      "No API key needed? Tick 'This endpoint needs no API key'"
+    );
+  });
+});

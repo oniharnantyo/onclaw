@@ -55,6 +55,33 @@ func TestRegistry_BuiltinProviders(t *testing.T) {
 	}
 }
 
+func TestProvider_RequiresAPIKey(t *testing.T) {
+	reg := providers.NewRegistry()
+
+	tests := []struct {
+		providerType string
+		want         bool
+	}{
+		{providers.TypeOpenAI, true},
+		{providers.TypeAnthropic, true},
+		{providers.TypeGemini, true},
+		{providers.TypeOpenRouter, true},
+		{providers.TypeOpenAICompatible, false},
+		{providers.TypeAnthropicCompatible, false},
+	}
+
+	for _, tt := range tests {
+		p, err := reg.Get(tt.providerType)
+		if err != nil {
+			t.Errorf("reg.Get(%q) error: %v", tt.providerType, err)
+			continue
+		}
+		if got := p.RequiresAPIKey(); got != tt.want {
+			t.Errorf("%s.RequiresAPIKey() = %v, want %v", tt.providerType, got, tt.want)
+		}
+	}
+}
+
 func TestRegistry_Panics(t *testing.T) {
 	reg := providers.NewRegistry()
 
