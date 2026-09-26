@@ -7,7 +7,7 @@ Executes workspace agents: turns a stored agent configuration into streaming, to
 ## Requirements
 
 ### Requirement: Streaming execution
-An agent execution SHALL stream transcript events to its caller as they occur and SHALL end with exactly one terminal event (completed, error, or cancelled). Assistant text and reasoning SHALL be delivered as incremental delta events during generation; deltas SHALL NOT be persisted. Each completed assistant message SHALL be persisted exactly once. An execution interrupted mid-generation SHALL persist an incomplete-message marker so a later reload renders the partial response from durable data alone.
+An agent execution SHALL stream transcript events to its caller as they occur and SHALL end with exactly one terminal event (completed, error, or cancelled). Assistant text and reasoning SHALL be delivered as incremental delta events during generation; deltas SHALL NOT be persisted. Each completed assistant message SHALL be persisted exactly once. An execution interrupted mid-generation SHALL persist an incomplete-message marker so a later reload renders the partial response from durable data alone. Each executed tool call SHALL be announced on the live stream by exactly one `tool_call_started` event carrying that call's id, name, and arguments, followed by exactly one `tool_call_started`-paired `tool_call_finished` event carrying the result, error flag, and measured latency — no matter which internal event source (message blocks or execution spans) surfaces the call, and no matter how many calls the model issued in parallel. A call id SHALL NOT be started twice on one execution's live stream. The live events SHALL agree field-for-field with the hydrated transcript projection of the same execution, including each started event's arguments.
 
 #### Scenario: Deltas stream during generation
 - **WHEN** an agent generates a response
@@ -20,6 +20,18 @@ An agent execution SHALL stream transcript events to its caller as they occur an
 #### Scenario: Terminal event exactly once
 - **WHEN** an execution finishes (any outcome)
 - **THEN** the stream ends with exactly one terminal event and no events follow it
+
+#### Scenario: Tool call announced once with arguments
+- **WHEN** an execution executes a tool call whose arguments the model emitted in the requesting assistant message, on a provider whose live message stream does not surface tool-call blocks (span-sourced call)
+- **THEN** the live stream contains exactly one `tool_call_started` event for that call id, carrying the same call's arguments as recorded in the persisted transcript, followed by exactly one matching `tool_call_finished`
+
+#### Scenario: Parallel tool calls each paired
+- **WHEN** an execution executes two or more tool calls issued by the same assistant message
+- **THEN** the live stream contains exactly one started event and one finished event per call id, and no finished event is attributed to a different call's id
+
+#### Scenario: Live and hydrated transcripts agree
+- **WHEN** the same executed tool call is observed on the live stream and then replayed from the session log
+- **THEN** both projections carry the same call id, name, arguments, result, error flag, and latency
 
 ### Requirement: Instruction composition
 At execution start, the system instruction SHALL be composed in fixed order from: `AGENTS.md`, `IDENTITY.md`, `SOUL.md`, `WORKSPACE.md`, `USER.md`, `CHANNEL.md`, `BOOTSTRAP.md`. The L1 base prompt (`AGENTS.md`) SHALL be injected from the platform-embedded template at every composition — it SHALL NOT be read from the agent's workspace directory, so template updates reach every agent on the next execution regardless of workspace age. `IDENTITY.md`, `SOUL.md`, and `BOOTSTRAP.md` SHALL be read from the agent's workspace directory. `WORKSPACE.md` SHALL be rendered from the workspace record (name, description) plus a `## Shared memory` subsection carrying the workspace's shared memory content. `USER.md` SHALL be rendered from the calling user's record and workspace membership (name, email, role) plus a `## Memory` subsection carrying that user's own memory content. `CHANNEL.md` SHALL be rendered only when the execution carries channel context — from the channel record (name, slug, purpose, conventions), the member roster with specialization notes, and the channel catch-up tail as specified in the `agent-channels` capability — and SHALL occupy its fixed position between `USER.md` and `BOOTSTRAP.md`; executions without channel context SHALL omit it entirely. The memory subsections are distinct from the structured metadata (which remains free context): they carry preferences and information the structured fields do not capture. Composition SHALL happen per execution because `USER.md` varies by caller and memory may have changed since the previous turn, and missing documents and empty memory SHALL be skipped without failing the run (an empty memory omits its subsection entirely). The composed instruction SHALL carry a rich-cards guidance section — the markdown fence conventions for rendering card elements, with one shape per fence tag, plus the composition-tree (`ui`) conventions: the node protocol, the composition vocabulary, the constraint ranges, and the selection rule that composition is reserved for responses whose arrangement carries meaning — in attended, scheduler, and heartbeat compositions, positioned with the `AGENTS.md` base prompt.
@@ -417,7 +429,7 @@ The runtime SHALL expose a `web.fetch` tool that retrieves an http(s) URL and re
 - **THEN** the redirected fetch is refused under the same guard
 
 ### Requirement: Web search tool providers
-The `web.search` tool SHALL resolve queries through a search provider selected per workspace from the workspace's tool settings, falling back to instance configuration when the workspace has none, and to the zero-credential DuckDuckGo backend when neither exists (see the workspace-tools capability, "Search provider configuration"). The provider registry SHALL be extensible: a provider registers the credential kind it requires (`none`, `api_key`, `base_url`) and the catalog uses this to render configuration. The result shape SHALL be identical across providers. A workspace-selected provider whose credential is missing SHALL fail the tool's construction for the execution with an error naming the missing configuration, not silently fall back.
+The `web.search` tool SHALL resolve queries through a search provider selected per workspace from the workspace's tool settings, falling back to instance configuration when the workspace has none (see the workspace-tools capability, "Search provider configuration"). The provider registry SHALL be extensible: a provider registers the credential kind it requires (`api_key`, `base_url`) and the catalog uses this to render configuration. The result shape SHALL be identical across providers. When neither workspace entries nor a usable instance-env provider exist — or a selected provider is unknown or lacks its credential — the tool SHALL still build: its provider SHALL resolve lazily at first invocation, and every invocation SHALL return an explicit error result naming the missing configuration, surfaced on the tool call in the transcript while the run completes; the unconfigured tool SHALL NOT reach the network and SHALL NOT silently fall back to any credential-free backend.
 
 #### Scenario: Workspace provider selected
 - **WHEN** the workspace configures `brave` with an API key
@@ -428,12 +440,12 @@ The `web.search` tool SHALL resolve queries through a search provider selected p
 - **THEN** `web.search` resolves through Tavily
 
 #### Scenario: Zero-credential default
-- **WHEN** neither workspace nor instance configuration exists
-- **THEN** `web.search` uses the DuckDuckGo backend
+- **WHEN** neither workspace nor instance configuration exists and a run invokes `web.search`
+- **THEN** the invocation returns the explicit "not configured" error result without any network attempt, the tool call shows the error while the run completes, and no credential-free backend is used
 
-#### Scenario: Misconfigured workspace provider fails construction
-- **WHEN** the workspace selects `tavily` without a stored key
-- **THEN** the tool construction for the execution fails with an error naming the missing configuration
+#### Scenario: Misconfigured workspace provider degrades to a tool result
+- **WHEN** the workspace selects `tavily` without a stored key and a run invokes `web.search`
+- **THEN** the invocation returns an error result naming the missing configuration without any network attempt, the tool call shows the error while the run completes, and the tool does not silently fall back
 
 ### Requirement: Browser automation
 The runtime SHALL expose a browser tool set behind the `browser` facade: `browser.navigate`, `browser.snapshot`, `browser.click`, `browser.type`, `browser.hover`, `browser.drag`, `browser.select_option`, `browser.act`, `browser.read`, and `browser.screenshot`. The set SHALL follow the accessibility-snapshot model: `browser.snapshot` SHALL capture a page snapshot whose elements carry stable references, and the interaction tools (`click`, `type`, `hover`, `drag`, `select_option`) SHALL target elements by those references. The runtime SHALL attach to the workspace-configured remote CDP endpoint when one is provided, otherwise launch a local Chromium under the workspace-configured headless setting, honoring `max_pages`, `idle_timeout_seconds`, and `action_timeout_seconds` from the workspace's tool settings (see the workspace-tools capability, "Browser tool configuration"). When no browser is available, the tools SHALL return a clear availability error instead of failing the run. Each execution SHALL get its own isolated browser session, torn down when the execution ends or the idle timeout expires. Screenshots SHALL be written into the agent's workspace directory, and the tool result SHALL return the in-jail path.

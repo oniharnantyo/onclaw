@@ -70,7 +70,7 @@ Keys SHALL be encrypted at rest with AES-256-GCM using an instance master key, e
 - **THEN** verify on that config reports undecryptable; rename/toggle/delete still succeed
 
 ### Requirement: Connection verification
-POST `/workspaces/:ws/providers/:id/verify` SHALL decrypt the stored key and probe the provider per type: named types use their canonical (or overridden) origin; `openrouter` SHALL probe the key-info endpoint (`/api/v1/key`) because its models endpoint is public; `-compatible` types probe `{base_url}` with the type's canonical path. The result SHALL be returned synchronously as 200 {ok: true} or 200 {ok: false, error} and SHALL NOT be persisted on the config row. Verification SHALL require `providers.write`. Verifying a config without a key SHALL be 400. Provider-side auth failures (401/403) SHALL be reported as ok:false with the provider error, not as a server 5xx.
+POST `/workspaces/:ws/providers/:id/verify` SHALL decrypt the stored key and probe the provider per type: named types use their canonical (or overridden) origin; `openrouter` SHALL probe the key-info endpoint (`/api/v1/key`) because its models endpoint is public; `-compatible` types probe `{base_url}` with the type's canonical path. The result SHALL be returned synchronously as 200 {ok: true} or 200 {ok: false, error} and SHALL NOT be persisted on the config row. Verification SHALL require `providers.write`. Each provider type SHALL declare whether it requires an API key: the four named types (`openai`, `anthropic`, `gemini`, `openrouter`) require one, and the `-compatible` types do not — their probes omit the auth header when no key is configured. Verifying a config without a key SHALL be 400 only when the config's type requires a key; a keyless config of a keyless-capable type SHALL verify with an empty key, delegating the auth question to the endpoint's own answer. Provider-side auth failures (401/403) SHALL be reported as ok:false with the provider error, not as a server 5xx.
 
 #### Scenario: Successful probe
 - **WHEN** verify is called on a config with a valid OpenAI key
@@ -85,8 +85,12 @@ POST `/workspaces/:ws/providers/:id/verify` SHALL decrypt the stored key and pro
 - **THEN** 200 {ok: false, error describes the transport failure}
 
 #### Scenario: Verify without key
-- **WHEN** verify is called on a keyless config
+- **WHEN** verify is called on a keyless config whose type requires a key (e.g. `openai`)
 - **THEN** response is 400 invalid_request
+
+#### Scenario: Keyless config verifies
+- **WHEN** verify is called on a keyless config of a keyless-capable type (e.g. `openai-compatible`) whose endpoint needs no credential
+- **THEN** 200 {ok: true} when the endpoint answers; a 401 from an endpoint that does require auth reports 200 {ok: false, error} — never a server 5xx
 
 #### Scenario: Verify requires write permission
 - **WHEN** a Member-role holder calls verify
@@ -130,18 +134,22 @@ An `openai-compatible` or `anthropic-compatible` provider configuration SHALL ac
 - **THEN** catalog resolution treats the provider as unmapped (unknown), and nothing else about the provider changes
 
 ### Requirement: Draft credential verification
-`POST /workspaces/:ws/providers/verify-draft` SHALL test unsaved provider form values without persisting anything. The payload SHALL carry the form state — `type`, optional `base_url`, write-only optional `key`, optional `catalog_provider`, and optional `provider_id` naming an existing workspace config. When `key` is absent and `provider_id` names a config with a stored key, the endpoint SHALL decrypt the stored key and verify it together with the submitted type and base URL; when no credential can be resolved (no key and no config, or a keyless config) the endpoint SHALL be 400. Verification SHALL reuse the per-type provider probes of the stored-config verify endpoint, SHALL require `providers.write`, SHALL return synchronously as 200 `{ok: true}` or 200 `{ok: false, error}` (provider-side auth failures reported as `ok: false`, not a server 5xx), and SHALL NOT write any state.
+`POST /workspaces/:ws/providers/verify-draft` SHALL test unsaved provider form values without persisting anything. The payload SHALL carry the form state — `type`, optional `base_url`, write-only optional `key`, optional `catalog_provider`, and optional `provider_id` naming an existing workspace config. When the draft's type requires an API key and `key` is absent, the endpoint SHALL decrypt the stored key of the config named by `provider_id` and verify it together with the submitted type and base URL; when the type requires a key and no credential can be resolved (no key and no config, or a keyless config) the endpoint SHALL be 400. When the draft's type does not require a key, the endpoint SHALL verify immediately with the submitted key — including an empty one — without consulting a stored config. Verification SHALL reuse the per-type provider probes of the stored-config verify endpoint, SHALL require `providers.write`, SHALL return synchronously as 200 `{ok: true}` or 200 `{ok: false, error}` (provider-side auth failures reported as `ok: false`, not a server 5xx), and SHALL NOT write any state.
 
 #### Scenario: Verify typed values in the create dialog
 - **WHEN** a client posts a draft with type, base URL, and a typed key
 - **THEN** the endpoint probes the provider with those values and returns ok or the provider error, persisting nothing
 
 #### Scenario: Edit dialog verifies against the stored key
-- **WHEN** a client posts a draft with `provider_id` of a key-set config and no key
+- **WHEN** a client posts a draft with `provider_id` of a key-set config whose type requires a key, and no key
 - **THEN** the stored key is verified against the submitted type and base URL
 
+#### Scenario: Keyless draft verifies without a key
+- **WHEN** a client posts a draft of a keyless-capable type (e.g. `openai-compatible`) with a base URL and no key
+- **THEN** the endpoint probes the endpoint keyless and returns ok or the provider error, persisting nothing
+
 #### Scenario: No credential to test
-- **WHEN** a client posts a draft with no key and a `provider_id` of a keyless config (or none)
+- **WHEN** a client posts a draft of a key-requiring type with no key and a `provider_id` of a keyless config (or none)
 - **THEN** response is 400
 
 #### Scenario: Nothing is persisted

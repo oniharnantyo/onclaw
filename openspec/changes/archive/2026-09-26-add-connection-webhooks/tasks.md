@@ -21,9 +21,9 @@
 
 ## 4. Web
 
-- [ ] 4.1 ASCII gallery for the connection webhooks section (enable, secret reveal-once, rotate, target picker, event checkboxes) — approval gate before any UI build
-- [ ] 4.2 Implement the approved webhooks section in the connection manage surface; design-contract conformance
-- [ ] 4.3 Ingest setup helper copy: exact provider configuration steps (URL + secret + events) from the recipe
+- [x] 4.1 ASCII gallery for the connection webhooks section (enable, secret reveal-once, rotate, target picker, event checkboxes) — approval gate before any UI build (gallery.md; user pivoted to live rendered review)
+- [x] 4.2 Implement the approved webhooks section in the connection manage surface; design-contract conformance (ConnectionWebhooksDialog + IntegrationsSection wiring; team verifier PASS — tsc green, web 1460/1460)
+- [x] 4.3 Ingest setup helper copy: exact provider configuration steps (URL + secret + events) from the recipe (rendered verbatim from recipe.webhooks.setup)
 
 ## 5. Verification
 
