@@ -96,8 +96,10 @@ type documentCreateTool struct {
 }
 
 // NewDocumentCreate constructs the document.create tool for one agent
-// workspace. agentDir must exist and resolves symlinks to its canonical form,
-// exactly like the fs jail backend. publisher and htmlRenderer implement the
+// workspace. A missing agentDir is created at construction (self-heal) and
+// resolves symlinks to its canonical form, exactly like the fs jail backend;
+// only an unwritable path or a non-directory occupying it fails construction.
+// publisher and htmlRenderer implement the
 // delivery (D6) and PDF HTML-route (D4) ports; a nil htmlRenderer encodes a
 // deployment without headless Chrome (the HTML route then degrades with a
 // structured error), a nil publisher omits the capability URL from results.
@@ -109,12 +111,11 @@ func NewDocumentCreate(agentDir string, publisher DocumentPublisher, htmlRendere
 	if err != nil {
 		return nil, fmt.Errorf("resolve agent workspace path: %w", err)
 	}
-	info, err := os.Stat(abs)
-	if err != nil {
-		return nil, fmt.Errorf("stat agent workspace directory: %w", err)
-	}
-	if !info.IsDir() {
+	if info, statErr := os.Stat(abs); statErr == nil && !info.IsDir() {
 		return nil, fmt.Errorf("agent workspace is not a directory: %s", abs)
+	}
+	if err := os.MkdirAll(abs, 0o755); err != nil {
+		return nil, fmt.Errorf("create agent workspace directory: %w", err)
 	}
 	resolvedRoot, err := filepath.EvalSymlinks(abs)
 	if err != nil {
@@ -139,9 +140,9 @@ func (t *documentCreateTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 		Desc: "Generate a new document (xlsx, pdf, docx, or pptx) inside the workspace at an absolute output path under " + backend.DefaultMountPoint + ". " +
 			"Input follows the format: docx takes {\"markdown\"} (headings #/##/###, **bold**, *italic*, - bullets, | pipe tables |); " +
 			"pptx takes {\"slides\":[{\"title\",\"bullets\",\"notes\"}]}; " +
-				"xlsx takes {\"sheets\":[{\"name\",\"rows\",\"bold_first_row\"}]} or a simple {\"text\"} pipe table; " +
-				"pdf takes {\"markdown\":\"# Title\\n...\"} or {\"source\":\"html\",\"html\":...} or {\"source\":\"structured\",\"invoice\":{seller,buyer,number,date,line_items,tax_rate,notes}}. " +
-				"An optional \"template\" path (a chat-attached file mount or workspace file) switches to template-fill: " +
+			"xlsx takes {\"sheets\":[{\"name\",\"rows\",\"bold_first_row\"}]} or a simple {\"text\"} pipe table; " +
+			"pdf takes {\"markdown\":\"# Title\\n...\"} or {\"source\":\"html\",\"html\":...} or {\"source\":\"structured\",\"invoice\":{seller,buyer,number,date,line_items,tax_rate,notes}}. " +
+			"An optional \"template\" path (a chat-attached file mount or workspace file) switches to template-fill: " +
 			"xlsx fills named cells {\"cells\":{\"Sheet1!B3\":\"v\"}} and appends rows; docx/pptx replace {{placeholder}} text. " +
 			"PDF templates are not supported (PDF is final-form) — use an xlsx or docx template, or the structured/HTML pdf routes. " +
 			"Generation failures return an error result naming the document; the output path must stay inside the workspace.",

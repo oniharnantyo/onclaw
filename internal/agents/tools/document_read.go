@@ -124,9 +124,10 @@ type documentReadTool struct {
 }
 
 // NewDocumentRead constructs the document.read tool for one agent workspace.
-// Validates that agentDir exists and is a directory (resolving symlinks).
-// Conversion is fully in-process — no external runtime exists to be missing
-// (design.md D3), so construction only fails on a bad workspace path.
+// A missing agentDir is created at construction (self-heal); the root resolves
+// symlinks, and construction fails only on a genuinely unwritable path or a
+// non-directory occupying it. Conversion is fully in-process — no external
+// runtime exists to be missing (design.md D3).
 func NewDocumentRead(agentDir string, opts ...DocumentReadOption) (tool.BaseTool, error) {
 	if agentDir == "" {
 		return nil, fmt.Errorf("agent workspace directory cannot be empty")
@@ -135,12 +136,11 @@ func NewDocumentRead(agentDir string, opts ...DocumentReadOption) (tool.BaseTool
 	if err != nil {
 		return nil, fmt.Errorf("resolve agent workspace path: %w", err)
 	}
-	info, err := os.Stat(abs)
-	if err != nil {
-		return nil, fmt.Errorf("stat agent workspace directory: %w", err)
-	}
-	if !info.IsDir() {
+	if info, statErr := os.Stat(abs); statErr == nil && !info.IsDir() {
 		return nil, fmt.Errorf("agent workspace is not a directory: %s", abs)
+	}
+	if err := os.MkdirAll(abs, 0o755); err != nil {
+		return nil, fmt.Errorf("create agent workspace directory: %w", err)
 	}
 	resolvedRoot, err := filepath.EvalSymlinks(abs)
 	if err != nil {

@@ -193,12 +193,16 @@ func NewDefaultToolRegistry(memories store.MemoryStore, opts ...ToolRegistryOpti
 		opt(reg)
 	}
 
+	// web.search (fix-tool-config-error-degrades-to-tool-result D1): the
+	// provider chain resolves lazily through the resolver on first invocation,
+	// so the registration is infallible — a workspace with no usable provider
+	// entries still builds the tool, and the not-configured / unknown-provider
+	// / missing-credential errors surface as error results on the tool call
+	// while the run completes (design.md D4).
 	reg.Register(tools.Name, func(tctx ToolContext) (tool.BaseTool, error) {
-		provider, err := searchProviderFor(tctx)
-		if err != nil {
-			return nil, err
-		}
-		return tools.NewWebSearch(tools.WithSearchProvider(provider))
+		return tools.NewWebSearch(tools.WithSearchProviderResolver(func() (tools.SearchProvider, error) {
+			return searchProviderFor(tctx)
+		}))
 	})
 
 	reg.Register(tools.NameWebFetch, func(ToolContext) (tool.BaseTool, error) {
@@ -420,9 +424,12 @@ func (r *toolRegistry) CloseSession(sessionID string) {
 	}
 }
 
-// errWebSearchNotConfigured is the construction error for a workspace with no
-// usable search provider entries (design.md D4): explicit and actionable,
-// raised before any network attempt, with no credential-free fallback.
+// errWebSearchNotConfigured is the invocation-time error for a workspace with
+// no usable search provider entries
+// (fix-tool-config-error-degrades-to-tool-result design.md D1/D4): explicit
+// and actionable, raised through the lazy resolver before any network attempt,
+// with no credential-free fallback. web.search always builds; the error
+// surfaces as an error result on the tool call while the run completes.
 var errWebSearchNotConfigured = errors.New("web.search is not configured — add a provider in Settings → Tools")
 
 // webSearchWindow is the positional failover window: the first N entries in
@@ -434,8 +441,9 @@ const webSearchWindow = 3
 // a per-attempt HTTP client bounded by request_timeout_seconds (design.md D7)
 // and the first webSearchWindow entries are chained as the failover window
 // (design.md D2). Config arrives decrypted with instance env already merged
-// by the settings service; with no entries there is no fallback —
-// construction fails with the explicit not-configured error (design.md D4).
+// by the settings service; with no entries there is no fallback — the
+// resolver returns the explicit not-configured error, which surfaces at first
+// invocation as an error result (design.md D4).
 func searchProviderFor(tctx ToolContext) (tools.SearchProvider, error) {
 	named, err := webSearchChainEntries(tctx.ToolConfigs[tools.Name])
 	if err != nil {

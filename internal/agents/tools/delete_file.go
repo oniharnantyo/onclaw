@@ -26,10 +26,11 @@ type deleteFileTool struct {
 	agentDir string
 }
 
-// NewDeleteFile constructs the delete tool for one agent workspace. The root
-// must exist and resolves symlinks to its canonical form, exactly like the fs
-// jail backend — a construction failure fails tool resolution, mirroring how
-// the jail backend fails composition for a missing workspace directory.
+// NewDeleteFile constructs the delete tool for one agent workspace. A missing
+// root is created at construction (self-heal: an absent directory must not
+// kill every run for the agent) and the root resolves symlinks to its
+// canonical form, exactly like the fs jail backend — only an unwritable path
+// or a non-directory occupying the root still fails construction.
 func NewDeleteFile(agentDir string) (tool.BaseTool, error) {
 	if agentDir == "" {
 		return nil, fmt.Errorf("agent workspace directory cannot be empty")
@@ -38,12 +39,11 @@ func NewDeleteFile(agentDir string) (tool.BaseTool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve agent workspace path: %w", err)
 	}
-	info, err := os.Stat(abs)
-	if err != nil {
-		return nil, fmt.Errorf("stat agent workspace directory: %w", err)
-	}
-	if !info.IsDir() {
+	if info, statErr := os.Stat(abs); statErr == nil && !info.IsDir() {
 		return nil, fmt.Errorf("agent workspace is not a directory: %s", abs)
+	}
+	if err := os.MkdirAll(abs, 0o755); err != nil {
+		return nil, fmt.Errorf("create agent workspace directory: %w", err)
 	}
 	resolvedRoot, err := filepath.EvalSymlinks(abs)
 	if err != nil {

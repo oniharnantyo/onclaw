@@ -142,8 +142,12 @@ func TestNewDeleteFile_Construction(t *testing.T) {
 	if _, err := NewDeleteFile(""); err == nil {
 		t.Error("expected empty-dir construction error")
 	}
-	if _, err := NewDeleteFile(filepath.Join(t.TempDir(), "absent")); err == nil {
-		t.Error("expected missing-dir construction error")
+	missing := filepath.Join(t.TempDir(), "absent")
+	if _, err := NewDeleteFile(missing); err != nil {
+		t.Errorf("missing dir should self-heal at construction, got %v", err)
+	}
+	if info, err := os.Stat(missing); err != nil || !info.IsDir() {
+		t.Errorf("missing dir should be created at construction, stat err: %v", err)
 	}
 	file := filepath.Join(t.TempDir(), "plain.txt")
 	if err := os.WriteFile(file, []byte("x"), 0644); err != nil {

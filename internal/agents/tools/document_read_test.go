@@ -579,3 +579,23 @@ func TestDocumentReadParentCancellationPropagates(t *testing.T) {
 		t.Fatalf("parent cancellation should propagate as a Go error")
 	}
 }
+
+func TestNewDocumentRead_Construction(t *testing.T) {
+	if _, err := NewDocumentRead(""); err == nil {
+		t.Error("expected empty-dir construction error")
+	}
+	missing := filepath.Join(t.TempDir(), "absent")
+	if _, err := NewDocumentRead(missing); err != nil {
+		t.Errorf("missing dir should self-heal at construction, got %v", err)
+	}
+	if info, err := os.Stat(missing); err != nil || !info.IsDir() {
+		t.Errorf("missing dir should be created at construction, stat err: %v", err)
+	}
+	file := filepath.Join(t.TempDir(), "plain.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := NewDocumentRead(file); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Errorf("expected not-a-directory construction error, got %v", err)
+	}
+}

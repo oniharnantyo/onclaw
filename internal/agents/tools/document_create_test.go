@@ -545,12 +545,12 @@ func TestDocumentCreate_PDFStructuredInvoice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("convertPDF round trip: %v", err)
 	}
-		for _, want := range []string{"INVOICE", "INV-2026-001", "OnClaw Inc", "Acme Corp", "Agent workspace license", "1,240.00", "124.00", "1,364.00", "Payment due in 30 days"} {
-			if !strings.Contains(text, want) {
-				t.Errorf("pdf text missing %q in:\n%s", want, text)
-			}
+	for _, want := range []string{"INVOICE", "INV-2026-001", "OnClaw Inc", "Acme Corp", "Agent workspace license", "1,240.00", "124.00", "1,364.00", "Payment due in 30 days"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("pdf text missing %q in:\n%s", want, text)
 		}
 	}
+}
 
 func TestDocumentCreate_PDFMarkdownDocument(t *testing.T) {
 	tool, dir := newDocumentCreateForDir(t)
@@ -804,8 +804,12 @@ func TestNewDocumentCreate_Construction(t *testing.T) {
 	if _, err := NewDocumentCreate("", nil, nil); err == nil {
 		t.Error("expected empty-dir construction error")
 	}
-	if _, err := NewDocumentCreate(filepath.Join(t.TempDir(), "absent"), nil, nil); err == nil {
-		t.Error("expected missing-dir construction error")
+	missing := filepath.Join(t.TempDir(), "absent")
+	if _, err := NewDocumentCreate(missing, nil, nil); err != nil {
+		t.Errorf("missing dir should self-heal at construction, got %v", err)
+	}
+	if info, err := os.Stat(missing); err != nil || !info.IsDir() {
+		t.Errorf("missing dir should be created at construction, stat err: %v", err)
 	}
 	file := filepath.Join(t.TempDir(), "plain.txt")
 	if err := os.WriteFile(file, []byte("x"), 0644); err != nil {

@@ -220,10 +220,15 @@ func TestNewDefaultToolRegistry_DocumentTools(t *testing.T) {
 	if info.Name != tools.NameDocumentRead {
 		t.Errorf("tool name = %q, want %q", info.Name, tools.NameDocumentRead)
 	}
-	// A missing workspace directory fails construction (the constructor
-	// validates the jail root exists).
-	if _, err := ctor(ToolContext{AgentDir: filepath.Join(agentDir, "missing")}); err == nil {
-		t.Error("expected document.read construction failure for a missing agent dir")
+	// A missing workspace directory self-heals at construction (design.md D5):
+	// MkdirAll creates the jail root; only a non-directory or unwritable path
+	// still fails.
+	missing := filepath.Join(agentDir, "missing")
+	if _, err := ctor(ToolContext{AgentDir: missing}); err != nil {
+		t.Errorf("document.read must self-heal a missing agent dir: %v", err)
+	}
+	if info, err := os.Stat(missing); err != nil || !info.IsDir() {
+		t.Errorf("expected the missing agent dir to be created, got %+v (err=%v)", info, err)
 	}
 
 	// document.create builds against the jail root; the publisher and the
@@ -354,7 +359,7 @@ func TestSearchProviderFor_BuildsChainFromEntries(t *testing.T) {
 	}
 }
 
-func TestSearchProviderFor_MissingCredentialFailsConstruction(t *testing.T) {
+func TestSearchProviderFor_MissingCredentialFailsResolution(t *testing.T) {
 	// Cannot pass settings validation, but the resolver must still fail
 	// loudly instead of building a dead provider.
 	tctx := ToolContext{ToolConfigs: webSearchToolConfig(
@@ -362,7 +367,53 @@ func TestSearchProviderFor_MissingCredentialFailsConstruction(t *testing.T) {
 	)}
 	_, err := searchProviderFor(tctx)
 	if err == nil || !strings.Contains(err.Error(), "requires an API key") {
-		t.Fatalf("expected missing-credential construction error, got %v", err)
+		t.Fatalf("expected missing-credential resolution error, got %v", err)
+	}
+}
+
+// TestWebSearchResolution_DegradesToInvocationError pins the lazy web.search
+// resolution end to end (fix-tool-config-error-degrades-to-tool-result 1.3):
+// an unconfigured workspace resolves the tool successfully through the
+// registry, and the not-configured error surfaces on first invocation as the
+// middleware-contract error result naming web.search; a configured workspace
+// still resolves its provider chain at construction.
+func TestWebSearchResolution_DegradesToInvocationError(t *testing.T) {
+	reg := NewDefaultToolRegistry(nil)
+	ctor, ok := reg.Lookup(tools.Name)
+	if !ok {
+		t.Fatal("expected web.search registration")
+	}
+
+	// Unconfigured workspace: construction succeeds; the not-configured error
+	// surfaces on first invocation (the runtime's error-result middleware
+	// renders it as the JSON the model reads).
+	tl, err := ctor(ToolContext{})
+	if err != nil {
+		t.Fatalf("unconfigured workspace must still build web.search: %v", err)
+	}
+	it, ok := tl.(tool.InvokableTool)
+	if !ok {
+		t.Fatal("webSearchTool must implement tool.InvokableTool")
+	}
+	_, err = it.InvokableRun(context.Background(), `{"query":"test"}`)
+	if want := "web.search is not configured — add a provider in Settings → Tools"; err == nil || err.Error() != want {
+		t.Fatalf("expected not-configured invocation error %q, got %v", want, err)
+	}
+	payload := errorResultPayload(err, tools.Name)
+	if !strings.Contains(payload, `"error"`) || !strings.Contains(payload, `"tool":"web.search"`) {
+		t.Errorf("expected middleware-contract error result naming web.search, got %s", payload)
+	}
+
+	// Configured workspace: the chain resolves at construction. Not invoked —
+	// that would attempt a network call.
+	configured, err := ctor(ToolContext{ToolConfigs: webSearchToolConfig(
+		map[string]any{"id": "a1b2c3d4", "name": "Tavily 1", "provider": "tavily", "api_key": "k1"},
+	)})
+	if err != nil {
+		t.Fatalf("configured workspace must build web.search through its chain: %v", err)
+	}
+	if configured == nil {
+		t.Fatal("expected non-nil tool for configured workspace")
 	}
 }
 

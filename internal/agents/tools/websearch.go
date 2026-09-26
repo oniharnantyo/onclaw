@@ -1,9 +1,10 @@
 // Package tools holds the OnClaw built-in tool implementations wired into the
 // agent execution Engine via the ToolRegistry. web.search is composed from
 // API-backed providers (Tavily, Brave, Exa, Perplexity, Firecrawl, SearXNG)
-// configured per workspace; there is no credential-free default — an
-// unconfigured web.search fails construction. The browser tools opt into a
-// local browser.
+// configured per workspace; there is no credential-free default — the tool
+// always builds, and a not-configured / unknown-provider / missing-credential
+// error surfaces at invocation as an error result while the run completes.
+// The browser tools opt into a local browser.
 package tools
 
 import (
@@ -13,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/cloudwego/eino/components/tool"
@@ -46,29 +48,50 @@ func WithHTTPClient(c HTTPClient) WebSearchOption {
 	return func(w *webSearchTool) { w.client = c }
 }
 
-// WithSearchProvider overrides the search backend (testing seam).
+// WithSearchProvider overrides the search backend (testing seam). When set it
+// wins outright — the lazy resolver never runs.
 func WithSearchProvider(p SearchProvider) WebSearchOption {
 	return func(w *webSearchTool) { w.provider = p }
 }
 
+// WithSearchProviderResolver defers backend resolution to first invocation
+// (design.md D1): the resolver runs once on the first InvokableRun and the
+// outcome is memoized, so a configuration error surfaces as an invocation
+// error result while the run completes.
+func WithSearchProviderResolver(fn func() (SearchProvider, error)) WebSearchOption {
+	return func(w *webSearchTool) { w.resolver = fn }
+}
+
 // webSearchTool implements the web.search built-in on top of a SearchProvider.
+// The backend binds eagerly (WithSearchProvider, the test seam) or lazily
+// through the resolver on first invocation; the resolution outcome — including
+// a failed resolution — is memoized on the instance (design.md D2: one tool
+// instance per execution, so repeat invocations return the identical error
+// cheaply).
 type webSearchTool struct {
 	provider SearchProvider
 	client   HTTPClient
+
+	resolver   func() (SearchProvider, error)
+	once       sync.Once
+	resolved   SearchProvider
+	resolveErr error
 }
 
 // Name is the dotted capability name registered in the tool registry.
 const Name = "web.search"
 
-// NewWebSearch constructs the web.search built-in. A provider must be injected
-// with WithSearchProvider; without one construction fails — there is no
-// credential-free default backend.
+// NewWebSearch constructs the web.search built-in. The backend binds either
+// eagerly with WithSearchProvider (testing seam) or lazily through
+// WithSearchProviderResolver (production: the workspace provider chain
+// resolves on first invocation); with neither, construction fails — there is
+// no credential-free default backend.
 func NewWebSearch(opts ...WebSearchOption) (tool.BaseTool, error) {
 	t := &webSearchTool{}
 	for _, opt := range opts {
 		opt(t)
 	}
-	if t.provider == nil {
+	if t.provider == nil && t.resolver == nil {
 		return nil, errors.New("web.search: no search provider configured")
 	}
 	return t, nil
@@ -123,7 +146,12 @@ func (t *webSearchTool) InvokableRun(ctx context.Context, argumentsInJSON string
 		num = 10
 	}
 
-	results, err := t.provider.Search(ctx, args.Query, num)
+	provider, err := t.searchProvider()
+	if err != nil {
+		return "", err
+	}
+
+	results, err := provider.Search(ctx, args.Query, num)
 	if err != nil {
 		return "", err
 	}
@@ -135,6 +163,19 @@ func (t *webSearchTool) InvokableRun(ctx context.Context, argumentsInJSON string
 		return "", fmt.Errorf("web.search: encode results: %w", err)
 	}
 	return string(out), nil
+}
+
+// searchProvider returns the tool's backend: the eager provider when set,
+// otherwise the resolver run once on first invocation with the outcome —
+// including the error — memoized (design.md D2).
+func (t *webSearchTool) searchProvider() (SearchProvider, error) {
+	if t.provider != nil {
+		return t.provider, nil
+	}
+	t.once.Do(func() {
+		t.resolved, t.resolveErr = t.resolver()
+	})
+	return t.resolved, t.resolveErr
 }
 
 // Timeout returns an option setting a per-call HTTP timeout.

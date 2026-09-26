@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -94,6 +95,55 @@ func TestWebSearch_EmptyQuery(t *testing.T) {
 	_, err = tl.(tool.InvokableTool).InvokableRun(context.Background(), `{"query":""}`)
 	if err == nil {
 		t.Fatal("expected error for empty query, got nil")
+	}
+}
+
+// TestWebSearch_ResolverErrorMemoized pins the lazy lane's failure behavior
+// (design.md D2): the resolver's error surfaces from InvokableRun on the first
+// call and identically on the second, with the resolver itself invoked exactly
+// once — the failed resolution is cached on the tool instance.
+func TestWebSearch_ResolverErrorMemoized(t *testing.T) {
+	calls := 0
+	want := "web.search is not configured — add a provider in Settings → Tools"
+	tl, err := NewWebSearch(WithSearchProviderResolver(func() (SearchProvider, error) {
+		calls++
+		return nil, errors.New(want)
+	}))
+	if err != nil {
+		t.Fatalf("NewWebSearch: %v", err)
+	}
+	it, ok := tl.(tool.InvokableTool)
+	if !ok {
+		t.Fatal("webSearchTool must implement tool.InvokableTool")
+	}
+
+	for i := 0; i < 2; i++ {
+		_, err := it.InvokableRun(context.Background(), `{"query":"test"}`)
+		if err == nil || err.Error() != want {
+			t.Fatalf("call %d: expected %q, got %v", i+1, want, err)
+		}
+	}
+	if calls != 1 {
+		t.Errorf("resolver invoked %d times, want exactly 1", calls)
+	}
+}
+
+func TestWebSearch_ResolverSuccessServesQuery(t *testing.T) {
+	provider := &fakeSearchProvider{results: []SearchResult{
+		{Title: "R", URL: "https://r.example", Snippet: "snippet"},
+	}}
+	tl, err := NewWebSearch(WithSearchProviderResolver(func() (SearchProvider, error) {
+		return provider, nil
+	}))
+	if err != nil {
+		t.Fatalf("NewWebSearch: %v", err)
+	}
+	out, err := tl.(tool.InvokableTool).InvokableRun(context.Background(), `{"query":"test"}`)
+	if err != nil {
+		t.Fatalf("InvokableRun: %v", err)
+	}
+	if !strings.Contains(out, "https://r.example") {
+		t.Errorf("output missing resolved provider result: %s", out)
 	}
 }
 
