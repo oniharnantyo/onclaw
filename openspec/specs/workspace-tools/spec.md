@@ -7,7 +7,7 @@ The per-workspace tool catalog and its control surface: what every selectable to
 ## Requirements
 
 ### Requirement: Tool catalog
-The backend SHALL maintain a tool catalog covering every selectable tool: registry built-ins, the filesystem middleware tools (`ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`), the `document.read` tool, the reserved shell name `execute`, and the channel toolset (`channel.post`, `channel.history`, `session.close`). The catalog SHALL NOT offer the generative-UI echo tools `ui.chart`, `ui.timeline`, or `ui.preview`: rich card rendering is prompt-guided markdown fences (the `web-app/generative-ui` capability), not tool calls, and any stored agent allowlists naming the removed keys SHALL be inert. Each entry SHALL carry a stable key (the allowlist name, with `browser` as the browser facade alias), a human-readable display name, a one-line description, a group, and an icon key. Each entry SHALL also carry a toggleability marker: the three channel toolset entries SHALL be marked non-toggleable (always-on in their execution context), and every other entry SHALL be marked toggleable. A tool MAY declare itself configurable with a config-field schema (field key, label, type: `secret` | `text` | `number` | `boolean` | `enum`, requirement, help text) so clients can render structured config forms without frontend changes. Registering a new tool into the registry or catalog SHALL be sufficient for it to appear in API responses; no frontend edit SHALL be required.
+The backend SHALL maintain a tool catalog covering every selectable tool: registry built-ins, the filesystem middleware tools (`ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`), the `document.read` tool, the reserved shell name `execute`, and the channel toolset (`channel.post`, `channel.history`, `session.close`). The catalog SHALL NOT offer the generative-UI echo tools `ui.chart`, `ui.timeline`, or `ui.preview`: rich card rendering is prompt-guided markdown fences (the `web-app/generative-ui` capability), not tool calls, and any stored agent denylists naming the removed keys SHALL be inert. Each entry SHALL carry a stable key (the denylist name agents use in `disabled_tools`, with `browser` as the browser facade alias), a human-readable display name, a one-line description, a group, and an icon key. Each entry SHALL also carry a toggleability marker: the three channel toolset entries SHALL be marked non-toggleable (always-on in their execution context), and every other entry SHALL be marked toggleable. A tool MAY declare itself configurable with a config-field schema (field key, label, type: `secret` | `text` | `number` | `boolean` | `enum`, requirement, help text) so clients can render structured config forms without frontend changes. Registering a new tool into the registry or catalog SHALL be sufficient for it to appear in API responses; no frontend edit SHALL be required.
 
 #### Scenario: Catalog includes filesystem tools
 - **WHEN** the catalog is requested
@@ -22,7 +22,7 @@ The backend SHALL maintain a tool catalog covering every selectable tool: regist
 - **THEN** entries include `todo_write` and `todo_read` with display name, description, group, and icon key, each toggleable and selectable per agent, and the removed echo tools appear as no entries at all
 
 #### Scenario: Stale allowlist keys are inert
-- **WHEN** an agent's stored tool allowlist still names `ui.chart`
+- **WHEN** an agent's stored tool denylist still names `ui.chart`
 - **THEN** agent creation, update, and execution succeed; the unknown key contributes no tool to runs
 
 #### Scenario: New tool appears without frontend changes
@@ -36,7 +36,6 @@ The backend SHALL maintain a tool catalog covering every selectable tool: regist
 #### Scenario: Channel toolset marked non-toggleable
 - **WHEN** the catalog is requested
 - **THEN** `channel.post`, `channel.history`, and `session.close` appear with display name, description, group, and icon key and carry the non-toggleable marker, and no other entry carries it
-
 ### Requirement: Workspace tool settings storage
 Each workspace SHALL store per-tool state in a `workspace_tool_settings` table: workspace id, tool key, `enabled` (default true), and `config` (JSON object, default empty). Rows SHALL be workspace-scoped — no query without the workspace boundary. Secret config values SHALL be encrypted at rest with the instance encryption key in the same manner as workspace provider keys, and SHALL never be returned by any endpoint; reads SHALL expose only a non-secret hint (e.g. last four characters) plus all non-secret values.
 
@@ -80,10 +79,10 @@ Workspaces SHALL expose `GET /api/v1/workspaces/:ws/tools` returning the catalog
 - **THEN** the response is 422 and the stored settings are unchanged
 
 ### Requirement: Workspace tool gate
-Tool resolution for an execution SHALL intersect the agent's allowlist with the workspace's enabled set from tool settings. A workspace-disabled tool SHALL NOT be exposed to any agent in that workspace, and the gate SHALL win over both the agent allowlist and any per-turn allowed-tools override. Facade aliases SHALL expand only from tools that pass the gate — disabling the facade disables every member tool. Non-toggleable (always-on) tools SHALL be exempt from the enabled-set intersection: workspace settings SHALL NOT remove them, stored disabled rows for them SHALL be ignored, and their exposure SHALL remain governed solely by the run's execution context (channel-run scoping; the facilitator and active-session conditions for `session.close`).
+Tool resolution for an execution SHALL intersect the agent's denylist-resolved effective tool set (catalog minus `disabled_tools`) with the workspace's enabled set from tool settings. A workspace-disabled tool SHALL NOT be exposed to any agent in that workspace, and the gate SHALL win over the agent denylist and any per-turn allowed-tools override. Facade aliases SHALL expand only from tools that pass the gate — disabling the facade disables every member tool. Non-toggleable (always-on) tools SHALL be exempt from the enabled-set intersection: workspace settings SHALL NOT remove them, stored disabled rows for them SHALL be ignored, and their exposure SHALL remain governed solely by the run's execution context (channel-run scoping; the facilitator and active-session conditions for `session.close`).
 
 #### Scenario: Workspace gate overrides agent allowlist
-- **WHEN** `web.search` is disabled for the workspace and an agent's `tools` contains `web.search`
+- **WHEN** `web.search` is disabled for the workspace and the agent's `disabled_tools` does not name it
 - **THEN** the agent's executions expose no `web.search` tool
 
 #### Scenario: Gate overrides per-turn request
@@ -92,12 +91,11 @@ Tool resolution for an execution SHALL intersect the agent's allowlist with the 
 
 #### Scenario: Facade disable cascades
 - **WHEN** the workspace disables the `browser` facade
-- **THEN** no `browser.*` tool is exposed to any agent in the workspace, regardless of agent allowlists
+- **THEN** no `browser.*` tool is exposed to any agent in the workspace, regardless of agent denylists
 
 #### Scenario: Stale disabled row does not strip an always-on tool
 - **WHEN** the workspace holds an `enabled=false` settings row for `channel.history` and a channel run resolves its toolset
 - **THEN** `channel.history` is still exposed to that run
-
 ### Requirement: Search provider configuration
 `web.search` SHALL be configurable per workspace through its tool settings as an ordered list of named provider entries: each entry carries a unique non-empty name, a provider chosen from the provider registry, and the credential that provider requires. The registry SHALL ship `tavily`, `brave`, `exa`, `perplexity`, and `firecrawl` (API key) and `searxng` (base URL); a credential-free scraping provider SHALL NOT exist. The same provider MAY appear in multiple entries with different credentials. A workspace may store any number of entries (bounded by a platform cap well above the request window); list order is priority. Request resolution SHALL build a failover chain from the first three entries in list order (a positional window; the window size is a platform constant): each attempt is bounded by the tool's per-attempt request timeout (`request_timeout_seconds`, positive integer, default 10, maximum 60); any attempt error — non-200 status, network failure, or response decode failure — SHALL advance to the next entry in the window; a successful response with zero results SHALL be returned as a valid answer without advancing; when every entry in the window fails, the request SHALL fail with the last error prefixed by the failing entry's name. Entries below the window SHALL never serve while they sit below it. When a workspace has no entries, the resolver SHALL fall back to the instance configuration (environment) as a single-entry chain. When neither entries nor a usable env provider exist — or the entries or env name an unknown provider or lack the credential that provider requires — `web.search` SHALL still build: its provider SHALL resolve lazily at first invocation, every invocation SHALL return an explicit error result naming the missing configuration without any network attempt, the error SHALL be surfaced on the tool call in the transcript while the run completes, and the agent SHALL remain free to answer through other means; there SHALL be no credential-free fallback. Enabling `web.search` SHALL require at least one fully valid entry (unique non-empty name, known provider, credential present per kind); enabling with none, or saving duplicate entry names, SHALL be rejected with a 422 naming the offending entry. The result shape SHALL be identical across providers.
 

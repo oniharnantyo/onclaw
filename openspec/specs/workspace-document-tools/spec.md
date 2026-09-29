@@ -7,7 +7,7 @@ The `document.*` tool family: reading office documents (pdf, docx, xlsx, pptx, h
 ## Requirements
 
 ### Requirement: Document read tool
-The runtime SHALL expose a built-in tool `document.read` whose input is a single file path and whose output is the document's content converted to markdown text. The tool SHALL accept any document format the converter registry registers — pdf, docx, xlsx, pptx, html, csv included — and SHALL convert documents in-process using pure-Go converters bounded by a conversion deadline, without shell or subprocess execution. The tool SHALL be available to agents subject to the standard allowlist and workspace tool gate.
+The runtime SHALL expose a built-in tool `document.read` whose input is a single file path and whose output is the document's content converted to markdown text. The tool SHALL accept any document format the converter registry registers — pdf, docx, xlsx, pptx, html, csv included — and SHALL convert documents in-process using pure-Go converters bounded by a conversion deadline, without shell or subprocess execution. The tool SHALL be available to agents subject to the standard tool denylist and workspace tool gate.
 
 #### Scenario: Agent reads an attached docx
 - **WHEN** an agent invokes `document.read` on the workspace path of an attached docx file
@@ -20,7 +20,6 @@ The runtime SHALL expose a built-in tool `document.read` whose input is a single
 #### Scenario: PDF is read like any other document
 - **WHEN** an agent invokes `document.read` on an attached PDF
 - **THEN** the tool result carries the PDF's text content as markdown
-
 ### Requirement: Document read path validation
 The `document.read` tool SHALL accept only paths within the jailed filesystem the agent already has access to — the run's drop-lane attachment mounts and the agent workspace tree — and SHALL reject paths outside that boundary as a tool-parameter error, under the same contract as the filesystem read tools.
 
@@ -51,9 +50,8 @@ When a document cannot be converted — corrupt, encrypted, or an uploaded forma
 - **THEN** the tool result is a conversion-failure error naming the document, and the run continues
 
 #### Scenario: Tool is always selectable
-- **WHEN** an agent's allowlist includes `document.read` on any deployment
+- **WHEN** an agent has not disabled `document.read` on any deployment
 - **THEN** the tool resolves at composition — no availability gate or provisioning state exists
-
 ### Requirement: Document tool family seam
 Document tools SHALL register as a family sharing one plumbing set: catalog entries with display name, description, group, and icon key per verb; a per-verb permission key subject to the workspace tool gate; a tool-card rendering rule; and a hook target addressable by name. Adding a sibling verb (e.g. a creation verb) SHALL require only a new registration against this family — no new plumbing. Adding a new document FORMAT SHALL require only one converter registration into the format registry — no tool changes.
 

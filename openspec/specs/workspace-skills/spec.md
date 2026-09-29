@@ -56,7 +56,7 @@ Skills SHALL be governed by tier rules with no per-agent skill toggle at any tie
 - **THEN** only that agent's executions list it
 
 ### Requirement: Skill dependency resolution
-Skills SHALL declare dependencies in SKILL.md frontmatter (`dependencies.tools`, `dependencies.binaries`, `dependencies.python` — an OnClaw extension ignored by the middleware) and ecosystem manifests (`requirements.txt` beside scripts). At import, undeclared dependencies SHALL be inferred (tool-name patterns in the body, script imports/manifests) and the inferred set SHALL be stored on the registry row without modifying imported files. Resolution per kind: **tools** resolve against the workspace tool gate and agent tool allowlists, with a pre-checked "enable everywhere" install option that adds the tool to the gate and every agent's allowlist (agent-tier skills scope this to the owning agent); a non-empty `scripts/` directory implies the reserved `execute` shell tool as a dependency; **binaries** are probed on the server PATH and never auto-installed — the report names the package-manager command per platform with a re-check action; **python packages** provision into one shared per-workspace venv (pip union install across all enabled skills; a version conflict between skills SHALL name both sides and fail the dependency step) automatically when python is present on the server, otherwise reported as guidance. Unmet dependencies SHALL NOT gate execution: missing tools and missing binaries surface as natural tool errors in the transcript. Dependency status SHALL be re-checkable on demand.
+Skills SHALL declare dependencies in SKILL.md frontmatter (`dependencies.tools`, `dependencies.binaries`, `dependencies.python` — an OnClaw extension ignored by the middleware) and ecosystem manifests (`requirements.txt` beside scripts). At import, undeclared dependencies SHALL be inferred (tool-name patterns in the body, script imports/manifests) and the inferred set SHALL be stored on the registry row without modifying imported files. Resolution per kind: **tools** resolve against the workspace tool gate and agent tool denylists, with a pre-checked "enable everywhere" install option that adds the tool to the gate and removes it from every agent's `disabled_tools` (agent-tier skills scope this to the owning agent); a non-empty `scripts/` directory implies the reserved `execute` shell tool as a dependency; **binaries** are probed on the server PATH and never auto-installed — the report names the package-manager command per platform with a re-check action; **python packages** provision into one shared per-workspace venv (pip union install across all enabled skills; a version conflict between skills SHALL name both sides and fail the dependency step) automatically when python is present on the server, otherwise reported as guidance. Unmet dependencies SHALL NOT gate execution: missing tools and missing binaries surface as natural tool errors in the transcript. Dependency status SHALL be re-checkable on demand.
 
 #### Scenario: Requirements.txt feeds the declaration
 - **WHEN** a skill is imported with `scripts/requirements.txt` containing `pypdf>=4.0` and no frontmatter declaration
@@ -64,7 +64,7 @@ Skills SHALL declare dependencies in SKILL.md frontmatter (`dependencies.tools`,
 
 #### Scenario: Enable-everywhere satisfies tool dependencies
 - **WHEN** a skill declaring `dependencies.tools: [web.search]` is installed with the pre-checked enable option on
-- **THEN** the workspace tool gate allows `web.search` and every agent's tool allowlist contains it
+- **THEN** the workspace tool gate allows `web.search` and no agent's `disabled_tools` contains it
 
 #### Scenario: Missing binary reports guidance
 - **WHEN** a declared binary `pdftotext` is absent from the server PATH at install
@@ -77,7 +77,6 @@ Skills SHALL declare dependencies in SKILL.md frontmatter (`dependencies.tools`,
 #### Scenario: Cross-skill version conflict named
 - **WHEN** two enabled skills require incompatible versions of the same python package
 - **THEN** the dependency step fails naming both skills' requirements and previously installed skills are untouched
-
 ### Requirement: Explicit skill invocation
 The runtime SHALL recognize `$name` skill mentions in user input on every execution surface — direct chats, channels, and cron prompts — and convert them into a blocking instruction to invoke the skill tool for that name before responding; the skill middleware SHALL remain the single execution path, so explicit invocations render as tool-call cards in transcripts. A `$name` that matches no enabled skill (unknown, or workspace-disabled) SHALL be inert: transmitted as plain text.
 

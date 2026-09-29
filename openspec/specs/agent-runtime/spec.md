@@ -34,11 +34,11 @@ An agent execution SHALL stream transcript events to its caller as they occur an
 - **THEN** both projections carry the same call id, name, arguments, result, error flag, and latency
 
 ### Requirement: Instruction composition
-At execution start, the system instruction SHALL be composed in fixed order from: `AGENTS.md`, `IDENTITY.md`, `SOUL.md`, `WORKSPACE.md`, `USER.md`, `CHANNEL.md`, `BOOTSTRAP.md`. The L1 base prompt (`AGENTS.md`) SHALL be injected from the platform-embedded template at every composition — it SHALL NOT be read from the agent's workspace directory, so template updates reach every agent on the next execution regardless of workspace age. `IDENTITY.md`, `SOUL.md`, and `BOOTSTRAP.md` SHALL be read from the agent's workspace directory. `WORKSPACE.md` SHALL be rendered from the workspace record (name, description) plus a `## Shared memory` subsection carrying the workspace's shared memory content. `USER.md` SHALL be rendered from the calling user's record and workspace membership (name, email, role) plus a `## Memory` subsection carrying that user's own memory content. `CHANNEL.md` SHALL be rendered only when the execution carries channel context — from the channel record (name, slug, purpose, conventions), the member roster with specialization notes, and the channel catch-up tail as specified in the `agent-channels` capability — and SHALL occupy its fixed position between `USER.md` and `BOOTSTRAP.md`; executions without channel context SHALL omit it entirely. The memory subsections are distinct from the structured metadata (which remains free context): they carry preferences and information the structured fields do not capture. Composition SHALL happen per execution because `USER.md` varies by caller and memory may have changed since the previous turn, and missing documents and empty memory SHALL be skipped without failing the run (an empty memory omits its subsection entirely). The composed instruction SHALL carry a rich-cards guidance section — the markdown fence conventions for rendering card elements, with one shape per fence tag, plus the composition-tree (`ui`) conventions: the node protocol, the composition vocabulary, the constraint ranges, and the selection rule that composition is reserved for responses whose arrangement carries meaning — in attended, scheduler, and heartbeat compositions, positioned with the `AGENTS.md` base prompt.
+At execution start, the system instruction SHALL be composed in fixed order from: `AGENTS.md`, `IDENTITY.md`, `SOUL.md`, `WORKSPACE.md`, `USER.md`, `CHANNEL.md`. The L1 base prompt (`AGENTS.md`) SHALL be injected from the platform-embedded template at every composition — it SHALL NOT be read from the agent's workspace directory, so template updates reach every agent on the next execution regardless of workspace age. `IDENTITY.md` and `SOUL.md` SHALL be read from the agent's workspace directory. `WORKSPACE.md` SHALL be rendered from the workspace record (name, description) plus a `## Shared memory` subsection carrying the workspace's shared memory content. `USER.md` SHALL be rendered from the calling user's record and workspace membership (name, email, role) plus a `## Memory` subsection carrying that user's own memory content. `CHANNEL.md` SHALL be rendered only when the execution carries channel context — from the channel record (name, slug, purpose, conventions), the member roster with specialization notes, and the channel catch-up tail as specified in the `agent-channels` capability — and SHALL occupy its fixed position after `USER.md` at the end of the workspace-document tier; executions without channel context SHALL omit it entirely. The memory subsections are distinct from the structured metadata (which remains free context): they carry preferences and information the structured fields do not capture. Composition SHALL happen per execution because `USER.md` varies by caller and memory may have changed since the previous turn, and missing documents and empty memory SHALL be skipped without failing the run (an empty memory omits its subsection entirely). The composed instruction SHALL carry a rich-cards guidance section — the markdown fence conventions for rendering card elements, with one shape per fence tag together with its rendering purpose and when-to-use triggers, example fences for the raw-source exception tags, a markdown-first clause steering tabular data to native markdown tables, and a cross-tag selection rule with anti-pattern guidance, plus the composition-tree (`ui`) conventions: the node protocol, the composition vocabulary, the constraint ranges, and the selection rule that composition is reserved for responses whose arrangement carries meaning — in attended, scheduler, and heartbeat compositions, positioned with the `AGENTS.md` base prompt.
 
 #### Scenario: Fixed document order
 - **WHEN** an execution composes its instruction with all six documents present
-- **THEN** the system instruction contains their contents in the order AGENTS, IDENTITY, SOUL, WORKSPACE, USER, BOOTSTRAP
+- **THEN** the system instruction contains their contents in the order AGENTS, IDENTITY, SOUL, WORKSPACE, USER, CHANNEL
 
 #### Scenario: Base prompt always current
 - **WHEN** the platform-embedded L1 template changes and an agent whose workspace was created before the change executes a turn
@@ -53,7 +53,7 @@ At execution start, the system instruction SHALL be composed in fixed order from
 - **THEN** each execution's instruction carries that member's own name, email, and workspace role
 
 #### Scenario: Missing documents tolerated
-- **WHEN** an agent's prompt generation failed and IDENTITY.md/SOUL.md/BOOTSTRAP.md are absent
+- **WHEN** an agent's prompt generation failed and IDENTITY.md/SOUL.md are absent
 - **THEN** the execution still runs with the remaining documents (at minimum the injected base prompt plus the two virtual documents)
 
 #### Scenario: Memory rides every turn
@@ -66,7 +66,7 @@ At execution start, the system instruction SHALL be composed in fixed order from
 
 #### Scenario: Channel execution gains CHANNEL.md
 - **WHEN** an agent is summoned from a channel
-- **THEN** the composed instruction contains CHANNEL.md — roster, specializations, conventions, catch-up tail — between USER.md and BOOTSTRAP.md
+- **THEN** the composed instruction contains CHANNEL.md — roster, specializations, conventions, catch-up tail — after USER.md, at the end of the workspace-document tier
 
 #### Scenario: Non-channel execution unchanged
 - **WHEN** an agent is executed through a direct chat
@@ -76,8 +76,16 @@ At execution start, the system instruction SHALL be composed in fixed order from
 - **WHEN** any composition profile composes its instruction
 - **THEN** the rich-cards section includes the `ui` tree conventions, the component vocabulary with its constraint ranges, and the rule that a single card is rendered by its own tag rather than a composition
 
+#### Scenario: Bootstrap is not composed
+- **WHEN** an agent's workspace still contains a `BOOTSTRAP.md` file at execution start
+- **THEN** no bootstrap section appears in the composed instruction; the file is swept at startup per the `agent-prompts` capability
+
+#### Scenario: Rich-cards guidance carries per-tag triggers
+- **WHEN** any composition (attended, scheduler, heartbeat) renders the base prompt
+- **THEN** its rich-cards section pairs each fence tag's shape with rendering purpose and when-to-use triggers, exemplifies the raw-source exception tags, and steers tabular data to native markdown tables
+
 ### Requirement: Filesystem jail
-File tools (list, read, write, edit, glob, grep, delete) and runtime capability middlewares (reduction truncation and context clearing) SHALL operate on virtual mount paths scoped to the agent's workspace directory (mounted at `/workspace`); any resolved path escaping it SHALL be rejected as a tool error, not a crash. The agent's generated prompt documents, its agent-tier skills directory, summarization offload files, and tool reduction offload artifacts (`/workspace/trunc/...` and `/workspace/clear/...`) all live inside this directory and are reachable through the file tools, including deletion of prompt documents such as `BOOTSTRAP.md`. (Shell execution is no longer banned outright — it is governed by the "Shell execution" and "Dangerous-command approval" requirements below.) Additionally, an agent that is a member of a channel with a project space SHALL have that channel's project directory mounted read-write at `/project` inside its jail (see the `channel-teams` capability); all jail rules apply to `/project` identically.
+File tools (list, read, write, edit, glob, grep, delete) and runtime capability middlewares (reduction truncation and context clearing) SHALL operate on virtual mount paths scoped to the agent's workspace directory (mounted at `/workspace`); any resolved path escaping it SHALL be rejected as a tool error, not a crash. The agent's generated prompt documents, its agent-tier skills directory, summarization offload files, and tool reduction offload artifacts (`/workspace/trunc/...` and `/workspace/clear/...`) all live inside this directory and are reachable through the file tools. (Shell execution is no longer banned outright — it is governed by the "Shell execution" and "Dangerous-command approval" requirements below.) Additionally, an agent that is a member of a channel with a project space SHALL have that channel's project directory mounted read-write at `/project` inside its jail (see the `channel-teams` capability); all jail rules apply to `/project` identically.
 
 #### Scenario: Path escape rejected
 - **WHEN** a file tool is invoked with a path resolving outside the agent's workspace directory (including via symlink or `..`)
@@ -345,55 +353,53 @@ An agent execution's reasoning loop SHALL be bounded by a server-configured maxi
 - **THEN** the execution completes normally with a turn-completed terminal event
 
 ### Requirement: Tool selection
-An agent's tool surface SHALL be resolved from its `tools` allowlist intersected with the workspace's enabled tool set (see the workspace-tools capability — the workspace gate wins over the allowlist and over per-turn allowed-tools overrides). A name listed in `tools` SHALL expose the corresponding registered built-in tool. The reserved name `execute` SHALL enable the shell tool (see "Shell execution"). The facade alias `browser` SHALL expand to the full browser tool set at resolution (see "Browser automation"); individual `browser.*` names in an allowlist SHALL continue to resolve for backward compatibility. The filesystem middleware tools SHALL be selectable through the allowlist names `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`: a name present SHALL keep that middleware tool attached, a name absent SHALL disable it via the filesystem middleware's per-tool disable configuration. An agent whose `tools` array is empty SHALL have no registry tools and no filesystem tools exposed. Names in `tools` that match no registered tool SHALL be ignored, not errors. Built-in tools registered after an agent's allowlist was saved SHALL NOT appear for that agent until its allowlist is updated.
+An agent's tool surface SHALL be resolved from the tool catalog minus the agent's `disabled_tools` denylist, intersected with the workspace's enabled tool set (see the workspace-tools capability — the workspace gate wins over the denylist and over per-turn allowed-tools overrides). A name absent from `disabled_tools` SHALL expose the corresponding registered built-in tool. The reserved name `execute` SHALL be absent from the surface only when listed in `disabled_tools` (see "Shell execution"). The facade alias `browser` in `disabled_tools` SHALL disable the full browser tool set at resolution (see "Browser automation"); individual `browser.*` names in `disabled_tools` SHALL disable those tools individually. The filesystem middleware tools SHALL be governable through the denylist names `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`: a name present in `disabled_tools` SHALL disable that middleware tool via the filesystem middleware's per-tool disable configuration, a name absent SHALL keep it attached. An agent whose `disabled_tools` array is empty SHALL have every catalog tool exposed — registry tools and filesystem tools — subject to the workspace gate. Names in `disabled_tools` that match no registered tool SHALL be ignored, not errors. Built-in tools registered after an agent was saved SHALL appear for that agent automatically unless its `disabled_tools` names them.
 
 #### Scenario: Allowlist gates the surface
-- **WHEN** an agent's `tools` contains only `web.search` and the workspace enables it
-- **THEN** its executions expose `web.search` and no other registry tool
+- **WHEN** an agent's `disabled_tools` contains only `web.search` and the workspace disables nothing
+- **THEN** its executions expose every catalog tool except `web.search`
 
 #### Scenario: Filesystem tools follow the allowlist
-- **WHEN** an agent's `tools` contains `read_file` and `glob` but not `write_file`
+- **WHEN** an agent's `disabled_tools` contains `write_file` but not `read_file` or `glob`
 - **THEN** its executions expose the read and glob file tools and no write tool
 
 #### Scenario: Empty allowlist exposes nothing
-- **WHEN** an agent has an empty `tools` array
-- **THEN** no registry tool and no filesystem tool is available to its executions
+- **WHEN** an agent has an empty `disabled_tools` array and the workspace disables nothing
+- **THEN** every registry tool and every filesystem tool is available to its executions
 
 #### Scenario: Facade alias expands
-- **WHEN** an agent's `tools` contains `browser` and the workspace enables it
-- **THEN** its executions expose the full current browser tool set
+- **WHEN** an agent's `disabled_tools` contains `browser`
+- **THEN** its executions expose no browser tool
 
 #### Scenario: Legacy individual browser names still resolve
-- **WHEN** an existing agent's `tools` contains `browser.navigate` and `browser.read`
-- **THEN** exactly those tools resolve until the allowlist is updated
+- **WHEN** an agent's `disabled_tools` contains `browser.navigate` and `browser.read`
+- **THEN** the remaining browser tools still resolve
 
 #### Scenario: Workspace gate intersects
-- **WHEN** the workspace disables `web.search` and an agent's allowlist contains it
+- **WHEN** the workspace disables `web.search` and the agent has not disabled it
 - **THEN** the agent's executions expose no `web.search` tool
 
 #### Scenario: Unknown names are inert
-- **WHEN** an agent is saved with `tools` naming a tool no registry provides
+- **WHEN** an agent is saved with `disabled_tools` naming a tool no registry provides
 - **THEN** the save succeeds; the unknown name is inert at execution time
 
 #### Scenario: Later-registered tools do not leak
-- **WHEN** a new built-in tool is registered after an agent's allowlist was saved
-- **THEN** the agent's executions do not expose it until the allowlist names it
-
+- **WHEN** a new built-in tool is registered after an agent was saved
+- **THEN** the agent's executions expose it unless `disabled_tools` names it
 ### Requirement: Shell execution
-When the agent's `tools` allowlist contains the reserved name `execute`, the runtime SHALL expose a shell tool. Shell commands SHALL execute with the agent's workspace directory as the working directory, SHALL inherit a scrubbed minimal environment (no instance secrets), and SHALL be bounded by a timeout and an output cap, with truncation and exit code reported in the tool result. Agents whose allowlist omits `execute` SHALL have no shell tool. The workspace jail SHALL be understood as a working-directory convention, not an OS sandbox.
+Unless the agent's `disabled_tools` contains the reserved name `execute`, the runtime SHALL expose a shell tool. Shell commands SHALL execute with the agent's workspace directory as the working directory, SHALL inherit a scrubbed minimal environment (no instance secrets), and SHALL be bounded by a timeout and an output cap, with truncation and exit code reported in the tool result. Agents whose `disabled_tools` lists `execute` SHALL have no shell tool. The workspace jail SHALL be understood as a working-directory convention, not an OS sandbox.
 
 #### Scenario: Allow-listed shell runs in the jail
-- **WHEN** an agent with `execute` in `tools` runs a shell command that writes a file
+- **WHEN** an agent without `execute` in `disabled_tools` runs a shell command that writes a file
 - **THEN** the command executes with the agent's workspace directory as its working directory and the file appears inside the jail
 
 #### Scenario: Shell not allow-listed
-- **WHEN** an execution's agent does not list `execute` in `tools`
+- **WHEN** an execution's agent lists `execute` in `disabled_tools`
 - **THEN** no shell tool is present on its tool surface
 
 #### Scenario: Timeout bounds the command
 - **WHEN** a shell command runs longer than the configured timeout
 - **THEN** the command is stopped and the tool result reports the timeout with whatever output was produced
-
 ### Requirement: Dangerous-command approval
 The shell tool SHALL classify each command against a built-in dangerous-pattern list (destructive filesystem operations, piping network fetches into a shell, privilege escalation, disk/format utilities, host power/reboot, and similar). A matching command SHALL NOT execute immediately: the runtime SHALL pause the execution, persist an `approval_required` transcript event carrying the command and an interrupt identifier, and wait for a human decision. A pending approval SHALL remain resolvable across server restarts. An approve decision SHALL execute the command and record its output as the tool result; a deny decision SHALL record a denial notice as the tool result without executing. Resolution SHALL be possible through an authenticated endpoint permitted to workspace members.
 

@@ -81,41 +81,34 @@ The deploy wizard and workspace-birth flow SHALL show an interactive loading sta
 - **THEN** while the regenerate request runs, the button is disabled and labelled "Retrying…"
 
 ### Requirement: Prompt documents are workspace files
-An agent's prompt documents SHALL live as markdown files in the agent's workspace directory — `IDENTITY.md`, `SOUL.md`, `BOOTSTRAP.md` (generated) — with one exception: the L1 base prompt (`AGENTS.md`) SHALL NOT be materialized as a workspace file; it is platform-embedded content injected into the instruction at every composition as specified in the `agent-runtime` capability. The generated files SHALL be the single source of truth for their content; the database SHALL carry only `prompts_status` and `prompts_error`. Writes SHALL be atomic (write-to-temp-then-rename) with `0o755` directories and `0o644` files. A successful generation SHALL write the files before the ready transition, so a ready agent always has files on disk. On regenerate, stale files SHALL be left untouched until the new generation succeeds. Read-side APIs SHALL compose `identity`, `soul`, and `bootstrap` onto the agent from the files on every fetch; a missing or unreadable file SHALL compose as empty rather than failing the request. A startup sweep SHALL remove `AGENTS.md` files seeded into existing agent workspaces by earlier versions, so the workspace never shows a stale copy of injected content.
+An agent's prompt documents SHALL live as markdown files in the agent's workspace directory — `IDENTITY.md`, `SOUL.md` (generated) — with one exception: the L1 base prompt (`AGENTS.md`) SHALL NOT be materialized as a workspace file; it is platform-embedded content injected into the instruction at every composition as specified in the `agent-runtime` capability. The generated files SHALL be the single source of truth for their content; the database SHALL carry only `prompts_status` and `prompts_error`. Writes SHALL be atomic (write-to-temp-then-rename) with `0o755` directories and `0o644` files. A successful generation SHALL write the files before the ready transition, so a ready agent always has files on disk. On regenerate, stale files SHALL be left untouched until the new generation succeeds. Read-side APIs SHALL compose `identity` and `soul` onto the agent from the files on every fetch; a missing or unreadable file SHALL compose as empty rather than failing the request. A startup sweep SHALL remove `AGENTS.md` files seeded into existing agent workspaces by earlier versions, and SHALL also remove `BOOTSTRAP.md` and `BOOTSTRAP.md.bak` files left by the removed birth-sequence feature, so the workspace never shows stale copies of injected or removed content.
 
 #### Scenario: Ready implies files on disk
-- **WHEN** generation succeeds
-- **ONLY THEN** `IDENTITY.md`, `SOUL.md`, and `BOOTSTRAP.md` exist in the workspace directory and `prompts_status` reads `ready`
+- **WHEN** an agent reaches `prompts_status: ready`
+- **THEN** its workspace directory contains `IDENTITY.md` and `SOUL.md`
 
 #### Scenario: Create seeds AGENTS.md before generation
-- **WHEN** a new agent is created
-- **THEN** its workspace directory contains no `AGENTS.md` — the base prompt is platform-embedded content injected at composition (the `agent-runtime` capability), and generation proceeds over `IDENTITY.md`/`SOUL.md`/`BOOTSTRAP.md` alone
+- **WHEN** a new agent's workspace directory is prepared
+- **THEN** its workspace directory contains no `AGENTS.md` — the base prompt is platform-embedded content injected at composition (the `agent-runtime` capability), and generation proceeds over `IDENTITY.md`/`SOUL.md` alone
 
 #### Scenario: Startup sweep removes seeded base prompts
 - **WHEN** the server starts and an agent workspace still contains an `AGENTS.md` seeded by an earlier version
 - **THEN** the sweep deletes it, leaving generated documents untouched
 
+#### Scenario: Startup sweep removes stray bootstrap documents
+- **WHEN** the server starts and an agent workspace contains a `BOOTSTRAP.md` or `BOOTSTRAP.md.bak` left by the removed birth-sequence feature
+- **THEN** the sweep deletes both, logs the removal, and leaves generated documents untouched
+
 #### Scenario: Failed regeneration keeps old files
 - **WHEN** regeneration fails for a previously ready agent
-- **THEN** the old `IDENTITY.md`/`SOUL.md`/`BOOTSTRAP.md` remain on disk and `prompts_status` reads `failed`
+- **THEN** the old `IDENTITY.md`/`SOUL.md` remain on disk and `prompts_status` reads `failed`
 
 #### Scenario: Compose-on-read projection
 - **WHEN** a client fetches a ready agent
-- **THEN** the response carries `identity`, `soul`, and `bootstrap` read from the workspace files; the database does not store the content
-
-### Requirement: BOOTSTRAP.md birth sequence
-The generator SHALL emit a third document, `BOOTSTRAP.md`, personalized to the agent. It SHALL open with the birth-sequence title and a "you just woke up" opener, SHALL state that the user's request always comes first (the ritual is not a gate), and SHALL carry short beats adapted to OnClaw: introduce yourself as the configured name (never re-ask or invent a name), show your vibe in one line consistent with SOUL.md, and invite the user's first real task. It SHALL instruct the agent to end the ritual by removing the file, completing the birth sequence.
-
-#### Scenario: Personalized ritual
-- **WHEN** generation runs for an agent named Atlas with a given brief
-- **THEN** the generated `BOOTSTRAP.md` instructs introduction as Atlas and stays consistent with the co-generated identity and soul
-
-#### Scenario: User request first
-- **WHEN** the first chat message asks for real work
-- **THEN** the ritual instructions defer to the request instead of gating the conversation on the beats
+- **THEN** the response carries `identity` and `soul` read from the workspace files; the database does not store the content
 
 ### Requirement: Generate-before-persist on create
-Creating an agent SHALL generate identity/soul/bootstrap prompts synchronously **before** the agent row is persisted: the generation pipeline resolves the payload's provider config, invokes the configured model, parses the three documents, and writes them into the agent's workspace directory; only then is the row inserted — directly in `prompts_status: ready`. The create request path MAY block on the LLM call within the bounded generation timeout. A generation failure SHALL abort the create: response is 400 `invalid_request` with the sanitized provider error, no agent row is created, and the seeded workspace directory is removed. `generating` no longer occurs on the create path; it describes in-flight regeneration only.
+Creating an agent SHALL generate identity/soul prompts synchronously **before** the agent row is persisted: the generation pipeline resolves the payload's provider config, invokes the configured model, parses the two documents, and writes them into the agent's workspace directory; only then is the row inserted — directly in `prompts_status: ready`. The create request path MAY block on the LLM call within the bounded generation timeout. A generation failure SHALL abort the create: response is 400 `invalid_request` with the sanitized provider error, no agent row is created, and the seeded workspace directory is removed. `generating` no longer occurs on the create path; it describes in-flight regeneration only.
 
 #### Scenario: Create blocks while the model answers
 - **WHEN** an agent is created with a valid provider config
@@ -128,3 +121,35 @@ Creating an agent SHALL generate identity/soul/bootstrap prompts synchronously *
 #### Scenario: No failed agents from create
 - **WHEN** agents are created through the endpoint
 - **THEN** no agent enters the workspace in `prompts_status: failed` from the create path; `failed` arises only from regeneration or the interrupted-generation sweep
+
+### Requirement: Base prompt teaching content
+
+The platform-embedded L1 base prompt (`internal/promptdocs/AGENTS.md`) SHALL carry, in addition to the tenant-boundary, persona-alignment, and capability-scope directives and the memory-tool teaching:
+
+- **Execution** teaching: act on actionable requests immediately; treat an available tool for a requested action as authorization with policy gates and approvals owning risk; batch independent tool calls into one turn and serialize only on true dependency; resolve prerequisite steps before the main action; live-check mutable facts (files, dates, versions, service state) with tools instead of answering from memory; on weak or empty tool results vary the query, path, or source before concluding; on long work post a brief update and continue to done or a real blocker.
+- **Finishing & Honesty** teaching: the deliverable is a real result backed by tool output, not a description; verify requirements coverage and claim grounding before finalizing; read back the effect of state-changing external actions before claiming success; never fabricate data, file contents, or API responses — report the blocker plainly; preserve identifiers and values exactly as given; when context is missing retrieve with tools first, ask only when irretrievable, and label assumptions when proceeding.
+- **Follow-through** teaching: a progress statement is not an answer — take the next action in the same turn; promises of future or recurring work create ownership with a completion path arranged before the turn ends, preferring the `schedule` tool over polling or waiting; return proactively with results or blockers; progress is not completion.
+- **Communication & Output** teaching: reply length matches the weight of the ask; finished work reports what changed, what is verified, and what is left without replaying the process; no filler, no restating the request, no narrating visible tool calls; plain claims over adjectives; uncertain statements say so plainly; confirmed facts, tool outputs, and the agent's own reasoning stay distinguishable.
+- **Rich-cards catalogue with per-tag guidance**: the fence-tag catalogue SHALL pair each tag's fixed JSON shape (or raw-source body for the exception tags) with what the card renders and when to reach for it — concrete trigger cases plus a redirect to the better alternative where confusion is likely (chart vs ticker vs tables; flow vs timeline vs diagram; progress vs timeline; spec vs table; compare vs table). Tabular data SHALL be taught as requiring no fence — a standard markdown table renders natively in chat.
+
+The exception tags SHALL be taught with example fences: `diagram` with its info-string title and a raw mermaid body, and `mermaid` with a raw body. The catalogue SHALL warn that a `diagram` fence without its info-string title silently degrades to a plain code block, SHALL carry a cross-tag chooser line mapping situations to tags, and SHALL carry an anti-pattern line that a diagram is not a substitute for the surrounding answer text.
+
+#### Scenario: Per-tag purpose and trigger guidance
+
+- **WHEN** the composed instruction's rich-cards section is inspected
+- **THEN** every fence tag's entry states what the card renders and at least one concrete when-to-use case, and tags with likely confusion carry a redirect to the better alternative
+
+#### Scenario: Exception tags are exemplified
+
+- **WHEN** the rich-cards section is inspected
+- **THEN** `diagram` and `mermaid` each show a complete example fence, and the `diagram` missing-title degradation is stated explicitly
+
+#### Scenario: Markdown-first for tables
+
+- **WHEN** the agent prepares tabular output
+- **THEN** the instruction teaches that a standard markdown table requires no fence and renders natively
+
+#### Scenario: Behavioral sections present
+
+- **WHEN** the base prompt is rendered for any composition
+- **THEN** it contains the Execution, Finishing & Honesty, Follow-through, and Communication & Output teaching sections with the rules above
