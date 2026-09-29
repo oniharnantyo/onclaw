@@ -11,20 +11,23 @@ import (
 )
 
 // fileHandlers handles capability file serving: avatar files from the
-// instance storage and, for attachment keys, blobs streamed from the backend
-// recorded on the attachment row (attachments design D15/D16 — capability
-// URLs are onclaw-proxied and driver-invariant).
+// instance storage and, for capability keys of stored rows, blobs streamed
+// from the backend recorded on the row (attachments design D15/D16 and the
+// reference-document branch, add-reference-documents 3.5 — capability URLs
+// are onclaw-proxied and driver-invariant, and downloads are byte-identical).
 type fileHandlers struct {
 	storage     storage.Storage
 	attachments store.AttachmentStore
+	documents   store.ReferenceDocumentStore
 	wsStorage   *resolver.WorkspaceStorage
 }
 
 // NewFileHandlers creates a new fileHandlers instance with injected dependencies.
-func NewFileHandlers(strg storage.Storage, attachments store.AttachmentStore, wsStorage *resolver.WorkspaceStorage) *fileHandlers {
+func NewFileHandlers(strg storage.Storage, attachments store.AttachmentStore, documents store.ReferenceDocumentStore, wsStorage *resolver.WorkspaceStorage) *fileHandlers {
 	return &fileHandlers{
 		storage:     strg,
 		attachments: attachments,
+		documents:   documents,
 		wsStorage:   wsStorage,
 	}
 }
@@ -51,6 +54,21 @@ func (h *fileHandlers) ServeFile(c *gin.Context) {
 	if att, err := h.attachments.ByStorageKey(c.Request.Context(), key); err == nil {
 		h.serve(c, key, func() (storage.File, error) {
 			st, err := h.wsStorage.ForBackend(c.Request.Context(), att.WorkspaceID, att.Backend)
+			if err != nil {
+				return nil, err
+			}
+			return st.Open(c.Request.Context(), key)
+		})
+		return
+	}
+
+	// Reference-document branch (add-reference-documents 3.5): the same
+	// global bearer-token lookup over the reference registry, streaming from
+	// the backend recorded on the document row so the download is the
+	// uploaded file, byte-identical.
+	if doc, err := h.documents.GetByStorageKey(c.Request.Context(), key); err == nil {
+		h.serve(c, key, func() (storage.File, error) {
+			st, err := h.wsStorage.ForBackend(c.Request.Context(), doc.WorkspaceID, doc.Backend)
 			if err != nil {
 				return nil, err
 			}

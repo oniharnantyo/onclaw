@@ -49,6 +49,15 @@ const (
 	// Scheduled and heartbeat runs never emit it (spec agent-memory-pipeline,
 	// Ingested-chip event).
 	TranscriptEventMemoryIngested TranscriptEventKind = "memory_ingested"
+	// TranscriptEventTaskCompleted announces a background task (delegation or
+	// shell) reaching a terminal status (add-agent-subagents-background D8).
+	// The task space is process-local — scoped to one run — and the event
+	// lands via the per-run notification pump, so it is transcript/honesty
+	// surface only, never a polling channel: the model-facing detail channel
+	// is task_output. It is persisted under the x.task_completed session
+	// event so the hydrated History projection renders it identically to the
+	// live stream.
+	TranscriptEventTaskCompleted TranscriptEventKind = "task_completed"
 	// TranscriptEventRunActive is a synthetic status frame the streaming
 	// session-events endpoint writes when its tap attaches to a live run —
 	// never persisted or broadcast by the runner. It tells a reconnected
@@ -198,6 +207,28 @@ type promptBlockedEvent struct {
 	Reason string `json:"reason"`
 }
 
+// TaskCompletedPayload carries a background task's terminal notice
+// (add-agent-subagents-background D8): the process-local task id, the lane
+// kind ("delegation" for the subagent lane, "shell" for the fs shell lane),
+// the outcome ("completed" | "failed" | "canceled"), the output file path the
+// model can Read inside the jail, and a one-line human summary derived from
+// the task description. The JSON tags are the web contract — identical for
+// the live emission and the hydrated read path.
+type TaskCompletedPayload struct {
+	TaskID     string `json:"task_id"`
+	Kind       string `json:"kind"`
+	Outcome    string `json:"outcome"`
+	OutputPath string `json:"output_path,omitempty"`
+	Summary    string `json:"summary,omitempty"`
+}
+
+// sessionEventKindTaskCompleted is the application-owned session-event kind
+// (the ADK extension namespace, the x.prompt_blocked convention) that
+// persists a background task completion notice. The ADK runner never
+// produces it; the per-run notification pump appends it so a reloaded
+// transcript renders the completion identically to the live stream (D8).
+const sessionEventKindTaskCompleted = adk.SessionEventKind("x.task_completed")
+
 // sessionExtraKeyCompaction is the Extra key under which a window-replacement
 // session event carries its display-only token estimates (chat-compact-command
 // D4/D5). The stock adk.SessionEventMessagesReplaced record has no estimate
@@ -218,6 +249,11 @@ type compactionEstimates struct {
 func init() {
 	schema.Register[promptBlockedEvent]()
 	schema.Register[compactionEstimates]()
+	// The task-completion payload rides the session-event Extension any
+	// field; registering the concrete type is what lets the serializer
+	// round-trip it as the struct instead of a generic map (the
+	// promptBlockedEvent precedent).
+	schema.Register[TaskCompletedPayload]()
 }
 
 // TranscriptEvent represents a single domain-level event in an agent turn transcript.
@@ -239,10 +275,17 @@ type TranscriptEvent struct {
 	// never content. The type is the memory package's own registered payload
 	// so the live event and the persisted session event serialize identically.
 	MemoryIngested *memory.MemoryIngestedPayload `json:"memory_ingested,omitempty"`
-	Error          string                        `json:"error,omitempty"`
-	CancelReason   string                        `json:"cancel_reason,omitempty"`
-	RetryAttempt   int                           `json:"retry_attempt,omitempty"`
-	Usage          *UsagePayload                 `json:"usage,omitempty"`
+	// TaskCompleted carries the background task completion chip
+	// (add-agent-subagents-background D8): task id, lane kind, terminal
+	// outcome, output path, and summary — the transcript/honesty surface of
+	// the run-scoped process-local task space. The type is the registered
+	// concrete payload so the live event and the persisted session event
+	// serialize identically.
+	TaskCompleted *TaskCompletedPayload `json:"task_completed,omitempty"`
+	Error         string                `json:"error,omitempty"`
+	CancelReason  string                `json:"cancel_reason,omitempty"`
+	RetryAttempt  int                   `json:"retry_attempt,omitempty"`
+	Usage         *UsagePayload         `json:"usage,omitempty"`
 	// TraceID carries the turn's pinned Langfuse trace id on terminal events
 	// (integrate-langfuse-tracing D3/D5), set only when the turn sampled in
 	// for export — a sampled-out turn carries no id, so a persisted run
@@ -307,10 +350,12 @@ type ExecRequest struct {
 	ConnectionService string
 	Event             string
 
-	// AllowedTools replaces the agent's tool allowlist for this turn when
-	// non-nil (an empty slice runs the turn with no tools). nil keeps the
-	// agent's configured allowlist. Callers that narrow must intersect with
-	// the agent allowlist themselves — a request can narrow, never widen.
+	// AllowedTools replaces the agent's tool selection for this turn when
+	// non-nil: an explicit request-scoped allowlist (an empty slice runs the
+	// turn with no tools). nil keeps denylist resolution — the agent's
+	// disabled_tools subtracted from the catalog (agent-tools-denylist D2).
+	// Callers that narrow must intersect with the effective set themselves —
+	// a request can narrow, never widen.
 	AllowedTools []string
 
 	// Command names a built-in slash command executed as a turn

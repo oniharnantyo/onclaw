@@ -13,7 +13,6 @@ import (
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
 	"github.com/oniharnantyo/onclaw/internal/agents/hooks"
-	"github.com/oniharnantyo/onclaw/internal/agents/tools"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/store/fake"
 )
@@ -315,17 +314,20 @@ func TestComposeAgent_StampsContextMeasure(t *testing.T) {
 	mdl := &compactModel{text: "ok"}
 	st, runner, ws, ag, req := setupCompactRunner(t, mdl)
 
-	// No tools resolved: only the instruction share is stamped.
+	// No tools resolved: only the instruction share is stamped. The per-turn
+	// override replaces denylist resolution with an explicit empty allowlist —
+	// a toolless turn (agent-tools-denylist D2).
 	loadedWs, loadedAgent, user, role, err := runner.load(ctx, req)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
+	req.AllowedTools = []string{}
 	cfg, resolvedTools, err := runner.resolve(ctx, req, loadedWs, loadedAgent, nil)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
 	if len(resolvedTools) != 0 {
-		t.Fatalf("resolved tools = %d, want none for a toolless agent", len(resolvedTools))
+		t.Fatalf("resolved tools = %d, want none for a toolless turn", len(resolvedTools))
 	}
 	sizes := &contextSizes{}
 	cfg.ContextMeasure = sizes
@@ -339,14 +341,14 @@ func TestComposeAgent_StampsContextMeasure(t *testing.T) {
 		t.Fatalf("toolSchemaBytes = %d, want 0 without tools", sizes.toolSchemaBytes)
 	}
 
-	// An agent exposing web.fetch stamps the marshaled schema bytes too.
+	// An agent on its default surface (empty denylist — denylist D2) stamps
+	// the marshaled schema bytes too.
 	chart := &domain.Agent{
 		WorkspaceID: ws.ID,
 		Slug:        "beacon",
 		Name:        "Beacon",
 		ProviderID:  ag.ProviderID,
 		Model:       ag.Model,
-		Tools:       []string{tools.NameWebFetch},
 	}
 	if err := st.Agents().Create(ctx, chart); err != nil {
 		t.Fatalf("create chart agent: %v", err)
@@ -356,6 +358,9 @@ func TestComposeAgent_StampsContextMeasure(t *testing.T) {
 		t.Fatalf("seed chart agent dir: %v", err)
 	}
 	req.AgentID = chart.ID
+	// The override was the first half's toolless turn; the chart agent reads
+	// its default surface, so the per-turn allowlist must not ride along.
+	req.AllowedTools = nil
 	loadedWs, loadedAgent, user, role, err = runner.load(ctx, req)
 	if err != nil {
 		t.Fatalf("load chart agent: %v", err)

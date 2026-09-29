@@ -49,6 +49,7 @@ const builtinToolNames: Record<string, string> = {
   delete_file: 'Delete File',
   'document.read': 'Read Document',
   'document.create': 'Create Document',
+  'document.search': 'Search Documents',
   execute: 'Shell',
   memory: 'Memory',
   'web.search': 'Web Search',
@@ -62,6 +63,10 @@ const builtinToolNames: Record<string, string> = {
   todo_read: 'Read Todos',
 };
 
+// Built-in catalog size, for client-side context estimates: the denylist world
+// exposes every built-in unless an agent's disabled_tools removes it.
+export const builtinToolCount = Object.keys(builtinToolNames).length;
+
 const builtinToolIcons: Record<string, string> = {
   ls: 'folder',
   read_file: 'file',
@@ -72,6 +77,7 @@ const builtinToolIcons: Record<string, string> = {
   delete_file: 'trash',
   'document.read': 'file-text',
   'document.create': 'file-plus',
+  'document.search': 'search',
   execute: 'terminal',
   memory: 'memory',
   'web.search': 'search',

@@ -761,7 +761,6 @@ export const useStore = create<AppState>((set, get) => ({
               brief: apiAgent.brief,
               identity: apiAgent.identity,
               soul: apiAgent.soul,
-              bootstrap: apiAgent.bootstrap,
               provider_id: apiAgent.provider_id,
               provider: apiAgent.provider_id,
               model: apiAgent.model,
@@ -773,7 +772,7 @@ export const useStore = create<AppState>((set, get) => ({
               summarization_trigger_tokens: apiAgent.summarization_trigger_tokens,
               input_modalities: apiAgent.input_modalities,
               autonomy: apiAgent.autonomy,
-              tools: apiAgent.tools || [],
+              disabled_tools: apiAgent.disabled_tools || [],
               skills: apiAgent.skills || [],
               avatar: apiAgent.avatar || {},
               prompts_status: apiAgent.prompts_status,
@@ -906,7 +905,6 @@ export const useStore = create<AppState>((set, get) => ({
                   prompts_error: updated.prompts_error,
                   identity: updated.identity || a.identity,
                   soul: updated.soul || a.soul,
-                  bootstrap: updated.bootstrap || a.bootstrap,
                 }
               : a
           ),

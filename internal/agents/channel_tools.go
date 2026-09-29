@@ -15,8 +15,8 @@ import (
 // Channel tool names (integrate-agent-channels task 5). Both are registry
 // tools registered under dotted names, so pre_tool_use hooks target them by
 // exact name in matchers. They are exposed ONLY in channel runs: resolve
-// appends them to the effective allowlist for channel runs and strips them
-// from non-channel runs.
+// un-scopes them out of the agent's denylist (and appends them to a per-turn
+// override) for channel runs and strips them from non-channel runs.
 const (
 	ChannelToolPost    = "channel.post"
 	ChannelToolHistory = "channel.history"
@@ -37,9 +37,10 @@ const (
 const channelHistoryEmptyMarker = "(no earlier messages)"
 
 // scopeChannelToolsIn returns the allowlist with the channel toolset appended
-// for channel runs (after the caller's allowlist choice, before the workspace
-// gate, so the settings toggle still governs them). The input slice is not
-// mutated.
+// for channel runs. This is the per-turn override path — denylist resolution
+// un-scopes them instead (effectiveToolsFromDenylist) — and the append lands
+// before the workspace gate, so the settings toggle still governs them. The
+// input slice is not mutated.
 func scopeChannelToolsIn(allowlist []string, channelRun bool) []string {
 	if !channelRun {
 		return allowlist
@@ -51,8 +52,9 @@ func scopeChannelToolsIn(allowlist []string, channelRun bool) []string {
 }
 
 // withoutChannelTools strips the channel toolset — non-channel runs never
-// expose it, even when an agent allowlisted it (exposure is channel-run-only;
-// the tools bind to per-run channel state a direct chat does not have).
+// expose it (exposure is channel-run-only; the tools bind to per-run channel
+// state a direct chat does not have). Denylist resolution carries the names
+// in the catalog, so this strip is what removes them.
 func withoutChannelTools(names []string) []string {
 	out := make([]string, 0, len(names))
 	for _, name := range names {

@@ -16,7 +16,8 @@ func todoItemOf(key, text, status string) store.TodoItem {
 }
 
 // seedTodoRunner creates a fake store with one workspace and one agent whose
-// allowlist exposes the todo tools, plus a runner wired with that store.
+// default surface (empty denylist) exposes the todo tools, plus a runner
+// wired with that store.
 func seedTodoRunner(t *testing.T) (runner *Runner, st store.Store, wsID, agentID string) {
 	t.Helper()
 	ctx := context.Background()
@@ -36,7 +37,6 @@ func seedTodoRunner(t *testing.T) (runner *Runner, st store.Store, wsID, agentID
 		Name:        "Atlas",
 		ProviderID:  p.ID,
 		Model:       "gpt-4o",
-		Tools:       []string{tools.NameTodoWrite, tools.NameTodoRead},
 	}
 	if err := st.Agents().Create(ctx, a); err != nil {
 		t.Fatalf("create agent: %v", err)
@@ -50,10 +50,10 @@ func seedTodoRunner(t *testing.T) (runner *Runner, st store.Store, wsID, agentID
 }
 
 // TestRunner_TodoSummaryInjection pins the D6 contract: the one-line
-// open-items summary composes only for agents exposing the todo tools, names
-// the open counts and the revision, and disappears when nothing is open, the
-// store is unwired, the agent lacks the tools, or the per-turn override
-// strips them.
+// open-items summary composes only for agents exposing the todo tools —
+// default-on unless the denylist names them — and disappears when nothing is
+// open, the store is unwired, the denylist denies them, or the per-turn
+// override replaces the surface without them.
 func TestRunner_TodoSummaryInjection(t *testing.T) {
 	runner, st, wsID, agentID := seedTodoRunner(t)
 	ctx := context.Background()
@@ -68,7 +68,7 @@ func TestRunner_TodoSummaryInjection(t *testing.T) {
 		t.Fatalf("seed todos: %v", err)
 	}
 
-	agent := &domain.Agent{WorkspaceID: wsID, Slug: "atlas", Name: "Atlas", Tools: []string{tools.NameTodoWrite}}
+	agent := &domain.Agent{WorkspaceID: wsID, Slug: "atlas", Name: "Atlas"}
 	req := ExecRequest{WorkspaceID: wsID, AgentID: agentID, SessionID: "sess_1", UserID: "u"}
 
 	got := runner.composeTodoSummary(ctx, req, agent)
@@ -79,13 +79,21 @@ func TestRunner_TodoSummaryInjection(t *testing.T) {
 		t.Fatalf("expected the summary to point at todo_read, got %q", got)
 	}
 
-	// An agent without the tools composes nothing — present-only.
-	unexposed := &domain.Agent{WorkspaceID: wsID, Slug: "atlas", Name: "Atlas"}
-	if got := runner.composeTodoSummary(ctx, req, unexposed); got != "" {
-		t.Fatalf("unexposed agent must compose no summary, got %q", got)
+	// An agent that denied the tools composes nothing — present-only.
+	denied := &domain.Agent{WorkspaceID: wsID, Slug: "atlas", Name: "Atlas",
+		DisabledTools: []string{tools.NameTodoWrite, tools.NameTodoRead}}
+	if got := runner.composeTodoSummary(ctx, req, denied); got != "" {
+		t.Fatalf("denylisted agent must compose no summary, got %q", got)
+	}
+	// Denying only one of the pair keeps the exposure (either name suffices).
+	halfDenied := &domain.Agent{WorkspaceID: wsID, Slug: "atlas", Name: "Atlas",
+		DisabledTools: []string{tools.NameTodoWrite}}
+	if got := runner.composeTodoSummary(ctx, req, halfDenied); got == "" {
+		t.Fatal("denying only todo_write must keep the summary (todo_read still exposed)")
 	}
 
-	// The per-turn override replaces the allowlist and can strip the tools.
+	// The per-turn override replaces denylist resolution and can strip the
+	// tools.
 	override := req
 	override.AllowedTools = []string{"web.search"}
 	if got := runner.composeTodoSummary(ctx, override, agent); got != "" {

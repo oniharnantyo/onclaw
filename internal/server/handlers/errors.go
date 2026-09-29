@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/references"
 	"github.com/oniharnantyo/onclaw/internal/skills"
 )
 
@@ -90,6 +91,14 @@ func ErrorToStatus(err error) (int, string, string) {
 		return http.StatusConflict, CodeConflict, err.Error()
 	case errors.Is(err, domain.ErrPayloadTooLarge):
 		return http.StatusRequestEntityTooLarge, CodePayloadTooLarge, err.Error()
+	case errors.Is(err, references.ErrUnsupportedType):
+		// Reference-document upload rejections (add-reference-documents 6.1):
+		// the wrapped message carries the guidance (legacy-format conversion,
+		// the allowed-type list) — the same invalid envelope the attachment
+		// upload serves for its classify rejections. Oversize rides the
+		// ErrPayloadTooLarge branch above (references.ErrTooLarge unwraps to
+		// domain.ErrPayloadTooLarge).
+		return http.StatusBadRequest, CodeInvalidRequest, err.Error()
 	case skills.IsDependencyConflict(err):
 		return http.StatusConflict, CodeConflict, err.Error()
 	case isHostileArchive(err):

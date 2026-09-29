@@ -61,7 +61,10 @@ func (r *ResponseRequest) RequestedToolNames() []string {
 // InputPart is one content part of an input item. The attachment-part fields
 // (input_image/input_file) stay raw JSON so their URL values can tolerate
 // both the plain-string and the {url: "..."} object form; attachments.go
-// decodes them.
+// decodes them. The document-mention fields (add-reference-documents 10.4)
+// carry the composer's identity chip — kind/documentId/name/path — either as
+// a typed input_document part or as the chip object verbatim (no type
+// marker, only kind).
 type InputPart struct {
 	Type     string          `json:"type"`
 	Text     string          `json:"text"`
@@ -71,6 +74,14 @@ type InputPart struct {
 	FileID   json.RawMessage `json:"file_id"`
 	Filename string          `json:"filename"`
 	Detail   string          `json:"detail"`
+
+	// Document-mention chip fields (add-reference-documents 10.4). Kind is
+	// the chip's own discriminator ("document"); Name mirrors the chip's
+	// name field (Filename above stays the input_file form).
+	Kind       string `json:"kind"`
+	DocumentID string `json:"documentId"`
+	Name       string `json:"name"`
+	Path       string `json:"path"`
 }
 
 // InputItem is one entry of an item-array input.

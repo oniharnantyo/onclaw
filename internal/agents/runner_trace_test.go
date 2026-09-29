@@ -86,18 +86,28 @@ func (s *traceSpyHandler) counts() (chat, tools, other int) {
 type traceToolCallModel struct{}
 
 func (m *traceToolCallModel) Generate(_ context.Context, msgs []*schema.AgenticMessage, _ ...model.Option) (*schema.AgenticMessage, error) {
-	if len(msgs) > 0 && msgs[len(msgs)-1] != nil &&
-		strings.Contains(extractAgenticText(msgs[len(msgs)-1]), "hello") {
-		return &schema.AgenticMessage{
-			Role: schema.AgenticRoleTypeAssistant,
-			ContentBlocks: []*schema.ContentBlock{
-				{Type: schema.ContentBlockTypeFunctionToolCall, FunctionToolCall: &schema.FunctionToolCall{
-					CallID:    "call-trace-1",
-					Name:      "test.echo",
-					Arguments: `{}`,
-				}},
-			},
-		}, nil
+	// Branch on the latest non-system message: with the delegation
+	// capability default-on (agent-tools-denylist D3), a mid-conversation
+	// system reminder rides after the turn input, and the tool result
+	// message ends the tool loop.
+	for i := len(msgs) - 1; i >= 0; i-- {
+		msg := msgs[i]
+		if msg == nil || msg.Role == schema.AgenticRoleTypeSystem {
+			continue
+		}
+		if strings.Contains(extractAgenticText(msg), "hello") {
+			return &schema.AgenticMessage{
+				Role: schema.AgenticRoleTypeAssistant,
+				ContentBlocks: []*schema.ContentBlock{
+					{Type: schema.ContentBlockTypeFunctionToolCall, FunctionToolCall: &schema.FunctionToolCall{
+						CallID:    "call-trace-1",
+						Name:      "test.echo",
+						Arguments: `{}`,
+					}},
+				},
+			}, nil
+		}
+		break
 	}
 	return traceFinalMessage(), nil
 }
@@ -122,8 +132,9 @@ func traceFinalMessage() *schema.AgenticMessage {
 	}
 }
 
-// setupTraceRunner seeds a workspace/agent whose allowlist selects the
-// test.echo tool, scripted to m, with the given runner options.
+// setupTraceRunner seeds a workspace/agent whose registry provides the
+// test.echo tool — exposed by the agent's empty denylist — scripted to m,
+// with the given runner options.
 func setupTraceRunner(t *testing.T, sessionID string, m model.BaseModel[*schema.AgenticMessage], opts ...RunnerOption) (*Runner, ExecRequest) {
 	t.Helper()
 	ctx := context.Background()
@@ -177,7 +188,6 @@ func setupTraceRunner(t *testing.T, sessionID string, m model.BaseModel[*schema.
 		Name:        "Atlas",
 		ProviderID:  prov.ID,
 		Model:       "gpt-4o",
-		Tools:       []string{"test.echo"},
 	}
 	if err := st.Agents().Create(ctx, ag); err != nil {
 		t.Fatalf("create agent: %v", err)

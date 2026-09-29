@@ -874,7 +874,11 @@ func TestConnectionToolSourceEmptyAttachmentList(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRunnerResolveConnectionToolsAfterBuiltinsAndMCP(t *testing.T) {
-	runner, ws, ag, req := setupMCPRunner(t, []string{"web.fetch"})
+	runner, ws, ag, req := setupMCPRunner(t)
+	// The per-turn override replaces denylist resolution with an explicit
+	// allowlist naming web.fetch (agent-tools-denylist D2) — the ordering
+	// assertion below pins built-ins before MCP before connection verbs.
+	req.AllowedTools = []string{"web.fetch"}
 
 	recipe := registerConnectionTestRecipe(t, "https://api.example.test", func(id string) []domain.RecipeVerb {
 		return []domain.RecipeVerb{
@@ -933,7 +937,7 @@ func TestWithConnectionToolSourceOption(t *testing.T) {
 }
 
 func TestRunnerResolveConnectionToolsDefaultNoop(t *testing.T) {
-	runner, ws, ag, req := setupMCPRunner(t, nil)
+	runner, ws, ag, req := setupMCPRunner(t)
 	_, tools, err := runner.resolve(context.Background(), req, ws, ag, nil)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)

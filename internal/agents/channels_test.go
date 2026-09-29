@@ -502,9 +502,6 @@ func (f *sessionErrContext) ActiveWorkSession(context.Context, string, string) (
 
 func TestInstructionComposer_ChannelDocsPosition(t *testing.T) {
 	tempDir := t.TempDir()
-	if err := os.WriteFile(tempDir+"/BOOTSTRAP.md", []byte("# Bootstrap: Welcome"), 0o644); err != nil {
-		t.Fatalf("write BOOTSTRAP.md: %v", err)
-	}
 
 	st := fake.New()
 	ws := &domain.Workspace{ID: "ws-1", Slug: "acme", Name: "Acme"}
@@ -527,12 +524,16 @@ func TestInstructionComposer_ChannelDocsPosition(t *testing.T) {
 	userIdx := strings.Index(instruction, "# Current User")
 	channelIdx := strings.Index(instruction, "CHANNEL-DOC")
 	catchUpIdx := strings.Index(instruction, "CATCH-UP-DOC")
-	bootstrapIdx := strings.Index(instruction, "# Bootstrap: Welcome")
-	if userIdx < 0 || channelIdx < 0 || catchUpIdx < 0 || bootstrapIdx < 0 {
+	if userIdx < 0 || channelIdx < 0 || catchUpIdx < 0 {
 		t.Fatalf("missing docs in instruction:\n%s", instruction)
 	}
-	if !(userIdx < channelIdx && channelIdx < catchUpIdx && catchUpIdx < bootstrapIdx) {
-		t.Fatalf("channel docs must sit between USER.md and BOOTSTRAP.md:\n%s", instruction)
+	// The channel docs sit after USER.md and close the workspace-document
+	// tier (remove-bootstrap-doc: the former BOOTSTRAP.md slot is gone).
+	if !(userIdx < channelIdx && channelIdx < catchUpIdx) {
+		t.Fatalf("channel docs must sit after USER.md:\n%s", instruction)
+	}
+	if tail := strings.TrimSpace(instruction); !strings.HasSuffix(tail, "CATCH-UP-DOC") {
+		t.Fatalf("channel docs must end the workspace-document tier, got tail:\n%s", tail[len(tail)-120:])
 	}
 
 	// Without ChannelDocs the composition is exactly as before (no doc, no
@@ -556,7 +557,7 @@ func TestInstructionComposer_ChannelDocsPosition(t *testing.T) {
 
 func TestRunner_ChannelRunRequiresChannelPorts(t *testing.T) {
 	mdl := &hooksModel{final: "done"}
-	_, runner, ws, ag, req := setupHooksRunner(t, nil, mdl)
+	_, runner, ws, ag, req := setupHooksRunner(t, mdl)
 
 	channelReq := req
 	channelReq.Origin = OriginChannel
@@ -723,7 +724,8 @@ func TestChannelTools_ChannelRunOnlyExposure(t *testing.T) {
 		}
 	}
 
-	// Non-channel runs never expose the channel toolset, even when allowlisted.
+	// Non-channel runs never expose the channel toolset, even though the
+	// default surface carries the names (denylist D2).
 	stripped := withoutChannelTools([]string{"memory", ChannelToolPost, ChannelToolHistory})
 	if len(stripped) != 1 || stripped[0] != "memory" {
 		t.Fatalf("non-channel toolset = %v, want [memory]", stripped)
@@ -841,7 +843,7 @@ func TestHooks_ChannelOriginBlockedBeforeModel(t *testing.T) {
 		},
 	}
 	fcc, fcf, opts := channelRunContext()
-	_, runner, ws, ag, req := setupHooksRunnerWithOpts(t, nil, mdl, opts, hook)
+	_, runner, ws, ag, req := setupHooksRunnerWithOpts(t, mdl, opts, hook)
 
 	channelReq := req
 	channelReq.Origin = OriginChannel
@@ -896,7 +898,7 @@ func TestHooks_ChannelOriginRunLifecyclePayloads(t *testing.T) {
 		captureHookCommand(t, "channel-finish-observer", domain.HookEventRunFinished, "*", finishedFile),
 	}
 	fcc, _, opts := channelRunContext()
-	_, runner, ws, ag, req := setupHooksRunnerWithOpts(t, nil, mdl, opts, hooks...)
+	_, runner, ws, ag, req := setupHooksRunnerWithOpts(t, mdl, opts, hooks...)
 
 	channelReq := req
 	channelReq.Origin = OriginChannel
@@ -929,7 +931,7 @@ func TestHooks_ChannelOriginRunLifecyclePayloads(t *testing.T) {
 func TestRunner_ChannelRunComposeAndExecute(t *testing.T) {
 	mdl := &hooksModel{final: "done"}
 	fcc, _, opts := channelRunContext()
-	_, runner, ws, ag, req := setupHooksRunnerWithOpts(t, nil, mdl, opts)
+	_, runner, ws, ag, req := setupHooksRunnerWithOpts(t, mdl, opts)
 
 	channelReq := req
 	channelReq.Origin = OriginChannel

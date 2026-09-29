@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, beforeAll, vi } from 'vitest';
 import { StrictMode } from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { ChatRoute } from './ChatRoute';
 import { useStore } from '../store';
@@ -508,6 +508,65 @@ describe('ChatRoute component', () => {
     // duplicate, and the surviving attempt must not have been skipped.
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(useStore.getState().ui.running).toBe(false);
+  });
+
+  // --- Mention bridge (rework-document-chat-surfaces 2.2/D3) -----------------
+  // The panel's Documents listing inserts mentions into the composer through
+  // the ChatRoute bridge: the composer registers its insertion callback, the
+  // documents source's per-row Insert action calls it, and the composer adds
+  // the markdown token (the visible pill) plus the identity chip.
+
+  it('the panel documents listing Insert action inserts the mention into the composer (token + chip)', async () => {
+    useStore.setState({ panel: { open: false, tabs: [], activeId: null, badge: false } } as any);
+    requestMock.mockImplementation(async (endpoint: string) => {
+      if (endpoint.includes('/api-keys/exchange')) return { key: 'oc_exchanged_key', api_key: {} };
+      if (endpoint.includes('/documents')) {
+        return {
+          documents: [{
+            id: 'doc-1', name: 'twilio-api.pdf', description: 'Twilio API manual.', mime: 'application/pdf',
+            size: 2048, url: '/api/v1/workspaces/acme/documents/doc-1/file', indexStatus: 'ready',
+            scope: 'workspace', pageCount: 31, agents: [], channels: [], createdAt: '2026-09-01T00:00:00Z',
+          }],
+        };
+      }
+      if (endpoint.includes('/skills')) return { skills: [] };
+      return {};
+    });
+
+    const { container } = render(
+      <MemoryRouter initialEntries={['/c/a-atlas']}>
+        <Routes>
+          <Route path="/c/:chatId" element={<ChatRoute />} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/conversation with atlas/i)).not.toBeNull();
+    });
+
+    // The header's documents affordance opens the panel Documents listing
+    // (2.1, 2026-09-28 user pivot: header toggle beside the panel toggle);
+    // the listing fetches through the conversation lens.
+    fireEvent.click(screen.getByTestId('btn-panel-documents'));
+    // The panel chrome renders BOTH instances (docked + overlay) — queries
+    // scope to the docked one, like RightPanel.test.
+    const docked = () => container.querySelector('[data-od-id="right-panel-docked"]') as HTMLElement;
+    await waitFor(() => {
+      expect(docked().querySelector('[data-testid="panel-doc-twilio-api.pdf"]')).not.toBeNull();
+    });
+
+    fireEvent.click(docked().querySelector('[data-testid="panel-doc-insert-twilio-api.pdf"]') as HTMLElement);
+
+    // The bridge invoked the composer's callback: the markdown token sits in
+    // the input and the identity chip landed in the tray.
+    const input = screen.getByLabelText('Message input') as HTMLTextAreaElement;
+    expect(input.value).toBe('[📄 twilio-api.pdf](references/twilio-api.pdf) ');
+    const chip = document.querySelector('[data-testid="document-chip"]');
+    expect(chip).not.toBeNull();
+    expect(chip?.getAttribute('data-document-id')).toBe('doc-1');
+    // Design D3: the panel stays open — preview-then-send flow.
+    expect(docked().querySelector('[data-testid="panel-doc-twilio-api.pdf"]')).not.toBeNull();
   });
 });
 

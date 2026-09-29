@@ -83,7 +83,7 @@ function useSkillGroups(tenant: any, agent: any) {
 }
 
 export function ChatView({ tenant, target, agent, thread, session, channelMembers, onOpenMembers,
-  typing, busy, compacting, allowAttachments,
+  typing, busy, compacting, allowAttachments, documentsLens, registerDocInserter,
   onSend, onCancel, onCopy, onRefresh, onBranch, onEditSubmit  }: any) {
   const listRef = useRef(null);
   const atBottomRef = useRef(true);
@@ -208,6 +208,19 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
   // Right panel slice (add-right-panel 1.4): the header toggle reflects these.
   const panelOpen = useStore((s: any) => s.panel.open);
   const panelBadge = useStore((s: any) => s.panel.badge);
+  // Documents toggle (rework-document-chat-surfaces D2, 2026-09-28 user
+  // pivot): pressed while the panel shows the documents tab; clicking closes
+  // the tab (last tab closed closes the panel) or mints it back — the listing
+  // fills the panel, so the tab strip never strands the documents surface.
+  const documentsTabId = useStore((s: any) =>
+    s.panel.open ? s.panel.tabs.find((t: any) => t.kind === 'documents')?.id ?? null : null);
+  const documentsOpen = Boolean(documentsTabId);
+  const toggleDocuments = () => {
+    const st = useStore.getState();
+    const id = st.panel.tabs.find((t: any) => t.kind === 'documents')?.id;
+    if (id) st.closePanelTab(id);
+    else st.openPanelTab({ kind: 'documents', title: 'Documents', payload: {} });
+  };
   // Tool display names come from the per-workspace catalog cache (design D7);
   // the bump re-renders the list once names resolve so cards pick them up.
   const [, setCatalogTick] = useState(0);
@@ -274,7 +287,9 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
       <ChatHeader target={target} agent={agent} channelMembers={channelMembers} usage={session?.usage} langfuseUrl={session?.langfuseUrl}
         onOpenMembers={onOpenMembers}
         panelOpen={panelOpen} panelBadge={panelBadge}
-        onTogglePanel={() => useStore.getState().setPanelOpen(!panelOpen)}/>
+        onTogglePanel={() => useStore.getState().setPanelOpen(!panelOpen)}
+        documentsAvailable={Boolean(documentsLens)} documentsOpen={documentsOpen}
+        onToggleDocuments={toggleDocuments}/>
       {/* Rail column + transcript: the conversation rail is a real flex child
           at the LEFT edge of the chat pane (before the chat, not floating
           beside the centered column), so it stays pinned while the transcript
@@ -382,6 +397,7 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
           <Composer agent={agent} running={busy} onSend={onSend} onCancel={onCancel}
             ref={composerRef} allowAttachments={allowAttachments} workspaceSlug={workspaceId}
             chatId={target.obj.id}
+            registerDocMention={registerDocInserter}
             mentionOptions={target.kind === 'channel' ? channelMembers : null}
             allowCommands={target.kind === 'agent'}
             skillGroups={skillGroups}/>

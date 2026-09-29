@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 	"github.com/oniharnantyo/onclaw/internal/agents/tools"
+	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/store/fake"
 )
 
@@ -310,6 +312,141 @@ func TestNewDefaultToolRegistry_ScheduleOptional(t *testing.T) {
 	}
 	if entry.DisplayName != "Schedule" || entry.IconKey != "calendar" || entry.Configurable {
 		t.Errorf("unexpected schedule catalog entry: %+v", entry)
+	}
+}
+
+// fakeDocumentTools is a scripted DocumentTools recording document.search's
+// construction-bound identity and scope at call time.
+type fakeDocumentTools struct {
+	calls []fakeDocumentSearchCall
+	hits  []domain.DocumentSectionHit
+}
+
+type fakeDocumentSearchCall struct {
+	workspaceID string
+	scope       domain.DocumentRunScope
+	query       string
+	limit       int
+}
+
+func (f *fakeDocumentTools) SearchDocuments(_ context.Context, workspaceID string, scope domain.DocumentRunScope, query string, limit int) ([]domain.DocumentSectionHit, error) {
+	f.calls = append(f.calls, fakeDocumentSearchCall{workspaceID: workspaceID, scope: scope, query: query, limit: limit})
+	return f.hits, nil
+}
+
+func (f *fakeDocumentTools) VisibleDocuments(context.Context, string, domain.DocumentRunScope) ([]domain.ReferenceDocument, error) {
+	return nil, nil
+}
+
+// TestNewDefaultToolRegistry_DocumentSearchOptional pins document.search's
+// registration contract (add-reference-documents 4.1): the references
+// service is optional — WithDocumentTools registers the tool and nothing
+// registers without it (the memory-search precedent) — while document.read
+// stays registered either way (reading a jailed file never requires the
+// library).
+func TestNewDefaultToolRegistry_DocumentSearchOptional(t *testing.T) {
+	bare := NewDefaultToolRegistry(nil)
+	if _, ok := bare.Lookup(tools.NameDocumentSearch); ok {
+		t.Fatal("document.search must not register without WithDocumentTools")
+	}
+	if _, ok := bare.Lookup(tools.NameDocumentRead); !ok {
+		t.Fatal("document.read must register even without WithDocumentTools")
+	}
+	if slices.Contains(bare.Names(), tools.NameDocumentSearch) {
+		t.Error("unwired registry must not offer document.search to denylist resolution")
+	}
+
+	reg := NewDefaultToolRegistry(nil, WithDocumentTools(&fakeDocumentTools{}))
+	ctor, ok := reg.Lookup(tools.NameDocumentSearch)
+	if !ok {
+		t.Fatal("WithDocumentTools must register document.search")
+	}
+
+	// The constructor builds and binds the run's identity and visibility
+	// scope; the query arguments carry no identity fields.
+	tl, err := ctor(ToolContext{
+		WorkspaceID:      "ws-1",
+		AgentID:          "ag-1",
+		ChannelID:        "ch-9",
+		IsChannelSession: true,
+	})
+	if err != nil {
+		t.Fatalf("document.search constructor: %v", err)
+	}
+	info, err := tl.Info(context.Background())
+	if err != nil {
+		t.Fatalf("tool info: %v", err)
+	}
+	if info.Name != tools.NameDocumentSearch {
+		t.Errorf("tool name = %q, want %q", info.Name, tools.NameDocumentSearch)
+	}
+
+	fake := &fakeDocumentTools{}
+	reg2 := NewDefaultToolRegistry(nil, WithDocumentTools(fake))
+	ctor2, ok := reg2.Lookup(tools.NameDocumentSearch)
+	if !ok {
+		t.Fatal("expected document.search registration")
+	}
+	tl2, err := ctor2(ToolContext{WorkspaceID: "ws-2", AgentID: "ag-2"})
+	if err != nil {
+		t.Fatalf("constructor: %v", err)
+	}
+	if _, err := tl2.(tool.InvokableTool).InvokableRun(context.Background(), `{"query":" rate limits "}`); err != nil {
+		t.Fatalf("InvokableRun: %v", err)
+	}
+	if len(fake.calls) != 1 {
+		t.Fatalf("searcher calls = %d, want 1", len(fake.calls))
+	}
+	call := fake.calls[0]
+	if call.workspaceID != "ws-2" || call.query != "rate limits" || call.limit != 8 {
+		t.Errorf("call = %+v, want ws-2 / trimmed query / limit 8", call)
+	}
+	// A direct (non-channel) run: no channel, not a channel session.
+	if call.scope.AgentID != "ag-2" || call.scope.ChannelID != "" || call.scope.IsChannelSession {
+		t.Errorf("scope = %+v, want the direct-run scope", call.scope)
+	}
+}
+
+// TestNewDefaultToolRegistry_DocumentSearchChannelScope pins the channel half
+// of the visibility binding: a channel session run binds ChannelID and
+// IsChannelSession onto the searcher's DocumentRunScope, while the scheduled
+// shape (channel known, IsChannelSession false) resolves by agent bindings
+// only — the delivery target never widens the searchable set.
+func TestNewDefaultToolRegistry_DocumentSearchChannelScope(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		tctx ToolContext
+		want domain.DocumentRunScope
+	}{
+		{
+			name: "channel session",
+			tctx: ToolContext{WorkspaceID: "ws", AgentID: "ag", ChannelID: "ch-1", IsChannelSession: true},
+			want: domain.DocumentRunScope{AgentID: "ag", ChannelID: "ch-1", IsChannelSession: true},
+		},
+		{
+			name: "scheduled run with delivery channel",
+			tctx: ToolContext{WorkspaceID: "ws", AgentID: "ag", ChannelID: "ch-1"},
+			want: domain.DocumentRunScope{AgentID: "ag", ChannelID: "ch-1", IsChannelSession: false},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeDocumentTools{}
+			reg := NewDefaultToolRegistry(nil, WithDocumentTools(fake))
+			ctor, ok := reg.Lookup(tools.NameDocumentSearch)
+			if !ok {
+				t.Fatal("expected document.search registration")
+			}
+			tl, err := ctor(tc.tctx)
+			if err != nil {
+				t.Fatalf("constructor: %v", err)
+			}
+			if _, err := tl.(tool.InvokableTool).InvokableRun(context.Background(), `{"query":"x"}`); err != nil {
+				t.Fatalf("InvokableRun: %v", err)
+			}
+			if fake.calls[0].scope != tc.want {
+				t.Errorf("scope = %+v, want %+v", fake.calls[0].scope, tc.want)
+			}
+		})
 	}
 }
 

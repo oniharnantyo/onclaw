@@ -44,7 +44,7 @@ type stubChatModel struct{}
 
 func (stubChatModel) Generate(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.Message, error) {
 	return &schema.Message{
-		Content: `{"identity":"# Identity\nStub identity","soul":"# Soul\nStub soul","bootstrap":"# BOOTSTRAP.md - Birth Sequence\nStub bootstrap"}`,
+		Content: `{"identity":"# Identity\nStub identity","soul":"# Soul\nStub soul"}`,
 	}, nil
 }
 

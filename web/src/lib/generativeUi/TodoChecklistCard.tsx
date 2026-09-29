@@ -98,6 +98,30 @@ function TodoMark({ status }: { status: TodoStatus }) {
   return <span aria-hidden="true" className="inline-block h-[9px] w-[9px] shrink-0 rounded-full border border-muted"/>;
 }
 
+/** Shared row list — one `li` per item with the four row states (done struck
+ * + dimmed, active spinning, pending dimmed, failed in danger with its reason
+ * beneath). Exported for the session-todos popover (add-session-todos-surface
+ * task 2.2) so popover rows and transcript cards can never drift. */
+export function TodoPlanRows({ items }: { items: TodoItem[] }) {
+  return (
+    <ul className="border-t border-linesoft">
+      {items.map((item) => (
+        <li key={item.key} data-od-id={`todo-row-${item.key}`} className="px-2.5 py-1.5">
+          <div className="flex items-center gap-2">
+            <TodoMark status={item.status}/>
+            <span className={cx('min-w-0 flex-1 truncate text-[12px]', ROW_TEXT[item.status])}>
+              {item.text || '(untitled)'}
+            </span>
+          </div>
+          {item.status === 'failed' && item.reason && (
+            <p className="ms-[20px] mt-0.5 text-[11px] leading-4 text-danger">{item.reason}</p>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 interface TodoChecklistCardProps {
   plan: TodoPlan;
   odId: string;
@@ -117,21 +141,7 @@ export function TodoChecklistCard({ plan, odId }: TodoChecklistCardProps) {
           {done}/{total}{plan.revision !== null ? ` · rev ${plan.revision}` : ''}
         </span>
       </div>
-      <ul className="border-t border-linesoft">
-        {plan.items.map((item) => (
-          <li key={item.key} data-od-id={`todo-row-${item.key}`} className="px-2.5 py-1.5">
-            <div className="flex items-center gap-2">
-              <TodoMark status={item.status}/>
-              <span className={cx('min-w-0 flex-1 truncate text-[12px]', ROW_TEXT[item.status])}>
-                {item.text || '(untitled)'}
-              </span>
-            </div>
-            {item.status === 'failed' && item.reason && (
-              <p className="ms-[20px] mt-0.5 text-[11px] leading-4 text-danger">{item.reason}</p>
-            )}
-          </li>
-        ))}
-      </ul>
+      <TodoPlanRows items={plan.items}/>
     </div>
   );
 }

@@ -97,15 +97,16 @@ func (m *hooksModel) inputToolResultText(t *testing.T, call int) string {
 	return sb.String()
 }
 
-// setupHooksRunner seeds a workspace, agent (with the given allowlisted
-// tools), user, provider, and workspace hooks, and wires the runner with the
-// real hook dispatcher over the fake store. Extra opts configure further
-// runner knobs (e.g. the channel ports for channel-run tests).
-func setupHooksRunner(t *testing.T, tools []string, mdl *hooksModel, hookList ...*domain.WorkspaceHook) (store.Store, *Runner, *domain.Workspace, *domain.Agent, ExecRequest) {
-	return setupHooksRunnerWithOpts(t, tools, mdl, nil, hookList...)
+// setupHooksRunner seeds a workspace, agent (default surface — denylist D2:
+// empty disabled_tools exposes the catalog), user, provider, and workspace
+// hooks, and wires the runner with the real hook dispatcher over the fake
+// store. Extra opts configure further runner knobs (e.g. the channel ports
+// for channel-run tests).
+func setupHooksRunner(t *testing.T, mdl *hooksModel, hookList ...*domain.WorkspaceHook) (store.Store, *Runner, *domain.Workspace, *domain.Agent, ExecRequest) {
+	return setupHooksRunnerWithOpts(t, mdl, nil, hookList...)
 }
 
-func setupHooksRunnerWithOpts(t *testing.T, tools []string, mdl *hooksModel, opts []RunnerOption, hookList ...*domain.WorkspaceHook) (store.Store, *Runner, *domain.Workspace, *domain.Agent, ExecRequest) {
+func setupHooksRunnerWithOpts(t *testing.T, mdl *hooksModel, opts []RunnerOption, hookList ...*domain.WorkspaceHook) (store.Store, *Runner, *domain.Workspace, *domain.Agent, ExecRequest) {
 	t.Helper()
 	ctx := context.Background()
 	st := fake.New()
@@ -161,7 +162,6 @@ func setupHooksRunnerWithOpts(t *testing.T, tools []string, mdl *hooksModel, opt
 		Name:        "Atlas",
 		ProviderID:  prov.ID,
 		Model:       "gpt-4o",
-		Tools:       tools,
 	}
 	if err := st.Agents().Create(ctx, ag); err != nil {
 		t.Fatalf("create agent: %v", err)
@@ -195,7 +195,7 @@ func findPromptBlocked(events []TranscriptEvent) *TranscriptEvent {
 func TestHooks_BlockedToolCallContinuesRun(t *testing.T) {
 	mdl := &hooksModel{tooled: true, toolName: "read_file", toolArgs: `{"path":"/tmp/notes.md"}`, final: "I could not read the file, but here is the plan."}
 	hook := blockedToolHook(t, "policy-guard", []string{"read_file"})
-	_, runner, ws, ag, req := setupHooksRunner(t, []string{"read_file"}, mdl, hook)
+	_, runner, ws, ag, req := setupHooksRunner(t, mdl, hook)
 
 	stream, err := runner.Run(context.Background(), req)
 	if err != nil {
@@ -264,7 +264,7 @@ func TestHooks_BlockedPromptNeverReachesModel(t *testing.T) {
 			Enabled:     true,
 		},
 	}
-	_, runner, ws, ag, req := setupHooksRunner(t, nil, mdl, hook)
+	_, runner, ws, ag, req := setupHooksRunner(t, mdl, hook)
 
 	stream, err := runner.Run(context.Background(), req)
 	if err != nil {
@@ -335,7 +335,7 @@ func TestHooks_OriginGatesPromptSubmit(t *testing.T) {
 			Enabled:     true,
 		},
 	}
-	st, runner, _, ag, req := setupHooksRunner(t, nil, mdl, hook, heartbeatHook)
+	st, runner, _, ag, req := setupHooksRunner(t, mdl, hook, heartbeatHook)
 
 	// Origin scheduler: the hook's matcher selects scheduler → blocked before
 	// the model.
@@ -402,7 +402,7 @@ func TestHooks_ApprovalResumeDoesNotRefirePreToolUse(t *testing.T) {
 			Enabled:     true,
 		},
 	}
-	st, runner, _, _, req := setupHooksRunner(t, []string{ReservedShellTool}, mdl, hook)
+	st, runner, _, _, req := setupHooksRunner(t, mdl, hook)
 
 	stream, err := runner.Run(context.Background(), req)
 	if err != nil {
@@ -485,7 +485,7 @@ func TestHooks_ObserverSlownessAndBreakageLeaveRunUntouched(t *testing.T) {
 			Enabled:     true,
 		},
 	}
-	st, runner, _, _, req := setupHooksRunner(t, nil, mdl, slow, broken)
+	st, runner, _, _, req := setupHooksRunner(t, mdl, slow, broken)
 
 	started := time.Now()
 	stream, err := runner.Run(context.Background(), req)

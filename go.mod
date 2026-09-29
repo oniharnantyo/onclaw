@@ -6,7 +6,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.46.0
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.54
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.112.0
-	github.com/cloudwego/eino v0.10.0-alpha.28
+	github.com/cloudwego/eino v0.10.0-alpha.35
 	github.com/cloudwego/eino-ext/callbacks/langfuse v0.1.3
 	github.com/cloudwego/eino-ext/components/model/agenticclaude v0.1.5
 	github.com/cloudwego/eino-ext/components/model/agenticgemini v0.2.3

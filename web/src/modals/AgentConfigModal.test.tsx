@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/re
 import { AgentConfigModal } from './AgentConfigModal';
 import { api, ApiError, type ApiMcpServer, type ApiWorkspaceSkill } from '../lib/api';
 import { connectionsApi } from '../lib/connectionsApi';
+import { documentsApi, type ApiReferenceDocument } from '../lib/documentsApi';
 import { heartbeats, type ApiHeartbeat } from '../lib/heartbeats';
 import { useStore } from '../store';
 import { useAuthStore } from '../store/auth';
@@ -160,6 +161,10 @@ describe('modals/AgentConfigModal', () => {
     // The Integrations section lists managed connections (empty unless a test
     // overrides it) — optional context that must not block the modal.
     vi.spyOn(connectionsApi, 'list').mockResolvedValue({ connections: [] });
+    // The read-only reference-documents section (add-reference-documents 9.1):
+    // empty unless a test overrides it — optional context that must not block
+    // the modal, and never a real network call in tests.
+    vi.spyOn(documentsApi, 'list').mockResolvedValue({ documents: [] });
     vi.spyOn(api.tools, 'list').mockResolvedValue({
       tools: [
         { key: 'ls', display_name: 'List Files', description: '', group: 'filesystem', icon_key: 'folder', configurable: false, enabled: true, configured: false, config: {}, toggleable: true },
@@ -313,12 +318,11 @@ describe('modals/AgentConfigModal', () => {
         brief: 'Review all PRs',
         identity: '',
         soul: '',
-        bootstrap: '',
         provider_id: 'prov_anthropic',
         model: 'claude-3-7-sonnet',
         temperature: 1.0,
         autonomy: 'approval',
-        tools: [],
+        disabled_tools: [],
         skills: [],
         enabled_mcps: [],
         avatar: {},
@@ -347,7 +351,14 @@ describe('modals/AgentConfigModal', () => {
     // Deploy button only exists on the final step
     expect(screen.getByTestId('btn-agent-save-modal')).not.toBeNull();
 
-    // Skip capabilities: an untouched Step 3 deploys with no tools selected
+    // Step 3 inverts (D6): every toggleable catalog chip renders selected
+    // for an agent with an empty denylist — untouched, they stay enabled.
+    expect(screen.getByText('Web Search').closest('button').getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByText('Browser').closest('button').getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByText('Shell').closest('button').getAttribute('aria-pressed')).toBe('true');
+
+    // Skip capabilities: an untouched Step 3 deploys with an empty denylist
+    // (every catalog tool enabled — scenarios: Step 3 skippable).
     fireEvent.click(screen.getByTestId('btn-agent-save-modal'));
 
     await waitFor(() => {
@@ -358,7 +369,7 @@ describe('modals/AgentConfigModal', () => {
         brief: 'Review all PRs',
         provider_id: 'prov_anthropic',
         model: 'claude-3-7-sonnet',
-        tools: [],
+        disabled_tools: [],
         enabled_mcps: [],
       }));
       // No per-agent skill state ships in the payload — tiers only.
@@ -368,7 +379,7 @@ describe('modals/AgentConfigModal', () => {
     expect(onSave).toHaveBeenCalled();
   });
 
-  it('deploys with the capabilities selected on Step 3', async () => {
+  it('toggle-off stores the denylist key and toggle-on removes it', async () => {
     const onSave = vi.fn();
     vi.spyOn(api.agents, 'create').mockResolvedValue({
       agent: {
@@ -381,12 +392,11 @@ describe('modals/AgentConfigModal', () => {
         brief: 'Triage incidents',
         identity: '',
         soul: '',
-        bootstrap: '',
         provider_id: 'prov_anthropic',
         model: 'claude-3-7-sonnet',
         temperature: 1.0,
         autonomy: 'approval',
-        tools: ['web.search'],
+        disabled_tools: ['web.search'],
         skills: ['github-sweeper'],
         enabled_mcps: [],
         avatar: {},
@@ -412,9 +422,12 @@ describe('modals/AgentConfigModal', () => {
     await goToStep2({ name: 'Beacon', role: 'triage-bot', brief: 'Triage incidents' });
     await goToStep3();
 
-    // Toggle capability chips: opt into "Web Search" (also satisfies the
-    // github-sweeper tool dependency warning below)
-    fireEvent.click(screen.getByText('Web Search'));
+    // Chips start selected (empty denylist); toggling Web Search off adds
+    // its key to the denylist...
+    const webSearchChip = screen.getByText('Web Search').closest('button') as HTMLButtonElement;
+    expect(webSearchChip.getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(webSearchChip);
+    expect(webSearchChip.getAttribute('aria-pressed')).toBe('false');
 
     // Autonomy lives on the Capabilities step, with a description per option
     expect(screen.getByText(/asks you before every tool call/i)).not.toBeNull();
@@ -426,9 +439,72 @@ describe('modals/AgentConfigModal', () => {
     await waitFor(() => {
       expect(api.agents.create).toHaveBeenCalledWith('acme', expect.objectContaining({
         name: 'Beacon',
-        tools: ['web.search'],
+        disabled_tools: ['web.search'],
         enabled_mcps: [],
         autonomy: 'suggest',
+      }));
+    });
+
+    expect(onSave).toHaveBeenCalled();
+  });
+
+  it('toggle-on after toggle-off removes the key from the denylist, and Shell stores execute', async () => {
+    const onSave = vi.fn();
+    vi.spyOn(api.agents, 'create').mockResolvedValue({
+      agent: {
+        id: 'agent-457',
+        workspace_id: 'acme',
+        slug: 'beacon',
+        name: 'Beacon',
+        role: 'triage-bot',
+        description: '',
+        brief: 'Triage incidents',
+        identity: '',
+        soul: '',
+        provider_id: 'prov_anthropic',
+        model: 'claude-3-7-sonnet',
+        temperature: 1.0,
+        autonomy: 'approval',
+        disabled_tools: [],
+        skills: [],
+        enabled_mcps: [],
+        avatar: {},
+        prompts_status: 'generating',
+        created_at: '',
+        updated_at: '',
+      },
+    });
+
+    render(
+      <AgentConfigModal
+        tenant={mockTenant}
+        onClose={vi.fn()}
+        onSave={onSave}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('input-agent-name')).not.toBeNull();
+    });
+
+    await goToStep2({ name: 'Beacon', role: 'triage-bot', brief: 'Triage incidents' });
+    await goToStep3();
+
+    // Toggle off then back on: the key leaves the denylist again.
+    const webFetchChip = screen.getByText('Web Fetch').closest('button') as HTMLButtonElement;
+    fireEvent.click(webFetchChip);
+    expect(webFetchChip.getAttribute('aria-pressed')).toBe('false');
+    fireEvent.click(webFetchChip);
+    expect(webFetchChip.getAttribute('aria-pressed')).toBe('true');
+
+    // Toggling the single Shell chip off stores the reserved `execute` name.
+    fireEvent.click(screen.getByText('Shell'));
+
+    fireEvent.click(screen.getByTestId('btn-agent-save-modal'));
+
+    await waitFor(() => {
+      expect(api.agents.create).toHaveBeenCalledWith('acme', expect.objectContaining({
+        disabled_tools: ['execute'],
       }));
     });
 
@@ -459,12 +535,11 @@ describe('modals/AgentConfigModal', () => {
       brief: 'Review all pull requests thoroughly',
       identity: 'System prompt identity from file',
       soul: 'Helpful and concise tone',
-      bootstrap: '',
       provider_id: 'prov_anthropic',
       model: 'claude-3-7-sonnet',
       temperature: 1.0,
       autonomy: 'approval' as const,
-      tools: ['web.search'],
+      disabled_tools: ['web.search'],
       skills: ['research'],
       enabled_mcps: [],
       avatar: {},
@@ -550,12 +625,11 @@ describe('modals/AgentConfigModal', () => {
       brief: 'Review all PRs',
       identity: 'old identity body',
       soul: 'old soul body',
-      bootstrap: 'old bootstrap body',
       provider_id: 'prov_anthropic',
       model: 'claude-3-7-sonnet',
       temperature: 1.0,
       autonomy: 'approval' as const,
-      tools: ['web.search'],
+      disabled_tools: ['web.search'],
       skills: ['research'],
       enabled_mcps: [],
       avatar: {},
@@ -592,11 +666,8 @@ describe('modals/AgentConfigModal', () => {
     expect(screen.getByTestId('agent-prompts-pane')).not.toBeNull();
     expect(screen.getByTestId('prompt-file-identity')).not.toBeNull();
     expect(screen.getByTestId('prompt-file-soul')).not.toBeNull();
-    expect(screen.getByTestId('prompt-file-bootstrap')).not.toBeNull();
     expect(screen.getByText('Ready')).not.toBeNull();
     expect((screen.getByTestId('input-agent-identity') as HTMLTextAreaElement).value).toBe('old identity body');
-    fireEvent.click(screen.getByTestId('prompt-file-bootstrap'));
-    expect(screen.getByTestId('agent-bootstrap-doc').textContent).toContain('old bootstrap body');
     fireEvent.click(screen.getByTestId('prompt-file-identity'));
 
     // Regenerate asks what should change before running
@@ -632,12 +703,11 @@ describe('modals/AgentConfigModal', () => {
         brief: 'Review all PRs',
         identity: 'old identity body',
         soul: '',
-        bootstrap: '',
         provider_id: 'prov_anthropic',
         model: 'claude-3-7-sonnet',
         temperature: 1.0,
         autonomy: 'approval' as const,
-        tools: [],
+        disabled_tools: [],
         skills: [],
         enabled_mcps: [],
         avatar: {},
@@ -692,13 +762,12 @@ describe('modals/AgentConfigModal', () => {
         brief: 'Review all PRs',
         identity: '',
         soul: '',
-        bootstrap: '',
         provider_id: 'prov_anthropic',
         model: 'claude-3-7-sonnet',
         temperature: 1.0,
         autonomy: 'approval' as const,
         context_window: 200000,
-        tools: ['web.search'],
+        disabled_tools: ['web.search'],
         skills: ['research'],
         enabled_mcps: [],
         avatar: {},
@@ -756,13 +825,12 @@ describe('modals/AgentConfigModal', () => {
       brief: 'Review all PRs',
       identity: 'Identity',
       soul: 'Soul',
-      bootstrap: '',
       provider_id: 'prov_anthropic',
       model: 'claude-3-7-sonnet',
       temperature: 1.0,
       autonomy: 'approval' as const,
       context_window: 50000,
-      tools: ['web.search'],
+      disabled_tools: ['web.search'],
       skills: ['research'],
       enabled_mcps: [],
       avatar: {},
@@ -813,7 +881,7 @@ describe('modals/AgentConfigModal', () => {
       ],
     });
     vi.spyOn(api.agents, 'create').mockResolvedValue({
-      agent: { id: 'agent-x', workspace_id: 'acme', slug: 'beacon', name: 'Beacon', role: 'triage-bot', description: '', brief: 'Triage', identity: '', soul: '', bootstrap: '', provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet', temperature: 1.0, autonomy: 'approval', tools: [], skills: [], enabled_mcps: [], avatar: {}, prompts_status: 'generating', created_at: '', updated_at: '' },
+      agent: { id: 'agent-x', workspace_id: 'acme', slug: 'beacon', name: 'Beacon', role: 'triage-bot', description: '', brief: 'Triage', identity: '', soul: '', provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet', temperature: 1.0, autonomy: 'approval', disabled_tools: [], skills: [], enabled_mcps: [], avatar: {}, prompts_status: 'generating', created_at: '', updated_at: '' },
     });
 
     render(<AgentConfigModal tenant={mockTenant} onClose={vi.fn()} onSave={vi.fn()} />);
@@ -826,16 +894,20 @@ describe('modals/AgentConfigModal', () => {
     expect(disabledChip.disabled).toBe(true);
     expect(disabledChip.title).toBe('Disabled in Settings → Tools');
 
-    // Clicking must not select it.
+    // Denylist inversion (D6): the gate-excluded chip renders selected (it
+    // is exposed unless denylisted) but the gate locks the toggle.
+    expect(disabledChip.getAttribute('aria-pressed')).toBe('true');
+
+    // Clicking must not change it.
     fireEvent.click(disabledChip);
-    expect(disabledChip.getAttribute('aria-pressed')).toBe('false');
+    expect(disabledChip.getAttribute('aria-pressed')).toBe('true');
 
     fireEvent.click(screen.getByText('Web Fetch'));
 
     fireEvent.click(screen.getByTestId('btn-agent-save-modal'));
     await waitFor(() => {
       expect(api.agents.create).toHaveBeenCalledWith('acme', expect.objectContaining({
-        tools: ['web.fetch'],
+        disabled_tools: ['web.fetch'],
       }));
     });
   });
@@ -857,7 +929,7 @@ describe('modals/AgentConfigModal', () => {
     expect(screen.getByText('Browser')).not.toBeNull();
   });
 
-  it('keeps a stored channel.post allowlist key invisibly and preserves it on save', async () => {
+  it('keeps a stored channel.post denylist key invisibly and preserves it on save', async () => {
     const summaryDraft = {
       id: 'radar', workspace_id: 'acme', slug: 'radar', name: 'Radar', role: 'Reviewer',
       description: 'PR Reviewer', model: 'claude-3-7-sonnet', status: 'idle',
@@ -865,10 +937,10 @@ describe('modals/AgentConfigModal', () => {
     const detailAgent = {
       id: 'radar', workspace_id: 'acme', slug: 'radar', name: 'Radar Detail', role: 'Code Reviewer',
       description: 'PR Reviewer Detail', brief: 'Review all pull requests thoroughly',
-      identity: '', soul: '', bootstrap: '',
+      identity: '', soul: '',
       provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet', temperature: 1.0,
       autonomy: 'approval' as const,
-      tools: ['web.search', 'channel.post'],
+      disabled_tools: ['web.search', 'channel.post'],
       skills: [], enabled_mcps: [], avatar: {}, prompts_status: 'ready' as const,
       created_at: '', updated_at: '',
     };
@@ -881,25 +953,27 @@ describe('modals/AgentConfigModal', () => {
       expect(screen.queryByTestId('agent-modal-loading')).toBeNull();
     });
 
-    // No chip renders for the stored always-on key; toggleable chips hydrate.
+    // No chip renders for the stored always-on key; the denied Web Search
+    // chip hydrates deselected (its key sits in the denylist).
     fireEvent.click(screen.getByText('Capabilities'));
     expect(screen.queryByText('Channel Post')).toBeNull();
-    expect(screen.getByText('Web Search')).not.toBeNull();
+    const webSearchChip = screen.getByText('Web Search').closest('button') as HTMLButtonElement;
+    expect(webSearchChip.getAttribute('aria-pressed')).toBe('false');
 
-    // Saving keeps the stored key instead of scrubbing it.
+    // Saving keeps the stored keys instead of scrubbing them.
     fireEvent.click(screen.getByTestId('btn-agent-save-modal'));
     await waitFor(() => {
       expect(api.agents.patch).toHaveBeenCalledWith(
         'acme',
         'radar',
         expect.objectContaining({
-          tools: ['web.search', 'channel.post'],
+          disabled_tools: ['web.search', 'channel.post'],
         })
       );
     });
   });
 
-  it('hydrates legacy browser.* names as the Browser chip and normalizes on save', async () => {
+  it('renders the Browser chip selected for legacy browser.* names and keeps them on save', async () => {
     const summaryDraft = {
       id: 'radar', workspace_id: 'acme', slug: 'radar', name: 'Radar', role: 'Reviewer',
       description: 'PR Reviewer', model: 'claude-3-7-sonnet', status: 'idle',
@@ -907,10 +981,10 @@ describe('modals/AgentConfigModal', () => {
     const detailAgent = {
       id: 'radar', workspace_id: 'acme', slug: 'radar', name: 'Radar Detail', role: 'Code Reviewer',
       description: 'PR Reviewer Detail', brief: 'Review all pull requests thoroughly',
-      identity: '', soul: '', bootstrap: '',
+      identity: '', soul: '',
       provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet', temperature: 1.0,
       autonomy: 'approval' as const,
-      tools: ['web.search', 'browser.navigate', 'browser.read'],
+      disabled_tools: ['web.search', 'browser.navigate', 'browser.read'],
       skills: [], enabled_mcps: [], avatar: {}, prompts_status: 'ready' as const,
       created_at: '', updated_at: '',
     };
@@ -923,20 +997,64 @@ describe('modals/AgentConfigModal', () => {
       expect(screen.queryByTestId('agent-modal-loading')).toBeNull();
     });
 
-    // Capabilities tab: the Browser chip shows selected for legacy names.
+    // Capabilities tab: the Browser chip shows selected — the denylist
+    // carries none of the alias, so the remaining browser tools stay exposed.
     fireEvent.click(screen.getByText('Capabilities'));
     const browserChip = screen.getByText('Browser').closest('button') as HTMLButtonElement;
     await waitFor(() => {
       expect(browserChip.getAttribute('aria-pressed')).toBe('true');
     });
 
+    // An untouched save keeps the legacy member names (no alias collapse).
     fireEvent.click(screen.getByTestId('btn-agent-save-modal'));
     await waitFor(() => {
       expect(api.agents.patch).toHaveBeenCalledWith(
         'acme',
         'radar',
         expect.objectContaining({
-          tools: ['web.search', 'browser'],
+          disabled_tools: ['web.search', 'browser.navigate', 'browser.read'],
+        })
+      );
+    });
+  });
+
+  it('deselecting the Browser chip stores the browser alias and drops individual names', async () => {
+    const summaryDraft = {
+      id: 'radar', workspace_id: 'acme', slug: 'radar', name: 'Radar', role: 'Reviewer',
+      description: 'PR Reviewer', model: 'claude-3-7-sonnet', status: 'idle',
+    };
+    const detailAgent = {
+      id: 'radar', workspace_id: 'acme', slug: 'radar', name: 'Radar Detail', role: 'Code Reviewer',
+      description: 'PR Reviewer Detail', brief: 'Review all pull requests thoroughly',
+      identity: '', soul: '',
+      provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet', temperature: 1.0,
+      autonomy: 'approval' as const,
+      disabled_tools: ['web.search', 'browser.navigate', 'browser.read'],
+      skills: [], enabled_mcps: [], avatar: {}, prompts_status: 'ready' as const,
+      created_at: '', updated_at: '',
+    };
+    vi.spyOn(api.agents, 'get').mockResolvedValue({ agent: detailAgent });
+    vi.spyOn(api.agents, 'patch').mockResolvedValue({ agent: detailAgent });
+
+    render(<AgentConfigModal draft={summaryDraft} tenant={mockTenant} onClose={vi.fn()} onSave={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('agent-modal-loading')).toBeNull();
+    });
+
+    fireEvent.click(screen.getByText('Capabilities'));
+
+    // Deselecting the single Browser chip stores the `browser` alias — the
+    // facade alias subsumes the individual browser.* names.
+    fireEvent.click(screen.getByText('Browser').closest('button') as HTMLButtonElement);
+
+    fireEvent.click(screen.getByTestId('btn-agent-save-modal'));
+    await waitFor(() => {
+      expect(api.agents.patch).toHaveBeenCalledWith(
+        'acme',
+        'radar',
+        expect.objectContaining({
+          disabled_tools: ['web.search', 'browser'],
         })
       );
     });
@@ -967,8 +1085,13 @@ describe('modals/AgentConfigModal', () => {
     expect(screen.getByTestId('locked-skill-github-sweeper')).not.toBeNull();
     expect(screen.queryByTestId('locked-skill-vision')).toBeNull();
 
-    // Unmet tool dependency warns inline, naming the missing tool and
-    // pointing at the tool chips below (no tools selected on this agent).
+    // Effective-set reading (D6): with the default empty denylist nothing is
+    // unmet — web.search is exposed, so no dependency warning yet.
+    expect(screen.queryByTestId('skill-dep-warn-github-sweeper')).toBeNull();
+
+    // Denying web.search starves the skill: the warning names the missing
+    // tool and points at the tool chips below.
+    fireEvent.click(screen.getByText('Web Search'));
     const warn = screen.getByTestId('skill-dep-warn-github-sweeper');
     expect(warn.textContent).toContain('web.search');
     expect(warn.textContent).toContain('tool chips below');
@@ -980,12 +1103,32 @@ describe('modals/AgentConfigModal', () => {
     expect(screen.getByTestId('agent-skills-inventory').textContent).toContain('after it is deployed');
   });
 
+  it('skill dependency warns when the workspace gate excludes the required tool', async () => {
+    vi.spyOn(api.tools, 'list').mockResolvedValue({
+      tools: [
+        { key: 'web.search', display_name: 'Web Search', description: '', group: 'web', icon_key: 'search', configurable: true, enabled: false, configured: false, config: {}, toggleable: true },
+      ],
+    });
+
+    render(<AgentConfigModal tenant={mockTenant} onClose={vi.fn()} onSave={vi.fn()} />);
+
+    await waitFor(() => { expect(screen.getByTestId('input-agent-name')).not.toBeNull(); });
+    await goToStep2();
+    await goToStep3();
+
+    // The agent denylist is empty, but the workspace gate excludes
+    // web.search — the required tool is missing from the effective set.
+    const warn = screen.getByTestId('skill-dep-warn-github-sweeper');
+    expect(warn.textContent).toContain('web.search');
+    expect(warn.textContent).toContain('tool chips below');
+  });
+
   it('edit mode lists agent-tier skills and installs/removes them for writers', async () => {
     const detailAgent = {
       id: 'radar', workspace_id: 'acme', slug: 'radar', name: 'Radar', role: 'Reviewer',
-      description: 'PR Reviewer', brief: 'Review all PRs', identity: '', soul: '', bootstrap: '',
+      description: 'PR Reviewer', brief: 'Review all PRs', identity: '', soul: '',
       provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet', temperature: 1.0,
-      autonomy: 'approval' as const, tools: [], enabled_mcps: [], avatar: {},
+      autonomy: 'approval' as const, disabled_tools: [], enabled_mcps: [], avatar: {},
       prompts_status: 'ready' as const, created_at: '', updated_at: '',
     };
     vi.spyOn(api.agents, 'get').mockResolvedValue({ agent: detailAgent });
@@ -1074,9 +1217,9 @@ describe('modals/AgentConfigModal', () => {
     const create = vi.spyOn(api.agents, 'create').mockResolvedValue({
       agent: {
         id: 'agent-mcp', workspace_id: 'acme', slug: 'radar', name: 'Radar Agent', role: 'code-reviewer',
-        description: '', brief: 'Review all PRs', identity: '', soul: '', bootstrap: '',
+        description: '', brief: 'Review all PRs', identity: '', soul: '',
         provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet', temperature: 1.0, autonomy: 'approval',
-        tools: [], skills: [], enabled_mcps: [], avatar: {}, prompts_status: 'generating', created_at: '', updated_at: '',
+        disabled_tools: [], skills: [], enabled_mcps: [], avatar: {}, prompts_status: 'generating', created_at: '', updated_at: '',
       },
     });
 
@@ -1129,9 +1272,9 @@ describe('modals/AgentConfigModal', () => {
     vi.spyOn(api.mcp, 'list').mockResolvedValue({ servers: [mcpServerRow()] });
     const detailAgent = {
       id: 'radar', workspace_id: 'acme', slug: 'radar', name: 'Radar', role: 'Reviewer',
-      description: 'PR Reviewer', brief: 'Review all PRs', identity: '', soul: '', bootstrap: '',
+      description: 'PR Reviewer', brief: 'Review all PRs', identity: '', soul: '',
       provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet', temperature: 1.0,
-      autonomy: 'approval' as const, tools: [], skills: [],
+      autonomy: 'approval' as const, disabled_tools: [], skills: [],
       enabled_mcps: ['srv-gh'],
       avatar: {}, prompts_status: 'ready' as const, created_at: '', updated_at: '',
     };
@@ -1165,9 +1308,9 @@ describe('modals/AgentConfigModal', () => {
     });
     const detailAgent = {
       id: 'radar', workspace_id: 'acme', slug: 'radar', name: 'Radar', role: 'Reviewer',
-      description: '', brief: 'Review all PRs', identity: '', soul: '', bootstrap: '',
+      description: '', brief: 'Review all PRs', identity: '', soul: '',
       provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet', temperature: 1.0,
-      autonomy: 'approval' as const, tools: [], skills: [], enabled_mcps: [],
+      autonomy: 'approval' as const, disabled_tools: [], skills: [], enabled_mcps: [],
       avatar: {}, prompts_status: 'ready' as const, created_at: '', updated_at: '',
     };
     vi.spyOn(api.agents, 'get').mockResolvedValue({ agent: detailAgent });
@@ -1213,9 +1356,9 @@ describe('modals/AgentConfigModal', () => {
     });
     const detailAgent = {
       id: 'radar', workspace_id: 'acme', slug: 'radar', name: 'Radar', role: 'Reviewer',
-      description: '', brief: 'Review all PRs', identity: '', soul: '', bootstrap: '',
+      description: '', brief: 'Review all PRs', identity: '', soul: '',
       provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet', temperature: 1.0,
-      autonomy: 'approval' as const, tools: [], skills: [], enabled_mcps: [],
+      autonomy: 'approval' as const, disabled_tools: [], skills: [], enabled_mcps: [],
       avatar: {}, prompts_status: 'ready' as const, created_at: '', updated_at: '',
     };
     vi.spyOn(api.agents, 'get').mockResolvedValue({ agent: detailAgent });
@@ -1336,9 +1479,9 @@ describe('modals/AgentConfigModal', () => {
     });
     const detailAgent = {
       id: 'radar', workspace_id: 'acme', slug: 'radar', name: 'Radar', role: 'Reviewer',
-      description: '', brief: 'Review all PRs', identity: '', soul: '', bootstrap: '',
+      description: '', brief: 'Review all PRs', identity: '', soul: '',
       provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet', temperature: 1.0,
-      autonomy: 'approval' as const, tools: [], skills: [], enabled_mcps: [],
+      autonomy: 'approval' as const, disabled_tools: [], skills: [], enabled_mcps: [],
       avatar: {}, prompts_status: 'ready' as const, created_at: '', updated_at: '',
     };
     vi.spyOn(api.agents, 'get').mockResolvedValue({ agent: detailAgent });
@@ -1394,6 +1537,10 @@ describe('modals/AgentConfigModal — Hooks section (integrate-agent-hooks)', ()
     // The Integrations section lists managed connections (empty unless a test
     // overrides it) — optional context that must not block the modal.
     vi.spyOn(connectionsApi, 'list').mockResolvedValue({ connections: [] });
+    // The read-only reference-documents section (add-reference-documents 9.1):
+    // empty unless a test overrides it — optional context that must not block
+    // the modal, and never a real network call in tests.
+    vi.spyOn(documentsApi, 'list').mockResolvedValue({ documents: [] });
     vi.spyOn(api.tools, 'list').mockResolvedValue({ tools: [] });
   });
 
@@ -1401,9 +1548,9 @@ describe('modals/AgentConfigModal — Hooks section (integrate-agent-hooks)', ()
   async function openHooksTab(listHooks: { instance: any[]; workspace: any[]; agent: any[] }) {
     const detailAgent = {
       id: 'radar', workspace_id: 'acme', slug: 'radar', name: 'Radar', role: 'Reviewer',
-      description: '', brief: 'Review all PRs', identity: '', soul: '', bootstrap: '',
+      description: '', brief: 'Review all PRs', identity: '', soul: '',
       provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet', temperature: 1.0,
-      autonomy: 'approval' as const, tools: [], skills: [], enabled_mcps: [],
+      autonomy: 'approval' as const, disabled_tools: [], skills: [], enabled_mcps: [],
       avatar: {}, prompts_status: 'ready' as const, created_at: '', updated_at: '',
     };
     vi.spyOn(api.agents, 'get').mockResolvedValue({ agent: detailAgent });
@@ -1493,9 +1640,9 @@ describe('modals/AgentConfigModal — Heartbeat section (add-agent-heartbeat)', 
 
   const hbDetailAgent = {
     id: 'radar', workspace_id: 'acme', slug: 'radar', name: 'Radar', role: 'Reviewer',
-    description: '', brief: 'Review all PRs', identity: '', soul: '', bootstrap: '',
+    description: '', brief: 'Review all PRs', identity: '', soul: '',
     provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet', temperature: 1.0,
-    autonomy: 'approval' as const, tools: [], skills: [], enabled_mcps: [],
+    autonomy: 'approval' as const, disabled_tools: [], skills: [], enabled_mcps: [],
     avatar: {}, prompts_status: 'ready' as const, created_at: '', updated_at: '',
   };
 
@@ -1683,6 +1830,10 @@ describe('modals/AgentConfigModal — workspace default inherit (refactor-worksp
     // The Integrations section lists managed connections (empty unless a test
     // overrides it) — optional context that must not block the modal.
     vi.spyOn(connectionsApi, 'list').mockResolvedValue({ connections: [] });
+    // The read-only reference-documents section (add-reference-documents 9.1):
+    // empty unless a test overrides it — optional context that must not block
+    // the modal, and never a real network call in tests.
+    vi.spyOn(documentsApi, 'list').mockResolvedValue({ documents: [] });
     vi.spyOn(api.tools, 'list').mockResolvedValue({ tools: [] });
   });
 
@@ -1756,12 +1907,11 @@ describe('modals/AgentConfigModal — workspace default inherit (refactor-worksp
         brief: 'Review all PRs',
         identity: '',
         soul: '',
-        bootstrap: '',
         provider_id: null,
         model: '',
         temperature: 1.0,
         autonomy: 'approval',
-        tools: [],
+        disabled_tools: [],
         skills: [],
         enabled_mcps: [],
         avatar: {},
@@ -1817,5 +1967,131 @@ describe('modals/AgentConfigModal — workspace default inherit (refactor-worksp
     });
     expect(screen.queryByText(/provider is required/i)).toBeNull();
     expect(screen.queryByText(/model is required/i)).toBeNull();
+  });
+});
+
+// Reference documents (add-reference-documents 9.1): the Capabilities surface
+// lists promoted + agent-attached documents read-only — scope badges,
+// index-status chips, a preview link into a standalone modal
+// (rework-document-chat-surfaces 1.2) — with an empty
+// state, and the section stays out entirely when the fetch fails.
+describe('modals/AgentConfigModal — reference documents section (9.1)', () => {
+  beforeEach(() => {
+    useAuthStore.setState({ memberships: [] });
+    vi.spyOn(api.providers, 'list').mockResolvedValue({ providers: [] });
+    vi.spyOn(api.providers, 'models').mockResolvedValue({ source: 'none', models: [] });
+    vi.spyOn(api.skills, 'list').mockResolvedValue({ skills: [] });
+    vi.spyOn(api.agents, 'listSkills').mockResolvedValue({ skills: [] });
+    vi.spyOn(api.agents, 'listMcpServers').mockResolvedValue({ servers: [] });
+    vi.spyOn(api.agents, 'listHooks').mockResolvedValue({ agent: [], instance: [], workspace: [] });
+    vi.spyOn(api.mcp, 'list').mockResolvedValue({ servers: [] });
+    vi.spyOn(connectionsApi, 'list').mockResolvedValue({ connections: [] });
+    vi.spyOn(api.tools, 'list').mockResolvedValue({ tools: [] });
+  });
+
+  const doc = (over: Partial<ApiReferenceDocument> = {}): ApiReferenceDocument => ({
+    id: 'doc-1',
+    name: 'runbook.pdf',
+    description: 'Incident runbook',
+    mime: 'application/pdf',
+    size: 1024,
+    url: '/files/acme/docs/runbook.pdf',
+    indexStatus: 'ready',
+    scope: 'attached',
+    pageCount: 12,
+    agents: ['radar'],
+    channels: [],
+    createdAt: '2026-09-01T00:00:00Z',
+    ...over,
+  });
+
+  const detailAgent = {
+    id: 'radar', workspace_id: 'acme', slug: 'radar', name: 'Radar', role: 'Reviewer',
+    description: '', brief: 'Review all PRs', identity: '', soul: '',
+    provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet', temperature: 1.0,
+    autonomy: 'approval' as const, disabled_tools: [], skills: [], enabled_mcps: [],
+    avatar: {}, prompts_status: 'ready' as const, created_at: '', updated_at: '',
+  };
+
+  async function openCapabilities(docs: ApiReferenceDocument[]) {
+    vi.spyOn(api.agents, 'get').mockResolvedValue({ agent: detailAgent });
+    vi.spyOn(documentsApi, 'list').mockResolvedValue({ documents: docs });
+    render(<AgentConfigModal draft={{ id: 'radar', name: 'Radar' }} tenant={{ id: 'acme', sub: 'acme', name: 'Acme' }} onClose={vi.fn()} onSave={vi.fn()} />);
+    await waitFor(() => {
+      expect(screen.queryByTestId('agent-modal-loading')).toBeNull();
+    });
+    fireEvent.click(screen.getByText('Capabilities'));
+    await waitFor(() => {
+      expect(screen.getByText('Reference documents')).not.toBeNull();
+    });
+  }
+
+  it('lists promoted and agent-attached documents with badges — nothing else, no edit controls', async () => {
+    await openCapabilities([
+      doc({ scope: 'workspace', agents: [] }),
+      doc({ id: 'doc-2', name: 'radar-only.md', mime: 'text/markdown', scope: 'attached', agents: ['radar'], indexStatus: 'no_text_layer' }),
+      doc({ id: 'doc-3', name: 'elsewhere.md', mime: 'text/markdown', scope: 'attached', agents: ['other-agent'] }),
+    ]);
+    const section = screen.getByTestId('agent-documents-section');
+    expect(screen.getByTestId('agent-document-doc-1')).not.toBeNull();
+    expect(screen.getByTestId('agent-document-scope-doc-1').textContent).toBe('ALL AGENTS');
+    expect(screen.getByTestId('agent-document-doc-2')).not.toBeNull();
+    expect(screen.getByTestId('agent-document-scope-doc-2').textContent).toBe('Attached');
+    expect(screen.getByTestId('agent-document-index-doc-2').textContent).toBe('No text layer');
+    // A document attached to another agent is not this agent's context.
+    expect(screen.queryByTestId('agent-document-doc-3')).toBeNull();
+
+    // Read-only: the section's only buttons are the two Preview links.
+    const buttons = Array.from(section.querySelectorAll('button'));
+    expect(buttons).toHaveLength(2);
+    buttons.forEach((b) => expect(b.textContent).toBe('Preview'));
+    // No toggle/attach/promote affordances anywhere in the section.
+    expect(section.querySelectorAll('input[type="checkbox"]')).toHaveLength(0);
+  });
+
+  it('a preview link renders the document source in a standalone modal (1.2)', async () => {
+    await openCapabilities([doc()]);
+    fireEvent.click(screen.getByTestId('agent-document-preview-doc-1'));
+
+    // pdf rides the iframe source — no fetch needed.
+    const modal = screen.getByTestId('modal-document-preview');
+    expect(modal).not.toBeNull();
+    const frame = modal.querySelector(
+      'iframe[data-od-id="panel-document-frame"]'
+    ) as HTMLIFrameElement;
+    expect(frame).not.toBeNull();
+    expect(frame.getAttribute('src')).toContain('/files/acme/docs/runbook.pdf');
+
+    // Panel-less surface: the panel slice stays untouched — no tab minted.
+    const panel = useStore.getState().panel;
+    expect(panel.open).toBe(false);
+    expect(panel.tabs).toHaveLength(0);
+
+    // Closing the preview returns to the capabilities step. Scoped to the
+    // preview modal — the agent modal has its own Close dialog button.
+    fireEvent.click(modal.querySelector('button[aria-label="Close dialog"]')!);
+    await waitFor(() => {
+      expect(screen.queryByTestId('modal-document-preview')).toBeNull();
+    });
+    expect(screen.getByTestId('agent-documents-section')).not.toBeNull();
+  });
+
+  it('an empty library renders the empty state pointing at Settings → Documents', async () => {
+    await openCapabilities([]);
+    expect(screen.getByTestId('agent-documents-empty').textContent).toContain('Settings → Documents');
+  });
+
+  it('a failed fetch silently omits the section (AgentConnectionsSection precedent)', async () => {
+    vi.spyOn(api.agents, 'get').mockResolvedValue({ agent: detailAgent });
+    vi.spyOn(documentsApi, 'list').mockRejectedValue(new Error('offline'));
+    render(<AgentConfigModal draft={{ id: 'radar', name: 'Radar' }} tenant={{ id: 'acme', sub: 'acme', name: 'Acme' }} onClose={vi.fn()} onSave={vi.fn()} />);
+    await waitFor(() => {
+      expect(screen.queryByTestId('agent-modal-loading')).toBeNull();
+    });
+    fireEvent.click(screen.getByText('Capabilities'));
+    await waitFor(() => {
+      expect(screen.getByText('Capabilities & Integrations')).not.toBeNull();
+    });
+    expect(screen.queryByTestId('agent-documents-section')).toBeNull();
   });
 });

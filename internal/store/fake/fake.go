@@ -20,63 +20,66 @@ import (
 type fakeStore struct {
 	mu sync.RWMutex
 
-	users                   map[string]*domain.User                   // key: ID
-	usersByEmail            map[string]string                         // key: normalized email -> ID
-	workspaces              map[string]*domain.Workspace              // key: ID
-	workspacesBySlug        map[string]string                         // key: slug -> ID
-	roles                   map[string]*domain.Role                   // key: ID
-	rolesByName             map[string]string                         // key: workspaceID + ":" + name -> ID
-	members                 map[string]*domain.Member                 // key: workspaceID + ":" + userID -> Member
-	providers               map[string]*domain.ProviderConfig         // key: ID
-	agents                  map[string]*domain.Agent                  // key: ID
-	agentsBySlug            map[string]string                         // key: workspaceID + ":" + slug -> ID
-	userMemories            map[string]*domain.Memory                 // key: workspaceID + ":" + userID -> Memory
-	workspaceMemories       map[string]*domain.Memory                 // key: workspaceID -> Memory
-	memoryEvents            map[string]*domain.MemoryEvent            // key: ID
-	memoryNotes             map[string]*domain.MemoryNote             // key: ID
-	sessionEvents           map[string][]domain.SessionEvent          // key: sessionID -> ordered events
-	sessionCPData           map[string][]byte                         // key: checkpointID -> data
-	apiKeys                 map[string]*domain.WorkspaceAPIKey        // key: ID
-	apiKeysByHash           map[string]string                         // key: SHA-256 hex hash -> ID
-	toolSettings            map[string]*domain.WorkspaceToolSetting   // key: workspaceID + ":" + toolKey -> Setting
-	skills                  map[string]*domain.WorkspaceSkill         // key: ID
-	skillsByName            map[string]string                         // key: workspaceID + ":" + name -> ID
-	wsMCPServers            map[string]*domain.WorkspaceMCPServer     // key: ID
-	wsMCPServerNames        map[string]string                         // key: workspaceID + ":" + lower(name) -> ID
-	agentMCPServers         map[string]*domain.AgentMCPServer         // key: ID
-	agentMCPServerNames     map[string]string                         // key: agentID + ":" + lower(name) -> ID
-	mcptokens               map[string]*domain.MCPToken               // key: workspaceID + ":" + agentID + ":" + serverID (agentID empty = workspace scope)
-	connections             map[string]*domain.Connection             // key: ID
-	connectionsByService    map[string]string                         // key: workspaceID + ":" + service -> ID
-	connectionWebhooks      map[string]*domain.ConnectionWebhook      // key: connection ID
-	connectionDeliveries    map[string]map[string]time.Time           // key: connection ID -> delivery ID -> recorded at
-	oauthApps               map[string]*domain.InstanceOAuthApp       // key: provider
-	hooks                   *hookData                                 // hook state: all three levels + execution audit log
-	channels                *channelData                              // channel state: rooms, membership roster, shared feed
-	agentSessions           map[string]*domain.AgentSession           // key: workspaceID + ":" + agentID + ":" + sessionID
-	attachments             map[string]*domain.Attachment             // key: ID
-	attachmentsByStorageKey map[string]string                         // key: capability storage key -> ID
-	workspaceStorage        map[string]*domain.WorkspaceStorageConfig // key: workspaceID -> config
-	schedulers              map[string]*domain.Scheduler              // key: ID
-	schedulerRuns           map[string]*domain.SchedulerRun           // key: ID
-	heartbeats              map[string]*domain.Heartbeat              // key: ID
-	heartbeatsByAgent       map[string]string                         // key: workspaceID + ":" + agentID -> heartbeat ID
-	heartbeatRuns           map[string]*domain.HeartbeatRun           // key: ID
-	gateways                map[string]*domain.GatewayConfig          // key: ID
-	gatewayIdentities       map[string]string                         // key: workspaceID + ":" + platform + ":" + identity -> ID
-	gatewayChatBindings     map[string]*domain.ChatBinding            // key: ID
-	gatewayBindingsByChat   map[string]string                         // key: platform + ":" + platformChatID -> binding ID
-	gatewayUserLinks        map[string]*domain.UserLink               // key: platform + ":" + platformUserID + ":" + workspaceID
-	gatewayPairingTokens    map[string]*domain.PairingToken           // key: workspaceID + ":" + token
-	gatewayActiveSessions   map[string]int64                          // key: platform + ":" + platformChatID + ":" + agentID -> suffix
-	gatewayOutbox           map[string]*domain.OutboxEntry            // key: ID
-	memoryNoteEvidence      map[string]*domain.MemoryNoteEvidence     // key: noteID + ":" + sourceEventID
-	memoryReports           map[string]*domain.MemoryReport           // key: workspaceID
-	memoryEmbeddings        map[string]*domain.MemoryEmbedding        // key: ID
-	memoryEntities          map[string]*domain.MemoryEntity           // key: ID
-	memoryEntitiesByNorm    map[string]string                         // key: workspaceID + ":" + normalizedLabel -> ID
-	memoryEntityEdges       map[string]*domain.MemoryEntityEdge       // key: ID
-	agentTodos              map[string]*fakeTodoRow                   // key: sessionID + ":" + itemKey
+	users                          map[string]*domain.User                   // key: ID
+	usersByEmail                   map[string]string                         // key: normalized email -> ID
+	workspaces                     map[string]*domain.Workspace              // key: ID
+	workspacesBySlug               map[string]string                         // key: slug -> ID
+	roles                          map[string]*domain.Role                   // key: ID
+	rolesByName                    map[string]string                         // key: workspaceID + ":" + name -> ID
+	members                        map[string]*domain.Member                 // key: workspaceID + ":" + userID -> Member
+	providers                      map[string]*domain.ProviderConfig         // key: ID
+	agents                         map[string]*domain.Agent                  // key: ID
+	agentsBySlug                   map[string]string                         // key: workspaceID + ":" + slug -> ID
+	userMemories                   map[string]*domain.Memory                 // key: workspaceID + ":" + userID -> Memory
+	workspaceMemories              map[string]*domain.Memory                 // key: workspaceID -> Memory
+	memoryEvents                   map[string]*domain.MemoryEvent            // key: ID
+	memoryNotes                    map[string]*domain.MemoryNote             // key: ID
+	sessionEvents                  map[string][]domain.SessionEvent          // key: sessionID -> ordered events
+	sessionCPData                  map[string][]byte                         // key: checkpointID -> data
+	apiKeys                        map[string]*domain.WorkspaceAPIKey        // key: ID
+	apiKeysByHash                  map[string]string                         // key: SHA-256 hex hash -> ID
+	toolSettings                   map[string]*domain.WorkspaceToolSetting   // key: workspaceID + ":" + toolKey -> Setting
+	skills                         map[string]*domain.WorkspaceSkill         // key: ID
+	skillsByName                   map[string]string                         // key: workspaceID + ":" + name -> ID
+	wsMCPServers                   map[string]*domain.WorkspaceMCPServer     // key: ID
+	wsMCPServerNames               map[string]string                         // key: workspaceID + ":" + lower(name) -> ID
+	agentMCPServers                map[string]*domain.AgentMCPServer         // key: ID
+	agentMCPServerNames            map[string]string                         // key: agentID + ":" + lower(name) -> ID
+	mcptokens                      map[string]*domain.MCPToken               // key: workspaceID + ":" + agentID + ":" + serverID (agentID empty = workspace scope)
+	connections                    map[string]*domain.Connection             // key: ID
+	connectionsByService           map[string]string                         // key: workspaceID + ":" + service -> ID
+	connectionWebhooks             map[string]*domain.ConnectionWebhook      // key: connection ID
+	connectionDeliveries           map[string]map[string]time.Time           // key: connection ID -> delivery ID -> recorded at
+	oauthApps                      map[string]*domain.InstanceOAuthApp       // key: provider
+	hooks                          *hookData                                 // hook state: all three levels + execution audit log
+	channels                       *channelData                              // channel state: rooms, membership roster, shared feed
+	agentSessions                  map[string]*domain.AgentSession           // key: workspaceID + ":" + agentID + ":" + sessionID
+	attachments                    map[string]*domain.Attachment             // key: ID
+	attachmentsByStorageKey        map[string]string                         // key: capability storage key -> ID
+	workspaceStorage               map[string]*domain.WorkspaceStorageConfig // key: workspaceID -> config
+	schedulers                     map[string]*domain.Scheduler              // key: ID
+	schedulerRuns                  map[string]*domain.SchedulerRun           // key: ID
+	heartbeats                     map[string]*domain.Heartbeat              // key: ID
+	heartbeatsByAgent              map[string]string                         // key: workspaceID + ":" + agentID -> heartbeat ID
+	heartbeatRuns                  map[string]*domain.HeartbeatRun           // key: ID
+	gateways                       map[string]*domain.GatewayConfig          // key: ID
+	gatewayIdentities              map[string]string                         // key: workspaceID + ":" + platform + ":" + identity -> ID
+	gatewayChatBindings            map[string]*domain.ChatBinding            // key: ID
+	gatewayBindingsByChat          map[string]string                         // key: platform + ":" + platformChatID -> binding ID
+	gatewayUserLinks               map[string]*domain.UserLink               // key: platform + ":" + platformUserID + ":" + workspaceID
+	gatewayPairingTokens           map[string]*domain.PairingToken           // key: workspaceID + ":" + token
+	gatewayActiveSessions          map[string]int64                          // key: platform + ":" + platformChatID + ":" + agentID -> suffix
+	gatewayOutbox                  map[string]*domain.OutboxEntry            // key: ID
+	memoryNoteEvidence             map[string]*domain.MemoryNoteEvidence     // key: noteID + ":" + sourceEventID
+	memoryReports                  map[string]*domain.MemoryReport           // key: workspaceID
+	memoryEmbeddings               map[string]*domain.MemoryEmbedding        // key: ID
+	memoryEntities                 map[string]*domain.MemoryEntity           // key: ID
+	memoryEntitiesByNorm           map[string]string                         // key: workspaceID + ":" + normalizedLabel -> ID
+	memoryEntityEdges              map[string]*domain.MemoryEntityEdge       // key: ID
+	agentTodos                     map[string]*fakeTodoRow                   // key: sessionID + ":" + itemKey
+	referenceDocuments             map[string]*domain.ReferenceDocument      // key: ID
+	referenceDocumentsByStorageKey map[string]string                         // key: capability storage key -> ID
+	referenceDocumentSections      map[string][]domain.DocumentSection       // key: document ID -> ordered sections
 }
 
 // New creates a new in-memory fake store.
@@ -86,63 +89,66 @@ func New() store.Store {
 
 func newStore() *fakeStore {
 	return &fakeStore{
-		users:                   make(map[string]*domain.User),
-		usersByEmail:            make(map[string]string),
-		workspaces:              make(map[string]*domain.Workspace),
-		workspacesBySlug:        make(map[string]string),
-		roles:                   make(map[string]*domain.Role),
-		rolesByName:             make(map[string]string),
-		members:                 make(map[string]*domain.Member),
-		providers:               make(map[string]*domain.ProviderConfig),
-		agents:                  make(map[string]*domain.Agent),
-		agentsBySlug:            make(map[string]string),
-		userMemories:            make(map[string]*domain.Memory),
-		workspaceMemories:       make(map[string]*domain.Memory),
-		memoryEvents:            make(map[string]*domain.MemoryEvent),
-		memoryNotes:             make(map[string]*domain.MemoryNote),
-		sessionEvents:           make(map[string][]domain.SessionEvent),
-		sessionCPData:           make(map[string][]byte),
-		apiKeys:                 make(map[string]*domain.WorkspaceAPIKey),
-		apiKeysByHash:           make(map[string]string),
-		toolSettings:            make(map[string]*domain.WorkspaceToolSetting),
-		skills:                  make(map[string]*domain.WorkspaceSkill),
-		skillsByName:            make(map[string]string),
-		wsMCPServers:            make(map[string]*domain.WorkspaceMCPServer),
-		wsMCPServerNames:        make(map[string]string),
-		agentMCPServers:         make(map[string]*domain.AgentMCPServer),
-		agentMCPServerNames:     make(map[string]string),
-		mcptokens:               make(map[string]*domain.MCPToken),
-		connections:             make(map[string]*domain.Connection),
-		connectionsByService:    make(map[string]string),
-		connectionWebhooks:      make(map[string]*domain.ConnectionWebhook),
-		connectionDeliveries:    make(map[string]map[string]time.Time),
-		oauthApps:               make(map[string]*domain.InstanceOAuthApp),
-		hooks:                   newHookData(),
-		channels:                newChannelData(),
-		agentSessions:           make(map[string]*domain.AgentSession),
-		attachments:             make(map[string]*domain.Attachment),
-		attachmentsByStorageKey: make(map[string]string),
-		workspaceStorage:        make(map[string]*domain.WorkspaceStorageConfig),
-		schedulers:              make(map[string]*domain.Scheduler),
-		schedulerRuns:           make(map[string]*domain.SchedulerRun),
-		heartbeats:              make(map[string]*domain.Heartbeat),
-		heartbeatsByAgent:       make(map[string]string),
-		heartbeatRuns:           make(map[string]*domain.HeartbeatRun),
-		gateways:                make(map[string]*domain.GatewayConfig),
-		gatewayIdentities:       make(map[string]string),
-		gatewayChatBindings:     make(map[string]*domain.ChatBinding),
-		gatewayBindingsByChat:   make(map[string]string),
-		gatewayUserLinks:        make(map[string]*domain.UserLink),
-		gatewayPairingTokens:    make(map[string]*domain.PairingToken),
-		gatewayActiveSessions:   make(map[string]int64),
-		gatewayOutbox:           make(map[string]*domain.OutboxEntry),
-		memoryNoteEvidence:      make(map[string]*domain.MemoryNoteEvidence),
-		memoryReports:           make(map[string]*domain.MemoryReport),
-		memoryEmbeddings:        make(map[string]*domain.MemoryEmbedding),
-		memoryEntities:          make(map[string]*domain.MemoryEntity),
-		memoryEntitiesByNorm:    make(map[string]string),
-		memoryEntityEdges:       make(map[string]*domain.MemoryEntityEdge),
-		agentTodos:              make(map[string]*fakeTodoRow),
+		users:                          make(map[string]*domain.User),
+		usersByEmail:                   make(map[string]string),
+		workspaces:                     make(map[string]*domain.Workspace),
+		workspacesBySlug:               make(map[string]string),
+		roles:                          make(map[string]*domain.Role),
+		rolesByName:                    make(map[string]string),
+		members:                        make(map[string]*domain.Member),
+		providers:                      make(map[string]*domain.ProviderConfig),
+		agents:                         make(map[string]*domain.Agent),
+		agentsBySlug:                   make(map[string]string),
+		userMemories:                   make(map[string]*domain.Memory),
+		workspaceMemories:              make(map[string]*domain.Memory),
+		memoryEvents:                   make(map[string]*domain.MemoryEvent),
+		memoryNotes:                    make(map[string]*domain.MemoryNote),
+		sessionEvents:                  make(map[string][]domain.SessionEvent),
+		sessionCPData:                  make(map[string][]byte),
+		apiKeys:                        make(map[string]*domain.WorkspaceAPIKey),
+		apiKeysByHash:                  make(map[string]string),
+		toolSettings:                   make(map[string]*domain.WorkspaceToolSetting),
+		skills:                         make(map[string]*domain.WorkspaceSkill),
+		skillsByName:                   make(map[string]string),
+		wsMCPServers:                   make(map[string]*domain.WorkspaceMCPServer),
+		wsMCPServerNames:               make(map[string]string),
+		agentMCPServers:                make(map[string]*domain.AgentMCPServer),
+		agentMCPServerNames:            make(map[string]string),
+		mcptokens:                      make(map[string]*domain.MCPToken),
+		connections:                    make(map[string]*domain.Connection),
+		connectionsByService:           make(map[string]string),
+		connectionWebhooks:             make(map[string]*domain.ConnectionWebhook),
+		connectionDeliveries:           make(map[string]map[string]time.Time),
+		oauthApps:                      make(map[string]*domain.InstanceOAuthApp),
+		hooks:                          newHookData(),
+		channels:                       newChannelData(),
+		agentSessions:                  make(map[string]*domain.AgentSession),
+		attachments:                    make(map[string]*domain.Attachment),
+		attachmentsByStorageKey:        make(map[string]string),
+		workspaceStorage:               make(map[string]*domain.WorkspaceStorageConfig),
+		schedulers:                     make(map[string]*domain.Scheduler),
+		schedulerRuns:                  make(map[string]*domain.SchedulerRun),
+		heartbeats:                     make(map[string]*domain.Heartbeat),
+		heartbeatsByAgent:              make(map[string]string),
+		heartbeatRuns:                  make(map[string]*domain.HeartbeatRun),
+		gateways:                       make(map[string]*domain.GatewayConfig),
+		gatewayIdentities:              make(map[string]string),
+		gatewayChatBindings:            make(map[string]*domain.ChatBinding),
+		gatewayBindingsByChat:          make(map[string]string),
+		gatewayUserLinks:               make(map[string]*domain.UserLink),
+		gatewayPairingTokens:           make(map[string]*domain.PairingToken),
+		gatewayActiveSessions:          make(map[string]int64),
+		gatewayOutbox:                  make(map[string]*domain.OutboxEntry),
+		memoryNoteEvidence:             make(map[string]*domain.MemoryNoteEvidence),
+		memoryReports:                  make(map[string]*domain.MemoryReport),
+		memoryEmbeddings:               make(map[string]*domain.MemoryEmbedding),
+		memoryEntities:                 make(map[string]*domain.MemoryEntity),
+		memoryEntitiesByNorm:           make(map[string]string),
+		memoryEntityEdges:              make(map[string]*domain.MemoryEntityEdge),
+		agentTodos:                     make(map[string]*fakeTodoRow),
+		referenceDocuments:             make(map[string]*domain.ReferenceDocument),
+		referenceDocumentsByStorageKey: make(map[string]string),
+		referenceDocumentSections:      make(map[string][]domain.DocumentSection),
 	}
 }
 
@@ -310,6 +316,16 @@ func (s *fakeStore) GatewayLinks() store.GatewayLinks {
 // GatewayOutbox returns the GatewayOutbox sub-port.
 func (s *fakeStore) GatewayOutbox() store.GatewayOutbox {
 	return &gatewayOutboxStore{s: s}
+}
+
+// ReferenceDocuments returns the ReferenceDocumentStore sub-port.
+func (s *fakeStore) ReferenceDocuments() store.ReferenceDocumentStore {
+	return &referenceDocumentStore{s: s}
+}
+
+// DocumentSections returns the DocumentSectionStore sub-port.
+func (s *fakeStore) DocumentSections() store.DocumentSectionStore {
+	return &documentSectionStore{s: s}
 }
 
 // WithTx executes the given function in an isolated transaction.
@@ -510,6 +526,15 @@ func (s *fakeStore) clone() *fakeStore {
 		copied := *row
 		cp.agentTodos[key] = &copied
 	}
+	for id, doc := range s.referenceDocuments {
+		cp.referenceDocuments[id] = cloneReferenceDocument(doc)
+	}
+	for key, id := range s.referenceDocumentsByStorageKey {
+		cp.referenceDocumentsByStorageKey[key] = id
+	}
+	for docID, sections := range s.referenceDocumentSections {
+		cp.referenceDocumentSections[docID] = cloneDocumentSections(sections)
+	}
 	return cp
 }
 
@@ -571,6 +596,9 @@ func (s *fakeStore) apply(other *fakeStore) {
 	s.memoryEntitiesByNorm = other.memoryEntitiesByNorm
 	s.memoryEntityEdges = other.memoryEntityEdges
 	s.agentTodos = other.agentTodos
+	s.referenceDocuments = other.referenceDocuments
+	s.referenceDocumentsByStorageKey = other.referenceDocumentsByStorageKey
+	s.referenceDocumentSections = other.referenceDocumentSections
 }
 
 func cloneUser(u *domain.User) *domain.User {
@@ -661,9 +689,9 @@ func cloneAgent(a *domain.Agent) *domain.Agent {
 		cw := *a.ContextWindow
 		cp.ContextWindow = &cw
 	}
-	if a.Tools != nil {
-		cp.Tools = make([]string, len(a.Tools))
-		copy(cp.Tools, a.Tools)
+	if a.DisabledTools != nil {
+		cp.DisabledTools = make([]string, len(a.DisabledTools))
+		copy(cp.DisabledTools, a.DisabledTools)
 	}
 	if a.EnabledMCPS != nil {
 		cp.EnabledMCPS = make([]string, len(a.EnabledMCPS))
@@ -1567,8 +1595,8 @@ func (as *agentStore) Create(ctx context.Context, a *domain.Agent) error {
 	if a.PromptsStatus == "" {
 		a.PromptsStatus = domain.PromptsStatusGenerating
 	}
-	if a.Tools == nil {
-		a.Tools = []string{}
+	if a.DisabledTools == nil {
+		a.DisabledTools = []string{}
 	}
 	if a.EnabledMCPS == nil {
 		a.EnabledMCPS = []string{}
@@ -1745,9 +1773,9 @@ func (as *agentStore) Update(ctx context.Context, a *domain.Agent) error {
 		existing.Autonomy = a.Autonomy
 	}
 	existing.ContextWindow = a.ContextWindow
-	if a.Tools != nil {
-		existing.Tools = make([]string, len(a.Tools))
-		copy(existing.Tools, a.Tools)
+	if a.DisabledTools != nil {
+		existing.DisabledTools = make([]string, len(a.DisabledTools))
+		copy(existing.DisabledTools, a.DisabledTools)
 	}
 	if a.EnabledMCPS != nil {
 		existing.EnabledMCPS = make([]string, len(a.EnabledMCPS))
@@ -1823,6 +1851,22 @@ func (as *agentStore) Delete(ctx context.Context, workspaceID, id string) error 
 	// adopt-assistant-ui-elements D5).
 	for _, key := range todoRowsBelongingToAgentLocked(as.s.agentTodos, workspaceID, id) {
 		delete(as.s.agentTodos, key)
+	}
+
+	// Reference-document agent joins die with the agent (ON DELETE CASCADE
+	// on reference_document_agents, add-reference-documents tenancy
+	// requirement) — the join row is removed, never the document.
+	for _, doc := range as.s.referenceDocuments {
+		if doc.WorkspaceID != workspaceID || len(doc.AgentIDs) == 0 {
+			continue
+		}
+		filtered := make([]string, 0, len(doc.AgentIDs))
+		for _, agentID := range doc.AgentIDs {
+			if agentID != id {
+				filtered = append(filtered, agentID)
+			}
+		}
+		doc.AgentIDs = filtered
 	}
 
 	return nil

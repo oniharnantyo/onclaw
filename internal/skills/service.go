@@ -229,7 +229,7 @@ func (s *InstallService) Enable(ctx context.Context, workspaceID, name string, e
 }
 
 // RecheckDependencies re-probes every dependency kind for a stored row —
-// binaries via LookPath, tools via gate+allowlists, python via the
+// binaries via LookPath, tools via gate+denylists, python via the
 // provisioner's Check — and persists the refreshed statuses (spec:
 // "Dependency status SHALL be re-checkable on demand").
 func (s *InstallService) RecheckDependencies(ctx context.Context, workspaceID, tenantSlug, onClawDir, name string) (*Skill, error) {
@@ -249,9 +249,10 @@ func (s *InstallService) RecheckDependencies(ctx context.Context, workspaceID, t
 	return row, nil
 }
 
-// EnableEverywhere adds each tool to the workspace tool gate and to every
-// agent's tool allowlist in one service call — the transaction seam
-// (spec: "Enable-everywhere satisfies tool dependencies").
+// EnableEverywhere adds each tool to the workspace tool gate and removes it
+// from every agent's tool denylist in one service call — force-enable by
+// subtraction, the transaction seam (design D5; spec: "Enable-everywhere
+// satisfies tool dependencies").
 func (s *InstallService) EnableEverywhere(ctx context.Context, workspaceID string, toolNames []string) error {
 	run := func(ctx context.Context, tx TxStores) error {
 		for _, tool := range toolNames {
@@ -264,10 +265,10 @@ func (s *InstallService) EnableEverywhere(ctx context.Context, workspaceID strin
 			return err
 		}
 		for i := range agents {
-			if hasAllTools(agents[i].Tools, toolNames) {
-				continue
+			if !denylistHasAny(agents[i].DisabledTools, toolNames) {
+				continue // nothing to remove — the denylist already exposes the tool
 			}
-			agents[i].Tools = mergeTools(agents[i].Tools, toolNames)
+			agents[i].DisabledTools = subtractTools(agents[i].DisabledTools, toolNames)
 			if err := tx.Agents.Update(ctx, &agents[i]); err != nil {
 				return err
 			}
@@ -537,7 +538,7 @@ func (s *InstallService) installOne(ctx context.Context, in InstallInput, staged
 }
 
 // resolveDependencies computes statuses for all three kinds. Tool misses
-// with enableEverywhere become gate + allowlist writes in one call; python
+// with enableEverywhere become gate + denylist writes in one call; python
 // with provision runs the provisioner over the union of enabled skills'
 // requirements.
 func (s *InstallService) resolveDependencies(ctx context.Context, workspaceID, skillsRoot string, set DependencySet, enableEverywhere, provision bool) (DependencySet, []string, error) {
@@ -640,10 +641,11 @@ func (s *InstallService) enabledPythonRequirements(ctx context.Context, workspac
 	return perSkill, nil
 }
 
-// toolStatuses resolves tool names against the workspace tool gate and
-// every agent allowlist: met only when the gate allows the tool and each
-// agent's allowlist carries it (design D5; agent-tier installs scope the
-// allowlist check to the owning agent at the handler seam).
+// toolStatuses resolves tool names against the workspace tool gate and the
+// agents' tool denylists: met only when the gate allows the tool and no
+// agent's denylist denies it — the effective set (catalog minus denylist)
+// carries it everywhere (design D5; agent-tier installs scope the denylist
+// check to the owning agent at the handler seam).
 func (s *InstallService) toolStatuses(ctx context.Context, workspaceID string, names []string) ([]ToolDependency, error) {
 	rows, err := s.toolSettings.List(ctx, workspaceID)
 	if err != nil {
@@ -667,7 +669,7 @@ func (s *InstallService) toolStatuses(ctx context.Context, workspaceID string, n
 			status.Status = DepMissing
 		}
 		for i := range agents {
-			if !hasAllTools(agents[i].Tools, []string{name}) {
+			if denylistHasAny(agents[i].DisabledTools, []string{name}) {
 				status.Status = DepMissing
 				break
 			}
@@ -694,32 +696,35 @@ func enableToolInGate(ctx context.Context, settings store.ToolSettingsStore, wor
 	return settings.Upsert(ctx, setting)
 }
 
-func hasAllTools(have, want []string) bool {
-	set := make(map[string]bool, len(have))
-	for _, t := range have {
+// denylistHasAny reports whether the denylist carries any of the names.
+func denylistHasAny(denylist, names []string) bool {
+	set := make(map[string]bool, len(denylist))
+	for _, t := range denylist {
 		set[t] = true
 	}
-	for _, t := range want {
-		if !set[t] {
-			return false
+	for _, name := range names {
+		if set[name] {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
-func mergeTools(have, add []string) []string {
-	set := make(map[string]bool, len(have))
-	for _, t := range have {
-		set[t] = true
+// subtractTools returns have with every name in remove dropped (order
+// preserved) — skills "enable everywhere" force-enables by removing the
+// required tools from each agent's denylist (design D5).
+func subtractTools(have, remove []string) []string {
+	removeSet := make(map[string]bool, len(remove))
+	for _, t := range remove {
+		removeSet[t] = true
 	}
-	merged := append([]string(nil), have...)
-	for _, t := range add {
-		if !set[t] {
-			set[t] = true
-			merged = append(merged, t)
+	kept := make([]string, 0, len(have))
+	for _, t := range have {
+		if !removeSet[t] {
+			kept = append(kept, t)
 		}
 	}
-	return merged
+	return kept
 }
 
 // validateStagedFiles re-checks staged paths (defense in depth ahead of

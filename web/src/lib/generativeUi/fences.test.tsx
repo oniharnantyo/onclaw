@@ -37,7 +37,6 @@ describe('parseFence — JSON tags (2.2)', () => {
       chart: '{"label":"Revenue","value":"$1","points":[1,2]}',
       timeline: '{"events":[{"label":"Kickoff"}]}',
       preview: '{"url":"https://example.com","html":"<p>hi</p>"}',
-      table: '{"columns":[{"key":"name","label":"Model"}],"rows":[{"name":"Atlas"}]}',
       ticker: '{"value":4200,"label":"stars"}',
       activity: '{"title":"D","total":3,"start":"2026-08-01","end":"2026-08-07","data":[{"date":"2026-08-03","count":1}]}',
       spec: '{"title":"Atlas","rows":[{"label":"R","value":"V"}]}',
@@ -45,7 +44,6 @@ describe('parseFence — JSON tags (2.2)', () => {
       progress: '{"title":"T","stages":[{"name":"s","weight":1}],"stageIndex":0,"stageProgress":0,"eta":"1m"}',
       score: '{"verdict":"ok","total":1,"outOf":2,"criteria":[{"label":"L","score":1,"weight":1}]}',
       flow: '{"nodes":[{"id":"a","label":"A","column":0,"row":0,"state":"done"}],"edges":[]}',
-      math: '{"steps":[{"expression":"x=1"}]}',
     };
     for (const [tag, body] of Object.entries(bodies)) {
       const parsed = parseFence(tag, body);
@@ -67,14 +65,10 @@ describe('parseFence — JSON tags (2.2)', () => {
     expect(parseFence('ticker', '{"value":"4","label":"stars"}').ok).toBe(false); // string value
     expect(parseFence('timeline', '{"events":[]}').ok).toBe(false);
     expect(parseFence('timeline', '{"events":[{"state":"settled"}]}').ok).toBe(false); // no label
-    expect(parseFence('table', '{"columns":[{"key":"a","label":"A"}],"rows":[]}').ok).toBe(false);
-    expect(parseFence('table', '{"columns":[],"rows":[{"a":1}]}').ok).toBe(false);
     expect(parseFence('spec', '{"rows":[{"label":"L","value":"V"}]}').ok).toBe(false); // no title
     expect(parseFence('compare', '{"traitLabels":[],"options":[{"id":"x","name":"N","headline":"H","traits":[]}],"recommendedId":"x","reason":"r"}').ok).toBe(false);
     expect(parseFence('progress', '{"title":"T","stages":[],"stageIndex":0,"stageProgress":0,"eta":"e"}').ok).toBe(false);
     expect(parseFence('score', '{"verdict":"v","total":1,"outOf":2,"criteria":[]}').ok).toBe(false);
-    expect(parseFence('math', '{"steps":[]}').ok).toBe(false);
-    expect(parseFence('math', '{"steps":[{"expression":"  "}]}').ok).toBe(false);
     expect(parseFence('activity', '{"title":"T","total":1,"start":"nope","end":"2026-08-07","data":[{"date":"2026-08-03","count":1}]}').ok).toBe(false);
   });
 
@@ -136,6 +130,18 @@ describe('parseFence — JSON tags (2.2)', () => {
   it('rejects an unknown tag', () => {
     expect(parseFence('snake', OK).ok).toBe(false);
     expect(parseFence('shiki', OK).ok).toBe(false); // deliberately not a fence tag
+  });
+
+  it('the removed table/math tags are unknown — native markdown owns those forms', () => {
+    // remove-markdown-redundant-fences: GFM tables and KaTeX math render in
+    // the markdown body, so `table`/`math` left the fence universe entirely —
+    // parseFence treats a persisted one like any unknown tag (D3).
+    const table = parseFence('table', '{"columns":[{"key":"a","label":"A"}],"rows":[{"a":1}]}');
+    expect(table.ok).toBe(false);
+    expect((table as { ok: false; reason: string }).reason).toBe('unknown fence tag: table');
+    const math = parseFence('math', '{"steps":[{"expression":"x=1"}]}');
+    expect(math.ok).toBe(false);
+    expect((math as { ok: false; reason: string }).reason).toBe('unknown fence tag: math');
   });
 });
 
@@ -267,11 +273,24 @@ describe('AgentMessage — fence mounting (2.5/2.6)', () => {
     await waitFor(() => expect(container.querySelector('[data-slot="diagram"] svg')).not.toBeNull());
   });
 
-  it('a math fence upgrades from LaTeX source to KaTeX', async () => {
+  it('a removed ```table fence degrades to an ordinary code block, never a card', () => {
+    // remove-markdown-redundant-fences D3: the tag left FENCE_TAGS, so a
+    // persisted message hits the existing unknown-tag contract — ordinary
+    // code block, source readable, no card mounts, no crash.
+    const { container } = renderMessage('```table\n{"columns":[{"key":"name","label":"Model"}],"rows":[{"name":"Atlas"}]}\n```\n');
+    expect(container.querySelector('pre')).not.toBeNull();
+    expect(container.textContent).toContain('"name":"Atlas"'); // the raw source stays readable
+    expect(container.querySelector('[data-slot="data-table"]')).toBeNull();
+    expect(container.querySelector('[data-od-id^="tool-fence-"]')).toBeNull();
+  });
+
+  it('a removed ```math fence degrades to an ordinary code block and never loads KaTeX', () => {
     const { container } = renderMessage('```math\n{"steps":[{"expression":"\\\\int_0^1 x\\\\,dx"}]}\n```\n');
-    expect(container.querySelector('[data-slot="math-block"]')).not.toBeNull();
-    expect(container.textContent).toContain('int_0^1'); // degraded first paint: the source
-    await waitFor(() => expect(container.querySelector('.katex')).not.toBeNull());
+    expect(container.querySelector('pre')).not.toBeNull();
+    expect(container.textContent).toContain('int_0^1'); // the LaTeX source stays readable
+    expect(container.querySelector('[data-slot="math-block"]')).toBeNull();
+    expect(container.querySelector('.katex')).toBeNull(); // the fence lane no longer pairs KaTeX
+    expect(container.querySelector('[data-od-id^="tool-fence-"]')).toBeNull();
   });
 
   it('an unclosed (still-streaming) fence stays the existing plain code block', () => {

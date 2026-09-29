@@ -129,6 +129,32 @@ func TestJailedShell_WritesIntoJail(t *testing.T) {
 	}
 }
 
+// TestJailedShell_ExecuteRunsTranslatedCommand pins the mount contract end to
+// end: the model-facing /workspace prefix the classifier judged must be the
+// command the host shell actually runs. Live 2026-09-28 regression (Personal
+// Assistant, `cd /workspace && go version`): Execute translated the command
+// for the classifier but exec spawned zsh -c req.Command raw, so the shell
+// died on /workspace while the fs tools resolved the same path fine — the
+// model-facing view was split between lanes.
+func TestJailedShell_ExecuteRunsTranslatedCommand(t *testing.T) {
+	s := newTestShell(t)
+	resp, err := s.Execute(context.Background(), &einofs.ExecuteRequest{
+		Command: `cd /workspace && pwd; ls /workspace`,
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if code := *resp.ExitCode; code != 0 {
+		t.Fatalf("exit %d, output %q", code, resp.Output)
+	}
+	if strings.Contains(resp.Output, "/workspace") && !strings.Contains(resp.Output, s.agentDir) {
+		t.Errorf("raw mount prefix reached the host shell: output %q", resp.Output)
+	}
+	if got := strings.TrimSpace(strings.SplitN(resp.Output, "\n", 2)[0]); got != s.agentDir {
+		t.Errorf("cd /workspace && pwd = %q, want jail root %q", got, s.agentDir)
+	}
+}
+
 func TestIsDangerousCommand(t *testing.T) {
 	dangerous := []string{
 		"rm -rf /",

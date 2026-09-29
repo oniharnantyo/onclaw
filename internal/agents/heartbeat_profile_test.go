@@ -26,10 +26,11 @@ const heartbeatContractPinned = "## Heartbeat\n\nThis run is an unattended perio
 
 // TestRun_HeartbeatProfileComposition covers the heartbeat execution profile
 // (add-agent-heartbeat D9, spec agent-runtime "Heartbeat composition"): with
-// all six documents and workspace shared memory present, the heartbeat-origin
+// every document and workspace shared memory present, the heartbeat-origin
 // instruction carries AGENTS/IDENTITY/SOUL, the workspace metadata doc, the
-// HEARTBEAT checklist, and the activity digest, and omits USER.md,
-// BOOTSTRAP.md, the shared-memory subsection, and channel docs.
+// HEARTBEAT checklist, and the activity digest, and omits USER.md, the
+// shared-memory subsection, and channel docs — and never composes the stray
+// BOOTSTRAP.md leftover.
 func TestRun_HeartbeatProfileComposition(t *testing.T) {
 	st, runner, rec, _, req := setupSchedulerRunner(t, "sess-hb-placeholder")
 	ctx := context.Background()
@@ -71,7 +72,7 @@ func TestRun_HeartbeatProfileComposition(t *testing.T) {
 		"## Rich cards",
 		"IDENTITY-CONTENT-MARKER",
 		"SOUL-CONTENT-MARKER",
-		"# Workspace",
+		"# Workspace\n",
 		"acme",
 		"## HEARTBEAT checklist",
 		"HEARTBEAT-CHECKLIST-MARKER",
@@ -214,10 +215,10 @@ func TestRun_HeartbeatKeepsCheckpointsAndOutOfIndex(t *testing.T) {
 
 // TestResolve_HeartbeatToolStrip covers the runner-level strip for heartbeat
 // origin (add-agent-heartbeat D10): a heartbeat tick resolves neither the
-// schedule tool nor the memory tools even when the agent allowlists them and
-// the registry registers them, while ordinary allowed tools survive. The
-// scheduler control pins the shared branch, the user control the unchanged
-// ordinary surface.
+// schedule tool nor the memory tools even though the agent's denylist doesn't
+// name them and the registry registers them, while ordinary tools survive.
+// The scheduler control pins the shared branch, the user control the
+// unchanged ordinary surface.
 func TestResolve_HeartbeatToolStrip(t *testing.T) {
 	st := fake.New()
 	reg := NewDefaultToolRegistry(st.Memories(), WithSchedulerTools(st.Schedulers(), st.Channels()))
@@ -232,7 +233,6 @@ func TestResolve_HeartbeatToolStrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load agent: %v", err)
 	}
-	agent.Tools = []string{tools.NameSchedule, tools.NameMemory, tools.NameDeleteFile, tools.NameWebFetch}
 
 	namesOf := func(origin string) map[string]bool {
 		t.Helper()
@@ -254,8 +254,8 @@ func TestResolve_HeartbeatToolStrip(t *testing.T) {
 	}
 
 	// Heartbeat origin: the shared anti-runaway strip removes schedule and the
-	// memory tools regardless of the allowlist; the ordinary allowed tool
-	// survives.
+	// memory tools even though the default surface exposes them; the ordinary
+	// tools survive.
 	hbNames := namesOf(OriginHeartbeat)
 	for _, excluded := range []string{tools.NameSchedule, tools.NameMemory, tools.NameDeleteFile} {
 		if hbNames[excluded] {
@@ -263,7 +263,7 @@ func TestResolve_HeartbeatToolStrip(t *testing.T) {
 		}
 	}
 	if !hbNames[tools.NameWebFetch] {
-		t.Fatalf("heartbeat run must keep the ordinary allowed tool %q (resolved: %v)", tools.NameWebFetch, hbNames)
+		t.Fatalf("heartbeat run must keep the ordinary exposed tool %q (resolved: %v)", tools.NameWebFetch, hbNames)
 	}
 
 	// Scheduler control: the same strip applies (scheduler behavior must not
@@ -273,10 +273,10 @@ func TestResolve_HeartbeatToolStrip(t *testing.T) {
 		t.Fatalf("scheduler run must strip the same set (resolved: %v)", schedNames)
 	}
 	if !schedNames[tools.NameWebFetch] {
-		t.Fatalf("scheduler run must keep the ordinary allowed tool (resolved: %v)", schedNames)
+		t.Fatalf("scheduler run must keep the ordinary exposed tool (resolved: %v)", schedNames)
 	}
 
-	// User control: the same allowlist resolves everything the registry
+	// User control: the default surface resolves everything the registry
 	// registered — the strip applies only to the unattended origins.
 	userNames := namesOf(OriginUser)
 	for _, kept := range []string{tools.NameSchedule, tools.NameMemory, tools.NameDeleteFile, tools.NameWebFetch} {
@@ -372,7 +372,6 @@ func TestRun_HeartbeatProfileOtherOriginsUnchanged(t *testing.T) {
 		"## Rich cards",
 		"IDENTITY-CONTENT-MARKER",
 		"SOUL-CONTENT-MARKER",
-		"BOOTSTRAP-CONTENT-MARKER",
 		"# Current User",
 		"USER-MEMORY-MARKER",
 		"## Shared memory",
@@ -381,6 +380,11 @@ func TestRun_HeartbeatProfileOtherOriginsUnchanged(t *testing.T) {
 		if !strings.Contains(uInstruction, marker) {
 			t.Fatalf("user instruction must contain %s, got:\n%s", marker, uInstruction)
 		}
+	}
+	// The removed birth document is never composed, even attended
+	// (remove-bootstrap-doc, spec agent-runtime "Bootstrap is not composed").
+	if strings.Contains(uInstruction, "BOOTSTRAP-CONTENT-MARKER") {
+		t.Fatalf("user instruction must never compose the stray BOOTSTRAP.md, got:\n%s", uInstruction)
 	}
 	for _, absent := range []string{
 		"Unattended run",

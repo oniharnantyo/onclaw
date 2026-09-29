@@ -101,6 +101,26 @@ func (s *JailedShell) WithDecisionLedger(l DecisionLedger) *JailedShell {
 	return s
 }
 
+// ApprovalChecker is the pre-execution approval check the background shell
+// lane performs before launching a command (add-agent-subagents-background
+// design.md risk register fallback): a shell that can interrupt for approval
+// reports which commands would raise that interrupt, so a background launch
+// can refuse them readably instead of detaching a command no approver can
+// reach. Optional shell capability — a shell without it never interrupts and
+// needs no launch-side check.
+type ApprovalChecker interface {
+	WouldInterrupt(command string) bool
+}
+
+// WouldInterrupt reports whether command trips the dangerous-command
+// classifier after mount translation — the same judgment Execute applies
+// before interrupting. It consults neither the resume context nor the
+// decision ledger: a prior approval does not make a command safe to detach,
+// only to run in the foreground where the approver is attached.
+func (s *JailedShell) WouldInterrupt(command string) bool {
+	return s.classifier(s.translateMounts(command))
+}
+
 // ShellOption configures a JailedShell at construction time.
 type ShellOption func(*JailedShell)
 
@@ -208,6 +228,13 @@ func (s *JailedShell) Execute(ctx context.Context, req *einofs.ExecuteRequest) (
 			return nil, tool.Interrupt(ctx, ShellApprovalInfo{Command: command})
 		}
 	}
+	// The translated form is the one the classifier judged and the approver
+	// saw — it is also the one that must run. Writing it back into the request
+	// keeps exec single-sourced; without this, the model-facing mount contract
+	// (`cd /workspace && …`) reached the host shell raw and died on a path the
+	// fs tools resolve fine (live 2026-09-28: execute failed where write_file
+	// to /workspace/go.mod succeeded in the same turn).
+	req.Command = command
 	return s.exec(ctx, req)
 }
 

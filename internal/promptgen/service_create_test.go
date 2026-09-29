@@ -68,20 +68,16 @@ func TestService_GenerateForCreate_WritesDocumentsWithoutRow(t *testing.T) {
 		t.Fatalf("GenerateForCreate: %v", err)
 	}
 
-	// Documents are on disk — BOOTSTRAP.md seeded with the embedded template…
-	id, soul, _, err := promptdocs.ReadPromptDocuments(wsDir)
+	// Documents are on disk, and the removed birth document is not seeded…
+	id, soul, err := promptdocs.ReadPromptDocuments(wsDir)
 	if err != nil {
 		t.Fatalf("read documents: %v", err)
 	}
 	if id != "# Identity\nNew agent identity." || soul != "# Soul\nNew agent soul." {
 		t.Errorf("unexpected document contents: %q / %q", id, soul)
 	}
-	boot, err := os.ReadFile(filepath.Join(wsDir, "BOOTSTRAP.md"))
-	if err != nil {
-		t.Fatalf("read BOOTSTRAP.md: %v", err)
-	}
-	if string(boot) != promptdocs.BootstrapTemplate {
-		t.Errorf("BOOTSTRAP.md = %q, want the embedded template", string(boot))
+	if _, err := os.Stat(filepath.Join(wsDir, "BOOTSTRAP.md")); !os.IsNotExist(err) {
+		t.Errorf("GenerateForCreate must not seed BOOTSTRAP.md, stat err: %v", err)
 	}
 
 	// …and no agent row exists.
@@ -144,9 +140,9 @@ func TestService_GenerateForCreate_FailureReturnsErrorAndWritesNothing(t *testin
 	}
 
 	// Nothing was written: no documents, no row.
-	id, soul, boot, _ := promptdocs.ReadPromptDocuments(wsDir)
-	if id != "" || soul != "" || boot != "" {
-		t.Errorf("expected no documents on failure, got %q / %q / %q", id, soul, boot)
+	id, soul, _ := promptdocs.ReadPromptDocuments(wsDir)
+	if id != "" || soul != "" {
+		t.Errorf("expected no documents on failure, got %q / %q", id, soul)
 	}
 	if _, err := st.Agents().ByID(ctx, ws.ID, agent.ID); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("expected no agent row after failed generation, got %v", err)

@@ -48,6 +48,40 @@ export function containsMathDelimiters(text: string): boolean {
   return /\$\$[\s\S]+?\$\$|\$[^\s$](?:[^$\n]*[^\s$])?\$/.test(text);
 }
 
+// --- document citation links (add-reference-documents 10.2) ------------------
+// Agents cite reference documents as markdown links whose href lives under
+// `references/` — e.g. [twilio-api.pdf · p. 31](references/twilio-api.pdf).
+// They render as chip buttons (the CHIP_BASE idiom from ToolCall) that open
+// the right panel's document source with {name, locator} — NO url, because
+// agents don't know capability URLs; the document source resolves by name.
+
+/** The document named by a `references/` href, or null. Percent-decoded
+ * first; query strings and fragments stripped; the basename is the payload
+ * identity the panel resolves against the workspace library. */
+export function referenceCitationOf(href: string | undefined | null): { name: string } | null {
+  if (!href) return null;
+  let decoded = href;
+  try {
+    decoded = decodeURI(href);
+  } catch {
+    // malformed escape sequence — test the raw href as-is
+  }
+  const m = /^references\/(.+)$/i.exec(decoded.replace(/^\.\//, ''));
+  if (!m) return null;
+  const base = m[1].split(/[?#]/)[0].split('/').pop() || '';
+  return base ? { name: base } : null;
+}
+
+/** Flat text of a markdown link's children — the citation label that carries
+ * the locator ("twilio-api.pdf · p. 31"). */
+function textOfChildren(node: any): string {
+  if (node == null || typeof node === 'boolean') return '';
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(textOfChildren).join('');
+  if (typeof node === 'object' && node.props) return textOfChildren(node.props.children);
+  return '';
+}
+
 // react-markdown replaces raw text nodes with element trees, so mention
 // highlighting is applied by overriding text-bearing renderers: every string
 // child goes through the same MentionText splitter used elsewhere in chat.
@@ -200,6 +234,33 @@ export const MarkdownBody = memo(function MarkdownBody({ text, members, live }: 
           <a href={href} target="_blank" rel="noreferrer" className="text-accent underline underline-offset-2 hover:opacity-80">
             {children}
           </a>
+        );
+      }
+      // Document citation (add-reference-documents 10.2): a `references/`
+      // href names a workspace reference document — rendered as a chip
+      // button carrying 📄 + the label (label includes the locator), opening
+      // the document preview in the right panel. The payload has no url —
+      // the source resolves the document by name.
+      const citation = referenceCitationOf(href);
+      if (citation) {
+        return (
+          <button
+            type="button"
+            data-od-id="citation-chip"
+            onClick={(e) => {
+              e.preventDefault();
+              useStore.getState().openPanelTab({
+                kind: 'document',
+                title: citation.name,
+                payload: { name: citation.name, locator: textOfChildren(children) },
+              });
+            }}
+            title={`Open ${citation.name} in panel`}
+            className="inline-flex cursor-pointer items-center gap-1 rounded-[6px] border border-line bg-[color-mix(in_oklab,var(--fg)_5%,transparent)] px-1.5 py-0.5 text-[12px] leading-4 text-fg2 transition-colors hover:border-accent hover:text-accent"
+          >
+            <span aria-hidden="true">📄</span>
+            {children}
+          </button>
         );
       }
       let relPath: string | null = null;

@@ -298,6 +298,62 @@ func TestCompose_Capabilities(t *testing.T) {
 			t.Fatal("expected non-nil agent")
 		}
 	})
+
+	t.Run("full stack with subagent capability inserts subagent and background control after filesystem", func(t *testing.T) {
+		agentDir := t.TempDir()
+		clawDir := t.TempDir()
+
+		cfg := &Config{
+			Name:        "agent-full-stack-delegating",
+			Description: "full stack capabilities with delegation",
+			Instruction: "You have everything, and you can delegate.",
+			ChatModel:   &dummyModel{},
+			Filesystem: &FilesystemConfig{
+				AgentDir: agentDir,
+			},
+			Skills: &SkillsConfig{
+				OnClawDir:  clawDir,
+				TenantSlug: "acme",
+				AgentSlug:  "delegating-bot",
+			},
+			Summarization: &SummarizationConfig{
+				TriggerTokens: 4096,
+			},
+			SubagentsEnabled: true,
+			Background:       newTestSubagentBackground(t),
+		}
+
+		handlers, err := buildMiddlewares(ctx, cfg)
+		if err != nil {
+			t.Fatalf("buildMiddlewares failed: %v", err)
+		}
+		if len(handlers) != 10 {
+			t.Fatalf("expected 10 handlers, got %d", len(handlers))
+		}
+
+		// design.md D3's pinned position: subagent then background-control sit
+		// after filesystem and before attachments/hooks/gate/tool-error-result,
+		// so the later wrappers stay outermost and the parent's policy gates
+		// wrap the `agent` tool call. The delegation-instruction measurer
+		// (task 6.1) rides immediately after the delegation block.
+		expectedOrder := []string{
+			"patchtoolcalls", "reduction", "summarization", "skill", "filesystem",
+			"subagent", "backgroundtask", "delegationinstructionmeasurer",
+			"attachmentsplaceholdermiddleware",
+		}
+		for i, exp := range expectedOrder {
+			assertHandlerType(t, handlers[i], exp)
+		}
+		assertHandlerType(t, handlers[len(handlers)-1], "toolerrorresultmiddleware")
+
+		agent, err := Compose(ctx, cfg)
+		if err != nil {
+			t.Fatalf("Compose failed: %v", err)
+		}
+		if agent == nil {
+			t.Fatal("expected non-nil agent")
+		}
+	})
 }
 
 func TestCompose_IterationDefault(t *testing.T) {

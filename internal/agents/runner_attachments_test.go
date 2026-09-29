@@ -160,7 +160,6 @@ func setupAttachmentsRunner(t *testing.T, mdl Model, opts ...RunnerOption) (*Run
 		Name:        "Atlas",
 		ProviderID:  prov.ID,
 		Model:       "gpt-4o",
-		Tools:       []string{"read_file", "write_file"},
 	}
 	if err := st.Agents().Create(ctx, ag); err != nil {
 		t.Fatalf("create agent: %v", err)

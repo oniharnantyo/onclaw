@@ -508,6 +508,55 @@ func TestSystemSkillsSync(t *testing.T) {
 			t.Errorf("Expected original content to be restored, but found modified content")
 		}
 	})
+
+	t.Run("document-read mirrors beside web-research", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Boot mirror produces document-read/SKILL.md beside web-research/SKILL.md.
+		if err := systemskills.SyncSystemSkills(tmpDir); err != nil {
+			t.Fatalf("Sync failed: %v", err)
+		}
+
+		for _, name := range []string{"web-research", "document-read"} {
+			skillPath := filepath.Join(tmpDir, name, "SKILL.md")
+			if _, err := os.Stat(skillPath); err != nil {
+				t.Errorf("Expected %s to exist after sync: %v", skillPath, err)
+			}
+		}
+
+		// Content-diff semantics hold for document-read: a modified mirrored
+		// skill is restored on the next sync.
+		docReadPath := filepath.Join(tmpDir, "document-read", "SKILL.md")
+		if err := os.WriteFile(docReadPath, []byte("modified content"), 0644); err != nil {
+			t.Fatalf("Failed to modify document-read skill: %v", err)
+		}
+		if err := systemskills.SyncSystemSkills(tmpDir); err != nil {
+			t.Fatalf("Re-sync failed: %v", err)
+		}
+		matches, err := systemskills.VerifyChecksum("document-read", tmpDir)
+		if err != nil {
+			t.Fatalf("VerifyChecksum failed for document-read: %v", err)
+		}
+		if !matches {
+			t.Error("Expected document-read content to be restored on re-sync")
+		}
+
+		// Removal semantics hold for document-read: extraneous siblings are
+		// removed while the embedded set survives.
+		extraDir := filepath.Join(tmpDir, "extra-doc-skill")
+		if err := os.MkdirAll(extraDir, 0755); err != nil {
+			t.Fatalf("Failed to create extra directory: %v", err)
+		}
+		if err := systemskills.SyncSystemSkills(tmpDir); err != nil {
+			t.Fatalf("Sync after adding extraneous directory failed: %v", err)
+		}
+		if _, err := os.Stat(extraDir); err == nil {
+			t.Error("Expected extraneous directory to be removed on sync")
+		}
+		if _, err := os.Stat(filepath.Join(tmpDir, "document-read", "SKILL.md")); err != nil {
+			t.Errorf("Expected document-read skill to survive extraneous-dir removal: %v", err)
+		}
+	})
 }
 
 // Helper functions

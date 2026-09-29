@@ -10,8 +10,7 @@
 // never JSON; the diagram title rides the fence info string, which
 // react-markdown surfaces as the code node's `meta`.
 
-import { useEffect, useMemo, useState } from "react";
-import { MathBlock } from "@/components/assistant-ui/elements/math-block";
+import { useMemo, useState } from "react";
 import { Diagram } from "@/components/assistant-ui/elements/diagram";
 import { readMermaidPalette, useMermaidEngine } from "@/lib/assistantUi/mermaidEngine";
 import { cx } from "../helpers";
@@ -22,8 +21,8 @@ import { cx } from "../helpers";
  * index.tsx is exactly this). shiki is deliberately NOT a tag: it upgrades
  * ordinary code blocks and has no fence of its own. */
 export const FENCE_TAGS = [
-  'chart', 'timeline', 'preview', 'table', 'ticker', 'activity', 'spec',
-  'compare', 'progress', 'score', 'flow', 'math', 'mermaid', 'diagram', 'ui',
+  'chart', 'timeline', 'preview', 'ticker', 'activity', 'spec',
+  'compare', 'progress', 'score', 'flow', 'mermaid', 'diagram', 'ui',
 ] as const;
 
 export type FenceTag = (typeof FENCE_TAGS)[number];
@@ -54,12 +53,6 @@ export interface FencePreview {
   url: string;
   html: string;
   title?: string;
-}
-
-export interface FenceTable {
-  caption?: string;
-  columns: { key: string; label: string }[];
-  rows: Record<string, unknown>[];
 }
 
 export interface FenceTicker {
@@ -106,11 +99,6 @@ export interface FenceScore {
 export interface FenceFlow {
   nodes: { id: string; label: string; column: number; row: number; state: 'done' | 'active' | 'pending' }[];
   edges: { from: string; to: string }[];
-}
-
-export interface FenceMath {
-  label?: string;
-  steps: { expression: string; note?: string }[];
 }
 
 type Json = Record<string, unknown>;
@@ -191,24 +179,6 @@ function previewOf(raw: unknown): FencePreview | null {
   const title = opt(raw.title, isStr);
   if (title === null) return null;
   return { url: raw.url, html: raw.html, ...(title !== undefined ? { title } : {}) };
-}
-
-export function tableOf(raw: unknown): FenceTable | null {
-  if (!isObj(raw)) return null;
-  if (!Array.isArray(raw.columns) || raw.columns.length === 0) return null;
-  const columns = [];
-  for (const col of raw.columns) {
-    if (!isObj(col) || !isStr(col.key) || !isStr(col.label)) return null;
-    columns.push({ key: col.key, label: col.label });
-  }
-  if (!Array.isArray(raw.rows) || raw.rows.length === 0 || !raw.rows.every(isObj)) return null;
-  const caption = opt(raw.caption, isStr);
-  if (caption === null) return null;
-  return {
-    ...(caption !== undefined ? { caption } : {}),
-    columns,
-    rows: raw.rows,
-  };
 }
 
 export function tickerOf(raw: unknown): FenceTicker | null {
@@ -312,21 +282,6 @@ export function flowOf(raw: unknown): FenceFlow | null {
     edges.push({ from: item.from, to: item.to });
   }
   return { nodes, edges };
-}
-
-export function mathOf(raw: unknown): FenceMath | null {
-  if (!isObj(raw)) return null;
-  if (!Array.isArray(raw.steps) || raw.steps.length === 0) return null;
-  const steps = [];
-  for (const item of raw.steps) {
-    if (!isObj(item) || !isStr(item.expression) || !item.expression.trim()) return null;
-    const note = opt(item.note, isStr);
-    if (note === null) return null;
-    steps.push({ expression: item.expression, ...(note !== undefined ? { note } : {}) });
-  }
-  const label = opt(raw.label, isStr);
-  if (label === null) return null;
-  return { ...(label !== undefined ? { label } : {}), steps };
 }
 
 /** mermaid/diagram bodies are raw source; `diagram` carries its title in the
@@ -467,7 +422,6 @@ const JSON_TAGS: Record<string, (raw: unknown) => unknown> = {
   chart: chartOf,
   timeline: timelineOf,
   preview: previewOf,
-  table: tableOf,
   ticker: tickerOf,
   activity: activityOf,
   spec: specOf,
@@ -475,7 +429,6 @@ const JSON_TAGS: Record<string, (raw: unknown) => unknown> = {
   progress: jobOf,
   score: scoreOf,
   flow: flowOf,
-  math: mathOf,
   ui: uiOf,
 };
 
@@ -552,48 +505,4 @@ export function FenceDiagramCard({ title, code, className }: { title: string; co
       )}
     </div>
   );
-}
-
-interface FenceMathStep {
-  expression: string;
-  note?: string;
-}
-
-/** `math` fence card (2.3/2.6): the element's `expression` prop is a
- * ReactNode, so each LaTeX string maps through KaTeX's renderToString. KaTeX
- * stays lazy (the MarkdownBody math lane's pattern — a JSON fence never trips
- * the message-level delimiter gate): first paint shows the LaTeX source in
- * place, upgrading when the shared chunk + stylesheet land (D9); a failed
- * chunk load degrades this mount to the source permanently. */
-export function FenceMathBlock({ label, steps, className }: { label?: string; steps: readonly FenceMathStep[]; className?: string }) {
-  // Steps re-derive every markdown delta; key the load + render on content so
-  // identity churn cannot re-import or re-render KaTeX needlessly.
-  const stepsKey = useMemo(
-    () => steps.map((s) => `${s.expression}\u0000${s.note ?? ''}`).join('\u0001'),
-    [steps],
-  );
-  const [html, setHtml] = useState<string[] | null>(null);
-  useEffect(() => {
-    let alive = true;
-    Promise.all([
-      import('katex'),
-      // The stylesheet rides the same lazy chunk (idempotent — the module
-      // cache dedupes with the MarkdownBody math lane's import).
-      import('katex/dist/katex.min.css'),
-    ]).then(([katex]) => {
-      if (alive) setHtml(steps.map((s) => katex.default.renderToString(s.expression, { throwOnError: false, displayMode: true })));
-    }).catch(() => {
-      // Present-only degradation: the source stays readable; never blank.
-      if (alive) setHtml([]);
-    });
-    return () => { alive = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on content, not identity
-  }, [stepsKey]);
-  const mapped = steps.map((s, i) => ({
-    expression: html && html[i] !== undefined
-      ? <span dangerouslySetInnerHTML={{ __html: html[i] }} />
-      : s.expression, // degraded first paint: the LaTeX source itself
-    note: s.note,
-  }));
-  return <MathBlock label={label} steps={mapped} visibleSteps={steps.length} className={cx('mb-2', className)} />;
 }

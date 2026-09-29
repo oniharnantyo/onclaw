@@ -193,14 +193,14 @@ describe('screens/settings/SettingsPage', () => {
   }
 
   describe('Navigation & Routing', () => {
-    it('renders the thirteen section tab labels with active highlighting and switches section on click', async () => {
+    it('renders the fourteen section tab labels with active highlighting and switches section on click', async () => {
       renderSettingsPage('/settings/workspace');
 
       const tablist = screen.getByRole('tablist');
       expect(tablist).not.toBeNull();
 
       const tabs = screen.getAllByRole('tab');
-      expect(tabs.length).toBe(13);
+      expect(tabs.length).toBe(14);
 
       const expectedLabels = [
         'Workspace',
@@ -211,6 +211,7 @@ describe('screens/settings/SettingsPage', () => {
         'Integrations',
         'MCP servers',
         'Skills',
+        'Documents',
         'Tools',
         'Hooks',
         'API keys',
@@ -278,8 +279,8 @@ describe('screens/settings/SettingsPage', () => {
       expect(back.tagName).toBe('BUTTON');
       expect(back.textContent).toContain('Back');
       expect(screen.getByText('Settings')).not.toBeNull();
-      // The section nav is untouched: thirteen tabs below the header.
-      expect(screen.getAllByRole('tab').length).toBe(13);
+      // The section nav: fourteen tabs below the header.
+      expect(screen.getAllByRole('tab').length).toBe(14);
       expect(screen.getByRole('tablist')).not.toBeNull();
     });
 

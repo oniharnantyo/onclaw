@@ -339,6 +339,22 @@ func (r *Runner) History(ctx context.Context, req HistoryRequest) (*HistoryResul
 					})
 				}
 			}
+		case sessionEventKindTaskCompleted:
+			// Background task completion chip (add-agent-subagents-background
+			// D8): render the terminal notice exactly as the live stream
+			// delivered it. The payload type is the registered concrete
+			// struct, so the serializer hands it back whole.
+			if se.Extension != nil {
+				if completed, ok := se.Extension.Data.(TaskCompletedPayload); ok {
+					events = append(events, TranscriptEvent{
+						ID:            id,
+						Kind:          TranscriptEventTaskCompleted,
+						OccurredAt:    occurredAt,
+						TurnID:        turnID,
+						TaskCompleted: &completed,
+					})
+				}
+			}
 		}
 		// Accumulate: a trailing row that renders nothing (run status spans,
 		// model-span bookkeeping) must not un-render the turn's earlier events.

@@ -1,0 +1,32 @@
+sequenceDiagram
+    autonumber
+    participant USR as User
+    participant API as Upload API
+    participant BLOB as Blob store
+    participant PG as Postgres sections and registry
+    participant AGT as Agent LLM
+
+    rect rgb(235, 243, 255)
+    note over USR,PG: Phase 1 - upload and index - deterministic code only, no LLM, no embeddings
+    USR->>API: upload twilio-api.pdf
+    API->>API: magic-byte sniff, size and page caps
+    API->>BLOB: store PDF as-is
+    BLOB-->>API: blob path plus capability URL
+    API->>API: extract text in-process, pure Go converter
+    API->>PG: sections rows with tsvector, GIN indexed
+    API->>PG: registry row - name, description, TOC from PDF outline
+    API-->>USR: 201 created - scanned PDFs warn no text layer here
+    note over PG: derived layer - rebuildable from the blob anytime
+    end
+
+    rect rgb(255, 246, 235)
+    note over USR,AGT: Phase 2 - agent turn - the only model in the loop
+    PG-->>AGT: manifest injected at compose - names, descriptions, TOC
+    USR->>AGT: how do I validate a Twilio webhook signature?
+    AGT->>PG: documents.search webhook signature validation
+    PG-->>AGT: Webhooks p.30 plus snippet
+    AGT->>BLOB: document.read twilio-api.pdf pages 30 to 34
+    BLOB-->>AGT: converted markdown of those pages
+    AGT->>AGT: repeat search or read if needed
+    AGT-->>USR: answer citing page 30 of the PDF
+    end

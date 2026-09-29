@@ -48,9 +48,8 @@ func TestModels_Endpoints_And_DeleteInUse(t *testing.T) {
 	mockLiveServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "chat/completions") {
 			args, _ := json.Marshal(map[string]string{
-				"identity":  "# Identity\nBound agent identity.",
-				"soul":      "# Soul\nBound agent soul.",
-				"bootstrap": "# BOOTSTRAP.md - Birth Sequence\nIntroduce yourself.",
+				"identity": "# Identity\nBound agent identity.",
+				"soul":     "# Soul\nBound agent soul.",
 			})
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)

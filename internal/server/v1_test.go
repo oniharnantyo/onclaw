@@ -157,7 +157,6 @@ func setupV1EnvOpts(t *testing.T, release chan struct{}, keepAlive time.Duration
 		Model:       "gpt-4o",
 		Temperature: 1.0,
 		Autonomy:    domain.AutonomyApproval,
-		Tools:       []string{"web.search"},
 	}
 	if err := st.Agents().Create(ctx, ag); err != nil {
 		t.Fatalf("create agent: %v", err)

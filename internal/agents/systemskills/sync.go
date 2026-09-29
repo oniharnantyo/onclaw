@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 )
 
-//go:embed web-research/SKILL.md
+//go:embed web-research/SKILL.md document-read/SKILL.md
 var embeddedSkills embed.FS
 
 // SyncSystemSkills mirrors embedded files into destDir.

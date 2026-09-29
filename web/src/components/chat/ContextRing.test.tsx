@@ -10,6 +10,7 @@ import { render, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import { ContextRing } from './ContextRing';
 import { Composer } from './Composer';
 import { useStore } from '../../store';
+import { builtinToolCount } from "../../lib/toolCatalog";
 import { formatTokens } from '../../lib/helpers';
 
 // This environment's jsdom exposes no localStorage (same mode behind the
@@ -32,7 +33,7 @@ const agent = {
   summarization_trigger_tokens: 150_000,
   prompt: 'x'.repeat(400), // 100 tokens estimated
   role: '',
-  tools: ['a', 'b', 'c'], // 360
+  disabled_tools: ['a', 'b', 'c'], // denies 3 → (builtinToolCount - 3) × 120
   skills: ['s1'], // 40
 };
 
@@ -42,8 +43,8 @@ const messages = [
   { id: 'm1', author: 'you', ts: '', text: 'q'.repeat(400) },
   { id: 'm2', author: 'agent', ts: '', text: 'a'.repeat(400), attachments: [{ mime: 'application/pdf', size: 400 }] },
 ];
-// Face-value estimate sum: 100 + 360 + 40 + 216 + 100 (400-byte file) = 816
-const ESTIMATE_SUM = 816;
+// Face-value estimate sum: 100 + (builtinToolCount - 3) × 120 + 40 + 216 + 100 (400-byte file)
+const ESTIMATE_SUM = 100 + (builtinToolCount - 3) * 120 + 40 + 216 + 100;
 
 const seed = (opts: {
   usage?: any;

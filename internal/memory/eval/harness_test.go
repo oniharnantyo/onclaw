@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -31,13 +30,13 @@ type stubServer struct {
 	failChat        bool            // fail every "?"-bearing /v1 turn
 	notesLive       bool            // serve /memory/notes (false → 404)
 
-	// Fixture-agent provisioning capture (fix-memory-prefetch-matching D6):
-	// the create body's tools allowlist, an optional pre-existing agent's
-	// allowlist (nil → GET agent 404s, the create path), and every PATCHed
-	// allowlist in order.
-	createdAgentTools  []string
-	existingAgentTools []string
-	toolsPatches       [][]string
+	// Fixture-agent provisioning capture (fix-memory-prefetch-matching D6,
+	// denylist form): the create body's disabled_tools denylist, an optional
+	// pre-existing agent's denylist (nil → GET agent 404s, the create path),
+	// and every PATCHed denylist in order.
+	createdAgentDisabledTools  []string
+	existingAgentDisabledTools []string
+	disabledToolsPatches       [][]string
 }
 
 func newStub(t *testing.T, notesLive bool) *stubServer {
@@ -127,27 +126,27 @@ func (s *stubServer) handler() http.Handler {
 
 	mux.HandleFunc("GET /api/v1/workspaces/"+stubWS+"/agents/"+stubAgent, func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
-		existing := s.existingAgentTools
+		existing := s.existingAgentDisabledTools
 		s.mu.Unlock()
 		if existing == nil {
 			writeJSON(w, 404, map[string]any{"error": map[string]any{"code": "not_found"}})
 			return
 		}
 		writeJSON(w, 200, map[string]any{
-			"agent": map[string]any{"id": stubUserID, "slug": stubAgent, "name": "Memory Eval Agent", "model": "stub-model", "tools": existing},
+			"agent": map[string]any{"id": stubUserID, "slug": stubAgent, "name": "Memory Eval Agent", "model": "stub-model", "disabled_tools": existing},
 		})
 	})
 
 	mux.HandleFunc("PATCH /api/v1/workspaces/"+stubWS+"/agents/"+stubUserID, func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Tools []string `json:"tools"`
+			DisabledTools []string `json:"disabled_tools"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		s.mu.Lock()
-		s.toolsPatches = append(s.toolsPatches, body.Tools)
+		s.disabledToolsPatches = append(s.disabledToolsPatches, body.DisabledTools)
 		s.mu.Unlock()
 		writeJSON(w, 200, map[string]any{
-			"agent": map[string]any{"id": stubUserID, "slug": stubAgent, "name": "Memory Eval Agent", "model": "stub-model", "tools": body.Tools},
+			"agent": map[string]any{"id": stubUserID, "slug": stubAgent, "name": "Memory Eval Agent", "model": "stub-model", "disabled_tools": body.DisabledTools},
 		})
 	})
 
@@ -158,19 +157,19 @@ func (s *stubServer) handler() http.Handler {
 		if model == "" {
 			model = "stub-model"
 		}
-		var tools []string
-		if raw, ok := body["tools"].([]any); ok {
+		var disabled []string
+		if raw, ok := body["disabled_tools"].([]any); ok {
 			for _, item := range raw {
 				if s, ok := item.(string); ok {
-					tools = append(tools, s)
+					disabled = append(disabled, s)
 				}
 			}
 		}
 		s.mu.Lock()
-		s.createdAgentTools = tools
+		s.createdAgentDisabledTools = disabled
 		s.mu.Unlock()
 		writeJSON(w, 201, map[string]any{
-			"agent": map[string]any{"id": stubUserID, "slug": stubAgent, "name": "Memory Eval Agent", "model": model, "tools": tools},
+			"agent": map[string]any{"id": stubUserID, "slug": stubAgent, "name": "Memory Eval Agent", "model": model, "disabled_tools": disabled},
 		})
 	})
 
@@ -688,14 +687,15 @@ func TestExtractSearchEvidencePairsCallsAndResults(t *testing.T) {
 }
 
 // TestFixtureAgentExposesMemorySearch pins the self-search leg's provisioning
-// contract (fix-memory-prefetch-matching D6). The recorded live failure: the
-// fixture agent carried an empty tools allowlist, the runner exposes zero
-// registry tools for an empty allowlist, so the model had no memory.search
-// schema to call and could only reach the skill middleware's generic skill
-// tool — which answered `skill not found: memory`. The harness must therefore
-// (a) create the fixture agent carrying the memory.search allowlist, (b)
-// repair agents provisioned before the allowlist existed when reusing them,
-// and (c) stay idempotent when the allowlist is already in place.
+// contract (fix-memory-prefetch-matching D6, denylist form). The recorded live
+// failure predates the denylist: the fixture agent carried an empty tools
+// allowlist, the runner exposed zero registry tools for an empty allowlist,
+// and the model had no memory.search schema to call. Under the denylist an
+// empty DisabledTools exposes every catalog tool — memory.search included —
+// so the harness must (a) create the fixture agent with the default (empty)
+// denylist and no legacy `tools` key, (b) repair reused agents whose stored
+// denylist denies a required tool, and (c) stay idempotent when the stored
+// denylist denies none of them.
 func TestFixtureAgentExposesMemorySearch(t *testing.T) {
 	seedOpts := func(runID string) SeedOptions {
 		return SeedOptions{
@@ -714,8 +714,9 @@ func TestFixtureAgentExposesMemorySearch(t *testing.T) {
 		}
 	}
 
-	// (a) Create path: the create body carries the allowlist and the seeder
-	// reports the agent with it.
+	// (a) Create path: the create body carries no tools key at all (the
+	// legacy allowlist is gone) and no disabled_tools key — the server's
+	// default empty denylist exposes memory.search.
 	stub := newStub(t, false)
 	srv := httptest.NewServer(stub.handler())
 	res, err := newSeeder(srv).Seed(context.Background(), seedOpts("eval-test-tools-create"))
@@ -723,49 +724,50 @@ func TestFixtureAgentExposesMemorySearch(t *testing.T) {
 		t.Fatalf("Seed() create path = %v, want nil", err)
 	}
 	stub.mu.Lock()
-	created := stub.createdAgentTools
+	created := stub.createdAgentDisabledTools
 	stub.mu.Unlock()
-	if !slices.Equal(created, evalAgentTools) {
-		t.Errorf("agent create body tools = %v, want %v (the self-search leg needs memory.search exposed)", created, evalAgentTools)
+	if len(created) != 0 {
+		t.Errorf("agent create body disabled_tools = %v, want empty (the default denylist exposes memory.search)", created)
 	}
-	if !slices.Equal(res.Agent.Tools, evalAgentTools) {
-		t.Errorf("SeedResult.Agent.Tools = %v, want %v", res.Agent.Tools, evalAgentTools)
+	if len(res.Agent.DisabledTools) != 0 {
+		t.Errorf("SeedResult.Agent.DisabledTools = %v, want empty", res.Agent.DisabledTools)
 	}
 
-	// (b) Reuse path, toolless stored agent (the pre-D6 live fixture state):
-	// exactly one repair PATCH carrying the allowlist.
+	// (b) Reuse path, denylist denying memory.search: exactly one repair
+	// PATCH replacing the denylist with memory.search removed.
 	stub = newStub(t, false)
-	stub.existingAgentTools = []string{} // the recorded broken state
+	stub.existingAgentDisabledTools = []string{"memory.search"} // the denying state
 	srv2 := httptest.NewServer(stub.handler())
 	res, err = newSeeder(srv2).Seed(context.Background(), seedOpts("eval-test-tools-reuse"))
 	if err != nil {
 		t.Fatalf("Seed() reuse path = %v, want nil", err)
 	}
 	stub.mu.Lock()
-	patches := append([][]string(nil), stub.toolsPatches...)
+	patches := append([][]string(nil), stub.disabledToolsPatches...)
 	stub.mu.Unlock()
 	if len(patches) != 1 {
-		t.Fatalf("reuse path issued %d tools PATCHes, want 1", len(patches))
+		t.Fatalf("reuse path issued %d disabled_tools PATCHes, want 1", len(patches))
 	}
-	if !slices.Equal(patches[0], evalAgentTools) {
-		t.Errorf("repair PATCH tools = %v, want %v", patches[0], evalAgentTools)
+	if len(patches[0]) != 0 {
+		t.Errorf("repair PATCH disabled_tools = %v, want empty (memory.search removed)", patches[0])
 	}
-	if !slices.Equal(res.Agent.Tools, evalAgentTools) {
-		t.Errorf("repaired SeedResult.Agent.Tools = %v, want %v", res.Agent.Tools, evalAgentTools)
+	if len(res.Agent.DisabledTools) != 0 {
+		t.Errorf("repaired SeedResult.Agent.DisabledTools = %v, want empty", res.Agent.DisabledTools)
 	}
 
-	// (c) Reuse path, allowlist already in place: idempotent, zero PATCHes.
+	// (c) Reuse path, denylist denying none of the required tools
+	// (unrelated denial kept): idempotent, zero PATCHes.
 	stub = newStub(t, false)
-	stub.existingAgentTools = append([]string(nil), evalAgentTools...)
+	stub.existingAgentDisabledTools = []string{"browser"}
 	srv3 := httptest.NewServer(stub.handler())
 	if _, err := newSeeder(srv3).Seed(context.Background(), seedOpts("eval-test-tools-idem")); err != nil {
 		t.Fatalf("Seed() idempotent reuse = %v, want nil", err)
 	}
 	stub.mu.Lock()
-	patches = append([][]string(nil), stub.toolsPatches...)
+	patches = append([][]string(nil), stub.disabledToolsPatches...)
 	stub.mu.Unlock()
 	if len(patches) != 0 {
-		t.Errorf("idempotent reuse issued %d tools PATCHes, want 0", len(patches))
+		t.Errorf("idempotent reuse issued %d disabled_tools PATCHes, want 0", len(patches))
 	}
 }
 

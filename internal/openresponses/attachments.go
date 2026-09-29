@@ -14,18 +14,27 @@ import (
 const CapabilityPathPrefix = "/api/v1/files/"
 
 // InputAttachment is one attachment candidate parsed from an input content
-// part (attachments design D2). Kind is "image" (input_image) or "file"
-// (input_file); URL is the inline data: URL when Inline is set, otherwise the
-// normalized onclaw capability path; Filename is the part's filename when
-// given; Detail carries the OpenAI image detail hint — the OpenAI backend may
-// use it later, other backends ignore it. It is a wire-level candidate:
-// resolving it to an agents.AttachmentRef is the /v1 handler's job.
+// part (attachments design D2). Kind is "image" (input_image), "file"
+// (input_file), or "document" (the document-mention chip,
+// add-reference-documents 10.4); URL is the inline data: URL when Inline is
+// set, otherwise the normalized onclaw capability path; Filename is the
+// part's filename (the chip's name) when given; Detail carries the OpenAI
+// image detail hint — the OpenAI backend may use it later, other backends
+// ignore it. Document chips additionally carry DocumentID (the chip's
+// documentId) and Path (the references/ mount path); they have no URL. It is
+// a wire-level candidate: resolving it to an agents.AttachmentRef is the /v1
+// handler's job.
 type InputAttachment struct {
-	Kind     string // "image" | "file"
+	Kind     string // "image" | "file" | "document"
 	URL      string
 	Filename string
 	Detail   string
 	Inline   bool
+
+	// Document-mention identity (add-reference-documents 10.4); empty on
+	// image and file candidates.
+	DocumentID string
+	Path       string
 }
 
 // CapabilityKey returns the capability key carried by a non-inline input
@@ -44,7 +53,8 @@ func (a InputAttachment) CapabilityKey() (string, bool) {
 // FlattenInputParts turns the request input into the turn's text input plus
 // the attachment candidates its content parts reference (attachments design
 // D2): a string passes through; an item array concatenates its input_text
-// parts in order and collects input_image/input_file parts. image_url and
+// parts in order and collects input_image/input_file parts and
+// document-mention chips (add-reference-documents 10.4). image_url and
 // file_url accept a plain string or an object with a url field; file_data is
 // tolerated as the inline file form. Every URL must be an inline data: URL or
 // an onclaw capability URL — file_id and remote third-party URLs error. The
@@ -81,6 +91,18 @@ func FlattenInputParts(raw json.RawMessage) (string, []InputAttachment, error) {
 			return "", nil, fmt.Errorf("input: malformed content on item of type %q", item.Type)
 		}
 		for _, p := range ps {
+			// Document-mention chips (add-reference-documents 10.4) ride
+			// their own lane: either the typed input_document part or the
+			// chip object verbatim (kind "document", no type marker) — the
+			// composer sends the same identity object it holds locally.
+			if isDocumentPart(p) {
+				att, err := documentAttachment(p)
+				if err != nil {
+					return "", nil, err
+				}
+				atts = append(atts, att)
+				continue
+			}
 			switch p.Type {
 			case "", "input_text":
 				parts = append(parts, p.Text)
@@ -110,6 +132,35 @@ func FlattenInputParts(raw json.RawMessage) (string, []InputAttachment, error) {
 		out += p
 	}
 	return out, atts, nil
+}
+
+// isDocumentPart reports whether a content part is a document-mention chip
+// (add-reference-documents 10.4): either the typed input_document part or the
+// chip object verbatim — kind "document" with no type marker.
+func isDocumentPart(p InputPart) bool {
+	return p.Type == "input_document" || (p.Type == "" && p.Kind == "document")
+}
+
+// documentAttachment parses one document-mention chip into the wire-level
+// candidate: identity only — documentId, name, and the mount path; no URL,
+// no bytes. A chip missing its identity is malformed input.
+func documentAttachment(p InputPart) (InputAttachment, error) {
+	name := p.Name
+	if name == "" {
+		name = p.Filename
+	}
+	if strings.TrimSpace(p.DocumentID) == "" {
+		return InputAttachment{}, fmt.Errorf("input: input_document: documentId is required")
+	}
+	if strings.TrimSpace(name) == "" {
+		return InputAttachment{}, fmt.Errorf("input: input_document: name is required")
+	}
+	return InputAttachment{
+		Kind:       "document",
+		Filename:   name,
+		DocumentID: p.DocumentID,
+		Path:       p.Path,
+	}, nil
 }
 
 // imageAttachment parses one input_image part: image_url (string or {url})

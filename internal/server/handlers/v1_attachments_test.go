@@ -183,7 +183,7 @@ func newV1aEnv(t *testing.T) v1aEnv {
 	}
 
 	atts := &v1aCaptureAttachments{AttachmentStore: st.Attachments()}
-	v1H := handlers.NewV1Handlers(runner, st.Agents(), st.SessionEvents(), atts, wsStorage, 0)
+	v1H := handlers.NewV1Handlers(runner, st.Agents(), st.SessionEvents(), atts, wsStorage, agents.NewToolSettingsService(st.ToolSettings(), nil), 0)
 
 	r := gin.New()
 	apiKey := &domain.WorkspaceAPIKey{WorkspaceID: ws.ID, CreatedBy: user.ID}

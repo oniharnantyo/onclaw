@@ -126,13 +126,13 @@ func (h *agentHandlers) resolveAgent(ctx context.Context, workspaceID, identifie
 	return h.agents.ByID(ctx, workspaceID, identifier)
 }
 
-// composePromptDocuments fills an agent's identity/soul/bootstrap projection
+// composePromptDocuments fills an agent's identity/soul projection
 // from the agent's workspace files under dir. Best-effort: a missing or
 // unreadable file composes as empty — the status column carries the truth
 // about readiness. The directory derives from the current root and slugs; the
 // row records no path.
 func composePromptDocuments(dir string, agent *domain.Agent) {
-	agent.Identity, agent.Soul, agent.Bootstrap, _ = promptdocs.ReadPromptDocuments(dir)
+	agent.Identity, agent.Soul, _ = promptdocs.ReadPromptDocuments(dir)
 }
 
 // agentResponse is the response-only payload: it embeds the domain agent and
@@ -253,9 +253,12 @@ type CreateAgentRequest struct {
 	Effort                   *string               `json:"effort,omitempty"`
 	Autonomy                 *domain.AgentAutonomy `json:"autonomy,omitempty"`
 	ContextWindow            *int                  `json:"context_window,omitempty"`
-	Tools                    []string              `json:"tools,omitempty"`
-	EnabledMCPS              []string              `json:"enabled_mcps,omitempty"`
-	Avatar                   json.RawMessage       `json:"avatar,omitempty"`
+	// DisabledTools is the tool denylist (empty exposes every catalog tool);
+	// the legacy `tools` allowlist key binds nowhere and is ignored like a
+	// managed field.
+	DisabledTools []string        `json:"disabled_tools,omitempty"`
+	EnabledMCPS   []string        `json:"enabled_mcps,omitempty"`
+	Avatar        json.RawMessage `json:"avatar,omitempty"`
 }
 
 // AgentCreationDeps bundles the stores and services the shared agent creation
@@ -364,9 +367,11 @@ type PatchAgentRequest struct {
 	Effort                   *string               `json:"effort,omitempty"`
 	Autonomy                 *domain.AgentAutonomy `json:"autonomy,omitempty"`
 	ContextWindow            *int                  `json:"context_window,omitempty"`
-	Tools                    *[]string             `json:"tools,omitempty"`
-	EnabledMCPS              *[]string             `json:"enabled_mcps,omitempty"`
-	Avatar                   *json.RawMessage      `json:"avatar,omitempty"`
+	// DisabledTools replaces the stored denylist when provided (nil leaves it
+	// untouched); the legacy `tools` key binds nowhere and is ignored.
+	DisabledTools *[]string        `json:"disabled_tools,omitempty"`
+	EnabledMCPS   *[]string        `json:"enabled_mcps,omitempty"`
+	Avatar        *json.RawMessage `json:"avatar,omitempty"`
 }
 
 // PatchAgent updates an existing agent's fields.
@@ -385,7 +390,7 @@ func (h *agentHandlers) PatchAgent(c *gin.Context) {
 		req.Brief == nil && req.Identity == nil && req.Soul == nil && req.ProviderID == nil &&
 		req.Model == nil && req.MemorySidecallProviderID == nil && req.MemorySidecallModel == nil &&
 		req.Temperature == nil && req.MaxTokens == nil && req.Effort == nil &&
-		req.Autonomy == nil && req.ContextWindow == nil && req.Tools == nil &&
+		req.Autonomy == nil && req.ContextWindow == nil && req.DisabledTools == nil &&
 		req.EnabledMCPS == nil && req.Avatar == nil {
 		RespondError(c, fmt.Errorf("%w: no fields to update", domain.ErrInvalid))
 		return
@@ -572,8 +577,8 @@ func (h *agentHandlers) PatchAgent(c *gin.Context) {
 		existing.ContextWindow = h.modelCatalog.ResolveContextLimit(c.Request.Context(), provider.Type, targetModel, hint)
 	}
 
-	if req.Tools != nil {
-		existing.Tools = *req.Tools
+	if req.DisabledTools != nil {
+		existing.DisabledTools = *req.DisabledTools
 	}
 
 	if req.EnabledMCPS != nil {
@@ -1009,9 +1014,9 @@ func buildAgentFromCreateRequest(ctx context.Context, wsID, userID string, req *
 		contextWindow = mc.ResolveContextLimit(ctx, provider.Type, model, hint)
 	}
 
-	agentTools := req.Tools
-	if agentTools == nil {
-		agentTools = []string{}
+	agentDisabledTools := req.DisabledTools
+	if agentDisabledTools == nil {
+		agentDisabledTools = []string{}
 	}
 	enabledMCPS := req.EnabledMCPS
 	if enabledMCPS == nil {
@@ -1045,7 +1050,7 @@ func buildAgentFromCreateRequest(ctx context.Context, wsID, userID string, req *
 		Effort:                   effort,
 		Autonomy:                 autonomy,
 		ContextWindow:            contextWindow,
-		Tools:                    agentTools,
+		DisabledTools:            agentDisabledTools,
 		EnabledMCPS:              enabledMCPS,
 		Avatar:                   avatar,
 		PromptsStatus:            domain.PromptsStatusGenerating,

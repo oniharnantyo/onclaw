@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -30,7 +31,11 @@ type v1Handlers struct {
 	sessionEvents store.SessionEventStore
 	attachments   store.AttachmentStore
 	wsStorage     *resolver.WorkspaceStorage
-	keepAlive     time.Duration
+	// toolPolicy is the workspace tool gate the runner applies at resolution:
+	// the v1 narrowing stage consults the same gate so a request can neither
+	// extend the effective set nor bypass the gate.
+	toolPolicy agents.ToolPolicy
+	keepAlive  time.Duration
 }
 
 // defaultKeepAlive is the SSE idle cadence: how often the stream re-sends the
@@ -42,11 +47,11 @@ const defaultKeepAlive = 15 * time.Second
 
 // NewV1Handlers creates a new v1Handlers instance with injected dependencies.
 // keepAlive <= 0 falls back to the default cadence.
-func NewV1Handlers(runner *agents.Runner, agents store.AgentStore, sessionEvents store.SessionEventStore, attachments store.AttachmentStore, wsStorage *resolver.WorkspaceStorage, keepAlive time.Duration) *v1Handlers {
+func NewV1Handlers(runner *agents.Runner, agents store.AgentStore, sessionEvents store.SessionEventStore, attachments store.AttachmentStore, wsStorage *resolver.WorkspaceStorage, toolPolicy agents.ToolPolicy, keepAlive time.Duration) *v1Handlers {
 	if keepAlive <= 0 {
 		keepAlive = defaultKeepAlive
 	}
-	return &v1Handlers{runner: runner, agents: agents, sessionEvents: sessionEvents, attachments: attachments, wsStorage: wsStorage, keepAlive: keepAlive}
+	return &v1Handlers{runner: runner, agents: agents, sessionEvents: sessionEvents, attachments: attachments, wsStorage: wsStorage, toolPolicy: toolPolicy, keepAlive: keepAlive}
 }
 
 // ListModels implements GET /v1/models: the workspace's agents listed as
@@ -118,23 +123,13 @@ func (h *v1Handlers) CreateResponse(c *gin.Context) {
 		return
 	}
 
-	// Tool narrowing: intersection of the request's names with the agent
-	// allowlist (a request may narrow, never widen); tool_choice "none"
-	// strips all tools for the turn.
-	var allowedTools []string
-	if req.ToolChoiceNone() {
-		allowedTools = []string{}
-	} else if names := req.RequestedToolNames(); len(names) > 0 {
-		allow := map[string]bool{}
-		for _, t := range agent.Tools {
-			allow[t] = true
-		}
-		allowedTools = []string{}
-		for _, t := range agent.Tools {
-			if allow[t] && contains(names, t) {
-				allowedTools = append(allowedTools, t)
-			}
-		}
+	// Tool narrowing: the request's names intersect the agent's effective tool
+	// set (catalog minus the agent denylist, workspace-gated) — a request may
+	// narrow, never extend; tool_choice "none" strips all tools for the turn.
+	allowedTools, err := narrowRequestTools(c.Request.Context(), h.toolPolicy, key.WorkspaceID, agent, &req)
+	if err != nil {
+		respondV1Error(c, err)
+		return
 	}
 
 	// Attachment resolution (attachments design D9): capability URLs resolve
@@ -194,15 +189,36 @@ func (h *v1Handlers) CreateResponse(c *gin.Context) {
 	h.serveAggregated(c, stream, translator)
 }
 
+// v1DocumentLane is the document-mention lane (add-reference-documents
+// 10.4), mirroring the runner's attLaneDocument value as a literal so the
+// handler stays decoupled from the agents package internals (the lane-value
+// literal precedent).
+const v1DocumentLane = "document"
+
 // resolveAttachments turns parsed input attachments into runner refs
 // (attachments design D9): capability URLs resolve through the attachment
 // store — the lookup is global, so the row's workspace is verified against
 // the key's (foreign and unknown fail identically) — and inline data URLs
-// demote to stored attachments (D2). Validation failures wrap
-// domain.ErrInvalid; infrastructure failures pass through bare.
+// demote to stored attachments (D2). Document-mention chips map to
+// identity-only refs under the document lane: no resolution, no bytes — the
+// run's references/ mount is the visibility boundary (add-reference-documents
+// 10.4). Validation failures wrap domain.ErrInvalid; infrastructure failures
+// pass through bare.
 func (h *v1Handlers) resolveAttachments(c *gin.Context, workspaceID, userID string, atts []openresponses.InputAttachment) ([]agents.AttachmentRef, error) {
 	refs := make([]agents.AttachmentRef, 0, len(atts))
 	for _, att := range atts {
+		if att.Kind == "document" {
+			// Identity-only pointer (add-reference-documents 10.4): the
+			// chip's documentId and name ride the ref; the mount path is
+			// re-derived runner-side from the name, and the document lane
+			// never opens bytes.
+			if att.DocumentID == "" || att.Filename == "" {
+				return nil, fmt.Errorf("%w: document mention is missing its identity", domain.ErrInvalid)
+			}
+			refs = append(refs, agents.AttachmentRef{ID: att.DocumentID, Name: att.Filename, Lane: v1DocumentLane})
+			continue
+		}
+
 		if att.Inline {
 			ref, err := h.demoteInlineAttachment(c, workspaceID, userID, att)
 			if err != nil {
@@ -492,13 +508,52 @@ func (h *v1Handlers) serveStream(c *gin.Context, stream *agents.EventStream, tra
 	c.Writer.Flush()
 }
 
-func contains(haystack []string, needle string) bool {
-	for _, s := range haystack {
-		if s == needle {
-			return true
+// narrowRequestTools resolves the turn's per-turn allowed-tools override from
+// the request: tool_choice "none" strips all tools; otherwise the request's
+// names intersect the agent's effective tool set (a request may narrow, never
+// extend). nil means the request left tool selection to the agent config.
+func narrowRequestTools(ctx context.Context, policy agents.ToolPolicy, workspaceID string, agent *domain.Agent, req *openresponses.ResponseRequest) ([]string, error) {
+	if req.ToolChoiceNone() {
+		return []string{}, nil
+	}
+	names := req.RequestedToolNames()
+	if len(names) == 0 {
+		return nil, nil
+	}
+	effective, err := effectiveToolSet(ctx, policy, workspaceID, agent)
+	if err != nil {
+		return nil, err
+	}
+	allowed := make([]string, 0, len(names))
+	for _, t := range names {
+		if effective[t] {
+			allowed = append(allowed, t)
 		}
 	}
-	return false
+	return allowed, nil
+}
+
+// effectiveToolSet resolves the agent's effective tool surface as a key set:
+// the tool catalog minus the agent's DisabledTools denylist, intersected with
+// the workspace tool gate (the gate wins). This is the same resolution shape
+// the runner applies at run start; a v1 request's tools can narrow it but
+// never extend it.
+func effectiveToolSet(ctx context.Context, policy agents.ToolPolicy, workspaceID string, agent *domain.Agent) (map[string]bool, error) {
+	enabled, err := policy.EnabledTools(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	disabled := make(map[string]bool, len(agent.DisabledTools))
+	for _, t := range agent.DisabledTools {
+		disabled[t] = true
+	}
+	effective := make(map[string]bool)
+	for _, entry := range agents.ToolCatalog() {
+		if enabled[entry.Key] && !disabled[entry.Key] {
+			effective[entry.Key] = true
+		}
+	}
+	return effective, nil
 }
 
 func respondV1InvalidParam(c *gin.Context, param, message string) {

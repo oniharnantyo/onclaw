@@ -244,7 +244,7 @@ func seedSessionFixtures(fcc *fakeChannelContext, agentID string, role domain.Ch
 func TestRunner_SessionRunRequiresSessionPorts(t *testing.T) {
 	mdl := &hooksModel{final: "done"}
 	fcc, _, opts := channelRunContext()
-	_, runner, ws, ag, req := setupHooksRunnerWithOpts(t, nil, mdl, opts)
+	_, runner, ws, ag, req := setupHooksRunnerWithOpts(t, mdl, opts)
 
 	sessionReq := req
 	sessionReq.Origin = OriginChannel
@@ -271,7 +271,7 @@ func TestRunner_SessionCloseExposure(t *testing.T) {
 		WithWorkSessions(sessions),
 		WithProjectSpace(&fakeProjectSpace{dir: projectDir}),
 	)
-	_, runner, ws, ag, req := setupHooksRunnerWithOpts(t, nil, mdl, opts)
+	_, runner, ws, ag, req := setupHooksRunnerWithOpts(t, mdl, opts)
 
 	sessionReq := req
 	sessionReq.Origin = OriginChannel
@@ -309,10 +309,9 @@ func TestRunner_SessionCloseExposure(t *testing.T) {
 		t.Fatalf("channel run must keep the channel toolset, got %v", resolvedToolNames(t, resolved))
 	}
 
-	// A non-facilitator session run: session.close stripped even when the
-	// agent allowlisted it.
+	// A non-facilitator session run: session.close stripped even though the
+	// agent's denylist doesn't name it.
 	memberAgent := *ag
-	memberAgent.Tools = []string{SessionToolClose}
 	seedSessionFixtures(fcc, ag.ID, domain.ChannelMemberRoleMember)
 	memberReq := sessionReq
 	memberReq.SessionID = "chan_ch-1_member"
@@ -324,9 +323,8 @@ func TestRunner_SessionCloseExposure(t *testing.T) {
 		t.Fatalf("non-facilitator session run must not resolve session.close, got %v", resolvedToolNames(t, resolved))
 	}
 
-	// An allowlisted session.close outside any session run is stripped too.
+	// session.close outside any session run is stripped too.
 	directAgent := *ag
-	directAgent.Tools = []string{SessionToolClose}
 	_, resolved, err = runner.resolve(context.Background(), req, ws, &directAgent, nil)
 	if err != nil {
 		t.Fatalf("resolve direct: %v", err)

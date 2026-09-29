@@ -532,7 +532,6 @@ func TestService_Generate_Success(t *testing.T) {
 	}
 
 	// The generated documents live in the workspace dir, not the store.
-	// BOOTSTRAP.md is not generated — regeneration never touches it.
 	for name, want := range map[string]string{
 		"IDENTITY.md": "DevOps engineer",
 		"SOUL.md":     "calm under pressure",
@@ -1033,7 +1032,7 @@ func TestService_Generate_FailedRegenerationPreservesFiles(t *testing.T) {
 		t.Errorf("expected failed status, got %s", updated.PromptsStatus)
 	}
 
-	identity, soul, _, err := promptdocs.ReadPromptDocuments(wsDir)
+	identity, soul, err := promptdocs.ReadPromptDocuments(wsDir)
 	if err != nil {
 		t.Fatalf("read back documents: %v", err)
 	}
@@ -1141,9 +1140,6 @@ func TestService_Generate_EnhancesExistingDocuments(t *testing.T) {
 	if err := promptdocs.WritePromptDocuments(wsDir, "old identity", "old soul"); err != nil {
 		t.Fatalf("write existing documents: %v", err)
 	}
-	if err := promptdocs.SeedBootstrapDocument(wsDir); err != nil {
-		t.Fatalf("seed bootstrap: %v", err)
-	}
 
 	agent := &domain.Agent{
 		ID:            "agent-enhance",
@@ -1177,7 +1173,7 @@ func TestService_Generate_EnhancesExistingDocuments(t *testing.T) {
 
 	// The enhanced documents are committed and the previous generation is
 	// preserved as .bak beside them.
-	identity, soul, _, err := promptdocs.ReadPromptDocuments(wsDir)
+	identity, soul, err := promptdocs.ReadPromptDocuments(wsDir)
 	if err != nil {
 		t.Fatalf("read documents: %v", err)
 	}
@@ -1190,15 +1186,6 @@ func TestService_Generate_EnhancesExistingDocuments(t *testing.T) {
 	}
 	if string(backup) != "old identity" {
 		t.Errorf("IDENTITY.md.bak = %q, want the previous generation", string(backup))
-	}
-
-	// Regeneration never touches BOOTSTRAP.md: the seeded template stays as-is.
-	boot, err := os.ReadFile(filepath.Join(wsDir, "BOOTSTRAP.md"))
-	if err != nil {
-		t.Fatalf("read BOOTSTRAP.md: %v", err)
-	}
-	if string(boot) != promptdocs.BootstrapTemplate {
-		t.Errorf("regeneration must leave BOOTSTRAP.md untouched, got %q", string(boot))
 	}
 
 	updated, err := st.Agents().ByID(ctx, ws.ID, agent.ID)

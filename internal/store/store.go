@@ -68,6 +68,8 @@ type Store interface {
 	GatewayBindings() GatewayBindings
 	GatewayLinks() GatewayLinks
 	GatewayOutbox() GatewayOutbox
+	ReferenceDocuments() ReferenceDocumentStore
+	DocumentSections() DocumentSectionStore
 	WithTx(ctx context.Context, fn func(Store) error) error
 	Close() error
 }

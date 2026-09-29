@@ -1043,9 +1043,9 @@ func TestRun_CancelledRunClosesSubscribers(t *testing.T) {
 	}
 }
 
-// setupGatedApprovalRunner seeds the approval-flow rig (shell allow-listed,
-// autonomy=approval) wired to the supplied model, for interrupt-path
-// subscriber tests.
+// setupGatedApprovalRunner seeds the approval-flow rig (shell exposed —
+// default-on under the denylist, autonomy=approval) wired to the supplied
+// model, for interrupt-path subscriber tests.
 func setupGatedApprovalRunner(t *testing.T, sessionID string, m model.BaseModel[*schema.AgenticMessage]) (*Runner, ExecRequest) {
 	t.Helper()
 	ctx := context.Background()
@@ -1093,7 +1093,6 @@ func setupGatedApprovalRunner(t *testing.T, sessionID string, m model.BaseModel[
 		Model:       "gpt-4o",
 		Temperature: 1.0,
 		Autonomy:    domain.AutonomyApproval,
-		Tools:       []string{ReservedShellTool},
 	}
 	if err := st.Agents().Create(ctx, ag); err != nil {
 		t.Fatalf("create agent: %v", err)

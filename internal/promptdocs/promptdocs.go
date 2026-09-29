@@ -16,12 +16,6 @@ import (
 //go:embed AGENTS.md
 var BasePrompt string
 
-// BootstrapTemplate is the embedded birth-sequence document seeded into every
-// new agent workspace; BOOTSTRAP.md is never LLM-generated.
-//
-//go:embed BOOTSTRAP.md
-var BootstrapTemplate string
-
 // HeartbeatTemplate is the embedded default HEARTBEAT checklist seeded onto a
 // new heartbeat (add-agent-heartbeat D3). Its top section carries the silence
 // contract the tick runner enforces (add-agent-heartbeat D7): a whole reply
@@ -35,11 +29,17 @@ const (
 	basePromptFileName     = "AGENTS.md"
 	identityFileName       = "IDENTITY.md"
 	soulFileName           = "SOUL.md"
-	bootstrapFileName      = "BOOTSTRAP.md"
 	promptDocumentFilePerm = 0o644
 	workspaceDirPerm       = 0o755
 	backupFileSuffix       = ".bak"
 )
+
+// bootstrapFileNames are the workspace file names of the removed BOOTSTRAP.md
+// birth-sequence feature (remove-bootstrap-doc). Nothing seeds them anymore;
+// the names survive only so a reused slug directory never inherits a stale
+// file (SeedWorkspace) and so the startup sweep clears leftovers from
+// existing agent workspaces.
+var bootstrapFileNames = []string{"BOOTSTRAP.md", "BOOTSTRAP.md" + backupFileSuffix}
 
 // SeedWorkspace creates the agent workspace directory if needed and clears
 // any generated documents left behind by a previous agent that lived in the
@@ -51,10 +51,11 @@ func SeedWorkspace(dir string) error {
 	if err := os.MkdirAll(dir, workspaceDirPerm); err != nil {
 		return fmt.Errorf("create agent workspace dir: %w", err)
 	}
-	for _, name := range []string{
-		identityFileName, soulFileName, bootstrapFileName,
-		identityFileName + backupFileSuffix, soulFileName + backupFileSuffix, bootstrapFileName + backupFileSuffix,
-	} {
+	stale := append([]string{
+		identityFileName, soulFileName,
+		identityFileName + backupFileSuffix, soulFileName + backupFileSuffix,
+	}, bootstrapFileNames...)
+	for _, name := range stale {
 		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("clear %s: %w", name, err)
 		}
@@ -68,17 +69,6 @@ func SeedWorkspace(dir string) error {
 func ensureDir(dir string) error {
 	if err := os.MkdirAll(dir, workspaceDirPerm); err != nil {
 		return fmt.Errorf("create agent workspace dir: %w", err)
-	}
-	return nil
-}
-
-// SeedBootstrapDocument writes the embedded BOOTSTRAP.md template into the
-// agent workspace directory. A new agent starts with the shared birth-sequence
-// template; BOOTSTRAP.md is never LLM-generated, and regeneration leaves the
-// existing document untouched.
-func SeedBootstrapDocument(dir string) error {
-	if err := WritePromptDocument(dir, bootstrapFileName, BootstrapTemplate); err != nil {
-		return fmt.Errorf("seed %s: %w", bootstrapFileName, err)
 	}
 	return nil
 }
@@ -134,7 +124,7 @@ func WritePromptDocument(dir, name, content string) error {
 	return nil
 }
 
-// WritePromptDocuments writes the three generated prompt documents into the
+// WritePromptDocuments writes the two generated prompt documents into the
 // agent workspace directory. Every document is staged first and the renames
 // happen back-to-back only once all staging succeeded, so a failure while
 // staging leaves the previous documents untouched (a crash between renames can
@@ -205,20 +195,16 @@ func removeStaged(staged []string) {
 // ReadPromptDocuments reads the generated prompt documents from the agent
 // workspace directory. A missing document composes as an empty string; only a
 // real I/O error (e.g. the directory is unreadable) is returned.
-func ReadPromptDocuments(dir string) (identity, soul, bootstrap string, err error) {
+func ReadPromptDocuments(dir string) (identity, soul string, err error) {
 	identity, err = readPromptDocument(dir, identityFileName)
 	if err != nil {
-		return "", "", "", err
+		return "", "", err
 	}
 	soul, err = readPromptDocument(dir, soulFileName)
 	if err != nil {
-		return "", "", "", err
+		return "", "", err
 	}
-	bootstrap, err = readPromptDocument(dir, bootstrapFileName)
-	if err != nil {
-		return "", "", "", err
-	}
-	return identity, soul, bootstrap, nil
+	return identity, soul, nil
 }
 
 // readPromptDocument reads a single prompt document; a missing file is an

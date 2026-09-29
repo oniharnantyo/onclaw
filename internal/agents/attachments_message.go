@@ -10,6 +10,7 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/references"
 )
 
 // AttachmentPointerExtraKey marks a user-message content block as a drop-lane
@@ -159,6 +160,15 @@ const (
 	attLaneInlineText  = "inline-text"
 )
 
+// attLaneDocument is the document-mention lane (add-reference-documents
+// 10.4): the composer's documents popover sends a chip shaped
+// {kind: "document", documentId, name, path} through the same
+// ExecRequest.Attachments payload chat-attachment chips ride. Identity only —
+// no content is carried: the bytes already sit in the run's references/
+// mount, so the lane renders a pointer note and never materializes or binds
+// bytes.
+const attLaneDocument = "document"
+
 // documentExts are the extensions the document.read tool supports
 // (add-document-read-tool spec): PDF plus the modern office formats.
 var documentExts = map[string]bool{"pdf": true, "docx": true, "xlsx": true, "pptx": true}
@@ -195,7 +205,7 @@ func isDocumentRef(ref AttachmentRef) bool {
 func (r *Runner) buildAttachmentUserMessage(ctx context.Context, req ExecRequest, mod inputModality) (*schema.AgenticMessage, error) {
 	for _, ref := range req.Attachments {
 		switch ref.Lane {
-		case attLaneInlineText, attLaneInlineImage, attLaneInlinePDF, attLaneDrop:
+		case attLaneInlineText, attLaneInlineImage, attLaneInlinePDF, attLaneDrop, attLaneDocument:
 		default:
 			return nil, fmt.Errorf("attachment %q: unknown lane %q", ref.ID, ref.Lane)
 		}
@@ -325,6 +335,23 @@ func (r *Runner) buildAttachmentUserMessage(ctx context.Context, req ExecRequest
 			return nil, fmt.Errorf("resolve drop-lane attachment %q URL: %w", ref.ID, err)
 		}
 		setAttachmentBlockMeta(note, attachmentBlockMeta{ID: ref.ID, Name: ref.Name, Mime: ref.MimeType, Size: ref.Size, Lane: ref.Lane, URL: url})
+		blocks = append(blocks, note)
+	}
+	for _, ref := range req.Attachments {
+		if ref.Lane != attLaneDocument {
+			continue
+		}
+		// Document mention (add-reference-documents 10.4): the composer's
+		// chip carries identity only, and the note is the same contract —
+		// name plus mount path, no bytes opened, bound, or stamped. The
+		// content lives in the run's references/ mount (D8), reached through
+		// the document tools the manifest teaches.
+		note := schema.NewContentBlock(&schema.UserInputText{
+			Text: "User referenced document \"" + ref.Name + "\" — it is available read-only at " +
+				references.MountDirName + "/" + ref.Name +
+				"; use document.search or document.read to consult it.",
+		})
+		note.Extra = map[string]any{AttachmentPointerExtraKey: true}
 		blocks = append(blocks, note)
 	}
 

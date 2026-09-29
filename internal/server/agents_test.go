@@ -15,7 +15,6 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/oniharnantyo/onclaw/internal/agents"
 	"github.com/oniharnantyo/onclaw/internal/domain"
-	"github.com/oniharnantyo/onclaw/internal/promptdocs"
 	"github.com/oniharnantyo/onclaw/internal/server/handlers"
 )
 
@@ -275,9 +274,10 @@ func TestAgents_CRUD_And_Validation(t *testing.T) {
 			t.Errorf("expected agent workspace directory on disk: %v", err)
 		}
 		// Creation seeds no base prompt (markdown-card-elements D8 — the L1
-		// prompt is injected per build, never materialized); generation writes
-		// the three documents before the ready transition.
-		for _, name := range []string{"IDENTITY.md", "SOUL.md", "BOOTSTRAP.md"} {
+		// prompt is injected per build, never materialized) and no bootstrap
+		// document (remove-bootstrap-doc); generation writes IDENTITY.md and
+		// SOUL.md before the ready transition.
+		for _, name := range []string{"IDENTITY.md", "SOUL.md"} {
 			if _, err := os.Stat(filepath.Join(expectedDir, name)); err != nil {
 				t.Errorf("expected %s in agent workspace dir: %v", name, err)
 			}
@@ -285,13 +285,16 @@ func TestAgents_CRUD_And_Validation(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(expectedDir, "AGENTS.md")); !os.IsNotExist(err) {
 			t.Errorf("agent workspace must not carry a seeded AGENTS.md, stat err: %v", err)
 		}
+		if _, err := os.Stat(filepath.Join(expectedDir, "BOOTSTRAP.md")); !os.IsNotExist(err) {
+			t.Errorf("agent workspace must not carry a BOOTSTRAP.md, stat err: %v", err)
+		}
 		// Generation runs synchronously with a stubbed model factory, so the
 		// create response already carries the final prompt state.
 		if agent.PromptsStatus != domain.PromptsStatusReady {
 			t.Errorf("expected prompts_status %q, got %q", domain.PromptsStatusReady, agent.PromptsStatus)
 		}
-		if len(agent.Tools) != 0 || len(agent.EnabledMCPS) != 0 {
-			t.Errorf("expected empty capability arrays, got tools=%v mcps=%v", agent.Tools, agent.EnabledMCPS)
+		if len(agent.DisabledTools) != 0 || len(agent.EnabledMCPS) != 0 {
+			t.Errorf("expected empty capability arrays, got disabled_tools=%v mcps=%v", agent.DisabledTools, agent.EnabledMCPS)
 		}
 	})
 
@@ -307,8 +310,8 @@ func TestAgents_CRUD_And_Validation(t *testing.T) {
 		_ = json.Unmarshal(wSlug.Body.Bytes(), &res)
 		agentID := res.Agent.ID
 		// Read-side responses compose the prompt documents from the files.
-		if res.Agent.Identity != "# Identity\nStub identity" || res.Agent.Soul != "# Soul\nStub soul" || res.Agent.Bootstrap != promptdocs.BootstrapTemplate {
-			t.Errorf("expected identity/soul/bootstrap composed from workspace files, got identity=%q soul=%q bootstrap=%q", res.Agent.Identity, res.Agent.Soul, res.Agent.Bootstrap)
+		if res.Agent.Identity != "# Identity\nStub identity" || res.Agent.Soul != "# Soul\nStub soul" {
+			t.Errorf("expected identity/soul composed from workspace files, got identity=%q soul=%q", res.Agent.Identity, res.Agent.Soul)
 		}
 
 		// By ID
@@ -431,15 +434,12 @@ func TestAgents_CRUD_And_Validation(t *testing.T) {
 		}
 	})
 
-	t.Run("bootstrap is not client-editable", func(t *testing.T) {
+	t.Run("bootstrap field is ignored on input and absent from output", func(t *testing.T) {
 		agentDir := domain.AgentWorkspaceDir(env.workspaceDir, "crud-agents-ws", "managed-test")
-		existing, err := os.ReadFile(filepath.Join(agentDir, "BOOTSTRAP.md"))
-		if err != nil {
-			t.Fatalf("read BOOTSTRAP.md before PATCH: %v", err)
-		}
 
-		// The generator owns BOOTSTRAP.md; a client-sent bootstrap field must
-		// be ignored (only generator runs write the file).
+		// The bootstrap field is removed (remove-bootstrap-doc): a client-sent
+		// bootstrap value must be ignored like a managed field, no bootstrap
+		// document may be seeded, and the response carries no bootstrap field.
 		wPatch := doRequest(env.router, http.MethodPatch, "/api/v1/workspaces/crud-agents-ws/agents/managed-test", ownerToken, map[string]any{
 			"bootstrap":   "client-injected bootstrap",
 			"description": "payload also carries an editable field",
@@ -448,19 +448,11 @@ func TestAgents_CRUD_And_Validation(t *testing.T) {
 			t.Fatalf("expected 200 OK, got %d: %s", wPatch.Code, wPatch.Body.String())
 		}
 
-		var res struct {
-			Agent domain.Agent `json:"agent"`
+		if strings.Contains(wPatch.Body.String(), `"bootstrap"`) {
+			t.Errorf("response must not carry a bootstrap field: %s", wPatch.Body.String())
 		}
-		_ = json.Unmarshal(wPatch.Body.Bytes(), &res)
-		if res.Agent.Bootstrap == "client-injected bootstrap" {
-			t.Errorf("bootstrap must not be client-editable, got %q", res.Agent.Bootstrap)
-		}
-		got, err := os.ReadFile(filepath.Join(agentDir, "BOOTSTRAP.md"))
-		if err != nil {
-			t.Fatalf("read BOOTSTRAP.md after PATCH: %v", err)
-		}
-		if string(got) != string(existing) {
-			t.Errorf("BOOTSTRAP.md changed on PATCH: %q -> %q", string(existing), string(got))
+		if _, err := os.Stat(filepath.Join(agentDir, "BOOTSTRAP.md")); !os.IsNotExist(err) {
+			t.Errorf("PATCH must not create a BOOTSTRAP.md, stat err: %v", err)
 		}
 	})
 
@@ -567,7 +559,7 @@ func TestAgents_CRUD_And_Validation(t *testing.T) {
 			"provider_id":     openAIProvID,
 			"model":           "gpt-4o",
 			"disabled_skills": []string{"code-review", "non-existent-skill"},
-			"tools":           []string{"web.search", "non-existent-tool"},
+			"disabled_tools":  []string{"non-existent-tool"},
 			"disabled_mcps":   []string{"non-existent-mcp"},
 		})
 		if wUnknownSkill.Code != http.StatusCreated {
@@ -577,8 +569,8 @@ func TestAgents_CRUD_And_Validation(t *testing.T) {
 			Agent domain.Agent `json:"agent"`
 		}
 		_ = json.Unmarshal(wUnknownSkill.Body.Bytes(), &res)
-		if len(res.Agent.Tools) != 2 || len(res.Agent.EnabledMCPS) != 0 {
-			t.Errorf("expected tools saved as provided and the legacy disabled_mcps denylist ignored: %+v", res.Agent)
+		if len(res.Agent.DisabledTools) != 1 || res.Agent.DisabledTools[0] != "non-existent-tool" || len(res.Agent.EnabledMCPS) != 0 {
+			t.Errorf("expected disabled_tools saved as provided and the legacy disabled_mcps denylist ignored: %+v", res.Agent)
 		}
 		if strings.Contains(wUnknownSkill.Body.String(), "disabled_skills") || strings.Contains(wUnknownSkill.Body.String(), "disabled_mcps") {
 			t.Error("disabled_skills/disabled_mcps must not appear in agent responses")

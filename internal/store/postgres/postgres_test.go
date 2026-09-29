@@ -22,13 +22,13 @@ import (
 )
 
 // latestSchemaVersion is the newest embedded migration number.
-const latestSchemaVersion = 69
+const latestSchemaVersion = 71
 
 // previousSchemaVersion is the migration version below latestSchemaVersion.
 // The channel-teams wave numbered its migration 000040 after v1's 000031
 // wave, leaving 000032–000039 unused (golang-migrate tolerates gaps), so one
 // step down from the latest must land on the previous EXISTING version.
-const previousSchemaVersion = 68
+const previousSchemaVersion = 70
 
 func getTestBaseDSN(t *testing.T) string {
 	dsn := os.Getenv("TEST_DATABASE_URL")
@@ -66,7 +66,7 @@ func setupTestSchema(t *testing.T) (store.Store, string, context.Context) {
 	if strings.Contains(baseDSN, "?") {
 		separator = "&"
 	}
-	schemaDSN := fmt.Sprintf("%s%ssearch_path=%s", baseDSN, separator, schemaName)
+	schemaDSN := fmt.Sprintf("%s%ssearch_path=%s,public", baseDSN, separator, schemaName)
 
 	// Run migrations on schema
 	migrator := postgres.NewMigrator(schemaDSN)
@@ -123,7 +123,7 @@ func TestIntegration_Migration_IdempotenceAndRollback(t *testing.T) {
 	if strings.Contains(baseDSN, "?") {
 		separator = "&"
 	}
-	schemaDSN := fmt.Sprintf("%s%ssearch_path=%s", baseDSN, separator, schemaName)
+	schemaDSN := fmt.Sprintf("%s%ssearch_path=%s,public", baseDSN, separator, schemaName)
 
 	mig := postgres.NewMigrator(schemaDSN)
 

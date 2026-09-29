@@ -193,7 +193,7 @@ export function CreateWorkspaceModal({
               temperature: 1.0,
               autonomy: agentAutonomy,
               avatar: agentAvatar,
-              tools: [],
+              disabled_tools: [],
               skills: [],
               // Design D1: opt-in MCP starts empty — a starter agent opts into
               // servers post-deploy.

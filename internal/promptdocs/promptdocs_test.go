@@ -82,8 +82,11 @@ func TestSeedWorkspaceClearsGeneratedDocumentsOnly(t *testing.T) {
 }
 
 // TestBasePromptCarriesRichCards pins the rich-cards fence conventions in the
-// embedded L1 template (markdown-card-elements D7): the section heading and
-// the transport rules the renderer relies on.
+// embedded L1 template (markdown-card-elements D7; enhance-agent-base-prompt
+// 1.6-1.8): the section heading, the transport rules the renderer relies on,
+// the 13-tag end-state catalogue (no table, no math — remove-markdown-
+// redundant-fences deleted them web-side) with per-tag purpose/trigger
+// guidance, the exception-tag examples, and the chooser/anti-pattern lines.
 func TestBasePromptCarriesRichCards(t *testing.T) {
 	if strings.TrimSpace(BasePrompt) == "" {
 		t.Fatal("BasePrompt = empty, want embedded template")
@@ -102,7 +105,6 @@ func TestBasePromptCarriesRichCards(t *testing.T) {
 		"- chart: {\"",
 		"- timeline: {\"",
 		"- preview: {\"",
-		"- table: {\"",
 		"- ticker: {\"",
 		"- activity: {\"",
 		"- spec: {\"",
@@ -110,8 +112,19 @@ func TestBasePromptCarriesRichCards(t *testing.T) {
 		"- progress: {\"",
 		"- score: {\"",
 		"- flow: {\"",
-		"- math: {\"",
-		"```diagram Payment flow",
+		// Markdown-first clause (enhance-agent-base-prompt 1.6): tabular data
+		// needs no fence — native markdown tables render in chat.
+		"tabular data needs no fence",
+		// The raw-source exception tags, each with a complete example fence
+		// (enhance-agent-base-prompt 1.7) and the diagram missing-title
+		// silent-degradation warning.
+		"raw mermaid source, not JSON",
+		"```diagram Payment flow\n",
+		"```mermaid\n",
+		"silently degrades to a plain code block",
+		// Cross-tag chooser and anti-pattern lines (enhance-agent-base-prompt 1.8).
+		"Chooser:",
+		"A diagram is not a substitute for the answer text",
 		// The `ui` composition tag (generative-ui adoption): the tree shape, the
 		// sparing-use rule, and the two numeric/enum traps the validator guards
 		// (0-8 tokens, the closed icon set) are all taught explicitly.
@@ -138,6 +151,118 @@ func TestBasePromptCarriesRichCards(t *testing.T) {
 	// area/sparkline — "bars" fails every safeParse).
 	if strings.Contains(BasePrompt, `"line"|"area"|"bars"`) {
 		t.Errorf(`BasePrompt teaches the rejected Chart variant "bars" (schema enum is "bar"|"line"|"area"|"sparkline")`)
+	}
+	// The deleted fence tags must not resurface in the catalogue
+	// (remove-markdown-redundant-fences deleted table/math web-side; the
+	// prompt ships the 13-tag end state — markdown tables need no fence and
+	// KaTeX renders natively). The ui section's Table/Chart vocabulary nodes
+	// are component names, not fence tags, so the pinned catalogue-line
+	// shapes are the discriminating markers.
+	for _, removed := range []string{
+		"- table: {\"",
+		"- math: {\"",
+		`"expression": "<LaTeX string>"`,
+	} {
+		if strings.Contains(BasePrompt, removed) {
+			t.Errorf("BasePrompt still teaches the deleted %q fence tag", removed)
+		}
+	}
+}
+
+// TestBasePromptCarriesReferenceDocuments pins the reference-documents block
+// in the embedded L1 template (add-reference-documents 7.1-7.2): the
+// read-only `references/` library and its run-visible manifest, the
+// never-shell guardrail (fix-reference-document-retrieval D5), the
+// discover/search/scoped-read loop over the document tools, the
+// document+locator citation rule with the mount-path link, and the subagent
+// delegation hint for heavy multi-document research.
+func TestBasePromptCarriesReferenceDocuments(t *testing.T) {
+	for _, marker := range []string{
+		"## Reference documents",
+		// The library: persistent, read-only mount, run-visible documents
+		// listed in the injected manifest.
+		"mounted read-only at `references/`",
+		"reference-documents manifest",
+		// The guardrail: documents are already mounted and served by the
+		// document tools — no find/grep/cat hunts through the shell; the
+		// file tools may confirm the mount, search/read stay with the
+		// document tools.
+		"and served by `document.search`/`document.read`",
+		"never hunt for these documents through the shell",
+		"(`find`/`grep`/`cat`)",
+		"but only the document tools search and read it",
+		// The usage loop: manifest discovery, keyword search, scoped reads
+		// (pages for PDF ranges, section for heading/slide/sheet), full reads
+		// on any document path.
+		"`document.search`",
+		"`pages` for a PDF page range",
+		"`section` for a heading, slide, or sheet title",
+		"full `document.read` also works on any document path",
+		// Citations: document AND locator, linked mount path.
+		"name the document AND its locator",
+		"(`references/manual.pdf`)",
+		// Subagent delegation hint for heavy multi-document research.
+		"delegate via the `agent` tool",
+		"explicit citation requirements",
+	} {
+		if !strings.Contains(BasePrompt, marker) {
+			t.Errorf("BasePrompt missing reference-documents marker %q", marker)
+		}
+	}
+}
+
+// TestBasePromptCarriesBehavioralSections pins the reframed directives and the
+// four peer-grade teaching sections (enhance-agent-base-prompt 1.1-1.5, spec
+// agent-prompts "Behavioral sections present"): Core Directives 4→3 with the
+// verbatim boundary/persona content, plus Execution, Finishing & Honesty,
+// Follow-through, and Communication & Output.
+func TestBasePromptCarriesBehavioralSections(t *testing.T) {
+	for _, marker := range []string{
+		// Reframed directives (D4): standalone sections, boundary and persona
+		// content verbatim, tool-usage prose folded into Capability Scope.
+		"## Workspace & Tenant Boundaries",
+		"You operate strictly within the context of your designated workspace.",
+		"## Persona & Alignment",
+		"prioritize safety, workspace policy, and core directives over persona styling",
+		"## Capability Scope",
+		"Use only the tools, skills, and MCP capabilities assigned to you",
+		// Execution: act now, batching, prerequisites, live-check,
+		// vary-then-conclude, persistence.
+		"## Execution",
+		"no pre-refusal",
+		"policy gates and approvals own the risk",
+		"Batch independent tool calls into one turn",
+		"resolve prerequisite steps first",
+		"Live-check mutable facts",
+		"vary the query, path, or source before concluding",
+		"continue to done or a real blocker",
+		// Finishing & Honesty: real artifact, verification, read-back,
+		// never fabricate, literal preservation, missing-context ladder.
+		"## Finishing & Honesty",
+		"a real result backed by tool output, not a description",
+		"read back state-changing external writes",
+		"Never fabricate data, file contents, or API responses",
+		"Preserve identifiers and values exactly as given",
+		"ask only when irretrievable",
+		// Follow-through: progress ≠ answer, ownership, schedule over polling.
+		"## Follow-through",
+		"A progress statement is not an answer",
+		"preferring the `schedule` tool over polling or waiting",
+		"progress is not completion",
+		// Communication & Output: sizing, no filler, earned depth, three-way
+		// distinction.
+		"## Communication & Output",
+		"Reply length matches the weight of the ask",
+		"never restate the request or narrate visible tool calls",
+		"distinguish between confirmed facts, tool outputs, and model reasoning",
+	} {
+		if !strings.Contains(BasePrompt, marker) {
+			t.Errorf("BasePrompt missing behavioral marker %q", marker)
+		}
+	}
+	// The old four-directive wrapper must not resurface.
+	if strings.Contains(BasePrompt, "## Core Directives") {
+		t.Error("BasePrompt still carries the superseded ## Core Directives wrapper")
 	}
 }
 
@@ -214,22 +339,6 @@ func TestWritePromptDocumentsCreatesMissingDir(t *testing.T) {
 	}
 }
 
-func TestSeedBootstrapDocumentWritesTemplate(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "agents", "atlas")
-
-	if err := SeedBootstrapDocument(dir); err != nil {
-		t.Fatalf("SeedBootstrapDocument() error = %v", err)
-	}
-
-	got, err := os.ReadFile(filepath.Join(dir, "BOOTSTRAP.md"))
-	if err != nil {
-		t.Fatalf("read BOOTSTRAP.md: %v", err)
-	}
-	if string(got) != BootstrapTemplate {
-		t.Errorf("BOOTSTRAP.md = %q, want embedded template", string(got))
-	}
-}
-
 // TestHeartbeatTemplateCarriesSilenceContract pins the seeded checklist's
 // load-bearing wording (add-agent-heartbeat D3/D7): the exact NO_REPLY token
 // and the "what to check" section the user fills in.
@@ -246,12 +355,12 @@ func TestHeartbeatTemplateCarriesSilenceContract(t *testing.T) {
 }
 
 func TestReadPromptDocumentsMissingDirComposesEmpty(t *testing.T) {
-	identity, soul, bootstrap, err := ReadPromptDocuments(filepath.Join(t.TempDir(), "does-not-exist"))
+	identity, soul, err := ReadPromptDocuments(filepath.Join(t.TempDir(), "does-not-exist"))
 	if err != nil {
 		t.Fatalf("ReadPromptDocuments() error = %v, want nil for missing dir", err)
 	}
-	if identity != "" || soul != "" || bootstrap != "" {
-		t.Errorf("ReadPromptDocuments() = (%q, %q, %q), want empty strings", identity, soul, bootstrap)
+	if identity != "" || soul != "" {
+		t.Errorf("ReadPromptDocuments() = (%q, %q), want empty strings", identity, soul)
 	}
 }
 
@@ -261,12 +370,12 @@ func TestReadPromptDocumentsRoundTrip(t *testing.T) {
 		t.Fatalf("WritePromptDocuments() error = %v", err)
 	}
 
-	identity, soul, bootstrap, err := ReadPromptDocuments(dir)
+	identity, soul, err := ReadPromptDocuments(dir)
 	if err != nil {
 		t.Fatalf("ReadPromptDocuments() error = %v", err)
 	}
-	if identity != "id" || soul != "soul" || bootstrap != "" {
-		t.Errorf("ReadPromptDocuments() = (%q, %q, %q), want (id, soul, empty)", identity, soul, bootstrap)
+	if identity != "id" || soul != "soul" {
+		t.Errorf("ReadPromptDocuments() = (%q, %q), want (id, soul)", identity, soul)
 	}
 }
 
@@ -318,7 +427,7 @@ func TestWritePromptDocumentsBackupFailureAbortsCommit(t *testing.T) {
 		t.Fatal("expected the write to fail when the backup cannot be created")
 	}
 
-	identity, soul, _, err := ReadPromptDocuments(dir)
+	identity, soul, err := ReadPromptDocuments(dir)
 	if err != nil {
 		t.Fatalf("read back documents: %v", err)
 	}
@@ -337,21 +446,23 @@ func TestWritePromptDocumentsBackupFailureAbortsCommit(t *testing.T) {
 	}
 }
 
-// TestSweepSeededBasePromptsRemovesOnlyBasePrompt covers the startup sweep
-// (markdown-card-elements D8): a seeded AGENTS.md is removed, while the
-// generated documents, their backups, HEARTBEAT, and workspace skills files
-// stay untouched.
-func TestSweepSeededBasePromptsRemovesOnlyBasePrompt(t *testing.T) {
+// TestSweepStrayPromptFilesRemovesOnlyStrayDocuments covers the startup sweep
+// (markdown-card-elements D8; remove-bootstrap-doc): a seeded AGENTS.md and
+// the removed birth document's BOOTSTRAP.md/.bak leftovers are removed, while
+// the generated documents, their backups, HEARTBEAT, and workspace skills
+// files stay untouched.
+func TestSweepStrayPromptFilesRemovesOnlyStrayDocuments(t *testing.T) {
 	dir := t.TempDir()
 	files := map[string]string{
-		"AGENTS.md":       "# OnClaw Agent Base System Prompt (L1)\n\nstale seeded copy",
-		"IDENTITY.md":     "# Identity",
-		"SOUL.md":         "# Soul",
-		"BOOTSTRAP.md":    "# Bootstrap",
-		"IDENTITY.md.bak": "# Identity (previous)",
-		"SOUL.md.bak":     "# Soul (previous)",
-		"HEARTBEAT.md":    "# Heartbeat checklist",
-		"skills/feed.md":  "workspace skill body",
+		"AGENTS.md":        "# OnClaw Agent Base System Prompt (L1)\n\nstale seeded copy",
+		"IDENTITY.md":      "# Identity",
+		"SOUL.md":          "# Soul",
+		"BOOTSTRAP.md":     "# Bootstrap",
+		"BOOTSTRAP.md.bak": "# Bootstrap (previous)",
+		"IDENTITY.md.bak":  "# Identity (previous)",
+		"SOUL.md.bak":      "# Soul (previous)",
+		"HEARTBEAT.md":     "# Heartbeat checklist",
+		"skills/feed.md":   "workspace skill body",
 	}
 	for name, content := range files {
 		full := filepath.Join(dir, name)
@@ -363,18 +474,28 @@ func TestSweepSeededBasePromptsRemovesOnlyBasePrompt(t *testing.T) {
 		}
 	}
 
-	removed, err := SweepSeededBasePrompts([]string{dir})
+	removed, err := SweepStrayPromptFiles([]string{dir})
 	if err != nil {
-		t.Fatalf("SweepSeededBasePrompts() error = %v", err)
+		t.Fatalf("SweepStrayPromptFiles() error = %v", err)
 	}
-	if len(removed) != 1 || removed[0] != filepath.Join(dir, "AGENTS.md") {
-		t.Fatalf("removed = %v, want exactly the seeded AGENTS.md path", removed)
+	wantRemoved := map[string]bool{
+		filepath.Join(dir, "AGENTS.md"):        true,
+		filepath.Join(dir, "BOOTSTRAP.md"):     true,
+		filepath.Join(dir, "BOOTSTRAP.md.bak"): true,
+	}
+	if len(removed) != len(wantRemoved) {
+		t.Fatalf("removed = %v, want exactly the stray files %v", removed, wantRemoved)
+	}
+	for _, path := range removed {
+		if !wantRemoved[path] {
+			t.Errorf("unexpected removal %s, want only %v", path, wantRemoved)
+		}
 	}
 
 	for name, want := range files {
-		if name == "AGENTS.md" {
+		if wantRemoved[filepath.Join(dir, name)] {
 			if _, statErr := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(statErr) {
-				t.Errorf("AGENTS.md must be removed, stat err: %v", statErr)
+				t.Errorf("%s must be removed, stat err: %v", name, statErr)
 			}
 			continue
 		}
@@ -388,16 +509,57 @@ func TestSweepSeededBasePromptsRemovesOnlyBasePrompt(t *testing.T) {
 	}
 }
 
-// TestSweepSeededBasePromptsToleratesMissing covers the no-op cases: a
-// directory without a base prompt and a directory that does not exist at all
+// TestSweepStrayPromptFilesRemovesBootstrapLeftovers pins the
+// remove-bootstrap-doc sweep scenario (spec agent-prompts "Startup sweep
+// removes stray bootstrap documents"): a workspace pre-seeded with the
+// removed birth document and its backup is cleaned, while the generated
+// documents are untouched.
+func TestSweepStrayPromptFilesRemovesBootstrapLeftovers(t *testing.T) {
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"BOOTSTRAP.md":     "# BOOTSTRAP.md - Birth Sequence\n_You just woke up._",
+		"BOOTSTRAP.md.bak": "# BOOTSTRAP.md - Birth Sequence (previous)",
+		"IDENTITY.md":      "# Identity\nkept",
+		"SOUL.md":          "# Soul\nkept",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+	}
+
+	removed, err := SweepStrayPromptFiles([]string{dir})
+	if err != nil {
+		t.Fatalf("SweepStrayPromptFiles() error = %v", err)
+	}
+	wantRemoved := map[string]bool{
+		filepath.Join(dir, "BOOTSTRAP.md"):     true,
+		filepath.Join(dir, "BOOTSTRAP.md.bak"): true,
+	}
+	if len(removed) != len(wantRemoved) {
+		t.Fatalf("removed = %v, want exactly the bootstrap leftovers %v", removed, wantRemoved)
+	}
+	for _, path := range removed {
+		if !wantRemoved[path] {
+			t.Errorf("unexpected removal %s, want only %v", path, wantRemoved)
+		}
+	}
+	for _, name := range []string{"IDENTITY.md", "SOUL.md"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("generated document %s must be untouched: %v", name, err)
+		}
+	}
+}
+
+// TestSweepStrayPromptFilesToleratesMissing covers the no-op cases: a
+// directory without stray files and a directory that does not exist at all
 // sweep nothing and return no error.
-func TestSweepSeededBasePromptsToleratesMissing(t *testing.T) {
+func TestSweepStrayPromptFilesToleratesMissing(t *testing.T) {
 	empty := t.TempDir()
 	missing := filepath.Join(t.TempDir(), "agents", "ghost")
 
-	removed, err := SweepSeededBasePrompts([]string{empty, missing})
+	removed, err := SweepStrayPromptFiles([]string{empty, missing})
 	if err != nil {
-		t.Fatalf("SweepSeededBasePrompts() error = %v", err)
+		t.Fatalf("SweepStrayPromptFiles() error = %v", err)
 	}
 	if len(removed) != 0 {
 		t.Fatalf("removed = %v, want none", removed)

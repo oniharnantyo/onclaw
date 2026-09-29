@@ -33,7 +33,7 @@ func setupService(t *testing.T, skillStore Store, opts ...InstallOption) (*Insta
 	if err := st.Providers().Create(ctx, provider); err != nil {
 		t.Fatal(err)
 	}
-	agent := &domain.Agent{WorkspaceID: ws.ID, Name: "Atlas", Slug: "atlas", ProviderID: provider.ID, Model: "gpt-x", Tools: []string{"ls"}}
+	agent := &domain.Agent{WorkspaceID: ws.ID, Name: "Atlas", Slug: "atlas", ProviderID: provider.ID, Model: "gpt-x", DisabledTools: []string{"ls"}}
 	if err := st.Agents().Create(ctx, agent); err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestInstallUploadZip(t *testing.T) {
 	}
 }
 
-func TestEnableEverywhereWritesGateAndAllowlists(t *testing.T) {
+func TestEnableEverywhereWritesGateAndDenylists(t *testing.T) {
 	memory := NewMemoryStore()
 	var txSeen bool
 	var svc *InstallService
@@ -226,6 +226,18 @@ func TestEnableEverywhereWritesGateAndAllowlists(t *testing.T) {
 		txSeen = true
 		return fn(ctx, TxStores{Skills: memory, Agents: svc.agents, ToolSettings: svc.toolSettings})
 	}))
+
+	// The fixture agent denies web.search; enable-everywhere must remove it
+	// from the denylist (subtraction) while leaving other denials untouched.
+	ctx := context.Background()
+	existing, err := svc.agents.BySlug(ctx, wsID, "atlas")
+	if err != nil {
+		t.Fatalf("fetch fixture agent: %v", err)
+	}
+	existing.DisabledTools = []string{"web.search", "ls"}
+	if err := svc.agents.Update(ctx, existing); err != nil {
+		t.Fatalf("seed denying agent: %v", err)
+	}
 
 	if err := svc.EnableEverywhere(context.Background(), wsID, []string{"web.search"}); err != nil {
 		t.Fatalf("EnableEverywhere: %v", err)
@@ -242,30 +254,35 @@ func TestEnableEverywhereWritesGateAndAllowlists(t *testing.T) {
 		t.Errorf("gate row not enabled")
 	}
 	for name, agent := range stAgents(t, svc, wsID) {
-		if !slices.Contains(agent.Tools, "web.search") {
-			t.Errorf("agent %s allowlist missing web.search: %v", name, agent.Tools)
+		if slices.Contains(agent.DisabledTools, "web.search") {
+			t.Errorf("agent %s denylist still denies web.search: %v", name, agent.DisabledTools)
+		}
+		if name == "Atlas" && !slices.Contains(agent.DisabledTools, "ls") {
+			t.Errorf("agent %s unrelated denial ls must survive: %v", name, agent.DisabledTools)
 		}
 	}
 }
 
-func TestToolStatusesRespectGateAndAllowlists(t *testing.T) {
+func TestToolStatusesRespectGateAndDenylists(t *testing.T) {
 	svc, wsID, _ := setupService(t, NewMemoryStore())
 	ctx := context.Background()
 
-	// Gate allows (no row) but the agent allowlist lacks web.search.
+	// Gate allows (no row); the fixture agent denies ls, so ls is missing
+	// while web.search (denied by nobody) is met.
 	statuses, err := svc.toolStatuses(ctx, wsID, []string{"web.search", "ls"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if statuses[0].Status != DepMissing || statuses[1].Status != DepMet {
+	if statuses[0].Status != DepMet || statuses[1].Status != DepMissing {
 		t.Errorf("statuses = %+v", statuses)
 	}
 
-	// Disabling in the gate flips ls to missing even though the allowlist has it.
-	if err := svc.toolSettings.Upsert(ctx, &domain.WorkspaceToolSetting{WorkspaceID: wsID, ToolKey: "ls", Enabled: false}); err != nil {
+	// Disabling in the gate flips web.search to missing even though no agent
+	// denies it — the gate wins over the denylist.
+	if err := svc.toolSettings.Upsert(ctx, &domain.WorkspaceToolSetting{WorkspaceID: wsID, ToolKey: "web.search", Enabled: false}); err != nil {
 		t.Fatal(err)
 	}
-	statuses, err = svc.toolStatuses(ctx, wsID, []string{"ls"})
+	statuses, err = svc.toolStatuses(ctx, wsID, []string{"web.search"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,6 +294,17 @@ func TestToolStatusesRespectGateAndAllowlists(t *testing.T) {
 func TestInstallWithEnableEverywhereSatisfiesToolDeps(t *testing.T) {
 	svc, wsID, dir := setupService(t, NewMemoryStore())
 	ctx := context.Background()
+
+	// A denylist-only agent denies web.search outright; enable-everywhere at
+	// install must subtract it so the dependency reads met everywhere.
+	existing, err := svc.agents.BySlug(ctx, wsID, "atlas")
+	if err != nil {
+		t.Fatalf("fetch fixture agent: %v", err)
+	}
+	existing.DisabledTools = []string{"web.search"}
+	if err := svc.agents.Update(ctx, existing); err != nil {
+		t.Fatalf("seed denying agent: %v", err)
+	}
 
 	results, err := svc.Install(ctx, InstallInput{
 		WorkspaceID: wsID, TenantSlug: "acme", OnClawDir: dir,
@@ -293,8 +321,8 @@ func TestInstallWithEnableEverywhereSatisfiesToolDeps(t *testing.T) {
 		}
 	}
 	for name, agent := range stAgents(t, svc, wsID) {
-		if !slices.Contains(agent.Tools, "web.search") {
-			t.Errorf("agent %s allowlist not updated", name)
+		if slices.Contains(agent.DisabledTools, "web.search") {
+			t.Errorf("agent %s denylist still denies web.search", name)
 		}
 	}
 }

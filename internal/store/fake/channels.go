@@ -3,6 +3,7 @@ package fake
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -328,6 +329,23 @@ func (cs *channelStore) DeleteChannel(ctx context.Context, workspaceID, id strin
 		if session != nil && session.ChannelID == id {
 			delete(cs.s.channels.workSessions, session.ID)
 		}
+	}
+
+	// Reference-document channel joins die with the channel
+	// (reference_document_channels ON DELETE CASCADE): the fake mirrors the
+	// cascade by stripping the id from every stored document's channel list
+	// — the join state IS that list.
+	for _, doc := range cs.s.referenceDocuments {
+		if !slices.Contains(doc.ChannelIDs, id) {
+			continue
+		}
+		remaining := make([]string, 0, len(doc.ChannelIDs))
+		for _, channelID := range doc.ChannelIDs {
+			if channelID != id {
+				remaining = append(remaining, channelID)
+			}
+		}
+		doc.ChannelIDs = remaining
 	}
 
 	delete(cs.s.channels.channels, id)

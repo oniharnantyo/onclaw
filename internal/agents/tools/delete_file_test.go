@@ -21,18 +21,18 @@ func newDeleteToolForDir(t *testing.T) (*deleteFileTool, string) {
 
 func TestDeleteFile_Success(t *testing.T) {
 	tool, dir := newDeleteToolForDir(t)
-	if err := os.WriteFile(filepath.Join(dir, "BOOTSTRAP.md"), []byte("# Bootstrap"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "NOTES.md"), []byte("# Notes"), 0644); err != nil {
 		t.Fatalf("seed file: %v", err)
 	}
 
-	out, err := tool.InvokableRun(context.Background(), `{"path":"/workspace/BOOTSTRAP.md"}`)
+	out, err := tool.InvokableRun(context.Background(), `{"path":"/workspace/NOTES.md"}`)
 	if err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if !strings.Contains(out, "Deleted /workspace/BOOTSTRAP.md") {
+	if !strings.Contains(out, "Deleted /workspace/NOTES.md") {
 		t.Errorf("expected confirmation naming the mount path, got %q", out)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "BOOTSTRAP.md")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dir, "NOTES.md")); !os.IsNotExist(err) {
 		t.Errorf("file should be gone, stat err: %v", err)
 	}
 }

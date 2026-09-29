@@ -64,7 +64,7 @@ func TestIntegration_AgentStore_CRUD(t *testing.T) {
 		MaxTokens:   &maxTok,
 		Effort:      &effort,
 		Autonomy:    domain.AutonomyApproval,
-		Tools:       []string{"search_kb", "calc"},
+		DisabledTools: []string{"search_kb", "calc"},
 		EnabledMCPS: []string{"github"},
 		Avatar:      json.RawMessage(`{"shape":"circle","color":"#336699"}`),
 	}
@@ -143,7 +143,7 @@ func TestIntegration_AgentStore_CRUD(t *testing.T) {
 	if found.ID != a1.ID || found.Name != "Support Agent" || found.Autonomy != domain.AutonomyApproval {
 		t.Fatalf("unexpected agent retrieved: %+v", found)
 	}
-	if len(found.Tools) != 2 || len(found.EnabledMCPS) != 1 {
+	if len(found.DisabledTools) != 2 || len(found.EnabledMCPS) != 1 {
 		t.Fatalf("unexpected capabilities on agent: %+v", found)
 	}
 
@@ -218,7 +218,7 @@ func TestIntegration_AgentStore_CRUD(t *testing.T) {
 	found.Name = "Support Agent Advanced"
 	found.Role = "senior-support"
 	found.Autonomy = domain.AutonomySuggest
-	found.Tools = []string{"search_kb", "calc", "ticket_creator"}
+	found.DisabledTools = []string{"search_kb", "calc", "ticket_creator"}
 	if err := s.Agents().Update(ctx, found); err != nil {
 		t.Fatalf("unexpected Update error: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestIntegration_AgentStore_CRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected ByID after update: %v", err)
 	}
-	if reloaded.Name != "Support Agent Advanced" || reloaded.Autonomy != domain.AutonomySuggest || len(reloaded.Tools) != 3 {
+	if reloaded.Name != "Support Agent Advanced" || reloaded.Autonomy != domain.AutonomySuggest || len(reloaded.DisabledTools) != 3 {
 		t.Fatalf("unexpected agent after update: %+v", reloaded)
 	}
 
@@ -240,7 +240,7 @@ func TestIntegration_AgentStore_CRUD(t *testing.T) {
 	if readyAgent.PromptsStatus != domain.PromptsStatusReady || readyAgent.PromptsError != nil {
 		t.Fatalf("unexpected ready agent: %+v", readyAgent)
 	}
-	if readyAgent.Identity != "" || readyAgent.Soul != "" || readyAgent.Bootstrap != "" {
+	if readyAgent.Identity != "" || readyAgent.Soul != "" {
 		t.Fatalf("expected store to persist no prompt content, got: %+v", readyAgent)
 	}
 

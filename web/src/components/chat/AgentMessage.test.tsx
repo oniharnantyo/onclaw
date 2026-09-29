@@ -83,6 +83,19 @@ function renderTurn(tools: any[], parts?: any[]) {
   return renderMessage({ id: 'm1', text: '', tools, ...(parts ? { parts } : {}) });
 }
 
+// Multi-turn thread (add-session-todos-surface D5): renders several agent
+// messages the way ChatView does — one AgentMessage per turn, hydrated
+// (busy=false), isLast only on the final message.
+function renderThread(turns: any[]) {
+  return render(
+    <div>
+      {turns.map((m, i) => (
+        <div key={m.id}>{messageElement(m, { isLast: i === turns.length - 1 })}</div>
+      ))}
+    </div>
+  );
+}
+
 const toolIds = (container: HTMLElement): string[] =>
   Array.from(container.querySelectorAll('[data-od-id]'))
     .map((el) => el.getAttribute('data-od-id') || '')
@@ -130,6 +143,40 @@ describe('components/chat/AgentMessage — todo rewrite collapse (6.2)', () => {
     const { container } = renderTurn([todoWrite(1)]);
     expect(container.querySelector('[data-od-id^="todo-updated-"]')).toBeNull();
     expect(container.querySelectorAll('[data-od-id="tool-todo_write"]')).toHaveLength(1);
+  });
+
+  it('renders one full card per turn across a thread — earlier turns collapse too (D5)', () => {
+    // Three turns emitting 2, 1 and 3 todo_write calls (revisions 1,2 / 3 /
+    // 4,5,6): exactly three full cards survive — the LAST call of each turn —
+    // and exactly three one-line summaries (revs 1, 4, 5).
+    const { container } = renderThread([
+      { id: 't1', text: '', tools: [todoWrite(1), todoWrite(2)] },
+      { id: 't2', text: '', tools: [todoWrite(3)] },
+      { id: 't3', text: '', tools: [todoWrite(4), todoWrite(5), todoWrite(6)] },
+    ]);
+    const cards = Array.from(container.querySelectorAll('[data-od-id="tool-todo_write"]'));
+    expect(cards).toHaveLength(3);
+    // Survivors are the final call of each turn, in order.
+    expect(cards[0].textContent).toContain('rev 2');
+    expect(cards[1].textContent).toContain('rev 3');
+    expect(cards[2].textContent).toContain('rev 6');
+    // Every earlier call — same-turn rewrites AND earlier turns — is a summary.
+    const summaries = Array.from(container.querySelectorAll('[data-od-id^="todo-updated-"]'));
+    expect(summaries).toHaveLength(3);
+    expect(summaries[0].textContent).toContain('rev 1');
+    expect(summaries[1].textContent).toContain('rev 4');
+    expect(summaries[2].textContent).toContain('rev 5');
+    summaries.forEach((s) => expect(s.querySelectorAll('li')).toHaveLength(0));
+  });
+
+  it('a thread where no turn has todo_write renders nothing todo-related (present-only)', () => {
+    const { container } = renderThread([
+      { id: 't1', text: '', tools: [read('a.go'), read('b.go')] },
+      { id: 't2', text: '', tools: [read('c.go')] },
+    ]);
+    expect(container.querySelector('[data-od-id="tool-todo_write"]')).toBeNull();
+    expect(container.querySelector('[data-od-id^="todo-updated-"]')).toBeNull();
+    expect(container.textContent).not.toContain('Plan updated');
   });
 });
 
@@ -511,6 +558,75 @@ describe('components/chat/AgentMessage — local file links open in right panel'
 
     fireEvent.click(buttons[1]);
     expect(useStore.getState().panel.tabs[1].payload).toEqual({ path: 'docs/guide.md' });
+  });
+});
+
+// Citation chips (add-reference-documents 10.2): agents cite reference
+// documents as markdown links under `references/` — they render as chip
+// buttons (not raw links) that open the document preview in the right panel
+// with {name, locator} and NO url (agents don't know capability URLs).
+describe('AgentMessage — document citation chips (10.2)', () => {
+  it('renders a references/ link as a chip and opens the document panel with name + locator', () => {
+    useStore.setState({ panel: { open: false, tabs: [], activeId: null, badge: false } });
+    const { container } = renderMessage({
+      id: 'm1',
+      text: 'Per the docs: [twilio-api.pdf · p. 31](references/twilio-api.pdf) — that is the limit.',
+    });
+    const chip = container.querySelector('[data-od-id="citation-chip"]') as HTMLButtonElement | null;
+    expect(chip).not.toBeNull();
+    // No raw anchor survives for a references/ href…
+    expect(container.querySelector('a[href="references/twilio-api.pdf"]')).toBeNull();
+    // …and it is not the file-panel button either.
+    expect(container.querySelector('[data-od-id="link-open-panel"]')).toBeNull();
+    expect(chip!.textContent).toContain('📄');
+    expect(chip!.textContent).toContain('twilio-api.pdf · p. 31');
+
+    fireEvent.click(chip!);
+    const panel = useStore.getState().panel;
+    expect(panel.open).toBe(true);
+    expect(panel.tabs).toHaveLength(1);
+    expect(panel.tabs[0].kind).toBe('document');
+    expect(panel.tabs[0].title).toBe('twilio-api.pdf');
+    expect(panel.tabs[0].payload).toEqual({
+      name: 'twilio-api.pdf',
+      locator: 'twilio-api.pdf · p. 31',
+    });
+  });
+
+  it('percent-decodes the href and strips query/fragment before naming the document', () => {
+    useStore.setState({ panel: { open: false, tabs: [], activeId: null, badge: false } });
+    const { container } = renderMessage({
+      id: 'm2',
+      text: '[integration%20notes.md · slide 5](references/integration%20notes.md?v=2#toc)',
+    });
+    fireEvent.click(container.querySelector('[data-od-id="citation-chip"]')!);
+    const tab0 = useStore.getState().panel.tabs[0];
+    expect(tab0.payload).toEqual({ name: 'integration notes.md', locator: 'integration%20notes.md · slide 5' });
+  });
+
+  it('leaves external links and non-reference file links untouched', () => {
+    useStore.setState({ panel: { open: false, tabs: [], activeId: null, badge: false } });
+    const { container } = renderMessage({
+      id: 'm3',
+      text: '[GitHub](https://github.com) and [Notes](notes.txt) and [Deep](references/deep/nested.md).',
+    });
+    // External stays a real anchor…
+    const ext = container.querySelector('a[href="https://github.com"]');
+    expect(ext).not.toBeNull();
+    expect(ext!.getAttribute('target')).toBe('_blank');
+    // …the plain local link stays a file-panel button…
+    const fileBtns = container.querySelectorAll('[data-od-id="link-open-panel"]');
+    expect(fileBtns).toHaveLength(1);
+    // …and only the references/ link is a chip.
+    expect(container.querySelectorAll('[data-od-id="citation-chip"]')).toHaveLength(1);
+    fireEvent.click(fileBtns[0]);
+    expect(useStore.getState().panel.tabs[0].payload).toEqual({ path: 'notes.txt' });
+    // A nested reference path still resolves the document basename.
+    fireEvent.click(container.querySelector('[data-od-id="citation-chip"]')!);
+    expect(useStore.getState().panel.tabs[1].payload).toEqual({
+      name: 'nested.md',
+      locator: 'Deep',
+    });
   });
 });
 

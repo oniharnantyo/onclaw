@@ -172,11 +172,10 @@ func (s *Seeder) ensureActor(ctx context.Context, adminToken, wsSlug string, a A
 
 // ensureAgent creates-or-reuses the fixture agent. Creation runs live prompt
 // generation against the provider, so a missing/broken provider fails here.
-// The reuse path repairs agents provisioned before the harness carried an
-// exposed-tools allowlist (fix-memory-prefetch-matching D6): their stored
-// tools list is empty, an empty allowlist exposes zero registry tools, and the
-// self-search leg dies in `skill not found: memory` — so a stored allowlist
-// missing one of evalAgentTools is patched up to it.
+// The reuse path repairs agents that deny a tool the self-search leg needs:
+// memory.search exposed is the fixture's load-bearing provisioning (the
+// denylist exposes it unless the agent names it), so a stored denylist
+// carrying one of evalAgentTools is patched to exclude them.
 func (s *Seeder) ensureAgent(ctx context.Context, adminToken, wsSlug string, opts SeedOptions) (*Agent, error) {
 	agent, err := s.client.GetAgent(ctx, adminToken, wsSlug, opts.AgentSlug)
 	switch {
@@ -187,11 +186,12 @@ func (s *Seeder) ensureAgent(ctx context.Context, adminToken, wsSlug string, opt
 			}
 			agent.Model = opts.Model
 		}
-		if !agentCoversTools(agent, evalAgentTools) {
-			if err := s.client.PatchAgentTools(ctx, adminToken, wsSlug, agent.ID, evalAgentTools); err != nil {
+		if denylistDeniesAny(agent, evalAgentTools) {
+			repaired := subtractAgentTools(agent.DisabledTools, evalAgentTools)
+			if err := s.client.PatchAgentDisabledTools(ctx, adminToken, wsSlug, agent.ID, repaired); err != nil {
 				return nil, fmt.Errorf("exposing %v on agent %s: %w", evalAgentTools, opts.AgentSlug, err)
 			}
-			agent.Tools = evalAgentTools
+			agent.DisabledTools = repaired
 		}
 		return agent, nil
 	case isNotFound(err):
@@ -384,20 +384,38 @@ func workspaceName(slug string) string {
 	return name + " Workspace"
 }
 
-// agentCoversTools reports whether the agent's stored allowlist carries every
-// named tool. Registry names the allowlist omits are simply unexposed (the
-// inert-unknown rule), so coverage is the only thing the reuse path checks.
-func agentCoversTools(a *Agent, want []string) bool {
-	have := make(map[string]struct{}, len(a.Tools))
-	for _, t := range a.Tools {
-		have[t] = struct{}{}
+// denylistDeniesAny reports whether the agent's stored denylist carries any
+// of the named tools — under the denylist a required tool is exposed exactly
+// when it is absent from DisabledTools (catalog minus denylist; the workspace
+// gate defaults everything on for the seeder's fresh fixture workspaces), so
+// denial is the only failure the reuse path must repair.
+func denylistDeniesAny(a *Agent, want []string) bool {
+	denied := make(map[string]struct{}, len(a.DisabledTools))
+	for _, t := range a.DisabledTools {
+		denied[t] = struct{}{}
 	}
 	for _, t := range want {
-		if _, ok := have[t]; !ok {
-			return false
+		if _, ok := denied[t]; ok {
+			return true
 		}
 	}
-	return true
+	return false
+}
+
+// subtractAgentTools returns the denylist with every named tool removed
+// (order preserved) — the repaired denylist the reuse path PATCHes in.
+func subtractAgentTools(denylist, remove []string) []string {
+	removeSet := make(map[string]struct{}, len(remove))
+	for _, t := range remove {
+		removeSet[t] = struct{}{}
+	}
+	kept := make([]string, 0, len(denylist))
+	for _, t := range denylist {
+		if _, ok := removeSet[t]; !ok {
+			kept = append(kept, t)
+		}
+	}
+	return kept
 }
 
 func isNotFound(err error) bool     { return statusIs(err, 404) }

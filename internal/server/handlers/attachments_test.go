@@ -80,7 +80,7 @@ func newAttachmentsTestEnv(t *testing.T, authed bool) (*gin.Engine, store.Store,
 
 	counting := &countingAttachments{AttachmentStore: st.Attachments()}
 	attH := handlers.NewAttachmentsHandlers(counting, wsStorage)
-	fileH := handlers.NewFileHandlers(strg, st.Attachments(), wsStorage)
+	fileH := handlers.NewFileHandlers(strg, st.Attachments(), st.ReferenceDocuments(), wsStorage)
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {

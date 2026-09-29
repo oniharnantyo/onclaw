@@ -3,16 +3,48 @@
 // add/remove eligibility, and the add-member flow are unchanged; only the
 // surrounding chrome moved into the panel shell (tab strip + panel close).
 // Registered through the same API a plugin would use; nothing special-cases it.
+// Reference documents (add-reference-documents 9.2): the channel's read-only
+// documents section — channel-attached plus promoted, through the backend's
+// channel lens — rides the same surface as chips with preview links. The read
+// is optional context: a failed fetch leaves the section out (the agent modal's
+// AgentConnectionsSection precedent).
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Icon } from "../../../ui/Icon";
 import { Avatar } from "../../../ui/Avatar";
 import { StatusDot } from "../../../ui/StatusDot";
 import { registerPanelSource } from "../../../../lib/panel/registry";
+import { useStore, useWorkspace } from "../../../../store";
+import { documentsApi, indexStatusLabel, type ApiReferenceDocument } from "../../../../lib/documentsApi";
 
-export function MembersSource({ ctx }: any) {
+export function MembersSource({ ctx, tab }: any) {
   const { channelMembers, memberCandidates, primaryAgentId, onAddMember, onRemoveMember, onOpenMember } = ctx;
   const [adding, setAdding] = useState(false);
+
+  // The channel the panel was opened over — the members tab's payload is the
+  // chat id (store.openPanelTab({ kind: 'members', payload: { chatId } })).
+  const channelId: string = typeof tab?.payload?.chatId === 'string' ? tab.payload.chatId : '';
+  const tenant = useWorkspace() as any;
+  const ws: string = tenant?.sub ?? tenant?.id ?? tenant?.slug ?? '';
+  // null = not loaded or the fetch failed — the section stays out either way.
+  const [docs, setDocs] = useState<ApiReferenceDocument[] | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    if (!ws || !channelId) return;
+    documentsApi
+      .list(ws, { channel: channelId })
+      .then((res) => {
+        if (mounted) setDocs(res?.documents || []);
+      })
+      .catch(() => {
+        if (mounted) setDocs(null);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [ws, channelId]);
+
   return (
     <div className="p-4">
       <div className="space-y-1">
@@ -71,9 +103,48 @@ export function MembersSource({ ctx }: any) {
         </button>
       )}
 
+      {docs !== null && (
+        <div className="mt-4" data-testid="channel-documents-section">
+          <p className="px-1 font-mono text-[9px] font-semibold uppercase tracking-[0.14em] text-muted">Reference documents</p>
+          {docs.length > 0 ? (
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {docs.map((d) => (
+                <button
+                  key={d.id}
+                  type="button"
+                  data-testid={'channel-document-' + d.id}
+                  title={'Preview ' + d.name}
+                  onClick={() =>
+                    useStore.getState().openPanelTab({
+                      kind: 'document',
+                      title: d.name,
+                      payload: { name: d.name, url: d.url },
+                    })
+                  }
+                  className="flex h-7 max-w-full items-center gap-1.5 rounded-md border border-line bg-[color-mix(in_oklab,var(--fg)_4%,transparent)] px-2 text-[12px] font-medium text-fg2 transition-colors hover:border-accent hover:text-fg"
+                >
+                  <Icon name="file-text" size={11} className="shrink-0 text-accent"/>
+                  <span className="min-w-0 max-w-[12rem] truncate">{d.name}</span>
+                  {d.scope === 'workspace' && (
+                    <span className="shrink-0 font-mono text-[9px] uppercase tracking-wide text-muted">All agents</span>
+                  )}
+                  <span className="shrink-0 font-mono text-[9px] uppercase tracking-wide text-muted">
+                    {indexStatusLabel(d.indexStatus)}
+                  </span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-1 px-1 text-[12px] text-muted" data-testid="channel-documents-empty">
+              No reference documents yet — attach one in Settings → Documents.
+            </p>
+          )}
+        </div>
+      )}
+
       <p className="mt-4 text-[12px] leading-5 text-muted">Type @ in the composer to mention anyone here — mentioned agents respond in the thread.</p>
     </div>
   );
 }
 
-registerPanelSource('members', ({ ctx }) => <MembersSource ctx={ctx}/>);
+registerPanelSource('members', ({ ctx, tab }) => <MembersSource ctx={ctx} tab={tab}/>);

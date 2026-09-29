@@ -3,6 +3,7 @@ import { Icon } from "../ui/Icon";
 import { Avatar } from "../ui/Avatar";
 import { Chip } from "../ui/Chip";
 import { STATUS } from "../../lib/constants";
+import { SessionTodosSurface } from "./todos/SessionTodosSurface";
 
 // The context meter moved to the composer's left rail (adopt-assistant-ui-
 // elements D1) — the header renders no meter; the ring + breakdown popover
@@ -13,9 +14,12 @@ import { STATUS } from "../../lib/constants";
 // configuration stays reachable from the Agents screen, never here. In
 // channels the members avatar stack opens the panel's members tab; the dot
 // badge on the toggle marks a panel-able tool that finished while the panel
-// was closed.
+// was closed. The documents toggle (rework-document-chat-surfaces D2, 2026-
+// 09-28 user pivot) sits beside it: agent chats with a documents lens get a
+// dedicated entry to the panel's Documents listing — closing the tab from the
+// panel strip never strands the surface, the header button brings it back.
 
-export function ChatHeader({ target, agent, channelMembers, langfuseUrl, onOpenMembers, panelOpen, panelBadge, onTogglePanel  }: any) {
+export function ChatHeader({ target, agent, channelMembers, langfuseUrl, onOpenMembers, panelOpen, panelBadge, onTogglePanel, documentsAvailable, documentsOpen, onToggleDocuments  }: any) {
   const t = target;
   return (
     <header data-od-id="chat-header"
@@ -41,6 +45,10 @@ export function ChatHeader({ target, agent, channelMembers, langfuseUrl, onOpenM
         </p>
       </div>
       <div className="ml-auto flex items-center gap-3">
+        {/* Session todos chip (add-session-todos-surface D2/D6): direct agent
+            chats only, leftmost of the action cluster; present-only — renders
+            nothing without a todo plan or todo_write exposure. */}
+        {t.kind === 'agent' && <SessionTodosSurface agent={agent}/>}
         {/* Observability deep link (integrate-langfuse-tracing D6): rendered
             only when the opened run carries a langfuse_url — untraced runs
             (tracing unconfigured or pre-dating export) see no action. */}
@@ -65,6 +73,13 @@ export function ChatHeader({ target, agent, channelMembers, langfuseUrl, onOpenM
                 +{channelMembers.length - 4}
               </span>
             )}
+          </button>
+        )}
+        {documentsAvailable && (
+          <button type="button" onClick={onToggleDocuments} data-od-id="btn-panel-documents" data-testid="btn-panel-documents"
+            title={documentsOpen ? 'Hide documents' : 'Show documents'} aria-pressed={Boolean(documentsOpen)}
+            aria-label="Documents" className="flex h-8 w-8 items-center justify-center rounded-md text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg2 aria-pressed:text-fg2">
+            <Icon name="file" size={16}/>
           </button>
         )}
         <button type="button" onClick={onTogglePanel} data-od-id="btn-panel-toggle"

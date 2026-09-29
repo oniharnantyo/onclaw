@@ -260,12 +260,6 @@ func (h *workspaceHandlers) CreateWorkspace(c *gin.Context) {
 			RespondError(c, fmt.Errorf("failed to create agent workspace directory: %w", err))
 			return
 		}
-		// A new agent starts with the embedded BOOTSTRAP.md template; prompt
-		// generation only writes IDENTITY.md and SOUL.md.
-		if err := promptdocs.SeedBootstrapDocument(starterAgentDir); err != nil {
-			RespondError(c, fmt.Errorf("failed to create agent workspace directory: %w", err))
-			return
-		}
 	}
 
 	var desc string
@@ -365,9 +359,9 @@ func (h *workspaceHandlers) CreateWorkspace(c *gin.Context) {
 			createdProvider = prov
 
 			if req.StarterAgent != nil {
-				agentTools := req.StarterAgent.Tools
-				if agentTools == nil {
-					agentTools = []string{}
+				agentDisabledTools := req.StarterAgent.DisabledTools
+				if agentDisabledTools == nil {
+					agentDisabledTools = []string{}
 				}
 				enabledMCPS := req.StarterAgent.EnabledMCPS
 				if enabledMCPS == nil {
@@ -397,7 +391,7 @@ func (h *workspaceHandlers) CreateWorkspace(c *gin.Context) {
 					Effort:        effort,
 					Autonomy:      autonomy,
 					ContextWindow: contextWindow,
-					Tools:         agentTools,
+					DisabledTools: agentDisabledTools,
 					EnabledMCPS:   enabledMCPS,
 					Avatar:        avatar,
 					PromptsStatus: domain.PromptsStatusGenerating,

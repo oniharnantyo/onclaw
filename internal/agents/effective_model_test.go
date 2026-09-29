@@ -43,7 +43,7 @@ func (f *recordingFactory) snapshot() []capturedModelCall {
 // consulted.
 func TestRunner_PinnedAgentUnaffected(t *testing.T) {
 	rec := &recordingFactory{mdl: &hooksModel{final: "done"}}
-	st, runner, ws, ag, req := setupHooksRunnerWithOpts(t, nil, rec.mdl, []RunnerOption{
+	st, runner, ws, ag, req := setupHooksRunnerWithOpts(t, rec.mdl, []RunnerOption{
 		WithAgenticModelFactory(rec.factory),
 	})
 
@@ -78,7 +78,7 @@ func TestRunner_PinnedAgentUnaffected(t *testing.T) {
 // type requires max_tokens and the agent pins none (D4: the run proceeds).
 func TestRunner_InheritingAgentRunsWorkspaceDefault(t *testing.T) {
 	rec := &recordingFactory{mdl: &hooksModel{final: "done"}}
-	st, runner, ws, ag, req := setupHooksRunnerWithOpts(t, nil, rec.mdl, []RunnerOption{
+	st, runner, ws, ag, req := setupHooksRunnerWithOpts(t, rec.mdl, []RunnerOption{
 		WithAgenticModelFactory(rec.factory),
 	})
 
@@ -125,7 +125,7 @@ func TestRunner_InheritingAgentRunsWorkspaceDefault(t *testing.T) {
 // model construction, with the missing workspace setting named.
 func TestRunner_InheritingAgentWithoutDefaultFailsFast(t *testing.T) {
 	rec := &recordingFactory{mdl: &hooksModel{final: "done"}}
-	st, runner, _, ag, req := setupHooksRunnerWithOpts(t, nil, rec.mdl, []RunnerOption{
+	st, runner, _, ag, req := setupHooksRunnerWithOpts(t, rec.mdl, []RunnerOption{
 		WithAgenticModelFactory(rec.factory),
 	})
 

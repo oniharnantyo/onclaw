@@ -7,7 +7,7 @@ import {
   uploadAttachment, precheckAttachment, defaultPasteName, formatSize, mimeLabel,
   ATTACHMENTS_PER_MESSAGE, PICKER_ACCEPT,
 } from "../../lib/attachments";
-import type { AttachmentChip, UploadError } from "../../lib/attachments";
+import type { AttachmentChip, UploadError, DocumentMentionChip } from "../../lib/attachments";
 
 import { SlashMenu } from "./SlashMenu";
 import { MentionMenu } from "./MentionMenu";
@@ -81,6 +81,30 @@ function AttachmentChipCard({ chip, warning, onRemove, onRetry }: {
   );
 }
 
+// One pending document-mention chip (add-reference-documents 10.4): document
+// icon + name + mount path + remove. Identity only — the pill the transcript
+// shows is the markdown link in the sent text, never a second chip card.
+function DocumentChipCard({ chip, onRemove }: { chip: DocumentMentionChip; onRemove: () => void }) {
+  return (
+    <div data-testid="document-chip" data-document-id={chip.documentId}
+      className="flex w-[230px] max-w-full items-center gap-2 rounded-[12px] border border-line bg-surface px-2 py-1.5">
+      <span aria-hidden
+        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] bg-[color-mix(in_oklab,var(--fg)_5%,transparent)] text-muted">
+        <Icon name="file" size={15}/>
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[12px] leading-4 text-fg" title={chip.name}>{chip.name}</span>
+        <span className="block truncate font-mono text-[11px] leading-4 text-muted">{chip.path}</span>
+      </span>
+      <button type="button" onClick={onRemove} data-testid="doc-chip-remove"
+        aria-label={'Remove ' + chip.name} title="Remove"
+        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg">
+        <Icon name="x" size={11}/>
+      </button>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Draft restore (adopt-assistant-ui-elements 9.3): unsent composer text
 // persists per thread in localStorage under `onclaw.draft.<chatId>` and is
@@ -113,7 +137,7 @@ const saveDraft = (chatId: string | undefined, value: string) => {
 };
 
 export function Composer({ agent, running, onSend, onCancel, mentionOptions, allowCommands, skillGroups,
-  allowAttachments, workspaceSlug, chatId, ref }: any) {
+  allowAttachments, workspaceSlug, chatId, registerDocMention, ref }: any) {
   const [text, setText] = useState(() => loadDraft(chatId));
   // Every user-driven text change persists the draft; an empty value clears
   // the stored one (send, or deleting everything typed).
@@ -251,6 +275,55 @@ export function Composer({ agent, running, onSend, onCancel, mentionOptions, all
     return undefined;
   };
 
+  // --- Pending document mention chips (add-reference-documents 10.4) -------
+
+  // Pending document mention chips are COMPOSER-LOCAL state, like the
+  // attachment chips — never global stores (React 19 nested-update lessons).
+  // The floating popover that used to mint them is gone (rework-document-chat-
+  // surfaces D2): chips are added through the mention bridge ChatRoute
+  // registers from the panel's Documents listing (task 2.2), and the composer
+  // only carries/removes them onto the send.
+  const [docChips, setDocChips] = useState<DocumentMentionChip[]>([]);
+
+  const removeDocChip = (chip: DocumentMentionChip) => {
+    setDocChips((cs) => cs.filter((c) => c.documentId !== chip.documentId));
+  };
+
+  // --- Mention insertion (rework-document-chat-surfaces 2.2, design D3) -----
+  //
+  // The panel's Documents listing inserts mentions through the ChatRoute
+  // bridge: the composer registers its insertion callback (text token +
+  // docChips state) with the mounting screen via the ref-style registration
+  // prop — the chips stay composer-local, never lifted into a store (same
+  // rule as the attachment chips). Reconstructed popover semantics: the
+  // markdown link token in the text IS the visible pill the transcript
+  // renders (runtime contract: `[📄 name](references/name)`), and the chip
+  // rides the send as document identity only.
+  const insertDocMention = (doc: { id: string; name: string }) => {
+    const path = 'references/' + doc.name;
+    const token = '[📄 ' + doc.name + '](' + path + ')';
+    changeText((text ? text.replace(/\s+$/, '') + ' ' : '') + token + ' ');
+    setDocChips((cs) => cs.some((c) => c.documentId === doc.id)
+      ? cs
+      : [...cs, { kind: 'document', documentId: doc.id, name: doc.name, path }]);
+    requestAnimationFrame(() => { if (ta.current) ta.current.focus(); });
+  };
+  // Registration happens once per bridge identity; a stable trampoline
+  // forwards to the freshest insertion closure through a ref (refreshed each
+  // commit), so a callback held across keystrokes never inserts stale text.
+  const insertDocRef = useRef<((doc: { id: string; name: string }) => void) | null>(null);
+  useEffect(() => {
+    insertDocRef.current = insertDocMention;
+  });
+  useEffect(() => {
+    registerDocMention?.((doc: { id: string; name: string }) => insertDocRef.current?.(doc));
+    return () => registerDocMention?.(null);
+  }, [registerDocMention]);
+
+  // The documents affordance moved to the chat header (rework-document-chat-
+  // surfaces D2, 2026-09-28 user pivot): ChatView's header toggle opens the
+  // panel's Documents listing; the composer keeps only the mention bridge.
+
   // Conversation switch unmounts the Composer (ChatRoute keys ChatView on the
   // chat id): the tray dies with it and in-flight uploads abort (spec:
   // "switching conversations clears it and aborts in-flight uploads").
@@ -281,7 +354,8 @@ export function Composer({ agent, running, onSend, onCancel, mentionOptions, all
 
   // --- Send gate (design D12, hard) ------------------------------------------
   // Blocked while any chip is uploading; enabled when text is non-empty OR at
-  // least one chip is ready — attachment-only sends are valid. Rejected and
+  // least one chip is ready — attachment-only sends are valid, and so are
+  // mention-only sends (the document identity is the payload). Rejected and
   // failed chips are absent from the gate.
   const uploadingAny = chips.some((c) => c.state === 'uploading');
   const readyChips = chips.filter((c) => c.state === 'ready');
@@ -292,10 +366,11 @@ export function Composer({ agent, running, onSend, onCancel, mentionOptions, all
     // queue) — blocking submit would make the queue unreachable.
     if (uploadingAny) return;
     const val = (raw !== undefined ? raw : text).trim();
-    if (!val && readyChips.length === 0) return;
-    onSend(val, readyChips);
+    if (!val && readyChips.length === 0 && docChips.length === 0) return;
+    onSend(val, [...readyChips, ...docChips]);
     changeText('');
     setChips([]);
+    setDocChips([]);
     requestAnimationFrame(grow);
   };
 
@@ -338,11 +413,15 @@ export function Composer({ agent, running, onSend, onCancel, mentionOptions, all
           placeholder={mentionOptions ? 'Message the channel — @ to mention' : agent ? 'Message ' + agent.name + '…' : 'Send a message…'}
           enterKeyHint="send"
           className="max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-1.5 text-[15px] leading-6 text-fg outline-none placeholder:text-muted"/>
-        {allowAttachments && chips.length > 0 && (
-          <div className="flex flex-wrap items-stretch gap-2 px-1 pb-1.5 pt-0.5" data-testid="attachment-tray">
+        {((allowAttachments && chips.length > 0) || docChips.length > 0) && (
+          <div className="flex flex-wrap items-stretch gap-2 px-1 pb-1.5 pt-0.5"
+            data-testid={chips.length > 0 ? 'attachment-tray' : 'document-chip-tray'}>
             {chips.map((chip) => (
               <AttachmentChipCard key={chip.key} chip={chip} warning={chipWarning(chip)}
                 onRemove={() => removeChip(chip)} onRetry={() => retryChip(chip)}/>
+            ))}
+            {docChips.map((chip) => (
+              <DocumentChipCard key={chip.documentId} chip={chip} onRemove={() => removeDocChip(chip)}/>
             ))}
           </div>
         )}
@@ -366,7 +445,7 @@ export function Composer({ agent, running, onSend, onCancel, mentionOptions, all
             <ContextRing agent={agent} enabled={Boolean(allowCommands)}/>
           </div>
           {!running ? (
-            <button type="button" onClick={(e) => { e.stopPropagation(); submit(undefined as any); }} disabled={uploadingAny || (!text.trim() && readyChips.length === 0)} data-od-id="btn-send" data-testid="btn-send"
+            <button type="button" onClick={(e) => { e.stopPropagation(); submit(undefined as any); }} disabled={uploadingAny || (!text.trim() && readyChips.length === 0 && docChips.length === 0)} data-od-id="btn-send" data-testid="btn-send"
               aria-label="Send message" title="Send message"
               className="flex h-8 w-8 items-center justify-center rounded-full bg-accent text-accenton transition-colors hover:bg-[var(--accent-hover)] active:bg-[var(--accent-active)] disabled:opacity-35 disabled:hover:bg-accent">
               <Icon name="up" size={15} sw={2.4}/>

@@ -42,29 +42,30 @@ type Agent struct {
 	Brief       string `json:"brief"`
 	Identity    string `json:"identity"`
 	Soul        string `json:"soul"`
-	Bootstrap   string `json:"bootstrap"`
 	ProviderID  string `json:"provider_id"`
 	Model       string `json:"model"`
 	// Memory side-call override: both empty (the default) inherits the
 	// workspace memory settings' side_call_model, then the model the agent
 	// itself runs. Both set pins the memory pipeline's cheap-model calls.
-	MemorySidecallProviderID string          `json:"memory_sidecall_provider_id,omitempty"`
-	MemorySidecallModel      string          `json:"memory_sidecall_model,omitempty"`
-	Temperature              float64         `json:"temperature"`
-	MaxTokens                *int            `json:"max_tokens,omitempty"`
-	Effort                   *string         `json:"effort,omitempty"`
-	Autonomy                 AgentAutonomy   `json:"autonomy"`
-	ContextWindow            *int            `json:"context_window,omitempty"`
-	Tools                    []string        `json:"tools"`
-	EnabledMCPS              []string        `json:"enabled_mcps"`
-	Avatar                   json.RawMessage `json:"avatar"`
-	PromptsStatus            PromptsStatus   `json:"prompts_status"`
-	PromptsError             *string         `json:"prompts_error,omitempty"`
-	MaxIterations            *int            `json:"max_iterations,omitempty"`
-	CreatedBy                *string         `json:"created_by,omitempty"`
-	UpdatedBy                *string         `json:"updated_by,omitempty"`
-	CreatedAt                time.Time       `json:"created_at"`
-	UpdatedAt                time.Time       `json:"updated_at"`
+	MemorySidecallProviderID string        `json:"memory_sidecall_provider_id,omitempty"`
+	MemorySidecallModel      string        `json:"memory_sidecall_model,omitempty"`
+	Temperature              float64       `json:"temperature"`
+	MaxTokens                *int          `json:"max_tokens,omitempty"`
+	Effort                   *string       `json:"effort,omitempty"`
+	Autonomy                 AgentAutonomy `json:"autonomy"`
+	ContextWindow            *int          `json:"context_window,omitempty"`
+	// DisabledTools is the tool denylist: names absent from it are exposed
+	// (catalog minus denylist, workspace-gated); unknown names are inert.
+	DisabledTools []string        `json:"disabled_tools"`
+	EnabledMCPS   []string        `json:"enabled_mcps"`
+	Avatar        json.RawMessage `json:"avatar"`
+	PromptsStatus PromptsStatus   `json:"prompts_status"`
+	PromptsError  *string         `json:"prompts_error,omitempty"`
+	MaxIterations *int            `json:"max_iterations,omitempty"`
+	CreatedBy     *string         `json:"created_by,omitempty"`
+	UpdatedBy     *string         `json:"updated_by,omitempty"`
+	CreatedAt     time.Time       `json:"created_at"`
+	UpdatedAt     time.Time       `json:"updated_at"`
 }
 
 // ValidateAgentAutonomy validates that autonomy is one of the allowed values (approval, suggest, full).

@@ -16,9 +16,10 @@ import (
 // SessionToolClose is the facilitator's termination power (channel-teams D2):
 // a registry tool registered under its dotted name, so pre_tool_use hooks
 // target it by exact name in matchers. Exposure is decided at resolution —
-// appended to the effective allowlist only for a work-session channel run
-// whose running agent holds the facilitator role, stripped otherwise — and
-// the constructor re-checks the same conditions as a backstop.
+// un-scoped out of the agent's denylist (or appended to a per-turn override)
+// only for a work-session channel run whose running agent holds the
+// facilitator role, stripped otherwise — and the constructor re-checks the
+// same conditions as a backstop.
 const SessionToolClose = "session.close"
 
 // SessionToolNames is the work-session toolset, in catalog order. Empty for
@@ -44,9 +45,11 @@ type ProjectSpace interface {
 }
 
 // scopeSessionToolsIn returns the allowlist with session.close appended for
-// runs that may close a session (after the caller's allowlist choice, before
-// the workspace gate, so the settings toggle still governs it — the channel
-// toolset precedent). The input slice is not mutated.
+// runs that may close a session. This is the per-turn override path —
+// denylist resolution un-scopes it instead (effectiveToolsFromDenylist) —
+// and the append lands before the workspace gate, so the settings toggle
+// still governs it (the channel toolset precedent). The input slice is not
+// mutated.
 func scopeSessionToolsIn(allowlist []string, expose bool) []string {
 	if !expose {
 		return allowlist
@@ -58,9 +61,10 @@ func scopeSessionToolsIn(allowlist []string, expose bool) []string {
 }
 
 // withoutSessionTools strips session.close — runs outside its exposure
-// conditions never see it, even when an agent allowlisted it (exposure is
-// facilitator-session-run-only; the tool binds to per-run session state a
-// direct chat does not have).
+// conditions never see it (exposure is facilitator-session-run-only; the
+// tool binds to per-run session state a direct chat does not have). Denylist
+// resolution carries the name in the catalog, so this strip is what removes
+// it.
 func withoutSessionTools(names []string) []string {
 	out := make([]string, 0, len(names))
 	for _, name := range names {

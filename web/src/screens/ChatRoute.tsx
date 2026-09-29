@@ -1,9 +1,9 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { AssistantRuntimeProvider } from '@assistant-ui/react';
 import { useStore, useWorkspace, useThread } from '../store';
 import { useChatRuntime } from '../chat/runtime';
-import type { AttachmentChip } from '../lib/attachments';
+import type { AttachmentChip, DocumentMentionChip } from '../lib/attachments';
 import { ErrorState } from '../components/ErrorState';
 import { ChatView } from '../components/chat/ChatView';
 import { RightPanel } from '../components/chat/RightPanel';
@@ -60,6 +60,20 @@ function ChatRouteActive({
   const openMembersTab = () =>
     useStore.getState().openPanelTab({ kind: 'members', title: 'Members', payload: { chatId: cleanId } });
 
+  // Mention bridge (rework-document-chat-surfaces 2.2, design D3): the
+  // composer registers its insertion callback here through ChatView (ref
+  // style — registering never re-renders the composer); the panel's
+  // Documents listing calls insertDocumentMention from its source context.
+  // The callback is a plain ref read, so it stays stable across renders and
+  // no-ops in the transient window before the composer has registered.
+  const docInserterRef = useRef<((doc: { id: string; name: string }) => void) | null>(null);
+  const registerDocInserter = useCallback((fn: ((doc: { id: string; name: string }) => void) | null) => {
+    docInserterRef.current = fn;
+  }, []);
+  const insertDocumentMention = useCallback((doc: { id: string; name: string }) => {
+    docInserterRef.current?.(doc);
+  }, []);
+
   const chatAgent = agent || (channel ? (tenant?.agents || []).find((a: any) => a.id === channel.agentId) || null : null);
   const threadState = useThread(cleanId);
   const target = agent
@@ -72,6 +86,16 @@ function ChatRouteActive({
   const thread = session ? session.messages : [];
 
   const workspaceId = tenant?.sub || tenant?.id;
+
+  // Conversation-visible document lens (add-reference-documents 10.3/10.5):
+  // direct chats resolve by agent attachments + promoted, channels by channel
+  // attachments + promoted — the backend list lens implements the predicate.
+  // Person chats carry no documents surface.
+  const documentsLens: { agent?: string; channel?: string } | undefined = target.kind === 'agent'
+    ? { agent: target.obj.id }
+    : target.kind === 'channel'
+      ? { channel: target.obj.id }
+      : undefined;
 
   // Workspace entry: provision the per-workspace chat key (JWT → key
   // exchange) when the slot is absent; the connect state covers failure.
@@ -251,7 +275,9 @@ function ChatRouteActive({
           busy={ui.running}
           compacting={ui.compacting}
           allowAttachments={target.kind === 'agent'}
-          onSend={(text: string, chips?: AttachmentChip[]) =>
+          documentsLens={documentsLens}
+          registerDocInserter={registerDocInserter}
+          onSend={(text: string, chips?: (AttachmentChip | DocumentMentionChip)[]) =>
             chatRuntime.onNew(
               {
                 role: 'user',
@@ -285,6 +311,18 @@ function ChatRouteActive({
           onAddMember: addChannelMember,
           onRemoveMember: removeChannelMember,
           onOpenMember: openMember,
+          // Conversation-visible documents lens (add-reference-documents 10.5):
+          // the documents listing source fetches through it; openPanelTab is
+          // the same store action every other surface opens previews with.
+          workspaceId,
+          documentsLens,
+          openPanelTab: (entry: { kind: string; title: string; payload: Record<string, unknown> }) =>
+            useStore.getState().openPanelTab(entry),
+          // Mention bridge (rework-document-chat-surfaces 2.3/D3): the
+          // documents listing's per-row Insert action inserts the mention
+          // into the composer through the registered callback; the panel
+          // stays open — preview-then-send flow.
+          insertDocumentMention,
         }}
       />
     </>

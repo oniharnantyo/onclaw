@@ -239,6 +239,9 @@ describe('static built-in mirror (card names/icons resolve before the catalog lo
     expect(toolCatalog.displayName('web.search')).toBe('Web Search');
     expect(toolCatalog.displayName('execute')).toBe('Shell');
     expect(toolCatalog.displayName('ls')).toBe('List Files');
+    // Document family (add-reference-documents): search mirrors the backend
+    // catalog's display name and search icon.
+    expect(toolCatalog.displayName('document.search')).toBe('Search Documents');
   });
 
   it('resolves built-in icons without any catalog fetch', () => {
@@ -246,6 +249,7 @@ describe('static built-in mirror (card names/icons resolve before the catalog lo
     expect(toolCatalog.icon('web.search')).toBe('search');
     expect(toolCatalog.icon('execute')).toBe('terminal');
     expect(toolCatalog.icon('memory')).toBe('memory');
+    expect(toolCatalog.icon('document.search')).toBe('search');
   });
 
   it('resolves channel/session tool names and icons without any catalog fetch', () => {

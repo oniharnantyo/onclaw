@@ -149,23 +149,17 @@ func (s *Service) GenerateForCreate(ctx context.Context, dir, workspaceID string
 	if err != nil {
 		return err
 	}
-	if err := promptdocs.WritePromptDocuments(dir, identity, soul); err != nil {
-		return err
-	}
-	// BOOTSTRAP.md is never generated: a new agent starts with the embedded
-	// birth-sequence template, copied into its workspace directory.
-	return promptdocs.SeedBootstrapDocument(dir)
+	return promptdocs.WritePromptDocuments(dir, identity, soul)
 }
 
 // readCurrentPrompts loads the agent's generated documents for enhance mode.
-// BOOTSTRAP.md is excluded — it is a seeded template, never regenerated. A
-// directory without documents, or an unreadable one, yields nil — fresh
+// A directory without documents, or an unreadable one, yields nil — fresh
 // generation — rather than failing the run.
 func readCurrentPrompts(dir string) *GeneratedPrompts {
 	if dir == "" {
 		return nil
 	}
-	identity, soul, _, err := promptdocs.ReadPromptDocuments(dir)
+	identity, soul, err := promptdocs.ReadPromptDocuments(dir)
 	if err != nil || (identity == "" && soul == "") {
 		return nil
 	}

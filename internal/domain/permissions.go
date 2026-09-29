@@ -55,6 +55,15 @@ const (
 	// only on explicit grant.
 	IntegrationsWrite = "integrations.write"
 
+	// Reference documents permissions (workspace reference library —
+	// add-reference-documents D7). Upload, attach, edit, and delete ride the
+	// ordinary membership surfaces; reference_documents.promote guards the
+	// admin-only scope flip between attached (agent/channel tiers) and
+	// workspace (all agents). Held by built-in Owner and Admin (Superadmin
+	// via its all-workspace-permissions set), never by Member, and by custom
+	// roles only on explicit grant.
+	PermissionReferenceDocumentsPromote = "reference_documents.promote"
+
 	// Admin permissions (master tenant control plane)
 	AdminWorkspacesRead   = "admin.workspaces.read"
 	AdminWorkspacesWrite  = "admin.workspaces.write"
@@ -70,7 +79,7 @@ const (
 )
 
 var (
-	// OwnerPermissions contains all standard workspace permissions (22 permissions).
+	// OwnerPermissions contains all standard workspace permissions (23 permissions).
 	OwnerPermissions = []string{
 		WorkspaceRead,
 		WorkspaceWrite,
@@ -94,9 +103,10 @@ var (
 		SchedulerWrite,
 		GatewaysWrite,
 		IntegrationsWrite,
+		PermissionReferenceDocumentsPromote,
 	}
 
-	// AdminPermissions contains all standard workspace permissions except roles.write (21 permissions).
+	// AdminPermissions contains all standard workspace permissions except roles.write (22 permissions).
 	AdminPermissions = []string{
 		WorkspaceRead,
 		WorkspaceWrite,
@@ -119,6 +129,7 @@ var (
 		SchedulerWrite,
 		GatewaysWrite,
 		IntegrationsWrite,
+		PermissionReferenceDocumentsPromote,
 	}
 
 	// MemberPermissions contains only read permissions (7 permissions).
@@ -132,7 +143,7 @@ var (
 		SchedulerRead,
 	}
 
-	// SuperadminPermissions contains all workspace permissions plus all instance-admin permissions (28 permissions).
+	// SuperadminPermissions contains all workspace permissions plus all instance-admin permissions (29 permissions).
 	SuperadminPermissions = []string{
 		WorkspaceRead,
 		WorkspaceWrite,
@@ -156,6 +167,7 @@ var (
 		SchedulerWrite,
 		GatewaysWrite,
 		IntegrationsWrite,
+		PermissionReferenceDocumentsPromote,
 		AdminWorkspacesRead,
 		AdminWorkspacesWrite,
 		AdminUsersRead,
@@ -190,6 +202,7 @@ func AllPermissions() []string {
 		SchedulerWrite,
 		GatewaysWrite,
 		IntegrationsWrite,
+		PermissionReferenceDocumentsPromote,
 		AdminWorkspacesRead,
 		AdminWorkspacesWrite,
 		AdminUsersRead,
@@ -214,6 +227,7 @@ func IsValidPermission(p string) bool {
 		SchedulerRead, SchedulerWrite,
 		GatewaysWrite,
 		IntegrationsWrite,
+		PermissionReferenceDocumentsPromote,
 		AdminWorkspacesRead, AdminWorkspacesWrite,
 		AdminUsersRead, AdminUsersWrite,
 		AdminSuperadminsWrite,

@@ -77,7 +77,9 @@ func TestTools_ListReturnsCatalog(t *testing.T) {
 			t.Errorf("tool %s must default to enabled", tool.Key)
 		}
 	}
-	for _, want := range []string{"ls", "web.search", "browser", "execute", "web.fetch", "read_file"} {
+	// The reserved capability rows must surface in the payload toggleable and
+	// enabled-by-default (add-agent-subagents-background 5.2).
+	for _, want := range []string{"ls", "web.search", "browser", "execute", "web.fetch", "read_file", "background_shell", "subagents"} {
 		if !byKey[want] {
 			t.Errorf("expected %s in catalog response", want)
 		}

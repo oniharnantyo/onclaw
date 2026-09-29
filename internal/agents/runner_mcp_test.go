@@ -155,8 +155,11 @@ func (s *mcpStubStatus) lastAgentFor(serverID string) (mcpStatusWrite, bool) {
 
 // setupMCPRunner seeds a minimal workspace/agent and returns a runner whose
 // MCP seams are stubs. Callers then wire policy/manager/status through the
-// WithMCP* options and drive resolve directly.
-func setupMCPRunner(t *testing.T, agentTools []string) (*Runner, *domain.Workspace, *domain.Agent, ExecRequest) {
+// WithMCP* options and drive resolve directly. The request carries an empty
+// per-turn AllowedTools override so the built-in surface is empty — the tests
+// isolate the MCP contribution (agent-tools-denylist D2: the override is an
+// explicit request-scoped allowlist).
+func setupMCPRunner(t *testing.T) (*Runner, *domain.Workspace, *domain.Agent, ExecRequest) {
 	t.Helper()
 	ctx := context.Background()
 	st := fake.New()
@@ -189,7 +192,6 @@ func setupMCPRunner(t *testing.T, agentTools []string) (*Runner, *domain.Workspa
 		ProviderID:  prov.ID,
 		Model:       "gpt-4o",
 		Temperature: 1.0,
-		Tools:       agentTools,
 	}
 	if err := st.Agents().Create(ctx, ag); err != nil {
 		t.Fatalf("create agent: %v", err)
@@ -210,11 +212,12 @@ func setupMCPRunner(t *testing.T, agentTools []string) (*Runner, *domain.Workspa
 	)
 
 	req := ExecRequest{
-		WorkspaceID: ws.ID,
-		AgentID:     ag.ID,
-		SessionID:   "sess-1",
-		UserID:      user.ID,
-		Input:       "hello",
+		WorkspaceID:  ws.ID,
+		AgentID:      ag.ID,
+		SessionID:    "sess-1",
+		UserID:       user.ID,
+		Input:        "hello",
+		AllowedTools: []string{},
 	}
 	return runner, ws, ag, req
 }
@@ -260,7 +263,7 @@ func agentServer(wsID, agentID, id, name string, enabled bool) domain.AgentMCPSe
 }
 
 func TestRunnerResolveMCPOptInFiltering(t *testing.T) {
-	runner, ws, ag, req := setupMCPRunner(t, nil)
+	runner, ws, ag, req := setupMCPRunner(t)
 
 	opted := wsServer(ws.ID, "srv-opted", "github", true, "", "", 0)
 	notOpted := wsServer(ws.ID, "srv-other", "linear", true, "", "", 0)
@@ -298,7 +301,7 @@ func TestRunnerResolveMCPOptInFiltering(t *testing.T) {
 }
 
 func TestRunnerResolveMCPMasterSwitchWins(t *testing.T) {
-	runner, ws, ag, req := setupMCPRunner(t, nil)
+	runner, ws, ag, req := setupMCPRunner(t)
 
 	paused := wsServer(ws.ID, "srv-paused", "github", false, "", "", 0) // opted in, but paused
 	policy := &mcpStubPolicy{workspace: map[string][]domain.WorkspaceMCPServer{ws.ID: {paused}}}
@@ -326,7 +329,7 @@ func TestRunnerResolveMCPMasterSwitchWins(t *testing.T) {
 }
 
 func TestRunnerResolveMCPDeadServerSkipsAndMarks(t *testing.T) {
-	runner, ws, ag, req := setupMCPRunner(t, nil)
+	runner, ws, ag, req := setupMCPRunner(t)
 
 	alive := wsServer(ws.ID, "srv-alive", "github", true, "", "", 0)
 	dead := wsServer(ws.ID, "srv-dead", "linear", true, "", "", 0)
@@ -361,7 +364,7 @@ func TestRunnerResolveMCPDeadServerSkipsAndMarks(t *testing.T) {
 }
 
 func TestRunnerResolveMCPStatusWriteIsBestEffort(t *testing.T) {
-	runner, ws, ag, req := setupMCPRunner(t, nil)
+	runner, ws, ag, req := setupMCPRunner(t)
 
 	alive := wsServer(ws.ID, "srv-alive", "github", true, "", "", 0)
 	policy := &mcpStubPolicy{workspace: map[string][]domain.WorkspaceMCPServer{ws.ID: {alive}}}
@@ -384,7 +387,7 @@ func TestRunnerResolveMCPStatusWriteIsBestEffort(t *testing.T) {
 }
 
 func TestRunnerResolveMCPSuccessRefreshesStatus(t *testing.T) {
-	runner, ws, ag, req := setupMCPRunner(t, nil)
+	runner, ws, ag, req := setupMCPRunner(t)
 
 	// Row was previously errored by a probe; a successful runtime connection
 	// refreshes the stored status and tool count.
@@ -421,7 +424,7 @@ func TestRunnerResolveMCPSuccessRefreshesStatus(t *testing.T) {
 }
 
 func TestRunnerResolveMCPPrivateServers(t *testing.T) {
-	runner, ws, ag, req := setupMCPRunner(t, nil)
+	runner, ws, ag, req := setupMCPRunner(t)
 
 	mine := agentServer(ws.ID, ag.ID, "srv-mine", "private-one", true)
 	other := agentServer(ws.ID, "agent-B", "srv-other-agent", "private-two", true)
@@ -460,7 +463,7 @@ func TestRunnerResolveMCPPrivateServers(t *testing.T) {
 }
 
 func TestRunnerResolveMCPNamingCollisions(t *testing.T) {
-	runner, ws, ag, req := setupMCPRunner(t, nil)
+	runner, ws, ag, req := setupMCPRunner(t)
 
 	// Two servers whose names collide after sanitization ("GH 1" / "GH_1"
 	// both → gh_1), plus a clean one.
@@ -489,11 +492,12 @@ func TestRunnerResolveMCPNamingCollisions(t *testing.T) {
 	}
 }
 
-func TestRunnerResolveMCPIgnoresToolsAllowlist(t *testing.T) {
-	// The agent's tools allowlist is empty: no built-in registry tools may
-	// resolve, yet the opted-in MCP server's tools still do (agent-runtime
-	// delta: MCP exposure is independent of the allowlist and the gate).
-	runner, ws, ag, req := setupMCPRunner(t, nil)
+func TestRunnerResolveMCPExposureIndependentOfTurnOverride(t *testing.T) {
+	// The per-turn AllowedTools override is an empty allowlist: no built-in
+	// registry tools may resolve, yet the opted-in MCP server's tools still do
+	// (agent-runtime delta: MCP exposure is independent of the turn's tool
+	// selection — denylist or override — and of the gate).
+	runner, ws, ag, req := setupMCPRunner(t)
 
 	opted := wsServer(ws.ID, "srv-opted", "github", true, "", "", 0)
 	policy := &mcpStubPolicy{workspace: map[string][]domain.WorkspaceMCPServer{ws.ID: {opted}}}
@@ -511,7 +515,7 @@ func TestRunnerResolveMCPIgnoresToolsAllowlist(t *testing.T) {
 	}
 	for _, name := range toolNamesOf(t, tools) {
 		if name != "mcp__github__create_issue" {
-			t.Fatalf("built-in tool %q leaked through an empty allowlist", name)
+			t.Fatalf("built-in tool %q leaked through an empty override", name)
 		}
 	}
 	if len(tools) != 1 {
@@ -522,7 +526,7 @@ func TestRunnerResolveMCPIgnoresToolsAllowlist(t *testing.T) {
 func TestRunnerResolveMCPDefaultsContributeNothing(t *testing.T) {
 	// No MCP options wired: resolution must yield zero MCP tools with no
 	// nil-dereference, exactly as before the MCP integration.
-	runner, ws, ag, req := setupMCPRunner(t, nil)
+	runner, ws, ag, req := setupMCPRunner(t)
 
 	_, tools, err := runner.resolve(context.Background(), req, ws, ag, nil)
 	if err != nil {
@@ -536,7 +540,7 @@ func TestRunnerResolveMCPDefaultsContributeNothing(t *testing.T) {
 func TestRunnerResolveMCPPolicyErrorFailsResolution(t *testing.T) {
 	// A store-level policy failure is infrastructure failure: unlike a dead
 	// server it fails the resolution, like every other store error.
-	runner, ws, ag, req := setupMCPRunner(t, nil)
+	runner, ws, ag, req := setupMCPRunner(t)
 
 	policy := &mcpStubPolicy{policyErr: errors.New("db down")}
 	runner.mcpPolicy = policy

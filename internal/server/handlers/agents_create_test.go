@@ -119,22 +119,18 @@ func TestCreateAgent_GeneratesBeforePersist(t *testing.T) {
 		t.Fatalf("expected agent row after successful create: %v", err)
 	}
 
-	// …and the workspace directory holds the generated documents, with
-	// BOOTSTRAP.md seeded from the embedded template.
+	// …and the workspace directory holds the generated documents, with no
+	// seeded BOOTSTRAP.md (the birth ritual is removed).
 	dir := filepath.Join(wsDir, ws.Slug, "agents", "scout")
-	id, soul, _, err := promptdocs.ReadPromptDocuments(dir)
+	id, soul, err := promptdocs.ReadPromptDocuments(dir)
 	if err != nil {
 		t.Fatalf("read documents: %v", err)
 	}
 	if id != "# Identity\nCreated agent identity." || soul != "# Soul\nCreated agent soul." {
 		t.Errorf("unexpected document contents: %q / %q", id, soul)
 	}
-	boot, err := os.ReadFile(filepath.Join(dir, "BOOTSTRAP.md"))
-	if err != nil {
-		t.Fatalf("read BOOTSTRAP.md: %v", err)
-	}
-	if string(boot) != promptdocs.BootstrapTemplate {
-		t.Errorf("BOOTSTRAP.md = %q, want the embedded template", string(boot))
+	if _, err := os.Stat(filepath.Join(dir, "BOOTSTRAP.md")); !os.IsNotExist(err) {
+		t.Errorf("create must not seed BOOTSTRAP.md, stat err: %v", err)
 	}
 }
 

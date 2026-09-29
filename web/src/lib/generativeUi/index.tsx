@@ -6,7 +6,6 @@
 
 import "./generativeUi.css";
 
-import { DataTable } from "@/components/assistant-ui/elements/data-table";
 import { NumberTicker } from "@/components/assistant-ui/elements/number-ticker";
 import { ActivityGraph } from "@/components/assistant-ui/elements/activity-graph";
 import { SpecSheet } from "@/components/assistant-ui/elements/spec-sheet";
@@ -21,17 +20,14 @@ import { registerSpecRenderer, registerToolRenderer } from "./registry";
 import {
   FENCE_TAGS,
   FenceDiagramCard,
-  FenceMathBlock,
   activityOf,
   compareOf,
   diagramOf,
   flowOf,
   jobOf,
-  mathOf,
   mermaidOf,
   scoreOf,
   specOf,
-  tableOf,
   tickerOf,
   uiOf,
 } from "./fences";
@@ -40,6 +36,7 @@ import { PreviewCard } from "./PreviewCard";
 import { renderTodoCard } from "./TodoChecklistCard";
 import { TimelineCard, parseTimelineEvents } from "./TimelineCard";
 import { WebSearchCard, parseSearchSources } from "./WebSearchCard";
+import { DocumentSearchCard, parseDocumentHits } from "./DocumentSearchCard";
 
 /** The pinned registry universe — the coverage-guard test asserts the live
  * registries equal these sets so a removed entry cannot ship silently
@@ -51,7 +48,7 @@ import { WebSearchCard, parseSearchSources } from "./WebSearchCard";
 export const GENERATIVE_UI_TYPES = FENCE_TAGS;
 
 /** Tool-keyed registry universe (cards keyed on the tool id, not a `$type`). */
-export const GENERATIVE_UI_TOOLS = ['todo_write', 'web.search'] as const;
+export const GENERATIVE_UI_TOOLS = ['todo_write', 'web.search', 'document.search'] as const;
 
 // --- $type envelopes (echo tools, design D3) -------------------------------
 
@@ -98,19 +95,6 @@ registerSpecRenderer('preview', ({ props, ctx }) => {
 // (cards pop in complete — the design accepts it), progress's onCancel is
 // dropped (a fence has nothing to cancel), and job progress converts its
 // 0–100 contract to the element's 0–1 fraction.
-
-registerSpecRenderer('table', ({ props }) => {
-  const table = tableOf(props);
-  if (!table) return null;
-  return (
-    <DataTable
-      caption={table.caption}
-      columns={table.columns}
-      rows={table.rows}
-      className="mb-2"
-    />
-  );
-});
 
 registerSpecRenderer('ticker', ({ props }) => {
   const tick = tickerOf(props);
@@ -208,12 +192,6 @@ registerSpecRenderer('flow', ({ props }) => {
   );
 });
 
-registerSpecRenderer('math', ({ props }) => {
-  const math = mathOf(props);
-  if (!math) return null;
-  return <FenceMathBlock label={math.label} steps={math.steps}/>;
-});
-
 registerSpecRenderer('mermaid', ({ props }) => {
   const src = mermaidOf(props);
   if (!src) return null;
@@ -261,6 +239,21 @@ registerToolRenderer('todo_write', ({ args, res, ctx }) => {
   return renderTodoCard({ args, res, ctx });
 });
 
+// Document search (add-reference-documents 10.1): the binding envelope carries
+// the query too, so the pill survives even when the model omitted it from the
+// call args. Same flow as web.search: in flight → query pill + searching
+// status; done with an unparsable envelope → generic fallback (never both).
+registerToolRenderer('document.search', ({ args, res, ms, ctx }) => {
+  const argQuery = args && typeof args.query === 'string' ? args.query : '';
+  const envelopeQuery = res && typeof res.query === 'string' ? res.query : '';
+  const query = argQuery.trim() ? argQuery : envelopeQuery;
+  // Without a usable query, or on a failed call, the generic card stays.
+  if (!query.trim() || ctx.error) return null;
+  const hits = parseDocumentHits(res);
+  if (!hits && !ctx.running) return null;
+  return <DocumentSearchCard query={query} hits={hits ?? []} running={ctx.running} ms={ms} live={ctx.live}/>;
+});
+
 // --- public re-exports ------------------------------------------------------
 
 export type { GenerativeUiCtx, SpecRenderInput, SpecRenderer, ToolRenderInput, ToolRenderer } from './registry';
@@ -277,5 +270,7 @@ export { parseChartSpec } from './ChartCard';
 export { parseTodoPlan, todoRatio } from './TodoChecklistCard';
 export { parseTimelineEvents } from './TimelineCard';
 export { parseSearchSources } from './WebSearchCard';
+export { parseDocumentHits } from './DocumentSearchCard';
 export { TodoUpdatedSummary } from './TodoChecklistCard';
+export { TodoPlanRows } from './TodoChecklistCard';
 export { FENCE_TAGS, isFenceTag, parseFence, uiOf } from './fences';

@@ -16,6 +16,7 @@ import (
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/callbacks"
 	"github.com/cloudwego/eino/components/tool"
+	fsmw "github.com/cloudwego/eino/adk/middlewares/filesystem"
 	"github.com/cloudwego/eino/schema"
 	"github.com/google/uuid"
 	"github.com/oniharnantyo/onclaw/internal/agents/backend"
@@ -26,6 +27,7 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/promptdocs"
 	"github.com/oniharnantyo/onclaw/internal/providers"
+	"github.com/oniharnantyo/onclaw/internal/references"
 	"github.com/oniharnantyo/onclaw/internal/secrets"
 	"github.com/oniharnantyo/onclaw/internal/services"
 	"github.com/oniharnantyo/onclaw/internal/store"
@@ -135,6 +137,18 @@ type Runner struct {
 	// never consult it.
 	attachmentBlobs AttachmentBlobs
 
+	// Reference-document library port (add-reference-documents D6/D7/D8):
+	// backs the run-scoped references/ mount, the compose-time manifest, and
+	// document.search. Optional — nil (unwired) keeps every references
+	// capability off and runs compose exactly as before; the composition root
+	// applies WithReferences where the library exists.
+	references ReferencesLibrary
+
+	// referenceManifestBudget caps the compose-time manifest block's total
+	// size (add-reference-documents 5.2); zero selects
+	// DefaultReferenceManifestBudget.
+	referenceManifestBudget int
+
 	// Todo store (adopt-assistant-ui-elements D6): reads the session's open
 	// items for the per-turn one-line summary. An optional capability — the
 	// composition root applies WithTodoStore only where the todo tools are
@@ -177,7 +191,7 @@ func WithAgenticModelFactory(f AgenticModelFactory) RunnerOption {
 }
 
 // WithInstructionComposer overrides the instruction composer (default: the
-// AGENTS/IDENTITY/SOUL/WORKSPACE/USER/BOOTSTRAP composer).
+// AGENTS/IDENTITY/SOUL/WORKSPACE/USER/CHANNEL composer).
 func WithInstructionComposer(c InstructionComposer) RunnerOption {
 	return func(r *Runner) {
 		if c != nil {
@@ -198,10 +212,10 @@ func WithToolRegistry(reg ToolRegistry) RunnerOption {
 }
 
 // WithToolPolicy supplies the workspace tool gate consulted at resolution:
-// the workspace's enabled tool set wins over the agent allowlist and over
-// per-turn allowed-tools overrides (design.md D4). Default: a policy that
-// enables everything; the composition root wires the settings-backed
-// implementation.
+// the workspace's enabled tool set wins over the agent's disabled_tools
+// denylist and over per-turn allowed-tools overrides (design.md D4). Default:
+// a policy that enables everything; the composition root wires the
+// settings-backed implementation.
 func WithToolPolicy(policy ToolPolicy) RunnerOption {
 	return func(r *Runner) {
 		if policy != nil {
@@ -212,7 +226,8 @@ func WithToolPolicy(policy ToolPolicy) RunnerOption {
 
 // WithMCPPolicy supplies the MCP server policy consulted at resolution
 // (design.md D6): the agent's opt-in workspace servers (enabled only) plus
-// its private servers. MCP tools bypass the tools allowlist and this gate —
+// its private servers. MCP tools bypass the agent's tool selection (the
+// denylist and the per-turn override) and this gate —
 // the policy is their only authority. Default: a policy that contributes no
 // servers; the composition root wires the settings-service-backed
 // implementation (a later wave).
@@ -508,8 +523,11 @@ func NewRunner(
 		opt(r)
 	}
 	// Leftover run-scoped drop-lane materializations from crashed runs are
-	// removed at startup (attachments design D17); best-effort.
+	// removed at startup (attachments design D17); best-effort. The
+	// references-mount root is swept the same way (add-reference-documents
+	// D8).
 	sweepDropLane(r.onClawDir)
+	sweepReferencesMount(r.onClawDir)
 	r.runMgr = newRunManager(r.baseCtx, DefaultCancelEscalation)
 	return r
 }
@@ -597,6 +615,40 @@ type agentConfig struct {
 	// schemas, stamped by composeAgent at compose time. Wired from the
 	// per-run compose measure, nil in unit constructions.
 	ContextMeasure *contextSizes
+
+	// SubagentsEnabled is the delegation capability's resolved signal
+	// (add-agent-subagents-background D9; denylist D3 opt-out): the reserved
+	// `subagents` name was not denied by the agent's disabled_tools (or the
+	// per-turn override named it). composeAgent wires Compose's capability
+	// from it.
+	SubagentsEnabled bool
+
+	// ShellBackgroundEnabled is the shell lane's resolved signal (D11; the
+	// same D3 opt-out): the reserved `background_shell` name was not denied
+	// AND the shell tool is wired (task 4.2 — `background_shell` without shell
+	// resolves the lane silently off, never an error). composeAgent wires the
+	// fs middleware's background seam from it.
+	ShellBackgroundEnabled bool
+
+	// backgroundTasks is the run's ONE process-local task space
+	// (add-agent-subagents-background D5), constructed by composeAgent when
+	// either lane resolved on and handed to execute/streamResume, whose pump
+	// drains it on the run's context (D8). Unexported: runner-internal
+	// wiring, same shape as gate.
+	backgroundTasks *BackgroundTaskSpace
+
+	// References-run assembly (add-reference-documents 4.3/5.1), resolved in
+	// resolve() and consumed by composeAgent. Unexported: runner-internal
+	// wiring, same shape as backgroundTasks. referencesScope is the run's D7
+	// visibility scope; visibleDocuments the lens result the mount
+	// materialized from (nil when the library is unwired or nothing is
+	// visible); referencesMountDir the materialized mount ("" on the
+	// skip-silently paths); DocumentSearchEnabled reports the post-gate
+	// effective set carrying document.search — the manifest's gate-off skip.
+	referencesScope      domain.DocumentRunScope
+	visibleDocuments     []domain.ReferenceDocument
+	referencesMountDir   string
+	documentSearchEnabled bool
 
 	// InputModality is the turn's resolved input-modality capability
 	// (fix-image-attachment-lane D4), consumed by attachment message
@@ -708,21 +760,31 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 		workspaceTZ = time.UTC
 	}
 
-	// Tool resolution order (workspace-tool-catalog 3.2): the per-turn
-	// AllowedTools override replaces the agent allowlist, the browser facade
-	// alias expands, then the workspace gate filters — so the gate wins over
-	// both the allowlist and the override. Channel runs carry the channel
-	// toolset through the gate (exposure is channel-run-only, integrate-agent-
-	// channels task 5); non-channel runs strip it even when allowlisted.
-	// session.close rides the same gate, exposed only to the facilitator of a
-	// run minted inside a work session (channel-teams task 4).
-	allowlist := agent.Tools
+	// Tool resolution order (workspace-tool-catalog 3.2; agent-tools-denylist
+	// D2/D3): the agent's disabled_tools denylist inverts the selection stage —
+	// the effective set is the full catalog minus the denylist, so an empty
+	// denylist exposes everything and unknown names are inert. The per-turn
+	// AllowedTools override REPLACES denylist resolution for the turn: it
+	// stays an explicit request-scoped allowlist (v1 and the eval fixtures
+	// narrow through it), so it only ever narrows. Channel runs un-scope the
+	// channel toolset out of the denylist — exposure is channel-run-only and
+	// the denylist cannot opt an agent out of its room's tools
+	// (integrate-agent-channels task 5); session.close rides the same
+	// un-scoping for the facilitator of a run minted inside a work session
+	// (channel-teams task 4). The workspace gate then filters — the gate wins
+	// over both the denylist and the override — and non-channel runs strip the
+	// channel toolset even though the denylist never selected it.
+	var effective []string
 	if req.AllowedTools != nil {
-		allowlist = req.AllowedTools
+		// Per-turn override: an explicit allowlist replaces denylist
+		// resolution, so the context toolsets append to it as before.
+		allowlist := scopeChannelToolsIn(req.AllowedTools, req.ChannelID != "")
+		allowlist = scopeSessionToolsIn(allowlist, exposeSessionClose)
+		effective = allowlist
+	} else {
+		effective = effectiveToolsFromDenylist(r.toolRegistry, agent.DisabledTools, req.ChannelID != "", exposeSessionClose)
 	}
-	allowlist = scopeChannelToolsIn(allowlist, req.ChannelID != "")
-	allowlist = scopeSessionToolsIn(allowlist, exposeSessionClose)
-	effective, err := r.applyToolGate(ctx, req.WorkspaceID, allowlist)
+	effective, err = r.applyToolGate(ctx, req.WorkspaceID, effective)
 	if err != nil {
 		return cfg, nil, fmt.Errorf("apply tool policy: %w", err)
 	}
@@ -734,11 +796,26 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 	}
 	// Unattended runs share the anti-runaway strip (scheduler
 	// integrate-scheduler D6; heartbeat add-agent-heartbeat D10): the strip
-	// applies after the allowlist and the workspace gate, so neither can
+	// applies after denylist resolution and the workspace gate, so neither can
 	// re-expose the excluded tools — an unattended run cannot mint schedulers
 	// and cannot silently edit or destroy a human's memory.
 	if origin := normalizeOrigin(req.Origin); origin == OriginScheduler || origin == OriginHeartbeat {
 		effective = withoutSchedulerTools(effective)
+	}
+
+	// References manifest gate (add-reference-documents D6): the compose-time
+	// manifest is injected only when the run's post-gate effective set still
+	// carries document.search — gate-off agents get no search and no
+	// manifest. Resolved here, on the final effective set (the local `tools`
+	// slice below shadows the tools package). The mount half below is
+	// independent of the gate: visible documents stay readable through the
+	// jail for document.read even when search is gated off.
+	documentSearchEnabled := false
+	for _, name := range effective {
+		if name == tools.NameDocumentSearch {
+			documentSearchEnabled = true
+			break
+		}
 	}
 
 	toolConfigs, err := r.toolPolicy.ToolConfigs(ctx, req.WorkspaceID)
@@ -763,6 +840,38 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 		readOnlyRoots = append(readOnlyRoots, dropDir)
 	}
 
+	// References-run assembly (add-reference-documents 4.3/5.1): the D7
+	// visibility scope, resolved once and shared by the mount, the manifest,
+	// and document.search's construction binding. The mount materializes
+	// here — the drop-lane posture again: a failure fails the run before any
+	// model call, and the directory joins the read-only roots below so the
+	// jail resolves references/<name> but write tools reject the subtree.
+	scope := referencesRunScope(req)
+	refMountDir, visibleDocs, err := r.materializeReferencesMount(ctx, req, scope)
+	if err != nil {
+		return cfg, nil, fmt.Errorf("materialize references mount: %w", err)
+	}
+	if refMountDir != "" {
+		readOnlyRoots = append(readOnlyRoots, refMountDir)
+		// File-tools lane visibility (fix-reference-document-retrieval 3.3,
+		// design D6): the read-only root above reaches document.read only —
+		// the glob/ls lane maps /workspace onto the agent dir, where no
+		// references/ exists (the 2026-09-28 session-events run probed both
+		// forms — glob "No files found", ls "no such file or directory" —
+		// then defected to the shell). Link the mount into the workspace at
+		// its documented path so every lane sees it exactly where the
+		// manifest promises; the link target stays outside the agent dir, so
+		// the jail keeps the subtree read-only for the write tools.
+		if err := linkWorkspaceReferencesMount(agentDir, refMountDir, referencesMountRoot(r.onClawDir)); err != nil {
+			return cfg, nil, fmt.Errorf("link references mount into workspace: %w", err)
+		}
+	} else {
+		// No mount this run (nothing visible or the library is unwired):
+		// retire a dangling link a previous run left behind, so the
+		// workspace never advertises a dead references/ entry (best-effort).
+		unlinkStaleWorkspaceReferencesMount(agentDir, referencesMountRoot(r.onClawDir))
+	}
+
 	tctx := ToolContext{
 		WorkspaceSlug: ws.Slug,
 		AgentSlug:     agent.Slug,
@@ -784,6 +893,10 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 	if r.attachmentBlobs != nil {
 		tctx.DocumentPublisher = r.attachmentBlobs
 	}
+	if r.references != nil {
+		tctx.Documents = r.references
+		tctx.IsChannelSession = scope.IsChannelSession
+	}
 	if req.ChannelID != "" {
 		tctx.ChannelContext = r.channelContext
 		tctx.ChannelFeed = r.channelFeed
@@ -802,7 +915,7 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 
 	// MCP tools append after built-ins (design.md D6): governed solely by the
 	// opt-in allowlist + master switches + private attachment via the policy —
-	// deliberately independent of `effective`, the allowlist, and the gate.
+	// deliberately independent of `effective`, the denylist, and the gate.
 	// Origin-marked (connection-materialized) servers' tools are annotated
 	// with their connection identity for the connection gate (task 2.1).
 	mcpTools, mcpOrigins, err := r.resolveMCPTools(ctx, req, agent)
@@ -901,8 +1014,9 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 		AgentDir:      agentDir,
 		DisabledTools: disabledFilesystemTools(effective),
 		// The same read-only roots tool constructors saw on the ToolContext
-		// (the skills tree, readable but never writable per design D6, plus
-		// the turn's drop-lane mount — attachments design D8/D17).
+		// (the skills tree, readable but never writable per design D6, the
+		// turn's drop-lane mount — attachments design D8/D17 — and the
+		// references mount, add-reference-documents D8).
 		ReadOnlyRoots: readOnlyRoots,
 	}
 	// Shared project space (channel-teams D5): member agents of a channel run
@@ -933,6 +1047,24 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 		}
 		fsCfg.Shell = shell.WithDecisionLedger(&checkpointDecisionLedger{checkpoints: r.checkpoints})
 	}
+	// Reserved capability names resolve here (add-agent-subagents-background
+	// D9/D11, tasks 4.2/5.1), mirroring ReservedShellTool above. They are not
+	// registry entries — ResolvedTools filters the effective set through the
+	// registry, so the raw names never reach the model-facing business tool
+	// surface or the compose-time tool-schema measurement, and they name no fs
+	// middleware tool, so disabledFilesystemTools is untouched by them.
+	// Under denylist resolution they are present unless agent.DisabledTools
+	// names them (denylist D3 — default-on, opt-out); a per-turn override
+	// exposes them only when it names them. `background_shell` without the
+	// shell tool resolves the lane silently off (coherent resolution; an
+	// incoherent direct Compose call fails fast in validateConfig — the
+	// summarization-requires-filesystem precedent).
+	cfg.SubagentsEnabled = allowedSet[ReservedSubagentsTool]
+	cfg.ShellBackgroundEnabled = allowedSet[ReservedBackgroundShellTool] && allowedSet[ReservedShellTool]
+	cfg.documentSearchEnabled = documentSearchEnabled
+	cfg.referencesScope = scope
+	cfg.visibleDocuments = visibleDocs
+	cfg.referencesMountDir = refMountDir
 	cfg.Filesystem = fsCfg
 	cfg.Skills = &SkillsConfig{
 		OnClawDir:     r.onClawDir,
@@ -946,7 +1078,7 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 }
 
 // schedulerExcludedTools are the tool names an unattended run never carries,
-// regardless of its allowlist or the workspace gate — scheduler-origin runs
+// regardless of the denylist or the workspace gate — scheduler-origin runs
 // (integrate-scheduler D6) and heartbeat-origin runs (add-agent-heartbeat
 // D10): the schedule tool is filtered by its registry name — an unattended
 // run must never mint schedulers — and the memory tools are excluded so an
@@ -958,7 +1090,7 @@ var schedulerExcludedTools = map[string]struct{}{
 }
 
 // withoutSchedulerTools strips the scheduler-excluded tool names from an
-// effective allowlist (integrate-scheduler D6; heartbeat D10 shares the same
+// effective tool set (integrate-scheduler D6; heartbeat D10 shares the same
 // anti-runaway set).
 func withoutSchedulerTools(names []string) []string {
 	out := make([]string, 0, len(names))
@@ -1204,7 +1336,8 @@ func (r *Runner) injectSkillInvocations(ctx context.Context, ws *domain.Workspac
 // composeAgent validates config, builds instruction, and delegates composition to Compose.
 // req carries the run's channel coordinates: channel runs (ChannelID set)
 // compose the CHANNEL.md virtual doc and catch-up tail (design D8) in fixed
-// position between USER.md and BOOTSTRAP.md; non-channel runs compose exactly
+// position after USER.md, at the end of the workspace-document tier;
+// non-channel runs compose exactly
 // as before. The deterministic channel session id is the caller's job (D7) —
 // this branch only composes documents.
 func (r *Runner) composeAgent(
@@ -1251,11 +1384,20 @@ func (r *Runner) composeAgent(
 	// todo tools get a one-line open-items summary so the plan survives
 	// compaction — the full list stays behind todo_read. Fail-open like the
 	// memory docs: a store error drops the line, never the run. Rides the
-	// same pre-BOOTSTRAP document tier, so the trimmed unattended profiles
+	// same post-USER document tier, so the trimmed unattended profiles
 	// (which carry no per-turn injection tier) omit it with the memory docs.
 	if todoDoc := r.composeTodoSummary(ctx, req, domainAgent); todoDoc != "" {
 		memoryDocs = append(memoryDocs, todoDoc)
 	}
+
+	// Reference-documents manifest (add-reference-documents 5.1/5.2): the
+	// pre-rendered library manifest, resolved in resolve() from the same
+	// visibility lens the mount materialized from. Skipped entirely when the
+	// library is unwired, the post-gate tool set excludes document.search, or
+	// nothing is visible — the composer appends it after the memory docs, and
+	// the trimmed unattended profiles (which carry no per-run injection
+	// tier) leave it out with them.
+	referenceManifest := r.renderReferenceManifest(ctx, cfg)
 
 	instruction, err := r.instructionComposer.Compose(ctx, ComposeParams{
 		AgentDir:           cfg.Filesystem.AgentDir,
@@ -1265,6 +1407,7 @@ func (r *Runner) composeAgent(
 		Memories:           r.memories,
 		ChannelDocs:        channelDocs,
 		MemoryDocs:         memoryDocs,
+		ReferenceManifest:  referenceManifest,
 		SchedulerProfile:   schedulerRun,
 		NoReplyToken:       req.SchedulerNoReply,
 		HeartbeatProfile:   heartbeatRun,
@@ -1284,6 +1427,60 @@ func (r *Runner) composeAgent(
 		cfg.ContextMeasure.recordCompose(len(instruction), toolSchemaBytes(ctx, resolvedTools))
 	}
 
+	// The run's ONE background task space (add-agent-subagents-background
+	// D5, tasks 3.2/4.1): constructed when either resolved lane is on —
+	// delegation (SubagentsEnabled, D9 pins no separate toggle) or the shell
+	// lane — so both share one Runner, one Manager, and one task-id space.
+	// Allocation-only: composition stays pure (newBackgroundTaskSpace does no
+	// I/O). The space rides cfg.backgroundTasks to execute/streamResume, whose
+	// notification pump runs on the RUN's context and dies with it (D8) —
+	// composeAgent itself only allocates on the caller's validation ctx.
+	var backgroundCfg *SubagentBackgroundConfig
+	if cfg.SubagentsEnabled || cfg.ShellBackgroundEnabled {
+		space, err := newBackgroundTaskSpace(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("compose agent: %w", err)
+		}
+		opener, err := backend.NewTasksAppendOpener(cfg.Filesystem.AgentDir)
+		if err != nil {
+			return nil, fmt.Errorf("compose agent: %w", err)
+		}
+		cfg.backgroundTasks = space
+		if cfg.SubagentsEnabled {
+			backgroundCfg = &SubagentBackgroundConfig{
+				Runner:      space.Runner,
+				OutputStore: opener,
+				OutputDir:   TasksOutputDir,
+			}
+		}
+		if cfg.ShellBackgroundEnabled {
+			// The foreground timer is already disabled inside
+			// newBackgroundTaskSpace (ForegroundTimeoutMs pinned to -1, the
+			// D11 policy pin): foreground commands run to completion exactly
+			// as before and an explicit run_in_background is the only path
+			// into the background.
+			cfg.Filesystem.Background = &fsmw.BackgroundConfig{
+				Local: &fsmw.LocalBackgroundConfig{
+					Runner:      space.Runner,
+					OutputStore: opener,
+					OutputDir:   TasksOutputDir,
+				},
+				NotificationSessionID: func(context.Context) (string, error) {
+					return req.SessionID, nil
+				},
+			}
+		}
+	}
+
+	// Delegation-instruction observer (task 6.1): the measuring middleware
+	// reports the post-injection instruction total onto the same per-run
+	// measure the compose-time stamp used.
+	var delegationObserver func(totalInstructionBytes int)
+	if cfg.ContextMeasure != nil && cfg.SubagentsEnabled {
+		sizes := cfg.ContextMeasure
+		delegationObserver = sizes.recordDelegationInstruction
+	}
+
 	adkAgent, err := Compose(ctx, &Config{
 		Name:               domainAgent.Name,
 		Description:        domainAgent.Description,
@@ -1298,6 +1495,10 @@ func (r *Runner) composeAgent(
 		HooksBase:          cfg.HooksBase,
 		CompactionObserver: cfg.CompactionObserver,
 		gate:               cfg.Gate,
+
+		SubagentsEnabled:              cfg.SubagentsEnabled,
+		Background:                    backgroundCfg,
+		DelegationInstructionObserver: delegationObserver,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("compose agent: %w", err)
@@ -1325,6 +1526,7 @@ func (r *Runner) execute(
 	hookBase hooks.Event,
 	compaction *compactionState,
 	sizes *contextSizes,
+	bgSpace *BackgroundTaskSpace,
 ) *EventStream {
 	var sessionStore adk.SessionEventStore[*schema.AgenticMessage] = sessionAdapter
 	var cpStore adk.CheckPointStore = sessionAdapter
@@ -1366,8 +1568,49 @@ func (r *Runner) execute(
 	runner := adk.NewTypedRunner(runnerCfg)
 
 	stream := NewEventStream(128)
+	// The completion pump (add-agent-subagents-background D8) runs on the
+	// run's context — started only when the run composed a task space — so it
+	// dies with the run exactly like the tasks it reports. It appends through
+	// the same session store the run persists into, ephemeral included (the
+	// ephemeral adapter drops the records; the in-memory lane is the surface).
+	if bgSpace != nil {
+		emit := r.taskCompletionEmitter(handle.ctx, runKeyOf(req), req.SessionID, sessionStore, stream)
+		go pumpBackgroundNotifications(handle.ctx, bgSpace, emit)
+	}
 	go r.streamRun(handle, cancelOpt, runner, stream, req, userMsg, hookChain, hookBase, compaction, sizes, trace, ephemeral, sessionStore)
 	return stream
+}
+
+// taskCompletionEmitter builds the notification pump's emit callback (D8),
+// the AppendMemoryChip shape: persist the completion chip as an
+// application-owned session event through the run's session store so the
+// hydrated transcript renders it identically, then broadcast the live
+// TranscriptEvent to the primary tap and every dynamically attached
+// subscriber. TurnID stays empty: a completion is run-level honesty surface,
+// not turn material — the History projection renders empty-turn rows as
+// standalone chips without disturbing the turn-boundary synthesis.
+// Best-effort end to end; called on the run's context by the pump goroutine.
+func (r *Runner) taskCompletionEmitter(ctx context.Context, key RunKey, sessionID string, sessionStore adk.SessionEventStore[*schema.AgenticMessage], stream *EventStream) func(TaskCompletedPayload) {
+	return func(payload TaskCompletedPayload) {
+		now := time.Now().UTC()
+		ev := &adk.SessionEvent[*schema.AgenticMessage]{
+			EventID:   uuid.NewString(),
+			Timestamp: now,
+			Kind:      sessionEventKindTaskCompleted,
+			Extension: &adk.SessionExtensionEvent{Data: payload},
+		}
+		if err := sessionStore.AppendEvents(ctx, sessionID, []*adk.SessionEvent[*schema.AgenticMessage]{ev}); err != nil {
+			slog.WarnContext(ctx, "agents: persist task_completed chip failed (best-effort)",
+				"session_id", sessionID, "task_id", payload.TaskID, "error", err)
+		}
+		event := &TranscriptEvent{
+			Kind:          TranscriptEventTaskCompleted,
+			OccurredAt:    now,
+			TaskCompleted: &payload,
+		}
+		stream.Send(event)
+		r.runMgr.Broadcast(key, event)
+	}
 }
 
 // Run executes an agent turn and streams transcript events to the caller.
@@ -1584,10 +1827,12 @@ func (r *Runner) run(ctx context.Context, req ExecRequest, ephemeral bool) (*Eve
 	if len(req.Attachments) > 0 {
 		userMsg, err = r.buildAttachmentUserMessage(ctx, req, cfg.InputModality)
 		if err != nil {
-			// The drop-lane materialization from resolve() would otherwise
-			// outlive a run that never started — its teardown defer lives in
-			// streamRun, which is never reached.
+			// The drop-lane and references-mount materializations from
+			// resolve() would otherwise outlive a run that never started —
+			// their teardown defers live in streamRun, which is never
+			// reached.
 			r.teardownDropLane(req)
+			r.teardownReferencesMount(req)
 			return nil, fmt.Errorf("agent.Run: %w", err)
 		}
 	}
@@ -1620,7 +1865,7 @@ func (r *Runner) run(ctx context.Context, req ExecRequest, ephemeral bool) (*Eve
 		r.indexAgentSession(ctx, req, title)
 	}
 
-	return r.execute(handle, cancelOpt, adkAgent, req, userMsg, sessionAdapter, ephemeral, hookChain, hookBase, compaction, sizes), nil
+	return r.execute(handle, cancelOpt, adkAgent, req, userMsg, sessionAdapter, ephemeral, hookChain, hookBase, compaction, sizes, cfg.backgroundTasks), nil
 }
 
 // resolveHooksChain resolves the run's hook chain (D2). A runner whose
@@ -1904,7 +2149,7 @@ func renderMemoryCandidatesDoc(candidates []memory.Candidate) string {
 // (adopt-assistant-ui-elements D6): counts by status plus the revision, with
 // the full list one todo_read away. Present-only — an unwired store, an
 // agent without the tools, a read failure, and a plan with nothing open all
-// compose without the line. Callers merge it into the pre-BOOTSTRAP document
+// compose without the line. Callers merge it into the post-USER document
 // tier, so the trimmed unattended profiles omit it with the memory docs.
 func (r *Runner) composeTodoSummary(ctx context.Context, req ExecRequest, agent *domain.Agent) string {
 	if r.todos == nil || !agentExposesTodoTools(agent, req) {
@@ -1932,20 +2177,27 @@ func (r *Runner) composeTodoSummary(ctx context.Context, req ExecRequest, agent 
 	return fmt.Sprintf("Open todos: %d pending, %d active, revision %d — call todo_read for the full list.", pending, active, list.Revision)
 }
 
-// agentExposesTodoTools reports whether the turn's effective allowlist names
-// either todo tool. The per-turn AllowedTools override replaces the agent
-// allowlist, mirroring the selection in resolve.
+// agentExposesTodoTools reports whether the turn's effective tool selection
+// exposes the todo surface the summary serves: the summary directs the model
+// to todo_read, so it composes exactly when todo_read is not denied (denylist
+// D2 — default-on; denying todo_write alone leaves the read tool, and the
+// summary, exposed). The per-turn AllowedTools override replaces denylist
+// resolution with an explicit allowlist, mirroring the selection in resolve.
 func agentExposesTodoTools(agent *domain.Agent, req ExecRequest) bool {
-	allowlist := agent.Tools
 	if req.AllowedTools != nil {
-		allowlist = req.AllowedTools
+		for _, name := range req.AllowedTools {
+			if name == tools.NameTodoRead {
+				return true
+			}
+		}
+		return false
 	}
-	for _, name := range allowlist {
-		if name == tools.NameTodoWrite || name == tools.NameTodoRead {
-			return true
+	for _, name := range agent.DisabledTools {
+		if name == tools.NameTodoRead {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 // AppendMemoryChip is the memory worker's ChipSink (task 3.6, D11): after the
@@ -2060,8 +2312,10 @@ func (r *Runner) streamRun(
 	defer r.logTapDrops(stream, req)
 	// Registered last so it runs first: the materialized drop-lane dir is
 	// removed before the stream closes, so a consumer observing the terminal
-	// event (or EOF) never finds the dir behind it.
+	// event (or EOF) never finds the dir behind it. The references mount
+	// rides the same lifecycle (add-reference-documents D8).
 	defer r.teardownDropLane(req)
+	defer r.teardownReferencesMount(req)
 	r.teardownBrowserSession(req)
 
 	// The run context carries the turn's trace attribution (D2) and the
@@ -2276,6 +2530,40 @@ func (r *Runner) drainAgentEvents(
 		if !ok {
 			break
 		}
+
+		// Child-event filtering (add-agent-subagents-background D7, tasks 5.3
+		// and 5.4): the delegation middleware forwards the child run's events
+		// onto the parent's stream, and a child event never reaches the parent
+		// transcript — no text deltas, no reasoning, no tool-call cards. The
+		// delegation renders as exactly one tool-call card from its own
+		// started/finished events, which ride the normal lane on the parent
+		// session. The parent runner already skips foreign events for
+		// persistence, so live and hydrated views agree by construction.
+		//
+		// Two lanes tag a forwarded event. The session variant carries the
+		// child session id when variant fields survive to the live lane (runs
+		// composed with WithTimelineEvents). The production default strips the
+		// variant (the runner's live lane keeps variant fields only for its own
+		// streaming delivery), and the surviving marker is the RunPath: the
+		// agent tool extends every forwarded event with the delegation path
+		// (parent step + child step), while the parent's own events carry
+		// exactly one step — a top-level OnClaw run is a single agent.
+		//
+		// Child token usage is harvested before the skip (task 5.4) so the
+		// run's totals include what the delegation spent.
+		if variant := event.SessionEventVariant; variant != nil && variant.SessionID != "" && variant.SessionID != req.SessionID {
+			if variant.Event != nil && variant.Event.Message != nil &&
+				string(variant.Event.Message.Role) == string(schema.AgenticRoleTypeAssistant) &&
+				variant.Event.Message.ResponseMeta != nil {
+				accumulateTokenUsage(&usage, variant.Event.Message.ResponseMeta.TokenUsage)
+			}
+			continue
+		}
+		if len(event.RunPath) > 1 {
+			accumulateChildEventUsage(&usage, event.Output)
+			continue
+		}
+
 		now := time.Now().UTC()
 
 		// Propagate turn ID from session events.
@@ -2629,6 +2917,37 @@ func accumulateTokenUsage(acc *UsagePayload, u *schema.TokenUsage) {
 	acc.FinalInputTokens = u.PromptTokens
 }
 
+// accumulateChildEventUsage harvests the provider usage one forwarded child
+// event carries (add-agent-subagents-background task 5.4): streaming events
+// report usage on their final frame, complete assistant messages on
+// ResponseMeta. The event's content is otherwise discarded — the child's
+// transcript never surfaces on the parent stream (design.md D7).
+func accumulateChildEventUsage(acc *UsagePayload, output *adk.TypedAgentOutput[*schema.AgenticMessage]) {
+	if output == nil || output.MessageOutput == nil {
+		return
+	}
+	mo := output.MessageOutput
+	if mo.IsStreaming && mo.MessageStream != nil {
+		var frameUsage *schema.TokenUsage
+		for {
+			frame, err := mo.MessageStream.Recv()
+			if err != nil {
+				break
+			}
+			if frame != nil && frame.ResponseMeta != nil && frame.ResponseMeta.TokenUsage != nil {
+				frameUsage = frame.ResponseMeta.TokenUsage
+			}
+		}
+		accumulateTokenUsage(acc, frameUsage)
+		return
+	}
+	if mo.Message != nil &&
+		string(mo.Message.Role) == string(schema.AgenticRoleTypeAssistant) &&
+		mo.Message.ResponseMeta != nil {
+		accumulateTokenUsage(acc, mo.Message.ResponseMeta.TokenUsage)
+	}
+}
+
 // teardownBrowserSession closes any browser session the execution opened. It
 // is a no-op when the tool registry holds no per-session resources.
 func (r *Runner) teardownBrowserSession(req ExecRequest) {
@@ -2810,7 +3129,7 @@ func (r *Runner) Resume(ctx context.Context, req ExecRequest, approval *Approval
 	})
 
 	stream := NewEventStream(128)
-	go r.streamResume(handle, cancelOpt, adkRunner, stream, req, approval, approved, hookChain, hookBase, sizes, trace, sessionAdapter)
+	go r.streamResume(handle, cancelOpt, adkRunner, stream, req, approval, approved, hookChain, hookBase, sizes, trace, sessionAdapter, cfg.backgroundTasks)
 	return stream, nil
 }
 
@@ -2834,6 +3153,7 @@ func (r *Runner) streamResume(
 	sizes *contextSizes,
 	trace *runTrace,
 	sessionStore adk.SessionEventStore[*schema.AgenticMessage],
+	bgSpace *BackgroundTaskSpace,
 ) {
 	key := runKeyOf(req)
 	defer handle.finish()
@@ -2846,8 +3166,10 @@ func (r *Runner) streamResume(
 	defer r.logTapDrops(stream, req)
 	// Registered last so it runs first: the materialized drop-lane dir is
 	// removed before the stream closes, so a consumer observing the terminal
-	// event (or EOF) never finds the dir behind it.
+	// event (or EOF) never finds the dir behind it. The references mount
+	// rides the same lifecycle (add-reference-documents D8).
 	defer r.teardownDropLane(req)
+	defer r.teardownReferencesMount(req)
 	r.teardownBrowserSession(req)
 
 	// Same run-context treatment as streamRun (D2/D1): trace attribution on
@@ -2858,6 +3180,14 @@ func (r *Runner) streamResume(
 	if trace != nil {
 		runCtx = r.applyTurnTrace(runCtx, req, *trace)
 		runOpts = append(runOpts, r.traceRunOptions()...)
+	}
+
+	// Same pump contract as execute (D8): the resumed turn's own task space —
+	// composeAgent builds a fresh one per composition — drains on the run's
+	// context only.
+	if bgSpace != nil {
+		emit := r.taskCompletionEmitter(handle.ctx, key, req.SessionID, sessionStore, stream)
+		go pumpBackgroundNotifications(handle.ctx, bgSpace, emit)
 	}
 
 	iter, err := runner.ResumeWithParams(runCtx, ResumeCheckpointID(req.SessionID), &adk.ResumeParams{
@@ -2898,23 +3228,34 @@ type ComposeParams struct {
 	Memories  store.MemoryStore
 	// ChannelDocs are the pre-rendered channel virtual documents (the
 	// CHANNEL.md doc and the catch-up tail, integrate-agent-channels D8),
-	// inserted in fixed position between USER.md and BOOTSTRAP.md. Empty for
+	// inserted in fixed position after USER.md, at the end of the
+	// workspace-document tier. Empty for
 	// non-channel runs — composition is byte-identical without them.
 	ChannelDocs []string
 	// MemoryDocs are the pre-rendered memory prefetch documents
 	// (integrate-agent-zero-memory 4.2): the bounded, cited candidate section
 	// the intent gate routed, inserted in fixed position after the channel
-	// docs and before BOOTSTRAP.md. Empty unless the gate found the turn
+	// docs, at the end of the workspace-document tier. Empty unless the gate
+	// found the turn
 	// needs deep memory and prefetch returned candidates. The scheduler and
 	// heartbeat profiles omit it entirely — unattended runs carry no memory
 	// document tier (their trimmed stacks drop even the shared-memory
 	// subsection), and the runner never gates those origins.
 	MemoryDocs []string
+	// ReferenceManifest is the pre-rendered reference-documents manifest
+	// (add-reference-documents 5.1/5.2): one budget-capped block describing
+	// every document visible to the run — the same D7 lens document.search
+	// and the references/ mount enforce. Inserted in fixed position after the
+	// memory docs, at the end of the workspace-document tier. Empty for
+	// unwired libraries, gate-off runs, and runs with no visible documents —
+	// and the trimmed unattended profiles omit the tier with the memory
+	// docs. The runner renders it; the composer only places it.
+	ReferenceManifest string
 	// SchedulerProfile selects the trimmed unattended-run composition
 	// (integrate-scheduler D6): the embedded base prompt plus IDENTITY/SOUL
 	// and the workspace metadata doc without the shared-memory subsection,
-	// closed by the unattended-run contract. USER.md, BOOTSTRAP.md, and
-	// channel docs are omitted entirely. False keeps the ordinary composition
+	// closed by the unattended-run contract. USER.md and channel docs are
+	// omitted entirely. False keeps the ordinary composition
 	// byte-identical.
 	SchedulerProfile bool
 	// NoReplyToken is the literal suppression token the unattended-run
@@ -2925,7 +3266,7 @@ type ComposeParams struct {
 	// HeartbeatProfile selects the heartbeat composition (add-agent-heartbeat
 	// D9): the scheduler-trimmed document stack extended with the HEARTBEAT
 	// checklist section and the workspace-activity digest, closed by the
-	// heartbeat silence contract. USER.md, BOOTSTRAP.md, the shared-memory
+	// heartbeat silence contract. USER.md, the shared-memory
 	// subsection, and channel docs are omitted exactly as in the scheduler
 	// profile. False keeps the ordinary and scheduler compositions
 	// byte-identical.
@@ -2946,7 +3287,7 @@ type InstructionComposer interface {
 	Compose(ctx context.Context, params ComposeParams) (string, error)
 }
 
-// DefaultInstructionComposer composes the 6 documents in fixed order.
+// DefaultInstructionComposer composes the documents in fixed order.
 type DefaultInstructionComposer struct{}
 
 // NewInstructionComposer returns a new DefaultInstructionComposer.
@@ -3021,17 +3362,21 @@ func (c *DefaultInstructionComposer) Compose(ctx context.Context, params Compose
 
 	// 6. Channel context (integrate-agent-channels D8): the CHANNEL.md virtual
 	// doc and the catch-up tail, pre-rendered by the runner, in fixed position
-	// between USER.md and BOOTSTRAP.md. Empty for non-channel runs.
+	// after USER.md, at the end of the workspace-document tier. Empty for
+	// non-channel runs.
 	docs = append(docs, params.ChannelDocs...)
 
 	// 7. Memory prefetch (integrate-agent-zero-memory 4.2): the cited
-	// candidate section, pre-rendered by the runner, after the channel docs
-	// and before BOOTSTRAP.md. Empty unless the intent gate routed the turn.
+	// candidate section, pre-rendered by the runner, after the channel docs.
+	// Empty unless the intent gate routed the turn.
 	docs = append(docs, params.MemoryDocs...)
 
-	// 8. BOOTSTRAP.md
-	if content := readPromptFile(params.AgentDir, "BOOTSTRAP.md"); content != "" {
-		docs = append(docs, content)
+	// 8. Reference documents (add-reference-documents 5.1/5.2): the
+	// library manifest, pre-rendered by the runner, closing the
+	// workspace-document tier after the memory docs. Empty unless the run
+	// carries document.search behind an open gate and something is visible.
+	if params.ReferenceManifest != "" {
+		docs = append(docs, params.ReferenceManifest)
 	}
 
 	return strings.Join(docs, "\n\n"), nil
@@ -3042,7 +3387,7 @@ func (c *DefaultInstructionComposer) Compose(ctx context.Context, params Compose
 // the embedded base prompt (markdown-card-elements D8 — injected per build,
 // never read from the workspace) plus IDENTITY/SOUL and the workspace
 // metadata document WITHOUT the shared-memory subsection — params.Memories is
-// never consulted. USER.md, BOOTSTRAP.md, and channel docs are omitted
+// never consulted. USER.md and channel docs are omitted
 // entirely: an unattended run has no calling user and no room to catch up on.
 func trimmedUnattendedDocs(params ComposeParams) []string {
 	var docs []string
@@ -3082,7 +3427,7 @@ func (c *DefaultInstructionComposer) composeSchedulerProfile(_ context.Context, 
 // D9, spec agent-runtime "Heartbeat execution profile"): the shared trimmed
 // stack extended with the agent's HEARTBEAT checklist and the
 // workspace-activity digest, closed by the heartbeat silence contract as the
-// last document. USER.md, BOOTSTRAP.md, the shared-memory subsection, and
+// last document. USER.md, the shared-memory subsection, and
 // channel docs are omitted exactly as in the scheduler profile.
 func (c *DefaultInstructionComposer) composeHeartbeatProfile(_ context.Context, params ComposeParams) (string, error) {
 	docs := append(trimmedUnattendedDocs(params),
@@ -3170,6 +3515,76 @@ func readPromptFile(agentDir, filename string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(data))
+}
+
+// linkWorkspaceReferencesMount exposes the run's references mount at its
+// documented workspace path (fix-reference-document-retrieval 3.3, design
+// D6): agentDir/references becomes a symlink to the run-scoped mount
+// directory, so the file-tools lane (ls, glob, grep, read_file — the fs
+// middleware's jailed backend) resolves /workspace/references exactly where
+// the base prompt, the manifest, and document.search's read hints promise
+// it. The read-only root alone reaches document.read: the glob/ls lane maps
+// /workspace onto the agent dir, and the 2026-09-28 session-events run
+// probed both forms — `glob **/…` → "No files found",
+// `ls /workspace/references` → "no such file or directory" — before
+// defecting to shell forensics. The link target sits outside the agent dir,
+// so the jail's write resolution keeps the subtree read-only; write and
+// delete tools reject it as they reject the raw mount. A non-symlink
+// occupant at the documented path (an agent-created references/ file or
+// directory) is never clobbered — the link is skipped with a warning and
+// document.read keeps its root-based resolution. Every other failure fails
+// the run before any model call: the materialization posture — a half-wired
+// mount would break the manifest's promise all over again.
+func linkWorkspaceReferencesMount(agentDir, mountDir, mountRoot string) error {
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		return fmt.Errorf("create agent workspace directory: %w", err)
+	}
+	link := filepath.Join(agentDir, references.MountDirName)
+	if target, err := os.Readlink(link); err == nil {
+		if target == mountDir {
+			return nil // already wired for this run
+		}
+		if err := os.Remove(link); err != nil {
+			return fmt.Errorf("retire stale references mount link: %w", err)
+		}
+	} else if _, statErr := os.Lstat(link); statErr == nil {
+		slog.Warn("references mount: workspace occupant at the documented path; mount link skipped",
+			"path", link)
+		return nil
+	}
+	if err := os.Symlink(mountDir, link); err != nil {
+		return fmt.Errorf("create references mount link: %w", err)
+	}
+	return nil
+}
+
+// unlinkStaleWorkspaceReferencesMount removes the workspace references link
+// when this run materialized no mount (best-effort, the teardown posture):
+// a link left by an earlier run can only dangle once its mount is gone, and
+// a dead references/ entry must not linger in the workspace listing. Only a
+// symlink pointing into the references-mount root is removed — an agent's
+// own references/ file or directory, and any other symlink, are never
+// touched. A live link (another concurrent run's mount still exists) is
+// left for the run that materialized it.
+func unlinkStaleWorkspaceReferencesMount(agentDir, mountRoot string) {
+	if agentDir == "" || mountRoot == "" {
+		return
+	}
+	link := filepath.Join(agentDir, references.MountDirName)
+	target, err := os.Readlink(link)
+	if err != nil {
+		return // absent or not a symlink: nothing platform-managed here
+	}
+	if !strings.HasPrefix(target, mountRoot+string(filepath.Separator)) {
+		return // not ours to manage
+	}
+	if _, statErr := os.Stat(link); statErr == nil {
+		return // target still alive; the owning run manages it
+	}
+	if err := os.Remove(link); err != nil {
+		slog.Warn("references mount: removing stale workspace link failed (best-effort)",
+			"link", link, "error", err)
+	}
 }
 
 func renderWorkspaceDoc(ws *domain.Workspace, sharedMemory string) string {

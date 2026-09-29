@@ -51,13 +51,19 @@ const CHART_ENVELOPE = {
 describe('generative-UI registry coverage guard (1.4)', () => {
   it('pins the registry universes', () => {
     // markdown-card-elements 2.1: the universe IS the fence tags now; the `ui`
-    // composition tag joined it with the generative-ui adoption.
-    expect(GENERATIVE_UI_TYPES).toHaveLength(15);
+    // composition tag joined it with the generative-ui adoption, and
+    // remove-markdown-redundant-fences dropped the markdown-redundant
+    // `table`/`math` tags — 13 remain.
+    expect(GENERATIVE_UI_TYPES).toHaveLength(13);
     expect(GENERATIVE_UI_TYPES).toEqual([
-      'chart', 'timeline', 'preview', 'table', 'ticker', 'activity', 'spec',
-      'compare', 'progress', 'score', 'flow', 'math', 'mermaid', 'diagram', 'ui',
+      'chart', 'timeline', 'preview', 'ticker', 'activity', 'spec',
+      'compare', 'progress', 'score', 'flow', 'mermaid', 'diagram', 'ui',
     ]);
-    expect(GENERATIVE_UI_TOOLS).toHaveLength(2);
+    expect(GENERATIVE_UI_TYPES).not.toContain('table');
+    expect(GENERATIVE_UI_TYPES).not.toContain('math');
+    // document.search joined the tool-keyed universe with
+    // add-reference-documents (10.1) — todo_write, web.search, document.search.
+    expect(GENERATIVE_UI_TOOLS).toHaveLength(3);
     expect(SNAPSHOT_TYPES).toEqual([...GENERATIVE_UI_TYPES].sort());
     expect(SNAPSHOT_TOOLS).toEqual([...GENERATIVE_UI_TOOLS].sort());
   });
@@ -279,7 +285,7 @@ describe('stagger reveal primitive (1.2)', () => {
 
 // ---------------------------------------------------------------------------
 // Fence transport mounts (markdown-card-elements 2.1/2.8, design D1/D3): each
-// of the 14 tags mounts its element through renderSpecByType with a validated
+// of the 13 tags mounts its element through renderSpecByType with a validated
 // body from parseFence — the same registered renderers the legacy $type path
 // above exercises. Mermaid/diagram run on the mocked lazy engine.
 // ---------------------------------------------------------------------------
@@ -288,7 +294,6 @@ const FENCE_BODY: Record<string, string> = {
   chart: '{"label":"Revenue","value":"$12.4k","delta":"+3","variant":"area","points":[1,2,3,4]}',
   timeline: '{"title":"Launch","events":[{"label":"Kickoff","at":"2026-01-05T09:00:00Z","state":"settled"},{"label":"Review","state":"reference"}]}',
   preview: '{"url":"https://example.com/app","html":"<p>hi</p>","title":"App"}',
-  table: '{"caption":"Models","columns":[{"key":"name","label":"Model"},{"key":"cost","label":"Cost"}],"rows":[{"name":"Atlas","cost":"$3"},{"name":"Beacon","cost":"$1"}]}',
   ticker: '{"value":4200,"label":"stars"}',
   activity: '{"title":"Deploys","total":12,"start":"2026-08-01","end":"2026-08-28","data":[{"date":"2026-08-03","count":2},{"date":"2026-08-10","count":5}]}',
   spec: '{"title":"Atlas","subtitle":"resolver agent","rows":[{"label":"Runtime","value":"go 1.27"},{"label":"Region","value":"iad","emphasis":true}]}',
@@ -296,7 +301,6 @@ const FENCE_BODY: Record<string, string> = {
   progress: '{"title":"Indexing","stages":[{"name":"fetch","weight":1},{"name":"embed","weight":3}],"stageIndex":1,"stageProgress":50,"eta":"2m"}',
   score: '{"verdict":"solid","total":7.5,"outOf":10,"criteria":[{"label":"Latency","score":8,"weight":2,"note":"p95 under 900ms"}]}',
   flow: '{"nodes":[{"id":"a","label":"fetch","column":0,"row":0,"state":"done"},{"id":"b","label":"embed","column":1,"row":0,"state":"active"}],"edges":[{"from":"a","to":"b"}]}',
-  math: '{"label":"Bayes","steps":[{"expression":"P(A|B)=\\\\frac{P(B|A)P(A)}{P(B)}","note":"posterior"}]}',
   mermaid: 'graph TD;A-->B',
   diagram: 'graph LR;X-->Y',
   // The `ui` composition tag rides the same mount path: parseFence runs uiOf
@@ -330,14 +334,6 @@ describe('fence transport mounts (2.1/2.8)', () => {
     const { container } = render(<>{mount('preview')}</>);
     expect(container.querySelector('iframe')?.getAttribute('sandbox')).toContain('allow-scripts');
     expect(container.textContent).toContain('example.com');
-  });
-
-  it('table mounts the generalized data table', () => {
-    const { container } = render(<>{mount('table')}</>);
-    expect(container.querySelector('[data-slot="data-table"]')).not.toBeNull();
-    expect(container.textContent).toContain('Models');
-    expect(container.textContent).toContain('Atlas');
-    expect(container.textContent).toContain('$3');
   });
 
   it('ticker mounts the number ticker with a formatted value', () => {
@@ -395,14 +391,6 @@ describe('fence transport mounts (2.1/2.8)', () => {
     expect(container.textContent).toContain('embed');
   });
 
-  it('math mounts the math block and maps LaTeX through the KaTeX lane', async () => {
-    const { container } = render(<>{mount('math')}</>);
-    expect(container.querySelector('[data-slot="math-block"]')).not.toBeNull();
-    // Real katex, same lazy chunk the MarkdownBody math lane uses — the
-    // stylesheet import is idempotent module cache.
-    await waitFor(() => expect(container.querySelector('.katex')).not.toBeNull());
-  });
-
   it('mermaid upgrades from raw source to the mocked lazy engine render', async () => {
     const { container } = render(<>{mount('mermaid')}</>);
     expect(container.querySelector('svg')).toBeNull(); // degraded first paint (D9)
@@ -430,7 +418,7 @@ describe('fence transport mounts (2.1/2.8)', () => {
   });
 
   it('a garbage body reaching the registry mints nothing — renderer tolerance', () => {
-    expect(renderSpecByType('table', { columns: 'junk', rows: 4 }, ctx())).toBeNull();
+    expect(renderSpecByType('activity', { title: 4, data: 'junk' }, ctx())).toBeNull();
     expect(renderSpecByType('ticker', { value: '4', label: 2 }, ctx())).toBeNull();
     expect(renderSpecByType('flow', { nodes: [], edges: 'x' }, ctx())).toBeNull();
     expect(renderSpecByType('mermaid', { code: '   ' }, ctx())).toBeNull();

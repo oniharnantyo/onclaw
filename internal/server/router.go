@@ -20,6 +20,7 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/promptgen"
 	"github.com/oniharnantyo/onclaw/internal/providers"
+	"github.com/oniharnantyo/onclaw/internal/references"
 	"github.com/oniharnantyo/onclaw/internal/scheduler"
 	"github.com/oniharnantyo/onclaw/internal/server/handlers"
 	"github.com/oniharnantyo/onclaw/internal/services"
@@ -147,6 +148,12 @@ type RouterOptions struct {
 	// recorded on the attachment row, and drop-lane runs materialize through
 	// it. nil builds a fresh resolver around the instance storage.
 	WorkspaceStorage *resolver.WorkspaceStorage
+	// References is the workspace reference-document service
+	// (add-reference-documents): the upload/manage API handler AND the
+	// runner's references capability (manifest, mount, document.search) share
+	// this one instance. nil builds a fresh one over the store aggregate and
+	// the instance storage (test-assembly fallback).
+	References *references.Service
 }
 
 // ---------------------------------------------------------------------------
@@ -297,13 +304,28 @@ func (rt *router) Engine() *gin.Engine {
 		wsStorage = resolver.New(rt.opts.Storage, rt.opts.Store.WorkspaceStorage(), rt.opts.Store.Attachments(), rt.opts.EncryptionKey, dataDir)
 	}
 
+	// Reference documents (add-reference-documents): one service shared by
+	// the documents API handler and the runner's references capability —
+	// the composition root may inject a long-lived instance; the fallback
+	// builds a fresh one over the store aggregate and the workspace storage
+	// resolver (the as-is blobs ride the workspace's configured driver, reads
+	// dispatch on the row's recorded backend —
+	// route-reference-documents-through-workspace-storage D1–D3).
+	referencesSvc := rt.opts.References
+	if referencesSvc == nil {
+		referencesSvc = references.NewService(rt.opts.Store, wsStorage)
+	}
+
 	authHandlers := handlers.NewAuthHandlers(authService, rt.opts.Storage)
 	workspaceHandlers := handlers.NewWorkspaceHandlers(rt.opts.Store, rt.opts.EncryptionKey, providerRegistry, modelCatalog, agentService, workspaceDir)
 	memberHandlers := handlers.NewMemberHandlers(rt.opts.Store, rt.opts.Storage)
 	roleHandlers := handlers.NewRoleHandlers(rt.opts.Store.Roles())
 	userHandlers := handlers.NewUserHandlers(rt.opts.Store.Users(), rt.opts.Storage)
-	fileHandlers := handlers.NewFileHandlers(rt.opts.Storage, rt.opts.Store.Attachments(), wsStorage)
+	fileHandlers := handlers.NewFileHandlers(rt.opts.Storage, rt.opts.Store.Attachments(), rt.opts.Store.ReferenceDocuments(), wsStorage)
 	attachmentHandlers := handlers.NewAttachmentsHandlers(rt.opts.Store.Attachments(), wsStorage)
+	// Reference-document library surface (add-reference-documents 6.1–6.4):
+	// the same service the runner's references capability consumes below.
+	referenceDocumentHandlers := handlers.NewReferenceDocumentsHandlers(referencesSvc, rt.opts.Store.ReferenceDocuments())
 	storageConfigHandlers := handlers.NewStorageConfigHandlers(rt.opts.Store.WorkspaceStorage(), rt.opts.EncryptionKey, s3.Probe)
 	adminWorkspaceHandlers := handlers.NewAdminWorkspaceHandlers(rt.opts.Store, rt.opts.Storage)
 	adminUserHandlers := handlers.NewAdminUserHandlers(rt.opts.Store.Users(), rt.opts.Store.Workspaces(), rt.opts.Store.Members(), rt.opts.Store.Roles())
@@ -487,6 +509,10 @@ func (rt *router) Engine() *gin.Engine {
 				agents.WithSchedulerTools(rt.opts.Store.Schedulers(), rt.opts.Store.Channels()),
 				agents.WithMemorySearch(memorySearcher),
 				agents.WithTodoTools(rt.opts.Store.Todos()),
+				// document.search (add-reference-documents 4.1): the same
+				// references capability wired below as the runner option —
+				// one library behind the tool, the manifest, and the mount.
+				agents.WithDocumentTools(referencesSvc),
 			)),
 			agents.WithEnabledSkillReader(WorkspaceSkillReader(rt.opts.Store.WorkspaceSkills())),
 			agents.WithMCPPolicy(mcp.NewSettingsPolicy(runtimeSource)),
@@ -515,6 +541,11 @@ func (rt *router) Engine() *gin.Engine {
 			// memory settings record per turn, absence resolving to the
 			// default.
 			agents.WithMemoryGateBudget(memory.SettingsGateBudget(rt.opts.Store.ToolSettings(), memoryLog)),
+			// References capability (add-reference-documents 4.3/5.1): the
+			// run-scoped references/ mount, the compose-time manifest, and
+			// document.search all resolve through the one library shared with
+			// the documents API handler above.
+			agents.WithReferences(referencesSvc),
 		)
 		channelRuntime.BindRunner(runner)
 	}
@@ -711,13 +742,15 @@ func (rt *router) Engine() *gin.Engine {
 
 	// Save-time match counts (D8) enumerate the workspace-visible toolset:
 	// the built-in tool surface (a fresh default registry's names — identical
-	// to the runner's; no tool is constructed) plus the workspace's enabled
-	// MCP servers' tools through the shared manager.
+	// to the runner's, the references capability included; no tool is
+	// constructed) plus the workspace's enabled MCP servers' tools through the
+	// shared manager.
 	hookToolValues := handlers.NewWorkspaceHookToolValueSource(
 		agents.NewDefaultToolRegistry(
 			rt.opts.Store.Memories(),
 			agents.WithSchedulerTools(rt.opts.Store.Schedulers(), rt.opts.Store.Channels()),
 			agents.WithTodoTools(rt.opts.Store.Todos()),
+			agents.WithDocumentTools(referencesSvc),
 		),
 		rt.opts.Store.WorkspaceMCPServers(),
 		mcpManager,
@@ -746,7 +779,7 @@ func (rt *router) Engine() *gin.Engine {
 	r.Use(gin.Logger())
 
 	// /v1 (OpenResponses) surface: API-key authenticated only (JWTs rejected).
-	v1Handlers := handlers.NewV1Handlers(runner, rt.opts.Store.Agents(), rt.opts.Store.SessionEvents(), rt.opts.Store.Attachments(), wsStorage, rt.opts.V1StreamKeepAlive)
+	v1Handlers := handlers.NewV1Handlers(runner, rt.opts.Store.Agents(), rt.opts.Store.SessionEvents(), rt.opts.Store.Attachments(), wsStorage, toolSettings, rt.opts.V1StreamKeepAlive)
 	v1 := r.Group("/v1")
 	v1.Use(rt.v1mw.APIKeyAuthRequired())
 	{
@@ -880,6 +913,24 @@ func (rt *router) Engine() *gin.Engine {
 				// files to their own turns; the returned capability URL is
 				// the attachment's wire token.
 				wsGroup.POST("/attachments", attachmentHandlers.Upload)
+
+				// Workspace reference-document library
+				// (add-reference-documents 6.1–6.3): upload, list lenses,
+				// metadata edit, set-complete attach edits, content
+				// replacement, and delete ride membership; promotion and
+				// demotion are the admin-gated tier flips behind the
+				// reference_documents.promote catalog entry. /documents and
+				// /documents/:id are distinct literal/prefix shapes — gin
+				// resolves them without order sensitivity.
+				wsGroup.GET("/documents", referenceDocumentHandlers.List)
+				wsGroup.POST("/documents", referenceDocumentHandlers.Upload)
+				wsGroup.PATCH("/documents/:id", referenceDocumentHandlers.Patch)
+				wsGroup.DELETE("/documents/:id", referenceDocumentHandlers.Delete)
+				wsGroup.PUT("/documents/:id/agents", referenceDocumentHandlers.PutAgents)
+				wsGroup.PUT("/documents/:id/channels", referenceDocumentHandlers.PutChannels)
+				wsGroup.PUT("/documents/:id/content", referenceDocumentHandlers.PutContent)
+				wsGroup.POST("/documents/:id/promote", rt.mw.RequirePermission(domain.PermissionReferenceDocumentsPromote), referenceDocumentHandlers.Promote)
+				wsGroup.POST("/documents/:id/demote", rt.mw.RequirePermission(domain.PermissionReferenceDocumentsPromote), referenceDocumentHandlers.Demote)
 
 				// Workspace blob-storage configuration (attachments design
 				// D16, the settings Storage pane): viewing the masked

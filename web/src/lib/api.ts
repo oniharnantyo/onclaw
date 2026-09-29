@@ -301,7 +301,6 @@ export interface ApiAgent {
   brief: string;
   identity: string;
   soul: string;
-  bootstrap: string;
   provider_id: string;
   model: string;
   /** Memory side-call override: both empty = inherit the workspace memory
@@ -324,7 +323,9 @@ export interface ApiAgent {
     image: 'supported' | 'unsupported' | 'unknown';
     pdf: 'supported' | 'unsupported' | 'unknown';
   };
-  tools: string[];
+  /** Tool denylist (refactor-agent-tools-denylist): catalog keys the agent
+   * must NOT expose — empty means every catalog tool is enabled. */
+  disabled_tools: string[];
   /** Agent-tier skill names when the server lists them; never a payload field. */
   skills?: string[];
   /** MCP server UUIDs the agent opts into (design D1). */
@@ -353,7 +354,8 @@ export interface CreateAgentPayload {
   effort?: string;
   autonomy?: AgentAutonomy;
   context_window?: number | null;
-  tools?: string[];
+  /** Tool denylist to create with; empty/omitted exposes every catalog tool. */
+  disabled_tools?: string[];
   skills?: string[];
   enabled_mcps?: string[];
   avatar?: Record<string, any>;
@@ -378,7 +380,9 @@ export interface PatchAgentPayload {
   effort?: string;
   autonomy?: AgentAutonomy;
   context_window?: number | null;
-  tools?: string[];
+  /** Replaces the stored tool denylist. A legacy `tools` key is accepted
+   * and ignored by the server. */
+  disabled_tools?: string[];
   skills?: string[];
   enabled_mcps?: string[];
   avatar?: Record<string, any>;
@@ -441,7 +445,8 @@ export interface ApiSkillInspectResult {
 
 /** Install options shared by every source on the dependency review step. */
 export interface SkillInstallOptions {
-  /** Pre-checked: add missing tools to the workspace gate and every agent allowlist. */
+  /** Pre-checked: add missing tools to the workspace gate and remove them
+   * from every agent's `disabled_tools` (refactor-agent-tools-denylist). */
   enable_everywhere?: boolean;
   /** Auto-provision python packages into the shared workspace venv. */
   provision_python?: boolean;

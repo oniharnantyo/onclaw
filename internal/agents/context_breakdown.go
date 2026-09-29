@@ -28,13 +28,17 @@ const (
 // contextSizes carries the compose-time section byte counts of one run's
 // composed context (D7): the composed instruction string and the marshaled
 // tool schemas, both captured from the real composed artifacts at compose
-// time. Written by composeAgent before the run goroutine starts (the `go`
-// statement that launches the drain establishes the happens-before), read at
-// turn end by the breakdown measurement — no locking required, the same
-// single-writer shape as the compaction estimates.
+// time. delegationReportedBytes carries the instruction total the delegation
+// measurer middleware observed AFTER the capability's BeforeAgent injections
+// (add-agent-subagents-background task 6.1). Written from composeAgent before
+// the run goroutine starts and from the measurer's BeforeAgent during the run
+// (visible to the drain loop's turn-end read through the ADK iterator's
+// channel handoff) — read at turn end by the breakdown measurement, no
+// locking required, the same single-writer shape as the compaction estimates.
 type contextSizes struct {
-	instructionBytes int
-	toolSchemaBytes  int
+	instructionBytes        int
+	toolSchemaBytes         int
+	delegationReportedBytes int
 }
 
 // recordCompose stamps the compose-time byte counts. The composed
@@ -44,6 +48,16 @@ type contextSizes struct {
 func (s *contextSizes) recordCompose(instructionBytes, toolBytes int) {
 	s.instructionBytes = instructionBytes
 	s.toolSchemaBytes = toolBytes
+}
+
+// recordDelegationInstruction stamps the post-injection instruction total the
+// measurer middleware observed (task 6.1). First write wins: BeforeAgent runs
+// once per turn, and the total only ever grows from the compose baseline — a
+// second report would carry no new information.
+func (s *contextSizes) recordDelegationInstruction(totalInstructionBytes int) {
+	if s.delegationReportedBytes == 0 {
+		s.delegationReportedBytes = totalInstructionBytes
+	}
 }
 
 // toolSchemaBytes marshals every resolved registry tool's parameter schema
@@ -130,7 +144,17 @@ func measureContextBreakdown(
 
 	var cb ContextBreakdown
 	if sizes != nil {
-		cb.Instructions = sizes.instructionBytes / contextCharPerToken
+		// The Instructions segment accounts the LARGER of the compose-time
+		// instruction and the post-injection total the delegation measurer
+		// reported (task 6.1): the subagent middleware appends its delegation
+		// instruction at BeforeAgent, so opted-in agents report a total above
+		// the compose-time string. Agents without the capability never report,
+		// and the compose-time count stands unchanged.
+		instructionBytes := sizes.instructionBytes
+		if sizes.delegationReportedBytes > instructionBytes {
+			instructionBytes = sizes.delegationReportedBytes
+		}
+		cb.Instructions = instructionBytes / contextCharPerToken
 		cb.Tools = sizes.toolSchemaBytes / contextCharPerToken
 	}
 	// The conversation and files segments measure the TRUE session window —

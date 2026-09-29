@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/oniharnantyo/onclaw/internal/domain"
-	"github.com/oniharnantyo/onclaw/internal/promptdocs"
 	"github.com/oniharnantyo/onclaw/internal/server/handlers"
 )
 
@@ -76,9 +75,10 @@ func TestWorkspaces_AtomicBirth(t *testing.T) {
 			t.Errorf("expected agent workspace directory on disk: %v", err)
 		}
 		// Birth seeds no base prompt (markdown-card-elements D8 — the L1
-		// prompt is injected per build, never materialized); the synchronous
-		// generation writes the three documents before the ready transition.
-		for _, name := range []string{"IDENTITY.md", "SOUL.md", "BOOTSTRAP.md"} {
+		// prompt is injected per build, never materialized) and no bootstrap
+		// document (remove-bootstrap-doc); the synchronous generation writes
+		// IDENTITY.md and SOUL.md before the ready transition.
+		for _, name := range []string{"IDENTITY.md", "SOUL.md"} {
 			if _, err := os.Stat(filepath.Join(expectedDir, name)); err != nil {
 				t.Errorf("expected %s in starter agent workspace dir: %v", name, err)
 			}
@@ -86,12 +86,14 @@ func TestWorkspaces_AtomicBirth(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(expectedDir, "AGENTS.md")); !os.IsNotExist(err) {
 			t.Errorf("starter agent workspace must not carry a seeded AGENTS.md, stat err: %v", err)
 		}
+		if _, err := os.Stat(filepath.Join(expectedDir, "BOOTSTRAP.md")); !os.IsNotExist(err) {
+			t.Errorf("starter agent workspace must not carry a BOOTSTRAP.md, stat err: %v", err)
+		}
 		// The birth response composes the prompt documents from those files.
 		if res.StarterAgent.Identity != "# Identity\nStub identity" ||
-			res.StarterAgent.Soul != "# Soul\nStub soul" ||
-			res.StarterAgent.Bootstrap != promptdocs.BootstrapTemplate {
-			t.Errorf("expected identity/soul/bootstrap composed from workspace files, got identity=%q soul=%q bootstrap=%q",
-				res.StarterAgent.Identity, res.StarterAgent.Soul, res.StarterAgent.Bootstrap)
+			res.StarterAgent.Soul != "# Soul\nStub soul" {
+			t.Errorf("expected identity/soul composed from workspace files, got identity=%q soul=%q",
+				res.StarterAgent.Identity, res.StarterAgent.Soul)
 		}
 		if res.StarterAgent.ProviderID != res.Provider.ID {
 			t.Errorf("expected starter agent provider_id to match created provider ID %q, got %q", res.Provider.ID, res.StarterAgent.ProviderID)

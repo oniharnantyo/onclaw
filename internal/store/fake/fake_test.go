@@ -725,7 +725,7 @@ func TestAgentStore_CRUD(t *testing.T) {
 		MaxTokens:     &maxTok,
 		Effort:        &effort,
 		ContextWindow: &cw,
-		Tools:         []string{"search", "calculator"},
+		DisabledTools: []string{"search", "calculator"},
 		EnabledMCPS:   []string{"github"},
 		Avatar:        json.RawMessage(`{"shape":"circle","color":"blue"}`),
 	}
@@ -818,7 +818,7 @@ func TestAgentStore_CRUD(t *testing.T) {
 	if found.ContextWindow == nil || *found.ContextWindow != 128000 {
 		t.Fatalf("unexpected context_window: %+v", found.ContextWindow)
 	}
-	if len(found.Tools) != 2 || len(found.EnabledMCPS) != 1 {
+	if len(found.DisabledTools) != 2 || len(found.EnabledMCPS) != 1 {
 		t.Fatalf("unexpected capabilities arrays: %+v", found)
 	}
 
@@ -867,12 +867,12 @@ func TestAgentStore_CRUD(t *testing.T) {
 	found.Role = "senior-support"
 	found.Autonomy = domain.AutonomyFull
 	found.ContextWindow = &newCW
-	found.Tools = []string{"search", "calculator", "docs"}
+	found.DisabledTools = []string{"search", "calculator", "docs"}
 	if err := s.Agents().Update(ctx, found); err != nil {
 		t.Fatalf("unexpected Update error: %v", err)
 	}
 	reloaded, _ := s.Agents().ByID(ctx, ws1.ID, a1.ID)
-	if reloaded.Name != "Support Bot Pro" || reloaded.Autonomy != domain.AutonomyFull || len(reloaded.Tools) != 3 || reloaded.ContextWindow == nil || *reloaded.ContextWindow != 200000 {
+	if reloaded.Name != "Support Bot Pro" || reloaded.Autonomy != domain.AutonomyFull || len(reloaded.DisabledTools) != 3 || reloaded.ContextWindow == nil || *reloaded.ContextWindow != 200000 {
 		t.Fatalf("unexpected updated agent: %+v", reloaded)
 	}
 
@@ -884,7 +884,7 @@ func TestAgentStore_CRUD(t *testing.T) {
 	if readyAgent.PromptsStatus != domain.PromptsStatusReady || readyAgent.PromptsError != nil {
 		t.Fatalf("unexpected ready agent: %+v", readyAgent)
 	}
-	if readyAgent.Identity != "" || readyAgent.Soul != "" || readyAgent.Bootstrap != "" {
+	if readyAgent.Identity != "" || readyAgent.Soul != "" {
 		t.Fatalf("expected store to persist no prompt content, got: %+v", readyAgent)
 	}
 

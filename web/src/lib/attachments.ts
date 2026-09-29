@@ -34,6 +34,19 @@ export interface UploadedAttachment {
   url: string;
 }
 
+/** A reference-document mention chip (add-reference-documents 10.4): the
+ * composer-local pending chip inserted from the documents popover. At send it
+ * rides the SAME chips array file attachments ride — the Go backend parses
+ * this object out of the turn payload verbatim. Document identity only, never
+ * content: the visible pill is the markdown link in the message text. */
+export interface DocumentMentionChip {
+  kind: 'document';
+  documentId: string;
+  name: string;
+  /** Mount path, `references/<name>`. */
+  path: string;
+}
+
 /** Upload failure with an HTTP status: 4xx means the server rejected the
  * file (rejected chip), 0/5xx means transport or server trouble (failed chip
  * with Retry). */

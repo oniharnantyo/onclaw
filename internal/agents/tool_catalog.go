@@ -7,10 +7,25 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/agents/tools"
 )
 
-// BrowserToolAlias is the facade allowlist name that expands to the full
-// browser tool set at resolution (design.md D2). Legacy individual browser.*
-// names keep resolving for backward compatibility.
+// BrowserToolAlias is the facade tool name: denying it in an agent's
+// disabled_tools disables the full browser tool set at resolution
+// (agent-tools-denylist D3), and in a per-turn override it expands to the
+// set (D2). Legacy individual browser.* names keep resolving and deny
+// individually.
 const BrowserToolAlias = "browser"
+
+// ReservedSubagentsTool is the reserved tool name for agent delegation
+// (add-agent-subagents-background D9): default-on — the capability resolves
+// unless the agent's disabled_tools denies it (agent-tools-denylist D3) or a
+// per-turn override omits it. Not a registry entry: the runner resolves it
+// into the subagent capability; it never reaches the model surface as a
+// business tool.
+const ReservedSubagentsTool = "subagents"
+
+// ReservedBackgroundShellTool is the reserved tool name for background
+// execution of the shell tool (D11): default-on under the same D3 opt-out.
+// Attaches only when the shell capability itself is wired.
+const ReservedBackgroundShellTool = "background_shell"
 
 // ConfigFieldType enumerates the config field kinds the settings dialog
 // renders. secret fields are write-only: writes persist ciphertext, reads
@@ -62,9 +77,10 @@ type ConfigField struct {
 }
 
 // ToolCatalogEntry is the metadata record for one catalog tool: the surface
-// shown by the agent dialog chips and the settings Tools pane. Keys are
-// allowlist names; fs middleware tools and the reserved execute name have no
-// registry constructors but still appear.
+// shown by the agent dialog chips and the settings Tools pane. Keys are the
+// names the agent denylist and the workspace gate address; fs middleware
+// tools and the reserved execute name have no registry constructors but still
+// appear.
 type ToolCatalogEntry struct {
 	Key          string        `json:"key"`
 	DisplayName  string        `json:"display_name"`
@@ -80,9 +96,10 @@ type ToolCatalogEntry struct {
 }
 
 // ToolCatalog returns the full tool catalog: every registry tool, the six fs
-// middleware tools, the reserved execute name, and the browser facade alias.
-// The order is stable (filesystem, document, shell, memory, web, browser) so
-// surfaces render deterministically.
+// middleware tools, the reserved execute name, the background-shell and
+// subagents capability rows, and the browser facade alias. The order is
+// stable (filesystem, document, shell, memory, web, browser) so surfaces
+// render deterministically.
 func ToolCatalog() []ToolCatalogEntry {
 	return []ToolCatalogEntry{
 		{
@@ -149,11 +166,32 @@ func ToolCatalog() []ToolCatalogEntry {
 			IconKey:     "file-plus",
 		},
 		{
+			Key:         tools.NameDocumentSearch,
+			DisplayName: "Search Documents",
+			Description: "Full-text search the workspace's reference documents (PDF, Word, Excel, PowerPoint, HTML, CSV) and return matching sections with page, slide, sheet, or heading locators.",
+			Group:       "document",
+			IconKey:     "search",
+		},
+		{
 			Key:         ReservedShellTool,
 			DisplayName: "Shell",
 			Description: "Run shell commands inside the agent workspace jail.",
 			Group:       "shell",
 			IconKey:     "terminal",
+		},
+		{
+			Key:         ReservedBackgroundShellTool,
+			DisplayName: "Background Shell",
+			Description: "Run shell commands in the background: a long command returns a task id immediately while it keeps running; poll with task_output, cancel with task_stop. Requires the Shell tool.",
+			Group:       "shell",
+			IconKey:     "clock",
+		},
+		{
+			Key:         ReservedSubagentsTool,
+			DisplayName: "Sub-agents",
+			Description: "Delegate self-contained subtasks to a sub-agent running in its own fresh context — only its final report returns. Optionally in the background, with the same task_output/task_stop controls.",
+			Group:       "agents",
+			IconKey:     "bot",
 		},
 		{
 			Key:         tools.NameMemory,

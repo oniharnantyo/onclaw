@@ -30,6 +30,13 @@ import { useCanWriteSkills, unmetToolDependencies } from "../lib/skills";
 import { useCanWriteAgents } from "../lib/agents";
 import { useCanWriteTools } from "../lib/tools";
 import {
+  documentsApi,
+  documentTypeLabel,
+  indexStatusLabel,
+  scopeBadge,
+  type ApiReferenceDocument,
+} from "../lib/documentsApi";
+import {
   HOOK_LEVEL_LABEL,
   hookEventMeta,
   hookHandlerLabel,
@@ -40,12 +47,14 @@ import { McpServerDialog } from "./McpServerDialog";
 import { HookDialog } from "./HookDialog";
 import { AgentConnectionsSection } from "./AgentConnectionsSection";
 import { HeartbeatPane, type HeartbeatPaneHandle } from "./HeartbeatPane";
+import { DocumentSource } from "../components/chat/panel/sources/document/DocumentSource";
 import { useWorkspace, useStore } from "../store";
 
-// The browser facade: the catalog exposes one Browser chip whose stored
-// value is the alias `browser`. Legacy allowlists may carry individual
-// `browser.*` names — they collapse to the alias in the UI and on save
-// (workspace-tool-catalog D2).
+// The browser facade: the catalog exposes one Browser chip whose deselection
+// stores the alias `browser` in the denylist (refactor-agent-tools-denylist).
+// Legacy denylists may carry individual `browser.*` names for a partial
+// facade disable — they render the chip selected and save back untouched;
+// only the alias subsumes them.
 const BROWSER_TOOL_ALIAS = "browser";
 const BROWSER_MEMBER_PREFIX = "browser.";
 // Select value for the "Workspace default (inherit)" option (refactor-
@@ -57,12 +66,13 @@ const TIER_HINT: Record<string, string> = {
   agent: "Agent skill — installed into this agent's directory only.",
 };
 
-function normalizeBrowserAlias(toolIds: string[]): string[] {
-  const hasAlias = toolIds.includes(BROWSER_TOOL_ALIAS);
-  const hasMember = toolIds.some((t) => t.startsWith(BROWSER_MEMBER_PREFIX));
-  if (!hasMember) return toolIds;
-  const withoutMembers = toolIds.filter((t) => !t.startsWith(BROWSER_MEMBER_PREFIX));
-  return hasAlias ? withoutMembers : [...withoutMembers, BROWSER_TOOL_ALIAS];
+// Denylist save shape: the `browser` alias disables the whole facade, so
+// when it is present the individual `browser.*` names are dropped ("no
+// individual browser.* names"). A member-only denylist passes through —
+// the remaining browser tools stay exposed and the names ride the next save.
+function normalizeBrowserDenylist(toolIds: string[]): string[] {
+  if (!toolIds.includes(BROWSER_TOOL_ALIAS)) return toolIds;
+  return toolIds.filter((t) => !t.startsWith(BROWSER_MEMBER_PREFIX));
 }
 
 // Design D1: the agent's MCP opt-ins are server-assigned UUIDs in
@@ -105,10 +115,9 @@ const ROLE_SUGGESTIONS = [
   "pricing-monitor",
 ];
 
-const PROMPT_FILES: Array<{ id: 'identity' | 'soul' | 'bootstrap'; name: string; hint: string }> = [
+const PROMPT_FILES: Array<{ id: 'identity' | 'soul'; name: string; hint: string }> = [
   { id: 'identity', name: 'IDENTITY.md', hint: 'identity' },
   { id: 'soul', name: 'SOUL.md', hint: 'voice' },
-  { id: 'bootstrap', name: 'BOOTSTRAP.md', hint: 'ritual' },
 ];
 
 const AUTONOMY_OPTIONS: Array<{ id: AgentAutonomy; label: string; description: string }> = [
@@ -134,6 +143,128 @@ export interface AgentConfigModalProps {
   onClose: () => void;
   onSave: (values: any) => void;
   tenant?: any;
+}
+
+// Read-only reference documents (add-reference-documents 9.1): the promoted
+// (workspace-scope) library plus the documents attached to this agent, listed
+// on the Capabilities surface with scope badges, index-status chips, and a
+// preview link. Strictly read-only —
+// attach/promote/demote live in Settings → Documents (spec: Management
+// surfaces). The read rides workspace membership and is optional context: a
+// failed fetch leaves the section out, never blocking agent configuration
+// (AgentConnectionsSection precedent).
+function AgentDocumentsSection({ targetWsId, agentId }: { targetWsId: string; agentId?: string }) {
+  const [docs, setDocs] = useState<ApiReferenceDocument[] | null>(null);
+  // Preview (rework-document-chat-surfaces 1.2): the agent-config modal has no
+  // right-panel host (the panel mounts only in ChatRoute), so the preview link
+  // opens a standalone modal hosting the same DocumentSource the panel uses —
+  // not openPanelTab, which would write invisible panel state here.
+  const [previewing, setPreviewing] = useState<ApiReferenceDocument | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    if (!targetWsId) return;
+    documentsApi
+      .list(targetWsId)
+      .then((res) => {
+        if (mounted) setDocs(res?.documents || []);
+      })
+      .catch(() => {
+        if (mounted) setDocs(null);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [targetWsId]);
+
+  // null = still loading or the fetch failed — the section stays out either way.
+  if (!docs) return null;
+
+  const visible = docs.filter(
+    (d) => d.scope === 'workspace' || (agentId ? d.agents.includes(agentId) : false)
+  );
+
+  return (
+    <div data-testid="agent-documents-section">
+      <span className={labelCls}>Reference documents</span>
+      {visible.length > 0 ? (
+        <div className="space-y-2">
+          {visible.map((d) => (
+            <div
+              key={d.id}
+              data-testid={'agent-document-' + d.id}
+              className="rounded-md border border-line px-3 py-2.5"
+            >
+              <div className="flex items-center gap-3">
+                <span
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-[color-mix(in_oklab,var(--accent)_12%,transparent)] text-accent"
+                  title={documentTypeLabel(d.name, d.mime)}
+                >
+                  <Icon name="file-text" size={15} />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="truncate text-[13px] font-medium text-fg">{d.name}</p>
+                    <span
+                      className="rounded border border-line px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wide text-muted"
+                      data-testid={'agent-document-scope-' + d.id}
+                    >
+                      {d.scope === 'workspace' ? scopeBadge(d) : 'Attached'}
+                    </span>
+                    <span
+                      className="rounded bg-[color-mix(in_oklab,var(--fg)_6%,transparent)] px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wide text-muted"
+                      data-testid={'agent-document-index-' + d.id}
+                    >
+                      {indexStatusLabel(d.indexStatus)}
+                    </span>
+                  </div>
+                  {d.description ? (
+                    <p className="truncate text-[11px] leading-4 text-muted">{d.description}</p>
+                  ) : null}
+                </div>
+                <button
+                  type="button"
+                  data-testid={'agent-document-preview-' + d.id}
+                  onClick={() => setPreviewing(d)}
+                  className="flex h-7 shrink-0 items-center rounded-md border border-line px-2.5 text-[11px] font-medium text-fg2 transition-colors hover:border-accent hover:text-fg"
+                >
+                  Preview
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-[12px] text-muted" data-testid="agent-documents-empty">
+          No reference documents yet — upload one in Settings → Documents.
+        </p>
+      )}
+      <p className="mt-1.5 text-[11px] leading-4 text-muted">
+        Documents attached to this agent and promoted workspace-wide are listed read-only —
+        manage, attach, or promote them in Settings → Documents.
+      </p>
+      {previewing ? (
+        <Modal
+          title={previewing.name}
+          onClose={() => setPreviewing(null)}
+          odId="modal-document-preview"
+          data-testid="modal-document-preview"
+          wide
+        >
+          {/* Same source the right panel renders, wrapped in the tab shape it
+              expects; keyed by {name, url} so a reopened document remounts. */}
+          <DocumentSource
+            key={previewing.name + "\u0000" + previewing.url}
+            tab={{
+              kind: "document",
+              title: previewing.name,
+              payload: { name: previewing.name, url: previewing.url },
+            }}
+          />
+        </Modal>
+      ) : null}
+    </div>
+  );
 }
 
 export function AgentConfigModal({
@@ -210,7 +341,7 @@ export function AgentConfigModal({
 
   // Prompts tab: selected file in the list/preview view + the regenerate
   // change-request form
-  const [selectedDoc, setSelectedDoc] = useState<'identity' | 'soul' | 'bootstrap'>('identity');
+  const [selectedDoc, setSelectedDoc] = useState<'identity' | 'soul'>('identity');
   const [regenFormOpen, setRegenFormOpen] = useState(false);
   const [regenInstruction, setRegenInstruction] = useState('');
 
@@ -226,7 +357,6 @@ export function AgentConfigModal({
   const [brief, setBrief] = useState("");
   const [identity, setIdentity] = useState("");
   const [soul, setSoul] = useState("");
-  const [bootstrap, setBootstrap] = useState("");
   const [avatar, setAvatar] = useState<Record<string, any>>(generateRandomAvatar());
 
   const initialProvider = useMemo(() => {
@@ -255,8 +385,10 @@ export function AgentConfigModal({
   const [availableEfforts, setAvailableEfforts] = useState<string[]>([]);
   const [autonomy, setAutonomy] = useState<AgentAutonomy>('approval');
 
-  // Untouched Step 3 enables no registry tools and opts into no MCP servers —
-  // the deployer opts in (scenarios: Step 3 skippable).
+  // Step 3 inverts (design D6): `tools` holds the agent's tool DENYLIST —
+  // untouched Step 3 stores an empty list, which exposes every catalog tool
+  // (scenarios: Step 3 skippable). The chips derive their selected state
+  // from it; toggling a chip off adds its key, toggling on removes it.
   const [tools, setTools] = useState<string[]>([]);
   const [enabledMcps, setEnabledMcps] = useState<string[]>([]);
 
@@ -286,7 +418,6 @@ export function AgentConfigModal({
             setBrief(a.brief || "");
             setIdentity(a.identity || "");
             setSoul(a.soul || "");
-            setBootstrap(a.bootstrap || "");
             if (a.avatar && Object.keys(a.avatar).length > 0) {
               setAvatar(a.avatar);
             }
@@ -317,7 +448,7 @@ export function AgentConfigModal({
             if (a.autonomy && ['approval', 'suggest', 'full'].includes(a.autonomy)) {
               setAutonomy(a.autonomy as AgentAutonomy);
             }
-            if (a.tools) setTools(normalizeBrowserAlias([...a.tools]));
+            if (a.disabled_tools) setTools([...a.disabled_tools]);
             setEnabledMcps([...mcpRefs(a)]);
             setPromptStatus(a.prompts_status || 'ready');
             setPromptError(a.prompts_error || null);
@@ -547,7 +678,7 @@ export function AgentConfigModal({
       context_window: parsedContextWindow,
       effort: effort || undefined,
       autonomy,
-      tools: normalizeBrowserAlias(tools),
+      disabled_tools: normalizeBrowserDenylist(tools),
       enabled_mcps: enabledMcps,
       avatar,
     };
@@ -599,7 +730,7 @@ export function AgentConfigModal({
       context_window: parsedContextWindow,
       effort: effort || undefined,
       autonomy,
-      tools: normalizeBrowserAlias(tools),
+      disabled_tools: normalizeBrowserDenylist(tools),
       enabled_mcps: enabledMcps,
       avatar,
     };
@@ -1444,13 +1575,26 @@ export function AgentConfigModal({
               <span className={labelCls}>Built-in Tools</span>
               {toolCatalog.length > 0 ? (
                 <OptionChips
+                  // Step 3 inverts (design D6): a chip renders SELECTED unless
+                  // its catalog key sits in `disabled_tools`, so new catalog
+                  // tools appear enabled automatically. Toggling off adds the
+                  // key to the denylist; toggling on removes it.
                   // Non-toggleable (always-on) tools render no chip — exposure
-                  // is context-granted at runtime, not agent-selectable. Stored
-                  // allowlist keys for them stay in `tools` and save back
-                  // harmlessly (they never become chips).
+                  // is context-granted at runtime, not agent-selectable, and a
+                  // stored denylist still naming one keeps the key invisibly
+                  // rather than surfacing a chip for it.
                   options={toolCatalog.filter((t) => t.toggleable).map((t) => ({ id: t.key, label: t.display_name }))}
-                  value={tools}
-                  onChange={setTools}
+                  value={toolCatalog.filter((t) => t.toggleable && !tools.includes(t.key)).map((t) => t.key)}
+                  onChange={(selected: string[]) => {
+                    const toggleableKeys = toolCatalog.filter((t) => t.toggleable).map((t) => t.key);
+                    // Keys the picker does not render (stored always-on keys,
+                    // legacy browser.* facade members) ride along untouched —
+                    // the chips only ever change their own catalog keys.
+                    setTools(normalizeBrowserDenylist([
+                      ...toggleableKeys.filter((k) => !selected.includes(k)),
+                      ...tools.filter((k) => !toggleableKeys.includes(k)),
+                    ]));
+                  }}
                   iconOf={(o: any) => toolCatalog.find((t) => t.key === o.id)?.icon_key || "plug"}
                   disabledOf={(o: any) => !toolCatalog.find((t) => t.key === o.id)?.enabled}
                 />
@@ -1478,9 +1622,13 @@ export function AgentConfigModal({
               {allSkills.length > 0 ? (
                 <div className="flex flex-wrap gap-2" data-testid="skill-chips">
                   {allSkills.map((s) => {
-                    // A workspace skill whose tool dependency the agent's
-                    // allowlist lacks warns inline and points at the chips below.
-                    const missingTools = s.tier === "agent" ? [] : unmetToolDependencies(s).filter((t) => !tools.includes(t));
+                    // Effective-set reading (design D6): a required tool is
+                    // unmet when the agent's denylist names it — or the
+                    // workspace gate excludes it from the catalog. With the
+                    // default empty denylist nothing is unmet.
+                    const missingTools = s.tier === "agent" ? [] : unmetToolDependencies(s).filter((t) =>
+                      tools.includes(t) || toolCatalog.find((c) => c.key === t)?.enabled === false
+                    );
                     return (
                       <div key={s.tier + "-" + s.name} className="relative">
                         <span
@@ -1533,6 +1681,11 @@ export function AgentConfigModal({
               targetWsId={targetWsId}
               enabledMcps={enabledMcps}
               onToggle={toggleMcpServer}
+            />
+
+            <AgentDocumentsSection
+              targetWsId={targetWsId}
+              agentId={draft?.id || draft?.slug}
             />
 
             <div data-testid="agent-mcp-section">
@@ -1958,7 +2111,7 @@ export function AgentConfigModal({
                   placeholder="e.g. make the tone sharper and add incident-triage duties"
                 />
                 <p className="mt-1 text-[11px] leading-4 text-muted">
-                  The current IDENTITY.md, SOUL.md, and BOOTSTRAP.md are always sent along — the model
+                  The current IDENTITY.md and SOUL.md are always sent along — the model
                   enhances them with your change applied. Leave empty to enhance without a specific change.
                 </p>
                 <div className="mt-2 flex items-center justify-end gap-2">
@@ -2053,21 +2206,6 @@ export function AgentConfigModal({
                       onChange={(e) => setSoul(e.target.value)}
                       placeholder={promptStatus === 'generating' ? "Generating soul…" : "Agent soul & behavioral rules…"}
                     />
-                  </div>
-                )}
-
-                {selectedDoc === 'bootstrap' && (
-                  <div>
-                    <span className={labelCls}>
-                      <span className="font-mono">BOOTSTRAP.md</span>
-                      <span className="text-muted font-normal"> — read-only</span>
-                    </span>
-                    <div
-                      data-testid="agent-bootstrap-doc"
-                      className="mt-1.5 max-h-72 overflow-auto rounded-md border border-line bg-warm p-3 font-mono text-[12px] leading-relaxed text-fg2 whitespace-pre-wrap"
-                    >
-                      {bootstrap || "Not generated yet."}
-                    </div>
                   </div>
                 )}
               </div>

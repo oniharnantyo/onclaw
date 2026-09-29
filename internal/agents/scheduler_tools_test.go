@@ -32,9 +32,9 @@ func TestWithoutSchedulerTools(t *testing.T) {
 
 // TestResolve_SchedulerToolStrip covers the runner-level strip (task 3.4): a
 // scheduler-origin run resolves neither the schedule tool nor the memory
-// tools even when the agent allowlists them, while ordinary allowed tools
-// survive and unlisted tools stay excluded. The user-origin control resolves
-// the same allowlist untouched.
+// tools even though the agent's denylist doesn't name them (denylist D2 —
+// default-on), while ordinary tools survive. The user-origin control resolves
+// the same default surface untouched.
 func TestResolve_SchedulerToolStrip(t *testing.T) {
 	_, runner, _, _, req := setupSchedulerRunner(t, "sess-toolstrip")
 	ctx := context.Background()
@@ -47,7 +47,6 @@ func TestResolve_SchedulerToolStrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load agent: %v", err)
 	}
-	agent.Tools = []string{tools.NameSchedule, tools.NameMemory, tools.NameDeleteFile, tools.NameWebFetch}
 
 	namesOf := func(origin string) map[string]bool {
 		t.Helper()
@@ -68,9 +67,9 @@ func TestResolve_SchedulerToolStrip(t *testing.T) {
 		return names
 	}
 
-	// Scheduler origin: the strip removes schedule and the memory tools
-	// regardless of the allowlist; the ordinary allowed tool survives; the
-	// unlisted websearch stays excluded.
+	// Scheduler origin: the strip removes schedule and the memory tools even
+	// though the default surface exposes them; every other exposed tool
+	// survives.
 	schedulerNames := namesOf(OriginScheduler)
 	for _, excluded := range []string{tools.NameSchedule, tools.NameMemory, tools.NameDeleteFile} {
 		if schedulerNames[excluded] {
@@ -78,13 +77,10 @@ func TestResolve_SchedulerToolStrip(t *testing.T) {
 		}
 	}
 	if !schedulerNames[tools.NameWebFetch] {
-		t.Fatalf("scheduler run must keep the ordinary allowed tool %q (resolved: %v)", tools.NameWebFetch, schedulerNames)
-	}
-	if schedulerNames[tools.Name] {
-		t.Fatal("an unlisted tool must stay excluded for scheduler runs")
+		t.Fatalf("scheduler run must keep the ordinary exposed tool %q (resolved: %v)", tools.NameWebFetch, schedulerNames)
 	}
 
-	// User origin control: the same allowlist resolves the memory tools
+	// User origin control: the default surface resolves the memory tools
 	// untouched — the strip applies only to origin scheduler. ("schedule" is
 	// inert for every origin on the default registry, which does not register
 	// it — see the registered-registry test below.)
@@ -102,8 +98,8 @@ func TestResolve_SchedulerToolStrip(t *testing.T) {
 
 // TestResolve_SchedulerToolStripExcludesRegisteredSchedule covers the strip
 // against a registry that actually registered the schedule tool (task 6.2):
-// a scheduler-origin resolve still excludes it even though the allowlist
-// names it, while a user-origin run on the same runner resolves it —
+// a scheduler-origin resolve still excludes it even though the agent never
+// denied it, while a user-origin run on the same runner resolves it —
 // registration and the strip can never drift apart.
 func TestResolve_SchedulerToolStripExcludesRegisteredSchedule(t *testing.T) {
 	st := fake.New()
@@ -122,7 +118,6 @@ func TestResolve_SchedulerToolStripExcludesRegisteredSchedule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load agent: %v", err)
 	}
-	agent.Tools = []string{tools.NameSchedule, tools.NameWebFetch}
 
 	namesOf := func(origin string) map[string]bool {
 		t.Helper()
@@ -148,7 +143,7 @@ func TestResolve_SchedulerToolStripExcludesRegisteredSchedule(t *testing.T) {
 		t.Fatalf("scheduler run must strip the registered schedule tool (resolved: %v)", schedulerNames)
 	}
 	if !schedulerNames[tools.NameWebFetch] {
-		t.Fatalf("scheduler run must keep the ordinary allowed tool (resolved: %v)", schedulerNames)
+		t.Fatalf("scheduler run must keep the ordinary exposed tool (resolved: %v)", schedulerNames)
 	}
 
 	userNames := namesOf(OriginUser)

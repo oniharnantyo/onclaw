@@ -4,12 +4,32 @@
 import { describe, it, expect, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/react';
 import { ChatHeader } from './ChatHeader';
+import { useStore } from '../../store';
+import { seedDb } from '../../data/seed';
+
+// This environment's jsdom exposes no localStorage (same mode behind the ~66
+// pre-existing failures); install a minimal stub so this suite runs — the
+// header now mounts the store-connected session-todos surface.
+if (typeof (globalThis as any).localStorage === 'undefined') {
+  const backing = new Map<string, string>();
+  (globalThis as any).localStorage = {
+    getItem: (k: string) => (backing.has(k) ? backing.get(k)! : null),
+    setItem: (k: string, v: string) => void backing.set(k, String(v)),
+    removeItem: (k: string) => void backing.delete(k),
+    clear: () => void backing.clear(),
+    key: (i: number) => Array.from(backing.keys())[i] ?? null,
+    get length() { return backing.size; },
+  };
+}
 
 const agent = {
   id: 'a1', name: 'Atlas', slug: 'atlas', status: 'idle', model: 'gpt-5',
   lastActive: '2m ago',
   effective_context_window: 200000,
   summarization_trigger_tokens: 150000,
+  // Denylist form (refactor-agent-tools-denylist): the todos-chip presence
+  // gate reads it — this default denies todo_write; the chip test overrides.
+  disabled_tools: ['todo_write'],
 };
 
 const agentTarget = { kind: 'agent', obj: { id: 'a1', name: 'Atlas' } };
@@ -89,6 +109,40 @@ describe('components/chat/ChatHeader — members stack opens the members tab (ad
   });
 });
 
+describe('components/chat/ChatHeader — documents toggle (rework-document-chat-surfaces 2.1, 2026-09-28 user pivot)', () => {
+  it('an agent chat with a documents lens renders the toggle beside the panel toggle; click toggles', () => {
+    const onToggleDocuments = vi.fn();
+    const utils = renderHeader({
+      target: agentTarget, agent, documentsAvailable: true, documentsOpen: false, onToggleDocuments,
+    });
+    const docs = utils.container.querySelector('[data-testid="btn-panel-documents"]') as HTMLButtonElement;
+    expect(docs).not.toBeNull();
+    // Beside the panel toggle: immediately before it in the action cluster.
+    const toggle = utils.container.querySelector('[data-od-id="btn-panel-toggle"]')!;
+    expect(toggle.compareDocumentPosition(docs) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+    expect(docs.getAttribute('aria-pressed')).toBe('false');
+    expect(docs.getAttribute('title')).toBe('Show documents');
+    fireEvent.click(docs);
+    expect(onToggleDocuments).toHaveBeenCalledTimes(1);
+  });
+
+  it('pressed state and title reflect an open documents listing', () => {
+    const utils = renderHeader({
+      target: agentTarget, agent, documentsAvailable: true, documentsOpen: true, onToggleDocuments: () => {},
+    });
+    const docs = utils.container.querySelector('[data-testid="btn-panel-documents"]') as HTMLButtonElement;
+    expect(docs.getAttribute('aria-pressed')).toBe('true');
+    expect(docs.getAttribute('title')).toBe('Hide documents');
+  });
+
+  it('no documents toggle without a documents lens, and never in channel chats without one', () => {
+    const noLens = renderHeader({ target: agentTarget, agent });
+    expect(noLens.container.querySelector('[data-testid="btn-panel-documents"]')).toBeNull();
+    const channel = renderHeader({ target: channelTarget, agent: null });
+    expect(channel.container.querySelector('[data-testid="btn-panel-documents"]')).toBeNull();
+  });
+});
+
 describe('components/chat/ChatHeader — Langfuse link (integrate-langfuse-tracing 4.1)', () => {
   const lfUrl = (utils: ReturnType<typeof renderHeader>) =>
     utils.container.querySelector('a[data-od-id="btn-open-langfuse"]') as HTMLAnchorElement | null;
@@ -109,5 +163,69 @@ describe('components/chat/ChatHeader — Langfuse link (integrate-langfuse-traci
       expect(lfUrl(utils)).toBeNull();
       expect(utils.container.textContent).not.toContain('Langfuse');
     }
+  });
+});
+
+describe('components/chat/ChatHeader — session todos chip (add-session-todos-surface D2/D6)', () => {
+  // Seeding idiom from lib/sessionTodos.test.ts: the active session of the
+  // open chat carries a todo_write call the surface's hook derives the plan
+  // from. Store state persists across tests in this file, but the surface is
+  // present-only — every earlier test's fixtures stay DOM-neutral (see the
+  // gate assertions below).
+  const seedTodoPlan = () => {
+    useStore.setState({
+      db: {
+        acme: {
+          ...seedDb().acme,
+          threads: {
+            'a-atlas': {
+              active: 's1',
+              list: [{
+                id: 's1', title: 'Chat', updated: '',
+                messages: [{
+                  id: 'm1', author: 'agent', agentId: 'a-atlas', ts: '9:00 AM', text: '',
+                  tools: [{
+                    callId: 'call-1', name: 'todo_write',
+                    args: JSON.stringify({ items: [
+                      { key: 'k1', text: 'Read the logs', status: 'done' },
+                      { key: 'k2', text: 'Patch the service', status: 'pending' },
+                    ], revision: 1 }),
+                    res: JSON.stringify({ ok: true }),
+                  }],
+                }],
+              }],
+            },
+          },
+        },
+      },
+      pos: { tenantId: 'acme', view: 'chats', chatId: 'a-atlas', showContext: false },
+    } as any);
+  };
+
+  it('an agent chat with a seeded plan renders the todos chip as the first header action', () => {
+    seedTodoPlan();
+    const utils = renderHeader({
+      target: { kind: 'agent', obj: { id: 'a-atlas', name: 'Atlas' } },
+      agent: { ...agent, disabled_tools: [] },
+    });
+    const chip = utils.container.querySelector('[data-od-id="todos-chip"]') as HTMLElement;
+    expect(chip).not.toBeNull();
+    expect(chip.textContent).toContain('1/2');
+    // Leftmost of the action cluster: before the panel toggle in DOM order.
+    const toggle = utils.container.querySelector('[data-od-id="btn-panel-toggle"]')!;
+    expect(chip.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('an agent chat without todo_write exposure renders no chip even with a plan', () => {
+    seedTodoPlan();
+    const utils = renderHeader({ target: agentTarget, agent });
+    expect(utils.container.querySelector('[data-od-id="todos-chip"]')).toBeNull();
+  });
+
+  it('a channel chat never renders the todos chip, even with a seeded plan', () => {
+    seedTodoPlan();
+    const utils = renderHeader({ target: channelTarget, agent: null });
+    expect(utils.container.querySelector('[data-od-id="todos-chip"]')).toBeNull();
+    expect(utils.container.querySelector('[data-od-id="todos-popover"]')).toBeNull();
   });
 });

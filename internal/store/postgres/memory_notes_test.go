@@ -131,7 +131,7 @@ func TestIntegration_MemoryStores_MigrationRoundTrip(t *testing.T) {
 	if strings.Contains(baseDSN, "?") {
 		separator = "&"
 	}
-	schemaDSN := fmt.Sprintf("%s%ssearch_path=%s", baseDSN, separator, schemaName)
+	schemaDSN := fmt.Sprintf("%s%ssearch_path=%s,public", baseDSN, separator, schemaName)
 	mig := postgres.NewMigrator(schemaDSN)
 
 	tableExists := func(target string) bool {

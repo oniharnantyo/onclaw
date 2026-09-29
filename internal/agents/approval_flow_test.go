@@ -46,9 +46,9 @@ func hasKind(events []TranscriptEvent, kind TranscriptEventKind) bool {
 	return false
 }
 
-// setupApprovalRunner seeds a workspace/agent (shell allow-listed) and a
-// runner wired to the scripted tool-call model. Each test supplies the
-// dangerous command via newScriptedModel.
+// setupApprovalRunner seeds a workspace/agent (shell exposed — default-on
+// under the denylist) and a runner wired to the scripted tool-call model.
+// Each test supplies the dangerous command via newScriptedModel.
 func setupApprovalRunner(t *testing.T, sessionID string) (store.Store, *Runner, *domain.Workspace, *domain.Agent, ExecRequest) {
 	const agSlug = "atlas"
 	t.Helper()
@@ -100,7 +100,6 @@ func setupApprovalRunner(t *testing.T, sessionID string) (store.Store, *Runner, 
 		Model:       "gpt-4o",
 		Temperature: 1.0,
 		Autonomy:    domain.AutonomyApproval,
-		Tools:       []string{ReservedShellTool},
 	}
 	if err := st.Agents().Create(ctx, ag); err != nil {
 		t.Fatalf("create agent: %v", err)

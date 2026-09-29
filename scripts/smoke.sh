@@ -16,6 +16,9 @@
 #  11. CLI user provisioning & authentication verification
 #  12. Workspace provider configuration CRUD & verify scenarios
 #  13. Agents, skills, tools, user & workspace memory endpoints, birth flow
+#      + agent tools denylist contract (refactor-agent-tools-denylist: create
+#      defaults to an empty disabled_tools, PATCH replaces, legacy tools key
+#      ignored)
 #  14. /v1 OpenResponses live chat sessions (chat key exchange → birth → chain)
 #  15. MCP server registry & agent-private servers (CRUD, probes, enabled_mcps)
 #  16. Agent hooks: workspace CRUD, validation, reorder, dry-run, executions,
@@ -68,6 +71,25 @@
 #      local mock MCP service via the github recipe's origin parameter —
 #      attachment PUT with atomic rejection, probe-gated token replacement
 #      swapping in place)
+#  32. Sub-agents & background work (add-agent-subagents-background: stub-LLM
+#      delegation turn rendering exactly one agent card with the child's
+#      report as its tool result, background delegation with a task id launch
+#      + task_output poll + kind-delegation completion chip, background shell
+#      command with a bash task id + task_output + kind-shell completion chip)
+#      + v1 request tool narrowing (refactor-agent-tools-denylist 32.4: the
+#      request intersects the agent's effective set — narrow, never extend —
+#      and tool_choice "none" strips all agent tools)
+#  33. Reference documents CRUD + serving (add-reference-documents: multipart
+#      upload of md/csv/pdf with the 201 shape — sniffed mime, index status,
+#      page count — agent/channel lens listings, patch, capability-URL byte
+#      equality, attach + content replace, reject lanes (.doc guidance,
+#      exe-renamed pdf, oversize 413), member promote 403, admin
+#      promote/demote scope flips, delete cascade incl. dead capability URL)
+#  34. Agent library end-to-end (add-reference-documents: a document-tools
+#      agent driving document.search and document.read pages/section against
+#      the uploaded library over /v1 turns — tool-call cards with query and
+#      library content in results, channel-tied runbook invisible in a direct
+#      chat at both the API lens and query time)
 #
 # Usage:
 #   ./scripts/smoke.sh
@@ -112,6 +134,7 @@ fi
 WA_STUB_PID=""
 HB_MOCK_PID=""
 CONN_MOCK_PID=""
+SUB_STUB_PID=""
 MOCK_PID=""
 SERVER_PID=""
 
@@ -181,6 +204,10 @@ cleanup() {
     if [[ -n "${CONN_MOCK_PID}" ]]; then
         kill "${CONN_MOCK_PID}" 2>/dev/null || true
         wait "${CONN_MOCK_PID}" 2>/dev/null || true
+    fi
+    if [[ -n "${SUB_STUB_PID}" ]]; then
+        kill "${SUB_STUB_PID}" 2>/dev/null || true
+        wait "${SUB_STUB_PID}" 2>/dev/null || true
     fi
     rm -rf "${TMP_DIR}"
     if [[ $exit_code -eq 0 ]]; then
@@ -811,7 +838,6 @@ PORT = int(sys.argv[1])
 ARGS = json.dumps({
     "identity": "# IDENTITY.md - Who Am I?\n**Name:** Smoke Agent\n**Creature:** test fixture\n**Purpose:** smoke the create path\n**Vibe:** deterministic\n**Emoji:** checkmark\n",
     "soul": "# SOUL.md\nShort beats long. Deterministic beats flaky.\nBe the assistant you'd actually want to talk to at 2am. Not a corporate drone. Not a sycophant. Just... good.\n",
-    "bootstrap": "# BOOTSTRAP.md - Birth Sequence\n_You just woke up. Keep this first conversation short and make it yours._\n",
 })
 
 class Handler(BaseHTTPRequestHandler):
@@ -885,6 +911,77 @@ class Handler(BaseHTTPRequestHandler):
                 return "@architect ONCLAW_TEAMS_SMOKE ONCLAW_TEAMS_S3 please draft the technical spec and cut the scope."
             return "@pm ONCLAW_TEAMS_SMOKE ONCLAW_TEAMS_S2 kickoff received — I have sequenced the work, starting with the plan."
 
+        # Section 34 reference-documents branch (add-reference-documents 11.3):
+        # the ONCLAW_REFDOC marker steers a live /v1 turn into a document-tool
+        # call (document.search, or document.read with the pages/section scope
+        # params). When the conversation's LAST message is the executed tool
+        # result (role "tool" — the same phasing the section-32 stub uses),
+        # the mock answers with the turn's final assistant text instead.
+        is_refdoc = "ONCLAW_REFDOC" in all_text
+        if is_refdoc:
+            msgs = [m for m in messages if isinstance(m, dict) and m.get("role") in ("user", "tool", "assistant")]
+            has_tool_result = bool(msgs) and msgs[-1].get("role") == "tool"
+            if "ONCLAW_REFDOC_SEARCH" in all_text:
+                tool_name = "document.search"
+                tool_args = '{"query":"webhook signing secret rotation policy"}'
+                final = "REFDOC-SEARCH-FINAL the library citations are in"
+            elif "ONCLAW_REFDOC_PAGES" in all_text:
+                tool_name = "document.read"
+                tool_args = '{"path":"references/refdoc-api-manual.pdf","pages":"1"}'
+                final = "REFDOC-PAGES-FINAL the page slice is in"
+            else:
+                tool_name = "document.read"
+                tool_args = '{"path":"references/refdoc-playbook.md","section":"Signing Key Rotation"}'
+                final = "REFDOC-SECTION-FINAL the section slice is in"
+
+            if body.get("stream"):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+
+                def sse_doc(part):
+                    self.wfile.write(("data: " + json.dumps(part) + "\n\n").encode())
+
+                def doc_chunk(delta, finish):
+                    return {
+                        "id": "chatcmpl-smoke-refdoc",
+                        "object": "chat.completion.chunk",
+                        "created": 0,
+                        "model": "gpt-4",
+                        "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+                    }
+
+                sse_doc(doc_chunk({"role": "assistant"}, None))
+                if has_tool_result:
+                    sse_doc(doc_chunk({"content": final}, None))
+                    stop = doc_chunk({}, "stop")
+                    stop["usage"] = {"prompt_tokens": 5, "completion_tokens": 6, "total_tokens": 11}
+                    sse_doc(stop)
+                else:
+                    sse_doc(doc_chunk({"tool_calls": [{"index": 0, "id": "call_refdoc", "type": "function", "function": {"name": tool_name, "arguments": ""}}]}, None))
+                    sse_doc(doc_chunk({"tool_calls": [{"index": 0, "function": {"arguments": tool_args}}]}, None))
+                    sse_doc(doc_chunk({}, "tool_calls"))
+                self.wfile.write(b"data: [DONE]\n\n")
+                return
+            if has_tool_result:
+                message = {"role": "assistant", "content": final}
+                finish = "stop"
+            else:
+                message = {"role": "assistant", "content": "", "tool_calls": [{
+                    "id": "call_refdoc",
+                    "type": "function",
+                    "function": {"name": tool_name, "arguments": tool_args},
+                }]}
+                finish = "tool_calls"
+            self._send(200, {
+                "id": "chatcmpl-smoke-refdoc",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "gpt-4",
+                "choices": [{"index": 0, "message": message, "finish_reason": finish}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 6, "total_tokens": 11},
+            })
+            return
         if is_live := ("ONCLAW_V1_SMOKE" in all_text):
             # The runner always executes turns in streaming mode; a compliant
             # server must answer stream:true with an SSE chat.completion.chunk
@@ -1103,13 +1200,14 @@ assert_status "404" "Uninstalled skill is gone"
 api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/agents" "${CHARLIE_TOKEN}" '{"name":"Test Agent","slug":"test-agent","role":"Tester","description":"Tests things","brief":"A short brief","provider_id":"'"${MOCK_PROV_ID}"'","model":"gpt-4"}'
 assert_status "201" "Owner creates an agent (generation gates persistence)"
 assert_json_expr '.agent.prompts_status == "ready"' "Create returns the agent with prompts ready (generation ran against the mock provider)"
+assert_json_expr '(.agent.disabled_tools | length) == 0' "Agent create defaults to an empty disabled_tools (empty denylist exposes the catalog)"
 AGENT_ID=$(json_get '.agent.id')
 
 # The agent workspace directory is created at create time; the L1 base prompt
 # is injected at build time, never seeded to disk (markdown-card-elements D8
-# sweeps seeded AGENTS.md out of agent workspaces). Generated documents
-# (IDENTITY/SOUL/BOOTSTRAP.md) land in the same directory once generation
-# succeeds against a live provider.
+# sweeps seeded AGENTS.md out of agent workspaces), and the birth ritual is
+# removed (remove-bootstrap-doc). Generated documents (IDENTITY/SOUL.md) land
+# in the same directory once generation succeeds against a live provider.
 AGENT_WS_DIR="${WS_ROOT}/${TENANT_SLUG}/agents/test-agent"
 if [[ -d "${AGENT_WS_DIR}" ]]; then
     log_pass "Agent workspace directory exists (${AGENT_WS_DIR})"
@@ -1121,9 +1219,14 @@ if [[ ! -f "${AGENT_WS_DIR}/AGENTS.md" ]]; then
 else
     log_fail "Agent workspace still carries a seeded AGENTS.md (should be swept)"
 fi
+if [[ ! -f "${AGENT_WS_DIR}/BOOTSTRAP.md" ]]; then
+    log_pass "No BOOTSTRAP.md in agent workspace (birth ritual removed)"
+else
+    log_fail "Agent workspace still carries a BOOTSTRAP.md (feature removed; startup sweep clears it)"
+fi
 GENERATED_STATUS=$(json_get '.agent.prompts_status')
 if [[ "${GENERATED_STATUS}" == "ready" ]]; then
-    for doc in IDENTITY.md SOUL.md BOOTSTRAP.md; do
+    for doc in IDENTITY.md SOUL.md; do
         if [[ -f "${AGENT_WS_DIR}/${doc}" ]]; then
             log_pass "Generated prompt document present: ${doc}"
         else
@@ -1258,6 +1361,32 @@ assert_status "422" "Disabling an always-on channel tool is rejected"
 api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/tools" "${CHARLIE_TOKEN}"
 assert_json_expr '.tools | map(select(.key == "channel.post")) | .[0].enabled == true' "Rejected patch left the channel tool enabled"
 
+# 13.2c Agent tools denylist contract (refactor-agent-tools-denylist 6.2):
+# a legacy `tools` payload key is accepted and ignored on create and patch,
+# PATCH replaces the stored denylist (never merges), and an empty patch
+# wipes it. The fixture agent is deleted so later sections see a clean list.
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/agents" "${CHARLIE_TOKEN}" '{"name":"Denylist Smoke Agent","slug":"denylist-smoke","role":"Tester","description":"Denylist contract fixture","brief":"A short brief","provider_id":"'"${MOCK_PROV_ID}"'","model":"gpt-4","tools":["ls","web.search"]}'
+assert_status "201" "Owner creates an agent carrying a legacy tools payload"
+assert_json_expr '(.agent.disabled_tools | length) == 0' "The legacy tools key is ignored: create still defaults to an empty disabled_tools"
+assert_json_expr '.agent | has("tools") == false' "The agent payload exposes no legacy tools field"
+DENYLIST_AGENT_ID=$(json_get '.agent.id')
+
+api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/agents/${DENYLIST_AGENT_ID}" "${CHARLIE_TOKEN}" '{"tools":["ls"],"disabled_tools":["web.search","memory"]}'
+assert_status "200" "Owner writes the denylist alongside a legacy tools key"
+assert_json_expr '(.agent.disabled_tools | index("web.search") != null) and (.agent.disabled_tools | index("memory") != null)' "Both denylist names round-trip"
+assert_json_expr '.agent | has("tools") == false' "The legacy tools key stays ignored and absent on patch"
+
+api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/agents/${DENYLIST_AGENT_ID}" "${CHARLIE_TOKEN}" '{"disabled_tools":["memory"]}'
+assert_status "200" "Owner rewrites the denylist down to a single name"
+assert_json_expr '(.agent.disabled_tools | index("memory") != null) and (.agent.disabled_tools | index("web.search") == null)' "PATCH replaces the denylist (the dropped name is gone, not merged)"
+
+api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/agents/${DENYLIST_AGENT_ID}" "${CHARLIE_TOKEN}" '{"disabled_tools":[]}'
+assert_status "200" "Owner clears the denylist"
+assert_json_expr '(.agent.disabled_tools | length) == 0' "An empty disabled_tools patch wipes the denylist"
+
+api_req "DELETE" "/api/v1/workspaces/${TENANT_SLUG}/agents/${DENYLIST_AGENT_ID}" "${CHARLIE_TOKEN}"
+assert_status "204" "Owner deletes the denylist fixture agent"
+
 # 13.3 Delete in-use provider 409 (the agent references the mock provider)
 api_req "DELETE" "/api/v1/workspaces/${TENANT_SLUG}/providers/${MOCK_PROV_ID}" "${CHARLIE_TOKEN}"
 assert_status "409" "Deleting in-use provider returns 409"
@@ -1319,7 +1448,7 @@ assert_status "404" "Old DELETE agent-memory route is gone (404)"
 api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/agents/${AGENT_ID}/regenerate" "${CHARLIE_TOKEN}"
 assert_status "200" "Regenerate returns 200"
 assert_json_expr '.agent.prompts_status == "ready"' "Regenerate completes with ready status"
-for doc in IDENTITY.md SOUL.md BOOTSTRAP.md; do
+for doc in IDENTITY.md SOUL.md; do
     if [[ -f "${AGENT_WS_DIR}/${doc}" ]]; then
         log_pass "Regenerated document present: ${doc}"
     else
@@ -2844,7 +2973,6 @@ PORT = int(sys.argv[1])
 ARGS = json.dumps({
     "identity": "# IDENTITY.md - Who Am I?\n**Name:** Heartbeat Agent\n**Creature:** test fixture\n**Purpose:** smoke the heartbeat path\n**Vibe:** deterministic\n**Emoji:** pulse\n",
     "soul": "# SOUL.md\nShort beats long. Deterministic beats flaky.\n",
-    "bootstrap": "# BOOTSTRAP.md - Birth Sequence\n_You just woke up. Keep this first conversation short and make it yours._\n",
 })
 
 REPORT = "ONCLAW_HEARTBEAT_SMOKE_REPORT disk usage at 92 percent on db-1 - needs attention."
@@ -3338,8 +3466,8 @@ assert_status "200" "Read stored SVG file (200)"
 assert_header "Content-Disposition" ".*attachment" "Stored SVG carries attachment disposition"
 
 # 27.4 List mode: exactly one directory level per response, nosniff on
-# listings too (the jail also holds the agent's generated IDENTITY/SOUL/
-# BOOTSTRAP prompt documents — assert by membership, not exact set).
+# listings too (the jail also holds the agent's generated IDENTITY/SOUL
+# prompt documents — assert by membership, not exact set).
 api_req "GET" "${WF_BASE}?mode=list" "${CHARLIE_TOKEN}"
 assert_status "200" "List the agent workspace root (200)"
 assert_json_expr '(.entries | map(select(.name == "notes.md" and .kind == "file")) | length) == 1' "Root listing contains notes.md as a file"
@@ -3803,3 +3931,584 @@ assert_json_expr "[.connections[] | select(.id == \"${CONN_EDIT_ID}\")][0].token
 api_req "PUT" "${CONN_EDIT_BASE}/connections/${CONN_EDIT_ID}/agents" "${CLI_USER_TOKEN}" "{\"agent_ids\":[\"${CONN_EDIT_AGENT_ID}\"]}"
 assert_status "403" "Member cannot manage the connection's attachments (integrations.write 403)"
 assert_json_expr '.error.code == "forbidden"' "The attachment rejection is forbidden"
+
+# -----------------------------------------------------------------------------
+# 32. Sub-agents & Background Work (add-agent-subagents-background task 6.3):
+#     a stub-LLM parent turn delegating to a sub-agent (exactly one agent
+#     card, the child's report as its tool result, no child leakage), a
+#     background delegation (launch returns a task id, task_output polls the
+#     child's report, a kind-delegation x.task_completed chip lands), and a
+#     background shell command (bash task id, task_output carries the command
+#     output, a kind-shell completion chip lands). task_stop cancellation is
+#     Go-level covered; the smoke owns the happy paths.
+# -----------------------------------------------------------------------------
+log_step "32. Sub-agents & Background Work: Delegation, task_output, Completion Chips"
+
+# 32.0 The delegation stub LLM (scripts/v1smoke/stub_llm.py — the same stub
+# the /v1 wire smoke uses, scripted for DELEGATE/BGDELEGATE/BGSHELL phases).
+# It plays the workspace provider for one opted-in agent; the child runs its
+# own model calls against the same stub from a fresh conversation.
+SUB_STUB_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+python3 scripts/v1smoke/stub_llm.py "${SUB_STUB_PORT}" >"${TMP_DIR}/stub_subagents.log" 2>&1 &
+SUB_STUB_PID=$!
+sleep 0.5
+if kill -0 "${SUB_STUB_PID}" 2>/dev/null; then
+    log_pass "Sub-agent stub LLM listening on 127.0.0.1:${SUB_STUB_PORT}"
+else
+    log_fail "Sub-agent stub LLM failed to start: $(cat "${TMP_DIR}/stub_subagents.log")"
+fi
+
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/providers" "${CHARLIE_TOKEN}" '{"type":"openai-compatible","name":"Subagent Stub LLM","base_url":"http://127.0.0.1:'"${SUB_STUB_PORT}"'/v1","key":"stub-secret-key"}'
+assert_status "201" "Owner creates the sub-agent stub LLM provider"
+SUB_PROV_ID=$(json_get '.provider.id')
+
+# The scenario agent rides the denylist contract (D9/D11): `subagents` wires
+# delegation, `background_shell` rides `execute`, and catalog rows default to
+# enabled — so the denylist names only an unrelated tool and the reserved
+# capability names stay exposed (the legacy `tools` allowlist key binds
+# nowhere and is ignored).
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/agents" "${CHARLIE_TOKEN}" '{"name":"Subagent Smoke Agent","slug":"subagent-smoke","role":"Tester","description":"Sub-agent smoke fixture","brief":"A short brief","provider_id":"'"${SUB_PROV_ID}"'","model":"stub-1","disabled_tools":["web.search"]}'
+assert_status "201" "Owner creates the sub-agent smoke agent with subagents + background_shell exposed"
+assert_json_expr '(.agent.disabled_tools | index("web.search") != null)' "A tool written into disabled_tools is denylisted"
+assert_json_expr '(.agent.disabled_tools | index("subagents") == null) and (.agent.disabled_tools | index("background_shell") == null) and (.agent.disabled_tools | index("execute") == null)' "The agent denylist leaves the reserved capability names enabled"
+
+SUB_EVENTS_BASE="/api/v1/workspaces/${TENANT_SLUG}/agents/subagent-smoke/sessions"
+
+# 32.1 Delegation turn (foreground): the stub-scripted parent calls `agent`,
+# the general-purpose clone runs its own model call against the stub, and the
+# parent finishes on the child's report. The transcript must show EXACTLY ONE
+# agent card and no child events.
+SUB_SESSION_1="sess-sg-deleg-$(date +%s)-${RANDOM}"
+api_req "POST" "/v1/responses" "${V1_KEY}" '{"model":"subagent-smoke","input":"ONCLAW_V1_SMOKE DELEGATE the research brief to a sub-agent","stream":true,"metadata":{"onclaw_session":"'"${SUB_SESSION_1}"'"}}'
+assert_status "200" "Delegation turn streamed"
+printf '%s' "${HTTP_BODY}" | grep -q '"type":"response.created"' || log_fail "Delegation stream missing response.created"
+printf '%s' "${HTTP_BODY}" | grep -q '"type":"response.completed"' || log_fail "Delegation stream missing response.completed"
+printf '%s' "${HTTP_BODY}" | grep -q '^data: \[DONE\]' || log_fail "Delegation stream missing [DONE] sentinel"
+printf '%s' "${HTTP_BODY}" | grep -q '"name":"agent"' || log_fail "Delegation stream carried no agent function_call item"
+log_pass "Delegation turn streamed the full SSE lifecycle with an agent function_call item"
+
+# The hydrated transcript: exactly one agent tool-call card, the child's
+# report as its result, the final answer from the stub's post-tool phase.
+for i in {1..40}; do
+    api_req "GET" "${SUB_EVENTS_BASE}/${SUB_SESSION_1}/events?limit=100" "${CHARLIE_TOKEN}"
+    if [[ "$(json_get '[.events[]? | select(.kind == "turn_completed")] | length')" -ge 1 ]]; then
+        break
+    fi
+    sleep 0.25
+done
+assert_json_expr '[.events[]? | select(.kind == "tool_call_started" and .tool_call.name == "agent")] | length == 1' "Delegation renders EXACTLY ONE agent tool_call_started card"
+assert_json_expr '[.events[]? | select(.kind == "tool_call_finished" and .tool_result.name == "agent")] | length == 1' "Delegation renders EXACTLY ONE agent tool_call_finished card"
+assert_json_expr '[.events[]? | select(.kind == "tool_call_finished" and .tool_result.name == "agent")][0].tool_result.result | contains("SUBRESULT stub child report complete")' "The agent card's tool result is the child's final report"
+assert_json_expr '[.events[]? | select(.kind == "message_completed" and .message.role == "assistant") | .message.content] | length == 1' "The delegation turn carries exactly one assistant message"
+assert_json_expr '[.events[]? | select(.kind == "message_completed" and .message.role == "assistant")][0].message.content == "DELEGATEFINAL stub parent collected the child report"' "The parent's final answer matches the stub's post-tool phase"
+assert_json_expr '[.events[]? | select(.message != null and .message.role == "assistant") | .message.content] | map(select(test("SUBBRIEF|SUBRESULT"))) | length == 0' "No child transcript text leaked into the parent session"
+assert_json_expr '[.events[]? | select(.kind == "task_completed")] | length == 0' "A foreground delegation exposes no task_completed chip"
+
+# 32.2 Background delegation: the launch returns promptly with a task id, the
+# parent polls task_output with that id and finishes on the child's report,
+# and a kind-delegation completion chip lands in the durable session events
+# (the /v1 translator intentionally does not surface the chip).
+SUB_SESSION_2="sess-sg-bgdeleg-$(date +%s)-${RANDOM}"
+api_req "POST" "/v1/responses" "${V1_KEY}" '{"model":"subagent-smoke","input":"ONCLAW_V1_SMOKE BGDELEGATE the research brief to a background sub-agent","stream":true,"metadata":{"onclaw_session":"'"${SUB_SESSION_2}"'"}}'
+assert_status "200" "Background delegation turn streamed"
+printf '%s' "${HTTP_BODY}" | grep -q '"type":"response.created"' || log_fail "Background delegation stream missing response.created"
+printf '%s' "${HTTP_BODY}" | grep -q '"type":"response.completed"' || log_fail "Background delegation stream missing response.completed"
+printf '%s' "${HTTP_BODY}" | grep -q '"name":"task_output"' || log_fail "Background delegation stream carried no task_output function_call item"
+SUB_BG_TASK_ID=$(printf '%s' "${HTTP_BODY}" | grep -o 'Agent running in background with ID: [A-Za-z0-9_-]*\.' | head -1 | sed 's/^.*ID: //; s/\.$//')
+if [[ -n "${SUB_BG_TASK_ID}" ]]; then
+    log_pass "Background delegation launch returned a task id (${SUB_BG_TASK_ID:0:20}...)"
+else
+    log_fail "Background delegation launch carried no task id. Body: ${HTTP_BODY}"
+fi
+if [[ "${SUB_BG_TASK_ID}" == subagent_* ]]; then
+    log_pass "The delegation task id rides the subagent lane prefix"
+else
+    log_fail "Expected a subagent_* task id, got: ${SUB_BG_TASK_ID}"
+fi
+if printf '%s' "${HTTP_BODY}" | grep -q 'task_completed'; then
+    log_fail "The /v1 stream surfaced the task_completed chip (translator must not)"
+else
+    log_pass "The /v1 stream does not surface the task_completed chip (durable listing owns it)"
+fi
+
+for i in {1..40}; do
+    api_req "GET" "${SUB_EVENTS_BASE}/${SUB_SESSION_2}/events?limit=100" "${CHARLIE_TOKEN}"
+    if [[ "$(json_get '[.events[]? | select(.kind == "task_completed")] | length')" -ge 1 ]]; then
+        break
+    fi
+    sleep 0.25
+done
+assert_json_expr '[.events[]? | select(.kind == "tool_call_finished" and .tool_result.name == "agent")][0].tool_result.result | contains("Agent running in background with ID: ")' "The agent launch result is the task-id copy, not a blocking run"
+assert_json_expr '([.events[]? | select(.kind == "tool_call_finished" and .tool_result.name == "agent")][0].tool_result.result | contains("SUBRESULT")) == false' "The launch result returned promptly without the child's report"
+assert_json_expr '[.events[]? | select(.kind == "tool_call_started" and .tool_call.name == "task_output")][0].tool_call.arguments | contains("'"${SUB_BG_TASK_ID}"'")' "The parent polled task_output with the launched task id"
+assert_json_expr '[.events[]? | select(.kind == "message_completed" and .message.role == "assistant")][0].message.content == "BGFINAL stub parent collected the background child report"' "The parent finished on the polled child report"
+assert_json_expr '[.events[]? | select(.kind == "task_completed")][0].task_completed.kind == "delegation"' "The completion chip names the delegation lane"
+assert_json_expr '[.events[]? | select(.kind == "task_completed")][0].task_completed.outcome == "completed"' "The background delegation completed"
+assert_json_expr '[.events[]? | select(.kind == "task_completed")][0].task_completed.task_id == "'"${SUB_BG_TASK_ID}"'"' "The completion chip addresses the launched task id"
+assert_json_expr '[.events[]? | select(.kind == "task_completed")][0].task_completed.summary == "Stub background delegation"' "The completion chip derives its summary from the task description"
+assert_json_expr '[.events[]? | select(.kind == "task_completed")][0].task_completed.output_path | contains(".tasks/")' "The completion chip carries the jail output path"
+
+# 32.3 Background shell: the agent's execute tool takes run_in_background,
+# the launch carries a bash task id, task_output returns the command output,
+# and a kind-shell completion chip lands.
+SUB_SESSION_3="sess-sg-bgshell-$(date +%s)-${RANDOM}"
+api_req "POST" "/v1/responses" "${V1_KEY}" '{"model":"subagent-smoke","input":"ONCLAW_V1_SMOKE BGSHELL run the echo command in the background","stream":true,"metadata":{"onclaw_session":"'"${SUB_SESSION_3}"'"}}'
+assert_status "200" "Background shell turn streamed"
+printf '%s' "${HTTP_BODY}" | grep -q '"type":"response.created"' || log_fail "Background shell stream missing response.created"
+printf '%s' "${HTTP_BODY}" | grep -q '"type":"response.completed"' || log_fail "Background shell stream missing response.completed"
+printf '%s' "${HTTP_BODY}" | grep -q '"name":"execute"' || log_fail "Background shell stream carried no execute function_call item"
+SUB_SH_TASK_ID=$(printf '%s' "${HTTP_BODY}" | grep -o 'Command running in background with ID: [A-Za-z0-9_-]*\.' | head -1 | sed 's/^.*ID: //; s/\.$//')
+if [[ -n "${SUB_SH_TASK_ID}" ]]; then
+    log_pass "Background shell launch returned a task id (${SUB_SH_TASK_ID:0:20}...)"
+else
+    log_fail "Background shell launch carried no task id. Body: ${HTTP_BODY}"
+fi
+if [[ "${SUB_SH_TASK_ID}" == bash_* ]]; then
+    log_pass "The shell task id rides the bash lane prefix"
+else
+    log_fail "Expected a bash_* task id, got: ${SUB_SH_TASK_ID}"
+fi
+
+for i in {1..40}; do
+    api_req "GET" "${SUB_EVENTS_BASE}/${SUB_SESSION_3}/events?limit=100" "${CHARLIE_TOKEN}"
+    if [[ "$(json_get '[.events[]? | select(.kind == "task_completed")] | length')" -ge 1 ]]; then
+        break
+    fi
+    sleep 0.25
+done
+assert_json_expr '[.events[]? | select(.kind == "tool_call_started" and .tool_call.name == "execute")][0].tool_call.arguments | contains("run_in_background")' "The execute call requested the background lane"
+assert_json_expr '[.events[]? | select(.kind == "tool_call_finished" and .tool_result.name == "task_output")][0].tool_result.result | contains("onclaw-bg-shell-ok")' "task_output returned the background command's output"
+assert_json_expr '[.events[]? | select(.kind == "message_completed" and .message.role == "assistant")][0].message.content == "BGSHELLFINAL stub parent collected the background command output"' "The parent finished on the polled command output"
+assert_json_expr '[.events[]? | select(.kind == "task_completed")][0].task_completed.kind == "shell"' "The completion chip names the shell lane"
+assert_json_expr '[.events[]? | select(.kind == "task_completed")][0].task_completed.outcome == "completed"' "The background shell task completed"
+assert_json_expr '[.events[]? | select(.kind == "task_completed")][0].task_completed.task_id == "'"${SUB_SH_TASK_ID}"'"' "The shell completion chip addresses the launched task id"
+assert_json_expr '[.events[]? | select(.kind == "task_completed")][0].task_completed.output_path | contains(".tasks/")' "The shell completion chip carries the jail output path"
+
+# 32.4 v1 request tool narrowing (refactor-agent-tools-denylist 6.2): the
+# request's tool names intersect the agent's effective tool set (catalog
+# minus the denylist, workspace-gated) — a request may narrow, never extend —
+# and tool_choice "none" strips every agent tool for the turn. The sub stub
+# records the model-facing tool surface of every model call; each probe
+# reads the surface back right after its turn settles.
+#
+# A turn's trailing memory-curation model call rides tools-less, so the
+# observation is the LAST NON-EMPTY recorded surface — the turn's main model
+# call. The helper re-wraps it in the {"tools": ...} shape the assertions
+# read.
+read_stub_surface() {
+    local surface
+    surface=$(curl -s "http://127.0.0.1:${SUB_STUB_PORT}/debug/calls" | jq -c '[.calls[] | select(length > 0)] | last // []')
+    HTTP_BODY="{\"tools\": ${surface}}"
+}
+
+# 32.4a Baseline: no request tools — the surface is the catalog minus the
+# denylist. The subagent-smoke agent denies web.search; the reserved shell
+# capability stays exposed.
+SUB_SESSION_4="sess-sg-narrow-base-$(date +%s)-${RANDOM}"
+api_req "POST" "/v1/responses" "${V1_KEY}" '{"model":"subagent-smoke","input":"ONCLAW_V1_SMOKE plain narrowing baseline turn","stream":true,"metadata":{"onclaw_session":"'"${SUB_SESSION_4}"'"}}'
+assert_status "200" "Baseline narrowing probe streamed"
+read_stub_surface
+assert_json_expr '(.tools | length) > 0' "The stub observed a non-empty model-facing tool surface"
+assert_json_expr '(.tools | index("web.search")) == null' "The denylisted tool never reaches the model surface"
+assert_json_expr '(.tools | index("execute")) != null' "The reserved shell capability stays on the model surface"
+
+# 32.4b The request asks for ls, the denied web.search, and a tool that is
+# not even in the catalog: the turn's surface narrows to the effective
+# intersection — the denied name cannot be resurrected, the unknown one
+# cannot be minted.
+SUB_SESSION_5="sess-sg-narrow-req-$(date +%s)-${RANDOM}"
+api_req "POST" "/v1/responses" "${V1_KEY}" '{"model":"subagent-smoke","input":"ONCLAW_V1_SMOKE narrowing request turn","stream":true,"tools":[{"type":"function","name":"ls"},{"type":"function","name":"web.search"},{"type":"function","name":"made.up.tool"}],"metadata":{"onclaw_session":"'"${SUB_SESSION_5}"'"}}'
+assert_status "200" "Narrowing request turn streamed"
+read_stub_surface
+assert_json_expr '(.tools | index("ls")) != null' "The requested effective tool rides the turn's surface"
+assert_json_expr '(.tools | index("web.search")) == null' "The request cannot extend the surface past the denylist"
+assert_json_expr '(.tools | index("made.up.tool")) == null' "The request cannot mint a tool outside the catalog"
+
+# 32.4c tool_choice "none": every agent tool is stripped for the turn, even
+# though the request also names tools. The middleware-internal skill loader
+# is not part of the agent's tool selection and is tolerated.
+SUB_SESSION_6="sess-sg-narrow-none-$(date +%s)-${RANDOM}"
+api_req "POST" "/v1/responses" "${V1_KEY}" '{"model":"subagent-smoke","input":"ONCLAW_V1_SMOKE toolless narrowing turn","stream":true,"tools":[{"type":"function","name":"ls"},{"type":"function","name":"web.search"}],"tool_choice":"none","metadata":{"onclaw_session":"'"${SUB_SESSION_6}"'"}}'
+assert_status "200" "Toolless narrowing turn streamed"
+read_stub_surface
+assert_json_expr '([.tools[] | select(. == "ls" or . == "read_file" or . == "write_file" or . == "edit_file" or . == "glob" or . == "grep" or . == "execute" or . == "web.search")] | length) == 0' "tool_choice none strips every agent tool from the model surface"
+assert_json_expr '(.tools | length) <= 1' "The toolless turn leaves no agent tools beyond middleware internals"
+
+# -----------------------------------------------------------------------------
+# 33. Reference Documents CRUD + Serving (add-reference-documents 6.x/11.3):
+#     multipart upload of md/csv/pdf with the 201 shape (sniffed mime, index
+#     status, page count), list + agent/channel lenses, patch, capability-URL
+#     byte equality, attach, content replace, reject lanes (.doc guidance,
+#     exe-renamed pdf, oversize 413), member promote 403, admin promote/
+#     demote scope flips, and the delete cascade incl. dead capability URL.
+# -----------------------------------------------------------------------------
+log_step "33. Reference Documents: Upload, Lenses, Serving, Reject Lanes, Promote"
+
+REFDOC_BASE="/api/v1/workspaces/${TENANT_SLUG}/documents"
+
+# Section-local multipart helper: api_upload is POST+single-field; the
+# documents upload carries optional name/description plus repeated
+# agentIds/channelIds form fields, and PUT :id/content reuses the shape.
+api_multipart() {
+    local method="$1" path="$2" token="$3" file_path="$4" field_name="${5:-file}"
+    if [[ $# -ge 5 ]]; then
+        shift 5
+    else
+        shift $#
+    fi
+    local url="${SERVER_URL}${path}"
+    local headers_file="${TMP_DIR}/headers.tmp"
+    local body_file="${TMP_DIR}/body.tmp"
+
+    local args=(-s -S -X "${method}" -D "${headers_file}" -o "${body_file}")
+    if [[ -n "${token}" ]]; then
+        args+=(-H "Authorization: Bearer ${token}")
+    fi
+    args+=(-F "${field_name}=@${file_path}")
+    local kv
+    for kv in "$@"; do
+        args+=(-F "${kv}")
+    done
+
+    if ! curl "${args[@]}" "${url}"; then
+        log_fail "curl multipart failed to reach ${url}"
+    fi
+    # Final status, not the interim 100 Continue block (see api_req).
+    HTTP_STATUS=$(awk '/^HTTP\/[0-9.]+/ {code=$2} END {print code}' "${headers_file}")
+    HTTP_BODY=$(cat "${body_file}")
+}
+
+# 33.0 Fixtures: an md with two ## headings (section-indexed), a csv
+# (single-section fallback), and the committed two-page pdf (real text layer;
+# scripts/fixtures/refdoc-manual.pdf is a repo file, byte-compared below).
+REFDOC_MD="${TMP_DIR}/refdoc-notes.md"
+cat > "${REFDOC_MD}" <<'REFDOC_NOTES_EOF'
+# Smoke reference notes
+
+## Signing Key Rotation
+
+The signing keys rotate on a ninety-day cadence. PB77 notes marker.
+
+## Release Channels
+
+Release announcements ship through the notes channel. PB-OTHER notes marker.
+REFDOC_NOTES_EOF
+
+REFDOC_CSV="${TMP_DIR}/refdoc-limits.csv"
+cat > "${REFDOC_CSV}" <<'REFDOC_CSV_EOF'
+endpoint,limit
+users,1000
+workspaces,100
+REFDOC_CSV_EOF
+
+if [[ ! -f "scripts/fixtures/refdoc-manual.pdf" ]]; then
+    log_fail "Missing committed PDF fixture scripts/fixtures/refdoc-manual.pdf"
+fi
+
+# 33.1 Markdown upload: the 201 shape — sniffed mime (never the client's
+# declared type), byte size, capability URL, index status, default scope.
+MD_SIZE=$(stat -f%z "${REFDOC_MD}" 2>/dev/null || stat -c%s "${REFDOC_MD}")
+api_multipart POST "${REFDOC_BASE}" "${CHARLIE_TOKEN}" "${REFDOC_MD}" file "name=refdoc-notes.md" "description=Smoke reference notes"
+assert_status "201" "Owner uploads a markdown reference document (201)"
+assert_json_expr '.id != null and .id != ""' "Upload response carries the document id"
+assert_json_expr '.name == "refdoc-notes.md"' "Upload echoes the display name"
+assert_json_expr '.description == "Smoke reference notes"' "Upload echoes the description"
+assert_json_expr '.mime == "text/markdown"' "Mime is the sniffed canonical type, not the client-declared one"
+assert_json_expr ".size == ${MD_SIZE}" "Upload response carries the byte size"
+assert_json_expr '.indexStatus == "ready"' "Markdown index status is ready"
+assert_json_expr '.scope == "attached"' "New documents default to attached scope"
+assert_json_expr '.pageCount == 0' "Markdown carries no page count"
+assert_json_expr '.createdAt != null' "Upload response carries createdAt"
+REFDOC_NOTES_ID=$(json_get '.id')
+REFDOC_NOTES_URL=$(json_get '.url')
+if [[ "${REFDOC_NOTES_URL}" =~ ^/api/v1/files/[0-9a-f]{32}$ ]]; then
+    log_pass "Capability URL is the proxied files path over a 32-hex key (${REFDOC_NOTES_URL})"
+else
+    log_fail "Capability URL malformed: ${REFDOC_NOTES_URL}"
+fi
+
+# 33.2 csv + multi-page pdf uploads.
+api_multipart POST "${REFDOC_BASE}" "${CHARLIE_TOKEN}" "${REFDOC_CSV}" file "name=refdoc-limits.csv"
+assert_status "201" "Owner uploads a csv reference document (201)"
+assert_json_expr '.mime == "text/csv"' "csv mime is the canonical text/csv"
+assert_json_expr '.indexStatus == "ready"' "csv index status is ready"
+REFDOC_CSV_ID=$(json_get '.id')
+
+PDF_SIZE=$(stat -f%z "scripts/fixtures/refdoc-manual.pdf" 2>/dev/null || stat -c%s "scripts/fixtures/refdoc-manual.pdf")
+api_multipart POST "${REFDOC_BASE}" "${CHARLIE_TOKEN}" "scripts/fixtures/refdoc-manual.pdf" file "name=refdoc-manual.pdf" "description=Two page smoke manual"
+assert_status "201" "Owner uploads the two-page pdf reference document (201)"
+assert_json_expr '.mime == "application/pdf"' "pdf mime is sniffed from magic bytes"
+assert_json_expr ".size == ${PDF_SIZE}" "pdf response carries the byte size"
+assert_json_expr '.indexStatus == "ready"' "pdf index status is ready"
+assert_json_expr '.pageCount == 2' "pdf page count resolves to the fixture's two pages"
+REFDOC_PDF_ID=$(json_get '.id')
+REFDOC_PDF_URL=$(json_get '.url')
+
+# 33.3 Workspace list + the agent/channel lenses (both empty before any
+# attachment — a lens never leaks unattached documents).
+api_req "GET" "${REFDOC_BASE}" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists the workspace's reference documents"
+assert_json_expr '(.documents | length) >= 3' "List holds the three uploads"
+assert_json_expr '[.documents[] | select(.id == "'"${REFDOC_PDF_ID}"'")] | length == 1' "List contains the pdf"
+
+api_req "GET" "${REFDOC_BASE}?agent=${AGENT_ID}" "${CHARLIE_TOKEN}"
+assert_status "200" "Agent lens lists agent-attached documents"
+assert_json_expr '(.documents | length) == 0' "Agent lens is empty before any attachment"
+
+api_req "GET" "${REFDOC_BASE}?channel=${SCHED_CHANNEL_ID}" "${CHARLIE_TOKEN}"
+assert_status "200" "Channel lens lists channel-attached documents"
+assert_json_expr '(.documents | length) == 0' "Channel lens is empty before any attachment"
+
+# 33.4 Patch rewrites the editable bibliographic fields.
+api_req "PATCH" "${REFDOC_BASE}/${REFDOC_NOTES_ID}" "${CHARLIE_TOKEN}" '{"name":"refdoc-notes-renamed.md","description":"Renamed smoke notes"}'
+assert_status "200" "Patch rewrites name and description (200)"
+assert_json_expr '.name == "refdoc-notes-renamed.md"' "Patch echoes the new name"
+assert_json_expr '.description == "Renamed smoke notes"' "Patch echoes the new description"
+
+# 33.5 The capability URL serves the ORIGINAL bytes, no authentication.
+api_req "GET" "${REFDOC_NOTES_URL}" ""
+assert_status "200" "Capability URL serves the reference document without authentication (200)"
+if cmp -s "${TMP_DIR}/body.tmp" "${REFDOC_MD}"; then
+    log_pass "Served bytes are identical to the uploaded markdown"
+else
+    log_fail "Served markdown bytes differ from the uploaded file"
+fi
+
+# 33.6 Attach to the section-13 test agent, then re-read the agent lens.
+api_req "PUT" "${REFDOC_BASE}/${REFDOC_NOTES_ID}/agents" "${CHARLIE_TOKEN}" "{\"agentIds\":[\"${AGENT_ID}\"]}"
+assert_status "200" "Attach the notes to the test agent (200)"
+assert_json_expr ".agents | index(\"${AGENT_ID}\") != null" "Attach response carries the agent id"
+
+api_req "GET" "${REFDOC_BASE}?agent=${AGENT_ID}" "${CHARLIE_TOKEN}"
+assert_json_expr '[.documents[] | select(.id == "'"${REFDOC_NOTES_ID}"'")] | length == 1' "Agent lens now contains the attached notes"
+
+# 33.7 Channel attach over a dedicated annex channel + channel lens.
+api_req "POST" "${CHANNELS_BASE}" "${CHARLIE_TOKEN}" '{"name":"Refdoc Annex","slug":"refdoc-annex","purpose":"Reference documents annex channel."}'
+assert_status "201" "Owner creates the annex channel"
+REFDOC_CHANNEL_ID=$(json_get '.channel.id')
+
+api_req "PUT" "${REFDOC_BASE}/${REFDOC_NOTES_ID}/channels" "${CHARLIE_TOKEN}" "{\"channelIds\":[\"${REFDOC_CHANNEL_ID}\"]}"
+assert_status "200" "Attach the notes to the annex channel (200)"
+assert_json_expr ".channels | index(\"${REFDOC_CHANNEL_ID}\") != null" "Attach response carries the channel id"
+
+api_req "GET" "${REFDOC_BASE}?channel=${REFDOC_CHANNEL_ID}" "${CHARLIE_TOKEN}"
+assert_json_expr '[.documents[] | select(.id == "'"${REFDOC_NOTES_ID}"'")] | length == 1' "Channel lens contains the attached notes"
+
+# 33.8 Replace (PUT content): the blob is swapped, the index rebuilt, the old
+# capability URL dies, and the (new) capability URL serves the new bytes.
+cat > "${TMP_DIR}/refdoc-notes-v2.md" <<'REFDOC_V2_EOF'
+# Smoke reference notes v2
+
+## Replacement Section
+
+V2BETA replacement marker content with a deliberately different byte length.
+REFDOC_V2_EOF
+V2_SIZE=$(stat -f%z "${TMP_DIR}/refdoc-notes-v2.md" 2>/dev/null || stat -c%s "${TMP_DIR}/refdoc-notes-v2.md")
+api_multipart PUT "${REFDOC_BASE}/${REFDOC_NOTES_ID}/content" "${CHARLIE_TOKEN}" "${TMP_DIR}/refdoc-notes-v2.md" file
+assert_status "200" "Replace swaps the stored blob (200)"
+assert_json_expr ".size == ${V2_SIZE}" "Replace reports the new byte size"
+assert_json_expr '.indexStatus == "ready"' "Replace reindexes with status ready"
+REFDOC_NOTES_URL_V2=$(json_get '.url')
+api_req "GET" "${REFDOC_NOTES_URL_V2}" ""
+assert_status "200" "Capability URL serves the replacement blob (200)"
+if cmp -s "${TMP_DIR}/body.tmp" "${TMP_DIR}/refdoc-notes-v2.md"; then
+    log_pass "Replaced capability URL serves the new bytes byte-identically"
+else
+    log_fail "Replaced capability URL does not serve the new bytes"
+fi
+api_req "GET" "${REFDOC_NOTES_URL}" ""
+assert_status "404" "The replaced blob's old capability URL is dead (404)"
+
+# 33.9 Reject lanes: legacy .doc guidance, exe-renamed pdf, oversize 413.
+echo "legacy binary doc content" > "${TMP_DIR}/refdoc-legacy.doc"
+api_multipart POST "${REFDOC_BASE}" "${CHARLIE_TOKEN}" "${TMP_DIR}/refdoc-legacy.doc" file
+assert_status "400" "Legacy office-format (.doc) upload rejected 400"
+assert_json_expr '.error.message | ascii_downcase | contains("convert to .docx or pdf")' "Legacy rejection suggests converting to a modern format or PDF"
+
+printf 'MZ this is really an executable, not a pdf' > "${TMP_DIR}/refdoc-evil.pdf"
+api_multipart POST "${REFDOC_BASE}" "${CHARLIE_TOKEN}" "${TMP_DIR}/refdoc-evil.pdf" file
+assert_status "400" "Executable renamed .pdf rejected 400 (sniffed type wins)"
+assert_json_expr '.error.message | contains("allowed")' "Rejection names the allowed reference document types"
+
+printf '%%PDF-1.4\n' > "${TMP_DIR}/refdoc-huge.pdf"
+truncate -s 21M "${TMP_DIR}/refdoc-huge.pdf"
+api_multipart POST "${REFDOC_BASE}" "${CHARLIE_TOKEN}" "${TMP_DIR}/refdoc-huge.pdf" file
+assert_status "413" "Oversize pdf upload rejected 413"
+assert_json_expr '.error.message | contains("20971520")' "413 message names the 20 MB pdf cap"
+
+# 33.10 A plain Member can upload, but promotion is admin-only: member
+# promote is the 403 permission envelope, the admin flips scope to workspace
+# and back to attached.
+api_multipart POST "${REFDOC_BASE}" "${DAVE_TOKEN}" "${REFDOC_CSV}" file "name=refdoc-member-note.csv"
+assert_status "201" "Member (non-admin) uploads a reference document (201)"
+REFDOC_MEMBER_ID=$(json_get '.id')
+REFDOC_MEMBER_URL=$(json_get '.url')
+
+api_req "POST" "${REFDOC_BASE}/${REFDOC_MEMBER_ID}/promote" "${DAVE_TOKEN}"
+assert_status "403" "Member cannot promote (admin-only permission gate)"
+assert_json_expr '.error.code == "forbidden"' "Promotion rejection is the forbidden envelope"
+
+api_req "POST" "${REFDOC_BASE}/${REFDOC_MEMBER_ID}/promote" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner promotes the document to the workspace"
+assert_json_expr '.scope == "workspace"' "Promoted scope is workspace"
+
+api_req "POST" "${REFDOC_BASE}/${REFDOC_MEMBER_ID}/demote" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner demotes the document back to attached"
+assert_json_expr '.scope == "attached"' "Demoted scope is attached"
+
+# 33.11 Delete cascades: the row leaves the list and the capability URL dies.
+api_req "DELETE" "${REFDOC_BASE}/${REFDOC_MEMBER_ID}" "${CHARLIE_TOKEN}"
+assert_status "204" "Delete removes the reference document (204)"
+
+api_req "GET" "${REFDOC_BASE}" "${CHARLIE_TOKEN}"
+assert_json_expr '[.documents[] | select(.id == "'"${REFDOC_MEMBER_ID}"'")] | length == 0' "Deleted document left the workspace list"
+api_req "GET" "${REFDOC_MEMBER_URL}" ""
+assert_status "404" "Deleted document's capability URL is dead (404)"
+
+# -----------------------------------------------------------------------------
+# 34. Agent Library End-to-End (add-reference-documents 11.3): a document-
+#     tools agent drives document.search and document.read (pages + section)
+#     over /v1 turns against the uploaded library — tool-call cards, library
+#     content in the results, and the channel-tied runbook invisible in a
+#     direct chat at both the API lens and query time. Subagent/scheduler
+#     visibility rides the Go tests (tasks 1.2/11.1/11.2).
+# -----------------------------------------------------------------------------
+log_step "34. Agent Library: document.search, document.read, Visibility"
+
+# 34.1 A dedicated agent with the document tools available: the agent
+# denylist stays empty (nothing denylisted) and the catalog rows default to
+# enabled — no workspace-gate setup. The mock provider's ONCLAW_REFDOC branch
+# steers the document tool calls.
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/agents" "${CHARLIE_TOKEN}" '{"name":"Refdoc Smoke Agent","slug":"refdoc-smoke","role":"Librarian","description":"Reference library smoke fixture","brief":"A short brief","provider_id":"'"${MOCK_PROV_ID}"'","model":"gpt-4"}'
+assert_status "201" "Owner creates the document-tools smoke agent"
+assert_json_expr '.agent.prompts_status == "ready"' "Agent create completes with prompts ready against the mock provider"
+assert_json_expr '(.agent.disabled_tools | length) == 0' "The agent denylist stays empty (document tools not denylisted)"
+DOC_AGENT_ID=$(json_get '.agent.id')
+
+api_req "POST" "${CHANNELS_BASE}" "${CHARLIE_TOKEN}" '{"name":"Refdoc Ops","slug":"refdoc-ops","purpose":"Reference library channel fixture."}'
+assert_status "201" "Owner creates the ops channel"
+DOC_CHANNEL_ID=$(json_get '.channel.id')
+api_req "POST" "${CHANNELS_BASE}/${DOC_CHANNEL_ID}/members" "${CHARLIE_TOKEN}" "{\"member_type\":\"agent\",\"agent_id\":\"${DOC_AGENT_ID}\",\"specialization\":\"Library duty\"}"
+assert_status "201" "Owner adds the document-tools agent to the ops channel"
+
+# 34.2 Library fixtures: the runbook is CHANNEL-attached only (the visibility
+# fixture — its ZQ91 marker must never leak into a direct-chat run), the api
+# manual pdf rides the agent, and the playbook md rides the agent carrying
+# the searchable policy phrase so the direct-chat search has deterministic
+# agent-visible hits.
+cat > "${TMP_DIR}/refdoc-runbook.md" <<'REFDOC_RUNBOOK_EOF'
+# Incident runbook
+
+## Webhook signing
+
+ZQ91: the webhook signing secret rotation policy lives here — channel runbook only.
+REFDOC_RUNBOOK_EOF
+api_multipart POST "${REFDOC_BASE}" "${CHARLIE_TOKEN}" "${TMP_DIR}/refdoc-runbook.md" file "name=refdoc-runbook.md" "channelIds=${DOC_CHANNEL_ID}"
+assert_status "201" "Upload the channel-attached runbook (201)"
+assert_json_expr '.scope == "attached"' "Runbook defaults to attached scope"
+DOC_RUNBOOK_ID=$(json_get '.id')
+assert_json_expr ".channels | index(\"${DOC_CHANNEL_ID}\") != null" "Runbook upload carried the channel attachment"
+
+api_multipart POST "${REFDOC_BASE}" "${CHARLIE_TOKEN}" "scripts/fixtures/refdoc-manual.pdf" file "name=refdoc-api-manual.pdf" "agentIds=${DOC_AGENT_ID}"
+assert_status "201" "Upload the agent-attached api manual pdf (201)"
+assert_json_expr '.indexStatus == "ready"' "Manual index status is ready"
+DOC_MANUAL_ID=$(json_get '.id')
+
+cat > "${TMP_DIR}/refdoc-playbook.md" <<'REFDOC_PLAYBOOK_EOF'
+# Library playbook
+
+## Signing Key Rotation
+
+The webhook signing secret rotation policy rotates keys every ninety days. PB77 playbook marker.
+
+## Escalation
+
+PB-OTHER escalation contacts live in the paging roster.
+REFDOC_PLAYBOOK_EOF
+api_multipart POST "${REFDOC_BASE}" "${CHARLIE_TOKEN}" "${TMP_DIR}/refdoc-playbook.md" file "name=refdoc-playbook.md" "agentIds=${DOC_AGENT_ID}"
+assert_status "201" "Upload the agent-attached playbook (201)"
+DOC_PLAYBOOK_ID=$(json_get '.id')
+
+# 34.3 The deterministic API-level visibility: the agent lens excludes the
+# channel-attached runbook while the channel lens carries it, and neither
+# lens is widened by the agent's channel membership.
+api_req "GET" "${REFDOC_BASE}?agent=${DOC_AGENT_ID}" "${CHARLIE_TOKEN}"
+assert_status "200" "Agent lens lists the document-tools agent's documents"
+assert_json_expr '[.documents[] | select(.id == "'"${DOC_RUNBOOK_ID}"'")] | length == 0' "Agent lens EXCLUDES the channel-attached runbook"
+assert_json_expr '[.documents[] | select(.id == "'"${DOC_MANUAL_ID}"'")] | length == 1' "Agent lens contains the attached manual"
+assert_json_expr '[.documents[] | select(.id == "'"${DOC_PLAYBOOK_ID}"'")] | length == 1' "Agent lens contains the attached playbook"
+
+api_req "GET" "${REFDOC_BASE}?channel=${DOC_CHANNEL_ID}" "${CHARLIE_TOKEN}"
+assert_status "200" "Channel lens lists the ops channel's documents"
+assert_json_expr '[.documents[] | select(.id == "'"${DOC_RUNBOOK_ID}"'")] | length == 1' "Channel lens contains the channel-attached runbook"
+assert_json_expr '[.documents[] | select(.id == "'"${DOC_MANUAL_ID}"'")] | length == 0' "Channel lens excludes the agent-attached manual"
+
+# 34.4 document.search in a DIRECT chat: the mock steers the turn into a
+# search for the runbook's distinctive phrase. The tool card must render with
+# the query, the hits reflect the visible library (manual + playbook), and
+# the channel-tied runbook stays invisible at query time.
+DOC_EVENTS_BASE="/api/v1/workspaces/${TENANT_SLUG}/agents/refdoc-smoke/sessions"
+DOC_SEARCH_SESSION="sess-refdoc-search-$(date +%s)-${RANDOM}"
+api_req "POST" "/v1/responses" "${V1_KEY}" '{"model":"refdoc-smoke","input":"ONCLAW_REFDOC_SEARCH search the library for the signing policy","stream":true,"metadata":{"onclaw_session":"'"${DOC_SEARCH_SESSION}"'"}}'
+assert_status "200" "Library search turn streamed"
+printf '%s' "${HTTP_BODY}" | grep -q '"type":"response.completed"' || log_fail "Search stream missing response.completed"
+printf '%s' "${HTTP_BODY}" | grep -q '"name":"document.search"' || log_fail "Search stream carried no document.search function_call item"
+log_pass "Search turn streamed the full SSE lifecycle with a document.search function_call item"
+
+for i in {1..40}; do
+    api_req "GET" "${DOC_EVENTS_BASE}/${DOC_SEARCH_SESSION}/events?limit=100" "${CHARLIE_TOKEN}"
+    if [[ "$(json_get '[.events[]? | select(.kind == "turn_completed")] | length')" -ge 1 ]]; then
+        break
+    fi
+    sleep 0.25
+done
+assert_json_expr '[.events[]? | select(.kind == "tool_call_started" and .tool_call.name == "document.search")] | length == 1' "Search renders EXACTLY ONE document.search tool_call_started card"
+assert_json_expr '[.events[]? | select(.kind == "tool_call_started" and .tool_call.name == "document.search")][0].tool_call.arguments | contains("webhook signing secret rotation policy")' "The search card carries the library query"
+assert_json_expr '[.events[]? | select(.kind == "tool_call_finished" and .tool_result.name == "document.search")] | length == 1' "Search renders the document.search tool_call_finished card"
+assert_json_expr '[.events[]? | select(.kind == "tool_call_finished" and .tool_result.name == "document.search")][0].tool_result.result | contains("refdoc-playbook.md")' "Search hits include the agent-attached playbook (heading locator type)"
+assert_json_expr '[.events[]? | select(.kind == "tool_call_finished" and .tool_result.name == "document.search")][0].tool_result.result | contains("PB77 playbook marker")' "Search snippets carry real library content"
+assert_json_expr '[.events[]? | select(.kind == "tool_call_finished" and .tool_result.name == "document.search")][0].tool_result.result | contains("refdoc-api-manual.pdf")' "Search hits include the agent-attached pdf (mixed-type hit)"
+assert_json_expr '([.events[]? | select(.kind == "tool_call_finished" and .tool_result.name == "document.search")][0].tool_result.result | contains("refdoc-runbook.md")) == false' "Direct-chat search never surfaces the channel-attached runbook"
+assert_json_expr '([.events[]? | select(.kind == "tool_call_finished" and .tool_result.name == "document.search")][0].tool_result.result | contains("ZQ91")) == false' "Runbook content stays invisible to the direct chat at query time"
+assert_json_expr '[.events[]? | select(.kind == "message_completed" and .message.role == "assistant")][0].message.content == "REFDOC-SEARCH-FINAL the library citations are in"' "The search turn finished on the mock's post-tool reply"
+
+# 34.5 document.read page-scoped: pages:"1" over the pdf must slice page one
+# only — ALPHA71 present, BETA72 (page two) absent.
+DOC_PAGES_SESSION="sess-refdoc-pages-$(date +%s)-${RANDOM}"
+api_req "POST" "/v1/responses" "${V1_KEY}" '{"model":"refdoc-smoke","input":"ONCLAW_REFDOC_PAGES read page one of the api manual","stream":true,"metadata":{"onclaw_session":"'"${DOC_PAGES_SESSION}"'"}}'
+assert_status "200" "Page-scoped read turn streamed"
+printf '%s' "${HTTP_BODY}" | grep -q '"type":"response.completed"' || log_fail "Pages stream missing response.completed"
+printf '%s' "${HTTP_BODY}" | grep -q '"name":"document.read"' || log_fail "Pages stream carried no document.read function_call item"
+
+for i in {1..40}; do
+    api_req "GET" "${DOC_EVENTS_BASE}/${DOC_PAGES_SESSION}/events?limit=100" "${CHARLIE_TOKEN}"
+    if [[ "$(json_get '[.events[]? | select(.kind == "turn_completed")] | length')" -ge 1 ]]; then
+        break
+    fi
+    sleep 0.25
+done
+assert_json_expr '[.events[]? | select(.kind == "tool_call_started" and .tool_call.name == "document.read")] | length == 1' "Pages read renders EXACTLY ONE document.read tool_call_started card"
+assert_json_expr '[.events[]? | select(.kind == "tool_call_started" and .tool_call.name == "document.read")][0].tool_call.arguments | contains("\"pages\":\"1\"")' "The read card requested the pages scope"
+assert_json_expr '[.events[]? | select(.kind == "tool_call_finished" and .tool_result.name == "document.read")][0].tool_result.result | contains("refdoc-api-manual.pdf")' "The pages read resolved the mounted manual"
+assert_json_expr '[.events[]? | select(.kind == "tool_call_finished" and .tool_result.name == "document.read")][0].tool_result.result | contains("ALPHA71")' "The page slice carries page one's content"
+assert_json_expr '([.events[]? | select(.kind == "tool_call_finished" and .tool_result.name == "document.read")][0].tool_result.result | contains("BETA72")) == false' "The page slice excludes page two's content"
+
+# 34.6 document.read section-scoped over the playbook md: the section title
+# slices the Signing Key Rotation body — PB77 present, PB-OTHER absent.
+DOC_SECTION_SESSION="sess-refdoc-section-$(date +%s)-${RANDOM}"
+api_req "POST" "/v1/responses" "${V1_KEY}" '{"model":"refdoc-smoke","input":"ONCLAW_REFDOC_SECTION read the signing key rotation section of the playbook","stream":true,"metadata":{"onclaw_session":"'"${DOC_SECTION_SESSION}"'"}}'
+assert_status "200" "Section-scoped read turn streamed"
+printf '%s' "${HTTP_BODY}" | grep -q '"type":"response.completed"' || log_fail "Section stream missing response.completed"
+printf '%s' "${HTTP_BODY}" | grep -q '"name":"document.read"' || log_fail "Section stream carried no document.read function_call item"
+
+for i in {1..40}; do
+    api_req "GET" "${DOC_EVENTS_BASE}/${DOC_SECTION_SESSION}/events?limit=100" "${CHARLIE_TOKEN}"
+    if [[ "$(json_get '[.events[]? | select(.kind == "turn_completed")] | length')" -ge 1 ]]; then
+        break
+    fi
+    sleep 0.25
+done
+assert_json_expr '[.events[]? | select(.kind == "tool_call_started" and .tool_call.name == "document.read")][0].tool_call.arguments | contains("Signing Key Rotation")' "The section read card carries the section title"
+assert_json_expr '[.events[]? | select(.kind == "tool_call_finished" and .tool_result.name == "document.read")][0].tool_result.result | contains("refdoc-playbook.md")' "The section read resolved the mounted playbook"
+assert_json_expr '[.events[]? | select(.kind == "tool_call_finished" and .tool_result.name == "document.read")][0].tool_result.result | contains("PB77 playbook marker")' "The section slice carries the Signing Key Rotation body"
+assert_json_expr '([.events[]? | select(.kind == "tool_call_finished" and .tool_result.name == "document.read")][0].tool_result.result | contains("PB-OTHER")) == false' "The section slice excludes the Escalation section"

@@ -68,8 +68,8 @@ func (as *agentStore) Create(ctx context.Context, a *domain.Agent) error {
 	if a.PromptsStatus == "" {
 		a.PromptsStatus = domain.PromptsStatusGenerating
 	}
-	if a.Tools == nil {
-		a.Tools = []string{}
+	if a.DisabledTools == nil {
+		a.DisabledTools = []string{}
 	}
 	if a.EnabledMCPS == nil {
 		a.EnabledMCPS = []string{}
@@ -91,7 +91,7 @@ func (as *agentStore) Create(ctx context.Context, a *domain.Agent) error {
 		INSERT INTO agents (
 			id, workspace_id, slug, name, role, description, brief,
 			provider_id, model, temperature, max_tokens, effort, autonomy,
-			context_window, tools, enabled_mcps,
+			context_window, disabled_tools, enabled_mcps,
 			memory_sidecall_provider_id, memory_sidecall_model,
 			avatar, prompts_status, prompts_error, created_by, updated_by, created_at, updated_at
 		) VALUES (
@@ -116,7 +116,7 @@ func (as *agentStore) Create(ctx context.Context, a *domain.Agent) error {
 		a.Effort,
 		string(a.Autonomy),
 		a.ContextWindow,
-		a.Tools,
+		a.DisabledTools,
 		a.EnabledMCPS,
 		a.MemorySidecallProviderID,
 		a.MemorySidecallModel,
@@ -142,7 +142,7 @@ func (as *agentStore) ByID(ctx context.Context, workspaceID, id string) (*domain
 	query := `
 		SELECT id, workspace_id, slug, name, role, description, brief,
 		       COALESCE(provider_id::text, ''), COALESCE(model, ''), temperature, max_tokens, effort, autonomy,
-		       context_window, tools, enabled_mcps,
+		       context_window, disabled_tools, enabled_mcps,
 		       memory_sidecall_provider_id, memory_sidecall_model,
 		       avatar, prompts_status, prompts_error, created_by, updated_by, created_at, updated_at
 		FROM agents
@@ -166,7 +166,7 @@ func (as *agentStore) ByID(ctx context.Context, workspaceID, id string) (*domain
 		&a.Effort,
 		&autonomyStr,
 		&a.ContextWindow,
-		&a.Tools,
+		&a.DisabledTools,
 		&a.EnabledMCPS,
 		&a.MemorySidecallProviderID,
 		&a.MemorySidecallModel,
@@ -188,8 +188,8 @@ func (as *agentStore) ByID(ctx context.Context, workspaceID, id string) (*domain
 	} else {
 		a.Avatar = json.RawMessage("{}")
 	}
-	if a.Tools == nil {
-		a.Tools = []string{}
+	if a.DisabledTools == nil {
+		a.DisabledTools = []string{}
 	}
 	if a.EnabledMCPS == nil {
 		a.EnabledMCPS = []string{}
@@ -205,7 +205,7 @@ func (as *agentStore) BySlug(ctx context.Context, workspaceID, slug string) (*do
 	query := `
 		SELECT id, workspace_id, slug, name, role, description, brief,
 		       COALESCE(provider_id::text, ''), COALESCE(model, ''), temperature, max_tokens, effort, autonomy,
-		       context_window, tools, enabled_mcps,
+		       context_window, disabled_tools, enabled_mcps,
 		       memory_sidecall_provider_id, memory_sidecall_model,
 		       avatar, prompts_status, prompts_error, created_by, updated_by, created_at, updated_at
 		FROM agents
@@ -229,7 +229,7 @@ func (as *agentStore) BySlug(ctx context.Context, workspaceID, slug string) (*do
 		&a.Effort,
 		&autonomyStr,
 		&a.ContextWindow,
-		&a.Tools,
+		&a.DisabledTools,
 		&a.EnabledMCPS,
 		&a.MemorySidecallProviderID,
 		&a.MemorySidecallModel,
@@ -251,8 +251,8 @@ func (as *agentStore) BySlug(ctx context.Context, workspaceID, slug string) (*do
 	} else {
 		a.Avatar = json.RawMessage("{}")
 	}
-	if a.Tools == nil {
-		a.Tools = []string{}
+	if a.DisabledTools == nil {
+		a.DisabledTools = []string{}
 	}
 	if a.EnabledMCPS == nil {
 		a.EnabledMCPS = []string{}
@@ -268,7 +268,7 @@ func (as *agentStore) ListForWorkspace(ctx context.Context, workspaceID string) 
 	query := `
 		SELECT id, workspace_id, slug, name, role, description, brief,
 		       COALESCE(provider_id::text, ''), COALESCE(model, ''), temperature, max_tokens, effort, autonomy,
-		       context_window, tools, enabled_mcps,
+		       context_window, disabled_tools, enabled_mcps,
 		       memory_sidecall_provider_id, memory_sidecall_model,
 		       avatar, prompts_status, prompts_error, created_by, updated_by, created_at, updated_at
 		FROM agents
@@ -301,7 +301,7 @@ func (as *agentStore) ListForWorkspace(ctx context.Context, workspaceID string) 
 			&a.Effort,
 			&autonomyStr,
 			&a.ContextWindow,
-			&a.Tools,
+			&a.DisabledTools,
 			&a.EnabledMCPS,
 			&a.MemorySidecallProviderID,
 			&a.MemorySidecallModel,
@@ -322,8 +322,8 @@ func (as *agentStore) ListForWorkspace(ctx context.Context, workspaceID string) 
 		} else {
 			a.Avatar = json.RawMessage("{}")
 		}
-		if a.Tools == nil {
-			a.Tools = []string{}
+		if a.DisabledTools == nil {
+			a.DisabledTools = []string{}
 		}
 		if a.EnabledMCPS == nil {
 			a.EnabledMCPS = []string{}
@@ -378,8 +378,8 @@ func (as *agentStore) Update(ctx context.Context, a *domain.Agent) error {
 	} else {
 		a.Avatar = json.RawMessage("{}")
 	}
-	if a.Tools == nil {
-		a.Tools = []string{}
+	if a.DisabledTools == nil {
+		a.DisabledTools = []string{}
 	}
 	if a.EnabledMCPS == nil {
 		a.EnabledMCPS = []string{}
@@ -402,7 +402,7 @@ func (as *agentStore) Update(ctx context.Context, a *domain.Agent) error {
 		    effort = $10,
 		    autonomy = $11,
 		    context_window = $12,
-		    tools = $13,
+		    disabled_tools = $13,
 		    enabled_mcps = $14,
 		    memory_sidecall_provider_id = $15,
 		    memory_sidecall_model = $16,
@@ -426,7 +426,7 @@ func (as *agentStore) Update(ctx context.Context, a *domain.Agent) error {
 		a.Effort,
 		string(a.Autonomy),
 		a.ContextWindow,
-		a.Tools,
+		a.DisabledTools,
 		a.EnabledMCPS,
 		a.MemorySidecallProviderID,
 		a.MemorySidecallModel,

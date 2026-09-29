@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -57,6 +58,8 @@ func defaultDocumentConverters() map[string]documentConverter {
 		".htm":  convertHTML,
 		".csv":  convertDelimited(','),
 		".tsv":  convertDelimited('\t'),
+		".md":   convertPlainText,
+		".txt":  convertPlainText,
 	}
 }
 
@@ -75,7 +78,8 @@ func supportedDocumentFormats() []string {
 type DocumentReadOption func(*documentReadTool)
 
 // WithReadOnlyRoots configures extra read-only roots accessible to the tool
-// (e.g. drop-lane attachment run directories).
+// (e.g. drop-lane attachment run directories). Roots are stored in canonical
+// spelling (canonicalizePath) so the jail check compares like with like.
 func WithReadOnlyRoots(roots ...string) DocumentReadOption {
 	return func(t *documentReadTool) {
 		for _, r := range roots {
@@ -89,10 +93,10 @@ func WithReadOnlyRoots(roots ...string) DocumentReadOption {
 			resolved, err := filepath.EvalSymlinks(abs)
 			if err != nil {
 				// If directory doesn't exist yet, clean and store canonical form
-				t.readOnlyRoots = append(t.readOnlyRoots, strings.TrimSuffix(filepath.Clean(abs), string(filepath.Separator)))
+				t.readOnlyRoots = append(t.readOnlyRoots, strings.TrimSuffix(canonicalizePath(filepath.Clean(abs)), string(filepath.Separator)))
 				continue
 			}
-			t.readOnlyRoots = append(t.readOnlyRoots, strings.TrimSuffix(resolved, string(filepath.Separator)))
+			t.readOnlyRoots = append(t.readOnlyRoots, strings.TrimSuffix(canonicalizePath(resolved), string(filepath.Separator)))
 		}
 	}
 }
@@ -148,7 +152,7 @@ func NewDocumentRead(agentDir string, opts ...DocumentReadOption) (tool.BaseTool
 	}
 
 	t := &documentReadTool{
-		agentDir:   strings.TrimSuffix(resolvedRoot, string(filepath.Separator)),
+		agentDir:   strings.TrimSuffix(canonicalizePath(resolvedRoot), string(filepath.Separator)),
 		mount:      backend.DefaultMountPoint,
 		timeout:    defaultDocumentReadTimeout,
 		converters: defaultDocumentConverters(),
@@ -165,6 +169,7 @@ func (t *documentReadTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 		Name: NameDocumentRead,
 		Desc: "Convert a document (PDF, DOCX, XLSX, PPTX, HTML, CSV, TSV) to markdown text using built-in in-process conversion. " +
 			"Provide an absolute path under " + t.mount + " or a mounted drop-lane attachment path. " +
+			"Optionally scope the read: pages selects PDF pages, section reads only the matched heading, slide, or sheet section. " +
 			"Corrupt, password-protected, or unsupported documents return an error result naming the document; " +
 			"scanned or image-only PDFs report that no extractable text was found.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
@@ -173,13 +178,25 @@ func (t *documentReadTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 				Desc:     "The document file path to read.",
 				Required: true,
 			},
+			"pages": {
+				Type: schema.String,
+				Desc: "Optional PDF page selection: a page number, an inclusive N-M range, or a comma-separated combination like \"1,3,5-7\". Applies to PDFs only.",
+			},
+			"section": {
+				Type: schema.String,
+				Desc: "Optional section title: return only the matched section. Case-insensitive exact match on a heading, \"Slide N\", or sheet name.",
+			},
 		}),
 	}, nil
 }
 
-// documentReadArgs is the deserialized tool-call argument shape.
+// documentReadArgs is the deserialized tool-call argument shape. Pages and
+// Section are the optional scope parameters (add-reference-documents D5):
+// empty/whitespace values count as absent, and at most one may be set.
 type documentReadArgs struct {
-	Path string `json:"path"`
+	Path    string `json:"path"`
+	Pages   string `json:"pages"`
+	Section string `json:"section"`
 }
 
 // resolve maps the user-provided path against the allowed jail roots (the agent workspace
@@ -204,7 +221,20 @@ func (t *documentReadTool) resolve(userPath string) (string, error) {
 		candidate = filepath.Clean(userPath)
 	} else {
 		// Relative path: resolve under agentDir
-		candidate = filepath.Join(t.agentDir, filepath.Clean(userPath))
+		cleaned := filepath.Clean(userPath)
+		candidate = filepath.Join(t.agentDir, cleaned)
+		// references/<document name> addresses the run's references mount:
+		// the read-only root whose base directory is named "references" (the
+		// base prompt and search-tool contract). The first path segment must
+		// match that component exactly — never a prefix of an unrelated root.
+		if first, rest, _ := strings.Cut(cleaned, string(filepath.Separator)); first == "references" && rest != "" {
+			for _, root := range t.readOnlyRoots {
+				if filepath.Base(root) == "references" {
+					candidate = filepath.Join(root, rest)
+					break
+				}
+			}
+		}
 	}
 
 	resolved, err := filepath.EvalSymlinks(candidate)
@@ -215,8 +245,14 @@ func (t *documentReadTool) resolve(userPath string) (string, error) {
 		return "", fmt.Errorf("resolve path: %w", err)
 	}
 
-	if !t.isWithinAllowedRoots(resolved) {
-		return "", fmt.Errorf("path is outside allowed directories: %q", userPath)
+	// Different absolute spellings of the same file are the same file for the
+	// jail check: on darwin the data-volume firmlink gives one path a
+	// /System/Volumes/Data/... alias that EvalSymlinks does not collapse
+	// (fix-reference-document-retrieval 3.1). Compare the canonical spelling
+	// against the canonicalized roots; the read itself still uses resolved.
+	canonical := canonicalizePath(resolved)
+	if !t.isWithinAllowedRoots(canonical) {
+		return "", outsideAllowedRootsError(userPath, canonical)
 	}
 
 	fi, err := os.Stat(resolved)
@@ -253,14 +289,97 @@ func isWithinRoot(root, path string) bool {
 	return strings.HasPrefix(path, root+string(filepath.Separator))
 }
 
+// darwinDataVolumePrefix is the macOS data-volume firmlink mount of /: on
+// darwin every file under / also answers at /System/Volumes/Data/..., and
+// filepath.EvalSymlinks does not collapse that spelling, so one file carries
+// two absolute spellings that are not prefix-equal
+// (fix-reference-document-retrieval 3.1). The prefix only exists on darwin.
+const darwinDataVolumePrefix = "/System/Volumes/Data"
+
+// canonicalizePath maps a path's data-volume firmlink spelling to its plain
+// form ("/System/Volumes/Data/X" ≡ "/X"); every other path passes through
+// unchanged. The strip is guarded to that exact leading path component (the
+// remainder must start with its own separator and name something below the
+// mount root), so similar-looking prefixes and the mount root itself are
+// untouched. The strip only ever removes the firmlink alias — it never
+// relocates a file across the jail boundary — so the root check's security
+// semantics are unchanged: what was outside the roots stays outside.
+func canonicalizePath(path string) string {
+	if rest := strings.TrimPrefix(path, darwinDataVolumePrefix); len(rest) > 1 && rest[0] == '/' {
+		return rest
+	}
+	return path
+}
+
+// outsideAllowedRootsError renders the teaching rejection (design.md D4):
+// the accepted path forms, so a rejected call can self-correct in one retry
+// instead of dead-ending at a bare refusal. When the rejected spelling is a
+// spelling of a file a references mount serves — its canonical path sits
+// directly inside a directory named "references", e.g. a stale session's
+// mount path — the error additionally names that same file's
+// references/<document name> form. With canonicalization applied to the jail
+// check itself (3.1), a firmlink alias of an allowed root file no longer
+// reaches this error at all; the hint covers the residual spelling-artifact
+// class the check cannot vouch for. A genuine escape (symlink resolving
+// outside) never gets the hint: its canonical path does not sit inside a
+// references directory.
+func outsideAllowedRootsError(userPath, canonical string) error {
+	msg := fmt.Sprintf("path is outside allowed directories: %q — use references/<document name>, a workspace-relative path, or /workspace/...", userPath)
+	if name, ok := referencesMountFileName(canonical); ok {
+		msg += fmt.Sprintf(" (%q is the same file as references/%s)", userPath, name)
+	}
+	return fmt.Errorf("%s", msg)
+}
+
+// referencesMountDirName is the directory component every references mount
+// exposes — the base prompt and search-tool contract, and the component the
+// references/<name> path form keys on.
+const referencesMountDirName = "references"
+
+// referencesMountFileName reports whether canonical names a file directly
+// inside a directory named "references" — the documented mount shape — and
+// returns the document name for the references/<name> retry form. Nested
+// paths under other directories do not hint: the documented form is flat.
+func referencesMountFileName(canonical string) (string, bool) {
+	dir, file := filepath.Split(canonical)
+	if file == "" {
+		return "", false
+	}
+	dir = strings.TrimSuffix(dir, string(filepath.Separator))
+	if filepath.Base(dir) != referencesMountDirName {
+		return "", false
+	}
+	return file, true
+}
+
 // InvokableRun satisfies tool.InvokableTool. Path validation failures return
 // errors (the runtime's tool-error middleware turns them into JSON error
-// results); per-document conversion failures return structured error results
-// directly, naming the document, so the run continues (design.md D3).
+// results); per-document conversion failures and scoped-read misses return
+// structured results directly, naming the document, so the run continues
+// (design.md D3; add-reference-documents D5 — scoped-read failures never fail
+// the run, and the tool stays registered and selectable).
 func (t *documentReadTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
 	var args documentReadArgs
 	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
 		return "", fmt.Errorf("document.read: %w", err)
+	}
+
+	// Scope parameters (D5): empty/whitespace values are absent, and both at
+	// once is a malformed request. Page-syntax validation precedes document
+	// access — a malformed parameter is a tool-parameter error regardless of
+	// the file.
+	pagesSpec := strings.TrimSpace(args.Pages)
+	sectionTitle := strings.TrimSpace(args.Section)
+	if pagesSpec != "" && sectionTitle != "" {
+		return "", fmt.Errorf("document.read: specify either pages or section, not both")
+	}
+	var selection []int
+	if pagesSpec != "" {
+		pages, err := parsePageSelection(pagesSpec)
+		if err != nil {
+			return "", fmt.Errorf("document.read: %w", err)
+		}
+		selection = pages
 	}
 
 	resolvedPath, err := t.resolve(args.Path)
@@ -270,6 +389,13 @@ func (t *documentReadTool) InvokableRun(ctx context.Context, argumentsInJSON str
 
 	docName := filepath.Base(resolvedPath)
 	ext := strings.ToLower(filepath.Ext(docName))
+
+	// Page scoping is a PDF-only affordance (D5): on any other type return
+	// the structured note naming the section alternative — a request-shape
+	// mismatch, checked before conversion is attempted.
+	if pagesSpec != "" && ext != ".pdf" {
+		return documentReadNote(args.Path, docName, "page scoping applies to PDFs only; use the section parameter instead"), nil
+	}
 
 	converter, ok := t.converters[ext]
 	if !ok {
@@ -296,6 +422,18 @@ func (t *documentReadTool) InvokableRun(ctx context.Context, argumentsInJSON str
 			"Cannot read %s: %v.", docName, err)), nil
 	}
 
+	if pagesSpec != "" {
+		return t.pagesResult(args, docName, markdown, selection)
+	}
+	if sectionTitle != "" {
+		return t.sectionResult(args, docName, markdown, sectionTitle)
+	}
+
+	// Page anchors are an indexing affordance for the references pipeline
+	// (add-reference-documents tasks 3.1); the document.read output contract
+	// stays anchor-free.
+	markdown = StripPageMarkers(markdown)
+
 	// D5: Output contract
 	trimmed := strings.TrimSpace(markdown)
 	var finalMarkdown string
@@ -320,6 +458,75 @@ func (t *documentReadTool) InvokableRun(ctx context.Context, argumentsInJSON str
 	return string(out), nil
 }
 
+// pagesResult renders the page-scoped read (D5): the requested pages sliced
+// from the anchored PDF conversion, each under a `## Page N` heading, the
+// whole slice under the shared output cap. Selection order is document order;
+// out-of-range pages are dropped, and a selection matching nothing is a
+// structured not-found naming the document — never a run failure.
+func (t *documentReadTool) pagesResult(args documentReadArgs, docName, markdown string, selection []int) (string, error) {
+	segments := ParsePageSegments(markdown)
+	bodies := make(map[int]string, len(segments))
+	available := make([]int, 0, len(segments))
+	for _, seg := range segments {
+		bodies[seg.Page] = seg.Body
+		available = append(available, seg.Page)
+	}
+
+	var sb strings.Builder
+	matched := make([]int, 0, len(selection))
+	for _, page := range selection {
+		body, ok := bodies[page]
+		if !ok {
+			continue
+		}
+		matched = append(matched, page)
+		if sb.Len() > 0 {
+			sb.WriteString("\n\n")
+		}
+		sb.WriteString(fmt.Sprintf("## Page %d\n\n%s", page, body))
+	}
+	if len(matched) == 0 {
+		return documentReadScopeError(args.Path, docName, fmt.Sprintf(
+			"pages not found in %s: requested %q but only %s carry readable text",
+			docName, strings.TrimSpace(args.Pages), orPageList(available))), nil
+	}
+
+	out, err := json.Marshal(map[string]any{
+		"path":     args.Path,
+		"name":     docName,
+		"markdown": capDocumentReadSlice(sb.String()),
+		"pages":    renderPageSelection(matched),
+	})
+	if err != nil {
+		return "", fmt.Errorf("document.read: encode result: %w", err)
+	}
+	return string(out), nil
+}
+
+// sectionResult renders the section-scoped read (D5): the first heading whose
+// trimmed text equals the requested title (case-insensitive), rendered with
+// its body under the shared output cap. A miss is a structured not-found
+// naming the document and the requested title — never a run failure.
+func (t *documentReadTool) sectionResult(args documentReadArgs, docName, markdown, title string) (string, error) {
+	// Anchors stripped first: the output contract stays anchor-free even when
+	// a matched section sits inside an anchored PDF page.
+	heading, body, ok := sliceMarkdownSection(StripPageMarkers(markdown), title)
+	if !ok {
+		return documentReadScopeError(args.Path, docName, "section not found: "+title), nil
+	}
+	rendered := strings.TrimSpace(heading + "\n\n" + body)
+	out, err := json.Marshal(map[string]any{
+		"path":     args.Path,
+		"name":     docName,
+		"markdown": capDocumentReadSlice(rendered),
+		"section":  title,
+	})
+	if err != nil {
+		return "", fmt.Errorf("document.read: encode result: %w", err)
+	}
+	return string(out), nil
+}
+
 // documentReadFailure renders the structured per-document error result
 // (design.md D3): a result the model reads and reacts to, never a run failure.
 func documentReadFailure(userPath, docName, msg string) string {
@@ -333,6 +540,46 @@ func documentReadFailure(userPath, docName, msg string) string {
 		return msg
 	}
 	return string(out)
+}
+
+// documentReadScopeError renders the structured scoped-read miss (D5): same
+// result envelope as documentReadFailure without the empty markdown body —
+// the model reads the miss and re-queries, and the run continues.
+func documentReadScopeError(userPath, docName, msg string) string {
+	out, err := json.Marshal(map[string]any{
+		"path":  userPath,
+		"name":  docName,
+		"error": msg,
+	})
+	if err != nil {
+		return msg
+	}
+	return string(out)
+}
+
+// documentReadNote renders the structured guidance result (D5): page scoping
+// requested on a non-PDF names the limitation and the section alternative.
+func documentReadNote(userPath, docName, note string) string {
+	out, err := json.Marshal(map[string]any{
+		"path": userPath,
+		"name": docName,
+		"note": note,
+	})
+	if err != nil {
+		return note
+	}
+	return string(out)
+}
+
+// capDocumentReadSlice applies the shared output cap to a scoped-read slice
+// (D5): the cap binds after slicing, so a narrow page/section read is never
+// truncated by the rest of the document.
+func capDocumentReadSlice(markdown string) string {
+	trimmed := strings.TrimSpace(markdown)
+	if len(trimmed) > MaxDocumentReadOutputBytes {
+		return trimmed[:MaxDocumentReadOutputBytes] + truncationDocumentReadNotice
+	}
+	return trimmed
 }
 
 // convertDocument runs one converter under panic recovery — corrupt or
@@ -358,11 +605,49 @@ func convertDocument(ctx context.Context, conv documentConverter, path string) (
 	return markdown, nil
 }
 
+// ConvertDocument converts one in-memory document to markdown using the
+// default converter registry (design.md D2): the converter resolves by the
+// lowercased file extension of name, conversion runs under the shared bounded
+// deadline with panic recovery, and the returned markdown is UNTRUNCATED and
+// retains PDF page anchors — the references upload pipeline
+// (internal/references) sections on the anchors and applies its own caps.
+// Text formats (md, txt) have no converter and are passed through unconverted
+// by the caller.
+func ConvertDocument(name string, data []byte) (string, error) {
+	ext := strings.ToLower(filepath.Ext(name))
+	converter, ok := defaultDocumentConverters()[ext]
+	if !ok {
+		return "", fmt.Errorf("cannot convert %s: no converter is registered for the %q format. Supported formats: %s.",
+			name, ext, strings.Join(supportedDocumentFormats(), ", "))
+	}
+	dir, err := os.MkdirTemp("", "onclaw-convert-")
+	if err != nil {
+		return "", fmt.Errorf("create conversion workspace: %w", err)
+	}
+	defer os.RemoveAll(dir)
+	path := filepath.Join(dir, "document"+ext)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return "", fmt.Errorf("stage document bytes: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), defaultDocumentReadTimeout)
+	defer cancel()
+	return convertDocument(ctx, converter, path)
+}
+
+// DocumentConverterExtensions lists the conversion-registry extensions
+// (sorted, dotless) — the upload-side contract for convertible document types.
+func DocumentConverterExtensions() []string {
+	return supportedDocumentFormats()
+}
+
 // --- PDF (ledongthuc/pdf) -------------------------------------------------
 
-// convertPDF extracts per-page text from a PDF. A scanned/image-only PDF
-// yields no text runs and returns an empty string; the caller renders the
-// distinct "no extractable text" result (design.md D5).
+// convertPDF extracts per-page text from a PDF. Each page that yields text is
+// preceded by a `<!-- onclaw:page N -->` anchor line (add-reference-documents
+// tasks 3.1) so the sectioner maps headings to page locators and scoped reads
+// can slice pages; StripPageMarkers removes the anchors for plain output. A
+// scanned/image-only PDF yields no text runs and returns an empty string; the
+// caller renders the distinct "no extractable text" result (design.md D5).
 func convertPDF(ctx context.Context, path string) (string, error) {
 	f, r, err := pdf.Open(path)
 	if err != nil {
@@ -383,10 +668,249 @@ func convertPDF(ctx context.Context, path string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("extract text from page %d: %w", i, err)
 		}
-		sb.WriteString(strings.TrimSpace(text))
+		pageText := strings.TrimSpace(text)
+		if pageText == "" {
+			continue
+		}
+		sb.WriteString(pageAnchor(i))
+		sb.WriteString("\n")
+		sb.WriteString(pageText)
 		sb.WriteString("\n\n")
 	}
 	return sb.String(), nil
+}
+
+// pageAnchor renders the 1-based page-break anchor line for one PDF page.
+func pageAnchor(page int) string {
+	return fmt.Sprintf("<!-- onclaw:page %d -->", page)
+}
+
+// pdfPageMarkerLineRe matches one anchor line (ParsePageSegments splits on it).
+var pdfPageMarkerLineRe = regexp.MustCompile(`^[ \t]*<!-- onclaw:page ([0-9]+) -->[ \t]*$`)
+
+// pdfPageMarkerStripRe removes an anchor line together with its line
+// terminator, so stripped converter output is byte-identical to the
+// pre-anchor page-per-paragraph join.
+var pdfPageMarkerStripRe = regexp.MustCompile(`(?m)^[ \t]*<!-- onclaw:page [0-9]+ -->[ \t]*\r?\n?`)
+
+// PageSegment is one anchor-delimited page of converted PDF markdown.
+type PageSegment struct {
+	Page int    // 1-based page number from the anchor
+	Body string // the page's text, anchors stripped, whitespace-trimmed
+}
+
+// StripPageMarkers removes every `<!-- onclaw:page N -->` anchor line from
+// converted markdown.
+func StripPageMarkers(md string) string {
+	return pdfPageMarkerStripRe.ReplaceAllString(md, "")
+}
+
+// ParsePageSegments splits anchor-anchored markdown into per-page segments.
+// Content preceding the first anchor, if any, is prepended to the first
+// segment's body; markdown without any anchors yields a single Page 1 segment
+// holding the whole text; empty input yields nil.
+func ParsePageSegments(md string) []PageSegment {
+	lines := strings.Split(md, "\n")
+	type anchor struct{ idx, page int }
+	var anchors []anchor
+	for i, line := range lines {
+		if m := pdfPageMarkerLineRe.FindStringSubmatch(line); m != nil {
+			n, err := strconv.Atoi(m[1])
+			if err != nil {
+				continue
+			}
+			anchors = append(anchors, anchor{idx: i, page: n})
+		}
+	}
+	if len(anchors) == 0 {
+		if strings.TrimSpace(md) == "" {
+			return nil
+		}
+		return []PageSegment{{Page: 1, Body: strings.TrimSpace(md)}}
+	}
+	segments := make([]PageSegment, 0, len(anchors))
+	for i, a := range anchors {
+		end := len(lines)
+		if i+1 < len(anchors) {
+			end = anchors[i+1].idx
+		}
+		bodyLines := lines[a.idx+1 : end]
+		if i == 0 && a.idx > 0 {
+			// Content before the first anchor belongs to that page.
+			leading := make([]string, 0, a.idx+len(bodyLines))
+			leading = append(leading, lines[:a.idx]...)
+			bodyLines = append(leading, bodyLines...)
+		}
+		segments = append(segments, PageSegment{Page: a.page, Body: strings.TrimSpace(strings.Join(bodyLines, "\n"))})
+	}
+	return segments
+}
+
+// maxPageSelectionPages bounds how many distinct pages one pages parameter may
+// select: the output cap makes anything beyond a few hundred pages useless,
+// so a runaway range is rejected as a parameter error instead of expanded.
+const maxPageSelectionPages = 5000
+
+// parsePageSelection parses the pages parameter grammar (D5): `N`, the
+// inclusive range `N-M`, and comma-separated combinations ("1,3,5-7").
+// Malformed syntax is a parameter error; zero/negative page numbers never
+// match (pages are 1-based). The result is deduplicated and sorted into
+// document order.
+func parsePageSelection(spec string) ([]int, error) {
+	invalid := func(reason string) error {
+		return fmt.Errorf("invalid pages value %q: %s (expected page numbers and N-M ranges like \"1,3,5-7\")", spec, reason)
+	}
+	seen := make(map[int]bool)
+	var pages []int
+	add := func(n int) bool {
+		if seen[n] {
+			return len(pages) <= maxPageSelectionPages
+		}
+		seen[n] = true
+		pages = append(pages, n)
+		return len(pages) <= maxPageSelectionPages
+	}
+	for _, token := range strings.Split(spec, ",") {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			return nil, invalid("empty entry")
+		}
+		if start, end, ok := parsePageRange(token); ok {
+			if start > end {
+				return nil, invalid(fmt.Sprintf("range start %d exceeds end %d", start, end))
+			}
+			for page := start; page <= end; page++ {
+				if !add(page) {
+					return nil, invalid(fmt.Sprintf("selection exceeds the maximum of %d pages", maxPageSelectionPages))
+				}
+			}
+			continue
+		}
+		page, err := strconv.Atoi(token)
+		if err != nil || page <= 0 {
+			return nil, invalid(fmt.Sprintf("%q is not a page number", token))
+		}
+		if !add(page) {
+			return nil, invalid(fmt.Sprintf("selection exceeds the maximum of %d pages", maxPageSelectionPages))
+		}
+	}
+	sort.Ints(pages)
+	return pages, nil
+}
+
+// parsePageRange reports whether token is an `N-M` pair of integers.
+func parsePageRange(token string) (start, end int, ok bool) {
+	parts := strings.SplitN(token, "-", 2)
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	start, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return 0, 0, false
+	}
+	end, err = strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil {
+		return 0, 0, false
+	}
+	return start, end, true
+}
+
+// renderPageSelection renders an ascending page list as the normalized echo
+// form: contiguous runs collapse to `N-M`, runs join with commas ("1,3,5-7").
+func renderPageSelection(pages []int) string {
+	if len(pages) == 0 {
+		return ""
+	}
+	var parts []string
+	start, prev := pages[0], pages[0]
+	for _, page := range pages[1:] {
+		if page == prev+1 {
+			prev = page
+			continue
+		}
+		parts = append(parts, renderPageRun(start, prev))
+		start, prev = page, page
+	}
+	parts = append(parts, renderPageRun(start, prev))
+	return strings.Join(parts, ",")
+}
+
+func renderPageRun(start, end int) string {
+	if start == end {
+		return strconv.Itoa(start)
+	}
+	return fmt.Sprintf("%d-%d", start, end)
+}
+
+// orPageList renders an available-page list for not-found copy.
+func orPageList(pages []int) string {
+	if rendered := renderPageSelection(pages); rendered != "" {
+		return "pages " + rendered
+	}
+	return "no pages"
+}
+
+// atxHeadingLineRe matches one ATX heading line: up to three leading spaces,
+// 1-6 `#`, whitespace, then the heading text (extracted; an optional
+// whitespace-preceded closing `#` sequence is trimmed by atxHeadingText).
+var atxHeadingLineRe = regexp.MustCompile(`^[ \t]{0,3}#{1,6}[ \t]+(.*)$`)
+
+// atxHeadingText extracts a heading line's title: the text after the `#`
+// run, whitespace-trimmed, with an optional closing sequence of `#`s
+// (per CommonMark, only when whitespace precedes it — "C#" keeps its hash).
+// ok is false for non-heading lines and headings with no title text.
+func atxHeadingText(line string) (text string, ok bool) {
+	m := atxHeadingLineRe.FindStringSubmatch(line)
+	if m == nil {
+		return "", false
+	}
+	trimmed := strings.TrimRight(strings.TrimSpace(m[1]), " \t")
+	if !strings.HasSuffix(trimmed, "#") {
+		return trimmed, trimmed != ""
+	}
+	runStart := len(trimmed)
+	for runStart > 0 && trimmed[runStart-1] == '#' {
+		runStart--
+	}
+	if runStart > 0 && (trimmed[runStart-1] == ' ' || trimmed[runStart-1] == '\t') {
+		trimmed = strings.TrimRight(trimmed[:runStart], " \t")
+	}
+	return trimmed, trimmed != ""
+}
+
+// sliceMarkdownSection is the local markdown-section slicer (D5; kept in the
+// tools package — internal/references imports tools, never the reverse). It
+// finds the first ATX heading whose trimmed title equals title
+// (case-insensitive) — xlsx `## <sheet>`, pptx `## Slide N`, and html/docx
+// markdown headings are all ATX lines — and returns the heading line as
+// written plus the section body up to the next heading of any level. No
+// match yields ok=false.
+func sliceMarkdownSection(md, title string) (heading, body string, ok bool) {
+	lines := strings.Split(md, "\n")
+	start := -1
+	for i, line := range lines {
+		text, isHeading := atxHeadingText(line)
+		if !isHeading {
+			continue
+		}
+		if strings.EqualFold(text, title) {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return "", "", false
+	}
+	end := len(lines)
+	for j := start + 1; j < len(lines); j++ {
+		if _, isHeading := atxHeadingText(lines[j]); isHeading {
+			end = j
+			break
+		}
+	}
+	heading = strings.TrimRight(lines[start], " \t\r")
+	body = strings.TrimSpace(strings.Join(lines[start+1:end], "\n"))
+	return heading, body, true
 }
 
 // --- XLSX (excelize/v2) ----------------------------------------------------
@@ -417,6 +941,22 @@ func convertXLSX(ctx context.Context, path string) (string, error) {
 		sb.WriteString("\n")
 	}
 	return sb.String(), nil
+}
+
+// --- Markdown / plain text (pass-through) -----------------------------------
+
+// convertPlainText passes .md and .txt bytes through as the markdown string:
+// both formats are already the tool's output medium, so no conversion applies
+// (the file is read from its staged path like every other converter).
+func convertPlainText(ctx context.Context, path string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read file: %w", err)
+	}
+	return string(data), nil
 }
 
 // --- CSV / TSV (encoding/csv) ----------------------------------------------

@@ -191,7 +191,7 @@ func seedMemoryNote(t *testing.T, st store.Store, workspaceID string, visibility
 // both. The started worker uses a failing side-call resolver, so the jobs
 // fail soft without touching the network.
 func TestRunner_EnqueuesIngestOnBothStatuses(t *testing.T) {
-	st, runner, _, _, req := setupHooksRunner(t, nil, &hooksModel{final: "done"})
+	st, runner, _, _, req := setupHooksRunner(t, &hooksModel{final: "done"})
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	worker := memory.NewWorker(
 		memory.NewGister(st.MemoryEvents(), st.SessionEvents(), st.MemoryEntities(), nil, nil, nil, logger, memory.WithModelResolver(func(context.Context, string, string) (memory.Model, error) {
@@ -365,7 +365,7 @@ func TestRunner_MemoryGateFailOpen(t *testing.T) {
 		{name: "timeout past a short budget", delay: 3 * time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, runner, _, _, req := setupHooksRunner(t, nil, &hooksModel{final: "ok"})
+			_, runner, _, _, req := setupHooksRunner(t, &hooksModel{final: "ok"})
 			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 			gate := memory.NewIntentGate(nil, nil, nil, logger, memory.WithModelResolver(func(context.Context, string, string) (memory.Model, error) {
 				return &gateSlowModel{delay: tc.delay}, nil
@@ -419,7 +419,7 @@ func (m *gateSlowModel) Stream(_ context.Context, _ []*schema.AgenticMessage, _ 
 // TestRunner_SelfContainedTurnSkipsRetrieval: a needs_memory=false verdict
 // composes no memory section.
 func TestRunner_SelfContainedTurnSkipsRetrieval(t *testing.T) {
-	_, runner, _, _, req := setupHooksRunner(t, nil, &hooksModel{final: "ok"})
+	_, runner, _, _, req := setupHooksRunner(t, &hooksModel{final: "ok"})
 	gate := memory.NewIntentGate(nil, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)),
 		memory.WithModelResolver(func(context.Context, string, string) (memory.Model, error) {
 			return &staticTextModel{responses: []string{`{"needs_memory":false,"buckets":[]}`}}, nil
@@ -444,7 +444,7 @@ func TestRunner_SelfContainedTurnSkipsRetrieval(t *testing.T) {
 // the runner path: another member's user-visibility note is never injected
 // regardless of the query.
 func TestRunner_GateHitInjectsCitedCandidates(t *testing.T) {
-	st, runner, ws, _, req := setupHooksRunner(t, nil, &hooksModel{final: "ok"})
+	st, runner, ws, _, req := setupHooksRunner(t, &hooksModel{final: "ok"})
 
 	// A second workspace member whose private note mentions the same topic —
 	// the query legitimately matches it, and the scope filter must still
@@ -500,7 +500,7 @@ func TestRunner_GateHitInjectsCitedCandidates(t *testing.T) {
 // hydrated History renders it as the live kind — while scheduled and
 // heartbeat origins emit nothing.
 func TestRunner_AppendMemoryChipPersistsAndStreams(t *testing.T) {
-	st, runner, ws, ag, req := setupHooksRunner(t, nil, &hooksModel{final: "ok"})
+	st, runner, ws, ag, req := setupHooksRunner(t, &hooksModel{final: "ok"})
 	ctx := context.Background()
 
 	payload := memory.MemoryIngestedPayload{
@@ -590,7 +590,7 @@ func TestRunner_AppendMemoryChipPersistsAndStreams(t *testing.T) {
 // the chip — counts only, never content.
 func TestWorkerChipFlowsThroughRunnerSink(t *testing.T) {
 	ctx := context.Background()
-	st, runner, ws, _, req := setupHooksRunner(t, nil, &hooksModel{final: "ok"})
+	st, runner, ws, _, req := setupHooksRunner(t, &hooksModel{final: "ok"})
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sidecall := &staticTextModel{responses: []string{
 		`{"description":"The team planned the deploy window","outcome":"Tuesday morning confirmed"}`,
@@ -665,7 +665,7 @@ func TestWorkerChipFlowsThroughRunnerSink(t *testing.T) {
 // alongside the fused text candidates — within the same bounded section —
 // and never another member's linked row.
 func TestRunner_AssociativeRouteInjectsTraversalCandidates(t *testing.T) {
-	st, runner, ws, _, req := setupHooksRunner(t, nil, &hooksModel{final: "ok"})
+	st, runner, ws, _, req := setupHooksRunner(t, &hooksModel{final: "ok"})
 	ctx := context.Background()
 
 	// The entity graph: ProjectX links a visible shared row and Sari's

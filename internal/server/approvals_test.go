@@ -64,7 +64,6 @@ func TestApprovalsEndpoint_NoPendingApprovalConflicts(t *testing.T) {
 		Slug:        "atlas",
 		ProviderID:  prov.ID,
 		Model:       "fake-model",
-		Tools:       []string{"execute"},
 	}
 	if err := st.Agents().Create(ctx, agent); err != nil {
 		t.Fatalf("create agent: %v", err)

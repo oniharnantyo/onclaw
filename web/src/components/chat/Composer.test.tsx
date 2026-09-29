@@ -1,6 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { act, render, screen, fireEvent } from '@testing-library/react';
 import { Composer } from './Composer';
+import { useStore } from '../../store';
 
 const skillGroups = [
   {
@@ -236,5 +237,75 @@ describe('components/chat/Composer draft restore (adopt-assistant-ui-elements 9.
     fireEvent.change(input(), { target: { value: 'scratch' } });
     fireEvent.change(input(), { target: { value: '' } });
     expect(localStorage.getItem('onclaw.draft.a1')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Documents affordance note (rework-document-chat-surfaces 2.1, 2026-09-28
+// user pivot): the toolbar button is GONE — the documents entry point lives
+// in the chat header beside the panel toggle (ChatHeader.test.tsx owns the
+// toggle tests; ChatRoute.test.tsx owns the end-to-end). The composer keeps
+// only the mention bridge below.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Document mention bridge (rework-document-chat-surfaces 2.2): the composer
+// registers its insertion callback with the mounting screen through the
+// ref-style registration prop; the panel's Documents listing inserts
+// mentions through it (ChatRoute bridge).
+// ---------------------------------------------------------------------------
+
+describe('components/chat/Composer document mention bridge (rework-document-chat-surfaces 2.2)', () => {
+  it('registers an insertion callback that adds the text token and the identity chip', () => {
+    const registerDocMention = vi.fn();
+    const onSend = vi.fn();
+    render(
+      <Composer
+        agent={{ name: 'Atlas' }}
+        running={false}
+        onSend={onSend}
+        onCancel={vi.fn()}
+        registerDocMention={registerDocMention}
+      />
+    );
+    expect(registerDocMention).toHaveBeenCalledTimes(1);
+    const insert = registerDocMention.mock.calls[0][0] as (doc: { id: string; name: string }) => void;
+
+    const input = screen.getByLabelText('Message input') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'compare this with the limits' } });
+    // The bridge callback is imperative — updates flush inside act, exactly
+    // like the panel row's click dispatch does in the real surface.
+    act(() => { insert({ id: 'doc-1', name: 'twilio-api.pdf' }); });
+
+    // The markdown link token IS the visible pill the transcript renders.
+    expect(input.value).toBe('compare this with the limits [📄 twilio-api.pdf](references/twilio-api.pdf) ');
+    expect(screen.getByTestId('document-chip')).not.toBeNull();
+    expect(screen.getByTestId('document-chip').getAttribute('data-document-id')).toBe('doc-1');
+
+    // Re-inserting the same document never duplicates the identity chip.
+    act(() => { insert({ id: 'doc-1', name: 'twilio-api.pdf' }); });
+    expect(screen.getAllByTestId('document-chip')).toHaveLength(1);
+
+    // The chip rides the send as document identity (pointer note machinery).
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledWith(
+      'compare this with the limits [📄 twilio-api.pdf](references/twilio-api.pdf) [📄 twilio-api.pdf](references/twilio-api.pdf)',
+      [{ kind: 'document', documentId: 'doc-1', name: 'twilio-api.pdf', path: 'references/twilio-api.pdf' }]
+    );
+  });
+
+  it('deregisters the callback on unmount (conversation switch)', () => {
+    const registerDocMention = vi.fn();
+    const utils = render(
+      <Composer
+        agent={{ name: 'Atlas' }}
+        running={false}
+        onSend={vi.fn()}
+        onCancel={vi.fn()}
+        registerDocMention={registerDocMention}
+      />
+    );
+    utils.unmount();
+    expect(registerDocMention).toHaveBeenLastCalledWith(null);
   });
 });

@@ -26,6 +26,7 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/promptdocs"
 	"github.com/oniharnantyo/onclaw/internal/promptgen"
 	"github.com/oniharnantyo/onclaw/internal/providers"
+	"github.com/oniharnantyo/onclaw/internal/references"
 	"github.com/oniharnantyo/onclaw/internal/scheduler"
 	"github.com/oniharnantyo/onclaw/internal/server"
 	"github.com/oniharnantyo/onclaw/internal/server/handlers"
@@ -103,6 +104,16 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	// materialization so the per-workspace driver cache is common.
 	wsResolver := resolver.New(stor, st.WorkspaceStorage(), st.Attachments(), encKey, cfg.DataDir)
 
+	// Reference documents (add-reference-documents): one service over the
+	// store aggregate (the documented transaction seam — upload/replace span
+	// the registry and section stores) and the workspace storage resolver the
+	// as-is blobs ride — writes land on the workspace's configured driver and
+	// reads dispatch on the row's recorded backend
+	// (route-reference-documents-through-workspace-storage D1–D3). The
+	// documents API handler and the runner's references capability below
+	// consume this one instance.
+	referencesSvc := references.NewService(st, wsResolver)
+
 	bootstrapper := bootstrap.New(st)
 
 	// Bootstrap master tenant
@@ -158,29 +169,31 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("sync system skills: %w", err)
 	}
 
-	// Stray seeded base prompts (markdown-card-elements D8): the L1 base
-	// prompt is injected into every instruction per build now, so a seeded
-	// AGENTS.md left in an existing agent workspace would surface stale
-	// content to the agent at /workspace/AGENTS.md through the jailed mount.
-	// Enumerate every agent's workspace dir and sweep the seeded files out.
+	// Stray prompt files (markdown-card-elements D8; remove-bootstrap-doc):
+	// the L1 base prompt is injected into every instruction per build, so a
+	// seeded AGENTS.md left in an existing agent workspace would surface
+	// stale content to the agent at /workspace/AGENTS.md through the jailed
+	// mount; likewise the removed birth-sequence feature's BOOTSTRAP.md/.bak
+	// leftovers would keep the ritual text readable. Enumerate every agent's
+	// workspace dir and sweep the stray files out.
 	wsList, err := st.Workspaces().ListAll(ctx)
 	if err != nil {
-		return fmt.Errorf("list workspaces for base-prompt sweep: %w", err)
+		return fmt.Errorf("list workspaces for stray prompt file sweep: %w", err)
 	}
 	var agentDirs []string
 	for _, ws := range wsList {
 		wsAgents, err := st.Agents().ListForWorkspace(ctx, ws.ID)
 		if err != nil {
-			return fmt.Errorf("list agents for base-prompt sweep (workspace %s): %w", ws.Slug, err)
+			return fmt.Errorf("list agents for stray prompt file sweep (workspace %s): %w", ws.Slug, err)
 		}
 		for _, ag := range wsAgents {
 			agentDirs = append(agentDirs, domain.AgentWorkspaceDir(domain.WorkspaceRoot(cfg.OnClawDir), ws.Slug, ag.Slug))
 		}
 	}
-	if removed, err := promptdocs.SweepSeededBasePrompts(agentDirs); err != nil {
-		return fmt.Errorf("sweep seeded base prompts: %w", err)
+	if removed, err := promptdocs.SweepStrayPromptFiles(agentDirs); err != nil {
+		return fmt.Errorf("sweep stray prompt files: %w", err)
 	} else if len(removed) > 0 {
-		slog.Info("swept seeded base prompts from agent workspaces", "count", len(removed))
+		slog.Info("swept stray prompt files from agent workspaces", "count", len(removed))
 	}
 
 	// Workspace tool settings back the runtime's tool gate and the settings
@@ -399,6 +412,9 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 			agents.WithSchedulerTools(st.Schedulers(), st.Channels()),
 			agents.WithMemorySearch(memorySearcher),
 			agents.WithTodoTools(st.Todos()),
+			// document.search (add-reference-documents 4.1): the same
+			// references service wired below as the runner option.
+			agents.WithDocumentTools(referencesSvc),
 		)),
 		agents.WithToolPolicy(toolSettings),
 		agents.WithMCPPolicy(mcp.NewSettingsPolicy(runtimeSource)),
@@ -428,6 +444,11 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		// resolved from the workspace's memory settings record, falling back to
 		// the default pin when absent.
 		agents.WithMemoryGateBudget(memory.SettingsGateBudget(st.ToolSettings(), memoryLog)),
+		// References capability (add-reference-documents 4.3/5.1): the
+		// run-scoped references/ mount, the compose-time manifest, and
+		// document.search resolve through the one service the documents API
+		// handler shares.
+		agents.WithReferences(referencesSvc),
 	}
 	// The trace capability rides the callback chain only when configured (D1):
 	// the rate must be the handler's own so the runner's persistence gate and
@@ -596,6 +617,7 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		HooksCommandEnabled: cfg.HooksCommandEnabled,
 		HooksScriptEnabled:  cfg.HooksScriptEnabled,
 		WorkspaceStorage:    wsResolver,
+		References:          referencesSvc,
 		Gateways:            gatewayRuntime,
 		Webhooks:            webhookRuntime,
 		MemoryConsolidator:  memoryConsolidator,

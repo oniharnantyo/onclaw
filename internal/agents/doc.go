@@ -11,8 +11,8 @@
 //	  2. **Resolve** — resolves the tool surface from the built-in registry and the
 //	     three-tier skill resolver; validates capability flags.
 //	  3. **Compose** — assembles the system instruction via the instruction composer
-//	     (injects the embedded base prompt per build, reads IDENTITY.md, SOUL.md,
-//	     BOOTSTRAP.md from the agent dir),
+//	     (injects the embedded base prompt per build, reads IDENTITY.md, SOUL.md
+//	     from the agent dir),
 //	     and delegates to the pure [Compose] function (in agent.go) to wire the
 //	     middleware stack (patchtoolcalls → reduction → summarization → skill → filesystem)
 //	     and build the Eino ADK ChatModelAgent.
@@ -22,10 +22,17 @@
 //
 // # Layout
 //
-// The package consists of 11 source files:
+// The package's key source files:
 //   - agent.go: Pure, stateless ADK agent composition ([Compose], [Config], capability configs).
-//     Capability middlewares (patchtoolcalls, reduction, summarization, skill, filesystem)
-//     are inlined directly here.
+//     Capability middlewares (patchtoolcalls, reduction, summarization, skill, filesystem) and
+//     the delegation stack are inlined directly here.
+//   - subagents.go: The delegation capability's composition pieces (add-agent-subagents-background):
+//     config validation, the general-purpose clone builder, and the background-lane config types.
+//   - background.go: The per-run background task space ([BackgroundTaskSpace]), the notification
+//     pump, and the completion payload mapping shared by the delegation and shell lanes.
+//   - shell_lane.go: The shell background lane's execute tool — foreground runs reach the shell
+//     directly (approval interrupts intact); explicit launches route through the task space with
+//     a pre-execution approval check.
 //   - runner.go: Production execution pipeline ([Runner], [NewRunner]), instruction composition
 //     ([InstructionComposer]), and streaming execution.
 //   - runmanager.go: Live-run tracking ([RunKey], runManager): run contexts derive from the
@@ -38,8 +45,9 @@
 //   - tool_registry.go: Built-in tool surface and denylist filtering (extension seam).
 //   - model_factory.go: Provider type to Eino chat model mapping (extension seam).
 //   - session_adapter.go: Eino ADK session/checkpoint persistence adapter to store interfaces (extension seam / port adapter).
-//   - jail.go: Restricted filesystem backend enforcing agent directory boundary (extension seam).
-//   - skills_resolver.go: Three-tier (system, workspace, agent) skill resolution (extension seam).
+//   - backend/fs_jailed_backend.go: Restricted filesystem backend enforcing the agent directory
+//     boundary (extension seam).
+//   - backend/skill_backend.go: Three-tier (system, workspace, agent) skill resolution backend (extension seam).
 //
 // Middlewares are inlined directly into agent.go, and extension seams (tool_registry.go,
 // model_factory.go, session_adapter.go, jail.go, backend/skill_backend.go) stand alone with dedicated unit tests.
@@ -58,7 +66,7 @@
 // # Import direction
 //
 // internal/promptgen produces prompt documents *for* the agents package at
-// bootstrap time. Agents never imports promptgen — the dependency flows
+// agent-creation time. Agents never imports promptgen — the dependency flows
 // unidirectionally: promptgen → agents.  This keeps the agents package
 // independently buildable and avoids circularity between the generation
 // subsystem (Phase 2) and the runtime engine (this phase).

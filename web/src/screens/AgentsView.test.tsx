@@ -16,7 +16,7 @@ describe('screens/AgentsView & AgentCard', () => {
       role: 'General assistant',
       description: 'Answers everyday questions for the team.',
       status: 'running',
-      tools: ['web', 'files'],
+      disabled_tools: ['web', 'files'],
       skills: ['research'],
       lastActive: 'just now',
       prompts_status: 'ready',
@@ -32,7 +32,7 @@ describe('screens/AgentsView & AgentCard', () => {
       role: 'Pricing monitor',
       description: 'Watches competitor pricing pages and flags changes.',
       status: 'idle',
-      tools: ['web'],
+      disabled_tools: ['web'],
       skills: [],
       lastActive: '5m ago',
       prompts_status: 'generating',
@@ -48,7 +48,7 @@ describe('screens/AgentsView & AgentCard', () => {
       role: 'PR Triage',
       description: 'Triages inbound pull requests and flags risky changes.',
       status: 'idle',
-      tools: [],
+      disabled_tools: [],
       skills: [],
       lastActive: '1d ago',
       prompts_status: 'failed',
@@ -107,7 +107,7 @@ describe('screens/AgentsView & AgentCard', () => {
       role: 'Echo',
       description: 'Echo',
       status: 'idle',
-      tools: [],
+      disabled_tools: [],
       skills: [],
       lastActive: 'just now',
       prompts_status: 'ready',
@@ -218,9 +218,9 @@ describe('screens/AgentsView & AgentCard', () => {
 
   it('switches sort order between Newest first (default), Name A–Z, and Oldest', () => {
     const sortAgents = [
-      { id: 'z1', name: 'Zeta', status: 'idle', tools: [], skills: [] },
-      { id: 'a1', name: 'Alpha', status: 'idle', tools: [], skills: [] },
-      { id: 'b1', name: 'Beta', status: 'idle', tools: [], skills: [] },
+      { id: 'z1', name: 'Zeta', status: 'idle', disabled_tools: [], skills: [] },
+      { id: 'a1', name: 'Alpha', status: 'idle', disabled_tools: [], skills: [] },
+      { id: 'b1', name: 'Beta', status: 'idle', disabled_tools: [], skills: [] },
     ];
     const sortTenant: any = {
       id: 'acme',
@@ -298,7 +298,7 @@ describe('screens/AgentsView & AgentCard', () => {
         autonomy: 'approval',
         role: `Role ${num}`,
         status: 'idle',
-        tools: [],
+        disabled_tools: [],
         skills: [],
         lastActive: 'just now',
       };

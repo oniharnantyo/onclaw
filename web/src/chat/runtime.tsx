@@ -8,7 +8,7 @@ import { uid, nowTime, parseMentions, appendReasoningPart, appendToolPart } from
 import { runTurn, sessionIdFromResponseId, type TurnUsage } from '../lib/openresponses';
 import { markLiveChatDisconnected, handleV1AuthFailure, hydrateSession, attachCatchUpStream, isBoundSessionId } from '../lib/livechat';
 import { api } from '../lib/api';
-import type { AttachmentChip } from '../lib/attachments';
+import type { AttachmentChip, DocumentMentionChip } from '../lib/attachments';
 import { recordTurnTiming as stashTurnTiming } from './turnTiming';
 
 /** Parseable ISO wall-clock instant for live entries — the display `ts`
@@ -18,15 +18,33 @@ const nowIso = () => new Date().toISOString();
 
 const activeTimers: Record<string, any> = {};
 
-/** Ready composer chips → the ChatAttachment references carried by the store
- * entry and the /v1 turn request (add-chat-attachments D11). Filtering on the
- * ready state again here keeps rejected / failed / still-uploading chips out
- * of the transcript and the wire even if a caller bypasses the send gate. */
-const toAttachments = (chips?: AttachmentChip[]): ChatAttachment[] | undefined => {
-  const out = (chips || [])
-    .filter((c) => c.state === 'ready' && c.url)
-    .map((c) => ({ id: c.id, name: c.name, mime: c.mime, size: c.size, url: c.url as string }));
+/** Composer chips → the chips array carried by the /v1 turn request. Ready
+ * file chips become ChatAttachment references (add-chat-attachments D11);
+ * document mention chips (add-reference-documents 10.4) pass through as their
+ * `{kind: "document", documentId, name, path}` identity object. Filtering on
+ * the ready state again here keeps rejected / failed / still-uploading chips
+ * out of the wire even if a caller bypasses the send gate. */
+const toTurnChips = (chips?: (AttachmentChip | DocumentMentionChip)[]): ChatAttachment[] | undefined => {
+  const out: ChatAttachment[] = [];
+  for (const c of chips || []) {
+    if ('kind' in c && c.kind === 'document') {
+      out.push({ kind: 'document', documentId: c.documentId, name: c.name, path: c.path });
+    } else {
+      const a = c as AttachmentChip;
+      if (a.state === 'ready' && a.url) out.push({ id: a.id, name: a.name, mime: a.mime, size: a.size, url: a.url });
+    }
+  }
   return out.length ? out : undefined;
+};
+
+/** File-attachment references only — the optimistic transcript entry renders
+ * chips from `attachments`, and a document mention's visible pill is the
+ * markdown link in the text (never a second chip card). The document
+ * identities ride the turn request only. Undefined when nothing file-shaped
+ * remains, so a mention-only send stores no attachments key at all. */
+const fileRefsOnly = (chips?: ChatAttachment[]): ChatAttachment[] | undefined => {
+  const out = chips?.filter((a) => a.kind !== 'document');
+  return out && out.length ? out : undefined;
 };
 
 // ---------------------------------------------------------------------------
@@ -572,14 +590,18 @@ export function useChatRuntime(chatId: string) {
   }, [patchUi]);
 
   // `chips` carries the composer's ready attachments (add-chat-attachments
-  // D11): they land on the optimistic user entry — so the bubble renders them
-  // exactly like a hydrated one — and ride the turn request. Attachment-only
-  // sends (empty text, ≥1 ready chip) are valid and proceed like any turn.
-  const onNew = useCallback(async (msg: AppendMessage, chips?: AttachmentChip[]) => {
+  // D11) plus any document mention chips (add-reference-documents 10.4): both
+  // land on the turn request — file chips also land on the optimistic user
+  // entry so the bubble renders them exactly like a hydrated one, while a
+  // document mention's visible pill is the markdown link in the text, so only
+  // the file refs go on the entry. Attachment-only sends (empty text, ≥1
+  // ready chip) are valid and proceed like any turn.
+  const onNew = useCallback(async (msg: AppendMessage, chips?: (AttachmentChip | DocumentMentionChip)[]) => {
     const target = useStore.getState().db[tenantId]?.agents.find((a: any) => a.id === chatId) ? 'agent' : 'channel';
     const text = msg.content.map((c: any) => c.text).join('') || '';
     const trimmed = text.trim();
-    const attachments = toAttachments(chips);
+    const turnChips = toTurnChips(chips);
+    const attachments = fileRefsOnly(turnChips);
 
     // /compact interception (chat-compact-command D7): agent chats only, an
     // exact `/compact` or `/compact <focus>` match submits a compact turn —
@@ -645,8 +667,10 @@ export function useChatRuntime(chatId: string) {
     }
 
     // Channel mention fan-out stays text-only: the composer's attach button is
-    // agent-chat-only (ChatRoute allowAttachments), so chips never reach here.
-    if (chatAgent) respondFor(tenantId, chatId, chatAgent, text, { attachments });
+    // agent-chat-only (ChatRoute allowAttachments), so attachment chips never
+    // reach here — document mention chips can (both surfaces pass a lens) and
+    // ride the turn as pointer identity.
+    if (chatAgent) respondFor(tenantId, chatId, chatAgent, text, { attachments: turnChips });
   }, [tenantId, chatId, respondFor, respondCompact]);
 
   const onCancel = useCallback(async () => {

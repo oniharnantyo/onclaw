@@ -4,6 +4,8 @@ import (
 	"context"
 	"slices"
 	"testing"
+
+	"github.com/oniharnantyo/onclaw/internal/agents/tools"
 )
 
 // fakeToolPolicy is a scripted ToolPolicy for gate tests.
@@ -87,11 +89,11 @@ func TestDisabledFilesystemTools(t *testing.T) {
 		}
 	}
 
-	// Empty effective allowlist disables all six (empty allowlist exposes
-	// nothing — spec scenario).
+	// An empty effective set disables all six: the workspace gate can strip
+	// every middleware tool, and disabledFilesystemTools must report each.
 	all := disabledFilesystemTools(nil)
 	if len(all) != len(FilesystemToolNames) {
-		t.Errorf("expected all fs tools disabled for empty allowlist, got %v", all)
+		t.Errorf("expected all fs tools disabled for an empty effective set, got %v", all)
 	}
 }
 
@@ -153,8 +155,8 @@ func TestApplyToolGate_AlwaysOnSurvivesStaleDisabledRows(t *testing.T) {
 // TestApplyToolGate_NonChannelRunsStillStrip pins the existing context
 // guarantee (always-on-channel-tools 2.2): always-on only exempts a tool from
 // the workspace enabled set — it never widens where the toolset is exposed.
-// A non-channel run strips all three keys even when the agent allowlisted
-// them and the workspace policy would allow them.
+// A non-channel run strips all three keys even when the agent's tool
+// selection carries them and the workspace policy would allow them.
 func TestApplyToolGate_NonChannelRunsStillStrip(t *testing.T) {
 	ctx := context.Background()
 	// A policy that explicitly allows every key: the strip must come from the
@@ -184,5 +186,63 @@ func TestApplyToolGate_NonChannelRunsStillStrip(t *testing.T) {
 	}
 	if !slices.Contains(gated, "memory") {
 		t.Errorf("non-channel run must keep ungoverned tools: %v", gated)
+	}
+}
+
+// TestToolGate_DocumentSearch pins the 4.4 gate matrix for the new family
+// member: document.search is an ordinary registry tool — denylist resolution
+// exposes it when the references service is wired, the agent denylist removes
+// it by name, and the workspace tool gate strips it independently. It is
+// default-on in exactly the same sense as every other registered tool (no
+// always-on exemption, no separate permission path), while document.read
+// stays available with or without the references service.
+func TestToolGate_DocumentSearch(t *testing.T) {
+	ctx := context.Background()
+	reg := NewDefaultToolRegistry(nil, WithDocumentTools(&fakeDocumentTools{}))
+
+	// Denylist resolution: wired, an empty denylist exposes both document
+	// tools; denying document.search removes it alone.
+	full := effectiveToolsFromDenylist(reg, nil, false, false)
+	if !slices.Contains(full, tools.NameDocumentSearch) || !slices.Contains(full, tools.NameDocumentRead) {
+		t.Errorf("empty denylist must expose document.search and document.read: %v", full)
+	}
+	denied := effectiveToolsFromDenylist(reg, []string{tools.NameDocumentSearch}, false, false)
+	if slices.Contains(denied, tools.NameDocumentSearch) {
+		t.Errorf("denylisted document.search must be absent from the effective set: %v", denied)
+	}
+	if !slices.Contains(denied, tools.NameDocumentRead) {
+		t.Errorf("denying document.search must not touch document.read: %v", denied)
+	}
+
+	// Workspace gate: gate-off strips document.search after denylist
+	// resolution, again without touching document.read.
+	runner := NewRunner(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, []byte("k"), "/tmp/o",
+		WithToolPolicy(&fakeToolPolicy{enabled: map[string]bool{
+			tools.NameDocumentSearch: false,
+		}}))
+	gated, err := runner.applyToolGate(ctx, "ws-1", effectiveToolsFromDenylist(reg, nil, false, false))
+	if err != nil {
+		t.Fatalf("applyToolGate: %v", err)
+	}
+	if slices.Contains(gated, tools.NameDocumentSearch) {
+		t.Errorf("gate-off document.search must be dropped: %v", gated)
+	}
+	if !slices.Contains(gated, tools.NameDocumentRead) {
+		t.Errorf("gate-off document.search must not strip document.read: %v", gated)
+	}
+}
+
+// TestToolGate_DocumentSearchAbsentWhenUnwired pins the composition end: a
+// registry built without WithDocumentTools offers no document.search to the
+// denylist catalog at all, so no agent — however permissive its denylist —
+// resolves the tool, and the gate has nothing to strip.
+func TestToolGate_DocumentSearchAbsentWhenUnwired(t *testing.T) {
+	reg := NewDefaultToolRegistry(nil)
+	effective := effectiveToolsFromDenylist(reg, nil, false, false)
+	if slices.Contains(effective, tools.NameDocumentSearch) {
+		t.Errorf("unwired registries must not expose document.search: %v", effective)
+	}
+	if !slices.Contains(effective, tools.NameDocumentRead) {
+		t.Errorf("document.read must stay exposed without the references service: %v", effective)
 	}
 }

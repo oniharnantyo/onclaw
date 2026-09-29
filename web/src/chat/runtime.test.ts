@@ -56,9 +56,9 @@ describe('useChatRuntime', () => {
   beforeEach(() => {
     localStorage.clear();
     act(() => {
-      const mkAgent = (id: string, name: string, tools: string[]) => ({
+      const mkAgent = (id: string, name: string, disabled_tools: string[]) => ({
         id, name, model: 'claude-sonnet-5', temp: 0.4, autonomy: 'approval', channelPost: false,
-        role: 'Test agent', status: 'idle', tools, skills: ['research'], lastActive: 'now', prompt: ''
+        role: 'Test agent', status: 'idle', disabled_tools, skills: ['research'], lastActive: 'now', prompt: ''
       });
       useStore.setState({
         pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
@@ -179,9 +179,9 @@ describe('useChatRuntime — live session binding (birth → chain → reset-for
     vi.mocked(handleV1AuthFailure).mockReset();
     vi.mocked(api.agents.cancelRun).mockClear();
     act(() => {
-      const mkAgent = (id: string, name: string, tools: string[]) => ({
+      const mkAgent = (id: string, name: string, disabled_tools: string[]) => ({
         id, name, model: 'claude-sonnet-5', temp: 0.4, autonomy: 'approval', channelPost: false,
-        role: 'Test agent', status: 'idle', tools, skills: ['research'], lastActive: 'now', prompt: ''
+        role: 'Test agent', status: 'idle', disabled_tools, skills: ['research'], lastActive: 'now', prompt: ''
       });
       useStore.setState({
         pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
@@ -723,9 +723,9 @@ describe('useChatRuntime — 409 conflict queue (live-run-reattach fix)', () => 
     vi.mocked(runTurn).mockReset();
     vi.mocked(handleV1AuthFailure).mockReset();
     act(() => {
-      const mkAgent = (id: string, name: string, tools: string[]) => ({
+      const mkAgent = (id: string, name: string, disabled_tools: string[]) => ({
         id, name, model: 'claude-sonnet-5', temp: 0.4, autonomy: 'approval', channelPost: false,
-        role: 'Test agent', status: 'idle', tools, skills: ['research'], lastActive: 'now', prompt: ''
+        role: 'Test agent', status: 'idle', disabled_tools, skills: ['research'], lastActive: 'now', prompt: ''
       });
       useStore.setState({
         pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
@@ -871,9 +871,9 @@ describe('useChatRuntime — message queue (adopt-assistant-ui-elements 8.1–8.
     vi.mocked(runTurn).mockReset();
     vi.mocked(handleV1AuthFailure).mockReset();
     act(() => {
-      const mkAgent = (id: string, name: string, tools: string[]) => ({
+      const mkAgent = (id: string, name: string, disabled_tools: string[]) => ({
         id, name, model: 'claude-sonnet-5', temp: 0.4, autonomy: 'approval', channelPost: false,
-        role: 'Test agent', status: 'idle', tools, skills: ['research'], lastActive: 'now', prompt: ''
+        role: 'Test agent', status: 'idle', disabled_tools, skills: ['research'], lastActive: 'now', prompt: ''
       });
       useStore.setState({
         pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
@@ -1140,9 +1140,9 @@ describe('useChatRuntime — message timing + entry dating (adopt-assistant-ui-e
     vi.mocked(runTurn).mockReset();
     vi.mocked(handleV1AuthFailure).mockReset();
     act(() => {
-      const mkAgent = (id: string, name: string, tools: string[]) => ({
+      const mkAgent = (id: string, name: string, disabled_tools: string[]) => ({
         id, name, model: 'claude-sonnet-5', temp: 0.4, autonomy: 'approval', channelPost: false,
-        role: 'Test agent', status: 'idle', tools, skills: ['research'], lastActive: 'now', prompt: ''
+        role: 'Test agent', status: 'idle', disabled_tools, skills: ['research'], lastActive: 'now', prompt: ''
       });
       useStore.setState({
         pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
@@ -1298,9 +1298,9 @@ describe('useChatRuntime — /compact command (chat-compact-command)', () => {
     vi.mocked(runTurn).mockReset();
     vi.mocked(handleV1AuthFailure).mockReset();
     act(() => {
-      const mkAgent = (id: string, name: string, tools: string[]) => ({
+      const mkAgent = (id: string, name: string, disabled_tools: string[]) => ({
         id, name, model: 'claude-sonnet-5', temp: 0.4, autonomy: 'approval', channelPost: false,
-        role: 'Test agent', status: 'idle', tools, skills: ['research'], lastActive: 'now', prompt: ''
+        role: 'Test agent', status: 'idle', disabled_tools, skills: ['research'], lastActive: 'now', prompt: ''
       });
       useStore.setState({
         pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
@@ -1516,9 +1516,9 @@ describe('useChatRuntime — attachment sends (add-chat-attachments D11/D12)', (
     vi.mocked(runTurn).mockReset();
     vi.mocked(handleV1AuthFailure).mockReset();
     act(() => {
-      const mkAgent = (id: string, name: string, tools: string[]) => ({
+      const mkAgent = (id: string, name: string, disabled_tools: string[]) => ({
         id, name, model: 'claude-sonnet-5', temp: 0.4, autonomy: 'approval', channelPost: false,
-        role: 'Test agent', status: 'idle', tools, skills: ['research'], lastActive: 'now', prompt: ''
+        role: 'Test agent', status: 'idle', disabled_tools, skills: ['research'], lastActive: 'now', prompt: ''
       });
       useStore.setState({
         pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
@@ -1714,5 +1714,129 @@ describe('useChatRuntime — attachment sends (add-chat-attachments D11/D12)', (
     });
 
     expect(activeSession().usage).toEqual({ finalInput: 43000, input: 43000, output: 800, at: expect.any(String) });
+  });
+});
+
+describe('useChatRuntime — document mention chips (add-reference-documents 10.4)', () => {
+  const activeSession = (): any => {
+    const th = useStore.getState().db.t1.threads.a1;
+    return th.list.find((x: any) => x.id === th.active);
+  };
+
+  const send = (result: any, text: string, chips?: any[]) =>
+    act(async () => {
+      await result.current.onNew({ role: 'user', content: [{ type: 'text', text }] } as any, chips);
+    });
+
+  const docChip = (over: Partial<any> = {}) => ({
+    kind: 'document', documentId: 'doc-1', name: 'twilio-api.pdf', path: 'references/twilio-api.pdf', ...over,
+  });
+
+  beforeEach(() => {
+    localStorage.clear();
+    vi.mocked(runTurn).mockReset();
+    vi.mocked(handleV1AuthFailure).mockReset();
+    act(() => {
+      const mkAgent = (id: string, name: string, disabled_tools: string[]) => ({
+        id, name, model: 'claude-sonnet-5', temp: 0.4, autonomy: 'approval', channelPost: false,
+        role: 'Test agent', status: 'idle', disabled_tools, skills: ['research'], lastActive: 'now', prompt: ''
+      });
+      useStore.setState({
+        pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
+        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, toasts: [] },
+        db: {
+          t1: {
+            id: 't1', name: 'T1', sub: 't1', tz: 'America/Los_Angeles',
+            defaultModel: 'claude-sonnet-5', retention: '90 days',
+            people: [], schedules: [], runs: [], members: [], integrations: [], skillLib: [], keys: [],
+            agents: [mkAgent('a1', 'Alice', ['document.search'])],
+            channels: [],
+            threads: {
+              a1: { active: 'sess_live-6', list: [{ id: 'sess_live-6', title: 'Chat', updated: '', messages: [] }] },
+            },
+          },
+        },
+      });
+    });
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it('the outgoing turn carries the document chip object verbatim (identity only)', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await send(result, 'compare this with the official limits', [docChip()]);
+
+    expect(runTurn).toHaveBeenCalledTimes(1);
+    const [, params]: any[] = vi.mocked(runTurn).mock.calls[0];
+    expect(params.attachments).toEqual([
+      { kind: 'document', documentId: 'doc-1', name: 'twilio-api.pdf', path: 'references/twilio-api.pdf' },
+    ]);
+    expect(params.input).toBe('compare this with the official limits');
+  });
+
+  it('the transcript entry carries file refs only — the visible pill is the markdown link', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await send(result, 'see [📄 twilio-api.pdf](references/twilio-api.pdf)', [
+      docChip(),
+      { key: 'c1', id: 'att-1', name: 'shot.png', mime: 'image/png', size: 12, url: '/api/v1/files/k1', state: 'ready', progress: 100 },
+    ]);
+
+    const user = activeSession().messages.find((m: any) => m.author === 'you');
+    expect(user.attachments).toEqual([
+      { id: 'att-1', name: 'shot.png', mime: 'image/png', size: 12, url: '/api/v1/files/k1' },
+    ]);
+    // The turn still carries both — input order preserved, one array.
+    const [, params]: any[] = vi.mocked(runTurn).mock.calls[0];
+    expect(params.attachments).toEqual([
+      { kind: 'document', documentId: 'doc-1', name: 'twilio-api.pdf', path: 'references/twilio-api.pdf' },
+      { id: 'att-1', name: 'shot.png', mime: 'image/png', size: 12, url: '/api/v1/files/k1' },
+    ]);
+  });
+
+  it('a document-chip-only send (empty text) proceeds like an attachment-only send', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    await send(result, '', [docChip()]);
+
+    expect(runTurn).toHaveBeenCalledTimes(1);
+    const [, params]: any[] = vi.mocked(runTurn).mock.calls[0];
+    expect(params.input).toBe('');
+    expect(params.attachments).toHaveLength(1);
+    // Nothing file-shaped lands on the empty-text entry.
+    const user = activeSession().messages.find((m: any) => m.author === 'you');
+    expect(user.attachments).toBeUndefined();
+  });
+
+  it('a send queued behind an active run carries the file refs only (queue is attachment-shaped)', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('a1'));
+    act(() => { useStore.getState().patchUi({ running: true }); });
+
+    await send(result, 'queued [📄 twilio-api.pdf](references/twilio-api.pdf)', [
+      docChip(),
+      { key: 'c1', id: 'att-1', name: 'shot.png', mime: 'image/png', size: 12, url: '/api/v1/files/k1', state: 'ready', progress: 100 },
+    ]);
+
+    // Queued behind the active run — no turn started yet, and the queue row
+    // stores the attachment-shaped refs only.
+    expect(runTurn).not.toHaveBeenCalled();
+    const head = useStore.getState().dequeueChatMessage('t1', 'a1');
+    expect(head?.text).toBe('queued [📄 twilio-api.pdf](references/twilio-api.pdf)');
+    expect(head?.attachments).toEqual([
+      { id: 'att-1', name: 'shot.png', mime: 'image/png', size: 12, url: '/api/v1/files/k1' },
+    ]);
   });
 });

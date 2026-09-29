@@ -559,13 +559,18 @@ describe('lib/api', () => {
         role: 'Research',
         brief: 'Do research',
         model: 'gpt-4o',
+        disabled_tools: ['web.search'],
       });
       expect((globalThis.fetch as any).mock.calls[2][0]).toBe('/api/v1/workspaces/acme/agents');
       expect((globalThis.fetch as any).mock.calls[2][1].method).toBe('POST');
+      // The denylist rides the create body (refactor-agent-tools-denylist).
+      expect(JSON.parse((globalThis.fetch as any).mock.calls[2][1].body).disabled_tools).toEqual(['web.search']);
 
-      await api.agents.patch('acme', 'radar', { name: 'Radar 2' });
+      // PATCH replaces the stored denylist.
+      await api.agents.patch('acme', 'radar', { disabled_tools: ['execute', 'browser'] });
       expect((globalThis.fetch as any).mock.calls[3][0]).toBe('/api/v1/workspaces/acme/agents/radar');
       expect((globalThis.fetch as any).mock.calls[3][1].method).toBe('PATCH');
+      expect(JSON.parse((globalThis.fetch as any).mock.calls[3][1].body).disabled_tools).toEqual(['execute', 'browser']);
 
       await api.agents.regenerate('acme', 'radar');
       expect((globalThis.fetch as any).mock.calls[4][0]).toBe('/api/v1/workspaces/acme/agents/radar/regenerate');

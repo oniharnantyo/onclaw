@@ -51,7 +51,7 @@ func TestHandlers_New(t *testing.T) {
 	}
 
 	wsStorage := resolver.New(stor, st.WorkspaceStorage(), st.Attachments(), []byte("01234567890123456789012345678901"), t.TempDir())
-	fileH := handlers.NewFileHandlers(stor, st.Attachments(), wsStorage)
+	fileH := handlers.NewFileHandlers(stor, st.Attachments(), st.ReferenceDocuments(), wsStorage)
 	if fileH == nil {
 		t.Fatal("expected non-nil FileHandlers instance")
 	}

@@ -10,6 +10,7 @@ import { IntegrationsSection } from "./IntegrationsSection";
 import { GatewaysPane } from "./GatewaysPane";
 import { McpPane } from "./McpPane";
 import { SkillsPane } from "./SkillsPane";
+import { DocumentsPane } from "./DocumentsPane";
 import { ToolsPane } from "./ToolsPane";
 import { HooksPane } from "./HooksPane";
 import { MemoryPane } from "./MemoryPane";
@@ -26,6 +27,7 @@ export const SETTINGS_SECTIONS = [
   { id: 'integrations', label: 'Integrations', icon: 'link' },
   { id: 'mcp', label: 'MCP servers', icon: 'plug' },
   { id: 'skills', label: 'Skills', icon: 'spark' },
+  { id: 'documents', label: 'Documents', icon: 'file' },
   { id: 'tools', label: 'Tools', icon: 'zap' },
   { id: 'hooks', label: 'Hooks', icon: 'activity' },
   { id: 'keys', label: 'API keys', icon: 'key' },
@@ -225,6 +227,14 @@ export function SettingsPage({
               onUpdate={onUpdate}
               onToast={onToast}
               canWrite={skillsCanWrite}
+            />
+          )}
+
+          {section === 'documents' && (
+            <DocumentsPane
+              tenant={tenant}
+              onUpdate={onUpdate}
+              onToast={onToast}
             />
           )}
 

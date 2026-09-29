@@ -17,7 +17,9 @@ declare global {
     identity?: string;
     soul?: string;
     status: string;
-    tools: string[];
+    /** Tool denylist (refactor-agent-tools-denylist): catalog keys the agent
+     * must NOT expose — empty means every catalog tool is enabled. */
+    disabled_tools: string[];
     skills?: string[];
     avatar?: Record<string, any>;
     prompts_status?: 'generating' | 'ready' | 'failed' | string;
@@ -35,13 +37,21 @@ declare global {
   /** A chat attachment reference (add-chat-attachments D10/D11): mirrors the
    * server's {name, mime, size, url} on CompletedMessage.attachments — the
    * capability `url` is the render and wire token. `id` is the upload row id
-   * when known (regenerate re-sends references, never re-uploads). */
+   * when known (regenerate re-sends references, never re-uploads).
+   *
+   * Reference-document mention chips (add-reference-documents 10.4) ride the
+   * SAME array with `kind: "document"` — identity only ({documentId, name,
+   * path}, no url/mime/size), which is why every file field stays optional
+   * for them. */
   interface ChatAttachment {
     id?: string;
     name: string;
-    mime: string;
-    size: number;
-    url: string;
+    mime?: string;
+    size?: number;
+    url?: string;
+    kind?: string;
+    documentId?: string;
+    path?: string;
   }
 
   interface ChatMessage {

@@ -75,7 +75,7 @@ func TestAgents_ListComposesPromptDocuments_GetIncludesPromptDocuments(t *testin
 	r.GET("/agents", agentH.ListAgents)
 	r.GET("/agents/:agent", agentH.GetAgent)
 
-	// 1. ListAgents omits identity/soul/bootstrap from the list response (summary roster)
+	// 1. ListAgents omits identity/soul from the list response (summary roster)
 	wList := httptest.NewRecorder()
 	reqList := httptest.NewRequest(http.MethodGet, "/agents", nil)
 	r.ServeHTTP(wList, reqList)
@@ -96,12 +96,12 @@ func TestAgents_ListComposesPromptDocuments_GetIncludesPromptDocuments(t *testin
 	}
 
 	listAgent := listRes.Agents[0]
-	if listAgent.Identity != "" || listAgent.Soul != "" || listAgent.Bootstrap != "" {
-		t.Errorf("expected list entry to omit prompt documents, got identity=%q soul=%q bootstrap=%q",
-			listAgent.Identity, listAgent.Soul, listAgent.Bootstrap)
+	if listAgent.Identity != "" || listAgent.Soul != "" {
+		t.Errorf("expected list entry to omit prompt documents, got identity=%q soul=%q",
+			listAgent.Identity, listAgent.Soul)
 	}
 
-	// 2. GetAgent (detail response) should include identity/soul/bootstrap document content
+	// 2. GetAgent (detail response) should include identity/soul document content
 	wGet := httptest.NewRecorder()
 	reqGet := httptest.NewRequest(http.MethodGet, "/agents/oracle", nil)
 	r.ServeHTTP(wGet, reqGet)
@@ -118,9 +118,8 @@ func TestAgents_ListComposesPromptDocuments_GetIncludesPromptDocuments(t *testin
 	}
 
 	if getRes.Agent.Identity != "# Identity\nOracle identity" ||
-		getRes.Agent.Soul != "# Soul\nOracle soul" ||
-		getRes.Agent.Bootstrap != "" {
-		t.Errorf("expected detail response to include prompt documents, got identity=%q soul=%q bootstrap=%q",
-			getRes.Agent.Identity, getRes.Agent.Soul, getRes.Agent.Bootstrap)
+		getRes.Agent.Soul != "# Soul\nOracle soul" {
+		t.Errorf("expected detail response to include prompt documents, got identity=%q soul=%q",
+			getRes.Agent.Identity, getRes.Agent.Soul)
 	}
 }

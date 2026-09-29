@@ -198,6 +198,15 @@ func hasExecutableMagic(head []byte) bool {
 	return false
 }
 
+// PDFPageCount counts "/Type /Page" object markers in the given bytes,
+// best-effort: page objects beyond the scanned window are invisible here and
+// the byte cap remains the hard limit. Exported for the references upload
+// pipeline (add-reference-documents tasks 3.3), which records the count on
+// the document row from the full in-memory blob.
+func PDFPageCount(head []byte) int {
+	return pdfPageCount(head)
+}
+
 // pdfPageCount counts "/Type /Page" object markers in the readable head,
 // best-effort (design.md): page objects beyond the head window are invisible
 // here and the byte cap remains the hard limit. "/Type /Pages" (the page

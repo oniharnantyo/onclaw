@@ -319,9 +319,10 @@ describe('humanizeKey', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4.2 coverage guard: the full expected tool universe — the 17 backend
+// 4.2 coverage guard: the full expected tool universe — the 18 backend
 // catalog keys (internal/agents/tool_catalog.go, incl. the todos from
-// adopt-assistant-ui-elements; the ui.* echo tools were removed — rich cards
+// adopt-assistant-ui-elements and document.search from
+// add-reference-documents; the ui.* echo tools were removed — rich cards
 // now come from markdown fences) + the 10 browser facade member ids
 // (toolCatalog.ts facadeToolNames) — MUST have a sentence-table entry that
 // mints a one-liner. When the backend gains a tool, extend this list AND
@@ -338,6 +339,7 @@ const SUITABLE_ARGS: Record<string, Record<string, unknown>> = {
   delete_file: { file_path: 'tmp.txt' },
   'document.read': { path: 'invoice.pdf' },
   'document.create': { path: 'invoice.xlsx', format: 'xlsx' },
+  'document.search': { query: 'sandbox rate limit' },
   execute: { command: 'ls -la' },
   memory: { action: 'read', path: 'USER.md' },
   'web.search': { query: 'onclaw' },
@@ -360,7 +362,7 @@ const SUITABLE_ARGS: Record<string, Record<string, unknown>> = {
 
 describe('coverage guard (4.2)', () => {
   it('pins the expected universe sizes', () => {
-    expect(CATALOG_TOOL_KEYS).toHaveLength(17);
+    expect(CATALOG_TOOL_KEYS).toHaveLength(18);
     expect(FACADE_TOOL_IDS).toHaveLength(10);
   });
 
@@ -388,6 +390,44 @@ describe('coverage guard (4.2)', () => {
     );
     // An unknown action must not invent a sentence (D1).
     expect(toolOneLiner('memory', { args: '{"action":"wipe"}' }, false)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// document.search (add-reference-documents 10.1): web.search's pattern —
+// verb + query object, hit-count fact from the trusted envelope.
+// ---------------------------------------------------------------------------
+
+describe('document.search one-liners (add-reference-documents 10.1)', () => {
+  it('verbs the query and appends the trusted hit count on done', () => {
+    const args = JSON.stringify({ query: 'sandbox rate limit' });
+    expect(toolOneLiner('document.search', { args }, true)).toBe(
+      "Searching documents for 'sandbox rate limit'"
+    );
+    expect(
+      toolOneLiner('document.search', { args, res: '{"hits":[{},{},{}]}' }, false)
+    ).toBe("Searched documents for 'sandbox rate limit' — 3 hits");
+    expect(toolOneLiner('document.search', { args, res: '{"hits":[]}' }, false)).toBe(
+      "Searched documents for 'sandbox rate limit' — 0 hits"
+    );
+    // No result yet (or unparseable): outcome without a fact (D2).
+    expect(toolOneLiner('document.search', { args }, false)).toBe(
+      "Searched documents for 'sandbox rate limit'"
+    );
+    expect(toolOneLiner('document.search', { args, res: 'nope' }, false)).toBe(
+      "Searched documents for 'sandbox rate limit'"
+    );
+  });
+
+  it('drops the object phrase when the query is absent', () => {
+    // The connector trimming is the shared renderSentence behavior (web.search
+    // with an empty query reads the same way).
+    expect(toolOneLiner('document.search', { args: '{}' }, true)).toBe(
+      'Searching documents for'
+    );
+    expect(toolOneLiner('document.search', { args: '{}' }, false)).toBe(
+      'Searched documents for'
+    );
   });
 });
 

@@ -59,7 +59,7 @@ func (t *deleteFileTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name: NameDeleteFile,
 		Desc: "Permanently delete a file inside the agent workspace. " +
-			"Paths are absolute under " + backend.DefaultMountPoint + " (the agent workspace mount), e.g. " + backend.DefaultMountPoint + "/BOOTSTRAP.md. " +
+			"Paths are absolute under " + backend.DefaultMountPoint + " (the agent workspace mount), e.g. " + backend.DefaultMountPoint + "/NOTES.md. " +
 			"Deletion is permanent — removed files cannot be recovered, and deleting a missing file is an error.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"path": {

@@ -72,7 +72,6 @@ func TestInstructionComposer_AllDocumentsPresent(t *testing.T) {
 
 	_ = os.WriteFile(filepath.Join(tempDir, "IDENTITY.md"), []byte("# Identity: Assistant"), 0644)
 	_ = os.WriteFile(filepath.Join(tempDir, "SOUL.md"), []byte("# Soul: Helpful"), 0644)
-	_ = os.WriteFile(filepath.Join(tempDir, "BOOTSTRAP.md"), []byte("# Bootstrap: Welcome"), 0644)
 
 	ws := &domain.Workspace{
 		Name:        "Acme Corp",
@@ -95,22 +94,21 @@ func TestInstructionComposer_AllDocumentsPresent(t *testing.T) {
 		t.Fatalf("unexpected compose error: %v", err)
 	}
 
-	// Verify order: base prompt, IDENTITY, SOUL, WORKSPACE, USER, BOOTSTRAP.
+	// Verify order: base prompt, IDENTITY, SOUL, WORKSPACE, USER.
 	// The base prompt is injected per build (markdown-card-elements D8), never
 	// read from the agent dir.
 	baseIdx := strings.Index(result, "# OnClaw Agent Base System Prompt")
 	identityIdx := strings.Index(result, "# Identity: Assistant")
 	soulIdx := strings.Index(result, "# Soul: Helpful")
-	wsIdx := strings.Index(result, "# Workspace")
+	wsIdx := strings.Index(result, "# Workspace\n")
 	userIdx := strings.Index(result, "# Current User")
-	bootstrapIdx := strings.Index(result, "# Bootstrap: Welcome")
 
-	if baseIdx < 0 || identityIdx < 0 || soulIdx < 0 || wsIdx < 0 || userIdx < 0 || bootstrapIdx < 0 {
+	if baseIdx < 0 || identityIdx < 0 || soulIdx < 0 || wsIdx < 0 || userIdx < 0 {
 		t.Fatalf("one or more expected documents missing in output:\n%s", result)
 	}
 
-	if !(baseIdx < identityIdx && identityIdx < soulIdx && soulIdx < wsIdx && wsIdx < userIdx && userIdx < bootstrapIdx) {
-		t.Fatalf("documents not in expected order (base < identity < soul < ws < user < bootstrap):\n%s", result)
+	if !(baseIdx < identityIdx && identityIdx < soulIdx && soulIdx < wsIdx && wsIdx < userIdx) {
+		t.Fatalf("documents not in expected order (base < identity < soul < ws < user):\n%s", result)
 	}
 
 	// Verify workspace content
@@ -178,7 +176,7 @@ func TestInstructionComposer_MissingDocumentsTolerated(t *testing.T) {
 	// A stale seeded base prompt left on disk (e.g. by an old seed) must never
 	// be read — the embedded base prompt supersedes it
 	// (markdown-card-elements D8). The generated documents are absent (e.g.
-	// failed prompt generation where IDENTITY, SOUL, BOOTSTRAP never landed).
+	// failed prompt generation where IDENTITY and SOUL never landed).
 	_ = os.WriteFile(filepath.Join(tempDir, "AGENTS.md"), []byte("# STALE-SEEDED-BASE-PROMPT"), 0644)
 
 	ws := &domain.Workspace{Name: "My Workspace"}
@@ -202,14 +200,45 @@ func TestInstructionComposer_MissingDocumentsTolerated(t *testing.T) {
 	if strings.Contains(result, "STALE-SEEDED-BASE-PROMPT") {
 		t.Errorf("the on-disk AGENTS.md must never be read; the injected base prompt supersedes it:\n%s", result)
 	}
-	if !strings.Contains(result, "# Workspace") || !strings.Contains(result, "My Workspace") {
+	if !strings.Contains(result, "# Workspace\n") || !strings.Contains(result, "My Workspace") {
 		t.Errorf("expected WORKSPACE.md virtual content to be present")
 	}
 	if !strings.Contains(result, "# Current User") || !strings.Contains(result, "Charlie") {
 		t.Errorf("expected USER.md virtual content to be present")
 	}
-	if strings.Contains(result, "# Identity: Oracle") || strings.Contains(result, "# Bootstrap: Welcome") {
+	if strings.Contains(result, "# Identity: Oracle") {
 		t.Errorf("expected absent generated documents to not appear in result")
+	}
+}
+
+// TestInstructionComposer_StrayBootstrapNotComposed pins the removed birth
+// document (remove-bootstrap-doc, spec agent-runtime "Bootstrap is not
+// composed"): a BOOTSTRAP.md left in the workspace by an earlier version
+// never appears in the composed instruction — the startup sweep deletes the
+// file (agent-prompts capability), and composition ignores it in the
+// meantime.
+func TestInstructionComposer_StrayBootstrapNotComposed(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(tempDir, "BOOTSTRAP.md"), []byte("# Bootstrap: Welcome"), 0644)
+
+	ws := &domain.Workspace{Name: "My Workspace"}
+	user := &domain.User{Name: "Dana", Email: "dana@example.com"}
+
+	composer := agents.NewInstructionComposer()
+	result, err := composer.Compose(ctx, agents.ComposeParams{
+		AgentDir:  tempDir,
+		Workspace: ws,
+		User:      user,
+		RoleName:  "Member",
+		Memories:  newFakeMemories(),
+	})
+	if err != nil {
+		t.Fatalf("unexpected compose error: %v", err)
+	}
+
+	if strings.Contains(result, "# Bootstrap: Welcome") || strings.Contains(result, "BOOTSTRAP") {
+		t.Errorf("the removed BOOTSTRAP.md must never be composed, got:\n%s", result)
 	}
 }
 
@@ -236,7 +265,7 @@ func TestInstructionComposer_MemorySubsectionsCarryStoredContent(t *testing.T) {
 		t.Fatalf("compose: %v", err)
 	}
 
-	wsIdx := strings.Index(result, "# Workspace")
+	wsIdx := strings.Index(result, "# Workspace\n")
 	sharedIdx := strings.Index(result, "## Shared memory")
 	sharedContentIdx := strings.Index(result, "Ship on Thursdays.")
 	userIdx := strings.Index(result, "# Current User")
@@ -289,6 +318,57 @@ func TestInstructionComposer_EmptyMemoryOmitsSubsections(t *testing.T) {
 	}
 	if userIdx := strings.Index(result, "# Current User"); userIdx >= 0 && strings.Contains(result[userIdx:], "## Memory") {
 		t.Errorf("empty user memory must omit its subsection entirely:\n%s", result)
+	}
+}
+
+// TestInstructionComposer_ReferenceManifestAfterUserDoc pins the compose
+// placement of the pre-rendered reference-documents manifest
+// (add-reference-documents 5.1): it appends as its own document block after
+// USER.md's tier — channel docs, then memory docs, then the manifest — and an
+// empty manifest composes nothing extra. The manifest string itself is
+// rendered by the runner (the internal renderer carries the fixture-driven
+// snapshot); this pins the composer's slot ordering from the exported surface.
+func TestInstructionComposer_ReferenceManifestAfterUserDoc(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+
+	const manifest = "## Reference documents\n\n- twilio-api.pdf — the API manual — 120 pages — TOC: Intro; Webhooks"
+	composer := agents.NewInstructionComposer()
+	result, err := composer.Compose(ctx, agents.ComposeParams{
+		AgentDir:          tempDir,
+		Workspace:         &domain.Workspace{ID: "ws-1", Name: "Acme"},
+		User:              &domain.User{ID: "user-1", Name: "Alice"},
+		RoleName:          "Member",
+		Memories:          newFakeMemories(),
+		MemoryDocs:        []string{"## Memory prefetch\n\ncandidates"},
+		ReferenceManifest: manifest,
+	})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+
+	userDocIdx := strings.Index(result, "# Current User")
+	memoryIdx := strings.Index(result, "## Memory prefetch")
+	manifestIdx := strings.Index(result, "- twilio-api.pdf — the API manual — 120 pages — TOC: Intro; Webhooks")
+	if userDocIdx < 0 || memoryIdx < 0 || manifestIdx < 0 {
+		t.Fatalf("expected the user doc, the memory docs, and the manifest entry:\n%s", result)
+	}
+	if !(userDocIdx < memoryIdx && memoryIdx < manifestIdx) {
+		t.Fatalf("manifest must compose after USER.md and the memory docs:\n%s", result)
+	}
+
+	without, err := composer.Compose(ctx, agents.ComposeParams{
+		AgentDir:  tempDir,
+		Workspace: &domain.Workspace{ID: "ws-1", Name: "Acme"},
+		User:      &domain.User{ID: "user-1", Name: "Alice"},
+		RoleName:  "Member",
+		Memories:  newFakeMemories(),
+	})
+	if err != nil {
+		t.Fatalf("compose without manifest: %v", err)
+	}
+	if strings.Contains(without, "twilio-api.pdf") {
+		t.Fatalf("empty manifest must compose no manifest entries:\n%s", without)
 	}
 }
 

@@ -1,14 +1,15 @@
+import { builtinToolCount } from "./toolCatalog";
 import { describe, it, expect } from 'vitest';
 import { computeContextBreakdown, postCompactionEntries } from './contextBreakdown';
 
 const agent = {
   prompt: 'x'.repeat(400), // 100 tokens estimated (~4 chars/token)
   role: 'y'.repeat(80), // 20
-  tools: ['a', 'b', 'c'], // 3 × 120 = 360
+  disabled_tools: ['a', 'b', 'c'], // denies 3 → (builtinToolCount - 3) × 120
   skills: ['s1'], // 40
 };
-// Face-value estimate sum: 100 + 20 + 360 + 40 = 520
-const AGENT_ESTIMATE = 520;
+// Face-value estimate sum: 100 + 20 + (builtinToolCount - 3) × 120 + 40
+const AGENT_ESTIMATE = 100 + 20 + (builtinToolCount - 3) * 120 + 40;
 
 describe('computeContextBreakdown — honest remainder (D2, replaces scale-to-fit)', () => {
   it('keeps segments at face value — never scaled to fit the reported total', () => {
@@ -56,7 +57,7 @@ describe('computeContextBreakdown — honest remainder (D2, replaces scale-to-fi
     ];
     const attachmentMessages = [{ attachments: [{ mime: 'image/png', size: 9_000 }, { mime: 'text/plain', size: 400 }] }];
     const { segments } = computeContextBreakdown(
-      { prompt: '', role: '', tools: ['t'], skills: [] },
+      { prompt: '', role: '', disabled_tools: ['t'], skills: [] },
       [...messages, ...attachmentMessages],
       99_999,
       200_000
@@ -64,7 +65,7 @@ describe('computeContextBreakdown — honest remainder (D2, replaces scale-to-fi
     const byLabel = (label: string) => segments.find((s) => s.label === label)?.tokens ?? 0;
     // Instructions: empty prompt/role → 0 → excluded
     expect(segments.some((s) => s.label === 'Instructions')).toBe(false);
-    expect(byLabel('Tools & skills')).toBe(120);
+    expect(byLabel('Tools & skills')).toBe((builtinToolCount - 1) * 120);
     // Files: 1100 image + max(64, ceil(400/4)=100) doc
     expect(byLabel('Files')).toBe(1100 + 100);
     // Conversation: (8 + 50 + 10) + (8 + 20 + 10) = 106

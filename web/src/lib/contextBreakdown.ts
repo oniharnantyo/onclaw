@@ -10,6 +10,8 @@
 // for those segments and the "estimated" caption drops (D7). Headroom is
 // always the real window minus the real used.
 
+import { builtinToolCount } from "./toolCatalog";
+
 export interface ContextSegment {
   label: string;
   tokens: number;
@@ -113,7 +115,7 @@ const isFiniteNumber = (v: unknown): v is number => typeof v === 'number' && Num
  * provider's real number, never the estimate.
  */
 export function computeContextBreakdown(
-  agent: { prompt?: string; role?: string; tools?: string[]; skills?: string[] } | undefined,
+  agent: { prompt?: string; role?: string; disabled_tools?: string[]; skills?: string[] } | undefined,
   messages: any[] | undefined,
   used: number,
   effective: number,
@@ -127,7 +129,11 @@ export function computeContextBreakdown(
     { label: 'Instructions', tokens: est(agent?.prompt) + est(agent?.role), tint: TINT_INSTRUCTIONS },
     {
       label: 'Tools & skills',
-      tokens: (agent?.tools?.length || 0) * TOOL_DEF_TOKENS + (agent?.skills?.length || 0) * SKILL_HEADER_TOKENS,
+      // Denylist world: every built-in is exposed unless disabled_tools removes
+      // it; an absent agent means nothing is known, so estimate nothing.
+      tokens:
+        (agent ? Math.max(0, builtinToolCount - (agent.disabled_tools?.length || 0)) : 0) * TOOL_DEF_TOKENS +
+        (agent?.skills?.length || 0) * SKILL_HEADER_TOKENS,
       tint: TINT_TOOLS,
     },
     { label: 'Files', tokens: estFiles(messages), tint: TINT_FILES },

@@ -42,15 +42,21 @@ type ToolContext struct {
 	ToolConfigs   map[string]map[string]any
 
 	// Document-family bindings (add-document-read-tool /
-	// add-document-create-tool). ReadOnlyRoots lists the run's extra
-	// read-only jail roots (the workspace skills tree plus the turn's
-	// materialized drop-lane mount) so document.read can convert
-	// chat-attached documents and document.create can read chat-delivered
-	// templates. DocumentPublisher publishes a created document into the
-	// workspace's blob storage and returns its capability URL; set only on
-	// runners wired with the workspace blob store.
+	// add-document-create-tool / add-reference-documents).
+	// ReadOnlyRoots lists the run's extra read-only jail roots (the workspace
+	// skills tree plus the turn's materialized drop-lane mount) so document.read
+	// can convert chat-attached documents and document.create can read
+	// chat-delivered templates. DocumentPublisher publishes a created document
+	// into the workspace's blob storage and returns its capability URL; set
+	// only on runners wired with the workspace blob store. Documents carries
+	// the workspace's reference-document library port for the compose-side
+	// consumers (manifest injection D6, references mount D8): nil on runners
+	// without the references service — document.search is then not registered
+	// (WithDocumentTools, the memory-search precedent), while document.read
+	// stays available without it.
 	ReadOnlyRoots     []string
 	DocumentPublisher DocumentPublisher
+	Documents         DocumentTools
 
 	// Channel-run bindings (integrate-agent-channels D8): set only for
 	// channel runs; non-channel runs leave them zero and never resolve the
@@ -61,6 +67,14 @@ type ToolContext struct {
 	ChannelFeed    ChannelFeed
 	ChannelHandles ChannelHandles
 
+	// IsChannelSession marks a run executing inside a team room (the
+	// document-visibility scope's channel half, add-reference-documents D7):
+	// channel-attached documents are visible only to these runs. Run assembly
+	// sets it alongside ChannelID — deliberately separate, so a scheduled run
+	// that knows its delivery channel still resolves visibility by agent
+	// bindings only (the delivery target never widens scope).
+	IsChannelSession bool
+
 	// Work-session bindings (channel-teams D2/D5): set only for a channel
 	// run minted inside an active work session. ChannelRole is the running
 	// agent's roster role; session.close resolves only for facilitators.
@@ -69,6 +83,23 @@ type ToolContext struct {
 	WorkSessions  WorkSessions
 }
 
+// DocumentTools is the run-side port over the workspace's reference-document
+// library (add-reference-documents D4/D7): visibility-filtered section search
+// for document.search and visible-document listing for the compose-side
+// manifest and references mount. The references service implements it;
+// internal/references imports internal/agents/tools, so this aggregate port
+// lives in the agents package and satisfies the tool-side search seam
+// (tools.DocumentSearcher) structurally — never the reverse. Nil on runners
+// without the references service wired.
+type DocumentTools interface {
+	SearchDocuments(ctx context.Context, workspaceID string, scope domain.DocumentRunScope, query string, limit int) ([]domain.DocumentSectionHit, error)
+	VisibleDocuments(ctx context.Context, workspaceID string, scope domain.DocumentRunScope) ([]domain.ReferenceDocument, error)
+}
+
+// The runner-side port carries the tool-side search seam — a drift breaks
+// this build, not search (the DocumentPublisher pattern).
+var _ tools.DocumentSearcher = DocumentTools(nil)
+
 // ToolConstructor builds a tool.BaseTool for a specific execution context.
 // Implementations are registered by dotted name (e.g. "web.search") and
 // resolved at agent composition time. Eino types are confined to this package
@@ -76,9 +107,10 @@ type ToolContext struct {
 // never reference tool.BaseTool directly.
 type ToolConstructor func(ToolContext) (tool.BaseTool, error)
 
-// ToolRegistry is the in-process tool surface. An agent's tools allowlist
-// selects from it at composition time; unknown names are inert — there are no
-// DB rows to validate against.
+// ToolRegistry is the in-process tool surface. The turn's effective tool set
+// (denylist resolution: catalog minus disabled_tools) selects from it at
+// composition time; unknown names are inert — there are no DB rows to
+// validate against.
 type ToolRegistry interface {
 	// Register adds a tool under its dotted name. The name must be unique
 	// within the registry; re-registering the same name replaces it.
@@ -90,18 +122,18 @@ type ToolRegistry interface {
 	// Names returns all registered tool names (sorted).
 	Names() []string
 
-	// Filter returns a ToolFilter bound to this registry applying allowlist
-	// semantics.
+	// Filter returns a ToolFilter bound to this registry that filters the
+	// resolved effective set down to registered names.
 	Filter() ToolFilter
 }
 
 // ToolFilter is a domain-level view of the tools available to a given agent
-// after applying its tools allowlist. It is consumed by the engine to build
-// the agent's tool set.
+// after intersecting the effective tool set with the registry. It is consumed
+// by the engine to build the agent's tool set.
 type ToolFilter interface {
-	// Available returns the registered tool names the agent is allowed to use,
-	// in a stable order (sorted by name). An empty allowlist selects no tools;
-	// allowed names that are not registered are silently ignored (inert).
+	// Available returns the registered tool names the agent's effective set
+	// carries, in a stable order (sorted by name). Names that are not
+	// registered are silently ignored (inert).
 	Available(allowed []string) []string
 }
 
@@ -124,6 +156,9 @@ type toolRegistry struct {
 	// todos carries the optional todo tools' store (set only by
 	// WithTodoTools); nil means the todo tools are not registered.
 	todos *todoToolDeps
+	// documents carries the optional document.search port (set only by
+	// WithDocumentTools); nil means the tool is not registered.
+	documents DocumentTools
 }
 
 // scheduleToolDeps bundles the stores the schedule tool needs at construction
@@ -171,6 +206,19 @@ func WithMemorySearch(searcher *memory.Searcher) ToolRegistryOption {
 func WithTodoTools(todos store.TodoStore) ToolRegistryOption {
 	return func(r *toolRegistry) {
 		r.todos = &todoToolDeps{todos: todos}
+	}
+}
+
+// WithDocumentTools registers the document.search tool
+// (add-reference-documents 4.1) backed by the workspace's reference-document
+// library port — visibility-filtered section search bound to the run's scope
+// at construction. Unset, the tool is simply not registered — the deployment
+// surfaces no document.search at all, not a broken one (the memory-search
+// precedent). document.read deliberately does not depend on it: reading a
+// jailed file never requires the library.
+func WithDocumentTools(documents DocumentTools) ToolRegistryOption {
+	return func(r *toolRegistry) {
+		r.documents = documents
 	}
 }
 
@@ -273,12 +321,31 @@ func NewDefaultToolRegistry(memories store.MemoryStore, opts ...ToolRegistryOpti
 			tools.WithDocumentCreateReadOnlyRoots(tctx.ReadOnlyRoots...))
 	})
 
+	// Document search (add-reference-documents 4.1): visibility-filtered
+	// full-text search over the workspace's indexed reference documents,
+	// registered only when the composition root wired the references service
+	// (the memory-search precedent). Identity and visibility scope bind per
+	// construction through the ToolContext — the query arguments carry no
+	// identity fields. The scope mirrors domain.DocumentRunScope: scheduled
+	// runs resolve by agent bindings only (IsChannelSession false), so a
+	// delivery channel never widens what a run can search.
+	if d := reg.documents; d != nil {
+		reg.Register(tools.NameDocumentSearch, func(tctx ToolContext) (tool.BaseTool, error) {
+			return tools.NewDocumentSearch(d, tctx.WorkspaceID, domain.DocumentRunScope{
+				AgentID:          tctx.AgentID,
+				ChannelID:        tctx.ChannelID,
+				IsChannelSession: tctx.IsChannelSession,
+			})
+		})
+	}
+
 	// Channel tools (integrate-agent-channels task 5): registry tools so
 	// pre_tool_use hooks target them by name, bound per run through the
 	// ToolContext channel bindings. Exposure is decided at resolution —
-	// channel runs append them to the effective allowlist, non-channel runs
-	// strip them — so the constructors below only ever build against wired
-	// channel state and fail explicitly otherwise.
+	// channel runs un-scope them from the denylist (or append them to a
+	// per-turn override), non-channel runs strip them — so the constructors
+	// below only ever build against wired channel state and fail explicitly
+	// otherwise.
 	reg.Register(ChannelToolPost, newChannelPostTool)
 	reg.Register(ChannelToolHistory, newChannelHistoryTool)
 
@@ -524,8 +591,8 @@ func (r *toolRegistry) Names() []string {
 	return names
 }
 
-// Filter returns a ToolFilter bound to this registry that resolves the
-// allowlist semantics.
+// Filter returns a ToolFilter bound to this registry that intersects an
+// effective tool set with the registered names.
 func (r *toolRegistry) Filter() ToolFilter {
 	return &allowlistFilter{reg: r}
 }
@@ -546,7 +613,8 @@ func (f *allowlistFilter) Available(allowed []string) []string {
 }
 
 // ResolvedTools builds the concrete tool.BaseTool slice for an agent from the
-// registry and its allowlist. An empty allowlist selects no tools; allowed
+// registry and the turn's effective tool set (allowlist-shaped: the resolved
+// denylist output, or a per-turn override). An empty set selects no tools;
 // names that don't resolve are silently dropped. Returns an error only if a
 // registered tool's constructor fails to build.
 func ResolvedTools(tctx ToolContext, reg ToolRegistry, allowed []string) ([]string, []tool.BaseTool, error) {

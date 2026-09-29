@@ -182,10 +182,13 @@ func setupSchedulerRunner(t *testing.T, sessionID string, opts ...RunnerOption) 
 	return st, runner, rec, cps, req
 }
 
-// seedPromptDocs writes the three on-disk prompt documents into the agent
-// workspace directory; the base prompt is never on disk (markdown-card-elements
-// D8 — injected per build), and the WORKSPACE and USER docs are virtual and
-// fed by seeded memories instead.
+// seedPromptDocs writes the on-disk prompt documents into the agent
+// workspace directory: the generated IDENTITY.md/SOUL.md plus a stray
+// BOOTSTRAP.md standing in for a pre-upgrade leftover — the removed birth
+// document must never be composed (remove-bootstrap-doc); the startup sweep
+// deletes the file instead. The base prompt is never on disk
+// (markdown-card-elements D8 — injected per build), and the WORKSPACE and
+// USER docs are virtual and fed by seeded memories instead.
 func seedPromptDocs(t *testing.T, runner *Runner, markers map[string]string) {
 	t.Helper()
 	agentDir := domain.AgentWorkspaceDir(domain.WorkspaceRoot(runner.onClawDir), "acme", "atlas")
@@ -210,11 +213,12 @@ const (
 )
 
 // TestRun_SchedulerProfileComposition covers the trimmed execution profile
-// (integrate-scheduler D6, spec scenario "Trimmed composition"): with all six
-// documents and workspace shared memory present, the scheduler-origin
+// (integrate-scheduler D6, spec scenario "Trimmed composition"): with every
+// document and workspace shared memory present, the scheduler-origin
 // instruction carries AGENTS/IDENTITY/SOUL plus the workspace metadata doc,
-// omits USER.md, BOOTSTRAP.md, the shared-memory subsection, and channel
-// docs, and ends with the unattended contract in its NO_REPLY variant.
+// omits USER.md, the shared-memory subsection, and channel docs — and never
+// composes the stray BOOTSTRAP.md leftover — and ends with the unattended
+// contract in its NO_REPLY variant.
 func TestRun_SchedulerProfileComposition(t *testing.T) {
 	st, runner, rec, _, req := setupSchedulerRunner(t, schedulerSessionID("sch-1", time.Unix(1760000000, 0)))
 	ctx := context.Background()
@@ -255,7 +259,7 @@ func TestRun_SchedulerProfileComposition(t *testing.T) {
 			t.Fatalf("scheduler instruction must contain the base prompt and %s, got:\n%s", marker, instruction)
 		}
 	}
-	if !strings.Contains(instruction, "# Workspace") || !strings.Contains(instruction, "acme") {
+	if !strings.Contains(instruction, "# Workspace\n") || !strings.Contains(instruction, "acme") {
 		t.Fatalf("scheduler instruction must carry the workspace metadata doc, got:\n%s", instruction)
 	}
 	for _, absent := range []string{
@@ -308,7 +312,7 @@ func TestRun_SchedulerProfileThreadContract(t *testing.T) {
 
 // TestRun_InteractiveCompositionUnchanged pins the other side of the origin
 // branch: a user-origin run for the same agent composes the full ordinary
-// stack — USER.md, BOOTSTRAP.md, both memory subsections — and never the
+// stack — USER.md and both memory subsections — and never the
 // unattended contract (integrate-scheduler D6, "Interactive runs are
 // unchanged").
 func TestRun_InteractiveCompositionUnchanged(t *testing.T) {
@@ -340,7 +344,6 @@ func TestRun_InteractiveCompositionUnchanged(t *testing.T) {
 		"## Rich cards",
 		"IDENTITY-CONTENT-MARKER",
 		"SOUL-CONTENT-MARKER",
-		"BOOTSTRAP-CONTENT-MARKER",
 		"# Current User",
 		"USER-MEMORY-MARKER",
 		"## Shared memory",
@@ -352,6 +355,11 @@ func TestRun_InteractiveCompositionUnchanged(t *testing.T) {
 	}
 	if strings.Contains(instruction, "Unattended run") {
 		t.Fatalf("interactive instruction must never carry the unattended contract, got:\n%s", instruction)
+	}
+	// The removed birth document is never composed, even attended
+	// (remove-bootstrap-doc, spec agent-runtime "Bootstrap is not composed").
+	if strings.Contains(instruction, "BOOTSTRAP-CONTENT-MARKER") {
+		t.Fatalf("interactive instruction must never compose the stray BOOTSTRAP.md, got:\n%s", instruction)
 	}
 }
 

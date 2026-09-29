@@ -64,9 +64,10 @@ export interface Agent {
   brief?: string;
   identity?: string;
   soul?: string;
-  bootstrap?: string;
   status: 'running' | 'idle' | 'error' | string;
-  tools: string[];
+  /** Tool denylist (refactor-agent-tools-denylist): catalog keys the agent
+   * must NOT expose — empty means every catalog tool is enabled. */
+  disabled_tools: string[];
   lastActive: string;
   skills: string[];
   avatar?: Record<string, any>;

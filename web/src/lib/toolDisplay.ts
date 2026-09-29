@@ -53,6 +53,7 @@ export const CATALOG_TOOL_KEYS = [
   'delete_file',
   'document.read',
   'document.create',
+  'document.search',
   'execute',
   'memory',
   'web.search',
@@ -151,6 +152,14 @@ export const SENTENCE_TABLE: Record<string, SentenceTableEntry> = {
     outcome: 'Created document {object}',
     object: { key: 'path', style: 'chip' },
     fact: documentCreateFact,
+  },
+  // Mirrors the web.search pattern (verb + query object); the fact appends
+  // the trusted envelope's hit count (add-reference-documents 10.1).
+  'document.search': {
+    intent: 'Searching documents for {object}',
+    outcome: 'Searched documents for {object}',
+    object: { key: 'query', style: 'quote' },
+    fact: documentSearchFact,
   },
   // Command-as-sentence (D1): the command IS the one-liner, verbatim, no
   // wrapping — the card's tool name already says "Shell".
@@ -357,6 +366,15 @@ function documentCreateFact(ctx: { args: Record<string, unknown>; res?: string }
   return format ? ` · ${format}` : null;
 }
 
+/** document.search fact: the hit count from the trusted binding envelope —
+ * " — 3 hits". An envelope without a hits array appends nothing (D2). */
+function documentSearchFact(ctx: { args: Record<string, unknown>; res?: string }): string | null {
+  const parsed = parseJsonObject(ctx.res);
+  if (!parsed || !Array.isArray(parsed.hits)) return null;
+  const n = parsed.hits.length;
+  return ` — ${n} hit${n === 1 ? '' : 's'}`;
+}
+
 /** Download URL for a document.create result envelope: the capability URL the
  * backend stamps on successful delivery, or null when absent/unparseable. */
 export function createdDocumentURL(rawResult: string | undefined | null): string | null {
@@ -494,6 +512,7 @@ const FIELD_SPECS: Record<string, FieldSpec[]> = {
     { key: 'format', label: 'Format', kind: 'enum' },
     { key: 'template', label: 'Template', kind: 'chip' },
   ],
+  'document.search': [{ key: 'query', label: 'Query', kind: 'quote' }],
   execute: [{ key: 'command', label: 'Command', kind: 'chip' }],
   memory: [
     { key: 'action', label: 'Action', kind: 'enum' },
