@@ -359,7 +359,7 @@ describe('modals/ProviderFormDialog — keyless declaration checkbox (fix-keyles
 
     // Default create mode is 'openai' — a key-requiring type.
     expect(screen.queryByTestId('prov-no-key-checkbox')).toBeNull();
-    for (const keyRequiring of ['openai', 'anthropic', 'gemini', 'openrouter']) {
+    for (const keyRequiring of ['openai', 'anthropic', 'gemini', 'openrouter', 'typesafe']) {
       switchType(keyRequiring);
       expect(screen.queryByTestId('prov-no-key-checkbox')).toBeNull();
     }
@@ -452,5 +452,189 @@ describe('modals/ProviderFormDialog — keyless declaration checkbox (fix-keyles
     expect(verifyButton().title).toBe(
       "No API key needed? Tick 'This endpoint needs no API key'"
     );
+  });
+});
+
+describe('modals/ProviderFormDialog — type groups & typesafe (add-configurable-decision-backend)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function renderDialog(props: Partial<Parameters<typeof ProviderFormDialog>[0]> = {}) {
+    const onClose = vi.fn();
+    const onSaved = vi.fn();
+    const onToast = vi.fn();
+    render(
+      <ProviderFormDialog
+        workspaceId="acme"
+        provider={null}
+        onClose={onClose}
+        onSaved={onSaved}
+        onToast={onToast}
+        {...props}
+      />
+    );
+    return { onClose, onSaved, onToast };
+  }
+
+  const typeSelect = () => screen.getByLabelText('Provider type') as HTMLSelectElement;
+  const verifyButton = () => screen.getByTestId('btn-provider-verify-draft') as HTMLButtonElement;
+  const saveButton = () => screen.getByTestId('btn-provider-create-confirm') as HTMLButtonElement;
+  const optgroups = () => Array.from(typeSelect().querySelectorAll('optgroup'));
+  const groupValues = (group: HTMLOptGroupElement) =>
+    Array.from(group.querySelectorAll('option')).map((o) => o.value);
+  const switchType = (type: string) =>
+    fireEvent.change(typeSelect(), { target: { value: type } });
+
+  it('groups the type select into Language models and Decision optgroups', () => {
+    renderDialog();
+
+    const groups = optgroups();
+    expect(groups.map((g) => g.label)).toEqual(['Language models', 'Decision']);
+    expect(groupValues(groups[0])).toEqual([
+      'openai',
+      'anthropic',
+      'gemini',
+      'openrouter',
+      'openai-compatible',
+      'anthropic-compatible',
+    ]);
+    expect(groupValues(groups[1])).toEqual(['typesafe']);
+    // The decision option's label is TypeSafe.
+    expect(groups[1].querySelector('option')?.textContent).toBe('TypeSafe');
+  });
+
+  it('typeGroup "decision" offers only the decision group with TypeSafe preselected', () => {
+    renderDialog({ typeGroup: 'decision' });
+
+    const groups = optgroups();
+    expect(groups.map((g) => g.label)).toEqual(['Decision']);
+    expect(groupValues(groups[0])).toEqual(['typesafe']);
+    expect(typeSelect().value).toBe('typesafe');
+  });
+
+  it('typeGroup "language" offers only the language group with no typesafe option', () => {
+    renderDialog({ typeGroup: 'language' });
+
+    const groups = optgroups();
+    expect(groups.map((g) => g.label)).toEqual(['Language models']);
+    expect(groupValues(groups[0])).toEqual([
+      'openai',
+      'anthropic',
+      'gemini',
+      'openrouter',
+      'openai-compatible',
+      'anthropic-compatible',
+    ]);
+    expect(typeSelect().value).toBe('openai');
+    expect(screen.queryByRole('option', { name: 'TypeSafe' })).toBeNull();
+  });
+
+  it('typesafe form: canonical systemone placeholder, no keyless checkbox, key required to verify', () => {
+    renderDialog();
+    switchType('typesafe');
+
+    // Canonical origin is the placeholder; an empty field means the default.
+    const baseUrl = screen.getByLabelText('Base URL') as HTMLInputElement;
+    expect(baseUrl.placeholder).toBe('https://api.typesafe.ai/v1/systemone');
+
+    // The help copy states the endpoint is used as entered — nothing is
+    // appended (the language-model "server appends resource paths" copy
+    // would steer users into a wrong-path override).
+    expect(screen.getByText(/used exactly as entered/)).not.toBeNull();
+
+    // The keyless declaration never renders for the key-requiring decision type.
+    expect(screen.queryByTestId('prov-no-key-checkbox')).toBeNull();
+
+    // Base URL stays optional (empty = canonical default, set = override) —
+    // save stays gated on the name alone.
+    fireEvent.change(screen.getByLabelText('Provider name'), { target: { value: 'Router' } });
+    expect(saveButton().disabled).toBe(false);
+
+    // The key IS required for verify: disabled until one is typed.
+    expect(verifyButton().disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'ts-key' } });
+    expect(verifyButton().disabled).toBe(false);
+  });
+
+  it('typesafe create submits type, name and key with no base_url until overridden', async () => {
+    const createSpy = vi.spyOn(api.providers, 'create').mockResolvedValue({
+      provider: compatibleProvider({ id: 'prov-ts', type: 'typesafe', name: 'Router', base_url: '' }),
+    });
+    renderDialog();
+
+    switchType('typesafe');
+    fireEvent.change(screen.getByLabelText('Provider name'), { target: { value: 'Router' } });
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'ts-key' } });
+    fireEvent.click(saveButton());
+
+    await waitFor(() => {
+      expect(createSpy).toHaveBeenCalledWith('acme', {
+        type: 'typesafe',
+        name: 'Router',
+        key: 'ts-key',
+        enabled: true,
+      });
+    });
+  });
+
+  it('typesafe create with a base URL override rides the payload', async () => {
+    const createSpy = vi.spyOn(api.providers, 'create').mockResolvedValue({
+      provider: compatibleProvider({
+        id: 'prov-ts',
+        type: 'typesafe',
+        name: 'Router',
+        base_url: 'https://staging.typesafe.ai/v1/systemone',
+      }),
+    });
+    renderDialog();
+
+    switchType('typesafe');
+    fireEvent.change(screen.getByLabelText('Provider name'), { target: { value: 'Router' } });
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'ts-key' } });
+    fireEvent.change(screen.getByLabelText('Base URL'), {
+      target: { value: 'https://staging.typesafe.ai/v1/systemone' },
+    });
+    fireEvent.click(saveButton());
+
+    await waitFor(() => {
+      expect(createSpy).toHaveBeenCalledWith(
+        'acme',
+        expect.objectContaining({
+          type: 'typesafe',
+          base_url: 'https://staging.typesafe.ai/v1/systemone',
+          key: 'ts-key',
+        })
+      );
+    });
+  });
+
+  it('typesafe edit with a stored key: no checkbox, verify enabled on a blank field', () => {
+    renderDialog({
+      provider: compatibleProvider({ id: 'prov-ts', type: 'typesafe', name: 'Router', base_url: '' }),
+    });
+
+    expect(typeSelect().value).toBe('typesafe');
+    expect((screen.getByLabelText('Edit base URL') as HTMLInputElement).placeholder).toBe(
+      'https://api.typesafe.ai/v1/systemone'
+    );
+    expect(screen.queryByTestId('prov-no-key-checkbox')).toBeNull();
+    expect(verifyButton().disabled).toBe(false);
+  });
+
+  it('existing language-model types keep their form shape', () => {
+    renderDialog();
+
+    // openai: optional-override placeholder, no keyless checkbox.
+    expect((screen.getByLabelText('Base URL') as HTMLInputElement).placeholder).toBe(
+      'https://api.openai.com/v1 (optional override)'
+    );
+    expect(screen.queryByTestId('prov-no-key-checkbox')).toBeNull();
+
+    // openai-compatible: required base URL, catalog mapping, keyless checkbox.
+    switchType('openai-compatible');
+    expect(screen.queryByTestId('prov-no-key-checkbox')).not.toBeNull();
+    expect(screen.getByLabelText('Catalog mapping')).not.toBeNull();
+    expect(saveButton().disabled).toBe(true); // base URL required
   });
 });

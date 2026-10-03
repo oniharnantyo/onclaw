@@ -49,6 +49,15 @@ type IntentGate struct {
 	resolver ModelResolver
 	trace    callbacks.Handler
 	log      *slog.Logger
+	// Decision-path dependencies (add-configurable-decision-backend D1): the
+	// provider catalog and instance encryption key re-used from side-call
+	// resolution, and the optional workspace settings source whose "memory"
+	// record may carry a decision configuration. settings nil (unwired, the
+	// trace-handler precedent) keeps the gate on the LLM path for every
+	// workspace.
+	providers     store.ProviderStore
+	encryptionKey []byte
+	settings      store.ToolSettingsStore
 }
 
 // NewIntentGate constructs the gate over the shared cheap-model seam: the
@@ -62,9 +71,12 @@ func NewIntentGate(providerStore store.ProviderStore, encryptionKey []byte, fact
 		opt(&cfg)
 	}
 	return &IntentGate{
-		resolver: newSideCallResolver(providerStore, encryptionKey, factory, cfg),
-		trace:    cfg.trace,
-		log:      log,
+		resolver:      newSideCallResolver(providerStore, encryptionKey, factory, cfg),
+		trace:         cfg.trace,
+		log:           log,
+		providers:     providerStore,
+		encryptionKey: encryptionKey,
+		settings:      cfg.settings,
 	}
 }
 
@@ -80,7 +92,10 @@ func NewIntentGate(providerStore store.ProviderStore, encryptionKey []byte, fact
 // Model-side failures (resolution, generation, timeout, undecodable output)
 // return the self-contained verdict with the error; the caller fail-opens by
 // proceeding without retrieval. An empty or whitespace turn is quietly
-// self-contained with a nil error — there is nothing to classify.
+// self-contained with a nil error — there is nothing to classify. When the
+// workspace's memory settings carry a decision configuration, the turn
+// classifies through the decision backend instead (same budget, same
+// fail-open contract); see the decision branch below.
 func (g *IntentGate) Classify(ctx context.Context, workspaceID, agentID, turnText string, budget time.Duration) (IntentVerdict, error) {
 	text := strings.TrimSpace(turnText)
 	if text == "" {
@@ -92,6 +107,24 @@ func (g *IntentGate) Classify(ctx context.Context, workspaceID, agentID, turnTex
 	}
 	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
+	start := time.Now()
+
+	// Decision branch (add-configurable-decision-backend D1/D2): when the
+	// workspace's memory settings record stores a decision configuration, the
+	// turn classifies through the decision backend — one systemone request
+	// under this same budget — and every decision-path failure fails open
+	// self-contained without ever falling back to the LLM path: the workspace
+	// chose decision mode. Absent configuration (or no settings source wired,
+	// or an unreadable record) keeps the LLM path byte-identical below.
+	if backend, ok := g.storedDecisionBackend(ctx, workspaceID); ok {
+		verdict, probs, err := g.classifyDecision(ctx, workspaceID, backend, text)
+		if err != nil {
+			g.failOpen(ctx, workspaceID, agentID, "decision call", err)
+			return IntentVerdict{}, err
+		}
+		g.logDecision(ctx, workspaceID, agentID, "decision", backend.model, verdict, probs, time.Since(start))
+		return verdict, nil
+	}
 
 	m, err := g.resolver(ctx, workspaceID, agentID)
 	if err != nil {
@@ -110,7 +143,30 @@ func (g *IntentGate) Classify(ctx context.Context, workspaceID, agentID, turnTex
 		g.failOpen(ctx, workspaceID, agentID, "decode verdict", err)
 		return IntentVerdict{}, err
 	}
+	g.logDecision(ctx, workspaceID, agentID, "llm", "", verdict, nil, time.Since(start))
 	return verdict, nil
+}
+
+// logDecision logs one completed classification at info: the per-turn record
+// that makes the gate's routing visible in server logs the way failOpen makes
+// its failures visible — which backend classified the turn (decision or llm),
+// the configured model, the routing verdict, and for the decision backend the
+// raw noul probabilities behind it.
+func (g *IntentGate) logDecision(ctx context.Context, workspaceID, agentID, source, model string, verdict IntentVerdict, probs map[string]float64, elapsed time.Duration) {
+	attrs := []any{
+		"workspace_id", workspaceID, "agent_id", agentID,
+		"source", source, "model", model,
+		"needs_memory", verdict.NeedsDeepMemory,
+		"notes", verdict.Notes, "events", verdict.Events,
+		"associative", verdict.Associative, "entity", verdict.Entity,
+		"elapsed_ms", elapsed.Milliseconds(),
+	}
+	for _, q := range []string{decisionNeedsMemoryQuestion, decisionNotesQuestion, decisionEventsQuestion} {
+		if p, ok := probs[q]; ok {
+			attrs = append(attrs, "probability_"+q, p)
+		}
+	}
+	g.log.InfoContext(ctx, "memory: intent gate classified turn", attrs...)
 }
 
 // failOpen logs one failed-open classification at warn: the turn proceeds

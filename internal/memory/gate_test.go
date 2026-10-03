@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -325,5 +326,42 @@ func TestGateNoopOnlyTurnStoresNothing(t *testing.T) {
 	}
 	if notes := storedNotes(t, s); len(notes) != 0 {
 		t.Fatalf("expected an empty store, got %d notes", len(notes))
+	}
+}
+
+// TestLogCurationDecisionCountsOps pins the per-curation info record: one
+// line per curation decision with the proposed ops broken out by kind and
+// the committed/rejected outcome — the write-side counterpart of the intent
+// gate's per-turn decision log.
+func TestLogCurationDecisionCountsOps(t *testing.T) {
+	log := &captureLogHandler{}
+	job := IngestJob{WorkspaceID: "ws-1", AgentID: "agent-1", SessionID: "sess-1", TurnID: "turn-9"}
+
+	logCurationDecision(slog.New(log), job, []gateOp{{Op: "ADD"}, {Op: "ADD"}, {Op: "UPDATE"}, {Op: ""}}, 2, 1, 150*time.Millisecond)
+
+	if len(log.records) != 1 {
+		t.Fatalf("expected exactly one curation decision record, got %d", len(log.records))
+	}
+	rec := log.records[0]
+	if rec.Level != slog.LevelInfo || rec.Message != "memory: curation gate decided turn facts" {
+		t.Fatalf("curation log = %s/%q, want info %q", rec.Level, rec.Message, "memory: curation gate decided turn facts")
+	}
+	got := map[string]string{}
+	rec.Attrs(func(a slog.Attr) bool {
+		got[a.Key] = a.Value.String()
+		return true
+	})
+	want := map[string]string{
+		"workspace_id": "ws-1", "agent_id": "agent-1", "session_id": "sess-1", "turn_id": "turn-9",
+		"ops_proposed": "4", "ops_add": "2", "ops_update": "1", "ops_supersede": "0", "ops_noop": "1",
+		"committed": "2", "rejected": "1",
+	}
+	for key, expect := range want {
+		if got[key] != expect {
+			t.Errorf("curation log %s = %q, want %q", key, got[key], expect)
+		}
+	}
+	if _, ok := got["elapsed_ms"]; !ok {
+		t.Errorf("curation log missing elapsed_ms")
 	}
 }

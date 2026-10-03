@@ -2,9 +2,11 @@ package providers_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/oniharnantyo/onclaw/internal/domain"
@@ -21,6 +23,7 @@ func TestRegistry_BuiltinProviders(t *testing.T) {
 		providers.TypeOpenAI,
 		providers.TypeOpenAICompatible,
 		providers.TypeOpenRouter,
+		providers.TypeTypeSafe,
 	}
 
 	list := reg.List()
@@ -68,6 +71,7 @@ func TestProvider_RequiresAPIKey(t *testing.T) {
 		{providers.TypeOpenRouter, true},
 		{providers.TypeOpenAICompatible, false},
 		{providers.TypeAnthropicCompatible, false},
+		{providers.TypeTypeSafe, true},
 	}
 
 	for _, tt := range tests {
@@ -576,6 +580,12 @@ func TestProvider_CapabilityFloors(t *testing.T) {
 			expectedEfforts:     []string{},
 			supportsTemperature: true,
 		},
+		{
+			providerType:        providers.TypeTypeSafe,
+			requiresMaxTokens:   false,
+			expectedEfforts:     []string{},
+			supportsTemperature: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -845,5 +855,246 @@ func TestSuggestCatalogProvider(t *testing.T) {
 				t.Errorf("SuggestCatalogProvider(%q) = %q, want %q", tt.baseURL, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestIsDecisionType(t *testing.T) {
+	tests := []struct {
+		providerType string
+		want         bool
+	}{
+		{providers.TypeTypeSafe, true},
+		{providers.TypeOpenAI, false},
+		{providers.TypeAnthropic, false},
+		{providers.TypeGemini, false},
+		{providers.TypeOpenRouter, false},
+		{providers.TypeOpenAICompatible, false},
+		{providers.TypeAnthropicCompatible, false},
+		{"", false},
+		{"unknown-type", false},
+	}
+
+	for _, tt := range tests {
+		if got := providers.IsDecisionType(tt.providerType); got != tt.want {
+			t.Errorf("IsDecisionType(%q) = %v, want %v", tt.providerType, got, tt.want)
+		}
+	}
+}
+
+func TestTypeSafeProvider_Verify(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("canonical origin constant includes the resource path", func(t *testing.T) {
+		p := providers.NewTypeSafeProvider(nil)
+		if got := p.CanonicalOrigin(); got != providers.TypesafeDefaultEndpoint {
+			t.Errorf("CanonicalOrigin() = %q, want %q", got, providers.TypesafeDefaultEndpoint)
+		}
+		if got := providers.TypesafeDefaultEndpoint; got != "https://api.typesafe.ai/v1/systemone" {
+			t.Errorf("TypesafeDefaultEndpoint = %q, want the canonical systemone origin", got)
+		}
+	})
+
+	t.Run("success with base_url override, auth header, and noul probe body", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Exact path — a dangling "/" here 307-redirects to an http://
+			// downgrade on the real endpoint and the redirect chain surfaces
+			// as a spurious provider 405.
+			if r.URL.Path != "/v1/systemone" {
+				t.Errorf("unexpected path: %q, want exactly /v1/systemone", r.URL.Path)
+			}
+			if r.Method != http.MethodPost {
+				t.Errorf("unexpected method: %s, want POST", r.Method)
+			}
+			if r.Header.Get("Authorization") != "Bearer ts-test-key" {
+				t.Errorf("unexpected Authorization header: %s", r.Header.Get("Authorization"))
+			}
+			// docs.typesafe.ai: questions is a MAP keyed by question id —
+			// an array of named objects is a 422 (dict_type violation).
+			var body struct {
+				State     string `json:"state"`
+				Model     string `json:"model"`
+				Questions map[string]struct {
+					Type         string `json:"type"`
+					Instructions string `json:"instructions"`
+				} `json:"questions"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("probe body is not valid JSON: %v", err)
+			}
+			if body.State == "" {
+				t.Errorf("probe state is empty")
+			}
+			if body.Model == "" {
+				t.Errorf("probe model is empty")
+			}
+			if len(body.Questions) != 1 {
+				t.Fatalf("probe carries %d questions, want 1", len(body.Questions))
+			}
+			q, ok := body.Questions["needs_memory"]
+			if !ok {
+				t.Fatalf("probe question keyed %q missing, want needs_memory", "needs_memory")
+			}
+			if q.Type != "noul" {
+				t.Errorf("probe question type = %q, want noul", q.Type)
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"answers": {"needs_memory": {"noul": 0.83}}, "usage": {"input": 3, "output": 1}}`))
+		}))
+		defer server.Close()
+
+		p := providers.NewTypeSafeProvider(server.Client())
+		err := p.Verify(ctx, providers.Credential{
+			Type:    providers.TypeTypeSafe,
+			BaseURL: server.URL + "/v1/systemone",
+			APIKey:  "ts-test-key",
+		})
+		if err != nil {
+			t.Fatalf("Verify failed: %v", err)
+		}
+	})
+
+	t.Run("success with a bare-number answer value", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"answers": {"needs_memory": 0.9}}`))
+		}))
+		defer server.Close()
+
+		p := providers.NewTypeSafeProvider(server.Client())
+		err := p.Verify(ctx, providers.Credential{
+			Type:    providers.TypeTypeSafe,
+			BaseURL: server.URL + "/v1/systemone",
+			APIKey:  "ts-test-key",
+		})
+		if err != nil {
+			t.Fatalf("Verify failed: %v", err)
+		}
+	})
+
+	t.Run("a trailing-slash base_url override is probed at the exact endpoint path", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// The stored base_url IS the full endpoint — the probe must hit
+			// it exactly, never with an appended "/" (the real endpoint
+			// 307s that to an http:// downgrade and the redirect chain
+			// surfaces as a spurious provider 405).
+			if r.URL.Path != "/v1/systemone" {
+				t.Errorf("unexpected path: %q, want exactly /v1/systemone", r.URL.Path)
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"answers": {"needs_memory": {"noul": 0.5}}}`))
+		}))
+		defer server.Close()
+
+		p := providers.NewTypeSafeProvider(server.Client())
+		err := p.Verify(ctx, providers.Credential{
+			Type:    providers.TypeTypeSafe,
+			BaseURL: server.URL + "/v1/systemone/",
+			APIKey:  "ts-test-key",
+		})
+		if err != nil {
+			t.Fatalf("Verify failed: %v", err)
+		}
+	})
+
+	t.Run("200 without an answers body fails", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"usage": {"input": 3, "output": 1}}`))
+		}))
+		defer server.Close()
+
+		p := providers.NewTypeSafeProvider(server.Client())
+		err := p.Verify(ctx, providers.Credential{
+			Type:    providers.TypeTypeSafe,
+			BaseURL: server.URL + "/v1/systemone",
+			APIKey:  "ts-test-key",
+		})
+		if err == nil {
+			t.Fatalf("Verify expected error on a 200 without answers, got nil")
+		}
+		if expected := "typesafe verify response does not contain an answers body"; !strings.Contains(err.Error(), expected) {
+			t.Errorf("error = %q, want it to contain %q", err.Error(), expected)
+		}
+	})
+
+	t.Run("200 with a non-JSON body fails", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`not json at all`))
+		}))
+		defer server.Close()
+
+		p := providers.NewTypeSafeProvider(server.Client())
+		err := p.Verify(ctx, providers.Credential{
+			Type:    providers.TypeTypeSafe,
+			BaseURL: server.URL + "/v1/systemone",
+			APIKey:  "ts-test-key",
+		})
+		if err == nil {
+			t.Fatalf("Verify expected error on a non-JSON 200, got nil")
+		}
+	})
+
+	t.Run("auth error response parsed", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error": {"message": "Invalid API key"}}`))
+		}))
+		defer server.Close()
+
+		p := providers.NewTypeSafeProvider(server.Client())
+		err := p.Verify(ctx, providers.Credential{
+			Type:    providers.TypeTypeSafe,
+			BaseURL: server.URL + "/v1/systemone",
+			APIKey:  "ts-bad-key",
+		})
+		if err == nil {
+			t.Fatalf("Verify expected error on 401, got nil")
+		}
+		if expected := "provider error (401): Invalid API key"; err.Error() != expected {
+			t.Errorf("error = %q, want %q", err.Error(), expected)
+		}
+	})
+
+	t.Run("missing API key fails fast", func(t *testing.T) {
+		p := providers.NewTypeSafeProvider(nil)
+		err := p.Verify(ctx, providers.Credential{
+			Type:   providers.TypeTypeSafe,
+			APIKey: "",
+		})
+		if err == nil {
+			t.Fatalf("Verify expected error on empty key, got nil")
+		}
+		if !errors.Is(err, domain.ErrInvalid) {
+			t.Errorf("error = %v, want ErrInvalid sentinel wrapped", err)
+		}
+	})
+
+	t.Run("invalid base_url scheme", func(t *testing.T) {
+		p := providers.NewTypeSafeProvider(nil)
+		err := p.Verify(ctx, providers.Credential{
+			Type:    providers.TypeTypeSafe,
+			BaseURL: "ftp://typesafe.example.com/v1/systemone",
+			APIKey:  "ts-test-key",
+		})
+		if err == nil {
+			t.Fatalf("Verify expected error on ftp scheme, got nil")
+		}
+		if !errors.Is(err, domain.ErrInvalid) {
+			t.Errorf("error = %v, want ErrInvalid sentinel wrapped", err)
+		}
+	})
+}
+
+func TestTypeSafeProvider_ListModels(t *testing.T) {
+	ctx := context.Background()
+
+	p := providers.NewTypeSafeProvider(nil)
+	models, err := p.ListModels(ctx, providers.Credential{Type: providers.TypeTypeSafe})
+	if err != nil {
+		t.Fatalf("ListModels failed: %v", err)
+	}
+	if len(models) != 0 {
+		t.Errorf("ListModels = %+v, want no models (decision providers never surface model choices)", models)
 	}
 }

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"sort"
@@ -88,10 +89,13 @@ type providerHandlers struct {
 	encryptionKey []byte
 	registry      *providers.Registry
 	modelCatalog  *services.ModelCatalog
+	// settings backs the delete-integrity check against the workspace memory
+	// decision configuration (the "memory" tool-settings record).
+	settings store.ToolSettingsStore
 }
 
 // NewProviderHandlers creates a new providerHandlers instance with injected dependencies.
-func NewProviderHandlers(providerConfigs store.ProviderStore, agentStore store.AgentStore, encryptionKey []byte, registry *providers.Registry, modelCatalog *services.ModelCatalog) *providerHandlers {
+func NewProviderHandlers(providerConfigs store.ProviderStore, agentStore store.AgentStore, encryptionKey []byte, registry *providers.Registry, modelCatalog *services.ModelCatalog, settings store.ToolSettingsStore) *providerHandlers {
 	if registry == nil {
 		registry = providers.NewRegistry()
 	}
@@ -101,6 +105,7 @@ func NewProviderHandlers(providerConfigs store.ProviderStore, agentStore store.A
 		encryptionKey: encryptionKey,
 		registry:      registry,
 		modelCatalog:  modelCatalog,
+		settings:      settings,
 	}
 }
 
@@ -309,7 +314,8 @@ func (h *providerHandlers) PatchProvider(c *gin.Context) {
 	RespondOK(c, gin.H{"provider": toProviderResponse(existing)})
 }
 
-// DeleteProvider deletes a provider configuration if it is not referenced by any agent.
+// DeleteProvider deletes a provider configuration if it is not referenced by
+// any agent and not backing the workspace memory decision configuration.
 func (h *providerHandlers) DeleteProvider(c *gin.Context) {
 	ws := MustCurrentWorkspace(c)
 	id := c.Param("id")
@@ -322,6 +328,24 @@ func (h *providerHandlers) DeleteProvider(c *gin.Context) {
 	if count > 0 {
 		RespondError(c, fmt.Errorf("%w: cannot delete provider in use by %d agent(s)", domain.ErrConflict, count))
 		return
+	}
+
+	// Decision-seam delete integrity (design D5): the workspace memory
+	// settings record may pin this config as the intent gate's decision
+	// backend. A dangling reference would silently disable decision mode,
+	// so the delete is refused — config and key stay intact — while the
+	// reference exists. Absence of the settings row is the no-decision-
+	// configuration default.
+	row, err := h.settings.Get(c.Request.Context(), ws.ID, memorySettingsToolKey)
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		RespondError(c, err)
+		return
+	}
+	if row != nil {
+		if refID, _ := row.Config["decision_provider_id"].(string); refID == id {
+			RespondError(c, fmt.Errorf("%w: cannot delete provider referenced by the workspace memory decision configuration", domain.ErrConflict))
+			return
+		}
 	}
 
 	if err := h.providers.Delete(c.Request.Context(), ws.ID, id); err != nil {

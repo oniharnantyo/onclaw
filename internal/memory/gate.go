@@ -352,8 +352,12 @@ type GateResult struct {
 func (g *Gate) Curate(ctx context.Context, job IngestJob, material []domain.SessionEvent, windowStart time.Time, endEventID string) (GateResult, error) {
 	turn := renderMaterial(material)
 	if strings.TrimSpace(turn) == "" {
+		g.log.Debug("memory: curation gate skipped; turn carried no material",
+			"workspace_id", job.WorkspaceID, "agent_id", job.AgentID,
+			"session_id", job.SessionID, "turn_id", job.TurnID)
 		return GateResult{NoteIDs: []string{}}, nil
 	}
+	start := time.Now()
 
 	m, err := g.resolver(ctx, job.WorkspaceID, job.AgentID)
 	if err != nil {
@@ -379,11 +383,13 @@ func (g *Gate) Curate(ctx context.Context, job IngestJob, material []domain.Sess
 	posture := g.postureFor(ctx, job.WorkspaceID)
 	now := time.Now().UTC()
 	result := GateResult{NoteIDs: []string{}}
+	rejected := 0
 	for _, op := range ops {
 		note, err := g.applyOp(ctx, job, op, ceiling, posture, windowStart, endEventID, now)
 		if err != nil {
 			// One malformed or rejected op never rejects the batch (D4).
 			g.log.Warn("memory gate: op rejected", "op", op.Op, "error", err)
+			rejected++
 			continue
 		}
 		if note == nil {
@@ -399,7 +405,33 @@ func (g *Gate) Curate(ctx context.Context, job IngestJob, material []domain.Sess
 		// edge never uncommits the note.
 		linkEntities(ctx, g.entities, g.log, job.WorkspaceID, endEventID, op.Entities, domain.MemoryTargetNote, note.ID, note.Visibility, now)
 	}
+	logCurationDecision(g.log, job, ops, len(result.NoteIDs), rejected, time.Since(start))
 	return result, nil
+}
+
+// logCurationDecision logs one completed curation decision at info — the
+// write-side counterpart of the intent gate's per-turn record: what the
+// side-call proposed for the turn's facts (ops by kind), how many committed
+// or were rejected, and how long the decision took. Curation always runs
+// through the LLM side-call — the decision backend cannot serve it (it
+// generates ops, which encoders cannot) — so there is no source field here.
+func logCurationDecision(log *slog.Logger, job IngestJob, ops []gateOp, committed, rejected int, elapsed time.Duration) {
+	counts := map[string]int{}
+	for _, op := range ops {
+		kind := strings.ToUpper(strings.TrimSpace(op.Op))
+		if kind == "" {
+			kind = "NOOP"
+		}
+		counts[kind]++
+	}
+	log.Info("memory: curation gate decided turn facts",
+		"workspace_id", job.WorkspaceID, "agent_id", job.AgentID,
+		"session_id", job.SessionID, "turn_id", job.TurnID,
+		"ops_proposed", len(ops),
+		"ops_add", counts["ADD"], "ops_update", counts["UPDATE"],
+		"ops_supersede", counts["SUPERSEDE"], "ops_noop", counts["NOOP"],
+		"committed", committed, "rejected", rejected,
+		"elapsed_ms", elapsed.Milliseconds())
 }
 
 // docDigest renders the kept documents for conflict context. It is

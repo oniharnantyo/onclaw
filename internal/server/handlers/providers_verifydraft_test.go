@@ -44,7 +44,7 @@ func newVerifyDraftRouter(t *testing.T, role *domain.Role) (*gin.Engine, store.S
 		t.Fatalf("failed to create workspace: %v", err)
 	}
 
-	h := handlers.NewProviderHandlers(st.Providers(), st.Agents(), []byte("01234567890123456789012345678901"), providers.NewRegistry(), nil)
+	h := handlers.NewProviderHandlers(st.Providers(), st.Agents(), []byte("01234567890123456789012345678901"), providers.NewRegistry(), nil, st.ToolSettings())
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {

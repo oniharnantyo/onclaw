@@ -3,12 +3,16 @@ import { cx } from "../../lib/helpers";
 import { Icon } from "../../components/ui/Icon";
 import { Toggle } from "../../components/ui/Toggle";
 import { Chip } from "../../components/ui/Chip";
+import { Segmented } from "../../components/ui/Segmented";
 import { ErrorState } from "../../components/ErrorState";
 import { api, formatApiError, ApiError, type ApiProviderConfig } from "../../lib/api";
+import { useCanWriteProviders } from "../../lib/writePerms";
 import {
   ProviderFormDialog,
   PROVIDER_CATALOG_TYPES,
   getProviderTypeLabel,
+  isDecisionProviderType,
+  PROVIDER_GROUP_LABELS,
 } from "../../modals/ProviderFormDialog";
 import serverErrorSvg from "../../assets/server-error.svg";
 
@@ -21,16 +25,24 @@ export interface ProvidersPaneProps {
 }
 
 export function ProvidersPane({ tenant, onToast, onUpdate }: ProvidersPaneProps) {
+  // Creation, edit, enable/disable, and delete ride providers.write; Members
+  // browse both tabs read-only (verify stays — reading is a permission too).
+  const writer = useCanWriteProviders(tenant);
   const [providers, setProviders] = useState<ApiProviderConfig[]>(tenant.providers || []);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<ApiError | Error | null>(null);
   const [dialogState, setDialogState] = useState<
-    { mode: 'add' } | { mode: 'edit'; provider: ApiProviderConfig } | null
+    { mode: 'add'; group: 'language' | 'decision' } | { mode: 'edit'; provider: ApiProviderConfig } | null
   >(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [verifyStatus, setVerifyStatus] = useState<
     Record<string, { loading?: boolean; ok?: boolean; error?: string }>
   >({});
+
+  // Pane-local tab state (D8): a client-side filter of the already-loaded
+  // list — no second API call. Decision-class configs list only under the
+  // Decision tab; language-model types only under Language models.
+  const [tab, setTab] = useState<'language' | 'decision'>('language');
 
   const targetWsId = tenant.sub || tenant.id;
 
@@ -146,20 +158,55 @@ export function ProvidersPane({ tenant, onToast, onUpdate }: ProvidersPaneProps)
     });
   };
 
+  const languageProviders = providers.filter((p) => !isDecisionProviderType(p.type));
+  const decisionProviders = providers.filter((p) => isDecisionProviderType(p.type));
+  const activeProviders = tab === 'decision' ? decisionProviders : languageProviders;
+
   return (
     <div className="max-w-xl" data-od-id="pane-providers" data-testid="pane-providers">
-      {providers.length > 0 && (
+      {writer && activeProviders.length > 0 && (
         <div className="mb-4 flex justify-end">
           <button
             type="button"
             data-od-id="btn-provider-add"
             data-testid="btn-provider-add"
-            onClick={() => setDialogState({ mode: 'add' })}
+            onClick={() => setDialogState({ mode: 'add', group: tab })}
             className="h-9 shrink-0 rounded-md border border-line px-3.5 text-[13px] font-medium text-fg2 transition-colors hover:border-accent hover:text-fg"
           >
             Add provider
           </button>
         </div>
+      )}
+
+      {!loading && !loadError && (
+        <>
+          <Segmented
+            value={tab}
+            onChange={(t) => setTab(t as 'language' | 'decision')}
+            options={[
+              {
+                id: 'language',
+                label: PROVIDER_GROUP_LABELS.language,
+                testid: 'providers-tab-language',
+              },
+              {
+                id: 'decision',
+                label: PROVIDER_GROUP_LABELS.decision,
+                testid: 'providers-tab-decision',
+              },
+            ]}
+          />
+
+          {tab === 'decision' && (
+            <p
+              className="mt-3 text-[12px] leading-5 text-muted"
+              data-od-id="providers-decision-hint"
+              data-testid="providers-decision-hint"
+            >
+              Decision providers power routing calls — they never serve chat or agent models.
+            </p>
+          )}
+        </>
       )}
 
       {loading ? (
@@ -179,7 +226,33 @@ export function ProvidersPane({ tenant, onToast, onUpdate }: ProvidersPaneProps)
             }}
           />
         </div>
-      ) : providers.length === 0 ? (
+      ) : tab === 'decision' && activeProviders.length === 0 ? (
+        <div
+          className="py-8 text-center"
+          data-od-id="providers-decision-empty"
+          data-testid="providers-decision-empty"
+        >
+          <div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-[color-mix(in_oklab,var(--fg)_6%,transparent)] text-muted">
+            <Icon name="sliders" size={20} />
+          </div>
+          <p className="text-[14px] font-medium text-fg">No decision providers configured</p>
+          <p className="mx-auto mt-1 max-w-sm text-[12px] text-muted">
+            Decision providers are the memory routing backend — the calls that decide what to
+            remember run through them. They never serve chat or agent models.
+          </p>
+          {writer && (
+            <button
+              type="button"
+              data-od-id="btn-provider-decision-empty-add"
+              data-testid="btn-provider-decision-empty-add"
+              onClick={() => setDialogState({ mode: 'add', group: 'decision' })}
+              className="mt-3 inline-flex h-8 items-center gap-1.5 rounded-md border border-line px-3 text-[12px] font-medium text-fg2 transition-colors hover:border-accent hover:text-fg"
+            >
+              <Icon name="plus" size={13} /> Add a decision provider
+            </button>
+          )}
+        </div>
+      ) : activeProviders.length === 0 ? (
         <div className="py-8 text-center" data-od-id="providers-empty" data-testid="providers-empty">
           <div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-[color-mix(in_oklab,var(--fg)_6%,transparent)] text-muted">
             <Icon name="sliders" size={20} />
@@ -188,19 +261,21 @@ export function ProvidersPane({ tenant, onToast, onUpdate }: ProvidersPaneProps)
           <p className="mx-auto mt-1 max-w-sm text-[12px] text-muted">
             Configure credentials for OpenAI, Anthropic, Gemini, OpenRouter, or custom compatible endpoints to power workspace agents.
           </p>
-          <button
-            type="button"
-            data-od-id="btn-provider-empty-add"
-            data-testid="btn-provider-empty-add"
-            onClick={() => setDialogState({ mode: 'add' })}
-            className="mt-3 inline-flex h-8 items-center gap-1.5 rounded-md border border-line px-3 text-[12px] font-medium text-fg2 transition-colors hover:border-accent hover:text-fg"
-          >
-            <Icon name="plus" size={13} /> Add your first provider
-          </button>
+          {writer && (
+            <button
+              type="button"
+              data-od-id="btn-provider-empty-add"
+              data-testid="btn-provider-empty-add"
+              onClick={() => setDialogState({ mode: 'add', group: 'language' })}
+              className="mt-3 inline-flex h-8 items-center gap-1.5 rounded-md border border-line px-3 text-[12px] font-medium text-fg2 transition-colors hover:border-accent hover:text-fg"
+            >
+              <Icon name="plus" size={13} /> Add your first provider
+            </button>
+          )}
         </div>
       ) : (
-        <div className="space-y-3">
-          {providers.map((p) => {
+        <div className="mt-4 space-y-3">
+          {activeProviders.map((p) => {
             const vResult = verifyStatus[p.id];
             const isVerifying = vResult?.loading;
 
@@ -251,24 +326,28 @@ export function ProvidersPane({ tenant, onToast, onUpdate }: ProvidersPaneProps)
                       {isVerifying ? 'Verifying…' : 'Verify'}
                     </button>
 
-                    <Toggle
-                      on={p.enabled}
-                      label={'Enable ' + p.name}
-                      onChange={() => handleToggle(p)}
-                    />
+                    {writer && (
+                      <Toggle
+                        on={p.enabled}
+                        label={'Enable ' + p.name}
+                        onChange={() => handleToggle(p)}
+                      />
+                    )}
 
-                    <button
-                      type="button"
-                      aria-label={'Edit ' + p.name}
-                      data-od-id={'btn-edit-' + p.id}
-                      data-testid={'btn-edit-' + p.id}
-                      onClick={() => setDialogState({ mode: 'edit', provider: p })}
-                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] hover:text-fg2"
-                    >
-                      <Icon name="edit" size={13} />
-                    </button>
+                    {writer && (
+                      <button
+                        type="button"
+                        aria-label={'Edit ' + p.name}
+                        data-od-id={'btn-edit-' + p.id}
+                        data-testid={'btn-edit-' + p.id}
+                        onClick={() => setDialogState({ mode: 'edit', provider: p })}
+                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] hover:text-fg2"
+                      >
+                        <Icon name="edit" size={13} />
+                      </button>
+                    )}
 
-                    {confirmDeleteId === p.id ? (
+                    {writer && confirmDeleteId === p.id ? (
                       <button
                         type="button"
                         data-od-id={'btn-delete-confirm-' + p.id}
@@ -278,7 +357,7 @@ export function ProvidersPane({ tenant, onToast, onUpdate }: ProvidersPaneProps)
                       >
                         Click to confirm
                       </button>
-                    ) : (
+                    ) : writer ? (
                       <button
                         type="button"
                         aria-label={'Delete ' + p.name}
@@ -289,7 +368,7 @@ export function ProvidersPane({ tenant, onToast, onUpdate }: ProvidersPaneProps)
                       >
                         <Icon name="x" size={13} />
                       </button>
-                    )}
+                    ) : null}
                   </div>
                 </div>
 
@@ -345,6 +424,7 @@ export function ProvidersPane({ tenant, onToast, onUpdate }: ProvidersPaneProps)
         <ProviderFormDialog
           workspaceId={targetWsId}
           provider={dialogState.mode === 'edit' ? dialogState.provider : null}
+          typeGroup={dialogState.mode === 'add' ? dialogState.group : undefined}
           onClose={() => setDialogState(null)}
           onSaved={handleSaved}
           onToast={onToast}

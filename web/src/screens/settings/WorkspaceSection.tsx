@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { cx } from "../../lib/helpers";
 import { TimezoneSelect } from "../../components/ui/TimezoneSelect";
 import { Chip } from "../../components/ui/Chip";
@@ -14,6 +14,8 @@ import {
   type ApiProviderConfig,
 } from "../../lib/api";
 import { useAuthStore } from "../../store/auth";
+import { useCanWriteWorkspace } from "../../lib/writePerms";
+import { isDecisionProviderType } from "../../modals/ProviderFormDialog";
 import { useStore } from "../../store";
 
 export interface WorkspaceSectionProps {
@@ -40,7 +42,6 @@ export function WorkspaceSection({
   const [savingWs, setSavingWs] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const currentUser = useAuthStore((s) => s.user);
-  const memberships = useAuthStore((s) => s.memberships);
 
   const targetWsId = tenant.sub || tenant.id;
 
@@ -79,7 +80,10 @@ export function WorkspaceSection({
     api.providers
       .list(targetWsId)
       .then((res) => {
-        if (!cancelled && res?.providers) setProviders(res.providers);
+        if (!cancelled && res?.providers)
+          // The default-model picker lists language-model providers only (5.3):
+          // decision configs never serve chat or agent models.
+          setProviders(res.providers.filter((p) => !isDecisionProviderType(p.type)));
       })
       .catch(() => {});
     return () => {
@@ -96,29 +100,12 @@ export function WorkspaceSection({
   const [memSaved, setMemSaved] = useState(false);
   const [memError, setMemError] = useState<string | null>(null);
 
-  // Settings-management permission: Owner/Admin (workspace.write) persist;
-  // Members get the read-only view. Same derivation shape as canWriteSkills.
-  const canWriteMemory = useMemo(() => {
-    if (!memberships.length) return true; // offline / mock mode — affordance stays
-    const mem = memberships.find(
-      (m) =>
-        m.workspace_id === targetWsId ||
-        m.workspace_slug === targetWsId ||
-        m.workspace_id === tenant?.id ||
-        m.workspace_slug === tenant?.sub
-    );
-    if (!mem) return false;
-    const role = mem.role;
-    const roleName = (mem.role_name || role?.name || '').toLowerCase();
-    const perms: string[] = role?.permissions || [];
-    return (
-      role?.is_owner === true ||
-      roleName === 'superadmin' ||
-      roleName === 'owner' ||
-      roleName === 'admin' ||
-      perms.some((p) => p === '*' || p === 'workspace.write' || p === 'workspace.*')
-    );
-  }, [memberships, targetWsId, tenant]);
+  // Settings-management permission (workspace.write): Owner/Admin persist, so
+  // the workspace fields render editable and the save control shows; Members
+  // get the read-only view — fields disabled, save hidden. Same derivation as
+  // the rest of the canWrite* family (lib/writePerms.ts).
+  const canWriteWorkspace = useCanWriteWorkspace(tenant);
+  const canWriteMemory = canWriteWorkspace;
 
   // Loads for every member (read state); offline failures stay silent so the
   // pane still renders in mock mode.
@@ -250,7 +237,8 @@ export function WorkspaceSection({
         </label>
         <input
           id="ws-name"
-          className={inputCls}
+          className={cx(inputCls, !canWriteWorkspace && 'disabled:cursor-not-allowed disabled:opacity-60')}
+          disabled={!canWriteWorkspace}
           value={ws.name}
           onChange={(e) => setWs({ ...ws, name: e.target.value })}
         />
@@ -278,6 +266,7 @@ export function WorkspaceSection({
             data-od-id="select-ws-tz"
             data-testid="select-ws-tz"
             value={ws.tz}
+            disabled={!canWriteWorkspace}
             onChange={(tz) => setWs({ ...ws, tz })}
           />
         </div>
@@ -290,6 +279,7 @@ export function WorkspaceSection({
             data-od-id="select-ws-default-provider"
             data-testid="select-ws-default-provider"
             className={inputCls}
+            disabled={!canWriteWorkspace}
             value={defaultProvider}
             onChange={(e) => {
               // Provider-first (web-app/settings): switching provider
@@ -324,6 +314,7 @@ export function WorkspaceSection({
                 model={defaultModel}
                 onModelChange={setDefaultModel}
                 hideEffort
+                disabled={!canWriteWorkspace}
               />
             </div>
           ) : (
@@ -340,6 +331,7 @@ export function WorkspaceSection({
         <select
           id="ws-ret"
           className={inputCls}
+          disabled={!canWriteWorkspace}
           value={ws.retention}
           onChange={(e) => setWs({ ...ws, retention: e.target.value })}
         >
@@ -348,17 +340,22 @@ export function WorkspaceSection({
           ))}
         </select>
       </div>
-      <div className="flex justify-end pt-1">
-        <button
-          type="button"
-          disabled={savingWs}
-          onClick={saveWorkspace}
-          data-od-id="btn-workspace-save"
-          data-testid="btn-workspace-save"
-          className="flex h-9 items-center rounded-md bg-accent px-4 text-[13px] font-semibold text-accenton transition-colors hover:bg-[var(--accent-hover)] active:bg-[var(--accent-active)] disabled:opacity-50"
-        >
-          {savingWs ? 'Saving…' : 'Save workspace'}
-        </button>
+      <div className="flex items-center justify-between gap-3 pt-1">
+        {!canWriteWorkspace && (
+          <p className="text-[11px] text-muted">Read-only — an Owner or Admin can edit workspace settings.</p>
+        )}
+        {canWriteWorkspace && (
+          <button
+            type="button"
+            disabled={savingWs}
+            onClick={saveWorkspace}
+            data-od-id="btn-workspace-save"
+            data-testid="btn-workspace-save"
+            className="ml-auto flex h-9 items-center rounded-md bg-accent px-4 text-[13px] font-semibold text-accenton transition-colors hover:bg-[var(--accent-hover)] active:bg-[var(--accent-active)] disabled:opacity-50"
+          >
+            {savingWs ? 'Saving…' : 'Save workspace'}
+          </button>
+        )}
       </div>
       <div className="pt-2" data-testid="ws-memory-editor">
         <div className="mb-1.5 flex items-center justify-between gap-3">

@@ -32,9 +32,11 @@ const tenant = {
 });
 
 function setup(role: 'Owner' | 'Admin' | 'Member') {
+  // Member carries the decided built-in set (reads + channels.read/write);
+  // roles.write is gone from the catalog entirely.
   const permissions =
     role === 'Member'
-      ? ['workspace.read', 'agents.read']
+      ? ['workspace.read', 'members.read', 'roles.read', 'providers.read', 'agents.read', 'skills.read', 'scheduler.read', 'channels.read', 'channels.write']
       : role === 'Admin'
         ? ['workspace.write', 'agents.read']
         : ['*'];
@@ -243,7 +245,7 @@ describe('screens/settings/WorkspaceSection default model (refactor-workspace-se
   ) {
     const permissions =
       role === 'Member'
-        ? ['workspace.read', 'agents.read']
+        ? ['workspace.read', 'members.read', 'roles.read', 'providers.read', 'agents.read', 'skills.read', 'scheduler.read', 'channels.read', 'channels.write']
         : role === 'Admin'
           ? ['workspace.write', 'agents.read']
           : ['*'];
@@ -324,6 +326,41 @@ describe('screens/settings/WorkspaceSection default model (refactor-workspace-se
     expect(modelSelect().value).not.toBe('claude-3-7-sonnet');
   });
 
+  it('the default-model picker never lists a decision (typesafe) config (5.3)', async () => {
+    vi.spyOn(api.memory, 'getWorkspace').mockResolvedValue({
+      content: '',
+      max_chars: 8192,
+      updated_at: null,
+    });
+    vi.spyOn(api.workspaces, 'get').mockResolvedValue(workspacePayload(null) as any);
+    vi.spyOn(api.providers, 'list').mockResolvedValue({
+      providers: [
+        ...providers,
+        {
+          id: 'prov_typesafe',
+          workspace_id: 'acme',
+          type: 'typesafe',
+          name: 'TypeSafe Routing',
+          base_url: '',
+          key_set: true,
+          key_hint: 'ab12',
+          enabled: true,
+          created_at: '',
+          updated_at: '',
+        },
+      ],
+    });
+    vi.spyOn(api.providers, 'models').mockImplementation(modelCatalog as any);
+    render(<WorkspaceSection tenant={tenant} onToast={vi.fn()} onUpdate={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(api.providers.list).toHaveBeenCalledWith('acme');
+    });
+    const options = Array.from(providerSelect().options).map((o) => o.textContent);
+    expect(options).toContain('Anthropic Prod (Anthropic)');
+    expect(options).not.toContain('TypeSafe Routing');
+  });
+
   it('clearing both empties the default: PATCH carries null and the toast confirms', async () => {
     const { onToast } = setup('Admin', { provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet' });
 
@@ -388,7 +425,7 @@ describe('screens/settings/WorkspaceSection default model (refactor-workspace-se
     });
   });
 
-  it('leaves a read-only Member untouched: pane and hydrated picker render, memory editor stays read-only', async () => {
+  it('leaves a read-only Member untouched: fields disabled, no save control, memory editor read-only', async () => {
     setup('Member', { provider_id: 'prov_openai', model: 'gpt-4o' });
 
     await waitFor(() => {
@@ -398,10 +435,14 @@ describe('screens/settings/WorkspaceSection default model (refactor-workspace-se
       expect(modelSelect().value).toBe('gpt-4o');
     });
 
+    // Fields render read-only and the save control is hidden (web-app/settings
+    // Workspace pane requirement, fix-role-permission-audit 5.1).
+    expect((providerSelect() as HTMLSelectElement).disabled).toBe(true);
+    expect((screen.getByLabelText(/workspace name/i) as HTMLInputElement).disabled).toBe(true);
+    expect(screen.queryByTestId('btn-workspace-save')).toBeNull();
+
     const textarea = (await waitFor(() => screen.getByTestId('textarea-workspace-memory'))) as HTMLTextAreaElement;
     expect(textarea.disabled).toBe(true);
     expect(screen.queryByTestId('btn-workspace-memory-save')).toBeNull();
-    // The save action stays server-gated exactly as before this change.
-    expect(screen.getByTestId('btn-workspace-save')).not.toBeNull();
   });
 });

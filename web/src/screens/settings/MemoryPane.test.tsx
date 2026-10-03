@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryPane } from './MemoryPane';
 import { api, type ApiMemoryNoteList, type ApiMemoryNote } from '../../lib/api';
+import { useAuthStore } from '../../store/auth';
 
 const mockTenant = { id: 'acme', sub: 'acme', name: 'Acme Corp' };
 
@@ -477,5 +478,235 @@ describe('screens/settings/MemoryPane', () => {
     expect(screen.getByTestId('memory-configuration').textContent).toContain(
       'Only Owner and Admin can change memory configuration'
     );
+  });
+
+  // ------------------------------------------------------------- Decision
+  // backend (add-configurable-decision-backend 5.4): unchecked stores
+  // nothing; checked reveals the typesafe-only pair; omission clears.
+  const decisionProviders = [
+    { id: 'prov-1', name: 'OpenAI', type: 'openai' },
+    { id: 'ts-1', name: 'TypeSafe Prod', type: 'typesafe' },
+  ];
+
+  function decisionSwitch() {
+    return screen.getByRole('switch', { name: 'Use decision backend' }) as HTMLButtonElement;
+  }
+
+  it('decision backend defaults off: checkbox unchecked, no decision fields render', async () => {
+    mockBase();
+    render(<MemoryPane tenant={mockTenant} canWrite />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('memory-configuration')).not.toBeNull();
+    });
+    expect(decisionSwitch().getAttribute('aria-checked')).toBe('false');
+    expect(screen.queryByTestId('memory-decision-fields')).toBeNull();
+    expect(screen.queryByTestId('memory-decision-provider')).toBeNull();
+    expect(screen.queryByTestId('memory-decision-model')).toBeNull();
+  });
+
+  it('checking reveals a typesafe-only provider select and a model prefilled jev-latest', async () => {
+    mockBase({ providers: { providers: decisionProviders } as any });
+    render(<MemoryPane tenant={mockTenant} canWrite />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('memory-configuration')).not.toBeNull();
+    });
+    fireEvent.click(decisionSwitch());
+
+    const fields = screen.getByTestId('memory-decision-fields');
+    expect(fields).not.toBeNull();
+    const select = screen.getByTestId('memory-decision-provider') as HTMLSelectElement;
+    // Decision configs only — the mocked openai config must not appear.
+    expect(Array.from(select.options).map((o) => o.textContent)).toEqual([
+      'Select a provider…',
+      'TypeSafe Prod',
+    ]);
+    const model = screen.getByTestId('memory-decision-model') as HTMLInputElement;
+    expect(model.value).toBe('jev-latest');
+  });
+
+  it('saving with the box checked but no provider selected is blocked inline', async () => {
+    mockBase({ providers: { providers: decisionProviders } as any });
+    const save = vi.spyOn(api.memory, 'updateSettings').mockResolvedValue({ settings: defaultSettings.settings });
+    const onToast = vi.fn();
+    render(<MemoryPane tenant={mockTenant} canWrite onToast={onToast} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('memory-configuration')).not.toBeNull();
+    });
+    fireEvent.click(decisionSwitch());
+    fireEvent.click(screen.getByTestId('btn-memory-save-settings'));
+
+    await waitFor(() => {
+      expect(onToast).toHaveBeenCalledWith(
+        expect.stringContaining('decision backend'),
+        'danger'
+      );
+    });
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('a checked save sends both decision keys; unticking a stored pair and saving omits both (the clear)', async () => {
+    mockBase({
+      providers: { providers: decisionProviders } as any,
+      settings: {
+        settings: {
+          ...defaultSettings.settings,
+          decision_provider_id: 'ts-1',
+          decision_model: 'jev-latest',
+        },
+      },
+    });
+    const storedPair = {
+      settings: {
+        ...defaultSettings.settings,
+        decision_provider_id: 'ts-1',
+        decision_model: 'jev-latest',
+      },
+    };
+    // The echo keeps the pair stored — a still-set response leaves the box
+    // checked after save #1, so the untick below is a real untick.
+    const save = vi.spyOn(api.memory, 'updateSettings').mockResolvedValue(storedPair);
+    const onToast = vi.fn();
+    render(<MemoryPane tenant={mockTenant} canWrite onToast={onToast} />);
+
+    // A stored pair opens with the box checked and the fields populated.
+    await waitFor(() => {
+      expect(decisionSwitch().getAttribute('aria-checked')).toBe('true');
+    });
+
+    // Saving checked: both flat keys ride the save.
+    fireEvent.click(screen.getByTestId('btn-memory-save-settings'));
+    await waitFor(() => {
+      expect(save).toHaveBeenLastCalledWith(
+        'acme',
+        expect.objectContaining({ decision_provider_id: 'ts-1', decision_model: 'jev-latest' })
+      );
+    });
+    await waitFor(() => {
+      expect(onToast).toHaveBeenCalledWith('Memory settings saved');
+    });
+
+    // Unticked: the body omits BOTH keys — omission is the server's clear.
+    fireEvent.click(decisionSwitch());
+    fireEvent.click(screen.getByTestId('btn-memory-save-settings'));
+    await waitFor(() => {
+      expect(save).toHaveBeenCalledTimes(2);
+    });
+    const body = save.mock.lastCall![1] as Record<string, unknown>;
+    expect(body).not.toHaveProperty('decision_provider_id');
+    expect(body).not.toHaveProperty('decision_model');
+    // Unrelated keys ride untouched.
+    expect(body.visibility_posture).toBe('narrow');
+    expect(body.ingestion_enabled).toBe(true);
+  });
+
+  it('a stored pair opens with the box checked and the fields populated', async () => {
+    mockBase({
+      providers: { providers: decisionProviders } as any,
+      settings: {
+        settings: {
+          ...defaultSettings.settings,
+          decision_provider_id: 'ts-1',
+          decision_model: 'jev-latest',
+        },
+      },
+    });
+    render(<MemoryPane tenant={mockTenant} canWrite />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('memory-configuration')).not.toBeNull();
+    });
+    expect(decisionSwitch().getAttribute('aria-checked')).toBe('true');
+    expect((screen.getByTestId('memory-decision-provider') as HTMLSelectElement).value).toBe('ts-1');
+    expect((screen.getByTestId('memory-decision-model') as HTMLInputElement).value).toBe('jev-latest');
+  });
+
+  it('model pickers (side-call and embedding) never list a decision config', async () => {
+    mockBase({
+      providers: { providers: decisionProviders } as any,
+      models: { source: 'live', models: [{ id: 'glm-4.5-air', name: 'GLM 4.5 Air' }] },
+    });
+    render(<MemoryPane tenant={mockTenant} canWrite />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('memory-configuration')).not.toBeNull();
+    });
+
+    // Embedding select: language providers only.
+    const embeddingOptions = Array.from(
+      (screen.getByTestId('memory-embedding-provider') as HTMLSelectElement).options
+    ).map((o) => o.textContent);
+    expect(embeddingOptions).toContain('OpenAI');
+    expect(embeddingOptions).not.toContain('TypeSafe Prod');
+
+    // Side-call select (specific mode): language providers only.
+    fireEvent.click(screen.getByTestId('memory-sidecall-specific'));
+    const sidecallOptions = Array.from(
+      (screen.getByTestId('memory-sidecall-provider') as HTMLSelectElement).options
+    ).map((o) => o.textContent);
+    expect(sidecallOptions).toContain('OpenAI');
+    expect(sidecallOptions).not.toContain('TypeSafe Prod');
+  });
+});
+
+// fix-role-permission-audit 5.1: the pane derives its gate from
+// workspace.write — no longer the tools.write check it shared before the audit.
+describe('screens/settings/MemoryPane — derived workspace.write gate', () => {
+  const authWith = (permissions: string[]) => {
+    useAuthStore.setState({
+      user: { id: 'u1', email: 'u1@acme.dev', name: 'U One', created_at: '', updated_at: '' },
+      memberships: [
+        {
+          workspace_id: 'acme',
+          workspace_slug: 'acme',
+          role_name: 'Custom',
+          role: { name: 'Custom', is_owner: false, permissions },
+        },
+      ] as any,
+      status: 'authenticated',
+    });
+  };
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('a role holding tools.write but not workspace.write sees the surfaces read-only', async () => {
+    mockBase();
+    authWith(['tools.write', 'workspace.read']);
+
+    render(<MemoryPane tenant={mockTenant} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('memory-tab-facts')).not.toBeNull();
+    });
+    switchTab('memory-tab-facts');
+    await waitFor(() => {
+      expect(screen.getByTestId('memory-note-note-1')).not.toBeNull();
+    });
+    expect(screen.queryByTestId('btn-memory-promote-note-1')).toBeNull();
+    expect(screen.queryByTestId('btn-memory-delete-note-1')).toBeNull();
+    switchTab('memory-tab-config');
+    expect(screen.getByTestId('memory-configuration').textContent).toContain(
+      'Only Owner and Admin can change memory configuration'
+    );
+  });
+
+  it('a role holding workspace.write but not tools.write gets the mutation affordances', async () => {
+    mockBase();
+    authWith(['workspace.write']);
+
+    render(<MemoryPane tenant={mockTenant} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('memory-tab-facts')).not.toBeNull();
+    });
+    switchTab('memory-tab-facts');
+    await waitFor(() => {
+      expect(screen.getByTestId('btn-memory-promote-note-1')).not.toBeNull();
+    });
+    expect(screen.getByTestId('btn-memory-delete-note-1')).not.toBeNull();
   });
 });

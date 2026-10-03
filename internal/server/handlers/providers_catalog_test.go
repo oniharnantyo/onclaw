@@ -14,6 +14,7 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/server/handlers"
 	"github.com/oniharnantyo/onclaw/internal/services"
+	"github.com/oniharnantyo/onclaw/internal/store"
 	storefake "github.com/oniharnantyo/onclaw/internal/store/fake"
 )
 
@@ -70,7 +71,7 @@ func newProviderHintRouter(t *testing.T) (*gin.Engine, *domain.Workspace, *httpt
 		t.Fatalf("failed to create workspace: %v", err)
 	}
 
-	h := handlers.NewProviderHandlers(st.Providers(), st.Agents(), []byte("01234567890123456789012345678901"), providers.NewRegistry(), mc)
+	h := handlers.NewProviderHandlers(st.Providers(), st.Agents(), []byte("01234567890123456789012345678901"), providers.NewRegistry(), mc, st.ToolSettings())
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
@@ -197,7 +198,7 @@ func TestProviderHandlers_CatalogFetchFailureFailsOpen(t *testing.T) {
 		t.Fatalf("failed to create workspace: %v", err)
 	}
 
-	h := handlers.NewProviderHandlers(st.Providers(), st.Agents(), []byte("01234567890123456789012345678901"), providers.NewRegistry(), mc)
+	h := handlers.NewProviderHandlers(st.Providers(), st.Agents(), []byte("01234567890123456789012345678901"), providers.NewRegistry(), mc, st.ToolSettings())
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		c.Set(handlers.WorkspaceContextKey, ws)
@@ -298,5 +299,206 @@ func TestProviderHandlers_ModelsUseCatalogHint(t *testing.T) {
 	}
 	if !foundPreview {
 		t.Fatalf("preview models = %+v, want glm-5.3-flash from the hinted catalog", previewRes.Models)
+	}
+}
+
+// newProviderLifecycleRouter wires provider create/list/delete against a fake
+// store (the settings sub-store rides it) with the workspace bound.
+func newProviderLifecycleRouter(t *testing.T) (*gin.Engine, store.Store, *domain.Workspace) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+
+	st := storefake.New()
+	ws := &domain.Workspace{Slug: "prov-lifecycle-ws", Name: "Provider Lifecycle WS"}
+	if err := st.Workspaces().Create(ctx, ws); err != nil {
+		t.Fatalf("failed to create workspace: %v", err)
+	}
+
+	h := handlers.NewProviderHandlers(st.Providers(), st.Agents(), []byte("01234567890123456789012345678901"), providers.NewRegistry(), nil, st.ToolSettings())
+
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set(handlers.WorkspaceContextKey, ws)
+		c.Next()
+	})
+	r.POST("/providers", h.CreateProvider)
+	r.GET("/providers", h.ListProviders)
+	r.DELETE("/providers/:id", h.DeleteProvider)
+	return r, st, ws
+}
+
+// TestProviderHandlers_DeleteDecisionReference covers the decision-seam delete
+// integrity (design D5): a delete is refused with 409 while the workspace
+// memory settings record pins the config as decision_provider_id, and
+// succeeds once the pair is cleared. A reference naming a different config
+// never blocks.
+func TestProviderHandlers_DeleteDecisionReference(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("delete blocked with 409 while the decision configuration references the config", func(t *testing.T) {
+		r, st, ws := newProviderLifecycleRouter(t)
+
+		w := doProviderJSON(r, http.MethodPost, "/providers", `{"type":"typesafe","name":"TypeSafe Production","key":"ts-key-123"}`)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create typesafe provider: status = %d, body = %s", w.Code, w.Body.String())
+		}
+		var created struct {
+			Provider struct {
+				ID     string `json:"id"`
+				Type   string `json:"type"`
+				KeySet bool   `json:"key_set"`
+			} `json:"provider"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+			t.Fatalf("failed to unmarshal create response: %v", err)
+		}
+		if created.Provider.Type != "typesafe" || !created.Provider.KeySet {
+			t.Fatalf("created provider = %+v, want a typesafe config with key_set", created.Provider)
+		}
+
+		// Pin the config as the workspace's decision backend on the memory
+		// settings record (the same record key the settings handler uses).
+		if err := st.ToolSettings().Upsert(ctx, &domain.WorkspaceToolSetting{
+			WorkspaceID: ws.ID,
+			ToolKey:     "memory",
+			Enabled:     true,
+			Config:      map[string]any{"decision_provider_id": created.Provider.ID, "decision_model": "jev-latest"},
+		}); err != nil {
+			t.Fatalf("failed to seed memory settings: %v", err)
+		}
+
+		w = doProviderJSON(r, http.MethodDelete, "/providers/"+created.Provider.ID, "")
+		if w.Code != http.StatusConflict {
+			t.Fatalf("delete decision-referenced provider: status = %d, want 409, body = %s", w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "cannot delete provider referenced by the workspace memory decision configuration") {
+			t.Errorf("delete refusal = %s, want it to name the memory decision configuration", w.Body.String())
+		}
+
+		// The config and its key remain intact: still listed, still key_set.
+		w = doProviderJSON(r, http.MethodGet, "/providers", "")
+		if w.Code != http.StatusOK {
+			t.Fatalf("list after refusal: status = %d", w.Code)
+		}
+		if !strings.Contains(w.Body.String(), `"key_set":true`) {
+			t.Errorf("provider list after refusal = %s, want the referenced config intact with its key", w.Body.String())
+		}
+	})
+
+	t.Run("a reference naming another config does not block the delete", func(t *testing.T) {
+		r, st, ws := newProviderLifecycleRouter(t)
+
+		seed := func(name string) string {
+			w := doProviderJSON(r, http.MethodPost, "/providers", `{"type":"typesafe","name":"`+name+`","key":"k"}`)
+			if w.Code != http.StatusCreated {
+				t.Fatalf("create %s: status = %d, body = %s", name, w.Code, w.Body.String())
+			}
+			return jsonGetID(t, w)
+		}
+		referenced := seed("Referenced")
+		victim := seed("Victim")
+
+		if err := st.ToolSettings().Upsert(ctx, &domain.WorkspaceToolSetting{
+			WorkspaceID: ws.ID,
+			ToolKey:     "memory",
+			Enabled:     true,
+			Config:      map[string]any{"decision_provider_id": referenced, "decision_model": "jev-latest"},
+		}); err != nil {
+			t.Fatalf("failed to seed memory settings: %v", err)
+		}
+
+		w := doProviderJSON(r, http.MethodDelete, "/providers/"+victim, "")
+		if w.Code != http.StatusNoContent {
+			t.Fatalf("delete unrelated provider: status = %d, want 204, body = %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("delete succeeds once the decision pair is cleared", func(t *testing.T) {
+		r, st, ws := newProviderLifecycleRouter(t)
+
+		w := doProviderJSON(r, http.MethodPost, "/providers", `{"type":"typesafe","name":"TypeSafe Production","key":"ts-key-123"}`)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create typesafe provider: status = %d, body = %s", w.Code, w.Body.String())
+		}
+		id := jsonGetID(t, w)
+
+		if err := st.ToolSettings().Upsert(ctx, &domain.WorkspaceToolSetting{
+			WorkspaceID: ws.ID,
+			ToolKey:     "memory",
+			Enabled:     true,
+			Config:      map[string]any{"decision_provider_id": id, "decision_model": "jev-latest"},
+		}); err != nil {
+			t.Fatalf("failed to seed memory settings: %v", err)
+		}
+
+		// Clear the pair (the settings handler's omitted-pair semantics).
+		if err := st.ToolSettings().Upsert(ctx, &domain.WorkspaceToolSetting{
+			WorkspaceID: ws.ID,
+			ToolKey:     "memory",
+			Enabled:     true,
+			Config:      map[string]any{},
+		}); err != nil {
+			t.Fatalf("failed to clear memory settings: %v", err)
+		}
+
+		w = doProviderJSON(r, http.MethodDelete, "/providers/"+id, "")
+		if w.Code != http.StatusNoContent {
+			t.Fatalf("delete after clear: status = %d, want 204, body = %s", w.Code, w.Body.String())
+		}
+
+		// Subsequent listing no longer carries the deleted config.
+		w = doProviderJSON(r, http.MethodGet, "/providers", "")
+		if strings.Contains(w.Body.String(), id) {
+			t.Errorf("provider list after delete = %s, want the deleted config gone", w.Body.String())
+		}
+	})
+}
+
+// jsonGetID pulls the created provider id out of a create response.
+func jsonGetID(t *testing.T, w *httptest.ResponseRecorder) string {
+	t.Helper()
+	var res struct {
+		Provider struct {
+			ID string `json:"id"`
+		} `json:"provider"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("failed to unmarshal provider id: %v", err)
+	}
+	return res.Provider.ID
+}
+
+// TestProviderHandlers_TypesafeResolvesNoModels covers the decision-class
+// model exclusion: model resolution through a typesafe config yields the
+// "none" source with an empty list — decision providers never surface as
+// model choices.
+func TestProviderHandlers_TypesafeResolvesNoModels(t *testing.T) {
+	r, _, _ := newProviderHintRouter(t)
+
+	w := doProviderJSON(r, http.MethodPost, "/providers", `{"type":"typesafe","name":"TypeSafe Production","key":"ts-key-123"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create typesafe provider: status = %d, body = %s", w.Code, w.Body.String())
+	}
+	id := jsonGetID(t, w)
+	if id == "" {
+		t.Fatalf("created provider carries no id")
+	}
+
+	w = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/providers/"+id+"/models", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("typesafe models: status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var res struct {
+		Source string `json:"source"`
+		Models []any  `json:"models"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("failed to unmarshal models response: %v", err)
+	}
+	if res.Source != "none" || len(res.Models) != 0 {
+		t.Errorf("typesafe resolution = source %q with %d models, want source none with none", res.Source, len(res.Models))
 	}
 }

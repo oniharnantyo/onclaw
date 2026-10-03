@@ -28,7 +28,11 @@ type memorySettingsWire struct {
 		IngestionEnabled    bool   `json:"ingestion_enabled"`
 		RawEmbeddingEnabled bool   `json:"raw_embedding_enabled"`
 		GateBudgetMs        int    `json:"gate_budget_ms"`
-		Embedding           *struct {
+		// DecisionProviderID/DecisionModel are pointers so an absent key
+		// (nil) is distinguishable from an empty string on the wire.
+		DecisionProviderID *string `json:"decision_provider_id"`
+		DecisionModel      *string `json:"decision_model"`
+		Embedding          *struct {
 			ProviderID string `json:"provider_id"`
 			Model      string `json:"model"`
 			Dimension  int    `json:"dimension"`
@@ -750,6 +754,172 @@ func TestMemoryNotes_SettingsGateBudget(t *testing.T) {
 	}
 	if ms, ok := row.Config["gate_budget_ms"].(int); !ok || ms != 8000 {
 		t.Fatalf("expected gate_budget_ms 8000 at rest, got %v", row.Config["gate_budget_ms"])
+	}
+}
+
+// TestMemoryNotes_SettingsDecisionBackend (add-configurable-decision-backend
+// tasks 2.1/2.2): the decision pair rides the memory settings record —
+// supplied together or not at all, validated against the workspace provider
+// catalog (existing + decision-class), cleared when omitted, and
+// round-tripped flat on GET.
+func TestMemoryNotes_SettingsDecisionBackend(t *testing.T) {
+	r, st, ws, _ := newMemoryNotesTestEnv(t)
+
+	// A decision-class provider and a language-model provider: the pair
+	// validation accepts only the former.
+	decider := &domain.ProviderConfig{WorkspaceID: ws.ID, Type: providers.TypeTypeSafe, Name: "TypeSafe Decider", Enabled: true}
+	if err := st.Providers().Create(nil, decider); err != nil {
+		t.Fatalf("seed typesafe provider: %v", err)
+	}
+	languageModel := &domain.ProviderConfig{WorkspaceID: ws.ID, Type: "openai", Name: "Language Model", Enabled: true}
+	if err := st.Providers().Create(nil, languageModel); err != nil {
+		t.Fatalf("seed openai provider: %v", err)
+	}
+
+	// Absence is the default: neither key reads back before any save.
+	w := doMemoryNotesRequest(r, http.MethodGet, "/api/v1/workspaces/acme/memory/settings", "member", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if s := decodeMemorySettings(t, w.Body.String()).Settings; s.DecisionProviderID != nil || s.DecisionModel != nil {
+		t.Fatalf("expected no decision pair by default, got %v/%v", s.DecisionProviderID, s.DecisionModel)
+	}
+
+	// A half-set pair is rejected in both directions, naming the together
+	// constraint.
+	w = doMemoryNotesRequest(r, http.MethodPut, "/api/v1/workspaces/acme/memory/settings", "admin", map[string]any{
+		"decision_provider_id": decider.ID,
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for provider-without-model, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "decision_provider_id and decision_model must be saved together") {
+		t.Fatalf("expected the together constraint named, got %s", w.Body.String())
+	}
+	w = doMemoryNotesRequest(r, http.MethodPut, "/api/v1/workspaces/acme/memory/settings", "admin", map[string]any{
+		"decision_model": "jev-latest",
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for model-without-provider, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "must be saved together") {
+		t.Fatalf("expected the together constraint named, got %s", w.Body.String())
+	}
+
+	// An unknown provider is rejected (the sidecall pair's not-found lane).
+	w = doMemoryNotesRequest(r, http.MethodPut, "/api/v1/workspaces/acme/memory/settings", "admin", map[string]any{
+		"decision_provider_id": "does-not-exist",
+		"decision_model":       "jev-latest",
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for an unknown decision provider, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "not found in workspace") {
+		t.Fatalf("expected the not-found constraint named, got %s", w.Body.String())
+	}
+
+	// A language-model provider is not decision-class: the rejection names
+	// the provider-type constraint.
+	w = doMemoryNotesRequest(r, http.MethodPut, "/api/v1/workspaces/acme/memory/settings", "admin", map[string]any{
+		"decision_provider_id": languageModel.ID,
+		"decision_model":       "jev-latest",
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a language-model decision provider, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "is not a decision provider") {
+		t.Fatalf("expected the decision-class constraint named, got %s", w.Body.String())
+	}
+
+	// A non-string model fails JSON binding.
+	w = doMemoryNotesRequest(r, http.MethodPut, "/api/v1/workspaces/acme/memory/settings", "admin", map[string]any{
+		"decision_provider_id": decider.ID,
+		"decision_model":       42,
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a non-string decision_model, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// None of the rejected saves stored anything.
+	w = doMemoryNotesRequest(r, http.MethodGet, "/api/v1/workspaces/acme/memory/settings", "member", nil)
+	if s := decodeMemorySettings(t, w.Body.String()).Settings; s.DecisionProviderID != nil || s.DecisionModel != nil {
+		t.Fatalf("rejected saves must leave the decision pair unstored, got %v/%v", s.DecisionProviderID, s.DecisionModel)
+	}
+
+	// The valid pair persists and round-trips on the PUT response, on GET,
+	// and at rest. A marker toggle rides the same save so the unchanged-
+	// after-rejection assertion below has something to check.
+	w = doMemoryNotesRequest(r, http.MethodPut, "/api/v1/workspaces/acme/memory/settings", "admin", map[string]any{
+		"decision_provider_id": decider.ID,
+		"decision_model":       "jev-latest",
+		"ingestion_enabled":    false,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	s := decodeMemorySettings(t, w.Body.String()).Settings
+	if s.DecisionProviderID == nil || *s.DecisionProviderID != decider.ID || s.DecisionModel == nil || *s.DecisionModel != "jev-latest" {
+		t.Fatalf("expected the saved pair on the PUT response, got %v/%v", s.DecisionProviderID, s.DecisionModel)
+	}
+	w = doMemoryNotesRequest(r, http.MethodGet, "/api/v1/workspaces/acme/memory/settings", "member", nil)
+	s = decodeMemorySettings(t, w.Body.String()).Settings
+	if s.DecisionProviderID == nil || *s.DecisionProviderID != decider.ID || s.DecisionModel == nil || *s.DecisionModel != "jev-latest" {
+		t.Fatalf("expected the saved pair on GET, got %v/%v", s.DecisionProviderID, s.DecisionModel)
+	}
+	row, err := st.ToolSettings().Get(nil, ws.ID, "memory")
+	if err != nil || row == nil {
+		t.Fatalf("expected a stored memory settings row, got %v err %v", row, err)
+	}
+	if row.Config["decision_provider_id"] != decider.ID || row.Config["decision_model"] != "jev-latest" {
+		t.Fatalf("expected the pair at rest, got %v/%v", row.Config["decision_provider_id"], row.Config["decision_model"])
+	}
+
+	// Half-set saves against the stored pair change nothing: the pair and
+	// the marker toggle both survive.
+	w = doMemoryNotesRequest(r, http.MethodPut, "/api/v1/workspaces/acme/memory/settings", "admin", map[string]any{
+		"decision_provider_id": decider.ID,
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a half-set save, got %d: %s", w.Code, w.Body.String())
+	}
+	w = doMemoryNotesRequest(r, http.MethodPut, "/api/v1/workspaces/acme/memory/settings", "admin", map[string]any{
+		"decision_model": "jev-latest",
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a half-set save, got %d: %s", w.Code, w.Body.String())
+	}
+	w = doMemoryNotesRequest(r, http.MethodGet, "/api/v1/workspaces/acme/memory/settings", "member", nil)
+	s = decodeMemorySettings(t, w.Body.String()).Settings
+	if s.DecisionProviderID == nil || *s.DecisionProviderID != decider.ID || s.DecisionModel == nil || *s.DecisionModel != "jev-latest" {
+		t.Fatalf("expected the stored pair to survive rejected saves, got %v/%v", s.DecisionProviderID, s.DecisionModel)
+	}
+	if s.IngestionEnabled {
+		t.Fatalf("expected the stored marker toggle to survive rejected saves, got %+v", s)
+	}
+
+	// Clear-on-omit: a PUT without either key deletes both stored keys (the
+	// checkbox-off clear), leaving the rest of the record intact.
+	w = doMemoryNotesRequest(r, http.MethodPut, "/api/v1/workspaces/acme/memory/settings", "admin", map[string]any{})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	w = doMemoryNotesRequest(r, http.MethodGet, "/api/v1/workspaces/acme/memory/settings", "member", nil)
+	s = decodeMemorySettings(t, w.Body.String()).Settings
+	if s.DecisionProviderID != nil || s.DecisionModel != nil {
+		t.Fatalf("expected the cleared pair to read back absent, got %v/%v", s.DecisionProviderID, s.DecisionModel)
+	}
+	if s.IngestionEnabled {
+		t.Fatalf("expected the unrelated stored toggle to survive the clear, got %+v", s)
+	}
+	row, err = st.ToolSettings().Get(nil, ws.ID, "memory")
+	if err != nil || row == nil {
+		t.Fatalf("expected a stored memory settings row, got %v err %v", row, err)
+	}
+	if _, ok := row.Config["decision_provider_id"]; ok {
+		t.Fatalf("expected decision_provider_id deleted at rest, got %v", row.Config["decision_provider_id"])
+	}
+	if _, ok := row.Config["decision_model"]; ok {
+		t.Fatalf("expected decision_model deleted at rest, got %v", row.Config["decision_model"])
 	}
 }
 

@@ -520,7 +520,14 @@ func (h *memoryNoteHandlers) memorySettingsView(row *domain.WorkspaceToolSetting
 		gateBudgetMS = int(budget / time.Millisecond)
 	}
 
-	return gin.H{
+	// The decision pair rides the view flat (the Memory pane reads
+	// decision_provider_id/decision_model directly); absent keys stay absent
+	// so clients read null, not empty strings. A half-set stored pair —
+	// unreachable through the PUT — renders as absent.
+	decProviderID, _ := config["decision_provider_id"].(string)
+	decModel, _ := config["decision_model"].(string)
+
+	view := gin.H{
 		"visibility_posture":    posture,
 		"ingestion_enabled":     ingestionEnabled,
 		"raw_embedding_enabled": rawEmbeddingEnabled,
@@ -528,6 +535,11 @@ func (h *memoryNoteHandlers) memorySettingsView(row *domain.WorkspaceToolSetting
 		"embedding":             embedding,
 		"gate_budget_ms":        gateBudgetMS,
 	}
+	if decProviderID != "" && decModel != "" {
+		view["decision_provider_id"] = decProviderID
+		view["decision_model"] = decModel
+	}
+	return view
 }
 
 // GetSettings returns the workspace memory settings view; absence is the
@@ -575,6 +587,14 @@ type memorySettingsPut struct {
 	// absence-is-defaults); when present it must sit inside the save-time
 	// bounds the memory package owns.
 	GateBudgetMs *int `json:"gate_budget_ms"`
+	// DecisionProviderID and DecisionModel pin the workspace decision
+	// backend for the intent gate (D6). Both supplied together set the pair
+	// (the provider must exist and be decision-class, the model non-empty);
+	// both omitted clear the stored pair — the Memory pane's checkbox-off
+	// clears server-side; exactly one is a 400 and leaves the stored
+	// configuration untouched.
+	DecisionProviderID *string `json:"decision_provider_id"`
+	DecisionModel      *string `json:"decision_model"`
 }
 
 // memorySideCallModelPut is the workspace-level side-call model choice.
@@ -693,6 +713,44 @@ func (h *memoryNoteHandlers) PutSettings(c *gin.Context) {
 		// Explicit JSON null: clear back to agent default.
 		delete(config, "sidecall_provider_id")
 		delete(config, "sidecall_model")
+	}
+	// The decision pair (D6): the intent gate's workspace decision backend.
+	// A key counts as supplied when present with a non-empty value; empty and
+	// absent read the same. Half-set saves are rejected before any mutation,
+	// so the stored configuration is untouched.
+	decProviderID := ""
+	if req.DecisionProviderID != nil {
+		decProviderID = strings.TrimSpace(*req.DecisionProviderID)
+	}
+	decModel := ""
+	if req.DecisionModel != nil {
+		decModel = strings.TrimSpace(*req.DecisionModel)
+	}
+	decProviderSet := decProviderID != ""
+	decModelSet := decModel != ""
+	if decProviderSet != decModelSet {
+		RespondError(c, fmt.Errorf("%w: decision_provider_id and decision_model must be saved together", domain.ErrInvalid))
+		return
+	}
+	if decProviderSet {
+		// The provider must exist in this workspace (mirrors the sidecall
+		// pair's pre-check) and be of a decision-capable type.
+		provider, err := h.providers.ByID(c.Request.Context(), ws.ID, decProviderID)
+		if err != nil {
+			RespondError(c, fmt.Errorf("%w: decision_provider_id provider not found in workspace", domain.ErrInvalid))
+			return
+		}
+		if !providers.IsDecisionType(provider.Type) {
+			RespondError(c, fmt.Errorf("%w: provider %s is not a decision provider (type %q is not decision-capable)", domain.ErrInvalid, decProviderID, provider.Type))
+			return
+		}
+		config["decision_provider_id"] = decProviderID
+		config["decision_model"] = decModel
+	} else {
+		// Neither key supplied: the checkbox-off clear (both keys go, the
+		// rest of the record rides untouched).
+		delete(config, "decision_provider_id")
+		delete(config, "decision_model")
 	}
 	if req.Embedding != nil {
 		// The embedding provider is a workspace provider — validate it like

@@ -24,9 +24,10 @@ const (
 	TypeOpenRouter          = "openrouter"
 	TypeOpenAICompatible    = "openai-compatible"
 	TypeAnthropicCompatible = "anthropic-compatible"
+	TypeTypeSafe            = "typesafe"
 )
 
-// KnownTypes contains the slice of all six standard catalog provider types.
+// KnownTypes contains the slice of all seven standard catalog provider types.
 var KnownTypes = []string{
 	TypeOpenAI,
 	TypeAnthropic,
@@ -34,6 +35,20 @@ var KnownTypes = []string{
 	TypeOpenRouter,
 	TypeOpenAICompatible,
 	TypeAnthropicCompatible,
+	TypeTypeSafe,
+}
+
+// IsDecisionType reports whether the provider type is decision-class: it backs
+// typed-decision calls (the memory intent gate) and never chat or agent model
+// resolution. Decision providers surface no models and are excluded from every
+// model picker.
+func IsDecisionType(providerType string) bool {
+	switch providerType {
+	case TypeTypeSafe:
+		return true
+	default:
+		return false
+	}
 }
 
 // DefaultTimeout is the default HTTP client timeout for provider probes.
@@ -72,12 +87,12 @@ type Registry struct {
 	providers map[string]Provider
 }
 
-// NewRegistry creates a new registry initialized with the six built-in providers using default HTTP clients.
+// NewRegistry creates a new registry initialized with the seven built-in providers using default HTTP clients.
 func NewRegistry() *Registry {
 	return NewRegistryWithClient(nil)
 }
 
-// NewRegistryWithClient creates a new registry initialized with the six built-in providers using the specified HTTP client.
+// NewRegistryWithClient creates a new registry initialized with the seven built-in providers using the specified HTTP client.
 func NewRegistryWithClient(client *http.Client) *Registry {
 	r := &Registry{
 		providers: make(map[string]Provider),
@@ -88,6 +103,7 @@ func NewRegistryWithClient(client *http.Client) *Registry {
 	r.Register(NewOpenRouterProvider(client))
 	r.Register(NewOpenAICompatibleProvider(client))
 	r.Register(NewAnthropicCompatibleProvider(client))
+	r.Register(NewTypeSafeProvider(client))
 	return r
 }
 
@@ -156,6 +172,10 @@ func httpClient(custom *http.Client) *http.Client {
 
 // buildProbeURL constructs the probe URL from baseURL, canonicalOrigin, and probePath.
 // It trims any trailing slashes from the origin/base and ensures clean path concatenation.
+// An empty probePath appends nothing — the base/canonical origin IS the endpoint
+// (typesafe's systemone URL carries its full resource path; a dangling "/" there
+// makes the endpoint 307-redirect to an http:// downgrade whose redirect chain
+// surfaces as a spurious provider 405).
 func buildProbeURL(baseURL, canonicalOrigin, probePath string, requiresBaseURL bool) (string, error) {
 	raw := strings.TrimSpace(baseURL)
 	if raw == "" {
@@ -178,7 +198,10 @@ func buildProbeURL(baseURL, canonicalOrigin, probePath string, requiresBaseURL b
 	}
 
 	trimmedBase := strings.TrimRight(raw, "/")
-	cleanPath := probePath
+	cleanPath := strings.TrimSpace(probePath)
+	if cleanPath == "" {
+		return trimmedBase, nil
+	}
 	if !strings.HasPrefix(cleanPath, "/") {
 		cleanPath = "/" + cleanPath
 	}
@@ -266,6 +289,12 @@ func StripVersionPath(base string) string {
 // OpenRouterDefaultEndpoint is the base URL used when an OpenRouter provider
 // has no explicit base_url configured.
 const OpenRouterDefaultEndpoint = "https://openrouter.ai/api/v1"
+
+// TypesafeDefaultEndpoint is the canonical decision API base used when a
+// typesafe provider has no explicit base_url configured. Unlike the language
+// providers, the base_url for this type IS the full endpoint including the
+// resource path (/v1/systemone) — there is no separate probe path appended.
+const TypesafeDefaultEndpoint = "https://api.typesafe.ai/v1/systemone"
 
 // catalogHostHints maps known compatible-gateway hosts to the community
 // catalog provider id their API matches. Only hosts verified present in the

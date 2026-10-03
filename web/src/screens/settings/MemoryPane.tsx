@@ -17,13 +17,14 @@ import {
   type ApiMorningReport,
   type ApiModelsResult,
 } from "../../lib/api";
-import { useCanWriteTools } from "../../lib/tools";
+import { useCanWriteWorkspace } from "../../lib/writePerms";
 import {
   classifyEmbeddingModel,
   KNOWN_MODEL_DIMS,
   SUPPORTED_EMBEDDING_DIMS,
   knownModelDimension,
 } from "../../lib/embedding";
+import { isDecisionProviderType } from "../../modals/ProviderFormDialog";
 import serverErrorSvg from "../../assets/server-error.svg";
 
 export interface MemoryPaneProps {
@@ -31,7 +32,7 @@ export interface MemoryPaneProps {
   /** Unused: every surface here is API-backed; kept for SettingsPage compat. */
   onUpdate?: (fn: any) => void;
   onToast?: (text: string, kind?: string) => void;
-  /** Override the derived workspace-write check (tests). */
+  /** Override the derived workspace.write check (tests). */
   canWrite?: boolean;
 }
 
@@ -79,12 +80,18 @@ function hasReportTime(generatedAt?: string | null): boolean {
   return Number.isFinite(t) && t > 0;
 }
 
+// The decision backend's model field prefills this when revealed unchecked
+// (add-configurable-decision-backend 5.4).
+const DECISION_MODEL_DEFAULT = "jev-latest";
+
 // ---------------------------------------------------------------------------
 // Pane
 // ---------------------------------------------------------------------------
 
 export function MemoryPane({ tenant, onToast = () => {}, canWrite }: MemoryPaneProps) {
-  const derivedWriter = useCanWriteTools(tenant);
+  // fix-role-permission-audit: memory mutations (configuration save, fact
+  // promote/delete, consolidation) gate on workspace.write, not tools.write.
+  const derivedWriter = useCanWriteWorkspace(tenant);
   const writer = canWrite !== undefined ? canWrite : derivedWriter;
 
   const targetWsId = tenant?.sub || tenant?.id;
@@ -117,6 +124,10 @@ export function MemoryPane({ tenant, onToast = () => {}, canWrite }: MemoryPaneP
   const [sidecallMode, setSidecallMode] = useState<"agent_default" | "specific">("agent_default");
   const [sidecallProviderId, setSidecallProviderId] = useState("");
   const [sidecallModel, setSidecallModel] = useState("");
+  // Decision backend (5.4): unchecked by default; checked reveals the pair.
+  const [useDecisionBackend, setUseDecisionBackend] = useState(false);
+  const [decisionProviderId, setDecisionProviderId] = useState("");
+  const [decisionModel, setDecisionModel] = useState("");
   const [model, setModel] = useState("");
   const [dimension, setDimension] = useState("");
   // The model id whose known dimension we auto-preselected (D7). Cleared
@@ -124,7 +135,10 @@ export function MemoryPane({ tenant, onToast = () => {}, canWrite }: MemoryPaneP
   // discovery, or an explicit user choice — so a later model switch never
   // clobbers a dimension the user (or the test) actually chose.
   const [dimensionAutoFor, setDimensionAutoFor] = useState<string | null>(null);
-  const [providers, setProviders] = useState<{ id: string; name: string }[]>([]);
+  // Provider configs keep their type so the pane can split language-model
+  // pickers (side-call, embedding) from the decision-backend select —
+  // decision providers never appear in a model picker (5.3).
+  const [providers, setProviders] = useState<{ id: string; name: string; type: string }[]>([]);
   const [providerId, setProviderId] = useState("");
   const [modelsResult, setModelsResult] = useState<ApiModelsResult | null>(null);
   const [savingSettings, setSavingSettings] = useState(false);
@@ -158,10 +172,20 @@ export function MemoryPane({ tenant, onToast = () => {}, canWrite }: MemoryPaneP
         setSidecallProviderId("");
         setSidecallModel("");
       }
+      // The GET view carries the flat decision keys only when BOTH are stored.
+      if (s.decision_provider_id && s.decision_model) {
+        setUseDecisionBackend(true);
+        setDecisionProviderId(s.decision_provider_id);
+        setDecisionModel(s.decision_model);
+      } else {
+        setUseDecisionBackend(false);
+        setDecisionProviderId("");
+        setDecisionModel("");
+      }
       setModel(s.embedding?.model || "");
       setDimension(s.embedding?.dimension ? String(s.embedding.dimension) : "");
       setProviderId(s.embedding?.provider_id || "");
-      setProviders((providerRes?.providers || []).map((p) => ({ id: p.id, name: p.name })));
+      setProviders((providerRes?.providers || []).map((p) => ({ id: p.id, name: p.name, type: p.type })));
     } catch (err: unknown) {
       if (err instanceof ApiError && err.status === 0) {
         return;
@@ -205,6 +229,25 @@ export function MemoryPane({ tenant, onToast = () => {}, canWrite }: MemoryPaneP
   // Tri-state: only classified embedding models populate the dropdown; when
   // the source resolves models but none classifies, stay on free text.
   const modelDropdown = embeddingModels.length > 0;
+
+  // Model pickers list language-model providers only (5.3): the side-call and
+  // embedding selects never offer a decision config, and the decision backend
+  // select offers nothing else.
+  const languageProviders = useMemo(
+    () => providers.filter((p) => !isDecisionProviderType(p.type)),
+    [providers]
+  );
+  const decisionProviders = useMemo(
+    () => providers.filter((p) => isDecisionProviderType(p.type)),
+    [providers]
+  );
+
+  // Revealing the block prefills the model (5.4) unless the pane already
+  // holds one — a retick never clobbers a model the user typed.
+  const handleDecisionBackendToggle = (on: boolean) => {
+    setUseDecisionBackend(on);
+    if (on && !decisionModel.trim()) setDecisionModel(DECISION_MODEL_DEFAULT);
+  };
 
   // Known-model preselect (D7): picking a model whose dimension the map knows
   // fills the Dimension dropdown — over Auto, or over a dimension the previous
@@ -301,6 +344,10 @@ export function MemoryPane({ tenant, onToast = () => {}, canWrite }: MemoryPaneP
         onToast("Pick a provider and model for the memory side-call, or switch back to agent default", "danger");
         return;
       }
+      if (useDecisionBackend && (!decisionProviderId || !decisionModel.trim())) {
+        onToast("Pick a provider and model for the decision backend, or untick Use decision backend", "danger");
+        return;
+      }
       const res = await api.memory.updateSettings(targetWsId, {
         visibility_posture: posture,
         ingestion_enabled: ingestion,
@@ -313,6 +360,11 @@ export function MemoryPane({ tenant, onToast = () => {}, canWrite }: MemoryPaneP
           model,
           ...(dimension.trim() ? { dimension: Number(dimension) } : {}),
         },
+        // Checked sends both flat keys; unchecked omits BOTH — omission is
+        // the clear (server tri-state), so a save never sends a half pair.
+        ...(useDecisionBackend
+          ? { decision_provider_id: decisionProviderId, decision_model: decisionModel.trim() }
+          : {}),
       });
       const s = res.settings;
       setPosture(s.visibility_posture);
@@ -325,6 +377,15 @@ export function MemoryPane({ tenant, onToast = () => {}, canWrite }: MemoryPaneP
         setSidecallMode("agent_default");
         setSidecallProviderId("");
         setSidecallModel("");
+      }
+      if (s.decision_provider_id && s.decision_model) {
+        setUseDecisionBackend(true);
+        setDecisionProviderId(s.decision_provider_id);
+        setDecisionModel(s.decision_model);
+      } else {
+        setUseDecisionBackend(false);
+        setDecisionProviderId("");
+        setDecisionModel("");
       }
       setModel(s.embedding?.model || "");
       setDimension(s.embedding?.dimension ? String(s.embedding.dimension) : "");
@@ -693,7 +754,7 @@ export function MemoryPane({ tenant, onToast = () => {}, canWrite }: MemoryPaneP
                             className="h-9 w-full rounded-md border border-line bg-surface px-2 text-[13px] text-fg2 focus:border-accent"
                           >
                             <option value="">Select a provider…</option>
-                            {providers.map((pr) => (
+                            {languageProviders.map((pr) => (
                               <option key={pr.id} value={pr.id}>
                                 {pr.name}
                               </option>
@@ -716,6 +777,62 @@ export function MemoryPane({ tenant, onToast = () => {}, canWrite }: MemoryPaneP
                     )}
                   </div>
 
+                  {/* Decision backend (5.4): the intent gate's classifier can
+                      ride a decision provider instead of the side-call model.
+                      Unchecked stores nothing; unticking and saving omits the
+                      pair, which is the server's clear. */}
+                  <div data-testid="memory-decision-backend">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-[12px] font-medium text-fg2">Decision backend</p>
+                        <p className="text-[11px] leading-5 text-muted">
+                          Classifies each turn&apos;s memory need in place of the side-call model. Entity
+                          routing (associative) requires the language model.
+                        </p>
+                      </div>
+                      <Toggle
+                        on={useDecisionBackend}
+                        label="Use decision backend"
+                        onChange={handleDecisionBackendToggle}
+                      />
+                    </div>
+                    {useDecisionBackend && (
+                      <div className="mt-3 grid gap-3 sm:grid-cols-2" data-testid="memory-decision-fields">
+                        <div>
+                          <label className="mb-1.5 block text-[12px] font-medium text-fg2" htmlFor="memory-decision-provider">
+                            Provider
+                          </label>
+                          <select
+                            id="memory-decision-provider"
+                            data-testid="memory-decision-provider"
+                            value={decisionProviderId}
+                            onChange={(e) => setDecisionProviderId(e.target.value)}
+                            className="h-9 w-full rounded-md border border-line bg-surface px-2 text-[13px] text-fg2 focus:border-accent"
+                          >
+                            <option value="">Select a provider…</option>
+                            {decisionProviders.map((pr) => (
+                              <option key={pr.id} value={pr.id}>
+                                {pr.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="mb-1.5 block text-[12px] font-medium text-fg2" htmlFor="memory-decision-model">
+                            Model
+                          </label>
+                          <input
+                            id="memory-decision-model"
+                            data-testid="memory-decision-model"
+                            className="h-9 w-full rounded-md border border-line bg-surface px-3 font-mono text-[13px] text-fg2 placeholder:text-muted focus:border-accent"
+                            value={decisionModel}
+                            onChange={(e) => setDecisionModel(e.target.value)}
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
                   <div className="space-y-3 border-t border-[var(--border-soft)] pt-4">
                     <p className="text-[12px] font-medium text-fg2">Embedding provider</p>
                     <div>
@@ -730,7 +847,7 @@ export function MemoryPane({ tenant, onToast = () => {}, canWrite }: MemoryPaneP
                         onChange={(e) => setProviderId(e.target.value)}
                       >
                         <option value="">Select a provider…</option>
-                        {providers.map((p) => (
+                        {languageProviders.map((p) => (
                           <option key={p.id} value={p.id}>
                             {p.name}
                           </option>

@@ -4,14 +4,33 @@ import { inputCls, labelCls } from "../components/ui/constants";
 import { cx } from "../lib/helpers";
 import { api, formatApiError, type ApiProviderConfig } from "../lib/api";
 
+/** The shared provider-type catalog: one source for the dialog's type select
+ * (grouped into optgroups), the pane's type badges, and future pickers.
+ * `decision` marks decision-class types (D8) — they power routing calls and
+ * never serve chat or agent models, so model pickers exclude them. */
 export const PROVIDER_CATALOG_TYPES = [
-  { id: 'openai', label: 'OpenAI', placeholder: 'https://api.openai.com/v1 (optional override)', requiresBaseUrl: false, requiresKey: true },
-  { id: 'anthropic', label: 'Anthropic', placeholder: 'https://api.anthropic.com/v1 (optional override)', requiresBaseUrl: false, requiresKey: true },
-  { id: 'gemini', label: 'Gemini', placeholder: 'https://generativelanguage.googleapis.com/v1beta (optional override)', requiresBaseUrl: false, requiresKey: true },
-  { id: 'openrouter', label: 'OpenRouter', placeholder: 'https://openrouter.ai/api/v1 (optional override)', requiresBaseUrl: false, requiresKey: true },
-  { id: 'openai-compatible', label: 'OpenAI-compatible', placeholder: 'https://api.together.xyz/v1', requiresBaseUrl: true, requiresKey: false },
-  { id: 'anthropic-compatible', label: 'Anthropic-compatible', placeholder: 'https://api.anthropic-proxy.com/v1', requiresBaseUrl: true, requiresKey: false },
+  { id: 'openai', label: 'OpenAI', placeholder: 'https://api.openai.com/v1 (optional override)', requiresBaseUrl: false, requiresKey: true, decision: false },
+  { id: 'anthropic', label: 'Anthropic', placeholder: 'https://api.anthropic.com/v1 (optional override)', requiresBaseUrl: false, requiresKey: true, decision: false },
+  { id: 'gemini', label: 'Gemini', placeholder: 'https://generativelanguage.googleapis.com/v1beta (optional override)', requiresBaseUrl: false, requiresKey: true, decision: false },
+  { id: 'openrouter', label: 'OpenRouter', placeholder: 'https://openrouter.ai/api/v1 (optional override)', requiresBaseUrl: false, requiresKey: true, decision: false },
+  { id: 'openai-compatible', label: 'OpenAI-compatible', placeholder: 'https://api.together.xyz/v1', requiresBaseUrl: true, requiresKey: false, decision: false },
+  { id: 'anthropic-compatible', label: 'Anthropic-compatible', placeholder: 'https://api.anthropic-proxy.com/v1', requiresBaseUrl: true, requiresKey: false, decision: false },
+  { id: 'typesafe', label: 'TypeSafe', placeholder: 'https://api.typesafe.ai/v1/systemone', requiresBaseUrl: false, requiresKey: true, decision: true },
 ] as const;
+
+/** Labels for the two provider classes, shared by the dialog's optgroups and
+ * the providers pane tabs (add-configurable-decision-backend D8). */
+export const PROVIDER_GROUP_LABELS = {
+  language: 'Language models',
+  decision: 'Decision',
+} as const;
+
+/** Decision-class types power routing calls only — never chat or agent
+ * models. Unknown types classify as language models. */
+export function isDecisionProviderType(type: string): boolean {
+  const found = PROVIDER_CATALOG_TYPES.find((c) => c.id === type);
+  return Boolean(found && found.decision);
+}
 
 /** Provider types that accept the optional catalog-mapping hint (D3). The
  * four canonical types are catalog-mapped by their type alone. */
@@ -38,6 +57,10 @@ export function getProviderTypeLabel(type: string): string {
 export interface ProviderFormDialogProps {
   workspaceId: string;
   provider?: ApiProviderConfig | null;
+  /** Scopes the add dialog's type select to one provider class — the pane
+   * passes the tab the dialog was launched from, so the Decision tab offers
+   * only decision types and vice versa. Unset (and edit mode): both groups. */
+  typeGroup?: keyof typeof PROVIDER_GROUP_LABELS;
   onClose: () => void;
   onSaved: (provider: ApiProviderConfig) => void;
   onToast: (text: string, kind?: string) => void;
@@ -46,12 +69,16 @@ export interface ProviderFormDialogProps {
 export function ProviderFormDialog({
   workspaceId,
   provider,
+  typeGroup,
   onClose,
   onSaved,
   onToast,
 }: ProviderFormDialogProps) {
   const isEdit = Boolean(provider);
-  const [type, setType] = useState(provider?.type || 'openai');
+  const groupTypes = PROVIDER_CATALOG_TYPES.filter(
+    (t) => !typeGroup || (typeGroup === 'decision') === t.decision
+  );
+  const [type, setType] = useState(provider?.type || groupTypes[0].id);
   const [name, setName] = useState(provider?.name || '');
   const [baseUrl, setBaseUrl] = useState(provider?.base_url || '');
   const [key, setKey] = useState('');
@@ -228,11 +255,19 @@ export function ProviderFormDialog({
               onChange={(e) => setType(e.target.value)}
               disabled={isEdit}
             >
-              {PROVIDER_CATALOG_TYPES.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.label}
-                </option>
-              ))}
+              {(['language', 'decision'] as const)
+                .filter((group) => !typeGroup || typeGroup === group)
+                .map((group) => (
+                  <optgroup key={group} label={PROVIDER_GROUP_LABELS[group]}>
+                    {groupTypes
+                      .filter((t) => t.decision === (group === 'decision'))
+                      .map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.label}
+                        </option>
+                      ))}
+                  </optgroup>
+                ))}
             </select>
           </div>
           <div>
@@ -266,7 +301,9 @@ export function ProviderFormDialog({
             onChange={(e) => setBaseUrl(e.target.value)}
           />
           <p className="mt-1 text-[11px] leading-4 text-muted">
-            Full API base including the version path (e.g. https://api.example.com/v1) — the server appends resource paths like /models or /chat/completions on top.
+            {selectedTypeConfig.decision
+              ? 'The full decision endpoint URL, used exactly as entered — nothing is appended. Leave empty for the canonical origin (https://api.typesafe.ai/v1/systemone).'
+              : 'Full API base including the version path (e.g. https://api.example.com/v1) — the server appends resource paths like /models or /chat/completions on top.'}
           </p>
         </div>
 
