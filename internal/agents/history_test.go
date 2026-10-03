@@ -599,25 +599,15 @@ func TestHistory_UnknownCursor(t *testing.T) {
 		t.Fatalf("AppendEvents failed: %v", err)
 	}
 
-	res, err := agent.History(ctx, HistoryRequest{
+	// An unknown cursor is a client error (add-server-authoritative-transcript
+	// D2): the endpoint answers invalid_request, never an empty page.
+	_, err := agent.History(ctx, HistoryRequest{
 		WorkspaceID: ws.ID,
 		SessionID:   sessionID,
 		After:       "nonexistent-cursor",
 	})
-	if err != nil {
-		t.Fatalf("unexpected error for unknown cursor: %v", err)
-	}
-	if res == nil {
-		t.Fatal("expected non-nil HistoryResult")
-	}
-	if len(res.Events) != 0 {
-		t.Fatalf("expected 0 events, got %d", len(res.Events))
-	}
-	if res.Events == nil {
-		t.Fatal("expected non-nil Events slice")
-	}
-	if res.Next != "" {
-		t.Fatalf("expected empty Next, got %q", res.Next)
+	if !errors.Is(err, domain.ErrInvalid) {
+		t.Fatalf("expected domain.ErrInvalid for unknown cursor, got %v", err)
 	}
 }
 

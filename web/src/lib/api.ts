@@ -2004,12 +2004,27 @@ export const api = {
         `/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/sessions/${encodeURIComponent(sessionId)}/approvals/${encodeURIComponent(interruptId)}`,
         { method: 'POST', body: { approved } },
       ),
-    // Translated transcript events for an agent session (server-authoritative history).
-    sessionEvents: (ws: string, agent: string, sessionId: string) =>
-      request<{ events: any[]; next: string }>(
-        `/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/sessions/${encodeURIComponent(sessionId)}/events`,
+    // Translated transcript events for an agent session (server-authoritative
+    // history). Windowed reads (add-server-authoritative-transcript D2/D3):
+    // `limit` + `reverse` fetch the most recent window, `before` pages strictly
+    // older events; the wire answers with has_more/oldest on backward reads.
+    // No opts issues the pre-change full load — NO query string at all.
+    sessionEvents: (
+      ws: string,
+      agent: string,
+      sessionId: string,
+      opts?: { before?: string; limit?: number; reverse?: boolean }
+    ) => {
+      const params: string[] = [];
+      if (opts?.before) params.push(`before=${encodeURIComponent(opts.before)}`);
+      if (typeof opts?.limit === 'number') params.push(`limit=${opts.limit}`);
+      if (opts?.reverse) params.push('reverse=true');
+      const query = params.length ? `?${params.join('&')}` : '';
+      return request<{ events: any[]; next: string; has_more?: boolean; oldest?: string }>(
+        `/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/sessions/${encodeURIComponent(sessionId)}/events${query}`,
         { method: 'GET' },
-      ),
+      );
+    },
     // Cancels the live run for a session; the :turn segment is addressed by
     // splitting the in-flight response id (resp_<session>_<turn>) client-side.
     cancelRun: (ws: string, agent: string, sessionId: string, turnId: string) =>

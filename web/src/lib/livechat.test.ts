@@ -3,7 +3,8 @@
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { fetchSessionTranscript, streamSessionEvents, attachCatchUpStream, abortCatchUpStream,
-  isBoundSessionId, hydrateSession, applyServerTranscript,
+  isBoundSessionId, hydrateSession, applyServerTranscript, HYDRATION_PAGE_SIZE,
+  fetchOlderTranscriptPage, prependServerTranscript,
 } from './livechat';
 import { useStore } from '../store';
 import { api } from './api';
@@ -1193,5 +1194,282 @@ describe('followed run tail survives stop (fix-chat-stop-on-reattached-run D5)',
     await new Promise((r) => setTimeout(r, 0));
     expect(session().messages.map((m: any) => m.author)).toEqual(['you', 'agent']);
     expect(session().messages[1].text).toBe('The answer is 42!');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Server-authoritative hydration + scroll-up paging
+// (add-server-authoritative-transcript D1-D4)
+// ---------------------------------------------------------------------------
+
+/** Binds ws1/chat-1 to an arbitrary session id with the given local rows. */
+const seedSession = (sessionId: string, messages: any[] = []) => {
+  const db: any = {
+    ws1: {
+      id: 'ws1', name: 'WS', sub: 'ws1', tz: 'UTC',
+      agents: [], channels: [], people: [], schedules: [], runs: [], members: [], integrations: [], skillLib: [], keys: [],
+      threads: { 'chat-1': { active: sessionId, list: [{ id: sessionId, title: 'Chat', updated: '', messages }] } },
+    },
+  };
+  useStore.setState({
+    db,
+    ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, runningChatId: null, toasts: [] },
+  });
+};
+
+const sessionOf = (sessionId: string): any =>
+  useStore.getState().db.ws1.threads['chat-1'].list.find((x: any) => x.id === sessionId);
+
+describe('hydrateSession — gate removal (add-server-authoritative-transcript D1)', () => {
+  it('hydrates an external-shaped session id (neither sess_ nor sched_ prefixed)', async () => {
+    seedSession('bench-task-17', [{ id: 'local-1', author: 'you', ts: 't0', text: 'typed before open' }]);
+    vi.mocked(api.agents.sessionEvents).mockResolvedValueOnce({
+      next: '',
+      events: [
+        { id: 'e1', kind: 'message_completed', occurred_at: 't0', turn_id: 'turn-1',
+          message: { role: 'user', content: 'bench prompt' } },
+        { id: 'e2', kind: 'message_completed', occurred_at: 't1', turn_id: 'turn-1',
+          message: { role: 'assistant', content: 'bench answer' } },
+      ],
+    });
+
+    const hydrated = await hydrateSession({ workspaceId: 'ws1', agentSlug: 'atlas', chatId: 'chat-1', sessionId: 'bench-task-17' });
+
+    expect(hydrated).not.toBeNull();
+    expect(hydrated!.messages.map((m: any) => m.author)).toEqual(['you', 'agent']);
+    // The server transcript replaced the local thread (applyServerTranscript).
+    const sess = sessionOf('bench-task-17');
+    expect(sess.messages.map((m: any) => m.author)).toEqual(['you', 'agent']);
+    expect(sess.messages[0].text).toBe('bench prompt');
+    expect(sess.messages[1].resp).toBe('resp_bench-task-17_turn-1');
+  });
+
+  it('an unknown session id leaves the local thread untouched and resolves null', async () => {
+    const local = [{ id: 'local-1', author: 'you', ts: 't0', text: 'typed before open' }];
+    seedSession('bench-task-404', local);
+    vi.mocked(api.agents.sessionEvents).mockRejectedValueOnce(new Error('404 not found'));
+
+    const hydrated = await hydrateSession({ workspaceId: 'ws1', agentSlug: 'atlas', chatId: 'chat-1', sessionId: 'bench-task-404' });
+
+    expect(hydrated).toBeNull();
+    const sess = sessionOf('bench-task-404');
+    expect(sess.messages).toEqual(local);
+    expect(sess.messages[0]).toBe(local[0]);
+    // Nothing was stamped — no paging state for a session the server rejects.
+    expect(sess.eventsHasMore).toBeUndefined();
+    expect(sess.eventsOldest).toBeUndefined();
+  });
+});
+
+describe('hydrateSession — windowed open (add-server-authoritative-transcript D3)', () => {
+  it('requests the most recent window; result and store carry the paging cursors', async () => {
+    seedSession('sess_w-1');
+    vi.mocked(api.agents.sessionEvents).mockResolvedValueOnce({
+      next: '',
+      has_more: true,
+      oldest: 'e1',
+      events: [
+        { id: 'e1', kind: 'message_completed', occurred_at: 't0', turn_id: 'turn-1',
+          message: { role: 'user', content: 'windowed hello' } },
+        { id: 'e2', kind: 'message_completed', occurred_at: 't1', turn_id: 'turn-1',
+          message: { role: 'assistant', content: 'windowed reply' } },
+      ],
+    });
+
+    const hydrated = await hydrateSession({ workspaceId: 'ws1', agentSlug: 'atlas', chatId: 'chat-1', sessionId: 'sess_w-1' });
+
+    // The backward window: page size H, most-recent-first read.
+    expect(vi.mocked(api.agents.sessionEvents)).toHaveBeenLastCalledWith('ws1', 'atlas', 'sess_w-1', {
+      limit: HYDRATION_PAGE_SIZE,
+      reverse: true,
+    });
+    // Wire paging maps onto the hydrated transcript...
+    expect(hydrated!.hasMore).toBe(true);
+    expect(hydrated!.oldestEventId).toBe('e1');
+    // ...and lastEventId stays the NEWEST event of the window — the catch-up
+    // attach cursor is unchanged by windowing.
+    expect(hydrated!.lastEventId).toBe('e2');
+    const sess = sessionOf('sess_w-1');
+    expect(sess.eventsHasMore).toBe(true);
+    expect(sess.eventsOldest).toBe('e1');
+  });
+});
+
+describe('fetchSessionTranscript — full-load compatibility (add-server-authoritative-transcript D3)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('no opts issues the request with no query params (3-arg sessionEvents call)', async () => {
+    vi.mocked(api.agents.sessionEvents).mockResolvedValueOnce({ next: '', events: [] });
+    await fetchSessionTranscript('ws1', 'atlas', 'sess_full-1');
+    expect(vi.mocked(api.agents.sessionEvents)).toHaveBeenLastCalledWith('ws1', 'atlas', 'sess_full-1');
+  });
+
+  it('the wire helper: no opts → no query string; windowed opts → encoded before/limit/reverse', async () => {
+    // The suite mocks './api' narrowly; importActual reaches the REAL session
+    // helper so the query-string contract is asserted against request() itself.
+    const real = await vi.importActual<typeof import('./api')>('./api');
+    const urls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: any) => {
+      urls.push(String(url));
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'Content-Type': 'application/json' }),
+        json: async () => ({ events: [], next: '' }),
+      } as unknown as Response;
+    }));
+
+    await real.api.agents.sessionEvents('ws1', 'atlas', 'sess_wire-1');
+    await real.api.agents.sessionEvents('ws1', 'atlas', 'sess_wire-1', { limit: 60, reverse: true });
+    await real.api.agents.sessionEvents('ws1', 'atlas', 'sess_wire-1', { before: 'ev/1 2', limit: 60 });
+
+    expect(urls[0]).toBe('/api/v1/workspaces/ws1/agents/atlas/sessions/sess_wire-1/events');
+    expect(urls[1]).toBe('/api/v1/workspaces/ws1/agents/atlas/sessions/sess_wire-1/events?limit=60&reverse=true');
+    expect(urls[2]).toBe('/api/v1/workspaces/ws1/agents/atlas/sessions/sess_wire-1/events?before=ev%2F1%202&limit=60');
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('fetchOlderTranscriptPage (add-server-authoritative-transcript D4)', () => {
+  it('fetches before+limit and returns the older page with paging fields', async () => {
+    vi.mocked(api.agents.sessionEvents).mockResolvedValueOnce({
+      next: '',
+      has_more: true,
+      oldest: 'e0',
+      events: [
+        { id: 'e0', kind: 'message_completed', occurred_at: 't0', turn_id: 'turn-0',
+          message: { role: 'user', content: 'older question' } },
+        { id: 'e1', kind: 'message_completed', occurred_at: 't1', turn_id: 'turn-0',
+          message: { role: 'assistant', content: 'older answer' } },
+      ],
+    });
+
+    const page = await fetchOlderTranscriptPage('ws1', 'atlas', 'sess_pg-1', 'e2');
+
+    expect(vi.mocked(api.agents.sessionEvents)).toHaveBeenLastCalledWith('ws1', 'atlas', 'sess_pg-1', {
+      before: 'e2',
+      limit: HYDRATION_PAGE_SIZE,
+    });
+    expect(page!.messages.map((m: any) => m.author)).toEqual(['you', 'agent']);
+    expect(page!.hasMore).toBe(true);
+    expect(page!.oldest).toBe('e0');
+    expect(page!.lastEventId).toBe('e1');
+  });
+
+  it('returns null on fetch failure (unknown cursor → 400 → soft miss)', async () => {
+    vi.mocked(api.agents.sessionEvents).mockRejectedValueOnce(new Error('400 bad cursor'));
+    const page = await fetchOlderTranscriptPage('ws1', 'atlas', 'sess_pg-2', 'nope');
+    expect(page).toBeNull();
+  });
+});
+
+describe('prependServerTranscript (add-server-authoritative-transcript D4)', () => {
+  it('plain prepend: the page lands before the thread messages and paging is stamped', () => {
+    seedSession('sess_pp-1', [
+      { id: 'w1', author: 'you', ts: 't5', text: 'recent question' },
+      { id: 'w2', author: 'agent', ts: 't6', text: 'recent answer', resp: 'resp_sess_pp-1_turn-9' },
+    ]);
+
+    prependServerTranscript('ws1', 'chat-1', 'sess_pp-1', [
+      { id: 'p1', author: 'you', ts: 't1', text: 'old question' },
+      { id: 'p2', author: 'agent', ts: 't2', text: 'old answer', resp: 'resp_sess_pp-1_turn-1' },
+    ], { hasMore: true, oldest: 'p1' });
+
+    const sess = sessionOf('sess_pp-1');
+    expect(sess.messages.map((m: any) => m.id)).toEqual(['p1', 'p2', 'w1', 'w2']);
+    expect(sess.eventsHasMore).toBe(true);
+    expect(sess.eventsOldest).toBe('p1');
+  });
+
+  it('a page boundary mid-turn composes into ONE agent message matching a full-load render', () => {
+    seedSession('sess_bp-1', [
+      // The thread starts with the CONTINUATION of turn T1 (its streamed/persisted
+      // second half): the finished card, the text, then the next turn's user row.
+      {
+        id: 'cu1', author: 'agent', ts: 't2', text: 'The answer is 42', resp: 'resp_sess_bp-1_T1',
+        tools: [{ callId: 'c1', name: 'grafana.query', args: 'q', ms: 250, res: '99.9%', ts: 't1' }],
+        parts: [{ k: 'reasoning', text: 'computing' }],
+      },
+      { id: 'n1', author: 'you', ts: 't3', text: 'next question' },
+    ]);
+
+    // The older page ends with turn T1's first half: the user prompt and the
+    // agent row holding the STARTED card (no result yet).
+    prependServerTranscript('ws1', 'chat-1', 'sess_bp-1', [
+      { id: 'p-u', author: 'you', ts: 't0', text: 'run diagnostics' },
+      {
+        id: 'pg1-a-0', author: 'agent', ts: 't1', text: '', resp: 'resp_sess_bp-1_T1',
+        tools: [{ callId: 'c1', name: 'grafana.query', args: 'q', ms: 0, ts: 't1' }],
+        parts: [{ k: 'tool', i: 0 }],
+      },
+    ], { hasMore: true, oldest: 'p-u' });
+
+    const sess = sessionOf('sess_bp-1');
+    // One composed turn: user(T1), agent(T1 merged), then the thread's rest —
+    // no split bubble for the turn the page boundary fell inside.
+    expect(sess.messages.map((m: any) => m.id)).toEqual(['p-u', 'pg1-a-0', 'n1']);
+    const merged = sess.messages[1];
+    // The page row keeps its identity.
+    expect(merged.resp).toBe('resp_sess_bp-1_T1');
+    expect(merged.ts).toBe('t1');
+    // The card carries args + result + latency (finished beats started).
+    expect(merged.tools).toHaveLength(1);
+    expect(merged.tools[0]).toEqual({ callId: 'c1', name: 'grafana.query', args: 'q', ms: 250, res: '99.9%', ts: 't1' });
+    // Texts concatenate (page side first); ordered parts concat with the page's
+    // tool card first, the thread's reasoning as-is.
+    expect(merged.text).toBe('The answer is 42');
+    expect(merged.parts).toEqual([{ k: 'tool', i: 0 }, { k: 'reasoning', text: 'computing' }]);
+    expect(sess.eventsHasMore).toBe(true);
+    expect(sess.eventsOldest).toBe('p-u');
+  });
+
+  it('a continuation card the page never saw appends after the page cards, its part reindexed', () => {
+    seedSession('sess_bp-2', [
+      {
+        id: 'cu2', author: 'agent', ts: 't2', text: 'and more', resp: 'resp_sess_bp-2_T1',
+        tools: [{ callId: 'c2', name: 'web.search', args: '{}', ms: 0, ts: 't2' }],
+        parts: [{ k: 'tool', i: 0 }],
+      },
+    ]);
+    prependServerTranscript('ws1', 'chat-1', 'sess_bp-2', [
+      {
+        id: 'pg2-a-0', author: 'agent', ts: 't1', text: '', resp: 'resp_sess_bp-2_T1',
+        tools: [{ callId: 'c1', name: 'grafana.query', args: 'q', ms: 0, ts: 't1' }],
+        parts: [{ k: 'tool', i: 0 }],
+      },
+    ], { hasMore: false });
+
+    const merged = sessionOf('sess_bp-2').messages[0];
+    expect(merged.tools.map((t: any) => t.callId)).toEqual(['c1', 'c2']);
+    // The thread's tool part indexed into the combined card list.
+    expect(merged.parts).toEqual([{ k: 'tool', i: 0 }, { k: 'tool', i: 1 }]);
+    expect(sessionOf('sess_bp-2').eventsHasMore).toBe(false);
+    expect(sessionOf('sess_bp-2').eventsOldest).toBeUndefined();
+  });
+
+  it('hasMore=false clears eventsOldest (sentinel disarmed at log start)', () => {
+    seedSession('sess_pp-3', [{ id: 'w1', author: 'you', ts: 't5', text: 'recent' }]);
+    prependServerTranscript('ws1', 'chat-1', 'sess_pp-3', [{ id: 'p1', author: 'you', ts: 't1', text: 'old' }], { hasMore: true, oldest: 'p1' });
+    expect(sessionOf('sess_pp-3').eventsOldest).toBe('p1');
+
+    prependServerTranscript('ws1', 'chat-1', 'sess_pp-3', [{ id: 'p0', author: 'you', ts: 't0', text: 'older' }], { hasMore: false, oldest: 'p0' });
+    const sess = sessionOf('sess_pp-3');
+    expect(sess.messages.map((m: any) => m.id)).toEqual(['p0', 'p1', 'w1']);
+    expect(sess.eventsHasMore).toBe(false);
+    expect(sess.eventsOldest).toBeUndefined();
+  });
+
+  it('an empty page is a no-op prepend that still stamps paging', () => {
+    const threadRows = [{ id: 'w1', author: 'you', ts: 't5', text: 'recent' }];
+    seedSession('sess_pp-4', threadRows);
+
+    prependServerTranscript('ws1', 'chat-1', 'sess_pp-4', [], { hasMore: false });
+
+    const sess = sessionOf('sess_pp-4');
+    expect(sess.messages).toEqual(threadRows);
+    expect(sess.eventsHasMore).toBe(false);
+    expect(sess.eventsOldest).toBeUndefined();
   });
 });

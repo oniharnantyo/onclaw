@@ -294,7 +294,10 @@ describe('ChatRoute component', () => {
     expect(screen.queryByText('different local divergence')).toBeNull();
   });
 
-  it('hydrates nothing for legacy unbound sessions', async () => {
+  // add-server-authoritative-transcript D1: the id-shape gate is gone — every
+  // opened session id probes the events endpoint once; an unknown/legacy id
+  // answers empty here and the local thread stays intact (fail-soft, task 2.3).
+  it('an unknown legacy session id probes the server and leaves the local thread intact', async () => {
     requestMock.mockClear();
     const db: any = seedDb();
     db.acme.threads['a-atlas'] = {
@@ -312,9 +315,18 @@ describe('ChatRoute component', () => {
     );
 
     await waitFor(() => {
+      expect(requestMock).toHaveBeenCalledWith(
+        expect.stringContaining('/sessions/s1/events'),
+        expect.anything()
+      );
+    });
+    // The probe answered empty (unknown session) — the local thread is
+    // untouched: the legacy message still renders and the store is unchanged.
+    await waitFor(() => {
       expect(screen.getByText('legacy local message')).not.toBeNull();
     });
-    expect(requestMock).not.toHaveBeenCalledWith(expect.stringContaining('/events'), expect.anything());
+    const sess: any = useStore.getState().db.acme.threads['a-atlas'].list.find((x: any) => x.id === 's1');
+    expect(sess.messages).toEqual([{ id: 'm1', author: 'you', ts: '', text: 'legacy local message' }]);
   });
 
   // --- In-flight re-attachment & catch-up stream (live-run-reattach D4) -----

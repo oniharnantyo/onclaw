@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { AssistantRuntimeProvider } from '@assistant-ui/react';
 import { useStore, useWorkspace, useThread } from '../store';
@@ -13,7 +13,8 @@ import {
   fetchSessionTranscript,
   applyServerTranscript,
   attachCatchUpStream,
-  isBoundSessionId,
+  fetchOlderTranscriptPage,
+  prependServerTranscript,
 } from '../lib/livechat';
 import notFoundSvg from '../assets/not-found.svg';
 
@@ -109,14 +110,16 @@ function ChatRouteActive({
     void ensureWorkspaceKey(workspaceId);
   }, [workspaceId]);
 
-  // Transcript hydration: opening a chat whose session is server-bound
-  // (sess_<uuid>) replaces the local thread with the authoritative server
-  // transcript — two browsers converge on the same history. Legacy counter
-  // sessions hydrate nothing. On success the catch-up stream attaches (D4):
-  // in-flight re-attachment — the hydrated cursor resumes the server's event
-  // feed so a reload mid-turn streams the remainder of the run to completion.
+  // Transcript hydration (add-server-authoritative-transcript D1): opening a
+  // chat whose session carries an id replaces the local thread with the
+  // authoritative server transcript — two browsers converge on the same
+  // history. The id-shape gate is gone: unknown/foreign ids fail soft through
+  // hydrateSession's catch → null (store untouched). On success the catch-up
+  // stream attaches (D4): in-flight re-attachment — the hydrated cursor
+  // resumes the server's event feed so a reload mid-turn streams the
+  // remainder of the run to completion.
   const catchUpRef = useRef<{ key: string; abort: AbortController } | null>(null);
-  const boundSessionId = session && isBoundSessionId(session.id) ? session.id : null;
+  const boundSessionId = session?.id ?? null;
   useEffect(() => {
     if (!boundSessionId || !chatAgent) return;
     const slug = chatAgent.slug || chatAgent.id;
@@ -206,7 +209,10 @@ function ChatRouteActive({
           ...(hydrated.contextBreakdown ? { contextBreakdown: hydrated.contextBreakdown } : {}),
         });
         if (hydrated.messages.length > 0 && hydrated.pendingInterruptIds.length === 0) {
-          applyServerTranscript(workspaceId, cleanId, boundSessionId, hydrated.messages);
+          // Full replace (add-server-authoritative-transcript D3): the poll
+          // loads the entire log, so paging disarms truthfully — a stale
+          // hasMore would send the sentinel re-fetching pages already shown.
+          applyServerTranscript(workspaceId, cleanId, boundSessionId, hydrated.messages, { hasMore: hydrated.hasMore ?? false });
         }
       } catch {
         // transient poll failure — the next tick retries
@@ -214,6 +220,45 @@ function ChatRouteActive({
     }, 2000);
     return () => clearInterval(timer);
   }, [workspaceId, cleanId, boundSessionId, pendingApprovalInterrupt, chatAgent?.slug, chatAgent?.id]);
+
+  // Older-page fetch (add-server-authoritative-transcript D4/3.3): the
+  // transcript's scroll-up sentinel calls this when the reader nears the log
+  // start. Single in-flight guard (same pattern as catchUpRef); the cursor is
+  // read from the store's session at call time so it never goes stale, and a
+  // missing cursor (nothing older stamped) is a no-op. Returns whether a
+  // fetch actually started — the sentinel releases its scroll anchor when it
+  // did not.
+  const olderFetchRef = useRef(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const onFetchOlder = useCallback((sessionId: string): boolean => {
+    if (olderFetchRef.current) return false;
+    const sess = (useStore.getState().db as any)[workspaceId]?.threads?.[cleanId]?.list?.find((x: any) => x.id === sessionId);
+    const before = sess?.eventsOldest;
+    if (!before) return false;
+    const slug = chatAgent?.slug || chatAgent?.id || '';
+    olderFetchRef.current = true;
+    setLoadingOlder(true);
+    void (async () => {
+      try {
+        // null = fetch failure — soft (3.3): paging stays armed so the next
+        // scroll-up retries; only a real page prepends.
+        const page = await fetchOlderTranscriptPage(workspaceId, slug, sessionId, before);
+        if (page) {
+          prependServerTranscript(workspaceId, cleanId, sessionId, page.messages, { hasMore: page.hasMore, oldest: page.oldest });
+        }
+      } finally {
+        olderFetchRef.current = false;
+        setLoadingOlder(false);
+      }
+    })();
+    return true;
+  }, [workspaceId, cleanId, chatAgent?.slug, chatAgent?.id]);
+
+  // A chat/session switch must not inherit the previous transcript's
+  // loading-earlier row (the in-flight fetch still clears it on completion).
+  useEffect(() => {
+    setLoadingOlder(false);
+  }, [cleanId, boundSessionId]);
 
   const channelMembers = channel
     ? (() => {
@@ -283,6 +328,8 @@ function ChatRouteActive({
           compacting={ui.compacting}
           allowAttachments={target.kind === 'agent'}
           documentsLens={documentsLens}
+          onFetchOlder={onFetchOlder}
+          loadingOlder={loadingOlder}
           registerDocInserter={registerDocInserter}
           onSend={(text: string, chips?: (AttachmentChip | DocumentMentionChip)[]) =>
             chatRuntime.onNew(

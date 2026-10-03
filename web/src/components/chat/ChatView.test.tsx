@@ -1,10 +1,11 @@
 /**
  * @vitest-environment jsdom
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, fireEvent, act } from '@testing-library/react';
 import { ChatView } from './ChatView';
 import { useStore } from '../../store';
+import { fetchOlderTranscriptPage, prependServerTranscript } from '../../lib/livechat';
 
 vi.mock('../../lib/api', () => ({
   api: {
@@ -13,6 +14,18 @@ vi.mock('../../lib/api', () => ({
     tools: { list: vi.fn().mockResolvedValue({ tools: [] }) },
     agents: { listSkills: vi.fn().mockResolvedValue({ skills: [] }) },
   },
+}));
+
+// ChatView only touches the livechat connect-state surface; the paging tests
+// below mock the older-page fetch/prepend pair and drive the store directly.
+const { LIVE_CONNECTED } = vi.hoisted(() => ({ LIVE_CONNECTED: { state: 'connected' as const } }));
+
+vi.mock('../../lib/livechat', () => ({
+  getLiveChatStatus: () => LIVE_CONNECTED,
+  subscribeLiveChat: () => () => {},
+  retryLiveChat: vi.fn(),
+  fetchOlderTranscriptPage: vi.fn(),
+  prependServerTranscript: vi.fn(),
 }));
 
 const tenant = {
@@ -293,5 +306,290 @@ describe('ChatView message queue stack (adopt-assistant-ui-elements 8.2)', () =>
     const { container } = render(<ChatView {...base} busy={false} />);
     expect(container.querySelector('[data-od-id="message-queue"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="queue-running-row"]')).toBeNull();
+  });
+});
+
+// --- Scroll-up paging (add-server-authoritative-transcript D4) --------------
+// The sentinel/observer/anchor live in ChatView; the older-page fetch wiring
+// lives in ChatRoute. These tests render ChatView against the real store and
+// a route-side callback harness that mirrors ChatRoute's onFetchOlder (single
+// in-flight ref guard, cursor read from the store's session), with the
+// livechat module mocked: prependServerTranscript injects through the store
+// so the prepended page renders for real.
+describe('ChatView scroll-up paging (add-server-authoritative-transcript)', () => {
+  class MockIntersectionObserver {
+    static instances: any[] = [];
+    callback: any;
+    constructor(callback: any, _opts?: any) {
+      this.callback = callback;
+      MockIntersectionObserver.instances.push(this);
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+    fire(isIntersecting: boolean) {
+      this.callback([{ isIntersecting }], this);
+    }
+  }
+
+  const pos = { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false };
+
+  const seedStoreSession = (messages: any[], paging?: { hasMore: boolean; oldest?: string }) => {
+    const sess: any = { id: 'sess_1', title: 'History', updated: '', messages };
+    if (paging) {
+      sess.eventsHasMore = paging.hasMore;
+      sess.eventsOldest = paging.oldest;
+    }
+    useStore.setState({
+      pos,
+      db: {
+        ...useStore.getState().db,
+        t1: {
+          ...(useStore.getState().db as any).t1,
+          id: 't1', sub: 't1', name: 'Acme', agents: [], channels: [], people: [],
+          threads: { a1: { active: 'sess_1', list: [sess] } },
+        },
+      },
+    });
+    return sess;
+  };
+
+  const storeSession = () =>
+    (useStore.getState().db as any).t1.threads.a1.list.find((x: any) => x.id === 'sess_1');
+
+  // Mirrors ChatRoute's onFetchOlder: ref guard, cursor from the store's
+  // session, fetch → prepend → clear. Returns whether a fetch started.
+  const makeOnFetchOlder = () => {
+    const guard = { inFlight: false };
+    return vi.fn((sessionId: string): boolean => {
+      if (guard.inFlight) return false;
+      const sess = (useStore.getState().db as any).t1?.threads?.a1?.list?.find((x: any) => x.id === sessionId);
+      const before = sess?.eventsOldest;
+      if (!before) return false;
+      guard.inFlight = true;
+      void (async () => {
+        try {
+          const page = await fetchOlderTranscriptPage('t1', 'atlas', sessionId, before);
+          if (page) prependServerTranscript('t1', 'a1', sessionId, page.messages, { hasMore: page.hasMore, oldest: page.oldest });
+        } finally {
+          guard.inFlight = false;
+        }
+      })();
+      return true;
+    });
+  };
+
+  // Mirrors ChatRoute's read path: thread/session derive from the store (the
+  // slices useThread selects), so a store injection re-renders the view.
+  function PagingHarness(props: any) {
+    const th: any = useStore((s: any) => s.db[s.pos.tenantId]?.threads?.a1);
+    const list = th && !Array.isArray(th) ? th.list : [];
+    const sess = list.find((x: any) => x.id === th?.active) || null;
+    return <ChatView {...base} {...props} thread={sess ? sess.messages : []} session={sess} />;
+  }
+
+  const fireSentinel = (isIntersecting = true) => {
+    const io = MockIntersectionObserver.instances[MockIntersectionObserver.instances.length - 1];
+    expect(io).toBeDefined();
+    act(() => io.fire(isIntersecting));
+  };
+
+  beforeEach(() => {
+    MockIntersectionObserver.instances = [];
+    vi.stubGlobal('IntersectionObserver', MockIntersectionObserver);
+    vi.mocked(fetchOlderTranscriptPage).mockReset();
+    vi.mocked(prependServerTranscript).mockReset();
+    // The real prependServerTranscript contract, re-implemented over the test
+    // store: prepend + stamp the paging fields the sentinel reads back.
+    vi.mocked(prependServerTranscript).mockImplementation((workspaceId: any, chatId: any, sessionId: any, messages: any[], paging: any) => {
+      useStore.getState().updateTenant(workspaceId, (t: any) => {
+        const th = t.threads[chatId];
+        const sess = th && th.list.find((x: any) => x.id === sessionId);
+        if (!sess) return t;
+        sess.messages = [...messages, ...sess.messages];
+        sess.eventsHasMore = paging.hasMore;
+        sess.eventsOldest = paging.hasMore ? paging.oldest : undefined;
+        return t;
+      });
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('(i) a visible sentinel fetches the older page once and the prepended page renders', async () => {
+    seedStoreSession(
+      [
+        { id: 'u1', author: 'you', text: 'recent question', ts: '' },
+        { id: 'm1', author: 'agent', agentId: 'a1', text: 'recent reply', ts: '' },
+      ],
+      { hasMore: true, oldest: 'ev_60' }
+    );
+    let resolvePage: (p: any) => void = () => {};
+    vi.mocked(fetchOlderTranscriptPage).mockImplementation(
+      () => new Promise((res) => { resolvePage = res; })
+    );
+    const onFetchOlder = makeOnFetchOlder();
+    const { container } = render(<PagingHarness onFetchOlder={onFetchOlder} loadingOlder={false} />);
+
+    expect(container.querySelector('[data-testid="history-sentinel"]')).not.toBeNull();
+    fireSentinel(true);
+
+    expect(fetchOlderTranscriptPage).toHaveBeenCalledTimes(1);
+    expect(fetchOlderTranscriptPage).toHaveBeenCalledWith('t1', 'atlas', 'sess_1', 'ev_60');
+
+    await act(async () => {
+      resolvePage({ messages: [{ id: 'old-1', author: 'you', text: 'the older message', ts: '' }], hasMore: false });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // The older page rendered above the recent window through the real store.
+    const oldEl = container.querySelector('[data-msg-id="old-1"]') as Element;
+    const u1El = container.querySelector('[data-msg-id="u1"]') as Element;
+    expect(oldEl).not.toBeNull();
+    expect(oldEl.compareDocumentPosition(u1El) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const sess = storeSession();
+    expect(sess.messages.map((m: any) => m.id)).toEqual(['old-1', 'u1', 'm1']);
+    // A page that exhausted the log stamps hasMore=false (terminal state).
+    expect(sess.eventsHasMore).toBe(false);
+    expect(sess.eventsOldest).toBeUndefined();
+    expect(onFetchOlder).toHaveBeenCalledTimes(1);
+  });
+
+  it('(ii) a visible sentinel expands the local window instead of fetching when messages are hidden locally', () => {
+    const msgs = Array.from({ length: 85 }, (_, i) => ({ id: 'm' + i, author: 'you', text: 'msg ' + i, ts: '' }));
+    seedStoreSession(msgs, { hasMore: true, oldest: 'ev_1' });
+    const onFetchOlder = makeOnFetchOlder();
+    const { container } = render(<PagingHarness onFetchOlder={onFetchOlder} loadingOlder={false} />);
+
+    // The 80-message local window hides five before the expansion.
+    expect(container.querySelectorAll('[data-msg-id]').length).toBe(80);
+    fireSentinel(true);
+
+    expect(fetchOlderTranscriptPage).not.toHaveBeenCalled();
+    expect(onFetchOlder).not.toHaveBeenCalled();
+    // Every locally held message renders after the window expanded.
+    expect(container.querySelectorAll('[data-msg-id]').length).toBe(85);
+  });
+
+  it('(iii) a terminal eventsHasMore=false session issues no fetch however often the sentinel fires', () => {
+    seedStoreSession(
+      [{ id: 'u1', author: 'you', text: 'only page', ts: '' }],
+      { hasMore: false, oldest: undefined }
+    );
+    const onFetchOlder = makeOnFetchOlder();
+    render(<PagingHarness onFetchOlder={onFetchOlder} loadingOlder={false} />);
+
+    for (let i = 0; i < 5; i++) fireSentinel(true);
+
+    expect(fetchOlderTranscriptPage).not.toHaveBeenCalled();
+    expect(onFetchOlder).not.toHaveBeenCalled();
+  });
+
+  it('(iv) double-triggering while a fetch is in flight issues a single call', () => {
+    seedStoreSession(
+      [{ id: 'u1', author: 'you', text: 'recent question', ts: '' }],
+      { hasMore: true, oldest: 'ev_1' }
+    );
+    // Never resolves — the fetch stays in flight for the whole test.
+    vi.mocked(fetchOlderTranscriptPage).mockImplementation(() => new Promise(() => {}));
+    const onFetchOlder = makeOnFetchOlder();
+    const { container, rerender } = render(<PagingHarness onFetchOlder={onFetchOlder} loadingOlder={false} />);
+
+    fireSentinel(true);
+    fireSentinel(true); // synchronous double fire — the route-side ref guard holds
+    expect(fetchOlderTranscriptPage).toHaveBeenCalledTimes(1);
+
+    // The view-side gate: while loadingOlder, the observer callback no-ops.
+    rerender(<PagingHarness onFetchOlder={onFetchOlder} loadingOlder={true} />);
+    expect(container.querySelector('[data-testid="history-loading"]')).not.toBeNull();
+    fireSentinel(true);
+    expect(fetchOlderTranscriptPage).toHaveBeenCalledTimes(1);
+    expect(onFetchOlder).toHaveBeenCalledTimes(2);
+  });
+
+  it('(v) the reading position is preserved across the prepend (height-delta anchor)', async () => {
+    seedStoreSession(
+      [
+        { id: 'u1', author: 'you', text: 'recent question', ts: '' },
+        { id: 'm1', author: 'agent', agentId: 'a1', text: 'recent reply', ts: '' },
+      ],
+      { hasMore: true, oldest: 'ev_1' }
+    );
+    let resolvePage: (p: any) => void = () => {};
+    vi.mocked(fetchOlderTranscriptPage).mockImplementation(
+      () => new Promise((res) => { resolvePage = res; })
+    );
+    const onFetchOlder = makeOnFetchOlder();
+    const { container } = render(<PagingHarness onFetchOlder={onFetchOlder} loadingOlder={false} />);
+
+    // jsdom reports 0s — stub the scroll geometry on the scroll container.
+    const list = container.querySelector('[data-od-id="message-list"]') as HTMLElement;
+    let scrollHeight = 1000;
+    let scrollTop = 0;
+    Object.defineProperty(list, 'scrollHeight', { get: () => scrollHeight, configurable: true });
+    Object.defineProperty(list, 'scrollTop', {
+      get: () => scrollTop,
+      set: (v: number) => { scrollTop = v; },
+      configurable: true,
+    });
+    scrollTop = 400; // the reader is parked 400px into the log
+
+    fireSentinel(true);
+    expect(onFetchOlder).toHaveBeenCalledTimes(1);
+
+    // The prepend grows the document by 600px before the store update lands.
+    scrollHeight = 1600;
+    await act(async () => {
+      resolvePage({ messages: [{ id: 'old-1', author: 'you', text: 'older', ts: '' }], hasMore: false });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // 1600 - 1000 + 400: the same content sits under the viewport top.
+    expect(scrollTop).toBe(1000);
+  });
+
+  it('(vi) the bottom auto-scroll does not force the reader down while the anchor restore lands', async () => {
+    seedStoreSession(
+      [
+        { id: 'u1', author: 'you', text: 'recent question', ts: '' },
+        { id: 'm1', author: 'agent', agentId: 'a1', text: 'recent reply', ts: '' },
+      ],
+      { hasMore: true, oldest: 'ev_1' }
+    );
+    let resolvePage: (p: any) => void = () => {};
+    vi.mocked(fetchOlderTranscriptPage).mockImplementation(
+      () => new Promise((res) => { resolvePage = res; })
+    );
+    const onFetchOlder = makeOnFetchOlder();
+    const { container } = render(<PagingHarness onFetchOlder={onFetchOlder} loadingOlder={false} />);
+
+    const list = container.querySelector('[data-od-id="message-list"]') as HTMLElement;
+    let scrollHeight = 1000;
+    let scrollTop = 0;
+    Object.defineProperty(list, 'scrollHeight', { get: () => scrollHeight, configurable: true });
+    Object.defineProperty(list, 'scrollTop', {
+      get: () => scrollTop,
+      set: (v: number) => { scrollTop = v; },
+      configurable: true,
+    });
+    scrollTop = 400;
+
+    fireSentinel(true);
+    // The prepend grows thread.length — the jump-to-bottom effect runs for
+    // that commit and must skip on the pending anchor, leaving the restore to
+    // win instead of flinging the reader to scrollTop = scrollHeight.
+    scrollHeight = 1600;
+    await act(async () => {
+      resolvePage({ messages: [{ id: 'old-1', author: 'you', text: 'older', ts: '' }], hasMore: false });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(scrollTop).not.toBe(1600); // NOT forced to the bottom
+    expect(scrollTop).toBe(1000);    // the anchor restore won
   });
 });

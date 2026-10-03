@@ -805,6 +805,14 @@ func (h *agentHandlers) ListSessionEvents(c *gin.Context) {
 		limit = n
 	}
 
+	// Backward paging (add-server-authoritative-transcript D2): `before` is
+	// the event-id cursor a scroll-up page reads older than and `reverse`
+	// flips the read to the newest-first window that backs it; both ride the
+	// same limit clamp. Absent (or false) reverse means the forward read
+	// every pre-change client issues.
+	before := c.Query("before")
+	reverse, _ := strconv.ParseBool(c.Query("reverse"))
+
 	streaming, _ := strconv.ParseBool(c.Query("stream"))
 	key := agents.RunKey{WorkspaceID: ws.ID, AgentID: agent.ID, SessionID: sessionID}
 
@@ -832,7 +840,9 @@ func (h *agentHandlers) ListSessionEvents(c *gin.Context) {
 		AgentID:     agent.ID,
 		SessionID:   sessionID,
 		After:       after,
+		Before:      before,
 		Limit:       limit,
+		Reverse:     reverse,
 	})
 	if err != nil {
 		RespondError(c, err)

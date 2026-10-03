@@ -123,13 +123,18 @@ export async function retryLiveChat(workspaceId: string): Promise<string | null>
 // Transcript hydration (server-authoritative replacement, D7)
 // ---------------------------------------------------------------------------
 
-/** Session ids that hydrate from the server transcript: interactive sessions
- * (`sess_<uuid>`) and scheduler-run sessions (`sched_<schedulerID>_<ts>`,
- * integrate-scheduler D7 — run sessions are artifacts that "hydrate like any
- * session"). */
+/** Session ids the CLIENT mints for server-bound conversations: interactive
+ * sessions (`sess_<uuid>`) and scheduler-run sessions (`sched_<schedulerID>_<ts>`,
+ * integrate-scheduler D7). No longer the hydration predicate — every session id
+ * hydrates by behavior now (add-server-authoritative-transcript D1); this stays
+ * exported for minted-session addressing (runtime.tsx) and the chat open path. */
 export function isBoundSessionId(sessionId: string | null | undefined): boolean {
   return typeof sessionId === 'string' && (sessionId.startsWith('sess_') || sessionId.startsWith('sched_'));
 }
+
+/** Windowed hydration page size (add-server-authoritative-transcript D3): the
+ * most recent H events load on open; older history pages in on scroll-up. */
+export const HYDRATION_PAGE_SIZE = 60;
 
 export interface HydratedTranscript {
   messages: any[];
@@ -150,6 +155,12 @@ export interface HydratedTranscript {
   /** Id of the last event folded into this transcript — the `after` cursor a
    * catch-up stream resumes from (D4). Undefined when the transcript is empty. */
   lastEventId?: string;
+  /** Windowed reads only (add-server-authoritative-transcript D3): older
+   * events exist beyond the loaded window. Absent on full loads. */
+  hasMore?: boolean;
+  /** Backward cursor: the oldest event id in the loaded window — the `before`
+   * value for the next older page. Absent on full loads and exhausted logs. */
+  oldestEventId?: string;
 }
 
 function toolCardFor(turn: any): any[] {
@@ -521,33 +532,56 @@ class TranscriptTranslator {
   }
 }
 
+/** Older-page translator id counter (add-server-authoritative-transcript D4):
+ * each backward-window read mints a unique prefix — the translator's synthetic
+ * fallback ids (`<prefix>-u-<messages.length>`) would collide across pages and
+ * with the 'h'/'cu' prefixes when a page lands beside a full load or a
+ * catch-up stream in the same thread. */
+let olderPageCounter = 0;
+
 /**
  * Fetches the session transcript from the native session-events endpoint and
  * translates the event vocabulary into local thread messages. Approvals that
  * the server history shows as unresolved render as pending (actionable) cards.
+ * Without opts this is the pre-change full load (no query string — the
+ * approval poll's full replace depends on it, D3); with opts it is a windowed
+ * read whose wire paging fields map onto the hydrated transcript (D2/D3).
  */
 export async function fetchSessionTranscript(
   workspaceId: string,
   agentSlug: string,
-  sessionId: string
+  sessionId: string,
+  opts?: { limit?: number; before?: string; reverse?: boolean }
 ): Promise<HydratedTranscript> {
-  const res = await api.agents.sessionEvents(workspaceId, agentSlug, sessionId);
+  const res = opts
+    ? await api.agents.sessionEvents(workspaceId, agentSlug, sessionId, opts)
+    : await api.agents.sessionEvents(workspaceId, agentSlug, sessionId);
   const events = res?.events || [];
 
-  const translator = new TranscriptTranslator(sessionId);
+  // Backward-window reads own a unique id prefix (D4) — see olderPageCounter.
+  const translator = new TranscriptTranslator(sessionId, opts?.before ? `pg${++olderPageCounter}` : 'h');
   for (const ev of events || []) translator.push(ev);
-  return translator.result();
+  const hydrated = translator.result();
+  // Windowed reads (D3): has_more says older pages exist beyond the window;
+  // oldest is the next backward cursor. Absent on full loads / old backends.
+  if (res?.has_more !== undefined) hydrated.hasMore = !!res.has_more;
+  if (res?.oldest) hydrated.oldestEventId = res.oldest;
+  return hydrated;
 }
 
 /**
  * Replaces the local thread for a bound session with the server transcript
  * (server-authoritative), preserving only an in-flight optimistic user message.
+ * `paging` (add-server-authoritative-transcript D3) stamps the scroll-up
+ * cursors alongside the messages: hasMore=false disarms paging and clears the
+ * older cursor.
  */
 export function applyServerTranscript(
   workspaceId: string,
   chatId: string,
   sessionId: string,
-  messages: any[]
+  messages: any[],
+  paging?: { hasMore: boolean; oldest?: string }
 ): void {
   const store: any = useStore.getState();
   store.updateTenant(workspaceId, (t: any) => {
@@ -596,14 +630,151 @@ export function applyServerTranscript(
       if (!serverTurnText.has(resp)) clientOnly.push(m);
     }
     sess.messages = [...replaced, ...clientOnly, ...inFlight];
+    if (paging) {
+      sess.eventsHasMore = paging.hasMore;
+      sess.eventsOldest = paging.hasMore ? paging.oldest : undefined;
+    }
+    return t;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Infinite scroll-up paging (add-server-authoritative-transcript D4)
+// ---------------------------------------------------------------------------
+
+/** One older transcript page (D4): the translated messages strictly older than
+ * the request cursor, plus the wire's backward paging state and the newest
+ * event id the page folded (its own catch-up cursor, unused for prepend). */
+export interface OlderPage {
+  messages: any[];
+  hasMore: boolean;
+  oldest?: string;
+  lastEventId?: string;
+}
+
+/** Merges the thread's continuation of the boundary turn (`cont`) INTO the
+ * page's partial (`page` — earlier in the same turn) so a page boundary that
+ * falls mid-turn renders as ONE composed turn, matching a full-load render
+ * (add-server-authoritative-transcript D4). Tool cards unify by call id with
+ * the thread side's res/ms/error winning (finished beats started); texts and
+ * ordered parts concatenate with the page side first, the thread side's tool
+ * parts reindexed into the combined card list (parts' tool entries index into
+ * m.tools). The page row keeps its identity — id/ts/resp stay stable. */
+function mergeBoundaryTurn(page: any, cont: any): void {
+  if (!Array.isArray(page.tools)) page.tools = [];
+  const pageToolsCount = page.tools.length;
+  for (const card of Array.isArray(cont.tools) ? cont.tools : []) {
+    const existing = card && card.callId ? page.tools.find((t: any) => t.callId === card.callId) : undefined;
+    if (existing) {
+      if (card.res !== undefined) existing.res = card.res;
+      if (card.ms !== undefined) existing.ms = card.ms;
+      if (card.error !== undefined) existing.error = card.error;
+    } else {
+      page.tools.push(card);
+    }
+  }
+  page.text = (page.text || '') + (cont.text || '');
+  const contParts = Array.isArray(cont.parts) ? cont.parts : [];
+  page.parts = [
+    ...(Array.isArray(page.parts) ? page.parts : []),
+    ...contParts.map((p: any) => (p && p.k === 'tool' ? { ...p, i: p.i + pageToolsCount } : p)),
+  ];
+}
+
+/**
+ * Fetches the page of events strictly older than `before` (the oldest loaded
+ * event id) and translates it like hydration (add-server-authoritative-
+ * transcript D4). Null on any failure — unknown cursor (400), network miss,
+ * aborted signal — the scroll-up sentinel treats it as a soft miss, the
+ * thread's paging state untouched.
+ */
+export async function fetchOlderTranscriptPage(
+  workspaceId: string,
+  agentSlug: string,
+  sessionId: string,
+  before: string,
+  signal?: AbortSignal
+): Promise<OlderPage | null> {
+  try {
+    const hydrated = await fetchSessionTranscript(workspaceId, agentSlug, sessionId, {
+      before,
+      limit: HYDRATION_PAGE_SIZE,
+    });
+    if (signal?.aborted) return null;
+    return {
+      messages: hydrated.messages,
+      hasMore: !!hydrated.hasMore,
+      ...(hydrated.oldestEventId !== undefined ? { oldest: hydrated.oldestEventId } : {}),
+      ...(hydrated.lastEventId !== undefined ? { lastEventId: hydrated.lastEventId } : {}),
+    };
+  } catch {
+    // Soft failure: the thread keeps its current window; the sentinel may
+    // retry on the next scroll-up.
+    return null;
+  }
+}
+
+/**
+ * Prepends an older transcript page BEFORE the thread's own rows
+ * (add-server-authoritative-transcript D4), stamping the paging cursors exactly
+ * like applyServerTranscript. One exception to plain prepend: when the page's
+ * newest agent turn is the SAME turn the thread starts with (the page boundary
+ * fell mid-turn), the thread's leading rows of that turn merge into the page's
+ * copy instead of rendering as a split bubble. The streamed-tail/in-flight
+ * preservation of applyServerTranscript does NOT apply here — prepend never
+ * replaces the thread's own rows beyond that boundary merge.
+ */
+export function prependServerTranscript(
+  workspaceId: string,
+  chatId: string,
+  sessionId: string,
+  messages: any[],
+  paging: { hasMore: boolean; oldest?: string }
+): void {
+  const store: any = useStore.getState();
+  store.updateTenant(workspaceId, (t: any) => {
+    const th = t.threads[chatId];
+    const sess = th && th.list.find((x: any) => x.id === sessionId);
+    if (!sess) return t;
+    // Boundary turn (D4): the page's newest agent message, named by the resp
+    // codec (resp_<session>_<turn>, stamped by the translator's flushTurn).
+    const prefix = 'resp_' + sessionId + '_';
+    let pageTail: any = null;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m && m.author === 'agent' && typeof m.resp === 'string' && m.resp.startsWith(prefix)) {
+        pageTail = m;
+        break;
+      }
+    }
+    // Boundary merge: the thread's LEADING run of agent rows of that same turn
+    // folds into the page's copy and is dropped from the thread side.
+    let consumed = 0;
+    if (pageTail) {
+      const turnResp = pageTail.resp;
+      while (consumed < sess.messages.length) {
+        const m = sess.messages[consumed];
+        if (m && m.author === 'agent' && m.resp === turnResp) {
+          mergeBoundaryTurn(pageTail, m);
+          consumed++;
+        } else break;
+      }
+    }
+    sess.messages = [...messages, ...sess.messages.slice(consumed)];
+    sess.eventsHasMore = paging.hasMore;
+    sess.eventsOldest = paging.hasMore ? paging.oldest : undefined;
     return t;
   });
 }
 
 /**
- * Hydrates a bound session into the local store: fetches the server transcript
- * and REPLACES the local thread (server is authoritative), preserving only an
- * in-flight optimistic user message. Legacy unbound sessions hydrate nothing.
+ * Hydrates a session into the local store: fetches the server transcript and
+ * REPLACES the local thread (server is authoritative), preserving only an
+ * in-flight optimistic user message. Any session id hydrates by behavior
+ * (add-server-authoritative-transcript D1 — the server answers "do you know
+ * this session" cheaply); unknown/foreign ids fail soft through the catch
+ * (local thread untouched). The open loads the most recent window only (D3);
+ * older history pages in via fetchOlderTranscriptPage on scroll-up.
  */
 export async function hydrateSession(opts: {
   workspaceId: string;
@@ -620,12 +791,15 @@ export async function hydrateSession(opts: {
   originTag?: string;
 }): Promise<HydratedTranscript | null> {
   const { workspaceId, agentSlug, chatId, sessionId, signal, originTag } = opts;
-  if (!isBoundSessionId(sessionId)) return null;
   let hydrated: HydratedTranscript;
   try {
-    hydrated = await fetchSessionTranscript(workspaceId, agentSlug, sessionId);
+    hydrated = await fetchSessionTranscript(workspaceId, agentSlug, sessionId, {
+      limit: HYDRATION_PAGE_SIZE,
+      reverse: true,
+    });
   } catch {
-    // Old backend / transient failure: keep the local thread untouched.
+    // Old backend / transient failure / unknown session: keep the local
+    // thread untouched.
     return null;
   }
   if (signal?.aborted) return null;
@@ -635,7 +809,10 @@ export async function hydrateSession(opts: {
     }
   }
   if (hydrated.messages.length > 0) {
-    applyServerTranscript(workspaceId, chatId, sessionId, hydrated.messages);
+    applyServerTranscript(workspaceId, chatId, sessionId, hydrated.messages, {
+      hasMore: hydrated.hasMore ?? false,
+      ...(hydrated.oldestEventId !== undefined ? { oldest: hydrated.oldestEventId } : {}),
+    });
   }
   return hydrated;
 }

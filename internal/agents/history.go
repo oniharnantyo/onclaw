@@ -78,13 +78,26 @@ type HistoryRequest struct {
 	AgentID     string `json:"agent_id"`
 	SessionID   string `json:"session_id"`
 	After       string `json:"after"`
-	Limit       int    `json:"limit"`
+	// Before selects a backward window (add-server-authoritative-transcript
+	// D2): the events immediately older than the referenced event, returned
+	// oldest-to-newest like every other read. Together with Reverse it never
+	// combines with After on a single request.
+	Before  string `json:"before"`
+	Limit   int    `json:"limit"`
+	Reverse bool   `json:"reverse"`
 }
 
 // HistoryResult contains the translated transcript events and next pagination cursor.
 type HistoryResult struct {
 	Events []TranscriptEvent `json:"events"`
 	Next   string            `json:"next"`
+	// HasMore and Oldest back the backward window (add-server-authoritative-
+	// transcript D2): Oldest is the oldest returned event id — the next
+	// backward cursor — and a false/absent HasMore means the beginning of the
+	// log was reached. Forward reads leave both zero so the JSON response is
+	// byte-identical to the pre-change contract.
+	HasMore bool   `json:"has_more,omitempty"`
+	Oldest  string `json:"oldest,omitempty"`
 }
 
 // History loads persisted session events and translates them into domain TranscriptEvents.
@@ -105,17 +118,53 @@ func (r *Runner) History(ctx context.Context, req HistoryRequest) (*HistoryResul
 		AfterEventID: req.After,
 		Limit:        req.Limit,
 	}
+	// Backward window (add-server-authoritative-transcript D2): the store
+	// returns the window ending at the Before cursor newest-first (its
+	// reverse keyset), so History probes one row past the page to compute
+	// HasMore and reverses the window to ASC before translation — clients
+	// always read oldest-to-newest.
+	if req.Reverse {
+		params.AfterEventID = req.Before
+		params.Reverse = true
+		if req.Limit > 0 {
+			params.Limit = req.Limit + 1
+		}
+	}
 
 	rows, err := r.sessionEvents.LoadEvents(ctx, params)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
+			// An unknown cursor is a client error — the endpoint's
+			// invalid_request contract — not an empty page. Without a cursor
+			// an unknown session stays the soft empty page hydration relies
+			// on. params.AfterEventID is the cursor the store actually
+			// resolved: req.Before on backward reads, req.After otherwise.
+			if cursor := params.AfterEventID; cursor != "" {
+				return nil, fmt.Errorf("%w: cursor event %q not found in session", domain.ErrInvalid, cursor)
+			}
 			return &HistoryResult{Events: []TranscriptEvent{}, Next: ""}, nil
 		}
 		return nil, fmt.Errorf("agent.History: load events: %w", err)
 	}
 
-	var next string
-	if req.Limit > 0 && len(rows) >= req.Limit {
+	var next, oldest string
+	hasMore := false
+	if req.Reverse {
+		// Drop the +1 probe row: its presence is exactly the has-more signal,
+		// and the kept window's last DESC row is the oldest returned event —
+		// the next backward cursor. A limitless backward read cannot have
+		// more behind it.
+		if req.Limit > 0 && len(rows) > req.Limit {
+			hasMore = true
+			rows = rows[:req.Limit]
+		}
+		if len(rows) > 0 {
+			oldest = rows[len(rows)-1].EventID
+		}
+		for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
+			rows[i], rows[j] = rows[j], rows[i]
+		}
+	} else if req.Limit > 0 && len(rows) >= req.Limit {
 		next = rows[len(rows)-1].EventID
 	}
 
@@ -396,8 +445,10 @@ func (r *Runner) History(ctx context.Context, req HistoryRequest) (*HistoryResul
 	}
 
 	return &HistoryResult{
-		Events: events,
-		Next:   next,
+		Events:  events,
+		Next:    next,
+		HasMore: hasMore,
+		Oldest:  oldest,
 	}, nil
 }
 

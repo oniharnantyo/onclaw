@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useSyncExternalStore } from "react";
+import { useState, useRef, useEffect, useCallback, useSyncExternalStore } from "react";
 import { cx } from "../../lib/helpers";
 import { Icon } from "../ui/Icon";
 import { Avatar } from "../ui/Avatar";
@@ -85,6 +85,7 @@ function useSkillGroups(tenant: any, agent: any) {
 
 export function ChatView({ tenant, target, agent, thread, session, channelMembers, onOpenMembers,
   typing, busy, compacting, allowAttachments, documentsLens, registerDocInserter,
+  onFetchOlder, loadingOlder,
   onSend, onCancel, onCopy, onRefresh, onBranch, onEditSubmit  }: any) {
   const listRef = useRef(null);
   const atBottomRef = useRef(true);
@@ -164,11 +165,34 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
   const visibleMsgs = thread.length > msgLimit ? thread.slice(thread.length - msgLimit) : thread;
   const hiddenMsgs = thread.length - visibleMsgs.length;
 
+  // Scroll-up paging state (add-server-authoritative-transcript D4): the
+  // sentinel observer arms once per session, so its callback reads this
+  // per-render mirror instead of stale closure state — the terminal
+  // eventsHasMore=false check lives inside the callback (3.3).
+  const pagingRef = useRef({ hidden: 0, hasMore: false, loading: false, sessionId: '' });
+  pagingRef.current = {
+    hidden: hiddenMsgs,
+    hasMore: Boolean(session?.eventsHasMore),
+    loading: Boolean(loadingOlder),
+    sessionId: sessionId || '',
+  };
+  // Reading-position anchor (3.2): recorded when the sentinel triggers the
+  // older-page fetch, consumed by the restore pass after the prepend lands.
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const savedScrollRef = useRef<{ top: number; height: number } | null>(null);
+  const anchorPendingRef = useRef(false);
+
   // A new message lands at the bottom — a sent message included, so the
   // response starts in view — and chat/session switches reset to the bottom.
   useEffect(() => {
     const el = listRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    // add-server-authoritative-transcript 3.2: while an older-page anchor
+    // restore is pending, the prepend owns this commit's scroll — forcing
+    // the reader to the bottom here would undo the anchor; the restore pass
+    // below repositions instead.
+    if (anchorPendingRef.current) return;
+    el.scrollTop = el.scrollHeight;
   }, [thread.length, typing, target.obj.id, sessionId]);
 
   // Follow the streaming tail: deltas mutate the last message in place (no
@@ -181,6 +205,69 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
     const el = listRef.current;
     if (el && atBottomRef.current) el.scrollTop = el.scrollHeight;
   });
+
+  // Reading-position restore (add-server-authoritative-transcript 3.2):
+  // height-delta method — scrollHeight+scrollTop recorded before the
+  // older-page fetch, scrollTop re-parked after the prepend's DOM insert so
+  // the reader stays on the same content. Declared AFTER the bottom-scroll
+  // effects so it runs later in the same passive-effect queue and wins.
+  useEffect(() => {
+    if (!anchorPendingRef.current) return;
+    const el = listRef.current;
+    const saved = savedScrollRef.current;
+    const inserted = Boolean(el && saved && el.scrollHeight !== saved.height);
+    // The loading-state render (fetch still in flight, nothing inserted)
+    // must not consume the anchor — hold until the prepend lands or the
+    // fetch ends without one.
+    if (!inserted && loadingOlder) return;
+    anchorPendingRef.current = false;
+    savedScrollRef.current = null;
+    if (inserted && el && saved) el.scrollTop = el.scrollHeight - saved.height + saved.top;
+  });
+
+  // Sentinel decision (add-server-authoritative-transcript D4/3.1): local
+  // window first — render everything the store already holds before any
+  // network fetch; only then an older-page fetch, which records the scroll
+  // anchor and reports failure to start (already in flight, cursor missing)
+  // so the anchor is released immediately.
+  const handleSentinelVisible = useCallback(() => {
+    const st = pagingRef.current;
+    if (st.hidden > 0) {
+      setMsgLimit(Number.MAX_SAFE_INTEGER);
+      return;
+    }
+    // Terminal state (3.3): eventsHasMore=false issues no fetch — the
+    // observer stays armed and simply no-ops.
+    if (!st.hasMore || st.loading || !st.sessionId) return;
+    const el = listRef.current;
+    if (el) {
+      savedScrollRef.current = { top: el.scrollTop, height: el.scrollHeight };
+      anchorPendingRef.current = true;
+    }
+    if (onFetchOlder?.(st.sessionId) === false) {
+      savedScrollRef.current = null;
+      anchorPendingRef.current = false;
+    }
+  }, [onFetchOlder]);
+
+  // Top-sentinel observer (add-server-authoritative-transcript D4/3.1): fires
+  // when the marker above the transcript scrolls into a 200px overscan of the
+  // viewport top. jsdom has no IntersectionObserver — skip observation there
+  // (tests drive handleSentinelVisible through a stub).
+  useEffect(() => {
+    if (!session || typeof IntersectionObserver === 'undefined') return;
+    const el = sentinelRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver((entries) => {
+      // Guard against a sentinel unmounted between fire and callback.
+      if (!sentinelRef.current) return;
+      for (const entry of entries) {
+        if (entry.isIntersecting) handleSentinelVisible();
+      }
+    }, { threshold: 0, rootMargin: '200px 0px 0px 0px' });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [session?.id, handleSentinelVisible]);
 
   const onScroll = (e) => {
     const el = e.currentTarget;
@@ -303,6 +390,15 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
       <div className="flex min-h-0 flex-1">
         <ConversationRail entries={visibleMsgs} listRef={listRef}/>
         <div ref={listRef} onScroll={onScroll} role="log" aria-label="Messages" className="od-scroll min-w-0 flex-1 overflow-y-auto" data-od-id="message-list">
+        {/* Scroll-up sentinel (add-server-authoritative-transcript D4): first
+            child of the scroll container, always mounted while a session is
+            open — the observer above watches it with a 200px overscan. */}
+        {session && <div ref={sentinelRef} data-testid="history-sentinel" aria-hidden="true" className="h-px w-full shrink-0"/>}
+        {session && loadingOlder && (
+          <div data-testid="history-loading" role="status" className="flex justify-center px-2 py-2">
+            <span className="text-[11px] text-muted">Loading earlier messages…</span>
+          </div>
+        )}
         {isEmpty ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center">
             {agent && <Avatar name={agent.name} avatar={agent.avatar} kind="agent" size={44}/>}
