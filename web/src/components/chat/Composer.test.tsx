@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, render, screen, fireEvent } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { Composer } from './Composer';
 import { useStore } from '../../store';
+import { attachCatchUpStream, abortCatchUpStream } from '../../lib/livechat';
 
 const skillGroups = [
   {
@@ -307,5 +308,110 @@ describe('components/chat/Composer document mention bridge (rework-document-chat
     );
     utils.unmount();
     expect(registerDocMention).toHaveBeenLastCalledWith(null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stop control on a followed run (fix-chat-stop-on-reattached-run D2): the
+// composer's Stop/Send flip projects ui.running exactly like ChatView wires
+// it (busy={ui.running}). While the page follows a run through the catch-up
+// stream, Stop must clear the control immediately on click — the runtime's
+// abort-before-patch ordering — and the post-abort event guard must keep a
+// stale followed-stream event from re-asserting the spinner (the control
+// never reappears).
+// ---------------------------------------------------------------------------
+
+describe('components/chat/Composer stop control on a followed run (fix-chat-stop-on-reattached-run D2)', () => {
+  // This environment's jsdom may expose no localStorage (same mode behind the
+  // ~66 pre-existing failures); install a minimal stub so the store boots.
+  if (typeof (globalThis as any).localStorage === 'undefined') {
+    const backing = new Map<string, string>();
+    (globalThis as any).localStorage = {
+      getItem: (k: string) => (backing.has(k) ? backing.get(k)! : null),
+      setItem: (k: string, v: string) => void backing.set(k, String(v)),
+      removeItem: (k: string) => void backing.delete(k),
+      clear: () => void backing.clear(),
+      key: (i: number) => Array.from(backing.keys())[i] ?? null,
+      get length() { return backing.size; },
+    };
+  }
+
+  beforeEach(() => {
+    localStorage.clear();
+    const db: any = {
+      ws1: {
+        id: 'ws1', name: 'WS', sub: 'ws1', tz: 'UTC',
+        agents: [], channels: [], people: [], schedules: [], runs: [], members: [], integrations: [], skillLib: [], keys: [],
+        threads: { a1: { active: 'sess_live', list: [{ id: 'sess_live', title: 'Live', updated: '', messages: [] }] } },
+      },
+    };
+    act(() => {
+      useStore.setState({
+        db,
+        pos: { tenantId: 'ws1', view: 'chats', chatId: 'a1', showContext: false, railExpanded: false },
+        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, runningChatId: null, toasts: [] },
+      });
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // The real ChatView wiring: `running` reads ui.running, so the control's
+  // flips project the run state the runtime and the catch-up stream drive.
+  const Harness = ({ onCancel }: { onCancel: () => void }) => {
+    const running = useStore((s: any) => !!s.ui.running);
+    return <Composer agent={{ name: 'Atlas' }} running={running} onSend={vi.fn()} onCancel={onCancel} />;
+  };
+
+  it('stop clears immediately on click and does not reappear from a stale followed-stream event', async () => {
+    // The followed stream: a run_active frame flips the spinner, then a
+    // trailing INCOMPLETE delta frame parks in the consumer's buffer — the
+    // stop-abort ends the read loop and its final-buffer flush delivers the
+    // stale event AFTER the stop (the exact shape the runtime guard drops).
+    const enc = new TextEncoder();
+    const fr = (ev: any) => `data: ${JSON.stringify(ev)}\n\n`;
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(enc.encode(fr({ kind: 'run_active', occurred_at: 'x' })));
+            controller.enqueue(enc.encode(`data: ${JSON.stringify({ id: 'e9', kind: 'text_delta', occurred_at: 'x', turn_id: 't1', text_delta: 'late' })}`));
+          },
+        }),
+      }) as unknown as Response
+    ));
+    attachCatchUpStream({ workspaceId: 'ws1', agentSlug: 'atlas', chatId: 'a1', sessionId: 'sess_live' });
+
+    // The runtime's landed stop sequence (fix-chat-stop-on-reattached-run D2):
+    // detach the followed stream FIRST, then clear the running state.
+    const onCancel = () => {
+      abortCatchUpStream('a1');
+      useStore.getState().patchUi({ running: false });
+    };
+    render(<Harness onCancel={onCancel} />);
+
+    // Following the run shows the Stop control, not Send.
+    await waitFor(() => expect(useStore.getState().ui.running).toBe(true));
+    expect(document.querySelector('[data-od-id="btn-cancel"]')).not.toBeNull();
+    expect(screen.queryByTestId('btn-send')).toBeNull();
+
+    // The control clears on the click's very render — the abort-before-patch
+    // ordering leaves nothing to re-assert the spinner.
+    fireEvent.click(document.querySelector('[data-od-id="btn-cancel"]')!);
+    expect(useStore.getState().ui.running).toBe(false);
+    expect(document.querySelector('[data-od-id="btn-cancel"]')).toBeNull();
+    expect(screen.queryByTestId('btn-send')).not.toBeNull();
+
+    // The stale event fires post-abort and is dropped by the guard: the
+    // spinner is never re-asserted, so the Stop control never reappears.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(useStore.getState().ui.running).toBe(false);
+    expect(document.querySelector('[data-od-id="btn-cancel"]')).toBeNull();
+    expect(screen.queryByTestId('btn-send')).not.toBeNull();
   });
 });

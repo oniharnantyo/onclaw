@@ -30,7 +30,9 @@ function seed(opts: { running?: boolean; messages?: any[]; agentName?: string } 
   const chatId = `chat-${++chatSeq}`;
   useStore.setState((s: any) => ({
     pos: { ...s.pos, tenantId: 't1', chatId },
-    ui: { ...s.ui, running: opts.running ?? false },
+    // Same-chat stamp (fix-thinking-leak-on-chat-switch): the mirror's run
+    // selector gates on runningChatId === pos.chatId.
+    ui: { ...s.ui, running: opts.running ?? false, runningChatId: opts.running ? chatId : null },
     db: {
       ...s.db,
       t1: {
@@ -54,7 +56,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  useStore.setState({ ui: { ...(useStore.getState() as any).ui, running: false } });
+  useStore.setState({ ui: { ...(useStore.getState() as any).ui, running: false, runningChatId: null } });
 });
 
 describe('panel sources/browser — candidate matcher (4.1)', () => {

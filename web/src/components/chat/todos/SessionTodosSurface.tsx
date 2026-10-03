@@ -46,7 +46,10 @@ function TodosPanel({ plan, agent, onDismiss }: { plan: any; agent: any; onDismi
 
 export function SessionTodosSurface({ agent }: { agent: any }) {
   const { plan, callId } = useSessionTodoPlan();
-  const running = useStore((s: any) => !!s.ui.running);
+  // Same-chat scope (fix-thinking-leak-on-chat-switch): the D4 auto-open /
+  // auto-collapse machine must follow THIS chat's run, not a turn streaming
+  // in some other chat.
+  const running = useStore((s: any) => !!s.ui.running && s.ui.runningChatId === s.pos.chatId);
 
   // The popover must never survive a chat switch: render-time reset keyed on
   // the open chat (ContextRing's sanctioned adjustment pattern). The machine

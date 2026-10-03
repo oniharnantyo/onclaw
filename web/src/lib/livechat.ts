@@ -421,6 +421,32 @@ class TranscriptTranslator {
         this.noteInterruptActivity();
         break;
       }
+      case 'skill_candidate': {
+        // Skill-curation chip (add-skill-curation-from-traces): a run that
+        // passed every qualification gate is candidate-bearing evidence —
+        // the payload carries the run's coordinates and, once the proposer
+        // has drafted one, the candidate's id and skill name. Same shape as
+        // the memory chip: its own post-turn entry, minted identically for
+        // hydrated history and the catch-up replay.
+        if (this.turnUser || this.turnAgent) this.flushTurn();
+        this.messages.push({
+          id: ev.id || `${this.idPrefix}-skc-${this.messages.length}`,
+          author: 'skill_candidate',
+          ts: ev.occurred_at || '',
+          text: '',
+          skillCandidate: {
+            workspaceId: ev.skill_candidate?.workspace_id || '',
+            agentId: ev.skill_candidate?.agent_id || '',
+            sessionId: ev.skill_candidate?.session_id || '',
+            runId: ev.skill_candidate?.run_id || '',
+            clusterId: ev.skill_candidate?.cluster_id || '',
+            skillName: ev.skill_candidate?.skill_name || '',
+            candidateId: ev.skill_candidate?.candidate_id || '',
+          },
+        });
+        this.noteInterruptActivity();
+        break;
+      }
       case 'turn_started':
       case 'cancelled':
       case 'error':
@@ -528,11 +554,48 @@ export function applyServerTranscript(
     const th = t.threads[chatId];
     const sess = th && th.list.find((x: any) => x.id === sessionId);
     if (!sess) return t;
-    const running = store.ui.running;
+    const running = store.ui.running && store.ui.runningChatId === chatId;
     const lastLocal = sess.messages[sess.messages.length - 1];
     const inFlight =
       running && lastLocal && lastLocal.author === 'you' ? [lastLocal] : [];
-    sess.messages = [...messages, ...inFlight];
+    // Streamed-turn preservation (fix-chat-stop-on-reattached-run D5): a turn
+    // the client followed live carries text/reasoning deltas that are NEVER
+    // persisted until its message completes, so a replace whose snapshot
+    // predates that — a hydrate/poll racing the run's terminal, or a run the
+    // stop cancelled (its partial message is never persisted) — would vanish
+    // the streamed tail. Turns are identified by the resp codec
+    // (resp_<session>_<turn>, stamped by both the hydration translator's
+    // flushTurn and the catch-up write): a turn history shows no longer body
+    // of keeps its local row — in place of a shorter server snapshot of the
+    // same turn, appended when history never persisted it. Post-terminal
+    // snapshots carry the full text and win, so convergence is unchanged.
+    const prefix = 'resp_' + sessionId + '_';
+    const turnResp = (m: any) =>
+      m && m.author === 'agent' && typeof m.resp === 'string' && m.resp.startsWith(prefix)
+        ? m.resp
+        : null;
+    const strongestLocal = new Map<string, any>();
+    for (const m of sess.messages) {
+      const resp = turnResp(m);
+      if (!resp) continue;
+      const current = strongestLocal.get(resp);
+      if ((m.text || '').length >= (current?.text || '').length) strongestLocal.set(resp, m);
+    }
+    const serverTurnText = new Map<string, number>();
+    for (const m of messages) {
+      const resp = turnResp(m);
+      if (resp) serverTurnText.set(resp, Math.max(serverTurnText.get(resp) ?? 0, (m.text || '').length));
+    }
+    const replaced = messages.map((m: any) => {
+      const resp = turnResp(m);
+      const local = resp ? strongestLocal.get(resp) : undefined;
+      return local && (local.text || '').length > (m.text || '').length ? local : m;
+    });
+    const clientOnly: any[] = [];
+    for (const [resp, m] of strongestLocal) {
+      if (!serverTurnText.has(resp)) clientOnly.push(m);
+    }
+    sess.messages = [...replaced, ...clientOnly, ...inFlight];
     return t;
   });
 }
@@ -726,6 +789,19 @@ export async function streamSessionEvents(opts: StreamSessionEventsOptions): Pro
   }
 }
 
+/** Live catch-up streams by chat id (fix-chat-stop-on-reattached-run D1):
+ * `attachCatchUpStream` registers the AbortController owning its stream so the
+ * stop control can detach a run the client is only FOLLOWING — followed runs
+ * hold no turn identity in the runtime's in-flight record. Last-writer-wins:
+ * registering a new stream for a chat aborts the previous entry's controller. */
+const catchUpStreams = new Map<string, AbortController>();
+
+/** Aborts the chat's live catch-up stream, if one is attached. No-op when
+ * nothing (or an already-dead stream) is registered. */
+export function abortCatchUpStream(chatId: string): void {
+  catchUpStreams.get(chatId)?.abort();
+}
+
 /**
  * Attaches the catch-up stream for a bound session (D4): streams every event
  * after the hydrate cursor and folds live deltas, tool cards, and reasoning
@@ -752,6 +828,19 @@ export function attachCatchUpStream(opts: {
 }): void {
   const { workspaceId, agentSlug, chatId, sessionId, after, signal, onDone, onError } = opts;
   if (signal?.aborted) return;
+  // Owned abort handle (fix-chat-stop-on-reattached-run D1): registered per
+  // chat so the stop control can detach a stream the client is only FOLLOWING
+  // (followed runs hold no turn identity in the runtime), and chained to the
+  // caller signal so a chat switch/unmount tears the stream down with the same
+  // silent (no onDone/onError) semantics as before.
+  const streamAbort = new AbortController();
+  const prev = catchUpStreams.get(chatId);
+  if (prev) prev.abort();
+  catchUpStreams.set(chatId, streamAbort);
+  const release = () => {
+    if (catchUpStreams.get(chatId) === streamAbort) catchUpStreams.delete(chatId);
+  };
+  signal?.addEventListener('abort', () => streamAbort.abort(), { once: true });
   const translator = new TranscriptTranslator(sessionId, 'cu');
   const owned = new Set<string>();
 
@@ -774,6 +863,16 @@ export function attachCatchUpStream(opts: {
 
   const write = () => {
     const view = translator.view();
+    // Stamp the in-flight turn's response codec on the live tail (D5): the
+    // translator stamps resp only at flush (turn boundary / hydration
+    // terminal), so a catch-up tail row would otherwise carry no resp —
+    // invisible to the streamed-turn preservation in applyServerTranscript
+    // and unchainable for a follow-up attach's seed. Idempotent with
+    // flushTurn's stamp (same codec, same turn).
+    const tail = view.tail;
+    if (tail?.agent && tail.turnId) {
+      tail.agent.resp = 'resp_' + sessionId + '_' + tail.turnId;
+    }
     const rendered = view.tail
       ? [...view.messages, view.tail.user, view.tail.agent].filter(Boolean)
       : view.messages;
@@ -811,30 +910,42 @@ export function attachCatchUpStream(opts: {
     }
   };
 
-  // Chat switch / unmount mid-catch-up: nothing else will call onDone, so
-  // clear the composer spinner here.
-  signal?.addEventListener('abort', () => useStore.getState().patchUi({ running: false }), { once: true });
+  // Stream teardown (chat switch via the chained caller signal, or the stop
+  // control via abortCatchUpStream): nothing else will call onDone, so clear
+  // the composer spinner here.
+  streamAbort.signal.addEventListener('abort', () => {
+    release();
+    useStore.getState().patchUi({ running: false });
+  }, { once: true });
 
   void streamSessionEvents({
     workspaceId,
     agentSlug,
     sessionId,
     after,
-    signal,
+    signal: streamAbort.signal,
     onEvent: (ev) => {
+      // Stop won the race (fix-chat-stop-on-reattached-run D2): an event
+      // already in flight when the stream was aborted — e.g. the consumer's
+      // final-buffer flush — must not re-assert the spinner or write the
+      // transcript.
+      if (streamAbort.signal.aborted) return;
       // Live catch-up renders exactly like a live turn: spinner on until the
       // server closes the stream. The synthetic run_active frame (no run
       // payload) flips the spinner the moment the tap attaches — before the
-      // first real event, which can be seconds away mid-tool-call.
-      useStore.getState().patchUi({ running: true });
+      // first real event, which can be seconds away mid-tool-call. The stamp
+      // scopes the spinner to THIS chat (fix-thinking-leak-on-chat-switch).
+      useStore.getState().patchUi({ running: true, runningChatId: chatId });
       translator.push(ev);
       write();
     },
     onDone: () => {
+      release();
       useStore.getState().patchUi({ running: false });
       onDone?.();
     },
     onError: (err) => {
+      release();
       useStore.getState().patchUi({ running: false });
       onError?.(err);
     },

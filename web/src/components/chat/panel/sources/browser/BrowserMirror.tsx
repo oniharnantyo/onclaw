@@ -33,7 +33,9 @@ export function BrowserMirror({ ctx }: any) {
   const tenantId = useStore((s: any) => s.pos.tenantId);
   const chatId = useStore((s: any) => s.pos.chatId);
   const tenant = useStore((s: any) => s.db[tenantId]);
-  const running = useStore((s: any) => s.ui.running);
+  // Same-chat scope (fix-thinking-leak-on-chat-switch): a run streaming in
+  // another chat keeps this chat's mirror frozen — no live activity here.
+  const running = useStore((s: any) => Boolean(s.ui.running) && s.ui.runningChatId === s.pos.chatId);
   const thread = useStore((s: any) => s.db[tenantId]?.threads[chatId]);
 
   const session = thread && !Array.isArray(thread) ? thread.list?.find((x: any) => x.id === thread.active) : null;

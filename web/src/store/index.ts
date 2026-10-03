@@ -127,6 +127,12 @@ export interface AppState {
     // A /compact turn is in flight (chat-compact-command): the transcript
     // shows the "Compacting context…" status row instead of the thinking row.
     compacting?: boolean;
+    // The chat the in-flight run belongs to: `running` alone is tab-global,
+    // so a turn streaming in one chat lit every other chat's thinking row,
+    // running composer, and header status. Per-chat consumers gate on
+    // `running && runningChatId === thisChat`. Every running:true writer
+    // stamps it; patchUi clears it when running flips false.
+    runningChatId: string | null;
   };
   search: string;
   /** Ordered queued messages per `tenantId::chatId` (message queue 8.1) —
@@ -263,7 +269,7 @@ export const useStore = create<AppState>((set, get) => ({
   panel: { open: false, tabs: [], activeId: null, badge: false },
   ui: {
     configAgent: null, scheduleEdit: null,
-    wsOpen: false, toasts: [], running: false
+    wsOpen: false, toasts: [], running: false, runningChatId: null
   },
   search: '',
   messageQueue: {},
@@ -303,7 +309,10 @@ export const useStore = create<AppState>((set, get) => ({
 
   patchUi: (p) => {
     const wasRunning = get().ui.running;
-    set((s: any) => ({ ui: { ...s.ui, ...p } }));
+    // runningChatId rides the same choke point: a running:false from any of
+    // the ~a dozen terminal paths invalidates the run's chat identity, so no
+    // call site has to remember to clear it.
+    set((s: any) => ({ ui: { ...s.ui, ...p, ...(p.running === false ? { runningChatId: null } : {}) } }));
     // Turn-terminal refetch trigger (agent-session-index D4): `running`
     // true→false is the single choke point every terminal path funnels
     // through (live bridge EOF, stream error, cancel, compact) — schedule

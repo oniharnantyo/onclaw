@@ -6,7 +6,7 @@ import { getWorkspaceKey } from '../store/workspaceKeys';
 import type { Message, Agent } from '../data/types';
 import { uid, nowTime, parseMentions, appendReasoningPart, appendToolPart } from '../lib/helpers';
 import { runTurn, sessionIdFromResponseId, type TurnUsage } from '../lib/openresponses';
-import { markLiveChatDisconnected, handleV1AuthFailure, hydrateSession, attachCatchUpStream, isBoundSessionId } from '../lib/livechat';
+import { markLiveChatDisconnected, handleV1AuthFailure, hydrateSession, attachCatchUpStream, abortCatchUpStream, isBoundSessionId } from '../lib/livechat';
 import { api } from '../lib/api';
 import type { AttachmentChip, DocumentMentionChip } from '../lib/attachments';
 import { recordTurnTiming as stashTurnTiming } from './turnTiming';
@@ -156,7 +156,11 @@ export function useChatRuntime(chatId: string) {
   const session = threadData && threadData.list.find((x: any) => x.id === threadData.active);
   const messages = session ? session.messages : [];
 
-  const running = useStore(s => !!s.ui.running);
+  // Chat-scoped run state (fix-thinking-leak-on-chat-switch): `running` is
+  // tab-global store state — a turn streaming in chat A must not light chat
+  // B's composer/thinking row, and must not gate B's message conversion as
+  // "currently running". Writers stamp ui.runningChatId with the turn's chat.
+  const running = useStore(s => !!s.ui.running && s.ui.runningChatId === chatId);
 
   // Auto-dispatch (message queue 8.3, design D9): when the active run hits a
   // terminal state, the FIRST queued message dispatches automatically —
@@ -241,7 +245,7 @@ export function useChatRuntime(chatId: string) {
     const attachments: ChatAttachment[] | undefined = opts?.attachments;
     // compacting: false — an ordinary turn never shows the compact status row
     // even if a stale compacting flag survived a chat/session switch.
-    patchUi({ running: true, compacting: false });
+    patchUi({ running: true, compacting: false, runningChatId: cid });
 
     // Real turn via the OpenResponses /v1 surface when a workspace chat key
     // is held (agent = model, key = tenant). Without a key the chat shows
@@ -443,7 +447,7 @@ export function useChatRuntime(chatId: string) {
                 return;
               }
               useStore.getState().toast('A run is still active — your message will follow it.');
-              useStore.getState().patchUi({ running: true });
+              useStore.getState().patchUi({ running: true, runningChatId: cid });
               void hydrateSession({ workspaceId: tid, agentSlug, chatId: cid, sessionId }).then((hydrated) => {
                 attachCatchUpStream({
                   workspaceId: tid,
@@ -501,7 +505,7 @@ export function useChatRuntime(chatId: string) {
    * swaps the row for the compaction divider; quiet completion (no compacted
    * event) or failure leaves NOTHING in the thread. */
   const respondCompact = useCallback((tid: string, cid: string, ag: Agent, focus: string, attempt = 0) => {
-    patchUi({ running: true, compacting: true });
+    patchUi({ running: true, compacting: true, runningChatId: cid });
     const apiKey = getWorkspaceKey(tid);
     if (!apiKey) {
       markLiveChatDisconnected(tid);
@@ -621,12 +625,16 @@ export function useChatRuntime(chatId: string) {
     // Message queue (8.1, design D9): while THIS tab's run is active in an
     // agent chat, a send joins the local queue instead of racing the session
     // lock — ordered cancelable rows under the running row (QueueStack). The
-    // queue gate replaces only the same-tab path: cross-tab/cron conflicts
+    // gate is same-chat (fix-thinking-leak-on-chat-switch): a run streaming
+    // in another chat holds no lock here, and a message queued behind it
+    // would never drain (the run's terminal dispatch pops only its own
+    // chat's queue). Cross-tab/cron conflicts on this chat's own session
     // still surface as 409s on a normal send and keep the existing
     // catch-up-and-redispatch machinery. /compact turns never queue (a
     // compact turn cannot run behind the active run — its own conflict path
     // surfaces as a toast).
-    if (target === 'agent' && useStore.getState().ui.running) {
+    const uiState = useStore.getState().ui;
+    if (target === 'agent' && uiState.running && uiState.runningChatId === chatId) {
       const db = useStore.getState().db[tenantId];
       const agent = db.agents.find((a: any) => a.id === chatId);
       if (agent) {
@@ -674,6 +682,11 @@ export function useChatRuntime(chatId: string) {
   }, [tenantId, chatId, respondFor, respondCompact]);
 
   const onCancel = useCallback(async () => {
+    // Detach any followed catch-up stream FIRST (fix-chat-stop-on-reattached-run
+    // D2): its per-event patchUi({running:true}) would re-assert the spinner
+    // right after the stop cleared it. No-op for fresh turns — no live
+    // catch-up stream is attached for the chat then.
+    abortCatchUpStream(chatId);
     patchUi({ running: false, compacting: false });
     for (const k in activeTimers) {
       if (k.startsWith('respond-') || k.startsWith('refresh-') || k.startsWith('stream-')) {
@@ -707,13 +720,30 @@ export function useChatRuntime(chatId: string) {
         // The local stop already succeeded; a failed server cancel just
         // means the stream ends on its own.
       });
+    } else if (!agentSlug) {
+      // Followed run (fix-chat-stop-on-reattached-run): the client did not
+      // start this turn in this view, so no turn identity is held. Address
+      // the session-scoped endpoint by the chat's bound session ('pending'
+      // placeholder turn) and the chat's own agent — the same lookup the
+      // send path uses. The catch tolerates "nothing live".
+      const db = useStore.getState().db[tenantId];
+      const channel = db.channels.find((c: any) => c.id === chatId);
+      const chatAgent = db.agents.find((a: any) => a.id === chatId)
+        || (channel ? db.agents.find((a: any) => a.id === channel.agentId) : undefined);
+      const boundSession = activeBoundSessionId(tenantId, chatId);
+      if (chatAgent && boundSession) {
+        void api.agents.cancelRun(tenantId, (chatAgent as any).slug || chatAgent.id, boundSession, 'pending').catch(() => {
+          // The local stop already succeeded; a failed server cancel just
+          // means the stream ends on its own.
+        });
+      }
     }
     retractIfEmpty();
     clearInFlight();
     // A stopped run is a finished run (message queue 8.3): the first queued
     // message dispatches instead of hanging in the stack forever.
     if (turnCid) dispatchQueuedHead(tenantId, turnCid);
-  }, [patchUi, tenantId]);
+  }, [patchUi, tenantId, chatId]);
 
   const onEdit = useCallback(async (msg: AppendMessage) => {
     const db = useStore.getState().db[tenantId];
@@ -776,7 +806,7 @@ export function useChatRuntime(chatId: string) {
       return;
     }
 
-    patchUi({ running: true, compacting: false });
+    patchUi({ running: true, compacting: false, runningChatId: chatId });
     // Seed the branch list with the current variant (full body — text, cards,
     // reasoning, ordered parts), then append a live branch that streams in
     // place (`n / total` comes from branches.length). The new variant gets a

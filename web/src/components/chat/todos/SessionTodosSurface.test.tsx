@@ -75,7 +75,9 @@ const seedThread = (list: any[], active?: string) => {
 
 const setRunning = (v: boolean) => {
   act(() => {
-    useStore.setState({ ui: { ...useStore.getState().ui, running: v } });
+    // Same-chat stamp (fix-thinking-leak-on-chat-switch): the surface's run
+    // selector gates on runningChatId === pos.chatId ('a-atlas' here).
+    useStore.setState({ ui: { ...useStore.getState().ui, running: v, runningChatId: v ? 'a-atlas' : null } });
   });
 };
 

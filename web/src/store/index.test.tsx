@@ -122,3 +122,28 @@ describe('loadAgents loaded marker', () => {
     expect(useStore.getState().agentsLoaded['acme']).toBeUndefined();
   });
 });
+
+describe('ui.runningChatId run identity (fix-thinking-leak-on-chat-switch)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    useStore.setState({ db: seedDb(), pos: posFor('acme') });
+  });
+
+  it('patchUi stamps the running chat and clears the identity on any running:false', () => {
+    useStore.getState().patchUi({ running: true, runningChatId: 'a-atlas' });
+    expect(useStore.getState().ui.running).toBe(true);
+    expect(useStore.getState().ui.runningChatId).toBe('a-atlas');
+
+    // Every terminal path funnels through running:false — the identity must
+    // not outlive the run without each call site remembering to clear it.
+    useStore.getState().patchUi({ running: false });
+    expect(useStore.getState().ui.running).toBe(false);
+    expect(useStore.getState().ui.runningChatId).toBeNull();
+  });
+
+  it('a fresh run re-stamps the identity over a stale one', () => {
+    useStore.getState().patchUi({ running: true, runningChatId: 'a-atlas' });
+    useStore.getState().patchUi({ running: true, runningChatId: 'ch-int' });
+    expect(useStore.getState().ui.runningChatId).toBe('ch-int');
+  });
+});

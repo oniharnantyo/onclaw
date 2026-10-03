@@ -6,7 +6,7 @@ import { renderHook, act } from '@testing-library/react';
 import { useChatRuntime } from './runtime';
 import { useStore } from '../store';
 import { runTurn } from '../lib/openresponses';
-import { getLiveChatStatus, handleV1AuthFailure } from '../lib/livechat';
+import { getLiveChatStatus, handleV1AuthFailure, abortCatchUpStream } from '../lib/livechat';
 import { getTurnTiming } from './turnTiming';
 import { api } from '../lib/api';
 
@@ -26,10 +26,11 @@ vi.mock('../lib/openresponses', () => ({
   },
 }));
 // Real livechat module (connect-status store, hydration) except the network
-// exchange, which the auth-failure tests stub.
+// exchange, which the auth-failure tests stub, and abortCatchUpStream, which
+// the followed-run stop tests observe (the real implementation still runs).
 vi.mock('../lib/livechat', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/livechat')>();
-  return { ...actual, handleV1AuthFailure: vi.fn() };
+  return { ...actual, handleV1AuthFailure: vi.fn(), abortCatchUpStream: vi.fn(actual.abortCatchUpStream) };
 });
 vi.mock('../lib/api', () => ({
   api: {
@@ -62,7 +63,7 @@ describe('useChatRuntime', () => {
       });
       useStore.setState({
         pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
-        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, toasts: [] },
+        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, runningChatId: null, toasts: [] },
         db: {
           t1: {
             id: 't1',
@@ -151,7 +152,7 @@ describe('useChatRuntime', () => {
     const { result } = renderHook(() => useChatRuntime('a1'));
     
     act(() => {
-      useStore.getState().patchUi({ running: true });
+      useStore.getState().patchUi({ running: true, runningChatId: 'a1' });
     });
     
     await act(async () => {
@@ -185,7 +186,7 @@ describe('useChatRuntime — live session binding (birth → chain → reset-for
       });
       useStore.setState({
         pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
-        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, toasts: [] },
+        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, runningChatId: null, toasts: [] },
         db: {
           t1: {
             id: 't1',
@@ -729,7 +730,7 @@ describe('useChatRuntime — 409 conflict queue (live-run-reattach fix)', () => 
       });
       useStore.setState({
         pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
-        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, toasts: [] },
+        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, runningChatId: null, toasts: [] },
         db: {
           t1: {
             id: 't1', name: 'T1', sub: 't1', tz: 'America/Los_Angeles',
@@ -877,7 +878,7 @@ describe('useChatRuntime — message queue (adopt-assistant-ui-elements 8.1–8.
       });
       useStore.setState({
         pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
-        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, toasts: [] },
+        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, runningChatId: null, toasts: [] },
         // Reset the queue slice explicitly: setState merges, and a leftover
         // entry from another suite in this file would dispatch spuriously.
         messageQueue: {},
@@ -1104,11 +1105,29 @@ describe('useChatRuntime — message queue (adopt-assistant-ui-elements 8.1–8.
     expect(useStore.getState().messageQueue['t1::a1'] || []).toHaveLength(0);
   });
 
+  it('a send in this chat while ANOTHER chat\'s run is active does not queue (same-chat gate)', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    vi.mocked(runTurn).mockImplementation(async () => {});
+    const { result } = renderHook(() => useChatRuntime('a1'));
+
+    // The live run belongs to a different chat — it holds no lock here, and
+    // a message queued behind it could never drain (the run's terminal
+    // dispatch pops only its own chat's queue).
+    act(() => { useStore.getState().patchUi({ running: true, runningChatId: 'chat-elsewhere' }); });
+
+    await send(result, 'cross-chat send');
+
+    expect(runTurn).toHaveBeenCalledTimes(1);
+    expect(queueTexts()).toEqual([]);
+    // The turn re-stamped the identity onto THIS chat.
+    expect(useStore.getState().ui.runningChatId).toBe('a1');
+  });
+
   it('channel sends never queue, even while a run is active', async () => {
     localStorage.setItem('onclaw.api_key.t1', 'k-live');
     vi.mocked(runTurn).mockImplementation(async () => {});
     const { result } = renderHook(() => useChatRuntime('c1'));
-    act(() => { useStore.getState().patchUi({ running: true }); });
+    act(() => { useStore.getState().patchUi({ running: true, runningChatId: 'c1' }); });
 
     await send(result, 'hello team');
 
@@ -1146,7 +1165,7 @@ describe('useChatRuntime — message timing + entry dating (adopt-assistant-ui-e
       });
       useStore.setState({
         pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
-        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, toasts: [] },
+        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, runningChatId: null, toasts: [] },
         messageQueue: {},
         db: {
           t1: {
@@ -1304,7 +1323,7 @@ describe('useChatRuntime — /compact command (chat-compact-command)', () => {
       });
       useStore.setState({
         pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
-        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, toasts: [] },
+        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, runningChatId: null, toasts: [] },
         db: {
           t1: {
             id: 't1', name: 'T1', sub: 't1', tz: 'America/Los_Angeles',
@@ -1522,7 +1541,7 @@ describe('useChatRuntime — attachment sends (add-chat-attachments D11/D12)', (
       });
       useStore.setState({
         pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
-        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, toasts: [] },
+        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, runningChatId: null, toasts: [] },
         db: {
           t1: {
             id: 't1', name: 'T1', sub: 't1', tz: 'America/Los_Angeles',
@@ -1743,7 +1762,7 @@ describe('useChatRuntime — document mention chips (add-reference-documents 10.
       });
       useStore.setState({
         pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
-        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, toasts: [] },
+        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, runningChatId: null, toasts: [] },
         db: {
           t1: {
             id: 't1', name: 'T1', sub: 't1', tz: 'America/Los_Angeles',
@@ -1823,7 +1842,7 @@ describe('useChatRuntime — document mention chips (add-reference-documents 10.
     localStorage.setItem('onclaw.api_key.t1', 'k-live');
     vi.mocked(runTurn).mockImplementation(async () => {});
     const { result } = renderHook(() => useChatRuntime('a1'));
-    act(() => { useStore.getState().patchUi({ running: true }); });
+    act(() => { useStore.getState().patchUi({ running: true, runningChatId: 'a1' }); });
 
     await send(result, 'queued [📄 twilio-api.pdf](references/twilio-api.pdf)', [
       docChip(),
@@ -1838,5 +1857,155 @@ describe('useChatRuntime — document mention chips (add-reference-documents 10.
     expect(head?.attachments).toEqual([
       { id: 'att-1', name: 'shot.png', mime: 'image/png', size: 12, url: '/api/v1/files/k1' },
     ]);
+  });
+});
+
+describe('useChatRuntime — stop on a followed run (fix-chat-stop-on-reattached-run)', () => {
+  const encoder = new TextEncoder();
+
+  const activeSession = (): any => {
+    const th = useStore.getState().db.t1.threads.a1;
+    return th.list.find((x: any) => x.id === th.active);
+  };
+
+  const send = (result: any, text: string) =>
+    act(async () => {
+      await result.current.onNew({ role: 'user', content: [{ type: 'text', text }] } as any);
+    });
+
+  beforeEach(() => {
+    localStorage.clear();
+    vi.mocked(runTurn).mockReset();
+    vi.mocked(handleV1AuthFailure).mockReset();
+    vi.mocked(abortCatchUpStream).mockClear();
+    vi.mocked(api.agents.cancelRun).mockClear();
+    act(() => {
+      const mkAgent = (id: string, name: string, disabled_tools: string[]) => ({
+        id, name, model: 'claude-sonnet-5', temp: 0.4, autonomy: 'approval', channelPost: false,
+        role: 'Test agent', status: 'idle', disabled_tools, skills: ['research'], lastActive: 'now', prompt: ''
+      });
+      useStore.setState({
+        pos: { tenantId: 't1', view: 'chats', chatId: 'a1', showContext: false },
+        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, runningChatId: null, toasts: [] },
+        messageQueue: {},
+        db: {
+          t1: {
+            id: 't1', name: 'T1', sub: 't1', tz: 'America/Los_Angeles',
+            defaultModel: 'claude-sonnet-5', retention: '90 days',
+            people: [], schedules: [], runs: [], members: [], integrations: [], skillLib: [], keys: [],
+            agents: [mkAgent('a1', 'Alice', ['search'])],
+            channels: [],
+            threads: {
+              // Bound session mid-run: the tail agent message carries the
+              // response chain a following client would extend.
+              a1: {
+                active: 'sess_live-9',
+                list: [{
+                  id: 'sess_live-9', title: 'Chat', updated: '',
+                  messages: [{ id: 'm0', author: 'agent', ts: '', text: 'partial', resp: 'resp_sess_live-9_turn-1' }],
+                }],
+              },
+            },
+          },
+        },
+      });
+    });
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('stop on a followed run aborts the catch-up stream before clearing the spinner and cancels by the bound session', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    // Spy the store action (the real one still runs) so the D2 ordering —
+    // detach the followed stream BEFORE the running:false patch — is
+    // observable. Wired before renderHook so the hook's selector picks it up.
+    const realPatchUi = useStore.getState().patchUi;
+    const patchSpy = vi.fn(realPatchUi);
+    act(() => { useStore.setState({ patchUi: patchSpy }); });
+    try {
+      const { result } = renderHook(() => useChatRuntime('a1'));
+
+      // First pass clears any turn record an earlier suite left in the
+      // module-level inFlight singleton (a stop is terminal for it), so the
+      // stop below deterministically exercises the followed-run fallback
+      // (empty inFlight), never the fresh-turn branch.
+      await act(async () => { await result.current.onCancel(); });
+      vi.mocked(api.agents.cancelRun).mockClear();
+      vi.mocked(abortCatchUpStream).mockClear();
+      patchSpy.mockClear();
+
+      await act(async () => { await result.current.onCancel(); });
+
+      expect(vi.mocked(abortCatchUpStream)).toHaveBeenCalledWith('a1');
+      expect(vi.mocked(abortCatchUpStream).mock.invocationCallOrder[0])
+        .toBeLessThan(patchSpy.mock.invocationCallOrder[0]);
+      // No turn identity held (the client did not start this run in this
+      // view): the session-scoped endpoint is addressed by the bound session
+      // with the 'pending' placeholder turn and the chat's own agent.
+      expect(api.agents.cancelRun).toHaveBeenCalledWith('t1', 'a1', 'sess_live-9', 'pending');
+      expect(useStore.getState().ui.running).toBe(false);
+      // The followed path holds no turn record — no queued redispatch.
+      expect(useStore.getState().messageQueue['t1::a1'] || []).toHaveLength(0);
+    } finally {
+      act(() => { useStore.setState({ patchUi: realPatchUi }); });
+    }
+  });
+
+  it('stop during a conflict-queued catch-up holds the queued send: no redispatch, row stays, running stays cleared, no toast', async () => {
+    localStorage.setItem('onclaw.api_key.t1', 'k-live');
+    // The catch-up stream: a complete run_active frame, then a trailing
+    // INCOMPLETE delta frame (no blank line). The stream stays open — the
+    // partial parks in the consumer's buffer until the stop-abort ends the
+    // read loop and its final-buffer flush delivers it as a stale post-abort
+    // event (the guard must drop it).
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ kind: 'run_active', occurred_at: 'x' })}\n\n`));
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ id: 'e9', kind: 'text_delta', occurred_at: 'x', turn_id: 'turn-1', text_delta: ' late' })}`));
+          },
+        }),
+      }) as unknown as Response
+    ));
+
+    vi.mocked(runTurn).mockImplementationOnce(async (_k: any, _p: any, cb: any) => {
+      cb.onError('agent.Run: conflict: a run is already active for session "sess_live-9"', { conflict: true });
+    });
+
+    const { result } = renderHook(() => useChatRuntime('a1'));
+    await send(result, 'any update?');
+
+    // Drain hydrate → attach → run_active (the client now follows the run).
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(useStore.getState().ui.running).toBe(true);
+    // Only the conflicted attempt ran — the send waits on the catch-up.
+    expect(runTurn).toHaveBeenCalledTimes(1);
+    expect(useStore.getState().ui.toasts.some((t: any) => t.text.startsWith('A run is still active'))).toBe(true);
+
+    await act(async () => { await result.current.onCancel(); });
+    await act(async () => { await Promise.resolve(); });
+
+    // (a) The queued re-dispatch hangs off the catch-up's onDone, which the
+    // stop-abort killed — the send is held, never redispatched.
+    expect(runTurn).toHaveBeenCalledTimes(1);
+    // (b) The optimistic user row remains in the transcript.
+    expect(activeSession().messages.some((m: any) => m.author === 'you' && m.text === 'any update?')).toBe(true);
+    // (c) The composer stays settled: the stale post-abort event neither
+    // restored the running indicator nor wrote the seeded turn tail.
+    expect(useStore.getState().ui.running).toBe(false);
+    expect(activeSession().messages[0].text).toBe('partial');
+    // (d) Stop is not a failure: the abort suppressed the catch-up's error
+    // path, so no "Lost the live stream" toast fired.
+    expect(useStore.getState().ui.toasts.some((t: any) => t.text === 'Lost the live stream — send your message again.')).toBe(false);
   });
 });

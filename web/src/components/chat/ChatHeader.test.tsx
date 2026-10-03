@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { describe, it, expect, vi } from 'vitest';
-import { fireEvent, render } from '@testing-library/react';
+import { act, fireEvent, render } from '@testing-library/react';
 import { ChatHeader } from './ChatHeader';
 import { useStore } from '../../store';
 import { seedDb } from '../../data/seed';
@@ -227,5 +227,48 @@ describe('components/chat/ChatHeader — session todos chip (add-session-todos-s
     const utils = renderHeader({ target: channelTarget, agent: null });
     expect(utils.container.querySelector('[data-od-id="todos-chip"]')).toBeNull();
     expect(utils.container.querySelector('[data-od-id="todos-popover"]')).toBeNull();
+  });
+});
+
+describe('components/chat/ChatHeader — running badge (agent status semantics, fix-chat-stop-on-reattached-run 4.1)', () => {
+  // The header must follow the same merged signal as the sidebar session
+  // indicator (instant store ui.running for the active session, server
+  // session-list running flag second) — the agent-level status field flips
+  // late and left the header on "Idle" while a run streamed. setState idiom
+  // from screens/ChatRoute.test.tsx; every test pins the value it needs so
+  // order on the shared store never matters.
+  // Same-chat stamp (fix-thinking-leak-on-chat-switch): the header gates on
+  // runningChatId === target.obj.id ('a1').
+  const setUiRunning = (value: boolean) =>
+    useStore.setState({ ui: { ...useStore.getState().ui, running: value, runningChatId: value ? 'a1' : null } });
+
+  it('flips to "Running · last active …" while ui.running is true for the active session, even with an idle agent-level status', () => {
+    setUiRunning(false);
+    const utils = renderHeader({ target: agentTarget, agent, session: { id: 's1', running: false } });
+    expect(utils.container.textContent).toContain('Idle · last active 2m ago');
+    act(() => setUiRunning(true));
+    expect(utils.container.textContent).toContain('Running · last active 2m ago');
+    const dot = utils.container.querySelector('span[title="Running"]') as HTMLElement;
+    expect(dot).not.toBeNull();
+    expect(dot.className).toContain('od-live');
+  });
+
+  it('reads Running from the server session running flag without a local run (foreign run)', () => {
+    setUiRunning(false);
+    const utils = renderHeader({ target: agentTarget, agent, session: { id: 's1', running: true } });
+    expect(utils.container.textContent).toContain('Running · last active 2m ago');
+    const dot = utils.container.querySelector('span[title="Running"]') as HTMLElement;
+    expect(dot.className).toContain('od-live');
+  });
+
+  it('returns to the agent-level Idle label and a still dot on terminal state (ui.running false + session not running)', () => {
+    setUiRunning(true);
+    const utils = renderHeader({ target: agentTarget, agent, session: { id: 's1', running: false } });
+    expect(utils.container.textContent).toContain('Running · last active 2m ago');
+    act(() => setUiRunning(false));
+    expect(utils.container.textContent).toContain('Idle · last active 2m ago');
+    const dot = utils.container.querySelector('span[title="Idle"]') as HTMLElement;
+    expect(dot).not.toBeNull();
+    expect(dot.className).not.toContain('od-live');
   });
 });

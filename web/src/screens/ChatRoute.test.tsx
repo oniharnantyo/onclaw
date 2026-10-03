@@ -436,7 +436,7 @@ describe('ChatRoute component', () => {
 
   it('skips the catch-up stream when this page already has a live turn running', async () => {
     bindSession('sess_live');
-    useStore.setState({ ui: { ...useStore.getState().ui, running: true } });
+    useStore.setState({ ui: { ...useStore.getState().ui, running: true, runningChatId: 'a-atlas' } });
 
     render(
       <MemoryRouter initialEntries={['/c/a-atlas']}>
@@ -567,6 +567,56 @@ describe('ChatRoute component', () => {
     expect(chip?.getAttribute('data-document-id')).toBe('doc-1');
     // Design D3: the panel stays open — preview-then-send flow.
     expect(docked().querySelector('[data-testid="panel-doc-twilio-api.pdf"]')).not.toBeNull();
+  });
+
+  // --- Run-state chat scoping (fix-thinking-leak-on-chat-switch) -----------
+  // The store's run flag is tab-global; the view must light it for the run's
+  // OWN chat only. The reported repro: a DM turn streaming while the user
+  // opened #integrations rendered the Thinking row over the channel's empty
+  // transcript (an empty thread passes the last-author guards vacuously).
+
+  /** Seeds an empty #integrations channel bound to the Atlas agent. */
+  const seedChannel = () => {
+    const db: any = seedDb();
+    db.acme.channels = [
+      { id: 'ch-int', name: 'integrations', purpose: 'Integration Q&A', members: [], agentId: 'a-atlas' },
+    ];
+    useStore.setState({ db });
+  };
+  const renderRoute = (chatId: string) =>
+    render(
+      <MemoryRouter initialEntries={['/c/' + chatId]}>
+        <Routes>
+          <Route path="/c/:chatId" element={<ChatRoute />} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+  it('a run streaming in another chat does not leak the thinking row into this chat', async () => {
+    seedChannel();
+    // The DM turn is live: running stamped with ITS chat id.
+    useStore.setState({ ui: { ...useStore.getState().ui, running: true, runningChatId: 'a-atlas' } });
+
+    renderRoute('ch-int');
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/conversation with #integrations/i)).not.toBeNull();
+    });
+    // The channel keeps its welcome state — no Thinking row, no streaming
+    // status anywhere.
+    expect(screen.queryByLabelText('Assistant is thinking')).toBeNull();
+    expect(screen.getByText('#integrations')).not.toBeNull();
+  });
+
+  it('the thinking row shows in the chat the run actually belongs to', async () => {
+    seedChannel();
+    useStore.setState({ ui: { ...useStore.getState().ui, running: true, runningChatId: 'ch-int' } });
+
+    renderRoute('ch-int');
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Assistant is thinking')).not.toBeNull();
+    });
   });
 });
 

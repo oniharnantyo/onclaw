@@ -36,6 +36,11 @@ function ChatRouteActive({
   const ui = useStore((s: any) => s.ui);
   const toast = useStore((s: any) => s.toast);
   const chatRuntime = useChatRuntime(cleanId);
+  // Run state scoped to THIS chat (fix-thinking-leak-on-chat-switch): the
+  // store's running flag is tab-global, so feeding it straight into the view
+  // streamed a turn's thinking row / running composer into whichever chat was
+  // open — an empty channel thread passes the last-author guards vacuously.
+  const chatRunning = Boolean(ui.running && ui.runningChatId === cleanId);
 
   // Run transcript handoff (integrate-scheduler 7.4): the runs screen
   // navigates here with the run's session address. One store write injects
@@ -148,9 +153,11 @@ function ChatRouteActive({
         // unfinished turn: history only shows committed events, so a run
         // between events (or mid-tool-call) is invisible to heuristics. The
         // server answers the probe with [DONE] immediately when no run is
-        // active (design D2 Phase 3), and a live turn this page started keeps
-        // its own stream — skip only when the composer is already running.
-        if (!useStore.getState().ui.running) {
+        // active (design D2 Phase 3). Skip only when THIS chat's turn is
+        // already streaming live — a run in another chat holds no stream
+        // here (fix-thinking-leak-on-chat-switch).
+        const uiNow = useStore.getState().ui;
+        if (!(uiNow.running && uiNow.runningChatId === cleanId)) {
           attachCatchUpStream({
             workspaceId,
             agentSlug: slug,
@@ -271,8 +278,8 @@ function ChatRouteActive({
           session={session}
           channelMembers={channelMembers}
           onOpenMembers={openMembersTab}
-          typing={ui.running}
-          busy={ui.running}
+          typing={chatRunning}
+          busy={chatRunning}
           compacting={ui.compacting}
           allowAttachments={target.kind === 'agent'}
           documentsLens={documentsLens}

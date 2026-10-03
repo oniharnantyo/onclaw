@@ -2,8 +2,8 @@
  * @vitest-environment jsdom
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { fetchSessionTranscript, streamSessionEvents, attachCatchUpStream,
-  isBoundSessionId,
+import { fetchSessionTranscript, streamSessionEvents, attachCatchUpStream, abortCatchUpStream,
+  isBoundSessionId, hydrateSession, applyServerTranscript,
 } from './livechat';
 import { useStore } from '../store';
 import { api } from './api';
@@ -323,7 +323,7 @@ describe('fetchSessionTranscript — prompt_blocked notices', () => {
       };
       useStore.setState({
         db,
-        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, toasts: [] },
+        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, runningChatId: null, toasts: [] },
       });
     };
     seed();
@@ -397,7 +397,7 @@ describe('fetchSessionTranscript — memory_ingested chip (integrate-agent-zero-
       };
       useStore.setState({
         db,
-        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, toasts: [] },
+        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, runningChatId: null, toasts: [] },
       });
     };
     seed();
@@ -431,6 +431,91 @@ describe('fetchSessionTranscript — memory_ingested chip (integrate-agent-zero-
     const chip = sess.messages[0] as any;
     expect(chip.author).toBe('memory');
     expect(chip.memory.counts).toEqual({ shared: 0, user: 1, agent: 0 });
+    expect(useStore.getState().ui.running).toBe(false);
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('fetchSessionTranscript — skill_candidate chip (add-skill-curation-from-traces)', () => {
+  it('hydrates the chip as its own post-turn entry carrying the run coordinates', async () => {
+    vi.mocked(api.agents.sessionEvents).mockResolvedValueOnce({
+      next: '',
+      events: [
+        { id: 'e1', kind: 'message_completed', occurred_at: 't0', turn_id: 'turn-1',
+          message: { role: 'user', content: 'run the deploy' } },
+        { id: 'e2', kind: 'skill_candidate', occurred_at: 't1', turn_id: 'turn-1',
+          skill_candidate: { workspace_id: 'ws1', agent_id: 'ag-1', session_id: 'sess_h-skc', run_id: 'turn-1',
+            cluster_id: 'cl-deploy', skill_name: 'deploy-rollout', candidate_id: 'cand-1' } },
+        { id: 'e3', kind: 'turn_completed', occurred_at: 't2', turn_id: 'turn-1' },
+      ],
+    });
+
+    const { messages } = await fetchSessionTranscript('ws1', 'atlas', 'sess_h-skc');
+
+    // The chip is its own post-turn entry after the user message, mapped to
+    // the camelCase shape the chip component reads.
+    expect(messages.map((m: any) => m.author)).toEqual(['you', 'skill_candidate']);
+    expect(messages[1].skillCandidate).toEqual({
+      workspaceId: 'ws1',
+      agentId: 'ag-1',
+      sessionId: 'sess_h-skc',
+      runId: 'turn-1',
+      clusterId: 'cl-deploy',
+      skillName: 'deploy-rollout',
+      candidateId: 'cand-1',
+    });
+    expect(messages[1].text).toBe('');
+  });
+
+  it('mints the same chip shape from the live catch-up stream (identical rendering after reload)', async () => {
+    const seed = () => {
+      const db: any = {
+        ws1: {
+          id: 'ws1', name: 'WS', sub: 'ws1', tz: 'UTC',
+          agents: [], channels: [], people: [], schedules: [], runs: [], members: [], integrations: [], skillLib: [], keys: [],
+          threads: { 'chat-1': { active: 'sess_cu4', list: [{ id: 'sess_cu4', title: 'Live', updated: '', messages: [] }] } },
+        },
+      };
+      useStore.setState({
+        db,
+        ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, runningChatId: null, toasts: [] },
+      });
+    };
+    seed();
+    const enc = new TextEncoder();
+    const fr = (ev: any) => `data: ${JSON.stringify(ev)}\n\n`;
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(enc.encode(fr({ id: 'k1', kind: 'skill_candidate', occurred_at: 't1', turn_id: 'turn-9',
+              skill_candidate: { workspace_id: 'ws1', agent_id: 'ag-1', session_id: 'sess_cu4', run_id: 'turn-9',
+                cluster_id: 'cl-deploy', skill_name: '', candidate_id: '' } })));
+            controller.enqueue(enc.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+      } as unknown as Response)
+    ));
+
+    attachCatchUpStream({
+      workspaceId: 'ws1', agentSlug: 'atlas', chatId: 'chat-1', sessionId: 'sess_cu4',
+    });
+
+    await vi.waitFor(() => {
+      const sess = useStore.getState().db.ws1.threads['chat-1'].list.find((x: any) => x.id === 'sess_cu4');
+      expect(sess.messages).toHaveLength(1);
+    });
+    const sess = useStore.getState().db.ws1.threads['chat-1'].list.find((x: any) => x.id === 'sess_cu4');
+    const chip = sess.messages[0] as any;
+    expect(chip.author).toBe('skill_candidate');
+    expect(chip.skillCandidate).toEqual({
+      workspaceId: 'ws1', agentId: 'ag-1', sessionId: 'sess_cu4', runId: 'turn-9',
+      clusterId: 'cl-deploy', skillName: '', candidateId: '',
+    });
     expect(useStore.getState().ui.running).toBe(false);
     vi.unstubAllGlobals();
   });
@@ -617,7 +702,7 @@ describe('attachCatchUpStream', () => {
     };
     useStore.setState({
       db,
-      ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, toasts: [] },
+      ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, runningChatId: null, toasts: [] },
     });
   };
 
@@ -698,6 +783,95 @@ describe('attachCatchUpStream', () => {
     expect(useStore.getState().ui.running).toBe(false);
     expect(onDone).not.toHaveBeenCalled();
   });
+
+  it('registers the abort handle: a second attach for the chat aborts the first stream silently', async () => {
+    seed();
+    // Open streams: only an abort can end the first attach's read loop.
+    const fetchMock = vi.fn(async (_url: unknown, _init?: unknown) => sseResponse([], { open: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const onDone1 = vi.fn();
+    const onError1 = vi.fn();
+    attachCatchUpStream({
+      workspaceId: 'ws1', agentSlug: 'atlas', chatId: 'chat-1', sessionId: 'sess_cu',
+      onDone: onDone1, onError: onError1,
+    });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect((fetchMock.mock.calls[0][1] as any).signal.aborted).toBe(false);
+
+    // Last-writer-wins (fix-chat-stop-on-reattached-run D1): attaching again
+    // for the same chat aborts the previous stream's owned handle.
+    attachCatchUpStream({
+      workspaceId: 'ws1', agentSlug: 'atlas', chatId: 'chat-1', sessionId: 'sess_cu',
+    });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    expect((fetchMock.mock.calls[0][1] as any).signal.aborted).toBe(true);
+    expect((fetchMock.mock.calls[1][1] as any).signal.aborted).toBe(false);
+    // The superseded stream detached silently — stop-style aborts are not
+    // failures, so its terminal hooks never fire.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(onDone1).not.toHaveBeenCalled();
+    expect(onError1).not.toHaveBeenCalled();
+  });
+
+  it('caller-signal abort (chat switch) still suppresses onDone and onError', async () => {
+    seed();
+    const caller = new AbortController();
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      sseResponse([frame({ id: 'e1', kind: 'turn_started', occurred_at: 'x', turn_id: 't1' })], { open: true })
+    ));
+
+    const onDone = vi.fn();
+    const onError = vi.fn();
+    attachCatchUpStream({
+      workspaceId: 'ws1', agentSlug: 'atlas', chatId: 'chat-1', sessionId: 'sess_cu',
+      signal: caller.signal, onDone, onError,
+    });
+    // The stream is live (the first event flipped the spinner).
+    await vi.waitFor(() => expect(useStore.getState().ui.running).toBe(true));
+
+    caller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(useStore.getState().ui.running).toBe(false);
+    expect(onDone).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('a stale event delivered after the abort does not re-assert the spinner or write the transcript', async () => {
+    seed();
+    // The stream carries a trailing INCOMPLETE frame (no blank line) and stays
+    // open: the frame parks in the consumer's buffer until the read loop ends.
+    // Aborting via the stop handle ends the loop, and the consumer's
+    // final-buffer flush delivers the stale frame to onEvent AFTER the abort —
+    // the attach must not flip the spinner back on or write the store
+    // (fix-chat-stop-on-reattached-run D2).
+    const fetchMock = vi.fn(async () =>
+      sseResponse([
+        `data: ${JSON.stringify({ id: 'e9', kind: 'text_delta', occurred_at: 'x', turn_id: 't1', text_delta: 'late' })}`,
+      ], { open: true })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    attachCatchUpStream({
+      workspaceId: 'ws1', agentSlug: 'atlas', chatId: 'chat-1', sessionId: 'sess_cu',
+    });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    // Let the first read consume the chunk — the partial frame parks in the
+    // consumer's buffer with the reader waiting on the open stream.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(useStore.getState().ui.running).toBe(false);
+
+    abortCatchUpStream('chat-1');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // The stale event fired post-abort and was dropped: spinner stays off,
+    // nothing was written to the transcript.
+    expect(useStore.getState().ui.running).toBe(false);
+    expect(session().messages).toEqual([]);
+  });
 });
 
 describe('fetchSessionTranscript — context_compacted divider (chat-compact-command)', () => {
@@ -736,7 +910,7 @@ describe('fetchSessionTranscript — context_compacted divider (chat-compact-com
     };
     useStore.setState({
       db,
-      ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, toasts: [] },
+      ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, runningChatId: null, toasts: [] },
     });
     const encoder = new TextEncoder();
     const frame = (ev: any) => `data: ${JSON.stringify(ev)}\n\n`;
@@ -845,5 +1019,179 @@ describe('fetchSessionTranscript — attachment metadata on user messages', () =
     const msg = restored['chat-1'].list[0].messages[0];
 
     expect(msg.attachments).toEqual([image, pdf]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Followed run tail survives stop (fix-chat-stop-on-reattached-run D5)
+// ---------------------------------------------------------------------------
+
+describe('followed run tail survives stop (fix-chat-stop-on-reattached-run D5)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** Binds ws1/chat-1 to session sess_tail with an empty thread. */
+  const seed = () => {
+    const db: any = {
+      ws1: {
+        id: 'ws1', name: 'WS', sub: 'ws1', tz: 'UTC',
+        agents: [], channels: [], people: [], schedules: [], runs: [], members: [], integrations: [], skillLib: [], keys: [],
+        threads: { 'chat-1': { active: 'sess_tail', list: [{ id: 'sess_tail', title: 'Live', updated: '', messages: [] }] } },
+      },
+    };
+    useStore.setState({
+      db,
+      pos: { tenantId: 'ws1', view: 'chats', chatId: 'chat-1', showContext: false, railExpanded: false },
+      ui: { configAgent: null, scheduleEdit: null, wsOpen: false, running: false, runningChatId: null, toasts: [] },
+    });
+  };
+
+  const session = (): any =>
+    useStore.getState().db.ws1.threads['chat-1'].list.find((x: any) => x.id === 'sess_tail');
+
+  // The pre-persist snapshot a hydrate sees while the run is still streaming
+  // (or after a stop cancelled it): the turn's user message and tool calls are
+  // committed, but the streamed answer is NOT — text/reasoning deltas are
+  // never persisted until the message completes.
+  const PRE_PERSIST_EVENTS = [
+    { id: 'e1', kind: 'message_completed', occurred_at: 't0', turn_id: 'T1',
+      message: { role: 'user', content: 'Run diagnostics' } },
+    { id: 'e2', kind: 'tool_call_started', occurred_at: 't1', turn_id: 'T1',
+      tool_call: { call_id: 'c1', name: 'grafana.query', arguments: 'q' } },
+    { id: 'e3', kind: 'tool_call_finished', occurred_at: 't2', turn_id: 'T1',
+      tool_result: { call_id: 'c1', result: '99.9%', latency: 1000000 } },
+  ];
+  const COMPLETED_EVENTS = [
+    ...PRE_PERSIST_EVENTS,
+    { id: 'e4', kind: 'message_completed', occurred_at: 't3', turn_id: 'T1',
+      message: { role: 'assistant', content: 'The answer is 42' } },
+    { id: 'e5', kind: 'turn_completed', occurred_at: 't4', turn_id: 'T1',
+      usage: { final_input_tokens: 4321 } },
+  ];
+
+  /** Open SSE Response with a push handle — the test plays the live server. */
+  const openStream = () => {
+    let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
+    const response = {
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+      body: new ReadableStream<Uint8Array>({
+        start(c) { controller = c; },
+      }),
+    } as unknown as Response;
+    return {
+      response,
+      push: (ev: any) => controller!.enqueue(encoder.encode(frame(ev))),
+      close: () => controller!.close(),
+    };
+  };
+
+  /** Mount-flow follow: hydrate → attach → stream the tail. Returns the
+   * stream handle so tests can deliver further frames. */
+  const followRun = async () => {
+    seed();
+    vi.mocked(api.agents.sessionEvents).mockResolvedValueOnce({
+      next: '',
+      events: PRE_PERSIST_EVENTS,
+    });
+    const hydrated = await hydrateSession({ workspaceId: 'ws1', agentSlug: 'atlas', chatId: 'chat-1', sessionId: 'sess_tail' });
+    expect(hydrated!.messages.map((m: any) => m.author)).toEqual(['you', 'agent']);
+    // The streamed answer is not persisted yet — the agent row has no text.
+    expect(hydrated!.messages[1].text).toBe('');
+
+    const stream = openStream();
+    vi.stubGlobal('fetch', vi.fn(async () => stream.response));
+    attachCatchUpStream({
+      workspaceId: 'ws1', agentSlug: 'atlas', chatId: 'chat-1', sessionId: 'sess_tail',
+      after: hydrated!.lastEventId,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    // The run streams its answer live: text, reasoning, a second tool card.
+    stream.push({ id: '', kind: 'text_delta', occurred_at: 'x', turn_id: 'T1', text_delta: 'The answer is ' });
+    stream.push({ id: '', kind: 'text_delta', occurred_at: 'x', turn_id: 'T1', text_delta: '42' });
+    stream.push({ id: '', kind: 'reasoning_delta', occurred_at: 'x', turn_id: 'T1', reasoning_delta: 'computing' });
+    stream.push({ id: '', kind: 'tool_call_started', occurred_at: 'x', turn_id: 'T1',
+      tool_call: { call_id: 'c2', name: 'web.search', arguments: '{}' } });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const tail = session().messages.find((m: any) => m.author === 'agent');
+    expect(tail.text).toBe('The answer is 42');
+    expect(tail.parts).toEqual([{ k: 'tool', i: 0 }, { k: 'reasoning', text: 'computing' }, { k: 'tool', i: 1 }]);
+    expect(session().messages.map((m: any) => m.author)).toEqual(['you', 'agent']);
+    return { stream, tail };
+  };
+
+  /** The stop control (runtime onCancel ordering): detach the followed stream,
+   * then clear the spinner. */
+  const stop = () => {
+    abortCatchUpStream('chat-1');
+    useStore.getState().patchUi({ running: false });
+  };
+
+  it('stop mid-catch-up + terminal re-hydrate keeps every streamed part (racing/cancelled snapshot)', async () => {
+    await followRun();
+    stop();
+    expect(useStore.getState().ui.running).toBe(false);
+
+    // The run reaches its terminal state; a re-hydrate lands whose snapshot
+    // predates the streamed answer (the fetch raced the terminal, or the
+    // cancelled run never persisted the partial message). The replace must
+    // not vanish what the turn streamed.
+    vi.mocked(api.agents.sessionEvents).mockResolvedValueOnce({
+      next: '',
+      events: PRE_PERSIST_EVENTS,
+    });
+    await hydrateSession({ workspaceId: 'ws1', agentSlug: 'atlas', chatId: 'chat-1', sessionId: 'sess_tail' });
+
+    const msgs = session().messages;
+    expect(msgs.map((m: any) => m.author)).toEqual(['you', 'agent']);
+    expect(msgs[1].text).toBe('The answer is 42');
+    expect(msgs[1].tools.map((t: any) => t.callId)).toEqual(['c1', 'c2']);
+    expect(msgs[1].parts).toEqual([{ k: 'tool', i: 0 }, { k: 'reasoning', text: 'computing' }, { k: 'tool', i: 1 }]);
+  });
+
+  it('terminal re-hydrate with the completed message converges — no duplicate turn, no stale body', async () => {
+    await followRun();
+    stop();
+
+    // History caught up: the completed message is persisted with the full
+    // streamed text. Server truth wins — the transcript converges without
+    // duplicating the turn or regressing to a stale client body.
+    vi.mocked(api.agents.sessionEvents).mockResolvedValueOnce({
+      next: '',
+      events: COMPLETED_EVENTS,
+    });
+    const hydrated = await hydrateSession({ workspaceId: 'ws1', agentSlug: 'atlas', chatId: 'chat-1', sessionId: 'sess_tail' });
+
+    const msgs = session().messages;
+    expect(msgs.map((m: any) => m.author)).toEqual(['you', 'agent']);
+    expect(msgs[1].text).toBe('The answer is 42');
+    expect(msgs[1].resp).toBe('resp_sess_tail_T1');
+    // The usage from the terminal event still drives the context meter.
+    expect(hydrated!.finalInputTokens).toBe(4321);
+  });
+
+  it('a transcript replace racing the live stream keeps the tail and the stream keeps folding (poller race)', async () => {
+    const { stream } = await followRun();
+
+    // A replace lands mid-stream with a pre-persist snapshot (approval-poll
+    // tick, second attach's hydration): the streamed prefix must survive and
+    // the stream must keep folding onto the same row.
+    vi.mocked(api.agents.sessionEvents).mockResolvedValueOnce({
+      next: '',
+      events: PRE_PERSIST_EVENTS,
+    });
+    const snapshot = await fetchSessionTranscript('ws1', 'atlas', 'sess_tail');
+    applyServerTranscript('ws1', 'chat-1', 'sess_tail', snapshot.messages);
+    expect(session().messages.map((m: any) => m.author)).toEqual(['you', 'agent']);
+    expect(session().messages[1].text).toBe('The answer is 42');
+
+    stream.push({ id: '', kind: 'text_delta', occurred_at: 'x', turn_id: 'T1', text_delta: '!' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(session().messages.map((m: any) => m.author)).toEqual(['you', 'agent']);
+    expect(session().messages[1].text).toBe('The answer is 42!');
   });
 });

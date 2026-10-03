@@ -1,4 +1,5 @@
 import { cx } from "../../lib/helpers";
+import { useStore } from "../../store";
 import { Icon } from "../ui/Icon";
 import { Avatar } from "../ui/Avatar";
 import { Chip } from "../ui/Chip";
@@ -19,8 +20,20 @@ import { SessionTodosSurface } from "./todos/SessionTodosSurface";
 // dedicated entry to the panel's Documents listing — closing the tab from the
 // panel strip never strands the surface, the header button brings it back.
 
-export function ChatHeader({ target, agent, channelMembers, langfuseUrl, onOpenMembers, panelOpen, panelBadge, onTogglePanel, documentsAvailable, documentsOpen, onToggleDocuments  }: any) {
+export function ChatHeader({ target, agent, session, channelMembers, langfuseUrl, onOpenMembers, panelOpen, panelBadge, onTogglePanel, documentsAvailable, documentsOpen, onToggleDocuments  }: any) {
   const t = target;
+  // Running badge (agent status semantics; fix-chat-stop-on-reattached-run
+  // 4.1): the header follows the same merged signal as the sidebar session
+  // indicator — this tab's instant in-flight run (store ui.running, scoped
+  // to the active session ChatView renders) OR the server session list's
+  // running flag (foreign runs) — because the agent-level status field
+  // flips late and left the header on "Idle" mid-run. On terminal state
+  // agent.status is the fallback source again (Idle / Needs attention).
+  // The store flag is same-chat (fix-thinking-leak-on-chat-switch): a run
+  // in another chat must not flip this header to Running.
+  const uiRunning = useStore((s: any) => Boolean(s.ui.running) && s.ui.runningChatId === t.obj.id);
+  const running = t.kind === 'agent' && (Boolean(uiRunning) || Boolean(session?.running));
+  const statusKey = running ? 'running' : agent?.status;
   return (
     <header data-od-id="chat-header"
       className="flex h-14 shrink-0 items-center gap-3 border-b border-linesoft bg-bg px-5">
@@ -29,8 +42,8 @@ export function ChatHeader({ target, agent, channelMembers, langfuseUrl, onOpenM
       {t.kind === 'agent' && (
         <span className="relative inline-flex shrink-0">
           <Avatar name={agent.name} avatar={agent.avatar} kind="agent" size={26}/>
-          <span title={STATUS[agent.status].label}
-            className={cx('absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-[var(--bg)]', STATUS[agent.status].dot, agent.status === 'running' && 'od-live')}/>
+          <span title={STATUS[statusKey].label}
+            className={cx('absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-[var(--bg)]', STATUS[statusKey].dot, running && 'od-live')}/>
         </span>
       )}
       <div className="min-w-0">
@@ -39,7 +52,7 @@ export function ChatHeader({ target, agent, channelMembers, langfuseUrl, onOpenM
           {t.kind === 'agent' && <Chip mono>{agent.model}</Chip>}
         </h1>
         <p className="truncate text-[12px] text-muted">
-          {t.kind === 'agent' && (STATUS[agent.status].label + ' · last active ' + agent.lastActive)}
+          {t.kind === 'agent' && (STATUS[statusKey].label + ' · last active ' + agent.lastActive)}
           {t.kind === 'channel' && (t.obj.purpose + ' · ' + (channelMembers && channelMembers.length ? channelMembers.length + ' members' : 'no members yet'))}
           {t.kind === 'person' && (t.obj.presence === 'online' ? 'Online' : 'Away') + ' · direct message'}
         </p>
