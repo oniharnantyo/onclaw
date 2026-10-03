@@ -114,13 +114,11 @@ func TestWorkerRawEmbedRunsBeforeExtraction(t *testing.T) {
 	gate := newTestGate(s, &orderRecordingModel{inner: shared, stage: "gate", rec: rec})
 	embedder := &recordingEmbedder{rec: rec}
 	w := NewWorker(gister, gate, embedder, s.MemoryEmbeddings(), testLogger)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	w.Start(ctx)
-	defer w.Stop()
+	ctx := context.Background()
 
-	w.Enqueue(testJob())
-	waitFor(t, 5*time.Second, func() bool { return w.Stats().Processed == 1 }, "worker did not process the job")
+	if err := w.Ingest(ctx, testJob()); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
 
 	got := rec.stages()
 	want := []string{"embed", "gist", "gate", "embed"}
@@ -149,13 +147,11 @@ func TestWorkerRawEmbedRowShape(t *testing.T) {
 	embedder := &recordingEmbedder{rec: &orderRecorder{}, vectors: [][][]float32{{{0.1, 0.2, 0.3}}}}
 	gister := newTestGister(s, &scriptedModel{responses: []string{`{"description":"d","outcome":"o"}`, `[]`}})
 	w := NewWorker(gister, newTestGate(s, &scriptedModel{responses: []string{`[]`}}), embedder, s.MemoryEmbeddings(), testLogger)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	w.Start(ctx)
-	defer w.Stop()
+	ctx := context.Background()
 
-	w.Enqueue(testJob()) // one human direct chat: user-visibility ceiling
-	waitFor(t, 5*time.Second, func() bool { return w.Stats().Processed == 1 }, "worker did not process the job")
+	if err := w.Ingest(ctx, testJob()); err != nil { // one human direct chat: user-visibility ceiling
+		t.Fatalf("ingest: %v", err)
+	}
 
 	hits, err := s.MemoryEmbeddings().SearchByVector(ctx, testWorkspaceID, testUserID, testAgentID,
 		[]domain.MemoryTargetType{domain.MemoryTargetRaw}, 3, []float32{0.1, 0.2, 0.3}, store.MemoryEmbeddingFilters{}, 0)
@@ -201,13 +197,11 @@ func TestWorkerCommittedRowsEmbedInOneBatch(t *testing.T) {
 		`[{"op":"ADD","content":"The launch date moved to October","visibility":"user","importance":6,"pin":false,"explicit_request":false,"supersedes":null,"topic":null,"conflict_with_doc":false}]`,
 	}}
 	w := NewWorker(newTestGister(s, gistModel), newTestGate(s, gistModel), embedder, s.MemoryEmbeddings(), testLogger)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	w.Start(ctx)
-	defer w.Stop()
+	ctx := context.Background()
 
-	w.Enqueue(testJob())
-	waitFor(t, 5*time.Second, func() bool { return w.Stats().Processed == 1 }, "worker did not process the job")
+	if err := w.Ingest(ctx, testJob()); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
 
 	calls := embedder.calls()
 	if len(calls) != 2 {
@@ -253,13 +247,11 @@ func TestWorkerEmbedderFailureFailsSoft(t *testing.T) {
 		`[{"op":"ADD","content":"The API gateway rotates keys monthly","visibility":"user","importance":5,"pin":false,"explicit_request":false,"supersedes":null,"topic":null,"conflict_with_doc":false}]`,
 	}}
 	w := NewWorker(newTestGister(s, gistModel), newTestGate(s, gistModel), embedder, s.MemoryEmbeddings(), testLogger)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	w.Start(ctx)
-	defer w.Stop()
+	ctx := context.Background()
 
-	w.Enqueue(testJob())
-	waitFor(t, 5*time.Second, func() bool { return w.Stats().Processed == 1 }, "worker did not process the job")
+	if err := w.Ingest(ctx, testJob()); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
 
 	stats := w.Stats()
 	if stats.Succeeded != 1 || stats.Failed != 0 {
@@ -295,13 +287,11 @@ func TestWorkerNoEmbeddingModelNoOps(t *testing.T) {
 		`[{"op":"ADD","content":"Invoices close on Fridays","visibility":"user","importance":5,"pin":false,"explicit_request":false,"supersedes":null,"topic":null,"conflict_with_doc":false}]`,
 	}}
 	w := NewWorker(newTestGister(s, gistModel), newTestGate(s, gistModel), embedder, s.MemoryEmbeddings(), testLogger)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	w.Start(ctx)
-	defer w.Stop()
+	ctx := context.Background()
 
-	w.Enqueue(testJob())
-	waitFor(t, 5*time.Second, func() bool { return w.Stats().Processed == 1 }, "worker did not process the job")
+	if err := w.Ingest(ctx, testJob()); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
 
 	stats := w.Stats()
 	if stats.Succeeded != 1 || stats.Failed != 0 || stats.EmbedFailures != 0 {
@@ -329,13 +319,11 @@ func TestWorkerRawEmbeddingToggleOff(t *testing.T) {
 	}}
 	w := NewWorker(newTestGister(s, gistModel), newTestGate(s, gistModel), embedder, s.MemoryEmbeddings(), testLogger,
 		WithRawEmbeddingEnabled(func(context.Context, string) bool { return false }))
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	w.Start(ctx)
-	defer w.Stop()
+	ctx := context.Background()
 
-	w.Enqueue(testJob())
-	waitFor(t, 5*time.Second, func() bool { return w.Stats().Processed == 1 }, "worker did not process the job")
+	if err := w.Ingest(ctx, testJob()); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
 
 	calls := embedder.calls()
 	if len(calls) != 1 {

@@ -44,13 +44,17 @@ const (
 	maxTopicRunes = 64
 	// maxConflictExcerpt bounds a report's note excerpt.
 	maxConflictExcerpt = 200
+	// stopGrace bounds Stop's wait for in-flight passes (the ingest seam's
+	// worker carries its own copy — the queue mechanics moved to
+	// internal/ingest).
+	stopGrace = 30 * time.Second
 )
 
-// StatsFunc snapshots the ingestion worker's monotonic counters; the
+// StatsFunc snapshots the memory pipeline's monotonic counters; the
 // morning report's extraction-failure count is the delta between the
 // pass's snapshot and the workspace's last-seen one. The consolidator takes
 // the function rather than the *Worker so the two services stay decoupled —
-// the composition root passes memoryWorker.Stats.
+// the composition root passes the memory pipeline's Stats.
 type StatsFunc func() IngestStats
 
 // Consolidator is the nightly per-workspace consolidation pass (tasks

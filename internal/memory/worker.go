@@ -1,64 +1,41 @@
-// Package memory implements the background agent-memory ingestion pipeline
-// and the read-only retrieval seam (integrate-agent-zero-memory): a bounded
-// worker drains turn-end ingest jobs through the per-run windowed gister and
-// the curation gate — both cheap-model side-calls that fail soft — while a
-// Searcher serves scope-filtered reads. Ingestion never touches the run that
-// produced the turn: any stage failure logs, counts, and leaves the raw
-// session events intact for reprocessing.
+// Package memory implements the background agent-memory pipeline
+// (integrate-agent-zero-memory) and the read-only retrieval seam: the
+// per-turn extraction pipeline — the windowed gister and the curation gate,
+// both cheap-model side-calls that fail soft, plus the vector channel — runs
+// as consumer #1 of the neutral turn-ingest seam (internal/ingest,
+// add-skill-curation-from-traces D1), while a Searcher serves scope-filtered
+// reads. Ingestion never touches the run that produced the turn: any stage
+// failure logs, counts, and leaves the raw session events intact for
+// reprocessing.
 package memory
 
 import (
 	"context"
 	"log/slog"
-	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/ingest"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
-// Run origins carried on IngestJob. The values mirror the ExecRequest Origin
-// constants in internal/agents — duplicated as literals because the runner
-// imports this package for the ingestion seam and the reverse import would
-// cycle. Empty behaves as a direct user chat.
+// IngestJob is the turn-end ingest job. The type itself moved to the neutral
+// seam (ingest.Job, add-skill-curation-from-traces D1); the alias keeps the
+// pipeline's signatures — and the chip's wire contract — stable.
+type IngestJob = ingest.Job
+
+// Run origins carried on the job. The values moved to internal/ingest with
+// the job type; the aliases keep the pipeline's internal references stable.
+// Empty behaves as a direct user chat.
 const (
-	originUser      = "user"
-	originScheduler = "scheduler"
-	originChannel   = "channel"
-	originTelegram  = "telegram"
-	originHeartbeat = "heartbeat"
+	originUser      = ingest.OriginUser
+	originScheduler = ingest.OriginScheduler
+	originChannel   = ingest.OriginChannel
+	originTelegram  = ingest.OriginTelegram
+	originHeartbeat = ingest.OriginHeartbeat
 )
-
-// IngestJob captures everything the pipeline needs at enqueue time (D2): the
-// turn's identity coordinates, the triggering origin, the session shape
-// driving the visibility ceiling, and the run-finish status. The raw
-// material is never copied into the job — the worker loads the session's
-// events itself through the store, so a pipeline failure leaves the raw log
-// untouched and reprocessing possible.
-type IngestJob struct {
-	WorkspaceID string
-	AgentID     string
-	UserID      string
-	SessionID   string
-	TurnID      string
-
-	// Origin is the finished run's origin: "user", "scheduler", "channel",
-	// "telegram", or "heartbeat" (the ExecRequest Origin values).
-	Origin string
-
-	// HumanParticipants is the session-shape human count feeding both the
-	// gister's participant rule and the gate's visibility ceiling. It is
-	// counted at enqueue time, never re-derived from the transcript.
-	HumanParticipants int
-
-	// Status is the run-finish status literal ("completed"/"failed"). Both
-	// statuses ingest (D2) — a failed run still contains a real user turn;
-	// the field is attribution, never a filter.
-	Status string
-}
 
 // SessionEventKindMemoryIngested is the application-owned session-event kind
 // (the ADK extension namespace, the x.prompt_blocked convention) that
@@ -100,19 +77,13 @@ func init() {
 // dropped, nothing else changes.
 type ChipSink func(ctx context.Context, job IngestJob, payload MemoryIngestedPayload)
 
-const (
-	defaultQueueSize   = 256
-	defaultConcurrency = 2
-	// stopGrace bounds Stop's wait for in-flight jobs; a side-call past the
-	// deadline logs and the process proceeds (fail-soft to the shutdown).
-	stopGrace = 30 * time.Second
-)
-
-// Worker drains turn-end ingest jobs off a bounded queue through the raw
-// evidence embed, the gister, and the curation gate, then emits the chip.
-// Enqueueing never blocks the caller and nothing a job does can fail a run
-// (D2, D10). Jobs on the same session are serialized — the gister's cursor
-// is read-then-write — while different sessions process concurrently.
+// Worker is the memory ingestion pipeline — consumer #1 of the ingest seam
+// (add-skill-curation-from-traces D1): one turn-end job drains through the
+// raw evidence embed, the windowed gister, and the curation gate, then emits
+// the chip. Queue mechanics — bounding, drain goroutines, and per-session
+// serialization — live on ingest.Worker; this type owns only the per-job
+// pipeline and its counters. Nothing a job does can fail a run (D2, D10):
+// every stage fails soft inside Ingest, which always returns nil.
 type Worker struct {
 	gister     *Gister
 	gate       *Gate
@@ -120,51 +91,20 @@ type Worker struct {
 	embeddings store.MemoryEmbeddingStore
 	log        *slog.Logger
 	chip       ChipSink
-	queue      chan IngestJob
-	queueSize  int
-	workers    int
-	wg         sync.WaitGroup
-	stopCh     chan struct{}
-	stopOnce   sync.Once
 
 	// rawEnabled resolves the workspace's raw-embedding toggle (the
 	// settings record's storage-pressure switch, D3 risk register); nil
 	// behaves as enabled — absence is ON.
 	rawEnabled RawEmbeddingFunc
 
-	locksMu     sync.Mutex
-	sessionLock map[string]*sync.Mutex
-
-	enqueued      atomic.Int64
 	processed     atomic.Int64
 	succeeded     atomic.Int64
 	failed        atomic.Int64
-	dropped       atomic.Int64
 	embedFailures atomic.Int64
 }
 
-// WorkerOption configures the worker; every knob has a safe default.
+// WorkerOption configures the memory pipeline; every knob has a safe default.
 type WorkerOption func(*Worker)
-
-// WithQueueSize caps the ingest queue (default 256). The queue exists to
-// absorb bursts, not to gate the turn path — overflow drops.
-func WithQueueSize(n int) WorkerOption {
-	return func(w *Worker) {
-		if n > 0 {
-			w.queueSize = n
-		}
-	}
-}
-
-// WithConcurrency sets how many background goroutines drain the queue
-// (default 2).
-func WithConcurrency(n int) WorkerOption {
-	return func(w *Worker) {
-		if n > 0 {
-			w.workers = n
-		}
-	}
-}
 
 // WithChipSink wires the chip emission. The composition root applies it only
 // when the session-event seam exists; inside the package the sink is simply
@@ -218,150 +158,39 @@ func WithRawEmbeddingEnabled(fn RawEmbeddingFunc) WorkerOption {
 	}
 }
 
-// NewWorker constructs the worker from its collaborators: the windowed
-// gister, the curation gate, the embeddings lane (the vector channel's
-// port), and the vector-index store the embedding stages persist through —
-// each an explicitly injected, granular dependency the composition root
-// resolves non-nil. The composition root resolves every dependency non-nil.
+// NewWorker constructs the memory pipeline consumer from its collaborators:
+// the windowed gister, the curation gate, the embeddings lane (the vector
+// channel's port), and the vector-index store the embedding stages persist
+// through — each an explicitly injected, granular dependency the composition
+// root resolves non-nil. The consumer registers into an ingest.Worker via
+// WithConsumers; the queue it drains is the seam's, not this type's.
 func NewWorker(gister *Gister, gate *Gate, embedder Embedder, embeddings store.MemoryEmbeddingStore, log *slog.Logger, opts ...WorkerOption) *Worker {
 	w := &Worker{
-		gister:      gister,
-		gate:        gate,
-		embedder:    embedder,
-		embeddings:  embeddings,
-		log:         log,
-		queueSize:   defaultQueueSize,
-		workers:     defaultConcurrency,
-		stopCh:      make(chan struct{}),
-		sessionLock: make(map[string]*sync.Mutex),
+		gister:     gister,
+		gate:       gate,
+		embedder:   embedder,
+		embeddings: embeddings,
+		log:        log,
 	}
 	for _, opt := range opts {
 		opt(w)
 	}
-	// Sized after the options so WithQueueSize takes effect.
-	w.queue = make(chan IngestJob, w.queueSize)
 	return w
 }
 
-// sessionMutex returns the per-session serialization lock: two jobs on one
-// session must not window concurrently or the same material is processed
-// twice against the incremental cursor (D3). Different sessions never
-// contend.
-func (w *Worker) sessionMutex(workspaceID, sessionID string) *sync.Mutex {
-	w.locksMu.Lock()
-	defer w.locksMu.Unlock()
-	key := workspaceID + "/" + sessionID
-	mu, ok := w.sessionLock[key]
-	if !ok {
-		mu = &sync.Mutex{}
-		w.sessionLock[key] = mu
-	}
-	return mu
-}
+// The memory pipeline satisfies the ingest seam's consumer contract.
+var _ ingest.Consumer = (*Worker)(nil)
 
-// Start launches the drain goroutines under the process-lifetime context:
-// the loops exit when ctx is cancelled or Stop is called; in-flight jobs are
-// not interrupted — Stop waits for them (the scheduler/heartbeat lifecycle).
-func (w *Worker) Start(ctx context.Context) {
-	for i := 0; i < w.workers; i++ {
-		w.wg.Add(1)
-		go func() {
-			defer w.wg.Done()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-w.stopCh:
-					return
-				case job := <-w.queue:
-					w.process(ctx, job)
-				}
-			}
-		}()
-	}
-}
-
-// Stop halts enqueue acceptance and waits for in-flight jobs to reach their
-// terminal outcome, bounded by the stop grace. Queued-but-unstarted jobs are
-// abandoned — the raw session events stay intact for reprocessing (D2).
-// Idempotent.
-func (w *Worker) Stop() {
-	w.stopOnce.Do(func() { close(w.stopCh) })
-	done := make(chan struct{})
-	go func() {
-		w.wg.Wait()
-		close(done)
-	}()
-	timer := time.NewTimer(stopGrace)
-	defer timer.Stop()
-	select {
-	case <-done:
-	case <-timer.C:
-		w.log.Warn("memory: stop deadline exceeded with jobs still in flight")
-	}
-}
-
-// Enqueue submits one turn for background ingestion. It never blocks the
-// caller: a full queue (or a stopped worker) drops the job with a warning
-// and a QueueDropped count — the runner's enqueue sits on the turn path and
-// must never stall a turn.
-func (w *Worker) Enqueue(job IngestJob) {
-	select {
-	case <-w.stopCh:
-		w.dropped.Add(1)
-		return
-	default:
-	}
-	select {
-	case w.queue <- job:
-		w.enqueued.Add(1)
-	default:
-		w.dropped.Add(1)
-		w.log.Warn("memory: ingest queue full; dropping job",
-			"workspace_id", job.WorkspaceID,
-			"session_id", job.SessionID,
-			"turn_id", job.TurnID)
-	}
-}
-
-// IngestStats is the worker's monotonic counter snapshot; the morning
-// report's extraction-failure count reads Failed from here and its
-// embedding-failure count reads EmbedFailures (wave3 D3's fail-soft
-// visibility — silent degradation surfaces in the report).
-type IngestStats struct {
-	Enqueued      int64
-	Processed     int64
-	Succeeded     int64
-	Failed        int64
-	QueueDropped  int64
-	EmbedFailures int64
-}
-
-// Stats returns the current counters.
-func (w *Worker) Stats() IngestStats {
-	return IngestStats{
-		Enqueued:      w.enqueued.Load(),
-		Processed:     w.processed.Load(),
-		Succeeded:     w.succeeded.Load(),
-		Failed:        w.failed.Load(),
-		QueueDropped:  w.dropped.Load(),
-		EmbedFailures: w.embedFailures.Load(),
-	}
-}
-
-// process runs one job: the raw evidence embed, the windowed gister, then
+// Ingest runs one job: the raw evidence embed, the windowed gister, then
 // the curation gate, then the row embed, then the chip. The stages fail
 // soft independently — a gist failure never blocks the gate, and an
 // embedding failure never blocks anything (D3/D4: the vector channel is the
-// additive lane) — and nothing escapes to the caller (D10). A job with an
-// empty unprocessed window is a quiet success: nothing to ingest. Jobs on
-// the same session hold the session lock for the whole body — the window
-// read, every stage, and the chip — so the incremental cursor never races.
-func (w *Worker) process(ctx context.Context, job IngestJob) {
-	mutex := w.sessionMutex(job.WorkspaceID, job.SessionID)
-	mutex.Lock()
-	defer mutex.Unlock()
-
+// additive lane) — and nothing escapes to the caller (D10): the method
+// always returns nil, with every stage failure counted. A job with an empty
+// unprocessed window is a quiet success: nothing to ingest. Per-session
+// serialization is the ingest.Worker's job (jobs on one session never
+// dispatch concurrently), so the incremental cursor never races.
+func (w *Worker) Ingest(ctx context.Context, job IngestJob) error {
 	failed := false
 	chip := MemoryIngestedPayload{NoteIDs: []string{}, EventIDs: []string{}}
 
@@ -411,6 +240,30 @@ func (w *Worker) process(ctx context.Context, job IngestJob) {
 	// The chip rides only committed memory: nothing stored, nothing emitted.
 	if w.chip != nil && (len(chip.NoteIDs) > 0 || len(chip.EventIDs) > 0) {
 		w.chip(ctx, job, chip)
+	}
+	return nil
+}
+
+// IngestStats is the memory pipeline's monotonic counter snapshot; the
+// morning report's extraction-failure count reads Failed from here and its
+// embedding-failure count reads EmbedFailures (wave3 D3's fail-soft
+// visibility — silent degradation surfaces in the report). The queue-level
+// counters (Enqueued, dispatched, QueueDropped) live on ingest.Worker's
+// Stats.
+type IngestStats struct {
+	Processed     int64
+	Succeeded     int64
+	Failed        int64
+	EmbedFailures int64
+}
+
+// Stats returns the current counters.
+func (w *Worker) Stats() IngestStats {
+	return IngestStats{
+		Processed:     w.processed.Load(),
+		Succeeded:     w.succeeded.Load(),
+		Failed:        w.failed.Load(),
+		EmbedFailures: w.embedFailures.Load(),
 	}
 }
 

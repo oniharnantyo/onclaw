@@ -204,7 +204,7 @@ func failingResolver(string) ModelResolver {
 
 // unconfiguredEmbedder is the no-model world (wave3 D4): the embedder
 // resolves no embedding config, so both embedding stages no-op quietly and
-// worker behavior stays byte-identical to the lexical-only pipeline.
+// pipeline behavior stays byte-identical to the lexical-only pipeline.
 func unconfiguredEmbedder() Embedder {
 	return NewProviderEmbedder(nil, nil, nil, providers.NewRegistry())
 }
@@ -217,24 +217,14 @@ func newTestGate(s store.Store, m Model) *Gate {
 	return NewGate(s.MemoryNotes(), s.MemoryEntities(), s.Memories(), nil, nil, nil, testLogger, WithModelResolver(staticResolver(m)))
 }
 
+// newTestWorker builds the pipeline consumer; the tests below drive it by
+// calling Ingest directly (the queue mechanics live on ingest.Worker and are
+// exercised there and through the runner's end-to-end tests).
 func newTestWorker(s store.Store, gister *Gister, gate *Gate, opts ...WorkerOption) *Worker {
 	return NewWorker(gister, gate, unconfiguredEmbedder(), s.MemoryEmbeddings(), testLogger, opts...)
 }
 
-// waitFor polls cond until it holds or the deadline passes.
-func waitFor(t *testing.T, timeout time.Duration, cond func() bool, msg string) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	t.Fatal(msg)
-}
-
-// ---- worker tests ----
+// ---- pipeline tests ----
 
 // TestWorkerChipPayloadShape pins the chip contract: the empty payload must
 // marshal to exactly the agreed wire shape (counts + ids, never content).
@@ -252,10 +242,11 @@ func TestWorkerChipPayloadShape(t *testing.T) {
 
 // TestWorkerProcessesBothStatuses (D2): a completed and a failed run both
 // ingest — the job's status is attribution, never a filter. The failed run's
-// turn is enqueued after the first finishes so its material is genuinely new
+// turn is ingested after the first finishes so its material is genuinely new
 // window content.
 func TestWorkerProcessesBothStatuses(t *testing.T) {
 	s := seedWorld(t)
+	ctx := context.Background()
 	base := time.Now().UTC().Add(-time.Hour)
 	appendEvents(t, s,
 		chatEvent(t, "e1", "turn-1", 1, base, schema.AgenticRoleTypeUser, "Reminder: the deploy window is Tuesdays."),
@@ -271,15 +262,12 @@ func TestWorkerProcessesBothStatuses(t *testing.T) {
 	gister := newTestGister(s, gistModel)
 	gate := newTestGate(s, gistModel)
 	w := newTestWorker(s, gister, gate)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	w.Start(ctx)
-	defer w.Stop()
 
 	done := testJob()
 	done.Status = "completed"
-	w.Enqueue(done)
-	waitFor(t, 5*time.Second, func() bool { return w.Stats().Processed == 1 }, "worker did not process the completed job")
+	if err := w.Ingest(ctx, done); err != nil {
+		t.Fatalf("ingest the completed job: %v", err)
+	}
 
 	appendEvents(t, s,
 		chatEvent(t, "e3", "turn-2", 3, base.Add(2*time.Minute), schema.AgenticRoleTypeUser, "Follow-up: the vendor contact is Budi."),
@@ -289,8 +277,9 @@ func TestWorkerProcessesBothStatuses(t *testing.T) {
 	failed := testJob()
 	failed.TurnID = "turn-2"
 	failed.Status = "failed"
-	w.Enqueue(failed)
-	waitFor(t, 5*time.Second, func() bool { return w.Stats().Processed == 2 }, "worker did not process the failed job")
+	if err := w.Ingest(ctx, failed); err != nil {
+		t.Fatalf("ingest the failed job: %v", err)
+	}
 
 	stats := w.Stats()
 	if stats.Succeeded != 2 || stats.Failed != 0 {
@@ -309,6 +298,7 @@ func TestWorkerProcessesBothStatuses(t *testing.T) {
 // stages, the job is counted failed, nothing is written, and nothing escapes.
 func TestWorkerModelDownFailsSoft(t *testing.T) {
 	s := seedWorld(t)
+	ctx := context.Background()
 	appendEvents(t, s,
 		chatEvent(t, "e1", "turn-1", 1, time.Now().UTC().Add(-time.Hour), schema.AgenticRoleTypeUser, "Remember that the staging database resets nightly."),
 	)
@@ -316,13 +306,10 @@ func TestWorkerModelDownFailsSoft(t *testing.T) {
 	gister := NewGister(s.MemoryEvents(), s.SessionEvents(), s.MemoryEntities(), nil, nil, nil, testLogger, WithModelResolver(failingResolver("down")))
 	gate := NewGate(s.MemoryNotes(), s.MemoryEntities(), s.Memories(), nil, nil, nil, testLogger, WithModelResolver(failingResolver("down")))
 	w := newTestWorker(s, gister, gate)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	w.Start(ctx)
-	defer w.Stop()
 
-	w.Enqueue(testJob())
-	waitFor(t, 5*time.Second, func() bool { return w.Stats().Processed == 1 }, "worker did not process the job")
+	if err := w.Ingest(ctx, testJob()); err != nil {
+		t.Fatalf("ingest must never propagate a stage failure: %v", err)
+	}
 
 	stats := w.Stats()
 	if stats.Failed != 1 || stats.Succeeded != 0 {
@@ -344,49 +331,11 @@ func TestWorkerModelDownFailsSoft(t *testing.T) {
 	}
 }
 
-// TestWorkerQueueOverflowNeverBlocks: a full queue drops the job and counts
-// it — Enqueue must return immediately even when nothing drains.
-func TestWorkerQueueOverflowNeverBlocks(t *testing.T) {
-	s := seedWorld(t)
-	gister := newTestGister(s, &scriptedModel{})
-	gate := newTestGate(s, &scriptedModel{})
-	w := newTestWorker(s, gister, gate, WithQueueSize(1)) // never started — nothing drains
-
-	start := time.Now()
-	for i := 0; i < 4; i++ {
-		w.Enqueue(testJob())
-	}
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("Enqueue blocked on a full queue for %v", elapsed)
-	}
-	stats := w.Stats()
-	if stats.Enqueued != 1 {
-		t.Fatalf("expected exactly 1 enqueued, got %+v", stats)
-	}
-	if stats.QueueDropped != 3 {
-		t.Fatalf("expected 3 queue drops, got %+v", stats)
-	}
-}
-
-// TestWorkerEnqueueAfterStopDrops: a stopped worker counts late enqueues as
-// dropped instead of parking them in the queue.
-func TestWorkerEnqueueAfterStopDrops(t *testing.T) {
-	s := seedWorld(t)
-	w := newTestWorker(s, newTestGister(s, &scriptedModel{}), newTestGate(s, &scriptedModel{}), WithQueueSize(4))
-	w.Start(context.Background())
-	w.Stop()
-
-	w.Enqueue(testJob())
-	stats := w.Stats()
-	if stats.Enqueued != 0 || stats.QueueDropped != 1 {
-		t.Fatalf("expected the post-stop enqueue to drop, got %+v", stats)
-	}
-}
-
 // TestWorkerEmitsChipAfterCommit (D11): the chip carries committed ids and
 // the visibility breakdown only, and a turn that stores nothing emits none.
 func TestWorkerEmitsChipAfterCommit(t *testing.T) {
 	s := seedWorld(t)
+	ctx := context.Background()
 	base := time.Now().UTC().Add(-time.Hour)
 	appendEvents(t, s,
 		chatEvent(t, "e1", "turn-1", 1, base, schema.AgenticRoleTypeUser, "Team update: the launch date moved to October."),
@@ -411,23 +360,21 @@ func TestWorkerEmitsChipAfterCommit(t *testing.T) {
 		chips = append(chips, payload)
 		chipJobs = append(chipJobs, job)
 	}))
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	w.Start(ctx)
-	defer w.Stop()
 
 	channel := testJob()
 	channel.Origin = originChannel
 	channel.HumanParticipants = 2
-	w.Enqueue(channel)
-	waitFor(t, 5*time.Second, func() bool { return w.Stats().Processed == 1 }, "worker did not process the first job")
+	if err := w.Ingest(ctx, channel); err != nil {
+		t.Fatalf("ingest the channel job: %v", err)
+	}
 
 	// The second turn's window is already consumed by the first gist — a
 	// quiet success, so no second chip is emitted.
 	second := testJob()
 	second.TurnID = "turn-2"
-	w.Enqueue(second)
-	waitFor(t, 5*time.Second, func() bool { return w.Stats().Processed == 2 }, "worker did not process the second job")
+	if err := w.Ingest(ctx, second); err != nil {
+		t.Fatalf("ingest the second job: %v", err)
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
