@@ -97,6 +97,10 @@ func (cs *connectionStore) UpdateTokenLifecycle(ctx context.Context, c *domain.C
 	}
 
 	now := time.Now().UTC()
+	if !now.After(stored.CreatedAt) {
+		// Same-clock-tick update: keep updated_at strictly after created_at.
+		now = stored.CreatedAt.Add(time.Microsecond)
+	}
 	stored.RefreshCiphertext = c.RefreshCiphertext
 	stored.ExpiresAt = c.ExpiresAt
 	stored.GrantedScopes = cloneStringSlice(c.GrantedScopes)
