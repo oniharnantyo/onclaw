@@ -19,6 +19,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/oniharnantyo/onclaw/internal/agents"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/ingest"
 	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/openresponses"
 	"github.com/oniharnantyo/onclaw/internal/providers"
@@ -110,12 +111,13 @@ func setupV1EnvOpts(t *testing.T, release chan struct{}, keepAlive time.Duration
 		st.MemoryEmbeddings(),
 		memLog,
 	)
+	ingestWorker := ingest.NewWorker(memLog, ingest.WithConsumers(memWorker))
 	memSearch := newTestMemorySearcher(st)
 	memGate := memory.NewIntentGate(st.Providers(), []byte("test-key-32-bytes-long-12345678"), agents.DefaultAgenticModelFactory, memLog)
 	runner := agents.NewRunner(
 		st.Workspaces(), st.Agents(), st.Users(), st.Members(), st.Roles(),
 		st.Providers(), st.SessionEvents(), st.SessionCheckpoints(), st.Memories(), st.AgentSessions(),
-		st.GatewayLinks(), memWorker, memSearch, memGate,
+		st.GatewayLinks(), ingestWorker, memSearch, memGate,
 		[]byte("test-key-32-bytes-long-12345678"),
 		onClawDir,
 		agents.WithAgenticModelFactory(func(_ context.Context, _ string, _ providers.Credential, _ string) (model.BaseModel[*schema.AgenticMessage], error) {
@@ -890,6 +892,20 @@ func TestV1Responses_CompactEmptyHistoryQuiet(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed empty session: %v", err)
 	}
+	// Index the session (fix-role-permission-audit D3 owner-scoping): the
+	// bind resolves only sessions owned by the key's creating user, and an
+	// un-indexed session reads as system/foreign.
+	atlas, err := st.Agents().BySlug(ctx, wsID, "atlas")
+	if err != nil {
+		t.Fatalf("load atlas agent: %v", err)
+	}
+	creator, err := st.Users().ByEmail(ctx, "v1@example.com")
+	if err != nil {
+		t.Fatalf("load key creator: %v", err)
+	}
+	if err := st.AgentSessions().UpsertAgentSession(ctx, wsID, atlas.ID, creator.ID, domain.AgentSessionUpsert{SessionID: sess, Title: ""}); err != nil {
+		t.Fatalf("index session: %v", err)
+	}
 
 	rec := v1Post(t, router, key, map[string]any{
 		"model":  "atlas",
@@ -930,6 +946,20 @@ func TestV1Responses_CompactConflictsWithActiveRun(t *testing.T) {
 		{EventID: "evt-conflict-1", TurnID: "turn-conflict", Timestamp: time.Now().UTC(), Message: schema.UserAgenticMessage("seeded history")},
 	}); err != nil {
 		t.Fatalf("seed session: %v", err)
+	}
+	// Index the session (fix-role-permission-audit D3 owner-scoping): the
+	// bind resolves only sessions owned by the key's creating user, and an
+	// un-indexed session reads as system/foreign.
+	atlas, err := st.Agents().BySlug(context.Background(), wsID, "atlas")
+	if err != nil {
+		t.Fatalf("load atlas agent: %v", err)
+	}
+	creator, err := st.Users().ByEmail(context.Background(), "v1@example.com")
+	if err != nil {
+		t.Fatalf("load key creator: %v", err)
+	}
+	if err := st.AgentSessions().UpsertAgentSession(context.Background(), wsID, atlas.ID, creator.ID, domain.AgentSessionUpsert{SessionID: sess, Title: ""}); err != nil {
+		t.Fatalf("index session: %v", err)
 	}
 
 	// Start an ordinary streaming turn; the stalling model keeps the run live.

@@ -15,6 +15,10 @@
 #  10. Last-owner & last-superadmin protection guards
 #  11. CLI user provisioning & authentication verification
 #  12. Workspace provider configuration CRUD & verify scenarios
+#      + typesafe decision provider (add-configurable-decision-backend:
+#      canonical default, base_url override, systemone verify probe, no model
+#      resolution, memory decision-reference 409, decision settings
+#      validation: half-set 400 / non-decision provider 400 / clear-on-omit)
 #  13. Agents, skills, tools, user & workspace memory endpoints, birth flow
 #      + agent tools denylist contract (refactor-agent-tools-denylist: create
 #      defaults to an empty disabled_tools, PATCH replaces, legacy tools key
@@ -536,9 +540,20 @@ api_req "POST" "/api/v1/auth/login" "" "{\"email\":\"${BOB_EMAIL}\",\"password\"
 assert_status "200" "Bob logs in"
 BOB_TOKEN=$(json_get '.token')
 
-# Guard: Bob (Admin) cannot assign Owner role (canAssign: role !⊆ actor) -> 403
+# canAssign (role ⊆ actor): since roles.write was retired (fix-role-permission-audit
+# D5) the built-in Owner and Admin roles hold IDENTICAL permission sets, so the
+# Owner role is a subset of Bob's Admin set and the assignment succeeds (owner
+# authority rides the is_owner flag, not an extra permission). The algebra's
+# denial side stays proved below — canEdit is strict-subset, so Bob still cannot
+# modify a peer Admin.
 api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/members" "${BOB_TOKEN}" "{\"email\":\"dave.smoke@example.com\",\"role_id\":\"${OWNER_ROLE_ID}\"}"
-assert_status "403" "Admin cannot assign Owner role (canAssign guard returns 403)"
+assert_status "201" "Admin assigns the Owner role (Owner and Admin sets are identical post-D5, canAssign subset holds)"
+DAVE_OWNER_UID=$(json_get '.member.user_id')
+
+# Fixture restore: Alice (Owner, is_owner bypasses canEdit) removes the second
+# owner so the later last-owner guards keep their sole-owner premise.
+api_req "DELETE" "/api/v1/workspaces/${TENANT_SLUG}/members/${DAVE_OWNER_UID}" "${ALICE_TOKEN}"
+assert_status "204" "Owner removes the second owner (is_owner bypasses canEdit; not the last owner)"
 
 # Alice updates Charlie to Admin role
 api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/members/${CHARLIE_UID}" "${ALICE_TOKEN}" "{\"role_id\":\"${ADMIN_ROLE_ID}\"}"
@@ -769,10 +784,12 @@ api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/providers" "${CHARLIE_TOKEN}" 
 assert_status "400" "Provider base_url with non-http(s) scheme is rejected (400)"
 assert_json_expr '.error.code == "invalid_request"' "Error code is invalid_request"
 
-# 12.5 Owner creates compatible provider with valid base_url
-api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/providers" "${CHARLIE_TOKEN}" '{"type":"openai-compatible","name":"Local vLLM","base_url":"http://127.0.0.1:8000/v1"}'
+# 12.5 Owner creates compatible provider with valid base_url (port 1 — the
+# script's canonical dead endpoint; port 8000 is forwarded by OrbStack on some
+# dev machines, so a "dead" probe there can answer ok:true).
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/providers" "${CHARLIE_TOKEN}" '{"type":"openai-compatible","name":"Local vLLM","base_url":"http://127.0.0.1:1/v1"}'
 assert_status "201" "Owner creates openai-compatible provider with base_url"
-assert_json_expr '.provider.base_url == "http://127.0.0.1:8000/v1"' "Provider base_url is set"
+assert_json_expr '.provider.base_url == "http://127.0.0.1:1/v1"' "Provider base_url is set"
 COMPAT_PROV_ID=$(json_get '.provider.id')
 
 # 12.6 Verify keyless compatible provider against a dead endpoint -> 200 {ok:false}
@@ -859,6 +876,22 @@ class Handler(BaseHTTPRequestHandler):
             self._send(401, {"error": {"message": "Invalid API key"}})
 
     def do_POST(self):
+        # TypeSafe /v1/systemone decision endpoint (add-configurable-decision-backend):
+        # the verify probe POSTs one noul question with a bearer key. The
+        # correct key gets a 200 answers body (verify ok:true); anything else
+        # gets a 401 so a bad key surfaces as verify ok:false. The path is
+        # matched EXACTLY — the base_url is the full endpoint, and a probe
+        # that appends a dangling "/" would 307-redirect to an http://
+        # downgrade on the real host (surfacing as a spurious 405).
+        if self.path.split("?")[0] == "/v1/systemone":
+            if self.headers.get("Authorization") != "Bearer ts-smoke-key-123456":
+                self._send(401, {"error": {"message": "Invalid API key"}})
+                return
+            self._send(200, {
+                "answers": {"needs_memory": {"noul": 0.83}},
+                "usage": {"input": 3, "output": 1},
+            })
+            return
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length) if length else b"{}"
         try:
@@ -1139,6 +1172,72 @@ assert_json_expr '.ok == true' "Keyless stored-config verify reports ok: true"
 api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/providers/verify-draft" "${CHARLIE_TOKEN}" '{"type":"openai-compatible","base_url":"http://127.0.0.1:'"${MOCK_PORT}"'/v1"}'
 assert_status "200" "Keyless verify-draft probes the endpoint without a key"
 assert_json_expr '.ok == true' "Keyless verify-draft reports ok: true"
+
+# 13.0c Typesafe decision provider (add-configurable-decision-backend): the
+# decision-class provider type — created with no base_url (canonical default
+# applies), overridden onto the mock systemone endpoint, verified, listed, and
+# excluded from model resolution. The memory settings decision pair then
+# blocks its delete with 409 until the pair is cleared.
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/providers" "${CHARLIE_TOKEN}" '{"type":"typesafe","name":"TypeSafe Production","key":"ts-smoke-key-123456"}'
+assert_status "201" "Owner creates a typesafe decision provider with a key"
+assert_json_expr '.provider.type == "typesafe"' "Provider type is typesafe"
+assert_json_expr '.provider.key_set == true' "Typesafe provider has key_set: true"
+assert_json_expr '.provider.base_url == null' "Typesafe provider persists with no base_url (canonical default applies)"
+TS_PROV_ID=$(json_get '.provider.id')
+
+# base_url override onto the mock systemone endpoint (the override replaces
+# the canonical origin for that config's calls).
+api_req "PATCH" "/api/v1/workspaces/${TENANT_SLUG}/providers/${TS_PROV_ID}" "${CHARLIE_TOKEN}" '{"base_url":"http://127.0.0.1:'"${MOCK_PORT}"'/v1/systemone"}'
+assert_status "200" "Owner patches the typesafe base_url override"
+
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/providers/${TS_PROV_ID}/verify" "${CHARLIE_TOKEN}"
+assert_status "200" "Typesafe provider verify returns 200"
+assert_json_expr '.ok == true' "Typesafe verify probe reports ok: true against the mock systemone endpoint"
+
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/providers" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists providers including the typesafe config"
+assert_json_expr '([.providers[] | select(.type == "typesafe")] | length) == 1' "Providers listing contains the typesafe config"
+
+# Decision providers never surface model choices.
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/providers/${TS_PROV_ID}/models" "${CHARLIE_TOKEN}"
+assert_status "200" "Typesafe model resolution returns 200"
+assert_json_expr '.source == "none" and .models == []' "Typesafe resolves no models (decision providers are not model choices)"
+
+# Memory settings decision pair (keys decision_provider_id + decision_model
+# on the "memory" tool-settings record) blocks the delete with 409.
+api_req "PUT" "/api/v1/workspaces/${TENANT_SLUG}/memory/settings" "${CHARLIE_TOKEN}" '{"decision_provider_id":"'"${TS_PROV_ID}"'","decision_model":"jev-latest"}'
+assert_status "200" "Owner stores the memory decision configuration (provider + model together)"
+
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/memory/settings" "${CHARLIE_TOKEN}"
+assert_json_expr '.settings.decision_provider_id == "'"${TS_PROV_ID}"'" and .settings.decision_model == "jev-latest"' "Memory settings GET round-trips the decision pair"
+
+api_req "DELETE" "/api/v1/workspaces/${TENANT_SLUG}/providers/${TS_PROV_ID}" "${CHARLIE_TOKEN}"
+assert_status "409" "Deleting the decision-referenced provider is blocked with 409"
+if [[ "${HTTP_BODY}" == *"memory decision configuration"* ]]; then
+    log_pass "Delete refusal names the memory decision configuration"
+else
+    log_fail "Delete refusal does not name the memory decision configuration: ${HTTP_BODY}"
+fi
+
+# Settings validation: a half-set pair and a non-decision provider are rejected.
+api_req "PUT" "/api/v1/workspaces/${TENANT_SLUG}/memory/settings" "${CHARLIE_TOKEN}" '{"decision_provider_id":"'"${TS_PROV_ID}"'"}'
+assert_status "400" "Half-set decision configuration (model missing) is rejected (400)"
+api_req "PUT" "/api/v1/workspaces/${TENANT_SLUG}/memory/settings" "${CHARLIE_TOKEN}" '{"decision_model":"jev-latest"}'
+assert_status "400" "Half-set decision configuration (provider missing) is rejected (400)"
+api_req "PUT" "/api/v1/workspaces/${TENANT_SLUG}/memory/settings" "${CHARLIE_TOKEN}" '{"decision_provider_id":"'"${MOCK_PROV_ID}"'","decision_model":"jev-latest"}'
+assert_status "400" "A non-decision provider as decision backend is rejected (400)"
+
+# Clearing the pair unblocks the delete (omitted keys clear both — the
+# PATCH tri-state precedent).
+api_req "PUT" "/api/v1/workspaces/${TENANT_SLUG}/memory/settings" "${CHARLIE_TOKEN}" '{}'
+assert_status "200" "Owner clears the memory decision configuration"
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/memory/settings" "${CHARLIE_TOKEN}"
+assert_json_expr '.settings.decision_provider_id == null and .settings.decision_model == null' "Cleared decision configuration reads back absent"
+
+api_req "DELETE" "/api/v1/workspaces/${TENANT_SLUG}/providers/${TS_PROV_ID}" "${CHARLIE_TOKEN}"
+assert_status "204" "Deleting the unreferenced decision provider succeeds (204)"
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/providers/${TS_PROV_ID}/models" "${CHARLIE_TOKEN}"
+assert_status "404" "Deleted decision provider is gone"
 
 # 13.1 Workspace skills: author install, tier-gated listing, enable/disable,
 # uninstall, and the Member write guard. The routes are part of the live
@@ -1466,9 +1565,15 @@ api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/agents/${AGENT_ID}/regenerate"
 assert_status "200" "Regenerate with change instruction returns 200"
 assert_json_expr '.agent.prompts_status == "ready"' "Instruction regeneration completes ready"
 
-# 13.6 Atomic Workspace Birth Flow
+# 13.6 Atomic Workspace Birth Flow. Workspace creation is superadmin-only
+# (fix-role-permission-audit D4): the public route chains master-tenant
+# membership + admin.workspaces.write, so a tenant owner outside the master
+# tenant is stopped by the gate (404 enumeration defense, the same convention
+# as sections 5.3 / 17.5 / 29.1) and the superadmin performs the birth.
 NEW_TENANT_SLUG="birth-tenant-${RUN_ID}"
-api_req "POST" "/api/v1/workspaces" "${CHARLIE_TOKEN}" '{"name":"Birth Tenant","slug":"'"${NEW_TENANT_SLUG}"'","provider":{"type":"openai","name":"OpenAI","key":"sk-smoke-secret-key-1234"},"starter_agent":{"name":"Starter Agent","slug":"starter","role":"Helper","description":"Helps out","brief":"A short brief","model":"gpt-4"}}'
+api_req "POST" "/api/v1/workspaces" "${CHARLIE_TOKEN}" '{"name":"Birth Tenant","slug":"'"${NEW_TENANT_SLUG}"'"}'
+assert_status "404" "Tenant owner is outside the workspace-creation gate (master-only, enumeration-defense 404)"
+api_req "POST" "/api/v1/workspaces" "${SUPERADMIN_TOKEN}" '{"name":"Birth Tenant","slug":"'"${NEW_TENANT_SLUG}"'","provider":{"type":"openai","name":"OpenAI","key":"sk-smoke-secret-key-1234"},"starter_agent":{"name":"Starter Agent","slug":"starter","role":"Helper","description":"Helps out","brief":"A short brief","model":"gpt-4"}}'
 assert_status "201" "Atomic workspace birth with provider and agent"
 assert_json_expr 'has("workspace")' "Response has workspace"
 assert_json_expr 'has("provider")' "Response has provider"
@@ -1873,14 +1978,23 @@ log_step "17. Channels: CRUD, Membership, Feed & SSE"
 
 CHANNELS_BASE="/api/v1/workspaces/${TENANT_SLUG}/channels"
 
-# 17.1 Permission guards: the builtin Member role holds neither channels.read
-# nor channels.write, so a plain Member is 403 on the whole surface.
+# 17.1 Permission surface: the builtin Member role now holds channels.read and
+# channels.write (fix-role-permission-audit D5, "channels join the member
+# grant"), so a plain Member lists and creates channels; the gate itself is
+# pinned by the unauthenticated 401 on the same surface.
 api_req "GET" "${CHANNELS_BASE}" "${CLI_USER_TOKEN}"
-assert_status "403" "Member cannot list channels (channels.read 403)"
-assert_json_expr '.error.code == "forbidden"' "Error code is forbidden"
+assert_status "200" "Member lists channels (channels.read granted)"
+assert_json_expr '(.channels | length) == 0' "Channel registry starts empty"
 
 api_req "POST" "${CHANNELS_BASE}" "${CLI_USER_TOKEN}" '{"name":"Nope","slug":"nope"}'
-assert_status "403" "Member cannot create channels (channels.write 403)"
+assert_status "201" "Member creates a channel (channels.write granted)"
+MEMBER_CHANNEL_ID=$(json_get '.channel.id')
+
+api_req "DELETE" "${CHANNELS_BASE}/${MEMBER_CHANNEL_ID}" "${CLI_USER_TOKEN}"
+assert_status "204" "Member deletes their channel (channels.write delete granted)"
+
+api_req "GET" "${CHANNELS_BASE}" ""
+assert_status "401" "Unauthenticated channel list is 401 (auth gate)"
 
 # 17.2 Owner creates the room; the slug is the #handle and URL form.
 api_req "POST" "${CHANNELS_BASE}" "${CHARLIE_TOKEN}" '{"name":"Production Ops","slug":"ops","purpose":"Coordinate production incident response.","conventions":"Keep runbooks linked. One incident per chain."}'
@@ -2026,17 +2140,23 @@ log_step "18. Teams: Templates, Materialization & Work Sessions"
 
 # 18.1 Fresh workspace for the teams leg: template-spawned agents bind the
 # workspace's first provider, so the mock provider must be the only one there.
+# Workspace creation is superadmin-only (fix-role-permission-audit D4), so the
+# admin console births the tenant with Charlie designated as Owner; Charlie's
+# Owner calls below enforce against the admin-path seeding sync without a reboot.
 TEAMS_TENANT_SLUG="teams-tenant-${RUN_ID}"
 TEAMS_CHANNEL_BASE="/api/v1/workspaces/${TEAMS_TENANT_SLUG}/channels"
-api_req "POST" "/api/v1/workspaces" "${CHARLIE_TOKEN}" "{\"name\":\"Teams Tenant\",\"slug\":\"${TEAMS_TENANT_SLUG}\"}"
-assert_status "201" "Charlie creates the dedicated teams workspace"
+api_req "POST" "/api/v1/admin/workspaces" "${SUPERADMIN_TOKEN}" "{\"name\":\"Teams Tenant\",\"slug\":\"${TEAMS_TENANT_SLUG}\",\"owner_email\":\"${CHARLIE_EMAIL}\"}"
+assert_status "201" "Admin births the dedicated teams workspace with Charlie as Owner"
 
 api_req "POST" "/api/v1/workspaces/${TEAMS_TENANT_SLUG}/providers" "${CHARLIE_TOKEN}" '{"type":"openai-compatible","name":"Teams Mock Provider","base_url":"http://127.0.0.1:'"${MOCK_PORT}"'/v1","key":"sk-mock-key"}'
 assert_status "201" "Owner registers the mock provider as the teams workspace's only provider"
 
-# 18.2 Permission guards: a plain Member holds neither channels.read nor
-# channels.write on the teams surface. Role ids are workspace-scoped, so the
-# Member role comes from the teams workspace's own role catalog.
+# 18.2 Permission surface: a plain Member now holds channels.read and
+# channels.write on the teams surface too (fix-role-permission-audit D5), so
+# Dave lists templates 200 and passes the materialize permission gate — the
+# unknown template id resolves to the handler's 404, not a 403 (18.4 pins that
+# mapping for a permission-holding caller). Role ids are workspace-scoped, so
+# the Member role comes from the teams workspace's own role catalog.
 api_req "GET" "/api/v1/workspaces/${TEAMS_TENANT_SLUG}/roles" "${CHARLIE_TOKEN}"
 assert_status "200" "Owner lists the teams workspace roles"
 TEAMS_MEMBER_ROLE_ID=$(json_get '.roles[] | select(.name == "Member") | .id')
@@ -2045,9 +2165,9 @@ api_req "POST" "/api/v1/admin/workspaces/${TEAMS_TENANT_SLUG}/members" "${SUPERA
 assert_status "201" "Dave joins the teams workspace as a Member"
 
 api_req "GET" "${TEAMS_CHANNEL_BASE}/templates" "${DAVE_TOKEN}"
-assert_status "403" "Member cannot list team templates (channels.read 403)"
-api_req "POST" "${TEAMS_CHANNEL_BASE}/templates/software-team/materialize" "${DAVE_TOKEN}" '{"name":"Nope","slug":"nope"}'
-assert_status "403" "Member cannot materialize templates (channels.write 403)"
+assert_status "200" "Member lists team templates (channels.read granted)"
+api_req "POST" "${TEAMS_CHANNEL_BASE}/templates/ghost/materialize" "${DAVE_TOKEN}" '{"name":"Nope","slug":"nope"}'
+assert_status "404" "Member passes the materialize gate; unknown template is 404"
 
 # 18.3 Template listing: the built-in Software Team with its six slots.
 api_req "GET" "${TEAMS_CHANNEL_BASE}/templates" "${CHARLIE_TOKEN}"
@@ -2246,10 +2366,16 @@ api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/agents/test-agent/sessions" "${
 assert_status "200" "Member lists their own session index"
 assert_json_expr "[.sessions[] | select(.session_id == \"${IDX_SESSION}\")] | length == 0" "Charlie's session is absent from Dave's listing"
 
-# 20.4 A foreign delete with agents.write is a 404 — a foreign-owned row is
-# indistinguishable from an absent one (no existence leak). Bob is Admin.
-api_req "DELETE" "/api/v1/workspaces/${TENANT_SLUG}/agents/test-agent/sessions/${IDX_SESSION}" "${BOB_TOKEN}"
-assert_status "404" "Foreign user's delete of a session they do not own is 404"
+# 20.4 Session deletion follows the ownership rule (fix-role-permission-audit
+# D3): the owning member or an agents.write holder may delete. Dave (Member, no
+# agents.write) deleting Charlie's foreign row is 403 — the guard names the
+# missing permission. Bob (Admin, agents.write) is PERMITTED, so his delete of
+# an unknown id rides the allowed branch and stays 404 (absent rows remain
+# indistinguishable — no existence leak).
+api_req "DELETE" "/api/v1/workspaces/${TENANT_SLUG}/agents/test-agent/sessions/${IDX_SESSION}" "${DAVE_TOKEN}"
+assert_status "403" "Member's foreign delete of a session they do not own is 403 (no agents.write)"
+api_req "DELETE" "/api/v1/workspaces/${TENANT_SLUG}/agents/test-agent/sessions/sess-unknown-foreign-probe" "${BOB_TOKEN}"
+assert_status "404" "agents.write holder's delete of an unknown session stays 404 (no existence leak)"
 
 # 20.5 The owner's delete is a 204 soft delete; the row disappears from
 # subsequent listings while the transcript stays on disk.
@@ -4512,3 +4638,618 @@ assert_json_expr '[.events[]? | select(.kind == "tool_call_started" and .tool_ca
 assert_json_expr '[.events[]? | select(.kind == "tool_call_finished" and .tool_result.name == "document.read")][0].tool_result.result | contains("refdoc-playbook.md")' "The section read resolved the mounted playbook"
 assert_json_expr '[.events[]? | select(.kind == "tool_call_finished" and .tool_result.name == "document.read")][0].tool_result.result | contains("PB77 playbook marker")' "The section slice carries the Signing Key Rotation body"
 assert_json_expr '([.events[]? | select(.kind == "tool_call_finished" and .tool_result.name == "document.read")][0].tool_result.result | contains("PB-OTHER")) == false' "The section slice excludes the Escalation section"
+
+# -----------------------------------------------------------------------------
+# 35. Skill Curation End-to-End (add-skill-curation-from-traces 10.1): seed a
+#     qualifying multi-tool trace TWICE (cluster convergence) → run a cycle
+#     manually → candidate appears → approve via API → skill directory
+#     materializes with SKILL.md + PURPOSE.md → next agent run loads the
+#     skill through the `skill` tool → wiki pattern pages + audit entry
+#     present, cycle status succeeded with counters.
+#
+#     The qualification gates read the run's persisted session window: ≥8
+#     tool calls, ≥2 distinct tools, one error→success recovery on the same
+#     tool, a final assistant message, completed status. The seven scripted
+#     tool calls all succeed (the live tool-error lane deliberately converts
+#     failures to readable payloads, so live spans end "ok"); the error→
+#     recovery pair is seeded straight into the session's event log DURING
+#     the run — the mock provider pauses before its final reply, and this
+#     section clones two real read_file span rows (error + ok) under the
+#     live turn id via psql. Without psql the section degrades to explicit
+#     SKIP markers (the gates can never pass without the recovery pair) —
+#     the dependent assertions are conditional and never fake green.
+# -----------------------------------------------------------------------------
+log_step "35. Skill Curation: qualify → cycle → approve → materialize → load"
+
+# 35.0 Dedicated steerable mock provider. Side-calls (wiki maintainer,
+# proposer) are detected by their system prompts; the main agent runs are
+# steered by the ONCLAW_SKILLCUR marker, with ONCLAW_SKILL_LOAD selecting the
+# skill-load leg. The final-round pause gives the seed window its room.
+CUR_MOCK_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+cat > "${TMP_DIR}/cur_mock_provider.py" <<'PYCUR'
+import json, re, sys, time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+PORT = int(sys.argv[1])
+PAUSE_SECONDS = float(sys.argv[2])
+
+ARGS = json.dumps({
+    "identity": "# IDENTITY.md - Who Am I?\n**Name:** Curation Agent\n**Creature:** test fixture\n**Purpose:** smoke the skill-curation pipeline\n**Vibe:** deterministic\n**Emoji:** recycle\n",
+    "soul": "# SOUL.md\nShort beats long. Deterministic beats flaky.\n",
+})
+
+# Seven real tool calls: 3 distinct tools, all succeed. The seeded error→
+# recovery pair (two read_file spans) is appended by the smoke harness during
+# the final-round pause, making the window: 9 calls, 3 distinct, 1 recovery.
+SCRIPT = [
+    ("write_file", '{"file_path":"/workspace/cur-notes.md","content":"nightly file audit notes"}'),
+    ("read_file", '{"file_path":"/workspace/cur-notes.md"}'),
+    ("ls", '{"path":"/workspace"}'),
+    ("write_file", '{"file_path":"/workspace/cur-runbook.md","content":"retry failed reads by writing the target first"}'),
+    ("read_file", '{"file_path":"/workspace/cur-runbook.md"}'),
+    ("write_file", '{"file_path":"/workspace/cur-final.md","content":"audit complete"}'),
+    ("read_file", '{"file_path":"/workspace/cur-final.md"}'),
+]
+
+PATTERN_BODY = (
+    "## Failure modes\n\n- read_file fails when the target does not exist yet.\n\n"
+    "## Working strategy\n\n- write the target before reading it, and retry the "
+    "same tool after fixing the target.\n\n"
+    "Derived from the sampled windows of the nightly file audit procedure."
+)
+
+DRAFT_CONTENT = (
+    "# Recover File Reads\n\n"
+    "Purpose: recover a failed read_file by writing the target first and reading "
+    "it back. SKILLCUR-APPROVED-CONTENT\n\n"
+    "## Steps\n\n"
+    "1. Attempt read_file on the target path.\n"
+    "2. On failure, write_file the target with the expected content.\n"
+    "3. read_file the target again and verify the content.\n"
+)
+
+def content_text(m):
+    c = m.get("content") if isinstance(m, dict) else None
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        return " ".join(p.get("text", "") for p in c if isinstance(p, dict))
+    return ""
+
+def unique(values):
+    out = []
+    for v in values:
+        if v not in out:
+            out.append(v)
+    return out
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def _send(self, code, payload):
+        body = json.dumps(payload).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _reply(self, body, content=None, tool_calls=None):
+        # tool_calls: list of (id, name, arguments). Streams when asked, plain
+        # JSON otherwise — both branches serve the same shapes the runner and
+        # the side-call seam parse.
+        if body.get("stream"):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+
+            def sse(part):
+                self.wfile.write(("data: " + json.dumps(part) + "\n\n").encode())
+
+            def chunk(delta, finish):
+                return {
+                    "id": "chatcmpl-smoke-cur",
+                    "object": "chat.completion.chunk",
+                    "created": 0,
+                    "model": "gpt-4",
+                    "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+                }
+
+            sse(chunk({"role": "assistant"}, None))
+            if tool_calls:
+                for i, (cid, name, args) in enumerate(tool_calls):
+                    sse(chunk({"tool_calls": [{"index": i, "id": cid, "type": "function", "function": {"name": name, "arguments": ""}}]}, None))
+                    sse(chunk({"tool_calls": [{"index": i, "function": {"arguments": args}}]}, None))
+                sse(chunk({}, "tool_calls"))
+            else:
+                sse(chunk({"content": content}, None))
+                final = chunk({}, "stop")
+                final["usage"] = {"prompt_tokens": 5, "completion_tokens": 6, "total_tokens": 11}
+                sse(final)
+            self.wfile.write(b"data: [DONE]\n\n")
+            return
+        if tool_calls:
+            message = {"role": "assistant", "content": "", "tool_calls": [{
+                "id": cid, "type": "function",
+                "function": {"name": name, "arguments": args},
+            } for (cid, name, args) in tool_calls]}
+            finish = "tool_calls"
+        else:
+            message = {"role": "assistant", "content": content}
+            finish = "stop"
+        self._send(200, {
+            "id": "chatcmpl-smoke-cur",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "gpt-4",
+            "choices": [{"index": 0, "message": message, "finish_reason": finish}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 6, "total_tokens": 11},
+        })
+
+    def do_GET(self):
+        if self.path.startswith("/v1/models"):
+            self._send(200, {"data": [{"id": "gpt-4"}, {"id": "gpt-4o"}]})
+        else:
+            self._send(401, {"error": {"message": "Invalid API key"}})
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            body = json.loads(raw)
+        except ValueError:
+            body = {}
+        messages = body.get("messages", [])
+        all_text = " ".join(content_text(m) for m in messages if isinstance(m, dict))
+        system_text = " ".join(content_text(m) for m in messages if isinstance(m, dict) and m.get("role") == "system")
+
+        # Wiki-maintenance side-call: one create op citing the sampled runs.
+        if "skill-wiki maintainer" in system_text:
+            runs = unique(re.findall(r"### Run (\S+?) \(", all_text))
+            ops = [{
+                "op": "create",
+                "slug": "tool-recovery-pattern",
+                "title": "Recovering failed tool reads",
+                "cited_runs": runs[:2],
+                "body": PATTERN_BODY,
+            }]
+            self._reply(body, content=json.dumps(ops))
+            return
+
+        # Proposal side-call: one new-skill draft grounded in the prompt's
+        # catalog, wiki index, and sampled session ids.
+        if "skill proposer" in system_text:
+            runs = unique(re.findall(r"### Run (\S+?) \(", all_text))
+            slugs = re.findall(r"^- ([a-z0-9][a-z0-9-]*) — ", all_text, re.M)
+            m = re.search(r"## Tool catalog\n([^\n]+)", all_text)
+            catalog = [t.strip() for t in m.group(1).split(",")] if m else []
+            tools = [t for t in ("read_file", "write_file") if t in catalog][:2] or catalog[:1]
+            draft = {
+                "name": "recover-file-reads",
+                "description": "Recover a failed read_file by writing the target first, then reading it back.",
+                "tools": tools,
+                "cited_patterns": slugs[:1],
+                "cited_runs": runs[:2],
+                "supersedes": "",
+                "content": DRAFT_CONTENT,
+            }
+            self._reply(body, content=json.dumps(draft))
+            return
+
+        # Main agent runs: the scripted seven-call procedure, then the
+        # final-round pause (the seed window), then the closing text. The
+        # ONCLAW_SKILL_LOAD marker selects the skill-load leg instead.
+        if "ONCLAW_SKILLCUR" in all_text:
+            n_results = sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "tool")
+            if "ONCLAW_SKILL_LOAD" in all_text:
+                if n_results == 0:
+                    self._reply(body, tool_calls=[("call-cur-skill-1", "skill", '{"skill":"recover-file-reads"}')])
+                else:
+                    self._reply(body, content="SKILLCUR-SKILL-LOADED the recovery runbook is loaded")
+                return
+            if n_results < len(SCRIPT):
+                name, args = SCRIPT[n_results]
+                self._reply(body, tool_calls=[("call-cur-%d" % (n_results + 1), name, args)])
+                return
+            time.sleep(PAUSE_SECONDS)
+            self._reply(body, content="SKILLCUR-RUN-DONE the nightly file audit completed")
+            return
+
+        # Everything else is the create/regenerate prompt-generation flow.
+        self._reply(body, tool_calls=[("call_cur_smoke", "submit_prompts", ARGS)])
+
+HTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+PYCUR
+python3 "${TMP_DIR}/cur_mock_provider.py" "${CUR_MOCK_PORT}" 8 &
+CUR_MOCK_PID=$!
+sleep 0.5
+log_pass "Curation mock provider listening on 127.0.0.1:${CUR_MOCK_PORT} (8s final-round seed window)"
+
+# The seed lane needs a psql binary: PATH first, then the well-known
+# Homebrew / Postgres.app locations. Missing everywhere → the recovery pair
+# cannot be seeded and the section degrades to explicit SKIP markers.
+PSQL_BIN=""
+if command -v psql >/dev/null 2>&1; then
+    PSQL_BIN="$(command -v psql)"
+elif [[ -x /opt/homebrew/bin/psql ]]; then
+    PSQL_BIN=/opt/homebrew/bin/psql
+elif [[ -x /usr/local/bin/psql ]]; then
+    PSQL_BIN=/usr/local/bin/psql
+elif [[ -x /Applications/Postgres.app/Contents/Versions/latest/bin/psql ]]; then
+    PSQL_BIN=/Applications/Postgres.app/Contents/Versions/latest/bin/psql
+fi
+CUR_FULL=0
+if [[ -n "${PSQL_BIN}" ]]; then
+    CUR_FULL=1
+    log_pass "Seed lane ready: psql at ${PSQL_BIN}"
+else
+    log_info "SKIP: no psql binary found — the error→recovery pair cannot be seeded, qualification-dependent assertions will be marked SKIP"
+fi
+
+# seed_read_file_recovery <session-id> <workspace-id> <suffix> [turn-id]:
+# clone the newest real read_file start/end span rows of the session into a
+# seeded error→recovery pair (event ids cur-seed-<suffix>-1..4) at
+# MAX(seq)+1..4. The window turn id is the source rows' own, unless a
+# turn-id override is given — the /v1 turn-end ingest job mints a fresh turn
+# id (the drain loop observes no turn-scoped event), so the pair the
+# qualifier's fallback tally reads carries the run's real turn id while the
+# pair the maintainer/proposer windows read carries the JOB's turn id.
+seed_read_file_recovery() {
+    local turn_col="ss.t"
+    if [[ -n "${4:-}" ]]; then
+        turn_col="'${4}'"
+    fi
+    "${PSQL_BIN}" "${DATABASE_URL}" -v ON_ERROR_STOP=1 -q <<SQL
+WITH mx AS (
+    SELECT COALESCE(MAX(seq), 0) AS m FROM session_events
+    WHERE session_id = '$1' AND workspace_id = '$2'::uuid
+),
+ss AS (
+    SELECT payload AS p, occurred_at AS o, turn_id AS t, kind AS k FROM session_events
+    WHERE session_id = '$1' AND workspace_id = '$2'::uuid AND kind = 'span.tool_call_start'
+      AND payload::jsonb #>> '{span,tool,name}' = 'read_file'
+      AND event_id NOT LIKE 'cur-seed-%'
+    ORDER BY seq DESC LIMIT 1
+),
+se AS (
+    SELECT payload AS p, occurred_at AS o, turn_id AS t, kind AS k FROM session_events
+    WHERE session_id = '$1' AND workspace_id = '$2'::uuid AND kind = 'span.tool_call_end'
+      AND payload::jsonb #>> '{span,tool,name}' = 'read_file'
+      AND event_id NOT LIKE 'cur-seed-%'
+    ORDER BY seq DESC LIMIT 1
+),
+n(n) AS (VALUES (1), (2), (3), (4))
+INSERT INTO session_events (session_id, event_id, turn_id, seq, kind, payload, occurred_at, workspace_id)
+SELECT '$1',
+       'cur-seed-${3}-' || n.n,
+       ${turn_col},
+       mx.m + n.n,
+       CASE WHEN n.n IN (1, 3) THEN ss.k ELSE se.k END,
+       (CASE
+           WHEN n.n = 1 THEN jsonb_set(ss.p::jsonb, '{span,tool,tool_use_id}', '"call-seed-err"')
+           WHEN n.n = 2 THEN jsonb_set(jsonb_set(jsonb_set(se.p::jsonb, '{span,tool,tool_use_id}', '"call-seed-err"'), '{span,status}', '"error"'), '{span,err}', '"seed: simulated read_file failure"')
+           WHEN n.n = 3 THEN jsonb_set(ss.p::jsonb, '{span,tool,tool_use_id}', '"call-seed-ok"')
+           ELSE jsonb_set(se.p::jsonb, '{span,tool,tool_use_id}', '"call-seed-ok"')
+       END)::text,
+       ss.o,
+       '$2'::uuid
+FROM mx CROSS JOIN n CROSS JOIN ss CROSS JOIN se
+SQL
+}
+
+CUR_BASE="/api/v1/workspaces/${TENANT_SLUG}/skill-curation"
+CUR_EVENTS_BASE="/api/v1/workspaces/${TENANT_SLUG}/agents/curation-smoke/sessions"
+CUR_SKILL="recover-file-reads"
+
+# 35.1 Fixtures: the curation mock provider (workspace), the smoke agent with
+# the curation side-call pair PINNED to it (resolution tier 1 — deterministic
+# against the steerable mock), and the review-surface permission guards.
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/providers" "${CHARLIE_TOKEN}" '{"type":"openai-compatible","name":"Curation Mock Provider","base_url":"http://127.0.0.1:'"${CUR_MOCK_PORT}"'/v1","key":"sk-cur-mock-key"}'
+assert_status "201" "Owner creates the curation mock provider"
+CUR_PROV_ID=$(json_get '.provider.id')
+
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/agents" "${CHARLIE_TOKEN}" '{"name":"Curation Smoke Agent","slug":"curation-smoke","role":"Auditor","description":"Skill-curation smoke fixture","brief":"A short brief","provider_id":"'"${CUR_PROV_ID}"'","model":"gpt-4","skill_curation_provider_id":"'"${CUR_PROV_ID}"'","skill_curation_model":"gpt-4"}'
+assert_status "201" "Owner creates the curation smoke agent with the curation pair pinned"
+assert_json_expr '.agent.prompts_status == "ready"' "Agent create completes with prompts ready against the curation mock"
+CUR_AGENT_ID=$(json_get '.agent.id')
+
+api_req "GET" "${CUR_BASE}/candidates" "${DAVE_TOKEN}"
+assert_status "200" "Member reviews the candidates queue (skills.read)"
+assert_json_expr '.count == 0' "Candidates queue starts empty"
+
+# 35.2+35.3 Two qualifying runs with the SAME ordered tool sequence (the
+# ClusterKey converges): seven scripted calls, then — during the mock's pause
+# — the seeded read_file error→recovery pair joins the live turn window. The
+# seed trigger reads the LIVE /v1 SSE stream (the committed history is not
+# visible to readers until the run finishes): the stream frames carry the
+# resp_<session>_<turn> response id and one onclaw.function_call_output item
+# per executed tool, so the seventh output marks the exact pause window.
+run_qualifying_trace() {
+    local sess="$1"
+    local pid_var="$2"
+    local sse_file="${TMP_DIR}/${sess}.sse"
+    curl -sS -N -X POST "${SERVER_URL}/v1/responses" \
+        -H "Authorization: Bearer ${V1_KEY}" \
+        -H "Content-Type: application/json" \
+        --data '{"model":"curation-smoke","input":"ONCLAW_SKILLCUR run the nightly file audit procedure","stream":true,"metadata":{"onclaw_session":"'"${sess}"'"}}' \
+        > "${sse_file}" 2>&1 &
+    eval "${pid_var}=\$!"
+
+    # The response id arrives with the stream's first frame and encodes the
+    # live turn id (resp_<session>_<turn> — the codec's DecodeResponseID).
+    local raw_id="" turn_id="" turned=0 outputs=0
+    for i in {1..80}; do
+        # The stream's first frame mints resp_<session>_pending; the id is
+        # re-minted with the real turn id once the run observes one — keep
+        # the LAST match so the seed log names the live turn.
+        raw_id=$(grep -o '"id":"resp_[^"]*"' "${sse_file}" 2>/dev/null | tail -1 | cut -d'"' -f4 || true)
+        turn_id="${raw_id#resp_${sess}_}"
+        outputs=$(grep -c '"type":"onclaw.function_call_output"' "${sse_file}" 2>/dev/null || true)
+        if [[ -n "${turn_id}" && "${outputs:-0}" -ge 7 ]]; then
+            turned=1
+            break
+        fi
+        sleep 0.25
+    done
+    if [[ "${turned}" -ne 1 ]]; then
+        log_fail "Qualifying run ${sess} never reached its seventh tool output in the live stream"
+    fi
+
+    # Seed the recovery pair into the live turn's window while the mock waits.
+    if [[ "${CUR_FULL}" == 1 ]]; then
+        if [[ -z "${turn_id}" ]]; then
+            log_fail "Could not read the live turn id of ${sess} for seeding"
+        fi
+        if ! seed_read_file_recovery "${sess}" "${TENANT_ID}" "a"; then
+            log_fail "Seeding the read_file error→recovery pair failed for ${sess}"
+        fi
+        log_pass "Seeded the read_file error→recovery pair into ${sess} (cloned under the run's live turn id)"
+    fi
+
+    wait "${!pid_var}" || log_fail "Qualifying run ${sess} stream failed"
+    grep -q '"type":"response.completed"' "${sse_file}" || log_fail "Run ${sess} stream missing response.completed"
+
+    for i in {1..40}; do
+        api_req "GET" "${CUR_EVENTS_BASE}/${sess}/events?limit=100" "${CHARLIE_TOKEN}"
+        if [[ "$(json_get '[.events[]? | select(.kind == "turn_completed")] | length')" -ge 1 ]]; then
+            break
+        fi
+        sleep 0.25
+    done
+    assert_json_expr '[.events[]? | select(.kind == "turn_completed")] | length >= 1' "Run ${sess} completed"
+
+    api_req "GET" "${CUR_EVENTS_BASE}/${sess}/events?limit=100" "${CHARLIE_TOKEN}"
+    assert_json_expr '[.events[]? | select(.kind == "tool_call_started" and .tool_call.name == "write_file")] | length == 3' "Run ${sess} drove three write_file cards"
+    assert_json_expr '[.events[]? | select(.kind == "tool_call_started" and .tool_call.name == "ls")] | length == 1' "Run ${sess} drove the ls card"
+    assert_json_expr '[.events[]? | select(.kind == "message_completed" and .message.role == "assistant")][0].message.content | contains("SKILLCUR-RUN-DONE")' "Run ${sess} finished on the mock's scripted reply"
+}
+
+log_info "Driving qualifying run 1 (sess-cur-run-1)"
+run_qualifying_trace "sess-cur-run-1" "CUR_RUN1_PID"
+api_req "GET" "${CUR_EVENTS_BASE}/sess-cur-run-1/events?limit=100" "${CHARLIE_TOKEN}"
+if [[ "${CUR_FULL}" == 1 ]]; then
+    assert_json_expr '[.events[]? | select(.kind == "tool_call_finished" and .tool_result.is_error == true)] | length == 1' "Run 1 window carries the seeded error result"
+else
+    assert_json_expr '[.events[]? | select(.kind == "tool_call_finished" and .tool_result.is_error == true)] | length == 0' "SKIP mode: run 1 carries no error results (nothing seeded)"
+fi
+
+log_info "Driving qualifying run 2 (sess-cur-run-2)"
+run_qualifying_trace "sess-cur-run-2" "CUR_RUN2_PID"
+
+# The qualification signal: each run's transcript gains a skill_candidate
+# chip once the ingest qualifier passes the five gates (the chip is emitted
+# only for qualifying runs — its presence IS the gate proof).
+if [[ "${CUR_FULL}" == 1 ]]; then
+    for i in {1..40}; do
+        api_req "GET" "${CUR_EVENTS_BASE}/sess-cur-run-1/events?limit=100" "${CHARLIE_TOKEN}"
+        if [[ "$(json_get '[.events[]? | select(.kind == "skill_candidate")] | length')" -ge 1 ]]; then
+            break
+        fi
+        sleep 0.5
+    done
+    assert_json_expr '[.events[]? | select(.kind == "skill_candidate")] | length == 1' "Run 1 emitted exactly one skill_candidate chip"
+    CUR_CLUSTER=$(json_get '[.events[]? | select(.kind == "skill_candidate")][0].skill_candidate.cluster_id // empty')
+    if [[ "${CUR_CLUSTER}" != cl-* ]]; then
+        log_fail "Run 1 chip carries no cluster id: ${CUR_CLUSTER}"
+    fi
+    log_pass "Run 1 qualified into cluster ${CUR_CLUSTER}"
+
+    # The side-call windows read the run through the INGEST JOB's turn id
+    # (the membership row's), which the /v1 path mints fresh — only the chip
+    # itself carries it. Seed a second read_file pair under that turn id so
+    # the maintainer/proposer windows render real tool evidence.
+    CUR_JOB_TURN1=$(json_get '[.events[]? | select(.kind == "skill_candidate")][0].turn_id // empty')
+    if [[ -z "${CUR_JOB_TURN1}" ]]; then
+        log_fail "Run 1 chip carries no turn id for the side-call window seed"
+    fi
+    if ! seed_read_file_recovery "sess-cur-run-1" "${TENANT_ID}" "b" "${CUR_JOB_TURN1}"; then
+        log_fail "Seeding the job-turn window pair failed for sess-cur-run-1"
+    fi
+    log_pass "Seeded the side-call window pair into sess-cur-run-1 (job turn ${CUR_JOB_TURN1})"
+
+    for i in {1..40}; do
+        api_req "GET" "${CUR_EVENTS_BASE}/sess-cur-run-2/events?limit=100" "${CHARLIE_TOKEN}"
+        if [[ "$(json_get '[.events[]? | select(.kind == "skill_candidate")] | length')" -ge 1 ]]; then
+            break
+        fi
+        sleep 0.5
+    done
+    assert_json_expr '[.events[]? | select(.kind == "skill_candidate")] | length == 1' "Run 2 emitted exactly one skill_candidate chip"
+    assert_json_expr '[.events[]? | select(.kind == "skill_candidate")][0].skill_candidate.cluster_id == "'"${CUR_CLUSTER}"'"' "Run 2 converged on the SAME cluster (identical tool sequence)"
+    CUR_JOB_TURN2=$(json_get '[.events[]? | select(.kind == "skill_candidate")][0].turn_id // empty')
+    if [[ -z "${CUR_JOB_TURN2}" ]]; then
+        log_fail "Run 2 chip carries no turn id for the side-call window seed"
+    fi
+    if ! seed_read_file_recovery "sess-cur-run-2" "${TENANT_ID}" "b" "${CUR_JOB_TURN2}"; then
+        log_fail "Seeding the job-turn window pair failed for sess-cur-run-2"
+    fi
+    log_pass "Seeded the side-call window pair into sess-cur-run-2 (job turn ${CUR_JOB_TURN2})"
+else
+    for i in {1..40}; do
+        api_req "GET" "${CUR_EVENTS_BASE}/sess-cur-run-1/events?limit=100" "${CHARLIE_TOKEN}"
+        if [[ "$(json_get '[.events[]? | select(.kind == "turn_completed")] | length')" -ge 1 ]]; then
+            break
+        fi
+        sleep 0.5
+    done
+    assert_json_expr '[.events[]? | select(.kind == "skill_candidate")] | length == 0' "SKIP mode: unseeded run 1 does NOT qualify (no chip)"
+    assert_json_expr '[.events[]? | select(.kind == "skill_candidate")] | length == 0' "SKIP mode: unseeded run 2 does NOT qualify (no chip)"
+    log_info "SKIP: the qualification gates (35.2/35.3) cannot pass without the seeded recovery pair — dependent assertions run in their skip lane below"
+fi
+
+# 35.4 The manual trigger: one cycle now, through the same in-flight set as
+# the ticker; a double trigger maps to 409 (retry once).
+if [[ "${CUR_FULL}" == 1 ]]; then
+    api_req "POST" "${CUR_BASE}/cycle/run" "${CHARLIE_TOKEN}"
+    if [[ "${HTTP_STATUS}" == "409" ]]; then
+        sleep 2
+        api_req "POST" "${CUR_BASE}/cycle/run" "${CHARLIE_TOKEN}"
+    fi
+    assert_status "200" "Owner triggers the curation cycle now"
+    # The cycle starts on its own goroutine: the immediate read can still be
+    # the idle record (RunNow returns before the status stamp lands), so the
+    # lifecycle assertion rides the poll below, not this snapshot.
+    assert_json_expr '.status.state | length > 0' "Trigger returns an observable cycle status"
+
+    for i in {1..80}; do
+        api_req "GET" "${CUR_BASE}/cycle/status" "${CHARLIE_TOKEN}"
+        CUR_STATE=$(json_get '.status.state')
+        if [[ "${CUR_STATE}" == "succeeded" || "${CUR_STATE}" == "failed" ]]; then
+            break
+        fi
+        sleep 0.5
+    done
+    assert_json_expr '.status.state == "succeeded"' "Cycle finished succeeded"
+    assert_json_expr '.status.trigger == "manual"' "Cycle records the manual trigger"
+    assert_json_expr '.status.counters.qualifying_runs >= 2' "Counters see both qualifying runs"
+    assert_json_expr '.status.counters.clusters_processed >= 1' "Budget selected the converged cluster"
+    assert_json_expr '.status.counters.patterns_changed >= 1' "Wiki maintenance wrote pattern pages"
+    assert_json_expr '.status.counters.pattern_count >= 1' "Wiki page count reflects the new page"
+    assert_json_expr '.status.counters.proposals_drafted >= 1' "Proposals drafted exactly the converged cluster's skill"
+    assert_json_expr '.status.counters.candidates_pending >= 1' "The drafted candidate awaits review"
+
+    # 35.5 The review queue: the pending candidate with its cluster linkage
+    # and evidence; the member gate; approval moves the row into probation.
+    api_req "GET" "${CUR_BASE}/candidates?status=pending" "${CHARLIE_TOKEN}"
+    assert_json_expr '.count == 1' "Exactly one pending candidate"
+    assert_json_expr '.candidates[0].skill_name == "'"${CUR_SKILL}"'"' "Candidate drafts the expected skill name"
+    assert_json_expr '.candidates[0].cluster_id == "'"${CUR_CLUSTER}"'"' "Candidate links to the converged cluster"
+    assert_json_expr '.candidates[0].proposed_content | contains("SKILLCUR-APPROVED-CONTENT")' "Candidate carries the drafted skill content"
+    assert_json_expr '(.candidates[0].evidence_event_ids | length) >= 1' "Candidate cites its evidence runs"
+    assert_json_expr '(.candidates[0].cited_pattern_refs | length) >= 1' "Candidate cites its wiki patterns"
+    CUR_CANDIDATE_ID=$(json_get '.candidates[0].id')
+
+    api_req "POST" "${CUR_BASE}/candidates/${CUR_CANDIDATE_ID}/approve" "${DAVE_TOKEN}"
+    assert_status "403" "Member cannot approve (skills.write 403)"
+
+    api_req "POST" "${CUR_BASE}/candidates/${CUR_CANDIDATE_ID}/approve" "${CHARLIE_TOKEN}"
+    assert_status "200" "Owner approves the candidate"
+    assert_json_expr '.candidate.status == "provisional"' "Approved candidate enters probation as provisional"
+    assert_json_expr '.candidate.skill_name == "'"${CUR_SKILL}"'"' "Approval response names the materialized skill"
+
+    api_req "GET" "${CUR_BASE}/candidates?status=pending" "${CHARLIE_TOKEN}"
+    assert_json_expr '.count == 0' "The decided candidate left the review queue"
+
+    # 35.6 On-disk materialization: the agent-tier skills directory carries
+    # SKILL.md + the PURPOSE.md provenance file (atomic-write contract).
+    CUR_SKILL_DIR="${WS_ROOT}/${TENANT_SLUG}/agents/curation-smoke/skills/${CUR_SKILL}"
+    if [[ -f "${CUR_SKILL_DIR}/SKILL.md" ]]; then
+        log_pass "Skill directory materialized: ${CUR_SKILL_DIR}/SKILL.md"
+    else
+        log_fail "Skill directory missing SKILL.md at ${CUR_SKILL_DIR}"
+    fi
+    if grep -q "SKILLCUR-APPROVED-CONTENT" "${CUR_SKILL_DIR}/SKILL.md"; then
+        log_pass "SKILL.md carries the drafted procedure content"
+    else
+        log_fail "SKILL.md does not carry the drafted content"
+    fi
+    if [[ -f "${CUR_SKILL_DIR}/PURPOSE.md" ]]; then
+        log_pass "PURPOSE.md provenance file materialized"
+    else
+        log_fail "PURPOSE.md missing at ${CUR_SKILL_DIR}"
+    fi
+    if grep -q "${CUR_CLUSTER}" "${CUR_SKILL_DIR}/PURPOSE.md" && grep -q "Approved by" "${CUR_SKILL_DIR}/PURPOSE.md"; then
+        log_pass "PURPOSE.md maps the skill to its cluster and reviewer"
+    else
+        log_fail "PURPOSE.md missing the cluster linkage or the approval line"
+    fi
+
+    # 35.7 The wiki + the audit: the maintainer's page and the approval
+    # verdict, both with evidence citations.
+    api_req "GET" "${CUR_BASE}/patterns" "${CHARLIE_TOKEN}"
+    assert_json_expr '(.patterns | length) >= 1' "The pattern wiki is non-empty"
+    assert_json_expr '[.patterns[] | select(.slug == "tool-recovery-pattern" and .status == "active")] | length == 1' "The maintained pattern page is active"
+    assert_json_expr '[.patterns[] | select(.slug == "tool-recovery-pattern")][0].evidence_runs | length >= 1' "The pattern page cites its evidence runs"
+
+    api_req "GET" "${CUR_BASE}/audit" "${CHARLIE_TOKEN}"
+    assert_json_expr '[.entries[] | select(.verdict == "approved" and .skill_name == "'"${CUR_SKILL}"'" and .cluster_id == "'"${CUR_CLUSTER}"'")] | length == 1' "The audit records the approved verdict"
+    assert_json_expr '[.entries[] | select(.verdict == "approved")][0].reviewer | length > 0' "The audit entry names its reviewer"
+else
+    # Skip lane: the cycle still runs and proves its quiet no-op path — no
+    # qualifying membership, nothing selected, nothing drafted.
+    api_req "POST" "${CUR_BASE}/cycle/run" "${CHARLIE_TOKEN}"
+    if [[ "${HTTP_STATUS}" == "409" ]]; then
+        sleep 2
+        api_req "POST" "${CUR_BASE}/cycle/run" "${CHARLIE_TOKEN}"
+    fi
+    assert_status "200" "SKIP mode: Owner still triggers the curation cycle"
+    for i in {1..80}; do
+        api_req "GET" "${CUR_BASE}/cycle/status" "${CHARLIE_TOKEN}"
+        CUR_STATE=$(json_get '.status.state')
+        if [[ "${CUR_STATE}" == "succeeded" || "${CUR_STATE}" == "failed" ]]; then
+            break
+        fi
+        sleep 0.5
+    done
+    assert_json_expr '.status.state == "succeeded"' "SKIP mode: cycle finishes succeeded with no work"
+    assert_json_expr '.status.counters.qualifying_runs == 0' "SKIP mode: no qualifying runs indexed"
+    assert_json_expr '.status.counters.proposals_drafted == 0' "SKIP mode: no proposals drafted"
+    api_req "GET" "${CUR_BASE}/candidates?status=pending" "${CHARLIE_TOKEN}"
+    assert_json_expr '.count == 0' "SKIP mode: review queue stays empty"
+    log_info "SKIP: candidate review (35.5), on-disk materialization (35.6), wiki/audit (35.7), and the skill-load run (35.8) need the seeded recovery pair and an approved candidate"
+fi
+
+# 35.8 The next agent run lists the skill: the directory scan IS the agent
+# catalog, and a fresh /v1 turn loads the skill through the `skill` tool.
+# Dependent on approval — guarded on the seed lane like 35.4–35.7.
+if [[ "${CUR_FULL}" == 1 ]]; then
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/agents/curation-smoke/skills" "${CHARLIE_TOKEN}"
+assert_status "200" "Agent skills listing reads the agent tier"
+assert_json_expr '[.skills[] | select(.name == "'"${CUR_SKILL}"'" and .tier == "agent")] | length == 1' "The approved skill lists on the agent tier"
+
+CUR_LOAD_SESSION="sess-cur-skillload-$(date +%s)-${RANDOM}"
+curl -sS -N -X POST "${SERVER_URL}/v1/responses" \
+    -H "Authorization: Bearer ${V1_KEY}" \
+    -H "Content-Type: application/json" \
+    --data '{"model":"curation-smoke","input":"ONCLAW_SKILLCUR ONCLAW_SKILL_LOAD load the recovery runbook","stream":true,"metadata":{"onclaw_session":"'"${CUR_LOAD_SESSION}"'"}}' \
+    > "${TMP_DIR}/cur_skillload.sse" 2>&1 &
+CUR_LOAD_PID=$!
+for i in {1..40}; do
+    api_req "GET" "${CUR_EVENTS_BASE}/${CUR_LOAD_SESSION}/events?limit=100" "${CHARLIE_TOKEN}"
+    if [[ "$(json_get '[.events[]? | select(.kind == "turn_completed")] | length')" -ge 1 ]]; then
+        break
+    fi
+    sleep 0.25
+done
+wait "${CUR_LOAD_PID}" || log_fail "Skill-load run stream failed"
+grep -q '"type":"response.completed"' "${TMP_DIR}/cur_skillload.sse" || log_fail "Skill-load stream missing response.completed"
+api_req "GET" "${CUR_EVENTS_BASE}/${CUR_LOAD_SESSION}/events?limit=100" "${CHARLIE_TOKEN}"
+assert_json_expr '[.events[]? | select(.kind == "turn_completed")] | length >= 1' "Skill-load run completed"
+assert_json_expr '[.events[]? | select(.kind == "tool_call_started" and .tool_call.name == "skill")] | length == 1' "The next run issues exactly one skill tool call"
+assert_json_expr '[.events[]? | select(.kind == "tool_call_started" and .tool_call.name == "skill")][0].tool_call.arguments | contains("'"${CUR_SKILL}"'")' "The skill tool call names the curated skill"
+assert_json_expr '[.events[]? | select(.kind == "tool_call_finished" and .tool_result.name == "skill")][0].tool_result.result | contains("SKILLCUR-APPROVED-CONTENT")' "The skill tool result carries the curated SKILL.md content"
+assert_json_expr '[.events[]? | select(.kind == "message_completed" and .message.role == "assistant")][0].message.content | contains("SKILLCUR-SKILL-LOADED")' "The run answers on the loaded skill"
+fi
+
+# 35.9 Cycle status stays observable: the record is the same one both
+# triggers write (idle when the seed lane was skipped).
+api_req "GET" "${CUR_BASE}/cycle/status" "${CHARLIE_TOKEN}"
+assert_status "200" "Cycle status readable after the flow"
+if [[ "${CUR_FULL}" == 1 ]]; then
+    assert_json_expr '.status.state == "succeeded"' "Cycle status persists as succeeded"
+fi
+
+# Release the section's mock (the suite-level cleanup only knows its own PIDs).
+kill "${CUR_MOCK_PID}" 2>/dev/null || true
+wait "${CUR_MOCK_PID}" 2>/dev/null || true

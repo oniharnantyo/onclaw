@@ -72,10 +72,14 @@ func (h *agentHandlers) ListAgentSessions(c *gin.Context) {
 	RespondOK(c, gin.H{"sessions": agentSessionViews(rows, liveIDs)})
 }
 
-// DeleteAgentSession soft-deletes the caller's own index row
-// (agent-session-index D6): the session disappears from listings while its
-// transcript events and checkpoints stay on disk. A foreign-owned or absent
-// row is domain.ErrNotFound — indistinguishable by design (no existence leak).
+// DeleteAgentSession soft-deletes a session index row (agent-session-index
+// D6) under the ownership rule (fix-role-permission-audit design D3): the
+// session's owning member or an agents.write holder may delete. The delete is
+// scoped to the FETCHED row's user, so an agents.write holder can remove a
+// foreign session even though the store's delete is owner-scoped. An absent
+// row (unknown id or a system-born session) keeps the existing not-found
+// behavior — indistinguishable by design (no existence leak); a foreign-owned
+// row without agents.write is 403.
 func (h *agentHandlers) DeleteAgentSession(c *gin.Context) {
 	ws := MustCurrentWorkspace(c)
 	user := MustCurrentUser(c)
@@ -86,10 +90,43 @@ func (h *agentHandlers) DeleteAgentSession(c *gin.Context) {
 		return
 	}
 
-	if err := h.agentSessions.SoftDeleteAgentSession(c.Request.Context(), ws.ID, agent.ID, user.ID, c.Param("session")); err != nil {
+	sessionID := c.Param("session")
+
+	allowed, row, err := h.sessionManageAllowed(c, ws, agent.ID, sessionID)
+	if err != nil {
 		RespondError(c, err)
 		return
 	}
 
+	if allowed {
+		// Soft-delete scoped to the fetched row's owner so an agents.write
+		// holder can remove a foreign session; the owner's own delete is the
+		// same call (row.UserID == user.ID). For an absent row permitted via
+		// agents.write the owner-scoped delete misses and stays not-found.
+		ownerID := user.ID
+		if row != nil {
+			ownerID = row.UserID
+		}
+		if err := h.agentSessions.SoftDeleteAgentSession(c.Request.Context(), ws.ID, agent.ID, ownerID, sessionID); err != nil {
+			RespondError(c, err)
+			return
+		}
+		RespondNoContent(c)
+		return
+	}
+
+	// Not permitted: a row that exists and belongs to someone else is 403;
+	// an absent row (system session or unknown id) keeps the store's
+	// owner-scoped not-found so probing random ids leaks nothing.
+	if row != nil {
+		AbortForbidden(c, "deleting another member's session requires the "+domain.AgentsWrite+" permission")
+		return
+	}
+	if err := h.agentSessions.SoftDeleteAgentSession(c.Request.Context(), ws.ID, agent.ID, user.ID, sessionID); err != nil {
+		RespondError(c, err)
+		return
+	}
+	// Unreachable in practice: an absent row always misses the owner-scoped
+	// delete. The call preserves the store's not-found semantics.
 	RespondNoContent(c)
 }

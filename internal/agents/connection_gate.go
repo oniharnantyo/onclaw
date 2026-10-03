@@ -9,6 +9,7 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 	agenthooks "github.com/oniharnantyo/onclaw/internal/agents/hooks"
+	"github.com/oniharnantyo/onclaw/internal/authz"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 )
 
@@ -155,7 +156,12 @@ type ConnectionGateAuthority interface {
 
 // connectionGateAuthority is the runner's authority implementation: granular
 // stores plus the run's coordinates (AGENTS.md: positional, granular deps).
+// The authorizer evaluates integrations.write through the rules engine
+// (fix-role-permission-audit 1.5); nil — unit constructions only, the
+// ConnectionOriginLookup nil precedent — degrades to the resolved role row's
+// own permission set. Production always injects it (WithAuthorizer).
 type connectionGateAuthority struct {
+	authz       authz.Authorizer
 	members     memberLookup
 	roles       roleLookup
 	workspaceID string
@@ -173,7 +179,11 @@ type roleLookup interface {
 	ByID(ctx context.Context, roleID string) (*domain.Role, error)
 }
 
-// IntegrationsWriteAllowed implements ConnectionGateAuthority.
+// IntegrationsWriteAllowed implements ConnectionGateAuthority. The CURRENT
+// member + role rows decide; the permission itself evaluates through the
+// authorizer engine when the runner carries one (production wiring), degrading
+// to the role row's own permission set only for unit constructions. Any read
+// failure fails closed (the gate must not silently disappear).
 func (a connectionGateAuthority) IntegrationsWriteAllowed(ctx context.Context) bool {
 	member, err := a.members.Get(ctx, a.workspaceID, a.userID)
 	if err != nil || member == nil {
@@ -182,6 +192,33 @@ func (a connectionGateAuthority) IntegrationsWriteAllowed(ctx context.Context) b
 	role, err := a.roles.ByID(ctx, member.RoleID)
 	if err != nil || role == nil {
 		return false
+	}
+	if a.authz != nil {
+		allowed, err := a.authz.Enforce(ctx, role.ID, a.workspaceID, domain.IntegrationsWrite)
+		if err != nil {
+			return false
+		}
+		return allowed
+	}
+	return domain.HasPermission(role.Permissions, domain.IntegrationsWrite)
+}
+
+// integrationsWriteAllowed resolves the role's integrations.write for the
+// resolution-time pruning decision: through the runner's authorizer when
+// wired (production — the engine is the single evaluation point,
+// fix-role-permission-audit 1.5), degrading to the role row's own permission
+// set for unit constructions without the option (the ConnectionOriginLookup
+// nil precedent). A nil role or an evaluation failure fails closed.
+func (r *Runner) integrationsWriteAllowed(ctx context.Context, workspaceID string, role *domain.Role) bool {
+	if role == nil {
+		return false
+	}
+	if r.authorizer != nil {
+		allowed, err := r.authorizer.Enforce(ctx, role.ID, workspaceID, domain.IntegrationsWrite)
+		if err != nil {
+			return false
+		}
+		return allowed
 	}
 	return domain.HasPermission(role.Permissions, domain.IntegrationsWrite)
 }
@@ -215,7 +252,7 @@ func (g *connectionGateConfig) active() bool { return g != nil && len(g.origins)
 // escalates through the approval flow instead (task 2.4). Runs with no
 // connection tools return an inactive gate: no pruning, no middleware,
 // byte-identical behavior.
-func (r *Runner) buildConnectionGate(req ExecRequest, role *domain.Role, originMaps ...map[string]connectionToolOrigin) (*connectionGateConfig, map[string]struct{}) {
+func (r *Runner) buildConnectionGate(ctx context.Context, req ExecRequest, role *domain.Role, originMaps ...map[string]connectionToolOrigin) (*connectionGateConfig, map[string]struct{}) {
 	total := 0
 	for _, m := range originMaps {
 		total += len(m)
@@ -235,6 +272,7 @@ func (r *Runner) buildConnectionGate(req ExecRequest, role *domain.Role, originM
 		origins:    origins,
 		serviceRun: normalizeOrigin(req.Origin) == OriginService,
 		authority: connectionGateAuthority{
+			authz:       r.authorizer,
 			members:     r.members,
 			roles:       r.roles,
 			workspaceID: req.WorkspaceID,
@@ -251,7 +289,7 @@ func (r *Runner) buildConnectionGate(req ExecRequest, role *domain.Role, originM
 	// pruned names stay known to the gate so a direct attempt at one returns
 	// the canonical block instead of the engine's raw not-found failure.
 	var pruned map[string]struct{}
-	if role == nil || !domain.HasPermission(role.Permissions, domain.IntegrationsWrite) {
+	if !r.integrationsWriteAllowed(ctx, req.WorkspaceID, role) {
 		pruned = make(map[string]struct{})
 		for name, origin := range origins {
 			if origin.tier(name) != domain.RecipeToolTierRead {

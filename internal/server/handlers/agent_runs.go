@@ -13,6 +13,11 @@ import (
 // accepted for API-shape stability but is not otherwise interpreted. The run
 // unwinds at its next safe point and records a cancel marker in the session
 // history; the response returns once cancellation has been initiated.
+//
+// The session-ownership rule (fix-role-permission-audit design D3) permits
+// the session's owning member or an agents.write holder; everyone else is
+// 403 — checked before the live-run probe so a member cannot interrupt
+// another member's run.
 func (h *agentHandlers) CancelRun(c *gin.Context) {
 	ws := MustCurrentWorkspace(c)
 
@@ -26,6 +31,16 @@ func (h *agentHandlers) CancelRun(c *gin.Context) {
 	turnID := c.Param("turn")
 	if sessionID == "" || turnID == "" {
 		RespondError(c, fmt.Errorf("%w: session and turn path segments are required", domain.ErrInvalid))
+		return
+	}
+
+	allowed, _, err := h.sessionManageAllowed(c, ws, agent.ID, sessionID)
+	if err != nil {
+		RespondError(c, err)
+		return
+	}
+	if !allowed {
+		AbortForbidden(c, "cancelling another member's run requires the "+domain.AgentsWrite+" permission")
 		return
 	}
 

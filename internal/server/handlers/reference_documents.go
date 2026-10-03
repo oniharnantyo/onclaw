@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/oniharnantyo/onclaw/internal/authz"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/references"
 	"github.com/oniharnantyo/onclaw/internal/store"
@@ -24,12 +25,40 @@ import (
 type referenceDocumentsHandlers struct {
 	references *references.Service
 	documents  store.ReferenceDocumentStore
+	// authz is the permission authorizer (fix-role-permission-audit D6):
+	// document mutations are ownership-scoped — the uploader mutates their
+	// own documents, other members' documents need workspace.write — and the
+	// listing lens resolves through the same evaluation point as the
+	// middleware.
+	authz authz.Authorizer
 }
 
 // NewReferenceDocumentsHandlers creates a new referenceDocumentsHandlers
-// instance with the injected references service and registry store.
-func NewReferenceDocumentsHandlers(references *references.Service, documents store.ReferenceDocumentStore) *referenceDocumentsHandlers {
-	return &referenceDocumentsHandlers{references: references, documents: documents}
+// instance with the injected references service, registry store, and
+// authorizer.
+func NewReferenceDocumentsHandlers(references *references.Service, documents store.ReferenceDocumentStore, authz authz.Authorizer) *referenceDocumentsHandlers {
+	return &referenceDocumentsHandlers{references: references, documents: documents, authz: authz}
+}
+
+// callerHolds reports whether the request's resolved role holds the given
+// workspace permission through the authorizer port (fix-role-permission-audit
+// D1: in-handler checks ride the same evaluation point as the middleware).
+func (h *referenceDocumentsHandlers) callerHolds(c *gin.Context, permission string) (bool, error) {
+	ws := MustCurrentWorkspace(c)
+	role := MustCurrentRole(c)
+	return h.authz.Enforce(c.Request.Context(), role.ID, ws.ID, permission)
+}
+
+// canMutateDocument evaluates the ownership-scoped mutation rule
+// (fix-role-permission-audit D6): the document's uploader may always mutate
+// it; anyone else needs workspace.write. The caller has already resolved the
+// document.
+func (h *referenceDocumentsHandlers) canMutateDocument(c *gin.Context, doc domain.ReferenceDocument) (bool, error) {
+	user := MustCurrentUser(c)
+	if doc.UploadedBy == user.ID {
+		return true, nil
+	}
+	return h.callerHolds(c, domain.WorkspaceWrite)
 }
 
 // documentView is the pinned wire shape of one reference document
@@ -103,7 +132,8 @@ func (h *referenceDocumentsHandlers) Upload(c *gin.Context) {
 // PutContent replaces one document's bytes: the blob is swapped and the
 // section index rebuilt from the new file in one service step. Only the
 // multipart `file` field is consumed — metadata and attach edits ride their
-// own endpoints — and the scope tier is left as stored.
+// own endpoints — and the scope tier is left as stored. Ownership-scoped
+// (fix-role-permission-audit D6): the uploader or a workspace.write holder.
 func (h *referenceDocumentsHandlers) PutContent(c *gin.Context) {
 	in, ok := h.readUpload(c)
 	if !ok {
@@ -111,7 +141,22 @@ func (h *referenceDocumentsHandlers) PutContent(c *gin.Context) {
 	}
 	ws := MustCurrentWorkspace(c)
 
-	doc, err := h.references.Replace(c.Request.Context(), ws.ID, c.Param("id"), references.UploadInput{
+	current, err := h.references.Get(c.Request.Context(), ws.ID, c.Param("id"))
+	if err != nil {
+		RespondError(c, err)
+		return
+	}
+	allowed, err := h.canMutateDocument(c, current)
+	if err != nil {
+		RespondError(c, err)
+		return
+	}
+	if !allowed {
+		RespondError(c, fmt.Errorf("%w: replacing another member's document requires workspace.write", domain.ErrForbidden))
+		return
+	}
+
+	doc, err := h.references.Replace(c.Request.Context(), ws.ID, current.ID, references.UploadInput{
 		Filename: in.Filename,
 		Data:     in.Data,
 	})
@@ -176,14 +221,35 @@ func (h *referenceDocumentsHandlers) readUpload(c *gin.Context) (*references.Upl
 // List returns the workspace's documents, or one lens when the request names
 // an agent or channel (?agent= / ?channel= — the visibility lenses the agent
 // config modal and channel settings render). Reads ride membership like the
-// other member-readable collections.
+// other member-readable collections, filtered through the tiered-visibility
+// lens (add-reference-documents D7 + fix-role-permission-audit D6):
+// reference_documents.promote holders see every workspace document; everyone
+// else sees their own uploads plus documents attached to agents or channels
+// they can configure.
 func (h *referenceDocumentsHandlers) List(c *gin.Context) {
 	ws := MustCurrentWorkspace(c)
+	user := MustCurrentUser(c)
+	role := MustCurrentRole(c)
 	ctx := c.Request.Context()
+
+	seeAll, err := h.authz.Enforce(ctx, role.ID, ws.ID, domain.PermissionReferenceDocumentsPromote)
+	if err != nil {
+		RespondError(c, err)
+		return
+	}
+	canConfigureAgents, err := h.authz.Enforce(ctx, role.ID, ws.ID, domain.AgentsWrite)
+	if err != nil {
+		RespondError(c, err)
+		return
+	}
+	canConfigureChannels, err := h.authz.Enforce(ctx, role.ID, ws.ID, domain.ChannelsWrite)
+	if err != nil {
+		RespondError(c, err)
+		return
+	}
 
 	var (
 		docs []domain.ReferenceDocument
-		err  error
 	)
 	switch {
 	case c.Query("agent") != "":
@@ -200,9 +266,26 @@ func (h *referenceDocumentsHandlers) List(c *gin.Context) {
 
 	views := make([]documentView, 0, len(docs))
 	for _, doc := range docs {
+		if !seeAll && !h.docVisibleTo(doc, user.ID, canConfigureAgents, canConfigureChannels) {
+			continue
+		}
 		views = append(views, h.documentViewOf(doc))
 	}
 	RespondOK(c, gin.H{"documents": views})
+}
+
+// docVisibleTo is the member listing-lens predicate: own uploads always
+// pass; otherwise the document passes when the viewer can configure a
+// surface it is attached to (agents.write for the attached agents,
+// channels.write for the attached channels).
+func (h *referenceDocumentsHandlers) docVisibleTo(doc domain.ReferenceDocument, userID string, canConfigureAgents, canConfigureChannels bool) bool {
+	if doc.UploadedBy == userID {
+		return true
+	}
+	if canConfigureAgents && len(doc.AgentIDs) > 0 {
+		return true
+	}
+	return canConfigureChannels && len(doc.ChannelIDs) > 0
 }
 
 // patchDocumentRequest is the metadata-edit payload; the pointer fields
@@ -214,6 +297,8 @@ type patchDocumentRequest struct {
 
 // Patch rewrites the editable bibliographic fields (name, description).
 // Absent fields stay as stored; a submitted blank name is invalid.
+// Ownership-scoped (fix-role-permission-audit D6): the uploader or a
+// workspace.write holder.
 func (h *referenceDocumentsHandlers) Patch(c *gin.Context) {
 	ws := MustCurrentWorkspace(c)
 	ctx := c.Request.Context()
@@ -221,6 +306,16 @@ func (h *referenceDocumentsHandlers) Patch(c *gin.Context) {
 	current, err := h.references.Get(ctx, ws.ID, c.Param("id"))
 	if err != nil {
 		RespondError(c, err)
+		return
+	}
+
+	allowed, err := h.canMutateDocument(c, current)
+	if err != nil {
+		RespondError(c, err)
+		return
+	}
+	if !allowed {
+		RespondError(c, fmt.Errorf("%w: editing another member's document requires workspace.write", domain.ErrForbidden))
 		return
 	}
 
@@ -253,9 +348,21 @@ type setDocumentAgentsRequest struct {
 
 // PutAgents replaces the document's attached-agent set (set-complete). Every
 // id must exist in the workspace — unknown or foreign ids ride the store's
-// domain.ErrNotFound, indistinguishable (tenancy).
+// domain.ErrNotFound, indistinguishable (tenancy). Gated to agents.write
+// (fix-role-permission-audit D6): attaching a document to agents is agent
+// configuration, reserved for agents.write holders.
 func (h *referenceDocumentsHandlers) PutAgents(c *gin.Context) {
 	ws := MustCurrentWorkspace(c)
+
+	allowed, err := h.callerHolds(c, domain.AgentsWrite)
+	if err != nil {
+		RespondError(c, err)
+		return
+	}
+	if !allowed {
+		RespondError(c, fmt.Errorf("%w: attaching documents to agents requires agents.write", domain.ErrForbidden))
+		return
+	}
 
 	var req setDocumentAgentsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -277,9 +384,21 @@ type setDocumentChannelsRequest struct {
 }
 
 // PutChannels replaces the document's attached-channel set, with the same
-// workspace FK parity as PutAgents.
+// workspace FK parity as PutAgents. Gated to channels.write
+// (fix-role-permission-audit D6): attaching a document to channels is channel
+// configuration.
 func (h *referenceDocumentsHandlers) PutChannels(c *gin.Context) {
 	ws := MustCurrentWorkspace(c)
+
+	allowed, err := h.callerHolds(c, domain.ChannelsWrite)
+	if err != nil {
+		RespondError(c, err)
+		return
+	}
+	if !allowed {
+		RespondError(c, fmt.Errorf("%w: attaching documents to channels requires channels.write", domain.ErrForbidden))
+		return
+	}
 
 	var req setDocumentChannelsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -324,10 +443,27 @@ func (h *referenceDocumentsHandlers) Demote(c *gin.Context) {
 
 // Delete removes the document, its section index, and the stored blob. The
 // response mirrors the connections disconnect shape: 204, no body.
+// Ownership-scoped (fix-role-permission-audit D6): the uploader or a
+// workspace.write holder.
 func (h *referenceDocumentsHandlers) Delete(c *gin.Context) {
 	ws := MustCurrentWorkspace(c)
 
-	if err := h.references.Delete(c.Request.Context(), ws.ID, c.Param("id")); err != nil {
+	current, err := h.references.Get(c.Request.Context(), ws.ID, c.Param("id"))
+	if err != nil {
+		RespondError(c, err)
+		return
+	}
+	allowed, err := h.canMutateDocument(c, current)
+	if err != nil {
+		RespondError(c, err)
+		return
+	}
+	if !allowed {
+		RespondError(c, fmt.Errorf("%w: deleting another member's document requires workspace.write", domain.ErrForbidden))
+		return
+	}
+
+	if err := h.references.Delete(c.Request.Context(), ws.ID, current.ID); err != nil {
 		RespondError(c, err)
 		return
 	}

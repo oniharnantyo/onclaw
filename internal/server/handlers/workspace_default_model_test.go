@@ -47,7 +47,11 @@ func newDefaultModelRouter(t *testing.T, rolePermission string, withDefault bool
 		}
 	}
 
-	h := handlers.NewWorkspaceHandlers(st, []byte("01234567890123456789012345678901"), nil, nil, nil, t.TempDir())
+	az, err := newTestAuthorizer(ctx, st)
+	if err != nil {
+		t.Fatalf("failed to build test authorizer: %v", err)
+	}
+	h := handlers.NewWorkspaceHandlers(st, []byte("01234567890123456789012345678901"), nil, nil, nil, t.TempDir(), az)
 
 	role := &domain.Role{WorkspaceID: ws.ID, Name: domain.RoleMember, Permissions: []string{rolePermission}}
 	member := &domain.Member{WorkspaceID: ws.ID, UserID: "user-1", RoleID: role.ID}
@@ -256,7 +260,7 @@ func TestPatchWorkspace_HalfSetDefaultModelRejected(t *testing.T) {
 	}
 
 	// Provider id without model.
-	w = doPatchWorkspace(r, `{"default_model": {"provider_id": "` + provA.ID + `", "model": ""}}`)
+	w = doPatchWorkspace(r, `{"default_model": {"provider_id": "`+provA.ID+`", "model": ""}}`)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for provider-only pair, got %d: %s", w.Code, w.Body.String())
 	}
@@ -276,7 +280,7 @@ func TestPatchWorkspace_DefaultModelMemberForbidden(t *testing.T) {
 	// handler runs.
 	r, _, _, provA, _ := newDefaultModelRouter(t, domain.ProvidersWrite, false)
 
-	w := doPatchWorkspace(r, `{"default_model": {"provider_id": "` + provA.ID + `", "model": "gpt-4o"}}`)
+	w := doPatchWorkspace(r, `{"default_model": {"provider_id": "`+provA.ID+`", "model": "gpt-4o"}}`)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 without workspace.write, got %d: %s", w.Code, w.Body.String())
 	}

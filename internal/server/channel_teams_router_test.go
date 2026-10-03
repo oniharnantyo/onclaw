@@ -15,6 +15,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/oniharnantyo/onclaw/internal/domain"
 )
 
 // teamsTestEnvMembers is channelsTestEnvMembers under a teams-specific slug.
@@ -356,21 +358,61 @@ func TestTeams_KickoffAndSessions(t *testing.T) {
 
 func TestTeams_PermissionMatrixAndIsolation(t *testing.T) {
 	env := setupTestEnv(t)
-	_, memberToken, nonMemberToken := teamsTestEnvMembers(t, env, "teams-perm-ws")
+	ownerToken, memberToken, nonMemberToken := teamsTestEnvMembers(t, env, "teams-perm-ws")
 
-	// The builtin Member role holds neither channels.read nor channels.write:
-	// the whole teams surface is 403.
+	// Template materialization spawns agents, which require a workspace
+	// provider; seed one so the member write below reaches the spawn path.
+	seedProviderWithDeadBaseURL(t, env, ownerToken, "teams-perm-ws")
+
+	// The builtin Member role now holds channels.read / channels.write
+	// (fix-role-permission-audit D5): the teams surface is open to members —
+	// templates list 200, materialize 201, and an unknown channel's sessions
+	// resolve past the gate to the enumeration defense 404.
 	w := doRequest(env.router, http.MethodGet, "/api/v1/workspaces/teams-perm-ws/channels/templates", memberToken, nil)
-	if w.Code != http.StatusForbidden {
-		t.Errorf("member templates: expected 403, got %d", w.Code)
+	if w.Code != http.StatusOK {
+		t.Errorf("member templates: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	w = doRequest(env.router, http.MethodPost, "/api/v1/workspaces/teams-perm-ws/channels/templates/software-team/materialize", memberToken, map[string]any{"name": "Nope", "slug": "nope"})
-	if w.Code != http.StatusForbidden {
-		t.Errorf("member materialize: expected 403, got %d", w.Code)
+	w = doRequest(env.router, http.MethodPost, "/api/v1/workspaces/teams-perm-ws/channels/templates/software-team/materialize", memberToken, map[string]any{
+		"name": "Member Team", "slug": "member-team",
+		"slots": map[string]any{
+			"pm": map[string]any{"spawn": true}, "architect": map[string]any{"spawn": true}, "scrum-master": map[string]any{"spawn": true},
+			"frontend": map[string]any{"spawn": true}, "backend": map[string]any{"spawn": true}, "tester": map[string]any{"spawn": true},
+		},
+	})
+	if w.Code != http.StatusCreated {
+		t.Errorf("member materialize: expected 201, got %d: %s", w.Code, w.Body.String())
 	}
 	w = doRequest(env.router, http.MethodGet, "/api/v1/workspaces/teams-perm-ws/channels/00000000-0000-0000-0000-000000000000/sessions", memberToken, nil)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("member sessions: expected 404, got %d", w.Code)
+	}
+
+	// Unauthenticated requests are rejected outright.
+	w = doRequest(env.router, http.MethodGet, "/api/v1/workspaces/teams-perm-ws/channels/templates", "", nil)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("unauthenticated templates: expected 401, got %d", w.Code)
+	}
+
+	// A custom role WITHOUT channels.* is still gated at 403, proving the
+	// matrix comes from the permission set, not mere membership.
+	ctx := context.Background()
+	noChannelsUser, noChannelsToken := createTestUser(t, env, "teams-perm-ws-nochan@example.com", "No Channels", "pwd")
+	permWS, err := env.store.Workspaces().BySlug(ctx, "teams-perm-ws")
+	if err != nil {
+		t.Fatalf("lookup workspace: %v", err)
+	}
+	noChannelsRole := &domain.Role{
+		WorkspaceID: permWS.ID,
+		Name:        "no-channels",
+		Permissions: []string{domain.WorkspaceRead},
+	}
+	if err := env.store.Roles().Create(ctx, noChannelsRole); err != nil {
+		t.Fatalf("create no-channels role: %v", err)
+	}
+	addMember(t, env, permWS.ID, noChannelsUser.ID, noChannelsRole.ID)
+	w = doRequest(env.router, http.MethodGet, "/api/v1/workspaces/teams-perm-ws/channels/templates", noChannelsToken, nil)
 	if w.Code != http.StatusForbidden {
-		t.Errorf("member sessions: expected 403, got %d", w.Code)
+		t.Errorf("no-channels role templates: expected 403, got %d", w.Code)
 	}
 
 	// A workspace outsider gets the enumeration defense 404, not 403.

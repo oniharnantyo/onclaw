@@ -3,10 +3,12 @@ package handlers
 import (
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/oniharnantyo/onclaw/internal/authz"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/storage"
 	"github.com/oniharnantyo/onclaw/internal/store"
@@ -16,17 +18,18 @@ import (
 type adminWorkspaceHandlers struct {
 	store   store.Store
 	storage storage.Storage
+	// authz is the permission authorizer (fix-role-permission-audit D1):
+	// AdminCreateWorkspace syncs each newborn workspace's built-in roles into
+	// the policy set at the seeding seam so they enforce without a reboot.
+	authz authz.Authorizer
 }
 
 // NewAdminWorkspaceHandlers creates a new adminWorkspaceHandlers instance with injected dependencies.
-func NewAdminWorkspaceHandlers(st store.Store, strg ...storage.Storage) *adminWorkspaceHandlers {
-	var s storage.Storage
-	if len(strg) > 0 {
-		s = strg[0]
-	}
+func NewAdminWorkspaceHandlers(st store.Store, strg storage.Storage, az authz.Authorizer) *adminWorkspaceHandlers {
 	return &adminWorkspaceHandlers{
 		store:   st,
-		storage: s,
+		storage: strg,
+		authz:   az,
 	}
 }
 
@@ -145,6 +148,7 @@ func (h *adminWorkspaceHandlers) AdminCreateWorkspace(c *gin.Context) {
 	var ownerRole *domain.Role
 	var ownerMember *domain.Member
 	var ownerUser *domain.User
+	var createdRoles []*domain.Role
 
 	err := h.store.WithTx(c.Request.Context(), func(txStore store.Store) error {
 		// Find or auto-provision owner user
@@ -231,12 +235,25 @@ func (h *adminWorkspaceHandlers) AdminCreateWorkspace(c *gin.Context) {
 		ownerRole = oRole
 		ownerMember = member
 		ownerUser = user
+		createdRoles = []*domain.Role{oRole, aRole, mRole}
 		return nil
 	})
 
 	if err != nil {
 		RespondError(c, err)
 		return
+	}
+
+	// Seeding Sync (fix-role-permission-audit D1/D2): the birth transaction
+	// committed the workspace's built-in role rows — write their policy lines
+	// through the authorizer now so a newborn workspace's roles enforce
+	// immediately, without a server reboot. The birth is already committed,
+	// so a sync failure logs rather than failing the request (the same
+	// post-commit posture as the public CreateWorkspace path).
+	for _, role := range createdRoles {
+		if err := h.authz.Sync(c.Request.Context(), role); err != nil {
+			log.Printf("[handlers.admin_workspaces] role policy sync failed for workspace %s role %s: %v", createdWs.ID, role.Name, err)
+		}
 	}
 
 	RespondCreated(c, gin.H{

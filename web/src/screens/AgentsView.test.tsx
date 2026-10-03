@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { AgentsView } from './AgentsView';
 import { AgentCard } from './AgentCard';
+import { useAuthStore } from '../store/auth';
 
 describe('screens/AgentsView & AgentCard', () => {
   const mockAgents = [
@@ -463,5 +464,57 @@ describe('screens/AgentsView & AgentCard', () => {
     expect(screen.getByTestId('agent-card-agent-25')).not.toBeNull();
     expect(screen.getByTestId('agent-card-agent-30')).not.toBeNull();
     expect(screen.queryByTestId('agent-card-agent-01')).toBeNull();
+  });
+});
+
+describe('screens/AgentsView — agents.write deploy gating (fix-role-permission-audit 5.5)', () => {
+  const agent = {
+    id: 'a1', slug: 'atlas', name: 'Atlas', model: 'gpt-4o', temp: 0.7, autonomy: 'approval',
+    channelPost: false, role: 'Assistant', description: 'Helps.', status: 'idle',
+    disabled_tools: [], skills: [], lastActive: '', prompts_status: 'ready',
+  };
+  const tenant: any = { id: 'acme', name: 'Acme Corp', agents: [agent] };
+
+  it('hides the deploy controls from a Member without agents.write but keeps the roster', () => {
+    // Built-in Member set per the decided catalog: reads + channels.*.
+    useAuthStore.setState({
+      user: { id: 'u1', email: 'u1@acme.dev', name: 'U One', created_at: '', updated_at: '' },
+      memberships: [
+        {
+          workspace_id: 'acme',
+          role_name: 'Member',
+          role: {
+            name: 'Member',
+            is_owner: false,
+            permissions: [
+              'workspace.read',
+              'members.read',
+              'roles.read',
+              'providers.read',
+              'agents.read',
+              'skills.read',
+              'scheduler.read',
+              'channels.read',
+              'channels.write',
+            ],
+          },
+        },
+      ] as any,
+      status: 'authenticated',
+    });
+
+    render(<AgentsView tenant={tenant} onChat={vi.fn()} onConfigure={vi.fn()} onDeploy={vi.fn()} />);
+
+    expect(screen.getByTestId('agent-card-a1')).not.toBeNull();
+    expect(screen.queryByTestId('btn-deploy-agent')).toBeNull();
+    expect(screen.queryByTestId('btn-agents-empty-deploy')).toBeNull();
+  });
+
+  it('keeps the deploy controls in mock mode (no memberships)', () => {
+    useAuthStore.setState({ user: null, memberships: [], status: 'authenticated' } as any);
+
+    render(<AgentsView tenant={tenant} onChat={vi.fn()} onConfigure={vi.fn()} onDeploy={vi.fn()} />);
+
+    expect(screen.queryByTestId('btn-deploy-agent')).not.toBeNull();
   });
 });

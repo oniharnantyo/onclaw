@@ -22,6 +22,7 @@ import {
   type SearchEntryDraft,
 } from "../../lib/toolCatalog";
 import serverErrorSvg from "../../assets/server-error.svg";
+import { useCanWriteTools } from "../../lib/tools";
 
 export interface ToolsPaneProps {
   tenant: any;
@@ -34,6 +35,9 @@ interface FieldErrors {
 }
 
 export function ToolsPane({ tenant, onToast = () => {} }: ToolsPaneProps) {
+  // Toggles and config gears ride tools.write; Members see every row
+  // read-only — names, descriptions, and states stay visible.
+  const writer = useCanWriteTools(tenant);
   const [tools, setTools] = useState<ApiToolSettings[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<ApiError | Error | null>(null);
@@ -137,7 +141,7 @@ export function ToolsPane({ tenant, onToast = () => {} }: ToolsPaneProps) {
             >
               {alwaysOnBadgeText(tool)}
             </span>
-          ) : (
+          ) : writer ? (
             <>
               {tool.configurable ? (
                 <button
@@ -157,7 +161,7 @@ export function ToolsPane({ tenant, onToast = () => {} }: ToolsPaneProps) {
                 onChange={() => handleToggle(tool)}
               />
             </>
-          )}
+          ) : null}
         </div>
       </div>
     );

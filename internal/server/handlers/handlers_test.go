@@ -30,12 +30,12 @@ func TestHandlers_New(t *testing.T) {
 		t.Fatal("expected non-nil AuthHandlers instance")
 	}
 
-	wsH := handlers.NewWorkspaceHandlers(st, []byte("01234567890123456789012345678901"), nil, nil, nil, t.TempDir())
+	wsH := handlers.NewWorkspaceHandlers(st, []byte("01234567890123456789012345678901"), nil, nil, nil, t.TempDir(), mustTestAuthorizer(t, st))
 	if wsH == nil {
 		t.Fatal("expected non-nil WorkspaceHandlers instance")
 	}
 
-	memH := handlers.NewMemberHandlers(st, stor)
+	memH := handlers.NewMemberHandlers(st, stor, mustTestAuthorizer(t, st))
 	if memH == nil {
 		t.Fatal("expected non-nil MemberHandlers instance")
 	}
@@ -56,7 +56,7 @@ func TestHandlers_New(t *testing.T) {
 		t.Fatal("expected non-nil FileHandlers instance")
 	}
 
-	admWsH := handlers.NewAdminWorkspaceHandlers(st, stor)
+	admWsH := handlers.NewAdminWorkspaceHandlers(st, stor, mustTestAuthorizer(t, st))
 	if admWsH == nil {
 		t.Fatal("expected non-nil AdminWorkspaceHandlers instance")
 	}
@@ -71,12 +71,12 @@ func TestHandlers_New(t *testing.T) {
 		t.Fatal("expected non-nil AdminSuperadminHandlers instance")
 	}
 
-	provH := handlers.NewProviderHandlers(st.Providers(), st.Agents(), []byte("01234567890123456789012345678901"), nil, nil)
+	provH := handlers.NewProviderHandlers(st.Providers(), st.Agents(), []byte("01234567890123456789012345678901"), nil, nil, st.ToolSettings())
 	if provH == nil {
 		t.Fatal("expected non-nil ProviderHandlers instance")
 	}
 
-	agentH := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), st.AgentSessions(), []byte("01234567890123456789012345678901"), nil, nil, nil, t.TempDir(), nil, nil)
+	agentH := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), st.AgentSessions(), []byte("01234567890123456789012345678901"), nil, nil, nil, t.TempDir(), nil, nil, mustTestAuthorizer(t, st))
 	if agentH == nil {
 		t.Fatal("expected non-nil AgentHandlers instance")
 	}

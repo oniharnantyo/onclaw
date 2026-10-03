@@ -203,3 +203,70 @@ describe('screens/SchedulesView — toggle and run-now', () => {
     expect(screen.getByText('Morning ops digest')).not.toBeNull();
   });
 });
+
+describe('screens/SchedulesView — scheduler.write gating (fix-role-permission-audit 5.5)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    listMock.mockResolvedValue({ schedulers: [sched1, sched2] });
+    seedStore();
+  });
+
+  afterEach(cleanup);
+
+  it('a Member sees the table read-only — no new-schedule, edit, run-now, or toggle controls', async () => {
+    const { useAuthStore } = await import('../store/auth');
+    // Built-in Member set per the decided catalog: reads + channels.*.
+    useAuthStore.setState({
+      user: { id: 'u1', email: 'u1@acme.dev', name: 'U One', created_at: '', updated_at: '' },
+      memberships: [
+        {
+          workspace_id: 't1',
+          workspace_slug: 't1',
+          role_name: 'Member',
+          role: {
+            name: 'Member',
+            is_owner: false,
+            permissions: [
+              'workspace.read',
+              'members.read',
+              'roles.read',
+              'providers.read',
+              'agents.read',
+              'skills.read',
+              'scheduler.read',
+              'channels.read',
+              'channels.write',
+            ],
+          },
+        },
+      ] as any,
+      status: 'authenticated',
+    });
+
+    view();
+
+    await findByOdId('schedule-row-sch-1');
+
+    // Rows stay visible with names, recurrences, and run history…
+    expect(odId('schedule-name-sch-1')).not.toBeNull();
+    // …but every mutation affordance is gone.
+    expect(odId('btn-new-schedule')).toBeNull();
+    expect(odId('btn-empty-new-schedule')).toBeNull();
+    expect(odId('schedule-run-sch-1')).toBeNull();
+    expect(screen.queryByRole('switch', { name: 'Pause Morning ops digest' })).toBeNull();
+    expect(screen.queryByRole('switch', { name: 'Resume Inbox triage' })).toBeNull();
+  });
+
+  it('mock mode (no memberships) keeps every affordance', async () => {
+    const { useAuthStore } = await import('../store/auth');
+    useAuthStore.setState({ user: null, memberships: [], status: 'authenticated' } as any);
+
+    view();
+
+    await findByOdId('schedule-row-sch-1');
+    expect(odId('btn-new-schedule')).not.toBeNull();
+    expect(odId('schedule-run-sch-1')).not.toBeNull();
+    // Mobile and desktop rows each render a toggle (two switch instances).
+    expect(screen.getAllByRole('switch', { name: 'Pause Morning ops digest' }).length).toBeGreaterThan(0);
+  });
+});

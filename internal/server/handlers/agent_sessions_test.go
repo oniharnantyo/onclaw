@@ -106,13 +106,23 @@ func newAgentSessionsTestEnv(t *testing.T) (*gin.Engine, store.Store, *domain.Wo
 	}
 
 	runner := &fakeSessionListerRunner{active: map[string]bool{}}
-	h := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), st.AgentSessions(), []byte("01234567890123456789012345678901"), nil, nil, nil, "ws-dir", runner, runner)
+	h := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), st.AgentSessions(), []byte("01234567890123456789012345678901"), nil, nil, nil, "ws-dir", runner, runner, mustTestAuthorizer(t, st))
 
 	var currentUser *domain.User
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		c.Set(handlers.WorkspaceContextKey, ws)
 		c.Set(handlers.UserContextKey, currentUser)
+		// Resolve the acting member's role like RequireWorkspace does — the
+		// ownership gate evaluates agents.write through the authorizer
+		// (fix-role-permission-audit D3).
+		if currentUser != nil {
+			if m, err := st.Members().Get(c.Request.Context(), ws.ID, currentUser.ID); err == nil {
+				if role, err := st.Roles().ByID(c.Request.Context(), m.RoleID); err == nil {
+					c.Set(handlers.RoleContextKey, role)
+				}
+			}
+		}
 		c.Next()
 	})
 	r.GET("/workspaces/:ws/agents/:agent/sessions", h.ListAgentSessions)
@@ -269,8 +279,11 @@ func TestAgentSessions_DeleteHidesRow(t *testing.T) {
 	}
 }
 
-// TestAgentSessions_DeleteForeignOrAbsentIs404: a foreign-owned row and an
-// unknown session id are indistinguishable — both 404 (no existence leak).
+// TestAgentSessions_DeleteForeignOrAbsentIs404: a foreign-owned row is 403
+// (the row exists and belongs to someone else — fix-role-permission-audit D3
+// distinguishes it), while an unknown session id stays 404 (no existence
+// leak). Both shapes are unreachable for members through the old route gate;
+// the handler now owns the distinction.
 func TestAgentSessions_DeleteForeignOrAbsentIs404(t *testing.T) {
 	r, _, _, _, member, _, currentUser := newAgentSessionsTestEnv(t)
 	*currentUser = member
@@ -282,12 +295,13 @@ func TestAgentSessions_DeleteForeignOrAbsentIs404(t *testing.T) {
 		t.Fatalf("member must see only their own session, got %v", sessions)
 	}
 
-	// Deleting the owner's session by its known id is still 404.
+	// Deleting the owner's session by its known id is 403: the row exists,
+	// belongs to someone else, and the member holds no agents.write.
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/workspaces/sess-ws/agents/atlas/sessions/sess-owner", nil)
 	r.ServeHTTP(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("foreign delete must be 404, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("foreign delete must be 403, got %d: %s", w.Code, w.Body.String())
 	}
 
 	// An absent session id is the same 404.

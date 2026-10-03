@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/oniharnantyo/onclaw/internal/authz"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/promptdocs"
 	"github.com/oniharnantyo/onclaw/internal/promptgen"
@@ -26,10 +27,14 @@ type workspaceHandlers struct {
 	modelCatalog  *services.ModelCatalog
 	agentService  *promptgen.Service
 	workspaceDir  string
+	// authz is the permission authorizer (fix-role-permission-audit D1):
+	// CreateWorkspace syncs each newborn workspace's built-in roles into the
+	// policy set at the seeding seam so they enforce without a reboot.
+	authz authz.Authorizer
 }
 
 // NewWorkspaceHandlers creates a new workspaceHandlers instance with injected dependencies.
-func NewWorkspaceHandlers(st store.Store, encryptionKey []byte, reg *providers.Registry, mc *services.ModelCatalog, as *promptgen.Service, workspaceDir string) *workspaceHandlers {
+func NewWorkspaceHandlers(st store.Store, encryptionKey []byte, reg *providers.Registry, mc *services.ModelCatalog, as *promptgen.Service, workspaceDir string, authz authz.Authorizer) *workspaceHandlers {
 	if reg == nil {
 		reg = providers.NewRegistry()
 	}
@@ -40,6 +45,7 @@ func NewWorkspaceHandlers(st store.Store, encryptionKey []byte, reg *providers.R
 		modelCatalog:  mc,
 		agentService:  as,
 		workspaceDir:  workspaceDir,
+		authz:         authz,
 	}
 }
 
@@ -250,6 +256,11 @@ func (h *workspaceHandlers) CreateWorkspace(c *gin.Context) {
 	var creatorMember *domain.Member
 	var createdProvider *domain.ProviderConfig
 	var createdAgent *domain.Agent
+	// createdRoles collects the built-in role rows born inside the
+	// transaction so the post-commit seeding Sync can register their policy
+	// lines (fix-role-permission-audit D1: Sync at the only runtime
+	// role-write seam).
+	var createdRoles []*domain.Role
 
 	// Pre-create the starter agent's on-disk workspace directory with its base
 	// prompt so a failure aborts the birth before any DB write.
@@ -329,6 +340,7 @@ func (h *workspaceHandlers) CreateWorkspace(c *gin.Context) {
 		createdWs = ws
 		ownerRole = oRole
 		creatorMember = member
+		createdRoles = []*domain.Role{oRole, aRole, mRole}
 
 		// Atomic birth: provision provider and starter agent within the same transaction if requested
 		if req.Provider != nil {
@@ -415,6 +427,18 @@ func (h *workspaceHandlers) CreateWorkspace(c *gin.Context) {
 		}
 		RespondError(c, err)
 		return
+	}
+
+	// Seeding Sync (fix-role-permission-audit D1/D2): the birth transaction
+	// committed the workspace's built-in role rows — write their policy lines
+	// through the authorizer now so a newborn workspace's roles enforce
+	// immediately, without a server reboot. The birth is already committed,
+	// so a sync failure logs rather than failing the request (the same
+	// post-commit posture as prompt generation below).
+	for _, role := range createdRoles {
+		if err := h.authz.Sync(c.Request.Context(), role); err != nil {
+			log.Printf("[handlers.workspaces] role policy sync failed for workspace %s role %s: %v", createdWs.ID, role.Name, err)
+		}
 	}
 
 	// Post-commit: generate prompts synchronously for the starter agent

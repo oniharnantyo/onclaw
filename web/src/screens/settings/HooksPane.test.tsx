@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { HooksPane } from './HooksPane';
 import { api, ApiError, type ApiHook, type ApiHookExecution } from '../../lib/api';
+import { useAuthStore } from '../../store/auth';
 
 const mockTenant = { id: 'acme', sub: 'acme', name: 'Acme Corp' };
 
@@ -567,5 +568,53 @@ describe('screens/settings/HooksPane', () => {
     expect(screen.getByTestId('hook-instance-hook-instance')).not.toBeNull();
     fireEvent.click(screen.getByTestId('hook-expand-hook-gate'));
     expect(screen.getByText('Execution history')).not.toBeNull();
+  });
+});
+
+// fix-role-permission-audit 5.1: the pane derives its gate from hooks.write —
+// no longer the tools.write check it shared before the audit.
+describe('screens/settings/HooksPane — derived hooks.write gate', () => {
+  const authWith = (permissions: string[]) => {
+    useAuthStore.setState({
+      user: { id: 'u1', email: 'u1@acme.dev', name: 'U One', created_at: '', updated_at: '' },
+      memberships: [
+        {
+          workspace_id: 'acme',
+          workspace_slug: 'acme',
+          role_name: 'Custom',
+          role: { name: 'Custom', is_owner: false, permissions },
+        },
+      ] as any,
+      status: 'authenticated',
+    });
+  };
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(api.hooks, 'list').mockResolvedValue({ instance: [], hooks: [hookRow()] });
+    vi.spyOn(api.hooks, 'executions').mockResolvedValue({ executions: [] });
+  });
+
+  it('a role holding tools.write but not hooks.write sees the pane read-only', async () => {
+    authWith(['tools.write', 'workspace.read']);
+
+    render(<HooksPane tenant={mockTenant} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('hook-hook-gate')).not.toBeNull();
+    });
+    expect(screen.queryByTestId('btn-hook-add')).toBeNull();
+    expect(screen.queryByRole('switch', { name: 'Enable Policy Gate' })).toBeNull();
+  });
+
+  it('a role holding hooks.write but not tools.write gets the write controls', async () => {
+    authWith(['hooks.write', 'workspace.read']);
+
+    render(<HooksPane tenant={mockTenant} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('btn-hook-add')).not.toBeNull();
+    });
+    expect(screen.getByRole('switch', { name: 'Enable Policy Gate' })).not.toBeNull();
   });
 });

@@ -30,7 +30,12 @@ type v1Handlers struct {
 	agents        store.AgentStore
 	sessionEvents store.SessionEventStore
 	attachments   store.AttachmentStore
-	wsStorage     *resolver.WorkspaceStorage
+	// sessions is the per-user agent session index (agent-session-index D1);
+	// resolveSession consults it for the owner-scoped binding rule
+	// (fix-role-permission-audit D3): an existing session binds only for its
+	// owning user.
+	sessions  store.AgentSessionStore
+	wsStorage *resolver.WorkspaceStorage
 	// toolPolicy is the workspace tool gate the runner applies at resolution:
 	// the v1 narrowing stage consults the same gate so a request can neither
 	// extend the effective set nor bypass the gate.
@@ -47,11 +52,11 @@ const defaultKeepAlive = 15 * time.Second
 
 // NewV1Handlers creates a new v1Handlers instance with injected dependencies.
 // keepAlive <= 0 falls back to the default cadence.
-func NewV1Handlers(runner *agents.Runner, agents store.AgentStore, sessionEvents store.SessionEventStore, attachments store.AttachmentStore, wsStorage *resolver.WorkspaceStorage, toolPolicy agents.ToolPolicy, keepAlive time.Duration) *v1Handlers {
+func NewV1Handlers(runner *agents.Runner, agents store.AgentStore, sessionEvents store.SessionEventStore, attachments store.AttachmentStore, sessions store.AgentSessionStore, wsStorage *resolver.WorkspaceStorage, toolPolicy agents.ToolPolicy, keepAlive time.Duration) *v1Handlers {
 	if keepAlive <= 0 {
 		keepAlive = defaultKeepAlive
 	}
-	return &v1Handlers{runner: runner, agents: agents, sessionEvents: sessionEvents, attachments: attachments, wsStorage: wsStorage, toolPolicy: toolPolicy, keepAlive: keepAlive}
+	return &v1Handlers{runner: runner, agents: agents, sessionEvents: sessionEvents, attachments: attachments, sessions: sessions, wsStorage: wsStorage, toolPolicy: toolPolicy, keepAlive: keepAlive}
 }
 
 // ListModels implements GET /v1/models: the workspace's agents listed as
@@ -117,7 +122,7 @@ func (h *v1Handlers) CreateResponse(c *gin.Context) {
 	// Session binding: metadata.onclaw_session (primary), then
 	// previous_response_id, then ephemeral. Compact-command turns bind
 	// strictly (D2): they never birth and never run ephemeral.
-	sessionID, err := h.resolveSession(c, key.WorkspaceID, req.Metadata, req.PreviousResponseID, command)
+	sessionID, err := h.resolveSession(c, key.WorkspaceID, agent.ID, key.CreatedBy, req.Metadata, req.PreviousResponseID, command)
 	if err != nil {
 		respondV1Error(c, err)
 		return
@@ -366,23 +371,40 @@ func sessionMetadata(md map[string]string) string {
 // is born on first use under the client-chosen ID — the first persisted
 // append is the birth, and the persistent session adapter scopes it to the
 // workspace (a foreign workspace's session using the same ID is untouched
-// and unreadable; the local session is independent). Chained binding
-// (previous_response_id) is strictly bind-only: malformed IDs are invalid,
-// unresolvable IDs are not-found, and the path never births. Compact-command
+// and unreadable; the local session is independent). Binding to an EXISTING
+// session is owner-scoped (fix-role-permission-audit D3): it resolves only
+// when the session-index row is owned by the key's creating user — another
+// user's session, and system-born sessions (channels, schedulers,
+// heartbeats, which have no index row at all), fail with the standard
+// not-found, indistinguishable from a foreign workspace's session.
+// Chained binding (previous_response_id) is strictly bind-only within the
+// creating user's own sessions: malformed IDs are invalid, unresolvable or
+// foreign-owned IDs are not-found, and the path never births. Compact-command
 // turns are bind-only everywhere (chat-compact-command D2): a compaction
 // targets an existing history, so metadata binding loses its birth power,
 // the unbound path fails instead of going ephemeral, and only the chained
 // path behaves as for ordinary turns.
-func (h *v1Handlers) resolveSession(c *gin.Context, workspaceID string, md map[string]string, previousResponseID, command string) (string, error) {
+func (h *v1Handlers) resolveSession(c *gin.Context, workspaceID, agentID, userID string, md map[string]string, previousResponseID, command string) (string, error) {
 	if sid := sessionMetadata(md); sid != "" {
+		if h.sessionExists(c, workspaceID, sid) {
+			// Owner-scoped binding (D3): the session exists in this workspace,
+			// so it resolves only for its owner.
+			if !h.sessionOwnedBy(c, workspaceID, agentID, sid, userID) {
+				return "", fmt.Errorf("%w: session not found", domain.ErrNotFound)
+			}
+			// Create-on-first-use already satisfied: the turn runs on the
+			// persistent adapter under the owned ID.
+			return sid, nil
+		}
 		// Compact never births (D2): an onclaw_session with no persisted
 		// events in the key's workspace has nothing to compact and fails
 		// not-found, mirroring previous_response_id.
-		if command == agents.CommandCompact && !h.sessionExists(c, workspaceID, sid) {
+		if command == agents.CommandCompact {
 			return "", fmt.Errorf("%w: session not found", domain.ErrNotFound)
 		}
-		// Create-on-first-use: whether the session already exists or not,
-		// the turn runs on the persistent adapter under the named ID.
+		// Birth: the session has no persisted events in this workspace, so
+		// the first turn births it owned by the key's creating user (the
+		// runner indexes it under ExecRequest.UserID at run start).
 		return sid, nil
 	}
 
@@ -391,7 +413,9 @@ func (h *v1Handlers) resolveSession(c *gin.Context, workspaceID string, md map[s
 		if err != nil {
 			return "", fmt.Errorf("%w: previous_response_id: %v", domain.ErrInvalid, err)
 		}
-		if !h.sessionExists(c, workspaceID, sid) {
+		// Bind-only within the creating user's own sessions (D3): unknown,
+		// foreign-workspace, and foreign-owned sessions all fail not-found.
+		if !h.sessionExists(c, workspaceID, sid) || !h.sessionOwnedBy(c, workspaceID, agentID, sid, userID) {
 			return "", fmt.Errorf("%w: session not found", domain.ErrNotFound)
 		}
 		return sid, nil
@@ -418,6 +442,21 @@ func (h *v1Handlers) sessionExists(c *gin.Context, workspaceID, sessionID string
 		return false
 	}
 	return true
+}
+
+// sessionOwnedBy reports whether the session-index row exists for the
+// (workspace, agent, session) triple and is owned by the given user.
+// System-born sessions (channel, scheduler, heartbeat, team group) have no
+// index row — GetAgentSession answers (nil, nil) — so nobody owns them and
+// user keys can never bind them (fix-role-permission-audit D3). Soft-deleted
+// rows still resolve: the transcript is on disk and a re-chat revives the
+// session.
+func (h *v1Handlers) sessionOwnedBy(c *gin.Context, workspaceID, agentID, sessionID, userID string) bool {
+	row, err := h.sessions.GetAgentSession(c.Request.Context(), workspaceID, agentID, sessionID)
+	if err != nil || row == nil {
+		return false
+	}
+	return row.UserID == userID
 }
 
 // serveAggregated drains the stream to the terminal event and returns the

@@ -197,15 +197,19 @@ export function Sidebar({ view, tenant, chatId, onSelect, onDeploy, onNewSchedul
       {view === 'schedules' && (
         <div className="od-scroll flex-1 overflow-y-auto pb-4">
           <SectionLabel action={
-            <button type="button" onClick={onNewSchedule} data-od-id="sidebar-new-schedule" title="New schedule"
-              className="flex h-5 w-5 items-center justify-center rounded-[6px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg"
-              aria-label="New schedule">
-              <Icon name="plus" size={13}/>
-            </button>
+            // Absent without scheduler.write (fix-role-permission-audit):
+            // members see the schedule list read-only.
+            onNewSchedule ? (
+              <button type="button" onClick={onNewSchedule} data-od-id="sidebar-new-schedule" title="New schedule"
+                className="flex h-5 w-5 items-center justify-center rounded-[6px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg"
+                aria-label="New schedule">
+                <Icon name="plus" size={13}/>
+              </button>
+            ) : undefined
           }>Next up</SectionLabel>
           <div className="px-1.5">
             {nextUp.map((j: any) => (
-              <SideRow key={j.id} odId={'side-schedule-' + j.id} active={false} onClick={() => onEditSchedule(j)}
+              <SideRow key={j.id} odId={'side-schedule-' + j.id} active={false} onClick={onEditSchedule ? () => onEditSchedule(j) : undefined}
                 icon={<Icon name="clock" size={13} className="text-muted"/>} label={j.name}
                 sub={<span className="font-mono text-[10px] text-muted">{fmtNextRun(j.next_run_at, tenant.tz)}</span>}/>
             ))}

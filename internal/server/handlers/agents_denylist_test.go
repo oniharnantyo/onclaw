@@ -58,7 +58,7 @@ func newDenylistTestEnv(t *testing.T) *denylistTestEnv {
 		promptgen.WithModelFactory(factory),
 		promptgen.WithTimeout(5*time.Second),
 	)
-	agentH := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), st.AgentSessions(), key, providers.NewRegistry(), nil, agentSvc, wsDir, nil, nil)
+	agentH := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), st.AgentSessions(), key, providers.NewRegistry(), nil, agentSvc, wsDir, nil, nil, mustTestAuthorizer(t, st))
 
 	currentUser := &domain.User{ID: "user-denylist", Email: "owner@example.com", Name: "Owner"}
 	r := gin.New()

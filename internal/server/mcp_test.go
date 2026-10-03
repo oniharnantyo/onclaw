@@ -497,8 +497,10 @@ func TestWorkspaceMCPServers_ProbeIsBounded(t *testing.T) {
 // the permission fixture for birth-created workspaces.
 func mcpBirthEnv(t *testing.T, env *testEnv, wsSlug string) (ownerToken, memberToken, nonMemberToken string) {
 	t.Helper()
-	ownerUser, ownerToken := createTestUser(t, env, wsSlug+"-owner@example.com", "Owner", "pwd")
-	_ = ownerUser // the birth handler assigns the creator the built-in Owner role
+	// D4: workspace birth is superadmin-only; the creator wears the built-in
+	// Owner role of the newborn workspace.
+	ownerUser, ownerToken := seedTestSuperadmin(t, env, wsSlug+"-owner@onclaw.local", "Owner", "pwd")
+	_ = ownerUser
 	w := doRequest(env.router, http.MethodPost, "/api/v1/workspaces", ownerToken, map[string]any{
 		"name": "MCP WS " + wsSlug,
 		"slug": wsSlug,
@@ -681,7 +683,8 @@ func TestAgentPrivateMCPServers_Matrix(t *testing.T) {
 // legacy disabled_mcps denylist.
 func TestWorkspaces_StarterAgentEnabledMCPS(t *testing.T) {
 	env := setupTestEnv(t)
-	user, token := createTestUser(t, env, "starter-mcp@example.com", "Starter MCP", "password123")
+	// D4: workspace birth is superadmin-only.
+	user, token := seedTestSuperadmin(t, env, "starter-mcp@onclaw.local", "Starter MCP", "password123")
 	_ = user
 
 	w := doRequest(env.router, http.MethodPost, "/api/v1/workspaces", token, map[string]any{

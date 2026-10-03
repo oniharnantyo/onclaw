@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/oniharnantyo/onclaw/internal/domain"
@@ -154,4 +155,31 @@ func (a *agentSessionStore) SoftDeleteAgentSession(ctx context.Context, workspac
 		return domain.ErrNotFound
 	}
 	return nil
+}
+
+// GetAgentSession returns one session-index row by the unique
+// (workspace_id, agent_id, session_id) triple regardless of owning user —
+// the ownership-check read (D3). No user predicate and no deleted_at filter:
+// a soft-deleted row still carries its birth owner (ownership is fixed at
+// birth, never rewritten). Absent → (nil, nil) — unknown, foreign-workspace,
+// and system sessions (chan_, sched_, hb_, tg_group_: never indexed) are
+// indistinguishable, following the GetScheduler convention.
+func (a *agentSessionStore) GetAgentSession(ctx context.Context, workspaceID, agentID, sessionID string) (*domain.AgentSession, error) {
+	if workspaceID == "" || agentID == "" || sessionID == "" {
+		return nil, nil
+	}
+
+	query := `
+		SELECT ` + agentSessionColumns + `
+		FROM agent_sessions
+		WHERE workspace_id = $1 AND agent_id = $2 AND session_id = $3
+	`
+	s, err := scanAgentSession(a.db.QueryRow(ctx, query, workspaceID, agentID, sessionID))
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return s, nil
 }

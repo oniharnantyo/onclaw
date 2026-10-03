@@ -80,11 +80,13 @@ func newAgentRunTestEnv(t *testing.T, runner *fakeAgentRunRunner) *gin.Engine {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	h := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), st.AgentSessions(), []byte("01234567890123456789012345678901"), nil, nil, nil, t.TempDir(), runner, runner)
+	h := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), st.AgentSessions(), []byte("01234567890123456789012345678901"), nil, nil, nil, t.TempDir(), runner, runner, mustTestAuthorizer(t, st))
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		c.Set(handlers.WorkspaceContextKey, ws)
+		c.Set(handlers.UserContextKey, &domain.User{ID: "user-run-1", Email: "runner@example.com", Name: "Runner"})
+		c.Set(handlers.RoleContextKey, &domain.Role{ID: "role-run-admin", WorkspaceID: ws.ID, Permissions: domain.AdminPermissions})
 		c.Next()
 	})
 	r.POST("/workspaces/:ws/agents/:agent/sessions/:session/runs/:turn/cancel", h.CancelRun)
@@ -97,6 +99,19 @@ func newAgentRunWorkspace(t *testing.T) (store.Store, *domain.Workspace) {
 	ws := &domain.Workspace{ID: "ws-run-test", Slug: "run-ws", Name: "Run Workspace"}
 	if err := st.Workspaces().Create(context.Background(), ws); err != nil {
 		t.Fatalf("create workspace: %v", err)
+	}
+	// The acting admin the ownership gate resolves (fix-role-permission-audit
+	// D3): agents.write via the role row, mirrored into the gin context.
+	role := &domain.Role{ID: "role-run-admin", WorkspaceID: ws.ID, Name: "Admin", Permissions: domain.AdminPermissions}
+	if err := st.Roles().Create(context.Background(), role); err != nil {
+		t.Fatalf("create role: %v", err)
+	}
+	user := &domain.User{ID: "user-run-1", Email: "runner@example.com", Name: "Runner"}
+	if err := st.Users().Create(context.Background(), user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := st.Members().Add(context.Background(), &domain.Member{WorkspaceID: ws.ID, UserID: user.ID, RoleID: role.ID}); err != nil {
+		t.Fatalf("add member: %v", err)
 	}
 	prov := &domain.ProviderConfig{ID: "prov-fake", WorkspaceID: ws.ID, Type: "fake", Name: "Fake"}
 	if err := st.Providers().Create(context.Background(), prov); err != nil {
@@ -303,12 +318,13 @@ func TestAgentRuns_ApprovalResumeOutlivesRequest(t *testing.T) {
 	if err := st.Agents().Create(context.Background(), agent); err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	h := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), st.AgentSessions(), []byte("01234567890123456789012345678901"), nil, nil, nil, t.TempDir(), runner, runner)
+	h := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), st.AgentSessions(), []byte("01234567890123456789012345678901"), nil, nil, nil, t.TempDir(), runner, runner, mustTestAuthorizer(t, st))
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		c.Set(handlers.WorkspaceContextKey, ws)
 		c.Set(handlers.UserContextKey, &domain.User{ID: "user-1", Email: "approver@example.com", Name: "Approver"})
+		c.Set(handlers.RoleContextKey, &domain.Role{ID: "role-run-admin", WorkspaceID: ws.ID, Permissions: domain.AdminPermissions})
 		c.Next()
 	})
 	r.POST("/workspaces/:ws/agents/:agent/sessions/:session/approvals/:interruptID", h.ResolveApproval)

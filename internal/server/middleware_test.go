@@ -80,7 +80,7 @@ func TestAuthRequiredMiddleware(t *testing.T) {
 		t.Fatalf("failed to issue expired token: %v", err)
 	}
 
-	mw := NewMiddlewares(st.Users(), st.Workspaces(), st.Members(), st.Roles(), issuer)
+	mw := NewMiddlewares(st.Users(), st.Workspaces(), st.Members(), st.Roles(), issuer, mustFallbackAuthorizer(t, st))
 	router := gin.New()
 	router.Use(mw.AuthRequired())
 	router.GET("/protected", func(c *gin.Context) {
@@ -218,7 +218,7 @@ func TestRequireWorkspaceMiddleware(t *testing.T) {
 		RoleID:      suspendedRole.ID,
 	})
 
-	mw := NewMiddlewares(st.Users(), st.Workspaces(), st.Members(), st.Roles(), issuer)
+	mw := NewMiddlewares(st.Users(), st.Workspaces(), st.Members(), st.Roles(), issuer, mustFallbackAuthorizer(t, st))
 	router := gin.New()
 	wsGroup := router.Group("/workspaces/:ws")
 	wsGroup.Use(mw.AuthRequired())
@@ -340,7 +340,7 @@ func TestRequirePermissionMiddleware(t *testing.T) {
 	_ = st.Members().Add(ctx, &domain.Member{WorkspaceID: ws.ID, UserID: adminUser.ID, RoleID: adminRole.ID})
 	_ = st.Members().Add(ctx, &domain.Member{WorkspaceID: ws.ID, UserID: memberUser.ID, RoleID: memberRole.ID})
 
-	mw := NewMiddlewares(st.Users(), st.Workspaces(), st.Members(), st.Roles(), issuer)
+	mw := NewMiddlewares(st.Users(), st.Workspaces(), st.Members(), st.Roles(), issuer, mustFallbackAuthorizer(t, st))
 	router := gin.New()
 	wsGroup := router.Group("/workspaces/:ws")
 	wsGroup.Use(mw.AuthRequired())
@@ -356,13 +356,15 @@ func TestRequirePermissionMiddleware(t *testing.T) {
 		c.Status(http.StatusOK)
 	})
 
-	// Route 3: roles.write (Owner has it; Admin and Member lack it)
-	wsGroup.POST("/roles-write", mw.RequirePermission(domain.RolesWrite), func(c *gin.Context) {
+	// Route 3: agents.write (Owner and Admin hold it; Member lacks it). The
+	// roles.write case this route once pinned left the catalog with D5 — no
+	// owner-only permission survives, so the route now pins the admin tier.
+	wsGroup.POST("/agents-write", mw.RequirePermission(domain.AgentsWrite), func(c *gin.Context) {
 		c.Status(http.StatusOK)
 	})
 
-	// Route 4: multiple permissions required (roles.write and workspace.write)
-	wsGroup.POST("/multi-permission", mw.RequireAllPermissions(domain.RolesWrite, domain.WorkspaceWrite), func(c *gin.Context) {
+	// Route 4: multiple permissions required (gateways.write and workspace.write)
+	wsGroup.POST("/multi-permission", mw.RequireAllPermissions(domain.GatewaysWrite, domain.WorkspaceWrite), func(c *gin.Context) {
 		c.Status(http.StatusOK)
 	})
 
@@ -395,16 +397,16 @@ func TestRequirePermissionMiddleware(t *testing.T) {
 			expectedStatus: http.StatusOK,
 		},
 		{
-			name:           "admin cannot roles.write (403)",
+			name:           "admin can agents.write (200)",
 			method:         http.MethodPost,
-			path:           "/workspaces/corp/roles-write",
+			path:           "/workspaces/corp/agents-write",
 			token:          adminToken,
-			expectedStatus: http.StatusForbidden,
+			expectedStatus: http.StatusOK,
 		},
 		{
-			name:           "owner can roles.write (200)",
+			name:           "owner can agents.write (200)",
 			method:         http.MethodPost,
-			path:           "/workspaces/corp/roles-write",
+			path:           "/workspaces/corp/agents-write",
 			token:          ownerToken,
 			expectedStatus: http.StatusOK,
 		},
@@ -416,10 +418,10 @@ func TestRequirePermissionMiddleware(t *testing.T) {
 			expectedStatus: http.StatusOK,
 		},
 		{
-			name:           "admin fails all permissions check (403)",
+			name:           "member fails all permissions check (403)",
 			method:         http.MethodPost,
 			path:           "/workspaces/corp/multi-permission",
-			token:          adminToken,
+			token:          memberToken,
 			expectedStatus: http.StatusForbidden,
 		},
 	}
@@ -474,7 +476,7 @@ func TestRequireMasterWorkspaceMiddleware(t *testing.T) {
 		RoleID:      masterRole.ID,
 	})
 
-	mw := NewMiddlewares(st.Users(), st.Workspaces(), st.Members(), st.Roles(), issuer)
+	mw := NewMiddlewares(st.Users(), st.Workspaces(), st.Members(), st.Roles(), issuer, mustFallbackAuthorizer(t, st))
 	router := gin.New()
 	adminGroup := router.Group("/admin")
 	adminGroup.Use(mw.AuthRequired())

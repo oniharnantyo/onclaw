@@ -15,10 +15,10 @@ func TestCanEdit(t *testing.T) {
 		expected    bool
 	}{
 		{
-			name:        "Owner can edit Admin (strict subset)",
+			name:        "Owner cannot edit Admin (peers — equal sets once roles.write retired)",
 			actorPerms:  domain.OwnerPermissions,
 			targetPerms: domain.AdminPermissions,
-			expected:    true,
+			expected:    false,
 		},
 		{
 			name:        "Owner can edit Member (strict subset)",
@@ -45,7 +45,7 @@ func TestCanEdit(t *testing.T) {
 			expected:    false,
 		},
 		{
-			name:        "Admin cannot edit Owner (target has perms actor lacks)",
+			name:        "Admin cannot edit Owner (peers — equal sets once roles.write retired)",
 			actorPerms:  domain.AdminPermissions,
 			targetPerms: domain.OwnerPermissions,
 			expected:    false,
@@ -166,10 +166,10 @@ func TestCanAssign(t *testing.T) {
 			expected:   true,
 		},
 		{
-			name:       "Admin cannot assign Owner (role has roles.write which admin lacks)",
+			name:       "Admin can assign Owner (equal sets are assignable — roles.write retired)",
 			actorPerms: domain.AdminPermissions,
 			rolePerms:  domain.OwnerPermissions,
-			expected:   false,
+			expected:   true,
 		},
 		{
 			name:       "Member can assign Member (subset of itself)",
@@ -484,5 +484,107 @@ func TestHooksPermissions(t *testing.T) {
 		if !domain.IsValidPermission(p) {
 			t.Errorf("expected %s to be a valid permission", p)
 		}
+	}
+}
+
+// TestChannelsPermissions pins the decided member channel grant
+// (fix-role-permission-audit proposal, design D5): channels.read and
+// channels.write join every built-in role including Member, so members can
+// list channels, post messages, and manage channel membership.
+func TestChannelsPermissions(t *testing.T) {
+	for _, role := range []struct {
+		name  string
+		perms []string
+	}{
+		{"Owner", domain.OwnerPermissions},
+		{"Admin", domain.AdminPermissions},
+		{"Member", domain.MemberPermissions},
+		{"Superadmin", domain.SuperadminPermissions},
+	} {
+		for _, p := range []string{domain.ChannelsRead, domain.ChannelsWrite} {
+			if !domain.HasPermission(role.perms, p) {
+				t.Errorf("expected %sPermissions to have %s", role.name, p)
+			}
+		}
+	}
+
+	// Both are part of the closed catalog
+	for _, p := range []string{domain.ChannelsRead, domain.ChannelsWrite} {
+		if !domain.IsValidPermission(p) {
+			t.Errorf("expected %s to be a valid permission", p)
+		}
+	}
+}
+
+// TestRolesWriteRetired pins the catalog surgery (fix-role-permission-audit
+// design D5): roles.write left the closed catalog and every built-in set.
+func TestRolesWriteRetired(t *testing.T) {
+	const retired = "roles.write"
+
+	if domain.IsValidPermission(retired) {
+		t.Error("expected roles.write to be invalid after retirement")
+	}
+	for _, p := range domain.AllPermissions() {
+		if p == retired {
+			t.Error("expected AllPermissions to not contain roles.write")
+		}
+	}
+	for _, role := range []struct {
+		name  string
+		perms []string
+	}{
+		{"Owner", domain.OwnerPermissions},
+		{"Admin", domain.AdminPermissions},
+		{"Member", domain.MemberPermissions},
+		{"Superadmin", domain.SuperadminPermissions},
+	} {
+		for _, p := range role.perms {
+			if p == retired {
+				t.Errorf("expected %sPermissions to not contain roles.write", role.name)
+			}
+		}
+	}
+}
+
+// TestBuiltInRoleSetShapes documents the decided built-in set sizes
+// (fix-role-permission-audit D5): Owner and Admin collapse to identical
+// 22-permission sets once roles.write is retired — owner authority rides the
+// is_owner flag, not an extra permission — and Member carries the 9-permission
+// read family plus channel participation.
+func TestBuiltInRoleSetShapes(t *testing.T) {
+	if len(domain.OwnerPermissions) != 22 {
+		t.Errorf("OwnerPermissions has %d permissions, want 22", len(domain.OwnerPermissions))
+	}
+	if len(domain.MemberPermissions) != 9 {
+		t.Errorf("MemberPermissions has %d permissions, want 9", len(domain.MemberPermissions))
+	}
+	if len(domain.SuperadminPermissions) != 28 {
+		t.Errorf("SuperadminPermissions has %d permissions, want 28", len(domain.SuperadminPermissions))
+	}
+
+	// Owner == Admin content-wise (peers under the strict-subset algebra).
+	ownerSet := make(map[string]bool, len(domain.OwnerPermissions))
+	for _, p := range domain.OwnerPermissions {
+		ownerSet[p] = true
+	}
+	if len(ownerSet) != len(domain.AdminPermissions) {
+		t.Fatalf("Owner set has %d distinct permissions, Admin set has %d", len(ownerSet), len(domain.AdminPermissions))
+	}
+	for _, p := range domain.AdminPermissions {
+		if !ownerSet[p] {
+			t.Errorf("Admin permission %s missing from Owner set — sets must be identical", p)
+		}
+	}
+
+	// Member stays a strict subset of Admin (Admin can still edit Member).
+	memberSet := make(map[string]bool, len(domain.MemberPermissions))
+	for _, p := range domain.MemberPermissions {
+		memberSet[p] = true
+		if !ownerSet[p] {
+			t.Errorf("Member permission %s missing from Admin set — Member must stay a subset", p)
+		}
+	}
+	if len(memberSet) >= len(ownerSet) {
+		t.Error("Member set must remain a strict subset of Admin")
 	}
 }

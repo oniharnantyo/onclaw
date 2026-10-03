@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/server"
 )
 
@@ -92,7 +93,7 @@ func createChannelViaAPI(t *testing.T, env *testEnv, token, wsSlug, slug string)
 func TestChannels_PermissionMatrix(t *testing.T) {
 	env := setupTestEnv(t)
 	ownerToken, adminToken, memberToken, nonMemberToken := channelsTestEnvMembers(t, env, "chan-perm-ws")
-	createChannelViaAPI(t, env, ownerToken, "chan-perm-ws", "ops")
+	ch := createChannelViaAPI(t, env, ownerToken, "chan-perm-ws", "ops")
 
 	// Owner and Admin hold channels.read / channels.write.
 	w := doRequest(env.router, http.MethodGet, "/api/v1/workspaces/chan-perm-ws/channels", ownerToken, nil)
@@ -104,18 +105,51 @@ func TestChannels_PermissionMatrix(t *testing.T) {
 		t.Fatalf("admin list: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// The builtin Member role snapshot holds neither channel permission.
+	// The builtin Member role now holds channels.read / channels.write too
+	// (fix-role-permission-audit D5): list, create, and post all succeed.
 	w = doRequest(env.router, http.MethodGet, "/api/v1/workspaces/chan-perm-ws/channels", memberToken, nil)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("member list: expected 403, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("member list: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	w = doRequest(env.router, http.MethodPost, "/api/v1/workspaces/chan-perm-ws/channels", memberToken, map[string]any{"name": "Nope", "slug": "nope"})
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("member create: expected 403, got %d", w.Code)
+	w = doRequest(env.router, http.MethodPost, "/api/v1/workspaces/chan-perm-ws/channels", memberToken, map[string]any{"name": "Member Made", "slug": "member-made"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("member create: expected 201, got %d: %s", w.Code, w.Body.String())
 	}
-	w = doRequest(env.router, http.MethodPost, "/api/v1/workspaces/chan-perm-ws/channels/00000000-0000-0000-0000-000000000000/messages", memberToken, map[string]any{"body": "hi"})
+	w = doRequest(env.router, http.MethodPost, "/api/v1/workspaces/chan-perm-ws/channels/"+ch.ID+"/messages", memberToken, map[string]any{"body": "hi"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("member post: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Unauthenticated requests are rejected outright.
+	w = doRequest(env.router, http.MethodGet, "/api/v1/workspaces/chan-perm-ws/channels", "", nil)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated list: expected 401, got %d", w.Code)
+	}
+
+	// A custom role WITHOUT channels.* is still gated at 403, proving the
+	// matrix comes from the permission set, not mere membership.
+	ctx := context.Background()
+	noChannelsUser, noChannelsToken := createTestUser(t, env, "chan-perm-ws-nochan@example.com", "No Channels", "pwd")
+	ws, err := env.store.Workspaces().BySlug(ctx, "chan-perm-ws")
+	if err != nil {
+		t.Fatalf("lookup workspace: %v", err)
+	}
+	noChannelsRole := &domain.Role{
+		WorkspaceID: ws.ID,
+		Name:        "no-channels",
+		Permissions: []string{domain.WorkspaceRead},
+	}
+	if err := env.store.Roles().Create(ctx, noChannelsRole); err != nil {
+		t.Fatalf("create no-channels role: %v", err)
+	}
+	addMember(t, env, ws.ID, noChannelsUser.ID, noChannelsRole.ID)
+	w = doRequest(env.router, http.MethodGet, "/api/v1/workspaces/chan-perm-ws/channels", noChannelsToken, nil)
 	if w.Code != http.StatusForbidden {
-		t.Fatalf("member post: expected 403, got %d", w.Code)
+		t.Fatalf("no-channels role list: expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+	w = doRequest(env.router, http.MethodPost, "/api/v1/workspaces/chan-perm-ws/channels", noChannelsToken, map[string]any{"name": "Nope", "slug": "nope"})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("no-channels role create: expected 403, got %d", w.Code)
 	}
 
 	// Non-members get the enumeration defense 404, not 403.

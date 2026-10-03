@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/oniharnantyo/onclaw/internal/authz"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/storage"
 	"github.com/oniharnantyo/onclaw/internal/store"
@@ -16,13 +17,16 @@ import (
 type memberHandlers struct {
 	store   store.Store
 	storage storage.Storage
+	authz   authz.Authorizer
 }
 
 // NewMemberHandlers creates a new memberHandlers instance with injected dependencies.
-func NewMemberHandlers(st store.Store, strg storage.Storage) *memberHandlers {
+// The authorizer evaluates the members.remove guard (fix-role-permission-audit 1.5).
+func NewMemberHandlers(st store.Store, strg storage.Storage, authorizer authz.Authorizer) *memberHandlers {
 	return &memberHandlers{
 		store:   st,
 		storage: strg,
+		authz:   authorizer,
 	}
 }
 
@@ -349,7 +353,16 @@ func (h *memberHandlers) DeleteMember(c *gin.Context) {
 
 	// If removing someone else, verify permissions and edit algebra
 	if actor.ID != targetUID {
-		if !domain.HasPermission(actorRole.Permissions, domain.MembersRemove) {
+		// members.remove through the authorizer (fix-role-permission-audit
+		// 1.5): the roles table stays the policy source, the engine decides.
+		// An evaluation failure fails closed — the standard envelope renders
+		// unknown errors as 500.
+		allowed, err := h.authz.Enforce(c.Request.Context(), actorRole.ID, ws.ID, domain.MembersRemove)
+		if err != nil {
+			RespondError(c, err)
+			return
+		}
+		if !allowed {
 			AbortForbidden(c, "insufficient permissions to remove members")
 			return
 		}

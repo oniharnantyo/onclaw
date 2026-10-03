@@ -7,6 +7,7 @@ import { LastRunCell } from "../components/ui/LastRunCell";
 import { Toggle } from "../components/ui/Toggle";
 import { useStore } from "../store";
 import { schedulers, type Scheduler } from "../lib/schedulers";
+import { useCanWriteSchedulers } from "../lib/writePerms";
 import { ApiError } from "../lib/api";
 
 /** Schedules screen on the live API (change integrate-scheduler, 7.2). The
@@ -19,6 +20,9 @@ export function SchedulesView({ tenant, onEdit, onNew, onToast }: {
   onToast: (text: string, kind?: string) => void;
 }) {
   const navigate = useNavigate();
+  // Mutations (create, edit, run-now, pause/resume, delete) ride
+  // scheduler.write; Members browse the table read-only.
+  const writer = useCanWriteSchedulers(tenant);
   const agents: any[] = tenant?.agents || [];
   const wsId: string = tenant?.id || tenant?.sub;
   // The store copy is the render source — mutations patch it optimistically
@@ -116,10 +120,12 @@ export function SchedulesView({ tenant, onEdit, onNew, onToast }: {
     <ViewShell odId="schedules-view" title="Schedules"
       sub={'Recurring agent runs for ' + tenant.name + '. Recurrences use standard 5-field cron in ' + (tenant.tz || 'the workspace timezone') + '.'}
       action={
-        <button type="button" onClick={onNew} data-od-id="btn-new-schedule"
-          className="flex h-9 items-center gap-2 rounded-md bg-accent px-3.5 text-[13px] font-semibold text-accenton transition-colors hover:bg-[var(--accent-hover)] active:bg-[var(--accent-active)]">
-          <Icon name="plus" size={15} sw={2.2}/> New schedule
-        </button>
+        writer ? (
+          <button type="button" onClick={onNew} data-od-id="btn-new-schedule"
+            className="flex h-9 items-center gap-2 rounded-md bg-accent px-3.5 text-[13px] font-semibold text-accenton transition-colors hover:bg-[var(--accent-hover)] active:bg-[var(--accent-active)]">
+            <Icon name="plus" size={15} sw={2.2}/> New schedule
+          </button>
+        ) : undefined
       }>
       {error ? (
         <div className="rounded-lg border border-line px-4 py-10 text-center" data-od-id="schedules-error">
@@ -147,17 +153,23 @@ export function SchedulesView({ tenant, onEdit, onNew, onToast }: {
 
               <div className="flex items-start justify-between md:contents">
                 <div className="min-w-0">
-                  <button type="button" onClick={() => onEdit(s)} data-od-id={'schedule-name-' + s.id}
-                    className="truncate text-left text-[14px] font-medium text-fg hover:text-accent">{s.name}</button>
+                  {writer ? (
+                    <button type="button" onClick={() => onEdit(s)} data-od-id={'schedule-name-' + s.id}
+                      className="truncate text-left text-[14px] font-medium text-fg hover:text-accent">{s.name}</button>
+                  ) : (
+                    <span data-od-id={'schedule-name-' + s.id} className="block truncate text-[14px] font-medium text-fg">{s.name}</span>
+                  )}
                   <p className="truncate text-[12px] text-muted">runs {agentName(s)}</p>
                 </div>
-                <div className="flex items-center justify-end gap-1 md:hidden">
-                  <button type="button" onClick={() => void runNow(s)} data-od-id={'schedule-run-' + s.id} title="Run now" aria-label={'Run ' + s.name + ' now'}
-                    className="flex h-7 w-7 items-center justify-center rounded-[6px] text-muted hover:bg-[color-mix(in_oklab,var(--fg)_9%,transparent)] hover:text-fg focus-visible:opacity-100 group-hover:opacity-100">
-                    <Icon name="play" size={13}/>
-                  </button>
-                  <Toggle on={s.enabled} onChange={() => void toggle(s)} label={(s.enabled ? 'Pause ' : 'Resume ') + s.name}/>
-                </div>
+                {writer && (
+                  <div className="flex items-center justify-end gap-1 md:hidden">
+                    <button type="button" onClick={() => void runNow(s)} data-od-id={'schedule-run-' + s.id} title="Run now" aria-label={'Run ' + s.name + ' now'}
+                      className="flex h-7 w-7 items-center justify-center rounded-[6px] text-muted hover:bg-[color-mix(in_oklab,var(--fg)_9%,transparent)] hover:text-fg focus-visible:opacity-100 group-hover:opacity-100">
+                      <Icon name="play" size={13}/>
+                    </button>
+                    <Toggle on={s.enabled} onChange={() => void toggle(s)} label={(s.enabled ? 'Pause ' : 'Resume ') + s.name}/>
+                  </div>
+                )}
               </div>
 
               <div className="flex justify-between md:contents">
@@ -182,23 +194,27 @@ export function SchedulesView({ tenant, onEdit, onNew, onToast }: {
                 {lastRunCell(s)}
               </div>
 
-              <div className="hidden md:flex items-center justify-end gap-1">
-                <button type="button" onClick={() => void runNow(s)} data-od-id={'schedule-run-' + s.id} title="Run now" aria-label={'Run ' + s.name + ' now'}
-                  className="flex h-7 w-7 items-center justify-center rounded-[6px] text-muted opacity-0 transition-opacity hover:bg-[color-mix(in_oklab,var(--fg)_9%,transparent)] hover:text-fg focus-visible:opacity-100 group-hover:opacity-100">
-                  <Icon name="play" size={13}/>
-                </button>
-                <Toggle on={s.enabled} onChange={() => void toggle(s)} label={(s.enabled ? 'Pause ' : 'Resume ') + s.name}/>
-              </div>
+              {writer && (
+                <div className="hidden md:flex items-center justify-end gap-1">
+                  <button type="button" onClick={() => void runNow(s)} data-od-id={'schedule-run-' + s.id} title="Run now" aria-label={'Run ' + s.name + ' now'}
+                    className="flex h-7 w-7 items-center justify-center rounded-[6px] text-muted opacity-0 transition-opacity hover:bg-[color-mix(in_oklab,var(--fg)_9%,transparent)] hover:text-fg focus-visible:opacity-100 group-hover:opacity-100">
+                    <Icon name="play" size={13}/>
+                  </button>
+                  <Toggle on={s.enabled} onChange={() => void toggle(s)} label={(s.enabled ? 'Pause ' : 'Resume ') + s.name}/>
+                </div>
+              )}
             </div>
           ))}
           {!loading && schedules.length === 0 && (
             <div className="px-4 py-10 text-center" data-od-id="schedules-empty">
               <p className="text-[14px] font-medium text-fg">No schedules yet</p>
               <p className="mt-1 text-[13px] text-muted">Give an agent a recurring job — digests, sweeps, pipeline checks.</p>
-              <button type="button" onClick={onNew} data-od-id="btn-empty-new-schedule"
-                className="mt-4 inline-flex h-9 items-center gap-2 rounded-md bg-accent px-3.5 text-[13px] font-semibold text-accenton transition-colors hover:bg-[var(--accent-hover)] active:bg-[var(--accent-active)]">
-                <Icon name="plus" size={15} sw={2.2}/> New schedule
-              </button>
+              {writer && (
+                <button type="button" onClick={onNew} data-od-id="btn-empty-new-schedule"
+                  className="mt-4 inline-flex h-9 items-center gap-2 rounded-md bg-accent px-3.5 text-[13px] font-semibold text-accenton transition-colors hover:bg-[var(--accent-hover)] active:bg-[var(--accent-active)]">
+                  <Icon name="plus" size={15} sw={2.2}/> New schedule
+                </button>
+              )}
             </div>
           )}
         </div>

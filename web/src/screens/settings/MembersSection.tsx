@@ -5,6 +5,7 @@ import { Chip } from "../../components/ui/Chip";
 import { ErrorState } from "../../components/ErrorState";
 import { api, formatApiError, ApiError, type ApiMemberItem, type ApiRole } from "../../lib/api";
 import { useAuthStore } from "../../store/auth";
+import { useCanWriteMembers, useCanRemoveMembers } from "../../lib/writePerms";
 import { InviteMemberDialog } from "../../modals/InviteMemberDialog";
 import serverErrorSvg from "../../assets/server-error.svg";
 
@@ -16,6 +17,11 @@ export interface MembersSectionProps {
 
 export function MembersSection({ tenant, onToast, onUpdate: _onUpdate }: MembersSectionProps) {
   const currentUser = useAuthStore((s) => s.user);
+  // Mutation affordances gate per permission (web-app/settings): invite and
+  // inline role changes ride members.write, removal rides members.remove.
+  // Members see the full roster read-only.
+  const canInvite = useCanWriteMembers(tenant);
+  const canRemove = useCanRemoveMembers(tenant);
   const [members, setMembers] = useState<ApiMemberItem[]>([]);
   const [roles, setRoles] = useState<ApiRole[]>([]);
   const [loadingMembers, setLoadingMembers] = useState(false);
@@ -83,7 +89,7 @@ export function MembersSection({ tenant, onToast, onUpdate: _onUpdate }: Members
 
   return (
     <div className="max-w-xl" data-od-id="pane-members" data-testid="pane-members">
-      {members.length > 0 && (
+      {canInvite && members.length > 0 && (
         <div className="mb-4 flex justify-end">
           <button
             type="button"
@@ -155,6 +161,8 @@ export function MembersSection({ tenant, onToast, onUpdate: _onUpdate }: Members
                   <Chip>{isOwner ? 'You are the owner' : 'You'}</Chip>
                 ) : isOwner ? (
                   <Chip>Owner</Chip>
+                ) : !canInvite ? (
+                  <Chip>{m.role_name || 'Member'}</Chip>
                 ) : (
                   <div className="flex items-center gap-2">
                     <select
@@ -176,14 +184,16 @@ export function MembersSection({ tenant, onToast, onUpdate: _onUpdate }: Members
                         </>
                       )}
                     </select>
-                    <button
-                      type="button"
-                      aria-label={'Remove ' + m.name}
-                      onClick={() => handleRemoveMember(m)}
-                      className="flex h-7 w-7 items-center justify-center rounded-[6px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--danger)_12%,transparent)] hover:text-danger"
-                    >
-                      <Icon name="x" size={13} />
-                    </button>
+                    {canRemove && (
+                      <button
+                        type="button"
+                        aria-label={'Remove ' + m.name}
+                        onClick={() => handleRemoveMember(m)}
+                        className="flex h-7 w-7 items-center justify-center rounded-[6px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--danger)_12%,transparent)] hover:text-danger"
+                      >
+                        <Icon name="x" size={13} />
+                      </button>
+                    )}
                   </div>
                 )}
               </li>
@@ -198,15 +208,17 @@ export function MembersSection({ tenant, onToast, onUpdate: _onUpdate }: Members
               <p className="mx-auto mt-1 max-w-sm text-[12px] text-muted">
                 Invite team members to collaborate in this workspace.
               </p>
-              <button
-                type="button"
-                data-od-id="btn-member-empty-add"
-                data-testid="btn-member-empty-add"
-                onClick={() => setInviteOpen(true)}
-                className="mt-3 inline-flex h-8 items-center gap-1.5 rounded-md border border-line px-3 text-[12px] font-medium text-fg2 transition-colors hover:border-accent hover:text-fg"
-              >
-                <Icon name="plus" size={13} /> Invite a member
-              </button>
+              {canInvite && (
+                <button
+                  type="button"
+                  data-od-id="btn-member-empty-add"
+                  data-testid="btn-member-empty-add"
+                  onClick={() => setInviteOpen(true)}
+                  className="mt-3 inline-flex h-8 items-center gap-1.5 rounded-md border border-line px-3 text-[12px] font-medium text-fg2 transition-colors hover:border-accent hover:text-fg"
+                >
+                  <Icon name="plus" size={13} /> Invite a member
+                </button>
+              )}
             </li>
           )}
         </ul>

@@ -1,7 +1,7 @@
 import { useRef, useEffect } from "react";
 import { cx } from "../../lib/helpers";
 import { Icon } from "../ui/Icon";
-import { useAuthStore } from "../../store/auth";
+import { useAuthStore, useIsAdmin } from "../../store/auth";
 import type { ApiMemberView } from "../../lib/api";
 
 export interface WorkspaceSwitcherProps {
@@ -26,6 +26,12 @@ export function WorkspaceSwitcher({
   const ref = useRef<HTMLDivElement>(null);
   const storeMemberships = useAuthStore((s) => s.memberships);
   const authMemberships = propMemberships || storeMemberships;
+  // Workspace creation is instance-admin-only (fix-role-permission-audit):
+  // master-workspace members holding admin.workspaces.write — exactly the
+  // useIsAdmin gate the backend enforces on POST /workspaces. No other role
+  // sees a creation entry.
+  const isAdmin = useIsAdmin();
+  const canCreate = Boolean(onCreateWorkspace) && isAdmin;
 
   useEffect(() => {
     if (!open) return;
@@ -51,13 +57,13 @@ export function WorkspaceSwitcher({
     >
       <div className="flex items-center justify-between border-b border-linesoft px-3.5 pt-3 pb-2 text-[11px] font-semibold uppercase tracking-wider text-muted">
         <span>Workspaces</span>
-        {onCreateWorkspace && (
+        {canCreate && (
           <button
             type="button"
             data-testid="btn-switcher-create-ws"
             onClick={() => {
               onClose();
-              onCreateWorkspace();
+              onCreateWorkspace!();
             }}
             className="flex items-center gap-1 rounded text-[11px] font-medium text-accent hover:underline lowercase tracking-normal"
           >
@@ -173,14 +179,14 @@ export function WorkspaceSwitcher({
           <li className="px-3.5 py-2 text-[12px] text-muted">No workspaces found</li>
         )}
       </ul>
-      {onCreateWorkspace && (
+      {canCreate && (
         <div className="border-t border-linesoft p-1.5">
           <button
             type="button"
             data-testid="btn-create-workspace-footer"
             onClick={() => {
               onClose();
-              onCreateWorkspace();
+              onCreateWorkspace!();
             }}
             className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-[12px] font-medium text-fg2 hover:bg-[color-mix(in_oklab,var(--fg)_6%,transparent)] hover:text-fg"
           >

@@ -27,13 +27,14 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/gin-gonic/gin"
 	"github.com/oniharnantyo/onclaw/internal/agents"
+	"github.com/oniharnantyo/onclaw/internal/authz"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/ingest"
 	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/openresponses"
 	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/references"
 	"github.com/oniharnantyo/onclaw/internal/secrets"
-	"github.com/oniharnantyo/onclaw/internal/server"
 	"github.com/oniharnantyo/onclaw/internal/server/handlers"
 	"github.com/oniharnantyo/onclaw/internal/storage"
 	storagefake "github.com/oniharnantyo/onclaw/internal/storage/fake"
@@ -56,6 +57,10 @@ type refDocEnv struct {
 	ws     *domain.Workspace
 	owner  *domain.User
 	member *domain.User
+	// az is the env's authorizer; tests that seed roles after the env boots
+	// (e.g. the cross-workspace fixtures) sync them through the same seam
+	// production uses at workspace creation.
+	az *authz.Fake
 }
 
 func newRefDocEnv(t *testing.T) refDocEnv {
@@ -71,9 +76,6 @@ func newRefDocEnv(t *testing.T) refDocEnv {
 	}
 	encKey := []byte("01234567890123456789012345678901")
 	wsStorage := resolver.New(strg, st.WorkspaceStorage(), st.Attachments(), encKey, dataDir)
-
-	docH := handlers.NewReferenceDocumentsHandlers(references.NewService(st, wsStorage), st.ReferenceDocuments())
-	fileH := handlers.NewFileHandlers(strg, st.Attachments(), st.ReferenceDocuments(), wsStorage)
 
 	ws := &domain.Workspace{Name: "Acme", Slug: "acme"}
 	if err := st.Workspaces().Create(ctx, ws); err != nil {
@@ -115,26 +117,67 @@ func newRefDocEnv(t *testing.T) refDocEnv {
 		t.Fatalf("seed channel: %v", err)
 	}
 
-	// The real middleware chain, scoped exactly like the router: an auth
-	// stub plays AuthRequired (tests pick the caller per request via a
-	// header), the real workspace membership gate wraps the tenant-scoped
-	// group, and the real permission gate sits ONLY on promote/demote. The
-	// capability file route carries no workspace middleware.
-	mw := server.NewMiddlewares(st.Users(), st.Workspaces(), st.Members(), st.Roles(), nil)
+	az, err := newTestAuthorizer(ctx, st)
+	if err != nil {
+		t.Fatalf("build test authorizer: %v", err)
+	}
+	docH := handlers.NewReferenceDocumentsHandlers(references.NewService(st, wsStorage), st.ReferenceDocuments(), az)
+	fileH := handlers.NewFileHandlers(strg, st.Attachments(), st.ReferenceDocuments(), wsStorage)
+
+	// The middleware chain, scoped exactly like the router: an auth stub
+	// plays AuthRequired (tests pick the caller per request via a header), a
+	// membership stub plays RequireWorkspace (the same context shape:
+	// workspace, member with hydrated role, role), and the authorizer-backed
+	// permission gate sits ONLY on promote/demote — the same port the
+	// router's RequirePermission evaluates through. The capability file
+	// route carries no workspace middleware.
 	r := gin.New()
 
 	wsGroup := r.Group("/api/v1/workspaces/:ws")
 	wsGroup.Use(func(c *gin.Context) {
-		if u := c.GetHeader("X-Test-User"); u != "" {
-			user := owner
-			if u == "member" {
-				user = member
-			}
-			c.Set(handlers.UserContextKey, user)
+		u := c.GetHeader("X-Test-User")
+		if u == "" {
+			c.AbortWithStatus(http.StatusUnauthorized)
+			return
 		}
+		user := owner
+		if u == "member" {
+			user = member
+		}
+		resolved, err := st.Workspaces().BySlug(c.Request.Context(), c.Param("ws"))
+		if err != nil {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		m, err := st.Members().Get(c.Request.Context(), resolved.ID, user.ID)
+		if err != nil {
+			c.AbortWithStatus(http.StatusForbidden)
+			return
+		}
+		role, err := st.Roles().ByID(c.Request.Context(), m.RoleID)
+		if err != nil {
+			c.AbortWithStatus(http.StatusForbidden)
+			return
+		}
+		m.Role = role
+		c.Set(handlers.UserContextKey, user)
+		c.Set(handlers.WorkspaceContextKey, resolved)
+		c.Set(handlers.MemberContextKey, m)
+		c.Set(handlers.RoleContextKey, role)
 		c.Next()
 	})
-	wsGroup.Use(mw.RequireWorkspace("ws"))
+	requirePromote := func(c *gin.Context) {
+		ok, err := az.Enforce(c.Request.Context(), handlers.MustCurrentRole(c).ID, handlers.MustCurrentWorkspace(c).ID, domain.PermissionReferenceDocumentsPromote)
+		if err != nil {
+			handlers.RespondError(c, err)
+			return
+		}
+		if !ok {
+			handlers.RespondError(c, domain.ErrForbidden)
+			return
+		}
+		c.Next()
+	}
 	{
 		wsGroup.GET("/documents", docH.List)
 		wsGroup.POST("/documents", docH.Upload)
@@ -143,12 +186,12 @@ func newRefDocEnv(t *testing.T) refDocEnv {
 		wsGroup.PUT("/documents/:id/agents", docH.PutAgents)
 		wsGroup.PUT("/documents/:id/channels", docH.PutChannels)
 		wsGroup.PUT("/documents/:id/content", docH.PutContent)
-		wsGroup.POST("/documents/:id/promote", mw.RequirePermission(domain.PermissionReferenceDocumentsPromote), docH.Promote)
-		wsGroup.POST("/documents/:id/demote", mw.RequirePermission(domain.PermissionReferenceDocumentsPromote), docH.Demote)
+		wsGroup.POST("/documents/:id/promote", requirePromote, docH.Promote)
+		wsGroup.POST("/documents/:id/demote", requirePromote, docH.Demote)
 	}
 	r.GET("/api/v1/files/:key", fileH.ServeFile)
 
-	return refDocEnv{st: st, strg: strg, router: r, ws: ws, owner: owner, member: member}
+	return refDocEnv{st: st, strg: strg, router: r, ws: ws, owner: owner, member: member, az: az}
 }
 
 // ---------------------------------------------------------------------------
@@ -666,6 +709,13 @@ func TestReferenceDocuments_CrossWorkspace404(t *testing.T) {
 	if err := env.st.Members().Add(context.Background(), &domain.Member{WorkspaceID: foreign.ID, UserID: env.owner.ID, RoleID: role.ID}); err != nil {
 		t.Fatalf("seed foreign membership: %v", err)
 	}
+	// The foreign role was born after this env's authorizer booted: sync it
+	// through the same seam production calls at workspace creation, so the
+	// probes below reach the handler and ride its tenancy not-found rather
+	// than an unsynced-policy 403.
+	if err := env.az.Sync(context.Background(), role); err != nil {
+		t.Fatalf("sync foreign role: %v", err)
+	}
 
 	foreignCases := []struct {
 		name   string
@@ -1086,6 +1136,7 @@ func newChipEnv(t *testing.T) chipEnv {
 		st.MemoryEmbeddings(),
 		memLog,
 	)
+	ingestWorker := ingest.NewWorker(memLog, ingest.WithConsumers(memWorker))
 	memSearch := memory.NewSearcher(st.MemoryNotes(), st.MemoryEvents(), st.MemoryEmbeddings(), st.MemoryEntities(), st.SessionEvents(), embedder)
 	memGate := memory.NewIntentGate(st.Providers(), encKey, agents.DefaultAgenticModelFactory, memLog)
 
@@ -1093,7 +1144,7 @@ func newChipEnv(t *testing.T) chipEnv {
 	runner := agents.NewRunner(
 		st.Workspaces(), st.Agents(), st.Users(), st.Members(), st.Roles(),
 		st.Providers(), st.SessionEvents(), st.SessionCheckpoints(), st.Memories(), st.AgentSessions(),
-		st.GatewayLinks(), memWorker, memSearch, memGate,
+		st.GatewayLinks(), ingestWorker, memSearch, memGate,
 		encKey, onClawDir,
 		agents.WithAgenticModelFactory(func(_ context.Context, _ string, _ providers.Credential, _ string) (model.BaseModel[*schema.AgenticMessage], error) {
 			return capture, nil
@@ -1144,7 +1195,7 @@ func newChipEnv(t *testing.T) chipEnv {
 		t.Fatalf("add member: %v", err)
 	}
 
-	v1H := handlers.NewV1Handlers(runner, st.Agents(), st.SessionEvents(), st.Attachments(), wsStorage, agents.NewToolSettingsService(st.ToolSettings(), nil), 0)
+	v1H := handlers.NewV1Handlers(runner, st.Agents(), st.SessionEvents(), st.Attachments(), st.AgentSessions(), wsStorage, agents.NewToolSettingsService(st.ToolSettings(), nil), 0)
 	r := gin.New()
 	apiKey := &domain.WorkspaceAPIKey{WorkspaceID: ws.ID, CreatedBy: user.ID}
 	r.Use(func(c *gin.Context) {

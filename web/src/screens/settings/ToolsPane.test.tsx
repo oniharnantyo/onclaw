@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { ToolsPane } from './ToolsPane';
 import { api, ApiError, type ApiToolSettings } from '../../lib/api';
+import { useAuthStore } from '../../store/auth';
 
 const mockTenant = { id: 'acme', sub: 'acme', name: 'Acme Corp' };
 
@@ -553,5 +554,69 @@ describe('screens/settings/ToolsPane', () => {
     expect(within(rows[0]).queryByTestId('web-search-row-error')).toBeNull();
     expect(screen.getByTestId('tool-config-error').textContent).toContain('Too many entries');
     expect(screen.getByTestId('tool-config-dialog')).not.toBeNull();
+  });
+});
+
+describe('screens/settings/ToolsPane — tools.write gating (fix-role-permission-audit)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('renders every toggleable row read-only for a Member without tools.write — no toggle, no gear', async () => {
+    // Built-in Member set per the decided catalog: reads + channels.*.
+    useAuthStore.setState({
+      user: { id: 'u1', email: 'u1@acme.dev', name: 'U One', created_at: '', updated_at: '' },
+      memberships: [
+        {
+          workspace_id: 'acme',
+          workspace_slug: 'acme',
+          role_name: 'Member',
+          role: {
+            name: 'Member',
+            is_owner: false,
+            permissions: [
+              'workspace.read',
+              'members.read',
+              'roles.read',
+              'providers.read',
+              'agents.read',
+              'skills.read',
+              'scheduler.read',
+              'channels.read',
+              'channels.write',
+            ],
+          },
+        },
+      ] as any,
+      status: 'authenticated',
+    });
+    vi.spyOn(api.tools, 'list').mockResolvedValue({ tools: catalogTools() });
+
+    render(<ToolsPane tenant={mockTenant} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tool-ls')).not.toBeNull();
+    });
+
+    // Names, descriptions, and states stay visible; no toggle or gear renders.
+    expect(screen.getByText('List Files')).not.toBeNull();
+    expect(screen.queryByTestId('btn-tool-config-browser')).toBeNull();
+    expect(screen.queryByTestId('btn-tool-config-web.search')).toBeNull();
+    expect(screen.queryByRole('switch', { name: 'Enable List Files' })).toBeNull();
+    expect(screen.queryByRole('switch', { name: 'Enable Browser' })).toBeNull();
+    // Always-on rows keep their badges in place of a toggle.
+    expect(screen.getByTestId('tool-always-on-badge-channel.post')).not.toBeNull();
+  });
+
+  it('keeps toggles and gears in mock mode (no memberships)', async () => {
+    useAuthStore.setState({ user: null, memberships: [], status: 'authenticated' });
+    vi.spyOn(api.tools, 'list').mockResolvedValue({ tools: catalogTools() });
+
+    render(<ToolsPane tenant={mockTenant} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('btn-tool-config-browser')).not.toBeNull();
+    });
+    expect(screen.queryByRole('switch', { name: 'Enable List Files' })).not.toBeNull();
   });
 });

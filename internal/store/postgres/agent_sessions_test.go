@@ -371,3 +371,60 @@ func TestIntegration_AgentSessionStore_UpsertUnknownReferencesNotFound(t *testin
 		t.Errorf("unknown user: expected ErrNotFound, got %v", err)
 	}
 }
+
+// TestIntegration_AgentSessionStore_GetAgentSession covers the ownership-check
+// read (fix-role-permission-audit tasks 3.1, design D3): the unique
+// (workspace, agent, session) triple resolves regardless of owning user,
+// unknown and foreign-workspace triples resolve (nil, nil), and a soft-deleted
+// row is still returned carrying its birth owner (no deleted_at filter —
+// ownership is fixed at birth, never rewritten).
+func TestIntegration_AgentSessionStore_GetAgentSession(t *testing.T) {
+	s, _, ctx := setupTestSchema(t)
+	wsID, agentID, userAID, _ := sessionSeed(t, ctx, s, "sess-get")
+
+	if err := s.AgentSessions().UpsertAgentSession(ctx, wsID, agentID, userAID, domain.AgentSessionUpsert{SessionID: "sess_owned", Title: "Owned"}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	// The triple resolves the row and exposes its birth owner.
+	row, err := s.AgentSessions().GetAgentSession(ctx, wsID, agentID, "sess_owned")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if row == nil {
+		t.Fatal("expected the owned session row, got nil")
+	}
+	if row.UserID != userAID || row.SessionID != "sess_owned" || row.Title != "Owned" {
+		t.Errorf("unexpected row: %+v", row)
+	}
+
+	// Unknown id → (nil, nil), the GetScheduler absence convention.
+	row, err = s.AgentSessions().GetAgentSession(ctx, wsID, agentID, "sess_missing")
+	if err != nil {
+		t.Errorf("unknown id: expected nil error, got %v", err)
+	}
+	if row != nil {
+		t.Errorf("unknown id: expected nil row, got %+v", row)
+	}
+
+	// Foreign-workspace triple is indistinguishable from unknown.
+	row, err = s.AgentSessions().GetAgentSession(ctx, "00000000-0000-0000-0000-000000000000", agentID, "sess_owned")
+	if err != nil || row != nil {
+		t.Errorf("foreign-workspace triple: expected (nil, nil), got (%+v, %v)", row, err)
+	}
+
+	// A soft-deleted row is still returned: ownership never disappears.
+	if err := s.AgentSessions().SoftDeleteAgentSession(ctx, wsID, agentID, userAID, "sess_owned"); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+	row, err = s.AgentSessions().GetAgentSession(ctx, wsID, agentID, "sess_owned")
+	if err != nil {
+		t.Fatalf("get after soft delete: %v", err)
+	}
+	if row == nil {
+		t.Fatal("expected the soft-deleted row to still resolve (ownership is fixed at birth)")
+	}
+	if row.UserID != userAID || row.DeletedAt == nil {
+		t.Errorf("soft-deleted row not faithful: %+v", row)
+	}
+}

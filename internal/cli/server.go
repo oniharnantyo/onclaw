@@ -16,11 +16,13 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/agents/mcp"
 	mcpoauth "github.com/oniharnantyo/onclaw/internal/agents/mcp/oauth"
 	"github.com/oniharnantyo/onclaw/internal/agents/systemskills"
+	"github.com/oniharnantyo/onclaw/internal/authz"
 	"github.com/oniharnantyo/onclaw/internal/bootstrap"
 	"github.com/oniharnantyo/onclaw/internal/channels"
 	"github.com/oniharnantyo/onclaw/internal/config"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/heartbeat"
+	"github.com/oniharnantyo/onclaw/internal/ingest"
 	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/observability"
 	"github.com/oniharnantyo/onclaw/internal/promptdocs"
@@ -31,6 +33,7 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/server"
 	"github.com/oniharnantyo/onclaw/internal/server/handlers"
 	"github.com/oniharnantyo/onclaw/internal/services"
+	"github.com/oniharnantyo/onclaw/internal/skillcuration"
 	"github.com/oniharnantyo/onclaw/internal/storage"
 	"github.com/oniharnantyo/onclaw/internal/storage/resolver"
 	"github.com/oniharnantyo/onclaw/internal/store"
@@ -142,6 +145,17 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	}
 	if seededUser != nil {
 		slog.Info("superadmin seeded successfully", "email", seededUser.Email)
+	}
+
+	// Permission authorizer (fix-role-permission-audit D1/D2): the rules
+	// engine over the roles table — still the policy source of truth. Every
+	// role row is loaded once at boot (the constructor's Reload); newborn
+	// workspaces' roles Sync at the workspace-creation seeding seam, so they
+	// enforce without a restart. One instance serves the HTTP middlewares,
+	// the in-handler checks, and the runner's connection gate.
+	authorizer, err := authz.NewCasbin(ctx, server.StoreRoleSource{Store: st})
+	if err != nil {
+		return fmt.Errorf("failed to build permission authorizer: %w", err)
 	}
 
 	issuer := services.NewJWTIssuer(services.JWTConfig{
@@ -343,7 +357,11 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	// — the same stores the gister's side-call lane reads. The registry
 	// resolves canonical origins for providers pinned without a base URL.
 	memoryEmbedder := memory.NewProviderEmbedder(st.Providers(), st.ToolSettings(), encKey, providers.NewRegistry())
-	memoryWorker := memory.NewWorker(
+	// The memory pipeline is consumer #1 of the neutral turn-ingest seam
+	// (add-skill-curation-from-traces D1): the per-job extraction stages live
+	// here; the bounded queue and per-session serialization live on
+	// ingest.Worker below.
+	memoryPipeline := memory.NewWorker(
 		memory.NewGister(st.MemoryEvents(), st.SessionEvents(), st.MemoryEntities(), st.Providers(), encKey, agents.DefaultAgenticModelFactory, memoryLog,
 			append(memoryTraceOpts, memory.WithAgentModelSource(st.Agents()), memory.WithWorkspaceModelSource(st.ToolSettings()))...),
 		memory.NewGate(st.MemoryNotes(), st.MemoryEntities(), st.Memories(), st.Providers(), encKey, agents.DefaultAgenticModelFactory, memoryLog,
@@ -366,6 +384,30 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 			return handlers.RawEmbeddingEnabledForWorkspace(ctx, st.ToolSettings(), workspaceID)
 		}),
 	)
+	// The skill-curation pipeline (add-skill-curation-from-traces D1/7.1) is
+	// consumer #2 of the neutral turn-ingest seam. Its workspace config
+	// source mirrors the memory posture-func precedent (a settings edit
+	// applies on the next job or cycle), and its chip sink is late-bound to
+	// the runner the same way the memory chip sink is: the closure reads
+	// `runner` at chip time, after NewRunner has assigned it. The qualifier
+	// is fail-soft by contract — its errors are logged per job and can never
+	// affect the memory pipeline's dispatch.
+	curationConfig := func(ctx context.Context, workspaceID string) skillcuration.Config {
+		return skillcuration.ConfigForWorkspace(ctx, st.ToolSettings(), workspaceID, memoryLog)
+	}
+	curationChipSink := func(ctx context.Context, job ingest.Job, payload skillcuration.SkillCandidatePayload) {
+		runner.AppendSkillCandidateChip(ctx, job, payload)
+	}
+	curationQualifier := skillcuration.NewQualifier(
+		st.SessionEvents(), curationConfig, st.SkillCandidates(), memoryLog,
+		skillcuration.WithCandidateChipSink(curationChipSink),
+	)
+	// The ingest worker (add-skill-curation-from-traces D1): the neutral
+	// turn-ingest seam every post-run consumer drains. The memory pipeline
+	// registers as consumer #1 and the curation qualifier as consumer #2;
+	// every consumer in dispatch order receives each job, fault-isolated.
+	// Start/Stop below own the queue's lifecycle.
+	ingestWorker := ingest.NewWorker(memoryLog, ingest.WithConsumers(memoryPipeline, curationQualifier))
 	// The fused searcher (wave3 task 3.3): the runner's prefetch, the
 	// memory.search tool, and the notes API free-text filter all read through
 	// this one instance — lexical and vector channels fused with RRF over the
@@ -384,9 +426,9 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 
 	// Memory consolidator (integrate-agent-zero-memory 6.1–6.3, D12): the
 	// nightly per-workspace pass aligns to ~02:00 in each workspace's local
-	// time and reads the worker's Stats counters for the morning report's
-	// extraction-failure deltas. The consolidate-now endpoint reaches the same
-	// code path through the router's narrow RunNow seam.
+	// time and reads the memory pipeline's Stats counters for the morning
+	// report's extraction-failure deltas. The consolidate-now endpoint reaches
+	// the same code path through the router's narrow RunNow seam.
 	memoryConsolidator := memory.NewConsolidator(
 		st.MemoryNotes(),
 		st.MemoryReports(),
@@ -395,9 +437,45 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		st.Providers(),
 		encKey,
 		agents.DefaultAgenticModelFactory,
-		memoryWorker.Stats,
+		memoryPipeline.Stats,
 		memoryLog,
 		memory.WithSideCall(append(memoryTraceOpts, memory.WithAgentModelSource(st.Agents()), memory.WithWorkspaceModelSource(st.ToolSettings()))...),
+	)
+
+	// Skill-curation side-call plumbing (add-skill-curation-from-traces 7.1):
+	// the D7 four-step model resolver per call (the resolver captures one
+	// Config, so the per-workspace wrapper is what makes the workspace-
+	// default tier tenant-correct), the draft validator sharing the
+	// approver's collision surfaces (workspace-skill registry, the agent-tier
+	// skills directory through the server package's reader, the tool
+	// catalog), and the probation manager the runner's outcome telemetry
+	// tallies through. All before the runner: the recorder option below
+	// closes over the probation instance.
+	curationModelResolver := func(ctx context.Context, workspaceID, agentID string) (skillcuration.Model, error) {
+		curationCfg := curationConfig(ctx, workspaceID)
+		return skillcuration.CurationModelResolver(
+			st.Providers(), st.Agents(), st.ToolSettings(),
+			encKey, agents.DefaultAgenticModelFactory, curationCfg,
+		)(ctx, workspaceID, agentID)
+	}
+	curationToolCatalog := agents.NewDefaultToolRegistry(
+		st.Memories(),
+		agents.WithSchedulerTools(st.Schedulers(), st.Channels()),
+		agents.WithTodoTools(st.Todos()),
+		agents.WithDocumentTools(referencesSvc),
+	)
+	curationValidator := skillcuration.NewDraftValidator(
+		st.WorkspaceSkills(),
+		server.AgentSkillContentReaderFor(st.Agents(), st.Workspaces(), cfg.OnClawDir),
+		curationToolCatalog.Names,
+	)
+	curationProbation := skillcuration.NewProbation(
+		st.SkillCandidates(),
+		st.Agents(),
+		st.Workspaces(),
+		curationConfig,
+		cfg.OnClawDir,
+		memoryLog,
 	)
 
 	// Construct the runtime runner. ToolRegistry is built-in; NewDefaultToolRegistry
@@ -449,6 +527,20 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		// document.search resolve through the one service the documents API
 		// handler shares.
 		agents.WithReferences(referencesSvc),
+		// Curated-skill probation telemetry (add-skill-curation-from-traces
+		// 6.2, design D6): the terminal seam classifies the turn's observed
+		// skill loads — completed → helpful, failed → harmful. The v1 proxy
+		// is run-level (no per-attach attribution exists); RecordSkillOutcome's
+		// unknown-skill path makes non-curated skills a quiet no-op, and the
+		// recorder's errors log inside Probation.
+		agents.WithSkillOutcomeRecorder(func(ctx context.Context, workspaceID, agentID, skillName string, helpful bool) {
+			if _, err := curationProbation.RecordSkillOutcome(ctx, workspaceID, agentID, skillName, helpful); err != nil {
+				if !errors.Is(err, domain.ErrNotFound) {
+					slog.WarnContext(ctx, "skillcuration: record skill outcome failed",
+						"workspace_id", workspaceID, "agent_id", agentID, "skill_name", skillName, "error", err)
+				}
+			}
+		}),
 	}
 	// The trace capability rides the callback chain only when configured (D1):
 	// the rate must be the handler's own so the runner's persistence gate and
@@ -468,7 +560,7 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		st.Memories(),
 		st.AgentSessions(),
 		st.GatewayLinks(),
-		memoryWorker,
+		ingestWorker,
 		memorySearcher,
 		intentGate,
 		encKey,
@@ -477,11 +569,31 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	)
 	channelRuntime.BindRunner(runner)
 
-	// Memory worker drain loop (integrate-agent-zero-memory 3.1): rides the
+	// Skill-curation cycle service (add-skill-curation-from-traces 7.1, D7):
+	// the claim-loop ticker (nightly default) plus the manual trigger, over
+	// the same stores the qualifier indexes and the resolver/validator/
+	// probation assembled above. The proposers it builds emit the drafted-
+	// skill chip through the shared late-bound sink.
+	curationCycle := skillcuration.NewCycle(
+		st.Workspaces(),
+		st.SkillCandidates(),
+		st.SessionEvents(),
+		curationConfig,
+		curationModelResolver,
+		curationValidator,
+		curationProbation,
+		cfg.OnClawDir,
+		memoryLog,
+		skillcuration.WithChipSink(curationChipSink),
+	)
+
+	// Ingest worker drain loop (add-skill-curation-from-traces D1): rides the
 	// process-lifetime context like the scheduler and heartbeat loops — the
-	// drain goroutines exit on shutdown cancel, and Stop() below waits for
-	// in-flight jobs before the process exits.
-	memoryWorker.Start(lifecycleCtx)
+	// drain goroutines exit on shutdown cancel or Stop(), and Stop() below
+	// waits for in-flight jobs before the process exits. The memory pipeline
+	// is consumer #1 and the curation qualifier consumer #2; every consumer
+	// in dispatch order receives each job.
+	ingestWorker.Start(lifecycleCtx)
 
 	// Consolidator loop (integrate-agent-zero-memory 6.1): the nightly
 	// per-workspace pass rides the same process-lifetime context as the
@@ -506,6 +618,14 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		scheduler.WithRunTimeout(cfg.SchedulerRunTimeout),
 	)
 	schedulerSvc.Start(lifecycleCtx)
+
+	// Curation cycle loop (add-skill-curation-from-traces 7.1, D7): the
+	// claim-loop ticker enumerates workspaces per tick and runs each one
+	// whose configured interval elapsed; the HTTP run-now endpoint reaches
+	// the same instance (RouterOptions below) through the same in-flight set.
+	// Its lifecycle rides the process-lifetime context like the scheduler
+	// loop; Stop() below waits for in-flight cycles.
+	curationCycle.Start(lifecycleCtx)
 
 	// Heartbeat loop (add-agent-heartbeat D14): the ticker claims due agent
 	// heartbeats and fires them through the same runner the interactive
@@ -621,7 +741,9 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		Gateways:            gatewayRuntime,
 		Webhooks:            webhookRuntime,
 		MemoryConsolidator:  memoryConsolidator,
+		SkillCurationCycle:  curationCycle,
 		LangfuseHost:        langfuseHost,
+		Authorizer:          authorizer,
 	})
 
 	listenAddr := cfg.ListenAddr
@@ -708,13 +830,19 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		slog.Warn("heartbeat stop exceeded the drain window; in-flight ticks keep their own deadline")
 	}
 
-	// Stop the memory worker (integrate-agent-zero-memory 3.1): enqueue
+	// Stop the ingest worker (add-skill-curation-from-traces D1): enqueue
 	// acceptance halts (no runs are left to mint jobs) and in-flight jobs keep
 	// the worker's own stop grace before the process exits. Queued-but-
 	// unstarted jobs are abandoned — the raw session events stay intact for
 	// the next start's reprocessing.
-	slog.Info("stopping memory worker")
-	memoryWorker.Stop()
+	slog.Info("stopping ingest worker")
+	ingestWorker.Stop()
+
+	// Stop the curation cycle loop (add-skill-curation-from-traces 7.1): the
+	// ticker halts and in-flight cycles keep the service's own runtime-cap
+	// deadline beyond the drain window (every cycle self-bounds).
+	slog.Info("stopping skill curation cycle loop")
+	curationCycle.Stop()
 
 	// Stop the memory consolidator (integrate-agent-zero-memory 6.1): the
 	// nightly loop halts and in-flight passes keep the consolidator's own

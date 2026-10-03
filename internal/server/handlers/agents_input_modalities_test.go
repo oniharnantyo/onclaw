@@ -88,7 +88,7 @@ func newAgentModalitiesHarness(t *testing.T) (*gin.Engine, map[string]*domain.Ag
 		"unknown":  makeAgent("unknown-agent", unhinted.ID, "glm-5.3-flash"),
 	}
 
-	h := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), st.AgentSessions(), []byte("01234567890123456789012345678901"), providers.NewRegistry(), mc, nil, t.TempDir(), nil, nil)
+	h := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), st.AgentSessions(), []byte("01234567890123456789012345678901"), providers.NewRegistry(), mc, nil, t.TempDir(), nil, nil, mustTestAuthorizer(t, st))
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {

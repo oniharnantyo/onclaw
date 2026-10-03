@@ -2,8 +2,11 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -13,10 +16,12 @@ import (
 	agenthooks "github.com/oniharnantyo/onclaw/internal/agents/hooks"
 	"github.com/oniharnantyo/onclaw/internal/agents/mcp"
 	mcpoauth "github.com/oniharnantyo/onclaw/internal/agents/mcp/oauth"
+	"github.com/oniharnantyo/onclaw/internal/authz"
 	"github.com/oniharnantyo/onclaw/internal/channels"
 	"github.com/oniharnantyo/onclaw/internal/config"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/heartbeat"
+	"github.com/oniharnantyo/onclaw/internal/ingest"
 	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/promptgen"
 	"github.com/oniharnantyo/onclaw/internal/providers"
@@ -24,6 +29,7 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/scheduler"
 	"github.com/oniharnantyo/onclaw/internal/server/handlers"
 	"github.com/oniharnantyo/onclaw/internal/services"
+	"github.com/oniharnantyo/onclaw/internal/skillcuration"
 	"github.com/oniharnantyo/onclaw/internal/skills"
 	"github.com/oniharnantyo/onclaw/internal/storage"
 	"github.com/oniharnantyo/onclaw/internal/storage/resolver"
@@ -108,6 +114,13 @@ type RouterOptions struct {
 	// with the worker's extraction-failure counters. Nil (fallback assembly)
 	// builds a ticker-less consolidator with an unwired stats source.
 	MemoryConsolidator *memory.Consolidator
+	// SkillCurationCycle is the composition root's curation cycle service
+	// (add-skill-curation-from-traces 7.1): the run-now endpoint and the
+	// status read share the same instance the claim-loop ticker drives — one
+	// code path, one in-flight set. Nil (fallback assembly) builds a
+	// ticker-less cycle; only the composition root Start()s it, riding the
+	// server's lifecycle (the scheduler precedent).
+	SkillCurationCycle *skillcuration.Cycle
 
 	// Gateways is the gateway runtime (integrate-telegram-gateway D11, task
 	// 6.2): the gateway service + lifecycle manager + pairing service built
@@ -154,6 +167,13 @@ type RouterOptions struct {
 	// this one instance. nil builds a fresh one over the store aggregate and
 	// the instance storage (test-assembly fallback).
 	References *references.Service
+	// Authorizer is the permission-evaluation engine behind the middleware
+	// guards and the in-handler checks (fix-role-permission-audit D1). The
+	// composition root builds the casbin authorizer from the roles store and
+	// syncs every role row at boot; nil builds a fresh one here (the
+	// test-assembly fallback wraps the engine in a sync-on-check adapter so
+	// roles seeded after router construction enforce immediately).
+	Authorizer authz.Authorizer
 }
 
 // ---------------------------------------------------------------------------
@@ -230,15 +250,28 @@ func (cr *ChannelRuntime) BindRunner(runner *agents.Runner) {
 
 // router configures and builds the HTTP API routes and handlers.
 type router struct {
-	opts RouterOptions
-	mw   *middlewares
-	v1mw *v1Middlewares
+	opts       RouterOptions
+	mw         *middlewares
+	v1mw       *v1Middlewares
+	authorizer authz.Authorizer
 }
 
 // New creates a new router instance with all handlers and middlewares initialized.
 func New(opts RouterOptions) *router {
 	if opts.Store == nil {
 		return &router{opts: opts}
+	}
+	// The authorizer is one instance for the middlewares AND every in-handler
+	// consumer (fix-role-permission-audit D1): the composition root injects
+	// its boot-synced engine; the test-assembly fallback wraps a fresh one in
+	// the sync-on-check adapter so roles created after New still enforce.
+	authorizer := opts.Authorizer
+	if authorizer == nil {
+		var err error
+		authorizer, err = newFallbackAuthorizer(context.Background(), opts.Store)
+		if err != nil {
+			panic(fmt.Sprintf("server: fallback authorizer: %v", err))
+		}
 	}
 	return &router{
 		opts: opts,
@@ -248,8 +281,10 @@ func New(opts RouterOptions) *router {
 			opts.Store.Members(),
 			opts.Store.Roles(),
 			opts.Issuer,
+			authorizer,
 		),
-		v1mw: NewV1Middlewares(opts.Store.APIKeys()),
+		v1mw:       NewV1Middlewares(opts.Store.APIKeys()),
+		authorizer: authorizer,
 	}
 }
 
@@ -317,17 +352,17 @@ func (rt *router) Engine() *gin.Engine {
 	}
 
 	authHandlers := handlers.NewAuthHandlers(authService, rt.opts.Storage)
-	workspaceHandlers := handlers.NewWorkspaceHandlers(rt.opts.Store, rt.opts.EncryptionKey, providerRegistry, modelCatalog, agentService, workspaceDir)
-	memberHandlers := handlers.NewMemberHandlers(rt.opts.Store, rt.opts.Storage)
+	workspaceHandlers := handlers.NewWorkspaceHandlers(rt.opts.Store, rt.opts.EncryptionKey, providerRegistry, modelCatalog, agentService, workspaceDir, rt.authorizer)
+	memberHandlers := handlers.NewMemberHandlers(rt.opts.Store, rt.opts.Storage, rt.authorizer)
 	roleHandlers := handlers.NewRoleHandlers(rt.opts.Store.Roles())
 	userHandlers := handlers.NewUserHandlers(rt.opts.Store.Users(), rt.opts.Storage)
 	fileHandlers := handlers.NewFileHandlers(rt.opts.Storage, rt.opts.Store.Attachments(), rt.opts.Store.ReferenceDocuments(), wsStorage)
 	attachmentHandlers := handlers.NewAttachmentsHandlers(rt.opts.Store.Attachments(), wsStorage)
 	// Reference-document library surface (add-reference-documents 6.1–6.4):
 	// the same service the runner's references capability consumes below.
-	referenceDocumentHandlers := handlers.NewReferenceDocumentsHandlers(referencesSvc, rt.opts.Store.ReferenceDocuments())
+	referenceDocumentHandlers := handlers.NewReferenceDocumentsHandlers(referencesSvc, rt.opts.Store.ReferenceDocuments(), rt.authorizer)
 	storageConfigHandlers := handlers.NewStorageConfigHandlers(rt.opts.Store.WorkspaceStorage(), rt.opts.EncryptionKey, s3.Probe)
-	adminWorkspaceHandlers := handlers.NewAdminWorkspaceHandlers(rt.opts.Store, rt.opts.Storage)
+	adminWorkspaceHandlers := handlers.NewAdminWorkspaceHandlers(rt.opts.Store, rt.opts.Storage, rt.authorizer)
 	adminUserHandlers := handlers.NewAdminUserHandlers(rt.opts.Store.Users(), rt.opts.Store.Workspaces(), rt.opts.Store.Members(), rt.opts.Store.Roles())
 	adminSuperadminHandlers := handlers.NewAdminSuperadminHandlers(rt.opts.Store)
 	// MCP settings + connection manager: the service backs both the settings
@@ -446,13 +481,15 @@ func (rt *router) Engine() *gin.Engine {
 	// workspace storage resolver.
 
 	// Memory pipeline (integrate-agent-zero-memory): the fallback assembly
-	// mirrors the composition root's construction — worker, searcher, and
-	// intent gate over the same stores, with the chip sink late-bound to the
-	// runner built below. The worker is Started by the composition root; the
-	// fallback path never drains, like the fallback scheduler/heartbeat.
-	// The embeddings lane and the fused searcher are built unconditionally:
-	// the searcher serves the memory-notes handlers' free-text filter on the
-	// injected-runner path too (wave3 task 3.3 — one fused read path).
+	// mirrors the composition root's construction — the memory consumer over
+	// the same stores registered as consumer #1 of the neutral ingest worker
+	// (add-skill-curation-from-traces D1), plus the searcher and intent gate,
+	// with the chip sink late-bound to the runner built below. The worker is
+	// Started by the composition root; the fallback path never drains, like
+	// the fallback scheduler/heartbeat. The embeddings lane and the fused
+	// searcher are built unconditionally: the searcher serves the
+	// memory-notes handlers' free-text filter on the injected-runner path too
+	// (wave3 task 3.3 — one fused read path).
 	memoryLog := slog.Default()
 	memoryEmbedder := memory.NewProviderEmbedder(rt.opts.Store.Providers(), rt.opts.Store.ToolSettings(), rt.opts.EncryptionKey, providerRegistry)
 	memorySearcher := memory.NewSearcher(
@@ -465,8 +502,26 @@ func (rt *router) Engine() *gin.Engine {
 	)
 
 	runner := rt.opts.Runner
+
+	// Skill-curation wiring (add-skill-curation-from-traces D1/7.1): the
+	// workspace config source (the memory posture-func precedent — a
+	// settings edit applies on the next job/cycle without rebuilding) and the
+	// chip sink late-bound to the runner (the memory chip-sink pattern: the
+	// closure reads `runner` at chip time, after NewRunner has assigned it).
+	// The qualifier registers as consumer #2 of the fallback ingest worker
+	// below; the cycle service shares the sink for the proposers' drafted
+	// chips.
+	curationConfig := func(ctx context.Context, workspaceID string) skillcuration.Config {
+		return skillcuration.ConfigForWorkspace(ctx, rt.opts.Store.ToolSettings(), workspaceID, memoryLog)
+	}
+	curationChipSink := func(ctx context.Context, job ingest.Job, payload skillcuration.SkillCandidatePayload) {
+		runner.AppendSkillCandidateChip(ctx, job, payload)
+	}
+
 	if runner == nil && rt.opts.Store != nil {
-		memoryWorker := memory.NewWorker(
+		// The per-job memory pipeline (consumer #1); the queue mechanics live
+		// on the ingest worker constructed right after.
+		memoryPipeline := memory.NewWorker(
 			memory.NewGister(rt.opts.Store.MemoryEvents(), rt.opts.Store.SessionEvents(), rt.opts.Store.MemoryEntities(), rt.opts.Store.Providers(), rt.opts.EncryptionKey, agents.DefaultAgenticModelFactory, memoryLog),
 			memory.NewGate(rt.opts.Store.MemoryNotes(), rt.opts.Store.MemoryEntities(), rt.opts.Store.Memories(), rt.opts.Store.Providers(), rt.opts.EncryptionKey, agents.DefaultAgenticModelFactory, memoryLog),
 			memoryEmbedder,
@@ -485,7 +540,15 @@ func (rt *router) Engine() *gin.Engine {
 				return handlers.RawEmbeddingEnabledForWorkspace(ctx, rt.opts.Store.ToolSettings(), workspaceID)
 			}),
 		)
-		intentGate := memory.NewIntentGate(rt.opts.Store.Providers(), rt.opts.EncryptionKey, agents.DefaultAgenticModelFactory, memoryLog)
+		// The skill-curation qualifier (consumer #2): fail-soft by contract —
+		// its errors are logged per job and can never affect the memory
+		// pipeline's dispatch (the ingest worker isolates consumers).
+		curationQualifier := skillcuration.NewQualifier(
+			rt.opts.Store.SessionEvents(), curationConfig, rt.opts.Store.SkillCandidates(), memoryLog,
+			skillcuration.WithCandidateChipSink(curationChipSink),
+		)
+		ingestWorker := ingest.NewWorker(memoryLog, ingest.WithConsumers(memoryPipeline, curationQualifier))
+		intentGate := memory.NewIntentGate(rt.opts.Store.Providers(), rt.opts.EncryptionKey, agents.DefaultAgenticModelFactory, memoryLog, memory.WithWorkspaceModelSource(rt.opts.Store.ToolSettings()))
 
 		runner = agents.NewRunner(
 			rt.opts.Store.Workspaces(),
@@ -499,7 +562,7 @@ func (rt *router) Engine() *gin.Engine {
 			rt.opts.Store.Memories(),
 			rt.opts.Store.AgentSessions(),
 			rt.opts.Store.GatewayLinks(),
-			memoryWorker,
+			ingestWorker,
 			memorySearcher,
 			intentGate,
 			rt.opts.EncryptionKey,
@@ -546,6 +609,9 @@ func (rt *router) Engine() *gin.Engine {
 			// document.search all resolve through the one library shared with
 			// the documents API handler above.
 			agents.WithReferences(referencesSvc),
+			// The connection gate's integrations.write re-check rides the
+			// same authorizer (fix-role-permission-audit 1.5).
+			agents.WithAuthorizer(rt.authorizer),
 		)
 		channelRuntime.BindRunner(runner)
 	}
@@ -652,8 +718,11 @@ func (rt *router) Engine() *gin.Engine {
 	}
 	webhookHandlers := handlers.NewWebhookHandlers(webhookRuntime.Service, webhookRuntime.Ingress, rt.opts.Store.Workspaces(), rt.opts.PublicBaseURL)
 
-	providerHandlers := handlers.NewProviderHandlers(rt.opts.Store.Providers(), rt.opts.Store.Agents(), rt.opts.EncryptionKey, providerRegistry, modelCatalog)
-	agentHandlers := handlers.NewAgentHandlers(rt.opts.Store.Agents(), rt.opts.Store.Providers(), rt.opts.Store.SessionEvents(), rt.opts.Store.AgentSessions(), rt.opts.EncryptionKey, providerRegistry, modelCatalog, agentService, workspaceDir, runner, runner)
+	providerHandlers := handlers.NewProviderHandlers(rt.opts.Store.Providers(), rt.opts.Store.Agents(), rt.opts.EncryptionKey, providerRegistry, modelCatalog, rt.opts.Store.ToolSettings())
+	// The authorizer rides the agent handlers for the session-ownership rule
+	// (fix-role-permission-audit D3): cancel/approval/delete permit the
+	// owning member or agents.write, evaluated through the same engine.
+	agentHandlers := handlers.NewAgentHandlers(rt.opts.Store.Agents(), rt.opts.Store.Providers(), rt.opts.Store.SessionEvents(), rt.opts.Store.AgentSessions(), rt.opts.EncryptionKey, providerRegistry, modelCatalog, agentService, workspaceDir, runner, runner, rt.authorizer)
 	// Agent workspace files (add-right-panel 2.1): read-only byte reads and
 	// one-level listings over the agent jail directory; the handler owns the
 	// path confinement and content-type serving guards.
@@ -770,8 +839,112 @@ func (rt *router) Engine() *gin.Engine {
 	)
 	skillHandlers := handlers.NewSkillHandlers(installService, rt.opts.Store.WorkspaceSkills(), rt.opts.Store.Agents(), onClawDir)
 
+	// Skill curation review surface (add-skill-curation-from-traces
+	// 6.1/8.2): the approve/reject human gate over the candidate store, the
+	// collision surfaces shared with draft validation (the workspace-skill
+	// registry rows and the agent-tier skills directory), the workspace
+	// curation config (the catalog budget), and the tool catalog the drafts'
+	// tool dependencies validate against — the same default registry shape
+	// the hook tool values enumerate, built once and read-only here. The
+	// pattern wiki lists over the workspace's wiki directory per call (one
+	// Wiki per workspace, D3).
+	curationToolCatalog := agents.NewDefaultToolRegistry(
+		rt.opts.Store.Memories(),
+		agents.WithSchedulerTools(rt.opts.Store.Schedulers(), rt.opts.Store.Channels()),
+		agents.WithTodoTools(rt.opts.Store.Todos()),
+		agents.WithDocumentTools(referencesSvc),
+	)
+	curationApprover := skillcuration.NewApprover(
+		rt.opts.Store.SkillCandidates(),
+		rt.opts.Store.Agents(),
+		rt.opts.Store.Workspaces(),
+		rt.opts.Store.WorkspaceSkills(),
+		agentSkillContentReader(rt.opts.Store.Agents(), rt.opts.Store.Workspaces(), onClawDir),
+		curationToolCatalog.Names,
+		func(ctx context.Context, workspaceID string) skillcuration.Config {
+			return skillcuration.ConfigForWorkspace(ctx, rt.opts.Store.ToolSettings(), workspaceID, slog.Default())
+		},
+		onClawDir,
+		slog.Default(),
+	)
+	// The curation model resolver: the D7 four-step fallback per call, with
+	// the workspace-default tier read per workspace from the curation config
+	// (the resolver captures one Config, so the per-workspace wrapper is what
+	// makes tier 3 tenant-correct).
+	curationModelResolver := func(ctx context.Context, workspaceID, agentID string) (skillcuration.Model, error) {
+		cfg := skillcuration.ConfigForWorkspace(ctx, rt.opts.Store.ToolSettings(), workspaceID, slog.Default())
+		return skillcuration.CurationModelResolver(
+			rt.opts.Store.Providers(), rt.opts.Store.Agents(), rt.opts.Store.ToolSettings(),
+			rt.opts.EncryptionKey, agents.DefaultAgenticModelFactory, cfg,
+		)(ctx, workspaceID, agentID)
+	}
+	curationValidator := skillcuration.NewDraftValidator(
+		rt.opts.Store.WorkspaceSkills(),
+		agentSkillContentReader(rt.opts.Store.Agents(), rt.opts.Store.Workspaces(), onClawDir),
+		curationToolCatalog.Names,
+	)
+	curationProbation := skillcuration.NewProbation(
+		rt.opts.Store.SkillCandidates(),
+		rt.opts.Store.Agents(),
+		rt.opts.Store.Workspaces(),
+		curationConfig,
+		onClawDir,
+		slog.Default(),
+	)
+	// The cycle service (7.1): one instance for the ticker (only the
+	// composition root Start()s it) and the run-now endpoint; the fallback
+	// builds a ticker-less one over the same seams (the scheduler precedent).
+	skillCurationCycle := rt.opts.SkillCurationCycle
+	if skillCurationCycle == nil && rt.opts.Store != nil {
+		skillCurationCycle = skillcuration.NewCycle(
+			rt.opts.Store.Workspaces(),
+			rt.opts.Store.SkillCandidates(),
+			rt.opts.Store.SessionEvents(),
+			curationConfig,
+			curationModelResolver,
+			curationValidator,
+			curationProbation,
+			onClawDir,
+			slog.Default(),
+			skillcuration.WithChipSink(curationChipSink),
+		)
+	}
+	// The deleted-source marker seam (skill-curation spec, human approval
+	// gate): one EXISTS-style read through the session-events store — does
+	// the candidate's first evidence session still exist? Best-effort by
+	// contract; the handler defaults to available on any error and approval
+	// never consults it.
+	skillCurationSessionChecker := handlers.SessionChecker(func(ctx context.Context, workspaceID, sessionID string) (bool, error) {
+		events, err := rt.opts.Store.SessionEvents().LoadEvents(ctx, store.LoadSessionEventsParams{
+			WorkspaceID: workspaceID,
+			SessionID:   sessionID,
+			Limit:       1,
+		})
+		if err != nil {
+			return false, err
+		}
+		return len(events) > 0, nil
+	})
+	// The manual-retry seam (extraction-failed cards): one proposer over the
+	// workspace's wiki (the cycle builds its proposers the same way per run)
+	// re-running the draft path for the failed candidate's cluster.
+	skillCurationRetry := skillCurationRetryRunner(
+		rt.opts.Store.Workspaces(), rt.opts.Store.SessionEvents(), rt.opts.Store.SkillCandidates(),
+		curationConfig, curationModelResolver, curationValidator, onClawDir,
+	)
+	skillCurationHandlers := handlers.NewSkillCurationHandlers(
+		rt.opts.Store.SkillCandidates(),
+		curationApprover,
+		func(_ context.Context, tenantSlug string) ([]skillcuration.Page, error) {
+			return skillcuration.NewWiki(domain.WorkspaceSkillWikiDir(onClawDir, tenantSlug)).List()
+		},
+		handlers.WithSkillCurationCycle(skillCurationCycle),
+		handlers.WithSessionChecker(skillCurationSessionChecker),
+		handlers.WithSkillCurationRetry(skillCurationRetry),
+	)
+
 	apiKeyService := services.NewAPIKeyService(rt.opts.Store.APIKeys())
-	apiKeyHandlers := handlers.NewAPIKeysHandlers(apiKeyService)
+	apiKeyHandlers := handlers.NewAPIKeysHandlers(apiKeyService, rt.authorizer)
 
 	r := gin.New()
 	r.Use(RequestIDMiddleware())
@@ -779,7 +952,7 @@ func (rt *router) Engine() *gin.Engine {
 	r.Use(gin.Logger())
 
 	// /v1 (OpenResponses) surface: API-key authenticated only (JWTs rejected).
-	v1Handlers := handlers.NewV1Handlers(runner, rt.opts.Store.Agents(), rt.opts.Store.SessionEvents(), rt.opts.Store.Attachments(), wsStorage, toolSettings, rt.opts.V1StreamKeepAlive)
+	v1Handlers := handlers.NewV1Handlers(runner, rt.opts.Store.Agents(), rt.opts.Store.SessionEvents(), rt.opts.Store.Attachments(), rt.opts.Store.AgentSessions(), wsStorage, toolSettings, rt.opts.V1StreamKeepAlive)
 	v1 := r.Group("/v1")
 	v1.Use(rt.v1mw.APIKeyAuthRequired())
 	{
@@ -862,7 +1035,10 @@ func (rt *router) Engine() *gin.Engine {
 
 			// Workspaces (unscoped user view & creation)
 			authed.GET("/workspaces", workspaceHandlers.ListWorkspaces)
-			authed.POST("/workspaces", workspaceHandlers.CreateWorkspace)
+			// Workspace creation is superadmin-only (fix-role-permission-audit
+			// D4): master-workspace membership with admin.workspaces.write.
+			// The handler's birth transaction is unchanged.
+			authed.POST("/workspaces", rt.mw.RequireMasterWorkspace(), rt.mw.RequirePermission(domain.AdminWorkspacesWrite), workspaceHandlers.CreateWorkspace)
 
 			// Credential preview for onboarding
 			authed.POST("/providers/models-preview", providerHandlers.ModelsPreview)
@@ -971,12 +1147,15 @@ func (rt *router) Engine() *gin.Engine {
 				// Durable agent session index (agent-session-index D3): the
 				// requesting user's non-deleted sessions with the live-run
 				// flag, and the soft delete. Listing rides agents.read like
-				// the transcript read below; deletion is agents.write.
+				// the transcript read below. Cancel, approval resolution,
+				// and deletion permit the session's owning member or
+				// agents.write (fix-role-permission-audit D3) — the handlers
+				// enforce the ownership rule themselves, so no route gate.
 				wsGroup.GET("/agents/:agent/sessions", rt.mw.RequirePermission(domain.AgentsRead), agentHandlers.ListAgentSessions)
-				wsGroup.DELETE("/agents/:agent/sessions/:session", rt.mw.RequirePermission(domain.AgentsWrite), agentHandlers.DeleteAgentSession)
+				wsGroup.DELETE("/agents/:agent/sessions/:session", agentHandlers.DeleteAgentSession)
 				wsGroup.GET("/agents/:agent/sessions/:session/events", rt.mw.RequirePermission(domain.AgentsRead), agentHandlers.ListSessionEvents)
-				wsGroup.POST("/agents/:agent/sessions/:session/approvals/:interruptID", rt.mw.RequirePermission(domain.AgentsWrite), agentHandlers.ResolveApproval)
-				wsGroup.POST("/agents/:agent/sessions/:session/runs/:turn/cancel", rt.mw.RequirePermission(domain.AgentsWrite), agentHandlers.CancelRun)
+				wsGroup.POST("/agents/:agent/sessions/:session/approvals/:interruptID", agentHandlers.ResolveApproval)
+				wsGroup.POST("/agents/:agent/sessions/:session/runs/:turn/cancel", agentHandlers.CancelRun)
 
 				// Agent workspace files (add-right-panel 2.4): byte reads and
 				// one-level listings from the agent's jail directory. Reads
@@ -1063,6 +1242,23 @@ func (rt *router) Engine() *gin.Engine {
 				wsGroup.POST("/agents/:agent/skills", rt.mw.RequirePermission(domain.SkillsWrite), skillHandlers.InstallAgentSkill)
 				wsGroup.DELETE("/agents/:agent/skills/:name", rt.mw.RequirePermission(domain.SkillsWrite), skillHandlers.RemoveAgentSkill)
 
+				// Skill curation review surface (add-skill-curation-from-traces
+				// 6.1/8.2): reads ride skills.read — every member reviews the
+				// queue, the pattern wiki, and the audit; approve/reject are
+				// the human gate, skills.write (Owner/Admin). The cycle
+				// status read is member-level; the run-now trigger is the
+				// same Owner/Admin tier (skills.write) — a double trigger is
+				// a wrapped domain.ErrConflict → 409.
+				wsGroup.GET("/skill-curation/candidates", rt.mw.RequirePermission(domain.SkillsRead), skillCurationHandlers.ListCandidates)
+				wsGroup.GET("/skill-curation/candidates/:id", rt.mw.RequirePermission(domain.SkillsRead), skillCurationHandlers.GetCandidate)
+				wsGroup.POST("/skill-curation/candidates/:id/approve", rt.mw.RequirePermission(domain.SkillsWrite), skillCurationHandlers.Approve)
+				wsGroup.POST("/skill-curation/candidates/:id/reject", rt.mw.RequirePermission(domain.SkillsWrite), skillCurationHandlers.Reject)
+				wsGroup.POST("/skill-curation/candidates/:id/retry", rt.mw.RequirePermission(domain.SkillsWrite), skillCurationHandlers.Retry)
+				wsGroup.GET("/skill-curation/patterns", rt.mw.RequirePermission(domain.SkillsRead), skillCurationHandlers.ListPatterns)
+				wsGroup.GET("/skill-curation/audit", rt.mw.RequirePermission(domain.SkillsRead), skillCurationHandlers.ListAudit)
+				wsGroup.POST("/skill-curation/cycle/run", rt.mw.RequirePermission(domain.SkillsWrite), skillCurationHandlers.RunCycle)
+				wsGroup.GET("/skill-curation/cycle/status", rt.mw.RequirePermission(domain.SkillsRead), skillCurationHandlers.CycleStatus)
+
 				// Agent-private MCP servers (agents.write per design.md D9;
 				// reads ride agents.read like the agent detail endpoint)
 				wsGroup.GET("/agents/:agent/mcp-servers", rt.mw.RequirePermission(domain.AgentsRead), mcpServerHandlers.ListAgentServers)
@@ -1132,13 +1328,17 @@ func (rt *router) Engine() *gin.Engine {
 				wsGroup.POST("/agents/:agent/heartbeat/run-now", rt.mw.RequirePermission(domain.AgentsWrite), heartbeatHandlers.RunAgentHeartbeatNow)
 				wsGroup.POST("/agents/:agent/heartbeat/resume", rt.mw.RequirePermission(domain.AgentsWrite), heartbeatHandlers.ResumeAgentHeartbeat)
 
-				// API keys management (workspace settings; workspace.write is Owner/Admin only)
-				// Exchange is Member-level: membership via RequireWorkspace suffices,
-				// like the other member-readable routes (e.g. GET /tools).
+				// API keys management (fix-role-permission-audit D7 creator
+				// symmetry): list and revoke self-gate in the handler via the
+				// authorizer (own keys for the creator; workspace.write sees
+				// and revokes all), so no route guard here. Key minting
+				// (POST) stays workspace.write; Exchange is Member-level:
+				// membership via RequireWorkspace suffices, like the other
+				// member-readable routes (e.g. GET /tools).
 				wsGroup.POST("/api-keys/exchange", apiKeyHandlers.ExchangeAPIKey)
-				wsGroup.GET("/api-keys", rt.mw.RequirePermission(domain.WorkspaceWrite), apiKeyHandlers.ListAPIKeys)
+				wsGroup.GET("/api-keys", apiKeyHandlers.ListAPIKeys)
 				wsGroup.POST("/api-keys", rt.mw.RequirePermission(domain.WorkspaceWrite), apiKeyHandlers.CreateAPIKey)
-				wsGroup.DELETE("/api-keys/:id", rt.mw.RequirePermission(domain.WorkspaceWrite), apiKeyHandlers.RevokeAPIKey)
+				wsGroup.DELETE("/api-keys/:id", apiKeyHandlers.RevokeAPIKey)
 
 				// Workspace agent lifecycle hooks (D13/D17): reads ride
 				// hooks.read, writes hooks.write. The instance section of the
@@ -1271,4 +1471,131 @@ func (rt *router) Engine() *gin.Engine {
 // NewRouter builds and returns the configured Gin Engine.
 func NewRouter(opts RouterOptions) *gin.Engine {
 	return New(opts).Engine()
+}
+
+// StoreRoleSource adapts store.Store to authz.RoleSource: the authorizer
+// constructors enumerate every role row in the instance while the role store
+// lists per workspace, so the adapter walks the workspace list — the seam the
+// composition root builds its boot-time sync on (fix-role-permission-audit
+// D1). Exported for the CLI composition root.
+type StoreRoleSource struct {
+	Store store.Store
+}
+
+// ListRoles enumerates every role row across every workspace.
+func (s StoreRoleSource) ListRoles(ctx context.Context) ([]domain.Role, error) {
+	wss, err := s.Store.Workspaces().ListAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []domain.Role
+	for _, ws := range wss {
+		rs, err := s.Store.Roles().ListForWorkspace(ctx, ws.ID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rs...)
+	}
+	return out, nil
+}
+
+// newFallbackAuthorizer builds the test-assembly authorizer (fix-role-
+// permission-audit D1): the fake-backed engine over the role store, wrapped
+// so every check re-syncs the checked role row first. Production loads all
+// role rows once at boot (internal/cli) and Syncs newborn workspaces at the
+// seeding seam; tests build the router before any role row exists, so the
+// boot-time sync has no equivalent moment here.
+func newFallbackAuthorizer(ctx context.Context, st store.Store) (authz.Authorizer, error) {
+	base, err := authz.NewFake(ctx, StoreRoleSource{Store: st})
+	if err != nil {
+		return nil, err
+	}
+	return &liveSyncedAuthorizer{Authorizer: base, roles: st.Roles()}, nil
+}
+
+// liveSyncedAuthorizer keeps the engine's policy set aligned with the CURRENT
+// role rows on every check. Sync is the idempotent write-through the seeding
+// seam uses, roles are immutable at runtime, so re-syncing never changes a
+// decision the engine would make for the current rows — it only stops the
+// policy set from going stale. A missing role row skips the sync and lets the
+// engine decide (deny), matching the old has-no-permissions outcome.
+type liveSyncedAuthorizer struct {
+	authz.Authorizer
+	roles store.RoleStore
+}
+
+// Enforce implements Authorizer with the sync-on-check prefix.
+func (a *liveSyncedAuthorizer) Enforce(ctx context.Context, roleID, workspaceID, permission string) (bool, error) {
+	role, err := a.roles.ByID(ctx, roleID)
+	if err == nil && role != nil {
+		if syncErr := a.Authorizer.Sync(ctx, role); syncErr != nil {
+			return false, syncErr
+		}
+	}
+	return a.Authorizer.Enforce(ctx, roleID, workspaceID, permission)
+}
+
+// AgentSkillContentReaderFor is the exported composition-root seam: the same
+// agent-tier collision/content reader the router builds internally for the
+// curation approver and draft validator, for callers assembling the
+// curation stack outside the server package (internal/cli).
+func AgentSkillContentReaderFor(agents store.AgentStore, workspaces store.WorkspaceStore, onClawDir string) skillcuration.SkillContentReader {
+	return agentSkillContentReader(agents, workspaces, onClawDir)
+}
+
+// agentSkillContentReader is the agent-tier collision/content seam the
+// skill-curation draft validator and approver read through
+// (add-skill-curation-from-traces 5.2/6.1): one agent skill's SKILL.md from
+// the owning agent's skills directory, found=false for absence (the normal
+// state). The workspace and agent ids resolve their validated slugs here —
+// the seam's signature is store-scoped, the on-disk path is slug-shaped.
+// skillCurationRetryRunner adapts the manual-retry seam (extraction-failed
+// cards): it resolves the workspace's wiki and builds one proposer per retry
+// — the cycle builds its proposers the same way per run — then re-runs the
+// draft path for the failed candidate's cluster.
+func skillCurationRetryRunner(
+	workspaces store.WorkspaceStore,
+	sessions store.SessionEventStore,
+	candidates store.SkillCandidateStore,
+	config skillcuration.ConfigSource,
+	resolver skillcuration.ModelResolver,
+	validator *skillcuration.DraftValidator,
+	onClawDir string,
+) handlers.SkillCurationRetryer {
+	return handlers.SkillCurationRetryerFunc(func(ctx context.Context, workspaceID, candidateID string) (*domain.SkillCandidate, error) {
+		ws, err := workspaces.ByID(ctx, workspaceID)
+		if err != nil {
+			return nil, fmt.Errorf("skillcuration retry: resolve workspace: %w", err)
+		}
+		proposer := skillcuration.NewProposer(
+			sessions, candidates, config, resolver,
+			skillcuration.NewWiki(domain.WorkspaceSkillWikiDir(onClawDir, ws.Slug)),
+			validator, slog.Default(),
+		)
+		return proposer.RetryCandidate(ctx, workspaceID, candidateID)
+	})
+}
+
+func agentSkillContentReader(agents store.AgentStore, workspaces store.WorkspaceStore, onClawDir string) skillcuration.SkillContentReader {
+	return func(ctx context.Context, workspaceID, agentID, skillName string) (string, bool, error) {
+		agent, err := agents.ByID(ctx, workspaceID, agentID)
+		if err != nil {
+			if errors.Is(err, domain.ErrNotFound) {
+				return "", false, nil
+			}
+			return "", false, err
+		}
+		ws, err := workspaces.ByID(ctx, workspaceID)
+		if err != nil {
+			return "", false, err
+		}
+		data, err := os.ReadFile(filepath.Join(domain.AgentSkillsDir(onClawDir, ws.Slug, agent.Slug), skillName, "SKILL.md"))
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		if err != nil {
+			return "", false, err
+		}
+		return string(data), true, nil
+	}
 }

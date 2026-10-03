@@ -14,7 +14,7 @@ import {
   type ApiHookPayload,
   type ApiHookSaveResult,
 } from "../../lib/api";
-import { useCanWriteTools } from "../../lib/tools";
+import { useCanWriteHooks } from "../../lib/writePerms";
 import {
   hookEventMeta,
   hookHandlerLabel,
@@ -29,8 +29,7 @@ export interface HooksPaneProps {
   /** Unused since the pane went API-backed; kept for SettingsPage compat. */
   onUpdate?: (fn: any) => void;
   onToast?: (text: string, kind?: string) => void;
-  /** Override the derived hooks.write check (tests). hooks.write is granted
-   * to the same built-in roles as tools.write, so the check is shared. */
+  /** Override the derived hooks.write check (tests). */
   canWrite?: boolean;
 }
 
@@ -101,7 +100,9 @@ function ExecutionRow({ exec }: { exec: ApiHookExecution }) {
 // control from below), the per-hook execution history, and the workspace-wide
 // recent-executions audit trail. Writes are limited to hooks.write holders.
 export function HooksPane({ tenant, onToast = () => {}, canWrite }: HooksPaneProps) {
-  const derivedCanWrite = useCanWriteTools(tenant);
+  // fix-role-permission-audit: hook mutation affordances gate on the hooks
+  // catalog permission itself, not tools.write.
+  const derivedCanWrite = useCanWriteHooks(tenant);
   const writer = canWrite !== undefined ? canWrite : derivedCanWrite;
 
   const wsId = tenant?.sub || tenant?.id;

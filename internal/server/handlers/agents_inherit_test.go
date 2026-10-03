@@ -55,7 +55,7 @@ func newInheritHarness(t *testing.T, withDefault bool, providerType string) (*gi
 		promptgen.WithModelFactory(factory),
 		promptgen.WithTimeout(5*time.Second),
 	)
-	agentH := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), st.AgentSessions(), []byte("01234567890123456789012345678901"), providers.NewRegistry(), nil, agentSvc, t.TempDir(), nil, nil)
+	agentH := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), st.AgentSessions(), []byte("01234567890123456789012345678901"), providers.NewRegistry(), nil, agentSvc, t.TempDir(), nil, nil, mustTestAuthorizer(t, st))
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {

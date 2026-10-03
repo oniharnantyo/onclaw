@@ -119,6 +119,54 @@ describe('App & Route Guard', () => {
     });
   });
 
+  it('lands a signed-in user with zero memberships on the ask-your-admin state (fix-role-permission-audit)', async () => {
+    // A real server session: a token exists and /auth/me returned zero
+    // memberships. Mock/seed mode (no token) keeps the seeded app shell.
+    localStorage.setItem('od_token', 'test-token');
+    useAuthStore.setState({
+      status: 'authenticated',
+      user: { id: 'u1', email: 'alice@example.com', name: 'Alice', created_at: '', updated_at: '' },
+      memberships: [],
+      boot: vi.fn(),
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('zero-membership-pane')).not.toBeNull();
+    });
+    expect(screen.getByText('No workspace yet')).not.toBeNull();
+    // No workspace-scoped navigation renders.
+    expect(screen.queryByLabelText(/primary/i)).toBeNull();
+    // The instance admin keeps their creation path — no invite-membership
+    // path is offered to non-admins here.
+    expect(screen.queryByTestId('btn-onboarding-deploy')).toBeNull();
+  });
+
+  it('keeps the shell for an instance administrator with zero memberships', async () => {
+    localStorage.setItem('od_token', 'test-token');
+    useAuthStore.setState({
+      status: 'authenticated',
+      user: { id: 'u_super', email: 'admin@master.dev', name: 'Super Admin', created_at: '', updated_at: '' },
+      memberships: [],
+      boot: vi.fn(),
+    });
+    // The active tenant presents as master with an instance-admin marker —
+    // useIsAdmin's mock-tenant fallback recognizes it and stays out of the
+    // way of superadmins (in live sessions a superadmin always holds the
+    // master membership, so the first useIsAdmin branch covers them).
+    useStore.setState((s: any) => ({
+      db: { ...s.db, acme: { ...s.db.acme, is_master: true, currentUserRole: 'superadmin' } },
+    }));
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('zero-membership-pane')).toBeNull();
+    });
+    expect(screen.getByLabelText(/primary/i)).not.toBeNull();
+  });
+
   it('renders suspended workspace screen when active workspace is suspended', async () => {
     useAuthStore.setState({
       status: 'authenticated',

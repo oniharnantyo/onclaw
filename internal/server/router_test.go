@@ -373,7 +373,9 @@ func TestAuthMe(t *testing.T) {
 
 func TestWorkspacesListAndCreate(t *testing.T) {
 	env := setupTestEnv(t)
-	user, token := createTestUser(t, env, "alice@example.com", "Alice", "password123")
+	// Workspace creation is superadmin-only (fix-role-permission-audit D4):
+	// the creator is a master-tenant superadmin holding admin.workspaces.write.
+	user, token := seedTestSuperadmin(t, env, "alice@onclaw.local", "Alice", "password123")
 
 	t.Run("create workspace success with built-in roles and owner assignment", func(t *testing.T) {
 		w := doRequest(env.router, http.MethodPost, "/api/v1/workspaces", token, map[string]string{
@@ -452,7 +454,15 @@ func TestWorkspacesListAndCreate(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
 			t.Fatalf("failed to decode: %v", err)
 		}
-		if len(res.Workspaces) != 1 || res.Workspaces[0].WorkspaceSlug != "acme-corp" {
+		// The superadmin creator's memberships include the master tenant;
+		// the created workspace must be among them with its birth role.
+		found := false
+		for _, m := range res.Workspaces {
+			if m.WorkspaceSlug == "acme-corp" {
+				found = true
+			}
+		}
+		if len(res.Workspaces) < 1 || !found {
 			t.Errorf("unexpected list response: %+v", res)
 		}
 	})
@@ -534,7 +544,8 @@ func TestWorkspaceGetAndPatch(t *testing.T) {
 // authorized PATCH updates it while the slug stays untouched.
 func TestWorkspaceDescription(t *testing.T) {
 	env := setupTestEnv(t)
-	ownerUser, ownerToken := createTestUser(t, env, "owner-desc@example.com", "Owner", "pwd")
+	// D4: the creating actor is a superadmin; it becomes the workspace's Owner.
+	ownerUser, ownerToken := seedTestSuperadmin(t, env, "owner-desc@onclaw.local", "Owner", "pwd")
 	memberUser, memberToken := createTestUser(t, env, "member-desc@example.com", "Member", "pwd")
 
 	t.Run("create workspace carries description and owner membership", func(t *testing.T) {
@@ -748,7 +759,11 @@ func TestMembersLifecycleAndGuards(t *testing.T) {
 		}
 	})
 
-	t.Run("admin attempting to assign Owner role returns 403 (CanAssign check)", func(t *testing.T) {
+	t.Run("admin assigning Owner role succeeds now that sets are equal (CanAssign check)", func(t *testing.T) {
+		// fix-role-permission-audit D5 retired roles.write, making the
+		// built-in Owner and Admin sets equal (22 perms each): the unchanged
+		// assign algebra (role ⊆ actor) now admits Admin → Owner. Decided
+		// consequence, not a guard regression.
 		newU, _ := createTestUser(t, env, "candidate@example.com", "Candidate", "pwd")
 		_ = newU
 
@@ -756,8 +771,23 @@ func TestMembersLifecycleAndGuards(t *testing.T) {
 			"email":   "candidate@example.com",
 			"role_id": ownerRole.ID,
 		})
-		if w.Code != http.StatusForbidden {
-			t.Fatalf("expected 403 Forbidden, got %d: %s", w.Code, w.Body.String())
+		if w.Code != http.StatusCreated {
+			t.Fatalf("expected 201 Created, got %d: %s", w.Code, w.Body.String())
+		}
+
+		// Restore the single-owner invariant the later last-owner scenarios
+		// rely on: demote the freshly minted peer owner back to Member. The
+		// Owner actor bypasses CanEdit (handlers/members.go is_owner special
+		// case), so this also proves the bypass layer directly.
+		candidate, err := env.store.Users().ByEmail(context.Background(), "candidate@example.com")
+		if err != nil {
+			t.Fatalf("lookup candidate: %v", err)
+		}
+		w = doRequest(env.router, http.MethodPatch, fmt.Sprintf("/api/v1/workspaces/team-guards/members/%s", candidate.ID), ownerToken, map[string]string{
+			"role_id": memberRole.ID,
+		})
+		if w.Code != http.StatusOK {
+			t.Fatalf("owner demoting peer owner: expected 200 OK, got %d: %s", w.Code, w.Body.String())
 		}
 	})
 

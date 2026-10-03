@@ -4,6 +4,7 @@ import { ViewShell } from "../components/ui/ViewShell";
 import { AgentCard } from "./AgentCard";
 import type { Workspace, Agent } from "../data/types";
 import { useStore } from "../store";
+import { useCanWriteAgents } from "../lib/agents";
 
 const PAGE_SIZE = 24;
 
@@ -20,6 +21,10 @@ export function AgentsView({ tenant, onChat, onConfigure, onDeploy }: AgentsView
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<AgentSortOption>('newest');
   const [page, setPage] = useState(1);
+  // Deploy affordances ride agents.write (fix-role-permission-audit); the
+  // roster itself stays browsable, and Configure opens the read-config modal
+  // whose save is disabled without the permission.
+  const canDeployAgent = useCanWriteAgents(tenant);
 
   const agents = tenant?.agents || [];
   const running = agents.filter((a: any) => a.status === 'running').length;
@@ -77,15 +82,17 @@ export function AgentsView({ tenant, onChat, onConfigure, onDeploy }: AgentsView
         ' running right now. Configuration lives in Settings → Agents.'
       }
       action={
-        <button
-          type="button"
-          onClick={onDeploy}
-          data-od-id="btn-deploy-agent"
-          data-testid="btn-deploy-agent"
-          className="flex h-9 items-center gap-2 rounded-md bg-accent px-3.5 text-[13px] font-semibold text-accenton transition-colors hover:bg-[var(--accent-hover)] active:bg-[var(--accent-active)]"
-        >
-          <Icon name="plus" size={15} sw={2.2} /> Deploy agent
-        </button>
+        canDeployAgent ? (
+          <button
+            type="button"
+            onClick={onDeploy}
+            data-od-id="btn-deploy-agent"
+            data-testid="btn-deploy-agent"
+            className="flex h-9 items-center gap-2 rounded-md bg-accent px-3.5 text-[13px] font-semibold text-accenton transition-colors hover:bg-[var(--accent-hover)] active:bg-[var(--accent-active)]"
+          >
+            <Icon name="plus" size={15} sw={2.2} /> Deploy agent
+          </button>
+        ) : undefined
       }
     >
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
@@ -181,16 +188,20 @@ export function AgentsView({ tenant, onChat, onConfigure, onDeploy }: AgentsView
             </div>
             <p className="text-[15px] font-medium text-fg">No agents in {tenant?.name || ''} yet</p>
             <p className="mt-1 text-[13px] text-muted">
-              Deploy one and it lands in the sidebar, ready to chat.
+              {canDeployAgent
+                ? 'Deploy one and it lands in the sidebar, ready to chat.'
+                : 'An Owner or Admin can deploy the first one — it lands in the sidebar ready to chat.'}
             </p>
-            <button
-              type="button"
-              onClick={onDeploy}
-              data-testid="btn-agents-empty-deploy"
-              className="mt-4 inline-flex h-8 items-center gap-1.5 rounded-md border border-line px-3 text-[12px] font-medium text-fg2 transition-colors hover:border-accent hover:text-fg"
-            >
-              <Icon name="plus" size={13} /> Deploy your first agent
-            </button>
+            {canDeployAgent && (
+              <button
+                type="button"
+                onClick={onDeploy}
+                data-testid="btn-agents-empty-deploy"
+                className="mt-4 inline-flex h-8 items-center gap-1.5 rounded-md border border-line px-3 text-[12px] font-medium text-fg2 transition-colors hover:border-accent hover:text-fg"
+              >
+                <Icon name="plus" size={13} /> Deploy your first agent
+              </button>
+            )}
           </div>
         )}
       </div>

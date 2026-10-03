@@ -18,6 +18,10 @@ import { ChatRoute } from './screens/ChatRoute';
 import { AgentConfigModal } from './modals/AgentConfigModal';
 import { ScheduleEditorModal } from './modals/ScheduleEditorModal';
 import { CreateWorkspaceModal } from './modals/CreateWorkspaceModal';
+import { ZeroMembershipPane } from './screens/ZeroMembershipPane';
+import { useCanWriteSchedulers } from './lib/writePerms';
+import { useCanWriteAgents } from './lib/agents';
+import { getToken } from './lib/api';
 import { BootError } from './components/BootError';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ErrorState } from './components/ErrorState';
@@ -104,9 +108,20 @@ function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
   const tenant = useWorkspace();
-  const { logout } = useAuth();
+  const { logout, isAuthenticated } = useAuth();
   const isAdmin = useIsAdmin();
   const memberships = useAuthStore((s) => s.memberships);
+  // Fix-role-permission-audit: workspace creation is instance-admin-only, so
+  // a signed-in user with zero memberships (a real server session — mock mode
+  // has no token) lands on the ask-your-admin state instead of the
+  // onboarding create flow. Superadmins keep the creation entry.
+  const zeroMembershipLocked =
+    isAuthenticated && Boolean(getToken()) && memberships.length === 0 && !isAdmin;
+  // Schedule and agent mutation gating for the shell affordances (the views
+  // gate their own controls): the sidebar's "New schedule" opens the editor
+  // and the onboarding pane's deploy entry, so both ride the write permission.
+  const schedulerWritable = useCanWriteSchedulers(tenant);
+  const agentsWritable = useCanWriteAgents(tenant);
 
   const ui = useStore((s: any) => s.ui);
   const patchUi = useStore((s: any) => s.patchUi);
@@ -213,6 +228,18 @@ function Layout() {
   );
 
   const isChatRoute = location.pathname === '/' || location.pathname.startsWith('/c/') || location.pathname === '/c';
+  // Zero-membership state (fix-role-permission-audit): signed in with no
+  // memberships and not an instance admin → ask-your-admin, no
+  // workspace-scoped navigation, no onboarding create flow.
+  if (zeroMembershipLocked) {
+    return (
+      <ZeroMembershipPane
+        email={useAuthStore.getState().user?.email}
+        onToast={useStore.getState().toast}
+        onSignOut={handleLogout}
+      />
+    );
+  }
   // Only route to onboarding once the workspace's agent list has actually been
   // fetched — an empty list mid-boot means "not loaded yet", not "no agents".
   if (!isSuspended && agentsLoaded && !tenant?.agents?.length && isChatRoute) {
@@ -228,13 +255,16 @@ function Layout() {
       activeIsAgent={(tenant?.agents || []).some(a => a.id === activeChatId)}
       session={session}
       sessions={sessions}
-      uiRunning={Boolean(ui.running)}
+      // Same-chat scope (fix-thinking-leak-on-chat-switch): the sidebar
+      // session list belongs to the open chat, so its in-flight spinner must
+      // follow this chat's run only.
+      uiRunning={Boolean(ui.running && ui.runningChatId === activeChatId)}
       onSwitchSession={handleSwitchSession}
-      onNewSession={newSession} 
+      onNewSession={newSession}
       onDeleteSession={deleteSession}
       onDeploy={() => navigate('/agents')}
-      onNewSchedule={() => patchUi({ scheduleEdit: 'new' })}
-      onEditSchedule={(s: any) => patchUi({ scheduleEdit: s })}
+      onNewSchedule={schedulerWritable ? () => patchUi({ scheduleEdit: 'new' }) : undefined}
+      onEditSchedule={schedulerWritable ? (s: any) => patchUi({ scheduleEdit: s }) : undefined}
       onOpenSwitcher={() => patchUi({ wsOpen: !ui.wsOpen })}
       search={search} 
       setSearch={setSearch}
@@ -334,7 +364,7 @@ function Layout() {
                 {/* Pre-rename deep links land on the schedules screen. */}
                 <Route path="/cron" element={<Navigate to="/schedules" replace />} />
                 <Route path="/runs" element={<RunsView tenant={tenant} onToast={useStore.getState().toast} />} />
-                <Route path="/welcome" element={<OnboardingPane tenant={tenant} onDeploy={() => patchUi({ configAgent: 'new' })} onSettings={() => navigate('/settings')} />} />
+                <Route path="/welcome" element={<OnboardingPane tenant={tenant} onDeploy={() => patchUi({ configAgent: 'new' })} onSettings={() => navigate('/settings')} canDeploy={agentsWritable} />} />
                 {/* Home is the chat page with nothing pre-opened; pick a conversation from the sidebar. */}
                 <Route path="/" element={<Navigate to="/c" replace />} />
                 <Route path="*" element={<NotFoundRoute />} />

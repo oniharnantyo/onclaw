@@ -15,7 +15,10 @@ import (
 
 func TestWorkspaces_AtomicBirth(t *testing.T) {
 	env := setupTestEnv(t)
-	user, token := createTestUser(t, env, "birth-creator@example.com", "Birth Creator", "password123")
+	// Workspace creation is superadmin-only (fix-role-permission-audit D4):
+	// the birth transaction's actor is a master-tenant superadmin holding
+	// admin.workspaces.write.
+	user, token := seedTestSuperadmin(t, env, "birth-creator@onclaw.local", "Birth Creator", "password123")
 	_ = user
 
 	t.Run("atomic birth success with provider and starter agent", func(t *testing.T) {

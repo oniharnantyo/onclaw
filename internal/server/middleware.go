@@ -1,9 +1,11 @@
 package server
 
 import (
+	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/oniharnantyo/onclaw/internal/authz"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/services"
 	"github.com/oniharnantyo/onclaw/internal/store"
@@ -16,16 +18,20 @@ type middlewares struct {
 	members    store.MemberStore
 	roles      store.RoleStore
 	issuer     services.TokenIssuer
+	authz      authz.Authorizer
 }
 
 // NewMiddlewares creates a new middlewares instance with the given store and token issuer.
-func NewMiddlewares(users store.UserStore, workspaces store.WorkspaceStore, members store.MemberStore, roles store.RoleStore, issuer services.TokenIssuer) *middlewares {
+// The authorizer is the single permission-evaluation point backing
+// RequirePermission/RequireAllPermissions (fix-role-permission-audit D1/D2).
+func NewMiddlewares(users store.UserStore, workspaces store.WorkspaceStore, members store.MemberStore, roles store.RoleStore, issuer services.TokenIssuer, authorizer authz.Authorizer) *middlewares {
 	return &middlewares{
 		users:      users,
 		workspaces: workspaces,
 		members:    members,
 		roles:      roles,
 		issuer:     issuer,
+		authz:      authorizer,
 	}
 }
 
@@ -171,23 +177,25 @@ func (m *middlewares) RequireMasterWorkspace() gin.HandlerFunc {
 	}
 }
 
-// RequirePermission verifies that the member's resolved role contains the required permission.
+// RequirePermission verifies that the member's resolved role holds the
+// required permission through the authorizer (fix-role-permission-audit D1):
+// the roles table stays the policy source, the engine the single evaluation
+// point. An evaluation failure fails CLOSED — a broken engine must never
+// widen access.
 func (m *middlewares) RequirePermission(permission string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		role, ok := CurrentRole(c)
-		if !ok || role == nil {
-			member, ok := CurrentMember(c)
-			if ok && member != nil && member.Role != nil {
-				role = member.Role
-			}
-		}
-
-		if role == nil {
+		role, ws := m.resolveRoleWorkspace(c)
+		if role == nil || ws == nil {
 			AbortForbidden(c, "insufficient permissions")
 			return
 		}
 
-		if !domain.HasPermission(role.Permissions, permission) {
+		allowed, err := m.authz.Enforce(c.Request.Context(), role.ID, ws.ID, permission)
+		if err != nil {
+			AbortWithError(c, http.StatusInternalServerError, CodeInternal, "internal server error")
+			return
+		}
+		if !allowed {
 			AbortForbidden(c, "insufficient permissions")
 			return
 		}
@@ -196,24 +204,24 @@ func (m *middlewares) RequirePermission(permission string) gin.HandlerFunc {
 	}
 }
 
-// RequireAllPermissions verifies that the member's resolved role contains all specified permissions.
+// RequireAllPermissions verifies that the member's resolved role holds all
+// specified permissions through the authorizer. An evaluation failure fails
+// CLOSED, like RequirePermission.
 func (m *middlewares) RequireAllPermissions(permissions ...string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		role, ok := CurrentRole(c)
-		if !ok || role == nil {
-			member, ok := CurrentMember(c)
-			if ok && member != nil && member.Role != nil {
-				role = member.Role
-			}
-		}
-
-		if role == nil {
+		role, ws := m.resolveRoleWorkspace(c)
+		if role == nil || ws == nil {
 			AbortForbidden(c, "insufficient permissions")
 			return
 		}
 
 		for _, p := range permissions {
-			if !domain.HasPermission(role.Permissions, p) {
+			allowed, err := m.authz.Enforce(c.Request.Context(), role.ID, ws.ID, p)
+			if err != nil {
+				AbortWithError(c, http.StatusInternalServerError, CodeInternal, "internal server error")
+				return
+			}
+			if !allowed {
 				AbortForbidden(c, "insufficient permissions")
 				return
 			}
@@ -221,4 +229,19 @@ func (m *middlewares) RequireAllPermissions(permissions ...string) gin.HandlerFu
 
 		c.Next()
 	}
+}
+
+// resolveRoleWorkspace reads the role and workspace RequireWorkspace /
+// RequireMasterWorkspace bound to the request context, falling back to the
+// member's embedded role when the role key is absent.
+func (m *middlewares) resolveRoleWorkspace(c *gin.Context) (*domain.Role, *domain.Workspace) {
+	role, ok := CurrentRole(c)
+	if !ok || role == nil {
+		member, ok := CurrentMember(c)
+		if ok && member != nil && member.Role != nil {
+			role = member.Role
+		}
+	}
+	ws, _ := CurrentWorkspace(c)
+	return role, ws
 }

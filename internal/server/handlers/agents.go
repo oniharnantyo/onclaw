@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/oniharnantyo/onclaw/internal/agents"
+	"github.com/oniharnantyo/onclaw/internal/authz"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/promptdocs"
 	"github.com/oniharnantyo/onclaw/internal/promptgen"
@@ -78,10 +79,13 @@ type agentHandlers struct {
 	workspaceDir  string
 	runner        AgentHistoryReader
 	runCanceler   AgentRunCanceler
+	authz         authz.Authorizer
 }
 
 // NewAgentHandlers creates a new agentHandlers instance with injected dependencies.
-func NewAgentHandlers(agentStore store.AgentStore, providerStore store.ProviderStore, sessionEvents store.SessionEventStore, agentSessions store.AgentSessionStore, encryptionKey []byte, reg *providers.Registry, mc *services.ModelCatalog, as *promptgen.Service, workspaceDir string, runner AgentHistoryReader, runCanceler AgentRunCanceler) *agentHandlers {
+// The authorizer backs the session-ownership rule (fix-role-permission-audit
+// D3) and the connection-approval integrations.write escalation.
+func NewAgentHandlers(agentStore store.AgentStore, providerStore store.ProviderStore, sessionEvents store.SessionEventStore, agentSessions store.AgentSessionStore, encryptionKey []byte, reg *providers.Registry, mc *services.ModelCatalog, as *promptgen.Service, workspaceDir string, runner AgentHistoryReader, runCanceler AgentRunCanceler, authorizer authz.Authorizer) *agentHandlers {
 	return &agentHandlers{
 		agents:        agentStore,
 		providers:     providerStore,
@@ -94,6 +98,7 @@ func NewAgentHandlers(agentStore store.AgentStore, providerStore store.ProviderS
 		workspaceDir:  workspaceDir,
 		runner:        runner,
 		runCanceler:   runCanceler,
+		authz:         authorizer,
 	}
 }
 
@@ -124,6 +129,46 @@ func (h *agentHandlers) resolveAgent(ctx context.Context, workspaceID, identifie
 		return nil, err
 	}
 	return h.agents.ByID(ctx, workspaceID, identifier)
+}
+
+// sessionManageAllowed decides the session-ownership rule (fix-role-
+// permission-audit design D3): the actor may cancel a run, resolve an
+// approval, or delete a session when their current role holds agents.write
+// OR the session index row attributes the session to them. System-born
+// sessions (channel, scheduler, heartbeat, subagent) have no index row, so
+// ownership never applies to them — only agents.write passes. The fetched
+// index row rides the return (nil when absent) so the caller can scope
+// follow-up writes. An evaluation or store failure surfaces as an error; the
+// caller renders it through the standard envelope (fail-closed — a false
+// return never grants).
+func (h *agentHandlers) sessionManageAllowed(c *gin.Context, ws *domain.Workspace, agentID, sessionID string) (bool, *domain.AgentSession, error) {
+	user := MustCurrentUser(c)
+
+	// The row is fetched regardless of the permission verdict: the caller
+	// scopes follow-up writes to the FETCHED row's owner (an agents.write
+	// holder deleting a foreign session), not to the actor.
+	row, err := h.agentSessions.GetAgentSession(c.Request.Context(), ws.ID, agentID, sessionID)
+	if err != nil {
+		return false, nil, err
+	}
+
+	role, ok := CurrentRole(c)
+	if !ok || role == nil {
+		if member, mok := CurrentMember(c); mok && member != nil && member.Role != nil {
+			role = member.Role
+		}
+	}
+	if role != nil {
+		allowed, err := h.authz.Enforce(c.Request.Context(), role.ID, ws.ID, domain.AgentsWrite)
+		if err != nil {
+			return false, nil, err
+		}
+		if allowed {
+			return true, row, nil
+		}
+	}
+
+	return row != nil && row.UserID == user.ID, row, nil
 }
 
 // composePromptDocuments fills an agent's identity/soul projection
@@ -246,13 +291,17 @@ type CreateAgentRequest struct {
 	ProviderID  string `json:"provider_id"`
 	Model       string `json:"model"`
 	// Memory side-call override (both empty = inherit); validated as a pair.
-	MemorySidecallProviderID string                `json:"memory_sidecall_provider_id,omitempty"`
-	MemorySidecallModel      string                `json:"memory_sidecall_model,omitempty"`
-	Temperature              *float64              `json:"temperature,omitempty"`
-	MaxTokens                *int                  `json:"max_tokens,omitempty"`
-	Effort                   *string               `json:"effort,omitempty"`
-	Autonomy                 *domain.AgentAutonomy `json:"autonomy,omitempty"`
-	ContextWindow            *int                  `json:"context_window,omitempty"`
+	MemorySidecallProviderID string `json:"memory_sidecall_provider_id,omitempty"`
+	MemorySidecallModel      string `json:"memory_sidecall_model,omitempty"`
+	// Skill curation override (both empty = fall through the memory pair);
+	// validated as a pair.
+	SkillCurationProviderID string                `json:"skill_curation_provider_id,omitempty"`
+	SkillCurationModel      string                `json:"skill_curation_model,omitempty"`
+	Temperature             *float64              `json:"temperature,omitempty"`
+	MaxTokens               *int                  `json:"max_tokens,omitempty"`
+	Effort                  *string               `json:"effort,omitempty"`
+	Autonomy                *domain.AgentAutonomy `json:"autonomy,omitempty"`
+	ContextWindow           *int                  `json:"context_window,omitempty"`
 	// DisabledTools is the tool denylist (empty exposes every catalog tool);
 	// the legacy `tools` allowlist key binds nowhere and is ignored like a
 	// managed field.
@@ -360,13 +409,17 @@ type PatchAgentRequest struct {
 	Model       *string `json:"model,omitempty"`
 	// Memory side-call override: both pointers nil = untouched; empty strings
 	// clear back to inherit (the workspace memory setting then agent default).
-	MemorySidecallProviderID *string               `json:"memory_sidecall_provider_id,omitempty"`
-	MemorySidecallModel      *string               `json:"memory_sidecall_model,omitempty"`
-	Temperature              *float64              `json:"temperature,omitempty"`
-	MaxTokens                *int                  `json:"max_tokens,omitempty"`
-	Effort                   *string               `json:"effort,omitempty"`
-	Autonomy                 *domain.AgentAutonomy `json:"autonomy,omitempty"`
-	ContextWindow            *int                  `json:"context_window,omitempty"`
+	MemorySidecallProviderID *string `json:"memory_sidecall_provider_id,omitempty"`
+	MemorySidecallModel      *string `json:"memory_sidecall_model,omitempty"`
+	// Skill curation override: same tri-state pair rule as the memory
+	// side-call override; empty strings clear back to fall-through.
+	SkillCurationProviderID *string               `json:"skill_curation_provider_id,omitempty"`
+	SkillCurationModel      *string               `json:"skill_curation_model,omitempty"`
+	Temperature             *float64              `json:"temperature,omitempty"`
+	MaxTokens               *int                  `json:"max_tokens,omitempty"`
+	Effort                  *string               `json:"effort,omitempty"`
+	Autonomy                *domain.AgentAutonomy `json:"autonomy,omitempty"`
+	ContextWindow           *int                  `json:"context_window,omitempty"`
 	// DisabledTools replaces the stored denylist when provided (nil leaves it
 	// untouched); the legacy `tools` key binds nowhere and is ignored.
 	DisabledTools *[]string        `json:"disabled_tools,omitempty"`
@@ -389,6 +442,7 @@ func (h *agentHandlers) PatchAgent(c *gin.Context) {
 	if req.Name == nil && req.Role == nil && req.Description == nil &&
 		req.Brief == nil && req.Identity == nil && req.Soul == nil && req.ProviderID == nil &&
 		req.Model == nil && req.MemorySidecallProviderID == nil && req.MemorySidecallModel == nil &&
+		req.SkillCurationProviderID == nil && req.SkillCurationModel == nil &&
 		req.Temperature == nil && req.MaxTokens == nil && req.Effort == nil &&
 		req.Autonomy == nil && req.ContextWindow == nil && req.DisabledTools == nil &&
 		req.EnabledMCPS == nil && req.Avatar == nil {
@@ -481,6 +535,31 @@ func (h *agentHandlers) PatchAgent(c *gin.Context) {
 	}
 	existing.MemorySidecallProviderID = targetSidecallProvider
 	existing.MemorySidecallModel = targetSidecallModel
+
+	// Skill curation override: validated as a pair (both set or both cleared);
+	// a set provider must exist in the workspace. The four-step resolution
+	// order (curation pair > memory side-call pair > workspace default >
+	// provider default) lives with the curation side-call callers.
+	targetCurationProvider := existing.SkillCurationProviderID
+	if req.SkillCurationProviderID != nil {
+		targetCurationProvider = strings.TrimSpace(*req.SkillCurationProviderID)
+	}
+	targetCurationModel := existing.SkillCurationModel
+	if req.SkillCurationModel != nil {
+		targetCurationModel = strings.TrimSpace(*req.SkillCurationModel)
+	}
+	if err := domain.ValidateAgentSkillCuration(targetCurationProvider, targetCurationModel); err != nil {
+		RespondError(c, err)
+		return
+	}
+	if targetCurationProvider != "" {
+		if _, err := h.providers.ByID(c.Request.Context(), ws.ID, targetCurationProvider); err != nil {
+			RespondError(c, fmt.Errorf("%w: skill curation provider not found in workspace", domain.ErrInvalid))
+			return
+		}
+	}
+	existing.SkillCurationProviderID = targetCurationProvider
+	existing.SkillCurationModel = targetCurationModel
 
 	var targetMaxTokens *int = existing.MaxTokens
 	if req.MaxTokens != nil {
@@ -941,6 +1020,19 @@ func buildAgentFromCreateRequest(ctx context.Context, wsID, userID string, req *
 		}
 	}
 
+	// Skill curation override (both empty = fall through), validated as a
+	// pair; a set provider must exist in the workspace.
+	curationProvider := strings.TrimSpace(req.SkillCurationProviderID)
+	curationModel := strings.TrimSpace(req.SkillCurationModel)
+	if err := domain.ValidateAgentSkillCuration(curationProvider, curationModel); err != nil {
+		return nil, err
+	}
+	if curationProvider != "" {
+		if _, err := providers.ByID(ctx, wsID, curationProvider); err != nil {
+			return nil, fmt.Errorf("%w: skill curation provider not found in workspace", domain.ErrInvalid)
+		}
+	}
+
 	// Pinned-path validation only: an inheriting agent's provider is resolved
 	// at run start, so type-driven requirements move there too.
 	var provider *domain.ProviderConfig
@@ -1045,6 +1137,8 @@ func buildAgentFromCreateRequest(ctx context.Context, wsID, userID string, req *
 		Model:                    model,
 		MemorySidecallProviderID: sidecallProvider,
 		MemorySidecallModel:      sidecallModel,
+		SkillCurationProviderID:  curationProvider,
+		SkillCurationModel:       curationModel,
 		Temperature:              temp,
 		MaxTokens:                req.MaxTokens,
 		Effort:                   effort,
@@ -1089,11 +1183,14 @@ type ResolveApprovalRequest struct {
 // paused turn. The response returns once the resume has been initiated; the
 // continued turn's events appear in the session history.
 //
-// A pending TOOL approval (a service-run write escalation,
+// The session-ownership rule (fix-role-permission-audit design D3) permits
+// the session's owning member or an agents.write holder; everyone else is
+// 403. A pending TOOL approval (a service-run write escalation,
 // add-integration-authority task 2.4) additionally requires the DECIDER to
-// hold domain.IntegrationsWrite: the escalation paused the run because the
-// service authority may not write on the team's behalf, so only a user who
-// may manage integrations may grant it. Shell approvals are unchanged.
+// hold domain.IntegrationsWrite — regardless of ownership: the escalation
+// paused the run because the service authority may not write on the team's
+// behalf, so only a user who may manage integrations may grant it. Shell
+// approvals are unchanged for permitted deciders.
 func (h *agentHandlers) ResolveApproval(c *gin.Context) {
 	ws := MustCurrentWorkspace(c)
 	user := MustCurrentUser(c)
@@ -1113,6 +1210,16 @@ func (h *agentHandlers) ResolveApproval(c *gin.Context) {
 	sessionID := c.Param("session")
 	interruptID := c.Param("interruptID")
 
+	allowed, _, err := h.sessionManageAllowed(c, ws, agent.ID, sessionID)
+	if err != nil {
+		RespondError(c, err)
+		return
+	}
+	if !allowed {
+		AbortForbidden(c, "managing another member's session requires the "+domain.AgentsWrite+" permission")
+		return
+	}
+
 	pending, err := h.runner.PendingApproval(c.Request.Context(), ws.ID, sessionID)
 	if err != nil {
 		RespondError(c, err)
@@ -1130,7 +1237,15 @@ func (h *agentHandlers) ResolveApproval(c *gin.Context) {
 				role = member.Role
 			}
 		}
-		if role == nil || !domain.HasPermission(role.Permissions, domain.IntegrationsWrite) {
+		allowed := false
+		if role != nil {
+			allowed, err = h.authz.Enforce(c.Request.Context(), role.ID, ws.ID, domain.IntegrationsWrite)
+			if err != nil {
+				RespondError(c, err)
+				return
+			}
+		}
+		if !allowed {
 			AbortForbidden(c, "approving a service-run write escalation requires the "+domain.IntegrationsWrite+" permission")
 			return
 		}

@@ -702,7 +702,20 @@ describe('components/chat/AgentMessage — service-run approval permission gate'
       {
         workspace_id: 'acme',
         role_name: 'Member',
-        role: { name: 'Member', permissions: ['agents.read'] },
+        role: {
+          name: 'Member',
+          permissions: [
+            'workspace.read',
+            'members.read',
+            'roles.read',
+            'providers.read',
+            'agents.read',
+            'skills.read',
+            'scheduler.read',
+            'channels.read',
+            'channels.write',
+          ],
+        },
       },
     ]);
     expect(findButton(container, 'Approve')).toBeNull();
@@ -720,7 +733,7 @@ describe('components/chat/AgentMessage — service-run approval permission gate'
     expect(findButton(container, 'Approve')).not.toBeNull();
   });
 
-  it('does not gate ordinary shell approvals', () => {
+  it('does not gate ordinary shell approvals', async () => {
     // The permission gate applies to the connection card only. A Member's
     // shell approval card renders exactly as before (its own resolved-state
     // semantics are pre-existing behavior, out of scope here).
@@ -729,7 +742,20 @@ describe('components/chat/AgentMessage — service-run approval permission gate'
         {
           workspace_id: 'acme',
           role_name: 'Member',
-          role: { name: 'Member', permissions: ['agents.read'] },
+          role: {
+            name: 'Member',
+            permissions: [
+              'workspace.read',
+              'members.read',
+              'roles.read',
+              'providers.read',
+              'agents.read',
+              'skills.read',
+              'scheduler.read',
+              'channels.read',
+              'channels.write',
+            ],
+          },
         },
       ],
     } as any);
@@ -767,6 +793,72 @@ describe('components/chat/AgentMessage — service-run approval permission gate'
     expect(container.querySelector('[data-od-id="approval-int-10"]')).not.toBeNull();
     expect(container.textContent).toContain('rm -rf /tmp/x');
     expect(container.querySelector('[data-testid="connection-approval-int-10"]')).toBeNull();
+  });
+
+  it('a Member resolves a pending approval on their own session', async () => {
+    // Session ownership (fix-role-permission-audit 5.4): the sessions sidebar
+    // is per-user, so the member viewing this card owns the session — the
+    // pending card is actionable and the resolution submits without any
+    // extra permission. Connection-write approvals keep their
+    // integrations.write gate (covered by the read-only test above).
+    useAuthStore.setState({
+      memberships: [
+        {
+          workspace_id: 'acme',
+          role_name: 'Member',
+          role: {
+            name: 'Member',
+            permissions: [
+              'workspace.read',
+              'members.read',
+              'roles.read',
+              'providers.read',
+              'agents.read',
+              'skills.read',
+              'scheduler.read',
+              'channels.read',
+              'channels.write',
+            ],
+          },
+        },
+      ],
+    } as any);
+    useStore.setState({ pos: { ...useStore.getState().pos, tenantId: 'acme' } });
+    const onResolveApproval = vi.fn().mockResolvedValue(undefined);
+    const pendingShell = {
+      id: 'm11',
+      agentId: 'a1',
+      text: '',
+      tools: [
+        {
+          args: '',
+          ms: 0,
+          approval: { interruptId: 'int-11', command: 'sudo reboot', sessionId: 'sess_9' },
+        },
+      ],
+    };
+    const { container } = render(
+      <AgentMessage
+        m={pendingShell}
+        agent={{ id: 'a1', name: 'Atlas' }}
+        inChannel={false}
+        busy={false}
+        isLast={false}
+        onCopy={vi.fn()}
+        onRefresh={vi.fn()}
+        onBranch={vi.fn()}
+        members={[]}
+        sessionId="sess_9"
+        onResolveApproval={onResolveApproval}
+      />
+    );
+    const approveBtn = findButton(container, 'Approve');
+    expect(approveBtn).not.toBeNull();
+    expect(findButton(container, 'Deny')).not.toBeNull();
+    fireEvent.click(approveBtn!);
+    await waitFor(() => {
+      expect(onResolveApproval).toHaveBeenCalledWith('a1', 'sess_9', 'int-11', true);
+    });
   });
 });
 

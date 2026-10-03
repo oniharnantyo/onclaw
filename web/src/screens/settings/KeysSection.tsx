@@ -3,6 +3,8 @@ import { KeyRow } from "./KeyRow";
 import { ApiKeyDialog } from "../../modals/ApiKeyDialog";
 import { Icon } from "../../components/ui/Icon";
 import { apiKeys, type ApiWorkspaceKey } from "../../lib/api";
+import { useAuthStore } from "../../store/auth";
+import { useCanWriteWorkspace } from "../../lib/writePerms";
 
 export interface KeysSectionProps {
   tenant: any;
@@ -17,6 +19,11 @@ export function KeysSection({ tenant, onToast, onUpdate }: KeysSectionProps) {
   const [liveKeys, setLiveKeys] = useState<ApiWorkspaceKey[] | null>(null);
   // Plaintext of the just-created key — the backend returns it exactly once.
   const [recent, setRecent] = useState<{ id: string; plaintext: string } | null>(null);
+  const user = useAuthStore((s) => s.user);
+  // Creator symmetry (fix-role-permission-audit): Members see and manage only
+  // the keys they created; workspace.write holders see every workspace key.
+  // The backend enforces the same split — the client derives it identically.
+  const seeAllKeys = useCanWriteWorkspace(tenant);
 
   useEffect(() => {
     let cancelled = false;
@@ -27,8 +34,11 @@ export function KeysSection({ tenant, onToast, onUpdate }: KeysSectionProps) {
   }, [tenant.id]);
 
   const live = liveKeys !== null;
+  const visibleLive = live
+    ? liveKeys!.filter((k) => seeAllKeys || (user != null && k.created_by === user.id))
+    : [];
   const keys: any[] = live
-    ? liveKeys!.map((k) => ({
+    ? visibleLive.map((k) => ({
         id: k.id,
         name: k.name,
         masked: `${k.key_prefix}••••••••${k.key_suffix}`,
