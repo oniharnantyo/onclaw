@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { SkillsPane } from './SkillsPane';
-import { api, type ApiWorkspaceSkill } from '../../lib/api';
+import { api, type ApiSkillCandidate, type ApiWorkspaceSkill } from '../../lib/api';
 
 const mockTenant = { id: 'acme', sub: 'acme', name: 'Acme Corp' };
 
@@ -150,5 +151,112 @@ describe('screens/settings/SkillsPane', () => {
     expect(screen.queryByTestId('btn-uninstall-changelog-sweeper')).toBeNull();
     expect(screen.queryByTestId('btn-fork-web-research')).toBeNull();
     expect(screen.getByTestId('system-skills-section')).not.toBeNull();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Two-tab shell (add-skill-curation-from-traces 9.1): the library stays the
+  // default view with identical behavior; Curation carries the pending badge.
+  // ---------------------------------------------------------------------------
+
+  const curatedCandidate = (overrides: Partial<ApiSkillCandidate> = {}): ApiSkillCandidate => ({
+    id: 'cand-1', workspace_id: 'acme', agent_id: 'ag-1', cluster_id: 'cl-1', skill_name: 'deploy-rollout',
+    status: 'pending', proposed_content: '# Deploy rollout', is_edit: false,
+    evidence_event_ids: [], cited_pattern_refs: [], helpful_count: 0, harmful_count: 0, use_count: 0,
+    proposed_at: '', updated_at: '',
+    ...overrides,
+  });
+
+  it('presents the two-tab shell with the library as the default view', async () => {
+    vi.spyOn(api.skills, 'list').mockResolvedValue(rows());
+    vi.spyOn(api.curation, 'listCandidates').mockResolvedValue({ candidates: [], count: 0 });
+
+    render(
+      <MemoryRouter>
+        <SkillsPane tenant={mockTenant} />
+      </MemoryRouter>
+    );
+
+    // Both tabs exist; the library renders without switching.
+    await waitFor(() => {
+      expect(screen.getByTestId('skills-tab-library')).not.toBeNull();
+    });
+    expect(screen.getByTestId('skills-tab-curation')).not.toBeNull();
+    expect(screen.getByTestId('skill-changelog-sweeper')).not.toBeNull();
+    expect(screen.getByTestId('btn-skill-add')).not.toBeNull();
+
+    // With an empty queue the Curation tab renders no badge.
+    fireEvent.click(screen.getByTestId('skills-tab-curation'));
+    await waitFor(() => {
+      expect(screen.getByTestId('pane-curation')).not.toBeNull();
+    });
+    expect(screen.queryByTestId('curation-pending-badge')).toBeNull();
+
+    // Back on Skills, the library is byte-identical: same rows, same controls.
+    fireEvent.click(screen.getByTestId('skills-tab-library'));
+    expect(screen.getByTestId('skill-changelog-sweeper')).not.toBeNull();
+    expect(screen.getByTestId('btn-uninstall-changelog-sweeper')).not.toBeNull();
+    expect(screen.getByTestId('system-skills-section')).not.toBeNull();
+  });
+
+  it('badges the Curation tab with the pending count and clears it when the queue empties', async () => {
+    vi.spyOn(api.skills, 'list').mockResolvedValue(rows());
+    let pending = 2;
+    vi.spyOn(api.curation, 'listCandidates').mockImplementation(async (_ws: string, status?: string) => {
+      if (status === 'pending') {
+        return {
+          candidates: [curatedCandidate(), curatedCandidate({ id: 'cand-2', skill_name: 'log-sweep' })],
+          count: pending,
+        };
+      }
+      return { candidates: [curatedCandidate()], count: 1 };
+    });
+    vi.spyOn(api.curation, 'cycleStatus').mockResolvedValue({
+      status: {
+        workspace_id: 'acme', state: 'idle', started_at: '', finished_at: '', stages: [],
+        counters: {
+          clusters_considered: 0, clusters_processed: 0, proposals_drafted: 0, patterns_changed: 0,
+          pattern_count: 0, candidates_pending: 2, probation_graduated: 0, probation_disabled: 0,
+          qualifying_runs: 0, cluster_runs: 0, approved_curated_skills: 0, rejected_proposals: 0,
+        },
+      },
+    });
+    vi.spyOn(api.curation, 'getCandidate').mockResolvedValue({
+      candidate: curatedCandidate(),
+      evidence: { event_ids: [], cited_patterns: [] },
+    });
+    const approve = vi.spyOn(api.curation, 'approve').mockResolvedValue({
+      candidate: curatedCandidate({ status: 'provisional' }),
+    });
+
+    render(
+      <MemoryRouter>
+        <SkillsPane tenant={mockTenant} />
+      </MemoryRouter>
+    );
+
+    // Two candidates await review → the badge reads 2.
+    await waitFor(() => {
+      expect(screen.getByTestId('curation-pending-badge')).not.toBeNull();
+    });
+    expect(screen.getByTestId('curation-pending-badge').textContent).toBe('2');
+
+    // Approving the row empties the queue → the badge clears.
+    fireEvent.click(screen.getByTestId('skills-tab-curation'));
+    await waitFor(() => {
+      expect(screen.getByTestId('candidate-deploy-rollout')).not.toBeNull();
+    });
+    fireEvent.click(screen.getByTestId('candidate-deploy-rollout'));
+    await waitFor(() => {
+      expect(screen.getByTestId('btn-approve')).not.toBeNull();
+    });
+    pending = 0;
+    fireEvent.click(screen.getByTestId('btn-approve'));
+
+    await waitFor(() => {
+      expect(approve).toHaveBeenCalledWith('acme', 'cand-1');
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId('curation-pending-badge')).toBeNull();
+    });
   });
 });

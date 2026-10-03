@@ -478,3 +478,75 @@ func TestInstructionComposer_SchedulerAndHeartbeatProfilesInjectBasePrompt(t *te
 		t.Errorf("heartbeat profile must carry the embedded base prompt and the rich-cards section:\n%s", heartbeat)
 	}
 }
+
+// TestInstructionComposer_SkillWikiNeverComposed pins the curation
+// withholding invariant (add-skill-curation-from-traces 8.1, spec
+// skill-curation "Wiki never reaches an agent"): a fully populated skill
+// wiki under the workspace root — pages, patterns, and the append-only log —
+// never appears in ANY composed execution context. The wiki lives at
+// <onclaw>/workspaces/<tenant>/skillwiki, a sibling of the agent workspace
+// directories, and the composer's document sources are the embedded base
+// prompt, the fixed prompt files in the agent dir, and runner-rendered
+// strings from the stores — no source enumerates the workspace tree. The
+// test reproduces the on-disk layout (plus a misplaced wiki INSIDE the agent
+// dir, in case a future source ever starts scanning it) and asserts the
+// marker is absent across the ordinary, scheduler, and heartbeat profiles —
+// the latter two exercising the shared trimmedUnattendedDocs stack.
+func TestInstructionComposer_SkillWikiNeverComposed(t *testing.T) {
+	ctx := context.Background()
+	const marker = "SKILLWIKI-MARKER-7f3d9a-do-not-compose"
+
+	// The production layout: <onclaw>/workspaces/<tenant>/agents/<agent> is
+	// the agent dir; the wiki sits beside it at
+	// <onclaw>/workspaces/<tenant>/skillwiki.
+	onclaw := t.TempDir()
+	wsRoot := filepath.Join(onclaw, "workspaces", "acme")
+	agentDir := filepath.Join(wsRoot, "agents", "atlas")
+	wikiDir := filepath.Join(wsRoot, "skillwiki")
+
+	for _, dir := range []string{
+		filepath.Join(wikiDir, "patterns"),
+		filepath.Join(agentDir, "skillwiki", "patterns"), // a misplaced wiki inside the agent dir
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	wikiPage := "# Retry backoff\n\nStatus: active\nEvidence-Runs: sess-1\n\n" + marker + " — back off exponentially on 429s.\n"
+	for _, page := range []string{
+		filepath.Join(wikiDir, "patterns", "retry-backoff.md"),
+		filepath.Join(agentDir, "skillwiki", "patterns", "retry-backoff.md"),
+	} {
+		if err := os.WriteFile(page, []byte(wikiPage), 0o644); err != nil {
+			t.Fatalf("write wiki page: %v", err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(wikiDir, "logs.md"), []byte("- 2026-10-02T00:00:00Z create retry-backoff evidence=sess-1 "+marker+"\n"), 0o644); err != nil {
+		t.Fatalf("write wiki log: %v", err)
+	}
+
+	params := agents.ComposeParams{
+		AgentDir:  agentDir,
+		Workspace: &domain.Workspace{ID: "ws-1", Name: "Acme"},
+		User:      &domain.User{ID: "user-1", Name: "Alice"},
+		RoleName:  "Member",
+		Memories:  newFakeMemories(),
+	}
+
+	composer := agents.NewInstructionComposer()
+	for name, mutate := range map[string]func(*agents.ComposeParams){
+		"ordinary":  func(p *agents.ComposeParams) {},
+		"scheduler": func(p *agents.ComposeParams) { p.SchedulerProfile = true },
+		"heartbeat": func(p *agents.ComposeParams) { p.HeartbeatProfile = true },
+	} {
+		profile := params
+		mutate(&profile)
+		result, err := composer.Compose(ctx, profile)
+		if err != nil {
+			t.Fatalf("compose (%s): %v", name, err)
+		}
+		if strings.Contains(result, marker) || strings.Contains(result, "retry-backoff") {
+			t.Errorf("the skill wiki must never reach the %s execution context:\n%s", name, result)
+		}
+	}
+}

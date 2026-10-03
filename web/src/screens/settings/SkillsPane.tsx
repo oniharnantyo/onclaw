@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { cx } from "../../lib/helpers";
 import { Icon } from "../../components/ui/Icon";
 import { Toggle } from "../../components/ui/Toggle";
@@ -14,6 +14,7 @@ import {
 import { useCanWriteSkills, unmetDependencies } from "../../lib/skills";
 import serverErrorSvg from "../../assets/server-error.svg";
 import { SkillInstallWizard, SkillEditDialog } from "../../modals/SkillDialog";
+import { CurationTab } from "./curation/CurationTab";
 
 export interface SkillsPaneProps {
   tenant: any;
@@ -23,12 +24,43 @@ export interface SkillsPaneProps {
   canWrite?: boolean;
 }
 
+type SkillsTab = 'skills' | 'curation';
+
+/** Initial tab from the deep link (?tab=curation) — read once, router-free so
+ * the pane also mounts bare (tests) without crashing. */
+function initialTabFromLocation(): SkillsTab {
+  try {
+    return new URLSearchParams(window.location.search).get('tab') === 'curation' ? 'curation' : 'skills';
+  } catch {
+    return 'skills';
+  }
+}
+
+/** Candidate id the in-chat chip deep-links (?candidate=<id>). */
+function focusCandidateFromLocation(): string | null {
+  try {
+    return new URLSearchParams(window.location.search).get('candidate');
+  } catch {
+    return null;
+  }
+}
+
 // Workspace skill library + locked system tier, backed by the skills API.
-// The workspace master switch and uninstall are the only lifecycle controls —
-// Members (skills.read without skills.write) get the same lists, read-only.
+// The pane is a two-tab shell (add-skill-curation-from-traces 9.1): Skills —
+// the library, exactly as before, the default view — and Curation, the
+// review loop, carrying a pending badge that clears when the queue empties.
+// The workspace master switch and uninstall are the only library lifecycle
+// controls — Members (skills.read without skills.write) get the same lists,
+// read-only, on both tabs.
 export function SkillsPane({ tenant, onToast = () => {}, canWrite }: SkillsPaneProps) {
   const derivedCanWrite = useCanWriteSkills(tenant);
   const writer = canWrite !== undefined ? canWrite : derivedCanWrite;
+
+  const [tab, setTab] = useState<SkillsTab>(initialTabFromLocation);
+  const focusCandidateId = useMemo(focusCandidateFromLocation, []);
+  // Pending badge: the review queue's size, null while unknown (fetch failed
+  // / workspace absent) — a null or zero badge renders nothing.
+  const [pendingCount, setPendingCount] = useState<number | null>(null);
 
   const [skills, setSkills] = useState<ApiWorkspaceSkill[]>([]);
   const [loading, setLoading] = useState(false);
@@ -41,6 +73,22 @@ export function SkillsPane({ tenant, onToast = () => {}, canWrite }: SkillsPaneP
   const [busy, setBusy] = useState(false);
 
   const targetWsId = tenant?.sub || tenant?.id;
+
+  const refreshPendingCount = useCallback(async () => {
+    if (!targetWsId) return;
+    try {
+      const res = await api.curation.listCandidates(targetWsId, 'pending');
+      setPendingCount(res.count ?? (res.candidates || []).length);
+    } catch (err: unknown) {
+      // Offline (status 0) rides the connection banner — don't flash a badge.
+      if (err instanceof ApiError && err.status === 0) return;
+      setPendingCount(null);
+    }
+  }, [targetWsId]);
+
+  useEffect(() => {
+    if (targetWsId) void refreshPendingCount();
+  }, [targetWsId, refreshPendingCount]);
 
   const loadSkills = async () => {
     setLoading(true);
@@ -211,6 +259,62 @@ export function SkillsPane({ tenant, onToast = () => {}, canWrite }: SkillsPaneP
 
   return (
     <div className="max-w-xl" data-od-id="pane-skills" data-testid="pane-skills">
+      {/* Two-tab shell (skill-curation spec): Skills — the library, the
+          default view, identical with or without curation — and Curation,
+          badged with the pending review count. */}
+      <div className="mb-4 flex gap-1 border-b border-linesoft" role="tablist" aria-label="Skills sections" data-testid="skills-pane-tabs">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'skills'}
+          onClick={() => setTab('skills')}
+          data-od-id="skills-tab-library"
+          data-testid="skills-tab-library"
+          className={cx(
+            '-mb-px flex h-9 items-center border-b-2 px-3 text-[13px] transition-colors',
+            tab === 'skills'
+              ? 'border-accent font-medium text-fg'
+              : 'border-transparent text-muted hover:text-fg2'
+          )}
+        >
+          Skills
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'curation'}
+          onClick={() => setTab('curation')}
+          data-od-id="skills-tab-curation"
+          data-testid="skills-tab-curation"
+          className={cx(
+            '-mb-px flex h-9 items-center gap-1.5 border-b-2 px-3 text-[13px] transition-colors',
+            tab === 'curation'
+              ? 'border-accent font-medium text-fg'
+              : 'border-transparent text-muted hover:text-fg2'
+          )}
+        >
+          Curation
+          {pendingCount ? (
+            <span
+              className="flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-accent px-1 font-mono text-[10px] font-semibold text-accenton"
+              data-testid="curation-pending-badge"
+            >
+              {pendingCount}
+            </span>
+          ) : null}
+        </button>
+      </div>
+
+      {tab === 'curation' ? (
+        <CurationTab
+          tenant={tenant}
+          canWrite={writer}
+          onToast={onToast}
+          focusCandidateId={focusCandidateId}
+          onQueueChanged={() => void refreshPendingCount()}
+        />
+      ) : (
+        <>
       <div className="mb-4 flex items-center justify-between">
         <div>
           <h3 className="text-[15px] font-semibold text-fg">Workspace skills</h3>
@@ -348,6 +452,8 @@ export function SkillsPane({ tenant, onToast = () => {}, canWrite }: SkillsPaneP
           </p>
         </Modal>
       ) : null}
+        </>
+      )}
     </div>
   );
 }

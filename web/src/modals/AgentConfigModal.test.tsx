@@ -156,6 +156,9 @@ describe('modals/AgentConfigModal', () => {
       ] as ApiWorkspaceSkill[]),
     });
     vi.spyOn(api.agents, 'listSkills').mockResolvedValue({ skills: [] });
+    // Curated provenance (add-skill-curation-from-traces): empty unless a
+    // test overrides it — optional context that must not block the modal.
+    vi.spyOn(api.curation, 'listCandidates').mockResolvedValue({ candidates: [], count: 0 });
     vi.spyOn(api.agents, 'listMcpServers').mockResolvedValue({ servers: [] });
     vi.spyOn(api.mcp, 'list').mockResolvedValue({ servers: [] });
     // The Integrations section lists managed connections (empty unless a test
@@ -227,6 +230,51 @@ describe('modals/AgentConfigModal', () => {
     const anthropicOption = options.find((o) => o.textContent?.includes('Anthropic (Configure in Settings → Providers)'));
     expect(anthropicOption).toBeDefined();
     expect(anthropicOption?.disabled).toBe(true);
+  });
+
+  it('excludes decision (typesafe) configs from every model picker (5.3)', async () => {
+    vi.spyOn(api.providers, 'list').mockResolvedValue({
+      providers: [
+        ...mockTenant.providers,
+        {
+          id: 'prov_typesafe',
+          workspace_id: 'acme',
+          type: 'typesafe',
+          name: 'TypeSafe Routing',
+          base_url: '',
+          key_set: true,
+          key_hint: 'ab12',
+          enabled: true,
+          created_at: '',
+          updated_at: '',
+        },
+      ],
+    });
+
+    render(
+      <AgentConfigModal
+        tenant={mockTenant}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('input-agent-name')).not.toBeNull();
+    });
+
+    await goToStep2();
+
+    // The agent model provider select lists language-model providers only —
+    // the decision config never appears as configured or unconfigured.
+    const providerSelect = screen.getByLabelText(/provider/i);
+    const options = Array.from(providerSelect.querySelectorAll('option'));
+    expect(options.some((o) => o.textContent?.includes('TypeSafe Routing'))).toBe(false);
+
+    // The agent's own memory side-call provider select: language providers only.
+    fireEvent.click(screen.getByTestId('ac-memory-sidecall-custom'));
+    const sidecall = screen.getByTestId('ac-memory-sidecall-provider') as HTMLSelectElement;
+    expect(Array.from(sidecall.options).map((o) => o.textContent)).not.toContain('TypeSafe Routing');
   });
 
   it('auto-suggests slug in kebab-case from name and applies kebab role suggestions', async () => {
@@ -1184,6 +1232,71 @@ describe('modals/AgentConfigModal', () => {
     });
   });
 
+  it('curated agent skills show provenance, probation standing, and a disabled promote affordance', async () => {
+    const detailAgent = {
+      id: 'radar', workspace_id: 'acme', slug: 'radar', name: 'Radar', role: 'Reviewer',
+      description: 'PR Reviewer', brief: 'Review all PRs', identity: '', soul: '',
+      provider_id: 'prov_anthropic', model: 'claude-3-7-sonnet', temperature: 1.0,
+      autonomy: 'approval' as const, disabled_tools: [], enabled_mcps: [], avatar: {},
+      prompts_status: 'ready' as const, created_at: '', updated_at: '',
+    };
+    vi.spyOn(api.agents, 'get').mockResolvedValue({ agent: detailAgent });
+    vi.spyOn(api.agents, 'listSkills').mockResolvedValue({
+      skills: [
+        {
+          id: 'radar/pdf-sweep', tier: 'agent', name: 'pdf-sweep', version: '0.3.1', source: 'authored',
+          description: 'Sweeps PDFs.', created_at: '', updated_at: '',
+        },
+      ],
+    });
+    // The agent-skills payload carries no curated state — the candidates list
+    // is the provenance source. One provisional curated row, decided 3 days ago.
+    vi.spyOn(api.curation, 'listCandidates').mockResolvedValue({
+      candidates: [
+        {
+          id: 'cand-1', workspace_id: 'acme', agent_id: 'radar', cluster_id: 'cl-pdf', skill_name: 'pdf-sweep',
+          status: 'provisional', proposed_content: '# pdf-sweep', is_edit: false,
+          evidence_event_ids: ['ev-1', 'ev-2'], cited_pattern_refs: ['pdf-extraction'],
+          helpful_count: 3, harmful_count: 1, use_count: 5,
+          proposed_at: '2026-09-24T00:00:00Z',
+          decided_at: new Date(Date.now() - 3 * 86400000).toISOString(),
+          updated_at: new Date(Date.now() - 3 * 86400000).toISOString(),
+        },
+      ],
+      count: 1,
+    });
+
+    render(<AgentConfigModal draft={{ id: 'radar', name: 'Radar' }} tenant={mockTenant} onClose={vi.fn()} onSave={vi.fn()} />);
+
+    await waitFor(() => { expect(screen.queryByTestId('agent-modal-loading')).toBeNull(); });
+    fireEvent.click(screen.getByText('Capabilities'));
+
+    // Curated badge with the skill's version + cited-pattern refs.
+    await waitFor(() => {
+      expect(screen.getByTestId('skill-curated-pdf-sweep')).not.toBeNull();
+    });
+    expect(screen.getByTestId('skill-curated-pdf-sweep').textContent).toContain('curated');
+    expect(screen.getByTestId('skill-curated-pdf-sweep').textContent).toContain('v0.3.1');
+    expect(screen.getByTestId('skill-pattern-pdf-sweep-pdf-extraction').textContent).toBe('pdf-extraction');
+
+    // Provisional chip with the probation day count and the outcome tally.
+    const provisional = screen.getByTestId('skill-provisional-pdf-sweep');
+    expect(provisional.textContent).toContain('provisional');
+    expect(provisional.textContent).toContain('day 3');
+    expect(provisional.textContent).toContain('3 helpful');
+    expect(provisional.textContent).toContain('1 harmful');
+
+    // Promote-to-workspace stays disabled with its unmet criteria named.
+    const promote = screen.getByTestId('btn-promote-pdf-sweep') as HTMLButtonElement;
+    expect(promote.disabled).toBe(true);
+    expect(screen.getByTestId('skill-promote-pdf-sweep').textContent).toContain(
+      'needs 2+ agents converging on this procedure'
+    );
+
+    // Plain agent skills stay unbadged.
+    expect(screen.queryByTestId('skill-curated-log-sweeper')).toBeNull();
+  });
+
   it('Step 3 MCP section lists workspace servers with status hints and off toggles by default', async () => {
     vi.spyOn(api.mcp, 'list').mockResolvedValue({
       servers: [
@@ -1469,9 +1582,28 @@ describe('modals/AgentConfigModal', () => {
   });
 
   it('hides private server write controls from holders without agents.write but keeps rows', async () => {
+    // Built-in Member set per the decided catalog (fix-role-permission-audit):
+    // reads plus channels.read/channels.write — roles.write is gone.
     useAuthStore.setState({
       memberships: [
-        { workspace_id: 'acme', role_name: 'Member', role: { name: 'Member', permissions: ['agents.read'] } },
+        {
+          workspace_id: 'acme',
+          role_name: 'Member',
+          role: {
+            name: 'Member',
+            permissions: [
+              'workspace.read',
+              'members.read',
+              'roles.read',
+              'providers.read',
+              'agents.read',
+              'skills.read',
+              'scheduler.read',
+              'channels.read',
+              'channels.write',
+            ],
+          },
+        },
       ] as any,
     });
     vi.spyOn(api.agents, 'listMcpServers').mockResolvedValue({

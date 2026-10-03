@@ -8,6 +8,7 @@ import (
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	"github.com/oniharnantyo/onclaw/internal/memory"
+	"github.com/oniharnantyo/onclaw/internal/skillcuration"
 )
 
 // Model is the Eino chat-model interface used by the ADK runtime agent.
@@ -49,6 +50,16 @@ const (
 	// Scheduled and heartbeat runs never emit it (spec agent-memory-pipeline,
 	// Ingested-chip event).
 	TranscriptEventMemoryIngested TranscriptEventKind = "memory_ingested"
+	// TranscriptEventSkillCandidate is the skill-curation chip
+	// (add-skill-curation-from-traces, spec "Qualifying run emits a candidate
+	// signal"): the qualifying run's coordinates and, once the proposer has
+	// drafted one, the candidate's id and skill name — the review queue's
+	// transcript breadcrumb. Like the memory chip it is emitted
+	// asynchronously after the run has terminalized; the durable form is the
+	// x.skill_candidate session event the hydrated History projection renders
+	// identically. Scheduled and heartbeat runs never emit it (the memory
+	// chip's origin rule, cloned).
+	TranscriptEventSkillCandidate TranscriptEventKind = "skill_candidate"
 	// TranscriptEventTaskCompleted announces a background task (delegation or
 	// shell) reaching a terminal status (add-agent-subagents-background D8).
 	// The task space is process-local — scoped to one run — and the event
@@ -275,6 +286,12 @@ type TranscriptEvent struct {
 	// never content. The type is the memory package's own registered payload
 	// so the live event and the persisted session event serialize identically.
 	MemoryIngested *memory.MemoryIngestedPayload `json:"memory_ingested,omitempty"`
+	// SkillCandidate carries the skill-curation chip payload
+	// (add-skill-curation-from-traces): the qualifying run's coordinates plus
+	// the drafted candidate's id and skill name once a proposal exists. The
+	// type is the skillcuration package's registered payload so the live
+	// event and the persisted session event serialize identically.
+	SkillCandidate *skillcuration.SkillCandidatePayload `json:"skill_candidate,omitempty"`
 	// TaskCompleted carries the background task completion chip
 	// (add-agent-subagents-background D8): task id, lane kind, terminal
 	// outcome, output path, and summary — the transcript/honesty surface of

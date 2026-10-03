@@ -269,7 +269,7 @@ func TestDrainAgentEvents_BreakdownRidesTerminalUsageOnly(t *testing.T) {
 			gen.Close()
 		}()
 		stream := NewEventStream(16)
-		r := &Runner{runMgr: newRunManager(context.Background(), 0), memoryWorker: newQueuedMemoryWorker()}
+		r := &Runner{runMgr: newRunManager(context.Background(), 0), ingestWorker: newQueuedMemoryWorker()}
 		req := ExecRequest{SessionID: "sess"}
 		r.drainAgentEvents(ctx, iter, stream, RunKey{}, "turn-1", "", nil, hooks.Event{}, &compactionState{}, sizes, nil, nil, req, false, adapter)
 		stream.Close()
@@ -454,7 +454,7 @@ func TestContextBreakdown_CancelledTurnStillMeasures(t *testing.T) {
 		gen.Close()
 	}()
 	stream := NewEventStream(16)
-	r := &Runner{runMgr: newRunManager(context.Background(), 0), memoryWorker: newQueuedMemoryWorker()}
+	r := &Runner{runMgr: newRunManager(context.Background(), 0), ingestWorker: newQueuedMemoryWorker()}
 	runCtx, cancel := context.WithCancel(context.Background())
 	cancel() // the run context is already dead when the seam fires
 	r.drainAgentEvents(runCtx, iter, stream, RunKey{}, "turn-1", "", nil, hooks.Event{}, &compactionState{}, sizes, nil, nil, ExecRequest{SessionID: "sess"}, false, adapter)

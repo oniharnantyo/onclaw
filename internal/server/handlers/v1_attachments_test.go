@@ -24,6 +24,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/oniharnantyo/onclaw/internal/agents"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/ingest"
 	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/server/handlers"
@@ -128,12 +129,13 @@ func newV1aEnv(t *testing.T) v1aEnv {
 		st.MemoryEmbeddings(),
 		memLog,
 	)
+	ingestWorker := ingest.NewWorker(memLog, ingest.WithConsumers(memWorker))
 	memSearch := newTestMemorySearcher(st)
 	memGate := memory.NewIntentGate(st.Providers(), v1aEncKey, agents.DefaultAgenticModelFactory, memLog)
 	runner := agents.NewRunner(
 		st.Workspaces(), st.Agents(), st.Users(), st.Members(), st.Roles(),
 		st.Providers(), st.SessionEvents(), st.SessionCheckpoints(), st.Memories(), st.AgentSessions(),
-		st.GatewayLinks(), memWorker, memSearch, memGate,
+		st.GatewayLinks(), ingestWorker, memSearch, memGate,
 		v1aEncKey, onClawDir,
 		agents.WithAgenticModelFactory(func(_ context.Context, _ string, _ providers.Credential, _ string) (model.BaseModel[*schema.AgenticMessage], error) {
 			return v1aStubModel{}, nil
@@ -183,7 +185,7 @@ func newV1aEnv(t *testing.T) v1aEnv {
 	}
 
 	atts := &v1aCaptureAttachments{AttachmentStore: st.Attachments()}
-	v1H := handlers.NewV1Handlers(runner, st.Agents(), st.SessionEvents(), atts, wsStorage, agents.NewToolSettingsService(st.ToolSettings(), nil), 0)
+	v1H := handlers.NewV1Handlers(runner, st.Agents(), st.SessionEvents(), atts, st.AgentSessions(), wsStorage, agents.NewToolSettingsService(st.ToolSettings(), nil), 0)
 
 	r := gin.New()
 	apiKey := &domain.WorkspaceAPIKey{WorkspaceID: ws.ID, CreatedBy: user.ID}

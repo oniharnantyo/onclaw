@@ -14,6 +14,7 @@ import (
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/ingest"
 	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/store"
@@ -40,33 +41,35 @@ func newTestMemorySearcher(st store.Store) *memory.Searcher {
 	)
 }
 
-// newTestMemoryPipeline builds the memory seam triplet over st: the worker,
-// the searcher, and the intent gate. The worker is deliberately NOT started —
-// tests that assert processed jobs construct their own worker with an
-// explicit side-call resolver (a started helper worker could reach the real
-// DefaultAgenticModelFactory). The gate's side-call resolution fails on the
-// provider catalog (no cheap tier wired), so full-turn tests fail open on the
-// gate exactly like production does with an unwired cheap tier.
-func newTestMemoryPipeline(st store.Store) (*memory.Worker, *memory.Searcher, *memory.IntentGate) {
+// newTestMemoryPipeline builds the memory seam triplet over st: the ingest
+// worker (with the memory pipeline registered as its consumer, never
+// started), the searcher, and the intent gate. The worker is deliberately
+// NOT started — tests that assert processed jobs construct their own worker
+// with an explicit side-call resolver (a started helper worker could reach
+// the real DefaultAgenticModelFactory). The gate's side-call resolution
+// fails on the provider catalog (no cheap tier wired), so full-turn tests
+// fail open on the gate exactly like production does with an unwired cheap
+// tier.
+func newTestMemoryPipeline(st store.Store) (*ingest.Worker, *memory.Searcher, *memory.IntentGate) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	worker := memory.NewWorker(
+	pipeline := memory.NewWorker(
 		memory.NewGister(st.MemoryEvents(), st.SessionEvents(), st.MemoryEntities(), st.Providers(), []byte("test-key-32-bytes-long-12345678"), DefaultAgenticModelFactory, logger),
 		memory.NewGate(st.MemoryNotes(), st.MemoryEntities(), st.Memories(), st.Providers(), []byte("test-key-32-bytes-long-12345678"), DefaultAgenticModelFactory, logger),
 		memory.NewProviderEmbedder(st.Providers(), st.ToolSettings(), []byte("test-key-32-bytes-long-12345678"), providers.NewRegistry()),
 		st.MemoryEmbeddings(),
 		logger,
 	)
-	return worker,
+	return ingest.NewWorker(logger, ingest.WithConsumers(pipeline)),
 		newTestMemorySearcher(st),
 		memory.NewIntentGate(st.Providers(), []byte("test-key-32-bytes-long-12345678"), DefaultAgenticModelFactory, logger)
 }
 
-// newQueuedMemoryWorker builds a never-started worker over nil stores: safe
-// for Enqueue (the bounded queue absorbs, nothing drains, no store is
+// newQueuedMemoryWorker builds a never-started ingest worker over nil stores:
+// safe for Enqueue (the bounded queue absorbs, nothing drains, no store is
 // touched) in tests that exercise the drain loop on a bare Runner literal.
-func newQueuedMemoryWorker() *memory.Worker {
+func newQueuedMemoryWorker() *ingest.Worker {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return memory.NewWorker(
+	pipeline := memory.NewWorker(
 		memory.NewGister(nil, nil, nil, nil, nil, nil, logger),
 		memory.NewGate(nil, nil, nil, nil, nil, nil, logger),
 		// No settings store: the embedder resolves no config and both
@@ -75,6 +78,7 @@ func newQueuedMemoryWorker() *memory.Worker {
 		nil,
 		logger,
 	)
+	return ingest.NewWorker(logger, ingest.WithConsumers(pipeline))
 }
 
 // staticTextModel answers every Generate with the next scripted response and
@@ -193,7 +197,7 @@ func seedMemoryNote(t *testing.T, st store.Store, workspaceID string, visibility
 func TestRunner_EnqueuesIngestOnBothStatuses(t *testing.T) {
 	st, runner, _, _, req := setupHooksRunner(t, &hooksModel{final: "done"})
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	worker := memory.NewWorker(
+	pipeline := memory.NewWorker(
 		memory.NewGister(st.MemoryEvents(), st.SessionEvents(), st.MemoryEntities(), nil, nil, nil, logger, memory.WithModelResolver(func(context.Context, string, string) (memory.Model, error) {
 			return nil, errors.New("side-call tier unwired")
 		})),
@@ -204,7 +208,8 @@ func TestRunner_EnqueuesIngestOnBothStatuses(t *testing.T) {
 		st.MemoryEmbeddings(),
 		logger,
 	)
-	runner.memoryWorker = worker
+	worker := ingest.NewWorker(logger, ingest.WithConsumers(pipeline))
+	runner.ingestWorker = worker
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	worker.Start(ctx)
@@ -240,13 +245,12 @@ func TestRunner_EnqueuesIngestOnBothStatuses(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		s := worker.Stats()
-		if s.Processed == 2 && s.Failed == 2 {
+		if worker.Stats().Processed == 2 && pipeline.Stats().Failed == 2 {
 			return
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	t.Fatalf("worker did not process both jobs fail-soft: %+v", worker.Stats())
+	t.Fatalf("worker did not process both jobs fail-soft: ingest %+v pipeline %+v", worker.Stats(), pipeline.Stats())
 }
 
 // TestRunner_EnqueueSkipsCancelledAndEphemeral pins the enqueue filter:
@@ -596,7 +600,7 @@ func TestWorkerChipFlowsThroughRunnerSink(t *testing.T) {
 		`{"description":"The team planned the deploy window","outcome":"Tuesday morning confirmed"}`,
 		`[{"op":"ADD","content":"The deploy window is Tuesday morning","visibility":"shared","importance":5,"pin":false,"explicit_request":false,"supersedes":null,"topic":null,"conflict_with_doc":false}]`,
 	}}
-	worker := memory.NewWorker(
+	pipeline := memory.NewWorker(
 		memory.NewGister(st.MemoryEvents(), st.SessionEvents(), st.MemoryEntities(), nil, nil, nil, logger, memory.WithModelResolver(func(context.Context, string, string) (memory.Model, error) {
 			return sidecall, nil
 		})),
@@ -608,7 +612,8 @@ func TestWorkerChipFlowsThroughRunnerSink(t *testing.T) {
 		logger,
 		memory.WithChipSink(runner.AppendMemoryChip),
 	)
-	runner.memoryWorker = worker
+	worker := ingest.NewWorker(logger, ingest.WithConsumers(pipeline))
+	runner.ingestWorker = worker
 
 	// Seed the session window the job will distill.
 	serializer := &schema.HumanReadableSerializer{}

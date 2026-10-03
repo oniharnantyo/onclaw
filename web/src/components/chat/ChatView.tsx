@@ -15,6 +15,7 @@ import { AgentMessage } from "./AgentMessage";
 import { ErrorEntry } from "./ErrorEntry";
 import { PromptBlockedNotice } from "./PromptBlockedNotice";
 import { MemoryIngestedChip } from "./MemoryIngestedChip";
+import { SkillCandidateChip } from "./SkillCandidateChip";
 import { ThinkingRow } from "./ThinkingRow";
 import { CompactionDivider } from "./CompactionDivider";
 import { DayDivider, dayKeyOf, fullStamp, parseEntryDate } from "./DayDivider";
@@ -254,6 +255,11 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
     // drawer — live events and hydrated history entries share it.
     if (m.author === 'memory')
       return <MemoryIngestedChip m={m} workspaceId={workspaceId}/>;
+    // Skill-curation chip (add-skill-curation-from-traces): a qualifying
+    // run's transcript breadcrumb — live events and hydrated history
+    // entries share it, mirroring the memory chip above.
+    if (m.author === 'skill_candidate')
+      return <SkillCandidateChip m={m}/>;
     // Context compaction marker (chat-compact-command): live events
     // and hydrated history entries share this divider component.
     if (m.author === 'compaction') return <CompactionDivider m={m}/>;
@@ -284,7 +290,7 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
           onOpenMembers (channels) opens the panel with the members tab
           focused — the configure prop is gone; configuration lives on the
           Agents screen. */}
-      <ChatHeader target={target} agent={agent} channelMembers={channelMembers} usage={session?.usage} langfuseUrl={session?.langfuseUrl}
+      <ChatHeader target={target} agent={agent} session={session} channelMembers={channelMembers} usage={session?.usage} langfuseUrl={session?.langfuseUrl}
         onOpenMembers={onOpenMembers}
         panelOpen={panelOpen} panelBadge={panelBadge}
         onTogglePanel={() => useStore.getState().setPanelOpen(!panelOpen)}

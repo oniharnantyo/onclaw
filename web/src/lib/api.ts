@@ -464,6 +464,98 @@ export interface ApiSkillInstallResult {
   dependency_status?: ApiSkillDependencyStatus[];
 }
 
+// ---------------------------------------------------------------------------
+// Skill curation review surface (add-skill-curation-from-traces 6.1): the
+// candidates queue, the approve/reject human gate, the pattern wiki listing,
+// the decision audit, and the cycle status. Shapes mirror
+// internal/server/handlers/skill_curation.go exactly.
+// ---------------------------------------------------------------------------
+
+/** One proposed curated skill: the model-drafted SKILL.md body plus its
+ * evidence chain and review lifecycle state (domain.SkillCandidate).
+ * source_available is the best-effort deleted-source marker the candidates
+ * LIST carries (the detail endpoint does not): false means the first
+ * evidence session no longer exists — the note never blocks approval. */
+export interface ApiSkillCandidate {
+  id: string;
+  workspace_id: string;
+  agent_id: string;
+  cluster_id: string;
+  skill_name: string;
+  status: 'pending' | 'approved' | 'rejected' | 'provisional' | 'disabled' | 'failed';
+  proposed_content: string;
+  is_edit: boolean;
+  supersedes_skill_name?: string;
+  superseded_content?: string;
+  evidence_event_ids: string[];
+  cited_pattern_refs: string[];
+  reason?: string;
+  helpful_count: number;
+  harmful_count: number;
+  use_count: number;
+  proposed_at: string;
+  decided_at?: string;
+  updated_at: string;
+  source_available?: boolean;
+}
+
+/** One curation-cycle stage outcome — ok, or the first error excerpt. */
+export interface ApiCycleStageResult {
+  stage: string;
+  ok: boolean;
+  error?: string;
+}
+
+/** The cycle's health numbers (skillcuration.CycleCounters). */
+export interface ApiCycleCounters {
+  clusters_considered: number;
+  clusters_processed: number;
+  proposals_drafted: number;
+  patterns_changed: number;
+  pattern_count: number;
+  candidates_pending: number;
+  probation_graduated: number;
+  probation_disabled: number;
+  qualifying_runs: number;
+  cluster_runs: number;
+  approved_curated_skills: number;
+  rejected_proposals: number;
+}
+
+/** One workspace's last (or current) cycle record (skillcuration.CycleStatus). */
+export interface ApiCycleStatus {
+  workspace_id: string;
+  state: 'idle' | 'running' | 'succeeded' | 'failed';
+  trigger?: string;
+  started_at: string;
+  finished_at: string;
+  stages: ApiCycleStageResult[];
+  counters: ApiCycleCounters;
+}
+
+/** One wiki pattern page (skillcuration.Page over the wire). */
+export interface ApiPatternPage {
+  slug: string;
+  title: string;
+  status: 'active' | 'superseded';
+  superseded_by?: string;
+  evidence_runs: string[];
+  body: string;
+}
+
+/** One audited review decision (domain.SkillImpactEntry). */
+export interface ApiAuditEntry {
+  id: string;
+  workspace_id: string;
+  cluster_id: string;
+  skill_name: string;
+  verdict: 'approved' | 'rejected' | 'superseded';
+  diff?: string;
+  reason?: string;
+  reviewer?: string;
+  created_at: string;
+}
+
 /** USER.md / WORKSPACE.md payload (change agent-memory). The size cap is
  * server-owned — every read carries `max_chars` and the UI never hardcodes it. */
 export interface ApiMemory {
@@ -606,6 +698,10 @@ export interface ApiMemorySettings {
     model: string;
     dimension: number;
   } | null;
+  /** The decision-backend pair (add-configurable-decision-backend): the view
+   * carries the flat keys only when BOTH are stored — absent reads as unset. */
+  decision_provider_id?: string;
+  decision_model?: string;
 }
 
 export interface ApiMemorySettingsUpdate {
@@ -616,6 +712,11 @@ export interface ApiMemorySettingsUpdate {
   gate_budget_ms?: number;
   /** Absent leaves the stored choice; null clears to agent default. */
   side_call_model?: { provider_id: string; model: string } | null;
+  /** The decision-backend pair, always sent together when enabled. Unlike
+   * side_call_model there is no null clear: omitting BOTH keys clears the
+   * stored pair (server tri-state on the flat keys). */
+  decision_provider_id?: string;
+  decision_model?: string;
   embedding?: {
     provider_id?: string;
     model?: string;
@@ -2074,6 +2175,77 @@ export const api = {
         method: 'POST',
         body,
       }),
+  },
+
+  // Skill-curation review surface (add-skill-curation-from-traces 6.1): reads
+  // ride skills.read (Members review the queue read-only); approve/reject and
+  // the manual cycle trigger are skills.write (Owner/Admin), enforced
+  // server-side. 409 conflicts carry the server's remedy/race message.
+  curation: {
+    // Empty status lists every lifecycle state (incl. disabled rows with
+    // their tallies); 'pending' is the review-badge view.
+    listCandidates: (ws: string, status?: string) => {
+      const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+      return request<{ candidates: ApiSkillCandidate[]; count: number }>(
+        `/workspaces/${encodeURIComponent(ws)}/skill-curation/candidates${qs}`,
+        { method: 'GET' }
+      );
+    },
+    // Detail plus the evidence payload: opaque event ids and cited pattern
+    // refs the UI deep-links — never hydrated transcripts.
+    getCandidate: (ws: string, id: string) =>
+      request<{ candidate: ApiSkillCandidate; evidence: { event_ids: string[]; cited_patterns: string[] } }>(
+        `/workspaces/${encodeURIComponent(ws)}/skill-curation/candidates/${encodeURIComponent(id)}`,
+        { method: 'GET' }
+      ),
+    approve: (ws: string, id: string) =>
+      request<{ candidate: ApiSkillCandidate }>(
+        `/workspaces/${encodeURIComponent(ws)}/skill-curation/candidates/${encodeURIComponent(id)}/approve`,
+        { method: 'POST', body: {} }
+      ),
+    // Reason is REQUIRED (400 on blank); it lands verbatim in the audit.
+    reject: (ws: string, id: string, reason: string) =>
+      request<{ candidate: ApiSkillCandidate }>(
+        `/workspaces/${encodeURIComponent(ws)}/skill-curation/candidates/${encodeURIComponent(id)}/reject`,
+        { method: 'POST', body: { reason } }
+      ),
+    // Re-runs extraction for one FAILED candidate's cluster (the
+    // extraction-failed card's retry action) — the same draft path the
+    // cycle runs. Success flips the row back to pending; failure refreshes
+    // the row's error message and rejects here (the card stays).
+    retryCandidate: (ws: string, id: string) =>
+      request<{ candidate: ApiSkillCandidate }>(
+        `/workspaces/${encodeURIComponent(ws)}/skill-curation/candidates/${encodeURIComponent(id)}/retry`,
+        { method: 'POST', body: {} }
+      ),
+    // Every page — active and superseded — with successor pointers and the
+    // evidence runs each cites. A missing wiki is the empty list.
+    listPatterns: (ws: string) =>
+      request<{ patterns: ApiPatternPage[] }>(
+        `/workspaces/${encodeURIComponent(ws)}/skill-curation/patterns`,
+        { method: 'GET' }
+      ),
+    // Decision audit, oldest first; since is an RFC 3339 timestamp.
+    listAudit: (ws: string, since?: string) => {
+      const qs = since ? `?since=${encodeURIComponent(since)}` : '';
+      return request<{ entries: ApiAuditEntry[] }>(
+        `/workspaces/${encodeURIComponent(ws)}/skill-curation/audit${qs}`,
+        { method: 'GET' }
+      );
+    },
+    // Manual trigger — the same entry point the ticker drives; 409 while a
+    // cycle is already in flight. The response carries the fresh status.
+    runCycle: (ws: string) =>
+      request<{ status: ApiCycleStatus }>(
+        `/workspaces/${encodeURIComponent(ws)}/skill-curation/cycle/run`,
+        { method: 'POST', body: {} }
+      ),
+    // Last (or current) cycle record; a never-run workspace reports idle.
+    cycleStatus: (ws: string) =>
+      request<{ status: ApiCycleStatus }>(
+        `/workspaces/${encodeURIComponent(ws)}/skill-curation/cycle/status`,
+        { method: 'GET' }
+      ),
   },
 
   users: {

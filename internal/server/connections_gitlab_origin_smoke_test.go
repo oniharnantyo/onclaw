@@ -16,6 +16,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/oniharnantyo/onclaw/internal/agents"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/ingest"
 	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/server"
@@ -200,11 +201,12 @@ func gitlabOriginEnv(t *testing.T, scripted *gitlabVerbModel) (*testEnv, *agents
 			o.Store.MemoryEmbeddings(),
 			memLog,
 		)
+		ingestWorker := ingest.NewWorker(memLog, ingest.WithConsumers(memWorker))
 		memGate := memory.NewIntentGate(o.Store.Providers(), o.EncryptionKey, agents.DefaultAgenticModelFactory, memLog)
 		runner = agents.NewRunner(
 			o.Store.Workspaces(), o.Store.Agents(), o.Store.Users(), o.Store.Members(), o.Store.Roles(),
 			o.Store.Providers(), o.Store.SessionEvents(), o.Store.SessionCheckpoints(), o.Store.Memories(), o.Store.AgentSessions(),
-			o.Store.GatewayLinks(), memWorker, newTestMemorySearcher(o.Store), memGate,
+			o.Store.GatewayLinks(), ingestWorker, newTestMemorySearcher(o.Store), memGate,
 			o.EncryptionKey, onClawDir,
 			agents.WithAgenticModelFactory(func(context.Context, string, providers.Credential, string) (agents.Model, error) {
 				return scripted, nil

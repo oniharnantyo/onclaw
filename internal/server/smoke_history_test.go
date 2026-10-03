@@ -20,6 +20,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/oniharnantyo/onclaw/internal/agents"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/ingest"
 	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/promptgen"
 	"github.com/oniharnantyo/onclaw/internal/providers"
@@ -148,6 +149,7 @@ func TestSmoke_ManualEngineRunAndHistoryEndpoint(t *testing.T) {
 		st.MemoryEmbeddings(),
 		memLog,
 	)
+	ingestWorker := ingest.NewWorker(memLog, ingest.WithConsumers(memWorker))
 	memSearch := newTestMemorySearcher(st)
 	memGate := memory.NewIntentGate(st.Providers(), []byte("test-key-32-bytes-long-12345678"), agents.DefaultAgenticModelFactory, memLog)
 	runner := agents.NewRunner(
@@ -160,7 +162,7 @@ func TestSmoke_ManualEngineRunAndHistoryEndpoint(t *testing.T) {
 		st.SessionEvents(),
 		st.SessionCheckpoints(),
 		st.Memories(), st.AgentSessions(),
-		st.GatewayLinks(), memWorker, memSearch, memGate,
+		st.GatewayLinks(), ingestWorker, memSearch, memGate,
 		encKey,
 		tempDir,
 		agents.WithAgenticModelFactory(agenticFactory),

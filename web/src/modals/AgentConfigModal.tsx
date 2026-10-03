@@ -22,13 +22,16 @@ import {
   type ApiHook,
   type ApiHookPayload,
   type ApiHookSaveResult,
+  type ApiSkillCandidate,
   type McpServerPayload,
   type AgentAutonomy,
   type CreateAgentPayload,
 } from "../lib/api";
 import { useCanWriteSkills, unmetToolDependencies } from "../lib/skills";
+import { probationDays } from "../screens/settings/curation/CandidatesList";
+import { isDecisionProviderType } from "./ProviderFormDialog";
 import { useCanWriteAgents } from "../lib/agents";
-import { useCanWriteTools } from "../lib/tools";
+import { useCanWriteHooks } from "../lib/writePerms";
 import {
   documentsApi,
   documentTypeLabel,
@@ -287,9 +290,10 @@ export function AgentConfigModal({
   // Loading detail state for edit mode
   const [loadingDetail, setLoadingDetail] = useState(isEdit);
 
-  // Configured providers
-  const [configuredProviders, setConfiguredProviders] = useState<ApiProviderConfig[]>(
-    tenant?.providers || currentWs?.providers || []
+  // Configured providers — decision-class configs are excluded at the seed
+  // and at every fetch (5.3): no model picker ever lists one.
+  const [configuredProviders, setConfiguredProviders] = useState<ApiProviderConfig[]>(() =>
+    (tenant?.providers || currentWs?.providers || []).filter((p) => !isDecisionProviderType(p.type))
   );
 
   // Workspace default model (refactor-workspace-settings D3): gates the
@@ -301,6 +305,11 @@ export function AgentConfigModal({
   const [workspaceSkills, setWorkspaceSkills] = useState<ApiWorkspaceSkill[]>([]);
   const [agentSkills, setAgentSkills] = useState<ApiWorkspaceSkill[]>([]);
   const [agentSkillFormOpen, setAgentSkillFormOpen] = useState(false);
+  // Curated provenance for the skills chips (add-skill-curation-from-traces):
+  // the agent-skills payload carries no curated state, so the curation
+  // candidates list is the honest client-side source. Optional context — a
+  // failed read renders no badges and never blocks the modal.
+  const [curatedSkills, setCuratedSkills] = useState<ApiSkillCandidate[]>([]);
   const skillsWritable = useCanWriteSkills(tenant || currentWs);
 
   // MCP: the workspace registry rows (opt-in toggles) and this agent's own
@@ -323,7 +332,7 @@ export function AgentConfigModal({
   // Agent lifecycle hooks (edit mode, D13): the agent's private hooks (CRUD,
   // same editor contract as the workspace pane) plus the instance/workspace
   // hooks that reach this agent — read-only, level-marked, no controls.
-  // hooks.write rides the same built-in role grants as tools.write.
+  // Gated on hooks.write (fix-role-permission-audit).
   const [agentHooks, setAgentHooks] = useState<ApiHook[]>([]);
   const [inheritedHooks, setInheritedHooks] = useState<{ instance: ApiHook[]; workspace: ApiHook[] }>({
     instance: [],
@@ -332,7 +341,9 @@ export function AgentConfigModal({
   const [agentHookDialog, setAgentHookDialog] = useState<
     { mode: 'add' } | { mode: 'edit'; hook: ApiHook } | null
   >(null);
-  const hooksWritable = useCanWriteTools(tenant || currentWs);
+  // fix-role-permission-audit: hook CRUD gates on the hooks catalog permission
+  // itself, not tools.write.
+  const hooksWritable = useCanWriteHooks(tenant || currentWs);
 
   const [toolCatalog, setToolCatalog] = useState<ApiToolSettings[]>([]);
 
@@ -472,7 +483,11 @@ export function AgentConfigModal({
         .list(targetWsId)
         .then((res) => {
           if (mounted && res?.providers) {
-            setConfiguredProviders(res.providers);
+            // Model pickers list language-model providers only (5.3): decision
+            // configs power routing calls and never serve agent models, so the
+            // agent model select and the memory side-call select both exclude
+            // them at the source.
+            setConfiguredProviders(res.providers.filter((p) => !isDecisionProviderType(p.type)));
           }
         })
         .catch(() => {});
@@ -566,6 +581,33 @@ export function AgentConfigModal({
       }
     }
   }, [isEdit, configuredProviders, provider]);
+
+  // Curated provenance (add-skill-curation-from-traces, agent-card chips):
+  // rows for this agent whose curated skill is live (approved, or mid-
+  // probation as provisional). Reads ride skills.read, so every viewer sees
+  // the same provenance; the agent id OR slug matches — candidates store the
+  // owning agent's id, the modal may address it by either.
+  useEffect(() => {
+    let mounted = true;
+    const agentId = draft?.id || draft?.slug;
+    if (isEdit && agentId && targetWsId) {
+      const agentKeys = new Set([draft?.id, draft?.slug].filter(Boolean) as string[]);
+      api.curation
+        .listCandidates(targetWsId)
+        .then((res) => {
+          if (!mounted) return;
+          setCuratedSkills(
+            (res?.candidates || []).filter(
+              (c) => agentKeys.has(c.agent_id) && (c.status === "provisional" || c.status === "approved")
+            )
+          );
+        })
+        .catch(() => {});
+    }
+    return () => {
+      mounted = false;
+    };
+  }, [isEdit, draft?.id, draft?.slug, targetWsId]);
 
   // Auto-fill context window from the selected model's catalog limit whenever
   // the model changes and the user has not typed a custom value. A manually
@@ -943,6 +985,16 @@ export function AgentConfigModal({
   // One inventory: system + enabled workspace tiers, then this agent's own.
   const allSkills = useMemo(() => [...lockedSkillChips, ...agentSkills], [lockedSkillChips, agentSkills]);
 
+  // Curated row per agent-tier skill name (add-skill-curation-from-traces):
+  // the curated badge, cited patterns, and probation chips read from this.
+  const curatedBySkillName = useMemo(() => {
+    const map = new Map<string, ApiSkillCandidate>();
+    for (const c of curatedSkills) {
+      if (!map.has(c.skill_name)) map.set(c.skill_name, c);
+    }
+    return map;
+  }, [curatedSkills]);
+
   return (
     <Modal
       title={isEdit ? (name ? `Configure ${name}` : draft?.name ? `Configure ${draft.name}` : "Configure agent") : "Deploy a new agent"}
@@ -1011,7 +1063,8 @@ export function AgentConfigModal({
 
               <button
                 type="button"
-                disabled={submitting}
+                disabled={submitting || !agentsWritable}
+                title={agentsWritable ? undefined : "Only Owners and Admins can deploy agents"}
                 onClick={() => handleCreateSubmit()}
                 data-od-id="btn-agent-save-modal"
                 data-testid="btn-agent-save-modal"
@@ -1032,7 +1085,8 @@ export function AgentConfigModal({
             </button>
             <button
               type="button"
-              disabled={submitting || loadingDetail}
+              disabled={submitting || loadingDetail || !agentsWritable}
+              title={agentsWritable ? undefined : "Only Owners and Admins can change agents"}
               onClick={handleEditSave}
               data-od-id="btn-agent-save-modal"
               data-testid="btn-agent-save-modal"
@@ -1629,6 +1683,7 @@ export function AgentConfigModal({
                     const missingTools = s.tier === "agent" ? [] : unmetToolDependencies(s).filter((t) =>
                       tools.includes(t) || toolCatalog.find((c) => c.key === t)?.enabled === false
                     );
+                    const curated = s.tier === "agent" ? curatedBySkillName.get(s.name) : undefined;
                     return (
                       <div key={s.tier + "-" + s.name} className="relative">
                         <span
@@ -1641,6 +1696,36 @@ export function AgentConfigModal({
                           <span className="rounded border border-line px-1 py-px font-mono text-[9px] uppercase tracking-wide text-muted" data-testid={"skill-tier-" + s.name}>
                             {s.tier}
                           </span>
+                          {curated ? (
+                            <>
+                              <span
+                                title="Curated by the skill-curation pipeline from reviewed run evidence"
+                                data-testid={"skill-curated-" + s.name}
+                                className="rounded border border-[color-mix(in_oklab,var(--accent)_45%,transparent)] px-1 py-px font-mono text-[9px] uppercase tracking-wide text-[color-mix(in_oklab,var(--accent),black_25%)]"
+                              >
+                                curated · v{s.version}
+                              </span>
+                              {(curated.cited_pattern_refs || []).map((ref) => (
+                                <span
+                                  key={ref}
+                                  title={"Cites wiki pattern " + ref}
+                                  data-testid={"skill-pattern-" + s.name + "-" + ref}
+                                  className="rounded border border-line px-1 py-px font-mono text-[9px] tracking-wide text-muted"
+                                >
+                                  {ref}
+                                </span>
+                              ))}
+                              {curated.status === "provisional" ? (
+                                <span
+                                  title="Mid-probation: outcome tally so far"
+                                  data-testid={"skill-provisional-" + s.name}
+                                  className="rounded border border-[color-mix(in_oklab,var(--accent)_45%,transparent)] bg-[color-mix(in_oklab,var(--accent)_8%,transparent)] px-1 py-px font-mono text-[9px] tracking-wide text-[color-mix(in_oklab,var(--accent),black_25%)]"
+                                >
+                                  ◐ provisional · day {probationDays(curated)} · +{curated.helpful_count} helpful / −{curated.harmful_count} harmful
+                                </span>
+                              ) : null}
+                            </>
+                          ) : null}
                           {s.tier === "agent" && isEdit && skillsWritable ? (
                             <button
                               type="button"
@@ -1653,6 +1738,20 @@ export function AgentConfigModal({
                             </button>
                           ) : null}
                         </span>
+                        {curated ? (
+                          <div className="mt-1 flex items-center gap-2" data-testid={"skill-promote-" + s.name}>
+                            <button
+                              type="button"
+                              disabled
+                              title="Promotion to a workspace skill is not available yet"
+                              data-testid={"btn-promote-" + s.name}
+                              className="flex h-6 items-center rounded-[6px] border border-line px-2 text-[10px] font-medium text-muted opacity-50"
+                            >
+                              Promote to workspace
+                            </button>
+                            <span className="text-[10px] text-muted">needs 2+ agents converging on this procedure</span>
+                          </div>
+                        ) : null}
                         {missingTools.length > 0 ? (
                           <p
                             className="mt-1 flex items-center gap-1 text-[11px] leading-4 text-[color-mix(in_oklab,var(--warn),black_38%)]"

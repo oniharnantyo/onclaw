@@ -47,13 +47,19 @@ type Agent struct {
 	// Memory side-call override: both empty (the default) inherits the
 	// workspace memory settings' side_call_model, then the model the agent
 	// itself runs. Both set pins the memory pipeline's cheap-model calls.
-	MemorySidecallProviderID string        `json:"memory_sidecall_provider_id,omitempty"`
-	MemorySidecallModel      string        `json:"memory_sidecall_model,omitempty"`
-	Temperature              float64       `json:"temperature"`
-	MaxTokens                *int          `json:"max_tokens,omitempty"`
-	Effort                   *string       `json:"effort,omitempty"`
-	Autonomy                 AgentAutonomy `json:"autonomy"`
-	ContextWindow            *int          `json:"context_window,omitempty"`
+	MemorySidecallProviderID string `json:"memory_sidecall_provider_id,omitempty"`
+	MemorySidecallModel      string `json:"memory_sidecall_model,omitempty"`
+	// Skill curation side-call override: both empty (the default) falls
+	// through the memory side-call pair, then the workspace default, then the
+	// provider default (skill-curation D7). Both set pins the curation
+	// side-calls (wiki maintenance, proposal) independently of memory's pair.
+	SkillCurationProviderID string        `json:"skill_curation_provider_id,omitempty"`
+	SkillCurationModel      string        `json:"skill_curation_model,omitempty"`
+	Temperature             float64       `json:"temperature"`
+	MaxTokens               *int          `json:"max_tokens,omitempty"`
+	Effort                  *string       `json:"effort,omitempty"`
+	Autonomy                AgentAutonomy `json:"autonomy"`
+	ContextWindow           *int          `json:"context_window,omitempty"`
 	// DisabledTools is the tool denylist: names absent from it are exposed
 	// (catalog minus denylist, workspace-gated); unknown names are inert.
 	DisabledTools []string        `json:"disabled_tools"`
@@ -83,6 +89,16 @@ func ValidateAgentAutonomy(autonomy AgentAutonomy) error {
 func ValidateAgentMemorySidecall(providerID, model string) error {
 	if (providerID == "") != (model == "") {
 		return fmt.Errorf("%w: memory side-call override needs both provider and model, or neither", ErrInvalid)
+	}
+	return nil
+}
+
+// ValidateAgentSkillCuration enforces the curation override pair with the
+// same rule as the memory side-call pair: inherit (both empty) or a
+// fully-specified model (both set) — never half.
+func ValidateAgentSkillCuration(providerID, model string) error {
+	if (providerID == "") != (model == "") {
+		return fmt.Errorf("%w: skill curation override needs both provider and model, or neither", ErrInvalid)
 	}
 	return nil
 }
@@ -187,6 +203,18 @@ func WorkspaceSkillsDir(dir, tenantSlug string) string {
 // <dir>/workspaces/<tenant_slug>/agents/<agent_slug>/skills
 func AgentSkillsDir(dir, tenantSlug, agentSlug string) string {
 	return filepath.Join(AgentWorkspaceDir(WorkspaceRoot(dir), tenantSlug, agentSlug), "skills")
+}
+
+// WorkspaceSkillWikiDir returns the skill-curation wiki directory for a
+// tenant workspace (add-skill-curation-from-traces D3):
+// <dir>/workspaces/<tenant_slug>/skillwiki
+//
+// The tenant slug is validated ([a-z0-9-]), so the path cannot traverse. The
+// wiki is workspace bookkeeping, never agent-facing: it lives beside — never
+// inside — any agent workspace directory, so the runner's document sources
+// (fixed prompt files, DB-rendered memory documents) cannot reach it.
+func WorkspaceSkillWikiDir(dir, tenantSlug string) string {
+	return filepath.Join(WorkspaceRoot(dir), tenantSlug, "skillwiki")
 }
 
 // AgentWorkspaceDir returns the agent's on-disk workspace directory under the

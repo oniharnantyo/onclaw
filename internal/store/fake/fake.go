@@ -19,6 +19,7 @@ import (
 // fakeStore is an in-memory implementation of store.Store.
 type fakeStore struct {
 	mu sync.RWMutex
+	lastStamp time.Time                      // last stampNow() value; guarded by mu
 
 	users                          map[string]*domain.User                   // key: ID
 	usersByEmail                   map[string]string                         // key: normalized email -> ID
@@ -80,9 +81,27 @@ type fakeStore struct {
 	referenceDocuments             map[string]*domain.ReferenceDocument      // key: ID
 	referenceDocumentsByStorageKey map[string]string                         // key: capability storage key -> ID
 	referenceDocumentSections      map[string][]domain.DocumentSection       // key: document ID -> ordered sections
+	skillCandidates                map[string]*domain.SkillCandidate         // key: ID
+	skillImpactEntries             map[string]*domain.SkillImpactEntry       // key: ID
+	skillClusterRuns               map[string]*domain.SkillClusterRun        // key: ID
+	skillClusterRunsByRun          map[string]string                         // key: workspaceID + ":" + sessionID + ":" + turnID -> ID
 }
 
 // New creates a new in-memory fake store.
+// stampNow returns the store's strictly monotonic wall stamp. Coarse OS
+// clocks return equal (occasionally regressing) readings for rapid writes,
+// which would break oldest-first ordering and strict re-stamp checks that
+// mirror the postgres adapter's behavior; the 1ns bump keeps later writes
+// strictly later. Must be called with s.mu held (all mutators do).
+func (s *fakeStore) stampNow() time.Time {
+	now := time.Now().UTC()
+	if !now.After(s.lastStamp) {
+		now = s.lastStamp.Add(time.Nanosecond)
+	}
+	s.lastStamp = now
+	return now
+}
+
 func New() store.Store {
 	return newStore()
 }
@@ -149,6 +168,10 @@ func newStore() *fakeStore {
 		referenceDocuments:             make(map[string]*domain.ReferenceDocument),
 		referenceDocumentsByStorageKey: make(map[string]string),
 		referenceDocumentSections:      make(map[string][]domain.DocumentSection),
+		skillCandidates:                make(map[string]*domain.SkillCandidate),
+		skillImpactEntries:             make(map[string]*domain.SkillImpactEntry),
+		skillClusterRuns:               make(map[string]*domain.SkillClusterRun),
+		skillClusterRunsByRun:          make(map[string]string),
 	}
 }
 
@@ -200,6 +223,11 @@ func (s *fakeStore) MemoryNotes() store.MemoryNoteStore {
 // MemoryReports returns the MemoryReportStore sub-port.
 func (s *fakeStore) MemoryReports() store.MemoryReportStore {
 	return &memoryReportStore{s: s}
+}
+
+// SkillCandidates returns the SkillCandidateStore sub-port.
+func (s *fakeStore) SkillCandidates() store.SkillCandidateStore {
+	return &skillCandidateStore{s: s}
 }
 
 // MemoryEmbeddings returns the MemoryEmbeddingStore sub-port.
@@ -535,6 +563,12 @@ func (s *fakeStore) clone() *fakeStore {
 	for docID, sections := range s.referenceDocumentSections {
 		cp.referenceDocumentSections[docID] = cloneDocumentSections(sections)
 	}
+	for id, c := range s.skillCandidates {
+		cp.skillCandidates[id] = cloneSkillCandidate(c)
+	}
+	for id, e := range s.skillImpactEntries {
+		cp.skillImpactEntries[id] = cloneSkillImpactEntry(e)
+	}
 	return cp
 }
 
@@ -599,6 +633,8 @@ func (s *fakeStore) apply(other *fakeStore) {
 	s.referenceDocuments = other.referenceDocuments
 	s.referenceDocumentsByStorageKey = other.referenceDocumentsByStorageKey
 	s.referenceDocumentSections = other.referenceDocumentSections
+	s.skillCandidates = other.skillCandidates
+	s.skillImpactEntries = other.skillImpactEntries
 }
 
 func cloneUser(u *domain.User) *domain.User {
@@ -875,7 +911,7 @@ func (us *userStore) Create(ctx context.Context, u *domain.User) error {
 		u.ID = uuid.NewString()
 	}
 
-	now := time.Now().UTC()
+	now := us.s.stampNow()
 	if u.CreatedAt.IsZero() {
 		u.CreatedAt = now
 	}
@@ -957,7 +993,7 @@ func (us *userStore) SetDisabled(ctx context.Context, id string, at *time.Time) 
 	} else {
 		u.DisabledAt = nil
 	}
-	u.UpdatedAt = time.Now().UTC()
+	u.UpdatedAt = us.s.stampNow()
 	return nil
 }
 
@@ -972,7 +1008,7 @@ func (us *userStore) SetPasswordHash(ctx context.Context, id string, hash string
 
 	h := hash
 	u.PasswordHash = &h
-	u.UpdatedAt = time.Now().UTC()
+	u.UpdatedAt = us.s.stampNow()
 	return nil
 }
 
@@ -1010,7 +1046,7 @@ func (us *userStore) Update(ctx context.Context, u *domain.User) error {
 	if u.PasswordHash != nil {
 		existing.PasswordHash = u.PasswordHash
 	}
-	existing.UpdatedAt = time.Now().UTC()
+	existing.UpdatedAt = us.s.stampNow()
 
 	*u = *cloneUser(existing)
 	return nil
@@ -1056,7 +1092,7 @@ func (ws *workspaceStore) Create(ctx context.Context, w *domain.Workspace) error
 		w.Timezone = "UTC"
 	}
 
-	now := time.Now().UTC()
+	now := ws.s.stampNow()
 	if w.CreatedAt.IsZero() {
 		w.CreatedAt = now
 	}
@@ -1123,7 +1159,7 @@ func (ws *workspaceStore) Update(ctx context.Context, w *domain.Workspace) error
 		pair := *w.DefaultModel
 		existing.DefaultModel = &pair
 	}
-	existing.UpdatedAt = time.Now().UTC()
+	existing.UpdatedAt = ws.s.stampNow()
 
 	*w = *cloneWorkspace(existing)
 	return nil
@@ -1196,7 +1232,7 @@ func (rs *roleStore) Create(ctx context.Context, r *domain.Role) error {
 		r.ID = uuid.NewString()
 	}
 
-	now := time.Now().UTC()
+	now := rs.s.stampNow()
 	if r.CreatedAt.IsZero() {
 		r.CreatedAt = now
 	}
@@ -1300,7 +1336,7 @@ func (ms *memberStore) Add(ctx context.Context, m *domain.Member) error {
 		return fmt.Errorf("%w: role does not belong to workspace", domain.ErrInvalid)
 	}
 
-	now := time.Now().UTC()
+	now := ms.s.stampNow()
 	if m.CreatedAt.IsZero() {
 		m.CreatedAt = now
 	}
@@ -1453,7 +1489,7 @@ func (ps *providerStore) Create(ctx context.Context, p *domain.ProviderConfig) e
 		p.ID = uuid.NewString()
 	}
 
-	now := time.Now().UTC()
+	now := ps.s.stampNow()
 	if p.CreatedAt.IsZero() {
 		p.CreatedAt = now
 	}
@@ -1527,7 +1563,7 @@ func (ps *providerStore) Update(ctx context.Context, p *domain.ProviderConfig) e
 	existing.KeyCiphertext = p.KeyCiphertext
 	existing.KeyHint = p.KeyHint
 	existing.Enabled = p.Enabled
-	existing.UpdatedAt = time.Now().UTC()
+	existing.UpdatedAt = ps.s.stampNow()
 
 	*p = *cloneProvider(existing)
 	return nil
@@ -1631,7 +1667,7 @@ func (as *agentStore) Create(ctx context.Context, a *domain.Agent) error {
 		a.ID = uuid.NewString()
 	}
 
-	now := time.Now().UTC()
+	now := as.s.stampNow()
 	if a.CreatedAt.IsZero() {
 		a.CreatedAt = now
 	}
@@ -1766,6 +1802,12 @@ func (as *agentStore) Update(ctx context.Context, a *domain.Agent) error {
 	existing.Brief = a.Brief
 	existing.ProviderID = a.ProviderID
 	existing.Model = a.Model
+	// Side-call override pairs ride the row like every other stored field
+	// (the postgres adapter's UPDATE persists them; the fake must agree).
+	existing.MemorySidecallProviderID = a.MemorySidecallProviderID
+	existing.MemorySidecallModel = a.MemorySidecallModel
+	existing.SkillCurationProviderID = a.SkillCurationProviderID
+	existing.SkillCurationModel = a.SkillCurationModel
 	existing.Temperature = a.Temperature
 	existing.MaxTokens = a.MaxTokens
 	existing.Effort = a.Effort
@@ -1786,7 +1828,7 @@ func (as *agentStore) Update(ctx context.Context, a *domain.Agent) error {
 		copy(existing.Avatar, a.Avatar)
 	}
 	existing.UpdatedBy = a.UpdatedBy
-	existing.UpdatedAt = time.Now().UTC()
+	existing.UpdatedAt = as.s.stampNow()
 
 	*a = *cloneAgent(existing)
 	return nil
@@ -1928,7 +1970,7 @@ func (as *agentStore) SetPromptState(ctx context.Context, workspaceID, id string
 	} else {
 		a.PromptsError = nil
 	}
-	a.UpdatedAt = time.Now().UTC()
+	a.UpdatedAt = as.s.stampNow()
 	return nil
 }
 
@@ -1936,7 +1978,7 @@ func (as *agentStore) SweepGenerating(ctx context.Context, errMsg string) (int64
 	as.s.mu.Lock()
 	defer as.s.mu.Unlock()
 
-	now := time.Now().UTC()
+	now := as.s.stampNow()
 	var count int64
 	for _, a := range as.s.agents {
 		if a.PromptsStatus == domain.PromptsStatusGenerating {
@@ -1991,7 +2033,7 @@ func (ms *memoryStore) UpsertUserMemory(ctx context.Context, workspaceID, userID
 		return fmt.Errorf("%w: user not found", domain.ErrNotFound)
 	}
 
-	ms.s.userMemories[workspaceID+":"+userID] = &domain.Memory{Content: content, UpdatedAt: time.Now().UTC()}
+	ms.s.userMemories[workspaceID+":"+userID] = &domain.Memory{Content: content, UpdatedAt: ms.s.stampNow()}
 	return nil
 }
 
@@ -2022,7 +2064,7 @@ func (ms *memoryStore) AppendUserMemory(ctx context.Context, workspaceID, userID
 	if err := domain.ValidateMemoryAppend(current, content); err != nil {
 		return err
 	}
-	ms.s.userMemories[key] = &domain.Memory{Content: current + content, UpdatedAt: time.Now().UTC()}
+	ms.s.userMemories[key] = &domain.Memory{Content: current + content, UpdatedAt: ms.s.stampNow()}
 	return nil
 }
 
@@ -2056,7 +2098,7 @@ func (ms *memoryStore) UpsertWorkspaceMemory(ctx context.Context, workspaceID, c
 		return fmt.Errorf("%w: workspace not found", domain.ErrNotFound)
 	}
 
-	ms.s.workspaceMemories[workspaceID] = &domain.Memory{Content: content, UpdatedAt: time.Now().UTC()}
+	ms.s.workspaceMemories[workspaceID] = &domain.Memory{Content: content, UpdatedAt: ms.s.stampNow()}
 	return nil
 }
 
@@ -2083,7 +2125,7 @@ func (ms *memoryStore) AppendWorkspaceMemory(ctx context.Context, workspaceID, c
 	if err := domain.ValidateMemoryAppend(current, content); err != nil {
 		return err
 	}
-	ms.s.workspaceMemories[workspaceID] = &domain.Memory{Content: current + content, UpdatedAt: time.Now().UTC()}
+	ms.s.workspaceMemories[workspaceID] = &domain.Memory{Content: current + content, UpdatedAt: ms.s.stampNow()}
 	return nil
 }
 
@@ -2366,7 +2408,7 @@ func (ks *apiKeyStore) Create(ctx context.Context, k *domain.WorkspaceAPIKey) er
 		k.ID = uuid.NewString()
 	}
 
-	now := time.Now().UTC()
+	now := ks.s.stampNow()
 	if k.CreatedAt.IsZero() {
 		k.CreatedAt = now
 	}
@@ -2413,7 +2455,7 @@ func (ks *apiKeyStore) Revoke(ctx context.Context, workspaceID, id string) error
 		return domain.ErrNotFound
 	}
 
-	now := time.Now().UTC()
+	now := ks.s.stampNow()
 	k.RevokedAt = &now
 	return nil
 }
@@ -2472,7 +2514,7 @@ func (ts *toolSettingStore) Upsert(ctx context.Context, setting *domain.Workspac
 		return fmt.Errorf("%w: workspace not found", domain.ErrNotFound)
 	}
 
-	now := time.Now().UTC()
+	now := ts.s.stampNow()
 	if setting.UpdatedAt.IsZero() {
 		setting.UpdatedAt = now
 	}
@@ -2540,7 +2582,7 @@ func (wss *workspaceSkillStore) Create(ctx context.Context, sk *domain.Workspace
 		sk.ID = uuid.NewString()
 	}
 
-	now := time.Now().UTC()
+	now := wss.s.stampNow()
 	if sk.CreatedAt.IsZero() {
 		sk.CreatedAt = now
 	}
@@ -2673,7 +2715,7 @@ func (wss *workspaceSkillStore) Update(ctx context.Context, sk *domain.Workspace
 		Binaries: cloneStringSlice(sk.Dependencies.Binaries),
 		Python:   cloneStringSlice(sk.Dependencies.Python),
 	}
-	existing.UpdatedAt = time.Now().UTC()
+	existing.UpdatedAt = wss.s.stampNow()
 
 	*sk = *cloneWorkspaceSkill(existing)
 	return nil
@@ -2693,7 +2735,7 @@ func (wss *workspaceSkillStore) SetEnabled(ctx context.Context, workspaceID, id 
 	}
 
 	sk.Enabled = enabled
-	sk.UpdatedAt = time.Now().UTC()
+	sk.UpdatedAt = wss.s.stampNow()
 	return nil
 }
 
@@ -2751,7 +2793,7 @@ func (mss *workspaceMCPServerStore) Create(ctx context.Context, srv *domain.Work
 		srv.ID = uuid.NewString()
 	}
 
-	now := time.Now().UTC()
+	now := mss.s.stampNow()
 	if srv.CreatedAt.IsZero() {
 		srv.CreatedAt = now
 	}
@@ -2830,7 +2872,7 @@ func (mss *workspaceMCPServerStore) Update(ctx context.Context, srv *domain.Work
 	existing.Name = srv.Name
 	existing.MCPConnection = cloneMCPConnection(srv.MCPConnection)
 	existing.Enabled = srv.Enabled
-	existing.UpdatedAt = time.Now().UTC()
+	existing.UpdatedAt = mss.s.stampNow()
 
 	*srv = *cloneWorkspaceMCPServer(existing)
 	return nil
@@ -2873,7 +2915,7 @@ func (mss *workspaceMCPServerStore) SetStatus(ctx context.Context, workspaceID, 
 	srv.Status = status
 	srv.StatusError = statusError
 	srv.ToolCount = toolCount
-	srv.UpdatedAt = time.Now().UTC()
+	srv.UpdatedAt = mss.s.stampNow()
 	return nil
 }
 
@@ -2917,7 +2959,7 @@ func (mss *agentMCPServerStore) Create(ctx context.Context, srv *domain.AgentMCP
 		srv.ID = uuid.NewString()
 	}
 
-	now := time.Now().UTC()
+	now := mss.s.stampNow()
 	if srv.CreatedAt.IsZero() {
 		srv.CreatedAt = now
 	}
@@ -2996,7 +3038,7 @@ func (mss *agentMCPServerStore) Update(ctx context.Context, srv *domain.AgentMCP
 	existing.Name = srv.Name
 	existing.MCPConnection = cloneMCPConnection(srv.MCPConnection)
 	existing.Enabled = srv.Enabled
-	existing.UpdatedAt = time.Now().UTC()
+	existing.UpdatedAt = mss.s.stampNow()
 
 	*srv = *cloneAgentMCPServer(existing)
 	return nil
@@ -3039,7 +3081,7 @@ func (mss *agentMCPServerStore) SetStatus(ctx context.Context, agentID, id, stat
 	srv.Status = status
 	srv.StatusError = statusError
 	srv.ToolCount = toolCount
-	srv.UpdatedAt = time.Now().UTC()
+	srv.UpdatedAt = mss.s.stampNow()
 	return nil
 }
 
@@ -3089,7 +3131,7 @@ func (a *agentSessionStore) UpsertAgentSession(ctx context.Context, workspaceID,
 	}
 
 	key := agentSessionKey(workspaceID, agentID, up.SessionID)
-	now := time.Now().UTC()
+	now := a.s.stampNow()
 	if existing, exists := a.s.agentSessions[key]; exists {
 		// Conflict path (design D2): bump activity, revive soft-deleted rows,
 		// and apply the birth-only title rule. user_id stays as born.
@@ -3157,9 +3199,26 @@ func (a *agentSessionStore) SoftDeleteAgentSession(ctx context.Context, workspac
 	}
 	// Re-deleting an already-deleted row is an accepted no-op: the listing
 	// outcome is identical.
-	now := time.Now().UTC()
+	now := a.s.stampNow()
 	session.DeletedAt = &now
 	return nil
+}
+
+// GetAgentSession returns one session-index row by the (workspace, agent,
+// session) triple regardless of owning user — the ownership-check read (D3).
+// No user predicate and no deleted_at filter: a soft-deleted row still
+// carries its birth owner. Absent → (nil, nil) — unknown, foreign-workspace,
+// and system sessions (chan_, sched_, hb_, tg_group_: never indexed) are
+// indistinguishable, following the GetScheduler convention.
+func (a *agentSessionStore) GetAgentSession(ctx context.Context, workspaceID, agentID, sessionID string) (*domain.AgentSession, error) {
+	a.s.mu.RLock()
+	defer a.s.mu.RUnlock()
+
+	session, exists := a.s.agentSessions[agentSessionKey(workspaceID, agentID, sessionID)]
+	if !exists {
+		return nil, nil
+	}
+	return cloneAgentSession(session), nil
 }
 
 // -------------------------------------------------------------------------
@@ -3591,7 +3650,7 @@ func (es *memoryEventStore) TombstoneEvent(ctx context.Context, workspaceID, id 
 		// Absent and already-tombstoned are indistinguishable — no leak.
 		return domain.ErrNotFound
 	}
-	now := time.Now().UTC()
+	now := es.s.stampNow()
 	e.TombstonedAt = &now
 	return nil
 }
@@ -3695,7 +3754,7 @@ func (ns *memoryNoteStore) TombstoneNote(ctx context.Context, workspaceID, id st
 	if !exists || n.WorkspaceID != workspaceID || n.TombstonedAt != nil {
 		return domain.ErrNotFound
 	}
-	now := time.Now().UTC()
+	now := ns.s.stampNow()
 	n.TombstonedAt = &now
 	return nil
 }
@@ -3722,7 +3781,7 @@ func (ns *memoryNoteStore) PromoteNote(ctx context.Context, workspaceID, id, pro
 	n.AgentID = nil
 	promotedBy := promotedByUserID
 	n.PromotedBy = &promotedBy
-	now := time.Now().UTC()
+	now := ns.s.stampNow()
 	n.PromotedAt = &now
 	return nil
 }
@@ -4000,7 +4059,7 @@ func (ns *memoryNoteStore) AddNoteEvidence(ctx context.Context, workspaceID, not
 	if !exists || n.WorkspaceID != workspaceID || n.TombstonedAt != nil {
 		return domain.ErrNotFound
 	}
-	now := time.Now().UTC()
+	now := ns.s.stampNow()
 	for _, sourceEventID := range sourceEventIDs {
 		if sourceEventID == "" {
 			continue
@@ -4093,4 +4152,452 @@ func (rs *memoryReportStore) Get(ctx context.Context, workspaceID string) (*doma
 		return nil, nil
 	}
 	return cloneMemoryReport(r), nil
+}
+
+// -------------------------------------------------------------------------
+// SkillCandidateStore implementation (add-skill-curation-from-traces 2.3):
+// the proposed-skill review queue and its append-only audit trail. Every
+// read is workspace-partitioned; a foreign-workspace id is indistinguishable
+// from an unknown one. Status transitions are the service's policy — the
+// fake persists any valid lifecycle state like the postgres adapter.
+// -------------------------------------------------------------------------
+
+type skillCandidateStore struct {
+	s *fakeStore
+}
+
+func (st *skillCandidateStore) Save(ctx context.Context, candidate *domain.SkillCandidate) error {
+	if candidate.Status == "" {
+		candidate.Status = domain.SkillCandidatePending
+	}
+	if err := candidate.Validate(); err != nil {
+		return err
+	}
+
+	st.s.mu.Lock()
+	defer st.s.mu.Unlock()
+
+	if _, exists := st.s.workspaces[candidate.WorkspaceID]; !exists {
+		return fmt.Errorf("%w: workspace not found", domain.ErrNotFound)
+	}
+	if agent, exists := st.s.agents[candidate.AgentID]; !exists || agent.WorkspaceID != candidate.WorkspaceID {
+		return fmt.Errorf("%w: agent not found in workspace", domain.ErrNotFound)
+	}
+	if candidate.ID == "" {
+		candidate.ID = uuid.NewString()
+	} else if _, exists := st.s.skillCandidates[candidate.ID]; exists {
+		return fmt.Errorf("%w: skill candidate %q already exists", domain.ErrConflict, candidate.ID)
+	}
+	now := st.s.stampNow()
+	if candidate.ProposedAt.IsZero() {
+		candidate.ProposedAt = now
+	}
+	candidate.UpdatedAt = now
+	st.s.skillCandidates[candidate.ID] = cloneSkillCandidate(candidate)
+	return nil
+}
+
+func (st *skillCandidateStore) Get(ctx context.Context, workspaceID, id string) (*domain.SkillCandidate, error) {
+	if workspaceID == "" || id == "" {
+		return nil, domain.ErrNotFound
+	}
+
+	st.s.mu.RLock()
+	defer st.s.mu.RUnlock()
+
+	c, exists := st.s.skillCandidates[id]
+	if !exists || c.WorkspaceID != workspaceID {
+		return nil, domain.ErrNotFound
+	}
+	return cloneSkillCandidate(c), nil
+}
+
+// listSkillCandidates is the shared ordered listing: newest proposal first,
+// filtered by the optional workspace/status/cluster scope.
+func (st *skillCandidateStore) listSkillCandidates(workspaceID string, status domain.SkillCandidateStatus, clusterID string) []domain.SkillCandidate {
+	candidates := make([]domain.SkillCandidate, 0)
+	for _, c := range st.s.skillCandidates {
+		if c.WorkspaceID != workspaceID {
+			continue
+		}
+		if status != "" && c.Status != status {
+			continue
+		}
+		if clusterID != "" && c.ClusterID != clusterID {
+			continue
+		}
+		candidates = append(candidates, *cloneSkillCandidate(c))
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if !candidates[i].ProposedAt.Equal(candidates[j].ProposedAt) {
+			return candidates[i].ProposedAt.After(candidates[j].ProposedAt)
+		}
+		return candidates[i].ID > candidates[j].ID
+	})
+	return candidates
+}
+
+func (st *skillCandidateStore) List(ctx context.Context, workspaceID string, status domain.SkillCandidateStatus) ([]domain.SkillCandidate, error) {
+	if workspaceID == "" {
+		return []domain.SkillCandidate{}, nil
+	}
+
+	st.s.mu.RLock()
+	defer st.s.mu.RUnlock()
+
+	return st.listSkillCandidates(workspaceID, status, ""), nil
+}
+
+func (st *skillCandidateStore) ListByCluster(ctx context.Context, workspaceID, clusterID string) ([]domain.SkillCandidate, error) {
+	if workspaceID == "" || clusterID == "" {
+		return []domain.SkillCandidate{}, nil
+	}
+
+	st.s.mu.RLock()
+	defer st.s.mu.RUnlock()
+
+	return st.listSkillCandidates(workspaceID, "", clusterID), nil
+}
+
+func (st *skillCandidateStore) UpdateStatus(ctx context.Context, workspaceID, id string, status domain.SkillCandidateStatus, reason string) error {
+	if workspaceID == "" || id == "" {
+		return domain.ErrNotFound
+	}
+	if !domain.ValidSkillCandidateStatus(status) {
+		return fmt.Errorf("%w: unknown skill candidate status %q", domain.ErrInvalid, status)
+	}
+
+	st.s.mu.Lock()
+	defer st.s.mu.Unlock()
+
+	c, exists := st.s.skillCandidates[id]
+	if !exists || c.WorkspaceID != workspaceID {
+		return domain.ErrNotFound
+	}
+	now := st.s.stampNow()
+	c.Status = status
+	c.Reason = reason
+	c.DecidedAt = &now
+	c.UpdatedAt = now
+	return nil
+}
+
+// UpdateDraft rewrites one candidate's draft payload in place — the manual
+// retry's success path: the failed row becomes a fresh pending proposal.
+// Mirrors the postgres adapter: the merged row is validated through the
+// domain layer, Reason clears, DecidedAt clears, ProposedAt/UpdatedAt are
+// stamped app-side, and the workspace partition scopes the write.
+func (st *skillCandidateStore) UpdateDraft(ctx context.Context, workspaceID, id string, draft *domain.SkillCandidate) error {
+	if workspaceID == "" || id == "" {
+		return domain.ErrNotFound
+	}
+	if draft == nil {
+		return fmt.Errorf("%w: skill candidate draft is required", domain.ErrInvalid)
+	}
+
+	st.s.mu.Lock()
+	defer st.s.mu.Unlock()
+
+	c, exists := st.s.skillCandidates[id]
+	if !exists || c.WorkspaceID != workspaceID {
+		return domain.ErrNotFound
+	}
+	merged := *c
+	merged.SkillName = draft.SkillName
+	merged.Status = domain.SkillCandidatePending
+	merged.ProposedContent = draft.ProposedContent
+	merged.IsEdit = draft.IsEdit
+	merged.SupersedesSkillName = draft.SupersedesSkillName
+	merged.SupersededContent = draft.SupersededContent
+	merged.EvidenceEventIDs = draft.EvidenceEventIDs
+	merged.CitedPatternRefs = draft.CitedPatternRefs
+	merged.Reason = ""
+	if err := merged.Validate(); err != nil {
+		return err
+	}
+	now := st.s.stampNow()
+	merged.ProposedAt = now
+	merged.DecidedAt = nil
+	merged.UpdatedAt = now
+	*c = merged
+	return nil
+}
+
+func (st *skillCandidateStore) CountPending(ctx context.Context, workspaceID string) (int, error) {
+	if workspaceID == "" {
+		return 0, nil
+	}
+
+	st.s.mu.RLock()
+	defer st.s.mu.RUnlock()
+
+	count := 0
+	for _, c := range st.s.skillCandidates {
+		if c.WorkspaceID == workspaceID && c.Status == domain.SkillCandidatePending {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (st *skillCandidateStore) CountApprovedCuratedByAgent(ctx context.Context, workspaceID, agentID string) (int, error) {
+	if workspaceID == "" || agentID == "" {
+		return 0, nil
+	}
+
+	st.s.mu.RLock()
+	defer st.s.mu.RUnlock()
+
+	// Live curated = approved + provisional; disabled rows are archived out
+	// of every catalog and stop counting against budget (D6).
+	count := 0
+	for _, c := range st.s.skillCandidates {
+		if c.WorkspaceID != workspaceID || c.AgentID != agentID {
+			continue
+		}
+		if c.Status == domain.SkillCandidateApproved || c.Status == domain.SkillCandidateProvisional {
+			count++
+		}
+	}
+	return count, nil
+}
+
+// IncrementOutcomeCounts tallies one probation outcome (6.2, D6): the
+// helpful/harmful counter and, when used, the use counter, with UpdatedAt
+// stamped. Absent or foreign-workspace candidates are domain.ErrNotFound,
+// mirroring the postgres adapter.
+func (st *skillCandidateStore) IncrementOutcomeCounts(ctx context.Context, workspaceID, candidateID string, helpful, used bool) error {
+	if workspaceID == "" || candidateID == "" {
+		return domain.ErrNotFound
+	}
+
+	st.s.mu.Lock()
+	defer st.s.mu.Unlock()
+
+	c, exists := st.s.skillCandidates[candidateID]
+	if !exists || c.WorkspaceID != workspaceID {
+		return domain.ErrNotFound
+	}
+	if helpful {
+		c.HelpfulCount++
+	} else {
+		c.HarmfulCount++
+	}
+	if used {
+		c.UseCount++
+	}
+	c.UpdatedAt = st.s.stampNow()
+	return nil
+}
+
+func (st *skillCandidateStore) AppendImpactEntry(ctx context.Context, entry *domain.SkillImpactEntry) error {
+	if err := entry.Validate(); err != nil {
+		return err
+	}
+
+	st.s.mu.Lock()
+	defer st.s.mu.Unlock()
+
+	if _, exists := st.s.workspaces[entry.WorkspaceID]; !exists {
+		return fmt.Errorf("%w: workspace not found", domain.ErrNotFound)
+	}
+	if entry.ID == "" {
+		entry.ID = uuid.NewString()
+	} else if _, exists := st.s.skillImpactEntries[entry.ID]; exists {
+		return fmt.Errorf("%w: skill impact entry %q already exists", domain.ErrConflict, entry.ID)
+	}
+	if entry.CreatedAt.IsZero() {
+		entry.CreatedAt = st.s.stampNow()
+	}
+	st.s.skillImpactEntries[entry.ID] = cloneSkillImpactEntry(entry)
+	return nil
+}
+
+func (st *skillCandidateStore) ListImpactEntries(ctx context.Context, workspaceID string, since time.Time) ([]domain.SkillImpactEntry, error) {
+	if workspaceID == "" {
+		return []domain.SkillImpactEntry{}, nil
+	}
+
+	st.s.mu.RLock()
+	defer st.s.mu.RUnlock()
+
+	entries := make([]domain.SkillImpactEntry, 0)
+	for _, e := range st.s.skillImpactEntries {
+		if e.WorkspaceID != workspaceID {
+			continue
+		}
+		if !since.IsZero() && e.CreatedAt.Before(since) {
+			continue
+		}
+		entries = append(entries, *cloneSkillImpactEntry(e))
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if !entries[i].CreatedAt.Equal(entries[j].CreatedAt) {
+			return entries[i].CreatedAt.Before(entries[j].CreatedAt)
+		}
+		return entries[i].ID < entries[j].ID
+	})
+	return entries, nil
+}
+
+func (st *skillCandidateStore) LatestImpactEntryForCluster(ctx context.Context, workspaceID, clusterID string) (*domain.SkillImpactEntry, error) {
+	if workspaceID == "" || clusterID == "" {
+		return nil, nil
+	}
+
+	st.s.mu.RLock()
+	defer st.s.mu.RUnlock()
+
+	var latest *domain.SkillImpactEntry
+	for _, e := range st.s.skillImpactEntries {
+		if e.WorkspaceID != workspaceID || e.ClusterID != clusterID {
+			continue
+		}
+		if latest == nil || e.CreatedAt.After(latest.CreatedAt) ||
+			(e.CreatedAt.Equal(latest.CreatedAt) && e.ID > latest.ID) {
+			latest = e
+		}
+	}
+	if latest == nil {
+		return nil, nil
+	}
+	return cloneSkillImpactEntry(latest), nil
+}
+
+func cloneSkillCandidate(c *domain.SkillCandidate) *domain.SkillCandidate {
+	if c == nil {
+		return nil
+	}
+	cp := *c
+	// jsonb arrays never come back null from the postgres adapter; the fake
+	// mirrors that normalization. The copy must preserve an empty (but
+	// non-nil) slice — append([]string(nil)) with zero elements returns nil.
+	if c.EvidenceEventIDs == nil {
+		cp.EvidenceEventIDs = []string{}
+	} else {
+		cp.EvidenceEventIDs = make([]string, len(c.EvidenceEventIDs))
+		copy(cp.EvidenceEventIDs, c.EvidenceEventIDs)
+	}
+	if c.CitedPatternRefs == nil {
+		cp.CitedPatternRefs = []string{}
+	} else {
+		cp.CitedPatternRefs = make([]string, len(c.CitedPatternRefs))
+		copy(cp.CitedPatternRefs, c.CitedPatternRefs)
+	}
+	if c.DecidedAt != nil {
+		t := *c.DecidedAt
+		cp.DecidedAt = &t
+	}
+	return &cp
+}
+
+func cloneSkillImpactEntry(e *domain.SkillImpactEntry) *domain.SkillImpactEntry {
+	if e == nil {
+		return nil
+	}
+	cp := *e
+	return &cp
+}
+
+// IndexClusterRun upserts one run's cluster membership: identity is the
+// (workspace, session, turn) unique key — re-indexing rewrites the row in
+// place, exactly like the postgres adapter's ON CONFLICT DO UPDATE.
+func (st *skillCandidateStore) IndexClusterRun(ctx context.Context, run *domain.SkillClusterRun) error {
+	if err := run.Validate(); err != nil {
+		return err
+	}
+
+	st.s.mu.Lock()
+	defer st.s.mu.Unlock()
+
+	if _, exists := st.s.workspaces[run.WorkspaceID]; !exists {
+		return fmt.Errorf("%w: workspace not found", domain.ErrNotFound)
+	}
+	if agent, exists := st.s.agents[run.AgentID]; !exists || agent.WorkspaceID != run.WorkspaceID {
+		return fmt.Errorf("%w: agent not found in workspace", domain.ErrNotFound)
+	}
+	if run.ID == "" {
+		run.ID = uuid.NewString()
+	}
+	if run.IndexedAt.IsZero() {
+		run.IndexedAt = st.s.stampNow()
+	}
+	runKey := run.WorkspaceID + ":" + run.SessionID + ":" + run.TurnID
+	if existingID, exists := st.s.skillClusterRunsByRun[runKey]; exists {
+		run.ID = existingID // one row per run: the store-assigned id is stable
+	}
+	st.s.skillClusterRunsByRun[runKey] = run.ID
+	st.s.skillClusterRuns[run.ID] = cloneSkillClusterRun(run)
+	return nil
+}
+
+func (st *skillCandidateStore) CountQualifyingByCluster(ctx context.Context, workspaceID, clusterID string) (int, error) {
+	if workspaceID == "" || clusterID == "" {
+		return 0, nil
+	}
+
+	st.s.mu.RLock()
+	defer st.s.mu.RUnlock()
+
+	count := 0
+	for _, r := range st.s.skillClusterRuns {
+		if r.WorkspaceID == workspaceID && r.ClusterID == clusterID && r.Qualifying {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (st *skillCandidateStore) ListClusterRunsByCluster(ctx context.Context, workspaceID, clusterID string) ([]domain.SkillClusterRun, error) {
+	if workspaceID == "" || clusterID == "" {
+		return []domain.SkillClusterRun{}, nil
+	}
+
+	st.s.mu.RLock()
+	defer st.s.mu.RUnlock()
+
+	runs := make([]domain.SkillClusterRun, 0)
+	for _, r := range st.s.skillClusterRuns {
+		if r.WorkspaceID != workspaceID || r.ClusterID != clusterID {
+			continue
+		}
+		runs = append(runs, *cloneSkillClusterRun(r))
+	}
+	// Oldest first — the evidence pool reads in run order (indexed_at, then
+	// id as the deterministic tie-break, mirroring the postgres adapter).
+	sort.Slice(runs, func(i, j int) bool {
+		if !runs[i].IndexedAt.Equal(runs[j].IndexedAt) {
+			return runs[i].IndexedAt.Before(runs[j].IndexedAt)
+		}
+		return runs[i].ID < runs[j].ID
+	})
+	return runs, nil
+}
+
+func (st *skillCandidateStore) ListClusterIDs(ctx context.Context, workspaceID string) ([]string, error) {
+	if workspaceID == "" {
+		return []string{}, nil
+	}
+
+	st.s.mu.RLock()
+	defer st.s.mu.RUnlock()
+
+	seen := make(map[string]bool)
+	ids := make([]string, 0)
+	for _, r := range st.s.skillClusterRuns {
+		if r.WorkspaceID != workspaceID || seen[r.ClusterID] {
+			continue
+		}
+		seen[r.ClusterID] = true
+		ids = append(ids, r.ClusterID)
+	}
+	return ids, nil
+}
+
+func cloneSkillClusterRun(r *domain.SkillClusterRun) *domain.SkillClusterRun {
+	if r == nil {
+		return nil
+	}
+	cp := *r
+	return &cp
 }

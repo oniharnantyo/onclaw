@@ -12,6 +12,7 @@ import (
 	"github.com/oniharnantyo/onclaw/internal/agents/backend"
 	"github.com/oniharnantyo/onclaw/internal/domain"
 	"github.com/oniharnantyo/onclaw/internal/memory"
+	"github.com/oniharnantyo/onclaw/internal/skillcuration"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
@@ -336,6 +337,24 @@ func (r *Runner) History(ctx context.Context, req HistoryRequest) (*HistoryResul
 						OccurredAt:     occurredAt,
 						TurnID:         turnID,
 						MemoryIngested: &chip,
+					})
+				}
+			}
+		case skillcuration.SessionEventKindSkillCandidate:
+			// Skill-curation chip (add-skill-curation-from-traces): render the
+			// candidate payload exactly as the live event carried it — the
+			// qualification signal, or the drafted candidate's id and skill
+			// name once the proposer has run. The payload type is the
+			// registered concrete struct, so the serializer hands it back
+			// whole (the memory-chip case mirrored).
+			if se.Extension != nil {
+				if chip, ok := se.Extension.Data.(skillcuration.SkillCandidatePayload); ok {
+					events = append(events, TranscriptEvent{
+						ID:             id,
+						Kind:           TranscriptEventSkillCandidate,
+						OccurredAt:     occurredAt,
+						TurnID:         turnID,
+						SkillCandidate: &chip,
 					})
 				}
 			}

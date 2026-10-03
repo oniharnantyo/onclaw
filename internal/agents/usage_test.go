@@ -48,7 +48,7 @@ func drainUsageEvents(t *testing.T, send func(gen *adk.AsyncGenerator[*adk.Typed
 	// nil hook chain disables the run_finished terminal seam here. The
 	// ephemeral session store is the in-memory stand-in every run carries —
 	// the turn-end breakdown measurement replays it.
-	r := &Runner{runMgr: newRunManager(context.Background(), 0), memoryWorker: newQueuedMemoryWorker()}
+	r := &Runner{runMgr: newRunManager(context.Background(), 0), ingestWorker: newQueuedMemoryWorker()}
 	r.drainAgentEvents(t.Context(), iter, stream, RunKey{}, "turn-1", "", nil, hooks.Event{}, &compactionState{}, nil, nil, nil, ExecRequest{}, false, NewEphemeralSessionAdapter())
 	// drainAgentEvents returns after the terminal event; the caller (streamRun
 	// in production) closes the stream.

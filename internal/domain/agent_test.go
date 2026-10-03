@@ -274,6 +274,13 @@ func TestPathHelpers(t *testing.T) {
 		t.Errorf("AgentSkillsDir() = %q, want %q", got, want)
 	}
 
+	// The skill wiki is a workspace-level sibling of the agent directories,
+	// never inside one (add-skill-curation-from-traces D3, the withholding
+	// invariant's path property).
+	if got, want := domain.WorkspaceSkillWikiDir(base, "acme-corp"), filepath.Join(base, "workspaces", "acme-corp", "skillwiki"); got != want {
+		t.Errorf("WorkspaceSkillWikiDir() = %q, want %q", got, want)
+	}
+
 	wsRoot := domain.WorkspaceRoot(base)
 	if got, want := domain.AgentWorkspaceDir(wsRoot, "acme-corp", "radar"), filepath.Join(base, "workspaces", "acme-corp", "agents", "radar"); got != want {
 		t.Errorf("AgentWorkspaceDir() = %q, want %q", got, want)
@@ -296,5 +303,29 @@ func TestAgentWorkspaceDir(t *testing.T) {
 	want := filepath.Join(root, "acme-corp", "agents", "radar")
 	if got != want {
 		t.Errorf("AgentWorkspaceDir() = %q, want %q", got, want)
+	}
+}
+
+func TestValidateAgentSkillCuration(t *testing.T) {
+	valid := [][2]string{
+		{"", ""},                      // inherit (fall through the D7 order)
+		{"prov-1", "model-a"},         // fully-specified pin
+		{"  prov-1  ", "  model-a  "}, // caller trims; the rule is emptiness, not whitespace
+	}
+	for _, pair := range valid {
+		if err := domain.ValidateAgentSkillCuration(pair[0], pair[1]); err != nil {
+			t.Errorf("ValidateAgentSkillCuration(%q, %q) expected nil error, got %v", pair[0], pair[1], err)
+		}
+	}
+
+	invalid := [][2]string{
+		{"prov-1", ""},  // half-set: provider without model
+		{"", "model-a"}, // half-set: model without provider
+	}
+	for _, pair := range invalid {
+		err := domain.ValidateAgentSkillCuration(pair[0], pair[1])
+		if !errors.Is(err, domain.ErrInvalid) {
+			t.Errorf("ValidateAgentSkillCuration(%q, %q) expected ErrInvalid, got %v", pair[0], pair[1], err)
+		}
 	}
 }

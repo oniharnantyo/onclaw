@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -9,27 +10,31 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/cloudwego/eino/adk"
+	fsmw "github.com/cloudwego/eino/adk/middlewares/filesystem"
 	"github.com/cloudwego/eino/callbacks"
 	"github.com/cloudwego/eino/components/tool"
-	fsmw "github.com/cloudwego/eino/adk/middlewares/filesystem"
 	"github.com/cloudwego/eino/schema"
 	"github.com/google/uuid"
 	"github.com/oniharnantyo/onclaw/internal/agents/backend"
 	"github.com/oniharnantyo/onclaw/internal/agents/hooks"
 	"github.com/oniharnantyo/onclaw/internal/agents/mcp"
 	"github.com/oniharnantyo/onclaw/internal/agents/tools"
+	"github.com/oniharnantyo/onclaw/internal/authz"
 	"github.com/oniharnantyo/onclaw/internal/domain"
+	"github.com/oniharnantyo/onclaw/internal/ingest"
 	"github.com/oniharnantyo/onclaw/internal/memory"
 	"github.com/oniharnantyo/onclaw/internal/promptdocs"
 	"github.com/oniharnantyo/onclaw/internal/providers"
 	"github.com/oniharnantyo/onclaw/internal/references"
 	"github.com/oniharnantyo/onclaw/internal/secrets"
 	"github.com/oniharnantyo/onclaw/internal/services"
+	"github.com/oniharnantyo/onclaw/internal/skillcuration"
 	"github.com/oniharnantyo/onclaw/internal/store"
 )
 
@@ -65,13 +70,14 @@ type Runner struct {
 	summarizationMargin float64
 	maxIterations       int
 
-	// Memory pipeline seam (integrate-agent-zero-memory 3.2/4.1/4.2): the
-	// worker enqueues turn-end ingest jobs off the hot path, the searcher
-	// serves scope-filtered prefetch, and the intent gate decides whether a
-	// turn needs retrieval at all. All three are composition-root wiring
-	// (never nil in production); every stage they drive fails open or
+	// Ingest seam (add-skill-curation-from-traces D1): the neutral ingest
+	// worker enqueues turn-end jobs off the hot path and dispatches them to
+	// its registered consumers (the memory pipeline is consumer #1); the
+	// searcher serves scope-filtered prefetch, and the intent gate decides
+	// whether a turn needs retrieval at all. All three are composition-root
+	// wiring (never nil in production); every stage they drive fails open or
 	// fire-and-forget, so nothing here can fail a run.
-	memoryWorker *memory.Worker
+	ingestWorker *ingest.Worker
 	memorySearch *memory.Searcher
 	intentGate   *memory.IntentGate
 	// gateBudget resolves the intent gate's classification budget at call
@@ -96,6 +102,13 @@ type Runner struct {
 	// structurally; default nil degrades fail-safe (affected tools gate as
 	// write).
 	connectionOrigins ConnectionOriginLookup
+
+	// Authorizer (fix-role-permission-audit 1.5): the permission engine the
+	// connection gate consults for integrations.write — at resolution-time
+	// pruning and at the invocation re-check. The composition root wires its
+	// boot-synced engine; default nil degrades to the resolved role row's own
+	// permission set (unit constructions only — production always injects).
+	authorizer authz.Authorizer
 
 	hooks      *hooks.Dispatcher
 	hooksWired bool
@@ -154,6 +167,12 @@ type Runner struct {
 	// composition root applies WithTodoStore only where the todo tools are
 	// wired, and an unwired runner composes no todo summary.
 	todos store.TodoStore
+
+	// Curated-skill probation telemetry (add-skill-curation-from-traces 6.2,
+	// design D6): an optional capability wired by the composition root; nil
+	// records nothing. See WithSkillOutcomeRecorder for the v1 proxy's
+	// contract.
+	skillOutcomes SkillOutcomeRecorder
 
 	// Input-modality resolver (fix-image-attachment-lane D4): resolves whether
 	// the turn's (provider, model) pair accepts a non-text input kind.
@@ -290,6 +309,20 @@ func WithConnectionOriginLookup(lookup ConnectionOriginLookup) RunnerOption {
 	}
 }
 
+// WithAuthorizer supplies the permission engine the connection gate consults
+// for integrations.write (fix-role-permission-audit 1.5). The composition
+// root wires its boot-synced engine — one instance shared with the HTTP
+// middlewares and handlers so a seeding-time Sync reaches every consumer.
+// Default: nil — the gate degrades to the resolved role row's own permission
+// set (unit constructions only).
+func WithAuthorizer(authorizer authz.Authorizer) RunnerOption {
+	return func(r *Runner) {
+		if authorizer != nil {
+			r.authorizer = authorizer
+		}
+	}
+}
+
 // WithHooks supplies the lifecycle-hook dispatcher consulted at the runtime
 // seams (design.md D2): prompt submission and tool calls on the run's
 // context, observers detached. Default: a no-op dispatcher that resolves no
@@ -379,6 +412,30 @@ func WithTodoStore(todos store.TodoStore) RunnerOption {
 	}
 }
 
+// SkillOutcomeRecorder tallies one curated-skill usage outcome
+// (add-skill-curation-from-traces 6.2, design D6): the composition root
+// wires it to skillcuration.Probation.RecordSkillOutcome. Failures are the
+// closure's own concern (logged, never surfaced) — the runner fires it
+// fire-and-forget off the terminal seam.
+type SkillOutcomeRecorder func(ctx context.Context, workspaceID, agentID, skillName string, helpful bool)
+
+// WithSkillOutcomeRecorder wires the curated-skill probation telemetry
+// (design D6). Unset, terminal outcomes record nothing — the v1 proxy is
+// wired by the composition root where the probation manager exists. The
+// v1 proxy, documented: a turn that LOADED a curated skill through the skill
+// middleware's tool (the observed `skill` tool calls) classifies the run's
+// outcome — completed → helpful, failed → harmful. No per-attach outcome
+// attribution exists beyond the run level; this is the crude-but-honest
+// v1 wiring (RecordSkillOutcome's own unknown-skill path makes non-curated
+// skills a quiet no-op).
+func WithSkillOutcomeRecorder(recorder SkillOutcomeRecorder) RunnerOption {
+	return func(r *Runner) {
+		if recorder != nil {
+			r.skillOutcomes = recorder
+		}
+	}
+}
+
 // WithSummarizationMargin sets the safety factor applied to the resolved
 // context window when arming the summarization trigger. Zero or ≥1 selects the
 // default margin.
@@ -463,8 +520,9 @@ func WithMemoryGateBudget(resolve func(ctx context.Context, workspaceID string) 
 // NewRunner creates a new production runner instance from explicit per-store
 // dependencies. Each granular store sub-interface is a positional parameter;
 // pass the aggregate's accessors (e.g. st.Agents(), st.Users()) at the call
-// site. The memory pipeline seam (integrate-agent-zero-memory) rides the same
-// rule: the worker, the searcher, and the intent gate are positional wiring
+// site. The memory retrieval seam (integrate-agent-zero-memory) and the
+// turn-ingest seam (add-skill-curation-from-traces D1) ride the same rule:
+// the ingest worker, the searcher, and the intent gate are positional wiring
 // resolved by the composition root. Defaultable behaviors are set through
 // RunnerOptions.
 func NewRunner(
@@ -479,7 +537,7 @@ func NewRunner(
 	memories store.MemoryStore,
 	agentSessions store.AgentSessionStore,
 	gatewayLinks store.GatewayLinks,
-	memoryWorker *memory.Worker,
+	ingestWorker *ingest.Worker,
 	memorySearch *memory.Searcher,
 	intentGate *memory.IntentGate,
 	encryptionKey []byte,
@@ -498,7 +556,7 @@ func NewRunner(
 		memories:              memories,
 		agentSessions:         agentSessions,
 		gatewayLinks:          gatewayLinks,
-		memoryWorker:          memoryWorker,
+		ingestWorker:          ingestWorker,
 		memorySearch:          memorySearch,
 		intentGate:            intentGate,
 		encryptionKey:         encryptionKey,
@@ -645,9 +703,9 @@ type agentConfig struct {
 	// visible); referencesMountDir the materialized mount ("" on the
 	// skip-silently paths); DocumentSearchEnabled reports the post-gate
 	// effective set carrying document.search — the manifest's gate-off skip.
-	referencesScope      domain.DocumentRunScope
-	visibleDocuments     []domain.ReferenceDocument
-	referencesMountDir   string
+	referencesScope       domain.DocumentRunScope
+	visibleDocuments      []domain.ReferenceDocument
+	referencesMountDir    string
 	documentSearchEnabled bool
 
 	// InputModality is the turn's resolved input-modality capability
@@ -941,7 +999,7 @@ func (r *Runner) resolve(ctx context.Context, req ExecRequest, ws *domain.Worksp
 	// budget clarity; the invocation re-check re-reads the CURRENT set).
 	// Service-authority runs keep the write tier reachable: its first
 	// write-tier call escalates through the approval flow (task 2.4).
-	gate, prunedNames := r.buildConnectionGate(req, role, mcpOrigins, connectionOrigins)
+	gate, prunedNames := r.buildConnectionGate(ctx, req, role, mcpOrigins, connectionOrigins)
 	resolvedTools = pruneResolvedNames(ctx, resolvedTools, prunedNames)
 	cfg.Gate = gate
 
@@ -1970,14 +2028,15 @@ func persistPromptBlocked(ctx context.Context, adapter *ADKSessionAdapter, sessi
 // Memory pipeline seam (integrate-agent-zero-memory 3.2/3.6/4.1/4.2)
 // ---------------------------------------------------------------------------
 
-// enqueueTurnIngest builds the turn-end IngestJob and hands it to the
-// background worker (task 3.2, D2). Only the completed and failed statuses
-// ingest — a failed run still contains a real user turn, the gate filters
-// noise, and a cancelled run was interrupted mid-flight rather than finishing
-// a turn. Ephemeral turns never enqueue: their material never persisted, so
-// the raw-log-stays-intact invariant the pipeline reprocesses from cannot
-// hold. Enqueue is fire-and-forget: the worker's queue absorbs bursts and
-// drops on overflow, so this never blocks or fails the run.
+// enqueueTurnIngest builds the turn-end ingest job and hands it to the
+// background ingest worker (task 3.2, D2; add-skill-curation-from-traces D1).
+// Only the completed and failed statuses ingest — a failed run still contains
+// a real user turn, the gate filters noise, and a cancelled run was
+// interrupted mid-flight rather than finishing a turn. Ephemeral turns never
+// enqueue: their material never persisted, so the raw-log-stays-intact
+// invariant the pipeline reprocesses from cannot hold. Enqueue is
+// fire-and-forget: the worker's queue absorbs bursts and drops on overflow,
+// so this never blocks or fails the run.
 //
 // The session shape (HumanParticipants) is captured here, at enqueue time,
 // per the participant rule — never re-derived from the transcript:
@@ -2008,7 +2067,7 @@ func (r *Runner) enqueueTurnIngest(ctx context.Context, req ExecRequest, turnID,
 		// citation targets are the session event ids in the provenance.
 		turnID = uuid.NewString()
 	}
-	r.memoryWorker.Enqueue(memory.IngestJob{
+	r.ingestWorker.Enqueue(ingest.Job{
 		WorkspaceID:       req.WorkspaceID,
 		AgentID:           req.AgentID,
 		UserID:            req.UserID,
@@ -2018,6 +2077,62 @@ func (r *Runner) enqueueTurnIngest(ctx context.Context, req ExecRequest, turnID,
 		HumanParticipants: r.ingestHumanParticipants(ctx, req),
 		Status:            status,
 	})
+}
+
+// skillToolName is the eino skill middleware's tool name — the one channel a
+// turn loads a skill's full instructions through (the middleware registers
+// it under this default; agent.go pins no override). A `skill` tool call's
+// {"skill": "<name>"} argument is the run's attach evidence.
+const skillToolName = "skill"
+
+// skillOutcomeBudget bounds one recorder invocation off the terminal seam.
+const skillOutcomeBudget = 10 * time.Second
+
+// recordSkillOutcomes classifies the turn's curated-skill loads against the
+// terminal outcome (design D6, v1 run-level proxy): completed → helpful,
+// failed → harmful, cancelled → unclassified (no signal). Fire-and-forget:
+// one goroutine walks the loads so the terminal seam never blocks; the
+// recorder closure owns its own error handling. Only completed and failed
+// runs classify — the same statuses the ingest path carries.
+func (r *Runner) recordSkillOutcomes(ctx context.Context, req ExecRequest, status string, skillLoads map[string]string) {
+	if r.skillOutcomes == nil || len(skillLoads) == 0 {
+		return
+	}
+	if status != hookRunStatusCompleted && status != hookRunStatusFailed {
+		return
+	}
+	helpful := status == hookRunStatusCompleted
+	seen := make(map[string]bool, len(skillLoads))
+	names := make([]string, 0, len(skillLoads))
+	for _, raw := range skillLoads {
+		var payload struct {
+			Skill string `json:"skill"`
+		}
+		if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+			continue // not a skill-load shape; inert
+		}
+		name := strings.TrimSpace(payload.Skill)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	// The loads arrive as a map, whose iteration order is randomized: sort
+	// the deduped names so outcome recording is deterministic.
+	sort.Strings(names)
+	if len(names) == 0 {
+		return
+	}
+	recorder := r.skillOutcomes
+	workspaceID, agentID := req.WorkspaceID, req.AgentID
+	go func() {
+		recCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), skillOutcomeBudget)
+		defer cancel()
+		for _, name := range names {
+			recorder(recCtx, workspaceID, agentID, name, helpful)
+		}
+	}()
 }
 
 // ingestHumanParticipants resolves the session-shape human count for the
@@ -2237,6 +2352,46 @@ func (r *Runner) AppendMemoryChip(ctx context.Context, job memory.IngestJob, pay
 	})
 }
 
+// AppendSkillCandidateChip is the skill-curation pipeline's CandidateChipSink
+// (add-skill-curation-from-traces, task 7): after a run qualified (the
+// qualifier) or a candidate was drafted for it (the proposer), persist the
+// chip as an application-owned session event (the x.memory_ingested
+// convention — hydrated transcripts render it identically to the live
+// stream) and broadcast the live event to the run's subscribers. Scheduled
+// and heartbeat runs never emit chips — the memory chip's origin rule,
+// cloned verbatim: unattended runs have no transcript audience. Best-effort
+// end to end: a failing append is logged and never surfaces; the broadcast
+// is a no-op once the run has deregistered (the persisted event covers
+// rehydration).
+func (r *Runner) AppendSkillCandidateChip(ctx context.Context, job ingest.Job, payload skillcuration.SkillCandidatePayload) {
+	origin := normalizeOrigin(job.Origin)
+	if origin == OriginScheduler || origin == OriginHeartbeat {
+		return
+	}
+	adapter := NewADKSessionAdapter(r.sessionEvents, r.checkpoints, job.WorkspaceID)
+	ev := &adk.SessionEvent[*schema.AgenticMessage]{
+		EventID:   uuid.NewString(),
+		TurnID:    job.TurnID,
+		Timestamp: time.Now().UTC(),
+		Kind:      skillcuration.SessionEventKindSkillCandidate,
+		Extension: &adk.SessionExtensionEvent{Data: payload},
+	}
+	if err := adapter.AppendEvents(ctx, job.SessionID, []*adk.SessionEvent[*schema.AgenticMessage]{ev}); err != nil {
+		slog.WarnContext(ctx, "skillcuration: persist skill_candidate chip failed (best-effort)",
+			"session_id", job.SessionID, "turn_id", job.TurnID, "error", err)
+	}
+	r.runMgr.Broadcast(RunKey{
+		WorkspaceID: job.WorkspaceID,
+		AgentID:     job.AgentID,
+		SessionID:   job.SessionID,
+	}, &TranscriptEvent{
+		Kind:           TranscriptEventSkillCandidate,
+		OccurredAt:     time.Now().UTC(),
+		TurnID:         job.TurnID,
+		SkillCandidate: &payload,
+	})
+}
+
 // rememberHookChain stores the run's hook chain for a later approval Resume
 // of the same session (D4 call-ID dedup across the interrupt boundary).
 func (r *Runner) rememberHookChain(key RunKey, chain *hooks.Resolved) {
@@ -2418,6 +2573,10 @@ func (r *Runner) drainAgentEvents(
 	// deliver a call with empty arguments before the complete one arrives, so
 	// real args are never overwritten with empty.
 	toolCallArgs := map[string]string{}
+	// skillLoads records the latest arguments of every skill-tool call
+	// observed this turn (call id → args) — the run's curated-skill attach
+	// evidence the terminal seam classifies (design D6 v1 proxy).
+	skillLoads := map[string]string{}
 
 	// emit sends every mapped transcript event to the primary tap and, additively,
 	// to all dynamically attached live subscribers of the run.
@@ -2462,6 +2621,7 @@ func (r *Runner) drainAgentEvents(
 			hookChain.RunFinished(ctx, hookBase, status)
 		}
 		r.enqueueTurnIngest(ctx, req, turnID, status, ephemeral)
+		r.recordSkillOutcomes(ctx, req, status, skillLoads)
 	}
 
 	recordToolStart := func(callID string, at time.Time) {
@@ -2486,6 +2646,9 @@ func (r *Runner) drainAgentEvents(
 		}
 		startedTools[callID] = true
 		recordToolStart(callID, time.Now().UTC())
+		if name == skillToolName && strings.TrimSpace(args) != "" {
+			skillLoads[callID] = args
+		}
 		emit(&TranscriptEvent{
 			Kind:       TranscriptEventToolCallStarted,
 			OccurredAt: time.Now().UTC(),

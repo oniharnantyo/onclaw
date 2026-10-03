@@ -70,6 +70,7 @@ type Store interface {
 	GatewayOutbox() GatewayOutbox
 	ReferenceDocuments() ReferenceDocumentStore
 	DocumentSections() DocumentSectionStore
+	SkillCandidates() SkillCandidateStore
 	WithTx(ctx context.Context, fn func(Store) error) error
 	Close() error
 }
@@ -432,6 +433,103 @@ type MemoryEntityStore interface {
 	FoldEntity(ctx context.Context, workspaceID, duplicateID, intoID string) (int64, error)
 }
 
+// SkillCandidateStore manages the skill-curation review queue and its
+// append-only audit trail (add-skill-curation-from-traces 2.3, design D3/D6):
+// proposed curated skills with their evidence chains, the review lifecycle
+// (pending/approved/rejected/provisional/disabled), and the impact entries
+// that record every decision. Every operation is workspace-scoped — no query
+// runs without the tenant partition.
+//
+// Absence conventions: Get, ListByCluster, and LatestImpactEntryForCluster
+// return domain.ErrNotFound, the empty slice, and (nil, nil) respectively for
+// unknown or foreign-workspace rows (foreign and unknown are
+// indistinguishable — no existence leak). Impact entries are append-only:
+// nothing overwrites or deletes one. Status transitions are the service
+// layer's policy — the store persists any valid lifecycle state.
+type SkillCandidateStore interface {
+	// Save inserts one candidate, assigning ID when empty and stamping
+	// ProposedAt (when zero) and UpdatedAt app-side. Write-shape validation
+	// runs through the domain layer.
+	Save(ctx context.Context, candidate *domain.SkillCandidate) error
+	// Get returns the candidate by ID within the workspace;
+	// domain.ErrNotFound when absent or foreign.
+	Get(ctx context.Context, workspaceID, id string) (*domain.SkillCandidate, error)
+	// List returns the workspace's candidates, newest proposal first. An
+	// empty status lists every lifecycle state; a non-empty status filters
+	// to it. The result is never nil.
+	List(ctx context.Context, workspaceID string, status domain.SkillCandidateStatus) ([]domain.SkillCandidate, error)
+	// ListByCluster returns the workspace's candidates of one similarity
+	// cluster, newest proposal first — the proposal step's cluster view.
+	// An empty result is an empty slice, not nil.
+	ListByCluster(ctx context.Context, workspaceID, clusterID string) ([]domain.SkillCandidate, error)
+	// UpdateStatus moves one candidate to the given lifecycle state,
+	// stamping DecidedAt and UpdatedAt app-side and storing the reviewer
+	// reason verbatim (an approval passes ""). Absent or foreign-workspace
+	// candidates return domain.ErrNotFound.
+	UpdateStatus(ctx context.Context, workspaceID, id string, status domain.SkillCandidateStatus, reason string) error
+	// UpdateDraft rewrites one candidate's draft payload in place — the
+	// manual retry's success path (extraction-failed cards): the failed row
+	// becomes a fresh pending proposal carrying the new draft's skill name,
+	// content, edit shape, and evidence. Reason clears, status forces to
+	// pending, DecidedAt clears (the review restarts), and ProposedAt and
+	// UpdatedAt are stamped app-side. AgentID and ClusterID stay as stored.
+	// Absent or foreign-workspace candidates return domain.ErrNotFound.
+	UpdateDraft(ctx context.Context, workspaceID, id string, draft *domain.SkillCandidate) error
+	// CountPending returns the workspace's pending-candidate count — the
+	// review-badge number. The count is 0 when nothing is pending.
+	CountPending(ctx context.Context, workspaceID string) (int, error)
+	// CountApprovedCuratedByAgent returns how many live curated skills the
+	// agent carries — approved plus provisional rows; rejected, disabled
+	// (archived), and pending rows don't occupy catalog budget. The approval
+	// path reads it to enforce the per-agent catalog budget (D6). The count
+	// is 0 for an agent with none, and the workspace partition scopes it.
+	CountApprovedCuratedByAgent(ctx context.Context, workspaceID, agentID string) (int, error)
+	// IncrementOutcomeCounts tallies one probation outcome on the candidate
+	// row (add-skill-curation-from-traces 6.2, design D6): helpful bumps
+	// HelpfulCount or HarmfulCount, used adds to UseCount, UpdatedAt is
+	// stamped app-side. Absent or foreign-workspace candidates return
+	// domain.ErrNotFound. The breach/graduation policy lives in the service
+	// layer — the store only counts.
+	IncrementOutcomeCounts(ctx context.Context, workspaceID, candidateID string, helpful, used bool) error
+	// AppendImpactEntry stores one audited review decision, assigning ID
+	// when empty and stamping CreatedAt app-side. Write-shape validation
+	// runs through the domain layer (a rejection requires a reason).
+	AppendImpactEntry(ctx context.Context, entry *domain.SkillImpactEntry) error
+	// ListImpactEntries returns the workspace's audit trail from since
+	// (inclusive; zero since lists everything), oldest first — the
+	// rendered rejection audit the proposer reads. The result is never nil.
+	ListImpactEntries(ctx context.Context, workspaceID string, since time.Time) ([]domain.SkillImpactEntry, error)
+	// LatestImpactEntryForCluster returns the cluster's newest audit entry —
+	// the suppression check's "is this cluster already decided?" read;
+	// (nil, nil) when the cluster has no audit history.
+	LatestImpactEntryForCluster(ctx context.Context, workspaceID, clusterID string) (*domain.SkillImpactEntry, error)
+
+	// IndexClusterRun persists one run's similarity-cluster membership
+	// (add-skill-curation-from-traces 3.1, D2 two-tier rule): every ingested
+	// run — qualifying or not — indexes exactly once per
+	// (workspace, session, turn); re-indexing the same run rewrites its row
+	// in place (upsert), never duplicates. Identity is store-assigned when
+	// empty and IndexedAt is stamped app-side. Write-shape validation runs
+	// through the domain layer.
+	IndexClusterRun(ctx context.Context, run *domain.SkillClusterRun) error
+	// CountQualifyingByCluster returns how many qualifying (gate-passing)
+	// runs the cluster holds — the "Cluster gate before drafting" read the
+	// proposer applies before drafting. The count is 0 for an unknown or
+	// foreign-workspace cluster.
+	CountQualifyingByCluster(ctx context.Context, workspaceID, clusterID string) (int, error)
+	// ListClusterRunsByCluster returns the cluster's membership rows oldest
+	// first — the evidence pool the wiki sampler and the contrast renderer
+	// read (qualifying and non-qualifying members alike). The result is
+	// never nil.
+	ListClusterRunsByCluster(ctx context.Context, workspaceID, clusterID string) ([]domain.SkillClusterRun, error)
+	// ListClusterIDs returns the workspace's distinct similarity-cluster ids
+	// that hold at least one indexed membership run — the cycle's backstop
+	// enumeration (add-skill-curation-from-traces 7.1: the clusters the
+	// qualifier's membership index knows about, gate and pending checks
+	// applied by the caller). Unordered; the result is never nil.
+	ListClusterIDs(ctx context.Context, workspaceID string) ([]string, error)
+}
+
 // LoadSessionEventsParams configures query parameters for loading session events.
 type LoadSessionEventsParams struct {
 	WorkspaceID  string
@@ -554,6 +652,13 @@ type AgentSessionStore interface {
 	// user, or absent entirely, returns domain.ErrNotFound — foreign-owned
 	// and unknown are indistinguishable.
 	SoftDeleteAgentSession(ctx context.Context, workspaceID, agentID, userID, sessionID string) error
+	// GetAgentSession returns one session-index row by (workspaceID, agentID,
+	// sessionID) regardless of owning user, for ownership checks (D3). Rows
+	// exist only for private-index sessions (sess_, tg_dm_, wa_dm_); system
+	// sessions (chan_, sched_, hb_, tg_group_) have no row. A soft-deleted row
+	// is still returned (ownership is fixed at birth, never rewritten).
+	// Absent → (nil, nil), following the GetScheduler convention.
+	GetAgentSession(ctx context.Context, workspaceID, agentID, sessionID string) (*domain.AgentSession, error)
 }
 
 // SchedulerClaim is one result of a due-claim batch: Missed marks a once
