@@ -1,9 +1,6 @@
-# providers Specification
+# Spec Delta
 
-## Purpose
-Tenant-scoped provider credential management: a code-defined catalog of seven built-in provider types, per-workspace provider configs with AES-256-GCM-encrypted API keys, live connection verification, and the `providers.*` permissions — the credential foundation the chat/runs domains build on.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Provider type catalog
 The system SHALL support exactly seven built-in provider types — `openai`, `anthropic`, `gemini`, `openrouter`, `openai-compatible`, `anthropic-compatible`, `typesafe` — defined in code and registered into a provider registry; built-ins are ordinary registrations. `typesafe` SHALL be a decision-provider class: it backs typed-decision calls (the memory intent gate), never chat or agent model resolution, and model-catalog resolution SHALL NOT list any models for it. Configs referencing an unknown type SHALL be rejected with 400. A workspace MAY hold multiple configs of the same type.
@@ -71,24 +68,6 @@ Tenant-scoped endpoints under `/workspaces/:ws/providers` SHALL create, list, up
 - **WHEN** PATCH sends key: ""
 - **THEN** response is 400 invalid_request
 
-### Requirement: Key secrecy on the wire
-API keys SHALL be write-only: responses SHALL expose `key_set` (bool) and `key_hint` (last 4 characters, display only) and SHALL NOT include the key or its ciphertext. The key hint SHALL be empty when no key is set.
-
-#### Scenario: List response shape
-- **WHEN** any member lists providers
-- **THEN** each row shows type, name, base_url, enabled, key_set, key_hint, timestamps — never the key or ciphertext
-
-### Requirement: Encryption at rest
-Keys SHALL be encrypted at rest with AES-256-GCM using an instance master key, envelope format `v1:<nonce>:<ciphertext>`, with the workspace ID bound as AAD so a ciphertext cannot be replayed into another tenant's row. Decryption failure SHALL surface as a distinct domain error (undecryptable), and the config SHALL remain renamable, toggleable, and deletable.
-
-#### Scenario: Cross-tenant replay blocked
-- **WHEN** a ciphertext from workspace A's config is written into workspace B's config row
-- **THEN** decryption in B fails with the undecryptable error (AAD mismatch)
-
-#### Scenario: Key changed between restarts
-- **WHEN** ONCLAW_ENCRYPTION_KEY changed since the key was stored
-- **THEN** verify on that config reports undecryptable; rename/toggle/delete still succeed
-
 ### Requirement: Connection verification
 POST `/workspaces/:ws/providers/:id/verify` SHALL decrypt the stored key and probe the provider per type: named types use their canonical (or overridden) origin; `openrouter` SHALL probe the key-info endpoint (`/api/v1/key`) because its models endpoint is public; `-compatible` types probe `{base_url}` with the type's canonical path; `typesafe` SHALL probe its canonical (or overridden) systemone origin with a minimal authenticated decision request (one noul question over trivial state) and read a 200 with an `answers` body as success. The result SHALL be returned synchronously as 200 {ok: true} or 200 {ok: false, error} and SHALL NOT be persisted on the config row. Verification SHALL require `providers.write`. Each provider type SHALL declare whether it requires an API key: the four named types (`openai`, `anthropic`, `gemini`, `openrouter`) and `typesafe` require one, and the `-compatible` types do not — their probes omit the auth header when no key is configured. Verifying a config without a key SHALL be 400 only when the config's type requires a key; a keyless config of a keyless-capable type SHALL verify with an empty key, delegating the auth question to the endpoint's own answer. Provider-side auth failures (401/403) SHALL be reported as ok:false with the provider error, not as a server 5xx.
 
@@ -119,67 +98,3 @@ POST `/workspaces/:ws/providers/:id/verify` SHALL decrypt the stored key and pro
 #### Scenario: Verify requires write permission
 - **WHEN** a Member-role holder calls verify
 - **THEN** response is 403 (verify uses the credential; read-only members cannot)
-
-### Requirement: Encryption key requirement
-The `server` command SHALL refuse to start unless `ONCLAW_ENCRYPTION_KEY` decodes to exactly 32 bytes as hex or base64, exiting with an error naming the variable and the generation command (`openssl rand -hex 32`). Other commands (`migrate`, `user`, `superadmin`) SHALL NOT require it.
-
-#### Scenario: Missing key
-- **WHEN** `onclaw server` starts without ONCLAW_ENCRYPTION_KEY
-- **THEN** the command exits with an error naming the variable and `openssl rand -hex 32`
-
-#### Scenario: Malformed key
-- **WHEN** ONCLAW_ENCRYPTION_KEY="short" is set
-- **THEN** server exits with the same class of error (must decode to 32 bytes)
-
-#### Scenario: Valid key starts
-- **WHEN** a 32-byte hex key is set
-- **THEN** server starts and provider endpoints function
-
-### Requirement: Permission gating
-Provider endpoints SHALL require `providers.read` for listing and `providers.write` for create/update/delete/verify. `providers.read` SHALL be granted to Owner, Admin, and Member built-in roles; `providers.write` SHALL be granted to Owner and Admin. The permissions SHALL belong to the closed catalog, so custom roles may express them via the standard role system.
-
-#### Scenario: Member lists providers
-- **WHEN** a Member-role holder lists providers
-- **THEN** 200 with all workspace configs (read is a permission, not implied)
-
-#### Scenario: Member cannot create
-- **WHEN** a Member-role holder creates a config
-- **THEN** response is 403
-
-### Requirement: Catalog mapping hint for compatible gateways
-An `openai-compatible` or `anthropic-compatible` provider configuration SHALL accept an optional catalog-mapping hint identifying which community-catalog provider the gateway corresponds to (e.g. a models.dev provider id). When present, the hint SHALL be used wherever the provider type alone is insufficient for catalog resolution (model lists, effort values, input-modality resolution). Known gateway hosts MAY pre-fill the hint, but the user's explicit selection SHALL always win. The hint SHALL be optional — an absent hint leaves resolution exactly as it behaves without mapping (unknown).
-
-#### Scenario: Hint unlocks catalog resolution
-- **WHEN** an openai-compatible provider config carries a catalog-mapping hint for a gateway known to the community catalog
-- **THEN** catalog-backed resolution (models, effort values, input modalities) uses that gateway's catalog entries
-
-#### Scenario: No hint keeps unknown semantics
-- **WHEN** an openai-compatible provider config carries no catalog-mapping hint and the host is not in the built-in hint map
-- **THEN** catalog resolution treats the provider as unmapped (unknown), and nothing else about the provider changes
-
-### Requirement: Draft credential verification
-`POST /workspaces/:ws/providers/verify-draft` SHALL test unsaved provider form values without persisting anything. The payload SHALL carry the form state — `type`, optional `base_url`, write-only optional `key`, optional `catalog_provider`, and optional `provider_id` naming an existing workspace config. When the draft's type requires an API key and `key` is absent, the endpoint SHALL decrypt the stored key of the config named by `provider_id` and verify it together with the submitted type and base URL; when the type requires a key and no credential can be resolved (no key and no config, or a keyless config) the endpoint SHALL be 400. When the draft's type does not require a key, the endpoint SHALL verify immediately with the submitted key — including an empty one — without consulting a stored config. Verification SHALL reuse the per-type provider probes of the stored-config verify endpoint, SHALL require `providers.write`, SHALL return synchronously as 200 `{ok: true}` or 200 `{ok: false, error}` (provider-side auth failures reported as `ok: false`, not a server 5xx), and SHALL NOT write any state.
-
-#### Scenario: Verify typed values in the create dialog
-- **WHEN** a client posts a draft with type, base URL, and a typed key
-- **THEN** the endpoint probes the provider with those values and returns ok or the provider error, persisting nothing
-
-#### Scenario: Edit dialog verifies against the stored key
-- **WHEN** a client posts a draft with `provider_id` of a key-set config whose type requires a key, and no key
-- **THEN** the stored key is verified against the submitted type and base URL
-
-#### Scenario: Keyless draft verifies without a key
-- **WHEN** a client posts a draft of a keyless-capable type (e.g. `openai-compatible`) with a base URL and no key
-- **THEN** the endpoint probes the endpoint keyless and returns ok or the provider error, persisting nothing
-
-#### Scenario: No credential to test
-- **WHEN** a client posts a draft of a key-requiring type with no key and a `provider_id` of a keyless config (or none)
-- **THEN** response is 400
-
-#### Scenario: Nothing is persisted
-- **WHEN** any draft verification completes, success or failure
-- **THEN** no provider row, key, or verification state is stored
-
-#### Scenario: Write permission required
-- **WHEN** a Member-role holder calls verify-draft
-- **THEN** response is 403
