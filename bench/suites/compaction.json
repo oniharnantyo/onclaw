@@ -1,0 +1,419 @@
+{
+  "suite_version": "1",
+  "lane": "compaction",
+  "description": "Context-window compaction and transcript offload fidelity, measured black-box. Each task pins a small agent-level context window (2000 tokens, summarization trigger at 75%), then builds one long measured thread — the seeding turns and the recall question ride in the same session, because the runner scopes setup chat_turns to a separate logical session from the measured one, so only measured turns reach the context under test; the harness compacts mid-thread and the final turn asks for an early-seeded fact. Soundness under pooled-answer verification: the file-write probes (transcript_file_write) are immune to seed-turn acknowledgements echoing seeded values, so every task pairs its answer probe with a file leg. All seeded tokens are short enough to stay lint-exempt. Verifiers are deterministic — no judge. A forced-compact command via request metadata exists on the public API but is not expressible in this suite schema, so compaction is forced purely through the window override.",
+  "tasks": [
+    {
+      "id": "comp-vault-echo",
+      "title": "Vault code recall across many short turns",
+      "summary": "A code is planted in the first of eight short turns, six of them logistics noise carrying a retired near-miss code as a decoy, and the closing turn asks for the opening code both in prose and persisted to a file. Sound because the code appears only in the seeded turn, the file-write probe can only be satisfied by code the agent still holds after compaction, and recalling the decoy instead fails both probes.",
+      "tools_used": [
+        "files.read",
+        "files.write"
+      ],
+      "setup": [
+        {
+          "type": "agent_config",
+          "context_window": 2000
+        }
+      ],
+      "turns": [
+        {
+          "text": "Field log opener, and one thing to hold onto: the vault code for this deployment is MIRAGE-741. Do not read it back now, a plain logged is all I need. I will ask for it cold much later."
+        },
+        {
+          "text": "Logistics note: the Halden courier run moves to Tuesdays from next month, and the dock assignee rotates, Oddmund takes the early slot and Sigrid the late one. Parking stickers for the annex arrive Friday, hand them to Ingrid at reception rather than the mailroom. The freight lift is down for inspection Thursday morning so palletize light only. The kettle in bay 2 is finally descaled. That is everything from facilities."
+        },
+        {
+          "text": "Housekeeping from the depot: the retired access code MIRAGE-338 from the old Kristiansund site keeps showing up on stale labels, ignore it wherever it surfaces, it opens nothing. Relabel the pallet wraps when you pass them. The forklift charger in lane 4 trips the breaker if paired with the space heater, so facilities asked us to stagger them. Talked to the electrician, parts arrive Monday."
+        },
+        {
+          "text": "Procurement update: the replacement gaskets for the brine pumps are on backorder until the 21st, so maintenance wants the standby seals inventoried before the weekend. Vegard promised the counts by Wednesday noon. Also the supplier portal password policy changed again, 90-day rotation now, and Astrid is collecting the new acknowledgments. Nothing else urgent on the purchasing side."
+        },
+        {
+          "text": "Schedule heads-up: the quarterly safety walk is moved from the 9th to the 16th because the auditor doubles up with the Bergen visit. Torill wants the ladder inspection tags refreshed beforehand and the eyewash stations flushed and logged. I owe her the revised checklist by Friday. The canteen menu voting link went around, respond if you care about the fish option."
+        },
+        {
+          "text": "IT memo: the shared plotter driver needs a manual reinstall on the terminals near dispatch, the queue silently drops large-format jobs. Kjetil is on leave so facilities will co-sign the access request. Backup verification passed for the archive share but the cold-storage bucket report is still pending. The badge printer ribbon is on order, expected Tuesday."
+        },
+        {
+          "text": "Weather and ops: the coastal forecast has a gale window Saturday evening, so the outdoor container moves shift to Saturday morning and the deck crew starts an hour early. New ear protection arrived, collect from Torill. The offshore pair on rotation wants their briefing moved to 07:30, nobody objected on the thread. Coffee beans restocked, the dark roast is the one by the window."
+        },
+        {
+          "text": "Two things to close the loop: first, what was the vault code from the very first message of this field log? Quote it exactly. Second, save that code as the only line of vault.md in your workspace so it outlives this chat."
+        }
+      ],
+      "verify": [
+        {
+          "kind": "answer_contains",
+          "any_of": [["mirage-741", "mirage 741"]]
+        },
+        {
+          "kind": "transcript_file_write",
+          "path": "vault.md",
+          "content_contains": "mirage-741"
+        }
+      ]
+    },
+    {
+      "id": "comp-memo-budget",
+      "title": "Largest budget derived from one long memo",
+      "summary": "A single long budget memo carrying four site allocations is followed by noise turns that push the thread past the trigger, and the closing turn asks which site got the largest allocation, a derivation over the memo rather than a verbatim echo, answered in prose and persisted to a file. Sound because the winner site and its amount appear only in the seeded memo and the file-write probe can only be satisfied by the derived winner after compaction.",
+      "tools_used": [
+        "files.read",
+        "files.write"
+      ],
+      "setup": [
+        {
+          "type": "agent_config",
+          "context_window": 2000
+        }
+      ],
+      "turns": [
+        {
+          "text": "Circulating the draft capital memo for next year, hold this version until finance signs: Site KESTREL-406, the north loading pier rebuild, is allocated 41,000 euros covering piling repairs and two new fenders. Site VESPER-251, the cold-store expansion on the inland road, is allocated 88,000 euros, the single largest line, covering the second compressor bank, the dock seals, and the racking extension. Site ORION-118, the workshop tooling refresh, is allocated 23,000 euros for the CNC retrofit and calibration. Site TALON-704, the fuel farm instrumentation swap, is allocated 65,000 euros for the metering skid and the vapor recovery tie-in. Contingency sits outside the site lines at 30,000 euros. Timeline: piling starts after ice-out, the cold-store compressor order has a 14 week lead so purchasing wants the PO cut in January, the CNC vendor slots April, and the metering skid ships direct from Rotterdam in March. Sign-off loop is me, then finance, then the board pack. Give the memo a plain ack so I know it reached you."
+        },
+        {
+          "text": "Two follow-ups on the memo while it circulates: the ice-out estimate came early this year so the pier job may pull forward a fortnight, and the racking vendor offered a discount if the extension order bundles with the bay signage refresh. Neither changes the allocation lines, do not renumber anything. Rekha still owes the compressor power draw calc for the electrical load letter."
+        },
+        {
+          "text": "Admin round: the visitor badges for the January audit team are ordered, the parking lease on the south lot renews in March, and the kettle round for the workshop is settled. The auditor wants a quiet room with a table for four and fresh coffee, booked. The badge printer ribbon arrived so visitor badges print in house again."
+        },
+        {
+          "text": "Buildings note: the stuck thermostat valve part arrived, facilities slots the fix for Tuesday morning, and the leak over the archive room is resealed and drying, dehumidifier runs until the weekend. The archive boxes moved one shelf down as a precaution. The plotter reinstall finished, large format jobs queue correctly again, test prints are in the recycle bin by dispatch."
+        },
+        {
+          "text": "People round: Torill is on course Thursday and Friday, Marianne covers the safety walk prep, and the new deck hand starts on the 12th, badge and locker assigned, buddy is Vegard. The probation review template came from HR, fill the goals section before day 30. The canteen fish option won the vote so it is on the standing menu now."
+        },
+        {
+          "text": "Compliance round: the drill logs are scanned into the compliance folder, eyewash flush records printed and signed, and the ladder tag refresh is done except bay 5 which needs the ladder down from the rack, scheduled Friday. The auditor asked for the waste manifests two quarters back, Marianne pulled them from the contractor portal. Nothing outstanding on my side except the binder tabs."
+        },
+        {
+          "text": "Close the memo out for me: which site is getting the largest allocation, and how much is that line? Answer with the site and the amount, and save the winner line as the only line of winner.md in your workspace."
+        }
+      ],
+      "verify": [
+        {
+          "kind": "answer_contains",
+          "all_of": [["vesper-251", "vesper 251"], ["88"]]
+        },
+        {
+          "kind": "transcript_file_write",
+          "path": "winner.md",
+          "content_contains": "vesper-251"
+        }
+      ]
+    },
+    {
+      "id": "comp-gate-offload",
+      "title": "Offloaded history readback after compaction",
+      "summary": "The audit gate order is planted first, noise turns push the thread past the trigger so the harness compacts and offloads the pre-compaction history into the agent workspace, and the closing turn asks the agent to locate that saved history file, read it back, and report the gate order. Sound because the tool-call probe pins the offload read (acknowledgements never read files, so it is pollution-immune) and the four gate words appear only in the seeded turn.",
+      "tools_used": [
+        "files.read",
+        "files.write"
+      ],
+      "setup": [
+        {
+          "type": "agent_config",
+          "context_window": 2000
+        }
+      ],
+      "turns": [
+        {
+          "text": "Audit prep item one, and this is the part I will quiz you on later: the physical audit gate order is kilo first, then oscar, then delta, then tango. The inspectors walk them in that sequence and the escort roster follows it. Just confirm you have it."
+        },
+        {
+          "text": "Escort roster draft: Monday covers kilo with Torill, Tuesday covers oscar with Vegard, Wednesday covers delta with Astrid, Thursday covers tango with Kjetil, Friday is the reserve day with me. Inspectors want hard hats on kilo and delta, closed shoes everywhere, and no phones past the oscar door. The safety video plays in the briefing room at 07:45 sharp and attendance is taken."
+        },
+        {
+          "text": "Paperwork for the audit: the last three drill logs need scanning into the compliance folder, the ladder tags photographed, and the eyewash flush records printed. Marianne is collecting everything in a single binder, tabbed by gate. The photocopier on 2 does tabs if the bypass tray is used, otherwise the print shop does them for a fee. Binder spine label is audit 2026 Q1, blue."
+        },
+        {
+          "text": "Facilities note: the briefing room projector lamp was replaced, the thermostat sticks at 21 degrees until the valve part arrives, and the vending machine takes cards again. Parking for the inspectors is reserved in the north row, spots 4 through 7, permits in the welcome pack. Lunch is the fish option both days per the dietary sheet, the vegetarian plates are separate and labeled."
+        },
+        {
+          "text": "Ops aside: the gasket shipment cleared customs, the standby seals are counted and tagged, and the brine pump work order is queued behind the compressor service. Vegard moved the pump job to the week after the audit so the crew is not split. The plotter near dispatch prints the gate maps again after the driver reinstall, Kjetil has the file."
+        },
+        {
+          "text": "Small stuff: the drone survey notice went to the harbor office with the 48 hour window, and the coffee order switched suppliers without a price change. The training module deadline extension was granted to end of month, Torill is tracking completion on the whiteboard by the stairwell. The radios got their charging rack mounted by the briefing room door."
+        },
+        {
+          "text": "Last prep item: the inspectors requested the waste manifest summaries for the past two quarters, Marianne has them from the contractor portal, and the escort radios need charging the night before each walk. The reserve day roster holds unless the weather window on Saturday eats into Monday, in which case the sequence slips by one day and I will reissue the sheet."
+        },
+        {
+          "text": "Now the quiz: our earlier context in this chat was summarized to fit the window. If the harness saved the pre-summary history to a file in your workspace, read that file back and tell me the audit gate order, first to last."
+        }
+      ],
+      "verify": [
+        {
+          "kind": "tool_called",
+          "tool": "read_file",
+          "args_contains": "transcript.md"
+        },
+        {
+          "kind": "answer_contains",
+          "all_of": [["kilo"], ["oscar"], ["delta"], ["tango"]]
+        }
+      ]
+    },
+    {
+      "id": "comp-standing-orders",
+      "title": "Standing orders survive compaction",
+      "summary": "Two standing orders, a reply prefix rule and a crate count, are planted in the first turn and never repeated; noise pushes the thread past the trigger and the closing turn requires the count recalled, the rule still observed in the reply, and both orders written from memory into a file. Sound because the two file-write probes are pollution-immune (acknowledgements cannot write files), so both orders must be retrievable after compaction, and the answer probes add prose coverage.",
+      "tools_used": [
+        "files.write",
+        "files.read"
+      ],
+      "setup": [
+        {
+          "type": "agent_config",
+          "context_window": 2000
+        }
+      ],
+      "turns": [
+        {
+          "text": "Two standing orders for this whole session, and I will hold you to them no matter how long we go: first, begin every reply with the word COPY-THAT. second, the sealed crate from the Tromso run holds 340 units, and that number stays between us until inventory signs off. Acknowledge both with one line."
+        },
+        {
+          "text": "Freight desk: the Tromso return leg is empty both ways this month so the carrier wants a decision on backhaul by Thursday, the fuel surcharge drops a point if we commit to the quarter. Customs paperwork for the sealed crate is already lodged, the seal number matches the manifest, and the tally sheet from the loading crew is signed. Pallet exchange with the terminal is square."
+        },
+        {
+          "text": "Workshop: the CNC retrofit vendor asked for a confirmation on the April slot, the calibration house wants two reference blocks shipped ahead, and the tool crib did the annual darkness audit, three dead spindles tagged out. The bench vise replacement is approved, the swivel model this time, and the chip wagon schedule moves to twice weekly while the retrofit runs."
+        },
+        {
+          "text": "People: Torill is on course Thursday and Friday, Marianne covers the safety walk prep, and the new deck hand starts on the 12th, badge and locker assigned, buddy is Vegard. The probation review template came from HR, fill the goals section before day 30. The canteen fish option won the vote so it is on the standing menu now."
+        },
+        {
+          "text": "Buildings: the stuck thermostat valve part arrived, facilities slots the fix for Tuesday morning, and the leak over the archive room is resealed and drying, dehumidifier runs until the weekend. The archive boxes moved one shelf down as a precaution. The plotter reinstall finished, large format jobs queue correctly again."
+        },
+        {
+          "text": "Compliance: the drill logs are scanned into the compliance folder, eyewash flush records printed and signed, and the ladder tag refresh is done except bay 5 which needs the ladder down from the rack, scheduled Friday. The auditor asked for the waste manifests two quarters back, Marianne pulled them from the contractor portal."
+        },
+        {
+          "text": "Planning: the gale window Saturday passed without damage, the container moves are back to normal slots, and the deck crew is back to 08:30 starts. The offshore pair briefing stays at 07:30 until the rotation flips. Ear protection stock is healthy. The training module deadline extension was granted to end of month."
+        },
+        {
+          "text": "Two closures: state the count of units in the sealed crate from the standing orders, keep honoring the reply rule as always, and write both standing orders as you remember them into orders.md in your workspace, one per line."
+        }
+      ],
+      "verify": [
+        {
+          "kind": "transcript_file_write",
+          "path": "orders.md",
+          "content_contains": "copy-that"
+        },
+        {
+          "kind": "transcript_file_write",
+          "path": "orders.md",
+          "content_contains": "340"
+        },
+        {
+          "kind": "answer_contains",
+          "all_of": [["340"], ["copy-that", "copy that"]]
+        }
+      ]
+    },
+    {
+      "id": "comp-codename-swarm",
+      "title": "Live codename against a defunct swarm",
+      "summary": "One codename is marked live while three defunct names are planted as noise around it, a long noisy thread pushes the context past the trigger, and the closing turn asks which codename is live, in prose and persisted to a file. Sound because the live name and the decoys appear only in the seeded turn, the file-write probe can only be satisfied by the name the agent still holds, and answering or persisting a defunct name fails both probes.",
+      "tools_used": [
+        "files.read",
+        "files.write"
+      ],
+      "setup": [
+        {
+          "type": "agent_config",
+          "context_window": 2000
+        }
+      ],
+      "turns": [
+        {
+          "text": "Naming housekeeping before the launch chatter starts: three project names floated this quarter, BRUMBY-77, CORVID-12 and HARRIER-58, are all defunct, do not attach them to anything current, they belong to the history folder. The live codename for the launch is HALCYON-930 and only that one goes on current material. Confirm the live one in a word."
+        },
+        {
+          "text": "Launch prep thread: the press kit draft went to comms, the placeholder imagery needs the final palette before it locks, and the demo build is frozen except for the crash on the settings pane which the platform team owns. The staging tenant refreshed overnight so the demo data looks sane again. Rehearsal slots went out, pick one before Friday."
+        },
+        {
+          "text": "Compliance filter for the launch material: no customer names in screenshots, mask the account panel in every capture, and the pricing slide needs the legal footer at the bottom in the small type. The accessibility pass flagged two contrast issues on the hero banner, the hex fix is trivial. Captions on the demo clip are done, the timing is off by a beat on the third line."
+        },
+        {
+          "text": "Supplier side: the launch hardware ETA slipped four days, the alternative is split shipping at a premium, and the warranty paperwork needs a signature from finance since it crosses the threshold. The swag order locked at 400 units, the tote color is the darker one, and the sticker sheet dropped the QR code variant. The printer proof arrives Wednesday."
+        },
+        {
+          "text": "Internal comms: the announcement holds until the press kit locks, the all-hands slot is booked, and the exec demo runs the day before. The FAQ draft covers the three questions the field team actually gets asked, pricing, migration, and support hours. The status page copy is approved. Nothing goes external before the flag from me."
+        },
+        {
+          "text": "Logistics around the launch week: the office booking for the demo day is the big room, catering is the light finger food, and the remote bridges are tested at capacity. The press embargoes lift at 09:00 local per market, the sequence is in the runbook. Support does a quiet shift swap so the senior pair covers launch morning."
+        },
+        {
+          "text": "Post-launch catch list: monitor the ingest dashboards for the first spike, the on-call pair is briefed, and the rollback path is rehearsed with a 15 minute target. The retro is booked two weeks out. The feedback inbox routes to the triage rota, and the first patch window is the Thursday after launch if the settings pane crash reappears."
+        },
+        {
+          "text": "Cutting through the quarter's noise: which codename is live for the launch? Answer it, and save it as the only line of codename.md in your workspace."
+        }
+      ],
+      "verify": [
+        {
+          "kind": "answer_contains",
+          "any_of": [["halcyon-930", "halcyon 930"]]
+        },
+        {
+          "kind": "transcript_file_write",
+          "path": "codename.md",
+          "content_contains": "halcyon-930"
+        }
+      ]
+    },
+    {
+      "id": "comp-badge-drill",
+      "title": "Mid-document figure from one long report",
+      "summary": "A single long incident report buries a flagged visitor badge number alongside a cleared badge that transposes it, further noise turns push the thread past the trigger, and the closing turn asks for the flagged badge number in prose and persisted to a file. Sound because both badge numbers exist only in the seeded report, the file-write probe can only be satisfied by the figure the agent still holds, and recalling the transposed decoy fails both probes.",
+      "tools_used": [
+        "files.read",
+        "files.write"
+      ],
+      "setup": [
+        {
+          "type": "agent_config",
+          "context_window": 2000
+        }
+      ],
+      "turns": [
+        {
+          "text": "Incident report 2026-04-11, west gate, verbatim for the record: at 09:12 the delivery van from the kitchen supplier arrived carrying the quarterly cleaning consumables. Driver logged in at the desk and proceeded to the loading bay as usual. At 09:40 a visitor arrived without an appointment, presenting as a subcontractor for the door maintenance job. The desk could not find a matching work order. The visitor was escorted to the waiting area and the foreman was called. At 09:55 the foreman confirmed no subcontractor was scheduled for the west gate that day, the door job is contracted to a different firm and runs the following week. Security was tasked with a polite hold while the visitor's papers were checked. The visitor carried a badge numbered 55-AD-31 which the desk later matched to a lapsed pass from a different site, deactivated in January. The cleared kitchen driver, by contrast, carried badge 55-AD-13 and came and went without incident. At 10:20 the visitor withdrew the request to enter and left the premises in a grey hatchback, plate logged. No assets were accessed, no doors were opened beyond the lobby, and the lobby camera captured the interaction in full. The desk log, the camera export, and the lapsed pass record are attached to the report. Recommendation: reception re-checks badge status at issue and the subcontractor list is refreshed weekly. Report filed by the shift lead at 10:45."
+        },
+        {
+          "text": "Follow-ups from the report: the lobby camera export is on the shared drive under the incident folder, the plate passed to the harbor office as a courtesy since the grey hatchback has been seen at the fish dock too, and reception did the badge re-check training on Tuesday. The door maintenance firm confirmed their crew comes the 19th, two people, badges issued at arrival, escort required."
+        },
+        {
+          "text": "Unrelated catch-up while the report circulates: the compressor service went fine, the brake van inspection is booked, and the canteen fixed the card reader. The eyewash station by bay 5 passed its weekly check, and the pallet wrap order arrives with Friday's delivery. The visitor wifi vouchers expire end of month, Marianne is reissuing the batch for the audit team."
+        },
+        {
+          "text": "Facilities round: the stuck thermostat valve is fixed, the briefing room projector got its new lamp, and the vending machine takes cards again. Parking for the auditors is reserved in the north row, spots 4 through 7, permits in the welcome pack. Lunch is the fish option both days per the dietary sheet, vegetarian plates separate and labeled."
+        },
+        {
+          "text": "Ops round: the gasket shipment cleared customs, the standby seals are counted and tagged, and the brine pump work order is queued behind the compressor service. Vegard moved the pump job to the week after the audit so the crew is not split. The deck crew is back to 08:30 starts after the gale window passed without damage."
+        },
+        {
+          "text": "Now the question I promised: from the incident report at the top of this thread, what was the badge number of the visitor flagged at the west gate? Answer with the badge number, and save it as the only line of badge.md in your workspace."
+        }
+      ],
+      "verify": [
+        {
+          "kind": "answer_contains",
+          "any_of": [["55-ad-31", "55 ad 31"]]
+        },
+        {
+          "kind": "transcript_file_write",
+          "path": "badge.md",
+          "content_contains": "55-ad-31"
+        }
+      ]
+    },
+    {
+      "id": "comp-node-totals",
+      "title": "Largest node load derived across turns",
+      "summary": "Storage node loads are seeded across four separate turns interleaved with unrelated noise, the thread pushes past the trigger, and the closing turn asks which node carries the most crates and how many, a comparison no single seeded turn states together, answered in prose and persisted to a file. Sound because the node names and counts exist only in the seeded turns and the file-write probe can only be satisfied by the derived winner after compaction.",
+      "tools_used": [
+        "files.read",
+        "files.write"
+      ],
+      "setup": [
+        {
+          "type": "agent_config",
+          "context_window": 2000
+        }
+      ],
+      "turns": [
+        {
+          "text": "Inventory snapshot, part one: node aspen is carrying 120 crates after the Returns consolidation, all palletized, all barcoded, aisle access is clear. Ack and I will send the rest of the network through the week."
+        },
+        {
+          "text": "Ops noise while you have that: the dock leveller on the north side passed its inspection, the buffer door motor is on order, and the night shift wants the floodlight timer moved an hour earlier for the dark mornings. The sweeper robot got a new filter and the ramp salt is restocked. Nothing here touches the inventory numbers."
+        },
+        {
+          "text": "Inventory snapshot, part two: node birch is carrying 95 crates, mostly the slow movers from the seasonal reset, and its overflow shelf is empty again after the charity pickup. The birch rack bolts passed torque check, so no restrictions there."
+        },
+        {
+          "text": "Admin aside: the forklift inspection stickers arrived, hand them to Vegard, the shift pattern consult is Thursday in the small room, and the lost property box by reception needs a clearout before month end. The audit binder tabs finally printed. None of this moves crates anywhere."
+        },
+        {
+          "text": "Inventory snapshot, part three: node cedar is carrying 340 crates after absorbing the returns overflow and the pre-build stock for the spring promo, it is the fullest it has been all year, and the aisle end guardrail got a dolly bump so facilities is checking it. Everything on cedar is counted twice, numbers are good."
+        },
+        {
+          "text": "Facilities echo: the guardrail on that aisle passed the check with a cosmetic scuff, the dolly that did it is getting a bumper, and the rack signage is being reprinted anyway for the promo labels. The spare guardrail tube is in stores if the scuff bothers anyone."
+        },
+        {
+          "text": "Inventory snapshot, part four: node dombek is carrying 260 crates of the export pallets, the reefer ones are plugged and healthy, and its outbound staging lane is reserved for Thursday's sailing. With that the network snapshot is complete, no more parts coming."
+        },
+        {
+          "text": "Across the whole snapshot you have: which node is carrying the most crates, and what is that count? Answer with the node and the count, and save the node name and its count as the only line of peak.md in your workspace."
+        }
+      ],
+      "verify": [
+        {
+          "kind": "answer_contains",
+          "all_of": [["cedar"], ["340"]]
+        },
+        {
+          "kind": "transcript_file_write",
+          "path": "peak.md",
+          "content_contains": "cedar"
+        }
+      ]
+    },
+    {
+      "id": "comp-safekeep-write",
+      "title": "Offload-to-file writeback of a seeded phrase",
+      "summary": "A depot access phrase is planted first, noise turns drive the thread past the trigger, and the closing turn asks the agent to persist the phrase from the start of the session into a named workspace file. Sound because the phrase exists only in the seeded turn, the file-write probe can only be satisfied by the phrase the agent still holds after compaction, and the recovery path, whether the replacement summary retained it or the agent digs it out of the offloaded history, is exactly the harness behavior this lane scores.",
+      "tools_used": [
+        "files.write",
+        "files.read"
+      ],
+      "setup": [
+        {
+          "type": "agent_config",
+          "context_window": 2000
+        }
+      ],
+      "turns": [
+        {
+          "text": "Before anything else in this session: the depot access phrase is LYREBIRD-5. Keep it handy, I will ask you to persist it once we are through the housekeeping. A one word ack is fine."
+        },
+        {
+          "text": "Housekeeping block one: the storage loft inventory is done, the floodlight over the yard got its new ballast, and the pest control visit is the first Tuesday of the month as usual. The loft ladder needs a wipe before the surveyor comes, and the loft key stays in the lockbox, code unchanged. The surveyor wants two hours with the roof trusses, Wednesday morning, escort required per the usual rule."
+        },
+        {
+          "text": "Housekeeping block two: the yard gate hinge is greased, the bollard lights are on the winter timer now, and the drainage channel by the ramp was cleared after the leaves. The grit bin is topped up and the spare padlock for the fuel cage is tagged in stores. The water bowser is drained for the season, do not reconnect it until the freeze risk passes."
+        },
+        {
+          "text": "Housekeeping block three: the first aid kit in the loft got its quarterly restock, the eyewash bottles are in date, and the incident book has a fresh page. The fire extinguisher by the loft stair is due its annual service in two weeks, the contractor will call ahead. The smoke detector chirp was a low battery, swapped, the old one is recycled."
+        },
+        {
+          "text": "Housekeeping block four: the loft insulation patch is done and the thermal camera pass found no further cold spots, the report is in the facilities folder. The roof survey drone flight is weather dependent, the pilot will confirm by text the evening before. The loft floor load limit sign was repainted, 200 kilograms per square meter, keep the archive boxes inside the marked zone."
+        },
+        {
+          "text": "Housekeeping block five: the pest control visit found nothing, the bait stations are fresh, and the loft is signed off for the quarter. The surveyor's truss report came back clean with a note to keep ventilation clear, the vents are clear. The lockbox code rotation is due in January, I will send the new one when the year turns."
+        },
+        {
+          "text": "Housekeeping block six: the grit bin lid hinge was replaced, the bowser stays drained, and the yard floodlights passed the night walk. The surveyor invoiced for the two hours as planned, facilities coded it to maintenance. The loft is tidy, the archive boxes are inside the marked zone, and the ladder is hung back on its hooks. That is the lot for this week."
+        },
+        {
+          "text": "One thing before the week closes: persist the depot access phrase I gave you at the very start of this session into a file called safekeep.md in your workspace, then confirm where you put it."
+        }
+      ],
+      "verify": [
+        {
+          "kind": "transcript_file_write",
+          "path": "safekeep.md",
+          "content_contains": "lyrebird-5"
+        },
+        {
+          "kind": "answer_contains",
+          "any_of": [["lyrebird-5", "lyrebird 5"]]
+        }
+      ]
+    }
+  ]
+}

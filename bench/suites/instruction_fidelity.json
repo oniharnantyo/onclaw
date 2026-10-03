@@ -1,0 +1,230 @@
+{
+  "suite_version": "1",
+  "lane": "instruction-fidelity",
+  "description": "Instruction fidelity, measured black-box. Behavioral rules ride in the task's measured turns — the runner scopes setup chat_turns to a separate logical session from the measured one, so a rule planted in setup never reaches the context under test; rules given in the measured thread are the closest reachable analog to stored system-prompt rules (agent identity fields are patchable via the public API but the suite schema's agent_config step cannot express them, and agent-tier skills are installable via the public API with no suite setup step to drive them — both noted as gaps rather than faked; slash commands are not reachable through the public input path at all). Soundness under pooled-answer verification: rule-turn acknowledgements can echo required tokens, so every task pairs its answer probes with a transcript_file_write leg whose content can only be produced by the final turn. Required surface forms are short tokens, split across probes, or derived (arithmetic no acknowledgement can precompute). Each task pins an empty tool denylist at setup so lane order cannot leak restrictions into it. Verifiers are deterministic — no judge.",
+  "tasks": [
+    {
+      "id": "fidelity-prefix-token",
+      "title": "Session prefix token on every reply",
+      "summary": "A prefix-token rule is planted at the start of the measured thread, the seeded fact follows in the next turn, and the closing turn asks for the fact in prose and persisted to a file with the rule still in force. Sound because the file-write probe can only be satisfied by the final turn, the token and the fact are short lint-exempt forms, and a reply that drops the rule fails the answer probe.",
+      "tools_used": [
+        "files.write"
+      ],
+      "setup": [
+        {
+          "type": "agent_config",
+          "disabled_tools": []
+        }
+      ],
+      "turns": [
+        {
+          "text": "House style for the rest of this session, no exceptions: begin every reply with the token [ATLAS] before anything else. Acknowledge with the token alone so I know it landed."
+        },
+        {
+          "text": "Project context for what is coming: for the Corfu shipment we settled on FOB as the incoterm, buyer covers freight from the port of loading. The crate list is final and the surveyor signed off."
+        },
+        {
+          "text": "Two things: remind me which incoterm we settled on for the Corfu shipment, one word, and save that word as the only line of terms.md in your workspace."
+        }
+      ],
+      "verify": [
+        {
+          "kind": "answer_contains",
+          "any_of": [["[atlas]"]],
+          "all_of": [["fob"]]
+        },
+        {
+          "kind": "transcript_file_write",
+          "path": "terms.md",
+          "content_contains": "fob"
+        }
+      ]
+    },
+    {
+      "id": "fidelity-risk-labels",
+      "title": "Three risks under a mandated label scheme",
+      "summary": "A delivery plan seeds exactly three real risks among loud non-risks, and the closing turn demands the three risks each carrying its mandated label and the list saved to a file. Sound because the risk themes exist only in the seeded turn, the labels are short lint-exempt forms, every label group plus every theme group must hit, and the file-write probe pins the list to the closing turn; line geometry is not probed since text normalization collapses it, the labels carry the structure instead.",
+      "tools_used": [
+        "files.write"
+      ],
+      "setup": [
+        {
+          "type": "agent_config",
+          "disabled_tools": []
+        }
+      ],
+      "turns": [
+        {
+          "text": "Delivery plan for the autumn push, read carefully: the schedule has three real delivery risks. First, the storm window on the coastal leg can close the pier for days at a time. Second, the harbor strike ballot lands mid-October and a walkout would freeze the loader rosters. Third, the staffing shortage on the night shift caps how many containers we can turn per tide. Things that are not delivery risks no matter how loud they get in meetings: the budget review, the customs paperwork backlog, and the canteen contract. Ack the plan and I will drill you on it next."
+        },
+        {
+          "text": "Do the drill now: list the three delivery risks from the plan, each labeled risk-1, risk-2 and risk-3 in that order, and save the list to risks.md in your workspace."
+        }
+      ],
+      "verify": [
+        {
+          "kind": "answer_contains",
+          "all_of": [
+            ["risk-1", "risk 1"],
+            ["risk-2", "risk 2"],
+            ["risk-3", "risk 3"],
+            ["storm", "weather"],
+            ["strike", "walkout"],
+            ["shortage", "staffing", "understaffed"]
+          ]
+        },
+        {
+          "kind": "transcript_file_write",
+          "path": "risks.md",
+          "content_contains": "risk-1"
+        }
+      ]
+    },
+    {
+      "id": "fidelity-word-ban",
+      "title": "Banned word swapped for the sanctioned form",
+      "summary": "A style rule banning a family of pretentious verbs in favor of a plain one is issued together with the writing task in the same turn, so the ban text lives in the prompt and the answer carries only compliant prose, saved to a file besides. Sound because the forbidden probes run over an answer that was produced under the ban, covering the word's common inflections and British spellings, and the file-write probe pins the prose to the same turn.",
+      "tools_used": [
+        "files.write"
+      ],
+      "setup": [
+        {
+          "type": "agent_config",
+          "disabled_tools": []
+        }
+      ],
+      "turns": [
+        {
+          "text": "Context for a writing task: the new deploy pipeline went live Tuesday, it gates on the smoke suite, and rollbacks are one click. The ops team is still learning the dashboards. Ack and I will hand you the task."
+        },
+        {
+          "text": "Style rule, effective immediately and for the rest of this session: never write the word 'utilize' or any of its cousins. The plain word 'use' is the only acceptable form, in replies and in files alike. Now the task: draft two sentences for the changelog about how the ops team will use the new deploy pipeline, and save them to deploy.md in your workspace."
+        }
+      ],
+      "verify": [
+        {
+          "kind": "answer_contains",
+          "all_of": [["pipeline"]]
+        },
+        {
+          "kind": "answer_not_contains",
+          "none_of": ["utilize", "utilizing", "utilized", "utilise", "utilising", "utilised", "utilisation", "utilization"]
+        },
+        {
+          "kind": "transcript_file_write",
+          "path": "deploy.md",
+          "content_contains": "pipeline"
+        }
+      ]
+    },
+    {
+      "id": "fidelity-precedence-override",
+      "title": "Later rule retires the earlier token",
+      "summary": "A sign-off token rule is issued, then explicitly retired and replaced by a new token one turn later, and the closing turn requires an arithmetic result logged with whichever sign-off is current. Sound because the result is derived arithmetic no acknowledgement can precompute, and the file-write probe requires the current token in the persisted line, so an agent still honoring the retired token fails the file leg; the retired token cannot be forbidden on the pooled answer because its own acknowledgement legitimately carried it.",
+      "tools_used": [
+        "files.write"
+      ],
+      "setup": [
+        {
+          "type": "agent_config",
+          "disabled_tools": []
+        }
+      ],
+      "turns": [
+        {
+          "text": "Sign-off rule for this session, starting now: end every reply with the token [OVER]. Nothing else changes."
+        },
+        {
+          "text": "Rule change, effective immediately and for the rest of the session: the old token is retired entirely. End every reply with [OUT] instead."
+        },
+        {
+          "text": "Quick arithmetic while the sign-off rules are in force: what is 17 plus 25? Answer here and log the result, with the current sign-off, as the only line of landing.md in your workspace."
+        }
+      ],
+      "verify": [
+        {
+          "kind": "answer_contains",
+          "any_of": [["[out]"]],
+          "all_of": [["42"]]
+        },
+        {
+          "kind": "transcript_file_write",
+          "path": "landing.md",
+          "content_contains": "[out]"
+        }
+      ]
+    },
+    {
+      "id": "fidelity-status-shape",
+      "title": "Three-line labeled status format",
+      "summary": "A strict output shape is mandated for status questions, three labeled lines in a fixed order, a seeded project supplies the content, and the closing turn asks for a status update plus the same lines saved to a file. Sound because the labels are short lint-exempt forms that the closing prompt never surfaces, the seeded blocker theme exists only in the seeded turn, and the file-write probe pins the formatted lines to the closing turn; line order is not probed since normalization collapses it.",
+      "tools_used": [
+        "files.write"
+      ],
+      "setup": [
+        {
+          "type": "agent_config",
+          "disabled_tools": []
+        }
+      ],
+      "turns": [
+        {
+          "text": "Format rule for status questions in this session: answer with exactly three labeled lines, STATUS:, BLOCKER: and NEXT:, in that order, nothing else. Ack now in that format."
+        },
+        {
+          "text": "Project context for the migration: the current blocker is the staging database, the next step is the dress rehearsal, everything else is green, and the cutover review is booked for the end of the month."
+        },
+        {
+          "text": "Status update on the migration, in the agreed format, and drop the same three lines into status.md in your workspace."
+        }
+      ],
+      "verify": [
+        {
+          "kind": "answer_contains",
+          "all_of": [["status:"], ["blocker:"], ["next:"], ["staging"]]
+        },
+        {
+          "kind": "transcript_file_write",
+          "path": "status.md",
+          "content_contains": "blocker:"
+        }
+      ]
+    },
+    {
+      "id": "fidelity-folder-rule",
+      "title": "Filing rule routes saves into the folder",
+      "summary": "A filing rule mandates that every save lands under a named workspace folder rather than the root, and the closing turn asks for a one-line summary saved under the file name alone, leaving the placement entirely to the rule. Sound because the rule exists only in the measured thread, the full destination path is never surfaced in the prompt, and the file check matches the written path with a content probe so a root-level save fails while a rule-abiding save passes.",
+      "tools_used": [
+        "files.write"
+      ],
+      "setup": [
+        {
+          "type": "agent_config",
+          "disabled_tools": []
+        }
+      ],
+      "turns": [
+        {
+          "text": "Filing rule for this session: anything I ask you to save goes under the reports folder in your workspace, never the root. Ack the rule."
+        },
+        {
+          "text": "Context you will be filing: the Brinewood incident was a vendor credential leak, contained the same day, full writeup pending, and no customer data was touched."
+        },
+        {
+          "text": "Save a one-line summary of the Brinewood incident as recap.md."
+        }
+      ],
+      "verify": [
+        {
+          "kind": "answer_contains",
+          "all_of": [["brinewood"]]
+        },
+        {
+          "kind": "transcript_file_write",
+          "path": "reports/recap.md",
+          "content_contains": "brinewood"
+        }
+      ]
+    }
+  ]
+}

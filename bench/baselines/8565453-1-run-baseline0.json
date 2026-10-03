@@ -1,0 +1,2265 @@
+{
+  "schema_version": 1,
+  "run_id": "bench-20261003-152144",
+  "suite_version": "1",
+  "onclaw_git_sha": "8565453",
+  "model_pin": "glm-5.3-flash",
+  "base_url": "http://localhost:8080",
+  "started_at": "2026-10-03T06:03:04.66827Z",
+  "finished_at": "2026-10-03T15:21:44.079253Z",
+  "seeds": 3,
+  "tasks": [
+    {
+      "task_id": "anchor-hello-file",
+      "lane": "anchor",
+      "seed": 0,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "Done. `/workspace/hello.txt` contains the single line `Hello, world!` (with trailing newline).",
+      "tool_calls": 1,
+      "duration_ms": 16375
+    },
+    {
+      "task_id": "anchor-hello-file",
+      "lane": "anchor",
+      "seed": 1,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "Created `/workspace/hello.txt` with the exact line `Hello, world!`.",
+      "tool_calls": 1,
+      "duration_ms": 15985
+    },
+    {
+      "task_id": "anchor-hello-file",
+      "lane": "anchor",
+      "seed": 2,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "Done. `/workspace/hello.txt` created with the single line `Hello, world!`.",
+      "tool_calls": 1,
+      "duration_ms": 15667
+    },
+    {
+      "task_id": "anchor-script-exec-fix",
+      "lane": "anchor",
+      "seed": 0,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "tool_called",
+          "passed": true
+        }
+      ],
+      "answer": "Saved `/workspace/process_data.sh` — exactly two lines (`wc -l` confirms 2), made executable, run directly as `./process_data.sh`.\n\nExact output:\n\n```\nsum-51\n```",
+      "tool_calls": 2,
+      "duration_ms": 28013
+    },
+    {
+      "task_id": "anchor-script-exec-fix",
+      "lane": "anchor",
+      "seed": 1,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "tool_called",
+          "passed": true
+        }
+      ],
+      "answer": "`/workspace/process_data.sh` saved — exactly two lines (shebang + the echo). Run via `./process_data.sh`, exact output:\n\n```\nsum-51\n```",
+      "tool_calls": 2,
+      "duration_ms": 23058
+    },
+    {
+      "task_id": "anchor-script-exec-fix",
+      "lane": "anchor",
+      "seed": 2,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "tool_called",
+          "passed": true
+        }
+      ],
+      "answer": "Done. `/workspace/process_data.sh` — exactly two lines (`#!/bin/bash` / `echo \"sum-$((17*3))\"`), made executable, run directly as `./process_data.sh`. Exact output:\n\n```\nsum-51\n```",
+      "tool_calls": 2,
+      "duration_ms": 22808
+    },
+    {
+      "task_id": "anchor-temp-average",
+      "lane": "anchor",
+      "seed": 0,
+      "status": "fail",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": false,
+          "detail": "no filesystem-write tool call wrote \"avg_temp.txt\""
+        }
+      ],
+      "answer": "Saved both files verbatim:\n\n- `/workspace/temp_high.csv` — 1 header + 4 rows, dates ISO.\n- `/workspace/temp_low.csv` — 1 header + 4 rows, dates left exactly as pasted (`03/02/2026 00:00:00`, `2026-03-03`, `04-Mar-2026`, `03/05/2026`) — not normalized, per your instruction.\n\nIf a later step needs the low-temp dates parsed, they'll require per-row format handling — say the word and I'll do that as a separate step, without touching these files.\n**7.35** — saved to `/workspace/avg_temp.txt`.\n\nAll four dates matched once the mangled low-temp formats were parsed (`03/02/2026 00:00:00` → 03-02, `2026-03-03` as-is, `04-Mar-2026` → 03-04, `03/05/2026` → 03-05). No unmatched rows on either side.\n\nDaily diffs (high − low): 5.5, 7.5, 8.5, 7.9 → mean 29.4 / 4 = 7.35 (exact, Decimal arithmetic).",
+      "tool_calls": 3,
+      "duration_ms": 59232
+    },
+    {
+      "task_id": "anchor-temp-average",
+      "lane": "anchor",
+      "seed": 1,
+      "status": "fail",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": false,
+          "detail": "no filesystem-write tool call wrote \"avg_temp.txt\""
+        }
+      ],
+      "answer": "Saved, byte-for-byte as pasted:\n\n- `/workspace/temp_high.csv` — header + 4 rows, ISO dates intact.\n- `/workspace/temp_low.csv` — header + 4 rows, mangled date formats preserved verbatim (`03/02/2026 00:00:00`, `2026-03-03`, `04-Mar-2026`, `03/05/2026`).\n\nAssumption: the \"Daily highs/lows (…)\" label lines were captions, not CSV content — excluded. No date normalization performed. If you want them parsed to a uniform format later, say so and it happens then, not now.\n**7.35**\n\n- `/workspace/avg_temp.txt` contains `7.35` (read back to confirm).\n- All 4 dates matched. Per-date diffs: 5.5, 7.5, 8.5, 7.9 → mean 7.35.\n- Assumption on record: `03/02/2026 00:00:00` and `03/05/2026` read as US month-first (Mar 2, Mar 5) — the only reading under which those rows match the high-side dates.",
+      "tool_calls": 3,
+      "duration_ms": 62635
+    },
+    {
+      "task_id": "anchor-temp-average",
+      "lane": "anchor",
+      "seed": 2,
+      "status": "fail",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": false,
+          "detail": "no filesystem-write tool call wrote \"avg_temp.txt\""
+        }
+      ],
+      "answer": "Both saved verbatim:\n\n- `/workspace/temp_high.csv` — 4 data rows, ISO dates\n- `/workspace/temp_low.csv` — 4 data rows, dates in three different formats (`03/02/2026 00:00:00`, `2026-03-03`, `04-Mar-2026`, `03/05/2026`) as pasted, unmodified\n\nIf any consumer of these files needs parseable dates, temp_low.csv will need normalization first — say the word and I'll standardize to ISO.\n**7.35** — saved to `/workspace/avg_temp.txt` and read back to verify.\n\nAll 4 dates matched after normalizing the mangled low-temp formats (`03/02/2026 00:00:00`, `04-Mar-2026`, `03/05/2026` read as MM/DD/YYYY):\n\n| Date | High | Low | Diff |\n|---|---|---|---|\n| 2026-03-02 | 58.2 | 52.7 | 5.5 |\n| 2026-03-03 | 61.0 | 53.5 | 7.5 |\n| 2026-03-04 | 59.4 | 50.9 | 8.5 |\n| 2026-03-05 | 63.8 | 55.9 | 7.9 |\n\nSum 29.4 ÷ 4 = 7.35 (computed with exact decimal arithmetic, no float noise).",
+      "tool_calls": 4,
+      "duration_ms": 92984
+    },
+    {
+      "task_id": "comp-vault-echo",
+      "lane": "compaction",
+      "seed": 0,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "Logged. Holding until you ask.\nLogged — facilities noted. Halden run shifts to Tuesdays next month, Oddmund takes the early dock and Sigrid the late one, Friday's annex stickers go to Ingrid at reception, the freight lift is out Thursday morning so light pallets only, and bay 2's kettle is descaled.\nLogged — MIRAGE-338 is retired, it opens nothing, so it gets ignored wherever it turns up on stale labels; I'll relabel the pallet wraps when passing them; the lane-4 forklift charger and the space heater stay staggered so the breaker holds, and the electrician's parts land Monday.\nLogged — brine-pump gasket replacements are backordered until the 21st, so the standby seals get inventoried before the weekend with Vegard's counts due Wednesday noon; supplier portal password rotation is now 90 days and Astrid's collecting the new acknowledgments.\nLogged — quarterly safety walk moves from the 9th to the 16th since the auditor doubles up with the Bergen visit; ladder inspection tags get refreshed beforehand and the eyewash stations flushed and logged; your revised checklist for Torill is due Friday; canteen voting link noted if the fish option matters.\nLogged — plotter driver needs a manual reinstall on the dispatch terminals since the queue silently drops large-format jobs; facilities co-signs the access request while Kjetil is on leave; archive share backup verification passed; cold-storage bucket report still pending; badge printer ribbon lands Tuesday.\nLogged — gale window Saturday evening pushes the outdoor container moves to Saturday morning with the deck crew starting an hour early; ear protection ready to collect from Torill; offshore pair's briefing moved to 07:30 with no objections; coffee beans restocked, the dark roast is by the window.\n**MIRAGE-741**\nBoth done. The code from the first message of this field log is **MIRAGE-741**, quoted exactly — and it's now the only line of `vault.md` in the workspace, so it outlives this chat.",
+      "tool_calls": 8,
+      "duration_ms": 1242249
+    },
+    {
+      "task_id": "comp-vault-echo",
+      "lane": "compaction",
+      "seed": 1,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "Logged. Holding for cold retrieval — no echo until you ask.\nLogged. Facilities note on file — courier, dock rotation, stickers, lift, kettle. No echo of held items until asked.\nLogged. Housekeeping on file — stale labels (retired old-site code flagged: ignore on sight, opens nothing), pallet wraps to relabel in passing, lane 4 charger and space heater to be staggered, electrician parts due Monday. Held items stay held until you ask.\nLogged. Procurement on file — gaskets backordered to the 21st, standby seals to be inventoried before the weekend, Vegard's counts due Wednesday noon, portal password rotation now 90 days with Astrid collecting the acknowledgments. Note: no portal password value was provided, only the policy change — nothing new is held from this message. Held items stay held until you ask.\nLogged. Schedule on file — safety walk moved from the 9th to the 16th (auditor doubling with the Bergen visit), ladder inspection tags to be refreshed beforehand, eyewash stations flushed and logged, revised checklist owed to Torill by Friday, canteen voting link noted with the fish option flagged as optional. Held items stay held until you ask.\nLogged. IT memo on file — plotter driver needs a manual reinstall on the terminals near dispatch (queue silently dropping large-format jobs), Kjetil on leave with facilities co-signing the access request, archive share backup verification passed, cold-storage bucket report still pending, badge printer ribbon on order expected Tuesday. No codes or credentials in this one — nothing new is held. Held items stay held until you ask.\nLogged. Weather and ops on file — gale window Saturday evening pushing outdoor container moves to Saturday morning with the deck crew starting an hour early, new ear protection to collect from Torill, offshore pair's briefing moved to 07:30 with no objections on the thread, coffee beans restocked with the dark roast by the window. No codes or credentials in this one — nothing new is held. Held items stay held until you ask.\nVault code from the first message of the field log, quoted exactly:\n\n**MIRAGE-741**\n\nThat's the deployment code from the opener — not the retired MIRAGE-338 from the Kristiansund housekeeping note, which opens nothing and stays ignored on sight.\nvault.md is written. One line, exactly as quoted: `MIRAGE-741` — the deployment code from the opener, not the retired MIRAGE-338. Both halves of the closing request are done: the cold recall and the durable file.",
+      "tool_calls": 1,
+      "duration_ms": 769271
+    },
+    {
+      "task_id": "comp-vault-echo",
+      "lane": "compaction",
+      "seed": 2,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "Logged.\nLogged.\nLogged.\nLogged.\nLogged.\nLogged.\nLogged.\nVault code from the first message of this field log, quoted exactly: **MIRAGE-741**\n\nSaved as the only line of `/workspace/vault.md` — it outlives this chat.\n\n(Note: MIRAGE-338 is the retired Kristiansund code; it opens nothing.)",
+      "tool_calls": 1,
+      "duration_ms": 736073
+    },
+    {
+      "task_id": "comp-memo-budget",
+      "lane": "compaction",
+      "seed": 0,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "Ack received — draft capital memo logged as-is: four site lines (€41k / €88k / €23k / €65k), €30k contingency outside the lines, timeline noted, €217k total on the page. Holding this version untouched until finance signs.\nNoted, no changes to the memo. Logged against the draft, lines untouched:\n\n- **Pier job (KESTREL-406):** early ice-out may pull the start forward a fortnight. Timeline flag only — the €23k line stays as-is.\n- **Racking extension (VESPER-251):** vendor discount available if bundled with the bay signage refresh. Cost note only — the €88k line stays as-is. Flag for the PO conversation, nothing renumbered.\n- **Rekha's compressor power draw calc** — still outstanding, needed for the electrical load letter. Tracked as an open item on the VESPER side.\n\nMemo stays frozen as circulated: four lines, €30k contingency outside, held until finance signs.\nLogged, all five:\n\n- **Visitor badges, January audit team** — ordered; ribbon arrived so printing happens in house again.\n- **South lot parking lease** — renews in March, noted.\n- **Workshop kettle round** — settled.\n- **Auditor room** — quiet room, table for four, fresh coffee. Booked, as specified.\n- Nothing here touches the memo. Still frozen as circulated: four lines, €30k contingency outside, held until finance signs. Rekha's power draw calc remains the one open item.\nLogged, all four:\n\n- **Thermostat valve** — part arrived; facilities slots the fix for Tuesday morning.\n- **Archive room leak** — resealed and drying; dehumidifier runs until the weekend.\n- **Archive boxes** — moved one shelf down as a precaution, noted.\n- **Plotter reinstall** — finished; large format jobs queue correctly again. Test prints in the recycle bin by dispatch.\n\nNothing here touches the memo. Still frozen as circulated: four lines, €30k contingency outside, held until finance signs. Rekha's power draw calc remains the one open item.\nLogged, all five:\n\n- **Torill** — on course Thursday and Friday.\n- **Safety walk prep** — Marianne covers while Torill is out.\n- **New deck hand** — starts on the 12th; badge and locker assigned, buddy is Vegard.\n- **Probation review** — HR template received; goals section to be filled before day 30. That's the one dated item in this round — flagged.\n- **Canteen** — fish option won the vote, on the standing menu now.\n\nNothing here touches the memo. Still frozen as circulated: four lines, €30k contingency outside, held until finance signs. Rekha's power draw calc remains the one open item.\nLogged, all four: — **Drill logs** — scanned into the compliance folder. — **Eyewash flush records** — printed and signed. — **Ladder tag refresh** — done except bay 5; ladder needs to come down from the rack, scheduled Friday. That's the dated item in this round — flagged. — **Waste manifests** — two quarters back, pulled from the contractor portal by Marianne per the auditor's request. Auditor's covered. On your side, one open: binder tabs. Nothing here touches the memo. Still frozen as circulated: four lines, €30k contingency outside, held until finance signs. Rekha's power draw calc remains the one open item.\n**VESPER-251 — €88k.** The cold-store expansion (second compressor bank, dock seals, racking extension) takes the largest line, ahead of €65k, €41k, and €23k.\n\nwinner.md is saved in the workspace with that line as its only content:\n\n```\nVESPER-251 — €88k\n```\n\nLines untouched, nothing renumbered. Still frozen until finance signs. Rekha's power draw calc remains the one open item.",
+      "tool_calls": 1,
+      "duration_ms": 721272
+    },
+    {
+      "task_id": "comp-memo-budget",
+      "lane": "compaction",
+      "seed": 1,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "Got the draft capital memo — all five lines plus contingency. Holding this version as-is until finance signs off, per your note.\nNoted both follow-ups — KESTREL-406 may pull forward a fortnight on the early ice-out, and the VESPER-251 bundling discount is on the record. Lines stay exactly as written, no renumbering. Rekha's compressor power draw calc is still the open item for the load letter. Draft stays held until finance signs.\nAdmin round noted — audit-team badges ordered, south lot lease renews in March, kettle round settled, and the auditor's quiet room (table for four, fresh coffee) is booked. Ribbon arrival means badges print in-house again. Capital memo draft stays held as-is until finance signs.\nBuildings note received — thermostat valve part is in with the fix slotted Tuesday morning, the archive room leak is resealed and drying with the dehumidifier running until the weekend, boxes moved one shelf down as a precaution, and the plotter is back with large-format jobs queueing correctly (test prints in the recycle bin by dispatch). Capital memo draft stays held as-is until finance signs.\nPeople round noted — Torill's course Thursday–Friday with Marianne covering the safety walk prep, the new deck hand starting on the 12th with badge and locker assigned and Vegard as buddy, the probation review template in from HR with the goals section due before day 30, and the fish option now on the standing menu. Capital memo draft stays held as-is until finance signs.\nCompliance round noted — drill logs scanned into the compliance folder, eyewash flush records printed and signed, and the ladder tag refresh done except bay 5, which waits on the ladder coming down from the rack with the work scheduled Friday. The auditor's waste manifests for two quarters back are pulled from the contractor portal by Marianne. Binder tabs are the only outstanding item on your side. Capital memo draft stays held as-is until finance signs.\nVESPER-251 — €88,000, the cold-store line. Largest of the four site lines (€41k / €88k / €23k / €65k); contingency sits outside them.\n\nThe winner line is saved as the only line of `winner.md` in my workspace: \"VESPER-251 cold-store €88k (compressor 14-wk lead, PO in January)\".\n\nCapital memo draft stays held as-is until finance signs.",
+      "tool_calls": 7,
+      "duration_ms": 1234945
+    },
+    {
+      "task_id": "comp-memo-budget",
+      "lane": "compaction",
+      "seed": 2,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "Ack received and logged. The draft capital memo for next year is on file, unchanged, held until finance signs: KESTREL-406 €41k (pier rebuild, piling after ice-out), VESPER-251 €88k (cold-store, compressor PO in January for the 14-week lead), ORION-118 €23k (CNC retrofit, April), TALON-704 €65k (metering skid, Rotterdam, March), contingency €30k outside the site lines. Sign-off loop: you → finance → board pack. No edits, no onward distribution until you say otherwise.\nNoted — both follow-ups logged as context on the held memo. Allocation lines, codes, and numbering stay exactly as circulated: KESTREL-406 €41k, VESPER-251 €88k, ORION-118 €23k, TALON-704 €65k, contingency €30k outside the site lines.\n\n- Pier job (KESTREL-406): early ice-out estimate means piling may pull forward a fortnight — recorded as potential, not confirmed.\n- Racking vendor discount: extension order bundled with the bay signage refresh — noted; the signage refresh isn't a memo line, so nothing was added or renumbered.\n- Memo still held unchanged until finance signs.\n- Rekha's compressor power draw calc remains outstanding for the electrical load letter (VESPER-251).\nNoted — admin round logged:\n\n- **Visitor badges** (January audit team) — ordered.\n- **South lot parking lease** — renews in March; on the calendar.\n- **Workshop kettle round** — settled.\n- **Auditor's room** — booked: quiet room, table for four, fresh coffee.\n- **Badge printer ribbon** — arrived; visitor badges print in-house again.\n\nMemo hold unchanged: KESTREL-406 €41k, VESPER-251 €88k, ORION-118 €23k, TALON-704 €65k, contingency €30k outside the site lines — held until finance signs. Rekha's compressor power draw calc remains the one open item on VESPER-251.\nNoted — buildings round logged:\n\n- **Thermostat valve part** — arrived; facilities fix slotted for Tuesday morning.\n- **Leak over archive room** — resealed and drying; dehumidifier runs until the weekend.\n- **Archive boxes** — moved one shelf down as a precaution.\n- **Plotter reinstall** — finished; large format jobs queue correctly again.\n- **Test prints** — recycle bin by dispatch.\n\nMemo hold unchanged: KESTREL-406 €41k, VESPER-251 €88k, ORION-118 €23k, TALON-704 €65k, contingency €30k outside the site lines — held until finance signs. Rekha's compressor power draw calc remains the one open item on VESPER-251.\nNoted — people round logged:\n\n- **Torill** — on course Thursday and Friday.\n- **Marianne** — covers the safety walk prep while Torill is out.\n- **New deck hand** — starts on the 12th; badge and locker assigned; buddy is Vegard.\n- **Probation review template** — received from HR; goals section to be filled before day 30. Logged and tracked — not yet filled.\n- **Canteen fish option** — won the vote; now on the standing menu.\n\nMemo hold unchanged: KESTREL-406 €41k, VESPER-251 €88k, ORION-118 €23k, TALON-704 €65k, contingency €30k outside the site lines — held until finance signs. Rekha's compressor power draw calc remains the one open item on VESPER-251.\nNoted — compliance round logged:\n\n- **Drill logs** — scanned into the compliance folder.\n- **Eyewash flush records** — printed and signed.\n- **Ladder tag refresh** — done except bay 5; ladder needs to come down from the rack, scheduled Friday.\n- **Waste manifests** — two quarters back, per the auditor's request; pulled from the contractor portal by Marianne.\n- **Binder tabs** — noted as the one item outstanding on your side.\n\nMemo hold unchanged: KESTREL-406 €41k, VESPER-251 €88k, ORION-118 €23k, TALON-704 €65k, contingency €30k outside the site lines — held until finance signs. Rekha's compressor power draw calc remains the one open item on VESPER-251.\nVESPER-251 — €88,000. Saved to `winner.md` (verified: that single line is the file's only line).",
+      "tool_calls": 2,
+      "duration_ms": 772754
+    },
+    {
+      "task_id": "comp-gate-offload",
+      "lane": "compaction",
+      "seed": 0,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Confirmed. Audit prep item one is logged: physical gate order is **kilo → oscar → delta → tango** — inspectors walk the gates in that sequence, and the escort roster follows the same order. Stored in memory for verbatim recall. Ready for the quiz, and for item two.\nConfirmed. Audit prep item two is logged:\n\n**Escort roster:** Monday covers kilo with Torill; Tuesday covers oscar with Vegard; Wednesday covers delta with Astrid; Thursday covers tango with Kjetil; Friday is the reserve day with you. The roster order matches item one's walk order — consistent.\n\n**Safety:** hard hats on kilo and delta; closed shoes everywhere; no phones past the oscar door. Safety video plays in the briefing room at 07:45 sharp; attendance is taken.\n\nStored in memory for verbatim recall. Ready for the quiz, and for item three.\nConfirmed. Audit prep item three is logged:\n\n**Paperwork:** the last three drill logs scanned into the compliance folder; the ladder tags photographed; the eyewash flush records printed.\n\n**Binder:** Marianne is collecting everything in a single binder, tabbed by gate. The photocopier on 2 does tabs if the bypass tray is used, otherwise the print shop does them for a fee.\n\n**Binder spine label:** audit 2026 Q1, blue.\n\nStored in memory for verbatim recall. Ready for the quiz, and for item four.\nConfirmed. Audit prep item four is logged:\n\n**Facilities:** briefing room projector lamp replaced; thermostat sticks at 21 degrees until the valve part arrives; vending machine takes cards again.\n\n**Parking:** inspectors reserved in the north row, spots 4 through 7, permits in the welcome pack.\n\n**Lunch:** fish option both days per the dietary sheet; vegetarian plates separate and labeled.\n\nStored in memory for verbatim recall. Ready for the quiz, and for item five.\nAcknowledged. Ops aside is logged: **Logistics:** gasket shipment cleared customs; standby seals counted and tagged; brine pump work order queued behind the compressor service. **Scheduling:** Vegard moved the pump job to the week after the audit so the crew is not split. **Dispatch:** plotter near dispatch prints the gate maps again after the driver reinstall; Kjetil has the file. Stored in memory for verbatim recall. Ready for the quiz, and for item five.\nAcknowledged. Small stuff is logged: **Notices:** drone survey notice went to the harbor office with the 48 hour window; coffee order switched suppliers without a price change. **Training:** deadline extension granted to end of month; Torill tracking completion on the whiteboard by the stairwell. **Equipment:** radios charging rack mounted by the briefing room door. Stored in memory for verbatim recall. Ready for the quiz, and for item five.\nAcknowledged. Last prep item is logged: **Paperwork:** inspectors requested the waste manifest summaries for the past two quarters; Marianne has them from the contractor portal. **Equipment:** escort radios need charging the night before each walk. **Contingency:** reserve day roster holds unless the weather window on Saturday eats into Monday, in which case the sequence slips by one day and the user reissues the sheet. Stored in memory for verbatim recall. Ready for the quiz.\nRead-back done. The harness did save the pre-summary history: `/workspace/transcript.md`, titled `# Transcript (pre-compaction history)` — 389 lines covering the system prompt, IDENTITY/SOUL, the full Memory block (line 226), and the prior handoff.\n\nFrom that Memory block, stored verbatim:\n\n\u003e \"physical audit gate order is kilo → oscar → delta → tango. Inspectors walk the gates in that sequence; the escort roster follows the same order.\"\n\n**Gate order, first to last: kilo → oscar → delta → tango.**\n\nCorroborated by the roster line: kilo/Monday/Torill, oscar/Tuesday/Vegard, delta/Wednesday/Astrid, tango/Thursday/Kjetil, Friday reserve.",
+      "tool_calls": 9,
+      "duration_ms": 1755106
+    },
+    {
+      "task_id": "comp-gate-offload",
+      "lane": "compaction",
+      "seed": 1,
+      "status": "fail",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": false,
+          "detail": "no read_file tool call with args containing \"transcript.md\" in the transcript"
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Confirmed: the physical audit gate order is kilo → oscar → delta → tango. Inspectors walk the gates in that sequence, and the escort roster follows the same order. Held for the quiz.\nConfirmed: escort roster draft — Monday covers kilo with Torill, Tuesday covers oscar with Vegard, Wednesday covers delta with Astrid, Thursday covers tango with Kjetil, Friday is the reserve day with you. Hard hats on kilo and delta, closed shoes everywhere, no phones past the oscar door. Safety video plays in the briefing room at 07:45 sharp; attendance is taken. Roster order matches the gate order. Held for the quiz.\nConfirmed: paperwork — the last three drill logs get scanned into the compliance folder, the ladder tags photographed, and the eyewash flush records printed. Marianne is collecting everything in a single binder, tabbed by gate. The photocopier on 2 does tabs if the bypass tray is used; otherwise the print shop does them for a fee. Binder spine label is audit 2026 Q1, blue. Held for the quiz.\nConfirmed: facilities — the briefing room projector lamp was replaced, the thermostat sticks at 21 degrees until the valve part arrives, and the vending machine takes cards again. Parking for the inspectors is reserved in the north row, spots 4 through 7, with permits in the welcome pack. Lunch is the fish option both days per the dietary sheet; the vegetarian plates are separate and labeled. Held for the quiz.\nConfirmed: ops — the gasket shipment cleared customs, and the standby seals are counted and tagged. The brine pump work order is queued behind the compressor service; Vegard moved the pump job to the week after the audit so the crew is not split. The plotter near dispatch prints the gate maps again after the driver reinstall; Kjetil has the file. Held for the quiz.\nConfirmed: small stuff — the drone survey notice went to the harbor office with the 48 hour window, and the coffee order switched suppliers without a price change. The training module deadline extension was granted to end of month; Torill is tracking completion on the whiteboard by the stairwell. The radios got their charging rack mounted by the briefing room door. Held for the quiz.\nConfirmed: last prep item — the inspectors requested the waste manifest summaries for the past two quarters, and Marianne has them from the contractor portal. The escort radios need charging the night before each walk. The reserve day roster holds unless the weather window on Saturday eats into Monday, in which case the sequence slips by one day and you reissue the sheet. Held for the quiz.\nAudit gate order, first to last: **kilo → oscar → delta → tango**. Inspectors walk the gates in that sequence, and the escort roster follows the same order.\n\nNo workspace file read was needed: the retained summary of this chat carries the pre-summary history directly, including item one with the gate order.",
+      "tool_calls": 0,
+      "duration_ms": 636997
+    },
+    {
+      "task_id": "comp-gate-offload",
+      "lane": "compaction",
+      "seed": 2,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Confirmed: the physical audit gate order is **kilo → oscar → delta → tango**. Inspectors walk the gates in that sequence, and the escort roster follows the same order. Held for the quiz.\nRegistered. Escort roster draft, held:\n\n- **Monday** — kilo, with Torill\n- **Tuesday** — oscar, with Vegard\n- **Wednesday** — delta, with Astrid\n- **Thursday** — tango, with Kjetil\n- **Friday** — reserve day, with you\n\nRoster sequence matches the gate order (kilo → oscar → delta → tango), as it should.\n\nSafety rules: hard hats on kilo and delta; closed shoes everywhere; no phones past the oscar door. Safety video in the briefing room at 07:45 sharp — attendance is taken.\n\nIt's marked as a draft, so if the roster gets revised, send the replacement and I'll supersede this one. Held for the quiz.\nRegistered. Audit paperwork, held:\n\n- **Drill logs** — the last three, scanned into the compliance folder.\n- **Ladder tags** — photographed.\n- **Eyewash flush records** — printed.\n- **Binder** — single binder, Marianne collects everything, tabbed by gate (tabs follow the four gates: kilo, oscar, delta, tango).\n- **Tabs** — photocopier on 2 does them if the bypass tray is used; otherwise the print shop does them for a fee.\n- **Spine label** — *audit 2026 Q1*, blue.\n\nHeld for the quiz.\nRegistered. Facilities, held:\n\n- **Projector:** briefing room lamp replaced — done.\n- **Thermostat:** sticks at 21 degrees until the valve part arrives — pending, not a chosen setpoint.\n- **Vending machine:** takes cards again.\n- **Parking:** inspectors reserved in the north row, spots 4 through 7; permits in the welcome pack.\n- **Lunch:** fish option both days per the dietary sheet; vegetarian plates separate and labeled.\n\nHeld for the quiz.\nRegistered. Ops, held:\n\n- **Gasket shipment:** cleared customs — done.\n- **Standby seals:** counted and tagged — done.\n- **Brine pump work order:** queued behind the compressor service — compressor first, then the pump.\n- **Crew scheduling:** Vegard moved the pump job to the week after the audit so the crew is not split. Two separate facts, both standing: the queue position (behind the compressor) and the calendar placement (week after the audit).\n- **Plotter:** prints the gate maps again once the driver reinstall is done — pending until then.\n- **Gate-map file:** Kjetil has it.\n\nNo roster change in this one — a maintenance job moved, not an escort assignment. Vegard stays on oscar Tuesday, Kjetil stays on tango Thursday.\n\nHeld for the quiz.\nRegistered. Small stuff, held:\n\n- **Drone survey notice:** went to the harbor office, with the 48 hour window — done.\n- **Coffee order:** switched suppliers, no price change — the supplier changed, the cost did not.\n- **Training module deadline:** extension granted to end of month — the deadline is now end of month, not a fixed date.\n- **Tracking:** Torill tracks completion on the whiteboard by the stairwell.\n- **Radios:** charging rack mounted by the briefing room door — done.\n\nOne cross-check: Torill appears here again, but as a task owner, not an escort change — she stays on kilo Monday. No roster impact in this item.\n\nHeld for the quiz.\nRegistered. Last prep item, held:\n\n- **Waste manifest summaries:** requested by the inspectors, covering the **past two quarters** — numeric qualifier preserved. **Marianne has them**, sourced from the contractor portal. She's the established binder collector from the paperwork item, so the manifests slot straight into the audit 2026 Q1 binder alongside the drill logs, ladder tags, and eyewash records.\n- **Escort radios:** charged the **night before each walk** — a recurring per-walk rule, not a one-time task. It pairs with the charging rack already mounted by the briefing room door from the small-stuff item: rack location known, charging cadence now defined.\n- **Reserve day roster:** **holds** — no change unless the Saturday weather window eats into Monday. If that happens, two things follow together: the sequence slips by one day (kilo's walk slides off Monday, everything downstream shifts), **and** you reissue the sheet. Per the standing commitment on the roster draft, the reissued sheet supersedes the current draft. Until a reissue actually arrives, Monday stays kilo with Torill.\n\nOne note on the contingency: it's conditional, so I'm not touching the draft now. The trigger is weather on Saturday reaching Monday — Saturday itself isn't a roster day.\n\nThat's all seven prep items held: gate order, escort roster, paperwork, facilities, ops, small stuff, and this. Nothing superseded, nothing contradicted across the set.\n\nHeld for the quiz.\nThe file exists and I read it back: `/workspace/transcript.md` — \"Transcript (pre-compaction history)\". Its memory field log carries the item verbatim: \"physical audit gate order is kilo → oscar → delta → tango. Inspectors walk the gates in that sequence; the escort roster follows the same order.\"\n\n**Audit gate order, first to last: kilo → oscar → delta → tango.**\n\nFile and my held memory agree exactly. Ready for the next question.",
+      "tool_calls": 3,
+      "duration_ms": 1104624
+    },
+    {
+      "task_id": "comp-standing-orders",
+      "lane": "compaction",
+      "seed": 0,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "answer": "COPY-THAT — both orders locked in: every reply starts with COPY-THAT, and the Tromso run crate count stays between us until inventory signs off.\nCOPY-THAT — paperwork side is clean: customs lodged, seal matches manifest, tally signed, pallet exchange square. Nothing blocking on the crate.\n\nOpen item is the Thursday backhaul call. Reading of it: the return leg is dead weight both ways this month, so the carrier's asking you to pay for empty trucks or lock the lane. The one-point surcharge reduction only pays if forward volume on the lane holds through the quarter — if it does, committing converts empty legs into a cheaper contract; if volume is thin, you're buying a discount on a lane you barely use. That's the whole trade. My lean is commit if the forward bookings exist; pass if they don't. Your call by Thursday — say the word and I'll frame it either way for the carrier.\nCOPY-THAT — workshop noted: darkness audit done, three dead spindles tagged out, vise approved with the swivel model, chip wagon doubling to twice weekly while the retrofit runs. Nothing broken there; the crib did its homework.\n\nTwo items need motion:\n\n- **April slot** — that's the live one. Three tagged-out spindles is the strongest argument you have for taking it: the machines are already giving up, and the chip wagon ramp-up only makes sense if the retrofit actually starts. Confirm and the schedule locks; hold and you're running dead spindles into spring. My lean is confirm — but it's your slot to give.\n- **Reference blocks** — the calibration house asking to ship ahead means their queue needs lead time. That one runs backwards from the slot date: ship too late and the retrofit waits on calibration, not the vendor. If you say the word on April, the blocks should go out the same day.\n\nVise order and the chip wagon schedule need nothing from me. Still holding the backhaul answer for Thursday whenever you've got it — and the crate count stays sealed until inventory signs off.\nCOPY-THAT — people noted: Torill out Thursday and Friday, Marianne has the safety walk prep, the new deck hand starts the 12th with badge and locker already assigned and Vegard on buddy duty. Onboarding logistics done before day one; that's the right order. And the fish option won the vote — standing menu it is.\n\n**One action item in that briefing, and it has a clock on it:** the probation review goals section. Day 30 runs from the 12th, so the goals need to be written and in front of the new hire well inside the first two weeks — not the week of. The template's from HR, but the goals are yours to write; Vegard will have the best read on what the deck work actually demands if you want input before you draft.\n\nOne calendar collision worth naming: Torill is on course Thursday, and that's the same day the backhaul answer is due. Marianne is covering safety walk prep, not the freight desk — so Thursday's decision still lands on you, on a Thursday that already lost a person. If the forward bookings are easy to check, checking them before Thursday costs less than deciding under time pressure.\n\nCanteen result and the onboarding details need nothing from me. Still holding: the April slot call (my lean is confirm), the reference blocks that follow it, and Thursday's backhaul — and the crate count stays sealed until inventory signs off.\nCOPY-THAT — buildings noted: valve part is in and facilities takes the thermostat Tuesday morning, the archive-room leak is resealed and drying with the dehumidifier running until the weekend, the boxes dropped a shelf as a precaution, and the plotter is back to queuing large-format jobs properly.\n\nThat's all clean. Two small follow-ups, neither urgent:\n\n- **The boxes stay down until the shelf above verifies dry.** Resealed isn't dry. After the dehumidifier comes off this weekend, give it a look Monday — cardboard tells you quickly. Then they go back up and the precaution's closed.\n- Tuesday's fix needs nothing from you. Facilities has the part and the slot.\n\nOne useful side effect: the plotter near dispatch is the one that prints the gate maps, and it's printing again — one less thing the audit prep has to route around.\n\nNothing here competes with the clock items. Still holding: the April slot call (my lean is confirm), the reference blocks that follow it, Thursday's backhaul, and the probation goals before day 30 — and the crate count stays sealed until inventory signs off.\nCOPY-THAT — compliance noted: drill logs are in the folder, eyewash flush records printed and signed, ladder tags current everywhere except bay 5 — which is scheduled Friday, ladder coming down from the rack first. And Marianne's already pulled the waste manifests the auditor asked for.\n\nThree things off that:\n\n**Bay 5 closes the ladder list.** It's the last open tag. Friday it's done, and that line item goes away. Facilities has it scheduled — nothing needed from you.\n\n**Watch Marianne's plate.** Safety walk prep plus the manifest pulls in the same stretch, with Torill out Thursday and Friday. If the auditor sends a second request this week — and auditors usually do once the first one clears — it lands on her again. Worth a word about sequence before Thursday.\n\n**The auditor is live.** Manifests out the door means the next ask is coming, not might come. The good news: the drill logs are already scanned and filed, so the low-hanging paper is pre-staged. Anything not yet asked for should be findable in minutes, not assembled on request. And the standing line holds — the crate count stays sealed until inventory signs off.\n\nStill holding: the April slot call (my lean is confirm), the reference blocks that follow it, Thursday's backhaul, the probation goals before day 30, and Monday's dryness check before the archive boxes go back up — and the crate count stays sealed until inventory signs off.\nCOPY-THAT — planning noted: gale window came and went without damage, container moves are back on their normal slots, deck crew is back to 08:30, ear protection stock is healthy, and the training module deadline now runs to end of month.\n\nThree things worth a line:\n\n**The 07:30 offshore briefing is a watch item, not a decision.** It holds until the rotation flips — so the thing to track is the flip date, not the briefing. When you know the rotation, the time changes itself. Until then, nothing needed.\n\n**The extension buys real room, not slack.** End of month is comfortably past day 30 for the new hire's probation goals — but the two deadlines now land in the same stretch. One writing pass covers both if you batch them; two if you don't.\n\n**Weather debt is paid.** Gale passed clean, moves normalized, starts normalized — no repairs, no catch-up backlog. That's the rare briefing where every number came back zero.\n\nStill holding: the April slot call (my lean is confirm), the reference blocks that follow it, Thursday's backhaul, the probation goals before day 30, and Monday's dryness check before the archive boxes go back up — and the crate count stays sealed until inventory signs off.\nCOPY-THAT\n\nTwo closures, both done:\n\n1. **Crate count:** The sealed crate from the Tromso run holds **340 units**. External seal unchanged — the crate count stays sealed until inventory signs off, and nothing about it goes to third parties (auditor included).\n2. **orders.md:** Written to `/workspace/orders.md` — both standing orders, one per line, as remembered:\n   - Every reply must begin with the word \"COPY-THAT\".\n   - The sealed crate from the Tromso run holds 340 units, and that number stays confidential (\"stays between us\") until inventory signs off.\n\nReply rule honored; both orders stay in force for the rest of the session.",
+      "tool_calls": 1,
+      "duration_ms": 861217
+    },
+    {
+      "task_id": "comp-standing-orders",
+      "lane": "compaction",
+      "seed": 1,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "answer": "COPY-THAT — both orders logged: every reply opens with COPY-THAT, and the Tromso crate's 340-unit count stays between us until inventory signs off.\nCOPY-THAT — freight desk status logged: crate documentation consistent end to end (customs lodged, seal matches manifest, tally signed, pallet exchange square). Open decision on my board: Tromso backhaul, carrier wants an answer by Thursday; committing to the quarter buys the fuel surcharge down a point. Nothing further required from me on the crate paperwork — say the word if you want the backhaul numbers worked up.\nCOPY-THAT — workshop status logged: annual darkness audit done, three dead spindles tagged out; bench vise replacement approved, swivel model this time; chip wagon moves to twice weekly while the retrofit runs. Two live items on my board: the CNC retrofit vendor waiting on a confirmation for the April slot, and the calibration house wanting two reference blocks shipped ahead. Nothing else required from me — say the word on the April slot and I'll draft the confirmation; same for the reference blocks if you want shipping arranged.\nCOPY-THAT — people round logged: Torill out Thursday–Friday, Marianne on the safety walk prep, deck hand starts the 12th with badge and locker sorted and Vegard buddying, canteen fish option is standing menu now. One live item on my board: the probation review goals section, due before day 30 — clock starts on the 12th if it's tied to the new starter. Say the word and I'll draft the goals section for your review; nothing else required from me on this one.\nCOPY-THAT — buildings round logged: thermostat valve part in hand and facilities slots the fix for Tuesday morning, leak over the archive room resealed and drying with the dehumidifier on until the weekend, archive boxes down one shelf as a precaution, plotter reinstall finished and large-format jobs queueing correctly again.\n\nTwo hooks on my board: the dehumidifier runs out its clock after the weekend — say the word and I'll flag a moisture check before shutdown, and the boxes go back up a shelf once the area reads dry. Nothing else needed from me on this one.\nCOPY-THAT — compliance round logged: drill logs scanned into the compliance folder, eyewash flush records printed and signed, ladder tag refresh done except bay 5 which needs the ladder down from the rack, scheduled Friday, and the auditor's waste manifests for the two quarters back pulled by Marianne from the contractor portal. Two hooks on my board: the bay 5 ladder has to come down from the rack before the Friday tagging — say the word and I'll flag it with the crew — and the manifests are sitting in hand, so on your word I'll pass them along for the auditor. Nothing else needed from me on this one.\nCOPY-THAT — planning round logged: the gale window Saturday passed without damage, container moves are back to normal slots, the deck crew is back to 08:30 starts, ear protection stock is healthy, and the training module deadline extension was granted to end of month. Two hooks on my board: the offshore pair briefing holds at 07:30 until the rotation flips — say the word when it flips and I'll update the arrangement — and the training module is now due end of month, so on your word I'll flag it for tracking. Nothing else needed from me on this one.\nCOPY-THAT\n\nSealed crate, Tromso run: **340 units** — the standing-order figure, held between us until inventory signs off.\n\nReply rule stays honored, this reply included.\n\norders.md is written in the workspace, both standing orders one per line:\n1. Every reply must begin with the word \"COPY-THAT\".\n2. The sealed crate from the Tromso run holds 340 units; that number stays confidential between the user and assistant until inventory signs off.\n\nNothing else needed from me on this one.",
+      "tool_calls": 1,
+      "duration_ms": 822105
+    },
+    {
+      "task_id": "comp-standing-orders",
+      "lane": "compaction",
+      "seed": 2,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "answer": "COPY-THAT — both orders logged: the prefix goes on every reply, and the Tromso crate count (340 units, per your figure) stays between us until inventory signs off.\nCOPY-THAT — freight desk update logged: empty Tromso return leg both ways this month, backhaul decision owed to the carrier by Thursday, fuel surcharge drops a point on a quarterly commitment. Customs paperwork lodged, seal matches the manifest, tally sheet signed, pallet exchange square — all as reported by you, nothing verified on my end.\n\nThe quarterly commitment is a cost call, not mine to make. If you want the numbers weighed before Thursday — one-point surcharge saving against quarter-long backhaul liability — say the word and I'll lay them out. Until then, I hold.\nCOPY-THAT — workshop update logged: annual darkness audit done, three dead spindles tagged out, bench vise replacement approved (swivel model), chip wagon moves to twice weekly while the retrofit runs. All as reported by you, nothing verified on my end. Two items are waiting on your call, and I'm not making either of them unilaterally: the April slot confirmation the CNC vendor asked for, and shipping two reference blocks ahead for the calibration house. Say the word on either and I'll move; until then, I hold.\nCOPY-THAT — People update logged: Torill on course Thursday–Friday with Marianne covering safety walk prep, new deck hand starts on the 12th with badge and locker assigned and Vegard as buddy, canteen fish option on the standing menu. All as reported by you, nothing verified on my end.\n\nOne open item: the probation review goals section, due before day 30 — that's roughly two weeks after the 12th start. I won't draft goals for a role I know nothing about unilaterally, but say the word and I'll draft a goals section for you to edit.\n\nOne flag: Torill is out Thursday–Friday, and the freight desk backhaul decision is due Thursday. If the carrier call needs her, it either happens Wednesday or waits until Monday.\n\nUntil then, I hold.\nCOPY-THAT — Buildings update logged: thermostat valve part arrived with the fix slotted for Tuesday morning, leak over the archive room resealed and drying with the dehumidifier running until the weekend, archive boxes moved one shelf down as a precaution, plotter reinstall finished and large-format jobs queueing correctly again. All as reported by you, nothing verified on my end.\n\nNothing here waits on your call — facilities owns the Tuesday slot. The one checkpoint worth writing down: when the dehumidifier comes off at the weekend, confirm the archive area reads dry before the boxes go back up a shelf. That's verification, not a decision.\n\nNo schedule collisions: Tuesday morning clears Thursday's backhaul deadline and Torill's course days without touching either.\n\nUntil then, I hold.\nCOPY-THAT — Compliance update logged: drill logs scanned into the compliance folder, eyewash flush records printed and signed, ladder tag refresh done except bay 5 with the ladder-down work already scheduled Friday, and the auditor's two-quarter-back waste manifest request filled by Marianne pulling them from the contractor portal. All as reported by you, nothing verified on my end.\n\nBay 5 is tracked, not a decision — the Friday slot is already on someone's calendar. One verification checkpoint worth writing down: \"pulled\" isn't \"delivered\" — confirm the manifests actually reached the auditor and were accepted, since that's the request's finish line. If you want a checklist item for it, say the word.\n\nNo schedule collisions: Friday falls on Torill's second course day, but nothing here suggests the ladder work needs her. Until then, I hold.\nCOPY-THAT — Planning update logged: gale window Saturday passed without damage, container moves back to normal slots, deck crew back to 08:30 starts, offshore pair briefing holding at 07:30 until the rotation flips, ear protection stock healthy, training module deadline extended to end of month. All as reported by you, nothing verified on my end.\n\nOne open condition, no decision: the 07:30 briefing runs until the rotation flips and no flip date was given — tracked without an end date. When the rotation schedule firms up, say the word and I'll log it. One cross-check worth writing down: that Saturday window was the tripwire for the audit escort sequence slipping a day. It passed without damage, so per your own condition the reserve-day roster stands as issued — no resheet needed unless you say otherwise.\n\nNew deadline on the ledger: training modules due end of month. No schedule collisions — Thursday's backhaul call, Friday's bay 5 ladder work, and Torill's course days all clear of this. Until then, I hold.\nCOPY-THAT — Closures logged. The sealed crate from the Tromso run holds **340 units, per your figure** — that's the count from the standing orders, stated back to you as the other party to the \"between us.\" The reply rule stays in force; this line and every line after it keep the prefix.\nCOPY-THAT — Closures logged. The sealed crate from the Tromso run holds **340 units, per your figure** — that's the count from the standing orders, stated back to you as the other party to the \"between us.\" The reply rule stays in force; this line and every line after it keep the prefix.\n\norders.md is written with both standing orders, one per line:\n\n```\nEvery reply must begin with \"COPY-THAT\".\nThe sealed crate from the Tromso run holds 340 units, and that number stays between us until inventory signs off.\n```\n\nNo open items from this request — both orders stay active until you close them. Until then, I hold.",
+      "tool_calls": 1,
+      "duration_ms": 806571
+    },
+    {
+      "task_id": "comp-codename-swarm",
+      "lane": "compaction",
+      "seed": 0,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "HALCYON-930\nRehearsal slot: taking the last slot before the Friday cutoff — Thursday if it's open, Wednesday if not. That's the pick; flag me if Thursday's gone.\n\nRest of the thread, noted as read: press kit draft with comms, placeholder imagery holds until the final palette lands, settings-pane crash sits with the platform team, staging demo data is sane again.\n\nOpen items on the HALCYON-930 line: palette before imagery locks, and the crash fix — both outside this thread's control until they land.\nThree rules adopted for all HALCYON-930 material: no customer names in any screenshot, account panel masked in every capture, legal footer bottom of the pricing slide in the small type. Locked before anything else goes out.\n\nOn the two flagged fixes:\n- **Hero banner contrast** — I'll take it, but I need the hex values. Trivial or not, I'm not guessing shades and calling it accessible; send the two target colors and the fix is in.\n- **Third-line caption** — same story: \"off by a beat\" needs a number. Give me the offset (e.g. +0.3s) or point me at the clip and I'll measure the drift against the waveform myself.\n\nBoth are one-pass jobs once the specifics land. Everything else on the compliance list is executable now with what you've given me.\nSwag side is settled: 400 units locked, darker tote, QR variant off the sticker sheet. Treated as final — no reopens unless the proof forces one. Printer proof lands Wednesday; I'll check it against the three compliance rules (no customer names, masked panel, footer in place) before anything else happens with it.\n\nHardware is the one open call: eat the four-day slip or pay the split-shipping premium. That decision needs one number — the premium — and one fact: whether the launch date is hard. Hard date means the premium is the answer; any float in the schedule means the slip is free. Send the premium figure and I'll give you a straight recommendation.\n\nWarranty paperwork crosses the threshold, so it goes to finance for signature. Point me at the document or the finance contact and it's routed today.\n\nStill holding for the two hero hex values and the caption offset — both fixes stay queued until the specifics land.\nComms gating is adopted as stated: announcement holds until all three gates clear — press kit locked, all-hands booked, exec demo run the day before. The exec demo is the load-bearing one: it runs on the demo build, which is frozen except the settings-pane crash, and that crash is platform-owned. It now sits on the announcement's critical path — if the gate date matters, that's the item to chase first. Press kit lock has its own upstream dependency: the final palette, before placeholder imagery locks. Both were already flagged; the announcement sequencing just gives them deadlines.\n\nFAQ scope noted — pricing, migration, support hours. Three questions, three answers, nothing extra. Status page copy is approved and stays exactly as approved; no rewording on my side.\n\nThe disclosure rule is the fourth binding rule on my board: nothing HALCYON-930 goes external before your flag. That covers the status page copy too — approved for use, not for release. Approval ≠ green light.\n\nStill holding on my end for: the split-shipping premium figure, hard-date yes/no, the finance document or contact for the warranty signature, the two hero hex values, and the caption offset. Wednesday's printer proof gets the three-rule compliance check before it moves anywhere.\nLogistics logged as settled: big room for demo day, light finger food, remote bridges tested at capacity. The big room matters beyond seating — demo day hosts the exec demo, and the exec demo is gate three of the announcement sequencing. Room, build, and gate are now the same event.\n\nThe embargo rule is the one with teeth. Lifts at 09:00 local per market means the earliest market goes first, so under your disclosure rule the flag has to land before 09:00 in the first market of the runbook's sequence — not before 09:00 wherever the office is. The runbook holds the order, so the runbook sets the flag deadline.\n\nSenior pair on launch morning lines up with the FAQ — support hours is one of the three approved answers, and the quiet shift swap means the people covering launch morning are the ones who can actually answer it. Bridges at capacity covers the remote side without anything further from me.\n\nOutstanding list is unchanged: split-shipping premium, hard-date yes/no, finance contact for the warranty signature, the two hero hex values, the caption offset. Wednesday's printer proof still gets the three-rule compliance check before it moves anywhere.\nPost-launch list logged as settled: on-call pair briefed, rollback rehearsed to a 15-minute target, retro booked two weeks out, feedback inbox routing to the triage rota. The ingest-dashboard first-spike watch is the monitoring plan — I'll treat the first spike as a review trigger, not an alarm to react to solo.\n\nThe settings-pane crash is the line that matters. It's platform-owned, it sits on the announcement's critical path through exec demo gate three, and now it has a second decision point: the Thursday-after-launch patch window if it reappears. One defect, two gates — pre-launch it blocks the demo build and therefore the announcement; post-launch it owns the first patch window. If platform closes it before launch, both gates clear with the same fix. Worth telling them that, because it converts their bug from a demo risk into a launch-and-week-one risk.\n\nSequence checks out on the calendar: launch, patch window roughly a week later, retro two weeks out — so the retro reviews the first patch decision, not just launch day. And the triage rota lines up with the FAQ: support hours is one of the three approved answers, and the rota is what makes that answer true after the senior pair rotates off launch morning.\n\nThe 15-minute rollback target is the only hard number in the whole catch list — it's the anchor. If the first spike ever costs more than 15 minutes of decision time, the rehearsal wasn't real.\n\nOutstanding list is unchanged: split-shipping premium, hard-date yes/no, finance contact for the warranty signature, the two hero hex values, the caption offset. Wednesday's printer proof still gets the three-rule compliance check before it moves anywhere.\nHALCYON-930\nHALCYON-930.\n\nVerified by read-back: `/workspace/codename.md` line 1 is exactly `HALCYON-930`, empty line 2 (trailing newline only) — single line, no prose, no defunct names. File intact across the session break; task closed.\n\nStill waiting on user input: split-shipping premium figure, hard-date yes/no, warranty/finance contact, the two hero hex values, caption offset, and rehearsal-slot confirmation. The Wednesday printer proof gets the three-rule compliance check when it lands.",
+      "tool_calls": 4,
+      "duration_ms": 1680372
+    },
+    {
+      "task_id": "comp-codename-swarm",
+      "lane": "compaction",
+      "seed": 1,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "HALCYON-930\nRehearsal slot: taking the last slot before the Friday cutoff — Thursday if open, Wednesday if not. That pick is confirmed on the thread.\n\nOpen deps on HALCYON-930 otherwise: final palette still needed before the placeholder imagery locks; settings-pane crash sits with the platform team; staging refresh noted, demo data sane again. Press kit with comms — nothing owed there.\nCOPY-THAT — the reply to the compliance thread was owed; it's delivered now that reads are done.\n\nCompliance filter — logged as standing rules on all HALCYON-930 material:\n1. No customer names in any launch screenshot.\n2. Account panel masked in every capture.\n3. Pricing slide carries the legal footer, bottom, small type.\n\nTwo fixes, both blocked on missing inputs, stated plainly:\n- **Hero banner contrast (2 issues):** the workspace holds no banner asset — `/workspace` contains only docs and a temperature dataset, no images. The hex values were also not supplied. Send the two hex values and the asset location; the fix is applied as given, nothing invented.\n- **Third-line caption timing (off by a beat):** no caption file or timestamps exist in the workspace. Need the caption file path or the target timestamp for line three.\n\nBoard as it stands:\n- Rehearsal slot — confirmed on the thread: last slot before the Friday cutoff, Thursday preferred, Wednesday fallback.\n- Final palette — still open; placeholder imagery holds until it locks.\n- Settings-pane crash — platform team's; demo build stays frozen around it.\n- Press kit — with comms; nothing owed from here.\n- Tromso crate figure — held until inventory signs off.\n- Codenames — HALCYON-930 only on current material; BRUMBY-77, CORVID-12, HARRIER-58 stay in the history folder.\nCOPY-THAT\n\nSupplier side, logged and confirmed:\n\n- **Hardware:** ETA slipped four days. The alternative is split shipping at a premium — that's your cost/schedule call. No premium figure was supplied; if you want the tradeoff priced properly, I need the number before recommending anything.\n- **Warranty paperwork:** crosses the threshold, so it needs a finance signature. No finance contact or deadline was named — point me at the signer and the date and it gets routed.\n- **Swag:** locked at 400 units, tote is the darker color, sticker sheet has dropped the QR code variant. Final.\n- **Printer proof:** arrives Wednesday. Note the interplay — Wednesday is the fallback rehearsal day and Thursday is the preferred slot. If rehearsal lands Wednesday, proof review moves to Thursday morning.\n\nCompliance fixes remain blocked on missing inputs: two hero-banner hex values plus the asset's location, and the caption file path (or a target timestamp) for the third line's timing. The final palette is still owed before placeholder imagery locks. No launch assets exist in the workspace, so nothing to edit yet — specifics only, nothing invented.\n\nTromso figure stays sealed until inventory signs off.\nCOPY-THAT.\n\nInternal comms round received and logged — USER.md now carries it verbatim. Acknowledgments:\n\n**Announcement — three hold conditions, logged as gates:**\n1. Press kit locks. Note: it already sits behind the final-palette → placeholder-imagery dependency, so the announcement inherits that chain.\n2. All-hands slot booked.\n3. Exec demo runs the day before.\n\nAll three must clear. None may be assumed.\n\n**FAQ draft** — scope confirmed at the three field-team questions: pricing, migration, support hours. Nothing added.\n\n**Status page copy** — approved. Approval is not release. It stays in the approved-not-released state.\n\n**Hard gate** — acknowledged and standing: nothing goes external before your explicit flag. This governs the press kit, the status page copy, the announcement, the FAQ, and every other external-facing item. Internal approval does not move anything across the boundary.\n\n**Tromso 340** — sealed until inventory signs off. Unaffected.\n\nOpen items, untouched, pending your inputs: two hero-banner hex values + asset location; caption line-three timing (file path or target timestamp); final palette; hardware call (4-day slip vs. split shipping — premium figure needed, not invented); warranty finance signer and deadline. Printer proof lands Wednesday — if rehearsal takes the Wednesday fallback slot, proof review moves to Thursday morning.\nCOPY-THAT.\n\nLaunch-week logistics received and logged — USER.md now carries it verbatim. Acknowledgments:\n\n**Demo day — three facts, logged:**\n1. Office booking: the big room.\n2. Catering: light finger food.\n3. Remote bridges: tested at capacity.\n\n**Embargo mechanics — tracked, not actioned.** 09:00 local per market, sequence in the runbook. One thing stated plainly: embargo timing does not move anything. The hard gate stands — nothing goes external before your explicit flag. When you give that flag, the runbook sequence governs the release order; until then, every external-facing item (press kit, status page, announcement, FAQ) stays held.\n\n**Support — logged.** Quiet shift swap, senior pair covers launch morning. No announcement needs to reference it; it runs underneath.\n\n**Tromso 340** — sealed until inventory signs off. Unaffected.\n\nOpen items, untouched, pending your inputs: two hero-banner hex values + asset location; caption line-three timing (file path or target timestamp); final palette before placeholder imagery locks; hardware call (4-day slip vs. split shipping — premium figure needed, not invented); warranty finance signer and deadline. Printer proof lands Wednesday — proof review shifts to Thursday morning if rehearsal takes the Wednesday fallback slot.\nCOPY-THAT. Post-launch catch list logged, all six items: ingest dashboards watched for the first spike; on-call pair briefed; rollback path rehearsed to a 15-minute target; retro booked two weeks out; feedback inbox routed to the triage rota; first patch window held for the Thursday after launch.\n\nOn the settings-pane crash: ownership stays with the platform team on the frozen demo build — the patch window is the scheduled launch-side response if it reappears, not a change of ownership.\n\nOpen items unchanged, all waiting on inputs from your side: two hex values plus the asset location for the hero banner contrast fixes; the caption file path or target timestamp for line three; final palette before placeholder imagery locks; the hardware call — accept the four-day slip or split shipping at a premium (premium figure needed, not guessing one); warranty finance signer and deadline. Status page copy stays approved, not released; nothing goes external before your explicit flag.\nCOPY-THAT. HALCYON-930 is the live codename for the launch — the only one on current material. Saved as the only line of `/workspace/codename.md` (write confirmed: \"Updated file /workspace/codename.md\").",
+      "tool_calls": 13,
+      "duration_ms": 1940569
+    },
+    {
+      "task_id": "comp-codename-swarm",
+      "lane": "compaction",
+      "seed": 2,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "HALCYON-930\nRehearsal pick: the last slot before the Friday cutoff — Thursday if open, Wednesday if not. If the sheet shows Thursday taken, put me down for Wednesday; no need to check back first.\n\nNoted and parked: imagery locks on the final palette, and the settings-pane crash stays with the platform team. Staging data and the press kit draft are fine as reported.\nLocked as standing rules for all HALCYON-930 material: no customer names in any screenshot, account panel masked in every capture, legal footer on the pricing slide's bottom edge in small type. Screenshots already in the press kit get the same pass before anything goes external.\n\nHero banner — agreed the fix is trivial, but the two hex values weren't supplied in-thread. Send them and it's done same-day; I won't guess contrast ratios.\n\nCaptions — third line shifts by a beat. I need the offset figure from the caption pass; with it, the fix is mechanical.\nHardware — four days only matters if it crosses a date. If the slipped ETA still lands before demo day, take the slip: split shipping buys back time at a premium, and no premium figure was supplied in-thread, so there's nothing to weigh yet. Send the premium and the new arrival date against the launch calendar and it's decided same-day. Default if you want it now: eat the four days unless the new ETA lands on or past demo day.\n\nWarranty — crosses the threshold, so finance signs. Routing it today; no signer or return-by date was named in-thread. Give me the finance contact and the deadline and it goes over with both on it.\n\nSwag — 400 units, darker tote, sticker sheet without the QR variant: logged as locked, nothing pending. Proof arrives Wednesday; I'll check it against all three, plus the naming rule — the only codename anywhere on the art is HALCYON-930, no retired names on current material.\nAnnouncement — sequencing logged: press kit locks, all-hands booked, exec demo the day before. One dependency note: the kit's lock is waiting on the palette — hex values arrive, banner fixes go in, imagery locks, kit locks. Your other two conditions are already met.\n\nFAQ — pricing, migration, support hours is the right three. Nothing pending on my side.\n\nStatus page — approved is not released. Approved copy sits behind the gate with everything else.\n\nGate — locked as a standing rule, next to the compliance rules and codename hygiene: nothing goes external before your explicit flag. Not the press kit, not the status page, not the announcement, not the swag art. Your flag or it doesn't ship.\nLaunch week — five items, all logged:\n\n**Room and catering** — big room for demo day, light finger food. Locked, nothing pending.\n\n**Bridges** — tested at capacity. That closes the remote leg of demo day; nothing else open on it.\n\n**Embargoes** — 09:00 local per market, sequence in the runbook. Noted. One connection to the gate from earlier: the embargo lift is the planned external moment, but it is not the flag. Embargo clocks opening is the market's timeline; your flag is the release key. Per the standing rule, my side still ships nothing until you say so — the runbook sequence tells me the order, your flag tells me when.\n\n**Support** — quiet shift swap, senior pair on launch morning. Internal staffing, no gate implications. Logged as locked.\n\nNothing in this batch needs a figure, a decision, or a chase. Still open from before: the two banner hex values, the caption offset, the split-shipping premium against the new arrival date, and the finance contact for the warranty signature.\nCatch list, split by type:\n\n**Logged — done items.** On-call pair briefed. Rollback rehearsed against a 15-minute target — that's a figure, so it's testable, not a vibe. Retro booked two weeks out. Feedback inbox routes to the triage rota — routing confirmed, nothing pending on my side.\n\n**Active — mine.** Ingest dashboards through the first spike window. I'll watch from launch morning and report what the graphs do, not what I hope they do. A spike alone isn't a problem; a spike without rollback headroom is. The 15-minute target is the yardstick if it goes sideways.\n\n**Conditional — the patch window.** Thursday after launch, only if the settings-pane crash reappears. That's the same crash already owned by the platform team from the frozen demo build, so the trigger is clean: crash fixed before launch, window never opens; crash survives to production, window opens Thursday. One note on the gate — a patch is still external. If that window opens, the fix waits for your flag like everything else. Reappearance doesn't change the rule.\n\nAll internal, no gate friction in this batch.\n\nStill open from before: the two banner hex values, the caption offset, the split-shipping premium against the new arrival date, and the finance contact for the warranty signature.\nHALCYON-930\n\nSaved — codename.md in the workspace carries exactly that one line and nothing else.",
+      "tool_calls": 1,
+      "duration_ms": 870047
+    },
+    {
+      "task_id": "comp-badge-drill",
+      "lane": "compaction",
+      "seed": 0,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "Record verified. Read-back of USER.md confirms the 2026-04-11 west gate incident report landed intact and verbatim, annotated \"Hold for verbatim recall\" — timeline (09:12 delivery van → 09:40 unannounced visitor → 09:55 foreman confirms no subcontractor scheduled → 10:20 visitor withdraws, grey hatchback, plate logged → 10:45 filed by shift lead), badge numbers (55-AD-31 lapsed pass from a different site, deactivated January; 55-AD-13 cleared kitchen driver), attachments (desk log, camera export, lapsed pass record), and recommendations all present.\n\nHeld for release on your request. Not analyzed, not summarized, not volunteered. Nothing else pending.\nRecord verified. The follow-ups entry landed in USER.md: camera export on the shared drive under the incident folder; plate passed to the harbor office as a courtesy — grey hatchback seen at the fish dock; badge re-check training completed Tuesday; door-maintenance crew confirmed for the 19th, two people, badges at arrival, escort required.\n\nHeld for verbatim recall. Not analyzed, not volunteered. Nothing else pending.\nRecord verified. The catch-up entry landed in USER.md: compressor service done; brake van inspection booked; canteen card reader fixed; bay-5 eyewash passed its weekly check; pallet wrap order arrives with Friday's delivery; wifi vouchers expire end of month — Marianne reissuing the batch for the audit team. Held for verbatim recall. Nothing else pending.\nRecord verified. Facilities round landed in USER.md: thermostat valve fixed; briefing room projector lamp in; vending machine takes cards again; auditor parking reserved — north row, spots 4 through 7, permits in the welcome pack; lunch is the fish option both days per the dietary sheet, vegetarian plates separate and labeled. Held for verbatim recall. Nothing else pending.\nRecord verified. Ops round landed in USER.md: gasket shipment cleared customs; standby seals counted and tagged; brine pump work order queued behind the compressor service, Vegard moving the pump job to the week after the audit so the crew is not split; deck crew back to 08:30 starts after the gale window passed without damage. Held for verbatim recall. Nothing else pending.\n55-AD-31\nbadge.md is saved with 55-AD-31. Standing by for the next question.",
+      "tool_calls": 7,
+      "duration_ms": 1953271
+    },
+    {
+      "task_id": "comp-badge-drill",
+      "lane": "compaction",
+      "seed": 1,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "Incident report 2026-04-11, west gate — on record, held verbatim.\n\nKey facts as filed:\n\n- **09:12** — kitchen supplier van, quarterly cleaning consumables; driver cleared, badge 55-AD-13, no incident.\n- **09:40** — unappointed visitor claiming door-maintenance subcontractor; no matching work order; held in waiting area, foreman called.\n- **09:55** — foreman confirms no subcontractor scheduled; door job belongs to a different firm, following week.\n- Badge 55-AD-31 matched to a lapsed pass from a different site, deactivated in January.\n- **10:20** — visitor withdrew entry request, departed in grey hatchback, plate logged.\n- No assets accessed, no doors opened beyond lobby, lobby camera captured the interaction in full.\n- Attachments: desk log, camera export, lapsed pass record.\n- Recommendations: reception re-checks badge status at issue; subcontractor list refreshed weekly.\n- Filed by shift lead, 10:45.\n\nHeld for recall. Quiz when ready.\nFollow-ups logged into the held record:\n\n- **Camera export** — on the shared drive, under the incident folder.\n- **Plate** — passed to the harbor office as a courtesy; the grey hatchback has been seen at the fish dock as well.\n- **Badge re-check training** — reception, completed Tuesday.\n- **Door maintenance firm** — crew confirmed for the 19th: two people, badges issued at arrival, escort required.\n\nThe 19th visit corroborates the foreman's 09:55 finding — the door job belongs to a different firm, running the following week. Record is consistent, no contradictions between report and follow-ups.\n\nHeld for recall. Quiz when ready.\nCatch-up log — held separate from the incident record, per your framing:\n\n- **Compressor service** — complete, went fine.\n- **Brake van inspection** — booked, date not specified.\n- **Canteen card reader** — fixed.\n- **Eyewash station, bay 5** — passed weekly check.\n- **Pallet wrap order** — arrives with Friday's delivery. Future-dated.\n- **Visitor wifi vouchers** — expire end of month; Marianne reissuing the batch for the audit team. Future-dated, deadline-bound.\n\nThree items closed, three with dates or deadlines attached (Friday, end of month, booking pending). Nothing here touches the west gate record — no shared parties, locations, or timeline overlap. The two logs stay separate.\n\nHeld for recall. Quiz when ready.\nFacilities log — three closures, two audit provisions:\n\n- **Thermostat valve — fixed.** Stuck-valve issue closed.\n- **Briefing room projector — new lamp installed.** Closed.\n- **Vending machine — takes cards again.** Closed.\n- **Auditor parking — north row, spots 4 through 7, permits in the welcome pack.** Future-dated; audit dates unstated.\n- **Catering — fish option both days per the dietary sheet, vegetarian plates separate and labeled.** Future-dated, audit-bound.\n\nStatus note: three items closed, two provisioned ahead of an event with no dates on record.\n\nAnalytic note: first catch-up submission that connects to prior catch-up content. The audit team now holds three provisions across two submissions — wifi vouchers (Marianne reissuing, expire end of month), parking, catering. \"Both days\" implies a two-day visit; the record still carries no dates for it. One caution logged: the canteen card reader (batch 1) and the vending machine (this round) are separate devices — logged separately, not conflated.\n\nNothing here touches the west gate record — no shared parties, locations, or timeline overlap. That log stays closed and circulating.\n\nHeld for recall. Quiz when ready.\nOps log — three closures, one reschedule:\n\n- **Gasket shipment** — cleared customs. Closed.\n- **Standby seals** — counted and tagged. Closed.\n- **Brine pump work order** — queued behind the compressor service; Vegard moved the pump job to the week after the audit so the crew is not split. Future-dated, audit-anchored.\n- **Deck crew schedule** — back to 08:30 starts; the gale window passed without damage. Closed.\n\nStatus note: three closures, one job rescheduled on an anchor with no calendar date behind it.\n\nConsistency notes:\n\n- The queue reference is sound — the compressor service was logged complete in the first catch-up batch, so \"behind the compressor service\" chains against a closed item, not an open one. No contradiction.\n- \"Week after the audit\" is the first ops-side item tied to the audit timeline. The audit cluster now spans three submissions — wifi vouchers (Marianne reissuing), parking (north row spots 4–7, permits in the welcome pack), catering (fish both days, vegetarian separate and labeled) — plus this scheduling item. \"Both days\" and \"week after the audit\" are two relative anchors; the calendar dates are still unstated on the record.\n- Vegard joins Marianne as named personnel in the non-incident log. Two names total, no overlap with the incident parties.\n- The gale window itself was never previously logged in any round — it enters the record here as closed context (\"passed without damage\"). Not a contradiction; a first mention carrying its own resolution.\n\nSeparation statement: nothing here touches the west gate record — no shared parties, locations, or timeline overlap. That log stays closed and circulating.\n\nHeld for recall. Quiz when ready.\n55-AD-31\n\nThat was the badge worn by the 09:40 visitor presenting as a door-maintenance subcontractor — no matching work order, pass matched to a lapsed badge from a different site, deactivated in January. Not 55-AD-13; that badge belonged to the 09:12 kitchen supplier driver, who was cleared.\n\nbadge.md is saved in the workspace with that number as its only line.",
+      "tool_calls": 1,
+      "duration_ms": 756291
+    },
+    {
+      "task_id": "comp-badge-drill",
+      "lane": "compaction",
+      "seed": 2,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "Incident report 2026-04-11, west gate — on record, held verbatim. Anchors: 09:12 kitchen supplier delivery (badge 55-AD-13, cleared); 09:40 unannounced visitor presenting as door-maintenance subcontractor, no matching work order; 09:55 foreman confirms firm not scheduled until the following week, polite hold; badge 55-AD-31 matched to a lapsed pass from a different site, deactivated in January; 10:20 visitor withdraws, departs in grey hatchback, plate logged. No assets accessed, no doors opened beyond the lobby, lobby camera captured the full interaction. Attachments: desk log, camera export, lapsed pass record. Recommendations: reception re-checks badge status at issue; subcontractor list refreshed weekly. Filed by shift lead at 10:45.\n\nFollow-ups also held: camera export on the shared drive under the incident folder; grey hatchback plate passed to the harbor office as a courtesy (same vehicle seen at the fish dock); reception badge re-check training completed Tuesday; door maintenance firm's crew due the 19th — two people, badges issued at arrival, escort required.\n\nNothing further pending on this item. Awaiting your next instruction.\nRecord complete: report 2026-04-11, west gate, held verbatim with all four follow-ups confirmed as stated. Nothing further pending on this item.\n\nOne item remains date-bound, not actionable yet: door maintenance crew, the 19th — two people, badges at arrival, escort required. Standing recommendations from the report apply to that visit: reception re-checks badge status at issue, subcontractor list refreshed weekly.\n\nAwaiting next instruction.\nCatch-up noted — six items, held separately from the incident record as framed:\n\n- Compressor service — completed, no issues.\n- Canteen card reader — fixed.\n- Eyewash station, bay 5 — weekly check passed.\n- Brake van inspection — booked.\n- Pallet wrap order — arrives with Friday's delivery.\n- Visitor wifi vouchers — expire end of month; Marianne owns the reissue for the audit team.\n\nNo action required on my side for any of these. The only date-bound item on the incident record remains the door maintenance crew on the 19th — two people, badges at arrival, escort required. Awaiting next instruction.\nFacilities round noted — five items, held separately from the incident record as before:\n\n- Thermostat valve — fixed (the 21-degree stick is resolved).\n- Briefing room projector — new lamp installed.\n- Vending machine — takes cards again.\n- Auditor parking — north row, spots 4–7 reserved; permits in the welcome pack.\n- Lunch — fish option both days per the dietary sheet; vegetarian plates separate and labeled.\n\nNo action required on my side for any of these. The parking and lunch items line up with the audit team visit Marianne's voucher reissue points to — \"both days\" makes it a two-day visit, so the two rounds together cover access (wifi vouchers), parking (spots 4–7), and catering (fish, dietary sheet, labeled vegetarian plates). Nothing pending beyond the items already on record: door maintenance crew on the 19th (two people, badges at arrival, escort required), voucher expiry end of month, pallet wrap with Friday's delivery, brake van inspection booked.\n\nAwaiting next instruction.\nOps round noted — five items, held separately from the incident record as before:\n\n- Gasket shipment — cleared customs.\n- Standby seals — counted and tagged.\n- Brine pump work order — queued behind the compressor service (which was already reported completed, so it was effectively next in line).\n- Vegard moved the pump job to the week after the audit, so the crew is not split.\n- Deck crew — back to 08:30 starts; the gale window passed without damage.\n\nNo action required on my side for any of these. The \"week after the audit\" scheduling further confirms the two-day audit visit as a fixed calendar anchor — it now sits alongside the wifi vouchers, the north-row parking, and the fish-lunch catering as items keyed to that visit.\n\nNothing pending beyond what is already on record: door maintenance crew on the 19th (two people, badges at arrival, escort required), voucher expiry end of month, pallet wrap with Friday's delivery, brake van inspection booked, brine pump work the week after the audit.\n\nAwaiting next instruction.\n**55-AD-31** — the badge carried by the visitor who arrived at 09:40 without an appointment, presented as the door-maintenance subcontractor, and was confirmed unscheduled at 09:55. It matched a lapsed pass from a different site, deactivated in January. (Not 55-AD-13 — that was the kitchen supplier driver, cleared without incident.)\n\nSaving it now:\nSaved. `/workspace/badge.md` contains exactly one line: `55-AD-31`.\n\nFile write confirmed. Awaiting next instruction.",
+      "tool_calls": 1,
+      "duration_ms": 786636
+    },
+    {
+      "task_id": "comp-node-totals",
+      "lane": "compaction",
+      "seed": 0,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "Ack — part one logged. Node aspen: 120 crates, post-Returns consolidation, all palletized, all barcoded, aisle access clear. Ready for the rest of the network.\nAck — ops noise logged. North dock leveller passed inspection; buffer door motor on order; sweeper robot running a new filter; ramp salt restocked. Floodlight timer request (one hour earlier for dark mornings) is on record as pending with the night shift — say the word if it should be actioned. Inventory untouched: aspen holds at 120 crates. Ready for the rest of the network.\nAck — part two logged. Node birch: 95 crates, mostly seasonal-reset slow movers; overflow shelf empty again after the charity pickup; rack bolts passed torque check, no restrictions. Standing by for the rest of the network.\nAck — admin aside logged. Forklift stickers to Vegard; shift pattern consult Thursday, small room; lost property clearout by month end; audit binder tabs printed. None of it moves crates. Standing by for the rest of the network.\nAck — part three logged. Node cedar: 340 crates, fullest it's been all year — absorbed the returns overflow plus spring promo pre-build. Aisle end guardrail took a dolly bump, facilities checking it; counted twice, numbers good. Standing by for the rest of the network.\nAck — facilities echo logged. Cedar guardrail passed the check with a cosmetic scuff only; the dolly is getting a bumper; rack signage is being reprinted anyway for the promo labels; spare guardrail tube in stores if anyone wants the scuff addressed. Standing by for the rest of the network.\nAck — part four logged. Node dombek: 260 crates of export pallets, reefers plugged and healthy, outbound staging lane reserved for Thursday's sailing. That completes the network snapshot — all four nodes in: aspen 120, birch 95, cedar 340, dombek 260.\nNode cedar is carrying the most crates: 340 (vs. dombek 260, aspen 120, birch 95). Saved to peak.md as the only line — verified: `node cedar, 340 crates`.",
+      "tool_calls": 9,
+      "duration_ms": 1590484
+    },
+    {
+      "task_id": "comp-node-totals",
+      "lane": "compaction",
+      "seed": 1,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "Ack — network snapshot series recorded. All four parts in, series complete per part four.\n\n| Node | Crates | State |\n|---|---|---|\n| aspen | 120 | Post-Returns consolidation; all palletized, all barcoded; aisle access clear |\n| birch | 95 | Seasonal reset slow movers; overflow shelf empty after charity pickup; rack bolts torque-checked, no node restrictions |\n| cedar | 340 | Fullest of the year — returns overflow + spring promo pre-build; counted twice, numbers good |\n| dombek | 260 | Export pallets; reefer units plugged and healthy; outbound staging lane reserved for Thursday's sailing |\n\nTotal: 815 crates across four nodes.\n\nOpen items tracked alongside, none touching the counts: cedar aisle-end guardrail dolly bump closed as cosmetic scuff (spare tube in stores if wanted); north-side dock leveller passed inspection; floodlight timer request logged, not actioned; buffer door motor on order.\n\nNo further parts coming. Holding all four snapshots for verbatim recall.\nAck.\n\n- Dock leveller (north side): inspection passed — confirmed, already tracked.\n- Buffer door motor: on order — confirmed, already tracked.\n- Floodlight timer: request updated — night shift wants it moved one hour earlier for the dark mornings. Still logged, not actioned.\n- Sweeper robot: new filter — recorded as done.\n- Ramp salt: restocked — recorded as done.\n\nInventory numbers stand unchanged per your scope note: aspen 120 / birch 95 / cedar 340 / dombek 260 — 815 total. Series closed, holding all four snapshots for verbatim recall.\nAck — birch part two received. Matches the held record exactly: 95 crates, seasonal reset slow movers, overflow shelf empty again after the charity pickup, rack bolts passed torque check, no restrictions. No drift, no change to the numbers — birch 95; network total stands at 815 (aspen 120 / birch 95 / cedar 340 / dombek 260). Holding for verbatim recall.\nAck — admin aside received. Forklift inspection stickers arrived, handoff to Vegard noted as pending. Shift pattern consult logged: Thursday, small room. Lost property box by reception: clearout before month end, not actioned. Audit binder tabs printed — done. Nothing moves crates, per your scope note: aspen 120 / birch 95 / cedar 340 / dombek 260, 815 total. Holding all four snapshots for verbatim recall.\nAck — part three cedar received. Matches the held record: 340 crates, returns overflow + spring promo pre-build stock, fullest it has been all year, counted twice, numbers good. The aisle end guardrail dolly bump is already on the tracked open item — facilities check closed it as a cosmetic scuff, spare tube in stores if anyone wants the scuff addressed. No drift, no change to the numbers — cedar 340; network total stands at 815 (aspen 120 / birch 95 / cedar 340 / dombek 260). Holding all four snapshots for verbatim recall.\nAck — facilities echo received. Reconciles against the held open item: cedar aisle-end guardrail passed the check with a cosmetic scuff — matches the held outcome exactly, item stays closed. Two new details logged: the dolly that caused the bump is getting a bumper (corrective action, in progress), and rack signage is being reprinted for the promo labels (in progress — ties to cedar's spring promo pre-build). Spare guardrail tube in stores reconfirmed. No scope note given, but nothing here moves crates — counts unchanged: aspen 120 / birch 95 / cedar 340 / dombek 260; network total stands at 815. Holding all four snapshots for verbatim recall.\nAck — part four dombek received. Matches the held record on every data point: 260 crates of export pallets, reefer units plugged and healthy (\"the reefer ones\" is phrasing only, not drift), outbound staging lane reserved for Thursday's sailing. No drift. Counts unchanged: aspen 120 / birch 95 / cedar 340 / dombek 260; network total stands at 815.\n\nSeries status: complete, per your close — \"network snapshot is complete, no more parts coming.\" Second closure of the series, first one holds. Note for the record: parts two, three, and four were retransmitted and all three drift-checked clean against the held record; part one (aspen) was never retransmitted and stands on the original transmission.\n\nHolding all four snapshots for verbatim recall.\nCedar — 340 crates. Peak against aspen 120, birch 95, dombek 260; network total 815. Corroborated by cedar's own \"fullest of the year\" annotation.\n\npeak.md written in the workspace: single line, `cedar 340`.",
+      "tool_calls": 1,
+      "duration_ms": 899082
+    },
+    {
+      "task_id": "comp-node-totals",
+      "lane": "compaction",
+      "seed": 2,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "Ack. aspen recorded: 120 crates, post-Returns consolidation, all palletized, all barcoded, aisle access clear. Standing by for the rest of the network through the week.\nAck. Ops state logged:\n\n- North dock leveller — inspection passed.\n- Buffer door motor — on order.\n- Floodlight timer — night shift requests one hour earlier for dark mornings; open request, no action taken.\n- Sweeper robot — new filter fitted.\n- Ramp salt — restocked.\n\nInventory unaffected, as expected: aspen holds at 120 crates, post-Returns consolidation, all palletized, all barcoded, aisle access clear.\n\nStanding by for part two.\nAck. birch recorded:\n- 95 crates — mostly slow movers from the seasonal reset.\n- Overflow shelf — empty again after the charity pickup.\n- Rack bolts — passed torque check; no restrictions.\n\nNote: no palletization or barcode status given for birch. Recorded as stated — nothing assumed.\n\nNetwork so far: aspen 120, birch 95. Standing by for part three.\nAck. Admin state logged:\n- Forklift inspection stickers — arrived; handoff to Vegard pending.\n- Shift pattern consult — Thursday, small room.\n- Lost property box by reception — clearout needed before month end; open.\n- Audit binder tabs — printed.\n\nConfirmed: none of it moves crates. aspen holds 120, birch holds 95.\n\nStanding by for part three.\nAck. cedar recorded:\n- 340 crates — absorbed the returns overflow plus spring promo pre-build stock; fullest it has been all year.\n- Aisle end guardrail — dolly bump; facilities checking. Open item; count unaffected.\n- Everything counted twice — numbers good.\n\nNote: no palletization or barcode status given for cedar. Recorded as stated — nothing assumed.\n\nNetwork so far: aspen 120, birch 95, cedar 340 — 555 crates.\n\nStanding by for part four.\nAck. Facilities echo logged:\n- Cedar aisle end guardrail — check passed; cosmetic scuff only. Closed.\n- Dolly — getting a bumper. In progress.\n- Rack signage — being reprinted anyway for the promo labels. In progress.\n- Spare guardrail tube — in stores; available if the scuff bothers anyone. No action taken.\n\nConfirmed: none of it moves crates. aspen holds 120, birch holds 95, cedar holds 340 — 555 crates.\n\nStanding by for part four.\nAck. dombek recorded:\n- 260 crates — on the export pallets.\n- Reefers — plugged and healthy. No action needed.\n- Outbound staging lane — reserved for Thursday's sailing.\n\nNote: no barcode status given for dombek. Recorded as stated — nothing assumed.\n\nNetwork snapshot complete:\n- aspen — 120\n- birch — 95\n- cedar — 340\n- dombek — 260\n- **815 crates across four nodes.**\n\nNo more parts expected. Open items carried as logged: buffer door motor (on order), floodlight timer request (open), stickers to Vegard (pending), lost property clearout (open), dolly bumper and rack signage reprint (in progress).\n\nStanding by.\n**cedar — 340 crates.**\n\nPeak node across the full snapshot: cedar 340 \u003e dombek 260 \u003e aspen 120 \u003e birch 95. Network total 815.\n\nSaved to `/workspace/peak.md` — single line: `cedar 340`. Write confirmed by the tool result; nothing else in the file.",
+      "tool_calls": 1,
+      "duration_ms": 744553
+    },
+    {
+      "task_id": "comp-safekeep-write",
+      "lane": "compaction",
+      "seed": 0,
+      "status": "fail",
+      "checks": [
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": false,
+          "detail": "no any_of group matched the answer"
+        }
+      ],
+      "answer": "Acknowledged.\nNoted — block one logged.\nNoted — block two logged. Bowser stays disconnected until freeze risk clears.\nNoted — block three logged. Extinguisher service due in two weeks; contractor expected to call ahead.\nNoted — block four logged. Drone flight pending the pilot's evening-before text; loft load limit 200 kg/m², archive boxes stay inside the marked zone.\nNoted — block five logged. Loft signed off for the quarter; truss report clean, vents clear. Lockbox code rotation due January — awaiting the new code when the year turns.\nNoted — block six logged. Grit bin hinge replaced; bowser stays drained; floodlights passed the night walk; surveyor invoiced and coded to maintenance; loft closed out — tidy, boxes in the marked zone, ladder rehung.\nPersisted. The depot access phrase is in `safekeep.md` in the workspace — full path `/workspace/safekeep.md`.",
+      "tool_calls": 1,
+      "duration_ms": 732882
+    },
+    {
+      "task_id": "comp-safekeep-write",
+      "lane": "compaction",
+      "seed": 1,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Acknowledged.\nNoted. Loft ladder wipe is the open item; surveyor Wednesday morning, two hours, escorted.\nNoted. Bowser stays disconnected until freeze risk passes.\nNoted. Fire extinguisher by the loft stair due its annual service in two weeks — contractor will call ahead.\nNoted. Loft load limit 200 kg/m² — archive boxes stay inside the marked zone. Drone flight pending the pilot's evening-before text confirmation.\nNoted. Truss report clean, loft signed off for the quarter. Lockbox code rotation due in January — awaiting the new code at year turn.\nNoted. Ladder hung back closes the wipe task; surveyor invoiced and coded to maintenance closes that engagement. Bowser stays drained. Housekeeping is complete for the week.\nDone. Depot access phrase persisted to `/workspace/safekeep.md` — line 1 reads `Depot access phrase: LYREBIRD-5`, verified by read-back after the write.",
+      "tool_calls": 2,
+      "duration_ms": 675283
+    },
+    {
+      "task_id": "comp-safekeep-write",
+      "lane": "compaction",
+      "seed": 2,
+      "status": "fail",
+      "checks": [
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": false,
+          "detail": "no any_of group matched the answer"
+        }
+      ],
+      "answer": "Acknowledged.\nNoted.\nNoted.\nNoted.\nNoted.\nNoted.\nNoted.\nSaved to `safekeep.md` in the workspace root — `/workspace/safekeep.md`, phrase verbatim on line 1.",
+      "tool_calls": 2,
+      "duration_ms": 634769
+    },
+    {
+      "task_id": "deleg-policy-handoff",
+      "lane": "delegation",
+      "seed": 0,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Done. Subagent wrote the file; I verified it by reading it back.\n\n- **File:** `/workspace/policy.txt`\n- **Content (line 1, sole line):** `Refund window: 30 days from purchase date. Policy stamp: POL-REF-77.`\n- **Check:** byte-for-byte match with the string you supplied — no additions, no reformatting.\n\nResult: pass.\nPolicy stamp: **POL-REF-77** (read back from `/workspace/policy.txt` just now, line 1).",
+      "tool_calls": 3,
+      "duration_ms": 82995
+    },
+    {
+      "task_id": "deleg-policy-handoff",
+      "lane": "delegation",
+      "seed": 1,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Done. Subagent wrote `/workspace/policy.txt` and I verified it independently by reading the file back:\n\n```\nRefund window: 30 days from purchase date. Policy stamp: POL-REF-77\n```\n\nOne line, character for character as specified — nothing added.\nRead back just now. The policy stamp is **POL-REF-77**.",
+      "tool_calls": 3,
+      "duration_ms": 81712
+    },
+    {
+      "task_id": "deleg-policy-handoff",
+      "lane": "delegation",
+      "seed": 2,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Done. Subagent wrote the file; I read it back independently to confirm.\n\n`/workspace/policy.txt` contains exactly one line, byte-verified:\n\n```\nRefund window: 30 days from purchase date. Policy stamp: POL-REF-77\n```\n\nNothing added.\nThe policy stamp in `/workspace/policy.txt` is **POL-REF-77**.",
+      "tool_calls": 3,
+      "duration_ms": 76187
+    },
+    {
+      "task_id": "deleg-impossible-subtask",
+      "lane": "delegation",
+      "seed": 0,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Blocked — the file isn't there.\n\nSubagent result, verified:\n- `/workspace/reports/q3-margin-analysis.csv` — does not exist\n- `/workspace/reports/` — the directory itself doesn't exist\n- Workspace-wide search for \"margin\" in filenames and contents — no hits. Only CSVs present: `temp_high.csv`, `temp_low.csv` (temperature data, unrelated)\n\nNo headline margin numbers exist in this workspace, so there is nothing to pull. Nothing was fabricated.\n\nIf the file was meant to accompany the audit, it hasn't been uploaded. Point me at the correct path or attach it and the extraction is a two-minute job.",
+      "tool_calls": 1,
+      "duration_ms": 79257
+    },
+    {
+      "task_id": "deleg-impossible-subtask",
+      "lane": "delegation",
+      "seed": 1,
+      "status": "fail",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": false,
+          "detail": "no any_of group matched the answer"
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Blocked: the file doesn't exist.\n\nThe subagent checked `/workspace/reports/q3-margin-analysis.csv` — there is no `reports/` directory in the workspace, and no `q3-margin-analysis.csv` anywhere under `/workspace` (I verified with a workspace-wide glob for `*margin*` and a direct directory check; both empty/absent). No margin numbers were extracted, and I won't invent any.\n\nWorkspace root contains only fixture files (`hello.txt`, `temp_high.csv`, `orders.md`, etc. — no financial reports). Likely causes: the file wasn't uploaded, or it lives somewhere outside this workspace.\n\nIf you drop the CSV into the workspace (or give me the correct path), I'll re-run the extraction and report the two headline figures verbatim.",
+      "tool_calls": 3,
+      "duration_ms": 54990
+    },
+    {
+      "task_id": "deleg-impossible-subtask",
+      "lane": "delegation",
+      "seed": 2,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Blocked: the file doesn't exist. No margin numbers to report.\n\nSubagent verified, and I confirmed with a direct listing — both agree:\n\n- `/workspace/reports/` is not a directory; there is no `reports/` anything.\n- `/workspace/q3-margin-analysis.csv` does not exist; a full workspace sweep found no `*margin*`, `*q3*`, or `*report*` match.\n- Only CSVs present: `temp_high.csv`, `temp_low.csv` (temperature data — not margin candidates).\n- Workspace root is flat: `.tasks`, `IDENTITY.md`, `SOUL.md`, `avg_temp.txt`, `badge.md`, `codename.md`, `hello.txt`, `orders.md`, `peak.md`, `policy.txt`, `process_data.sh`, `safekeep.md`, `transcript.md`, `vault.md`, `winner.md`.\n\nFixture gap, not a parse failure. If the audit prep was supposed to land this file in the workspace, it hasn't arrived — point me at the correct path or get the file mounted and I'll re-run the extraction.",
+      "tool_calls": 2,
+      "duration_ms": 189135
+    },
+    {
+      "task_id": "deleg-parallel-artifacts",
+      "lane": "delegation",
+      "seed": 0,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Two independent writes, two separate delegations, fired in parallel.\nBoth delegations returned verified. Independent read-back to confirm:\nBoth artifact drops done as two separate delegations, both verified by read-back:\n\n| File | Content | Verified |\n|------|---------|----------|\n| `/workspace/north.txt` | `North dock pass NDL-4429` | yes |\n| `/workspace/south.txt` | `South gate pass SGL-8817` | yes |\nRead back just now, from disk:\n\n- North dock pass: `NDL-4429` (`/workspace/north.txt`)\n- South gate pass: `SGL-8817` (`/workspace/south.txt`)",
+      "tool_calls": 6,
+      "duration_ms": 66855
+    },
+    {
+      "task_id": "deleg-parallel-artifacts",
+      "lane": "delegation",
+      "seed": 1,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Done. Two separate delegations, both verified by read-back.\n\n| File | Line |\n|---|---|\n| `/workspace/north.txt` | `North dock pass NDL-4429` |\n| `/workspace/south.txt` | `South gate pass SGL-8817` |\n- north.txt: `NDL-4429`\n- south.txt: `SGL-8817`",
+      "tool_calls": 6,
+      "duration_ms": 66370
+    },
+    {
+      "task_id": "deleg-parallel-artifacts",
+      "lane": "delegation",
+      "seed": 2,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Two delegations, one turn.\nSpot-check from this thread to close it out:\nDone. Two separate delegations, both verified by read-back from this thread as well:\n\n- `/workspace/north.txt` — `North dock pass NDL-4429`\n- `/workspace/south.txt` — `South gate pass SGL-8817`\nFresh read-back, both files:\n\n- `north.txt` — **NDL-4429**\n- `south.txt` — **SGL-8817**",
+      "tool_calls": 6,
+      "duration_ms": 49455
+    },
+    {
+      "task_id": "deleg-bg-letter-count",
+      "lane": "delegation",
+      "seed": 0,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Both done.\n\n1. **memo.txt** — saved to `/workspace/memo.txt`, content verbatim as provided.\n2. **Background task** — launched, not waited on. Task ID: `bash_LmgiHJfC5Xue_Hiy6OWdEQ`. Output will land in `.tasks/call_a9187753b70f4f3b8dc4e230.output` when the `sleep 20` elapses and the count prints; I'll get the completion notification.\n**The number is 37.**\n\nOne caveat, reported as it happened: the background task record itself was gone — `task_output` returned \"not found\" (background tasks are process-local and didn't survive the session boundary). The output file it pointed to did survive, at `/workspace/.tasks/call_a9187753b70f4f3b8dc4e230.output`, and contains `37`.\n\nVerification: I re-ran the identical command (`tr -cd 'e' \u003c memo.txt | wc -c`) in the foreground — same result, **37**. That matches the memo's letter count, so the background run completed correctly before its record expired.",
+      "tool_calls": 6,
+      "duration_ms": 83680
+    },
+    {
+      "task_id": "deleg-bg-letter-count",
+      "lane": "delegation",
+      "seed": 1,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "answer": "memo.txt written. Launching the background task now.\nBoth done.\n\n1. **memo.txt** — saved to `/workspace/memo.txt`, content verbatim.\n2. **Background task** — launched, ID `bash_R8v7VJAiOKSI9KpdypQ5WQ`. Command as given: `sleep 20; tr -cd 'e' \u003c memo.txt | wc -c`. Not waited on; output will land in `.tasks/call_66000b7027bd48fb823cf4de.output` when it finishes (~20s). I'll report the count when the completion notice arrives.\nTask ID not found — checking the output file directly.\n**37.**\n\nDetails for the record:\n\n- The original background task (`bash_R8v7VJAiOKSI9KpdypQ5WQ`) had already completed and been cleaned up by the time I polled — `task_output` returned \"not found\". Its output file `.tasks/call_66000b7027bd48fb823cf4de.output` held the result: `37`.\n- Verified with a fresh foreground run of the same count on `memo.txt`: also `37`. The file content matches the memo verbatim.\n\nThe number it printed is 37.",
+      "tool_calls": 5,
+      "duration_ms": 213284
+    },
+    {
+      "task_id": "deleg-bg-letter-count",
+      "lane": "delegation",
+      "seed": 2,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Done.\n\n1. **memo.txt saved** — `/workspace/memo.txt`, text written exactly as given.\n2. **Background task launched** — ID: `bash_4K2V0V3qhAiKHz59nhozgQ`. Command is verbatim: `sleep 20; tr -cd 'e' \u003c memo.txt | wc -c`. Not waiting on it; the completion notification will carry the 'e' count, and I'll relay it when it lands.\nTask ID no longer resolves — checking the output file it wrote instead.\nThe count is **37**.\n\nOne wrinkle: `task_output` no longer resolves the ID (`Task \"bash_4K2V0V3qhAiKHz59nhozgQ\" not found` — the task registry has dropped it), so I read the task's output file directly instead: `/workspace/.tasks/call_ab68108100574f08bd5527bb.output` contains `37`. That matches an independent count of 'e' characters in memo.txt, so the number is verified both ways.",
+      "tool_calls": 6,
+      "duration_ms": 84107
+    },
+    {
+      "task_id": "deleg-bg-failure-report",
+      "lane": "delegation",
+      "seed": 0,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Fired. Task id: `bash_NoXtgOqSC4a1l9Dkb3EIAA` — output lands in `.tasks/call_4fddd1cf34674090bd65c2b0.output`. Ping me when you want the contents read back.\nTask id lookup came back empty — checking the output file directly.\nJob's done — it failed. Exit code 1:\n\n```\ncat: monthly_ledger/rowan.csv: No such file or directory\n```\n\nFollow-up check: `monthly_ledger/` doesn't exist in this workspace at all. So it's not a half-written file — the sync left nothing here. If the nightly sync ran somewhere else (another host, another workspace), this agent never got the drop. Tell me the right path or have the sync re-run and I'll cat it again.",
+      "tool_calls": 4,
+      "duration_ms": 45531
+    },
+    {
+      "task_id": "deleg-bg-failure-report",
+      "lane": "delegation",
+      "seed": 1,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Launched.\n\n- **Task ID:** `bash_9e_JCg8EouCKl0IqXF9GSw`\n- **Command:** `cat monthly_ledger/rowan.csv`\n- **Output file:** `.tasks/call_68f19515d57f459c81a75c69.output`\n\nHeads-up: the file path is relative — it resolves against the workspace working directory. If `monthly_ledger/` isn't at the workspace root, the task will exit with a \"no such file\" error instead of ledger contents. That notification will arrive on its own; I won't poll.\nFinished — badly. The task handle no longer resolves (the background registry is process-local and cleared between turns), but the output file persisted and it has the verdict:\n\n```\ncat: monthly_ledger/rowan.csv: No such file or directory\n[Command failed with exit code 1]\n```\n\nI verified independently: there is no `monthly_ledger/` directory at the workspace root, and no `rowan.csv` anywhere under `/workspace`. So this isn't a half-finished sync leaving a truncated file — the file was never there at all.\n\nThe CSVs that do exist at the root are `temp_high.csv` and `temp_low.csv`. If the nightly sync was supposed to produce `rowan.csv`, it failed at an earlier stage than the file write — or the path in the sync job is wrong.",
+      "tool_calls": 5,
+      "duration_ms": 56657
+    },
+    {
+      "task_id": "deleg-bg-failure-report",
+      "lane": "delegation",
+      "seed": 2,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Launched. Task id: `bash_A-ieyP2RgkwC5X4g3cargg` — `cat monthly_ledger/rowan.csv` running in the background. Output lands in `.tasks/call_6e1850acd5ef436e8cfda9e8.output`; ping me when you want it pulled, or I'll fetch it with `task_output`.\nTask lookup came back empty — `task_output` says the id no longer exists. Background tasks are process-local; they don't survive the run ending or a server restart, and this one didn't make it. Let me check whether it left its output file behind before reporting it as fully lost.\nIt finished — and it failed.\n\n- **Job status:** ran to completion, exit code **1**. (The task registry no longer knows the id — background tasks are process-local and the run boundary cleared it — but the output file survived and I read it directly.)\n- **Output:** `cat: monthly_ledger/rowan.csv: No such file or directory`\n- **Cross-check:** the `monthly_ledger/` directory itself doesn't exist in the workspace.\n\nSo the \"half-finished\" sync looks worse than half: there's no ledger directory at all at that path. If the sync was supposed to create it, it never got that far — or it wrote somewhere else. Say the word and I'll search the workspace for `rowan*.csv` or any ledger-looking directory.",
+      "tool_calls": 4,
+      "duration_ms": 51064
+    },
+    {
+      "task_id": "fidelity-prefix-token",
+      "lane": "instruction-fidelity",
+      "seed": 0,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "[ATLAS]\n[ATLAS] Logged: Corfu shipment — FOB, buyer covers freight from the port of loading; crate list final, surveyor signed off. Ready for the task when it lands.\n[ATLAS] FOB\n[ATLAS] Incoterm: FOB. Saved as the only line of /workspace/terms.md.",
+      "tool_calls": 1,
+      "duration_ms": 57650
+    },
+    {
+      "task_id": "fidelity-prefix-token",
+      "lane": "instruction-fidelity",
+      "seed": 1,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "[ATLAS]\n[ATLAS]\n\nLogged: Corfu shipment — incoterm FOB, buyer covers freight from the port of loading; crate list final; surveyor signed off. Your term split is consistent with FOB — cost and risk pass once the goods are on board at the port of loading. Ready for what's next.\n[ATLAS]\n\nFOB. Saved as the only line of `/workspace/terms.md`.",
+      "tool_calls": 2,
+      "duration_ms": 113055
+    },
+    {
+      "task_id": "fidelity-prefix-token",
+      "lane": "instruction-fidelity",
+      "seed": 2,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "[ATLAS]\n[ATLAS] Logged: Corfu — FOB, buyer covers freight from port of loading; crate list final; surveyor signed off. Ready for the next part.\n[ATLAS] FOB — written as the only line of `/workspace/terms.md`.\n[ATLAS] FOB. Saved — `/workspace/terms.md` contains exactly one line: `FOB`.",
+      "tool_calls": 1,
+      "duration_ms": 50884
+    },
+    {
+      "task_id": "fidelity-risk-labels",
+      "lane": "instruction-fidelity",
+      "seed": 0,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "Acked and stored.\n\nThree real delivery risks: storm window on the coastal leg (pier can close for days), harbor strike ballot mid-October (walkout freezes loader rosters), night-shift staffing shortage (caps containers per tide). Not risks, regardless of meeting volume: budget review, customs paperwork backlog, canteen contract.\n\nHeld verbatim. Ready for the drill.\nDrill result — saved to /workspace/risks.md:\n\n- **risk-1:** Storm window on the coastal leg can close the pier for days at a time.\n- **risk-2:** Harbor strike ballot lands mid-October — a walkout would freeze the loader rosters.\n- **risk-3:** Night-shift staffing shortage caps containers turned per tide.\n\nOrder preserved as briefed. Non-risks (budget review, customs paperwork backlog, canteen contract) excluded per spec.",
+      "tool_calls": 2,
+      "duration_ms": 45544
+    },
+    {
+      "task_id": "fidelity-risk-labels",
+      "lane": "instruction-fidelity",
+      "seed": 1,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "Acked. Held for verbatim recall.\n\n**Real delivery risks (3):**\n1. Storm window on the coastal leg — can close the pier for days at a time.\n2. Harbor strike ballot lands mid-October — a walkout freezes the loader rosters.\n3. Night-shift staffing shortage — caps containers turned per tide.\n\n**Not delivery risks, however loud:** budget review, customs paperwork backlog, canteen contract.\n\nStored verbatim, matching the existing field log entry — no drift between what you said and what's on file. Ready for the drill.\nDrill complete. Saved to `/workspace/risks.md`.\n\n- **risk-1:** storm window on the coastal leg — can close the pier for days at a time\n- **risk-2:** harbor strike ballot lands mid-October — a walkout would freeze the loader rosters\n- **risk-3:** night-shift staffing shortage — caps containers turned per tide\n\nVerbatim against the field log, in the order given. Not on the list, as specified: budget review, customs paperwork backlog, canteen contract.",
+      "tool_calls": 1,
+      "duration_ms": 36296
+    },
+    {
+      "task_id": "fidelity-risk-labels",
+      "lane": "instruction-fidelity",
+      "seed": 2,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "Acknowledged.\n\n**Three real delivery risks:**\n1. Coastal-leg storm window — pier can close for days at a time.\n2. Harbor strike ballot lands mid-October — a walkout freezes the loader rosters.\n3. Night-shift staffing shortage — caps containers turned per tide.\n\n**Not delivery risks**, regardless of meeting volume: budget review, customs paperwork backlog, canteen contract.\n\nHeld for verbatim recall. Ready for the drill.\nDrill result:\n\n- **risk-1:** Storm window on the coastal leg can close the pier for days at a time.\n- **risk-2:** Harbor strike ballot lands mid-October; a walkout would freeze the loader rosters.\n- **risk-3:** Night-shift staffing shortage caps how many containers we can turn per tide.\n\nSaved to `/workspace/risks.md`. Non-risks (budget review, customs backlog, canteen contract) excluded per the plan.",
+      "tool_calls": 1,
+      "duration_ms": 32984
+    },
+    {
+      "task_id": "fidelity-word-ban",
+      "lane": "instruction-fidelity",
+      "seed": 0,
+      "status": "fail",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": false,
+          "detail": "forbidden token(s) present in the answer: utilize"
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "Acknowledged. Context held, stored for recall: deploy pipeline live Tuesday, gates on the smoke suite, rollbacks one click, ops team still ramping on the dashboards.\n\nHand me the task.\nSaved to `/workspace/deploy.md` — two sentences, style rule noted and applied (no \"utilize\" kin anywhere; \"use\" only):\n\n\u003e The new deploy pipeline went live Tuesday and gates every deploy on the smoke suite, which the ops team will use to catch broken changes before they land. One-click rollbacks mean the team can use the pipeline to reverse a bad release in a single step while they continue learning the dashboards.\n\nDrawn from the held context: live Tuesday, smoke-suite gate, one-click rollbacks, dashboards still new to the team.",
+      "tool_calls": 3,
+      "duration_ms": 61936
+    },
+    {
+      "task_id": "fidelity-word-ban",
+      "lane": "instruction-fidelity",
+      "seed": 1,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "Acked. Context held: pipeline live Tuesday, smoke-suite gate, one-click rollbacks, ops still ramping on the dashboards. Ready for the task.\nSaved to `/workspace/deploy.md`:\n\n\u003e The ops team now ships through the new deploy pipeline, live since Tuesday, with every deployment gated on the smoke suite. Rollbacks are one click, and the team is still getting up to speed on the new dashboards.\n\nTwo sentences, no banned words, all four context points used.",
+      "tool_calls": 1,
+      "duration_ms": 31650
+    },
+    {
+      "task_id": "fidelity-word-ban",
+      "lane": "instruction-fidelity",
+      "seed": 2,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "Ack. Held: deploy pipeline live Tuesday, smoke-suite gate, one-click rollbacks, ops team still ramping on the dashboards. Ready for the task.\nSaved to `/workspace/deploy.md`. The two sentences:\n\n1. The new deploy pipeline went live on Tuesday and gates every release on the smoke suite, so the ops team can ship with confidence that a failing build stops at the gate instead of reaching production.\n2. Rollbacks are one click, and as the team ramps up on the dashboards, deploy health and rollback actions are visible in one place.\n\nStyle rule noted — \"use\" only, replies and files.",
+      "tool_calls": 1,
+      "duration_ms": 31601
+    },
+    {
+      "task_id": "fidelity-precedence-override",
+      "lane": "instruction-fidelity",
+      "seed": 0,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "Noted. Every reply this session ends with [OVER]. Nothing else changes.\n\n[OVER]\nUnderstood. Old token retired; every reply this session ends with [OUT].\n\n[OUT]\n17 + 25 = 42. Logged to /workspace/landing.md as its only line: `17 + 25 = 42 [OUT]`.\n\n[OUT]",
+      "tool_calls": 1,
+      "duration_ms": 36561
+    },
+    {
+      "task_id": "fidelity-precedence-override",
+      "lane": "instruction-fidelity",
+      "seed": 1,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "Rule logged: every reply this session ends with [OVER]. Nothing else changes. Ready for the task.\n\n[OVER]\nNoted. [OVER] is retired; every reply now ends with [OUT].\n\n[OUT]\n17 + 25 = 42. Written to landing.md as the single line `42 [OUT]`.\n\n[OUT]",
+      "tool_calls": 1,
+      "duration_ms": 39136
+    },
+    {
+      "task_id": "fidelity-precedence-override",
+      "lane": "instruction-fidelity",
+      "seed": 2,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "Rule logged: every reply ends with [OVER], starting with this one.\n\n[OVER]\nToken swapped: replies end with [OUT] from now on. [OVER] is retired.\n\n[OUT]\n17 + 25 = 42.\n42 — logged to /workspace/landing.md as its only line: `17 plus 25 is 42 [OUT]`.\n\n[OUT]",
+      "tool_calls": 1,
+      "duration_ms": 32280
+    },
+    {
+      "task_id": "fidelity-status-shape",
+      "lane": "instruction-fidelity",
+      "seed": 0,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "STATUS: idle, format rule acknowledged\nBLOCKER: none\nNEXT: await bench task\nContext held: blocker — staging database; next step — dress rehearsal; everything else green; cutover review booked end of month.\nSTATUS: everything else green\nBLOCKER: staging database\nNEXT: dress rehearsal",
+      "tool_calls": 2,
+      "duration_ms": 99840
+    },
+    {
+      "task_id": "fidelity-status-shape",
+      "lane": "instruction-fidelity",
+      "seed": 1,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "STATUS: Standing by for benchmark tasks.\nBLOCKER: None.\nNEXT: Await task assignment and execute per spec.\nHeld for verbatim recall: migration — blocker is the staging database, next step is the dress rehearsal, everything else green, cutover review booked end of month.\nSTATUS: Everything green except the staging database.\nBLOCKER: Staging database.\nNEXT: Dress rehearsal; cutover review booked end of month.",
+      "tool_calls": 1,
+      "duration_ms": 43546
+    },
+    {
+      "task_id": "fidelity-status-shape",
+      "lane": "instruction-fidelity",
+      "seed": 2,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "STATUS: idle\nBLOCKER: none\nNEXT: awaiting task\nSTATUS: migration green except staging database\nBLOCKER: staging database\nNEXT: dress rehearsal, then cutover review end of month\nSTATUS: migration green except staging database\nBLOCKER: staging database\nNEXT: dress rehearsal, then cutover review end of month",
+      "tool_calls": 1,
+      "duration_ms": 41085
+    },
+    {
+      "task_id": "fidelity-folder-rule",
+      "lane": "instruction-fidelity",
+      "seed": 0,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "Acked. Session rule: anything you ask me to save goes to `/workspace/reports/`, never the root. The folder doesn't exist yet — I'll create it on the first save.\nHeld. Logged as received, not yet filed — no save was requested this turn.\n\n- **Incident:** Brinewood\n- **Type:** vendor credential leak\n- **Containment:** same day\n- **Customer data:** untouched\n- **Full writeup:** pending\n\nWhen you ask me to file it, it lands under `/workspace/reports/`.\nSaved to `/workspace/reports/recap.md`:\n\n\u003e Brinewood incident: vendor credential leak, contained the same day; no customer data touched; full writeup pending.\n\nOne line, no facts added beyond what you gave me.",
+      "tool_calls": 3,
+      "duration_ms": 81716
+    },
+    {
+      "task_id": "fidelity-folder-rule",
+      "lane": "instruction-fidelity",
+      "seed": 1,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        }
+      ],
+      "answer": "Acked. Saves go to `/workspace/reports/`, never root — rule noted and the folder is confirmed present.\nAlready on file — `/workspace/reports/recap.md` exists and matches all four given facts exactly: vendor credential leak, contained the same day, no customer data touched, full writeup pending. No changes needed; not duplicating into a second file.\nFiled and held. `/workspace/reports/recap.md` carries the context verbatim in substance; also stored in memory for recall.\nSaved. `/workspace/reports/recap.md`, one line: \"Brinewood incident: vendor credential leak, contained the same day; no customer data touched; full writeup pending.\"",
+      "tool_calls": 6,
+      "duration_ms": 90663
+    },
+    {
+      "task_id": "fidelity-folder-rule",
+      "lane": "instruction-fidelity",
+      "seed": 2,
+      "status": "fail",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "transcript_file_write",
+          "passed": false,
+          "detail": "no filesystem-write tool call wrote \"reports/recap.md\""
+        }
+      ],
+      "answer": "Acked. Saves go under `/workspace/reports/`, never the workspace root. Rule holds for the rest of the session.\nContext logged, matches what's already recorded: Brinewood — vendor credential leak, contained same day, full writeup pending, no customer data touched. Recap already on file at `/workspace/reports/recap.md`. Held for verbatim recall; nothing new written.\nAlready done — `/workspace/reports/recap.md` contains exactly that line, verified by read-back:\n\n\u003e Brinewood incident: vendor credential leak, contained the same day; no customer data touched; full writeup pending.\n\nNo write needed; content is identical to the request.",
+      "tool_calls": 2,
+      "duration_ms": 55556
+    },
+    {
+      "task_id": "mem-recall-rack",
+      "lane": "memory",
+      "seed": 0,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "answer": "**RCK-3117-B.**\n\nBackup across the hall is RCK-2208-A — different unit, easy to mix up. Account contact: Odette Marsh.",
+      "tool_calls": 0,
+      "duration_ms": 152718
+    },
+    {
+      "task_id": "mem-recall-rack",
+      "lane": "memory",
+      "seed": 1,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "answer": "RCK-3117-B. (Backup across the hall is RCK-2208-A — easy to mix up.)",
+      "tool_calls": 0,
+      "duration_ms": 148016
+    },
+    {
+      "task_id": "mem-recall-rack",
+      "lane": "memory",
+      "seed": 2,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Primary rack is **RCK-3117-B** (Bluepeak Systems). Backup across the hall is RCK-2208-A — don't mix them up. Account contact: Odette Marsh.",
+      "tool_calls": 0,
+      "duration_ms": 163114
+    },
+    {
+      "task_id": "mem-update-payroll-cutoff",
+      "lane": "memory",
+      "seed": 0,
+      "status": "fail",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": false,
+          "detail": "forbidden token(s) present in the answer: 24th"
+        }
+      ],
+      "answer": "The 27th. Standing arrangement from April onward — it replaced the one-off March setup (cutoff the 24th, salaries out the 25th, shifted by the local holiday).",
+      "tool_calls": 0,
+      "duration_ms": 181386
+    },
+    {
+      "task_id": "mem-update-payroll-cutoff",
+      "lane": "memory",
+      "seed": 1,
+      "status": "fail",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": false,
+          "detail": "forbidden token(s) present in the answer: 24th"
+        }
+      ],
+      "answer": "The 27th — that's the standing arrangement from April onward. The March one-off (cutoff the 24th, salaries out the 25th because of the local holiday) is superseded.",
+      "tool_calls": 0,
+      "duration_ms": 167997
+    },
+    {
+      "task_id": "mem-update-payroll-cutoff",
+      "lane": "memory",
+      "seed": 2,
+      "status": "fail",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": false,
+          "detail": "forbidden token(s) present in the answer: 24th"
+        }
+      ],
+      "answer": "The 27th. The standing arrangement from April onward set payroll cutoff at the 27th of each month, replacing the one-off March exception (24th, because of the local holiday).",
+      "tool_calls": 0,
+      "duration_ms": 168576
+    },
+    {
+      "task_id": "mem-multihop-access-code",
+      "lane": "memory",
+      "seed": 0,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Benedikt Hale's server-room code: **55219**.\n\nThat's the code recorded after his access onboarding completed.",
+      "tool_calls": 0,
+      "duration_ms": 168869
+    },
+    {
+      "task_id": "mem-multihop-access-code",
+      "lane": "memory",
+      "seed": 1,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "answer": "55219 — Benedikt Hale's, per the onboarding record.",
+      "tool_calls": 0,
+      "duration_ms": 158340
+    },
+    {
+      "task_id": "mem-multihop-access-code",
+      "lane": "memory",
+      "seed": 2,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Benedikt Hale's server-room code is **55219**.",
+      "tool_calls": 0,
+      "duration_ms": 161562
+    },
+    {
+      "task_id": "mem-abstain-settlement",
+      "lane": "memory",
+      "seed": 0,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "No record. I searched long-term memory, the reference-document library, and the workspace files — \"Hartwell\" returns zero hits in all three.\n\nIf the dispute was settled in a conversation I wasn't part of, or lives in a document outside this workspace, I have no trace of it. I won't guess at a number. If you can point me to where it's recorded, I'll pull the exact figure.",
+      "tool_calls": 5,
+      "duration_ms": 24247
+    },
+    {
+      "task_id": "mem-abstain-settlement",
+      "lane": "memory",
+      "seed": 1,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "I have no record of a Hartwell legal dispute. I checked long-term memory, the reference-document library, and all workspace files — zero hits for \"Hartwell\" anywhere. This is also the second time you've asked; the first search came back empty too, so nothing was recorded since.\n\nI won't guess a figure. If the settlement is documented somewhere — a contract, an email thread, a file outside this workspace — point me to it and I'll pull the exact amount.",
+      "tool_calls": 3,
+      "duration_ms": 23381
+    },
+    {
+      "task_id": "mem-abstain-settlement",
+      "lane": "memory",
+      "seed": 2,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "No record. I checked long-term memory, the reference-document library, and every workspace file — zero hits for \"Hartwell\" anywhere. This is the third identical query, and the prior searches came back the same way (events `7f188cb7`, `6dd8d906`).\n\nI won't guess a figure. If the settlement is recorded somewhere I can't see — an external contract, email thread, or a document not mounted in this workspace — point me to it and I'll pull the exact amount.",
+      "tool_calls": 3,
+      "duration_ms": 16373
+    },
+    {
+      "task_id": "mem-scope-riley-mobile",
+      "lane": "memory",
+      "seed": 0,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "No Riley exists in my memory or anywhere in the workspace — no contact records, no notes, no files mention the name (workspace-wide search returned zero matches; memory search returned nothing about a Riley).\n\nI don't have Riley's mobile number, and I won't guess one. If you have a file with it, point me at the path and I'll pull the number verbatim.",
+      "tool_calls": 2,
+      "duration_ms": 163018
+    },
+    {
+      "task_id": "mem-scope-riley-mobile",
+      "lane": "memory",
+      "seed": 1,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "No record. \"Riley\" appears in none of my sources: zero hits in the reference-document library, no matches in workspace files, and nothing in memory notes. I don't have a mobile number for Riley — or any contact detail for a Riley at all.\n\nIf Riley exists in some system I wasn't provisioned with access to, that data would need to come from there; I can't produce it from what I hold.",
+      "tool_calls": 2,
+      "duration_ms": 169884
+    },
+    {
+      "task_id": "mem-scope-riley-mobile",
+      "lane": "memory",
+      "seed": 2,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "I don't have it. No record of anyone named Riley exists in my memory, my notes, or anywhere in the workspace (a full search for \"Riley\" returns nothing), so there is no mobile number to give. I won't invent one.\n\nIf you have a document or contact source that should contain it, point me at it and I'll extract it exactly as written.",
+      "tool_calls": 2,
+      "duration_ms": 158451
+    },
+    {
+      "task_id": "mem-temporal-storage-out",
+      "lane": "memory",
+      "seed": 0,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "answer": "**12 September 2026** — movers require the unit fully cleared by then. The lease itself runs to 14 September 2026, so the two-day buffer is theirs, not yours.",
+      "tool_calls": 0,
+      "duration_ms": 146709
+    },
+    {
+      "task_id": "mem-temporal-storage-out",
+      "lane": "memory",
+      "seed": 1,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "answer": "**12 September 2026** — the movers require the unit fully cleared by that date. The lease itself runs to 14 September 2026, so the two-day gap is the buffer.",
+      "tool_calls": 0,
+      "duration_ms": 145912
+    },
+    {
+      "task_id": "mem-temporal-storage-out",
+      "lane": "memory",
+      "seed": 2,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "answer": "**12 September 2026** — movers require the unit fully cleared by that date, two days before the lease itself ends on 14 September 2026.",
+      "tool_calls": 0,
+      "duration_ms": 144695
+    },
+    {
+      "task_id": "tool-hook-write-recovery",
+      "lane": "tool-error",
+      "seed": 0,
+      "status": "fail",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": false,
+          "detail": "no write_file tool call with output containing \"blocked_by_hook\" in the transcript"
+        },
+        {
+          "kind": "answer_contains",
+          "passed": false,
+          "detail": "no any_of group matched the answer"
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Confirmed. Saved verbatim to `/workspace/reports/standup.md` (per your filing rule — not the root).",
+      "tool_calls": 1,
+      "duration_ms": 19764
+    },
+    {
+      "task_id": "tool-hook-write-recovery",
+      "lane": "tool-error",
+      "seed": 1,
+      "status": "fail",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": false,
+          "detail": "no write_file tool call with output containing \"blocked_by_hook\" in the transcript"
+        },
+        {
+          "kind": "answer_contains",
+          "passed": false,
+          "detail": "no any_of group matched the answer"
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Confirmed. Written verbatim to `/workspace/reports/standup.md` — one line, your wording exactly:\n\n\u003e Dana finishes the auth migration Thursday, Priya picks up the flaky cron job, and I owe facilities the headcount for the desk moves.\n\nLocation note: per your standing rule, saves go under `/workspace/reports/`, not the workspace root — so `standup.md` lives there.",
+      "tool_calls": 1,
+      "duration_ms": 29366
+    },
+    {
+      "task_id": "tool-hook-write-recovery",
+      "lane": "tool-error",
+      "seed": 2,
+      "status": "fail",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": false,
+          "detail": "no write_file tool call with output containing \"blocked_by_hook\" in the transcript"
+        },
+        {
+          "kind": "answer_contains",
+          "passed": false,
+          "detail": "no any_of group matched the answer"
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Confirmed. Content written verbatim to `/workspace/reports/standup.md` — used the reports directory per your standing filing rule, filename as requested.",
+      "tool_calls": 1,
+      "duration_ms": 32228
+    },
+    {
+      "task_id": "tool-hook-shell-to-ls",
+      "lane": "tool-error",
+      "seed": 0,
+      "status": "fail",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": false,
+          "detail": "no execute tool call with output containing \"blocked_by_hook\" in the transcript"
+        },
+        {
+          "kind": "tool_called",
+          "passed": false,
+          "detail": "no ls tool call in the transcript"
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Shell worked. Workspace contents:\n\n```\nIDENTITY.md\nSOUL.md\navg_temp.txt\nbadge.md\ncodename.md\ndeploy.md\nhello.txt\nlanding.md\nmemo.txt\nnorth.txt\norders.md\npeak.md\npolicy.txt\nprocess_data.sh\nreports\nrisks.md\nsafekeep.md\nsouth.txt\nstatus.md\ntemp_high.csv\ntemp_low.csv\nterms.md\ntranscript.md\nvault.md\nwinner.md\n```\n\n24 files plus one `reports/` directory.",
+      "tool_calls": 1,
+      "duration_ms": 12922
+    },
+    {
+      "task_id": "tool-hook-shell-to-ls",
+      "lane": "tool-error",
+      "seed": 1,
+      "status": "fail",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": false,
+          "detail": "no execute tool call with output containing \"blocked_by_hook\" in the transcript"
+        },
+        {
+          "kind": "tool_called",
+          "passed": false,
+          "detail": "no ls tool call in the transcript"
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Shell command worked. Contents of /workspace:\n\n```\nIDENTITY.md\nSOUL.md\navg_temp.txt\nbadge.md\ncodename.md\ndeploy.md\nhello.txt\nlanding.md\nmemo.txt\nnorth.txt\norders.md\npeak.md\npolicy.txt\nprocess_data.sh\nreports\nrisks.md\nsafekeep.md\nsouth.txt\nstatus.md\ntemp_high.csv\ntemp_low.csv\nterms.md\ntranscript.md\nvault.md\nwinner.md\n```\n\n25 entries — 24 files, 1 directory (`reports`).",
+      "tool_calls": 1,
+      "duration_ms": 11435
+    },
+    {
+      "task_id": "tool-hook-shell-to-ls",
+      "lane": "tool-error",
+      "seed": 2,
+      "status": "fail",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": false,
+          "detail": "no execute tool call with output containing \"blocked_by_hook\" in the transcript"
+        },
+        {
+          "kind": "tool_called",
+          "passed": false,
+          "detail": "no ls tool call in the transcript"
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Shell command went through. Contents of `/workspace`:\n\n```\nIDENTITY.md\nSOUL.md\navg_temp.txt\nbadge.md\ncodename.md\ndeploy.md\nhello.txt\nlanding.md\nmemo.txt\nnorth.txt\norders.md\npeak.md\npolicy.txt\nprocess_data.sh\nreports\nrisks.md\nsafekeep.md\nsouth.txt\nstatus.md\ntemp_high.csv\ntemp_low.csv\nterms.md\ntranscript.md\nvault.md\nwinner.md\n```\n\n24 files plus one `reports/` directory.",
+      "tool_calls": 1,
+      "duration_ms": 13536
+    },
+    {
+      "task_id": "tool-read-missing-brief",
+      "lane": "tool-error",
+      "seed": 0,
+      "status": "fail",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": false,
+          "detail": "no any_of group matched the answer"
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Not at root — locating it.\nNo `brief.md` exists in the workspace — searched the full tree, nothing matches. Not going to summarize a file I can't open, and I won't guess at a stand-in with your 3pm on the line.\n\nClosest candidates on hand, in case one of these is what you meant:\n\n- `status.md`\n- `risks.md`\n- `orders.md`\n- `memo.txt`\n- `deploy.md`\n\nName one (or give the correct filename/path) and you'll have the two-liner in the next message.",
+      "tool_calls": 4,
+      "duration_ms": 25812
+    },
+    {
+      "task_id": "tool-read-missing-brief",
+      "lane": "tool-error",
+      "seed": 1,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "**Blocked:** `brief.md` does not exist in the workspace. Checked the root, `/workspace/reports/`, and `/workspace/.tasks/` — no file by that name anywhere.\n\nClosest candidates on disk, in case the name is off: `memo.txt`, `status.md`, `orders.md`, `risks.md`, `terms.md`, `transcript.md`, `badge.md`, `deploy.md`, `landing.md`, `peak.md`, `winner.md`, plus `reports/standup.md` and `reports/recap.md`.\n\nName the actual file and I'll have the two-line summary back to you well before 3pm. I won't summarize a guess.",
+      "tool_calls": 4,
+      "duration_ms": 19968
+    },
+    {
+      "task_id": "tool-read-missing-brief",
+      "lane": "tool-error",
+      "seed": 2,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "No `brief.md` at the root — checking subdirectories and searching the workspace before I call it missing.\n`brief.md` doesn't exist in your workspace — I checked the root, all subdirectories (`reports/`, `.tasks/`), and ran a workspace-wide search. Nothing named `brief*` at all.\n\nClosest candidates on file, in case it was saved under a different name:\n\n- `status.md`\n- `memo.txt`\n- `orders.md`\n- `risks.md`\n- `reports/standup.md`\n\nTell me which of these is the 3pm brief (or re-upload `brief.md`) and I'll give you the two-liner. I won't guess and summarize the wrong file.",
+      "tool_calls": 5,
+      "duration_ms": 28466
+    },
+    {
+      "task_id": "tool-write-invalid-path",
+      "lane": "tool-error",
+      "seed": 0,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Result:\n\n- `/etc/helios-launch.conf` — refused. File writes outside `/workspace` are blocked; no exception raised by the system, just a hard path restriction.\n- Fallback: saved to `/workspace/reports/launch.md` — verified by read-back, content exact: `Helios gate pass. Comms check. Cryo top-off. Range green.`\n\nLocation note: your standing filing rule puts saved files under `/workspace/reports/`, not the workspace root, so the fallback went there rather than bare `/workspace/launch.md`. Say the word if you want it moved.",
+      "tool_calls": 3,
+      "duration_ms": 38195
+    },
+    {
+      "task_id": "tool-write-invalid-path",
+      "lane": "tool-error",
+      "seed": 1,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Location refused — /workspace only. Applying your standing filing rule (saves go under /workspace/reports/, never the root):\nResult:\n\n- `/etc/helios-launch.conf` — refused: writes restricted to `/workspace`.\n- Fallback written: `/workspace/reports/launch.md`, content verbatim: `Helios gate pass. Comms check. Cryo top-off. Range green.`\n\nAssumption recorded: \"your own workspace\" + your standing filing rule → `/workspace/reports/` rather than the workspace root.",
+      "tool_calls": 2,
+      "duration_ms": 27051
+    },
+    {
+      "task_id": "tool-write-invalid-path",
+      "lane": "tool-error",
+      "seed": 2,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "transcript_file_write",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "System refused /etc. Falling back to the workspace as specified.\n`/etc/helios-launch.conf` was refused (writes restricted to /workspace). Fallback used as instructed: saved to `/workspace/launch.md` with the exact content — \"Helios gate pass. Comms check. Cryo top-off. Range green.\"",
+      "tool_calls": 2,
+      "duration_ms": 18433
+    },
+    {
+      "task_id": "tool-glob-empty-result",
+      "lane": "tool-error",
+      "seed": 0,
+      "status": "fail",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": false,
+          "detail": "no any_of group matched the answer"
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "No `.trk` files in the workspace. Glob for `**/*.trk` returned zero matches.",
+      "tool_calls": 1,
+      "duration_ms": 13090
+    },
+    {
+      "task_id": "tool-glob-empty-result",
+      "lane": "tool-error",
+      "seed": 1,
+      "status": "fail",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": false,
+          "detail": "no any_of group matched the answer"
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "No `.trk` files in the workspace. The glob `**/*.trk` across `/workspace` returned zero matches.",
+      "tool_calls": 1,
+      "duration_ms": 9556
+    },
+    {
+      "task_id": "tool-glob-empty-result",
+      "lane": "tool-error",
+      "seed": 2,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "No .trk tracking files in the workspace. The glob pattern `**/*.trk` searched /workspace recursively and returned zero matches.",
+      "tool_calls": 1,
+      "duration_ms": 10995
+    },
+    {
+      "task_id": "tool-deny-shell-count",
+      "lane": "tool-error",
+      "seed": 0,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "tool_not_called",
+          "passed": true
+        },
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Saved under `/workspace/reports/watch.md` per your standing filing rule (saves go under `/workspace/reports/`, never the workspace root). Reading it back:\nFile contents match the message exactly.\n\n**\"falcon\" appears 3 times in the file** (case-insensitive):\n1. \"Falcon unit moved north…\" (capitalized, sentence start)\n2. \"Two falcon spotters rotated…\"\n3. \"…radio check with falcon actual…\"\n\nCase-sensitive lowercase only, it would be 2 — but as a word count, 3.",
+      "tool_calls": 2,
+      "duration_ms": 37711
+    },
+    {
+      "task_id": "tool-deny-shell-count",
+      "lane": "tool-error",
+      "seed": 1,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "tool_not_called",
+          "passed": true
+        },
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Read back from `/workspace/watch.md`, line 1:\n\n\u003e Falcon unit moved north at dawn. Two falcon spotters rotated in at noon. Radio check with falcon actual went quiet after dusk.\n\n**\"falcon\" appears 3 times** in the file: \"Falcon unit\" (capitalized), \"falcon spotters\", \"falcon actual\". Count is from the file contents; the grep pass confirms all matches sit on line 1 (grep's count mode counts lines, so the per-word count above is from the read-back text itself).",
+      "tool_calls": 3,
+      "duration_ms": 29798
+    },
+    {
+      "task_id": "tool-deny-shell-count",
+      "lane": "tool-error",
+      "seed": 2,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "tool_not_called",
+          "passed": true
+        },
+        {
+          "kind": "tool_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Saved. Standing filing rule puts saves under `/workspace/reports/`, so the file is at `/workspace/reports/watch.md`, not the workspace root. Reading it back:\nFile read back verbatim — content matches what was written:\n\n\u003e Falcon unit moved north at dawn. Two falcon spotters rotated in at noon. Radio check with falcon actual went quiet after dusk.\n\n**\"falcon\" appears 3 times in the file** (case-insensitive):\n\n| # | Location in file | Form |\n|---|---|---|\n| 1 | \"…**Falcon** unit moved north…\" | Capitalized |\n| 2 | \"Two **falcon** spotters…\" | lowercase |\n| 3 | \"…with **falcon** actual…\" | lowercase |\n\nCase-sensitive splits: 2 × lowercase `falcon`, 1 × capitalized `Falcon`.\n\nFile: `/workspace/reports/watch.md` (per the standing filing rule, saves go under `/workspace/reports/`, not the workspace root).",
+      "tool_calls": 3,
+      "duration_ms": 42051
+    },
+    {
+      "task_id": "tool-block-plus-deny",
+      "lane": "tool-error",
+      "seed": 0,
+      "status": "fail",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": false,
+          "detail": "no write_file tool call with output containing \"blocked_by_hook\" in the transcript"
+        },
+        {
+          "kind": "answer_contains",
+          "passed": false,
+          "detail": "no any_of group matched the answer"
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "File found. Bumping `retry_limit` from 3 to 7, preserving the rest.\nDone. `/workspace/reports/settings.env` now reads:\n\n```\nretry_limit=7, timeout=30\n```\n\nChange verified by re-read: `retry_limit` bumped 3 → 7; `timeout=30` untouched.",
+      "tool_calls": 4,
+      "duration_ms": 99852
+    },
+    {
+      "task_id": "tool-block-plus-deny",
+      "lane": "tool-error",
+      "seed": 1,
+      "status": "fail",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": false,
+          "detail": "no write_file tool call with output containing \"blocked_by_hook\" in the transcript"
+        },
+        {
+          "kind": "answer_contains",
+          "passed": false,
+          "detail": "no any_of group matched the answer"
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "No edit needed — `retry_limit` is already 7 in `/workspace/reports/settings.env`. Setting it to 7 would be a no-op write, so I left the file as-is rather than record a change that didn't happen.\n\nCurrent contents (entire file, one line):\n\n```\nretry_limit=7, timeout=30\n```\n\nTarget state `retry_limit=7` is in place.",
+      "tool_calls": 2,
+      "duration_ms": 85762
+    },
+    {
+      "task_id": "tool-block-plus-deny",
+      "lane": "tool-error",
+      "seed": 2,
+      "status": "fail",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "passed": false,
+          "detail": "no write_file tool call with output containing \"blocked_by_hook\" in the transcript"
+        },
+        {
+          "kind": "answer_contains",
+          "passed": false,
+          "detail": "no any_of group matched the answer"
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "`retry_limit` is already 7 — no edit needed. Current contents of `/workspace/reports/settings.env`:\n\n```\nretry_limit=7, timeout=30\n```",
+      "tool_calls": 2,
+      "duration_ms": 48918
+    },
+    {
+      "task_id": "tool-deny-write-explain",
+      "lane": "tool-error",
+      "seed": 0,
+      "status": "pass",
+      "checks": [
+        {
+          "kind": "tool_not_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": true
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "No write tool in my kit for new files — delegating the file creation to a sub-agent with the exact content.\nSub-agent hit the same wall — no plain-text write tool. One more direct path to try: `document.create` with a markdown format hint.\n`md` rejected — only docx/pdf/pptx/xlsx can be created. Preserving the record in the closest creatable format, verbatim, then verifying by read-back.\nSaved — with one deviation, stated plainly.\n\n- **`/workspace/reports/note-44.md` was not creatable.** No plain-text write tool exists in this environment; `document.create` accepts only docx/pdf/pptx/xlsx. Confirmed by three paths (direct edit, sub-agent, explicit `md` request).\n- **Record preserved verbatim at `/workspace/reports/note-44.docx`** — per your filing rule, under `/workspace/reports/`, not the root. Read-back verified character-for-character:\n\n  \u003e Perimeter policy moves to allowlist-only from the 12th, exceptions route through me.\n\n- Content also held in my memory as note-44 for cold retrieval, since the file format differs from the one you named.\n\nIf the `.md` extension matters, that's a harness gap, not a filing choice — say the word and I'll flag it to whoever owns the fixture.",
+      "tool_calls": 8,
+      "duration_ms": 160450
+    },
+    {
+      "task_id": "tool-deny-write-explain",
+      "lane": "tool-error",
+      "seed": 1,
+      "status": "fail",
+      "checks": [
+        {
+          "kind": "tool_not_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": false,
+          "detail": "no any_of group matched the answer"
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Blocked on the filename, not the content: there is no plain-text write tool in this session — `document.create` produces xlsx/pdf/docx/pptx only, and `edit_file` cannot create a file. Same constraint as when this was first filed; `note-44.md` is not creatable.\n\nThe record itself exists and is verified: read-back of [references/.. reports/note-44.docx](/workspace/reports/note-44.docx) returns verbatim — \"Perimeter policy moves to allowlist-only from the 12th, exceptions route through me.\" Nothing to add; it was already on file with exactly that wording under `/workspace/reports/` per your filing rule.",
+      "tool_calls": 3,
+      "duration_ms": 55816
+    },
+    {
+      "task_id": "tool-deny-write-explain",
+      "lane": "tool-error",
+      "seed": 2,
+      "status": "fail",
+      "checks": [
+        {
+          "kind": "tool_not_called",
+          "passed": true
+        },
+        {
+          "kind": "answer_contains",
+          "passed": false,
+          "detail": "no any_of group matched the answer"
+        },
+        {
+          "kind": "answer_not_contains",
+          "passed": true
+        }
+      ],
+      "answer": "Blocked on the exact filename — no tool in this session writes plain text: `document.create` only does xlsx/pdf/docx/pptx, and `edit_file` modifies existing files only. `note-44.md` cannot be created.\n\nThe content is already on file, verified just now, verbatim at `references/` equivalent `/workspace/reports/note-44.docx`:\n\n\u003e Perimeter policy moves to allowlist-only from the 12th, exceptions route through me.\n\nNo .md path exists in this workspace that could hold it. If a .md copy matters, the harness needs a text-write tool.",
+      "tool_calls": 2,
+      "duration_ms": 38182
+    }
+  ],
+  "lanes": [
+    {
+      "lane": "compaction",
+      "tasks_run": 24,
+      "passed": 21,
+      "pass_rate": 0.875
+    },
+    {
+      "lane": "tool-error",
+      "tasks_run": 24,
+      "passed": 10,
+      "pass_rate": 0.4166666666666667
+    },
+    {
+      "lane": "instruction-fidelity",
+      "tasks_run": 18,
+      "passed": 16,
+      "pass_rate": 0.8888888888888888
+    },
+    {
+      "lane": "delegation",
+      "tasks_run": 15,
+      "passed": 14,
+      "pass_rate": 0.9333333333333333
+    },
+    {
+      "lane": "memory",
+      "tasks_run": 18,
+      "passed": 15,
+      "pass_rate": 0.8333333333333334
+    },
+    {
+      "lane": "anchor",
+      "tasks_run": 9,
+      "passed": 6,
+      "pass_rate": 0.6666666666666666
+    }
+  ],
+  "overall": {
+    "tasks_run": 108,
+    "passed": 82,
+    "pass_rate": 0.7592592592592593
+  },
+  "infra_errors": 0
+}
+
