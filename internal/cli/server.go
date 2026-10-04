@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/oniharnantyo/onclaw/internal/agents"
+	agenthooks "github.com/oniharnantyo/onclaw/internal/agents/hooks"
 	"github.com/oniharnantyo/onclaw/internal/agents/mcp"
 	mcpoauth "github.com/oniharnantyo/onclaw/internal/agents/mcp/oauth"
 	"github.com/oniharnantyo/onclaw/internal/agents/systemskills"
@@ -63,19 +64,82 @@ func (s *serverCmd) Command() *cli.Command {
 func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	cfg := config.FromServerContext(ctx, cmd)
 
+	rt, err := assembleServerRuntime(ctx, *cfg)
+	if err != nil {
+		return err
+	}
+	// Process-lifetime resources close on every Run exit path — after the
+	// drain sequence when one runs (defers execute in reverse).
+	defer rt.close()
+
+	errChan := make(chan error, 1)
+	go func() {
+		slog.Info("listening for HTTP requests", "addr", rt.srv.Addr)
+		if err := rt.srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errChan <- err
+		}
+	}()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case err := <-errChan:
+		rt.stopWatchdog()
+		return fmt.Errorf("server error: %w", err)
+	case sig := <-sigChan:
+		slog.Info("received signal, shutting down server...", "signal", sig)
+	case <-ctx.Done():
+		slog.Info("context cancelled, shutting down server...")
+	}
+
+	return rt.stop()
+}
+
+// serverRuntime is one assembled server instance: the HTTP server (handler
+// wired, listen address resolved) plus the handles its lifecycle needs.
+type serverRuntime struct {
+	// srv is the configured HTTP server. Run serves it; tests may serve
+	// srv.Handler through their own listener instead.
+	srv    *http.Server
+	runner *agents.Runner
+	st     store.Store
+
+	// stopWatchdog halts the stall watchdog and — with it, through the
+	// process-lifecycle context — every background loop (ingest, scheduler,
+	// heartbeat, curation, consolidator, webhook pruner, gateway outbox).
+	// The serve-error path calls only this.
+	stopWatchdog func()
+	// stop performs the full drain-and-stop sequence: HTTP shutdown, gateway
+	// teardown, run drain, and the bounded stop of every background loop.
+	stop func() error
+	// close releases process-lifetime resources (store pool, MCP manager
+	// connections).
+	close func()
+}
+
+// assembleServerRuntime builds the complete server runtime from a resolved
+// config: stores, services, the serving runner, and the HTTP server —
+// everything Run serves. This is the composition root, and the runner built
+// here is THE runner every surface shares. Extracted from Run so tests can
+// boot the exact production composition: a test constructing its own
+// agents.NewRunner option list is precisely the diverging-option-list drift
+// class that left the hooks dispatcher unwired
+// (fix-hooks-dispatcher-unwired).
+func assembleServerRuntime(ctx context.Context, cfg config.Config) (*serverRuntime, error) {
 	if cfg.DatabaseURL == "" {
-		return errors.New("database URL is required (specify --database-url or DATABASE_URL)")
+		return nil, errors.New("database URL is required (specify --database-url or DATABASE_URL)")
 	}
 
 	// OnClaw runtime paths derive from this root at every use; a relative
 	// root would make them depend on the server's working directory.
 	if !filepath.IsAbs(cfg.OnClawDir) {
-		return fmt.Errorf("onclaw dir must be an absolute path (got %q; specify --onclaw-dir or ONCLAW_DIR)", cfg.OnClawDir)
+		return nil, fmt.Errorf("onclaw dir must be an absolute path (got %q; specify --onclaw-dir or ONCLAW_DIR)", cfg.OnClawDir)
 	}
 
 	encKey, err := config.ParseEncryptionKey(cfg.EncryptionKey)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if cfg.JWTSecret == "" {
@@ -84,9 +148,8 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 
 	st, err := store.Open(ctx, "postgres", store.DSNConfig{DSN: cfg.DatabaseURL})
 	if err != nil {
-		return fmt.Errorf("failed to open database store: %w", err)
+		return nil, fmt.Errorf("failed to open database store: %w", err)
 	}
-	defer st.Close()
 
 	storageDriver := cfg.StorageDriver
 	if storageDriver == "" {
@@ -97,7 +160,7 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		DataDir: cfg.DataDir,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to open storage driver: %w", err)
+		return nil, fmt.Errorf("failed to open storage driver: %w", err)
 	}
 
 	// Workspace blob storage resolver (attachments design D15/D16): maps each
@@ -122,7 +185,7 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	// Bootstrap master tenant
 	master, err := bootstrapper.EnsureMaster(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to ensure master tenant: %w", err)
+		return nil, fmt.Errorf("failed to ensure master tenant: %w", err)
 	}
 	slog.Info("master tenant verified", "slug", master.Slug, "id", master.ID)
 
@@ -130,7 +193,7 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	// version-guarded upserts, then removal of builtin rows this binary no
 	// longer ships. Idempotent and race-safe under concurrent starts.
 	if err := bootstrap.SyncBuiltinHooks(ctx, st); err != nil {
-		return fmt.Errorf("failed to sync builtin instance hooks: %w", err)
+		return nil, fmt.Errorf("failed to sync builtin instance hooks: %w", err)
 	}
 
 	// Bootstrap initial superadmin from env if configured
@@ -141,7 +204,7 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	}
 	seededUser, err := bootstrapper.SeedSuperadmin(ctx, seedCfg)
 	if err != nil {
-		return fmt.Errorf("failed to seed superadmin: %w", err)
+		return nil, fmt.Errorf("failed to seed superadmin: %w", err)
 	}
 	if seededUser != nil {
 		slog.Info("superadmin seeded successfully", "email", seededUser.Email)
@@ -155,7 +218,7 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	// the in-handler checks, and the runner's connection gate.
 	authorizer, err := authz.NewCasbin(ctx, server.StoreRoleSource{Store: st})
 	if err != nil {
-		return fmt.Errorf("failed to build permission authorizer: %w", err)
+		return nil, fmt.Errorf("failed to build permission authorizer: %w", err)
 	}
 
 	issuer := services.NewJWTIssuer(services.JWTConfig{
@@ -180,7 +243,7 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	// start: changed files are overwritten, extraneous files removed — the
 	// disk is a self-healing cache.
 	if err := systemskills.SyncSystemSkills(domain.SystemSkillsDir(cfg.OnClawDir)); err != nil {
-		return fmt.Errorf("sync system skills: %w", err)
+		return nil, fmt.Errorf("sync system skills: %w", err)
 	}
 
 	// Stray prompt files (markdown-card-elements D8; remove-bootstrap-doc):
@@ -192,20 +255,20 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	// workspace dir and sweep the stray files out.
 	wsList, err := st.Workspaces().ListAll(ctx)
 	if err != nil {
-		return fmt.Errorf("list workspaces for stray prompt file sweep: %w", err)
+		return nil, fmt.Errorf("list workspaces for stray prompt file sweep: %w", err)
 	}
 	var agentDirs []string
 	for _, ws := range wsList {
 		wsAgents, err := st.Agents().ListForWorkspace(ctx, ws.ID)
 		if err != nil {
-			return fmt.Errorf("list agents for stray prompt file sweep (workspace %s): %w", ws.Slug, err)
+			return nil, fmt.Errorf("list agents for stray prompt file sweep (workspace %s): %w", ws.Slug, err)
 		}
 		for _, ag := range wsAgents {
 			agentDirs = append(agentDirs, domain.AgentWorkspaceDir(domain.WorkspaceRoot(cfg.OnClawDir), ws.Slug, ag.Slug))
 		}
 	}
 	if removed, err := promptdocs.SweepStrayPromptFiles(agentDirs); err != nil {
-		return fmt.Errorf("sweep stray prompt files: %w", err)
+		return nil, fmt.Errorf("sweep stray prompt files: %w", err)
 	} else if len(removed) > 0 {
 		slog.Info("swept stray prompt files from agent workspaces", "count", len(removed))
 	}
@@ -291,6 +354,21 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	// Fail-open by design; the MCP runtime itself is untouched.
 	runtimeSource := services.NewRuntimeCredentialSource(mcpSettings, connectionsSvc, services.WithMCPOAuthTokenRefresher(mcpOAuthRefresher))
 
+	// Shared hook handler registry (D9/D10): one instance serves the REST
+	// dry-run endpoint AND the runtime dispatcher — built once here at the
+	// composition root and shipped to the router so both sides share one
+	// value (fix-hooks-dispatcher-unwired D2). The command/script kill
+	// switches ride the operator flags; the mcp_tool handler invokes
+	// workspace-level servers through the shared manager; the prompt handler
+	// resolves evaluator models through the workspace provider catalog.
+	hookRegistry := agenthooks.NewRegistry(
+		agenthooks.WithEncryptionKey(encKey),
+		agenthooks.WithCommandEnabled(cfg.HooksCommandEnabled),
+		agenthooks.WithScriptEnabled(cfg.HooksScriptEnabled),
+		agenthooks.WithMCPInvoker(mcp.NewHooksInvoker(runtimeSource, mcpManager)),
+		agenthooks.WithEvaluatorFactory(agents.NewHookEvaluatorFactory(st.Providers(), encKey, agents.DefaultAgenticModelFactory)),
+	)
+
 	// Channel fan-out (integrate-agent-channels D2/D11 + channel-teams D1/D3):
 	// one runtime shared by the runner (channel context + feed + work
 	// sessions) and the HTTP layer (post chokepoint + SSE hub). Built before
@@ -315,7 +393,7 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	// (ValidateLangfuse names the offending ONCLAW_LANGFUSE_* variable).
 	if err := cfg.ValidateLangfuse(); err != nil {
 		stopWatchdog()
-		return err
+		return nil, err
 	}
 	var traceHandler *observability.TraceHandler
 	if cfg.LangfuseConfigured() {
@@ -327,7 +405,7 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		})
 		if err != nil {
 			stopWatchdog()
-			return fmt.Errorf("langfuse configuration invalid: %w", err)
+			return nil, fmt.Errorf("langfuse configuration invalid: %w", err)
 		}
 	}
 	langfuseHost := ""
@@ -541,6 +619,14 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 				}
 			}
 		}),
+		// Lifecycle hooks (fix-hooks-dispatcher-unwired 2.1): the dispatcher
+		// over the hook store and the SHARED registry above. Without this
+		// option the runner keeps the default no-op dispatcher — hooks stay
+		// configurable, validatable, and auditable while never executing.
+		agents.WithHooks(agenthooks.NewDispatcher(st.Hooks(), hookRegistry)),
+		// The connection gate's integrations.write re-check rides the same
+		// authorizer the HTTP middlewares use (fix-role-permission-audit 1.5).
+		agents.WithAuthorizer(authorizer),
 	}
 	// The trace capability rides the callback chain only when configured (D1):
 	// the rate must be the handler's own so the runner's persistence gate and
@@ -680,7 +766,7 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 	bootWorkspaces, err := st.Workspaces().ListAll(ctx)
 	if err != nil {
 		stopWatchdog()
-		return fmt.Errorf("failed to list workspaces for gateway startup: %w", err)
+		return nil, fmt.Errorf("failed to list workspaces for gateway startup: %w", err)
 	}
 	gatewayIDs := make([]string, 0, len(bootWorkspaces))
 	for _, ws := range bootWorkspaces {
@@ -736,6 +822,7 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		ChannelRuntime:      channelRuntime,
 		HooksCommandEnabled: cfg.HooksCommandEnabled,
 		HooksScriptEnabled:  cfg.HooksScriptEnabled,
+		HookRegistry:        hookRegistry,
 		WorkspaceStorage:    wsResolver,
 		References:          referencesSvc,
 		Gateways:            gatewayRuntime,
@@ -751,120 +838,108 @@ func (s *serverCmd) Run(ctx context.Context, cmd *cli.Command) error {
 		listenAddr = config.DefaultListenAddr
 	}
 
-	srv := &http.Server{
-		Addr:    listenAddr,
-		Handler: router,
+	rt := &serverRuntime{
+		srv: &http.Server{
+			Addr:    listenAddr,
+			Handler: router,
+		},
+		runner:       runner,
+		st:           st,
+		stopWatchdog: stopWatchdog,
 	}
-
-	errChan := make(chan error, 1)
-	go func() {
-		slog.Info("listening for HTTP requests", "addr", listenAddr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errChan <- err
-		}
-	}()
-
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	select {
-	case err := <-errChan:
+	rt.stop = func() error {
+		// Stop the stall watchdog before the drain window opens: no new
+		// facilitator summons may be minted while in-flight runs drain.
 		stopWatchdog()
-		return fmt.Errorf("server error: %w", err)
-	case sig := <-sigChan:
-		slog.Info("received signal, shutting down server...", "signal", sig)
-	case <-ctx.Done():
-		slog.Info("context cancelled, shutting down server...")
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if err := rt.srv.Shutdown(shutdownCtx); err != nil {
+			return fmt.Errorf("server shutdown failed: %w", err)
+		}
+
+		// Stop gateway ingestion before draining runs (design D11): with the HTTP
+		// server down no new webhook updates or config mutations can arrive, and
+		// stopping the adapters keeps long polling from minting new turns while
+		// in-flight runs drain.
+		gatewayRuntime.Manager.Stop(shutdownCtx)
+
+		// The HTTP server is down, so no new runs can arrive. Give in-flight runs
+		// the drain window to reach a terminal state; stragglers are cancelled and
+		// record their cancel markers through the existing safe-point path.
+		slog.Info("draining in-flight agent runs", "window", cfg.RunDrainWindow)
+		runner.DrainRuns(cfg.RunDrainWindow)
+
+		// Stop the scheduler: the ticker halts (its loop also watches the
+		// lifecycle context) and in-flight fires get the same drain window; the
+		// service keeps its own longer deadline for stragglers beyond it.
+		slog.Info("stopping scheduler loop", "window", cfg.RunDrainWindow)
+		schedulerDone := make(chan struct{})
+		go func() {
+			schedulerSvc.Stop()
+			close(schedulerDone)
+		}()
+		select {
+		case <-schedulerDone:
+		case <-time.After(cfg.RunDrainWindow):
+			slog.Warn("scheduler stop exceeded the drain window; in-flight fires keep their own deadline")
+		}
+
+		// Stop the heartbeat loop (add-agent-heartbeat D14) in the same bounded
+		// pattern: the ticker halts and in-flight ticks keep their own
+		// run-timeout-plus-drain-grace deadline beyond the window.
+		slog.Info("stopping heartbeat loop", "window", cfg.RunDrainWindow)
+		heartbeatDone := make(chan struct{})
+		go func() {
+			heartbeatSvc.Stop()
+			close(heartbeatDone)
+		}()
+		select {
+		case <-heartbeatDone:
+		case <-time.After(cfg.RunDrainWindow):
+			slog.Warn("heartbeat stop exceeded the drain window; in-flight ticks keep their own deadline")
+		}
+
+		// Stop the ingest worker (add-skill-curation-from-traces D1): enqueue
+		// acceptance halts (no runs are left to mint jobs) and in-flight jobs keep
+		// the worker's own stop grace before the process exits. Queued-but-
+		// unstarted jobs are abandoned — the raw session events stay intact for
+		// the next start's reprocessing.
+		slog.Info("stopping ingest worker")
+		ingestWorker.Stop()
+
+		// Stop the curation cycle loop (add-skill-curation-from-traces 7.1): the
+		// ticker halts and in-flight cycles keep the service's own runtime-cap
+		// deadline beyond the drain window (every cycle self-bounds).
+		slog.Info("stopping skill curation cycle loop")
+		curationCycle.Stop()
+
+		// Stop the memory consolidator (integrate-agent-zero-memory 6.1): the
+		// nightly loop halts and in-flight passes keep the consolidator's own
+		// stop grace before the process exits.
+		slog.Info("stopping memory consolidator")
+		memoryConsolidator.Stop()
+
+		// Stop the webhook delivery queue (add-connection-webhooks 3.2): the
+		// pruner loop already halted with the lifecycle context; Close waits
+		// for in-flight deliveries to finish rendering and submitting.
+		slog.Info("stopping webhook delivery queue")
+		webhookRuntime.Close()
+
+		// Flush pending Langfuse exports (integrate-langfuse-tracing 3.3): after
+		// the run drain and the scheduler stop every traced turn has reached its
+		// terminal state, so one blocking flush sends whatever the batcher still
+		// queues instead of dropping it at process exit. Best-effort by design
+		// (D5) — the flush never fails startup or shutdown.
+		if traceHandler != nil {
+			traceHandler.Flush()
+		}
+		return nil
 	}
-
-	// Stop the stall watchdog before the drain window opens: no new
-	// facilitator summons may be minted while in-flight runs drain.
-	stopWatchdog()
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("server shutdown failed: %w", err)
+	rt.close = func() {
+		mcpManager.Close()
+		_ = st.Close()
 	}
-
-	// Stop gateway ingestion before draining runs (design D11): with the HTTP
-	// server down no new webhook updates or config mutations can arrive, and
-	// stopping the adapters keeps long polling from minting new turns while
-	// in-flight runs drain.
-	gatewayRuntime.Manager.Stop(shutdownCtx)
-
-	// The HTTP server is down, so no new runs can arrive. Give in-flight runs
-	// the drain window to reach a terminal state; stragglers are cancelled and
-	// record their cancel markers through the existing safe-point path.
-	slog.Info("draining in-flight agent runs", "window", cfg.RunDrainWindow)
-	runner.DrainRuns(cfg.RunDrainWindow)
-
-	// Stop the scheduler: the ticker halts (its loop also watches the
-	// lifecycle context) and in-flight fires get the same drain window; the
-	// service keeps its own longer deadline for stragglers beyond it.
-	slog.Info("stopping scheduler loop", "window", cfg.RunDrainWindow)
-	schedulerDone := make(chan struct{})
-	go func() {
-		schedulerSvc.Stop()
-		close(schedulerDone)
-	}()
-	select {
-	case <-schedulerDone:
-	case <-time.After(cfg.RunDrainWindow):
-		slog.Warn("scheduler stop exceeded the drain window; in-flight fires keep their own deadline")
-	}
-
-	// Stop the heartbeat loop (add-agent-heartbeat D14) in the same bounded
-	// pattern: the ticker halts and in-flight ticks keep their own
-	// run-timeout-plus-drain-grace deadline beyond the window.
-	slog.Info("stopping heartbeat loop", "window", cfg.RunDrainWindow)
-	heartbeatDone := make(chan struct{})
-	go func() {
-		heartbeatSvc.Stop()
-		close(heartbeatDone)
-	}()
-	select {
-	case <-heartbeatDone:
-	case <-time.After(cfg.RunDrainWindow):
-		slog.Warn("heartbeat stop exceeded the drain window; in-flight ticks keep their own deadline")
-	}
-
-	// Stop the ingest worker (add-skill-curation-from-traces D1): enqueue
-	// acceptance halts (no runs are left to mint jobs) and in-flight jobs keep
-	// the worker's own stop grace before the process exits. Queued-but-
-	// unstarted jobs are abandoned — the raw session events stay intact for
-	// the next start's reprocessing.
-	slog.Info("stopping ingest worker")
-	ingestWorker.Stop()
-
-	// Stop the curation cycle loop (add-skill-curation-from-traces 7.1): the
-	// ticker halts and in-flight cycles keep the service's own runtime-cap
-	// deadline beyond the drain window (every cycle self-bounds).
-	slog.Info("stopping skill curation cycle loop")
-	curationCycle.Stop()
-
-	// Stop the memory consolidator (integrate-agent-zero-memory 6.1): the
-	// nightly loop halts and in-flight passes keep the consolidator's own
-	// stop grace before the process exits.
-	slog.Info("stopping memory consolidator")
-	memoryConsolidator.Stop()
-
-	// Stop the webhook delivery queue (add-connection-webhooks 3.2): the
-	// pruner loop already halted with the lifecycle context; Close waits
-	// for in-flight deliveries to finish rendering and submitting.
-	slog.Info("stopping webhook delivery queue")
-	webhookRuntime.Close()
-
-	// Flush pending Langfuse exports (integrate-langfuse-tracing 3.3): after
-	// the run drain and the scheduler stop every traced turn has reached its
-	// terminal state, so one blocking flush sends whatever the batcher still
-	// queues instead of dropping it at process exit. Best-effort by design
-	// (D5) — the flush never fails startup or shutdown.
-	if traceHandler != nil {
-		traceHandler.Flush()
-	}
-
-	slog.Info("server exited cleanly")
-	return nil
+	return rt, nil
 }

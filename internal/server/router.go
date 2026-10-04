@@ -91,21 +91,28 @@ type RouterOptions struct {
 	// ONCLAW_HOOKS_SCRIPT_ENABLED; default on). It drives the shared hook
 	// registry's runtime gate.
 	HooksScriptEnabled bool
+	// HookRegistry is the shared hook handler registry (fix-hooks-
+	// dispatcher-unwired D2): the composition root builds it once so the
+	// serving runner's dispatcher and the hook REST handlers (dry-run,
+	// validation) execute through ONE instance. nil builds a fresh one over
+	// the encryption key, the kill switches, and the granular stores — the
+	// established optional-field fallback pattern.
+	HookRegistry *agenthooks.Registry
 	// ChannelRuntime is the channel fan-out assembly (integrate-agent-channels
 	// D2/D11): the SSE hub and the single-post chokepoint, built by the
 	// composition root around the runner so both share one instance. nil builds
-	// a fresh one around the fallback runner.
+	// a fresh one late-bound to the (required) runner.
 	ChannelRuntime *ChannelRuntime
 	// Scheduler is the scheduler ticker service (integrate-scheduler D3/D4),
 	// built by the composition root around the runner (RunSubmitter) and the
 	// channel chokepoint (ChannelPoster) so one runner serves every run
-	// origin. nil builds a fresh one around the fallback runner; only the
+	// origin. nil builds a fresh one around the (required) runner; only the
 	// composition root Start()s it, riding the server's lifecycle.
 	Scheduler *scheduler.Service
 	// Heartbeat is the heartbeat ticker service (add-agent-heartbeat D14),
 	// built by the composition root around the same runner (RunSubmitter +
 	// AgentBusyChecker) and the channel chokepoint (ChannelPoster). nil builds
-	// a fresh one around the fallback runner; only the composition root
+	// a fresh one around the (required) runner; only the composition root
 	// Start()s it, riding the server's lifecycle.
 	Heartbeat *heartbeat.Service
 	// MemoryConsolidator is the composition root's consolidator (integrate-
@@ -455,17 +462,32 @@ func (rt *router) Engine() *gin.Engine {
 	runtimeSource := services.NewRuntimeCredentialSource(mcpSettings, connectionsSvc, services.WithMCPOAuthTokenRefresher(mcpOAuthRefresher))
 
 	// Shared hook handler registry (D9/D10): one instance serves the REST
-	// dry-run endpoint AND the runtime dispatcher. The command kill switch
-	// rides the composition root's flag; the mcp_tool handler invokes
-	// workspace-level servers through the shared manager; the prompt handler
-	// resolves evaluator models through the workspace provider catalog.
-	hookRegistry := agenthooks.NewRegistry(
-		agenthooks.WithEncryptionKey(rt.opts.EncryptionKey),
-		agenthooks.WithCommandEnabled(rt.opts.HooksCommandEnabled),
-		agenthooks.WithScriptEnabled(rt.opts.HooksScriptEnabled),
-		agenthooks.WithMCPInvoker(mcp.NewHooksInvoker(runtimeSource, mcpManager)),
-		agenthooks.WithEvaluatorFactory(agents.NewHookEvaluatorFactory(rt.opts.Store.Providers(), rt.opts.EncryptionKey, agents.DefaultAgenticModelFactory)),
-	)
+	// dry-run endpoint AND the runtime dispatcher. The composition root
+	// injects the registry its runner's dispatcher already resolves through
+	// (fix-hooks-dispatcher-unwired D2); the fallback builds a fresh one over
+	// the encryption key, the command/script kill switches, and the granular
+	// stores. The command kill switch rides the composition root's flag; the
+	// mcp_tool handler invokes workspace-level servers through the shared
+	// manager; the prompt handler resolves evaluator models through the
+	// workspace provider catalog.
+	hookRegistry := rt.opts.HookRegistry
+	if hookRegistry == nil {
+		hookRegistry = agenthooks.NewRegistry(
+			agenthooks.WithEncryptionKey(rt.opts.EncryptionKey),
+			agenthooks.WithCommandEnabled(rt.opts.HooksCommandEnabled),
+			agenthooks.WithScriptEnabled(rt.opts.HooksScriptEnabled),
+			agenthooks.WithMCPInvoker(mcp.NewHooksInvoker(runtimeSource, mcpManager)),
+			agenthooks.WithEvaluatorFactory(agents.NewHookEvaluatorFactory(rt.opts.Store.Providers(), rt.opts.EncryptionKey, agents.DefaultAgenticModelFactory)),
+		)
+	}
+
+	// The serving runner is a REQUIRED dependency (house rule: injected
+	// dependencies are never nil — the composition root resolves every
+	// dependency before constructing the router). The fallback runner this
+	// file used to assemble — the second NewRunner construction site whose
+	// diverging option list left the hooks dispatcher unwired in production —
+	// is deleted wholesale (fix-hooks-dispatcher-unwired D1).
+	runner := rt.opts.Runner
 
 	// Channel fan-out (integrate-agent-channels D2/D11): one runtime shared by
 	// the runner (channel context + feed) and the HTTP layer (post chokepoint +
@@ -475,21 +497,20 @@ func (rt *router) Engine() *gin.Engine {
 	channelRuntime := rt.opts.ChannelRuntime
 	if channelRuntime == nil && rt.opts.Store != nil {
 		channelRuntime = NewChannelRuntime(rt.opts.Store.Channels(), rt.opts.Store.WorkSessions(), rt.opts.Store.Users(), rt.opts.Store.Agents())
+		// The fallback runtime late-binds the (required) runner — the same
+		// binding the deleted runner-fallback branch performed for
+		// test-assembly boots; the composition root binds its own.
+		channelRuntime.BindRunner(runner)
 	}
 
 	// Project space root (channel-teams D5) — dataDir computed above with the
 	// workspace storage resolver.
 
-	// Memory pipeline (integrate-agent-zero-memory): the fallback assembly
-	// mirrors the composition root's construction — the memory consumer over
-	// the same stores registered as consumer #1 of the neutral ingest worker
-	// (add-skill-curation-from-traces D1), plus the searcher and intent gate,
-	// with the chip sink late-bound to the runner built below. The worker is
-	// Started by the composition root; the fallback path never drains, like
-	// the fallback scheduler/heartbeat. The embeddings lane and the fused
-	// searcher are built unconditionally: the searcher serves the
-	// memory-notes handlers' free-text filter on the injected-runner path too
-	// (wave3 task 3.3 — one fused read path).
+	// Memory pipeline (integrate-agent-zero-memory): the embeddings lane and
+	// the fused searcher are built unconditionally — the searcher serves the
+	// memory-notes handlers' free-text filter (wave3 task 3.3, one fused read
+	// path). The ingest worker that drains extraction jobs is owned by the
+	// composition root; the router never assembles one.
 	memoryLog := slog.Default()
 	memoryEmbedder := memory.NewProviderEmbedder(rt.opts.Store.Providers(), rt.opts.Store.ToolSettings(), rt.opts.EncryptionKey, providerRegistry)
 	memorySearcher := memory.NewSearcher(
@@ -501,119 +522,17 @@ func (rt *router) Engine() *gin.Engine {
 		memoryEmbedder,
 	)
 
-	runner := rt.opts.Runner
-
 	// Skill-curation wiring (add-skill-curation-from-traces D1/7.1): the
 	// workspace config source (the memory posture-func precedent — a
 	// settings edit applies on the next job/cycle without rebuilding) and the
 	// chip sink late-bound to the runner (the memory chip-sink pattern: the
-	// closure reads `runner` at chip time, after NewRunner has assigned it).
-	// The qualifier registers as consumer #2 of the fallback ingest worker
-	// below; the cycle service shares the sink for the proposers' drafted
-	// chips.
+	// closure reads `runner` at chip time, after construction). The cycle
+	// service below shares the sink for the proposers' drafted chips.
 	curationConfig := func(ctx context.Context, workspaceID string) skillcuration.Config {
 		return skillcuration.ConfigForWorkspace(ctx, rt.opts.Store.ToolSettings(), workspaceID, memoryLog)
 	}
 	curationChipSink := func(ctx context.Context, job ingest.Job, payload skillcuration.SkillCandidatePayload) {
 		runner.AppendSkillCandidateChip(ctx, job, payload)
-	}
-
-	if runner == nil && rt.opts.Store != nil {
-		// The per-job memory pipeline (consumer #1); the queue mechanics live
-		// on the ingest worker constructed right after.
-		memoryPipeline := memory.NewWorker(
-			memory.NewGister(rt.opts.Store.MemoryEvents(), rt.opts.Store.SessionEvents(), rt.opts.Store.MemoryEntities(), rt.opts.Store.Providers(), rt.opts.EncryptionKey, agents.DefaultAgenticModelFactory, memoryLog),
-			memory.NewGate(rt.opts.Store.MemoryNotes(), rt.opts.Store.MemoryEntities(), rt.opts.Store.Memories(), rt.opts.Store.Providers(), rt.opts.EncryptionKey, agents.DefaultAgenticModelFactory, memoryLog),
-			memoryEmbedder,
-			rt.opts.Store.MemoryEmbeddings(),
-			memoryLog,
-			memory.WithChipSink(func(ctx context.Context, job memory.IngestJob, payload memory.MemoryIngestedPayload) {
-				runner.AppendMemoryChip(ctx, job, payload)
-			}),
-			// Workspace visibility posture (D4's policy switch): read off the
-			// memory settings record per job, failing safe to narrow.
-			memory.WithPostureFunc(func(ctx context.Context, workspaceID string) memory.Posture {
-				return handlers.MemoryPostureForWorkspace(ctx, rt.opts.Store.ToolSettings(), workspaceID)
-			}),
-			// Raw-embedding toggle (wave3): absence or read failure is ON.
-			memory.WithRawEmbeddingEnabled(func(ctx context.Context, workspaceID string) bool {
-				return handlers.RawEmbeddingEnabledForWorkspace(ctx, rt.opts.Store.ToolSettings(), workspaceID)
-			}),
-		)
-		// The skill-curation qualifier (consumer #2): fail-soft by contract —
-		// its errors are logged per job and can never affect the memory
-		// pipeline's dispatch (the ingest worker isolates consumers).
-		curationQualifier := skillcuration.NewQualifier(
-			rt.opts.Store.SessionEvents(), curationConfig, rt.opts.Store.SkillCandidates(), memoryLog,
-			skillcuration.WithCandidateChipSink(curationChipSink),
-		)
-		ingestWorker := ingest.NewWorker(memoryLog, ingest.WithConsumers(memoryPipeline, curationQualifier))
-		intentGate := memory.NewIntentGate(rt.opts.Store.Providers(), rt.opts.EncryptionKey, agents.DefaultAgenticModelFactory, memoryLog, memory.WithWorkspaceModelSource(rt.opts.Store.ToolSettings()))
-
-		runner = agents.NewRunner(
-			rt.opts.Store.Workspaces(),
-			rt.opts.Store.Agents(),
-			rt.opts.Store.Users(),
-			rt.opts.Store.Members(),
-			rt.opts.Store.Roles(),
-			rt.opts.Store.Providers(),
-			rt.opts.Store.SessionEvents(),
-			rt.opts.Store.SessionCheckpoints(),
-			rt.opts.Store.Memories(),
-			rt.opts.Store.AgentSessions(),
-			rt.opts.Store.GatewayLinks(),
-			ingestWorker,
-			memorySearcher,
-			intentGate,
-			rt.opts.EncryptionKey,
-			onClawDir,
-			agents.WithToolRegistry(agents.NewDefaultToolRegistry(
-				rt.opts.Store.Memories(),
-				agents.WithSchedulerTools(rt.opts.Store.Schedulers(), rt.opts.Store.Channels()),
-				agents.WithMemorySearch(memorySearcher),
-				agents.WithTodoTools(rt.opts.Store.Todos()),
-				// document.search (add-reference-documents 4.1): the same
-				// references capability wired below as the runner option —
-				// one library behind the tool, the manifest, and the mount.
-				agents.WithDocumentTools(referencesSvc),
-			)),
-			agents.WithEnabledSkillReader(WorkspaceSkillReader(rt.opts.Store.WorkspaceSkills())),
-			agents.WithMCPPolicy(mcp.NewSettingsPolicy(runtimeSource)),
-			agents.WithMCPManager(mcpManager),
-			agents.WithMCPStatusWriter(mcp.NewSettingsStatusWriter(runtimeSource)),
-			// Connection tool source (add-connection-http 2.1/3.3): the
-			// attached http-kind connections' verb tools resolve in the same
-			// pass as MCP tools, after built-ins — one wiring shape shared
-			// with the composition root.
-			agents.WithConnectionToolSource(NewConnectionToolSource(connectionsSvc)),
-			// Connection origin lookup (add-integration-authority 2.1): the
-			// origin-link half of the gate's MCP annotations, the same
-			// service satisfying the seam structurally.
-			agents.WithConnectionOriginLookup(connectionsSvc),
-			agents.WithHooks(agenthooks.NewDispatcher(rt.opts.Store.Hooks(), hookRegistry)),
-			agents.WithChannelContext(channelRuntime.Chokepoint()),
-			agents.WithChannelFeed(channelRuntime.Chokepoint()),
-			agents.WithWorkSessions(channelRuntime.Chokepoint()),
-			agents.WithProjectSpace(channels.NewLocalProjectSpace(dataDir, rt.opts.Store.Workspaces())),
-			agents.WithAttachmentBlobs(wsStorage),
-			agents.WithInputModalityResolver(modelCatalog),
-			// The todo store (adopt-assistant-ui-elements D6): the open-items
-			// summary the runner composes per turn for agents exposing the tools.
-			agents.WithTodoStore(rt.opts.Store.Todos()),
-			// Gate budget (fix-memory-retrieval-lane D3): read off the
-			// memory settings record per turn, absence resolving to the
-			// default.
-			agents.WithMemoryGateBudget(memory.SettingsGateBudget(rt.opts.Store.ToolSettings(), memoryLog)),
-			// References capability (add-reference-documents 4.3/5.1): the
-			// run-scoped references/ mount, the compose-time manifest, and
-			// document.search all resolve through the one library shared with
-			// the documents API handler above.
-			agents.WithReferences(referencesSvc),
-			// The connection gate's integrations.write re-check rides the
-			// same authorizer (fix-role-permission-audit 1.5).
-			agents.WithAuthorizer(rt.authorizer),
-		)
-		channelRuntime.BindRunner(runner)
 	}
 
 	// Scheduler loop (integrate-scheduler D3/D4): one service shared by the

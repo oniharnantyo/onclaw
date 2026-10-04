@@ -94,6 +94,11 @@
 #      the uploaded library over /v1 turns — tool-call cards with query and
 #      library content in results, channel-tied runbook invisible in a direct
 #      chat at both the API lens and query time)
+#  36. Hook gate live-fire (fix-hooks-dispatcher-unwired): a workspace
+#      pre_tool_use command hook blocks a matched write_file /v1 turn —
+#      the canonical blocked_by_hook payload lands as the tool result, the
+#      file side effect never occurs, the executions audit records the
+#      delivery, and the hook is deleted afterwards
 #
 # Usage:
 #   ./scripts/smoke.sh
@@ -1008,6 +1013,70 @@ class Handler(BaseHTTPRequestHandler):
                 finish = "tool_calls"
             self._send(200, {
                 "id": "chatcmpl-smoke-refdoc",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "gpt-4",
+                "choices": [{"index": 0, "message": message, "finish_reason": finish}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 6, "total_tokens": 11},
+            })
+            return
+        # Section 36 hook-gate branch (fix-hooks-dispatcher-unwired): the
+        # ONCLAW_HOOK_GATE marker steers a live /v1 turn into ONE write_file
+        # tool call against a known jail path — the workspace pre_tool_use
+        # command hook matches the tool and blocks it server-side. Phasing is
+        # tool-result COUNT based (the curation mock's pattern): once any tool
+        # result is in the conversation (the canonical block payload arrives
+        # as one), every further model call — the turn continuation and any
+        # trailing memory side-call — gets the final text, never another
+        # write_file frame.
+        is_hookgate = "ONCLAW_HOOK_GATE" in all_text
+        if is_hookgate:
+            n_results = sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "tool")
+            tool_name = "write_file"
+            tool_args = '{"file_path":"/workspace/hook-gate-probe.md","content":"hook gate probe payload"}'
+            final = "HOOKGATE-FINAL the write was refused by the hook"
+
+            if body.get("stream"):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+
+                def sse_hg(part):
+                    self.wfile.write(("data: " + json.dumps(part) + "\n\n").encode())
+
+                def hg_chunk(delta, finish):
+                    return {
+                        "id": "chatcmpl-smoke-hookgate",
+                        "object": "chat.completion.chunk",
+                        "created": 0,
+                        "model": "gpt-4",
+                        "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+                    }
+
+                sse_hg(hg_chunk({"role": "assistant"}, None))
+                if n_results > 0:
+                    sse_hg(hg_chunk({"content": final}, None))
+                    stop = hg_chunk({}, "stop")
+                    stop["usage"] = {"prompt_tokens": 5, "completion_tokens": 6, "total_tokens": 11}
+                    sse_hg(stop)
+                else:
+                    sse_hg(hg_chunk({"tool_calls": [{"index": 0, "id": "call_hookgate", "type": "function", "function": {"name": tool_name, "arguments": ""}}]}, None))
+                    sse_hg(hg_chunk({"tool_calls": [{"index": 0, "function": {"arguments": tool_args}}]}, None))
+                    sse_hg(hg_chunk({}, "tool_calls"))
+                self.wfile.write(b"data: [DONE]\n\n")
+                return
+            if n_results > 0:
+                message = {"role": "assistant", "content": final}
+                finish = "stop"
+            else:
+                message = {"role": "assistant", "content": "", "tool_calls": [{
+                    "id": "call_hookgate",
+                    "type": "function",
+                    "function": {"name": tool_name, "arguments": tool_args},
+                }]}
+                finish = "tool_calls"
+            self._send(200, {
+                "id": "chatcmpl-smoke-hookgate",
                 "object": "chat.completion",
                 "created": 0,
                 "model": "gpt-4",
@@ -5253,3 +5322,105 @@ fi
 # Release the section's mock (the suite-level cleanup only knows its own PIDs).
 kill "${CUR_MOCK_PID}" 2>/dev/null || true
 wait "${CUR_MOCK_PID}" 2>/dev/null || true
+
+# -----------------------------------------------------------------------------
+# 36. Hook Gate Live-Fire (fix-hooks-dispatcher-unwired): a workspace
+#     pre_tool_use command hook gates a REAL /v1 turn. The mock provider's
+#     ONCLAW_HOOK_GATE branch drives one write_file call against a known jail
+#     path; the hook (matcher write_file, exit 2 with a stderr reason) must
+#     intercept the call before execution — the canonical blocked_by_hook
+#     payload lands as the tool result, the file side effect never occurs,
+#     and the hooks-executions audit records the delivery. The hook is
+#     deleted at section end.
+# -----------------------------------------------------------------------------
+log_step "36. Hook Gate: pre_tool_use Blocks a Live write_file Turn"
+
+HOOKGATE_AGENT_BASE="/api/v1/workspaces/${TENANT_SLUG}/agents/hook-gate-smoke"
+HOOKGATE_FILES_BASE="${HOOKGATE_AGENT_BASE}/files"
+HOOKGATE_EVENTS_BASE="${HOOKGATE_AGENT_BASE}/sessions"
+
+# 36.1 Fixture agent on the shared mock provider. Its jail starts clean: the
+# path the blocked turn targets does not exist BEFORE the turn, so the
+# negative side-effect assertion has a baseline.
+api_req "POST" "/api/v1/workspaces/${TENANT_SLUG}/agents" "${CHARLIE_TOKEN}" '{"name":"Hook Gate Agent","slug":"hook-gate-smoke","role":"Reporter","description":"Hook gate smoke fixture","brief":"A short brief","provider_id":"'"${MOCK_PROV_ID}"'","model":"gpt-4"}'
+assert_status "201" "Owner creates the hook-gate smoke agent"
+assert_json_expr '.agent.prompts_status == "ready"' "Agent create completes with prompts ready against the mock provider"
+
+api_req "GET" "${HOOKGATE_FILES_BASE}?path=hook-gate-probe.md" "${CHARLIE_TOKEN}"
+assert_status "404" "The probe path starts absent in the fresh agent jail"
+
+# 36.2 The workspace pre_tool_use command hook: matcher write_file, handler
+# exits 2 with a stderr reason (the Claude Code compatibility row). Create
+# echoes the definition and reports the save-time match count; the execution
+# history for the hook starts empty.
+api_req "POST" "${HOOKS_BASE}" "${CHARLIE_TOKEN}" '{"name":"Write Blocker","event":"pre_tool_use","matcher":"write_file","handler_type":"command","config":{"command":"/bin/sh","args":["-c","echo blocked by smoke hook gate >&2; exit 2"]}}'
+assert_status "201" "Owner creates the pre_tool_use command hook matching write_file"
+assert_json_expr '.hook.handler_type == "command"' "Create echoes the command handler type"
+assert_json_expr '.hook.matcher == "write_file"' "Create echoes the write_file matcher"
+assert_json_expr '.match_count.matched == 1' "Match count pins the matcher to write_file alone"
+HOOKGATE_HOOK_ID=$(json_get '.hook.id')
+
+api_req "GET" "${HOOKS_BASE}/${HOOKGATE_HOOK_ID}/executions" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists the hook's executions before the turn"
+assert_json_expr '(.executions | length) == 0' "Execution history starts empty for the hook"
+
+# 36.3 The live turn: the mock steers the agent into the write_file call and
+# the serving runner must resolve the hook chain (the wiring under test — a
+# silent no-op dispatcher lets the write straight through).
+HOOKGATE_SESSION="sess-hook-gate-$(date +%s)-${RANDOM}"
+api_req "POST" "/v1/responses" "${V1_KEY}" '{"model":"hook-gate-smoke","input":"ONCLAW_HOOK_GATE write the probe file","stream":true,"metadata":{"onclaw_session":"'"${HOOKGATE_SESSION}"'"}}'
+assert_status "200" "Hook-gate turn streamed"
+printf '%s' "${HTTP_BODY}" | grep -q '"type":"response.completed"' || log_fail "Hook-gate stream missing response.completed"
+printf '%s' "${HTTP_BODY}" | grep -q '"name":"write_file"' || log_fail "Hook-gate stream carried no write_file function_call item"
+log_pass "Hook-gate turn streamed with a write_file function_call item"
+
+for i in {1..40}; do
+    api_req "GET" "${HOOKGATE_EVENTS_BASE}/${HOOKGATE_SESSION}/events?limit=100" "${CHARLIE_TOKEN}"
+    if [[ "$(json_get '[.events[]? | select(.kind == "turn_completed")] | length')" -ge 1 ]]; then
+        break
+    fi
+    sleep 0.25
+done
+assert_json_expr '[.events[]? | select(.kind == "turn_completed")] | length >= 1' "The hook-gate turn completed"
+
+# 36.4 The canonical block payload IS the tool result: the write_file card
+# renders the gate's decision — hook name and stderr reason ride the payload.
+api_req "GET" "${HOOKGATE_EVENTS_BASE}/${HOOKGATE_SESSION}/events?limit=100" "${CHARLIE_TOKEN}"
+assert_json_expr '[.events[]? | select(.kind == "tool_call_started" and .tool_call.name == "write_file")] | length == 1' "The turn renders EXACTLY ONE write_file tool_call_started card"
+assert_json_expr '[.events[]? | select(.kind == "tool_call_finished" and .tool_result.name == "write_file")] | length == 1' "The turn renders the write_file tool_call_finished card"
+assert_json_expr '[.events[]? | select(.kind == "tool_call_finished" and .tool_result.name == "write_file")][0].tool_result.result | contains("\"blocked_by_hook\":true")' "The tool result is the canonical blocked_by_hook payload"
+assert_json_expr '[.events[]? | select(.kind == "tool_call_finished" and .tool_result.name == "write_file")][0].tool_result.result | contains("Write Blocker")' "The block payload names the gating hook"
+assert_json_expr '[.events[]? | select(.kind == "tool_call_finished" and .tool_result.name == "write_file")][0].tool_result.result | contains("blocked by smoke hook gate")' "The block payload carries the handler's stderr reason"
+assert_json_expr '[.events[]? | select(.kind == "message_completed" and .message.role == "assistant")][0].message.content == "HOOKGATE-FINAL the write was refused by the hook"' "The turn finishes on the mock's post-block reply"
+
+# 36.5 The side effect never occurred: the targeted file is still absent — a
+# write that executes (the pre-fix no-op gate) fails this section.
+api_req "GET" "${HOOKGATE_FILES_BASE}?path=hook-gate-probe.md" "${CHARLIE_TOKEN}"
+assert_status "404" "The blocked write never created the file (side effect absent)"
+
+api_req "GET" "${HOOKGATE_FILES_BASE}?mode=list" "${CHARLIE_TOKEN}"
+assert_status "200" "List the agent jail after the blocked turn"
+assert_json_expr '(.entries | map(select(.name == "hook-gate-probe.md")) | length) == 0' "The jail listing carries no probe file"
+
+# 36.6 The hooks-executions audit records the delivery: at least one row for
+# this hook, decision block, event pre_tool_use, the handler's exit code.
+for i in {1..20}; do
+    api_req "GET" "${HOOKS_BASE}/${HOOKGATE_HOOK_ID}/executions" "${CHARLIE_TOKEN}"
+    if [[ "$(json_get '(.executions | length)')" -ge 1 ]]; then
+        break
+    fi
+    sleep 0.25
+done
+assert_status "200" "Owner lists the hook's executions after the turn"
+assert_json_expr '(.executions | length) >= 1' "The executions audit records the live delivery"
+assert_json_expr '[.executions[] | select(.decision == "block")] | length >= 1' "The recorded delivery decided block"
+assert_json_expr '[.executions[] | select(.decision == "block")][0].hook_name == "Write Blocker"' "The audit row names the gating hook"
+assert_json_expr '[.executions[] | select(.decision == "block")][0].event == "pre_tool_use"' "The audit row carries the pre_tool_use event"
+assert_json_expr '[.executions[] | select(.decision == "block")][0].exit_code == 2' "The audit row carries the handler's exit code 2"
+
+# 36.7 Cleanup: the gate is deleted after the live-fire proof (the audit rows
+# survive the deletion by design — D16).
+api_req "DELETE" "${HOOKS_BASE}/${HOOKGATE_HOOK_ID}" "${CHARLIE_TOKEN}"
+assert_status "204" "Owner deletes the hook-gate hook (204)"
+api_req "GET" "${HOOKS_BASE}" "${CHARLIE_TOKEN}"
+assert_json_expr "[.hooks[] | select(.id == \"${HOOKGATE_HOOK_ID}\")] | length == 0" "The deleted hook is gone from the workspace hooks list"

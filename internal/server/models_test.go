@@ -88,6 +88,10 @@ func TestModels_Endpoints_And_DeleteInUse(t *testing.T) {
 	testEnv := setupTestEnv(t)
 	testEnv.store = st
 	testEnv.storage = stor
+	// Runner from the test composition helper: RuntimeOptions.Runner is
+	// required since the router's runner fallback was deleted
+	// (fix-hooks-dispatcher-unwired D1/2.3).
+	runner, _ := newTestRunnerComposition(t, st, stor, encKey, t.TempDir(), t.TempDir())
 	testEnv.router = server.NewRouter(server.RouterOptions{
 		Store:         st,
 		Storage:       stor,
@@ -96,6 +100,7 @@ func TestModels_Endpoints_And_DeleteInUse(t *testing.T) {
 		EncryptionKey: encKey,
 		Providers:     providerReg,
 		ModelCatalog:  catalogSvc,
+		Runner:        runner,
 	})
 
 	ownerUser, ownerToken := createTestUser(t, testEnv, "owner@example.com", "Owner", "pwd")

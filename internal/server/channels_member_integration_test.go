@@ -136,14 +136,22 @@ func TestIntegration_ChannelsMemberAccess(t *testing.T) {
 	agentSvc := promptgen.NewService(st.Agents(), st.Providers(), encKey, promptgen.WithModelFactory(func(_ context.Context, _ string, _ providers.Credential, _ string) (model.BaseChatModel, error) {
 		return chMemberStubModel{}, nil
 	}))
+	// Runner + channel runtime from the test composition helper
+	// (fix-hooks-dispatcher-unwired 2.3): RuntimeOptions.Runner is required
+	// since the router's runner fallback was deleted, and the mention-run
+	// lane needs the chokepoint late-bound to the same runner the router
+	// serves.
+	runner, channelRuntime := newTestRunnerComposition(t, st, storagefake.New(), encKey, t.TempDir(), t.TempDir())
 	r := server.NewRouter(server.RouterOptions{
-		Store:         st,
-		Storage:       storagefake.New(),
-		Issuer:        issuer,
-		Auth:          authSvc,
-		EncryptionKey: encKey,
-		AgentService:  agentSvc,
-		WorkspaceDir:  filepath.Join(t.TempDir(), "workspaces"),
+		Store:          st,
+		Storage:        storagefake.New(),
+		Issuer:         issuer,
+		Auth:           authSvc,
+		EncryptionKey:  encKey,
+		AgentService:   agentSvc,
+		WorkspaceDir:   filepath.Join(t.TempDir(), "workspaces"),
+		Runner:         runner,
+		ChannelRuntime: channelRuntime,
 	})
 
 	// Seed: workspace with the built-in role sets, an owner, a member, and

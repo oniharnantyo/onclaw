@@ -682,12 +682,17 @@ func TestProviders_AAD_TenantBinding_And_DecryptionFailure(t *testing.T) {
 
 		// Simulate server restart with a DIFFERENT encryption key
 		rotatedKey := []byte("rotated-key-32-bytes-long-123456")
+		// Runner from the test composition helper: RuntimeOptions.Runner is
+		// required since the router's runner fallback was deleted
+		// (fix-hooks-dispatcher-unwired D1/2.3).
+		rotatedRunner, _ := newTestRunnerComposition(t, env.store, env.storage, rotatedKey, t.TempDir(), t.TempDir())
 		rotatedRouter := server.NewRouter(server.RouterOptions{
 			Store:         env.store,
 			Storage:       env.storage,
 			Issuer:        env.issuer,
 			Auth:          env.service,
 			EncryptionKey: rotatedKey,
+			Runner:        rotatedRunner,
 		})
 
 		// 1. Verify returns undecryptable error envelope

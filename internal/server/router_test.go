@@ -75,14 +75,22 @@ func setupTestEnv(t *testing.T, opts ...func(*server.RouterOptions)) *testEnv {
 	// touch the real home directory.
 	workspaceDir := filepath.Join(t.TempDir(), "workspaces")
 
+	// The runner (and the channel runtime it is bound to) come from the
+	// explicit test composition helper — the router's runner fallback was
+	// deleted (fix-hooks-dispatcher-unwired D1) and RuntimeOptions.Runner is
+	// a required dependency.
+	runner, channelRuntime := newTestRunnerComposition(t, st, stor, encKey, t.TempDir(), t.TempDir())
+
 	routerOpts := server.RouterOptions{
-		Store:         st,
-		Storage:       stor,
-		Issuer:        issuer,
-		Auth:          authSvc,
-		EncryptionKey: encKey,
-		AgentService:  agentSvc,
-		WorkspaceDir:  workspaceDir,
+		Store:          st,
+		Storage:        stor,
+		Issuer:         issuer,
+		Auth:           authSvc,
+		EncryptionKey:  encKey,
+		AgentService:   agentSvc,
+		WorkspaceDir:   workspaceDir,
+		Runner:         runner,
+		ChannelRuntime: channelRuntime,
 	}
 	for _, opt := range opts {
 		opt(&routerOpts)
