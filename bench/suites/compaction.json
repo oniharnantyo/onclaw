@@ -1,5 +1,5 @@
 {
-  "suite_version": "1",
+  "suite_version": "2",
   "lane": "compaction",
   "description": "Context-window compaction and transcript offload fidelity, measured black-box. Each task pins a small agent-level context window (2000 tokens, summarization trigger at 75%), then builds one long measured thread — the seeding turns and the recall question ride in the same session, because the runner scopes setup chat_turns to a separate logical session from the measured one, so only measured turns reach the context under test; the harness compacts mid-thread and the final turn asks for an early-seeded fact. Soundness under pooled-answer verification: the file-write probes (transcript_file_write) are immune to seed-turn acknowledgements echoing seeded values, so every task pairs its answer probe with a file leg. All seeded tokens are short enough to stay lint-exempt. Verifiers are deterministic — no judge. A forced-compact command via request metadata exists on the public API but is not expressible in this suite schema, so compaction is forced purely through the window override.",
   "tasks": [
@@ -46,7 +46,12 @@
       "verify": [
         {
           "kind": "answer_contains",
-          "any_of": [["mirage-741", "mirage 741"]]
+          "any_of": [
+            [
+              "mirage-741",
+              "mirage 741"
+            ]
+          ]
         },
         {
           "kind": "transcript_file_write",
@@ -95,7 +100,15 @@
       "verify": [
         {
           "kind": "answer_contains",
-          "all_of": [["vesper-251", "vesper 251"], ["88"]]
+          "all_of": [
+            [
+              "vesper-251",
+              "vesper 251"
+            ],
+            [
+              "88"
+            ]
+          ]
         },
         {
           "kind": "transcript_file_write",
@@ -152,7 +165,20 @@
         },
         {
           "kind": "answer_contains",
-          "all_of": [["kilo"], ["oscar"], ["delta"], ["tango"]]
+          "all_of": [
+            [
+              "kilo"
+            ],
+            [
+              "oscar"
+            ],
+            [
+              "delta"
+            ],
+            [
+              "tango"
+            ]
+          ]
         }
       ]
     },
@@ -209,7 +235,15 @@
         },
         {
           "kind": "answer_contains",
-          "all_of": [["340"], ["copy-that", "copy that"]]
+          "all_of": [
+            [
+              "340"
+            ],
+            [
+              "copy-that",
+              "copy that"
+            ]
+          ]
         }
       ]
     },
@@ -256,7 +290,12 @@
       "verify": [
         {
           "kind": "answer_contains",
-          "any_of": [["halcyon-930", "halcyon 930"]]
+          "any_of": [
+            [
+              "halcyon-930",
+              "halcyon 930"
+            ]
+          ]
         },
         {
           "kind": "transcript_file_write",
@@ -302,7 +341,12 @@
       "verify": [
         {
           "kind": "answer_contains",
-          "any_of": [["55-ad-31", "55 ad 31"]]
+          "any_of": [
+            [
+              "55-ad-31",
+              "55 ad 31"
+            ]
+          ]
         },
         {
           "kind": "transcript_file_write",
@@ -354,7 +398,14 @@
       "verify": [
         {
           "kind": "answer_contains",
-          "all_of": [["cedar"], ["340"]]
+          "all_of": [
+            [
+              "cedar"
+            ],
+            [
+              "340"
+            ]
+          ]
         },
         {
           "kind": "transcript_file_write",
@@ -411,7 +462,12 @@
         },
         {
           "kind": "answer_contains",
-          "any_of": [["lyrebird-5", "lyrebird 5"]]
+          "any_of": [
+            [
+              "lyrebird-5",
+              "lyrebird 5"
+            ]
+          ]
         }
       ]
     }

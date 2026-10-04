@@ -135,8 +135,9 @@ func checkAnswerNotContains(c *suite.Check, answer string) (bool, string) {
 }
 
 func checkToolCalled(c *suite.Check, calls []driver.ToolCall) (bool, string) {
+	candidates := candidateTools(c)
 	for _, call := range calls {
-		if !toolNameMatches(call.Name, c.Tool) {
+		if !anyToolMatches(candidates, call.Name) {
 			continue
 		}
 		if c.ArgsContains != "" && !strings.Contains(suite.NormalizeText(call.ArgsJSON), suite.NormalizeText(c.ArgsContains)) {
@@ -156,7 +157,26 @@ func checkToolCalled(c *suite.Check, calls []driver.ToolCall) (bool, string) {
 	case c.OutputContains != "":
 		probes = fmt.Sprintf(" with output containing %q", c.OutputContains)
 	}
-	return false, fmt.Sprintf("no %s tool call%s in the transcript", c.Tool, probes)
+	return false, fmt.Sprintf("no %s tool call%s in the transcript", strings.Join(candidates, " or "), probes)
+}
+
+// candidateTools returns the check's accepted tool names: the single Tool
+// when set, otherwise the ToolAny alternative set (lint enforces exactly one
+// of the two being set).
+func candidateTools(c *suite.Check) []string {
+	if c.Tool != "" {
+		return []string{c.Tool}
+	}
+	return c.ToolAny
+}
+
+func anyToolMatches(candidates []string, wireName string) bool {
+	for _, tool := range candidates {
+		if toolNameMatches(tool, wireName) {
+			return true
+		}
+	}
+	return false
 }
 
 func checkToolNotCalled(c *suite.Check, calls []driver.ToolCall) (bool, string) {

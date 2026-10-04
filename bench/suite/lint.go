@@ -210,8 +210,16 @@ func lintCheck(taskID string, check *Check, field string, judgeAllowed bool) []I
 			}
 		}
 	case CheckToolCalled:
-		if check.Tool == "" {
-			fail(".tool", "tool_called requires the tool name")
+		switch {
+		case check.Tool != "" && len(check.ToolAny) > 0:
+			fail(".tool_any", "tool_called accepts either tool or tool_any, not both")
+		case check.Tool == "" && len(check.ToolAny) == 0:
+			fail(".tool", "tool_called requires the tool name or a tool_any alternative set")
+		}
+		for i, tool := range check.ToolAny {
+			if strings.TrimSpace(tool) == "" {
+				fail(fmt.Sprintf(".tool_any[%d]", i), "tool_any entry is empty")
+			}
 		}
 	case CheckToolNotCalled:
 		if check.Tool == "" {

@@ -74,6 +74,11 @@ func TestCheckToolCalled(t *testing.T) {
 		{"args probe miss", suite.Check{Kind: suite.CheckToolCalled, Tool: "files.write", ArgsContains: "other.md"}, false},
 		{"output probe hit", suite.Check{Kind: suite.CheckToolCalled, Tool: "files.write", OutputContains: "wrote"}, true},
 		{"output probe miss", suite.Check{Kind: suite.CheckToolCalled, Tool: "files.write", OutputContains: "failed"}, false},
+		{"tool_any alternative hits", suite.Check{Kind: suite.CheckToolCalled, ToolAny: []string{"glob", "files.write"}}, true},
+		{"tool_any all miss", suite.Check{Kind: suite.CheckToolCalled, ToolAny: []string{"grep", "execute"}}, false},
+		{"tool_any honors args probe", suite.Check{Kind: suite.CheckToolCalled, ToolAny: []string{"glob", "files.write"}, ArgsContains: "notes.md"}, true},
+		{"tool_any args probe miss", suite.Check{Kind: suite.CheckToolCalled, ToolAny: []string{"glob", "read_file"}, ArgsContains: "other.md"}, false},
+		{"tool_any alias equivalence", suite.Check{Kind: suite.CheckToolCalled, ToolAny: []string{"files.write"}}, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

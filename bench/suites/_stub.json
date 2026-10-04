@@ -1,5 +1,5 @@
 {
-  "suite_version": "1",
+  "suite_version": "2",
   "lane": "compaction",
   "description": "Structural stub for dry-runs and live smoke: one plain-reply task that proves the runner can load, provision, drive one measured turn, and verify an answer. Underscore-prefixed, so directory loads skip it — run it explicitly with --suite bench/suites/_stub.json.",
   "judge_allowed": false,
@@ -8,7 +8,9 @@
       "id": "stub-ready",
       "title": "Stub readiness probe",
       "summary": "A no-setup, single-turn task whose expected reply is one short word; its only real assertion is that the live chat path round-trips.",
-      "tools_used": ["memory.search"],
+      "tools_used": [
+        "memory.search"
+      ],
       "setup": [],
       "turns": [
         {
@@ -19,7 +21,11 @@
       "verify": [
         {
           "kind": "answer_contains",
-          "any_of": [["ready"]]
+          "any_of": [
+            [
+              "ready"
+            ]
+          ]
         }
       ]
     }

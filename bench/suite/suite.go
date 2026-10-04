@@ -235,8 +235,13 @@ type Check struct {
 	// answer_not_contains
 	NoneOf []string `json:"none_of,omitempty"`
 
-	// tool_called / tool_not_called
-	Tool string `json:"tool,omitempty"`
+	// tool_called / tool_not_called: Tool names one tool; tool_called
+	// additionally accepts ToolAny as an alternative-set (pass if any listed
+	// tool's call matches the probes) — for checks whose intent is the
+	// effect, not the specific verb (e.g. absence verification via read OR
+	// search). Exactly one of Tool / ToolAny must be set.
+	Tool    string   `json:"tool,omitempty"`
+	ToolAny []string `json:"tool_any,omitempty"`
 
 	// tool_called: optional substring probes over the tool call's arguments
 	// and output; empty = skipped.

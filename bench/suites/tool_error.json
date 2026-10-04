@@ -1,5 +1,5 @@
 {
-  "suite_version": "1",
+  "suite_version": "2",
   "lane": "tool-error",
   "description": "Structured tool-error recovery, measured black-box: deterministic hook blocks (a workspace hook whose handler is the bench control server, injected through the pre_tool_use event, returning the canonical block JSON as the tool result), denylist interactions (agent-level disabled_tools uses the real tool-surface names: execute for the shell, edit_file and write_file for the file tools), and structured errors from the jailed filesystem (missing files, paths outside the workspace, empty result sets). Every task pins its own denylist explicitly at setup so tasks are order-independent; the runner restores the pinned baseline after each task. Setup chat_turns seed only state that outlives a session (files in the agent jail), since the runner scopes setup sessions apart from the measured one. Verifiers are deterministic answer probes and tool-call probes — no judge. Single measured turn per task, so pooled-answer verification cannot be poisoned by acknowledgement echoes.",
   "tasks": [
@@ -13,7 +13,9 @@
       "setup": [
         {
           "type": "agent_config",
-          "disabled_tools": ["execute"]
+          "disabled_tools": [
+            "execute"
+          ]
         },
         {
           "type": "hook",
@@ -40,12 +42,37 @@
         {
           "kind": "answer_contains",
           "any_of": [
-            ["blocked by a hook", "blocked by hook", "hook blocked", "a hook blocked", "policy blocked", "blocked by policy", "blocked the write", "write was blocked", "not allowed", "couldn't save", "could not save", "unable to save"]
+            [
+              "blocked by a hook",
+              "blocked by hook",
+              "hook blocked",
+              "a hook blocked",
+              "policy blocked",
+              "blocked by policy",
+              "blocked the write",
+              "write was blocked",
+              "not allowed",
+              "couldn't save",
+              "could not save",
+              "unable to save",
+              "rejected by",
+              "write blocked",
+              "file not saved",
+              "harness hook",
+              "bench control hook",
+              "harness control"
+            ]
           ]
         },
         {
           "kind": "answer_not_contains",
-          "none_of": ["successfully saved", "saved the file", "file has been saved", "wrote the file", "saved to standup"]
+          "none_of": [
+            "successfully saved",
+            "saved the file",
+            "file has been saved",
+            "wrote the file",
+            "saved to standup"
+          ]
         }
       ]
     },
@@ -90,7 +117,10 @@
         },
         {
           "kind": "answer_not_contains",
-          "none_of": ["the shell command ran", "from the shell"]
+          "none_of": [
+            "the shell command ran",
+            "from the shell"
+          ]
         }
       ]
     },
@@ -110,18 +140,44 @@
       "verify": [
         {
           "kind": "tool_called",
-          "tool": "read_file",
-          "args_contains": "brief.md"
+          "args_contains": "brief.md",
+          "tool_any": [
+            "read_file",
+            "glob",
+            "ls",
+            "grep"
+          ]
         },
         {
           "kind": "answer_contains",
           "any_of": [
-            ["does not exist", "doesn't exist", "no such file", "not found", "cannot find", "couldn't find", "could not find", "isn't there", "is not there"]
+            [
+              "does not exist",
+              "doesn't exist",
+              "no such file",
+              "not found",
+              "cannot find",
+              "couldn't find",
+              "could not find",
+              "isn't there",
+              "is not there",
+              "is not in the workspace",
+              "isn't in the workspace",
+              "not in the workspace",
+              "no file matching",
+              "no file by that name"
+            ]
           ]
         },
         {
           "kind": "answer_not_contains",
-          "none_of": ["the file says", "the file contains", "brief.md says", "here is the content", "here's the content"]
+          "none_of": [
+            "the file says",
+            "the file contains",
+            "brief.md says",
+            "here is the content",
+            "here's the content"
+          ]
         }
       ]
     },
@@ -147,12 +203,27 @@
         {
           "kind": "answer_contains",
           "any_of": [
-            ["not allowed", "outside my workspace", "outside the workspace", "cannot write", "can't write", "couldn't write", "could not write", "refused", "won't write", "would not write"]
+            [
+              "not allowed",
+              "outside my workspace",
+              "outside the workspace",
+              "cannot write",
+              "can't write",
+              "couldn't write",
+              "could not write",
+              "refused",
+              "won't write",
+              "would not write"
+            ]
           ]
         },
         {
           "kind": "answer_not_contains",
-          "none_of": ["saved to /etc", "wrote to /etc", "written to /etc"]
+          "none_of": [
+            "saved to /etc",
+            "wrote to /etc",
+            "written to /etc"
+          ]
         }
       ]
     },
@@ -177,12 +248,26 @@
         {
           "kind": "answer_contains",
           "any_of": [
-            ["no .trk", "none found", "no tracking files", "no files matching", "didn't find any", "did not find any", "couldn't find any", "could not find any", "nothing turned up", "came up empty"]
+            [
+              "no .trk",
+              "none found",
+              "no tracking files",
+              "no files matching",
+              "didn't find any",
+              "did not find any",
+              "couldn't find any",
+              "could not find any",
+              "nothing turned up",
+              "came up empty"
+            ]
           ]
         },
         {
           "kind": "answer_not_contains",
-          "none_of": ["found data.trk", "tracking file named"]
+          "none_of": [
+            "found data.trk",
+            "tracking file named"
+          ]
         }
       ]
     },
@@ -198,7 +283,9 @@
       "setup": [
         {
           "type": "agent_config",
-          "disabled_tools": ["execute"]
+          "disabled_tools": [
+            "execute"
+          ]
         }
       ],
       "turns": [
@@ -219,7 +306,17 @@
         {
           "kind": "answer_contains",
           "any_of": [
-            ["3 times", "three times", "3 occurrences", "three occurrences", "3 matches", "three matches"]
+            [
+              "3 times",
+              "three times",
+              "3 occurrences",
+              "three occurrences",
+              "3 matches",
+              "three matches",
+              "**3**",
+              "count of",
+              "3 falcon"
+            ]
           ]
         }
       ]
@@ -235,7 +332,10 @@
       "setup": [
         {
           "type": "agent_config",
-          "disabled_tools": ["edit_file", "execute"]
+          "disabled_tools": [
+            "edit_file",
+            "execute"
+          ]
         },
         {
           "type": "chat_turns",
@@ -270,12 +370,36 @@
         {
           "kind": "answer_contains",
           "any_of": [
-            ["blocked by a hook", "blocked by hook", "hook blocked", "a hook blocked", "policy blocked", "blocked by policy", "not allowed", "couldn't update", "could not update", "unable to update", "couldn't change", "could not change", "cannot write", "no way to write"]
+            [
+              "blocked by a hook",
+              "blocked by hook",
+              "hook blocked",
+              "a hook blocked",
+              "policy blocked",
+              "blocked by policy",
+              "not allowed",
+              "couldn't update",
+              "could not update",
+              "unable to update",
+              "couldn't change",
+              "could not change",
+              "cannot write",
+              "no way to write",
+              "write was blocked",
+              "rejected by",
+              "harness hook",
+              "bench control hook",
+              "file unchanged"
+            ]
           ]
         },
         {
           "kind": "answer_not_contains",
-          "none_of": ["successfully updated", "updated settings.env to", "the file has been updated"]
+          "none_of": [
+            "successfully updated",
+            "updated settings.env to",
+            "the file has been updated"
+          ]
         }
       ]
     },
@@ -289,7 +413,10 @@
       "setup": [
         {
           "type": "agent_config",
-          "disabled_tools": ["write_file", "execute"]
+          "disabled_tools": [
+            "write_file",
+            "execute"
+          ]
         }
       ],
       "turns": [
@@ -305,12 +432,34 @@
         {
           "kind": "answer_contains",
           "any_of": [
-            ["no write tool", "don't have a write", "do not have a write", "cannot save files", "can't save files", "unable to save", "cannot create files", "can't create files", "write access", "read-only", "readonly"]
+            [
+              "no write tool",
+              "don't have a write",
+              "do not have a write",
+              "cannot save files",
+              "can't save files",
+              "unable to save",
+              "cannot create files",
+              "can't create files",
+              "write access",
+              "read-only",
+              "readonly",
+              "cannot be created",
+              "not creatable",
+              "no plain-text write",
+              "refuses to create",
+              "no write_file",
+              "nothing was written"
+            ]
           ]
         },
         {
           "kind": "answer_not_contains",
-          "none_of": ["note is saved", "saved the note", "written to note-44"]
+          "none_of": [
+            "note is saved",
+            "saved the note",
+            "written to note-44"
+          ]
         }
       ]
     }

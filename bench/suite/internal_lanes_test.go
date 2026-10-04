@@ -67,7 +67,7 @@ func TestInternalLaneFilesLoadLintAndCount(t *testing.T) {
 			if s.Lane != lf.wantLane {
 				t.Errorf("lane = %q, want %q", s.Lane, lf.wantLane)
 			}
-			if s.SuiteVersion != "1" {
+			if s.SuiteVersion != "2" {
 				t.Errorf("suite_version = %q, want \"1\"", s.SuiteVersion)
 			}
 			if s.JudgeAllowed {

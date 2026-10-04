@@ -23,7 +23,7 @@ var externalLaneFiles = []struct {
 
 // TestExternalLaneFilesLoadLintAndCount validates the three externally
 // authored lane files end to end: strict-JSON Load, zero lint issues, the
-// canonical lane id, suite version "1", per-lane task counts, no judge
+// canonical lane id, suite version "2", per-lane task counts, no judge
 // checks (deterministic graders only), non-empty tools_used per task, and
 // task-id uniqueness across all three files (they share one scoreboard).
 func TestExternalLaneFilesLoadLintAndCount(t *testing.T) {
@@ -49,7 +49,7 @@ func TestExternalLaneFilesLoadLintAndCount(t *testing.T) {
 			if s.Lane != tt.lane {
 				t.Errorf("%s: lane = %q, want %q", tt.file, s.Lane, tt.lane)
 			}
-			if s.SuiteVersion != "1" {
+			if s.SuiteVersion != "2" {
 				t.Errorf("%s: suite_version = %q, want \"1\"", tt.file, s.SuiteVersion)
 			}
 			if s.JudgeAllowed {

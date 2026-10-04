@@ -72,6 +72,11 @@ func TestLintIssues(t *testing.T) {
 		{"answer_not_contains no tokens", func(s *TaskSuite) { s.Tasks[0].Verify[1].NoneOf = nil }, "dead-mcp-recovery", "verify[1].none_of"},
 		{"answer_not_contains empty token", func(s *TaskSuite) { s.Tasks[0].Verify[1].NoneOf = []string{""} }, "dead-mcp-recovery", "verify[1].none_of[0]"},
 		{"tool_called missing tool", func(s *TaskSuite) { s.Tasks[0].Verify[2].Tool = "" }, "dead-mcp-recovery", "verify[2].tool"},
+		{"tool_called both tool and tool_any", func(s *TaskSuite) { s.Tasks[0].Verify[2].ToolAny = []string{"glob", "ls"} }, "dead-mcp-recovery", "verify[2].tool_any"},
+		{"tool_called empty tool_any entry", func(s *TaskSuite) {
+			s.Tasks[0].Verify[2].Tool = ""
+			s.Tasks[0].Verify[2].ToolAny = []string{"glob", " "}
+		}, "dead-mcp-recovery", "verify[2].tool_any[1]"},
 		{"tool_not_called missing tool", func(s *TaskSuite) { s.Tasks[0].Verify[3].Tool = "" }, "dead-mcp-recovery", "verify[3].tool"},
 		{"transcript_file_write missing path", func(s *TaskSuite) { s.Tasks[0].Verify[4].Path = "" }, "dead-mcp-recovery", "verify[4].path"},
 		{"api_effect missing method", func(s *TaskSuite) { s.Tasks[0].Verify[5].Method = "" }, "dead-mcp-recovery", "verify[5].method"},
