@@ -42,6 +42,7 @@ A reference document's original bytes SHALL be stored unmodified through the wor
 #### Scenario: Delete removes from the recorded backend
 - **WHEN** a member deletes a document whose recorded backend is S3
 - **THEN** the blob is removed from the bucket and the document, its index, and its capability URL stop resolving
+
 ### Requirement: Deterministic section index
 At upload, the system SHALL convert the document to markdown in-process using the document converter registry (pdf, docx, pptx, xlsx, html, csv) or pass text formats through directly (md, txt), then split the result into sections with a format-agnostic sectioner keyed on markdown structure. Each section SHALL record the document, its heading or title, an ordinal, its body text, and a type-appropriate **locator**: page number for PDF, slide number for pptx, sheet name for xlsx, heading for docx/md/html, none for txt/csv. Section text SHALL be indexed for full-text search. PDF conversion SHALL emit page anchors so headings map to page locators. The extracted text SHALL NOT be retained outside the index; the index SHALL be rebuildable from the stored blob alone, and a rebuild SHALL produce equivalent sections. A scanned or image-only PDF with no extractable text layer SHALL surface a no-text-layer status at upload, and its index SHALL contain at most page-level sections.
 
@@ -131,6 +132,7 @@ In direct-chat and channel transcripts, `document.search` and `document.read` ca
 #### Scenario: Preview works outside the chat route
 - **WHEN** a user clicks a document preview control in workspace settings or the agent-config dialog
 - **THEN** the document source renders in a modal on the current page, without navigating to chat
+
 ### Requirement: Reference document tenancy
 A reference document SHALL be reachable only within its workspace: resolving a document id or path from another workspace SHALL fail not-found, indistinguishable from an unknown document. Attachment references SHALL be cleaned up when an attached agent or channel is deleted.
 
@@ -170,3 +172,26 @@ The runtime SHALL ship a system-tier skill named `document-read` that teaches ag
 #### Scenario: Fork customizes, original locked
 - **WHEN** a user forks the `document-read` system skill to the workspace tier
 - **THEN** a workspace skill with source `fork` is created from the embedded content and the system skill itself remains locked and unchanged
+
+### Requirement: Ownership-scoped document management
+Reference-document uploads SHALL remain available to every workspace member, and each document SHALL record its uploader. A member MAY edit, replace the content of, or delete only documents they uploaded; mutating a document uploaded by another member SHALL require `workspace.write`. Attaching a document to agents SHALL require `agents.write`; attaching to channels SHALL require `channels.write`; promote and demote remain gated by `reference_documents.promote`. The member listing lens SHALL follow the tiered-visibility rules: members see documents they uploaded plus documents attached to agents or channels they can configure; holders of `reference_documents.promote` see all workspace documents. Ownership and permission checks SHALL be enforced server-side on every mutating endpoint, not only in the UI.
+
+#### Scenario: Member manages their own upload
+- **WHEN** a Member renames, replaces the content of, or deletes a document they uploaded
+- **THEN** each succeeds
+
+#### Scenario: Member cannot mutate another member's document
+- **WHEN** a Member attempts to rename, replace, or delete a document uploaded by another member
+- **THEN** response is 403 (the actor lacks workspace.write)
+
+#### Scenario: Admin mutates any document
+- **WHEN** an Owner or Admin (workspace.write) edits or deletes a document uploaded by a Member
+- **THEN** the mutation succeeds
+
+#### Scenario: Attachment requires the surface's write permission
+- **WHEN** a Member without agents.write attempts to attach or detach a document on an agent, or a Member without channels.write attempts the same on a channel
+- **THEN** response is 403; the same attempts by an agents.write (respectively channels.write) holder succeed
+
+#### Scenario: Member listing lens
+- **WHEN** a Member lists reference documents without agent or channel lenses
+- **THEN** the result contains their own uploads plus documents attached to agents or channels they can configure — not the full workspace library

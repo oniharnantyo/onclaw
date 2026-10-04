@@ -42,5 +42,5 @@
 
 - [x] 6.1 `go build ./... && go vet ./... && go test ./...` and `go test -tags=integration ./...` all green.
 - [x] 6.2 `./scripts/smoke.sh` full suite green on a fresh `onclaw_smoke` database (drop + recreate first).
-- [ ] 6.3 Live pass (user-gated): member account sees read-only admin surfaces, can chat + approve own tool call + cancel + delete own thread + use channels; superadmin creates a workspace; member cannot.
+- [ ] 6.3 Live pass (user-gated): member account sees read-only admin surfaces, can chat + approve own tool call + cancel + delete own thread + use channels; superadmin creates a workspace; member cannot (DONE 2026-10-04 browser pass in Master as qa.member@onclaw.dev: settings fields all disabled with read-only note; chatted + Shell tool executed; Stop cancelled a mid-run turn (reply not persisted, Idle after); deleted own thread; posted to #integrations; superadmin created tenant qa-63 via UI; member has no Workspaces button + workspace-create API = 403. Not exercisable: no approval-gated tool configured on the test agent, so no approval interrupt fired — approve-own-tool-call stays covered by unit/integration suites.)
 - [x] 6.4 Update `docs/` permission notes if any exist; confirm openspec validate stays strict-clean.

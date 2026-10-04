@@ -7,7 +7,7 @@ A `/v1` surface compatible with the OpenResponses (OpenAI Responses API) contrac
 ## Requirements
 
 ### Requirement: API key authentication
-The `/v1` surface SHALL authenticate requests with workspace API keys only. A valid key SHALL resolve to exactly one workspace and its creating user; the key's workspace SHALL be the tenant scope for every `/v1` operation. Keys SHALL be presented as `Authorization: Bearer <key>`, SHALL be stored hashed, and SHALL be creatable and revocable by workspace members through the native workspace settings surface. Session JWTs SHALL NOT authenticate `/v1` requests.
+The `/v1` surface SHALL authenticate requests with workspace API keys only. A valid key SHALL resolve to exactly one workspace and its creating user; the key's workspace SHALL be the tenant scope for every `/v1` operation. Keys SHALL be presented as `Authorization: Bearer <key>`, SHALL be stored hashed, and SHALL be creatable and revocable by workspace members through the native workspace settings surface. Key management SHALL be creator-symmetric: the creating member SHALL be able to list and revoke their own keys through the settings surface, while listing every workspace key and revoking another member's key SHALL require `workspace.write`. Session JWTs SHALL NOT authenticate `/v1` requests.
 
 #### Scenario: Key resolves tenant scope
 - **WHEN** a request presents a valid workspace API key
@@ -24,6 +24,14 @@ The `/v1` surface SHALL authenticate requests with workspace API keys only. A va
 #### Scenario: Key management on the native surface
 - **WHEN** a workspace Owner or Admin creates or revokes an API key through workspace settings
 - **THEN** the key is returned in plaintext once at creation, stored hashed, and revoked keys stop authenticating immediately
+
+#### Scenario: Member manages own keys
+- **WHEN** a Member who exchanged a key lists API keys through workspace settings, or revokes a key they created
+- **THEN** the listing contains their own keys and their revoke succeeds — without workspace.write
+
+#### Scenario: Member cannot manage others' keys
+- **WHEN** a Member attempts to revoke a key created by another member
+- **THEN** response is 403 (revoking others' keys requires workspace.write)
 
 ### Requirement: Agents as models
 `GET /v1/models` SHALL list the workspace's agents as models, with the agent slug as the model `id`. On `POST /v1/responses`, the `model` field SHALL resolve to an agent slug within the key's workspace; an unknown or foreign slug SHALL fail with a `model_not_found` error.
@@ -79,18 +87,18 @@ With `stream: true`, the endpoint SHALL emit `text/event-stream` with `data: <js
 - **THEN** `onclaw:context_compacted` carrying the before/after token estimates arrives before the terminal event, and a client that ignores unknown event types still receives a valid lifecycle
 
 ### Requirement: Session binding and chaining
-A request SHALL bind to a session either by `metadata.onclaw_session` or by `previous_response_id` (an opaque response ID minted by the server that resolves to a prior response's session and turn). A `metadata.onclaw_session` naming a session with no persisted events in the key's workspace SHALL birth that session: the turn executes in a persistent session under the client-chosen ID, scoped to the key's workspace, and its history is persisted. `previous_response_id` SHALL remain bind-only: a malformed ID SHALL fail with `invalid_request_error`, and an ID resolving to a session with no persisted events in the key's workspace SHALL fail with not-found indistinguishable from a foreign workspace's session; it SHALL NEVER birth a session. A request with neither binding SHALL run in a fresh ephemeral session whose history is not persisted. Chained and metadata-bound requests append to the bound session's full-replay history.
+A request SHALL bind to a session either by `metadata.onclaw_session` or by `previous_response_id` (an opaque response ID minted by the server that resolves to a prior response's session and turn). A `metadata.onclaw_session` naming a session with no persisted events in the key's workspace SHALL birth that session: the turn executes in a persistent session under the client-chosen ID, scoped to the key's workspace and owned by the key's creating user, and its history is persisted. Binding to an EXISTING session via `metadata.onclaw_session` SHALL be owner-scoped: the session SHALL resolve only when it was created by the key's creating user; another user's session, and sessions born from system execution (channels, schedulers, heartbeats), SHALL fail not-found indistinguishable from a foreign workspace's session. `previous_response_id` SHALL remain bind-only within the creating user's own sessions: a malformed ID SHALL fail with `invalid_request_error`, and an ID resolving to a session with no persisted events in the key's workspace — or to a session the key's creating user does not own — SHALL fail with not-found indistinguishable from a foreign workspace's session; it SHALL NEVER birth a session. A request with neither binding SHALL run in a fresh ephemeral session whose history is not persisted. Chained and metadata-bound requests append to the bound session's full-replay history.
 
 #### Scenario: Metadata binding
-- **WHEN** a request carries `metadata.onclaw_session` for an existing session of the workspace
+- **WHEN** a request carries `metadata.onclaw_session` for an existing session created by the key's creating user
 - **THEN** the turn appends to that session's history
 
 #### Scenario: Session birth on first use
 - **WHEN** a request carries `metadata.onclaw_session` naming a session with no persisted events in the key's workspace
-- **THEN** the session is born under that ID in the key's workspace, the turn persists to it, and subsequent requests binding the same ID append to the same history
+- **THEN** the session is born under that ID in the key's workspace, owned by the key's creating user, the turn persists to it, and subsequent requests binding the same ID append to the same history
 
 #### Scenario: Chained turn
-- **WHEN** a request carries `previous_response_id` minted by an earlier response
+- **WHEN** a request carries `previous_response_id` minted by an earlier response of the same key's creating user
 - **THEN** the turn appends to that response's session; the chain is valid only within the key's workspace
 
 #### Scenario: Chaining cannot bootstrap
@@ -108,6 +116,14 @@ A request SHALL bind to a session either by `metadata.onclaw_session` or by `pre
 #### Scenario: Foreign session rejected
 - **WHEN** a chained request's `previous_response_id` resolves to a session that exists but belongs to another workspace
 - **THEN** the request fails with not-found, indistinguishable from an unknown session
+
+#### Scenario: Foreign-user session rejected
+- **WHEN** a request binds (by metadata or by previous_response_id) an existing session created by a different user of the same workspace
+- **THEN** the request fails with not-found, indistinguishable from an unknown session
+
+#### Scenario: System session rejected
+- **WHEN** a request binds the session of a channel, scheduler, or heartbeat execution
+- **THEN** the request fails with not-found; system-born sessions are not addressable by user API keys
 
 ### Requirement: Compact command
 A request MAY set `metadata.onclaw_command` to `compact` to compact the bound session's context instead of running a normal model turn. The command SHALL require a session binding that resolves to persisted events in the key's workspace: an unknown or foreign `metadata.onclaw_session` SHALL fail not-found indistinguishable from a foreign workspace's session and SHALL NEVER birth a session; `previous_response_id` binds unchanged. The request's `input`, when non-empty, SHALL steer the summary generation as focus text and SHALL NOT be persisted as a user message. The turn SHALL stream `onclaw:context_compacted` (see Streaming event contract) when compaction occurs and SHALL terminate with `response.completed` carrying the summarizer call's usage and no output items; a bound session with no compactable history SHALL complete without the compaction event. Compact requests SHALL be subject to the same single-active-run conflict behavior as ordinary turns.
@@ -176,6 +192,7 @@ Tool calls SHALL execute server-side per the agent's effective tool set (catalog
 
 #### Scenario: Tool choice none
 - **WHEN** a request sets `tool_choice: "none"`
+
 ### Requirement: Approval flow over the wire
 When the run pauses for a dangerous shell-command approval, the stream SHALL emit the custom `onclaw:approval_required` event carrying the interrupt ID, command, and response/item identity, and SHALL end with [DONE] leaving the response `incomplete`. Resolution SHALL happen only through the native approval endpoint; public clients use the event payload's identifiers to route the decision out-of-band. After resolution the continued turn is a new response chained to the same session.
 

@@ -297,7 +297,7 @@ The runtime SHALL maintain a durable index of agent chat sessions so that the se
 - **THEN** no index row is created and no existing row is touched
 
 ### Requirement: Cancellation at a safe point
-A running execution SHALL be cancellable by an explicit cancel request addressing the run (workspace, agent, session). Cancellation SHALL take effect at a safe point — the in-flight model call or tool call either completes and is recorded, or is aborted with its partial state marked — and SHALL record a cancel marker in the session history. Cancellation SHALL NOT leave dangling tool-call records that would break the next execution on the thread. A consumer disconnecting — an HTTP request returning, a stream client closing, or a stream never being consumed — SHALL NOT cancel the run.
+A running execution SHALL be cancellable by an explicit cancel request addressing the run (workspace, agent, session). Cancellation SHALL be permitted to holders of `agents.write` and to the session's owning member (the user the session was created by); any other member SHALL be refused with 403. Cancellation SHALL take effect at a safe point — the in-flight model call or tool call either completes and is recorded, or is aborted with its partial state marked — and SHALL record a cancel marker in the session history. Cancellation SHALL NOT leave dangling tool-call records that would break the next execution on the thread. A consumer disconnecting — an HTTP request returning, a stream client closing, or a stream never being consumed — SHALL NOT cancel the run.
 
 #### Scenario: Cancel between tool calls
 - **WHEN** a caller cancels while tool calls are executing
@@ -308,8 +308,12 @@ A running execution SHALL be cancellable by an explicit cancel request addressin
 - **THEN** the run continues to completion and its events are persisted to session history
 
 #### Scenario: Explicit cancel endpoint
-- **WHEN** an authorized member cancels the active run of a session
+- **WHEN** an authorized member — the session's owner, or a holder of agents.write — cancels the active run of a session
 - **THEN** the run stops at the next safe point with a cancel marker, and the cancel endpoint reports the run as cancelled
+
+#### Scenario: Non-owner member cancel refused
+- **WHEN** a Member without agents.write cancels the active run of another user's session
+- **THEN** response is 403 and the run continues
 
 ### Requirement: Detached execution lifetime
 An execution's context SHALL derive from the server's base context, not from any request or stream context. Completing the request that started a run, or ending any consumer's connection, SHALL NOT terminate or pause the run. The server SHALL track live runs so they can be cancelled explicitly and drained on graceful shutdown.
@@ -386,6 +390,7 @@ An agent's tool surface SHALL be resolved from the tool catalog minus the agent'
 #### Scenario: Later-registered tools do not leak
 - **WHEN** a new built-in tool is registered after an agent was saved
 - **THEN** the agent's executions expose it unless `disabled_tools` names it
+
 ### Requirement: Shell execution
 Unless the agent's `disabled_tools` contains the reserved name `execute`, the runtime SHALL expose a shell tool. Shell commands SHALL execute with the agent's workspace directory as the working directory, SHALL inherit a scrubbed minimal environment (no instance secrets), and SHALL be bounded by a timeout and an output cap, with truncation and exit code reported in the tool result. Agents whose `disabled_tools` lists `execute` SHALL have no shell tool. The workspace jail SHALL be understood as a working-directory convention, not an OS sandbox.
 
@@ -400,15 +405,16 @@ Unless the agent's `disabled_tools` contains the reserved name `execute`, the ru
 #### Scenario: Timeout bounds the command
 - **WHEN** a shell command runs longer than the configured timeout
 - **THEN** the command is stopped and the tool result reports the timeout with whatever output was produced
+
 ### Requirement: Dangerous-command approval
-The shell tool SHALL classify each command against a built-in dangerous-pattern list (destructive filesystem operations, piping network fetches into a shell, privilege escalation, disk/format utilities, host power/reboot, and similar). A matching command SHALL NOT execute immediately: the runtime SHALL pause the execution, persist an `approval_required` transcript event carrying the command and an interrupt identifier, and wait for a human decision. A pending approval SHALL remain resolvable across server restarts. An approve decision SHALL execute the command and record its output as the tool result; a deny decision SHALL record a denial notice as the tool result without executing. Resolution SHALL be possible through an authenticated endpoint permitted to workspace members.
+The shell tool SHALL classify each command against a built-in dangerous-pattern list (destructive filesystem operations, piping network fetches into a shell, privilege escalation, disk/format utilities, host power/reboot, and similar). A matching command SHALL NOT execute immediately: the runtime SHALL pause the execution, persist an `approval_required` transcript event carrying the command and an interrupt identifier, and wait for a human decision. A pending approval SHALL remain resolvable across server restarts. An approve decision SHALL execute the command and record its output as the tool result; a deny decision SHALL record a denial notice as the tool result without executing. Resolution SHALL be permitted through an authenticated endpoint to holders of `agents.write` and to the session's owning member; approval resolutions that escalate to service-connection writes SHALL additionally require `integrations.write` of the resolver regardless of ownership.
 
 #### Scenario: Dangerous command pauses for approval
 - **WHEN** an allow-listed shell tool is asked to run a command matching the dangerous list
 - **THEN** the command does not execute, an `approval_required` event is recorded in the transcript, and the turn pauses
 
 #### Scenario: Approval executes the command
-- **WHEN** a member approves a pending approval
+- **WHEN** the session's owning member (or an agents.write holder) approves a pending approval
 - **THEN** the command executes and its output appears in the transcript as the tool result
 
 #### Scenario: Denial records a refusal
@@ -418,6 +424,10 @@ The shell tool SHALL classify each command against a built-in dangerous-pattern 
 #### Scenario: Approval survives a restart
 - **WHEN** the server restarts while an approval is pending
 - **THEN** the approval can still be resolved afterwards and the execution resumes from its checkpoint
+
+#### Scenario: Connection-tool approval needs integrations.write
+- **WHEN** the pending approval's tool call would write through a service connection and the resolver holds agents.write but not integrations.write
+- **THEN** the resolution is refused with 403 and the approval remains pending
 
 ### Requirement: Web fetch tool
 The runtime SHALL expose a `web.fetch` tool that retrieves an http(s) URL and returns its readable text content, size-capped with an explicit truncation marker. The fetcher SHALL deny loopback, private, and link-local addresses by default — re-validating at each redirect hop — with an instance configuration flag to opt out for self-hosted internal use.
