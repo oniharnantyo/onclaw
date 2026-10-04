@@ -15,7 +15,7 @@
 
 - [x] 3.1 Turn 1.1/1.2 green; `go vet ./...`, `go test ./...`, `go test -tags=integration ./...` all green. Verify: CI-equivalent local run clean.
 - [x] 3.2 Smoke: add a smoke section — against a live server, create a workspace `pre_tool_use` command hook, drive a matched `/v1` turn, assert the blocked tool result; delete the hook. Verify: `./scripts/smoke.sh` fully green including the new section.
-- [ ] 3.3 Web: no changes expected; confirm the hooks settings pane and executions audit render the live deliveries (manual pass in dev UI: hook create → chat turn in the same workspace → execution row visible, tool card shows the block payload). Verify: manual pass recorded in the change notes. (Server-side proven live 2026-10-04: probe turn produced decision=block audit row + honest agent answer; only the pane rendering eyeball remains, user-gated.)
+- [x] 3.3 Web: no changes expected; confirm the hooks settings pane and executions audit render the live deliveries (manual pass in dev UI: hook create → chat turn in the same workspace → execution row visible, tool card shows the block payload). Verify: manual pass recorded in the change notes. (DONE 2026-10-04 via browser pass in the master workspace — away from the running bench cycle: live chat turn showed the "Write File · blocked · Blocked by uipass-verify-block" tool card with the hook name + reason; hooks pane rendered the Recent executions row (block / 14 ms / exit 2) and the hook health card; delete kept the history row, also live-verifying the audit history-survives-deletion scenario; agent answered honestly and refused to bypass the gate via shell.)
 
 ## 4. Release note + bench cycle
 
