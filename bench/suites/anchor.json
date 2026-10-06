@@ -1,5 +1,5 @@
 {
-  "suite_version": "2",
+  "suite_version": "3",
   "lane": "anchor",
   "description": "Terminal-Bench (arXiv 2601.11868) tasks adapted to OnClaw's jailed workspace: no network or package installs, workspace-relative paths, and hidden deterministic verifiers that ride the file-write tool cards and the final answer. Each task summary names the original Terminal-Bench task it adapts. Judge checks are forbidden in this lane.",
   "tasks": [
@@ -54,7 +54,7 @@
     {
       "id": "anchor-temp-average",
       "title": "Average daily temperature spread from heterogeneous CSVs",
-      "summary": "Adapts the Terminal-Bench task 'heterogeneous-dates', reworked for a jailed workspace with no network or package installs. The high-temperature CSV uses ISO dates while the low-temperature CSV mixes date formats; the average high-low difference over the four matching days is exactly 7.35, precomputed from the seeded data, so a correct number cannot be rendered without joining the dates correctly. The inputs are pasted in the measured turn and must be written into the workspace before processing, mirroring the original's two-step shape while keeping the task self-contained under the suite's setup-session semantics. The output-file check rides the file-writing tool card and the value is double-checked in the final answer; an agent that instead redirects through the shell fails the file-card check, which the answer check does not rescue — noted as a deliberate strictness relative to the original's pytest file read.",
+      "summary": "Adapts the Terminal-Bench task 'heterogeneous-dates', reworked for a jailed workspace with no network or package installs. The high-temperature CSV uses ISO dates while the low-temperature CSV mixes date formats; the average high-low difference over the four matching days is exactly 7.35, precomputed from the seeded data, so a correct number cannot be rendered without joining the dates correctly. The inputs are pasted in the measured turn and must be written into the workspace before processing, mirroring the original's two-step shape while keeping the task self-contained under the suite's setup-session semantics. The output-file check rides the file-writing tool card and the value is double-checked in the final answer; the measured turn pins the write tool and the workspace-root location explicitly, because an unpinned compute task drifts to shell redirection naturally (suite-v2 cycle: 3/3 seeds wrote via script, invisible to the file-card check) — the check therefore measures instruction compliance, not tool-choice drift.",
       "tools_used": [
         "files.write",
         "files.read",
@@ -65,7 +65,7 @@
           "text": "I'm pasting two weather exports below. Save them into the workspace as temp_high.csv and temp_low.csv, one CSV per file, header and rows exactly as pasted.\nDaily highs (date,temperature):\ndate,temperature\n2026-03-02,58.2\n2026-03-03,61.0\n2026-03-04,59.4\n2026-03-05,63.8\nDaily lows (date,temperature — the export tool mangled the date formats):\ndate,temperature\n03/02/2026 00:00:00,52.7\n2026-03-03,53.5\n04-Mar-2026,50.9\n03/05/2026,55.9"
         },
         {
-          "text": "Now work out the average difference between the daily high and the daily low across the matching dates, and save just that number to avg_temp.txt. Tell me the number you got."
+          "text": "Now work out the average difference between the daily high and the daily low across the matching dates, and save just that number to avg_temp.txt at the workspace root, using the file write tool. Tell me the number you got."
         }
       ],
       "verify": [

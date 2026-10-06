@@ -17,6 +17,7 @@ It lives as a **nested, decoupled Go module** (`module github.com/oniharnantyo/o
 The bench exists to gate harness changes. The protocol is **locked-harness** (design D4): the model is frozen, one harness delta is measured per cycle, and the pass/fail gate is **pre-registered before the after-run**.
 
 1. **Before the change.** With the harness frozen at the current baseline:
+   - **Purge the fixture workspace's learned memory** (`scripts/purge-memory.sh`) and verify the zeros. The memory pipeline re-learns during runs (turn-end ingestion), so memory state at cycle start depends on run history — cycles that start with different memory states are not comparable (the suite-v2 cycle measured identical prompts flipping 3/3-pass to 0/3-fail against the purged postfix cycle from accumulated memory alone). Never chat manually with the bench agent while a cycle runs, for the same reason.
    - Record the run: `go run . run ... --out /tmp/before.json` (full suite, ≥ 3 seeds, pinned model).
    - **Pre-register the gates** for the delta you are about to make — per lane, `max_regression` (how much pass rate the change may cost) and, for a change that claims improvement, `min_improvement` (how much it must gain). Gates live in the Baseline JSON's `gates` map and must be written and committed **before** the after-run. Copy the baseline artifact from `/tmp/before.json`, add the `gates` map, and commit it at `baselines/<git-sha>-<suite-version>.json`.
 2. **Make the delta.** Exactly one harness change per cycle. Touching the model, the suite, or more than one harness surface invalidates the comparison.
@@ -148,7 +149,7 @@ For every task × seed, sequentially: a fresh session id (`bench-<runid>-<task-i
 
 The **control server** is how the bench blocks a tool deterministically through the http-handler variant: a local HTTP server on `127.0.0.1` (ephemeral port) serving `/block` and `/allow`, which return exactly the harness's canonical hook decision bodies (`{"decision":"block","reason":…}` / `{"decision":"allow","reason":…}`). A `pre_tool_use` hook pointing `{{control_url}}/block` at a tool makes the harness turn that tool call into the canonical blocked tool result. The suites' default tooling is the **command-handler** variant instead: the runner-written temp script blocks by exiting 2 with a message on stderr (the harness's command-hook decision table), so no network path is involved.
 
-Checks match on normalized text (`suite.NormalizeText`: lowercase, apostrophe/punctuation folding, whitespace collapse) and accept either the suite's dotted tool convention (`files.write`) or the wire tool name (`write_file`) for the known aliases. `transcript_file_write` matches the written path as a suffix of the tool call's path (jailed-dir mounts prefix absolute paths).
+Checks match on normalized text (`suite.NormalizeText`: lowercase, apostrophe folding, backtick strip — the design contract has the model chip file/tool names in monospace, so probes are markup-blind — punctuation-to-space folding, whitespace collapse) and accept either the suite's dotted tool convention (`files.write`) or the wire tool name (`write_file`) for the known aliases. `transcript_file_write` matches the written path as a suffix of the tool call's path (jailed-dir mounts prefix absolute paths).
 
 ## Test
 

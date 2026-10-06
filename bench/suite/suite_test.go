@@ -157,6 +157,8 @@ func TestNormalizeText(t *testing.T) {
 		{"12 February, 2026; Q1", "12 february 2026 q1"},
 		{"  spaces\tand\nnewlines ", "spaces and newlines"},
 		{"a@b.com. Next", "a@b.com. next"},
+		{"No `.trk` files in the workspace", "no .trk files in the workspace"},
+		{"the `**/*.trk` glob returned `zero`", "the **/*.trk glob returned zero"},
 	}
 	for _, tc := range cases {
 		if got := NormalizeText(tc.in); got != tc.want {

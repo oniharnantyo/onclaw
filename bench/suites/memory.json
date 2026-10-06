@@ -1,5 +1,5 @@
 {
-  "suite_version": "2",
+  "suite_version": "3",
   "lane": "memory",
   "description": "LongMemEval-protocol task families ported from the in-repo memory eval's question style onto original bench facts: single-fact recall with a near-miss decoy, a superseded-value update, a two-hop entity-to-attribute chain, abstention on an unrecorded topic, cross-member scope safety, and temporal recall with an offset. Facts are seeded in scripted setup sessions; measured turns only ask. Recall rides the harness memory surface because questions are asked outside the seeding sessions.",
   "tasks": [
@@ -44,7 +44,7 @@
     {
       "id": "mem-update-payroll-cutoff",
       "title": "Superseded payroll cutoff",
-      "summary": "An update task in the eval's style: an early session fixes the payroll cutoff at one date and a later session supersedes it. The measured turn asks what the cutoff is now, so only the new value scores; the stale value's distinctive token is forbidden, so an answer that still asserts the old date as current fails even when it also names the new one. The question is phrased as a current-state ask to keep the measured behavior anchored on the present arrangement.",
+      "summary": "An update task in the eval's style: an early session fixes the payroll cutoff at one date and a later session supersedes it. The measured turn asks what the cutoff is now, so only the new value scores; the forbidden tokens are assertion-shaped (the cutoff asserted as the old date) rather than the bare date, because correct answers legitimately explain the superseded one-off — the suite-v2 cycle measured 3/3 correct-but-explaining answers failing a bare stale-date token. The question is phrased as a current-state ask to keep the measured behavior anchored on the present arrangement.",
       "tools_used": [
         "memory.search"
       ],
@@ -89,7 +89,10 @@
         {
           "kind": "answer_not_contains",
           "none_of": [
-            "24th"
+            "cutoff is the 24th",
+            "cutoff is 24th",
+            "cutoff remains the 24th",
+            "cutoff: the 24th"
           ]
         }
       ]
