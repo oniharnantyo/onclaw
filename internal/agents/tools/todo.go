@@ -74,6 +74,37 @@ func (t *todoWriteTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 				Type:     schema.Array,
 				Desc:     `The full item list, each item an object {"key": string (required), "text": string (required), "status": "pending"|"active"|"done"|"failed" (required), "reason": string (optional)}.`,
 				Required: true,
+				// Gemini's GenerateContent rejects array parameters without a
+				// declared element schema ("properties[items].items: missing
+				// field"), which 400s every agent turn on Gemini-family
+				// endpoints — the element shape must be declared, not just
+				// described in prose.
+				ElemInfo: &schema.ParameterInfo{
+					Type: schema.Object,
+					Desc: `One todo item.`,
+					SubParams: map[string]*schema.ParameterInfo{
+						"key": {
+							Type:     schema.String,
+							Required: true,
+							Desc:     "Stable item key. Reuse a key to update that item in place; a key absent from the call deletes that item.",
+						},
+						"text": {
+							Type:     schema.String,
+							Required: true,
+							Desc:     "Short display text for the item.",
+						},
+						"status": {
+							Type:     schema.String,
+							Required: true,
+							Enum:     []string{"pending", "active", "done", "failed"},
+							Desc:     `Exactly "pending", "active", "done", or "failed".`,
+						},
+						"reason": {
+							Type: schema.String,
+							Desc: "The failure explanation, for failed items only.",
+						},
+					},
+				},
 			},
 		}),
 	}, nil
