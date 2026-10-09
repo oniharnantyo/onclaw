@@ -42,30 +42,19 @@ The backend SHALL provide a built-in `todo_read` tool returning the calling sess
 - **THEN** the model cannot call todo_write and the transcript renders no todo elements for that agent's turns
 
 ### Requirement: Session todos chip
-The direct-chat view SHALL render a todos chip in the chat header whenever the session's current todo list — the item list of the newest `todo_write` call in the session's loaded events — contains at least one item, and SHALL render no chip otherwise. The chip SHALL display a spinner-state marker with the active item's text while any item is active, and a done/total progress count. The chip SHALL reflect the current list live as `todo_write` events arrive in the running session, without a page reload. Chip presence SHALL follow the existing present-only rule: no chip when the agent does not expose `todo_write` or the session has no plan.
+The direct-chat view SHALL present the session's todo plan inside the floating run card's Progress section — the card is the session's run-status surface, auto-surfaced over the transcript, hosting the todo checklist and the session's background-task activity (the Agents section, specified in web-app/chat). The todos data lane is unchanged: the section shows the item list of the newest `todo_write` call in the session's loaded events, with the same four row states the transcript cards use, an active-item spinner marker, and a done/total progress count in the card header. The section SHALL reflect the current list live as `todo_write` events arrive in the running session, without a page reload. Presence SHALL follow the existing present-only rule: the Progress section renders only when the agent exposes `todo_write` and the session has a plan; the card itself renders when either the todos lane or the background-task lane has content.
 
 #### Scenario: Chip shows current progress
 - **WHEN** the session's newest `todo_write` holds 5 items with 2 done and 1 active
-- **THEN** the chip renders with the active item's text in spinner state and a 2/5 progress count
+- **THEN** the floating card's Progress section renders with the active item in spinner state and a 2/5 progress count in the header
 
 #### Scenario: Chip absent without a plan
 - **WHEN** the session's events contain no `todo_write` call, or the newest call's list is empty, or the agent does not expose `todo_write`
-- **THEN** no chip renders anywhere in the chat header
+- **THEN** the Progress section does not render, while the card may still render for background-task activity alone
 
 #### Scenario: Chip updates live
 - **WHEN** a `todo_write` event arrives during a running session marking a second item done
-- **THEN** the chip's progress count and active-item marker update without a reload
-
-### Requirement: Todos popover
-Activating the chip SHALL open an anchored popover showing the session's current todo list in full: a header identifying the agent and the list revision, and one row per item with the same four row states the transcript cards use — done struck and dimmed, active spinning, pending dimmed, failed in the danger color with its failure reason beneath. The popover SHALL close on an explicit dismiss control and on interaction outside it.
-
-#### Scenario: Popover shows the full current list
-- **WHEN** the user activates the chip on a session whose current list has a failed item with a reason
-- **THEN** the popover lists every current item with its status styling and shows the failed item's reason
-
-#### Scenario: Popover dismisses
-- **WHEN** the user activates the dismiss control or clicks outside the open popover
-- **THEN** the popover closes and the chip remains
+- **THEN** the Progress section's rows and count update in place
 
 ### Requirement: Todos auto-surface
 The popover SHALL open itself when the first `todo_write` event of a run arrives, and SHALL collapse back to the chip when the run finishes or when the current list reaches a state with no open items. Later `todo_write` events in the same run SHALL update the open popover in place but SHALL NOT re-open a popover the user dismissed during that run.

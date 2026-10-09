@@ -50,7 +50,7 @@ Sub-agent compositions SHALL NOT carry the delegation tool or the background con
 - **THEN** its tool surface contains no delegation tool and no task control tools
 
 ### Requirement: Child transcript isolation
-Sub-agent execution events SHALL NOT persist onto the parent session's transcript and SHALL NOT be delivered onto the parent's live stream as transcript events. To the parent transcript — live and hydrated — a delegation is exactly one tool call with started/finished events carrying the delegation arguments and the sub-agent's final message as the result.
+Sub-agent execution events SHALL NOT persist onto the parent session's transcript and SHALL NOT be delivered onto the parent's live stream as transcript events. To the parent transcript — live and hydrated — a delegation is exactly one tool call with started/finished events carrying the delegation arguments and the sub-agent's final message as the result. The one exception is the user-facing observability surface (agent-runs-surface): a task-keyed progress side-channel on the dedicated session tasks endpoints MAY carry sub-agent execution records to UI clients that explicitly subscribe. That side-channel SHALL NOT write to the parent session's persisted events, SHALL NOT enter the parent's context, and SHALL NOT appear on the turn stream or the session-events stream.
 
 #### Scenario: Live stream shows one card
 - **WHEN** a delegated sub-agent executes multiple model turns and tool calls
@@ -59,6 +59,10 @@ Sub-agent execution events SHALL NOT persist onto the parent session's transcrip
 #### Scenario: Reload shows one card
 - **WHEN** a transcript containing a completed delegation is reloaded from durable storage
 - **THEN** the delegation renders as the same single tool call with its result, identical to what the live stream showed
+
+#### Scenario: Subscribed trajectory stays off the transcript
+- **WHEN** a client subscribed to the session tasks progress stream receives a delegation's child records
+- **THEN** the parent session's persisted events and transcript remain exactly as they would have been without any subscriber
 
 ### Requirement: Background delegation
 When the capability is wired with background enabled, the delegation tool SHALL accept a `run_in_background` argument. A background launch SHALL return immediately with the task id and status while the sub-agent continues executing. The model SHALL be able to inspect a task's interim progress with a `task_output` tool and cancel it with a `task_stop` tool; those control tools address every background task in the run's shared task space, delegation tasks and shell tasks alike. When a background delegation completes, fails, or is canceled, the parent session SHALL receive a completion transcript event naming the task, its outcome, and where the full output lives. Background tasks are process-local: a task does not survive the parent run ending or the server restarting, and the launch result SHALL say so honestly.

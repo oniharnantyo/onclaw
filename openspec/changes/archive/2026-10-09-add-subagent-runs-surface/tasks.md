@@ -1,0 +1,49 @@
+# Tasks
+
+## 1. Spike: progress tap
+
+- [x] 1.1 Verify against eino v0.10.0-alpha.35 whether the backgroundtask Manager/InMemoryStore exposes a task's progress entries (written via `EmitProgress`) with a readable incremental cursor (List/Get shape, ordering, read-your-writes). Write a throwaway Go test against the module in the mod cache or a scratch package; record the verdict and the chosen tap (D1 primary vs. `TranscriptFormat` fallback) in this tasks.md before any wiring. Verification: the spike test runs green and the decision is recorded.
+  - **Verdict (spike green, throwaway test deleted): D1 primary WINS — drain via `Manager.ListTaskEvents` re-page/skip.** (a) An empty cursor opens a fresh snapshot pinned at the current end and returns events in append order; `NextCursor` empties on exhaustion. (b) Continuation cursors are snapshot-stable — events appended after the first page are NOT reachable through them (cursor captured at 3 events still capped at 3 after 6 existed), so a live tail must re-page with an empty cursor each tick and skip past a per-task seen-count; fresh pages showed read-your-writes for late appends. (c) `WaitForTaskVersion` is progress-inert: progress appends neither advance `Version` nor signal the store, and the wait returned `DeadlineExceeded` across three progress-only appends — rejected as the progress wait (lifecycle transitions only). (d) `Manager.Get` exposes `Spec.Kind/Description/OutputFile` for enrichment; `ListTaskEvents` keeps working after the task goes terminal (final drain before the terminal frame is safe) and unknown ids read as `ErrNotFound`. Chosen tap: the per-run pump's sibling drain ticks at the same 250ms cadence, re-pages each tracked task with an empty cursor, skips the seen-count, and assigns frame sequence = append index + 1.
+
+## 2. Backend: task-space exposure
+
+- [x] 2.1 Extend the runner's live-run registry exposure so a run's `BackgroundTaskSpace` (store, Manager) is reachable by session coordinates the way `CancelRun` is (lookup by workspace/agent/session), returning not-found when no live run holds the session. Verification: unit test resolving a live run's task space and a not-found for an idle session.
+  - Verified: `Runner.TaskSpace` / `runManager.taskSpace` (space hung on `liveRun` at `start`, compact turns pass nil); `TestRunManager_TaskSpaceResolution` covers live-space resolution, run-without-lanes (nil, true), idle-session and finished-run not-found, and the progress-subscription refusals.
+- [x] 2.2 Implement the progress drain per the 1.1 verdict: per-run subscription registry (task-keyed frame fan-out) fed by the pump drain reading each live task's progress past a per-task cursor, covering delegation and shell kinds; terminal transitions emit a terminal frame and close that task's fan-out. Verification: unit test asserting frame order, task-keying, and terminal-frame delivery for both lanes.
+  - Verified: `taskProgressHub` + `drainTaskProgress` (pump-fed discovery, 250ms sibling drain, re-page/skip cursors, drop-on-full streams); `TestTaskProgressDrain_BothLanes` asserts per-task sequence order, task-keying, lane kinds, one terminal frame per task with no frames after it, for delegation and shell alike; race-detector clean.
+- [x] 2.3 Add the event/payload types for task progress frames (task_id, kind, sequence, record: text/tool_call/tool_result, terminal outcome) in `internal/agents/events.go`, with JSON tags as the wire contract. Verification: unit test on marshal/unmarshal round-trip.
+  - Verified: `TaskProgressFrame` / `TaskProgressRecord` pinned tags in events.go; `TestTaskProgressFrameRoundTrip` round-trips both frame variants and asserts the exact pinned key set and omitempty branches.
+- [x] 2.4 Implement the merged task list: live store snapshot ⋈ persisted `x.eino.background_task.created` / `x.task_completed` session events (status precedence: persisted terminal beats live absent; created-without-completion renders as created, never running, per process-local honesty). Verification: unit test with fake stores covering live-only, historical-only, created-lost-to-restart, and terminal-beats-live cases.
+  - Verified: pure `MergeSessionTasks` in tasklist.go (plain `LiveTask` / `TaskCreatedRecord` / `TaskCompletedPayload` inputs, deterministic task-id sort, empty non-nil); `TestMergeSessionTasks` covers all four named cases plus live-terminal, non-terminal→running mapping, duplicate collapse, and the pinned wire shape (`TestTaskListEntryWireShape`).
+
+## 3. Backend: session tasks API
+
+- [x] 3.1 Add handlers: `GET …/sessions/:sid/tasks` (list), `GET …/sessions/:sid/tasks/:tid/output` (trajectory: live cursor read, else file replay from `output_path`, clear not-found when pruned), `POST …/sessions/:sid/tasks/:tid/cancel` (running-only, 409 otherwise). Session access rules and workspace scoping identical to the existing session-events endpoints. Verification: handler tests for each endpoint incl. authz (foreign workspace 404/not-found indistinguishable) and the 409 conflict path.
+- [x] 3.2 Add the progress SSE endpoint `GET …/sessions/:sid/tasks/stream` with the same auth shape as the session-events live stream (auth header, `stream=true` semantics, reconnect-friendly), streaming 2.2's frames for the session's running tasks and ending frames per task on terminal. Verification: handler test asserting frame content, task-keying, and that a non-subscribed session's transcript events are untouched.
+- [x] 3.3 Wire a smoke-test section: delegate in background, list tasks, stream progress, read output, cancel a shell task; assert list merge and cancel outcomes. Verification: `./scripts/smoke.sh` new section green; full suite no regressions.
+
+## 4. Web: run state + task stream client
+
+- [x] 4.1 Add the tasks API client (`web/src/lib/api.ts`) and a per-session task store slice: task list (joined), per-task trajectory buffers, subscription lifecycle (subscribe while a consumer is open, teardown on close), `task_completed` folding from the livechat translator (replacing today's drop) and hydration parity. Verification: vitest for folding, join (description + order tiebreak), subscription scoping, and hydration parity.
+- [x] 4.2 Add display entries for `agent` and `background_shell` in `toolDisplay.ts`/`toolCatalog.ts` (icon, one-liner from description/command, live status label). Verification: vitest on the display derivation for running/done/failed/canceled calls.
+
+## 5. Web: floating run card
+
+- [x] 5.1 Rework `SessionTodosSurface` into the floating run card: transcript-anchored card (top corner; bottom sheet <640px), no header chip, hosting the Progress section (existing `useSessionTodoPlan` lane, four row states, header count) and the Agents section (task rows from 4.1's store; "Ended · N ›" summary row). Verification: vitest for presence rules (todos-only, tasks-only, neither), auto-surface-once-per-run, sticky dismissal, chat-switch reset.
+- [x] 5.2 Wire section→panel activation: Agents rows and the Ended row open the Subagents panel (list view; row pre-selection when the task is joinable). Verification: vitest on store interactions (openPanelTab payloads).
+
+## 6. Web: Subagents panel source
+
+- [x] 6.1 Implement the `subagents` panel source module (registry `registerPanelSource` + candidate matchers on `agent`/`background_shell` cards): list view (Running with live preview strip / Ended with outcome, relative time, snippet) and trajectory detail view (back navigation, kind/status/elapsed/tool-call count, streamed-or-replayed transcript rendering). Verification: vitest for view switching, dedup, candidate matching, and trajectory rendering from both live frames and replayed output.
+- [x] 6.2 Add the Stop control per D4: enabled only for running background tasks; disabled-with-explanation for foreground delegations; cancel API call flipping status everywhere via 4.1's store; badge-dot watcher covers task-terminal-while-panel-closed. Verification: vitest on gating logic and the cancel call path.
+- [x] 6.3 Deep-link affordance on `agent`/`background_shell` tool cards opening the panel detail (or list when unjoinable). Verification: vitest on the affordance payloads.
+
+## 7. Verification
+
+- [x] 7.1 Full backend gate: `go build ./... && go vet ./... && go test ./...` and integration suite green. Verification: clean output recorded.
+  - Verified (fresh, merged tree): build OK, vet OK, `go test ./...` all packages ok. Integration via `TEST_DATABASE_URL=postgres://postgres:password@localhost:5432/postgres?sslmode=disable go test -tags=integration ./...` → exit 0, all packages ok (note: exporting `DATABASE_URL` instead trips `internal/config` TestFromServerContextDefaults, which correctly asserts the default is empty — use TEST_DATABASE_URL).
+- [x] 7.2 Full web gate: typecheck + vitest suite green. Verification: clean output recorded.
+  - Verified (fresh, merged tree): `npx tsc -b` clean; `npx vitest run` → 135 files / 1810 tests, all passing. The previously-flaky `todos/SessionTodosSurface.test.tsx` re-run in isolation with the other new/adjacent files (SessionTodosSurface, lib/tasks, lib/livechat, ToolCall, panel sources/subagents): 5 files / 153 tests green.
+- [x] 7.3 Smoke suite green including the new 3.3 section. Verification: `./scripts/smoke.sh` full pass recorded.
+  - Verified (fresh): `onclaw_smoke` dropped + recreated first, then `DATABASE_URL=…onclaw_smoke… ./scripts/smoke.sh` → exit 0, all 37 sections ran, 1206 assertions passed, 0 failures, including section 37 (merged list over turns, delegation + shell trajectory replay from disk, no-live-run SSE shape + [DONE] sentinel, unknown task/session 404s, ended-task cancel 409s).
+- [ ] 7.4 Live pass (user-gated): real delegation run in the browser — card auto-surfaces, trajectory streams in the panel, stop cancels a background task, reload replays ended tasks. Verification: user-confirmed walkthrough.
