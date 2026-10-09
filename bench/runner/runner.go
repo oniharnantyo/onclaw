@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -29,6 +30,23 @@ import (
 // runStatusCompleted is the /v1 run status a turn must return; anything else
 // (failed, prompt_blocked, …) fails the task — recorded, never retried.
 const runStatusCompleted = "completed"
+
+// runStatusFailSignature is the recorded-error fragment of the server-side
+// run-failure classification: the endpoint accepted the turn but the run came
+// back with a non-completed status — the dead/drained-endpoint signature the
+// circuit breaker counts on.
+const runStatusFailSignature = "returned run status"
+
+// providerDeadStreakLimit is the consecutive server-side run failures that
+// trip the circuit breaker. Six single-fail tasks in a row cannot plausibly
+// be a live endpoint's capability profile — run-status failures mean the
+// agent run errored server-side, not that the answer was wrong.
+const providerDeadStreakLimit = 6
+
+// errProviderDead aborts the run (exit 1, no scoreboard written) when the
+// breaker trips: writing a scoreboard full of 0% lanes invites gating on
+// garbage, which is how the Opencode-zen outage cost a full cycle.
+var errProviderDead = errors.New("provider circuit breaker tripped")
 
 // command-hook artifact naming: the temp script per hook step and the
 // per-hook control file created only when the script body references
@@ -81,6 +99,13 @@ type Options struct {
 	// ScoreOnly skips provisioning (the workspace must already exist) and
 	// runs the scored tasks directly.
 	ScoreOnly bool
+
+	// Resume continues a prior aborted run: (task, seed) results already in
+	// the progress file (Out + ".progress.jsonl") are loaded and skipped, new
+	// results append, and the assembled scoreboard covers both. Without it a
+	// fresh run truncates the progress file. Pairs with the circuit breaker +
+	// an external retry loop so provider flaps cost minutes, not cycles.
+	Resume bool
 
 	// JudgeModel pins the judge check's model (default glm-5.3-flash);
 	// separate from the agent-under-test pin (design D5).
@@ -165,7 +190,10 @@ func Run(ctx context.Context, opts Options) (*scoreboard.Scoreboard, error) {
 	}
 	defer e.close()
 
-	results := e.executeAll(ctx, suites)
+	results, err := e.executeAll(ctx, suites, opts)
+	if err != nil {
+		return nil, err
+	}
 	board, err := e.assemble(opts, results)
 	if err != nil {
 		return nil, err
@@ -397,29 +425,161 @@ func actorEmail(name string) (string, error) {
 	}
 }
 
-// executeAll drives every task × seed sequentially in suite load order, with
-// the per-(task,seed) infra retry budget and bounded exponential backoff.
-func (e *executor) executeAll(ctx context.Context, suites []suite.TaskSuite) []scoreboard.TaskResult {
-	total := 0
-	for _, s := range suites {
-		total += len(s.Tasks) * e.opts.Seeds
+// progressPath is the per-run result journal: one final TaskResult JSON per
+// line, appended as each (task, seed) completes so an aborted run can resume.
+func progressPath(out string) string { return out + ".progress.jsonl" }
+
+// resultKey identifies one (task, seed) slot across resumes.
+func resultKey(r scoreboard.TaskResult) string {
+	return fmt.Sprintf("%s|%d", r.TaskID, r.Seed)
+}
+
+// loadProgress reads a prior run's journal, returning the recorded results
+// (in recorded order) and the done-slot set. A missing file is an empty
+// journal; a malformed line aborts — a corrupt journal must not silently
+// shrink the run.
+func loadProgress(path string) ([]scoreboard.TaskResult, map[string]bool, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, map[string]bool{}, nil
 	}
-	results := make([]scoreboard.TaskResult, 0, total)
+	if err != nil {
+		return nil, nil, err
+	}
+	var results []scoreboard.TaskResult
+	done := map[string]bool{}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var r scoreboard.TaskResult
+		if err := json.Unmarshal([]byte(line), &r); err != nil {
+			return nil, nil, fmt.Errorf("progress journal %s: %w", path, err)
+		}
+		results = append(results, r)
+		done[resultKey(r)] = true
+	}
+	return results, done, nil
+}
+
+// appendProgress journals one result line.
+func appendProgress(path string, r scoreboard.TaskResult) error {
+	line, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.Write(append(line, '\n'))
+	return err
+}
+
+// truncateProgress drops the last n journal entries (the dead-streak results
+// the breaker discards so outage windows never reach a scoreboard).
+func truncateProgress(path string, n int) error {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var lines []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) != "" {
+			lines = append(lines, line)
+		}
+	}
+	if n > len(lines) {
+		n = len(lines)
+	}
+	kept := strings.Join(lines[:len(lines)-n], "\n")
+	if kept != "" {
+		kept += "\n"
+	}
+	return os.WriteFile(path, []byte(kept), 0o644)
+}
+
+// executeAll drives every task × seed sequentially in suite load order, with
+// the per-(task,seed) infra retry budget and bounded exponential backoff. A
+// resumed run skips the (task, seed) slots already journaled and appends new
+// results as they land. The provider circuit breaker aborts the run once
+// providerDeadStreakLimit consecutive tasks fail with the server-side
+// run-failure signature (the endpoint accepted the turn but the agent run
+// died) — a dead or quota-drained endpoint otherwise burns the rest of the
+// cycle producing all-fail lanes, which is how two cycles were lost to
+// outages before the breaker existed.
+func (e *executor) executeAll(ctx context.Context, suites []suite.TaskSuite, opts Options) ([]scoreboard.TaskResult, error) {
+	prior, done, err := func() ([]scoreboard.TaskResult, map[string]bool, error) {
+		path := progressPath(opts.Out)
+		if opts.Resume {
+			return loadProgress(path)
+		}
+		// Fresh run: the journal from any prior attempt is void.
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return nil, nil, err
+		}
+		return nil, map[string]bool{}, nil
+	}()
+	if err != nil {
+		return nil, err
+	}
+	results := prior
+	skipped := 0
+	total := len(prior)
+	for _, s := range suites {
+		total += len(s.Tasks) * opts.Seeds
+	}
+	deadStreak := 0
 	for si := range suites {
 		s := &suites[si]
 		for ti := range s.Tasks {
 			task := &s.Tasks[ti]
-			for seed := 0; seed < e.opts.Seeds; seed++ {
+			for seed := 0; seed < opts.Seeds; seed++ {
+				if done[resultKey(scoreboard.TaskResult{TaskID: task.ID, Seed: seed})] {
+					skipped++
+					continue
+				}
 				result := e.executeWithRetries(ctx, s, task, seed)
 				results = append(results, result)
-				fmt.Printf("task %-28s seed %d/%d -> %s\n", task.ID, seed+1, e.opts.Seeds, result.Status)
+				if err := appendProgress(progressPath(opts.Out), result); err != nil {
+					return results, fmt.Errorf("journal progress: %w", err)
+				}
+				fmt.Printf("task %-28s seed %d/%d -> %s\n", task.ID, seed+1, opts.Seeds, result.Status)
 				if ctx.Err() != nil {
-					return results
+					return results, nil
+				}
+				if result.Status == scoreboard.StatusFail && strings.Contains(result.Error, runStatusFailSignature) {
+					deadStreak++
+					if deadStreak >= providerDeadStreakLimit {
+						// Discard the streak from the journal: those results
+						// died to the outage, not the model — re-running them
+						// on resume measures the task, not the flap. Without
+						// this, every flap poisons the journal with up to
+						// providerDeadStreakLimit all-fail lanes (which is how
+						// the first supervised baseline recorded 0% lanes
+						// across three dead windows).
+						if err := truncateProgress(progressPath(opts.Out), deadStreak); err != nil {
+							return results, fmt.Errorf("truncate dead-streak journal: %w", err)
+						}
+						results = results[:len(results)-deadStreak]
+						fmt.Printf("\nCIRCUIT BREAKER: %d consecutive server-side run failures — the model endpoint looks dead or drained. Streak discarded from the journal; no scoreboard written. Re-run with --resume to continue this run.\n", deadStreak)
+						return results, errProviderDead
+					}
+				} else {
+					deadStreak = 0
 				}
 			}
 		}
 	}
-	return results
+	if skipped > 0 {
+		fmt.Printf("resume: %d journaled results loaded, %d tasks skipped\n", len(prior), skipped)
+	}
+	return results, nil
 }
 
 func (e *executor) executeWithRetries(ctx context.Context, s *suite.TaskSuite, task *suite.Task, seed int) scoreboard.TaskResult {

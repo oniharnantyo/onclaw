@@ -47,6 +47,7 @@ Run flags:
   --dry-run             load + lint + plan only: emit a structural scoreboard, no server contact
   --seed-only           provision the fixture workspace/agent and exit (no tasks)
   --score-only          skip provisioning (workspace must already exist) and run the scored tasks
+  --resume              continue an aborted run: skip (task,seed) slots already in <out>.progress.jsonl
 
 Provider bootstrap (only used when the fixture workspace has no enabled provider):
   ONCLAW_BENCH_PROVIDER_KEY   API key for the pinned provider (GLM-5.3-flash via Z.AI)
@@ -107,6 +108,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	dryRun := fs.Bool("dry-run", false, "load + lint + plan only, emit a structural scoreboard")
 	seedOnly := fs.Bool("seed-only", false, "provision the fixture and exit (no tasks)")
 	scoreOnly := fs.Bool("score-only", false, "skip provisioning; the workspace must already exist")
+	resume := fs.Bool("resume", false, "continue an aborted run from <out>.progress.jsonl (skip completed task/seed slots)")
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(stderr, "run:", err)
 		return 2
@@ -147,6 +149,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		DryRun:        *dryRun,
 		SeedOnly:      *seedOnly,
 		ScoreOnly:     *scoreOnly,
+		Resume:        *resume,
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, "run failed:", err)

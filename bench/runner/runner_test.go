@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -552,6 +553,100 @@ func TestRunFailedTurnIsRecordedNotRetried(t *testing.T) {
 	fake.mu.Unlock()
 	if calls != 1 {
 		t.Fatalf("measured calls = %d, want 1 (failures are not retried)", calls)
+	}
+}
+
+// breakerSuiteJSON builds a nine-task suite so a run outlives the six-failure
+// breaker trip.
+func breakerSuiteJSON() string {
+	var b strings.Builder
+	b.WriteString(`{"suite_version":"1","lane":"tool-error","description":"breaker fixture","judge_allowed":false,"tasks":[`)
+	for i := 0; i < 9; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `{"id":"task-%02d","title":"T","summary":"Filler task for the breaker test.","tools_used":["files.write"],"setup":[],"turns":[{"actor":"casey","text":"do the thing"}],"verify":[{"kind":"answer_contains","any_of":[["wrote the note"]]}]}`, i)
+	}
+	b.WriteString("]}")
+	return b.String()
+}
+
+// TestProviderCircuitBreakerAbortsRun pins the breaker: a run whose measured
+// turns fail server-side six consecutive times aborts with errProviderDead,
+// no scoreboard is written, and the run stops AT the limit instead of burning
+// the rest of the suite on a dead endpoint.
+func TestProviderCircuitBreakerAbortsRun(t *testing.T) {
+	fake := newFakeOnclaw()
+	fake.measuredStatus = "failed"
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+
+	dir := t.TempDir()
+	suitePath := writeTempFile(t, dir, "breaker.json", breakerSuiteJSON())
+
+	board, err := Run(context.Background(), Options{
+		BaseURL: srv.URL, AdminEmail: "admin@test", AdminPassword: "pw",
+		WorkspaceSlug: "bench-eval", AgentSlug: "bench-agent", Model: "glm-test-model",
+		SuiteSpec: suitePath, Out: writeTempOut(t), Seeds: 1, Retries: 1, Backoff: 1 * time.Millisecond,
+	})
+	if !errors.Is(err, errProviderDead) {
+		t.Fatalf("want errProviderDead, got %v", err)
+	}
+	if board != nil {
+		t.Fatal("no scoreboard must be written when the breaker trips")
+	}
+	fake.mu.Lock()
+	calls := fake.measuredCalls
+	fake.mu.Unlock()
+	if calls != providerDeadStreakLimit {
+		t.Fatalf("measured calls = %d, want %d (run must stop at the limit)", calls, providerDeadStreakLimit)
+	}
+}
+
+// TestResumeContinuesAbortedRun pins the resume contract: an aborted run
+// journals its completed (task, seed) slots; a resumed run skips them, runs
+// only the remainder, and the assembled scoreboard covers both phases.
+func TestResumeContinuesAbortedRun(t *testing.T) {
+	fake := newFakeOnclaw()
+	fake.measuredStatus = "failed"
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+
+	dir := t.TempDir()
+	suitePath := writeTempFile(t, dir, "breaker.json", breakerSuiteJSON())
+	outPath := writeTempOut(t)
+	runOpts := Options{
+		BaseURL: srv.URL, AdminEmail: "admin@test", AdminPassword: "pw",
+		WorkspaceSlug: "bench-eval", AgentSlug: "bench-agent", Model: "glm-test-model",
+		SuiteSpec: suitePath, Out: outPath, Seeds: 1, Retries: 1, Backoff: 1 * time.Millisecond,
+	}
+
+	if _, err := Run(context.Background(), runOpts); !errors.Is(err, errProviderDead) {
+		t.Fatalf("phase 1: want errProviderDead, got %v", err)
+	}
+
+	fake.mu.Lock()
+	fake.measuredStatus = "completed"
+	fake.mu.Unlock()
+	board, err := Run(context.Background(), Options(func() Options {
+		o := runOpts
+		o.Resume = true
+		return o
+	}()))
+	if err != nil {
+		t.Fatalf("phase 2 (resume): %v", err)
+	}
+	// The breaker discarded its 6 dead-streak results from the journal, so
+	// the resumed run re-measures them against the recovered endpoint: the
+	// scoreboard holds all 9 tasks, all passing (3 measured pre-flap + 6
+	// re-measured post-resume — outage windows never reach a scoreboard).
+	if len(board.Tasks) != 9 {
+		t.Fatalf("resumed scoreboard has %d tasks, want 9", len(board.Tasks))
+	}
+	for i, res := range board.Tasks {
+		if res.Status != scoreboard.StatusPass {
+			t.Fatalf("task[%d] status = %s, want pass (dead-streak results must not survive the breaker)", i, res.Status)
+		}
 	}
 }
 
