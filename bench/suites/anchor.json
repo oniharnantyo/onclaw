@@ -1,5 +1,5 @@
 {
-  "suite_version": "3",
+  "suite_version": "4",
   "lane": "anchor",
   "description": "Terminal-Bench (arXiv 2601.11868) tasks adapted to OnClaw's jailed workspace: no network or package installs, workspace-relative paths, and hidden deterministic verifiers that ride the file-write tool cards and the final answer. Each task summary names the original Terminal-Bench task it adapts. Judge checks are forbidden in this lane.",
   "tasks": [

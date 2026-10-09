@@ -1,5 +1,5 @@
 {
-  "suite_version": "3",
+  "suite_version": "4",
   "lane": "instruction-fidelity",
   "description": "Instruction fidelity, measured black-box. Behavioral rules ride in the task's measured turns — the runner scopes setup chat_turns to a separate logical session from the measured one, so a rule planted in setup never reaches the context under test; rules given in the measured thread are the closest reachable analog to stored system-prompt rules (agent identity fields are patchable via the public API but the suite schema's agent_config step cannot express them, and agent-tier skills are installable via the public API with no suite setup step to drive them — both noted as gaps rather than faked; slash commands are not reachable through the public input path at all). Soundness under pooled-answer verification: rule-turn acknowledgements can echo required tokens, so every task pairs its answer probes with a transcript_file_write leg whose content can only be produced by the final turn. Required surface forms are short tokens, split across probes, or derived (arithmetic no acknowledgement can precompute). Each task pins an empty tool denylist at setup so lane order cannot leak restrictions into it. Verifiers are deterministic — no judge.",
   "tasks": [

@@ -1,5 +1,5 @@
 {
-  "suite_version": "3",
+  "suite_version": "4",
   "lane": "tool-error",
   "description": "Structured tool-error recovery, measured black-box: deterministic hook blocks (a workspace hook whose handler is the bench control server, injected through the pre_tool_use event, returning the canonical block JSON as the tool result), denylist interactions (agent-level disabled_tools uses the real tool-surface names: execute for the shell, edit_file and write_file for the file tools), and structured errors from the jailed filesystem (missing files, paths outside the workspace, empty result sets). Every task pins its own denylist explicitly at setup so tasks are order-independent; the runner restores the pinned baseline after each task. Setup chat_turns seed only state that outlives a session (files in the agent jail), since the runner scopes setup sessions apart from the measured one. Verifiers are deterministic answer probes and tool-call probes — no judge. Single measured turn per task, so pooled-answer verification cannot be poisoned by acknowledgement echoes.",
   "tasks": [
@@ -140,7 +140,7 @@
       "verify": [
         {
           "kind": "tool_called",
-          "args_contains": "brief.md",
+          "args_contains": "brief",
           "tool_any": [
             "read_file",
             "glob",
@@ -318,6 +318,7 @@
               "three matches",
               "**3**",
               "count of",
+              "count from the file",
               "3 falcon"
             ]
           ]

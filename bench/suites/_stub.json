@@ -1,5 +1,5 @@
 {
-  "suite_version": "3",
+  "suite_version": "4",
   "lane": "compaction",
   "description": "Structural stub for dry-runs and live smoke: one plain-reply task that proves the runner can load, provision, drive one measured turn, and verify an answer. Underscore-prefixed, so directory loads skip it — run it explicitly with --suite bench/suites/_stub.json.",
   "judge_allowed": false,

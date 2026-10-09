@@ -1,5 +1,5 @@
 {
-  "suite_version": "3",
+  "suite_version": "4",
   "lane": "delegation",
   "description": "Subagent delegation and background-shell outcomes with final-state verifiers: artifacts delegated to the general-purpose subagent are confirmed through the parent's own read-back of the jailed workspace, background launches are confirmed through the shell tool's background launch arguments, and delivered results (or honest failures) are confirmed in the final answer.",
   "tasks": [
@@ -68,6 +68,9 @@
               "was not able",
               "unable to",
               "does not exist",
+              "doesn't exist",
+              "did not exist",
+              "file missing",
               "no such file",
               "failed to",
               "not found"

@@ -67,8 +67,8 @@ func TestInternalLaneFilesLoadLintAndCount(t *testing.T) {
 			if s.Lane != lf.wantLane {
 				t.Errorf("lane = %q, want %q", s.Lane, lf.wantLane)
 			}
-			if s.SuiteVersion != "3" {
-				t.Errorf("suite_version = %q, want \"3\"", s.SuiteVersion)
+			if s.SuiteVersion != "4" {
+				t.Errorf("suite_version = %q, want \"4\"", s.SuiteVersion)
 			}
 			if s.JudgeAllowed {
 				t.Errorf("judge_allowed is set; the internal lanes are fully deterministic and must not opt into the judge")

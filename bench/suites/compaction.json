@@ -1,5 +1,5 @@
 {
-  "suite_version": "3",
+  "suite_version": "4",
   "lane": "compaction",
   "description": "Context-window compaction and transcript offload fidelity, measured black-box. Each task pins a small agent-level context window (2000 tokens, summarization trigger at 75%), then builds one long measured thread — the seeding turns and the recall question ride in the same session, because the runner scopes setup chat_turns to a separate logical session from the measured one, so only measured turns reach the context under test; the harness compacts mid-thread and the final turn asks for an early-seeded fact. Soundness under pooled-answer verification: the file-write probes (transcript_file_write) are immune to seed-turn acknowledgements echoing seeded values, so every task pairs its answer probe with a file leg. All seeded tokens are short enough to stay lint-exempt. Verifiers are deterministic — no judge. A forced-compact command via request metadata exists on the public API but is not expressible in this suite schema, so compaction is forced purely through the window override.",
   "tasks": [
@@ -40,7 +40,7 @@
           "text": "Weather and ops: the coastal forecast has a gale window Saturday evening, so the outdoor container moves shift to Saturday morning and the deck crew starts an hour early. New ear protection arrived, collect from Torill. The offshore pair on rotation wants their briefing moved to 07:30, nobody objected on the thread. Coffee beans restocked, the dark roast is the one by the window."
         },
         {
-          "text": "Two things to close the loop: first, what was the vault code from the very first message of this field log? Quote it exactly. Second, save that code as the only line of vault.md in your workspace so it outlives this chat."
+          "text": "Two things to close the loop: first, what was the vault code from the very first message of this field log? Quote it exactly. Second, save that code as the only line of vault.md in your workspace so it outlives this chat — write the file fresh with the write tool even if a vault.md is already present; do not just verify an existing one."
         }
       ],
       "verify": [
@@ -119,11 +119,10 @@
     },
     {
       "id": "comp-gate-offload",
-      "title": "Offloaded history readback after compaction",
-      "summary": "The audit gate order is planted first, noise turns push the thread past the trigger so the harness compacts and offloads the pre-compaction history into the agent workspace, and the closing turn asks the agent to locate that saved history file, read it back, and report the gate order. Sound because the tool-call probe pins the offload read (acknowledgements never read files, so it is pollution-immune) and the four gate words appear only in the seeded turn.",
+      "title": "Gate order recall after compaction",
+      "summary": "The audit gate order is planted first, noise turns push the thread past the trigger so the harness summarizes the pre-compaction context away, and the closing turn asks for the gate order cold. Sound because the four gate words appear only in the seeded turn, so a correct answer cannot be rendered without recovering them from whatever survived compaction — the summary text or the agent's own memory notes — and the recovered answer is scored on content only. Suite-v3 ran this with a saved-history-file premise and a read-back probe; OnClaw's summarization never materializes a history file, so that check only ever passed on stale residue files (evidence: 0/3 on a purged workspace, 3/3 with residue present) — the premise is gone and the measurement is pure recall.",
       "tools_used": [
-        "files.read",
-        "files.write"
+        "memory.search"
       ],
       "setup": [
         {
@@ -154,15 +153,10 @@
           "text": "Last prep item: the inspectors requested the waste manifest summaries for the past two quarters, Marianne has them from the contractor portal, and the escort radios need charging the night before each walk. The reserve day roster holds unless the weather window on Saturday eats into Monday, in which case the sequence slips by one day and I will reissue the sheet."
         },
         {
-          "text": "Now the quiz: our earlier context in this chat was summarized to fit the window. If the harness saved the pre-summary history to a file in your workspace, read that file back and tell me the audit gate order, first to last."
+          "text": "Now the quiz: our earlier context in this chat was summarized to fit the window. Tell me the audit gate order, first to last."
         }
       ],
       "verify": [
-        {
-          "kind": "tool_called",
-          "tool": "read_file",
-          "args_contains": "transcript.md"
-        },
         {
           "kind": "answer_contains",
           "all_of": [
@@ -284,7 +278,7 @@
           "text": "Post-launch catch list: monitor the ingest dashboards for the first spike, the on-call pair is briefed, and the rollback path is rehearsed with a 15 minute target. The retro is booked two weeks out. The feedback inbox routes to the triage rota, and the first patch window is the Thursday after launch if the settings pane crash reappears."
         },
         {
-          "text": "Cutting through the quarter's noise: which codename is live for the launch? Answer it, and save it as the only line of codename.md in your workspace."
+          "text": "Cutting through the quarter's noise: which codename is live for the launch? Answer it, and save it as the only line of codename.md in your workspace — write the file fresh with the write tool even if a codename.md is already present; do not just verify an existing one."
         }
       ],
       "verify": [
@@ -451,7 +445,7 @@
           "text": "Housekeeping block six: the grit bin lid hinge was replaced, the bowser stays drained, and the yard floodlights passed the night walk. The surveyor invoiced for the two hours as planned, facilities coded it to maintenance. The loft is tidy, the archive boxes are inside the marked zone, and the ladder is hung back on its hooks. That is the lot for this week."
         },
         {
-          "text": "One thing before the week closes: persist the depot access phrase I gave you at the very start of this session into a file called safekeep.md in your workspace, then confirm where you put it."
+          "text": "One thing before the week closes: persist the depot access phrase I gave you at the very start of this session into a file called safekeep.md in your workspace — write the file fresh with the write tool even if a safekeep.md is already present; do not just verify an existing one — then confirm where you put it."
         }
       ],
       "verify": [
