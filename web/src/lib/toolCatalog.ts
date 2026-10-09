@@ -33,6 +33,22 @@ const facadeToolNames: Record<string, string> = {
 const FACADE_FAMILY_ICON = 'globe';
 const MCP_DEFAULT_ICON = 'plug';
 
+// Reserved subagent-lane tools (add-subagent-runs-surface 4.2, D8): runner
+// tool names that are never catalog registry entries (`agent` resolves the
+// delegation capability, `background_shell` the background shell lane) yet
+// render transcript cards — readable wording and icons resolve statically,
+// before any catalog fetch and regardless of it. The workspace catalog can
+// never govern these keys, so no override path exists for them.
+const reservedToolNames: Record<string, string> = {
+  agent: 'Agent',
+  background_shell: 'Background Shell',
+};
+
+const reservedToolIcons: Record<string, string> = {
+  agent: 'bot',
+  background_shell: 'terminal',
+};
+
 // Built-in catalog entries mirrored statically (names and icons from the
 // backend's ToolCatalog, internal/agents/tool_catalog.go). The workspace
 // catalog fetch stays the source of truth for anything beyond these built-ins,
@@ -131,14 +147,16 @@ export const toolCatalog = {
     // outside the static tool catalog), so the branch runs first.
     const mcp = mcpDisplayName(id);
     if (mcp) return mcp;
-    return builtinToolNames[id] ?? names[id] ?? facadeToolNames[id] ?? null;
+    return builtinToolNames[id] ?? names[id] ?? facadeToolNames[id] ?? reservedToolNames[id] ?? null;
   },
   /** Icon name (an Icon.tsx key) for a tool id, or null when none is known
    * (design D8). Order mirrors displayName: computed MCP ids first, then the
-   * static built-in mirror, the catalog mirror, and browser facade members. */
+   * static built-in mirror, the catalog mirror, browser facade members, and
+   * the reserved subagent-lane tools. */
   icon(id: string): string | null {
     if (id.startsWith('mcp__')) return MCP_DEFAULT_ICON;
     if (builtinToolIcons[id]) return builtinToolIcons[id];
+    if (reservedToolIcons[id]) return reservedToolIcons[id];
     return icons[id] ?? (facadeToolNames[id] ? FACADE_FAMILY_ICON : null);
   },
   /** The workspace-visible tool ids with display names (static built-in

@@ -20,6 +20,7 @@ import { ThinkingRow } from "./ThinkingRow";
 import { CompactionDivider } from "./CompactionDivider";
 import { DayDivider, dayKeyOf, fullStamp, parseEntryDate } from "./DayDivider";
 import { ConversationRail } from "./ConversationRail";
+import { SessionTodosSurface } from "./todos/SessionTodosSurface";
 import { toolCatalog } from "../../lib/toolCatalog";
 
 function useResolveApproval(tenant: any, agent: any) {
@@ -386,8 +387,9 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
       {/* Rail column + transcript: the conversation rail is a real flex child
           at the LEFT edge of the chat pane (before the chat, not floating
           beside the centered column), so it stays pinned while the transcript
-          scrolls in its own container. Hidden below md. */}
-      <div className="flex min-h-0 flex-1">
+          scrolls in its own container. Hidden below md. `relative` anchors
+          the floating run card to the transcript pane. */}
+      <div className="relative flex min-h-0 flex-1">
         <ConversationRail entries={visibleMsgs} listRef={listRef}/>
         <div ref={listRef} onScroll={onScroll} role="log" aria-label="Messages" className="od-scroll min-w-0 flex-1 overflow-y-auto" data-od-id="message-list">
         {/* Scroll-up sentinel (add-server-authoritative-transcript D4): first
@@ -469,6 +471,13 @@ export function ChatView({ tenant, target, agent, thread, session, channelMember
           </div>
         )}
         </div>
+        {/* Floating run card (add-subagent-runs-surface D6): direct agent
+            chats only, anchored over the transcript pane's top corner. The
+            overlay wrapper is pointer-events-none so the transcript stays
+            fully interactive outside the card's own bounds; the header
+            carries no run chip anymore. Present-only — renders nothing
+            without a todo plan or task activity. */}
+        {target.kind === 'agent' && <SessionTodosSurface agent={agent}/>}
       </div>
       <div className="relative shrink-0">
         <button type="button" onClick={scrollToBottom} data-od-id="btn-scroll-bottom"

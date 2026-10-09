@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -54,12 +55,15 @@ var foregroundTimerDisabledMs = -1
 // (add-agent-subagents-background D5): the in-memory store the Manager
 // writes lifecycle into and the pump drains, the Manager itself (the
 // task_output/task_stop control-tools' binding point), and the local Runner
-// that executes the lanes' closures. Constructed per run — run ends or
+// that executes the lanes' closures. progress is the run's task-keyed
+// subscription registry the progress drain fans frames through
+// (add-subagent-runs-surface 2.2). Constructed per run — run ends or
 // process dies, tasks and their records are gone (the honest-lifetime pin).
 type BackgroundTaskSpace struct {
-	Store   *bgtask.InMemoryStore
-	Manager *bgtask.Manager
-	Runner  *backgroundlocal.Runner
+	Store    *bgtask.InMemoryStore
+	Manager  *bgtask.Manager
+	Runner   *backgroundlocal.Runner
+	progress *taskProgressHub
 }
 
 // newBackgroundTaskSpace builds one run's task space. Allocation-only: no
@@ -95,7 +99,12 @@ func newBackgroundTaskSpace(ctx context.Context) (*BackgroundTaskSpace, error) {
 	if err != nil {
 		return nil, fmt.Errorf("agents: background task runner: %w", err)
 	}
-	return &BackgroundTaskSpace{Store: store, Manager: manager, Runner: runner}, nil
+	return &BackgroundTaskSpace{
+		Store:    store,
+		Manager:  manager,
+		Runner:   runner,
+		progress: newTaskProgressHub(store, manager),
+	}, nil
 }
 
 // pumpBackgroundNotifications drains the space's notification outbox until
@@ -131,15 +140,18 @@ func pumpBackgroundNotifications(ctx context.Context, space *BackgroundTaskSpace
 }
 
 // dispatchNotification handles one leased notification: lifecycle plumbing
-// (task_created, waiting_input) is acked and dropped — only terminal
-// transitions emit completion surface; terminal ones enrich from the
-// authoritative task snapshot, emit, then ack the receipt. Skipping before
-// acking would re-lease the same record on every poll, so every handled
-// delivery is acked exactly once.
+// (task_created, waiting_input) registers the task with the progress drain
+// and is acked and dropped — only terminal transitions emit completion
+// surface; terminal ones enrich from the authoritative task snapshot, emit,
+// drive the progress hub's terminal fan-out (final records, then the
+// terminal frame, then that task's fan-out closes), then ack the receipt.
+// Skipping before acking would re-lease the same record on every poll, so
+// every handled delivery is acked exactly once.
 func (s *BackgroundTaskSpace) dispatchNotification(ctx context.Context, delivery bgtask.NotificationDelivery, emit func(TaskCompletedPayload)) {
 	record := delivery.Record
 	outcome, terminal := taskOutcomeFor(record.Kind)
 	if !terminal {
+		s.progress.track(record.TaskID)
 		s.ackNotification(ctx, delivery.Receipt)
 		return
 	}
@@ -156,6 +168,7 @@ func (s *BackgroundTaskSpace) dispatchNotification(ctx context.Context, delivery
 		payload.Summary = taskSummary(task.Spec.Description)
 	}
 	emit(payload)
+	s.progress.terminal(ctx, record.TaskID, payload)
 	s.ackNotification(ctx, delivery.Receipt)
 }
 
@@ -207,4 +220,68 @@ func taskSummary(description string) string {
 		description = line
 	}
 	return strings.TrimSpace(description)
+}
+
+// cancelTask stops one task through the space's Manager — the same control
+// surface the model's task_stop tool uses (add-subagent-runs-surface, task
+// cancel). Only a running task accepts the request: unknown ids (the space is
+// per-run, so a foreign task id reads as unknown) and already-terminal tasks
+// collapse into the typed ErrTaskNotRunning conflict the session tasks
+// handler maps to 409. For the process-local lanes the Manager waits for the
+// attempt's terminal acknowledgement, so the returned entry already carries
+// the canceled outcome; the canceled completion still surfaces through the
+// pump exactly as a model-initiated stop does.
+func (s *BackgroundTaskSpace) cancelTask(ctx context.Context, taskID string) (TaskListEntry, error) {
+	task, err := s.Manager.Get(ctx, taskID)
+	if err != nil {
+		if errors.Is(err, bgtask.ErrNotFound) {
+			return TaskListEntry{}, ErrTaskNotRunning
+		}
+		return TaskListEntry{}, fmt.Errorf("agents: cancel task %q: %w", taskID, err)
+	}
+	if taskStatusFor(string(task.Status)) != TaskStatusRunning {
+		return TaskListEntry{}, ErrTaskNotRunning
+	}
+	updated, err := s.Manager.RequestCancel(ctx, taskID)
+	if err != nil {
+		if errors.Is(err, bgtask.ErrAlreadyTerminal) {
+			// The task went terminal between the snapshot and the request.
+			return TaskListEntry{}, ErrTaskNotRunning
+		}
+		return TaskListEntry{}, fmt.Errorf("agents: cancel task %q: %w", taskID, err)
+	}
+	return taskListEntryFromLive(LiveTask{
+		TaskID:      updated.Spec.ID,
+		Kind:        taskKindFor(updated.Spec.Kind),
+		Status:      string(updated.Status),
+		Description: updated.Spec.Description,
+		OutputPath:  updated.Spec.OutputFile,
+	}), nil
+}
+
+// liveTasks snapshots the space's tracked tasks from the authoritative task
+// store — the live side of the merged session task list (2.4). Tasks whose
+// task_created notification the pump has not processed yet are absent (one
+// poll beat of lag at most).
+func (s *BackgroundTaskSpace) liveTasks(ctx context.Context) []LiveTask {
+	ids := s.progress.trackedIDs()
+	tasks := make([]LiveTask, 0, len(ids))
+	for _, id := range ids {
+		task, err := s.Manager.Get(ctx, id)
+		if err != nil {
+			// A tracked id that vanished raced the terminal fan-out's
+			// unregister — skip it; the merge works from what exists.
+			slog.WarnContext(ctx, "agents: live task snapshot read failed (best-effort)",
+				"task_id", id, "error", err)
+			continue
+		}
+		tasks = append(tasks, LiveTask{
+			TaskID:      task.Spec.ID,
+			Kind:        taskKindFor(task.Spec.Kind),
+			Status:      string(task.Status),
+			Description: task.Spec.Description,
+			OutputPath:  task.Spec.OutputFile,
+		})
+	}
+	return tasks
 }

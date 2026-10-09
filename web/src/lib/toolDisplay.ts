@@ -81,6 +81,12 @@ export const FACADE_TOOL_IDS = [
   'browser.select_option',
 ] as const;
 
+/** Reserved subagent-lane tool ids (add-subagent-runs-surface 4.2, D8): the
+ * runner resolves these outside the workspace catalog (they are never
+ * registry entries — internal/agents/tool_catalog.go), but their calls DO
+ * render transcript cards, so display treatment is mandatory. */
+export const RESERVED_TOOL_IDS = ['agent', 'background_shell'] as const;
+
 // ---------------------------------------------------------------------------
 // Sentence table (D1)
 // ---------------------------------------------------------------------------
@@ -278,6 +284,23 @@ export const SENTENCE_TABLE: Record<string, SentenceTableEntry> = {
     intent: 'Reading the plan',
     outcome: 'Read the plan',
     fact: todoReadFact,
+  },
+  // Reserved subagent-lane tools (add-subagent-runs-surface 4.2, D8): the
+  // delegation card one-lines from the call's `description` (the D5 join key)
+  // and the background shell card from its `command` — command-as-sentence,
+  // the same treatment as `execute`.
+  agent: {
+    intent: 'Delegating {object}',
+    outcome: 'Delegated {object}',
+    object: { key: 'description', style: 'quote' },
+  },
+  background_shell: {
+    // Command-as-sentence, the `execute` treatment (D1): the command IS the
+    // one-liner, verbatim — the card's tool name ("Background Shell") carries
+    // the lane distinction.
+    intent: '{object}',
+    outcome: '{object}',
+    object: { key: 'command', style: 'verbatim' },
   },
 };
 
@@ -478,6 +501,31 @@ export function toolOneLiner(
 }
 
 // ---------------------------------------------------------------------------
+// Live status labels for the delegation/shell cards (add-subagent-runs-surface
+// 4.2, D8). The call envelope alone cannot say "canceled" — an interrupted
+// background task's card carries an ordinary (often empty) result — so the
+// joined task's status refines the derivation when present.
+// ---------------------------------------------------------------------------
+
+/** The card's live status label: "Running" before a result, "Failed" on an
+ * error envelope, "Completed" otherwise — refined by the joined task's status
+ * when the caller has one (a canceled task reports Canceled even though the
+ * call envelope looks completed; the historical `created` never renders as a
+ * live state and falls through to the envelope derivation). */
+export function delegationStatusLabel(
+  card: { res?: string; error?: unknown } | undefined | null,
+  taskStatus?: 'running' | 'completed' | 'failed' | 'canceled' | 'created' | null
+): 'Running' | 'Completed' | 'Failed' | 'Canceled' {
+  if (taskStatus === 'canceled') return 'Canceled';
+  if (taskStatus === 'failed') return 'Failed';
+  if (taskStatus === 'completed') return 'Completed';
+  if (taskStatus === 'running') return 'Running';
+  if (card?.error === true) return 'Failed';
+  if (typeof card?.res === 'string' && card.res.trim() !== '') return 'Completed';
+  return 'Running';
+}
+
+// ---------------------------------------------------------------------------
 // Expanded-view field specs (D3)
 // ---------------------------------------------------------------------------
 
@@ -565,6 +613,14 @@ const FIELD_SPECS: Record<string, FieldSpec[]> = {
     { key: 'revision', label: 'Revision', kind: 'plain' },
   ],
   todo_read: [],
+  // Reserved subagent-lane tools (add-subagent-runs-surface 4.2): verified
+  // arg keys per the delegation tool's description/prompt input and the shell
+  // lane's command; anything else appends humanized (no silent drops).
+  agent: [
+    { key: 'description', label: 'Task', kind: 'quote' },
+    { key: 'prompt', label: 'Prompt', kind: 'content' },
+  ],
+  background_shell: [{ key: 'command', label: 'Command', kind: 'chip' }],
 };
 
 /** Per-tool expanded field spec; null for tools without an entry (renderer

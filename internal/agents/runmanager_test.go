@@ -597,19 +597,19 @@ func TestRunManager_ActiveRunSessionIDs(t *testing.T) {
 		t.Fatalf("empty manager must yield an empty (non-nil) slice, got %#v", ids)
 	}
 
-	h1, err := m.start(RunKey{"ws", "ag", "s1"}, stubAgentCancel)
+	h1, err := m.start(RunKey{"ws", "ag", "s1"}, stubAgentCancel, nil)
 	if err != nil {
 		t.Fatalf("start s1: %v", err)
 	}
-	if _, err := m.start(RunKey{"ws", "ag", "s2"}, stubAgentCancel); err != nil {
+	if _, err := m.start(RunKey{"ws", "ag", "s2"}, stubAgentCancel, nil); err != nil {
 		t.Fatalf("start s2: %v", err)
 	}
 	// Same agent in a different workspace, and a different agent in the same
 	// workspace: neither may leak into the enumeration.
-	if _, err := m.start(RunKey{"other-ws", "ag", "s3"}, stubAgentCancel); err != nil {
+	if _, err := m.start(RunKey{"other-ws", "ag", "s3"}, stubAgentCancel, nil); err != nil {
 		t.Fatalf("start s3: %v", err)
 	}
-	if _, err := m.start(RunKey{"ws", "other-ag", "s4"}, stubAgentCancel); err != nil {
+	if _, err := m.start(RunKey{"ws", "other-ag", "s4"}, stubAgentCancel, nil); err != nil {
 		t.Fatalf("start s4: %v", err)
 	}
 
@@ -634,13 +634,74 @@ func TestRunManager_ActiveRunSessionIDs(t *testing.T) {
 	}
 }
 
+// TestRunManager_TaskSpaceResolution is the subagent-runs-surface 2.1
+// verification: a live run's task space resolves by session coordinates the
+// way CancelRun resolves, a live run that composed no background lane yields
+// (nil, true), an idle session and a finished run report not-found, and the
+// progress subscription rides the same resolution — refused for anything but
+// a live run with a task space.
+func TestRunManager_TaskSpaceResolution(t *testing.T) {
+	m := newRunManager(context.Background(), 0)
+	space, err := newBackgroundTaskSpace(context.Background())
+	if err != nil {
+		t.Fatalf("newBackgroundTaskSpace: %v", err)
+	}
+
+	key := RunKey{"ws", "ag", "s1"}
+	h, err := m.start(key, stubAgentCancel, space)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	got, ok := m.taskSpace(key)
+	if !ok || got != space {
+		t.Fatalf("taskSpace(live) = (%v, %v), want the run's space", got, ok)
+	}
+
+	bare := RunKey{"ws", "ag", "s2"}
+	if _, err := m.start(bare, stubAgentCancel, nil); err != nil {
+		t.Fatalf("start bare: %v", err)
+	}
+	got, ok = m.taskSpace(bare)
+	if !ok || got != nil {
+		t.Fatalf("taskSpace(run without lanes) = (%v, %v), want (nil, true)", got, ok)
+	}
+
+	idle := RunKey{"ws", "ag", "s_idle"}
+	if _, ok := m.taskSpace(idle); ok {
+		t.Fatal("taskSpace(idle session) must report not-found")
+	}
+
+	subID, frames, ok := m.subscribeTaskProgress(key)
+	if !ok || frames == nil || subID == 0 {
+		t.Fatalf("subscribeTaskProgress(live space) = (%d, %v, %v), want a stream", subID, frames, ok)
+	}
+	if _, _, ok := m.subscribeTaskProgress(bare); ok {
+		t.Fatal("subscribeTaskProgress(run without lanes) must be refused")
+	}
+	if _, _, ok := m.subscribeTaskProgress(idle); ok {
+		t.Fatal("subscribeTaskProgress(idle session) must be refused")
+	}
+	m.unsubscribeTaskProgress(bare, subID) // unknown key: no-op
+	m.unsubscribeTaskProgress(key, 424242) // unknown sub-id: no-op
+	m.unsubscribeTaskProgress(key, subID)
+
+	h.finish()
+	<-h.done
+	if _, ok := m.taskSpace(key); ok {
+		t.Fatal("taskSpace(finished run) must report not-found")
+	}
+	if _, _, ok := m.subscribeTaskProgress(key); ok {
+		t.Fatal("subscribeTaskProgress(finished run) must be refused")
+	}
+}
+
 // TestRunManager_Drain: in-flight runs that finish within the window are left
 // alone; stragglers are cancelled; new starts are rejected once draining.
 func TestRunManager_Drain(t *testing.T) {
 	t.Run("in-flight run finishes within window", func(t *testing.T) {
 		m := newRunManager(context.Background(), 0)
 		k1 := RunKey{"ws", "ag", "s1"}
-		h1, err := m.start(k1, stubAgentCancel)
+		h1, err := m.start(k1, stubAgentCancel, nil)
 		if err != nil {
 			t.Fatalf("start: %v", err)
 		}
@@ -665,14 +726,14 @@ func TestRunManager_Drain(t *testing.T) {
 		default:
 		}
 
-		if _, err := m.start(RunKey{"ws", "ag", "s2"}, stubAgentCancel); !errors.Is(err, domain.ErrConflict) {
+		if _, err := m.start(RunKey{"ws", "ag", "s2"}, stubAgentCancel, nil); !errors.Is(err, domain.ErrConflict) {
 			t.Fatalf("start during drain must wrap domain.ErrConflict, got %v", err)
 		}
 	})
 
 	t.Run("straggler is cancelled", func(t *testing.T) {
 		m := newRunManager(context.Background(), 0)
-		h, err := m.start(RunKey{"ws", "ag", "s-straggler"}, stubAgentCancel)
+		h, err := m.start(RunKey{"ws", "ag", "s-straggler"}, stubAgentCancel, nil)
 		if err != nil {
 			t.Fatalf("start: %v", err)
 		}
@@ -687,10 +748,10 @@ func TestRunManager_Drain(t *testing.T) {
 	t.Run("concurrent start conflicts and cancel addressing", func(t *testing.T) {
 		m := newRunManager(context.Background(), 0)
 		key := RunKey{"ws", "ag", "s-conflict"}
-		if _, err := m.start(key, stubAgentCancel); err != nil {
+		if _, err := m.start(key, stubAgentCancel, nil); err != nil {
 			t.Fatalf("first start: %v", err)
 		}
-		if _, err := m.start(key, stubAgentCancel); !errors.Is(err, domain.ErrConflict) {
+		if _, err := m.start(key, stubAgentCancel, nil); !errors.Is(err, domain.ErrConflict) {
 			t.Fatalf("second start on live session must wrap domain.ErrConflict, got %v", err)
 		}
 		if m.cancel(RunKey{"ws", "ag", "unknown"}) {

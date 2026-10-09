@@ -37,6 +37,36 @@ type AgentRunCanceler interface {
 	CancelRun(workspaceID, agentID, sessionID string) bool
 }
 
+// AgentTaskSurface is the session-scoped background-task surface the session
+// tasks API reads and controls (add-subagent-runs-surface 3.1/3.2): the live
+// task snapshot and run-existence probe behind the merged list, one task's
+// live trajectory read behind the output endpoint, the progress subscription
+// behind the SSE stream, and the running-only cancel. The production runner
+// (*agents.Runner) implements every method; the same instance is injected
+// alongside AgentHistoryReader and AgentRunCanceler.
+type AgentTaskSurface interface {
+	// TaskSpace resolves the live run's background task space: (nil, true)
+	// for a live run that composed no lanes, (nil, false) for no live run.
+	TaskSpace(workspaceID, agentID, sessionID string) (*agents.BackgroundTaskSpace, bool)
+	// LiveTasks snapshots the live run's tasks — the live side of
+	// agents.MergeSessionTasks. Empty (never nil) without a live run.
+	LiveTasks(workspaceID, agentID, sessionID string) []agents.LiveTask
+	// TaskProgressRecords reads one task's live trajectory past a client
+	// cursor. ok is false when there is no live trajectory — the handler
+	// replays the persisted output file instead.
+	TaskProgressRecords(ctx context.Context, workspaceID, agentID, sessionID, taskID string, afterSequence int) ([]agents.TaskProgressFrame, bool, error)
+	// SubscribeTaskProgress attaches a task progress frame stream to the live
+	// run; (0, nil, false) when no live run holds the session. The stream
+	// closes when the run ends.
+	SubscribeTaskProgress(workspaceID, agentID, sessionID string) (uint64, <-chan agents.TaskProgressFrame, bool)
+	// UnsubscribeTaskProgress detaches a subscriber added by
+	// SubscribeTaskProgress; unknown keys and sub-IDs are no-ops.
+	UnsubscribeTaskProgress(workspaceID, agentID, sessionID string, subID uint64)
+	// CancelTask cancels one running background task; agents.ErrTaskNotRunning
+	// (mapped to 409 by the handler) for anything not running.
+	CancelTask(ctx context.Context, workspaceID, agentID, sessionID, taskID string) (agents.TaskListEntry, error)
+}
+
 // AgentRunTapper attaches live subscriber streams to in-flight runs so a
 // streaming session-events client can follow a run after replaying committed
 // history (design D2, live-run-reattach-and-catchup). The production runner
@@ -79,13 +109,17 @@ type agentHandlers struct {
 	workspaceDir  string
 	runner        AgentHistoryReader
 	runCanceler   AgentRunCanceler
+	taskSurface   AgentTaskSurface
 	authz         authz.Authorizer
 }
 
 // NewAgentHandlers creates a new agentHandlers instance with injected dependencies.
 // The authorizer backs the session-ownership rule (fix-role-permission-audit
-// D3) and the connection-approval integrations.write escalation.
-func NewAgentHandlers(agentStore store.AgentStore, providerStore store.ProviderStore, sessionEvents store.SessionEventStore, agentSessions store.AgentSessionStore, encryptionKey []byte, reg *providers.Registry, mc *services.ModelCatalog, as *promptgen.Service, workspaceDir string, runner AgentHistoryReader, runCanceler AgentRunCanceler, authorizer authz.Authorizer) *agentHandlers {
+// D3) and the connection-approval integrations.write escalation. taskSurface
+// carries the background-task surface (add-subagent-runs-surface 3.1/3.2) the
+// session tasks endpoints read; the composition root injects the same runner
+// that satisfies runner and runCanceler.
+func NewAgentHandlers(agentStore store.AgentStore, providerStore store.ProviderStore, sessionEvents store.SessionEventStore, agentSessions store.AgentSessionStore, encryptionKey []byte, reg *providers.Registry, mc *services.ModelCatalog, as *promptgen.Service, workspaceDir string, runner AgentHistoryReader, runCanceler AgentRunCanceler, taskSurface AgentTaskSurface, authorizer authz.Authorizer) *agentHandlers {
 	return &agentHandlers{
 		agents:        agentStore,
 		providers:     providerStore,
@@ -98,6 +132,7 @@ func NewAgentHandlers(agentStore store.AgentStore, providerStore store.ProviderS
 		workspaceDir:  workspaceDir,
 		runner:        runner,
 		runCanceler:   runCanceler,
+		taskSurface:   taskSurface,
 		authz:         authorizer,
 	}
 }

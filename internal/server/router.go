@@ -641,7 +641,7 @@ func (rt *router) Engine() *gin.Engine {
 	// The authorizer rides the agent handlers for the session-ownership rule
 	// (fix-role-permission-audit D3): cancel/approval/delete permit the
 	// owning member or agents.write, evaluated through the same engine.
-	agentHandlers := handlers.NewAgentHandlers(rt.opts.Store.Agents(), rt.opts.Store.Providers(), rt.opts.Store.SessionEvents(), rt.opts.Store.AgentSessions(), rt.opts.EncryptionKey, providerRegistry, modelCatalog, agentService, workspaceDir, runner, runner, rt.authorizer)
+	agentHandlers := handlers.NewAgentHandlers(rt.opts.Store.Agents(), rt.opts.Store.Providers(), rt.opts.Store.SessionEvents(), rt.opts.Store.AgentSessions(), rt.opts.EncryptionKey, providerRegistry, modelCatalog, agentService, workspaceDir, runner, runner, runner, rt.authorizer)
 	// Agent workspace files (add-right-panel 2.1): read-only byte reads and
 	// one-level listings over the agent jail directory; the handler owns the
 	// path confinement and content-type serving guards.
@@ -1073,6 +1073,16 @@ func (rt *router) Engine() *gin.Engine {
 				wsGroup.GET("/agents/:agent/sessions", rt.mw.RequirePermission(domain.AgentsRead), agentHandlers.ListAgentSessions)
 				wsGroup.DELETE("/agents/:agent/sessions/:session", agentHandlers.DeleteAgentSession)
 				wsGroup.GET("/agents/:agent/sessions/:session/events", rt.mw.RequirePermission(domain.AgentsRead), agentHandlers.ListSessionEvents)
+				// Session tasks API (add-subagent-runs-surface D3): the merged
+				// task list, one task's trajectory, the task progress SSE
+				// stream, and the running-only cancel. Reads ride agents.read
+				// like the transcript endpoints; the cancel enforces the
+				// session-ownership rule itself (no route gate, CancelRun's
+				// shape).
+				wsGroup.GET("/agents/:agent/sessions/:session/tasks", rt.mw.RequirePermission(domain.AgentsRead), agentHandlers.ListSessionTasks)
+				wsGroup.GET("/agents/:agent/sessions/:session/tasks/stream", rt.mw.RequirePermission(domain.AgentsRead), agentHandlers.StreamSessionTasks)
+				wsGroup.GET("/agents/:agent/sessions/:session/tasks/:task/output", rt.mw.RequirePermission(domain.AgentsRead), agentHandlers.GetSessionTaskOutput)
+				wsGroup.POST("/agents/:agent/sessions/:session/tasks/:task/cancel", agentHandlers.CancelSessionTask)
 				wsGroup.POST("/agents/:agent/sessions/:session/approvals/:interruptID", agentHandlers.ResolveApproval)
 				wsGroup.POST("/agents/:agent/sessions/:session/runs/:turn/cancel", agentHandlers.CancelRun)
 

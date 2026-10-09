@@ -80,7 +80,7 @@ func newAgentRunTestEnv(t *testing.T, runner *fakeAgentRunRunner) *gin.Engine {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	h := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), st.AgentSessions(), []byte("01234567890123456789012345678901"), nil, nil, nil, t.TempDir(), runner, runner, mustTestAuthorizer(t, st))
+	h := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), st.AgentSessions(), []byte("01234567890123456789012345678901"), nil, nil, nil, t.TempDir(), runner, runner, nil, mustTestAuthorizer(t, st))
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
@@ -318,7 +318,7 @@ func TestAgentRuns_ApprovalResumeOutlivesRequest(t *testing.T) {
 	if err := st.Agents().Create(context.Background(), agent); err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	h := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), st.AgentSessions(), []byte("01234567890123456789012345678901"), nil, nil, nil, t.TempDir(), runner, runner, mustTestAuthorizer(t, st))
+	h := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), st.AgentSessions(), []byte("01234567890123456789012345678901"), nil, nil, nil, t.TempDir(), runner, runner, nil, mustTestAuthorizer(t, st))
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {

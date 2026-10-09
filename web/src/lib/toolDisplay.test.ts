@@ -6,9 +6,11 @@ import { describe, it, expect } from 'vitest';
 import {
   CATALOG_TOOL_KEYS,
   FACADE_TOOL_IDS,
+  RESERVED_TOOL_IDS,
   SENTENCE_TABLE,
   blockedByHook,
   createdDocumentURL,
+  delegationStatusLabel,
   fieldRows,
   formatLatency,
   formatResult,
@@ -679,5 +681,83 @@ describe('blockedByHook', () => {
 
   it('returns null for partial/stream JSON (mid-stream edge)', () => {
     expect(blockedByHook('{"blocked_by_hook":tru')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reserved subagent-lane tools (add-subagent-runs-surface 4.2, D8): display
+// treatment for the `agent` delegation card and the `background_shell` card —
+// one-liner from description/command, plus the live status label derivation.
+// ---------------------------------------------------------------------------
+
+describe('reserved subagent tool one-liners (add-subagent-runs-surface 4.2)', () => {
+  it('agent: verbs the call description (the D5 join key)', () => {
+    const args = JSON.stringify({ description: 'Fix the flaky CI suite', prompt: 'run and repair' });
+    expect(toolOneLiner('agent', { args }, true)).toBe("Delegating 'Fix the flaky CI suite'");
+    expect(toolOneLiner('agent', { args }, false)).toBe("Delegated 'Fix the flaky CI suite'");
+    // Error state shows the intent form (never asserts success).
+    expect(toolOneLiner('agent', { args, error: true }, false)).toBe("Delegating 'Fix the flaky CI suite'");
+    // Bare form when the description is absent.
+    expect(toolOneLiner('agent', { args: '{"prompt":"go"}' }, true)).toBe('Delegating');
+  });
+
+  it('background_shell: command-as-sentence, the execute treatment', () => {
+    const args = '{"command":"npm test -- --filter web"}';
+    expect(toolOneLiner('background_shell', { args }, true)).toBe('npm test -- --filter web');
+    expect(toolOneLiner('background_shell', { args }, false)).toBe('npm test -- --filter web');
+    // No command → no sentence (same rule as execute).
+    expect(toolOneLiner('background_shell', { args: '{}' }, false)).toBeNull();
+  });
+
+  it('expanded view lists the verified arg keys in spec order', () => {
+    expect(toolFieldSpec('agent')).toEqual([
+      { key: 'description', label: 'Task', kind: 'quote' },
+      { key: 'prompt', label: 'Prompt', kind: 'content' },
+    ]);
+    expect(toolFieldSpec('background_shell')).toEqual([
+      { key: 'command', label: 'Command', kind: 'chip' },
+    ]);
+  });
+});
+
+describe('coverage guard: reserved subagent ids (add-subagent-runs-surface 4.2)', () => {
+  it('pins the reserved universe sizes', () => {
+    expect(CATALOG_TOOL_KEYS).toHaveLength(18); // unchanged — reserved tools are NOT catalog entries
+    expect(FACADE_TOOL_IDS).toHaveLength(10);
+    expect(RESERVED_TOOL_IDS).toEqual(['agent', 'background_shell']);
+  });
+
+  it('every reserved id has a mintable one-liner', () => {
+    const args: Record<string, Record<string, unknown>> = {
+      agent: { description: 'Audit the dependencies' },
+      background_shell: { command: 'go test ./...' },
+    };
+    for (const id of RESERVED_TOOL_IDS) {
+      expect(SENTENCE_TABLE[id], `${id} missing from SENTENCE_TABLE`).toBeDefined();
+      const raw = JSON.stringify(args[id]);
+      expect(toolOneLiner(id, { args: raw }, true), `${id} has no running one-liner`).toBeTruthy();
+      expect(toolOneLiner(id, { args: raw }, false), `${id} has no done one-liner`).toBeTruthy();
+    }
+  });
+});
+
+describe('delegationStatusLabel (live status labels, 4.2)', () => {
+  it('derives running/done/failed from the call envelope alone', () => {
+    expect(delegationStatusLabel({})).toBe('Running');
+    expect(delegationStatusLabel(undefined)).toBe('Running');
+    expect(delegationStatusLabel({ res: 'done: 3 findings' })).toBe('Completed');
+    expect(delegationStatusLabel({ res: '   ' })).toBe('Running');
+    expect(delegationStatusLabel({ res: 'partial', error: true })).toBe('Failed');
+  });
+
+  it('the joined task status refines the envelope (canceled beats completed)', () => {
+    expect(delegationStatusLabel({ res: 'done' }, 'canceled')).toBe('Canceled');
+    expect(delegationStatusLabel({ res: 'done' }, 'failed')).toBe('Failed');
+    expect(delegationStatusLabel({}, 'running')).toBe('Running');
+    expect(delegationStatusLabel({}, 'completed')).toBe('Completed');
+    // Historical `created` (created-without-completion) never renders as a
+    // live state — it falls through to the envelope derivation.
+    expect(delegationStatusLabel({ res: 'done' }, 'created')).toBe('Completed');
+    expect(delegationStatusLabel({}, 'created')).toBe('Running');
   });
 });

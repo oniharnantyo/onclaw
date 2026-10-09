@@ -275,3 +275,19 @@ describe('static built-in mirror (card names/icons resolve before the catalog lo
     expect(toolCatalog.icon('ui.preview')).toBeNull();
   });
 });
+
+describe('reserved subagent-lane tools (add-subagent-runs-surface 4.2)', () => {
+  it('resolves readable names and icons for the reserved runner tools without any catalog fetch', () => {
+    expect(toolCatalog.displayName('agent')).toBe('Agent');
+    expect(toolCatalog.displayName('background_shell')).toBe('Background Shell');
+    expect(toolCatalog.icon('agent')).toBe('bot');
+    expect(toolCatalog.icon('background_shell')).toBe('terminal');
+  });
+
+  it('keeps the reserved tools out of the workspace-governed catalog enumeration', async () => {
+    await toolCatalog.ensure('ws-reserved');
+    const keys = toolCatalog.entries().map((e) => e.key);
+    expect(keys).not.toContain('agent');
+    expect(keys).not.toContain('background_shell');
+  });
+});

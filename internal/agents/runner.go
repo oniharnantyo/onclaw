@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/adk"
+	bgtask "github.com/cloudwego/eino/adk/backgroundtask"
 	fsmw "github.com/cloudwego/eino/adk/middlewares/filesystem"
 	"github.com/cloudwego/eino/callbacks"
 	"github.com/cloudwego/eino/components/tool"
@@ -1634,6 +1635,11 @@ func (r *Runner) execute(
 	if bgSpace != nil {
 		emit := r.taskCompletionEmitter(handle.ctx, runKeyOf(req), req.SessionID, sessionStore, stream)
 		go pumpBackgroundNotifications(handle.ctx, bgSpace, emit)
+		// The progress drain (add-subagent-runs-surface 2.2, D1 verdict):
+		// the pump's sibling at the same cadence and wiring point — the pump
+		// feeds it task discovery and terminal transitions, it fans live
+		// records to the session's task progress subscribers.
+		go drainTaskProgress(handle.ctx, bgSpace)
 	}
 	go r.streamRun(handle, cancelOpt, runner, stream, req, userMsg, hookChain, hookBase, compaction, sizes, trace, ephemeral, sessionStore)
 	return stream
@@ -1735,6 +1741,111 @@ func (r *Runner) CancelRun(workspaceID, agentID, sessionID string) bool {
 		AgentID:     agentID,
 		SessionID:   sessionID,
 	})
+}
+
+// TaskSpace resolves the live run's background task space by session
+// coordinates, the CancelRun lookup pattern (add-subagent-runs-surface 2.1).
+// ok is false when no live run holds the session — not-found for an idle
+// session; a live run that composed neither background lane yields (nil,
+// true). Session tasks handlers call the higher-level methods below instead
+// of reaching into the space; the space is exported so wave-2 code can
+// resolve-and-inspect the same way the runner does.
+func (r *Runner) TaskSpace(workspaceID, agentID, sessionID string) (*BackgroundTaskSpace, bool) {
+	return r.runMgr.taskSpace(RunKey{
+		WorkspaceID: workspaceID,
+		AgentID:     agentID,
+		SessionID:   sessionID,
+	})
+}
+
+// LiveTasks snapshots the live run's background tasks (add-subagent-runs-surface
+// 2.4) — the live side of MergeSessionTasks. An empty slice, never nil, also
+// when no live run or no task space holds the session.
+func (r *Runner) LiveTasks(workspaceID, agentID, sessionID string) []LiveTask {
+	space, ok := r.runMgr.taskSpace(RunKey{
+		WorkspaceID: workspaceID,
+		AgentID:     agentID,
+		SessionID:   sessionID,
+	})
+	if !ok || space == nil {
+		return []LiveTask{}
+	}
+	return space.liveTasks(r.baseCtx)
+}
+
+// SubscribeTaskProgress attaches a task progress stream to the live run's
+// task space (add-subagent-runs-surface 2.2). It returns (0, nil, false) when
+// no run is live or the run composed no task space — the caller falls back to
+// persisted history. The stream carries the session's task frames: records
+// past each task's per-tick cursor and a terminal frame per task, then no
+// further frames for that task. The stream closes when the run ends, so Recv
+// drains to EOF; detach early via UnsubscribeTaskProgress. Slow consumers
+// never stall the run: sends drop when the subscriber's buffer is full.
+func (r *Runner) SubscribeTaskProgress(workspaceID, agentID, sessionID string) (uint64, <-chan TaskProgressFrame, bool) {
+	return r.runMgr.subscribeTaskProgress(RunKey{
+		WorkspaceID: workspaceID,
+		AgentID:     agentID,
+		SessionID:   sessionID,
+	})
+}
+
+// UnsubscribeTaskProgress detaches a subscriber added by
+// SubscribeTaskProgress without affecting the run, its other subscribers, or
+// the tasks. Unknown keys and sub-IDs are no-ops.
+func (r *Runner) UnsubscribeTaskProgress(workspaceID, agentID, sessionID string, subID uint64) {
+	r.runMgr.unsubscribeTaskProgress(RunKey{
+		WorkspaceID: workspaceID,
+		AgentID:     agentID,
+		SessionID:   sessionID,
+	}, subID)
+}
+
+// CancelTask cancels one background task of the session's live run through
+// the run's Manager — the same control surface the model's task_stop tool
+// uses (add-subagent-runs-surface, task cancel). Only a running task accepts
+// the request; anything else — unknown id, ended run, already-terminal task —
+// returns ErrTaskNotRunning, the conflict the handler maps to 409. The
+// returned entry is the post-request snapshot; the canceled completion
+// surfaces through the pump exactly as a model-initiated stop does.
+func (r *Runner) CancelTask(ctx context.Context, workspaceID, agentID, sessionID, taskID string) (TaskListEntry, error) {
+	space, ok := r.runMgr.taskSpace(RunKey{
+		WorkspaceID: workspaceID,
+		AgentID:     agentID,
+		SessionID:   sessionID,
+	})
+	if !ok || space == nil {
+		return TaskListEntry{}, ErrTaskNotRunning
+	}
+	return space.cancelTask(ctx, taskID)
+}
+
+// TaskProgressRecords reads one task's live trajectory past a client cursor
+// (add-subagent-runs-surface, task trajectory read): record frames with
+// per-task monotonic sequences greater than afterSequence. ok is false when
+// there is no live trajectory to read — no live run, no task space, or the
+// task unknown to the run's store — and the caller falls back to replaying
+// the persisted output file (DecodeTaskProgressRecords decodes its lines).
+func (r *Runner) TaskProgressRecords(ctx context.Context, workspaceID, agentID, sessionID, taskID string, afterSequence int) ([]TaskProgressFrame, bool, error) {
+	space, ok := r.runMgr.taskSpace(RunKey{
+		WorkspaceID: workspaceID,
+		AgentID:     agentID,
+		SessionID:   sessionID,
+	})
+	if !ok || space == nil {
+		return nil, false, nil
+	}
+	task, err := space.Manager.Get(ctx, taskID)
+	if err != nil {
+		if errors.Is(err, bgtask.ErrNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("agents: task trajectory %q: %w", taskID, err)
+	}
+	frames, _, err := readTaskProgressFrames(ctx, space.Store, taskID, taskKindFor(task.Spec.Kind), max(afterSequence, 0))
+	if err != nil {
+		return nil, false, fmt.Errorf("agents: task trajectory %q: %w", taskID, err)
+	}
+	return frames, true, nil
 }
 
 // DrainRuns stops accepting new runs and waits up to timeout for in-flight
@@ -1906,7 +2017,7 @@ func (r *Runner) run(ctx context.Context, req ExecRequest, ephemeral bool) (*Eve
 		WorkspaceID: req.WorkspaceID,
 		AgentID:     req.AgentID,
 		SessionID:   req.SessionID,
-	}, agentCancel)
+	}, agentCancel, cfg.backgroundTasks)
 	if err != nil {
 		return nil, fmt.Errorf("agent.Run: %w", err)
 	}
@@ -3258,7 +3369,7 @@ func (r *Runner) Resume(ctx context.Context, req ExecRequest, approval *Approval
 		WorkspaceID: req.WorkspaceID,
 		AgentID:     req.AgentID,
 		SessionID:   req.SessionID,
-	}, agentCancel)
+	}, agentCancel, cfg.backgroundTasks)
 	if err != nil {
 		return nil, fmt.Errorf("agent.Resume: %w", err)
 	}
@@ -3347,10 +3458,11 @@ func (r *Runner) streamResume(
 
 	// Same pump contract as execute (D8): the resumed turn's own task space —
 	// composeAgent builds a fresh one per composition — drains on the run's
-	// context only.
+	// context only, with the progress drain as its sibling (2.2).
 	if bgSpace != nil {
 		emit := r.taskCompletionEmitter(handle.ctx, key, req.SessionID, sessionStore, stream)
 		go pumpBackgroundNotifications(handle.ctx, bgSpace, emit)
+		go drainTaskProgress(handle.ctx, bgSpace)
 	}
 
 	iter, err := runner.ResumeWithParams(runCtx, ResumeCheckpointID(req.SessionID), &adk.ResumeParams{

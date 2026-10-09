@@ -1278,10 +1278,13 @@ describe('hydrateSession — windowed open (add-server-authoritative-transcript 
 
     const hydrated = await hydrateSession({ workspaceId: 'ws1', agentSlug: 'atlas', chatId: 'chat-1', sessionId: 'sess_w-1' });
 
-    // The backward window: page size H, most-recent-first read.
+    // The backward window: page size H, most-recent-first read. chatId rides
+    // along so persisted task_completed chips fold under the open chat
+    // (add-subagent-runs-surface D9) — it never reaches the query string.
     expect(vi.mocked(api.agents.sessionEvents)).toHaveBeenLastCalledWith('ws1', 'atlas', 'sess_w-1', {
       limit: HYDRATION_PAGE_SIZE,
       reverse: true,
+      chatId: 'chat-1',
     });
     // Wire paging maps onto the hydrated transcript...
     expect(hydrated!.hasMore).toBe(true);
@@ -1471,5 +1474,103 @@ describe('prependServerTranscript (add-server-authoritative-transcript D4)', () 
     expect(sess.messages).toEqual(threadRows);
     expect(sess.eventsHasMore).toBe(false);
     expect(sess.eventsOldest).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// task_completed folding (add-subagent-runs-surface D9, tasks 4.1): the
+// terminal notice folds into the per-chat task store on BOTH paths the
+// translator serves — hydration and the live catch-up stream — with the
+// transcript itself untouched (one card per delegation, no chip).
+// ---------------------------------------------------------------------------
+
+const TASK_COMPLETED_EVENT = {
+  id: 'e-tc',
+  kind: 'task_completed',
+  occurred_at: 't9',
+  turn_id: 'turn-9',
+  task_completed: {
+    task_id: 'task-1',
+    kind: 'delegation',
+    outcome: 'completed',
+    output_path: '/agents/atlas/.tasks/task-1.output',
+    summary: 'Summarized the incident',
+  },
+};
+
+describe('task_completed folding (hydration + live parity)', () => {
+  it('hydration folds the persisted chip into the chat task store, transcript untouched', async () => {
+    vi.mocked(api.agents.sessionEvents).mockResolvedValueOnce({
+      next: '',
+      events: [
+        { id: 'e1', kind: 'message_completed', occurred_at: 't0', turn_id: 'turn-1',
+          message: { role: 'user', content: 'delegate this' } },
+        TASK_COMPLETED_EVENT,
+      ],
+    });
+    await hydrateSession({ workspaceId: 'ws1', agentSlug: 'atlas', chatId: 'chat-tasks-1', sessionId: 'sess_hyd-tc' });
+
+    const state = useStore.getState().tasks['chat-tasks-1'];
+    expect(state).toBeDefined();
+    expect(state.entries).toHaveLength(1);
+    expect(state.entries[0]).toEqual({
+      taskId: 'task-1',
+      kind: 'delegation',
+      status: 'completed',
+      description: '',
+      outputPath: '/agents/atlas/.tasks/task-1.output',
+      summary: 'Summarized the incident',
+    });
+  });
+
+  it('the live catch-up stream folds identically (hydration parity)', async () => {
+    const encoder = new TextEncoder();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(TASK_COMPLETED_EVENT)}\n\n`));
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+        },
+      }),
+    } as unknown as Response));
+
+    attachCatchUpStream({
+      workspaceId: 'ws1',
+      agentSlug: 'atlas',
+      chatId: 'chat-tasks-2',
+      sessionId: 'sess_live-tc',
+      onDone: () => {},
+      onError: () => {},
+    });
+    await vi.waitFor(() => {
+      const state = useStore.getState().tasks['chat-tasks-2'];
+      expect(state?.entries[0]?.status).toBe('completed');
+    });
+    // Identical fold to the hydration path above (same event → same state).
+    expect(useStore.getState().tasks['chat-tasks-2'].entries[0]).toEqual({
+      taskId: 'task-1',
+      kind: 'delegation',
+      status: 'completed',
+      description: '',
+      outputPath: '/agents/atlas/.tasks/task-1.output',
+      summary: 'Summarized the incident',
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it('stays present-only: hydrating a session without task events writes no task state', async () => {
+    vi.mocked(api.agents.sessionEvents).mockResolvedValueOnce({
+      next: '',
+      events: [
+        { id: 'e1', kind: 'message_completed', occurred_at: 't0', turn_id: 'turn-1',
+          message: { role: 'user', content: 'plain chat' } },
+      ],
+    });
+    await hydrateSession({ workspaceId: 'ws1', agentSlug: 'atlas', chatId: 'chat-tasks-3', sessionId: 'sess_no-tasks' });
+    expect(useStore.getState().tasks['chat-tasks-3']).toBeUndefined();
   });
 });

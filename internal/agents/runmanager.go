@@ -34,12 +34,15 @@ type RunKey struct {
 // liveRun holds the lifecycle handles of one executing run: the cancel
 // function for its manager-derived context, the ADK agent-level cancel
 // function (the safe-point cancel state machine that persists the durable
-// cancel marker), and the done channel the run goroutine closes when it has
-// fully unwound. It also manages dynamic subscriber streams.
+// cancel marker), the done channel the run goroutine closes when it has
+// fully unwound, and the run's process-local background task space (nil when
+// the run composed neither background lane — the optional-space pattern of
+// execute/streamResume). It also manages dynamic subscriber streams.
 type liveRun struct {
 	cancel      func()
 	agentCancel adk.AgentCancelFunc
 	done        chan struct{}
+	tasks       *BackgroundTaskSpace
 
 	mu          sync.Mutex
 	nextSubID   uint64
@@ -89,11 +92,13 @@ func newRunManager(base context.Context, cancelEscalation time.Duration) *runMan
 
 // start registers a new live run for key and returns its handle. agentCancel
 // is the ADK cancel function created for this run via adk.WithCancel (never
-// nil — the runner creates one per run before registering). The run context
-// derives from the manager's base — never from the caller's context. A second
-// start on a live session (or during a drain) is rejected with an error
-// wrapping domain.ErrConflict so the HTTP layer translates it to 409.
-func (m *runManager) start(key RunKey, agentCancel adk.AgentCancelFunc) (*runHandle, error) {
+// nil — the runner creates one per run before registering). tasks is the
+// run's background task space, nil when the run composed neither background
+// lane. The run context derives from the manager's base — never from the
+// caller's context. A second start on a live session (or during a drain) is
+// rejected with an error wrapping domain.ErrConflict so the HTTP layer
+// translates it to 409.
+func (m *runManager) start(key RunKey, agentCancel adk.AgentCancelFunc, tasks *BackgroundTaskSpace) (*runHandle, error) {
 	m.mu.Lock()
 	if m.draining {
 		m.mu.Unlock()
@@ -109,6 +114,7 @@ func (m *runManager) start(key RunKey, agentCancel adk.AgentCancelFunc) (*runHan
 		cancel:      cancel,
 		agentCancel: agentCancel,
 		done:        make(chan struct{}),
+		tasks:       tasks,
 		subscribers: make(map[uint64]*EventStream),
 	}
 	m.live[key] = lr
@@ -117,9 +123,14 @@ func (m *runManager) start(key RunKey, agentCancel adk.AgentCancelFunc) (*runHan
 	// Deregister once the run goroutine has fully unwound so a completed
 	// session can run again. The sweep also closes any subscriber that raced
 	// in after the run's own CloseSubscribers but before done — every
-	// subscriber stream is guaranteed to close when the run ends.
+	// subscriber stream is guaranteed to close when the run ends. The task
+	// progress hub rides the same guarantee: every progress subscriber
+	// drains to EOF when the run's task space dies with the run.
 	go func() {
 		<-lr.done
+		if lr.tasks != nil {
+			lr.tasks.progress.close()
+		}
 		lr.mu.Lock()
 		subs := make([]*EventStream, 0, len(lr.subscribers))
 		for subID, sub := range lr.subscribers {
@@ -143,6 +154,50 @@ func (m *runManager) start(key RunKey, agentCancel adk.AgentCancelFunc) (*runHan
 		finish: sync.OnceFunc(func() { close(lr.done) }),
 		done:   lr.done,
 	}, nil
+}
+
+// taskSpace resolves the live run's background task space by session
+// coordinates, the CancelRun lookup pattern (add-subagent-runs-surface 2.1).
+// ok is false when no live run holds the session; a live run without a task
+// space yields (nil, true) — the run exists, it just composed no background
+// lane.
+func (m *runManager) taskSpace(key RunKey) (*BackgroundTaskSpace, bool) {
+	m.mu.Lock()
+	lr, ok := m.live[key]
+	m.mu.Unlock()
+	if !ok {
+		return nil, false
+	}
+	select {
+	case <-lr.done:
+		return nil, false
+	default:
+	}
+	return lr.tasks, true
+}
+
+// subscribeTaskProgress attaches a fresh task progress stream to the live
+// run's task space. It returns (0, nil, false) when no run is live or the
+// run composed no task space. The stream closes when the run ends, so Recv
+// drains to EOF; slow consumers drop frames instead of stalling the run.
+func (m *runManager) subscribeTaskProgress(key RunKey) (uint64, <-chan TaskProgressFrame, bool) {
+	space, ok := m.taskSpace(key)
+	if !ok || space == nil {
+		return 0, nil, false
+	}
+	id, stream := space.progress.subscribe()
+	return id, stream.frames, true
+}
+
+// unsubscribeTaskProgress detaches a task progress subscriber without
+// affecting the run, its other subscribers, or the tasks. Unknown keys and
+// sub-IDs are no-ops.
+func (m *runManager) unsubscribeTaskProgress(key RunKey, subID uint64) {
+	space, ok := m.taskSpace(key)
+	if !ok || space == nil {
+		return
+	}
+	space.progress.unsubscribe(subID)
 }
 
 // Subscribe dynamically attaches a new subscriber stream to the live run identified by key.

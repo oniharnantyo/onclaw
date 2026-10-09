@@ -782,6 +782,46 @@ describe('lib/api', () => {
       });
     });
   });
+
+  describe('Session background task endpoints (add-subagent-runs-surface 4.1)', () => {
+    const okJson = (payload: any) =>
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'Content-Type': 'application/json' }),
+        json: async () => payload,
+      } as any);
+
+    it('lists the session tasks under the agent-session family', async () => {
+      globalThis.fetch = okJson({ tasks: [] });
+      const res = await api.agents.listTasks('acme', 'atlas', 'sess_t-1');
+      expect((globalThis.fetch as any).mock.calls[0][0]).toBe(
+        '/api/v1/workspaces/acme/agents/atlas/sessions/sess_t-1/tasks'
+      );
+      expect((globalThis.fetch as any).mock.calls[0][1].method).toBe('GET');
+      expect(res).toEqual({ tasks: [] });
+    });
+
+    it('reads one task trajectory and URL-encodes the task id', async () => {
+      const output = { task_id: 'task a/b', records: [], terminal: null };
+      globalThis.fetch = okJson(output);
+      const res = await api.agents.taskOutput('acme', 'atlas', 'sess_t-1', 'task a/b');
+      expect((globalThis.fetch as any).mock.calls[0][0]).toBe(
+        `/api/v1/workspaces/acme/agents/atlas/sessions/sess_t-1/tasks/${encodeURIComponent('task a/b')}/output`
+      );
+      expect(res).toEqual(output);
+    });
+
+    it('cancels a running task with a bare POST', async () => {
+      globalThis.fetch = okJson({ cancelled: true });
+      const res = await api.agents.cancelTask('acme', 'atlas', 'sess_t-1', 'task-9');
+      expect((globalThis.fetch as any).mock.calls[0][0]).toBe(
+        '/api/v1/workspaces/acme/agents/atlas/sessions/sess_t-1/tasks/task-9/cancel'
+      );
+      expect((globalThis.fetch as any).mock.calls[0][1].method).toBe('POST');
+      expect(res.cancelled).toBe(true);
+    });
+  });
 });
 
 

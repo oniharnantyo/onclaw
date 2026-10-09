@@ -1,11 +1,12 @@
 /**
  * @vitest-environment jsdom
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { ToolCall } from './ToolCall';
 import { useStore } from '../../store';
 import { registerPanelCandidate, resetPanelRegistries } from '../../lib/panel/registry';
+import { applyTaskList, type TaskEntry } from '../../lib/tasks';
 
 const BLOCKED_RESULT = '{"blocked_by_hook":true,"hook":"Policy Gate","reason":"shell commands are blocked by policy"}';
 
@@ -386,5 +387,139 @@ describe('components/chat/ToolCall — panel open affordance (add-right-panel 1.
     );
     fireEvent.click(container.querySelector('button[data-od-id="tool-artifact.publish"]') as HTMLButtonElement);
     expect(container.textContent).toContain('result');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Subagents deep-link affordance (add-subagent-runs-surface 6.3): reserved
+// subagent-lane cards (`agent`, `background_shell`) open the right panel's
+// Subagents source — trajectory detail on the D5-joined task, list view when
+// unjoinable. The affordance replaces the generic open-in-panel control for
+// these tools and works on running cards (spec: live cards deep-link).
+// ---------------------------------------------------------------------------
+describe('components/chat/ToolCall — Subagents deep-link (add-subagent-runs-surface 6.3)', () => {
+  const CHAT = 'a-atlas';
+  const DESCRIPTION = 'Research the vendor landscape';
+
+  const agentCard = (over: Record<string, unknown> = {}) => ({
+    callId: 'c1', name: 'agent', args: JSON.stringify({ description: DESCRIPTION }), ms: 0, ...over,
+  });
+
+  const seed = (entries: TaskEntry[]) => {
+    useStore.setState({ pos: { ...useStore.getState().pos, tenantId: 'acme', chatId: CHAT } });
+    if (entries.length) applyTaskList(CHAT, entries);
+  };
+
+  beforeEach(() => {
+    useStore.setState({
+      tasks: {},
+      panel: { open: false, tabs: [], activeId: null, badge: false },
+      pos: { ...useStore.getState().pos, tenantId: 'acme', chatId: CHAT },
+    });
+  });
+
+  afterEach(() => {
+    useStore.setState({ tasks: {}, panel: { open: false, tabs: [], activeId: null, badge: false } });
+  });
+
+  it('a joinable card opens the panel on the joined task trajectory detail', () => {
+    seed([{ taskId: 'task-1', kind: 'delegation', status: 'running', description: DESCRIPTION }]);
+    const { container } = render(<ToolCall t={agentCard()} running={false}/>);
+    const btn = container.querySelector('[data-od-id="tool-open-subagents"]');
+    expect(btn).not.toBeNull();
+    fireEvent.click(btn as HTMLButtonElement);
+    const p = useStore.getState().panel;
+    expect(p.open).toBe(true);
+    expect(p.tabs).toHaveLength(1);
+    expect(p.tabs[0]).toMatchObject({ kind: 'subagents', title: 'Subagents', payload: { chatId: CHAT, taskId: 'task-1' } });
+  });
+
+  it('an unjoinable card still deep-links — to the list view (payload without taskId)', () => {
+    seed([]);
+    const { container } = render(<ToolCall t={agentCard()} running={false}/>);
+    fireEvent.click(container.querySelector('[data-od-id="tool-open-subagents"]') as HTMLButtonElement);
+    const p = useStore.getState().panel;
+    expect(p.open).toBe(true);
+    expect(p.tabs[0]).toMatchObject({ kind: 'subagents', payload: { chatId: CHAT } });
+    expect(p.tabs[0].payload.taskId).toBeUndefined();
+  });
+
+  it('same-description siblings tiebreak by order: first card joins the first task, second the second', () => {
+    seed([
+      { taskId: 'task-a', kind: 'delegation', status: 'running', description: DESCRIPTION },
+      { taskId: 'task-b', kind: 'delegation', status: 'running', description: DESCRIPTION },
+    ]);
+    const first = agentCard({ callId: 'c1' });
+    const second = agentCard({ callId: 'c2' });
+    const siblings = [first, second];
+    const one = render(<ToolCall t={first} siblings={siblings} running={false}/>);
+    fireEvent.click(one.container.querySelector('[data-od-id="tool-open-subagents"]') as HTMLButtonElement);
+    const two = render(<ToolCall t={second} siblings={siblings} running={false}/>);
+    fireEvent.click(two.container.querySelector('[data-od-id="tool-open-subagents"]') as HTMLButtonElement);
+    const payloads = useStore.getState().panel.tabs.map((t) => t.payload.taskId);
+    expect(payloads).toEqual(['task-a', 'task-b']);
+  });
+
+  it('without siblings context only a UNIQUE description match carries the taskId', () => {
+    // Unique match → detail.
+    seed([{ taskId: 'task-1', kind: 'delegation', status: 'running', description: DESCRIPTION }]);
+    const unique = render(<ToolCall t={agentCard()} running={false}/>);
+    fireEvent.click(unique.container.querySelector('[data-od-id="tool-open-subagents"]') as HTMLButtonElement);
+    expect(useStore.getState().panel.tabs[0].payload.taskId).toBe('task-1');
+
+    // Ambiguous (two same-description entries, no ordinal) → list view.
+    seed([
+      { taskId: 'task-a', kind: 'delegation', status: 'running', description: DESCRIPTION },
+      { taskId: 'task-b', kind: 'delegation', status: 'running', description: DESCRIPTION },
+    ]);
+    const ambiguous = render(<ToolCall t={agentCard()} running={false}/>);
+    fireEvent.click(ambiguous.container.querySelector('[data-od-id="tool-open-subagents"]') as HTMLButtonElement);
+    const tabs = useStore.getState().panel.tabs;
+    expect(tabs[tabs.length - 1].payload.taskId).toBeUndefined();
+  });
+
+  it('a running card keeps the affordance (live cards deep-link)', () => {
+    seed([{ taskId: 'task-1', kind: 'delegation', status: 'running', description: DESCRIPTION }]);
+    const { container } = render(<ToolCall t={agentCard()} running/>);
+    expect(container.querySelector('[data-od-id="tool-open-subagents"]')).not.toBeNull();
+  });
+
+  it('background_shell joins on its command', () => {
+    const cmd = 'npm test -- --coverage';
+    seed([{ taskId: 'task-sh', kind: 'shell', status: 'running', description: cmd }]);
+    const { container } = render(
+      <ToolCall t={{ callId: 'c9', name: 'background_shell', args: JSON.stringify({ command: cmd }), ms: 0 }} running={false}/>
+    );
+    fireEvent.click(container.querySelector('[data-od-id="tool-open-subagents"]') as HTMLButtonElement);
+    expect(useStore.getState().panel.tabs[0]).toMatchObject({
+      kind: 'subagents',
+      payload: { chatId: CHAT, taskId: 'task-sh' },
+    });
+  });
+
+  it('replaces (never doubles) the generic open-in-panel control for these tools', () => {
+    resetPanelRegistries();
+    registerPanelCandidate((card) =>
+      card.name === 'agent' ? { kind: 'subagents', title: 'Subagents', payload: {} } : null
+    );
+    const { container } = render(<ToolCall t={agentCard()} running={false}/>);
+    expect(container.querySelector('[data-od-id="tool-open-panel"]')).toBeNull();
+    expect(container.querySelector('[data-od-id="tool-open-subagents"]')).not.toBeNull();
+    resetPanelRegistries();
+  });
+
+  it('other tools never get the subagents button', () => {
+    const { container } = render(
+      <ToolCall t={{ name: 'execute', args: '{"command":"ls"}', res: 'ok', ms: 4 }} running={false}/>
+    );
+    expect(container.querySelector('[data-od-id="tool-open-subagents"]')).toBeNull();
+  });
+
+  it('clicking twice lands on ONE tab — dedup by payload identity', () => {
+    seed([{ taskId: 'task-1', kind: 'delegation', status: 'running', description: DESCRIPTION }]);
+    const { container } = render(<ToolCall t={agentCard()} running={false}/>);
+    fireEvent.click(container.querySelector('[data-od-id="tool-open-subagents"]') as HTMLButtonElement);
+    fireEvent.click(container.querySelector('[data-od-id="tool-open-subagents"]') as HTMLButtonElement);
+    expect(useStore.getState().panel.tabs).toHaveLength(1);
   });
 });

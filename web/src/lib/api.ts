@@ -1312,6 +1312,44 @@ export interface ApiWhatsAppPairing {
 }
 
 
+// ---------------------------------------------------------------------------
+// Session background tasks (add-subagent-runs-surface): wire shapes for the
+// session tasks API, mirroring the handlers' snake_case JSON exactly.
+// `created` is historical evidence (created-without-completion) — never
+// rendered as running. lib/tasks.ts maps these onto its camelCase entries.
+// ---------------------------------------------------------------------------
+
+export type ApiSessionTaskKind = 'delegation' | 'shell';
+
+export type ApiSessionTaskStatus = 'running' | 'completed' | 'failed' | 'canceled' | 'created';
+
+export interface ApiSessionTask {
+  task_id: string;
+  kind: ApiSessionTaskKind;
+  status: ApiSessionTaskStatus;
+  description: string;
+  output_path?: string;
+  summary?: string;
+}
+
+/** One trajectory record: a child text block, tool call, or tool result. */
+export interface ApiTaskRecord {
+  sequence: number;
+  type: 'text' | 'tool_call' | 'tool_result';
+  text?: string;
+  name?: string;
+  args?: string;
+  result?: string;
+}
+
+/** Trajectory read: the records plus the terminal envelope (null while the
+ * task is still running or its terminal evidence was never persisted). */
+export interface ApiTaskOutput {
+  task_id: string;
+  records: ApiTaskRecord[];
+  terminal: { outcome: 'completed' | 'failed' | 'canceled'; output_path?: string } | null;
+}
+
 type UnauthorizedHandler = () => void;
 const unauthorizedHandlers = new Set<UnauthorizedHandler>();
 
@@ -2030,6 +2068,28 @@ export const api = {
     cancelRun: (ws: string, agent: string, sessionId: string, turnId: string) =>
       request<{ cancelled: boolean }>(
         `/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(turnId)}/cancel`,
+        { method: 'POST' },
+      ),
+    // ---------------------------------------------------------------------
+    // Session background tasks (add-subagent-runs-surface, wire contract 1-3):
+    // the merged task list (live store joined with persisted evidence),
+    // trajectory read (live tail or output-file replay; 404 when unknown or
+    // pruned), and cancel (running-only — 409 otherwise). Progress rides the
+    // dedicated SSE endpoint consumed by lib/tasks.ts, not request().
+    // ---------------------------------------------------------------------
+    listTasks: (ws: string, agent: string, sessionId: string) =>
+      request<{ tasks: ApiSessionTask[] }>(
+        `/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/sessions/${encodeURIComponent(sessionId)}/tasks`,
+        { method: 'GET' },
+      ),
+    taskOutput: (ws: string, agent: string, sessionId: string, taskId: string) =>
+      request<ApiTaskOutput>(
+        `/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskId)}/output`,
+        { method: 'GET' },
+      ),
+    cancelTask: (ws: string, agent: string, sessionId: string, taskId: string) =>
+      request<{ cancelled: boolean }>(
+        `/workspaces/${encodeURIComponent(ws)}/agents/${encodeURIComponent(agent)}/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskId)}/cancel`,
         { method: 'POST' },
       ),
     // Agent-tier skills: bodies live in the agent's own skills directory;

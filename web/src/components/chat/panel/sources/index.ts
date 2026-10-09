@@ -10,3 +10,4 @@ import "./file";
 import "./browser";
 import "./document";
 import "./documents";
+import "./subagents";

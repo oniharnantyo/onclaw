@@ -1,84 +1,267 @@
-// Session todos surface (add-session-todos-surface D2/D3/D4/D6): a persistent
-// chip in the direct-chat header that opens the session's current todo
-// checklist. D2 — the chip always shows state while a plan exists (active
-// item + spinner while one runs, done/total otherwise). D3 — an anchored
-// popover above the trigger at/above the 640px floor (ContextRing's idiom,
-// same z-tier), a fixed bottom sheet below it. D4 — auto-surface: the
-// popover opens itself on a run's FIRST todo_write and collapses when the
-// run finishes or the list completes; presence is an event, not a layout
-// tax. Present-only everywhere: no plan or an agent without todo_write →
-// nothing renders (D6: direct agent chats only — ChatHeader gates the mount).
-import { useCallback, useEffect, useRef, useState } from 'react';
+// Floating run card (add-subagent-runs-surface D6, tasks 5.1/5.2): the
+// session's run-status surface, replacing the header chip + anchored popover
+// (add-session-todos-surface, whose popover requirement is removed). One
+// dismissible card floats over the transcript — anchored in the chat pane's
+// top corner at/above the 640px floor (WIDE_QUERY idiom), a full-height
+// bottom sheet below it — hosting the Progress section (the session's todo
+// checklist, same data lane and four row states as before) and the Agents
+// section (the session's background tasks: delegation and shell rows with a
+// live running marker, ended tasks collapsed into one "Ended · N ›" closing
+// row that opens the right panel's Subagents source).
+//
+// Surface model (spec "Floating run card"): the card renders whenever a lane
+// has content and the user has not dismissed it — the run's first todo write
+// or first task activity IS the auto-surface, so it happens exactly once per
+// run; dismissal is sticky for the remainder of the run (the next run's
+// false→true transition re-arms it) and a chat switch resets it. Present-only
+// everywhere: no todo plan and no task activity → nothing renders anywhere,
+// and the header carries no run chip anymore.
+//
+// Lanes: the todos lane is useSessionTodoPlan (unchanged). The tasks lane is
+// the per-chat task store (web/src/lib/tasks.ts) plus — without subscribing —
+// unresulted `agent` / `background_shell` calls in the session's loaded
+// events, so an in-flight delegation surfaces the card before any task entry
+// exists. The ref-counted progress stream is subscribed ONLY while the card
+// is actually visible (present and not dismissed); a dismissed card is closed
+// and releases it.
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '../../ui/Icon';
-import { cx } from '../../../lib/helpers';
 import { useStore } from '../../../store';
-import { agentExposesTodoWrite, hasOpenItems, useSessionTodoPlan } from '../../../lib/sessionTodos';
+import { agentExposesTodoWrite, useSessionTodoPlan } from '../../../lib/sessionTodos';
 import { TodoPlanRows, todoRatio } from '../../../lib/generativeUi/TodoChecklistCard';
-// The chip's active spinner copies TodoChecklistCard's TodoMark span, whose
-// animation lives in generativeUi.css — the registry CSS is imported there, so a
+import { parseArgs } from '../../../lib/toolDisplay';
+import { useTaskEntries, useTaskStream, type TaskEntry } from '../../../lib/tasks';
+// The running markers copy TodoChecklistCard's TodoMark span, whose animation
+// lives in generativeUi.css — the registry CSS is imported there, so a
 // standalone mount needs it too (Vite dedupes the double import).
 import '../../../lib/generativeUi/generativeUi.css';
 
 const WIDE_QUERY = '(min-width: 640px)';
 
-/** Shared panel body: transcript-card-register header (Todos · agent · rev N)
- * + the exact transcript rows + a dismiss control. Used by the anchored
- * popover and the bottom sheet so the two surfaces cannot drift. */
-function TodosPanel({ plan, agent, onDismiss }: { plan: any; agent: any; onDismiss: () => void }) {
+// ---------------------------------------------------------------------------
+// Transcript call collection — task-lane presence signal + D5 display join.
+// ---------------------------------------------------------------------------
+
+/** One `agent` / `background_shell` call found in the session's loaded
+ * events. It doubles as (a) the presence signal before any task entry exists
+ * (an unresulted call = the delegation/shell is in flight) and (b) the
+ * display-join counterpart of a TaskEntry: the delegation args carry
+ * `subagent_type` (the row's subagent name) and the shell args the `command`
+ * (the row's excerpt). Join is display-only (D5). */
+interface TaskCallInfo {
+  kind: 'delegation' | 'shell';
+  description: string;
+  subagentType: string;
+  command: string;
+  unresulted: boolean;
+}
+
+function collectTaskCalls(messages: any[] | undefined | null): TaskCallInfo[] {
+  const out: TaskCallInfo[] = [];
+  if (!Array.isArray(messages)) return out;
+  for (const m of messages) {
+    if (!Array.isArray(m?.tools)) continue;
+    for (const t of m.tools) {
+      if (t?.name !== 'agent' && t?.name !== 'background_shell') continue;
+      const args = parseArgs(typeof t.args === 'string' ? t.args : null) || {};
+      out.push({
+        kind: t.name === 'agent' ? 'delegation' : 'shell',
+        description: typeof args.description === 'string' ? args.description : '',
+        subagentType: typeof args.subagent_type === 'string' ? args.subagent_type : '',
+        command: typeof args.command === 'string' ? args.command : '',
+        unresulted: !t.res,
+      });
+    }
+  }
+  return out;
+}
+
+/** D5 join, task-row side: the entry's ordinal among its kind+description
+ * peers picks the same-indexed transcript call — the mirror image of
+ * joinTaskForCard's description+order tiebreak. A miss degrades the row name,
+ * never blocks anything. */
+function joinCallsForEntries(entries: TaskEntry[], calls: TaskCallInfo[]): (TaskCallInfo | null)[] {
+  const byKey = new Map<string, TaskCallInfo[]>();
+  for (const c of calls) {
+    const key = c.kind + '\u0000' + c.description;
+    const list = byKey.get(key);
+    if (list) list.push(c);
+    else byKey.set(key, [c]);
+  }
+  const ordinals = new Map<string, number>();
+  return entries.map((e) => {
+    const key = e.kind + '\u0000' + e.description;
+    const i = ordinals.get(key) ?? 0;
+    ordinals.set(key, i + 1);
+    return (byKey.get(key) ?? [])[i] ?? null;
+  });
+}
+
+/** First line, trimmed — the one-liner form descriptions/commands render in. */
+function firstLine(text: string): string {
+  const t = (text || '').trim();
+  const cut = t.indexOf('\n');
+  return (cut === -1 ? t : t.slice(0, cut)).trim();
+}
+
+/** Row name: the delegation's subagent type from the joined call's args,
+ * else the kind label 'Agent'; a shell row excerpts the joined call's
+ * command, else its description. */
+function taskRowName(entry: TaskEntry, call: TaskCallInfo | null): string {
+  if (entry.kind === 'shell') {
+    const command = firstLine(call?.command || entry.description);
+    return command || 'Shell';
+  }
+  return (call && call.subagentType && firstLine(call.subagentType)) || 'Agent';
+}
+
+/** Row description one-liner: the task description, else the folded
+ * completion summary (entries minted from task_completed carry it). */
+function taskRowDescription(entry: TaskEntry): string {
+  return firstLine(entry.description) || (entry.summary ? firstLine(entry.summary) : '');
+}
+
+// ---------------------------------------------------------------------------
+// Agents section — one row per running task + the Ended closing row (5.2:
+// header, rows, and the Ended summary all open the panel's Subagents source
+// through onOpen; a joinable row passes its taskId, the rest open the list).
+// ---------------------------------------------------------------------------
+
+function AgentsSection({ entries, joinedCalls, onOpen }: {
+  entries: TaskEntry[];
+  joinedCalls: (TaskCallInfo | null)[];
+  onOpen: (taskId?: string) => void;
+}) {
+  const endedCount = entries.reduce((n, e) => (e.status === 'running' ? n : n + 1), 0);
+  return (
+    <div>
+      <button type="button" data-od-id="tasks-section" aria-haspopup="dialog"
+        title="Open subagents" onClick={() => onOpen()}
+        className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_5%,transparent)]">
+        <Icon name="bot" size={13} className="shrink-0 text-meta"/>
+        <span className="font-mono text-[12px] text-fg2">Agents</span>
+        <span className="min-w-0 flex-1"/>
+        <Icon name="chevright" size={13} className="shrink-0 text-muted"/>
+      </button>
+      {entries.map((entry, i) => {
+        // `created` is restart-lost evidence — never rendered as running
+        // (process-local honesty); it collapses into the Ended row instead.
+        if (entry.status !== 'running') return null;
+        return (
+          <button key={entry.taskId || i} type="button" data-od-id={'task-row-' + entry.taskId}
+            title={taskRowDescription(entry) || taskRowName(entry, joinedCalls[i])}
+            onClick={() => onOpen(entry.taskId || undefined)}
+            className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_5%,transparent)]">
+            <span aria-hidden="true"
+              className="od-genui-spin inline-block h-[11px] w-[11px] shrink-0 rounded-full border-[1.5px] border-accent border-t-transparent"/>
+            <span className="max-w-[8rem] shrink-0 truncate font-mono text-[10px] text-fg2">
+              {taskRowName(entry, joinedCalls[i])}
+            </span>
+            <span className="min-w-0 flex-1 truncate text-[12px] text-muted">
+              {taskRowDescription(entry)}
+            </span>
+          </button>
+        );
+      })}
+      {endedCount > 0 && (
+        <button type="button" data-od-id="tasks-ended" aria-haspopup="dialog"
+          title="Open subagents" onClick={() => onOpen()}
+          className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_5%,transparent)]">
+          <Icon name="check-circle" size={13} className="shrink-0 text-meta"/>
+          <span className="font-mono text-[12px] text-fg2">Ended</span>
+          <span className="min-w-0 flex-1"/>
+          <span className="font-mono text-[10px] text-muted">{endedCount}</span>
+          <Icon name="chevright" size={13} className="shrink-0 text-muted"/>
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Shared card body: run header (agent name · rev + done/total + dismiss) +
+ * the Progress section (the todo lane, unchanged) + the Agents section. Used
+ * by the anchored card and the bottom sheet so the two surfaces cannot
+ * drift. */
+function RunCardBody({ plan, agent, running, entries, joinedCalls, onDismiss, onOpenSubagents }: {
+  plan: any;
+  agent: any;
+  running: boolean;
+  entries: TaskEntry[];
+  joinedCalls: (TaskCallInfo | null)[];
+  onDismiss: () => void;
+  onOpenSubagents: (taskId?: string) => void;
+}) {
+  const doneTotal = plan ? todoRatio(plan.items) : null;
   return (
     <>
       <div className="flex items-center gap-2 px-2.5 py-1.5">
-        <Icon name="check-circle" size={13} className="shrink-0 text-meta"/>
-        <span className="font-mono text-[12px] text-fg2">Todos</span>
+        {running ? (
+          <span aria-hidden="true"
+            className="od-genui-spin inline-block h-[11px] w-[11px] shrink-0 rounded-full border-[1.5px] border-accent border-t-transparent"/>
+        ) : (
+          <Icon name="check-circle" size={13} className="shrink-0 text-meta"/>
+        )}
+        <span className="font-mono text-[12px] text-fg2">Run</span>
         <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted">
-          {agent?.name}{plan.revision !== null ? ' · rev ' + plan.revision : ''}
+          {agent?.name}{plan && plan.revision !== null ? ' · rev ' + plan.revision : ''}
         </span>
-        <button type="button" data-od-id="todos-dismiss" title="Hide todos" aria-label="Hide todos"
+        {doneTotal && (
+          <span aria-live="polite" className="font-mono text-[10px] text-muted">
+            {doneTotal.done}/{doneTotal.total}
+          </span>
+        )}
+        <button type="button" data-od-id="todos-dismiss" title="Hide run status" aria-label="Hide run status"
           onClick={onDismiss}
           className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted transition-colors hover:text-fg2">
           <Icon name="x" size={13}/>
         </button>
       </div>
-      <TodoPlanRows items={plan.items}/>
+      {plan && <TodoPlanRows items={plan.items}/>}
+      {entries.length > 0 && (
+        <div className="border-t border-linesoft">
+          <AgentsSection entries={entries} joinedCalls={joinedCalls} onOpen={onOpenSubagents}/>
+        </div>
+      )}
     </>
   );
 }
 
 export function SessionTodosSurface({ agent }: { agent: any }) {
-  const { plan, callId } = useSessionTodoPlan();
-  // Same-chat scope (fix-thinking-leak-on-chat-switch): the D4 auto-open /
-  // auto-collapse machine must follow THIS chat's run, not a turn streaming
-  // in some other chat.
+  const { plan } = useSessionTodoPlan();
+  // Same-chat scope (fix-thinking-leak-on-chat-switch): every lane selector
+  // and the surface machine follow THIS chat's run, not a turn streaming in
+  // some other chat.
+  const chatId = useStore((s: any) => s.pos.chatId);
   const running = useStore((s: any) => !!s.ui.running && s.ui.runningChatId === s.pos.chatId);
+  // Tasks lane: entries reflect the folded task_completed translator output
+  // and — while this card is visible — the ref-counted progress stream.
+  const entries = useTaskEntries(chatId);
+  // Presence WITHOUT subscribing (D6): unresulted `agent` / `background_shell`
+  // calls in the session's loaded events mean a delegation/shell is in flight
+  // even before any task entry exists.
+  const messages = useStore((s: any) => {
+    const th = s.db[s.pos.tenantId]?.threads[s.pos.chatId];
+    return th && !Array.isArray(th)
+      ? th.list.find((x: any) => x.id === th.active)?.messages
+      : undefined;
+  });
+  const taskCalls = useMemo(() => collectTaskCalls(messages), [messages]);
+  const hasUnresultedCall = useMemo(() => taskCalls.some((c) => c.unresulted), [taskCalls]);
+  const joinedCalls = useMemo(() => joinCallsForEntries(entries, taskCalls), [entries, taskCalls]);
 
-  // The popover must never survive a chat switch: render-time reset keyed on
-  // the open chat (ContextRing's sanctioned adjustment pattern). The machine
-  // refs re-baseline here too — the new chat's already-landed writes are
-  // history, not live events, so switching into a mid-run chat does not
-  // auto-open; the next write in it does.
+  // The card never survives a chat switch: render-time reset keyed on the
+  // open chat (ContextRing's sanctioned adjustment pattern); sticky dismissal
+  // resets with it.
   const chatKey = useStore((s: any) => s.pos.tenantId + '::' + s.pos.chatId);
-  const [open, setOpen] = useState(false);
-  // `auto` marks the CURRENT open as machine-initiated — the only opens the
-  // D4 auto-collapse may close. User-opened popovers (chip click) are
-  // deliberate and never insta-collapsed by run boundaries.
-  const [auto, setAuto] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
   const [openChatKey, setOpenChatKey] = useState(chatKey);
-  const dismissedRef = useRef(false); // sticky user dismissal, per run
-  const baselineRef = useRef<string | null>(null); // writes already accounted for
-  const openedRef = useRef(false); // one-shot auto-open per run
-  const prevRunningRef = useRef(false);
   if (openChatKey !== chatKey) {
     setOpenChatKey(chatKey);
-    setOpen(false);
-    setAuto(false);
-    baselineRef.current = callId;
-    dismissedRef.current = false;
-    openedRef.current = false;
+    setDismissed(false);
   }
-  const rootRef = useRef<HTMLSpanElement>(null);
 
   // Viewport gate for the sheet (jsdom has no matchMedia — guard, listen,
-  // clean up). Unknowable viewport defaults to the anchored popover.
+  // clean up). Unknowable viewport defaults to the anchored card.
   const [wide, setWide] = useState(() =>
     typeof window !== 'undefined' && typeof window.matchMedia === 'function'
       ? window.matchMedia(WIDE_QUERY).matches
@@ -96,109 +279,81 @@ export function SessionTodosSurface({ agent }: { agent: any }) {
     return () => mq.removeListener(onChange);
   }, []);
 
-  // D4 ARM: on the running false→true transition (and on mount while already
-  // running — a reload mid-run snapshots hydrated history without opening),
-  // snapshot the last accounted write and clear the per-run flags. Never
-  // opens by itself.
+  // Run boundary (arm): dismissal is sticky for the REMAINDER of a run — the
+  // next run's false→true transition re-arms the card (a mount while already
+  // running starts armed). Nothing else is per-run state: visibility is
+  // presence-driven, so the run's first todo write or first task activity is
+  // the one auto-surface.
+  const prevRunningRef = useRef(false);
   useEffect(() => {
-    if (running && !prevRunningRef.current) {
-      baselineRef.current = callId;
-      dismissedRef.current = false;
-      openedRef.current = false;
-    }
+    if (running && !prevRunningRef.current) setDismissed(false);
     prevRunningRef.current = running;
-  }, [running, callId]);
+  }, [running]);
 
-  // D4 AUTO-OPEN: a write landing mid-run with a callId the run hasn't
-  // accounted for opens the popover once (each todo_write carries a unique
-  // callId, but the one-shot flag keeps auto-open to the run's FIRST write).
-  // The baseline always absorbs the seen callId so nothing re-triggers.
+  // Presence (present-only, D6): the todos lane needs the agent to expose
+  // todo_write AND a plan; the tasks lane needs task entries (folded
+  // completions, stream-fed rows) or an unresulted delegation/shell call.
+  const todoLane = Boolean(plan && agentExposesTodoWrite(agent));
+  const taskLane = entries.length > 0 || hasUnresultedCall;
+  const present = todoLane || taskLane;
+
+  // Escape dismisses while the card is visible.
   useEffect(() => {
-    if (running && callId && callId !== baselineRef.current && !dismissedRef.current && !openedRef.current) {
-      openedRef.current = true;
-      setAuto(true);
-      setOpen(true);
-    }
-    if (callId !== baselineRef.current) baselineRef.current = callId;
-  }, [callId, running]);
-
-  // D4 AUTO-COLLAPSE: only machine-initiated opens collapse — run finished,
-  // or every item reached done/failed. User dismissal is interaction-only.
-  useEffect(() => {
-    if (open && auto && (!running || (plan && !hasOpenItems(plan.items)))) {
-      setAuto(false);
-      setOpen(false);
-    }
-  }, [open, auto, running, plan]);
-
-  // User dismissal (button, outside pointerdown, Escape): closes the surface
-  // AND sticks for the rest of the run — later writes update the chip but
-  // never reopen. Cleared by the next run's ARM.
-  const dismiss = useCallback(() => {
-    dismissedRef.current = true;
-    setAuto(false);
-    setOpen(false);
-  }, []);
-
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (e: PointerEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) dismiss();
-    };
+    if (!present) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') dismiss();
+      if (e.key === 'Escape') setDismissed(true);
     };
-    document.addEventListener('pointerdown', onPointerDown);
     document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open, dismiss]);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [present]);
 
-  // Present-only gate AFTER all hooks (ContextRing precedent): the component
-  // may return null; hooks never conditionally.
-  if (!plan || !agentExposesTodoWrite(agent)) return null;
+  // Stream consumer (chat-runtime spec): the session tasks progress stream is
+  // subscribed ONLY while the card is actually visible — present and not
+  // dismissed. A dismissed card is closed: the ref-counted subscription
+  // releases; the next run re-arms.
+  useTaskStream(chatId, present && !dismissed);
 
-  const { done, total } = todoRatio(plan.items);
-  const activeItem = plan.items.find((i) => i.status === 'active') ?? null;
+  // Section→panel activation (task 5.2): the Agents header, any task row, and
+  // the Ended row open the right panel's Subagents source. A row with a
+  // joinable task passes its taskId (the panel pre-selects detail); the
+  // header and the Ended row open the list view (no taskId).
+  const onOpenSubagents = useCallback((taskId?: string) => {
+    useStore.getState().openPanelTab({
+      kind: 'subagents',
+      title: 'Subagents',
+      payload: { chatId, ...(taskId ? { taskId } : {}) },
+    });
+  }, [chatId]);
+
+  const dismiss = useCallback(() => setDismissed(true), []);
+
+  // Present-only + sticky-dismissal gate AFTER all hooks (ContextRing
+  // precedent): the component may return null; hooks never conditionally. A
+  // dismissed card is closed — it renders nothing and releases the stream
+  // until the next run re-arms it.
+  if (!present || dismissed) return null;
+
+  const body = (
+    <RunCardBody plan={plan} agent={agent} running={running} entries={entries}
+      joinedCalls={joinedCalls} onDismiss={dismiss} onOpenSubagents={onOpenSubagents}/>
+  );
 
   return (
-    <span ref={rootRef} className="relative flex items-center">
-      <button type="button" data-od-id="todos-chip" aria-expanded={open} aria-haspopup="dialog"
-        title={activeItem ? 'Todos · ' + activeItem.text : 'Todos · ' + done + ' of ' + total + ' done'}
-        onClick={(e) => {
-          e.stopPropagation();
-          if (open) setAuto(false); // chip close ends the machine lifecycle
-          setOpen(!open);
-        }}
-        className={cx(
-          'flex min-w-0 max-w-[160px] items-center gap-1.5 rounded-full border border-line bg-surface px-2 py-0.5',
-          'text-[11px] leading-4 text-fg2 transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_5%,transparent)]'
-        )}>
-        <Icon name="check-circle" size={13} className="shrink-0 text-meta"/>
-        {activeItem ? (
-          <>
-            <span aria-hidden="true"
-              className="od-genui-spin inline-block h-[11px] w-[11px] shrink-0 rounded-full border-[1.5px] border-accent border-t-transparent"/>
-            <span className="min-w-0 truncate font-mono text-[10px]">{activeItem.text}</span>
-          </>
-        ) : (
-          <span className="font-mono text-[10px] text-muted">{done}/{total}</span>
-        )}
-      </button>
-      {open && wide && (
-        <span role="dialog" aria-label="Session todos" data-od-id="todos-popover"
-          className="absolute bottom-full left-0 z-30 mb-2 block w-72 overflow-hidden rounded-lg border border-linesoft bg-surface text-left shadow-lg">
-          <TodosPanel plan={plan} agent={agent} onDismiss={dismiss}/>
-        </span>
+    <>
+      {wide && (
+        <div className="pointer-events-none absolute right-4 top-4 z-30 w-72">
+          <div role="dialog" aria-label="Run status" data-od-id="run-card"
+            className="pointer-events-auto overflow-hidden rounded-lg border border-linesoft bg-surface text-left shadow-lg">
+            {body}
+          </div>
+        </div>
       )}
-      {open && !wide && (
-        <span role="dialog" aria-label="Session todos" data-od-id="todos-sheet"
-          className="fixed inset-x-0 bottom-0 z-30 block max-h-[70vh] overflow-y-auto rounded-t-xl border-t border-linesoft bg-surface text-left shadow-lg">
-          <TodosPanel plan={plan} agent={agent} onDismiss={dismiss}/>
-        </span>
+      {!wide && (
+        <div role="dialog" aria-label="Run status" data-od-id="run-sheet"
+          className="pointer-events-auto fixed inset-x-0 bottom-0 top-14 z-30 overflow-y-auto rounded-t-xl border-t border-linesoft bg-surface text-left shadow-lg">
+          {body}
+        </div>
       )}
-    </span>
+    </>
   );
 }

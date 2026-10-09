@@ -106,7 +106,7 @@ func newAgentSessionsTestEnv(t *testing.T) (*gin.Engine, store.Store, *domain.Wo
 	}
 
 	runner := &fakeSessionListerRunner{active: map[string]bool{}}
-	h := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), st.AgentSessions(), []byte("01234567890123456789012345678901"), nil, nil, nil, "ws-dir", runner, runner, mustTestAuthorizer(t, st))
+	h := handlers.NewAgentHandlers(st.Agents(), st.Providers(), st.SessionEvents(), st.AgentSessions(), []byte("01234567890123456789012345678901"), nil, nil, nil, "ws-dir", runner, runner, nil, mustTestAuthorizer(t, st))
 
 	var currentUser *domain.User
 	r := gin.New()

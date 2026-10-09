@@ -99,6 +99,12 @@
 #      the canonical blocked_by_hook payload lands as the tool result, the
 #      file side effect never occurs, the executions audit records the
 #      delivery, and the hook is deleted afterwards
+#  37. Session tasks API (add-subagent-runs-surface: the merged list over
+#      turns — a background delegation still listed from its persisted events
+#      after a later plain turn, the shell lane's list row, the trajectory
+#      endpoint replaying delegation and shell output files, the tasks SSE
+#      stream's no-live-run shape, unknown task/session 404s, and the
+#      running-only cancel's 409 conflict on ended tasks)
 #
 # Usage:
 #   ./scripts/smoke.sh
@@ -5424,3 +5430,118 @@ api_req "DELETE" "${HOOKS_BASE}/${HOOKGATE_HOOK_ID}" "${CHARLIE_TOKEN}"
 assert_status "204" "Owner deletes the hook-gate hook (204)"
 api_req "GET" "${HOOKS_BASE}" "${CHARLIE_TOKEN}"
 assert_json_expr "[.hooks[] | select(.id == \"${HOOKGATE_HOOK_ID}\")] | length == 0" "The deleted hook is gone from the workspace hooks list"
+
+# -----------------------------------------------------------------------------
+# 37. Session Tasks API (add-subagent-runs-surface task 3.3): the merged
+#     session task list (an earlier turn's background delegation still listed
+#     from its persisted events after a later plain turn on the same session,
+#     and the section-32 shell lane's row), the trajectory endpoint replaying
+#     delegation and shell output files from disk, the tasks SSE stream's
+#     no-live-run shape, unknown task/session 404s, and the running-only
+#     cancel's 409 conflict on ended tasks (the scripted stub lanes always
+#     reach terminal during their parent's task_output poll, so no live cancel
+#     acceptance is reachable here — that path is Go-level covered, like the
+#     live-frame delivery of the stream).
+#     Reuses section 32's stub LLM (still listening), subagent-smoke agent,
+#     and its session base.
+# -----------------------------------------------------------------------------
+log_step "37. Session Tasks API: List Merge, Trajectory Replay, Cancel Conflict"
+
+SG_TASKS_BASE="${SUB_EVENTS_BASE}"
+
+# 37.1 A fresh background delegation on its own session (the stub's BGDELEGATE
+# phase launches run_in_background and polls task_output to completion).
+SG_TASKS_SESSION="sess-sg-tasks-$(date +%s)-${RANDOM}"
+api_req "POST" "/v1/responses" "${V1_KEY}" '{"model":"subagent-smoke","input":"ONCLAW_V1_SMOKE BGDELEGATE the research brief to a background sub-agent","stream":true,"metadata":{"onclaw_session":"'"${SG_TASKS_SESSION}"'"}}'
+assert_status "200" "Background delegation turn for the tasks API streamed"
+SG_TASK_ID=$(printf '%s' "${HTTP_BODY}" | grep -o 'Agent running in background with ID: [A-Za-z0-9_-]*\.' | head -1 | sed 's/^.*ID: //; s/\.$//')
+if [[ -n "${SG_TASK_ID}" ]]; then
+    log_pass "The tasks-API delegation launch returned a task id (${SG_TASK_ID:0:20}...)"
+else
+    log_fail "The tasks-API delegation launch carried no task id. Body: ${HTTP_BODY}"
+fi
+
+for i in {1..40}; do
+    api_req "GET" "${SG_TASKS_BASE}/${SG_TASKS_SESSION}/events?limit=100" "${CHARLIE_TOKEN}"
+    if [[ "$(json_get '[.events[]? | select(.kind == "task_completed")] | length')" -ge 1 ]]; then
+        break
+    fi
+    sleep 0.25
+done
+assert_json_expr '[.events[]? | select(.kind == "task_completed")][0].task_completed.task_id == "'"${SG_TASK_ID}"'"' "The delegation's completion chip landed in the session events"
+
+# 37.2 A later plain turn on the SAME session, then the merged list: the
+# earlier turn's task must still appear — live run gone, persisted evidence
+# carries it.
+api_req "POST" "/v1/responses" "${V1_KEY}" '{"model":"subagent-smoke","input":"ONCLAW_V1_SMOKE plain follow-up turn","stream":true,"metadata":{"onclaw_session":"'"${SG_TASKS_SESSION}"'"}}'
+assert_status "200" "Follow-up turn on the tasks session streamed"
+for i in {1..40}; do
+    api_req "GET" "${SG_TASKS_BASE}/${SG_TASKS_SESSION}/events?limit=100" "${CHARLIE_TOKEN}"
+    if [[ "$(json_get '[.events[]? | select(.kind == "turn_completed")] | length')" -ge 2 ]]; then
+        break
+    fi
+    sleep 0.25
+done
+
+api_req "GET" "${SG_TASKS_BASE}/${SG_TASKS_SESSION}/tasks" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists the delegation session's tasks"
+assert_json_expr '(.tasks | length) == 1' "The merged list carries the earlier turn's task"
+assert_json_expr '.tasks[0].task_id == "'"${SG_TASK_ID}"'"' "The merged list addresses the launched task id"
+assert_json_expr '.tasks[0].kind == "delegation"' "The merged list names the delegation lane"
+assert_json_expr '.tasks[0].status == "completed"' "The earlier turn's task lists with its persisted outcome"
+assert_json_expr '.tasks[0].description == "Stub background delegation"' "The merged list carries the task description"
+assert_json_expr '.tasks[0].output_path | contains(".tasks/")' "The merged list carries the output location"
+assert_json_expr '.tasks[0].summary == "Stub background delegation"' "The merged list carries the persisted summary"
+
+# 37.3 Trajectory replay: the ended delegation's output file decodes into
+# records (the child's report among them) with the persisted terminal notice.
+api_req "GET" "${SG_TASKS_BASE}/${SG_TASKS_SESSION}/tasks/${SG_TASK_ID}/output" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner reads the ended delegation's trajectory"
+assert_json_expr '.task_id == "'"${SG_TASK_ID}"'"' "The trajectory addresses the launched task"
+assert_json_expr '(.records | length) >= 1' "The trajectory carries decoded records"
+assert_json_expr '[.records[] | select(.type == "text" and (.text | contains("SUBRESULT stub child report complete")))] | length >= 1' "The trajectory replays the child's report from the output file"
+assert_json_expr 'all(.records[]; .sequence >= 1)' "Every replayed record carries a 1-based sequence"
+assert_json_expr '.terminal.task_id == "'"${SG_TASK_ID}"'"' "The trajectory's terminal names the task"
+assert_json_expr '.terminal.outcome == "completed"' "The trajectory's terminal carries the persisted outcome"
+
+# 37.4 The section-32 shell task's session: the same merged list and replay
+# over the shell lane.
+api_req "GET" "${SUB_EVENTS_BASE}/${SUB_SESSION_3}/tasks" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists the shell session's tasks"
+assert_json_expr '(.tasks | length) == 1' "The shell session's merged list carries its task"
+assert_json_expr '.tasks[0].task_id == "'"${SUB_SH_TASK_ID}"'"' "The shell list row addresses the launched bash task"
+assert_json_expr '.tasks[0].kind == "shell"' "The shell list row names the shell lane"
+assert_json_expr '.tasks[0].status == "completed"' "The shell task lists with its persisted outcome"
+
+api_req "GET" "${SUB_EVENTS_BASE}/${SUB_SESSION_3}/tasks/${SUB_SH_TASK_ID}/output" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner reads the ended shell task's trajectory"
+assert_json_expr '[.records[] | select(.type == "text" and (.text | contains("onclaw-bg-shell-ok")))] | length >= 1' "The shell trajectory replays the command's output from disk"
+assert_json_expr '.terminal.outcome == "completed"' "The shell trajectory's terminal carries the persisted outcome"
+
+# 37.5 The tasks SSE stream with no live run: a known session gets a clean
+# immediate end (SSE headers + [DONE]) — reconnect-friendly, no frames.
+api_req "GET" "${SG_TASKS_BASE}/${SG_TASKS_SESSION}/tasks/stream" "${CHARLIE_TOKEN}"
+assert_status "200" "The tasks stream accepts a no-live-run session"
+grep -q "text/event-stream" "${TMP_DIR}/headers.tmp" || log_fail "The tasks stream must serve text/event-stream. Headers: $(cat "${TMP_DIR}/headers.tmp")"
+if [[ "${HTTP_BODY}" == "data: [DONE]"* ]]; then
+    log_pass "The no-live-run tasks stream ends immediately with the [DONE] sentinel"
+else
+    log_fail "Expected an immediate clean stream end, got: ${HTTP_BODY}"
+fi
+
+# 37.6 Unknown task and unknown session read as not-found, never as empty
+# trajectories or empty lists.
+api_req "GET" "${SG_TASKS_BASE}/${SG_TASKS_SESSION}/tasks/does-not-exist/output" "${CHARLIE_TOKEN}"
+assert_status "404" "An unknown task's trajectory is not-found"
+api_req "GET" "${SG_TASKS_BASE}/sess-nonexistent/tasks" "${CHARLIE_TOKEN}"
+assert_status "404" "An unknown session's task list is not-found"
+
+# 37.7 The running-only cancel: every scripted task is terminal by the time
+# its parent turn finished, so both lanes' cancel attempts are refused with
+# the conflict envelope (the acceptance path is Go-level covered).
+api_req "POST" "${SG_TASKS_BASE}/${SG_TASKS_SESSION}/tasks/${SG_TASK_ID}/cancel" "${CHARLIE_TOKEN}"
+assert_status "409" "Cancelling the ended delegation task is refused with a conflict"
+assert_json_expr '.error.code == "conflict"' "The delegation cancel refusal carries the conflict code"
+api_req "POST" "${SUB_EVENTS_BASE}/${SUB_SESSION_3}/tasks/${SUB_SH_TASK_ID}/cancel" "${CHARLIE_TOKEN}"
+assert_status "409" "Cancelling the ended shell task is refused with a conflict"
+assert_json_expr '.error.code == "conflict"' "The shell cancel refusal carries the conflict code"

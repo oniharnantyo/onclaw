@@ -12,6 +12,7 @@ import {
   genericRows,
   parseArgs,
   resolveRefName,
+  RESERVED_TOOL_IDS,
   toolFieldSpec,
   toolOneLiner,
   type BlockedByHook,
@@ -20,6 +21,7 @@ import {
 } from "../../lib/toolDisplay";
 import { renderGenerativeUi } from "../../lib/generativeUi";
 import { matchPanelCandidate } from "../../lib/panel/registry";
+import { SubagentsCardLink } from "./panel/sources/subagents/CardLink";
 
 // Facade members whose args point at snapshot element refs — the only ids
 // whose ref chips resolve to element names via sibling cards (design D5).
@@ -387,7 +389,10 @@ export function ToolCall({ t, running, approval, siblings, live, agentName }: an
   // card data ({name, args, res, ms, error}) — identical for live and
   // hydrated transcripts by construction. A failed call produced nothing to
   // open, an in-flight one hasn't yet, and a hook block IS the result.
-  const panelCandidate = !bad && !blocked && !running
+  // Reserved subagent-lane cards (`agent`/`background_shell`,
+  // add-subagent-runs-surface 6.3) are excluded — their deep-link affordance
+  // below replaces this control and works on running cards too.
+  const panelCandidate = !bad && !blocked && !running && !(RESERVED_TOOL_IDS as readonly string[]).includes(t.name)
     ? matchPanelCandidate({ name: t.name, args: t.args, res: t.res, ms: t.ms })
     : null;
   const openInPanel = panelCandidate
@@ -477,6 +482,13 @@ export function ToolCall({ t, running, approval, siblings, live, agentName }: an
             className="mr-1.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-[5px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--accent)_14%,transparent)] hover:text-fg2">
             <Icon name="panelopen" size={13}/>
           </button>
+        )}
+        {/* Subagents deep-link (add-subagent-runs-surface 6.3): reserved
+            subagent-lane cards open the right panel's Subagents source —
+            detail on the joined task, list when unjoinable. Navigation only;
+            the cards carry no inner child events. */}
+        {(RESERVED_TOOL_IDS as readonly string[]).includes(t.name) && (
+          <SubagentsCardLink t={t} siblings={siblings}/>
         )}
       </div>
       {open && (

@@ -4,7 +4,6 @@ import { Icon } from "../ui/Icon";
 import { Avatar } from "../ui/Avatar";
 import { Chip } from "../ui/Chip";
 import { STATUS } from "../../lib/constants";
-import { SessionTodosSurface } from "./todos/SessionTodosSurface";
 
 // The context meter moved to the composer's left rail (adopt-assistant-ui-
 // elements D1) — the header renders no meter; the ring + breakdown popover
@@ -58,10 +57,9 @@ export function ChatHeader({ target, agent, session, channelMembers, langfuseUrl
         </p>
       </div>
       <div className="ml-auto flex items-center gap-3">
-        {/* Session todos chip (add-session-todos-surface D2/D6): direct agent
-            chats only, leftmost of the action cluster; present-only — renders
-            nothing without a todo plan or todo_write exposure. */}
-        {t.kind === 'agent' && <SessionTodosSurface agent={agent}/>}
+        {/* No run-status chip here (add-subagent-runs-surface D6): the header
+            stays clean — the floating run card lives over the transcript
+            (ChatView). */}
         {/* Observability deep link (integrate-langfuse-tracing D6): rendered
             only when the opened run carries a langfuse_url — untraced runs
             (tracing unconfigured or pre-dating export) see no action. */}

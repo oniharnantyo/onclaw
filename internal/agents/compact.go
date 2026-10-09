@@ -186,13 +186,14 @@ func (r *Runner) runCompact(
 	// The manager requires the ADK cancel pair per run; the compact turn
 	// never runs the ADK machine, so the run option is discarded and explicit
 	// cancel unwinds through the manager's context cancel, which handle.ctx
-	// carries into the summarizer call.
+	// carries into the summarizer call. The compact turn composes no agent,
+	// so it carries no background task space.
 	_, agentCancel := adk.WithCancel()
 	handle, err := r.runMgr.start(RunKey{
 		WorkspaceID: req.WorkspaceID,
 		AgentID:     req.AgentID,
 		SessionID:   req.SessionID,
-	}, agentCancel)
+	}, agentCancel, nil)
 	if err != nil {
 		return nil, fmt.Errorf("agent.Run: %w", err)
 	}

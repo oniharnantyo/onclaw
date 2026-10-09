@@ -240,6 +240,42 @@ type TaskCompletedPayload struct {
 // transcript renders the completion identically to the live stream (D8).
 const sessionEventKindTaskCompleted = adk.SessionEventKind("x.task_completed")
 
+// Task progress record types (add-subagent-runs-surface 2.3): the one-value
+// Type discriminator of TaskProgressRecord.
+const (
+	TaskProgressRecordText       = "text"
+	TaskProgressRecordToolCall   = "tool_call"
+	TaskProgressRecordToolResult = "tool_result"
+)
+
+// TaskProgressRecord is one child-execution record carried on a task progress
+// frame (add-subagent-runs-surface 2.3): a text message, a tool call, or a
+// tool result, decoded from the lane's task-event payload. The JSON tags are
+// the wire contract — the session tasks SSE endpoint marshals them verbatim.
+type TaskProgressRecord struct {
+	Type   string `json:"type"`
+	Text   string `json:"text,omitempty"`
+	Name   string `json:"name,omitempty"`
+	Args   string `json:"args,omitempty"`
+	Result string `json:"result,omitempty"`
+}
+
+// TaskProgressFrame is one task-keyed frame of the session tasks progress
+// stream (add-subagent-runs-surface D2): either a live child record or the
+// task's terminal notice. Sequence is per-task monotonic from 1 in append
+// order — the client's replay cursor. Terminal reuses the registered
+// TaskCompletedPayload so the terminal frame and the transcript's completion
+// chip carry the identical wire shape. The JSON tags are the wire contract —
+// the SSE endpoint marshals them verbatim. Frames are stream-only surface:
+// never persisted as session events, never carried on TranscriptEvent.
+type TaskProgressFrame struct {
+	TaskID   string                `json:"task_id"`
+	Kind     string                `json:"kind"` // "delegation" | "shell" via taskKindFor
+	Sequence int                   `json:"sequence"`
+	Record   *TaskProgressRecord   `json:"record,omitempty"`
+	Terminal *TaskCompletedPayload `json:"terminal,omitempty"`
+}
+
 // sessionExtraKeyCompaction is the Extra key under which a window-replacement
 // session event carries its display-only token estimates (chat-compact-command
 // D4/D5). The stock adk.SessionEventMessagesReplaced record has no estimate

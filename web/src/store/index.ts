@@ -22,6 +22,10 @@ import { overlayPersistedThreads, persistAllThreads, THREADS_KEY } from './threa
 // transcript tool cards against the registered candidate matchers; the tab
 // dedup key and PanelTab type live there too (registry owns the shapes).
 import { matchPanelCandidate, panelDedupKey, type PanelTab } from '../lib/panel/registry';
+// Background task state (add-subagent-runs-surface 4.1): types only — the
+// task slice's actions live on this store and are re-exported for consumers
+// by lib/tasks.ts alongside the stream/selector half.
+import type { TaskEntry, TaskFrame, TaskCompletion, TaskRecord } from '../lib/tasks';
 
 export { useConnectionStore, type ConnectionState } from './connection';
 
@@ -89,6 +93,22 @@ export interface QueuedMessage {
 
 const queueKey = (tenantId: string, chatId: string): string => `${tenantId}::${chatId}`;
 
+// ---------------------------------------------------------------------------
+// Background task state (add-subagent-runs-surface 4.1). Per-CHAT (the pinned
+// contract is chatId-scoped), present-only, ephemeral like the message queue —
+// nothing persists it. `entries` is ordered running-first then ended (stable
+// insertion order within each rank); `records` holds each task's live
+// trajectory buffer (progress frames only ever touch this — never the
+// transcript); `sequences` carries the last applied frame sequence per task so
+// a resubscribe's replayed frames dedup.
+// ---------------------------------------------------------------------------
+
+export interface SessionTaskState {
+  entries: TaskEntry[];
+  records: Record<string, TaskRecord[]>;
+  sequences: Record<string, number>;
+}
+
 export interface AppState {
   db: Record<string, Workspace>;
   // Per-workspace marker that loadAgents completed against the server at least
@@ -140,12 +160,23 @@ export interface AppState {
    * the run's terminal path. Ephemeral local state; nothing reads this slice
    * outside the queue actions, the ChatView stack, and the runtime dispatch. */
   messageQueue: Record<string, QueuedMessage[]>;
+  /** Per-chat background task state (add-subagent-runs-surface 4.1),
+   * keyed by chatId. Present-only; the selectors (useTaskEntries /
+   * useTaskRecords) and the stream live in lib/tasks.ts. */
+  tasks: Record<string, SessionTaskState>;
 
   // actions
   patchUi: (p: Partial<AppState['ui']>) => void;
   goPos: (p: Partial<AppState['pos']>) => void;
   setSearch: (q: string) => void;
   toast: (text: string, kind?: string) => void;
+
+  /** Folds the session tasks REST list (merge, don't clobber live records). */
+  applyTaskList: (chatId: string, tasks: TaskEntry[]) => void;
+  /** Appends one SSE progress frame to the addressed task's buffer. */
+  applyTaskFrame: (chatId: string, frame: TaskFrame) => void;
+  /** Idempotent terminal status flip (`task_completed` + terminal frames). */
+  applyTaskCompleted: (chatId: string, payload: TaskCompletion) => void;
 
   /** Opens (or focuses — dedup key is kind + payload identity) one panel tab
    * and shows the panel. The only path a tab can enter the panel. */
@@ -237,6 +268,40 @@ const setSafeTimer = (key: string, fn: () => void, delay: number) => {
   }, delay);
 };
 
+// Task-slice helpers (add-subagent-runs-surface 4.1). rank: running tasks
+// first, everything ended (or the historical `created`) after — the pinned
+// display order for entries; the explicit index tiebreak keeps same-rank
+// order stable across refolds regardless of Array.sort guarantees.
+const taskRank = (e: TaskEntry): number => (e.status === 'running' ? 0 : 1);
+const orderTaskEntries = (entries: TaskEntry[]): TaskEntry[] =>
+  entries
+    .map((e, i) => ({ e, i }))
+    .sort((a, b) => taskRank(a.e) - taskRank(b.e) || a.i - b.i)
+    .map(({ e }) => e);
+
+/** Closed outcome → status vocabulary; anything else (unknown wire outcome)
+ * folds nothing. */
+const completionStatus = (outcome: string): TaskEntry['status'] | null =>
+  outcome === 'completed' || outcome === 'failed' || outcome === 'canceled' ? outcome : null;
+
+/** Live progress frames address unknown tasks (the list fetch may have
+ * failed) — they mint a running entry on the fly. `shell` is the only other
+ * pinned kind; anything unrecognized rides the generic delegation lane. */
+const frameKind = (kind: unknown): TaskEntry['kind'] => (kind === 'shell' ? 'shell' : 'delegation');
+
+// Tail window per task buffer (design risk note: the panel renders a tail
+// window; stores keep only recent records per task).
+const TASK_RECORDS_CAP = 200;
+
+const taskRecordFromFrame = (sequence: number, record: any): TaskRecord => ({
+  sequence,
+  type: record.type,
+  ...(record.text !== undefined ? { text: record.text } : {}),
+  ...(record.name !== undefined ? { name: record.name } : {}),
+  ...(record.args !== undefined ? { args: record.args } : {}),
+  ...(record.result !== undefined ? { result: record.result } : {}),
+});
+
 // Wire → display mapping for the sidebar/room channel view (integrate-agent-
 // channels). `name` carries the slug so the sidebar and room header keep the
 // mock's `#handle` visual (design D6: the slug IS the #handle); unread starts
@@ -273,6 +338,7 @@ export const useStore = create<AppState>((set, get) => ({
   },
   search: '',
   messageQueue: {},
+  tasks: {},
 
   // Ordered append (message queue 8.1): a fresh array per write keeps the
   // useMessageQueue selector referentially stable between changes.
@@ -305,6 +371,124 @@ export const useStore = create<AppState>((set, get) => ({
     const [head] = items;
     set((s: any) => ({ messageQueue: { ...s.messageQueue, [key]: items.slice(1) } }));
     return head;
+  },
+
+  // Background task fold (add-subagent-runs-surface 4.1). The REST list merges
+  // by taskId — existing entries update in place and live trajectory buffers
+  // are NEVER clobbered; entries the list omits stay (transient list failures
+  // must not blank a streaming panel). Present-only: an empty list on an
+  // unknown chat writes nothing.
+  applyTaskList: (chatId, list) => {
+    if (!chatId || !Array.isArray(list) || list.length === 0) return;
+    set((s: any) => {
+      const prev = s.tasks[chatId];
+      const byId = new Map<string, TaskEntry>(
+        (prev?.entries || []).map((e: TaskEntry) => [e.taskId, e])
+      );
+      for (const t of list) {
+        if (!t || typeof t.taskId !== 'string' || !t.taskId) continue;
+        const existing = byId.get(t.taskId);
+        // The server list is the merged truth (live ⋈ persisted) — it wins on
+        // conflicts, records/sequences ride along untouched.
+        byId.set(t.taskId, existing ? { ...existing, ...t } : { ...t });
+      }
+      return {
+        tasks: {
+          ...s.tasks,
+          [chatId]: {
+            ...(prev || { records: {}, sequences: {} }),
+            entries: orderTaskEntries([...byId.values()]),
+          },
+        },
+      };
+    });
+  },
+
+  // One progress frame appends to the addressed task's buffer and NOTHING
+  // else — the transcript and message list are untouched (chat-runtime spec).
+  // Sequence dedup: a resubscribe replays frames from 0; anything at or below
+  // the last applied sequence for the task is dropped. Frames for an ENDED
+  // task are dropped too (its truth is terminal; replay goes over REST).
+  applyTaskFrame: (chatId, frame) => {
+    if (!chatId || !frame || typeof frame.task_id !== 'string' || !frame.task_id) return;
+    const record = (frame as any).record;
+    if (!record || typeof record.type !== 'string') return;
+    const sequence = typeof frame.sequence === 'number' ? frame.sequence : 0;
+    set((s: any) => {
+      const prev = s.tasks[chatId];
+      const entries: TaskEntry[] = prev?.entries || [];
+      const existing = entries.find((e) => e.taskId === frame.task_id);
+      // Ended (or the historical `created` → running flip aside) tasks accept
+      // no more frames — terminal truth stands; replay goes over REST.
+      if (existing && existing.status !== 'running' && existing.status !== 'created') return s;
+      const last = prev?.sequences?.[frame.task_id];
+      if (typeof last === 'number' && sequence <= last) return s;
+      const nextEntries = existing
+        ? entries.map((e) => (e.taskId === frame.task_id ? { ...e, status: 'running' as const } : e))
+        : [...entries, { taskId: frame.task_id, kind: frameKind(frame.kind), status: 'running' as const, description: '' }];
+      const buffered = [...(prev?.records?.[frame.task_id] || []), taskRecordFromFrame(sequence, record)];
+      if (buffered.length > TASK_RECORDS_CAP) buffered.splice(0, buffered.length - TASK_RECORDS_CAP);
+      return {
+        tasks: {
+          ...s.tasks,
+          [chatId]: {
+            entries: orderTaskEntries(nextEntries),
+            records: { ...(prev?.records || {}), [frame.task_id]: buffered },
+            sequences: { ...(prev?.sequences || {}), [frame.task_id]: sequence },
+          },
+        },
+      };
+    });
+  },
+
+  // Terminal flip (D9): idempotent — the same completion can arrive from the
+  // live translator AND a re-subscribed stream's terminal frame. Unknown
+  // tasks (completion beat the list) mint their entry; the trajectory buffer
+  // is preserved so the panel renders the streamed tail without re-fetching.
+  applyTaskCompleted: (chatId, payload) => {
+    if (!chatId || !payload || typeof payload.taskId !== 'string' || !payload.taskId) return;
+    const status = completionStatus(payload.outcome);
+    if (!status) return;
+    set((s: any) => {
+      const prev = s.tasks[chatId];
+      const entries: TaskEntry[] = prev?.entries || [];
+      const idx = entries.findIndex((e) => e.taskId === payload.taskId);
+      const patch = {
+        ...(payload.outputPath ? { outputPath: payload.outputPath } : {}),
+        ...(payload.summary ? { summary: payload.summary } : {}),
+      };
+      if (idx === -1) {
+        const entry: TaskEntry = {
+          taskId: payload.taskId,
+          kind: frameKind(payload.kind),
+          status,
+          description: '',
+          ...patch,
+        };
+        return {
+          tasks: {
+            ...s.tasks,
+            [chatId]: {
+              ...(prev || { records: {}, sequences: {} }),
+              entries: orderTaskEntries([...entries, entry]),
+            },
+          },
+        };
+      }
+      const existing = entries[idx];
+      if (existing.status === status) return s;
+      return {
+        tasks: {
+          ...s.tasks,
+          [chatId]: {
+            ...prev,
+            entries: orderTaskEntries(
+              entries.map((e, i) => (i === idx ? { ...e, status, ...patch } : e))
+            ),
+          },
+        },
+      };
+    });
   },
 
   patchUi: (p) => {

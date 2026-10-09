@@ -12,6 +12,11 @@ import { api, apiKeys, formatApiError } from './api';
 // working — a missing export degrades to undefined rather than breaking the
 // import binding. Both exist on the real module.
 import * as apiModule from './api';
+// task_completed folding (add-subagent-runs-surface D9): the translator maps
+// the terminal notice onto the per-chat task store — the SAME code path for
+// hydration and the catch-up stream, so a reloaded transcript shows the same
+// task state the live view did.
+import { applyTaskCompleted } from './tasks';
 import { appendReasoningPart, appendToolPart } from './helpers';
 import { useStore } from '../store';
 import {
@@ -216,10 +221,16 @@ class TranscriptTranslator {
 
   private sessionId: string;
   private idPrefix = 'h';
+  // The chat the translated transcript belongs to (optional): the ONLY thing
+  // the task_completed fold needs beyond the events — task state is
+  // chatId-keyed in the store (add-subagent-runs-surface 4.1). Without it the
+  // fold is skipped (older-page reads that cannot address a chat).
+  private chatId?: string;
 
-  constructor(sessionId: string, idPrefix = 'h') {
+  constructor(sessionId: string, idPrefix = 'h', chatId?: string) {
     this.sessionId = sessionId;
     this.idPrefix = idPrefix;
+    this.chatId = chatId;
   }
 
   /** Continues an in-flight turn already rendered locally (catch-up, D4):
@@ -458,6 +469,27 @@ class TranscriptTranslator {
         this.noteInterruptActivity();
         break;
       }
+      case 'task_completed': {
+        // Background task terminal (add-subagent-runs-surface D9): folds the
+        // pump's notice into the per-chat task store — status flips drive the
+        // card, floating card, and panel WITHOUT a transcript element (the
+        // transcript keeps exactly one card per delegation). Wire payload:
+        // {task_id, kind, outcome, output_path?, summary?} — identical for
+        // the live emission and the hydrated read path, so parity holds by
+        // construction. Present-only: without an addressable chat (or task
+        // id) nothing folds, and sessions without task events carry no state.
+        const tc = ev.task_completed;
+        if (this.chatId && tc && typeof tc.task_id === 'string' && tc.task_id) {
+          applyTaskCompleted(this.chatId, {
+            taskId: tc.task_id,
+            kind: tc.kind,
+            outcome: tc.outcome,
+            ...(tc.output_path ? { outputPath: tc.output_path } : {}),
+            ...(tc.summary ? { summary: tc.summary } : {}),
+          });
+        }
+        break;
+      }
       case 'turn_started':
       case 'cancelled':
       case 'error':
@@ -551,7 +583,7 @@ export async function fetchSessionTranscript(
   workspaceId: string,
   agentSlug: string,
   sessionId: string,
-  opts?: { limit?: number; before?: string; reverse?: boolean }
+  opts?: { limit?: number; before?: string; reverse?: boolean; chatId?: string }
 ): Promise<HydratedTranscript> {
   const res = opts
     ? await api.agents.sessionEvents(workspaceId, agentSlug, sessionId, opts)
@@ -559,7 +591,11 @@ export async function fetchSessionTranscript(
   const events = res?.events || [];
 
   // Backward-window reads own a unique id prefix (D4) — see olderPageCounter.
-  const translator = new TranscriptTranslator(sessionId, opts?.before ? `pg${++olderPageCounter}` : 'h');
+  const translator = new TranscriptTranslator(
+    sessionId,
+    opts?.before ? `pg${++olderPageCounter}` : 'h',
+    opts?.chatId
+  );
   for (const ev of events || []) translator.push(ev);
   const hydrated = translator.result();
   // Windowed reads (D3): has_more says older pages exist beyond the window;
@@ -693,12 +729,16 @@ export async function fetchOlderTranscriptPage(
   agentSlug: string,
   sessionId: string,
   before: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  chatId?: string
 ): Promise<OlderPage | null> {
   try {
     const hydrated = await fetchSessionTranscript(workspaceId, agentSlug, sessionId, {
       before,
       limit: HYDRATION_PAGE_SIZE,
+      // Older pages can carry task_completed chips too — parity for scroll-up
+      // history (add-subagent-runs-surface 4.1).
+      ...(chatId ? { chatId } : {}),
     });
     if (signal?.aborted) return null;
     return {
@@ -796,6 +836,9 @@ export async function hydrateSession(opts: {
     hydrated = await fetchSessionTranscript(workspaceId, agentSlug, sessionId, {
       limit: HYDRATION_PAGE_SIZE,
       reverse: true,
+      // Task state parity (add-subagent-runs-surface D9): persisted
+      // task_completed chips fold under this chat exactly like the live view.
+      chatId,
     });
   } catch {
     // Old backend / transient failure / unknown session: keep the local
@@ -1018,7 +1061,7 @@ export function attachCatchUpStream(opts: {
     if (catchUpStreams.get(chatId) === streamAbort) catchUpStreams.delete(chatId);
   };
   signal?.addEventListener('abort', () => streamAbort.abort(), { once: true });
-  const translator = new TranscriptTranslator(sessionId, 'cu');
+  const translator = new TranscriptTranslator(sessionId, 'cu', chatId);
   const owned = new Set<string>();
 
   // Seed the in-flight tail: the newest agent message carrying a response id

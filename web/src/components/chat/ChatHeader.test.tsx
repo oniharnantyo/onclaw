@@ -9,7 +9,7 @@ import { seedDb } from '../../data/seed';
 
 // This environment's jsdom exposes no localStorage (same mode behind the ~66
 // pre-existing failures); install a minimal stub so this suite runs — the
-// header now mounts the store-connected session-todos surface.
+// header reads the store's running flag for its status line.
 if (typeof (globalThis as any).localStorage === 'undefined') {
   const backing = new Map<string, string>();
   (globalThis as any).localStorage = {
@@ -27,8 +27,9 @@ const agent = {
   lastActive: '2m ago',
   effective_context_window: 200000,
   summarization_trigger_tokens: 150000,
-  // Denylist form (refactor-agent-tools-denylist): the todos-chip presence
-  // gate reads it — this default denies todo_write; the chip test overrides.
+  // Denylist form (refactor-agent-tools-denylist): this default denies
+  // todo_write; the clean-header test overrides it to prove the header stays
+  // clean even when the agent exposes todo_write.
   disabled_tools: ['todo_write'],
 };
 
@@ -166,12 +167,11 @@ describe('components/chat/ChatHeader — Langfuse link (integrate-langfuse-traci
   });
 });
 
-describe('components/chat/ChatHeader — session todos chip (add-session-todos-surface D2/D6)', () => {
+describe('components/chat/ChatHeader — clean header (add-subagent-runs-surface D6)', () => {
   // Seeding idiom from lib/sessionTodos.test.ts: the active session of the
-  // open chat carries a todo_write call the surface's hook derives the plan
-  // from. Store state persists across tests in this file, but the surface is
-  // present-only — every earlier test's fixtures stay DOM-neutral (see the
-  // gate assertions below).
+  // open chat carries a todo_write call — with content present, the header
+  // must STILL carry no run artifact: D6 removed the chip, and the floating
+  // run card lives over the transcript (ChatView), never in the header.
   const seedTodoPlan = () => {
     useStore.setState({
       db: {
@@ -202,31 +202,24 @@ describe('components/chat/ChatHeader — session todos chip (add-session-todos-s
     } as any);
   };
 
-  it('an agent chat with a seeded plan renders the todos chip as the first header action', () => {
+  it('an agent chat with a seeded plan renders no run artifact in the header', () => {
     seedTodoPlan();
     const utils = renderHeader({
       target: { kind: 'agent', obj: { id: 'a-atlas', name: 'Atlas' } },
       agent: { ...agent, disabled_tools: [] },
     });
-    const chip = utils.container.querySelector('[data-od-id="todos-chip"]') as HTMLElement;
-    expect(chip).not.toBeNull();
-    expect(chip.textContent).toContain('1/2');
-    // Leftmost of the action cluster: before the panel toggle in DOM order.
-    const toggle = utils.container.querySelector('[data-od-id="btn-panel-toggle"]')!;
-    expect(chip.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  });
-
-  it('an agent chat without todo_write exposure renders no chip even with a plan', () => {
-    seedTodoPlan();
-    const utils = renderHeader({ target: agentTarget, agent });
     expect(utils.container.querySelector('[data-od-id="todos-chip"]')).toBeNull();
+    expect(utils.container.querySelector('[data-od-id="todos-popover"]')).toBeNull();
+    expect(utils.container.querySelector('[data-od-id="todos-sheet"]')).toBeNull();
+    expect(utils.container.querySelector('[data-od-id="run-card"]')).toBeNull();
+    expect(utils.container.textContent).not.toContain('1/2');
   });
 
-  it('a channel chat never renders the todos chip, even with a seeded plan', () => {
+  it('a channel chat renders no run artifact either', () => {
     seedTodoPlan();
     const utils = renderHeader({ target: channelTarget, agent: null });
     expect(utils.container.querySelector('[data-od-id="todos-chip"]')).toBeNull();
-    expect(utils.container.querySelector('[data-od-id="todos-popover"]')).toBeNull();
+    expect(utils.container.querySelector('[data-od-id="run-card"]')).toBeNull();
   });
 });
 
