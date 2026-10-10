@@ -28,14 +28,24 @@ import (
 )
 
 // runStatusCompleted is the /v1 run status a turn must return; anything else
-// (failed, prompt_blocked, …) fails the task — recorded, never retried.
+// fails the task unless it is an infra run status (see isInfraRunStatus).
 const runStatusCompleted = "completed"
 
 // runStatusFailSignature is the recorded-error fragment of the server-side
 // run-failure classification: the endpoint accepted the turn but the run came
-// back with a non-completed status — the dead/drained-endpoint signature the
-// circuit breaker counts on.
+// back non-completed — the dead/drained-endpoint signature the circuit
+// breaker counts on (after the retry budget exhausts).
 const runStatusFailSignature = "returned run status"
+
+// isInfraRunStatus reports whether a /v1 run status marks a run that died at
+// the provider rather than a turn the gate owns. "failed" is the crash/quota
+// signature (the run errored server-side); "cancelled" is a stop race. Both
+// are infrastructure and retry within the per-(task,seed) budget. prompt_blocked
+// and any other terminal status are real task outcomes and stay task failures —
+// hooks are soft gates, so a blocked turn is the measure's business.
+func isInfraRunStatus(status string) bool {
+	return status == "failed" || status == "cancelled"
+}
 
 // providerDeadStreakLimit is the consecutive server-side run failures that
 // trip the circuit breaker. Six single-fail tasks in a row cannot plausibly
@@ -506,18 +516,39 @@ func truncateProgress(path string, n int) error {
 
 // executeAll drives every task × seed sequentially in suite load order, with
 // the per-(task,seed) infra retry budget and bounded exponential backoff. A
-// resumed run skips the (task, seed) slots already journaled and appends new
-// results as they land. The provider circuit breaker aborts the run once
-// providerDeadStreakLimit consecutive tasks fail with the server-side
-// run-failure signature (the endpoint accepted the turn but the agent run
-// died) — a dead or quota-drained endpoint otherwise burns the rest of the
-// cycle producing all-fail lanes, which is how two cycles were lost to
-// outages before the breaker existed.
+// resumed run skips the (task, seed) slots already journaled with a final
+// result (pass/fail) and re-measures journaled infra slots; new results
+// append as they land. The provider circuit breaker aborts the run once
+// providerDeadStreakLimit consecutive tasks exhaust their retry budgets on
+// the server-side run-failure signature (the endpoint accepted the turn but
+// the agent run died) — a dead or quota-drained endpoint otherwise burns the
+// rest of the cycle producing all-fail lanes, which is how two cycles were
+// lost to outages before the breaker existed.
 func (e *executor) executeAll(ctx context.Context, suites []suite.TaskSuite, opts Options) ([]scoreboard.TaskResult, error) {
+	reRunInfra := 0
 	prior, done, err := func() ([]scoreboard.TaskResult, map[string]bool, error) {
 		path := progressPath(opts.Out)
 		if opts.Resume {
-			return loadProgress(path)
+			p, _, err := loadProgress(path)
+			if err != nil {
+				return nil, nil, err
+			}
+			// Journaled infra results are never final: a slot that exhausted
+			// its retry budget inside an outage window re-measures on resume
+			// instead of surviving to the scoreboard as an excluded row.
+			live := p[:0]
+			for _, r := range p {
+				if r.Status == scoreboard.StatusInfraError {
+					continue
+				}
+				live = append(live, r)
+			}
+			reRunInfra = len(p) - len(live)
+			done := make(map[string]bool, len(live))
+			for _, r := range live {
+				done[resultKey(r)] = true
+			}
+			return live, done, nil
 		}
 		// Fresh run: the journal from any prior attempt is void.
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
@@ -553,7 +584,7 @@ func (e *executor) executeAll(ctx context.Context, suites []suite.TaskSuite, opt
 				if ctx.Err() != nil {
 					return results, nil
 				}
-				if result.Status == scoreboard.StatusFail && strings.Contains(result.Error, runStatusFailSignature) {
+				if result.Status == scoreboard.StatusInfraError && strings.Contains(result.Error, runStatusFailSignature) {
 					deadStreak++
 					if deadStreak >= providerDeadStreakLimit {
 						// Discard the streak from the journal: those results
@@ -567,7 +598,7 @@ func (e *executor) executeAll(ctx context.Context, suites []suite.TaskSuite, opt
 							return results, fmt.Errorf("truncate dead-streak journal: %w", err)
 						}
 						results = results[:len(results)-deadStreak]
-						fmt.Printf("\nCIRCUIT BREAKER: %d consecutive server-side run failures — the model endpoint looks dead or drained. Streak discarded from the journal; no scoreboard written. Re-run with --resume to continue this run.\n", deadStreak)
+						fmt.Printf("\nCIRCUIT BREAKER: %d consecutive tasks exhausted their retry budgets on server-side run failures — the model endpoint looks dead or drained. Streak discarded from the journal; no scoreboard written. Re-run with --resume to continue this run.\n", deadStreak)
 						return results, errProviderDead
 					}
 				} else {
@@ -576,8 +607,8 @@ func (e *executor) executeAll(ctx context.Context, suites []suite.TaskSuite, opt
 			}
 		}
 	}
-	if skipped > 0 {
-		fmt.Printf("resume: %d journaled results loaded, %d tasks skipped\n", len(prior), skipped)
+	if skipped > 0 || reRunInfra > 0 {
+		fmt.Printf("resume: %d journaled results loaded, %d tasks skipped, %d journaled infra slots re-measuring\n", len(prior), skipped, reRunInfra)
 	}
 	return results, nil
 }
@@ -665,7 +696,13 @@ func (e *executor) executeOnce(ctx context.Context, s *suite.TaskSuite, task *su
 					return failWith(scoreboard.StatusInfraError, fmt.Sprintf("setup chat turn: %s", err))
 				}
 				if t := driver.ExtractTurn(resp); t.Status != runStatusCompleted {
-					return failWith(scoreboard.StatusFail, fmt.Sprintf("setup chat turn returned run status %q (want %q)", t.Status, runStatusCompleted))
+					// The setup turn seeds fixture state — a dead run here is
+					// infrastructure regardless of which lane it serves.
+					status := scoreboard.StatusFail
+					if isInfraRunStatus(t.Status) {
+						status = scoreboard.StatusInfraError
+					}
+					return failWith(status, fmt.Sprintf("setup chat turn returned run status %q (want %q)", t.Status, runStatusCompleted))
 				}
 			}
 
@@ -736,9 +773,16 @@ func (e *executor) executeOnce(ctx context.Context, s *suite.TaskSuite, task *su
 		collected = append(collected, turn)
 		collectedCalls = append(collectedCalls, turn.ToolCalls...)
 		if turn.Status != runStatusCompleted {
-			// failed / prompt_blocked / … — a recorded task failure, never
-			// retried (the gate decides what a failure means).
-			return failWith(scoreboard.StatusFail, fmt.Sprintf("turn %d returned run status %q (want %q)", i, turn.Status, runStatusCompleted))
+			// failed/cancelled: the run died at the provider — infrastructure,
+			// retried within the budget (the v4 baseline lost 9 slots to
+			// mid-cycle flaps scored as task fails). prompt_blocked and other
+			// terminal statuses are gate outcomes the measure owns: recorded
+			// task failures, never retried.
+			status := scoreboard.StatusFail
+			if isInfraRunStatus(turn.Status) {
+				status = scoreboard.StatusInfraError
+			}
+			return failWith(status, fmt.Sprintf("turn %d returned run status %q (want %q)", i, turn.Status, runStatusCompleted))
 		}
 	}
 

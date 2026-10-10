@@ -36,11 +36,12 @@ type fakeOnclaw struct {
 	agentWindow    *int   // context window the fixture agent reports (PATCH-applied)
 	measuredStatus string // run status returned for measured turns
 
-	measuredCalls int                  // calls whose session is a measured bench session
-	failNext      int                  // number of upcoming measured calls to answer 500
-	hookCreated   int                  // created hook count
-	hookDeleted   int                  // deleted hook count
-	hookPayloads  []driver.HookPayload // create payloads in order
+	measuredCalls  int                  // calls whose session is a measured bench session
+	failNext       int                  // number of upcoming measured calls to answer 500
+	failNextStatus int                  // number of upcoming measured calls to answer with measuredStatus (status failures), then completed
+	hookCreated    int                  // created hook count
+	hookDeleted    int                  // deleted hook count
+	hookPayloads   []driver.HookPayload // create payloads in order
 	// hookScripts records command-hook script contents read from disk at
 	// create time; controlFiles records control-file paths referenced by a
 	// script and whether the file existed at create time.
@@ -219,6 +220,11 @@ func (f *fakeOnclaw) handler() http.Handler {
 		if f.failNext > 0 {
 			f.failNext--
 			http.Error(w, "upstream 500", http.StatusInternalServerError)
+			return
+		}
+		if f.failNextStatus > 0 {
+			f.failNextStatus--
+			writeJSON(w, http.StatusOK, chatResponse("failed"))
 			return
 		}
 		writeJSON(w, http.StatusOK, chatResponse(f.measuredStatus))
@@ -556,6 +562,89 @@ func TestRunFailedTurnIsRecordedNotRetried(t *testing.T) {
 	}
 }
 
+// TestRunStatusFailureIsInfraRetried pins the reclassification: a measured
+// turn whose /v1 run comes back status "failed" is infrastructure — retried
+// within the budget, and a recovered retry passes. (The v4 baseline scored
+// nine such provider flaps as task fails.)
+func TestRunStatusFailureIsInfraRetried(t *testing.T) {
+	fake := newFakeOnclaw()
+	fake.failNextStatus = 1
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+
+	dir := t.TempDir()
+	suitePath := writeTempFile(t, dir, "e2e.json", e2eSuite)
+
+	board, err := Run(context.Background(), Options{
+		BaseURL: srv.URL, AdminEmail: "admin@test", AdminPassword: "pw",
+		WorkspaceSlug: "bench-eval", AgentSlug: "bench-agent", Model: "glm-test-model",
+		SuiteSpec: suitePath, Out: writeTempOut(t), Seeds: 1, Retries: 2, Backoff: 5 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	res := board.Tasks[0]
+	if res.Status != scoreboard.StatusPass {
+		t.Fatalf("status = %s, want pass after the status-failure retry", res.Status)
+	}
+	if board.InfraErrors != 0 {
+		t.Fatalf("infra tally = %d, want 0 (the recovered slot is a pass, not infra)", board.InfraErrors)
+	}
+	fake.mu.Lock()
+	calls := fake.measuredCalls
+	fake.mu.Unlock()
+	if calls != 2 {
+		t.Fatalf("measured calls = %d, want 2 (one failed run + the retry)", calls)
+	}
+}
+
+// TestResumeReRunsJournaledInfra pins the resume half of the reclassification:
+// a slot that exhausted its retry budget during an outage journals as infra,
+// and a resumed run re-measures it instead of letting the excluded row survive
+// to the scoreboard.
+func TestResumeReRunsJournaledInfra(t *testing.T) {
+	fake := newFakeOnclaw()
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+
+	dir := t.TempDir()
+	suitePath := writeTempFile(t, dir, "e2e.json", e2eSuite)
+	outPath := writeTempOut(t)
+	runOpts := Options{
+		BaseURL: srv.URL, AdminEmail: "admin@test", AdminPassword: "pw",
+		WorkspaceSlug: "bench-eval", AgentSlug: "bench-agent", Model: "glm-test-model",
+		SuiteSpec: suitePath, Out: outPath, Seeds: 1, Retries: 1, Backoff: 1 * time.Millisecond,
+	}
+
+	// Phase 1: the endpoint status-fails past the retry budget — the slot
+	// journals as infra and the run completes (no breaker: one task cannot
+	// reach the six-streak limit).
+	fake.failNextStatus = 2
+	board, err := Run(context.Background(), runOpts)
+	if err != nil {
+		t.Fatalf("phase 1: %v", err)
+	}
+	if board.Tasks[0].Status != scoreboard.StatusInfraError || board.InfraErrors != 1 {
+		t.Fatalf("phase 1: status=%s infra=%d, want one exhausted infra row", board.Tasks[0].Status, board.InfraErrors)
+	}
+
+	// Phase 2: the endpoint recovered; resume must re-measure the slot.
+	board, err = Run(context.Background(), Options(func() Options {
+		o := runOpts
+		o.Resume = true
+		return o
+	}()))
+	if err != nil {
+		t.Fatalf("phase 2 (resume): %v", err)
+	}
+	if board.Tasks[0].Status != scoreboard.StatusPass {
+		t.Fatalf("phase 2: status = %s, want pass (journaled infra must re-measure)", board.Tasks[0].Status)
+	}
+	if board.InfraErrors != 0 {
+		t.Fatalf("phase 2: infra tally = %d, want 0 (the re-measured slot replaced the infra row)", board.InfraErrors)
+	}
+}
+
 // breakerSuiteJSON builds a nine-task suite so a run outlives the six-failure
 // breaker trip.
 func breakerSuiteJSON() string {
@@ -572,9 +661,11 @@ func breakerSuiteJSON() string {
 }
 
 // TestProviderCircuitBreakerAbortsRun pins the breaker: a run whose measured
-// turns fail server-side six consecutive times aborts with errProviderDead,
-// no scoreboard is written, and the run stops AT the limit instead of burning
-// the rest of the suite on a dead endpoint.
+// turns fail server-side until six consecutive tasks exhaust their retry
+// budgets aborts with errProviderDead, no scoreboard is written, and the run
+// stops AT the limit instead of burning the rest of the suite on a dead
+// endpoint. Retries is 0 here so each task burns exactly one attempt and the
+// trip still lands at six measured calls.
 func TestProviderCircuitBreakerAbortsRun(t *testing.T) {
 	fake := newFakeOnclaw()
 	fake.measuredStatus = "failed"
@@ -587,7 +678,7 @@ func TestProviderCircuitBreakerAbortsRun(t *testing.T) {
 	board, err := Run(context.Background(), Options{
 		BaseURL: srv.URL, AdminEmail: "admin@test", AdminPassword: "pw",
 		WorkspaceSlug: "bench-eval", AgentSlug: "bench-agent", Model: "glm-test-model",
-		SuiteSpec: suitePath, Out: writeTempOut(t), Seeds: 1, Retries: 1, Backoff: 1 * time.Millisecond,
+		SuiteSpec: suitePath, Out: writeTempOut(t), Seeds: 1, Retries: 0, Backoff: 1 * time.Millisecond,
 	})
 	if !errors.Is(err, errProviderDead) {
 		t.Fatalf("want errProviderDead, got %v", err)
@@ -618,7 +709,7 @@ func TestResumeContinuesAbortedRun(t *testing.T) {
 	runOpts := Options{
 		BaseURL: srv.URL, AdminEmail: "admin@test", AdminPassword: "pw",
 		WorkspaceSlug: "bench-eval", AgentSlug: "bench-agent", Model: "glm-test-model",
-		SuiteSpec: suitePath, Out: outPath, Seeds: 1, Retries: 1, Backoff: 1 * time.Millisecond,
+		SuiteSpec: suitePath, Out: outPath, Seeds: 1, Retries: 0, Backoff: 1 * time.Millisecond,
 	}
 
 	if _, err := Run(context.Background(), runOpts); !errors.Is(err, errProviderDead) {
