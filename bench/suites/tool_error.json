@@ -1,5 +1,5 @@
 {
-  "suite_version": "4",
+  "suite_version": "5",
   "lane": "tool-error",
   "description": "Structured tool-error recovery, measured black-box: deterministic hook blocks (a workspace hook whose handler is the bench control server, injected through the pre_tool_use event, returning the canonical block JSON as the tool result), denylist interactions (agent-level disabled_tools uses the real tool-surface names: execute for the shell, edit_file and write_file for the file tools), and structured errors from the jailed filesystem (missing files, paths outside the workspace, empty result sets). Every task pins its own denylist explicitly at setup so tasks are order-independent; the runner restores the pinned baseline after each task. Setup chat_turns seed only state that outlives a session (files in the agent jail), since the runner scopes setup sessions apart from the measured one. Verifiers are deterministic answer probes and tool-call probes — no judge. Single measured turn per task, so pooled-answer verification cannot be poisoned by acknowledgement echoes.",
   "tasks": [
@@ -60,7 +60,11 @@
               "file not saved",
               "harness hook",
               "bench control hook",
-              "harness control"
+              "harness control",
+              "cannot save",
+              "cannot be saved",
+              "blocked by",
+              "could not be completed"
             ]
           ]
         },
@@ -165,7 +169,9 @@
               "isn't in the workspace",
               "not in the workspace",
               "no file matching",
-              "no file by that name"
+              "no file by that name",
+              "not present",
+              "isn't present"
             ]
           ]
         },
@@ -213,7 +219,9 @@
               "could not write",
               "refused",
               "won't write",
-              "would not write"
+              "would not write",
+              "restricted",
+              "not permitted"
             ]
           ]
         },
@@ -393,7 +401,11 @@
               "rejected by",
               "harness hook",
               "bench control hook",
-              "file unchanged"
+              "file unchanged",
+              "blocked by",
+              "cannot update",
+              "could not be completed",
+              "unable to complete"
             ]
           ]
         },
@@ -453,7 +465,11 @@
               "no plain-text write",
               "refuses to create",
               "no write_file",
-              "nothing was written"
+              "nothing was written",
+              "unable to create",
+              "cannot create",
+              "no tool is available",
+              "no tool available"
             ]
           ]
         },

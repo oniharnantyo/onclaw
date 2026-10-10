@@ -1,5 +1,5 @@
 {
-  "suite_version": "4",
+  "suite_version": "5",
   "lane": "compaction",
   "description": "Context-window compaction and transcript offload fidelity, measured black-box. Each task pins a small agent-level context window (2000 tokens, summarization trigger at 75%), then builds one long measured thread — the seeding turns and the recall question ride in the same session, because the runner scopes setup chat_turns to a separate logical session from the measured one, so only measured turns reach the context under test; the harness compacts mid-thread and the final turn asks for an early-seeded fact. Soundness under pooled-answer verification: the file-write probes (transcript_file_write) are immune to seed-turn acknowledgements echoing seeded values, so every task pairs its answer probe with a file leg. All seeded tokens are short enough to stay lint-exempt. Verifiers are deterministic — no judge. A forced-compact command via request metadata exists on the public API but is not expressible in this suite schema, so compaction is forced purely through the window override.",
   "tasks": [

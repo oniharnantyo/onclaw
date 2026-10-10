@@ -1,5 +1,5 @@
 {
-  "suite_version": "4",
+  "suite_version": "5",
   "lane": "memory",
   "description": "LongMemEval-protocol task families ported from the in-repo memory eval's question style onto original bench facts: single-fact recall with a near-miss decoy, a superseded-value update, a two-hop entity-to-attribute chain, abstention on an unrecorded topic, cross-member scope safety, and temporal recall with an offset. Facts are seeded in scripted setup sessions; measured turns only ask. Recall rides the harness memory surface because questions are asked outside the seeding sessions.",
   "tasks": [
