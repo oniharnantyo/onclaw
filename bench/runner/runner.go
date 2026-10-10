@@ -136,6 +136,15 @@ func Run(ctx context.Context, opts Options) (*scoreboard.Scoreboard, error) {
 	if err := validateOptions(&opts); err != nil {
 		return nil, err
 	}
+	// The scoreboard and its journal land here; create the directory so a
+	// missing output parent (a wiped /tmp, a new path) aborts nothing.
+	if opts.Out != "" {
+		if dir := filepath.Dir(opts.Out); dir != "." && dir != "" {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return nil, fmt.Errorf("create output dir: %w", err)
+			}
+		}
+	}
 
 	// Seed-only provisions and exits; it needs no suites.
 	var suites []suite.TaskSuite
