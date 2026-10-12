@@ -7,7 +7,7 @@ The workspace settings routed page and its ten sections — workspace, providers
 ## Requirements
 
 ### Requirement: Settings navigation
-Settings SHALL be the routed page surface `/settings/:section` presenting the thirteen sections — Workspace, Providers, Members & roles, Memory, Gateways, Integrations, MCP servers, Skills, Tools, Hooks, API keys, Notifications, and Storage — with its own section navigation (a static left column at widths ≥768px, horizontal scroll tabs below) in place of the workspace sidebar. Settings SHALL render full-screen: the icon rail is not rendered on `/settings` routes, and a slim header above the section navigation carries a `← Back` control that returns to the route the user came from (the most recent non-settings route in the current tab, falling back to `/c` when there is none). `/settings` SHALL redirect to the Workspace section. The active section SHALL be carried in the URL so sections are deep-linkable and browser back/forward move between sections.
+Settings SHALL be the routed page surface `/settings/:section` presenting the fourteen sections — Workspace, Providers, Members & roles, Memory, Gateways, Integrations, MCP servers, Skills, Tools, Hooks, Webhooks, API keys, Notifications, and Storage — with its own section navigation (a static left column at widths ≥768px, horizontal scroll tabs below) in place of the workspace sidebar. Settings SHALL render full-screen: the icon rail is not rendered on `/settings` routes, and a slim header above the section navigation carries a `← Back` control that returns to the route the user came from (the most recent non-settings route in the current tab, falling back to `/c` when there is none). `/settings` SHALL redirect to the Workspace section. The active section SHALL be carried in the URL so sections are deep-linkable and browser back/forward move between sections.
 
 #### Scenario: Switch panes
 - **WHEN** the user selects "API keys" in the section nav
@@ -16,6 +16,10 @@ Settings SHALL be the routed page surface `/settings/:section` presenting the th
 #### Scenario: Gateways reachable
 - **WHEN** the user selects "Gateways" in the section nav
 - **THEN** the gateways section renders and the URL reads /settings/gateways
+
+#### Scenario: Webhooks reachable
+- **WHEN** the user selects "Webhooks" in the section nav
+- **THEN** the webhooks section renders and the URL reads /settings/webhooks
 
 #### Scenario: Tools reachable
 - **WHEN** the user selects "Tools" in the section nav
