@@ -61,6 +61,12 @@ vi.mock('../lib/api', () => {
         requestMock(`/workspaces/${ws}/agents/${agent}/sessions/${sid}/events`, { method: 'GET' }),
     },
     tools: { list: async () => ({ tools: [] }) },
+    channels: {
+      messages: {
+        list: async (ws: string, id: string, opts?: { after?: number; limit?: number }) =>
+          requestMock(`/workspaces/${ws}/channels/${id}/messages`, opts),
+      },
+    },
   };
   return {
     api,
@@ -628,6 +634,65 @@ describe('ChatRoute component', () => {
 
     await waitFor(() => {
       expect(screen.getByLabelText('Assistant is thinking')).not.toBeNull();
+    });
+  });
+
+  // Channel delivery feed (add-webhook-channel-visibility D3): the room
+  // renders the channel's message feed — where webhook, scheduler, and
+  // gateway replies auto-post — beside its session transcript.
+  const feedRow = (over: any) => ({
+    id: 'cm-1', workspace_id: 'ws1', channel_id: 'ch-int', seq: 1,
+    author_type: 'agent', author_agent_id: 'a-atlas',
+    body: 'MR !7 "Add run telemetry" was opened by Oni in team/api.',
+    mentions: [], chain_depth: 0, created_at: '2026-10-11T15:04:05Z',
+    ...over,
+  });
+
+  it('a channel room loads the delivery feed and renders an agent reply as the agent message', async () => {
+    seedChannel();
+    requestMock.mockImplementation(async (endpoint: string) => {
+      if (endpoint.includes('/api-keys/exchange')) return { key: 'oc_exchanged_key', api_key: {} };
+      if (endpoint.includes('/channels/ch-int/messages')) {
+        return { messages: [feedRow({})] };
+      }
+      if (endpoint.includes('/skills')) return { skills: [] };
+      return {};
+    });
+
+    renderRoute('ch-int');
+
+    await waitFor(() => {
+      expect(screen.getByText(/MR !7 "Add run telemetry" was opened by Oni/)).not.toBeNull();
+    });
+    // The invoked agent's name rides the message — the workspace roster
+    // resolves it (the store seed names a-atlas Atlas).
+    expect(screen.getAllByText('Atlas').length).toBeGreaterThan(0);
+  });
+
+  it('a folded message_posted event appends a delivery reply live', async () => {
+    seedChannel();
+    requestMock.mockImplementation(async (endpoint: string) => {
+      if (endpoint.includes('/api-keys/exchange')) return { key: 'oc_exchanged_key', api_key: {} };
+      if (endpoint.includes('/channels/ch-int/messages')) return { messages: [] };
+      if (endpoint.includes('/skills')) return { skills: [] };
+      return {};
+    });
+
+    renderRoute('ch-int');
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/conversation with #integrations/i)).not.toBeNull();
+    });
+    // The live fold is exactly what the room's SSE subscription feeds — a
+    // delivery reply completing mid-view lands without a reload.
+    useStore.getState().applyChannelEvent('acme', 'ch-int', {
+      type: 'message_posted',
+      seq: 2,
+      payload: feedRow({ id: 'cm-2', seq: 2, created_at: '2026-10-11T15:30:00Z' }),
+    } as any);
+
+    await waitFor(() => {
+      expect(screen.getByText(/MR !7 "Add run telemetry" was opened by Oni/)).not.toBeNull();
     });
   });
 });

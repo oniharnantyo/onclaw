@@ -216,9 +216,11 @@ func TestIntegration_MemberChannelsBackfill(t *testing.T) {
 	// lose the channel permissions; the built-ins that carried roles.write in
 	// the old model (Owner — and Superadmin, not present in this fixture)
 	// get it back; the custom row stays stripped (the all-rows strip is not
-	// invertible per row — documented on the down migration).
-	if err := mig.Down(1); err != nil {
-		t.Fatalf("failed to migrate down one step: %v", err)
+	// invertible per row — documented on the down migration). MigrateToVersion
+	// targets 000073 deterministically — migrations stacked above 000074
+	// (000075 workspace webhooks) roll back with it.
+	if err := mig.MigrateToVersion(73); err != nil {
+		t.Fatalf("failed to migrate down to version 73: %v", err)
 	}
 	if v, dirty, err := mig.Status(); err != nil || v != 73 || dirty {
 		t.Fatalf("expected clean version 73 after down, got v=%d dirty=%v err=%v", v, dirty, err)

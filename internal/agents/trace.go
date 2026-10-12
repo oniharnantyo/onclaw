@@ -143,7 +143,8 @@ func traceSessionConfig(turnID string) *adk.SessionConfig[*schema.AgenticMessage
 // applyTurnTrace stamps the run context with the turn's attribution (D2):
 // session/user identity, origin/agent/workspace tags, turn/workspace/agent/
 // origin metadata, the service-authority fields for OriginService runs (the
-// webhook run's connection and event, add-connection-webhooks contract §6),
+// webhook run's connection and event, add-connection-webhooks contract §6;
+// the standalone endpoint's id and name, add-workspace-webhooks D6),
 // the pinned trace id, and the trace name (schedule name for scheduler
 // fires, the input's first line otherwise). Runs for every traced turn
 // regardless of the sampling decision — the pinned id makes the upstream
@@ -161,6 +162,8 @@ func (r *Runner) applyTurnTrace(ctx context.Context, req ExecRequest, trace runT
 		ConnectionID:      req.ConnectionID,
 		ConnectionService: req.ConnectionService,
 		Event:             req.Event,
+		WebhookID:         req.WebhookID,
+		WebhookName:       req.WebhookName,
 	})
 }
 

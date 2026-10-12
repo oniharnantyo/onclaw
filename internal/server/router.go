@@ -142,6 +142,13 @@ type RouterOptions struct {
 	// queue. nil builds a fresh one for test assembly; the composition root
 	// owns the queue's Close and the delivery-window pruner loop.
 	Webhooks *WebhookRuntime
+	// WorkspaceWebhooks is the standalone workspace webhook runtime
+	// (add-workspace-webhooks 5.1/5.2): the management service and the
+	// endpoint ingress built by the composition root around the same runner,
+	// with its own bounded delivery queue and per-endpoint rate limiter. nil
+	// builds a fresh one for test assembly; the composition root owns the
+	// queue's Close and the standalone pruner loop.
+	WorkspaceWebhooks *WorkspaceWebhookRuntime
 	// DatabaseURL is the PostgreSQL DSN the multi-device WhatsApp lane
 	// bridges whatsmeow's sqlstore over (add-whatsapp-gateway design D6) —
 	// the same DSN the store uses. Empty keeps the md lane unconstructable
@@ -637,6 +644,27 @@ func (rt *router) Engine() *gin.Engine {
 	}
 	webhookHandlers := handlers.NewWebhookHandlers(webhookRuntime.Service, webhookRuntime.Ingress, rt.opts.Store.Workspaces(), rt.opts.PublicBaseURL)
 
+	// Standalone workspace webhook runtime (add-workspace-webhooks 5.1/5.2):
+	// the management service and endpoint ingress built by the composition
+	// root around the same runner; the fallback assembles a fresh one for
+	// tests, with the connection lane's Service doubling as the D2 read-in
+	// seam.
+	workspaceWebhookRuntime := rt.opts.WorkspaceWebhooks
+	if workspaceWebhookRuntime == nil && rt.opts.Store != nil {
+		workspaceWebhookRuntime = NewWorkspaceWebhookRuntime(
+			rt.opts.Store.WorkspaceWebhooks(),
+			rt.opts.Store.Connections(),
+			webhookRuntime.Service,
+			rt.opts.Store.Agents(),
+			rt.opts.Store.Members(),
+			rt.opts.Store.Roles(),
+			runner,
+			channelRuntime.Chokepoint(),
+			rt.opts.EncryptionKey,
+		)
+	}
+	workspaceWebhookHandlers := handlers.NewWorkspaceWebhookHandlers(workspaceWebhookRuntime.Service, workspaceWebhookRuntime.Ingress, rt.opts.Store.Workspaces(), rt.opts.PublicBaseURL)
+
 	providerHandlers := handlers.NewProviderHandlers(rt.opts.Store.Providers(), rt.opts.Store.Agents(), rt.opts.EncryptionKey, providerRegistry, modelCatalog, rt.opts.Store.ToolSettings())
 	// The authorizer rides the agent handlers for the session-ownership rule
 	// (fix-role-permission-audit D3): cancel/approval/delete permit the
@@ -928,6 +956,16 @@ func (rt *router) Engine() *gin.Engine {
 		ingest := r.Group("/api/ingest")
 		ingest.POST("/webhooks/:workspaceSlug/:connectionId", webhookHandlers.IngestDelivery)
 
+		// Public standalone-workspace-webhook ingest (add-workspace-webhooks
+		// 5.1, design.md D5): the pinned path shape
+		// /api/ingest/hooks/{workspace_slug}/{webhook_id} — no auth
+		// middleware, the delivery's signature IS the authentication. Every
+		// rejection (unknown workspace/endpoint, paused endpoint, bad
+		// signature material, replay, over-cap) is one generic 404 with no
+		// enumeration help; only an exhausted rate window answers 429 +
+		// Retry-After.
+		ingest.POST("/hooks/:workspaceSlug/:webhookId", workspaceWebhookHandlers.IngestStandaloneDelivery)
+
 		// Public OAuth callback ingress (add-connection-oauth 3.1): no auth
 		// middleware — the browser arrives from the provider's redirect, and
 		// the signed single-use state IS the authenticator (design.md D4).
@@ -1153,6 +1191,24 @@ func (rt *router) Engine() *gin.Engine {
 				wsGroup.PUT("/integrations/connections/:id/webhook/target", rt.mw.RequirePermission(domain.IntegrationsWrite), webhookHandlers.UpdateWebhookTarget)
 				wsGroup.PUT("/integrations/connections/:id/webhook/events", rt.mw.RequirePermission(domain.IntegrationsWrite), webhookHandlers.UpdateWebhookEvents)
 
+				// Standalone workspace webhooks (add-workspace-webhooks 5.1):
+				// the dedicated management sub-resource rides integrations.
+				// write across the board — the secret's reveal-once is
+				// connect-tier credential material, the connection-webhook
+				// contract's exact tier. The dry-run is a write-tier POST by
+				// route shape but executes read-only (spec: no side
+				// effects); deliveries is the per-endpoint diagnostic log.
+				wsGroup.GET("/integrations/webhooks", rt.mw.RequirePermission(domain.IntegrationsWrite), workspaceWebhookHandlers.ListWebhooks)
+				wsGroup.POST("/integrations/webhooks", rt.mw.RequirePermission(domain.IntegrationsWrite), workspaceWebhookHandlers.CreateWebhook)
+				wsGroup.GET("/integrations/webhooks/:id", rt.mw.RequirePermission(domain.IntegrationsWrite), workspaceWebhookHandlers.GetWebhook)
+				wsGroup.PUT("/integrations/webhooks/:id", rt.mw.RequirePermission(domain.IntegrationsWrite), workspaceWebhookHandlers.UpdateWebhook)
+				wsGroup.DELETE("/integrations/webhooks/:id", rt.mw.RequirePermission(domain.IntegrationsWrite), workspaceWebhookHandlers.DeleteWebhook)
+				wsGroup.POST("/integrations/webhooks/:id/rotate", rt.mw.RequirePermission(domain.IntegrationsWrite), workspaceWebhookHandlers.RotateWebhook)
+				wsGroup.POST("/integrations/webhooks/:id/enable", rt.mw.RequirePermission(domain.IntegrationsWrite), workspaceWebhookHandlers.EnableWebhook)
+				wsGroup.POST("/integrations/webhooks/:id/disable", rt.mw.RequirePermission(domain.IntegrationsWrite), workspaceWebhookHandlers.DisableWebhook)
+				wsGroup.POST("/integrations/webhooks/:id/dry-run", rt.mw.RequirePermission(domain.IntegrationsWrite), workspaceWebhookHandlers.DryRunWebhook)
+				wsGroup.GET("/integrations/webhooks/:id/deliveries", rt.mw.RequirePermission(domain.IntegrationsWrite), workspaceWebhookHandlers.WebhookDeliveryLog)
+
 				// Workspace skill library (registry + system tier; Member reads,
 				// Owner/Admin/Superadmin manage via skills.write)
 				wsGroup.GET("/skills", rt.mw.RequirePermission(domain.SkillsRead), skillHandlers.ListSkills)
@@ -1230,6 +1286,13 @@ func (rt *router) Engine() *gin.Engine {
 				wsGroup.GET("/channels/:id/sessions", rt.mw.RequirePermission(domain.ChannelsRead), channelHandlers.ListChannelSessions)
 				wsGroup.GET("/channels/:id/sessions/:sid", rt.mw.RequirePermission(domain.ChannelsRead), channelHandlers.GetChannelSession)
 				wsGroup.GET("/channels/:id/events", rt.mw.RequirePermission(domain.ChannelsRead), channelHandlers.StreamEvents)
+
+				// The workspace-wide webhook run feed (add-webhook-channel-visibility
+				// 4.4) rides the webhooks pane's integrations.write tier — the
+				// run-history screen merges it best-effort beside the scheduler
+				// feed. The per-channel listing was removed by live-pass verdict:
+				// the room renders the channel's own message feed natively.
+				wsGroup.GET("/webhook-runs", rt.mw.RequirePermission(domain.IntegrationsWrite), workspaceWebhookHandlers.ListWorkspaceWebhookRuns)
 
 				// Scheduler standing orders (integrate-scheduler D11): reads
 				// ride scheduler.read, mutations and run-now scheduler.write.

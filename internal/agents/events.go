@@ -403,6 +403,16 @@ type ExecRequest struct {
 	ConnectionService string
 	Event             string
 
+	// Standalone webhook attribution (add-workspace-webhooks D6): WebhookID
+	// and WebhookName name the workspace webhook endpoint a service-origin
+	// run was triggered by — the standalone lane's counterpart of the
+	// connection triple above (spec: "the run's metadata and trace name the
+	// endpoint and resolved event"). Empty on the connection lane and every
+	// other origin; purely additive observational metadata
+	// ({webhook_id, webhook_name} in the trace), read by nothing else.
+	WebhookID   string
+	WebhookName string
+
 	// AllowedTools replaces the agent's tool selection for this turn when
 	// non-nil: an explicit request-scoped allowlist (an empty slice runs the
 	// turn with no tools). nil keeps denylist resolution — the agent's

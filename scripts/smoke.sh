@@ -105,6 +105,21 @@
 #      endpoint replaying delegation and shell output files, the tasks SSE
 #      stream's no-live-run shape, unknown task/session 404s, and the
 #      running-only cancel's 409 conflict on ended tasks)
+#  38. Standalone workspace webhooks (add-workspace-webhooks: endpoint
+#      lifecycle with reveal-once generated and bring-your-own secrets, the
+#      integrations.write tier, save-time filter validation persisting
+#      nothing on a parse error, the dry-run tester, signed public ingress —
+#      timestamped HMAC verify, replay rejection, filter-ignore, bad-signature
+#      parity with the unknown-endpoint 404 — the bounded delivery log with
+#      run links and the labeled default turn, rotate invalidation, pause,
+#      and the per-endpoint 429 + Retry-After rate limit)
+#      + channel delivery feed (add-webhook-channel-visibility D3: the
+#      drain's PostFromAgent reply lands on the channel's message feed —
+#      the room renders that feed natively; the per-channel listing API was
+#      removed by live-pass verdict)
+#      + workspace webhook-run feed (add-webhook-channel-visibility 4.4: the
+#      submitted deliveries projected as runs with the endpoint, bound agent,
+#      and live status — runs only, integrations.write-gated)
 #
 # Usage:
 #   ./scripts/smoke.sh
@@ -5545,3 +5560,311 @@ assert_json_expr '.error.code == "conflict"' "The delegation cancel refusal carr
 api_req "POST" "${SUB_EVENTS_BASE}/${SUB_SESSION_3}/tasks/${SUB_SH_TASK_ID}/cancel" "${CHARLIE_TOKEN}"
 assert_status "409" "Cancelling the ended shell task is refused with a conflict"
 assert_json_expr '.error.code == "conflict"' "The shell cancel refusal carries the conflict code"
+
+# -----------------------------------------------------------------------------
+# 38. Standalone Workspace Webhooks (add-workspace-webhooks): the management
+#     surface's integrations.write tier, reveal-once secrets (generated and
+#     bring-your-own), save-time filter validation, the dry-run tester, the
+#     signed public ingress (timestamped HMAC verify, replay rejection,
+#     filter-ignore, bad-signature parity with the unknown-endpoint 404), the
+#     bounded delivery log with run links and the labeled default turn, rotate
+#     invalidation, pause, and the per-endpoint rate limit. The rate-limit
+#     burst runs LAST — an exhausted window must not disturb the earlier
+#     delivery assertions. Reuses section 13's mock-provider agent
+#     (test-agent) and section 22's delivery channel.
+# -----------------------------------------------------------------------------
+log_step "38. Standalone Workspace Webhooks: Lifecycle, Signed Ingress & Delivery Log"
+
+WH_BASE="/api/v1/workspaces/${TENANT_SLUG}/integrations/webhooks"
+
+# wh_sig computes the timestamped signature header value for a delivery —
+# "t=<unix>,v1=<hex HMAC-SHA256(secret, "{t}.{body}")>" — the standalone
+# endpoint's timestamped_hmac scheme (the wa_sig precedent).
+wh_sig() {
+    local t="$1" body="$2" secret="$3"
+    printf 't=%s,v1=%s' "${t}" "$(printf '%s' "${t}.${body}" | openssl dgst -sha256 -hmac "${secret}" | sed 's/^.* //')"
+}
+
+# wh_req posts one PUBLIC ingest delivery: the ingest route takes no bearer
+# (the signature IS the authentication) and a delivery needs several custom
+# headers, so unlike api_req it takes any number of "Name: value" headers
+# after the body. Sets $HTTP_STATUS/$HTTP_BODY (the api_req convention).
+wh_req() {
+    local path="$1" body="$2"; shift 2
+    local args=(-s -S -X POST -D "${TMP_DIR}/headers.tmp" -o "${TMP_DIR}/body.tmp" -H "Content-Type: application/json" --data "${body}")
+    local h
+    for h in "$@"; do
+        args+=(-H "${h}")
+    done
+    if ! curl "${args[@]}" "${SERVER_URL}${path}"; then
+        log_fail "curl failed to reach ${SERVER_URL}${path}"
+    fi
+    HTTP_STATUS=$(awk '/^HTTP\/[0-9.]+/ {code=$2} END {print code}' "${TMP_DIR}/headers.tmp")
+    HTTP_BODY=$(cat "${TMP_DIR}/body.tmp")
+}
+
+# 38.1 Permission tier: every management verb rides integrations.write —
+# unauthenticated reads are 401, a plain Member is 403, the Owner reads.
+api_req "GET" "${WH_BASE}" ""
+assert_status "401" "Unauthenticated webhook list is 401"
+
+api_req "GET" "${WH_BASE}" "${DAVE_TOKEN}"
+assert_status "403" "Member cannot read the webhook list (integrations.write 403)"
+assert_json_expr '.error.code == "forbidden"' "Error code is forbidden"
+
+api_req "GET" "${WH_BASE}" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists webhook endpoints"
+assert_json_expr '([.webhooks[] | select(.source == "standalone")] | length) == 0' "No standalone endpoints before the section"
+
+# 38.2 Create with a GENERATED secret (spec: Create with generated secret):
+# the plaintext rides the create response exactly once with its last-4 hint,
+# and the ingest URL names the pinned public path for the sender's config.
+WH_NAME="gitlab-mr-review-${RUN_ID}"
+api_req "POST" "${WH_BASE}" "${CHARLIE_TOKEN}" '{"name":"'"${WH_NAME}"'","scheme":"timestamped_hmac","event_source":{"kind":"header","name":"X-Demo-Event"},"delivery_id_source":"X-Delivery-Id","filter_expression":"event == \"merge_request\"","target_agent_id":"'"${AGENT_ID}"'","target_kind":"channel","target_id":"'"${SCHED_CHANNEL_ID}"'","enabled":true}'
+assert_status "201" "Owner creates a standalone endpoint (generated secret)"
+assert_json_expr '.secret != null and (.secret | length) >= 16' "The generated secret is revealed exactly once at create"
+assert_json_expr '.webhook.secret_hint == (.secret | .[-4:])' "The hint is the secret's last 4 characters"
+assert_json_expr '.webhook.scheme == "timestamped_hmac"' "Create echoes the scheme"
+assert_json_expr '.webhook.event_source == {"kind":"header","name":"X-Demo-Event"}' "Create echoes the header event source"
+assert_json_expr '.webhook.delivery_id_source == "X-Delivery-Id"' "Create echoes the delivery-id source"
+assert_json_expr '.webhook.filter_expression == "event == \"merge_request\""' "Create echoes the saved filter expression"
+assert_json_expr ".webhook.target_agent_id == \"${AGENT_ID}\"" "Create carries the bound agent"
+assert_json_expr ".webhook.target_kind == \"channel\" and .webhook.target_id == \"${SCHED_CHANNEL_ID}\"" "Create carries the channel binding"
+assert_json_expr '.webhook.enabled == true' "A fresh endpoint starts enabled"
+if echo "${HTTP_BODY}" | grep -q '"v1:'; then
+    log_fail "Create response leaked the secret ciphertext envelope!"
+else
+    log_pass "Create response never leaks the ciphertext envelope"
+fi
+WH_ID=$(json_get '.webhook.id')
+WH_SECRET=$(json_get '.secret')
+assert_json_expr '.ingest_url | contains("/api/ingest/hooks/'"${TENANT_SLUG}"'/'"${WH_ID}"'")' "The ingest URL names the pinned public path"
+WH_INGEST_PATH="/api/ingest/hooks/${TENANT_SLUG}/${WH_ID}"
+
+# 38.3 Bring-your-own secret (spec: Create with bring-your-own secret): the
+# supplied secret is stored and NEVER re-revealed — the hint is the residue.
+WH_BYO_SECRET="whsmoke-byo-secret-9942"
+api_req "POST" "${WH_BASE}" "${CHARLIE_TOKEN}" '{"name":"plain-token-hook-'"${RUN_ID}"'","scheme":"plain_token","secret":"'"${WH_BYO_SECRET}"'","event_source":{"kind":"header","name":"X-Demo-Event"},"delivery_id_source":"X-Delivery-Id","filter_expression":"event == \"merge_request\"","target_agent_id":"'"${AGENT_ID}"'","target_kind":"channel","target_id":"'"${SCHED_CHANNEL_ID}"'","enabled":true}'
+assert_status "201" "Owner creates an endpoint with a bring-your-own secret"
+assert_json_expr 'has("secret") == false' "A BYO secret is never re-revealed at create"
+assert_json_expr '.webhook.secret_hint == "9942"' "The BYO hint is the supplied secret's last 4"
+WH_BYO_ID=$(json_get '.webhook.id')
+
+api_req "GET" "${WH_BASE}/${WH_BYO_ID}" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner reads the BYO endpoint"
+if echo "${HTTP_BODY}" | grep -q "${WH_BYO_SECRET}"; then
+    log_fail "The BYO secret leaked in a management read!"
+else
+    log_pass "The BYO secret never appears on reads (hint only)"
+fi
+
+# The plain-token scheme's conventional header (X-Gitlab-Token) verifies the
+# delivery in constant time (spec: GitLab plain token accepted).
+WH_BYO_BODY='{"object_kind":"merge_request","title":"ONCLAW_V1_SMOKE plain token delivery"}'
+wh_req "/api/ingest/hooks/${TENANT_SLUG}/${WH_BYO_ID}" "${WH_BYO_BODY}" "X-Gitlab-Token: ${WH_BYO_SECRET}" "X-Demo-Event: merge_request" "X-Delivery-Id: wh-${RUN_ID}-byo-1"
+assert_status "200" "Plain-token delivery with the matching secret verifies"
+assert_json_expr '.ok == true' "The verified plain-token delivery is acknowledged"
+
+# 38.4 Save-time filter validation (spec: Invalid expression rejected at
+# save): an unparseable expression rejects 400 with the parser's message and
+# persists nothing.
+api_req "POST" "${WH_BASE}" "${CHARLIE_TOKEN}" '{"name":"broken-filter-'"${RUN_ID}"'","scheme":"plain_token","event_source":{"kind":"header","name":"X-Demo-Event"},"delivery_id_source":"X-Delivery-Id","filter_expression":"event == '"'"'","target_agent_id":"'"${AGENT_ID}"'","target_kind":"channel","target_id":"'"${SCHED_CHANNEL_ID}"'","enabled":true}'
+assert_status "400" "An unparseable filter expression is rejected at save (400)"
+assert_json_expr '.error.code == "invalid_request"' "Error code is invalid_request"
+assert_json_expr '(.error.message | length) > 0' "The rejection carries the parser's message"
+
+api_req "GET" "${WH_BASE}" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner re-reads the list after the rejected save"
+assert_json_expr '[.webhooks[] | select(.source == "standalone" and .webhook.name == "broken-filter-'"${RUN_ID}"'")] | length == 0' "The rejected save persisted nothing"
+
+# 38.5 Verified ingress (spec: the timestamped scheme over "{t}.{body}" with
+# the ±300s skew): a correctly signed delivery acks ok and enqueues the bound
+# agent's run. The payload embeds the section-13 mock marker so the run
+# completes deterministically.
+WH_MR_BODY='{"object_kind":"merge_request","project":{"path_with_namespace":"team/api"},"title":"ONCLAW_V1_SMOKE webhook smoke delivery"}'
+WH_MR_T=$(date +%s)
+wh_req "${WH_INGEST_PATH}" "${WH_MR_BODY}" "X-Demo-Event: merge_request" "X-Delivery-Id: wh-${RUN_ID}-mr-1" "X-Webhook-Signature: $(wh_sig "${WH_MR_T}" "${WH_MR_BODY}" "${WH_SECRET}")"
+assert_status "200" "Correctly timestamped-signed delivery verifies"
+assert_json_expr '.ok == true' "The verified delivery is acknowledged ok"
+
+# The delivery log links the submitted run (spec: Run linked from the log);
+# the submitted row is written by the queue processor, so poll briefly.
+WH_SUBMITTED_RUN=""
+for i in {1..40}; do
+    api_req "GET" "${WH_BASE}/${WH_ID}/deliveries" "${CHARLIE_TOKEN}"
+    if [[ "$(json_get '[.entries[] | select(.outcome == "submitted" and (.run_id // "") != "")] | length')" -ge 1 ]]; then
+        WH_SUBMITTED_RUN=$(json_get '[.entries[] | select(.outcome == "submitted")][0].run_id')
+        break
+    fi
+    sleep 0.5
+done
+if [[ -n "${WH_SUBMITTED_RUN}" ]]; then
+    log_pass "The submitted delivery log entry links its run (${WH_SUBMITTED_RUN:0:24}...)"
+else
+    log_fail "The verified delivery never produced a submitted log entry with a run link"
+fi
+
+# The submitted run's transcript session carries the default turn: it names
+# the endpoint and event and embeds the payload as labeled, delimited data
+# (spec: Default turn carries labeled payload).
+WH_TURN_READY=0
+for i in {1..20}; do
+    api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/agents/test-agent/sessions/${WH_SUBMITTED_RUN}/events?limit=100" "${CHARLIE_TOKEN}"
+    if [[ "$(json_get '[.events[]?.message.content // ""] | join(" ") | contains("BEGIN WEBHOOK EVENT DATA")')" == "true" ]]; then
+        WH_TURN_READY=1
+        break
+    fi
+    sleep 0.5
+done
+assert_status "200" "The run transcript resolves by the linked run id"
+assert_json_expr '[.events[]?.message.content // ""] | join(" ") | contains("'"${WH_NAME}"'")' "The turn input names the webhook endpoint"
+assert_json_expr '[.events[]?.message.content // ""] | join(" ") | contains("BEGIN WEBHOOK EVENT DATA")' "The payload rides as labeled, delimited data"
+
+# 38.6 Replay (spec: Timestamped replay within the window): the byte-identical
+# delivery — same timestamp, body, and signature — is rejected unenumerably.
+wh_req "${WH_INGEST_PATH}" "${WH_MR_BODY}" "X-Demo-Event: merge_request" "X-Delivery-Id: wh-${RUN_ID}-mr-1" "X-Webhook-Signature: $(wh_sig "${WH_MR_T}" "${WH_MR_BODY}" "${WH_SECRET}")"
+assert_status "404" "The replayed signature is rejected"
+
+# 38.7 Filter (spec: Non-matching delivery ignored): a verified delivery whose
+# event misses the expression acks 200 with the explicit ignored reason.
+WH_NOTE_BODY='{"object_kind":"note","title":"a comment that is not an MR"}'
+WH_NOTE_T=$(date +%s)
+wh_req "${WH_INGEST_PATH}" "${WH_NOTE_BODY}" "X-Demo-Event: note_hook" "X-Delivery-Id: wh-${RUN_ID}-note-1" "X-Webhook-Signature: $(wh_sig "${WH_NOTE_T}" "${WH_NOTE_BODY}" "${WH_SECRET}")"
+assert_status "200" "The filtered delivery is still acknowledged"
+assert_json_expr '.status == "ignored" and .reason == "filter"' "The non-matching delivery acks with the ignored reason"
+
+# 38.8 Rejection parity (spec: Invalid signature is unenumerable): a
+# wrong-secret signature and an unknown endpoint id get the SAME generic 404
+# (the envelope's per-request correlation id is not enumeration detail).
+WH_BADSIG_BODY='{"object_kind":"merge_request"}'
+WH_BADSIG_T=$(date +%s)
+wh_req "${WH_INGEST_PATH}" "${WH_BADSIG_BODY}" "X-Demo-Event: merge_request" "X-Delivery-Id: wh-${RUN_ID}-badsig-1" "X-Webhook-Signature: $(wh_sig "${WH_BADSIG_T}" "${WH_BADSIG_BODY}" "wrong-${WH_SECRET}")"
+assert_status "404" "A wrong-secret signature is rejected"
+WH_404_BADSIG_BODY="${HTTP_BODY}"
+
+wh_req "/api/ingest/hooks/${TENANT_SLUG}/00000000-0000-0000-0000-000000000000" "${WH_BADSIG_BODY}" "X-Demo-Event: merge_request" "X-Webhook-Signature: t=1,v1=0000000000000000000000000000000000000000000000000000000000000000"
+assert_status "404" "An unknown endpoint id is rejected"
+WH_404_UNKNOWN_BODY="${HTTP_BODY}"
+
+if [[ "$(printf '%s' "${WH_404_BADSIG_BODY}" | jq -S 'del(.error.request_id)')" == "$(printf '%s' "${WH_404_UNKNOWN_BODY}" | jq -S 'del(.error.request_id)')" ]]; then
+    log_pass "Bad-signature and unknown-endpoint rejections are identical (no enumeration oracle)"
+else
+    log_fail "Rejection bodies diverge: bad-sig=${WH_404_BADSIG_BODY} unknown=${WH_404_UNKNOWN_BODY}"
+fi
+
+# 38.9 Dry-run tester (spec: Dry-run reports the outcome): match and ignored
+# verdicts with no side effects.
+api_req "POST" "${WH_BASE}/${WH_ID}/dry-run" "${CHARLIE_TOKEN}" '{"payload":{"event":"merge_request","object_kind":"merge_request"}}'
+assert_status "200" "Owner dry-runs a selecting sample payload"
+assert_json_expr '.verdict.outcome == "match"' "The dry-run reports match for a selecting payload"
+
+api_req "POST" "${WH_BASE}/${WH_ID}/dry-run" "${CHARLIE_TOKEN}" '{"payload":{"object_kind":"note"}}'
+assert_status "200" "Owner dry-runs a non-selecting sample payload"
+assert_json_expr '.verdict.outcome == "ignored"' "The dry-run reports ignored when the expression is false"
+
+# 38.10 Rotate invalidates immediately (spec: Rotate invalidates): the prior
+# secret fails verification the moment the rotation lands.
+api_req "POST" "${WH_BASE}/${WH_ID}/rotate" "${CHARLIE_TOKEN}" '{}'
+assert_status "200" "Owner rotates the endpoint credential"
+assert_json_expr '.secret != null and .secret != ""' "Rotate reveals the replacement secret exactly once"
+assert_json_expr '.webhook.secret_hint == (.secret | .[-4:])' "The hint tracks the rotated secret"
+WH_NEW_SECRET=$(json_get '.secret')
+if [[ "${WH_NEW_SECRET}" != "${WH_SECRET}" ]]; then
+    log_pass "The replacement secret differs from the prior one"
+else
+    log_fail "Rotate returned the same secret"
+fi
+
+wh_req "${WH_INGEST_PATH}" "${WH_BADSIG_BODY}" "X-Demo-Event: merge_request" "X-Delivery-Id: wh-${RUN_ID}-postrotate-1" "X-Webhook-Signature: $(wh_sig "$(date +%s)" "${WH_BADSIG_BODY}" "${WH_SECRET}")"
+assert_status "404" "A delivery signed with the prior secret no longer verifies"
+
+WH_ROT_BODY='{"object_kind":"merge_request","title":"ONCLAW_V1_SMOKE post-rotate delivery"}'
+WH_ROT_T=$(date +%s)
+wh_req "${WH_INGEST_PATH}" "${WH_ROT_BODY}" "X-Demo-Event: merge_request" "X-Delivery-Id: wh-${RUN_ID}-postrotate-2" "X-Webhook-Signature: $(wh_sig "${WH_ROT_T}" "${WH_ROT_BODY}" "${WH_NEW_SECRET}")"
+assert_status "200" "A delivery signed with the rotated secret verifies"
+assert_json_expr '.ok == true' "The rotated credential accepts deliveries"
+
+# 38.11 Pause (spec: Paused endpoint ignores deliveries): a paused endpoint
+# rejects even validly signed deliveries, indistinguishably from unknown.
+api_req "POST" "${WH_BASE}/${WH_ID}/disable" "${CHARLIE_TOKEN}" '{}'
+assert_status "200" "Owner pauses the endpoint"
+assert_json_expr '.webhook.enabled == false' "Pause flips enabled false"
+
+WH_PAUSE_T=$(date +%s)
+wh_req "${WH_INGEST_PATH}" '{"object_kind":"merge_request","title":"while paused"}' "X-Demo-Event: merge_request" "X-Delivery-Id: wh-${RUN_ID}-paused-1" "X-Webhook-Signature: $(wh_sig "${WH_PAUSE_T}" '{"object_kind":"merge_request","title":"while paused"}' "${WH_NEW_SECRET}")"
+assert_status "404" "A delivery to the paused endpoint is rejected"
+
+api_req "POST" "${WH_BASE}/${WH_ID}/enable" "${CHARLIE_TOKEN}" '{}'
+assert_status "200" "Owner resumes the endpoint"
+assert_json_expr '.webhook.enabled == true' "Resume flips enabled true"
+
+WH_RESUME_BODY='{"object_kind":"merge_request","title":"ONCLAW_V1_SMOKE resumed delivery"}'
+WH_RESUME_T=$(date +%s)
+wh_req "${WH_INGEST_PATH}" "${WH_RESUME_BODY}" "X-Demo-Event: merge_request" "X-Delivery-Id: wh-${RUN_ID}-resumed-1" "X-Webhook-Signature: $(wh_sig "${WH_RESUME_T}" "${WH_RESUME_BODY}" "${WH_NEW_SECRET}")"
+assert_status "200" "A fresh delivery after resume verifies again"
+assert_json_expr '.ok == true' "The resumed endpoint acknowledges deliveries"
+
+# 38.12 Delivery log (spec: Filtered delivery visible in the log): every
+# terminal verdict from this section is on record, newest first.
+api_req "GET" "${WH_BASE}/${WH_ID}/deliveries" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner reads the endpoint's delivery log"
+assert_json_expr '(.entries | length) >= 6' "The log carries this section's deliveries"
+assert_json_expr '[.entries[] | select(.outcome == "filtered" and .event == "note_hook")] | length >= 1' "The filtered delivery is visible with its resolved event"
+assert_json_expr '[.entries[] | select(.outcome == "rejected" and .event == "merge_request")] | length >= 1' "The signature-rejected deliveries are visible with their event"
+assert_json_expr '[.entries[] | select(.outcome == "rejected" and .detail == "endpoint paused")] | length >= 1' "The paused endpoint's rejection records its reason"
+assert_json_expr '[.entries[] | select(.outcome == "submitted" and .event == "merge_request" and (.run_id // "") != "")] | length >= 2' "Submitted entries link their runs"
+assert_json_expr '[.entries[] | .outcome] | (index("rejected") < index("filtered"))' "The log reads newest-first"
+
+# 38.13 Channel delivery → feed (add-webhook-channel-visibility, design D3):
+# the room's delivery surface is the channel's own message feed — the drain's
+# PostFromAgent post lands there (summon/gateway replies ride the same lane),
+# and the room renders that feed natively. The per-channel webhook-runs
+# listing API was removed by live-pass verdict; the delivery stays proven via
+# the feed and the delivery log above.
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/channels/${SCHED_CHANNEL_ID}/messages?limit=100" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner reads the delivery channel's message feed"
+assert_json_expr '[.messages[] | select(.author_type == "agent" and (.body | length > 0))] | length >= 1' "The channel feed carries the delivery's agent reply"
+
+# 38.13b Workspace webhook-run feed (add-webhook-channel-visibility 4.4): the
+# workspace-wide listing of the section's submitted deliveries projected as
+# runs — endpoint name, bound agent, live status — riding the integrations
+# pane's trust tier (members are 403; unauthenticated 401).
+api_req "GET" "/api/v1/workspaces/${TENANT_SLUG}/webhook-runs" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner reads the workspace webhook-run feed"
+assert_json_expr '[.runs[] | select(.webhook_name == "'"${WH_NAME}"'" and (.run_id // "") != "" and .agent_id == "'"${AGENT_ID}"'")] | length >= 1' "The feed lists the section's submitted runs with the endpoint and bound agent"
+assert_json_expr '[.runs[] | select(.webhook_name == "'"${WH_NAME}"'") | .status] | length >= 1 and all(. == "running" or . == "completed" or . == "failed" or . == "cancelled")' "Every feed row carries a run status"
+assert_json_expr '[.runs[] | select(.outcome != null)] | length == 0' "The feed carries runs only — rejected deliveries stay in the delivery log"
+
+# 38.14 Rate limit (LAST): 130 correctly signed, filter-ignored deliveries
+# slam the endpoint's fixed 60/min window; excess answers 429.
+WH_429_COUNT=0
+for i in $(seq 1 130); do
+    WH_PROBE_BODY='{"probe":'"${i}"',"note":"smoke rate probe"}'
+    WH_PROBE_T=$(date +%s)
+    wh_req "${WH_INGEST_PATH}" "${WH_PROBE_BODY}" "X-Demo-Event: rate_probe" "X-Delivery-Id: wh-${RUN_ID}-probe-${i}" "X-Webhook-Signature: $(wh_sig "${WH_PROBE_T}" "${WH_PROBE_BODY}" "${WH_NEW_SECRET}")"
+    if [[ "${HTTP_STATUS}" == "429" ]]; then
+        WH_429_COUNT=$((WH_429_COUNT + 1))
+    fi
+done
+if [[ "${WH_429_COUNT}" -ge 1 ]]; then
+    log_pass "The per-endpoint rate limit answered ${WH_429_COUNT} x 429 across the burst"
+else
+    log_fail "The rate limit never answered 429 across the burst"
+fi
+
+# The window stays exhausted immediately after the burst: one more verified
+# delivery answers 429 with the Retry-After header (the one enumerable
+# rejection).
+WH_PROBE_BODY='{"probe":"final","note":"smoke rate probe"}'
+WH_PROBE_T=$(date +%s)
+wh_req "${WH_INGEST_PATH}" "${WH_PROBE_BODY}" "X-Demo-Event: rate_probe" "X-Delivery-Id: wh-${RUN_ID}-probe-final" "X-Webhook-Signature: $(wh_sig "${WH_PROBE_T}" "${WH_PROBE_BODY}" "${WH_NEW_SECRET}")"
+assert_status "429" "An exhausted window answers the next delivery 429"
+grep -qi '^Retry-After:' "${TMP_DIR}/headers.tmp" || log_fail "The 429 carries no Retry-After header"
+log_pass "The 429 carries the Retry-After header"
+
+# 38.15 The management list surfaces both standalone endpoints (the D2/D9
+# merged list: standalone rows carry the endpoint plus its ingest URL).
+api_req "GET" "${WH_BASE}" "${CHARLIE_TOKEN}"
+assert_status "200" "Owner lists the workspace's webhook endpoints"
+assert_json_expr '[.webhooks[] | select(.source == "standalone" and .webhook.id == "'"${WH_ID}"'" and .ingest_url != null)] | length == 1' "The rotated endpoint lists under source standalone"
+assert_json_expr '[.webhooks[] | select(.source == "standalone" and .webhook.id == "'"${WH_BYO_ID}"'")] | length == 1' "The BYO endpoint lists under source standalone"

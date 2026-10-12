@@ -4,6 +4,7 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { SettingsPage, rememberLastNonSettingsPath } from './SettingsPage';
 import { api, ApiError, type ApiWorkspaceSkill, type ApiMcpServer } from '../../lib/api';
 import { connectionsApi } from '../../lib/connectionsApi';
+import { workspaceWebhooksApi } from '../../lib/workspaceWebhooksApi';
 import { useAuthStore } from '../../store/auth';
 
 beforeAll(() => {
@@ -146,6 +147,9 @@ describe('screens/settings/SettingsPage', () => {
     // The Integrations pane fetches the recipe registry + connections.
     vi.spyOn(connectionsApi, 'recipes').mockResolvedValue({ recipes: [] });
     vi.spyOn(connectionsApi, 'list').mockResolvedValue({ connections: [] });
+    // The Webhooks pane fetches the webhook list + channels (agents above).
+    vi.spyOn(workspaceWebhooksApi, 'list').mockResolvedValue({ webhooks: [] });
+    vi.spyOn(api.channels, 'list').mockResolvedValue({ channels: [] });
   });
 
   function renderSettingsPage(initialPath = '/settings/workspace', overrides = {}) {
@@ -193,14 +197,14 @@ describe('screens/settings/SettingsPage', () => {
   }
 
   describe('Navigation & Routing', () => {
-    it('renders the fourteen section tab labels with active highlighting and switches section on click', async () => {
+    it('renders the fifteen section tab labels with active highlighting and switches section on click', async () => {
       renderSettingsPage('/settings/workspace');
 
       const tablist = screen.getByRole('tablist');
       expect(tablist).not.toBeNull();
 
       const tabs = screen.getAllByRole('tab');
-      expect(tabs.length).toBe(14);
+      expect(tabs.length).toBe(15);
 
       const expectedLabels = [
         'Workspace',
@@ -217,6 +221,7 @@ describe('screens/settings/SettingsPage', () => {
         'API keys',
         'Notifications',
         'Storage',
+        'Webhooks',
       ];
       tabs.forEach((tabEl, index) => {
         expect(tabEl.textContent).toBe(expectedLabels[index]);
@@ -252,6 +257,7 @@ describe('screens/settings/SettingsPage', () => {
         { path: '/settings/keys', paneTestId: 'pane-keys' },
         { path: '/settings/notifications', paneTestId: 'pane-notifications' },
         { path: '/settings/storage', paneTestId: 'pane-storage' },
+        { path: '/settings/webhooks', paneTestId: 'pane-webhooks' },
       ];
 
       for (const s of sections) {
@@ -279,8 +285,8 @@ describe('screens/settings/SettingsPage', () => {
       expect(back.tagName).toBe('BUTTON');
       expect(back.textContent).toContain('Back');
       expect(screen.getByText('Settings')).not.toBeNull();
-      // The section nav: fourteen tabs below the header.
-      expect(screen.getAllByRole('tab').length).toBe(14);
+      // The section nav: fifteen tabs below the header.
+      expect(screen.getAllByRole('tab').length).toBe(15);
       expect(screen.getByRole('tablist')).not.toBeNull();
     });
 

@@ -144,6 +144,13 @@ func (q *Queue) connectionSlot(connectionID string) chan struct{} {
 // Delivery is one queued, verified delivery with everything rendering and
 // routing need: the connection's webhook state snapshot (binding, event
 // selection), the registered recipe, and the raw payload body.
+//
+// The struct is the shared job carrier for both ingress lanes (design.md
+// D6 — one queue shape, two addresses): the connection lane sets state and
+// recipe, the standalone lane (standalone.go) sets workspaceWebhook and
+// leaves the connection-only fields zero. connectionID doubles as the
+// per-lane slot key — connection id or webhook endpoint id — so the
+// per-source concurrency cap holds for both lanes.
 type Delivery struct {
 	workspaceID  string
 	connectionID string
@@ -152,4 +159,9 @@ type Delivery struct {
 	state        *domain.ConnectionWebhook
 	recipe       *domain.Recipe
 	body         []byte
+	// workspaceWebhook is the standalone lane's endpoint snapshot: the
+	// scheme/secret envelope, event source, filter expression, turn
+	// template, and target binding the standalone processor resolves. Nil
+	// on the connection lane; the connection lane never reads it.
+	workspaceWebhook *domain.WorkspaceWebhook
 }

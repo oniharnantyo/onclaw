@@ -18,73 +18,76 @@ import (
 
 // fakeStore is an in-memory implementation of store.Store.
 type fakeStore struct {
-	mu sync.RWMutex
-	lastStamp time.Time                      // last stampNow() value; guarded by mu
+	mu        sync.RWMutex
+	lastStamp time.Time // last stampNow() value; guarded by mu
 
-	users                          map[string]*domain.User                   // key: ID
-	usersByEmail                   map[string]string                         // key: normalized email -> ID
-	workspaces                     map[string]*domain.Workspace              // key: ID
-	workspacesBySlug               map[string]string                         // key: slug -> ID
-	roles                          map[string]*domain.Role                   // key: ID
-	rolesByName                    map[string]string                         // key: workspaceID + ":" + name -> ID
-	members                        map[string]*domain.Member                 // key: workspaceID + ":" + userID -> Member
-	providers                      map[string]*domain.ProviderConfig         // key: ID
-	agents                         map[string]*domain.Agent                  // key: ID
-	agentsBySlug                   map[string]string                         // key: workspaceID + ":" + slug -> ID
-	userMemories                   map[string]*domain.Memory                 // key: workspaceID + ":" + userID -> Memory
-	workspaceMemories              map[string]*domain.Memory                 // key: workspaceID -> Memory
-	memoryEvents                   map[string]*domain.MemoryEvent            // key: ID
-	memoryNotes                    map[string]*domain.MemoryNote             // key: ID
-	sessionEvents                  map[string][]domain.SessionEvent          // key: sessionID -> ordered events
-	sessionCPData                  map[string][]byte                         // key: checkpointID -> data
-	apiKeys                        map[string]*domain.WorkspaceAPIKey        // key: ID
-	apiKeysByHash                  map[string]string                         // key: SHA-256 hex hash -> ID
-	toolSettings                   map[string]*domain.WorkspaceToolSetting   // key: workspaceID + ":" + toolKey -> Setting
-	skills                         map[string]*domain.WorkspaceSkill         // key: ID
-	skillsByName                   map[string]string                         // key: workspaceID + ":" + name -> ID
-	wsMCPServers                   map[string]*domain.WorkspaceMCPServer     // key: ID
-	wsMCPServerNames               map[string]string                         // key: workspaceID + ":" + lower(name) -> ID
-	agentMCPServers                map[string]*domain.AgentMCPServer         // key: ID
-	agentMCPServerNames            map[string]string                         // key: agentID + ":" + lower(name) -> ID
-	mcptokens                      map[string]*domain.MCPToken               // key: workspaceID + ":" + agentID + ":" + serverID (agentID empty = workspace scope)
-	connections                    map[string]*domain.Connection             // key: ID
-	connectionsByService           map[string]string                         // key: workspaceID + ":" + service -> ID
-	connectionWebhooks             map[string]*domain.ConnectionWebhook      // key: connection ID
-	connectionDeliveries           map[string]map[string]time.Time           // key: connection ID -> delivery ID -> recorded at
-	oauthApps                      map[string]*domain.InstanceOAuthApp       // key: provider
-	hooks                          *hookData                                 // hook state: all three levels + execution audit log
-	channels                       *channelData                              // channel state: rooms, membership roster, shared feed
-	agentSessions                  map[string]*domain.AgentSession           // key: workspaceID + ":" + agentID + ":" + sessionID
-	attachments                    map[string]*domain.Attachment             // key: ID
-	attachmentsByStorageKey        map[string]string                         // key: capability storage key -> ID
-	workspaceStorage               map[string]*domain.WorkspaceStorageConfig // key: workspaceID -> config
-	schedulers                     map[string]*domain.Scheduler              // key: ID
-	schedulerRuns                  map[string]*domain.SchedulerRun           // key: ID
-	heartbeats                     map[string]*domain.Heartbeat              // key: ID
-	heartbeatsByAgent              map[string]string                         // key: workspaceID + ":" + agentID -> heartbeat ID
-	heartbeatRuns                  map[string]*domain.HeartbeatRun           // key: ID
-	gateways                       map[string]*domain.GatewayConfig          // key: ID
-	gatewayIdentities              map[string]string                         // key: workspaceID + ":" + platform + ":" + identity -> ID
-	gatewayChatBindings            map[string]*domain.ChatBinding            // key: ID
-	gatewayBindingsByChat          map[string]string                         // key: platform + ":" + platformChatID -> binding ID
-	gatewayUserLinks               map[string]*domain.UserLink               // key: platform + ":" + platformUserID + ":" + workspaceID
-	gatewayPairingTokens           map[string]*domain.PairingToken           // key: workspaceID + ":" + token
-	gatewayActiveSessions          map[string]int64                          // key: platform + ":" + platformChatID + ":" + agentID -> suffix
-	gatewayOutbox                  map[string]*domain.OutboxEntry            // key: ID
-	memoryNoteEvidence             map[string]*domain.MemoryNoteEvidence     // key: noteID + ":" + sourceEventID
-	memoryReports                  map[string]*domain.MemoryReport           // key: workspaceID
-	memoryEmbeddings               map[string]*domain.MemoryEmbedding        // key: ID
-	memoryEntities                 map[string]*domain.MemoryEntity           // key: ID
-	memoryEntitiesByNorm           map[string]string                         // key: workspaceID + ":" + normalizedLabel -> ID
-	memoryEntityEdges              map[string]*domain.MemoryEntityEdge       // key: ID
-	agentTodos                     map[string]*fakeTodoRow                   // key: sessionID + ":" + itemKey
-	referenceDocuments             map[string]*domain.ReferenceDocument      // key: ID
-	referenceDocumentsByStorageKey map[string]string                         // key: capability storage key -> ID
-	referenceDocumentSections      map[string][]domain.DocumentSection       // key: document ID -> ordered sections
-	skillCandidates                map[string]*domain.SkillCandidate         // key: ID
-	skillImpactEntries             map[string]*domain.SkillImpactEntry       // key: ID
-	skillClusterRuns               map[string]*domain.SkillClusterRun        // key: ID
-	skillClusterRunsByRun          map[string]string                         // key: workspaceID + ":" + sessionID + ":" + turnID -> ID
+	users                          map[string]*domain.User                     // key: ID
+	usersByEmail                   map[string]string                           // key: normalized email -> ID
+	workspaces                     map[string]*domain.Workspace                // key: ID
+	workspacesBySlug               map[string]string                           // key: slug -> ID
+	roles                          map[string]*domain.Role                     // key: ID
+	rolesByName                    map[string]string                           // key: workspaceID + ":" + name -> ID
+	members                        map[string]*domain.Member                   // key: workspaceID + ":" + userID -> Member
+	providers                      map[string]*domain.ProviderConfig           // key: ID
+	agents                         map[string]*domain.Agent                    // key: ID
+	agentsBySlug                   map[string]string                           // key: workspaceID + ":" + slug -> ID
+	userMemories                   map[string]*domain.Memory                   // key: workspaceID + ":" + userID -> Memory
+	workspaceMemories              map[string]*domain.Memory                   // key: workspaceID -> Memory
+	memoryEvents                   map[string]*domain.MemoryEvent              // key: ID
+	memoryNotes                    map[string]*domain.MemoryNote               // key: ID
+	sessionEvents                  map[string][]domain.SessionEvent            // key: sessionID -> ordered events
+	sessionCPData                  map[string][]byte                           // key: checkpointID -> data
+	apiKeys                        map[string]*domain.WorkspaceAPIKey          // key: ID
+	apiKeysByHash                  map[string]string                           // key: SHA-256 hex hash -> ID
+	toolSettings                   map[string]*domain.WorkspaceToolSetting     // key: workspaceID + ":" + toolKey -> Setting
+	skills                         map[string]*domain.WorkspaceSkill           // key: ID
+	skillsByName                   map[string]string                           // key: workspaceID + ":" + name -> ID
+	wsMCPServers                   map[string]*domain.WorkspaceMCPServer       // key: ID
+	wsMCPServerNames               map[string]string                           // key: workspaceID + ":" + lower(name) -> ID
+	agentMCPServers                map[string]*domain.AgentMCPServer           // key: ID
+	agentMCPServerNames            map[string]string                           // key: agentID + ":" + lower(name) -> ID
+	mcptokens                      map[string]*domain.MCPToken                 // key: workspaceID + ":" + agentID + ":" + serverID (agentID empty = workspace scope)
+	connections                    map[string]*domain.Connection               // key: ID
+	connectionsByService           map[string]string                           // key: workspaceID + ":" + service -> ID
+	connectionWebhooks             map[string]*domain.ConnectionWebhook        // key: connection ID
+	connectionDeliveries           map[string]map[string]time.Time             // key: connection ID -> delivery ID -> recorded at
+	workspaceWebhooks              map[string]*domain.WorkspaceWebhook         // key: ID
+	workspaceWebhookDeliveries     map[string]map[string]time.Time             // key: webhook ID -> dedupe key -> recorded at
+	workspaceWebhookDeliveryLog    map[string][]domain.WebhookDeliveryLogEntry // key: webhook ID -> chronological entries
+	oauthApps                      map[string]*domain.InstanceOAuthApp         // key: provider
+	hooks                          *hookData                                   // hook state: all three levels + execution audit log
+	channels                       *channelData                                // channel state: rooms, membership roster, shared feed
+	agentSessions                  map[string]*domain.AgentSession             // key: workspaceID + ":" + agentID + ":" + sessionID
+	attachments                    map[string]*domain.Attachment               // key: ID
+	attachmentsByStorageKey        map[string]string                           // key: capability storage key -> ID
+	workspaceStorage               map[string]*domain.WorkspaceStorageConfig   // key: workspaceID -> config
+	schedulers                     map[string]*domain.Scheduler                // key: ID
+	schedulerRuns                  map[string]*domain.SchedulerRun             // key: ID
+	heartbeats                     map[string]*domain.Heartbeat                // key: ID
+	heartbeatsByAgent              map[string]string                           // key: workspaceID + ":" + agentID -> heartbeat ID
+	heartbeatRuns                  map[string]*domain.HeartbeatRun             // key: ID
+	gateways                       map[string]*domain.GatewayConfig            // key: ID
+	gatewayIdentities              map[string]string                           // key: workspaceID + ":" + platform + ":" + identity -> ID
+	gatewayChatBindings            map[string]*domain.ChatBinding              // key: ID
+	gatewayBindingsByChat          map[string]string                           // key: platform + ":" + platformChatID -> binding ID
+	gatewayUserLinks               map[string]*domain.UserLink                 // key: platform + ":" + platformUserID + ":" + workspaceID
+	gatewayPairingTokens           map[string]*domain.PairingToken             // key: workspaceID + ":" + token
+	gatewayActiveSessions          map[string]int64                            // key: platform + ":" + platformChatID + ":" + agentID -> suffix
+	gatewayOutbox                  map[string]*domain.OutboxEntry              // key: ID
+	memoryNoteEvidence             map[string]*domain.MemoryNoteEvidence       // key: noteID + ":" + sourceEventID
+	memoryReports                  map[string]*domain.MemoryReport             // key: workspaceID
+	memoryEmbeddings               map[string]*domain.MemoryEmbedding          // key: ID
+	memoryEntities                 map[string]*domain.MemoryEntity             // key: ID
+	memoryEntitiesByNorm           map[string]string                           // key: workspaceID + ":" + normalizedLabel -> ID
+	memoryEntityEdges              map[string]*domain.MemoryEntityEdge         // key: ID
+	agentTodos                     map[string]*fakeTodoRow                     // key: sessionID + ":" + itemKey
+	referenceDocuments             map[string]*domain.ReferenceDocument        // key: ID
+	referenceDocumentsByStorageKey map[string]string                           // key: capability storage key -> ID
+	referenceDocumentSections      map[string][]domain.DocumentSection         // key: document ID -> ordered sections
+	skillCandidates                map[string]*domain.SkillCandidate           // key: ID
+	skillImpactEntries             map[string]*domain.SkillImpactEntry         // key: ID
+	skillClusterRuns               map[string]*domain.SkillClusterRun          // key: ID
+	skillClusterRunsByRun          map[string]string                           // key: workspaceID + ":" + sessionID + ":" + turnID -> ID
 }
 
 // New creates a new in-memory fake store.
@@ -138,6 +141,9 @@ func newStore() *fakeStore {
 		connectionsByService:           make(map[string]string),
 		connectionWebhooks:             make(map[string]*domain.ConnectionWebhook),
 		connectionDeliveries:           make(map[string]map[string]time.Time),
+		workspaceWebhooks:              make(map[string]*domain.WorkspaceWebhook),
+		workspaceWebhookDeliveries:     make(map[string]map[string]time.Time),
+		workspaceWebhookDeliveryLog:    make(map[string][]domain.WebhookDeliveryLogEntry),
 		oauthApps:                      make(map[string]*domain.InstanceOAuthApp),
 		hooks:                          newHookData(),
 		channels:                       newChannelData(),
@@ -294,6 +300,11 @@ func (s *fakeStore) Connections() store.Connections {
 // ConnectionWebhooks returns the ConnectionWebhookStore sub-port.
 func (s *fakeStore) ConnectionWebhooks() store.ConnectionWebhookStore {
 	return &connectionWebhookStore{s: s}
+}
+
+// WorkspaceWebhooks returns the WorkspaceWebhookStore sub-port.
+func (s *fakeStore) WorkspaceWebhooks() store.WorkspaceWebhookStore {
+	return &workspaceWebhookStore{s: s}
 }
 
 // OAuthApps returns the OAuthApps sub-port.
@@ -476,6 +487,21 @@ func (s *fakeStore) clone() *fakeStore {
 		}
 		cp.connectionDeliveries[cid] = copied
 	}
+	for id, w := range s.workspaceWebhooks {
+		cp.workspaceWebhooks[id] = cloneWorkspaceWebhook(w)
+	}
+	for wid, deliveries := range s.workspaceWebhookDeliveries {
+		copied := make(map[string]time.Time, len(deliveries))
+		for id, at := range deliveries {
+			copied[id] = at
+		}
+		cp.workspaceWebhookDeliveries[wid] = copied
+	}
+	for wid, entries := range s.workspaceWebhookDeliveryLog {
+		copied := make([]domain.WebhookDeliveryLogEntry, len(entries))
+		copy(copied, entries)
+		cp.workspaceWebhookDeliveryLog[wid] = copied
+	}
 	for provider, app := range s.oauthApps {
 		cp.oauthApps[provider] = cloneInstanceOAuthApp(app)
 	}
@@ -603,6 +629,9 @@ func (s *fakeStore) apply(other *fakeStore) {
 	s.connectionsByService = other.connectionsByService
 	s.connectionWebhooks = other.connectionWebhooks
 	s.connectionDeliveries = other.connectionDeliveries
+	s.workspaceWebhooks = other.workspaceWebhooks
+	s.workspaceWebhookDeliveries = other.workspaceWebhookDeliveries
+	s.workspaceWebhookDeliveryLog = other.workspaceWebhookDeliveryLog
 	s.oauthApps = other.oauthApps
 	s.hooks = other.hooks
 	s.channels = other.channels

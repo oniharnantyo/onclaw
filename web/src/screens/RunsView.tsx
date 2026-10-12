@@ -6,6 +6,7 @@ import { ViewShell } from "../components/ui/ViewShell";
 import { Chip } from "../components/ui/Chip";
 import { useStore } from "../store";
 import { schedulers, type SchedulerRun } from "../lib/schedulers";
+import { workspaceWebhooksApi, type ApiWorkspaceWebhookRun } from "../lib/workspaceWebhooksApi";
 import { ApiError } from "../lib/api";
 
 const PAGE = 100;
@@ -25,10 +26,29 @@ const statusIcon = (s: SchedulerRun['status']): { icon: string; cls: string } | 
   }
 };
 
-/** Run history on the live scheduler-runs endpoints (integrate-scheduler 7.4).
- * The workspace-wide feed is the default; `?scheduler=<id>` narrows to one
- * scheduler's runs (the schedules screen's last-run cell links here). Rows
- * open the run's transcript in its agent's chat. */
+/** Maps a workspace webhook run row (add-webhook-channel-visibility 4.4)
+ * into the run-history row shape: the endpoint is the trigger, the bound
+ * agent the row's agent, the transcript session id the opener. */
+const webhookRunToRow = (r: ApiWorkspaceWebhookRun): SchedulerRun => ({
+  id: r.id,
+  scheduler_id: '',
+  scheduler_name: r.webhook_name,
+  agent_id: r.agent_id,
+  agent_name: r.agent_name,
+  session_id: r.run_id,
+  trigger: 'webhook',
+  status: r.status,
+  started_at: r.started_at,
+  duration_ms: r.duration_ms,
+  tokens_used: r.tokens_used,
+  delivery_status: '',
+});
+
+/** Run history on the live scheduler-runs endpoints (integrate-scheduler 7.4),
+ * merged with the workspace's webhook-origin runs (add-webhook-channel-visibility
+ * 4.5). The workspace-wide feed is the default; `?scheduler=<id>` narrows to one
+ * scheduler's runs (the schedules screen's last-run cell links here). Rows open
+ * the run's transcript in its agent's chat. */
 export function RunsView({ tenant, onToast }: {
   tenant: any;
   onToast: (text: string, kind?: string) => void;
@@ -59,9 +79,19 @@ export function RunsView({ tenant, onToast }: {
     const load = schedulerId
       ? schedulers.runs(wsId, schedulerId, { limit: PAGE })
         .then((res) => res?.runs || [])
-      : schedulers.listRuns(wsId, { limit: PAGE })
-        .then((res) => {
-          const rows = res?.runs || [];
+      : Promise.all([
+          // The scheduler feed drives the page (and the sidebar's run
+          // counts); the webhook feed merges beside it. The webhook route
+          // is integrations.write-gated, so members see scheduled runs
+          // only — the merge is failure-tolerant by design, never an error.
+          schedulers.listRuns(wsId, { limit: PAGE }).then((res) => res?.runs || []),
+          workspaceWebhooksApi.workspaceRuns(wsId)
+            .then((res) => (res?.runs || []).map(webhookRunToRow))
+            .catch(() => [] as SchedulerRun[]),
+        ]).then(([scheduled, webhook]) => {
+          const rows = [...scheduled, ...webhook].sort((a, b) =>
+            a.started_at === b.started_at ? (a.id > b.id ? -1 : 1)
+              : a.started_at < b.started_at ? 1 : -1);
           // Mirror the workspace-wide feed into the store so the sidebar's
           // run counts read live data too.
           useStore.getState().updateTenant(wsId, (t: any) => ({ ...t, runs: rows }));
@@ -108,6 +138,9 @@ export function RunsView({ tenant, onToast }: {
       state: { openRun: {
         sessionId: r.session_id,
         schedulerName: schedulerName(r),
+        // Webhook-origin rows stamp webhook origin chips on the transcript
+        // (add-webhook-channel-visibility 4.5); scheduler rows are the default.
+        originKind: r.trigger === 'webhook' ? ('webhook' as const) : ('scheduler' as const),
         // Traced runs carry the deep link so the transcript view can offer
         // the same action; untraced runs omit the key entirely.
         ...(lf ? { langfuseUrl: lf } : {}),
@@ -117,7 +150,7 @@ export function RunsView({ tenant, onToast }: {
 
   return (
     <ViewShell odId="runs-view" title="Run history"
-      sub={'Every scheduled agent execution in ' + tenant.name + ' — scheduled fires and run-now triggers.'}>
+      sub={'Every scheduled and webhook-triggered agent execution in ' + tenant.name + ' — scheduled fires, run-now triggers, and webhook invocations.'}>
       {schedulerId && (
         <div className="mb-4 flex items-center gap-2" data-od-id="runs-scheduler-filter">
           <Chip mono>scheduler · {schedules.find((s) => s.id === schedulerId)?.name || schedulerId}</Chip>
@@ -185,7 +218,9 @@ export function RunsView({ tenant, onToast }: {
                 {/* Agent and Trigger */}
                 <div className="flex items-center justify-between md:contents">
                   <span className="truncate text-[13px] font-medium text-fg md:font-normal"><span className="md:hidden text-[10px] uppercase tracking-wider text-muted font-mono mr-2">Agent</span>{agentName(r)}</span>
-                  <Chip mono className="justify-self-start">{r.trigger}</Chip>
+                  <Chip mono className="justify-self-start" title={r.trigger === 'webhook' ? 'Webhook · ' + schedulerName(r) : undefined}>
+                    {r.trigger === 'webhook' ? `webhook · ${schedulerName(r)}` : r.trigger}
+                  </Chip>
                 </div>
 
                 {/* Started, Duration, Tokens for mobile */}
@@ -201,7 +236,7 @@ export function RunsView({ tenant, onToast }: {
           {!loading && runs.length === 0 && (
             <div className="px-4 py-10 text-center" data-od-id="runs-empty">
               <p className="text-[14px] font-medium text-fg">No runs yet</p>
-              <p className="mt-1 text-[13px] text-muted">Create a schedule to run an agent unattended — fires land here with their transcripts.</p>
+              <p className="mt-1 text-[13px] text-muted">Scheduled fires and webhook invocations land here with their transcripts.</p>
               <button type="button" onClick={() => navigate('/schedules')} data-od-id="btn-runs-new-schedule"
                 className="mt-4 inline-flex h-9 items-center gap-2 rounded-md bg-accent px-3.5 text-[13px] font-semibold text-accenton transition-colors hover:bg-[var(--accent-hover)] active:bg-[var(--accent-active)]">
                 <Icon name="plus" size={15} sw={2.2}/> New schedule

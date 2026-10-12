@@ -18,4 +18,15 @@ describe('components/chat/SchedulerChip', () => {
     render(<SchedulerChip name=""/>);
     expect(screen.getByText('Scheduled run')).not.toBeNull();
   });
+
+  it('labels webhook-invoked runs with the webhook vocabulary (add-webhook-channel-visibility 4.5)', () => {
+    render(<SchedulerChip name="gitlab-mr-demo" kind="webhook"/>);
+    expect(screen.getByText('webhook · gitlab-mr-demo')).not.toBeNull();
+    expect(screen.getByTitle('Invoked by the “gitlab-mr-demo” webhook endpoint')).not.toBeNull();
+  });
+
+  it('falls back to generic webhook copy when no name is known', () => {
+    render(<SchedulerChip name="" kind="webhook"/>);
+    expect(screen.getByText('Webhook run')).not.toBeNull();
+  });
 });

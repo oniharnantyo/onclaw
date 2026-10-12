@@ -793,6 +793,26 @@ func assembleServerRuntime(ctx context.Context, cfg config.Config) (*serverRunti
 	)
 	go webhookRuntime.Service.PruneLoop(lifecycleCtx, webhooks.DefaultPruneInterval)
 
+	// Standalone workspace webhook runtime (add-workspace-webhooks 5.1/5.2):
+	// the management service and the endpoint ingest pipeline assembled
+	// around the same runner, with its own bounded queue, per-endpoint rate
+	// limiter, and the secret cipher over the instance master key. The
+	// connection lane's Service doubles as the D2 read-in's state seam. The
+	// pruner rides the process-lifetime context like the connection lane's;
+	// the queue's Close waits for in-flight deliveries at shutdown.
+	workspaceWebhookRuntime := server.NewWorkspaceWebhookRuntime(
+		st.WorkspaceWebhooks(),
+		st.Connections(),
+		webhookRuntime.Service,
+		st.Agents(),
+		st.Members(),
+		st.Roles(),
+		runner,
+		channelRuntime.Chokepoint(),
+		encKey,
+	)
+	go workspaceWebhookRuntime.Service.PruneLoop(lifecycleCtx, webhooks.StandalonePruneInterval)
+
 	// Delivery outbox loop (integrate-telegram-gateway D9): redelivers
 	// committed-but-unsent rows — the first cycle is the startup sweep — and
 	// prunes delivered rows past retention. It rides the process-lifetime
@@ -827,6 +847,7 @@ func assembleServerRuntime(ctx context.Context, cfg config.Config) (*serverRunti
 		References:          referencesSvc,
 		Gateways:            gatewayRuntime,
 		Webhooks:            webhookRuntime,
+		WorkspaceWebhooks:   workspaceWebhookRuntime,
 		MemoryConsolidator:  memoryConsolidator,
 		SkillCurationCycle:  curationCycle,
 		LangfuseHost:        langfuseHost,
@@ -921,11 +942,14 @@ func assembleServerRuntime(ctx context.Context, cfg config.Config) (*serverRunti
 		slog.Info("stopping memory consolidator")
 		memoryConsolidator.Stop()
 
-		// Stop the webhook delivery queue (add-connection-webhooks 3.2): the
-		// pruner loop already halted with the lifecycle context; Close waits
-		// for in-flight deliveries to finish rendering and submitting.
-		slog.Info("stopping webhook delivery queue")
+		// Stop the webhook delivery queues (add-connection-webhooks 3.2,
+		// add-workspace-webhooks 5.1): the pruner loops already halted with
+		// the lifecycle context; Close waits for in-flight deliveries to
+		// finish rendering and submitting — the connection lane first, then
+		// the standalone lane.
+		slog.Info("stopping webhook delivery queues")
 		webhookRuntime.Close()
+		workspaceWebhookRuntime.Close()
 
 		// Flush pending Langfuse exports (integrate-langfuse-tracing 3.3): after
 		// the run drain and the scheduler stop every traced turn has reached its

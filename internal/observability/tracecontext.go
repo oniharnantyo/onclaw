@@ -46,6 +46,8 @@ const (
 	metadataKeyConnectionID      = "connection_id"
 	metadataKeyConnectionService = "connection_service"
 	metadataKeyEvent             = "event"
+	metadataKeyWebhookID         = "webhook_id"
+	metadataKeyWebhookName       = "webhook_name"
 )
 
 // maxTraceNameRunes bounds the interactive trace name: the turn input's first
@@ -61,7 +63,8 @@ const traceIDNamespaceSeed = "urn:onclaw:langfuse:trace:run:"
 // workspace/agent scope, the turn id (which pins the trace id), the run
 // origin, the turn input (interactive trace name), the schedule name
 // (scheduler-fire trace name), and the service-authority attribution fields
-// for webhook-origin runs (add-connection-webhooks contract §6).
+// for webhook-origin runs (add-connection-webhooks contract §6; the
+// standalone endpoint's id/name, add-workspace-webhooks D6).
 type TraceContext struct {
 	SessionID         string
 	UserID            string
@@ -74,6 +77,8 @@ type TraceContext struct {
 	ConnectionID      string
 	ConnectionService string
 	Event             string
+	WebhookID         string
+	WebhookName       string
 }
 
 // ApplyTraceContext stamps the turn's trace context onto the run context via
@@ -157,7 +162,9 @@ func TraceTags(tc TraceContext) []string {
 // agent_id, origin}, absent keys omitted rather than exported blank. A
 // service-authority run (add-connection-webhooks contract §6) additionally
 // carries {authority: "service", connection_id, connection_service, event}
-// naming the exact trigger; user runs export no authority key.
+// naming the exact trigger — plus {webhook_id, webhook_name} when a
+// standalone workspace webhook endpoint fired it (add-workspace-webhooks
+// D6); user runs export no authority key.
 func TraceMetadata(tc TraceContext) map[string]string {
 	origin := NormalizeOrigin(tc.Origin)
 	metadata := map[string]string{metadataKeyOrigin: origin}
@@ -180,6 +187,12 @@ func TraceMetadata(tc TraceContext) map[string]string {
 		}
 		if tc.Event != "" {
 			metadata[metadataKeyEvent] = tc.Event
+		}
+		if tc.WebhookID != "" {
+			metadata[metadataKeyWebhookID] = tc.WebhookID
+		}
+		if tc.WebhookName != "" {
+			metadata[metadataKeyWebhookName] = tc.WebhookName
 		}
 	}
 	return metadata

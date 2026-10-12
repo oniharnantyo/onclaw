@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { AssistantRuntimeProvider } from '@assistant-ui/react';
-import { useStore, useWorkspace, useThread } from '../store';
+import { useStore, useWorkspace, useThread, useChannelFeed } from '../store';
 import { useChatRuntime } from '../chat/runtime';
 import type { AttachmentChip, DocumentMentionChip } from '../lib/attachments';
 import { ErrorState } from '../components/ErrorState';
 import { ChatView } from '../components/chat/ChatView';
 import { RightPanel } from '../components/chat/RightPanel';
+import { subscribeChannel } from '../lib/channelsLive';
+import { channelFeedEntries, mergeChannelFeed } from '../lib/channelFeed';
 import {
   ensureWorkspaceKey,
   hydrateSession,
@@ -48,12 +50,12 @@ function ChatRouteActive({
   // (or reuses) the session entry in this agent's thread and activates it;
   // the state is consumed immediately so a reload doesn't re-inject.
   const openRun = (location.state as any)?.openRun as
-    | { sessionId: string; schedulerName?: string; title?: string; langfuseUrl?: string }
+    | { sessionId: string; schedulerName?: string; title?: string; langfuseUrl?: string; originKind?: 'scheduler' | 'webhook' }
     | undefined;
   useEffect(() => {
     if (!openRun?.sessionId || !cleanId) return;
     const title = openRun.schedulerName ? 'Run · ' + openRun.schedulerName : 'Scheduled run';
-    useStore.getState().openRunSession(cleanId, openRun.sessionId, title, openRun.schedulerName, openRun.langfuseUrl);
+    useStore.getState().openRunSession(cleanId, openRun.sessionId, title, openRun.schedulerName, openRun.langfuseUrl, openRun.originKind);
     navigate(location.pathname, { replace: true, state: null });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openRun?.sessionId, cleanId]);
@@ -89,9 +91,52 @@ function ChatRouteActive({
     : ({ kind: 'person' as const, obj: person });
 
   const session = threadState.list.find((x: any) => x.id === threadState.active) || null;
-  const thread = session ? session.messages : [];
 
   const workspaceId = tenant?.sub || tenant?.id;
+
+  // Channel delivery feed (add-webhook-channel-visibility, design D3): the
+  // room renders the channel's message feed beside its session transcript —
+  // webhook, scheduler, and gateway replies all auto-post there, so a
+  // channel-targeted delivery surfaces as the invoked agent's message.
+  // History loads on open; the live event stream folds while the room is
+  // open (seq-deduped), so a reply completing mid-view appears without a
+  // reload. Effect cleanups make chat switches and StrictMode's
+  // double-invoke unsubscribe cleanly.
+  const isChannel = target.kind === 'channel';
+  const feedRows = useChannelFeed(isChannel ? cleanId : '');
+  const [feedReady, setFeedReady] = useState(false);
+  useEffect(() => {
+    if (!isChannel || !workspaceId || !cleanId) return;
+    let unsub: (() => void) | undefined;
+    let cancelled = false;
+    setFeedReady(false);
+    useStore.getState()
+      .loadChannelFeed(workspaceId, cleanId, { limit: 200 })
+      .then((lastSeq) => {
+        if (cancelled) return;
+        setFeedReady(true);
+        unsub = subscribeChannel({
+          workspaceId,
+          channelId: cleanId,
+          lastSeq,
+          onEvent: (ev) => useStore.getState().applyChannelEvent(workspaceId, cleanId, ev),
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setFeedReady(true);
+      });
+    return () => {
+      cancelled = true;
+      unsub?.();
+    };
+  }, [isChannel, workspaceId, cleanId]);
+
+  const thread = useMemo(() => {
+    const base = session ? session.messages : [];
+    if (!isChannel) return base;
+    return mergeChannelFeed(base, channelFeedEntries(feedRows, tenant?.sub));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session, isChannel, feedRows, feedReady, tenant?.sub]);
 
   // Conversation-visible document lens (add-reference-documents 10.3/10.5):
   // direct chats resolve by agent attachments + promoted, channels by channel
@@ -135,8 +180,10 @@ function ChatRouteActive({
     catchUpRef.current = { key, abort };
     void hydrateSession({ workspaceId, agentSlug: slug, chatId: cleanId, sessionId: boundSessionId, signal: abort.signal,
       // A run session opened from the runs screen knows its schedule's name —
-      // stamp messages that carry no origin tag of their own (7.4).
+      // stamp messages that carry no origin tag of their own (7.4). The
+      // origin kind follows the run's lane (webhook runs stamp webhook chips).
       originTag: (session as any)?.schedulerName,
+      originKind: (session as any)?.originKind,
     }).then((hydrated) => {
       if (abort.signal.aborted) return;
       // null means the fetch failed — the store is untouched so a transient

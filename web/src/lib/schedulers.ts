@@ -40,7 +40,10 @@ export interface Scheduler {
 }
 
 /** One scheduler execution (read view). `session_id` is the run transcript's
- * session address (`sched_<schedulerID>_<ts>`) — openable like any session. */
+ * session address (`sched_<schedulerID>_<ts>`) — openable like any session.
+ * The run-history screen also merges webhook-origin runs into this shape
+ * (add-webhook-channel-visibility 4.5): trigger `webhook`, the endpoint name
+ * riding `scheduler_name`, and no scheduler id. */
 export interface SchedulerRun {
   id: string;
   scheduler_id: string;
@@ -48,7 +51,7 @@ export interface SchedulerRun {
   agent_id?: string;
   agent_name?: string;
   session_id: string;
-  trigger: 'scheduler' | 'manual';
+  trigger: 'scheduler' | 'manual' | 'webhook';
   status: 'running' | 'completed' | 'failed' | 'cancelled' | 'blocked' | 'missed';
   started_at: string;
   duration_ms: number;

@@ -28,6 +28,10 @@ export interface Message {
   /** Scheduler-origin marker (integrate-scheduler D1): the schedule's name
    * when known; the chip falls back to generic copy when it is ''. */
   scheduler?: string;
+  /** Which unattended origin the marker names (add-webhook-channel-visibility
+   * 4.5): 'scheduler' by default, 'webhook' for webhook-invoked runs — the
+   * chip labels and tooltip follow. */
+  schedulerKind?: 'scheduler' | 'webhook';
   name?: string;
   tools?: ToolCall[];
   branches?: Message[]; // Support for branching variants

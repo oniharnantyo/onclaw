@@ -829,8 +829,11 @@ export async function hydrateSession(opts: {
    * open path knows it (runs-view context). Stamped onto agent messages that
    * carry no origin tag of their own; '' renders the generic chip. */
   originTag?: string;
+  /** Which unattended origin originTag names (add-webhook-channel-visibility
+   * 4.5): the chip's label and tooltip follow. Defaults to scheduler. */
+  originKind?: 'scheduler' | 'webhook';
 }): Promise<HydratedTranscript | null> {
-  const { workspaceId, agentSlug, chatId, sessionId, signal, originTag } = opts;
+  const { workspaceId, agentSlug, chatId, sessionId, signal, originTag, originKind } = opts;
   let hydrated: HydratedTranscript;
   try {
     hydrated = await fetchSessionTranscript(workspaceId, agentSlug, sessionId, {
@@ -848,7 +851,10 @@ export async function hydrateSession(opts: {
   if (signal?.aborted) return null;
   if (originTag !== undefined) {
     for (const m of hydrated.messages) {
-      if (m.author === 'agent' && m.scheduler === undefined) m.scheduler = originTag;
+      if (m.author === 'agent' && m.scheduler === undefined) {
+        m.scheduler = originTag;
+        if (originKind !== undefined) m.schedulerKind = originKind;
+      }
     }
   }
   if (hydrated.messages.length > 0) {

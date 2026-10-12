@@ -223,8 +223,11 @@ export interface AppState {
   /** Opens a scheduler run's transcript inside its agent's chat
    * (integrate-scheduler 7.4): injects (or reuses) a session entry addressed
    * by the run's session id and makes it active. The run's session belongs to
-   * the scheduler's agent, so the caller passes that agent's chat id. */
-  openRunSession: (chatId: string, sessionId: string, title?: string, schedulerName?: string, langfuseUrl?: string) => void;
+   * the scheduler's agent, so the caller passes that agent's chat id.
+   * originKind names the unattended origin the schedulerName slot carries
+   * (add-webhook-channel-visibility 4.5): 'scheduler' by default, 'webhook'
+   * for webhook-invoked runs — the transcript's origin chip follows. */
+  openRunSession: (chatId: string, sessionId: string, title?: string, schedulerName?: string, langfuseUrl?: string, originKind?: 'scheduler' | 'webhook') => void;
   /** Live schedules for the workspace (integrate-scheduler 7.2): replaces
    * tenant.schedules with the wire rows. Resolves false on failure so the
    * screen can render its error state. */
@@ -1200,7 +1203,7 @@ export const useStore = create<AppState>((set, get) => ({
   // entry (server Born sessions are never in the agent-session index by
   // design, D7) and points the thread at it. The ChatRoute hydration effect
   // takes over from there — sched_ ids hydrate like sess_ ids.
-  openRunSession: (chatId, sessionId, title, schedulerName, langfuseUrl) => {
+  openRunSession: (chatId, sessionId, title, schedulerName, langfuseUrl, originKind) => {
     const state = get();
     const tid = state.pos.tenantId;
     state.updateTenant(tid, (tenant: any) => {
@@ -1217,6 +1220,7 @@ export const useStore = create<AppState>((set, get) => ({
           // Marks where the transcript's origin chip name came from; the
           // hydration path stamps messages that lack a tag of their own.
           ...(schedulerName !== undefined ? { schedulerName } : {}),
+          ...(originKind !== undefined ? { originKind } : {}),
           // Observability deep link (integrate-langfuse-tracing D6): the
           // transcript header offers "Open in Langfuse" only when present.
           ...(langfuseUrl ? { langfuseUrl } : {}),
@@ -1552,3 +1556,10 @@ export const useMessageQueue = (tenantId: string, chatId: string): QueuedMessage
   useStore((s) => s.messageQueue[`${tenantId}::${chatId}`] || EMPTY_QUEUE);
 
 export const useRuns = () => useStore((s: any) => s.db[s.pos.tenantId]?.runs || EMPTY_LIST);
+
+// The channel delivery feed (add-webhook-channel-visibility D3): the rows the
+// room renders beside its session transcript — webhook, scheduler, and
+// gateway replies all auto-post here. Stable EMPTY_LIST keeps the zustand v5
+// selector contract.
+export const useChannelFeed = (channelId: string): ApiChannelMessage[] =>
+  useStore((s: any) => s.db[s.pos.tenantId]?.channelMessages?.[channelId] || EMPTY_LIST);

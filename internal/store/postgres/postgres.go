@@ -181,6 +181,11 @@ func (s *store) ConnectionWebhooks() storeport.ConnectionWebhookStore {
 	return NewConnectionWebhookStore(s.db)
 }
 
+// WorkspaceWebhooks returns the WorkspaceWebhookStore sub-port.
+func (s *store) WorkspaceWebhooks() storeport.WorkspaceWebhookStore {
+	return NewWorkspaceWebhookStore(s.db)
+}
+
 // OAuthApps returns the OAuthApps sub-port.
 func (s *store) OAuthApps() storeport.OAuthApps {
 	return NewOAuthAppStore(s.db)

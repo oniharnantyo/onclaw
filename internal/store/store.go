@@ -51,6 +51,7 @@ type Store interface {
 	MCPTokens() MCPTokens
 	Connections() Connections
 	ConnectionWebhooks() ConnectionWebhookStore
+	WorkspaceWebhooks() WorkspaceWebhookStore
 	OAuthApps() OAuthApps
 	Hooks() HookStore
 	Channels() ChannelStore

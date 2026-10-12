@@ -6,6 +6,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.46.0
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.54
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.112.0
+	github.com/casbin/casbin/v2 v2.135.0
 	github.com/cloudwego/eino v0.10.0-alpha.35
 	github.com/cloudwego/eino-ext/callbacks/langfuse v0.1.3
 	github.com/cloudwego/eino-ext/components/model/agenticclaude v0.1.5
@@ -17,6 +18,7 @@ require (
 	github.com/cloudwego/eino-ext/components/tool/mcp v0.0.9
 	github.com/dop251/goja v0.0.0-20260906210903-70ad66ec7ce4
 	github.com/eino-contrib/jsonschema v1.0.3
+	github.com/expr-lang/expr v1.17.8
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-pdf/fpdf v0.9.0
 	github.com/go-rod/rod v0.116.2
@@ -72,7 +74,6 @@ require (
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic v1.15.0 // indirect
 	github.com/bytedance/sonic/loader v0.5.0 // indirect
-	github.com/casbin/casbin/v2 v2.135.0 // indirect
 	github.com/casbin/govaluate v1.3.0 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect

@@ -11,12 +11,16 @@ import { MemoryRouter } from 'react-router-dom';
 
 const listRunsMock = vi.fn().mockResolvedValue({ runs: [], total: 0 });
 const perSchedulerMock = vi.fn().mockResolvedValue({ runs: [], total: 0 });
+const webhookRunsMock = vi.fn().mockResolvedValue({ runs: [] });
 
 vi.mock('../lib/schedulers', () => ({
   schedulers: {
     listRuns: (...a: unknown[]) => listRunsMock(...a),
     runs: (...a: unknown[]) => perSchedulerMock(...a),
   },
+}));
+vi.mock('../lib/workspaceWebhooksApi', () => ({
+  workspaceWebhooksApi: { workspaceRuns: (...a: unknown[]) => webhookRunsMock(...a) },
 }));
 vi.mock('../lib/api', () => ({
   api: { request: vi.fn(), onUnauthorized: vi.fn() },
@@ -76,6 +80,7 @@ const findByOdId = (id: string) =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  webhookRunsMock.mockResolvedValue({ runs: [] });
   searchParamsValue = new URLSearchParams();
   useStore.setState({
     pos: { tenantId: 't1', view: 'runs', chatId: '', showContext: false, railExpanded: false },
@@ -86,8 +91,7 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('screens/RunsView — workspace-wide table', () => {
-  it('renders runs with monospace id/times/counts, agent, trigger chip, and status', async () => {
-    listRunsMock.mockResolvedValue({
+  it('renders runs with monospace id/times/counts, agent, trigger chip, and status', async () => {    listRunsMock.mockResolvedValue({
       runs: [
         run({}),
         run({ id: 'run-2', status: 'failed', trigger: 'manual', agent_name: undefined,
@@ -111,6 +115,64 @@ describe('screens/RunsView — workspace-wide table', () => {
     // Duration formatting: 130000ms → "2m 10s"; tokens → "18.2k"/"9.4k".
     expect(odId('run-row-run-2').textContent).toMatch(/2m 10s/);
     expect(odId('run-row-run-1').textContent).toMatch(/18\.2k/);
+  });
+
+  it('merges webhook runs beside scheduled ones, newest first, with webhook trigger chips', async () => {
+    listRunsMock.mockResolvedValue({
+      runs: [run({ id: 'run-1', started_at: '2026-09-10T14:00:00Z' })],
+      total: 1,
+    });
+    webhookRunsMock.mockResolvedValue({
+      runs: [
+        {
+          id: 'log-1', webhook_id: 'wh-1', webhook_name: 'gitlab-mr-demo', event: 'merge_request',
+          run_id: 'whstandalone_wh-1_1', agent_id: 'a-atlas', agent_name: 'Atlas',
+          status: 'completed', duration_ms: 4200, tokens_used: 900,
+          started_at: '2026-09-10T15:00:00Z',
+        },
+        {
+          id: 'log-2', webhook_id: 'wh-1', webhook_name: 'gitlab-mr-demo', event: 'push',
+          run_id: 'whstandalone_wh-1_2', agent_id: 'a-atlas', agent_name: 'Atlas',
+          status: 'failed', duration_ms: 800, tokens_used: 0,
+          started_at: '2026-09-10T13:00:00Z',
+        },
+      ],
+    });
+
+    view();
+    await findByOdId('run-row-log-1');
+    // Newest first across lanes: webhook 15:00, scheduled 14:00, webhook 13:00.
+    const ids = ['log-1', 'run-1', 'log-2'].map((id) => odId('run-row-' + id));
+    ids.forEach((el, i) => expect(el).not.toBeNull());
+    // The webhook trigger chip carries the endpoint name.
+    expect(ids[0].textContent).toContain('webhook · gitlab-mr-demo');
+    expect(ids[2].textContent).toMatch(/failed/);
+    // Webhook telemetry renders like any run's.
+    expect(ids[0].textContent).toMatch(/4s/);
+    expect(ids[0].textContent).toMatch(/900/);
+
+    // A webhook row opens its transcript through the same handoff.
+    fireEvent.click(ids[0]);
+    await waitFor(() => {
+      expect(navigate).toHaveBeenCalledWith(
+        '/c/a-atlas',
+        expect.objectContaining({
+          state: { openRun: { sessionId: 'whstandalone_wh-1_1', schedulerName: 'gitlab-mr-demo', originKind: 'webhook' } },
+        }),
+      );
+    });
+  });
+
+  it('keeps the page error-free when the webhook feed is forbidden or failing', async () => {
+    listRunsMock.mockResolvedValue({ runs: [run({})], total: 1 });
+    webhookRunsMock.mockRejectedValue(new Error('403'));
+
+    view();
+    // The scheduler feed renders; the failed merge degrades to empty.
+    await findByOdId('run-row-run-1');
+    expect(screen.getByText('Atlas')).not.toBeNull();
+    expect(screen.queryByText('run-row-log-1')).toBeNull();
+    expect(screen.queryByTestId('runs-error')).toBeNull();
   });
 
   it('narrowing to Failed leaves only failed runs, colored with the danger class', async () => {
@@ -160,7 +222,7 @@ describe('screens/RunsView — transcript handoff and per-scheduler view', () =>
     await findByOdId('run-row-run-1');
     fireEvent.click(odId('run-row-run-1'));
     expect(navigate).toHaveBeenCalledWith('/c/a-atlas', {
-      state: { openRun: { sessionId: 'sched_sch-1_1', schedulerName: 'Morning ops digest' } },
+      state: { openRun: { sessionId: 'sched_sch-1_1', schedulerName: 'Morning ops digest', originKind: 'scheduler' } },
     });
   });
 
@@ -228,6 +290,7 @@ describe('screens/RunsView — Langfuse link (integrate-langfuse-tracing 4.1)', 
       state: { openRun: {
         sessionId: 'sched_sch-1_1',
         schedulerName: 'Morning ops digest',
+        originKind: 'scheduler',
         langfuseUrl: 'https://langfuse.acme.example.com/trace/tr-123',
       } },
     });
@@ -246,7 +309,7 @@ describe('screens/RunsView — Langfuse link (integrate-langfuse-tracing 4.1)', 
     // Neither row's transcript handoff carries a link.
     fireEvent.click(odId('run-row-run-1'));
     expect(navigate).toHaveBeenCalledWith('/c/a-atlas', {
-      state: { openRun: { sessionId: 'sched_sch-1_1', schedulerName: 'Morning ops digest' } },
+      state: { openRun: { sessionId: 'sched_sch-1_1', schedulerName: 'Morning ops digest', originKind: 'scheduler' } },
     });
   });
 });

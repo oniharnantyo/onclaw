@@ -485,10 +485,10 @@ export function AgentMessage({ m, agent, inChannel, busy, isLast, onCopy, onRefr
         {inChannel && (
           <div className="mb-0.5 flex items-center gap-2">
             <span className="text-[13px] font-semibold text-fg">{agent ? agent.name : 'Agent'}</span>
-            {m.scheduler !== undefined && <SchedulerChip name={m.scheduler}/>}
+            {m.scheduler !== undefined && <SchedulerChip name={m.scheduler} kind={m.schedulerKind}/>}
           </div>
         )}
-        {!inChannel && m.scheduler !== undefined && <div className="mb-1"><SchedulerChip name={m.scheduler}/></div>}
+        {!inChannel && m.scheduler !== undefined && <div className="mb-1"><SchedulerChip name={m.scheduler} kind={m.schedulerKind}/></div>}
         {parts && parts.length > 0 ? (
           // Ordered turn body (design D6/D2): each reasoning segment is its
           // own bubble, interleaved with the tool cards in stream order —
