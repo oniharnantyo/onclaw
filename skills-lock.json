@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "hallmark": {
+      "source": "nutlope/hallmark",
+      "sourceType": "github",
+      "skillPath": "skills/hallmark/SKILL.md",
+      "computedHash": "579f86b27cdd7eb972107f7aecedd537f472891c5fd7c7c821bea15f64e0fe86"
+    },
+    "native-feel-cross-platform-desktop": {
+      "source": "yetone/native-feel-skill",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "7f8cabfd619108eb5058087ea8bb09fbbe1edc23891bf387278d95cc564bb0f9"
+    }
+  }
+}

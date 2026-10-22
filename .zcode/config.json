@@ -1,0 +1,18 @@
+{
+  "mcp": {
+    "servers": {
+      "wails": {
+        "type": "stdio",
+        "command": "wails3",
+        "args": [
+          "mcp"
+        ]
+      },
+      "cu": {
+        "type": "stdio",
+        "command": "computer-use-mcp",
+        "args": []
+      }
+    }
+  }
+}
