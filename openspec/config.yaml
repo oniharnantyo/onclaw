@@ -1,0 +1,29 @@
+schema: spec-driven
+
+context: |
+  The frontend codebase lives entirely in `frontend/` (React + TypeScript, Vite+/vp toolchain).
+  Frontend stack constraints (chosen stack; not yet all installed in package.json):
+  - Styling uses the onclaw-v2 design contract (frontend/src/styles/tokens.css tokens + the frontend/src/components/ui kit) with both light and dark themes — every UI change must work in and be specified for both themes.
+  - The assistant/chat UI uses assistant-ui, targeting the same capabilities as the predecessor project `onclaw-v2` (the local desktop app this project was rebranded from).
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always state what is out of scope
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing
