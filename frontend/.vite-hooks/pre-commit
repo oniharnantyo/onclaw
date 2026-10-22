@@ -1,1 +1,1 @@
-vp staged
+cd frontend && vp staged

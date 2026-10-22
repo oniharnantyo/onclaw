@@ -134,6 +134,50 @@ describe("ToolsPane", () => {
     expect(row.querySelector("svg")).toBeTruthy();
   });
 
+  it("lists the four task tools in place of the retired todo tools", async () => {
+    tools.push(
+      {
+        Name: "task_create",
+        DisplayName: "Create Task",
+        IconKey: "list-checks",
+        Description: "Create a new task",
+        Enabled: true,
+      },
+      {
+        Name: "task_get",
+        DisplayName: "Get Task",
+        IconKey: "file",
+        Description: "Get details of a task",
+        Enabled: true,
+      },
+      {
+        Name: "task_update",
+        DisplayName: "Update Task",
+        IconKey: "edit",
+        Description: "Update a task",
+        Enabled: true,
+      },
+      {
+        Name: "task_list",
+        DisplayName: "List Tasks",
+        IconKey: "list",
+        Description: "List all tasks",
+        Enabled: true,
+      }
+    );
+    const { findByTestId } = await renderUI(<ToolsPane />);
+
+    for (const name of [
+      "task_create",
+      "task_get",
+      "task_update",
+      "task_list",
+    ]) {
+      const row = await findByTestId(`tool-${name}`);
+      expect(row).toBeTruthy();
+    }
+  });
+
   it("offers Rescan catalog as the empty state's next-step action", async () => {
     const user = userEvent.setup();
 

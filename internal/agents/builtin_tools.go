@@ -17,7 +17,7 @@ import (
 
 // The built-in tool catalog: the tools every agent turn may draw on — the
 // two workspace-free utilities, the jailed workspace filesystem and shell,
-// the todo plan pair, web access, the browser, and the scheduler (spec
+// the plantask tools, web access, the browser, and the scheduler (spec
 // agent-tools; spec add-browser-tool; spec add-scheduler). A tool reaches
 // the model only when all three gate conditions hold
 // (resolveTurnTools in gate.go): it is in the catalog, it is globally enabled
@@ -51,17 +51,23 @@ const (
 // computes the withheld set from this list (gate.go).
 var filesystemToolNames = []string{ToolLs, ToolReadFile, ToolWriteFile, ToolEditFile, ToolGlob, ToolGrep}
 
-// The workspace-scoped delete tool, the todo plan pair, and the web tools.
+// The workspace-scoped delete tool, the plantask tools, and the web tools.
 // Names mirror the constructors in internal/agents/backend and
 // internal/agents/tools.
 const (
 	ToolDeleteFile = backend.NameDeleteFile
-	ToolTodoWrite  = tools.NameTodoWrite
-	ToolTodoRead   = tools.NameTodoRead
+	ToolTaskCreate = "task_create"
+	ToolTaskGet    = "task_get"
+	ToolTaskUpdate = "task_update"
+	ToolTaskList   = "task_list"
 	ToolWebFetch   = tools.NameWebFetch
 	ToolWebSearch  = tools.NameWebSearch
 	ToolBrowser    = tools.NameBrowser
 )
+
+// plantaskToolNames are the plantask middleware's tools in stable order; the gate
+// computes the withheld set from this list (gate.go).
+var plantaskToolNames = []string{ToolTaskCreate, ToolTaskGet, ToolTaskUpdate, ToolTaskList}
 
 // ToolScheduler creates, lists, updates and deletes cron schedules that run
 // an agent on a prompt unattended (spec add-scheduler). Offered only when
@@ -108,8 +114,10 @@ var catalogEntries = []catalogEntry{
 	{meta: ToolMeta{Name: ToolGrep, DisplayName: "Grep", IconKey: "compass", Description: "Search file contents with a regular expression across your workspace."}, kind: toolMiddleware, workspaceScoped: true},
 	{meta: ToolMeta{Name: ToolExecute, DisplayName: "Shell", IconKey: "terminal", Description: "Run a shell command inside your workspace with a bounded timeout and output size."}, kind: toolShell, workspaceScoped: true},
 	{meta: ToolMeta{Name: ToolDeleteFile, DisplayName: "Delete File", IconKey: "trash", Description: "Permanently delete a file inside your workspace."}, workspaceScoped: true},
-	{meta: ToolMeta{Name: ToolTodoWrite, DisplayName: "Write Todos", IconKey: "list-checks", Description: "Replace your persisted task plan; the plan survives across turns in your workspace."}, workspaceScoped: true},
-	{meta: ToolMeta{Name: ToolTodoRead, DisplayName: "Read Todos", IconKey: "list", Description: "Read your persisted task plan."}, workspaceScoped: true},
+	{meta: ToolMeta{Name: ToolTaskCreate, DisplayName: "Create Task", IconKey: "list-checks", Description: "Create a new task in the workspace task plan."}, kind: toolMiddleware, workspaceScoped: true},
+	{meta: ToolMeta{Name: ToolTaskGet, DisplayName: "Get Task", IconKey: "file", Description: "Get details of a task by ID from the workspace task plan."}, kind: toolMiddleware, workspaceScoped: true},
+	{meta: ToolMeta{Name: ToolTaskUpdate, DisplayName: "Update Task", IconKey: "edit", Description: "Update a task's status, details, or dependencies in the workspace task plan."}, kind: toolMiddleware, workspaceScoped: true},
+	{meta: ToolMeta{Name: ToolTaskList, DisplayName: "List Tasks", IconKey: "list", Description: "List all tasks in the workspace task plan."}, kind: toolMiddleware, workspaceScoped: true},
 	{meta: ToolMeta{Name: ToolWebFetch, DisplayName: "Web Fetch", IconKey: "link", Description: "Fetch a URL over HTTP(S) and return its readable text content."}},
 	{meta: ToolMeta{Name: ToolWebSearch, DisplayName: "Web Search", IconKey: "search", Description: "Search the web through the configured provider chain (configured in Tools settings)."}},
 	{meta: ToolMeta{Name: ToolBrowser, DisplayName: "Browser", IconKey: "globe", Description: "Drive a real Chromium browser with persistent named profiles: navigate, snapshot, click, type, screenshot, manage cookies. Logins persist across sessions."}},
@@ -173,10 +181,6 @@ func (m *manager) buildDirectTool(name string, scope toolScope) (tool.BaseTool, 
 		return newHTTPGetTool()
 	case ToolDeleteFile:
 		return backend.NewDeleteFile(scope.Workspace)
-	case ToolTodoWrite:
-		return tools.NewTodoWrite(scope.Workspace)
-	case ToolTodoRead:
-		return tools.NewTodoRead(scope.Workspace)
 	case ToolWebFetch:
 		// The guarded client: every hop's resolved IPs are validated, so
 		// redirects cannot smuggle the fetch to a private target.

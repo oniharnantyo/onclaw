@@ -198,11 +198,18 @@ function FoldRun({
   );
 
   // Repeated plan writes collapse to a "plan updated" line except the last.
+  const isPlanTool = (name: string): boolean =>
+    name === "todo_write" ||
+    name === "task_create" ||
+    name === "task_update" ||
+    name === "TaskCreate" ||
+    name === "TaskUpdate";
+
   const lastPlanIndex = useMemo((): number => {
     let last = -1;
 
     for (let i = 0; i < calls.length; i += 1) {
-      if (calls[i].toolName === "todo_write") last = i;
+      if (isPlanTool(calls[i].toolName)) last = i;
     }
 
     return last;
@@ -238,7 +245,7 @@ function FoldRun({
       id: call.toolCallId,
       verb: toolVerb(call.toolName),
       chip:
-        call.toolName === "todo_write" && i !== lastPlanIndex
+        isPlanTool(call.toolName) && i !== lastPlanIndex
           ? "plan updated"
           : toolChip(call.toolName, call.argsText),
       icon: toolIcon(call.toolName),
@@ -282,7 +289,7 @@ function FoldRun({
         >
           {calls.map((call: RunCall, i: number): ReactElement => {
             const collapsedPlan =
-              call.toolName === "todo_write" && i !== lastPlanIndex;
+              isPlanTool(call.toolName) && i !== lastPlanIndex;
 
             return (
               <div key={call.toolCallId}>

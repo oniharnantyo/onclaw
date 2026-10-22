@@ -94,6 +94,88 @@ export function TodoReadTool(props: ToolCallMessagePartProps): ReactElement {
   return <TodoToolBody part={props} />;
 }
 
+export function TaskCreateTool(props: ToolCallMessagePartProps): ReactElement {
+  return <PlantaskToolBody part={props} />;
+}
+
+export function TaskGetTool(props: ToolCallMessagePartProps): ReactElement {
+  return <PlantaskToolBody part={props} />;
+}
+
+export function TaskUpdateTool(props: ToolCallMessagePartProps): ReactElement {
+  return <PlantaskToolBody part={props} />;
+}
+
+export function TaskListTool(props: ToolCallMessagePartProps): ReactElement {
+  return <PlantaskToolBody part={props} />;
+}
+
+function parseTaskListLines(text: string): TodoItem[] | null {
+  const lines = text
+    .split("\n")
+    .map((l: string) => l.trim())
+    .filter(Boolean);
+
+  const items: TodoItem[] = [];
+
+  for (const line of lines) {
+    const match = /^#(\d+)\s+\[([^\]]+)\]\s+(.*?)(?:\s+\[.*\])?$/.exec(line);
+
+    if (!match) continue;
+
+    const [, id, statusRaw, subject] = match;
+    let status = statusRaw;
+
+    if (statusRaw === "completed") {
+      status = "done";
+    } else if (statusRaw === "in_progress") {
+      status = "active";
+    }
+
+    items.push({
+      key: id,
+      text: subject,
+      status,
+    });
+  }
+
+  return items.length > 0 ? items : null;
+}
+
+function PlantaskToolBody({
+  part,
+}: {
+  part: ToolCallMessagePartProps;
+}): ReactElement {
+  const resultText = isTextResult(part.result) ? part.result : "";
+  const isError = part.isError === true;
+
+  const items = useMemo((): TodoItem[] | null => {
+    const parsedJSON = parseJSONResult(resultText);
+
+    const textToParse =
+      isObject(parsedJSON) && isString(parsedJSON.result)
+        ? parsedJSON.result
+        : resultText;
+
+    const fromLines = parseTaskListLines(textToParse);
+
+    if (fromLines !== null) return fromLines;
+
+    return parseTodoItems(resultText);
+  }, [resultText]);
+
+  return (
+    <ToolCard part={part}>
+      <TodoSnapshot
+        items={items}
+        isError={isError}
+        resultText={resultText || part.argsText}
+      />
+    </ToolCard>
+  );
+}
+
 function TodoToolBody({
   part,
 }: {

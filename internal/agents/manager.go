@@ -121,7 +121,7 @@ func WithPromptDocs(d PromptDocs) Option {
 }
 
 // WithWorkspaces supplies the workspace source turns root the jailed tools
-// at (filesystem, shell, delete_file, todos — resolved per agent slug, see
+// at (filesystem, shell, delete_file, task plan tools — resolved per agent slug, see
 // gate.go). Unset — the default — no workspace-rooted tool is ever offered:
 // agents keep chatting with the workspace-free tools only.
 func WithWorkspaces(w *workspaces.Manager) Option {

@@ -1,12 +1,16 @@
 package agents
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/cloudwego/eino/schema"
+	"github.com/stretchr/testify/require"
 
 	"github.com/oniharnantyo/buddies/internal/sessions"
-	"github.com/stretchr/testify/require"
+	"github.com/oniharnantyo/buddies/internal/workspaces"
 )
 
 // TestManager_CompactionAtThreshold is 4.5's acceptance test: a session
@@ -174,4 +178,143 @@ func TestManager_CompactionMarkerRidesLiveStream(t *testing.T) {
 	after := kinds[markerIdx+1:]
 	require.Contains(t, after, string(sessions.KindAssistantMessage))
 	require.Contains(t, after, string(sessions.KindTurnCompleted))
+}
+
+// TestManager_CompactionDualLayering covers the dual-layering invariant between
+// cross-turn checkpoint compaction (0.8 threshold) and the in-run summarization
+// safety net (~0.9 threshold):
+//  1. Pre-turn checkpoint compaction triggers independently when prior turn's usage >= 0.8 limit,
+//     persisting a checkpoint to SQLite, advancing the UpToSeq boundary, and emitting a KindCompaction marker.
+//  2. Mid-run summarization triggers when in-run working state crosses ~0.9 limit, collapsing working
+//     context in-run without writing a DB checkpoint, without emitting a KindCompaction marker,
+//     and without truncating the stored session transcript.
+//  3. Checkpoint boundary arithmetic and session continuation remain intact across subsequent turns.
+func TestManager_CompactionDualLayering(t *testing.T) {
+	ctx := t.Context()
+	wsRoot := t.TempDir()
+	wsMgr := workspaces.NewManager(wsRoot)
+	_, err := wsMgr.Create("tester")
+	require.NoError(t, err)
+
+	wsDir, err := wsMgr.Dir("tester")
+	require.NoError(t, err)
+
+	// An 8000-character payload in the workspace.
+	// For limit 2000:
+	// - Compaction threshold (0.8) = 1600 tokens
+	// - In-run summarization threshold (0.9) = 1800 tokens
+	// 8000 chars / 4 = 2000 tokens (> 1800), which trips in-run summarizer.
+	payload := strings.Repeat("Important diagnostic report entry section.\n", 200)
+	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "report.txt"), []byte(payload), 0644))
+
+	const preTurnSummary = "pre-turn summary: previous turn completed successfully"
+	const inRunSummary = "in-run summary: report.txt was examined"
+
+	var (
+		turnCalls           int
+		inRunSummarizerRan  bool
+		preTurnSummarizeRan bool
+	)
+
+	f := newFixture(t, func(input []*schema.Message) fakeReply {
+		// 1. Pre-turn compaction summarizer call
+		if isSummarizeCall(input) {
+			preTurnSummarizeRan = true
+			return fakeReply{text: preTurnSummary, promptTokens: 300, completionTokens: 40}
+		}
+
+		// 2. In-run summarizer call (from eino summarization middleware)
+		for _, msg := range input {
+			if strings.Contains(msg.Content, "tasked with summarizing conversations") ||
+				strings.Contains(msg.Content, "create a detailed summary") {
+				inRunSummarizerRan = true
+				return fakeReply{text: inRunSummary, promptTokens: 400, completionTokens: 50}
+			}
+		}
+
+		// 3. Normal turn execution
+		turnCalls++
+		switch turnCalls {
+		case 1:
+			// Turn 1 normal response: returns usage that trips pre-turn compaction for Turn 2
+			// (1650 + 50 = 1700 >= 1600 tokens = 0.8 * 2000)
+			return fakeReply{text: "turn 1 done", promptTokens: 1650, completionTokens: 50}
+		case 2:
+			// Turn 2 call 1: proposes reading report.txt
+			return toolCallsReply("call-1", ToolReadFile, `{"file_path":"/workspace/report.txt"}`)
+		case 3:
+			// Turn 2 call 2: after reading report.txt and in-run summarization, finishes turn
+			return fakeReply{text: "turn 2 done after in-run summary", promptTokens: 500, completionTokens: 50}
+		default:
+			// Subsequent turns
+			return fakeReply{text: "subsequent turn done", promptTokens: 200, completionTokens: 30}
+		}
+	}, WithWorkspaces(wsMgr))
+
+	// Configure agent with slug "tester" and ContextWindow = 2000
+	agent := f.agent
+	agent.Slug = "tester"
+	agent.ContextWindow = 2000
+	require.NoError(t, f.store.Agents().Update(ctx, &agent))
+	f.agent = agent
+
+	sess := f.newSession(t)
+
+	// --- Turn 1 ---
+	turn1, err := f.mgr.Send(ctx, sess.ID, "start task")
+	require.NoError(t, err)
+	require.NoError(t, turn1.Wait())
+
+	// Verify after Turn 1: no pre-turn compaction yet, no checkpoint
+	events, err := f.sessions.Events(ctx, sess.ID)
+	require.NoError(t, err)
+	require.Empty(t, eventsOfKind(events, sessions.KindCompaction))
+	_, cpExists, err := f.sessions.Checkpoint(ctx, sess.ID)
+	require.NoError(t, err)
+	require.False(t, cpExists, "no checkpoint before compaction threshold trips")
+
+	// --- Turn 2 ---
+	// Turn 1 usage was 1700 >= 1600 (0.8 * 2000). Pre-turn compaction must trigger before Turn 2.
+	// Mid-turn, reading report.txt trips the 0.9 in-run summarizer.
+	turn2, err := f.mgr.Send(ctx, sess.ID, "read the diagnostic report")
+	require.NoError(t, err)
+	require.NoError(t, turn2.Wait())
+
+	// Verifications after Turn 2:
+	// Both summarizers ran:
+	require.True(t, preTurnSummarizeRan, "pre-turn compaction must have run at 0.8 threshold")
+	require.True(t, inRunSummarizerRan, "in-run summarization must have run at 0.9 threshold")
+
+	events, err = f.sessions.Events(ctx, sess.ID)
+	require.NoError(t, err)
+
+	// 1. Compaction marker check: exactly ONE KindCompaction marker exists (the pre-turn one).
+	// In-run summarizer MUST NOT emit a compaction marker event.
+	markers := eventsOfKind(events, sessions.KindCompaction)
+	require.Len(t, markers, 1, "only pre-turn compaction emits a KindCompaction marker")
+	require.Equal(t, preTurnSummary, markers[0].Compaction.Summary)
+
+	// 2. Checkpoint check: checkpoint was persisted by pre-turn compaction, and was NOT overwritten by in-run summarizer.
+	cp, cpExists, err := f.sessions.Checkpoint(ctx, sess.ID)
+	require.NoError(t, err)
+	require.True(t, cpExists)
+	require.Equal(t, preTurnSummary, cp.Summary, "checkpoint summary must be from pre-turn compaction")
+	require.Equal(t, int64(3), cp.UpToSeq, "checkpoint boundary covers Turn 1 (events 1-3)")
+
+	// 3. Stored transcript check: transcript is NOT truncated.
+	// All events (Turn 1 messages, compaction marker, Turn 2 user, tool call, tool result, assistant message, completed) exist.
+	userEvents := eventsOfKind(events, sessions.KindUserMessage)
+	require.Len(t, userEvents, 2)
+	require.Equal(t, "start task", userEvents[0].Text)
+	require.Equal(t, "read the diagnostic report", userEvents[1].Text)
+
+	// 4. Boundary check on next turn (Turn 3)
+	turn3, err := f.mgr.Send(ctx, sess.ID, "final check")
+	require.NoError(t, err)
+	require.NoError(t, turn3.Wait())
+
+	// Checkpoint boundary was untouched
+	cpAfter, _, err := f.sessions.Checkpoint(ctx, sess.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(3), cpAfter.UpToSeq, "checkpoint boundary remains at Turn 1 until next compaction")
 }

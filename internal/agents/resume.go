@@ -457,6 +457,23 @@ func (m *manager) composeResumeRun(ctx context.Context, rt *runningTurn, sess se
 			fsCap.ExtraRoots = []string{m.skillsDir}
 		}
 		cfg.Filesystem = fsCap
+
+		extraRoots := fsCap.ExtraRoots
+		cfg.Reduction = &reductionCapability{
+			AgentDir:     surface.agentDir,
+			ExtraRoots:   extraRoots,
+			ContextLimit: int64(m.contextLimit(ctx, agent)),
+		}
+		cfg.Plantask = &plantaskCapability{
+			AgentDir:      surface.agentDir,
+			ExtraRoots:    extraRoots,
+			DisabledTools: surface.plantaskDisabled,
+		}
+		cfg.DisabledPlantaskTools = surface.plantaskDisabled
+	}
+	cfg.Summarization = &summarizationCapability{
+		Model:        mdl,
+		ContextLimit: int64(m.contextLimit(ctx, agent)),
 	}
 	if skillsCap != nil {
 		cfg.Skills = skillsCap
@@ -469,29 +486,22 @@ func (m *manager) composeResumeRun(ctx context.Context, rt *runningTurn, sess se
 
 	// Phases 8.5 and 9-merge: the delegation tools and the MCP tools join
 	// the surface exactly as a fresh turn resolves them.
-	delegationCap, err := m.resolveDelegation(ctx, agent, surface, tasks, mdl, instruction, skillsCap, hookCap, rt.turn.id)
-	if err != nil {
-		return turnRun{}, err
-	}
-	parentTools := append([]tool.BaseTool(nil), surface.tools...)
-	if delegationCap != nil {
-		delegationTools, err := delegationCap.tools(ctx)
-		if err != nil {
-			return turnRun{}, err
-		}
-		if err := assertNoDelegationToolCollision(ctx, parentTools, delegationTools); err != nil {
-			return turnRun{}, err
-		}
-		parentTools = append(parentTools, delegationTools...)
-	}
 	mcpTools, err := m.resolveMCPTools(ctx, agent)
 	if err != nil {
 		return turnRun{}, err
 	}
-	cfg.Tools = append(parentTools, mcpTools...)
-	if delegationCap != nil {
-		delegationCap.mcpTools = mcpTools
+	delegationCap, err := m.resolveDelegation(ctx, agent, surface, tasks, mdl, instruction, skillsCap, hookCap, rt.turn.id, mcpTools)
+	if err != nil {
+		return turnRun{}, err
 	}
+	if delegationCap != nil {
+		cfg.Subagent = delegationCap.subagentCap
+		cfg.BackgroundTask = delegationCap.bgCap
+	}
+	if err := assertNoDelegationToolCollision(surface.tools); err != nil {
+		return turnRun{}, err
+	}
+	cfg.Tools = append(append([]tool.BaseTool(nil), surface.tools...), mcpTools...)
 
 	turnAgent, toolErrors, err := composeTurnAgent(ctx, cfg)
 	if err != nil {

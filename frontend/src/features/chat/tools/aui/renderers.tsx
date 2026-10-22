@@ -24,7 +24,14 @@ import { EditFileTool, ReadFileTool, WriteFileTool } from "./FileTools";
 import { CurrentTimeTool, DeleteFileTool, HTTPGetTool } from "./GenericTool";
 import { GlobTool, GrepTool, LsTool } from "./SearchTools";
 import { TaskTool } from "./TaskTool";
-import { TodoReadTool, TodoWriteTool } from "./TodoTool";
+import {
+  TaskCreateTool,
+  TaskGetTool,
+  TaskListTool,
+  TaskUpdateTool,
+  TodoReadTool,
+  TodoWriteTool,
+} from "./TodoTool";
 import { WebFetchTool, WebSearchTool } from "./WebTools";
 
 /** One tool's renderer: the assistant-ui per-tool component shape. */
@@ -70,6 +77,14 @@ export const toolRenderers = {
   browser: BrowserTool,
   todo_write: TodoWriteTool,
   todo_read: TodoReadTool,
+  task_create: TaskCreateTool,
+  task_get: TaskGetTool,
+  task_update: TaskUpdateTool,
+  task_list: TaskListTool,
+  TaskCreate: TaskCreateTool,
+  TaskGet: TaskGetTool,
+  TaskUpdate: TaskUpdateTool,
+  TaskList: TaskListTool,
   task: TaskTool,
   http_get: HTTPGetTool,
   current_time: CurrentTimeTool,

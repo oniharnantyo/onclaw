@@ -228,16 +228,59 @@ function parsePlanItems(raw: string | undefined): PlanItem[] | null {
   return plan;
 }
 
+function parseTaskListText(raw: string | undefined): PlanItem[] | null {
+  if (!raw) return null;
+
+  const lines = raw
+    .split("\n")
+    .map((l: string): string => l.trim())
+    .filter(Boolean);
+
+  const items: PlanItem[] = [];
+
+  for (const line of lines) {
+    const match = /^#(\d+)\s+\[([^\]]+)\]\s+(.*?)(?:\s+\[.*\])?$/.exec(line);
+
+    if (!match) continue;
+
+    const [, id, statusRaw, subject] = match;
+    let status: PlanItem["status"] = "pending";
+
+    if (statusRaw === "completed") {
+      status = "done";
+    } else if (statusRaw === "in_progress") {
+      status = "active";
+    } else if (statusRaw === "deleted") {
+      status = "failed";
+    }
+
+    items.push({
+      key: id,
+      text: subject,
+      status,
+    });
+  }
+
+  return items.length > 0 ? items : null;
+}
+
 /** The run card's plan lane data (task 9.2, design D8): the persisted items of
- * the LATEST todo_write tool activity — the validated result echo when the
+ * the LATEST todo_write or TaskList tool activity — the validated result echo when the
  * terminal record landed, else the call arguments of a still-running call so
  * the checklist updates live mid-turn. A failed call persisted nothing, so it
- * yields no lane; with no todo_write activity at all the lane is absent. */
+ * yields no lane; with no plan tool activity at all the lane is absent. */
 export function latestPlanItems(entries: Entry[]): PlanItem[] {
   for (let i = entries.length - 1; i >= 0; i -= 1) {
     const entry = entries[i];
 
-    if (entry.kind !== "tool" || entry.call?.name !== "todo_write") continue;
+    if (
+      entry.kind !== "tool" ||
+      (entry.call?.name !== "todo_write" &&
+        entry.call?.name !== "task_list" &&
+        entry.call?.name !== "TaskList")
+    ) {
+      continue;
+    }
 
     if (
       entry.call.status === ToolStatus.ToolStatusFailed ||
@@ -246,7 +289,8 @@ export function latestPlanItems(entries: Entry[]): PlanItem[] {
       return [];
     }
 
-    const fromResult = parsePlanItems(entry.call.result);
+    const fromResult =
+      parsePlanItems(entry.call.result) ?? parseTaskListText(entry.call.result);
 
     if (fromResult !== null) return fromResult;
 

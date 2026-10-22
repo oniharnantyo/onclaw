@@ -403,6 +403,63 @@ function sentenceBrowser(input: SentenceInput): string | null {
   }
 }
 
+function sentenceTaskCreate(input: SentenceInput): string | null {
+  const { args, state } = input;
+  const subject = str(args, "subject");
+
+  if (state === "running") {
+    return subject !== "" ? `Creating task '${subject}'` : "Creating task";
+  }
+
+  return subject !== "" ? `Created task '${subject}'` : "Created task";
+}
+
+function sentenceTaskGet(input: SentenceInput): string | null {
+  const { args, state } = input;
+  const id = str(args, "taskId");
+  const target = id !== "" ? `#${id}` : "task";
+
+  return state === "running" ? `Getting task ${target}` : `Got task ${target}`;
+}
+
+function sentenceTaskUpdate(input: SentenceInput): string | null {
+  const { args, state } = input;
+  const id = str(args, "taskId");
+  const status = str(args, "status");
+  const target = id !== "" ? `#${id}` : "task";
+
+  if (state === "running") {
+    return status !== ""
+      ? `Updating task ${target} (${status})`
+      : `Updating task ${target}`;
+  }
+
+  return status !== ""
+    ? `Updated task ${target} (${status})`
+    : `Updated task ${target}`;
+}
+
+function sentenceTaskList(input: SentenceInput): string | null {
+  const { result, state } = input;
+
+  if (state === "running") return "Listing tasks";
+
+  const parsed = parseJSONResult(result);
+
+  const text =
+    isObject(parsed) && isString(parsed.result) ? parsed.result : result;
+
+  if (/^No tasks found/i.test(text)) return "No tasks found";
+
+  const count = text
+    .split("\n")
+    .filter((line: string): boolean => /^#\d+/.test(line.trim())).length;
+
+  return count > 0
+    ? `Listed ${count} ${count === 1 ? "task" : "tasks"}`
+    : "Listed tasks";
+}
+
 /**
  * The sentence table (design D3): one entry per builtin tool. The running
  * form states intent; the completed one states the outcome — when an
@@ -419,6 +476,14 @@ const SENTENCES = new Map<string, SentenceFn>([
   ["delete_file", sentenceDeleteFile],
   ["todo_write", sentenceTodoWrite],
   ["todo_read", sentenceTodoRead],
+  ["task_create", sentenceTaskCreate],
+  ["task_get", sentenceTaskGet],
+  ["task_update", sentenceTaskUpdate],
+  ["task_list", sentenceTaskList],
+  ["TaskCreate", sentenceTaskCreate],
+  ["TaskGet", sentenceTaskGet],
+  ["TaskUpdate", sentenceTaskUpdate],
+  ["TaskList", sentenceTaskList],
   ["web_search", sentenceWebSearch],
   ["web_fetch", sentenceWebFetch],
   ["http_get", sentenceHttpGet],

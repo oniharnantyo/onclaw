@@ -49,6 +49,14 @@ export function toolVerb(toolName: string): string {
     browser: "Browse",
     todo_write: "Plan",
     todo_read: "Plan",
+    task_create: "Task",
+    task_get: "Task",
+    task_update: "Task",
+    task_list: "Task",
+    TaskCreate: "Task",
+    TaskGet: "Task",
+    TaskUpdate: "Task",
+    TaskList: "Task",
     task: "Task",
   } satisfies Record<string, string>;
 
@@ -73,6 +81,14 @@ export function toolIcon(toolName: string): LucideIcon {
     browser: GlobeIcon,
     todo_write: ListTodoIcon,
     todo_read: ListTodoIcon,
+    task_create: ListTodoIcon,
+    task_get: ListTodoIcon,
+    task_update: ListTodoIcon,
+    task_list: ListTodoIcon,
+    TaskCreate: ListTodoIcon,
+    TaskGet: ListTodoIcon,
+    TaskUpdate: ListTodoIcon,
+    TaskList: ListTodoIcon,
     task: UsersIcon,
   } satisfies Record<string, LucideIcon>;
 
@@ -110,6 +126,17 @@ export function toolChip(toolName: string, argsText: string): string {
     case "todo_write":
     case "todo_read":
       return "plan";
+    case "task_create":
+    case "TaskCreate":
+      return str(args, "subject") || "task";
+    case "task_get":
+    case "TaskGet":
+    case "task_update":
+    case "TaskUpdate":
+      return str(args, "taskId") ? `#${str(args, "taskId")}` : "task";
+    case "task_list":
+    case "TaskList":
+      return "tasks";
     case "task":
       return str(args, "description") || str(args, "task_id");
     default:

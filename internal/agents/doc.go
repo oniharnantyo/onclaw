@@ -14,62 +14,27 @@
 //     vocabulary, owned by internal/sessions and JSON-serializable;
 //   - store.Store / store.Agent — persistence types from internal/store.
 //
-// The eino chat-model abstraction (model.BaseChatModel) and the per-provider
-// connectors live behind the unexported modelRegistry interface
-// (registry.go/connectors.go); turn execution consumes streamed chunks
-// through it and republishes them as sessions events (runner.go). This keeps
-// eino upgrades local to the package and lets the services wave bind the
-// Manager without any eino dependency.
+// # Package Architecture & Subpackages
 //
-// # Layout
+// The agent runtime is modularized into specialized subpackages:
 //
-//   - manager.go: the Manager port (session lifecycle, Send, Subscribe,
-//     ContextUsage) and its constructor wiring.
-//   - manager_impl.go: the concrete manager: session lifecycle, the
-//     per-session busy guard, and subscription fan-out.
-//   - runner.go: one turn's execution: the ADK event drain (tool loop →
-//     sessions events), context assembly, streaming deltas, event
-//     persistence.
-//   - compose.go: the compose seam (design D1): Config/Compose building the
-//     ADK agent (tool loop + ordered capability middlewares) per turn; the
-//     ordered handler list is the extension seam later waves hang their
-//     middlewares on.
-//   - toolerror.go: the tool-error-result middleware: tool failures become
-//     error results the model reads instead of run-killing errors, and the
-//     per-turn failure registry the drain consults for terminal records.
-//   - gate.go: the tool gate: resolve (catalog × global enable × agent
-//     allowlist) → the turn's tool surface handed to compose.
-//   - mcp.go: the MCP seam (design D7): the opt-in policy (enabled server +
-//     agent opt-in, bypassing the tool allowlist) and the pass-scoped
-//     mcp__<server>__<tool> renaming, merged into the turn's tool surface.
-//   - builtin_tools.go: the built-in tool catalog and the workspace-free
-//     tool constructors.
-//   - websearch_source.go: the tool_settings-backed adapter satisfying the
-//     tools package's SearchConfigSource seam.
-//   - turn.go: the Turn handle returned by Send (async per design D7).
-//   - subscription.go: per-session live event subscriptions; drop-new
-//     semantics so a slow consumer never stalls a turn — durability lives in
-//     the store, and reconnecting consumers replay from it.
-//   - registry.go: the provider registry: builds the eino model for an
-//     agent's configured provider, with typed errors for unconfigured
-//     providers.
-//   - connectors.go: provider type to eino connector mapping (Anthropic
-//     wired end-to-end; OpenAI and Gemini registered).
-//   - catalog.go: the built-in model catalog (context windows per model id).
-//   - context.go: context-window accounting from persisted usage.
-//   - compact.go: threshold compaction of the working context.
-//
-// # Subpackages
-//
-// The jailed working surface lives in two subpackages the composition wires
-// in; both keep their own boundaries:
-//
-//   - backend: the filesystem jail (einofs.Backend), the jailed shell
-//     (einofs.Shell), and the workspace-scoped delete_file tool.
-//   - tools: the todo plan pair and the web tools (web_fetch, the web_search
-//     provider chain), constructed per turn by the gate.
-//   - mcp: the MCP client runtime (design D7): the stdio/streamable-HTTP/SSE
-//     transport factory, the idle-reaped connection manager with
-//     negative-cache retry and invalidate-on-write, the mcp__<server>__<tool>
-//     namer, and the probe.
+//   - internal/agents (root): the service surface (manager, manager_impl,
+//     registry, catalog, builtin_tools, connectors, prompts, types).
+//   - internal/agents/compose: ADK agent composition, middleware pipeline
+//     (patchtoolcalls -> reduction -> summarization -> skill -> filesystem ->
+//     plantask -> hooks -> subagent -> backgroundtask -> tool-error-result),
+//     tool gating (ResolvedTools), and capability resolver.
+//   - internal/agents/run: turn execution engine (Runner, RunningTurn, Turn,
+//     DrainValues, subscriptions, and turn loop lifecycle).
+//   - internal/agents/compaction: working context compaction at 0.8 threshold
+//     into persisted SQLite checkpoints, and the in-run summarization safety
+//     net middleware (~0.9 context limit).
+//   - internal/agents/subagents: delegated subagent adapter over eino
+//     subagent and backgroundtask middlewares, run-scoped task ID sequencing,
+//     and task activity bridging.
+//   - internal/agents/backend: filesystem and shell jails (reduction, plantask,
+//     filesystem backends).
+//   - internal/agents/tools: web tools (browser, web_fetch, web_search).
+//   - internal/agents/mcp: Model Context Protocol (MCP) client manager and tool adapter.
+//   - internal/agents/hooks: deterministic pre- and post-tool lifecycle dispatchers.
 package agents

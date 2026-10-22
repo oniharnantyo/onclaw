@@ -31,14 +31,16 @@ var workspaceFreeToolsPlusScheduler = append(append([]string{}, workspaceFreeToo
 // workspaceTools are the catalog tools rooted at the agent's workspace.
 var workspaceTools = []string{
 	ToolLs, ToolReadFile, ToolWriteFile, ToolEditFile, ToolGlob, ToolGrep,
-	ToolExecute, ToolDeleteFile, ToolTodoWrite, ToolTodoRead,
+	ToolExecute, ToolDeleteFile,
+	ToolTaskCreate, ToolTaskGet, ToolTaskUpdate, ToolTaskList,
 }
 
 // fullCatalogNames is the expected catalog membership in display order.
 var fullCatalogNames = []string{
 	ToolCurrentTime, ToolHTTPGet,
 	ToolLs, ToolReadFile, ToolWriteFile, ToolEditFile, ToolGlob, ToolGrep,
-	ToolExecute, ToolDeleteFile, ToolTodoWrite, ToolTodoRead,
+	ToolExecute, ToolDeleteFile,
+	ToolTaskCreate, ToolTaskGet, ToolTaskUpdate, ToolTaskList,
 	ToolWebFetch, ToolWebSearch, ToolBrowser,
 	ToolScheduler,
 }
@@ -69,6 +71,30 @@ func TestCatalogSchedulerMeta(t *testing.T) {
 	require.Equal(t, "Scheduler", meta.DisplayName)
 	require.Equal(t, "calendar-clock", meta.IconKey)
 	require.NotEmpty(t, meta.Description)
+}
+
+// TestCatalogPlantaskMeta pins the plantask tools' display metadata: the
+// Tools pane cards and allowlist chips render them with expected metadata
+// (spec agent-tools "Task plan tools").
+func TestCatalogPlantaskMeta(t *testing.T) {
+	cases := []struct {
+		name        string
+		displayName string
+		iconKey     string
+		desc        string
+	}{
+		{ToolTaskCreate, "Create Task", "list-checks", "Create a new task in the workspace task plan."},
+		{ToolTaskGet, "Get Task", "file", "Get details of a task by ID from the workspace task plan."},
+		{ToolTaskUpdate, "Update Task", "edit", "Update a task's status, details, or dependencies in the workspace task plan."},
+		{ToolTaskList, "List Tasks", "list", "List all tasks in the workspace task plan."},
+	}
+	for _, tc := range cases {
+		meta, ok := CatalogToolByName(tc.name)
+		require.True(t, ok, "lookup %s", tc.name)
+		require.Equal(t, tc.displayName, meta.DisplayName)
+		require.Equal(t, tc.iconKey, meta.IconKey)
+		require.Equal(t, tc.desc, meta.Description)
+	}
 }
 
 // TestResolveOfferedTools covers the three-way gate: a tool reaches the

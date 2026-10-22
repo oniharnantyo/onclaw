@@ -307,6 +307,23 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 			fsCap.ExtraRoots = []string{m.skillsDir}
 		}
 		cfg.Filesystem = fsCap
+
+		extraRoots := fsCap.ExtraRoots
+		cfg.Reduction = &reductionCapability{
+			AgentDir:     surface.agentDir,
+			ExtraRoots:   extraRoots,
+			ContextLimit: int64(m.contextLimit(ctx, agent)),
+		}
+		cfg.Plantask = &plantaskCapability{
+			AgentDir:      surface.agentDir,
+			ExtraRoots:    extraRoots,
+			DisabledTools: surface.plantaskDisabled,
+		}
+		cfg.DisabledPlantaskTools = surface.plantaskDisabled
+	}
+	cfg.Summarization = &summarizationCapability{
+		Model:        mdl,
+		ContextLimit: int64(m.contextLimit(ctx, agent)),
 	}
 	if skillsCap != nil {
 		cfg.Skills = skillsCap
@@ -317,40 +334,24 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 		cfg.Hooks = hookCap
 	}
 
-	// 8.5 Subagents (spec agent-subagents, design D3): when the agent has the
-	// capability enabled, the turn is offered the delegation tools. The
-	// child composes from the BASE surface (no delegation tools of its own —
-	// no recursion), so the parent's surface is finalized by appending them
-	// only after the capability resolved. A resolution failure is a turn
-	// failure like any other pre-run error.
-	delegationCap, err := m.resolveDelegation(ctx, agent, surface, tasks, mdl, instruction, skillsCap, hookCap, turnID)
-	if err != nil {
-		return failTurn(err)
-	}
-	parentTools := append([]tool.BaseTool(nil), surface.tools...)
-	if delegationCap != nil {
-		delegationTools, err := delegationCap.tools(ctx)
-		if err != nil {
-			return failTurn(err)
-		}
-		if err := assertNoDelegationToolCollision(ctx, parentTools, delegationTools); err != nil {
-			return failTurn(err)
-		}
-		parentTools = append(parentTools, delegationTools...)
-	}
-
-	// 9. Merge the agent's opted-in MCP servers' tools into the surface
-	// (design D3/D7): MCP tools bypass the tool allowlist and the global
-	// toggles — their gate is the enabled server plus the agent's opt-in,
-	// and a dead server contributes zero tools without failing the turn.
+	// 8.5 Subagents (spec agent-subagents, design D3, D4): when the agent has the
+	// capability enabled, the turn is offered the delegation tools via eino middlewares.
 	mcpTools, err := m.resolveMCPTools(ctx, agent)
 	if err != nil {
 		return failTurn(err)
 	}
-	cfg.Tools = append(parentTools, mcpTools...)
-	if delegationCap != nil {
-		delegationCap.mcpTools = mcpTools
+	delegationCap, err := m.resolveDelegation(ctx, agent, surface, tasks, mdl, instruction, skillsCap, hookCap, turnID, mcpTools)
+	if err != nil {
+		return failTurn(err)
 	}
+	if delegationCap != nil {
+		cfg.Subagent = delegationCap.subagentCap
+		cfg.BackgroundTask = delegationCap.bgCap
+	}
+	if err := assertNoDelegationToolCollision(surface.tools); err != nil {
+		return failTurn(err)
+	}
+	cfg.Tools = append(append([]tool.BaseTool(nil), surface.tools...), mcpTools...)
 
 	turnAgent, toolErrors, err := composeTurnAgent(ctx, cfg)
 	if err != nil {
@@ -393,6 +394,7 @@ type turnRun struct {
 func (m *manager) executeTurnRun(ctx context.Context, recordCtx context.Context, rt *runningTurn, record recordFn, failTurn func(error) error, hookChain *hooks.Resolved, hookBase hooks.Event, run turnRun) error {
 	runner := adk.NewRunner(ctx, adk.RunnerConfig{
 		Agent:           run.agent,
+		SessionID:       rt.sessionID,
 		EnableStreaming: true,
 		CheckPointStore: m.store.Checkpoints(),
 	})

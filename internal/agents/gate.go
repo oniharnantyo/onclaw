@@ -23,13 +23,15 @@ type resolvedTools struct {
 	// ToolsConfig, in catalog order.
 	tools []tool.BaseTool
 	// agentDir is the agent's workspace directory when any workspace-rooted
-	// tool (filesystem, shell, delete_file, todos) is offered; empty
+	// tool (filesystem, shell, delete_file, plantask) is offered; empty
 	// otherwise — no workspace, no filesystem capability.
 	agentDir string
 	// shell offers the filesystem middleware's jailed execute tool.
 	shell bool
 	// fsDisabled lists the filesystem middleware tool names the gate withholds.
 	fsDisabled []string
+	// plantaskDisabled lists the plantask middleware tool names the gate withholds.
+	plantaskDisabled []string
 }
 
 // names returns every offered tool name in catalog order. It exists for
@@ -43,13 +45,21 @@ func (r *resolvedTools) names(ctx context.Context) ([]string, error) {
 		}
 		offered[info.Name] = true
 	}
-	withheld := make(map[string]bool, len(r.fsDisabled))
+	withheld := make(map[string]bool, len(r.fsDisabled)+len(r.plantaskDisabled))
 	for _, name := range r.fsDisabled {
 		withheld[name] = true
 	}
-	// The fs middleware's tools exist only when the jail was rooted.
+	for _, name := range r.plantaskDisabled {
+		withheld[name] = true
+	}
+	// The fs and plantask middlewares' tools exist only when the jail was rooted.
 	if r.agentDir != "" {
 		for _, name := range filesystemToolNames {
+			if !withheld[name] {
+				offered[name] = true
+			}
+		}
+		for _, name := range plantaskToolNames {
 			if !withheld[name] {
 				offered[name] = true
 			}
@@ -129,7 +139,7 @@ func (m *manager) resolveTurnTools(ctx context.Context, agent store.Agent) (*res
 		}
 		switch entry.kind {
 		case toolMiddleware:
-			// offered: stays out of fsDisabled (computed below).
+			// offered: stays out of fsDisabled and plantaskDisabled (computed below).
 		case toolShell:
 			res.shell = true
 		case toolDirect:
@@ -141,12 +151,17 @@ func (m *manager) resolveTurnTools(ctx context.Context, agent store.Agent) (*res
 		}
 	}
 
-	// The fs middleware attaches whenever the jail exists; every one of its
-	// six tools the gate withheld is disabled via per-tool config.
+	// The fs and plantask middlewares attach whenever the jail exists; every tool
+	// the gate withheld is disabled via per-tool config.
 	if res.agentDir != "" {
 		for _, name := range filesystemToolNames {
 			if !offered[name] {
 				res.fsDisabled = append(res.fsDisabled, name)
+			}
+		}
+		for _, name := range plantaskToolNames {
+			if !offered[name] {
+				res.plantaskDisabled = append(res.plantaskDisabled, name)
 			}
 		}
 	}

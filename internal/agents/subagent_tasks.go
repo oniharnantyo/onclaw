@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/oniharnantyo/buddies/internal/sessions"
+	"github.com/oniharnantyo/buddies/internal/workspaces"
 )
 
 // The delegated-task registry owns one turn's task-ID space (spec
@@ -134,6 +136,11 @@ type taskRegistry struct {
 	tasks  []*TaskRecord
 	tasksB map[string]*TaskRecord
 	closed bool
+
+	currentDesc     string
+	currentBg       bool
+	currentTurnID   string
+	latestAllocated string
 }
 
 // newTaskRegistry returns the run's empty task space over a detached context
@@ -141,6 +148,107 @@ type taskRegistry struct {
 func newTaskRegistry(record recordFn) *taskRegistry {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &taskRegistry{runCtx: ctx, cancelCtx: cancel, record: record, tasksB: make(map[string]*TaskRecord)}
+}
+
+// setPending registers the parameters of an upcoming task allocation.
+func (r *taskRegistry) setPending(description string, background bool, turnID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.currentDesc = description
+	r.currentBg = background
+	r.currentTurnID = turnID
+}
+
+// allocateTask mints the next task ID and creates its record and transcript.
+func (r *taskRegistry) allocateTask(tasksDir string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.next++
+	id := fmt.Sprintf("task-%d", r.next)
+	r.latestAllocated = id
+
+	rec := &TaskRecord{
+		ID:          id,
+		Description: r.currentDesc,
+		Status:      taskStatusRunning,
+		Background:  r.currentBg,
+		TurnID:      r.currentTurnID,
+		done:        make(chan struct{}),
+	}
+	_, cancel := context.WithCancel(r.runCtx)
+	rec.cancel = cancel
+	r.tasks = append(r.tasks, rec)
+	r.tasksB[id] = rec
+
+	if tasksDir != "" {
+		transcript, err := newTaskTranscript(tasksDir, rec.ID, rec.Description)
+		if err == nil {
+			rec.transcript = transcript
+			rec.TranscriptPath = filepath.Join(workspaces.DirTasks, rec.ID+taskTranscriptSuffix)
+		}
+	}
+	snapshot := *rec
+	go r.emitRunning(snapshot)
+	return id
+}
+
+// latestAllocatedID returns the most recently allocated task ID.
+func (r *taskRegistry) latestAllocatedID() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.latestAllocated
+}
+
+// nextID mints the next sequential task ID for the session.
+func (r *taskRegistry) nextID() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.next++
+	return fmt.Sprintf("task-%d", r.next)
+}
+
+// latestTaskID returns the ID of the most recently created task, or empty if none.
+func (r *taskRegistry) latestTaskID() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.tasks) == 0 {
+		return ""
+	}
+	return r.tasks[len(r.tasks)-1].ID
+}
+
+// recordTask records a newly-spawned task by ID and description.
+func (r *taskRegistry) recordTask(id, description string, background bool, turnID string) *TaskRecord {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if rec, ok := r.tasksB[id]; ok {
+		return rec
+	}
+	rec := &TaskRecord{
+		ID:          id,
+		Description: description,
+		Status:      taskStatusRunning,
+		Background:  background,
+		TurnID:      turnID,
+		done:        make(chan struct{}),
+	}
+	_, cancel := context.WithCancel(r.runCtx)
+	rec.cancel = cancel
+	r.tasks = append(r.tasks, rec)
+	r.tasksB[rec.ID] = rec
+	return rec
+}
+
+// activeTranscript returns the active non-terminal task's transcript, if any.
+func (r *taskRegistry) activeTranscript() *taskTranscript {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := len(r.tasks) - 1; i >= 0; i-- {
+		if !r.tasks[i].Terminal() && r.tasks[i].transcript != nil {
+			return r.tasks[i].transcript
+		}
+	}
+	return nil
 }
 
 // spawn registers a new task and returns its record plus the child context
@@ -162,12 +270,12 @@ func (r *taskRegistry) spawn(description string, background bool, turnID string)
 		TurnID:      turnID,
 		done:        make(chan struct{}),
 	}
-	ctx, cancel := context.WithCancel(r.runCtx)
+	childCtx, cancel := context.WithCancel(r.runCtx)
 	rec.cancel = cancel
 
 	r.tasks = append(r.tasks, rec)
 	r.tasksB[rec.ID] = rec
-	return rec, ctx, nil
+	return rec, childCtx, nil
 }
 
 // lookup returns a task's current snapshot. Unknown identifiers — including
@@ -269,6 +377,10 @@ func (r *taskRegistry) finish(id string, status sessions.ToolStatus, result stri
 	rec.Result = result
 	rec.cancel = nil
 	close(rec.done)
+	if rec.transcript != nil {
+		rec.transcript.terminal(string(status), result)
+		rec.transcript = nil
+	}
 	snapshot := *rec
 	r.mu.Unlock()
 
@@ -304,6 +416,10 @@ func (r *taskRegistry) cancel(id string) (TaskRecord, error) {
 	rec.Status = taskStatusStopped
 	rec.cancel = nil
 	close(rec.done)
+	if rec.transcript != nil {
+		rec.transcript.terminal(string(taskStatusStopped), "")
+		rec.transcript = nil
+	}
 	snapshot := *rec
 	if cancel != nil {
 		cancel()
