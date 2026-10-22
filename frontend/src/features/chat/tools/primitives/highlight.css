@@ -1,0 +1,14 @@
+/* Shiki dual-theme tokens (task 9.2, design D13 verdict B): grammar tokens
+ * carry the custom properties --shiki-light / --shiki-dark (set inline by
+ * the CodeBlock's token spans, see shikiHighlight.ts); this maps whichever
+ * the app theme selects onto `color`, following the app's
+ * :root[data-theme="dark"] switch (styles.css / theme.css — never a .dark
+ * class). Both forms stay legible: github-light on light surfaces,
+ * github-dark on dark ones. */
+.shiki-token {
+  color: var(--shiki-light, inherit);
+}
+
+:root[data-theme="dark"] .shiki-token {
+  color: var(--shiki-dark, inherit);
+}

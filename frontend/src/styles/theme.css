@@ -1,0 +1,126 @@
+/* Mapping of OnClaw's raw design tokens (styles/tokens.css) onto Tailwind v4
+ * theme variables, so utilities like `bg-bg` / `font-mono` / `rounded-md`
+ * resolve to the contract tokens.
+ *
+ * NOTE on same-name mappings: --font-mono and --radius-* map to raw tokens of
+ * the same name. A plain @theme emits `--font-mono: var(--font-mono)` into
+ * :root — a self-referential declaration that is only valid because the raw
+ * value in tokens.css is imported after `@import "tailwindcss"` (see
+ * index.css) and therefore wins the cascade. Do not reorder those imports
+ * without giving the raw tokens distinct names. */
+
+@theme {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-warm: var(--surface-warm);
+  --color-fg: var(--fg);
+  --color-fg2: var(--fg-2);
+  --color-muted: var(--muted);
+  --color-meta: var(--meta);
+  --color-line: var(--border);
+  --color-linesoft: var(--border-soft);
+  --color-accent: var(--accent);
+  --color-accenton: var(--accent-on);
+  --color-accenttext: var(--accent-text);
+  --color-success: var(--success);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
+  --color-dangertext: var(--danger-text);
+
+  --font-sans: var(--font-body);
+  --font-mono: var(--font-mono);
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+}
+
+/* ===== shadcn token seam (markdown-card-elements 1.2, design D4) =====
+ * Registry-installed assistant-ui elements style themselves with
+ * shadcn-standard token names (`bg-background`, `text-muted-foreground`,
+ * `border-border`, `ring-ring`, …). This inline block resolves those names
+ * onto the raw contract tokens from tokens.css, so the cards inherit the
+ * contract without per-card rewrites.
+ *
+ * `inline` is load-bearing: utilities carry the raw var itself (e.g.
+ * `background-color: var(--bg)`), so the `:root[data-theme="dark"]`
+ * overrides in tokens.css apply automatically — no duplicated dark palette
+ * lives here. Every mapping below is theme-relative; none hardcodes a
+ * light-only value.
+ *
+ * Same-name note: --color-accent and --color-muted already exist in the
+ * block above (feeding app-wide `text-accent` / `text-muted`); they are
+ * re-declared here with identical values only so this seam stays legible
+ * as the single inventory of shadcn-standard names. */
+@theme inline {
+  /* surfaces + text */
+  --color-background: var(--bg);
+  --color-foreground: var(--fg);
+  --color-card: var(--surface);
+  --color-card-foreground: var(--fg);
+  --color-popover: var(--surface);
+  --color-popover-foreground: var(--fg);
+  --color-border: var(--border);
+  --color-input: var(--border);
+
+  /* roles */
+  --color-muted: var(
+    --muted
+  ); /* text role — app-wide; elements' bg-muted uses map to the field tint instead */
+  --color-muted-foreground: var(--muted);
+  --color-secondary: color-mix(in oklab, var(--fg) 6%, transparent);
+  --color-secondary-foreground: var(--fg);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-on);
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--accent-on);
+  --color-destructive: var(--danger);
+  --color-destructive-foreground: #ffffff; /* no raw on-danger token; white on #dc2626 holds in both themes */
+  --color-ring: var(--accent);
+}
+
+/* Raw shadcn token names for vendored registry CSS that calls them directly
+ * (e.g. `var(--card)` in the generative-ui style item) rather than through a
+ * Tailwind utility.
+ *
+ * ONLY the names this app does not already define. `--border`, `--muted`,
+ * `--accent`, `--bg`, `--fg`, `--surface`, `--accent-on` and `--danger` are
+ * REAL tokens in styles/tokens.css (dark-aware, contract-defined) — the
+ * registry CSS calling them resolves to the contract value already, and
+ * re-declaring them here would be self-referential (`--accent: var(--accent)`)
+ * and clobber them app-wide.
+ *
+ * The aliases below are the genuinely missing names, resolved onto contract
+ * tokens. `inline` keeps the raw var so the dark overrides still apply. */
+@theme inline {
+  --card: var(--surface);
+  --card-foreground: var(--fg);
+  --popover: var(--surface);
+  --popover-foreground: var(--fg);
+  --foreground: var(--fg);
+  --background: var(--bg);
+  --input: var(--border);
+  --primary: var(--accent);
+  --primary-foreground: var(--accent-on);
+  --secondary: color-mix(in oklab, var(--fg) 6%, transparent);
+  --secondary-foreground: var(--fg);
+  --accent-foreground: var(--accent-on);
+  --muted-foreground: var(--muted);
+  --destructive: var(--danger);
+  --ring: var(--accent);
+  --chart-1: var(--accent);
+  --chart-2: var(--success);
+  --chart-3: var(--warn);
+  --chart-4: var(--danger);
+  --chart-5: var(--meta);
+  /* vendored-CSS tunables the app now owns (previously fallback-only in index.css) */
+  --aui-control-height: 2.5rem;
+  --aui-button-padding-x: 1.25rem;
+  --aui-control-font-size: 0.875rem;
+  --aui-field-padding-x: 0.875rem;
+  --radius: 12px;
+}
+
+/* Elements' `dark:` utilities must follow the in-app theme toggle, not
+ * Tailwind's default prefers-color-scheme media query: the app resolves and
+ * pins `data-theme` on <html> itself (lib/theme.ts, theme.test.ts). */
+@custom-variant dark (&:is(:root[data-theme="dark"] *));
