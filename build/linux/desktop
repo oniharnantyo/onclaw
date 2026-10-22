@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Name=My Product
+Comment=A buddies application
+# The Exec line includes %u to pass the URL to the application
+Exec=/usr/local/bin/buddies %u
+Terminal=false
+Type=Application
+Icon=buddies
+Categories=Utility;
+StartupWMClass=buddies
+
+ 

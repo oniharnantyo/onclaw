@@ -1,0 +1,21 @@
+.task
+bin
+# Root build artifact (go build at module root); anchored so the bindings path
+# .../oniharnantyo/buddies/ is not matched
+/buddies
+frontend/dist
+node_modules
+build/linux/appimage/build
+build/windows/nsis/MicrosoftEdgeWebview2Setup.exe
+# Mobile generated (per-machine; overlays hold absolute paths)
+build/ios/xcode/overlay.json
+build/ios/xcode/gen/
+build/android/overlay.json
+build/android/gen/
+# macOS
+.DS_Store
+# team-skill workspace
+.team/
+
+# hallmark design-memory
+.hallmark/

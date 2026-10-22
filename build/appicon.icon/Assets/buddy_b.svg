@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<!-- buddies mark: geometric lowercase "b" in the app theme coral
+     (dark theme primary token, oklch(72% 0.13 45) = srgb #E7885D).
+     Tight canvas around the glyph, same authoring style as the old
+     wails_icon_vector.svg placeholder this file replaces. -->
+<svg width="100%" height="100%" viewBox="229.5 124.5 563.75 775" version="1.1" xmlns="http://www.w3.org/2000/svg" style="fill-rule:evenodd;clip-rule:evenodd;">
+    <g fill="#E7885D">
+        <!-- stem: capsule x 229.5..367, y 124.5..899.5 (b glyph at 1.25x of the raster icon coords) -->
+        <path d="M 229.5 193.25 A 68.75 68.75 0 0 1 367 193.25 L 367 830.75 A 68.75 68.75 0 0 1 229.5 830.75 Z"/>
+        <!-- bowl: annulus centered (549.5, 655.75), outer r 243.75, hole r 93.75 -->
+        <path d="M 305.75 655.75 A 243.75 243.75 0 1 0 793.25 655.75 A 243.75 243.75 0 1 0 305.75 655.75 Z
+                 M 455.75 655.75 A 93.75 93.75 0 1 1 643.25 655.75 A 93.75 93.75 0 1 1 455.75 655.75 Z"/>
+    </g>
+</svg>
