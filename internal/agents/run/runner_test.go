@@ -12,12 +12,17 @@ import (
 )
 
 type fakeChatModel struct {
-	model.BaseChatModel
+	model.BaseModel[*schema.AgenticMessage]
 	reply string
 }
 
-func (m *fakeChatModel) Generate(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.Message, error) {
-	return schema.AssistantMessage(m.reply, nil), nil
+func (m *fakeChatModel) Generate(_ context.Context, _ []*schema.AgenticMessage, _ ...model.Option) (*schema.AgenticMessage, error) {
+	return &schema.AgenticMessage{
+		Role: schema.AgenticRoleTypeAssistant,
+		ContentBlocks: []*schema.ContentBlock{
+			schema.NewContentBlock(&schema.AssistantGenText{Text: m.reply}),
+		},
+	}, nil
 }
 
 func TestTurnLifecycle(t *testing.T) {
@@ -40,7 +45,7 @@ func TestStreamSubscription(t *testing.T) {
 
 func TestRunner_ExecuteTurn(t *testing.T) {
 	ctx := t.Context()
-	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
+	agent, err := adk.NewTypedChatModelAgent[*schema.AgenticMessage](ctx, &adk.TypedChatModelAgentConfig[*schema.AgenticMessage]{
 		Name:  "test-agent",
 		Model: &fakeChatModel{reply: "test response"},
 	})
@@ -50,6 +55,12 @@ func TestRunner_ExecuteTurn(t *testing.T) {
 	turn := NewTurn("turn-1")
 	rt := NewRunningTurn(turn, "session-1", ctx, func() {})
 
-	err = runner.ExecuteTurn(ctx, rt, agent, []*schema.Message{schema.UserMessage("hi")})
+	msg := &schema.AgenticMessage{
+		Role: schema.AgenticRoleTypeUser,
+		ContentBlocks: []*schema.ContentBlock{
+			schema.NewContentBlock(&schema.UserInputText{Text: "hi"}),
+		},
+	}
+	err = runner.ExecuteTurn(ctx, rt, agent, []*schema.AgenticMessage{msg})
 	require.NoError(t, err)
 }

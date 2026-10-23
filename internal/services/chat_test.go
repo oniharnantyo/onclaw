@@ -117,6 +117,15 @@ func (m *fakeAgentManager) Busy(_ context.Context, sessionID string) bool {
 	return m.busy[sessionID]
 }
 
+func (m *fakeAgentManager) TurnState(_ context.Context, sessionID string) (bool, string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.busy[sessionID] {
+		return true, "turn-" + sessionID
+	}
+	return false, ""
+}
+
 func (m *fakeAgentManager) Subscribe(_ context.Context, sessionID string) (agents.Subscription, error) {
 	if m.subscribeErr != nil {
 		return nil, m.subscribeErr
@@ -450,4 +459,20 @@ func TestChatService_ResolveApproval_DelegatesToRuntime(t *testing.T) {
 	turns.resolveErr = agents.ErrApprovalNotPending
 	err := svc.ResolveApproval(context.Background(), "s1", "int-1", true)
 	require.ErrorIs(t, err, agents.ErrApprovalNotPending, "the stale-id conflict propagates to the caller")
+}
+
+func TestChatService_TurnState_RunningAndIdle(t *testing.T) {
+	turns := newFakeAgentManager()
+	turns.busy["s1"] = true
+	svc := newTestChatService(t, turns, &fakeSessionsService{store: fake.New()}, &recordingEmitter{})
+
+	res, err := svc.TurnState(context.Background(), "s1")
+	require.NoError(t, err)
+	require.True(t, res.Busy)
+	require.Equal(t, "turn-s1", res.TurnID)
+
+	idleRes, err := svc.TurnState(context.Background(), "s2")
+	require.NoError(t, err)
+	require.False(t, idleRes.Busy)
+	require.Empty(t, idleRes.TurnID)
 }

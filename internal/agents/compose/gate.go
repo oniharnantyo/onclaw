@@ -9,7 +9,11 @@ import (
 
 // Tool name constants for built-in and middleware-registered tools.
 const (
-	ToolExecute    = "execute"
+	ToolExecute = "execute"
+	// ToolShellAlias is the second name the execute tool is registered under
+	// (compose.go): the same jailed shell, reachable by the name models tend
+	// to guess.
+	ToolShellAlias = "shell"
 	ToolReadFile   = "read_file"
 	ToolWriteFile  = "write_file"
 	ToolEditFile   = "edit_file"

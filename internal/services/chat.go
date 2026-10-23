@@ -245,6 +245,20 @@ func (s *ChatService) ContextUsage(ctx context.Context, sessionID string) (agent
 	return usage, nil
 }
 
+// TurnStateResult is the in-flight turn status of a session (design D1):
+// Busy reports whether a turn is running or parked on an approval, and
+// TurnID identifies that in-flight turn for re-adoption by the frontend.
+type TurnStateResult struct {
+	Busy   bool   `json:"busy"`
+	TurnID string `json:"turn_id"`
+}
+
+// TurnState reports whether the session has a turn in flight and its turn ID.
+func (s *ChatService) TurnState(ctx context.Context, sessionID string) (TurnStateResult, error) {
+	busy, turnID := s.turns.TurnState(ctx, sessionID)
+	return TurnStateResult{Busy: busy, TurnID: turnID}, nil
+}
+
 // WorkspaceEntry is one listed workspace child (design D8).
 type WorkspaceEntry struct {
 	// Name is the entry's base name inside the listed directory.

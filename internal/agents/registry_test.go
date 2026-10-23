@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cloudwego/eino-ext/components/model/claude"
-	"github.com/cloudwego/eino-ext/components/model/gemini"
-	"github.com/cloudwego/eino-ext/components/model/openai"
+	agenticclaude "github.com/cloudwego/eino-ext/components/model/agenticclaude"
+	agenticgemini "github.com/cloudwego/eino-ext/components/model/agenticgemini"
+	agenticopenai "github.com/cloudwego/eino-ext/components/model/agenticopenai"
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/oniharnantyo/buddies/internal/sessions"
@@ -66,7 +66,7 @@ func TestRegistry_BuildAnthropicWiresClaude(t *testing.T) {
 
 	mdl, err := reg.Build(t.Context(), agent, ModelOverride{})
 	require.NoError(t, err)
-	require.IsType(t, &claude.ChatModel{}, mdl, "the anthropic path must construct the eino-ext claude connector")
+	require.IsType(t, &agenticclaude.Model{}, mdl, "the anthropic path must construct the eino-ext claude connector")
 }
 
 // TestRegistry_BuildOpenAIAndGeminiRegistered covers the other registered
@@ -78,8 +78,8 @@ func TestRegistry_BuildOpenAIAndGeminiRegistered(t *testing.T) {
 		model        string
 		wantType     any
 	}{
-		{ProviderOpenAI, "gpt-4o", &openai.ChatModel{}},
-		{ProviderGemini, "gemini-2.5-flash", &gemini.ChatModel{}},
+		{ProviderOpenAI, "gpt-4o", &agenticopenai.ChatModel{}},
+		{ProviderGemini, "gemini-2.5-flash", &agenticgemini.Model{}},
 	} {
 		t.Run(tc.providerType, func(t *testing.T) {
 			fs := fakeStoreForRegistry(t)
@@ -151,7 +151,7 @@ func TestRegistry_RejectsUnconfiguredProviders(t *testing.T) {
 
 		mdl, err := newModelRegistry(fs).Build(t.Context(), *agent, ModelOverride{})
 		require.NoError(t, err)
-		require.IsType(t, &openai.ChatModel{}, mdl)
+		require.IsType(t, &agenticopenai.ChatModel{}, mdl)
 	})
 
 	t.Run("unsupported provider type", func(t *testing.T) {
@@ -235,7 +235,7 @@ func TestRegistry_OverrideModelReplacesAgentModel(t *testing.T) {
 
 		mdl, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{Model: "claude-opus-4-1"})
 		require.NoError(t, err)
-		require.IsType(t, &claude.ChatModel{}, mdl)
+		require.IsType(t, &agenticclaude.Model{}, mdl)
 	})
 
 	t.Run("empty override inherits the agent's model", func(t *testing.T) {

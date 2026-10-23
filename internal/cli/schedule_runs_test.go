@@ -72,6 +72,10 @@ func (m *fakeAgentsManager) ResolveApproval(context.Context, string, string, boo
 	return panicUnexpected()
 }
 func (m *fakeAgentsManager) Busy(context.Context, string) bool { panicUnexpected(); return false }
+func (m *fakeAgentsManager) TurnState(context.Context, string) (bool, string) {
+	panicUnexpected()
+	return false, ""
+}
 
 func panicUnexpected() error {
 	panic("unexpected call")

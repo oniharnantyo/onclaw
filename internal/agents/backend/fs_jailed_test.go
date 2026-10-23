@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	einofs "github.com/cloudwego/eino/adk/filesystem"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestFilesystemJail_EscapeAttempts(t *testing.T) {
@@ -702,4 +704,50 @@ func TestFilesystemJail_MountPoint(t *testing.T) {
 			t.Errorf("expected prefix-confusion path rejection, got: %v", err)
 		}
 	})
+}
+
+func TestFilesystemJail_MultiModalRead(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	jail, err := NewFilesystemJail(root)
+	require.NoError(t, err)
+
+	mmReader, ok := jail.(einofs.MultiModalReader)
+	require.True(t, ok, "jail backend must implement einofs.MultiModalReader")
+
+	// 1. Text file passthrough
+	err = jail.Write(ctx, &einofs.WriteRequest{FilePath: "sample.txt", Content: "plain text file content"})
+	require.NoError(t, err)
+
+	res, err := mmReader.MultiModalRead(ctx, &einofs.MultiModalReadRequest{
+		ReadRequest: einofs.ReadRequest{FilePath: "/workspace/sample.txt"},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	assert.Equal(t, "plain text file content", res.FileContent.Content)
+
+	// 2. Image reading
+	pngBytes := []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+		0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00,
+		0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+		0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49,
+		0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(root, "icon.png"), pngBytes, 0644))
+
+	res, err = mmReader.MultiModalRead(ctx, &einofs.MultiModalReadRequest{
+		ReadRequest: einofs.ReadRequest{FilePath: "/workspace/icon.png"},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	require.NotEmpty(t, res.Parts, "reading image should return multimodal parts")
+	assert.Equal(t, einofs.FileContentPartTypeImage, res.Parts[0].Type)
+
+	// 3. Jail escape rejection on MultiModalRead
+	_, err = mmReader.MultiModalRead(ctx, &einofs.MultiModalReadRequest{
+		ReadRequest: einofs.ReadRequest{FilePath: "../../outside.png"},
+	})
+	require.Error(t, err, "MultiModalRead must reject escape attempts")
 }

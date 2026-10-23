@@ -12,7 +12,7 @@ import (
 
 // HooksMiddleware gates tool calls through the turn's resolved hook chain.
 type HooksMiddleware struct {
-	adk.BaseChatModelAgentMiddleware
+	adk.TypedBaseChatModelAgentMiddleware[*schema.AgenticMessage]
 	resolved *hooks.Resolved
 	base     hooks.Event
 }

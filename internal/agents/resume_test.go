@@ -419,7 +419,7 @@ func TestApproval_CancelDuringResume(t *testing.T) {
 
 	root := t.TempDir()
 	gate := make(chan struct{})
-	var streamCalls int
+	var streamCalls atomic.Int32
 	f := approvalFixture(t, root, func(input []*schema.Message) fakeReply {
 		for _, msg := range input {
 			if msg.Role == schema.User && strings.Contains(msg.Content, "after the cancel") {
@@ -440,8 +440,7 @@ func TestApproval_CancelDuringResume(t *testing.T) {
 	// Only the RESUMED run's model call pauses mid-stream (the second Stream
 	// of the turn): the original run must complete its interrupting call.
 	f.model.midStream = func() {
-		streamCalls++
-		if streamCalls >= 2 {
+		if streamCalls.Add(1) >= 2 {
 			<-gate
 		}
 	}

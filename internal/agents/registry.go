@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/schema"
 
 	"github.com/oniharnantyo/buddies/internal/store"
 )
@@ -32,7 +33,7 @@ type modelRegistry interface {
 	// ErrProviderUnsupported, ErrModelNotListed, ErrEffortUnsupported) when
 	// the provider cannot serve the agent or the override is not valid for
 	// it.
-	Build(ctx context.Context, agent store.Agent, override ModelOverride) (model.BaseChatModel, error)
+	Build(ctx context.Context, agent store.Agent, override ModelOverride) (model.BaseModel[*schema.AgenticMessage], error)
 	// Models lists the catalog's model ids for a provider type, sorted.
 	Models(providerType string) []string
 }
@@ -50,7 +51,7 @@ func newModelRegistry(s store.Store) modelRegistry {
 	}
 }
 
-func (r *storeModelRegistry) Build(ctx context.Context, agent store.Agent, override ModelOverride) (model.BaseChatModel, error) {
+func (r *storeModelRegistry) Build(ctx context.Context, agent store.Agent, override ModelOverride) (model.BaseModel[*schema.AgenticMessage], error) {
 	if agent.ProviderID == "" {
 		return nil, fmt.Errorf("%w: agent %q has no provider selected", ErrProviderNotConfigured, agent.Name)
 	}

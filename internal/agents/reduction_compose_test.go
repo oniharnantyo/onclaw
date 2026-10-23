@@ -34,11 +34,14 @@ func (t *customTestTool) InvokableRun(ctx context.Context, args string, opts ...
 	return t.run(ctx, args)
 }
 
-func drainRunnerIterator(iter *adk.AsyncIterator[*adk.AgentEvent]) error {
+func drainRunnerIterator[T adk.MessageType](iter *adk.AsyncIterator[*adk.TypedAgentEvent[T]]) error {
 	for {
-		_, ok := iter.Next()
+		ev, ok := iter.Next()
 		if !ok {
 			break
+		}
+		if ev.Err != nil {
+			return ev.Err
 		}
 	}
 	return nil
@@ -94,12 +97,12 @@ func TestReductionCompose_OversizedOutputTruncated(t *testing.T) {
 	require.NotNil(t, agent)
 	require.NotNil(t, toolErrors)
 
-	runner := adk.NewRunner(ctx, adk.RunnerConfig{
+	runner := adk.NewTypedRunner(adk.TypedRunnerConfig[*schema.AgenticMessage]{
 		Agent:           agent,
 		EnableStreaming: true,
 	})
 
-	iter := runner.Run(ctx, []*schema.Message{schema.UserMessage("run heavy tool")})
+	iter := runner.Run(ctx, []*schema.AgenticMessage{schema.UserAgenticMessage("run heavy tool")})
 	err = drainRunnerIterator(iter)
 	require.NoError(t, err)
 
@@ -231,12 +234,12 @@ func TestReductionCompose_OffloadFailureKeepsOriginal(t *testing.T) {
 	require.NotNil(t, agent)
 	require.NotNil(t, toolErrors)
 
-	runner := adk.NewRunner(ctx, adk.RunnerConfig{
+	runner := adk.NewTypedRunner(adk.TypedRunnerConfig[*schema.AgenticMessage]{
 		Agent:           agent,
 		EnableStreaming: true,
 	})
 
-	iter := runner.Run(ctx, []*schema.Message{schema.UserMessage("execute tool")})
+	iter := runner.Run(ctx, []*schema.AgenticMessage{schema.UserAgenticMessage("execute tool")})
 	err = drainRunnerIterator(iter)
 	// Turn MUST NOT fail even if offload failed
 	require.NoError(t, err)

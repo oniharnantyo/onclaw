@@ -3,7 +3,6 @@ package agents
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -87,10 +86,12 @@ func sawToolMessage(input []*schema.Message) bool {
 	return false
 }
 
-// delegateOnceReply scripts the canonical delegating parent: the first call
-// delegates task, the child's fresh context (whose user message IS the task
-// text) gets the child answer, and the second parent call reads the child's
-// answer out of the tool result and closes the turn.
+// delegateOnceReply scripts the canonical delegating parent under the
+// always-background contract: the first call delegates task, the child's
+// fresh context (whose user message IS the task text) gets the child answer,
+// the parent collects the detached child's answer through a blocking
+// task_output, and once a tool result carries that answer the parent closes
+// the turn.
 func delegateOnceReply(task, childAnswer, finalAnswer string) func([]*schema.Message) fakeReply {
 	return func(input []*schema.Message) fakeReply {
 		for _, m := range input {
@@ -98,23 +99,25 @@ func delegateOnceReply(task, childAnswer, finalAnswer string) func([]*schema.Mes
 				return fakeReply{text: childAnswer, promptTokens: 5, completionTokens: 3}
 			}
 		}
-		for _, msg := range input {
-			if msg.Role == schema.Tool && strings.Contains(msg.Content, childAnswer) {
-				return fakeReply{text: finalAnswer, promptTokens: 30, completionTokens: 5}
-			}
-		}
 		if !sawToolMessage(input) {
 			return toolCallsReply("call-1", ToolAgent, fmt.Sprintf(`{"task":%q}`, task))
 		}
-		return fakeReply{err: errors.New("the delegated answer never reached the parent")}
+		if strings.Contains(textOfMessages(input, schema.Tool), childAnswer) {
+			return fakeReply{text: finalAnswer, promptTokens: 30, completionTokens: 5}
+		}
+		// Yield to the detached child before polling, so the parent's loop
+		// cannot outrun the child's completion at fake-model speed.
+		time.Sleep(5 * time.Millisecond)
+		return toolCallsReply("call-2", ToolTaskOutput, `{"task_id":"task-1"}`)
 	}
 }
 
 // TestSubagent_DelegationRoundTrip is the core delegation path (spec
-// agent-subagents "Delegation returns a result"): the parent calls the agent
-// tool, the clone runs its own turn, and the child's final answer comes back
-// as the tool result — with a terminal task_activity record on the parent's
-// transcript carrying the task identity and its transcript path.
+// agent-subagents "Delegation returns a result") under the always-background
+// contract: the parent calls the agent tool and gets the task id back at
+// once, the clone runs detached, the parent collects the child's final
+// answer through task_output — and a terminal task_activity record on the
+// parent's transcript carries the task identity and its transcript path.
 func TestSubagent_DelegationRoundTrip(t *testing.T) {
 	f, _ := newWorkspaceFixture(t, delegateOnceReply(
 		"summarize the repository layout", "the layout is: cmd, internal, frontend", "Delegated: the layout is known."))
@@ -127,15 +130,19 @@ func TestSubagent_DelegationRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, turn.Wait())
 
-	// The parent's tool record carries the child's answer as its result.
+	// The launch answers with the task id; the collection call carries the
+	// child's answer as its result.
 	events, err := f.sessions.Events(ctx, sess.ID)
 	require.NoError(t, err)
 	tools := eventsOfKind(events, sessions.KindToolActivity)
-	require.Len(t, tools, 1)
+	require.GreaterOrEqual(t, len(tools), 2, "the parent's delegate call and its task_output call(s)")
 	require.Equal(t, ToolAgent, tools[0].Tool.Name)
 	require.Equal(t, sessions.ToolStatusCompleted, tools[0].Tool.Status)
-	require.Contains(t, tools[0].Tool.Result, "the layout is: cmd, internal, frontend")
-	require.Contains(t, tools[0].Tool.Result, `"task_id":"task-1"`)
+	require.Contains(t, tools[0].Tool.Result, "task-1", "the launch returns the task id, not the answer")
+	require.NotContains(t, tools[0].Tool.Result, "the layout is: cmd, internal, frontend")
+	last := tools[len(tools)-1]
+	require.Equal(t, ToolTaskOutput, last.Tool.Name)
+	require.Contains(t, last.Tool.Result, "the layout is: cmd, internal, frontend")
 
 	// The task's terminal record is persisted on the parent transcript.
 	tasks := eventsOfKind(events, sessions.KindTaskActivity)
@@ -144,8 +151,11 @@ func TestSubagent_DelegationRoundTrip(t *testing.T) {
 	require.Equal(t, sessions.ToolStatusCompleted, tasks[0].Task.Status)
 	require.Equal(t, "summarize the repository layout", tasks[0].Task.Description)
 	require.Contains(t, tasks[0].Task.Result, "the layout is: cmd, internal, frontend")
-	require.False(t, tasks[0].Task.Background, "a foreground delegation is not a background task")
-	require.Equal(t, filepath.Join(".tasks", "task-1.md"), tasks[0].Task.TranscriptPath)
+	require.True(t, tasks[0].Task.Background, "every delegation runs as a background task")
+	require.Empty(t, tasks[0].Task.Progress, "the terminal record carries no live progress")
+	// The transcript path is eino's reserved per-call file, the same path
+	// task_output reports to the parent.
+	require.Equal(t, filepath.Join(".tasks", "call-1.output"), tasks[0].Task.TranscriptPath)
 
 	// The parent's final answer closes the turn.
 	require.Contains(t, textOf(events, sessions.KindAssistantMessage), "Delegated: the layout is known.")
@@ -169,7 +179,11 @@ func TestSubagent_CloneToolSurface(t *testing.T) {
 		if !sawToolMessage(input) {
 			return toolCallsReply("call-1", ToolAgent, `{"task":"inspect the surface"}`)
 		}
-		return fakeReply{text: "done"}
+		if strings.Contains(textOfMessages(input, schema.Tool), "the surface is as offered") {
+			return fakeReply{text: "done"}
+		}
+		time.Sleep(5 * time.Millisecond)
+		return toolCallsReply("call-2", ToolTaskOutput, `{"task_id":"task-1"}`)
 	})
 
 	ctx := t.Context()
@@ -186,7 +200,13 @@ func TestSubagent_CloneToolSurface(t *testing.T) {
 	require.NoError(t, turn.Wait())
 
 	parent := f.model.toolsOf(0)
-	child := f.model.toolsOf(1)
+	// The child runs detached, so its model call is found by content, not
+	// by position.
+	child := f.model.toolsOfCallWhere(func(input []*schema.Message) bool {
+		_, ok := childCall(input, "inspect the surface")
+		return ok
+	})
+	require.NotNil(t, child, "the clone's model call was recorded")
 	require.Contains(t, parent, ToolAgent, "the parent is offered the delegation tool")
 	require.Contains(t, child, ToolCurrentTime, "the clone keeps the parent's direct tools")
 	require.NotContains(t, child, ToolAgent, "no recursion: the clone cannot delegate")
@@ -263,7 +283,7 @@ func TestSubagent_BackgroundLane(t *testing.T) {
 	require.Contains(t, textOf(events, sessions.KindAssistantMessage), "Started the research in the background.")
 	tools := eventsOfKind(events, sessions.KindToolActivity)
 	require.Len(t, tools, 1)
-	require.Contains(t, tools[0].Tool.Result, `"task_id":"task-1"`)
+	require.Contains(t, tools[0].Tool.Result, "task-1")
 	require.NotContains(t, tools[0].Tool.Result, "the child's report",
 		"a background launch returns the task id, not the answer")
 
@@ -292,11 +312,11 @@ func TestSubagent_BackgroundLane(t *testing.T) {
 	require.Equal(t, "task-1", tasks[0].Task.TaskID)
 	require.True(t, tasks[0].Task.Background)
 	require.Contains(t, tasks[0].Task.Result, "the child's report")
-	require.Equal(t, filepath.Join(".tasks", "task-1.md"), tasks[0].Task.TranscriptPath)
+	require.Equal(t, filepath.Join(".tasks", "call-1.output"), tasks[0].Task.TranscriptPath)
 
 	// The materialized transcript holds the child's output (streamed, so
 	// reconstructed from the text steps like any JSONL reader would).
-	raw, err := os.ReadFile(filepath.Join(f.mgr.workspaces.Root(), "tester", ".tasks", "task-1.md"))
+	raw, err := os.ReadFile(filepath.Join(f.mgr.workspaces.Root(), "tester", ".tasks", "call-1.output"))
 	require.NoError(t, err)
 	var text strings.Builder
 	for _, line := range strings.Split(string(raw), "\n") {
@@ -338,7 +358,7 @@ func TestSubagent_TaskOutputCollectsCompletedRun(t *testing.T) {
 		if !sawToolMessage(input) {
 			return toolCallsReply("call-1", ToolAgent, `{"task":"finish quickly","run_in_background":true}`)
 		}
-		if strings.Contains(textOfMessages(input, schema.Tool), `"state":"completed"`) {
+		if strings.Contains(textOfMessages(input, schema.Tool), "completed") {
 			return fakeReply{text: "Collected: finished in the background."}
 		}
 		// Yield to the detached child before polling again, so the parent's
@@ -368,12 +388,13 @@ func TestSubagent_TaskOutputCollectsCompletedRun(t *testing.T) {
 	last := tools[len(tools)-1]
 	require.Equal(t, ToolTaskOutput, last.Tool.Name)
 	require.Contains(t, last.Tool.Result, "finished in the background")
-	require.Contains(t, last.Tool.Result, `"state":"completed"`)
+	require.Contains(t, last.Tool.Result, "completed")
 }
 
 // TestSubagent_SequentialDelegationsGetDistinctIDs covers the run-scoped
 // task-ID space (spec agent-subagents "Task identifiers SHALL be unique
-// within the run"): two delegations in one turn are task-1 and task-2.
+// within the run"): two delegations in one turn are task-1 and task-2, each
+// launched and then collected through task_output.
 func TestSubagent_SequentialDelegationsGetDistinctIDs(t *testing.T) {
 	f, _ := newWorkspaceFixture(t, func(input []*schema.Message) fakeReply {
 		if childText, ok := childCall(input, "first task", "second task"); ok {
@@ -383,10 +404,16 @@ func TestSubagent_SequentialDelegationsGetDistinctIDs(t *testing.T) {
 		}
 		toolMsgs := textOfMessages(input, schema.Tool)
 		switch {
-		case !strings.Contains(toolMsgs, "child says: first task"):
+		case !sawToolMessage(input):
 			return toolCallsReply("call-1", ToolAgent, `{"task":"first task"}`)
+		case !strings.Contains(toolMsgs, "child says: first task"):
+			time.Sleep(5 * time.Millisecond)
+			return toolCallsReply("call-2", ToolTaskOutput, `{"task_id":"task-1"}`)
+		case !strings.Contains(toolMsgs, "task-2"):
+			return toolCallsReply("call-3", ToolAgent, `{"task":"second task"}`)
 		case !strings.Contains(toolMsgs, "child says: second task"):
-			return toolCallsReply("call-2", ToolAgent, `{"task":"second task"}`)
+			time.Sleep(5 * time.Millisecond)
+			return toolCallsReply("call-4", ToolTaskOutput, `{"task_id":"task-2"}`)
 		default:
 			return fakeReply{text: "both delegations returned"}
 		}
@@ -420,7 +447,7 @@ func taskRunning(f *fixture, sessionID, taskID string) bool {
 	if tasks == nil {
 		return false
 	}
-	snapshot, err := tasks.lookup(taskID)
+	snapshot, err := tasks.Lookup(taskID)
 	if err != nil {
 		return false
 	}
@@ -448,7 +475,7 @@ func TestSubagent_TaskStopCancelsRunningTask(t *testing.T) {
 		if !sawToolMessage(input) {
 			return toolCallsReply("call-1", ToolAgent, `{"task":"cancel me","run_in_background":true}`)
 		}
-		if strings.Contains(textOfMessages(input, schema.Tool), `"state":"stopped"`) {
+		if strings.Contains(strings.ToLower(textOfMessages(input, schema.Tool)), "stop") {
 			return fakeReply{text: "Stopped the task."}
 		}
 		// The launch returned the task id; hold the stop call until the test
@@ -482,7 +509,7 @@ func TestSubagent_TaskStopCancelsRunningTask(t *testing.T) {
 	tools := eventsOfKind(events, sessions.KindToolActivity)
 	require.Len(t, tools, 2, "the parent's delegate call and its task_stop call")
 	require.Equal(t, ToolTaskStop, tools[1].Tool.Name)
-	require.Contains(t, tools[1].Tool.Result, `"state":"stopped"`)
+	require.Contains(t, strings.ToLower(tools[1].Tool.Result), "stop")
 
 	tasks := eventsOfKind(events, sessions.KindTaskActivity)
 	require.NotEmpty(t, tasks)
@@ -505,7 +532,7 @@ func TestSubagent_TranscriptReadableByParentTools(t *testing.T) {
 	require.NoError(t, turn.Wait())
 
 	// The file exists on disk inside the workspace.
-	file := filepath.Join(f.mgr.workspaces.Root(), "tester", ".tasks", "task-1.md")
+	file := filepath.Join(f.mgr.workspaces.Root(), "tester", ".tasks", "call-1.output")
 	raw, err := os.ReadFile(file)
 	require.NoError(t, err, "the child transcript must be materialized under .tasks/")
 	body := string(raw)
@@ -530,12 +557,12 @@ func TestSubagent_TranscriptReadableByParentTools(t *testing.T) {
 	require.Contains(t, text.String(), "the modules are cmd, internal, frontend")
 
 	// And the parent's own file tools read it through the workspace mount:
-	// run a second turn that reads /workspace/.tasks/task-1.md.
+	// run a second turn that reads /workspace/.tasks/call-1.output.
 	f.model.reply = func(input []*schema.Message) fakeReply {
 		if sawToolMessage(input) {
 			return fakeReply{text: "the transcript is readable"}
 		}
-		return toolCallsReply("read-1", ToolReadFile, `{"file_path":"/workspace/.tasks/task-1.md"}`)
+		return toolCallsReply("read-1", ToolReadFile, `{"file_path":"/workspace/.tasks/call-1.output"}`)
 	}
 
 	turn, err = f.mgr.Send(ctx, sess.ID, "read the task transcript back")

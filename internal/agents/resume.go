@@ -8,9 +8,11 @@ import (
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/schema"
 
 	"github.com/oniharnantyo/buddies/internal/agents/backend"
 	"github.com/oniharnantyo/buddies/internal/agents/hooks"
+	"github.com/oniharnantyo/buddies/internal/agents/subagents"
 	"github.com/oniharnantyo/buddies/internal/sessions"
 	"github.com/oniharnantyo/buddies/internal/store"
 )
@@ -140,7 +142,7 @@ func (m *manager) ResolveApproval(ctx context.Context, sessionID, interruptID st
 	rt, live := m.running[sessionID]
 	var (
 		turn       *Turn
-		agent      adk.Agent
+		agent      adk.TypedAgent[*schema.AgenticMessage]
 		toolErrors *toolErrorResult
 		usage      *sessions.Usage
 		args       map[string]string
@@ -383,6 +385,7 @@ func (m *manager) composeResumeRun(ctx context.Context, rt *runningTurn, sess se
 			checkpointID: pend.checkpointID,
 			resume:       true,
 			resumeData:   deny(),
+			planDir:      m.planDirForSlug(agent.Slug),
 		}, nil
 	}
 
@@ -445,8 +448,9 @@ func (m *manager) composeResumeRun(ctx context.Context, rt *runningTurn, sess se
 	}
 	var skillsCap *skillsCapability
 	if skillBackend != nil {
-		skillsCap = &skillsCapability{Backend: skillBackend, GlobalDir: m.skillsDir}
+		skillsCap = &skillsCapability{Backend: skillBackend}
 	}
+	var extraRoots []string
 	if surface.agentDir != "" {
 		fsCap := &filesystemCapability{AgentDir: surface.agentDir, DisabledTools: surface.fsDisabled}
 		if surface.shell {
@@ -458,7 +462,7 @@ func (m *manager) composeResumeRun(ctx context.Context, rt *runningTurn, sess se
 		}
 		cfg.Filesystem = fsCap
 
-		extraRoots := fsCap.ExtraRoots
+		extraRoots = fsCap.ExtraRoots
 		cfg.Reduction = &reductionCapability{
 			AgentDir:     surface.agentDir,
 			ExtraRoots:   extraRoots,
@@ -490,13 +494,39 @@ func (m *manager) composeResumeRun(ctx context.Context, rt *runningTurn, sess se
 	if err != nil {
 		return turnRun{}, err
 	}
-	delegationCap, err := m.resolveDelegation(ctx, agent, surface, tasks, mdl, instruction, skillsCap, hookCap, rt.turn.id, mcpTools)
-	if err != nil {
-		return turnRun{}, err
-	}
-	if delegationCap != nil {
-		cfg.Subagent = delegationCap.subagentCap
-		cfg.BackgroundTask = delegationCap.bgCap
+	if agent.SubagentsEnabled {
+		tasksDir := ""
+		if surface.agentDir != "" && m.workspaces != nil && agent.Slug != "" {
+			dir, err := m.workspaces.TasksDir(agent.Slug)
+			if err != nil {
+				return turnRun{}, fmt.Errorf("resolve tasks directory for agent %q: %w", agent.Slug, err)
+			}
+			tasksDir = dir
+		}
+		tasks.SetTurnID(rt.turn.id)
+		subCaps, err := subagents.New(ctx, &subagents.Config{
+			Instruction:      instruction,
+			Model:            mdl,
+			Tools:            surface.tools,
+			MCPTools:         mcpTools,
+			AgentDir:         surface.agentDir,
+			ExtraRoots:       extraRoots,
+			Shell:            surface.shell,
+			FSDisabled:       surface.fsDisabled,
+			PlantaskDisabled: surface.plantaskDisabled,
+			ContextLimit:     int64(m.contextLimit(ctx, agent)),
+			TasksDir:         tasksDir,
+			TurnID:           rt.turn.id,
+			Skills:           skillsCap,
+			Hooks:            hookCap,
+			Checkpoints:      backend.WithApprovalGate(checkpointLedger{checkpoints: m.store.Checkpoints()}),
+			Registry:         tasks,
+		})
+		if err != nil {
+			return turnRun{}, err
+		}
+		cfg.Subagent = &subagentCapability{Middleware: subCaps.SubagentMiddleware, ArgsMiddleware: subCaps.DelegationArgsMiddleware}
+		cfg.BackgroundTask = &backgroundTaskCapability{Middleware: subCaps.BackgroundTaskMiddleware}
 	}
 	if err := assertNoDelegationToolCollision(surface.tools); err != nil {
 		return turnRun{}, err
@@ -513,5 +543,6 @@ func (m *manager) composeResumeRun(ctx context.Context, rt *runningTurn, sess se
 		checkpointID: pend.checkpointID,
 		resume:       true,
 		resumeData:   deny(),
+		planDir:      planDirFor(surface.agentDir),
 	}, nil
 }

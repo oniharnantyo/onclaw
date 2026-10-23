@@ -96,16 +96,16 @@ func RenderTranscript(events []sessions.Event, upToSeq int64) string {
 func RunCompaction(
 	ctx context.Context,
 	sessionID, turnID string,
-	mdl model.BaseChatModel,
+	mdl model.BaseModel[*schema.AgenticMessage],
 	events []sessions.Event,
 	upToSeq int64,
 	sessionSvc sessions.Service,
 ) (sessions.Event, error) {
 	transcript := RenderTranscript(events, upToSeq)
 
-	summarized, err := mdl.Generate(ctx, []*schema.Message{
-		schema.SystemMessage(SummarizeSystemPrompt),
-		schema.UserMessage(transcript),
+	summarized, err := mdl.Generate(ctx, []*schema.AgenticMessage{
+		schema.SystemAgenticMessage(SummarizeSystemPrompt),
+		schema.UserAgenticMessage(transcript),
 	})
 	if err != nil {
 		return sessions.Event{}, fmt.Errorf("compact: summarize: %w", err)
@@ -113,9 +113,13 @@ func RunCompaction(
 	summary := ""
 	var usage *schema.TokenUsage
 	if summarized != nil {
-		summary = summarized.Content
+		for _, b := range summarized.ContentBlocks {
+			if b.AssistantGenText != nil {
+				summary += b.AssistantGenText.Text
+			}
+		}
 		if summarized.ResponseMeta != nil {
-			usage = summarized.ResponseMeta.Usage
+			usage = summarized.ResponseMeta.TokenUsage
 		}
 	}
 
@@ -123,6 +127,7 @@ func RunCompaction(
 	after := len(summary) / CharsPerToken
 
 	checkpoint := sessions.Checkpoint{
+		Version:      sessions.CheckpointVersionAgenticV1,
 		Summary:      summary,
 		UpToSeq:      upToSeq,
 		TokensBefore: before,

@@ -67,6 +67,10 @@ const (
 	// KindCompaction marks a compaction of the session's working context
 	// (persisted). The stored transcript is never truncated by compaction.
 	KindCompaction Kind = "compaction"
+	// KindPlanActivity carries a full snapshot of the agent's task plan (the
+	// plantask tools' tasks) after a plan tool changed it (persisted: replay
+	// folds to the newest snapshot).
+	KindPlanActivity Kind = "plan_activity"
 )
 
 // Approval outcomes — the decision recorded on a KindApprovalResolved event.
@@ -157,6 +161,12 @@ type TaskActivity struct {
 	TranscriptPath string `json:"transcript_path,omitempty"`
 	// Background reports whether the delegation ran in the background lane.
 	Background bool `json:"background,omitempty"`
+	// Progress is the child's latest activity while running — one line derived
+	// from its most recent transcript record (a tool call, a text fragment).
+	// Live-only: it rides running snapshots and is empty on terminal records.
+	Progress string `json:"progress,omitempty"`
+	// Steps counts the transcript records the child has produced so far.
+	Steps int `json:"steps,omitempty"`
 }
 
 // Terminal reports whether the task is in a state that may be persisted:
@@ -240,6 +250,27 @@ type Event struct {
 	// Approval carries the approval payload: the pending dangerous-command
 	// request (KindApprovalRequired) or the decision (KindApprovalResolved).
 	Approval *Approval `json:"approval,omitempty"`
+	// Plan carries the task-plan snapshot (KindPlanActivity).
+	Plan *PlanSnapshot `json:"plan,omitempty"`
+}
+
+// PlanSnapshot is the agent's whole task plan at one moment, in plan order.
+// It mirrors the plantask tools' records so the UI can render the plan's
+// progress without parsing tool results.
+type PlanSnapshot struct {
+	Tasks []PlanTask `json:"tasks"`
+}
+
+// PlanTask is one plan item. Status is the plantask vocabulary ("pending",
+// "in_progress", "completed"); deleted tasks are not snapshotted. A pending
+// task with a non-empty BlockedBy is waiting on other tasks.
+type PlanTask struct {
+	ID          string   `json:"id"`
+	Subject     string   `json:"subject"`
+	Description string   `json:"description,omitempty"`
+	Status      string   `json:"status"`
+	ActiveForm  string   `json:"active_form,omitempty"`
+	BlockedBy   []string `json:"blocked_by,omitempty"`
 }
 
 // Approval is the payload of the approval events: the dangerous command a
@@ -260,19 +291,22 @@ type Approval struct {
 	Outcome string `json:"outcome,omitempty"`
 }
 
+// CheckpointVersionAgenticV1 marks a checkpoint payload formatted for the
+// agentic runtime (design D2). Historical unmarked checkpoints are legacy.
+const CheckpointVersionAgenticV1 = "agentic-v1"
+
 // Checkpoint is a compaction checkpoint: the summary replacing the session's
 // older working context, and the log boundary (UpToSeq) it summarizes — every
 // event at or below UpToSeq is represented by Summary in the model's working
 // context. The persisted transcript itself is never truncated: the checkpoint
 // affects only what the model sees.
 type Checkpoint struct {
-	ID        string
-	SessionID string
-	Summary   string
-	UpToSeq   int64
-	// TokensBefore/TokensAfter are the display-grade estimates recorded on
-	// the compaction marker.
-	TokensBefore int
-	TokensAfter  int
-	CreatedAt    time.Time
+	Version      string    `json:"version,omitempty"`
+	ID           string    `json:"id"`
+	SessionID    string    `json:"session_id"`
+	Summary      string    `json:"summary"`
+	UpToSeq      int64     `json:"up_to_seq"`
+	TokensBefore int       `json:"tokens_before"`
+	TokensAfter  int       `json:"tokens_after"`
+	CreatedAt    time.Time `json:"created_at"`
 }

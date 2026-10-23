@@ -19,23 +19,44 @@ const DefaultInRunSummarizationFallbackTokens = 180000
 
 // SummarizationCapability configures the in-run summarization safety net middleware.
 type SummarizationCapability struct {
-	Model         model.BaseChatModel
+	Model         model.BaseModel[*schema.AgenticMessage]
 	ContextLimit  int64
 	TriggerTokens int
-	TokenCounter  summarization.TokenCounterFunc
+	TokenCounter  summarization.TypedTokenCounterFunc[*schema.AgenticMessage]
 }
 
-// DefaultSummarizationTokenCounter estimates tokens using the shared charsPerToken ratio.
-func DefaultSummarizationTokenCounter(_ context.Context, input *summarization.TypedTokenCounterInput[*schema.Message]) (int, error) {
+// DefaultSummarizationTokenCounter estimates tokens using the shared charsPerToken ratio
+// over agentic content blocks (design D1, Task 3.4).
+func DefaultSummarizationTokenCounter(_ context.Context, input *summarization.TypedTokenCounterInput[*schema.AgenticMessage]) (int, error) {
 	if input == nil {
 		return 0, nil
 	}
 	chars := 0
 	for _, m := range input.Messages {
 		if m != nil {
-			chars += len(m.Content)
-			for _, call := range m.ToolCalls {
-				chars += len(call.Function.Name) + len(call.Function.Arguments)
+			for _, b := range m.ContentBlocks {
+				if b == nil {
+					continue
+				}
+				if b.UserInputText != nil {
+					chars += len(b.UserInputText.Text)
+				}
+				if b.AssistantGenText != nil {
+					chars += len(b.AssistantGenText.Text)
+				}
+				if b.Reasoning != nil {
+					chars += len(b.Reasoning.Text)
+				}
+				if b.FunctionToolCall != nil {
+					chars += len(b.FunctionToolCall.Name) + len(b.FunctionToolCall.Arguments)
+				}
+				if b.FunctionToolResult != nil {
+					for _, c := range b.FunctionToolResult.Content {
+						if c != nil && c.Text != nil {
+							chars += len(c.Text.Text)
+						}
+					}
+				}
 			}
 		}
 	}
@@ -52,7 +73,7 @@ func DefaultSummarizationTokenCounter(_ context.Context, input *summarization.Ty
 }
 
 // NewSummarizationMiddleware constructs eino's summarization middleware for the in-run safety net.
-func NewSummarizationMiddleware(ctx context.Context, cap *SummarizationCapability) (adk.ChatModelAgentMiddleware, error) {
+func NewSummarizationMiddleware(ctx context.Context, cap *SummarizationCapability) (adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage], error) {
 	if cap == nil || cap.Model == nil {
 		return nil, fmt.Errorf("summarization capability requires a Model")
 	}
@@ -70,7 +91,7 @@ func NewSummarizationMiddleware(ctx context.Context, cap *SummarizationCapabilit
 		tokenCounter = DefaultSummarizationTokenCounter
 	}
 
-	cfg := &summarization.Config{
+	cfg := &summarization.TypedConfig[*schema.AgenticMessage]{
 		Model: cap.Model,
 		Trigger: &summarization.TriggerCondition{
 			ContextTokens: triggerTokens,
@@ -81,5 +102,5 @@ func NewSummarizationMiddleware(ctx context.Context, cap *SummarizationCapabilit
 		},
 	}
 
-	return summarization.New(ctx, cfg)
+	return summarization.NewTyped[*schema.AgenticMessage](ctx, cfg)
 }

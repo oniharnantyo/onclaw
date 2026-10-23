@@ -57,6 +57,7 @@ func (s *service) Append(ctx context.Context, sessionID string, events []Event) 
 			Error:       ev.Error,
 			Compaction:  ev.Compaction,
 			Approval:    ev.Approval,
+			Plan:        ev.Plan,
 		})
 		if err != nil {
 			return fmt.Errorf("append session events: marshal %s: %w", ev.Kind, err)
@@ -140,6 +141,7 @@ func decodeEvents(rows []store.SessionEvent) ([]Event, error) {
 			Error:       payload.Error,
 			Compaction:  payload.Compaction,
 			Approval:    payload.Approval,
+			Plan:        payload.Plan,
 		})
 	}
 	return events, nil
@@ -158,13 +160,15 @@ type eventPayload struct {
 	Error       string        `json:"error,omitempty"`
 	Compaction  *Compaction   `json:"compaction,omitempty"`
 	Approval    *Approval     `json:"approval,omitempty"`
+	Plan        *PlanSnapshot `json:"plan,omitempty"`
 }
 
 func knownKind(k Kind) bool {
 	switch k {
 	case KindUserMessage, KindTextDelta, KindReasoningDelta, KindAssistantMessage,
 		KindReasoning, KindToolActivity, KindTaskActivity, KindTurnCompleted, KindTurnError,
-		KindTurnCancelled, KindApprovalRequired, KindApprovalResolved, KindCompaction:
+		KindTurnCancelled, KindApprovalRequired, KindApprovalResolved, KindCompaction,
+		KindPlanActivity:
 		return true
 	default:
 		return false

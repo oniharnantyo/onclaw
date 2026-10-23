@@ -5,6 +5,7 @@ import (
 
 	"github.com/oniharnantyo/buddies/internal/agents/hooks"
 	"github.com/oniharnantyo/buddies/internal/agents/mcp"
+	"github.com/oniharnantyo/buddies/internal/agents/subagents"
 	"github.com/oniharnantyo/buddies/internal/attachments"
 	"github.com/oniharnantyo/buddies/internal/scheduler"
 	"github.com/oniharnantyo/buddies/internal/sessions"
@@ -107,6 +108,10 @@ type Manager interface {
 	// parked on a pending approval (spec chat-view: the running indicator,
 	// and the delete refusal for a session with a turn in flight).
 	Busy(ctx context.Context, sessionID string) bool
+	// TurnState reports whether the session has a turn in flight (running or
+	// parked on an approval) and its turn ID. When idle or unknown, reports
+	// false and empty turnID.
+	TurnState(ctx context.Context, sessionID string) (busy bool, turnID string)
 }
 
 // Option configures the agent runtime at construction.
@@ -227,7 +232,7 @@ func newManager(s store.Store, svc sessions.Service, registry modelRegistry, opt
 		subs:         make(map[string]map[int]*streamSub),
 		running:      make(map[string]*runningTurn),
 		resolving:    make(map[string]bool),
-		sessionTasks: make(map[string]*taskRegistry),
+		sessionTasks: make(map[string]*subagents.TaskRegistry),
 	}
 	for _, opt := range opts {
 		opt(m)

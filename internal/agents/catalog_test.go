@@ -3,6 +3,7 @@ package agents
 import (
 	"testing"
 
+	"github.com/oniharnantyo/buddies/internal/store"
 	"github.com/stretchr/testify/require"
 )
 
@@ -135,4 +136,228 @@ func TestModelInputCapabilities(t *testing.T) {
 	require.True(t, SupportsPDFInput(ProviderGemini, "gemini-2.5-pro"))
 	require.False(t, SupportsImageInput(ProviderAnthropic, "claude-unknown"), "unlisted models degrade to text-only")
 	require.False(t, SupportsPDFInput("quantum", "anything"))
+}
+
+func TestSupportsResponsesAPI(t *testing.T) {
+	tests := []struct {
+		name          string
+		provider      store.Provider
+		wantSupported bool
+		wantReasonSub string
+	}{
+		{
+			name: "native openai default base",
+			provider: store.Provider{
+				Type:    ProviderOpenAI,
+				BaseURL: "https://api.openai.com/v1",
+			},
+			wantSupported: true,
+		},
+		{
+			name: "compatible-with-responses custom proxy",
+			provider: store.Provider{
+				Type:    ProviderOpenAICompatible,
+				BaseURL: "https://responses-proxy.company.internal/v1",
+				Name:    "Internal Responses Proxy",
+			},
+			wantSupported: true,
+		},
+		{
+			name: "compatible-without: LM Studio default port",
+			provider: store.Provider{
+				Type:    ProviderOpenAICompatible,
+				BaseURL: "http://localhost:1234/v1",
+				Name:    "LM Studio Local",
+			},
+			wantSupported: false,
+			wantReasonSub: "LM Studio only supports /v1/chat/completions",
+		},
+		{
+			name: "compatible-without: Poolside",
+			provider: store.Provider{
+				Type:    ProviderOpenAICompatible,
+				BaseURL: "https://api.poolside.ai/v1",
+				Name:    "Poolside Laguna",
+			},
+			wantSupported: false,
+			wantReasonSub: "Poolside only supports /v1/chat/completions",
+		},
+		{
+			name: "compatible-without: Ollama local default port",
+			provider: store.Provider{
+				Type:    ProviderOpenAICompatible,
+				BaseURL: "http://localhost:11434/v1",
+				Name:    "Ollama Server",
+			},
+			wantSupported: false,
+			wantReasonSub: "Ollama lacks native /v1/responses support",
+		},
+		{
+			name: "openrouter lacking responses",
+			provider: store.Provider{
+				Type:    ProviderOpenRouter,
+				BaseURL: "https://openrouter.ai/api/v1",
+			},
+			wantSupported: false,
+			wantReasonSub: "OpenRouter only supports /v1/chat/completions",
+		},
+		{
+			name: "explicit without-responses flag",
+			provider: store.Provider{
+				Type:    ProviderOpenAICompatible,
+				BaseURL: "http://proxy.local/v1?responses=false",
+			},
+			wantSupported: false,
+			wantReasonSub: "endpoint does not implement required /v1/responses API",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			supported, reason := SupportsResponsesAPI(tt.provider)
+			require.Equal(t, tt.wantSupported, supported)
+			if !tt.wantSupported {
+				require.Contains(t, reason, tt.wantReasonSub)
+			}
+		})
+	}
+}
+
+func TestCheckTurnCapability(t *testing.T) {
+	tests := []struct {
+		name       string
+		provider   store.Provider
+		model      string
+		wantErrIs  error
+		wantErrSub string
+	}{
+		{
+			name: "native openai passes",
+			provider: store.Provider{
+				Type:    ProviderOpenAI,
+				APIKey:  "sk-test",
+				BaseURL: "https://api.openai.com/v1",
+				Name:    "OpenAI",
+			},
+			model: "gpt-5",
+		},
+		{
+			name: "compatible-with-responses passes",
+			provider: store.Provider{
+				Type:    ProviderOpenAICompatible,
+				BaseURL: "https://responses.internal.ai/v1",
+				Name:    "Responses Service",
+			},
+			model: "custom-model",
+		},
+		{
+			name: "compatible-without LM Studio fails",
+			provider: store.Provider{
+				Type:    ProviderOpenAICompatible,
+				BaseURL: "http://localhost:1234/v1",
+				Name:    "LM Studio",
+			},
+			model:      "qwen2.5-coder",
+			wantErrIs:  ErrEndpointIncompatible,
+			wantErrSub: "LM Studio only supports /v1/chat/completions",
+		},
+		{
+			name: "compatible-without Ollama fails",
+			provider: store.Provider{
+				Type:    ProviderOpenAICompatible,
+				BaseURL: "http://localhost:11434/v1",
+				Name:    "Ollama",
+			},
+			model:      "llama3",
+			wantErrIs:  ErrEndpointIncompatible,
+			wantErrSub: "Ollama lacks native /v1/responses support",
+		},
+		{
+			name: "anthropic passes without /v1/responses",
+			provider: store.Provider{
+				Type:   ProviderAnthropic,
+				APIKey: "sk-ant-test",
+				Name:   "Anthropic",
+			},
+			model: "claude-sonnet-4-5",
+		},
+		{
+			name: "gemini passes without /v1/responses",
+			provider: store.Provider{
+				Type:   ProviderGemini,
+				APIKey: "ai-test",
+				Name:   "Gemini",
+			},
+			model: "gemini-2.5-pro",
+		},
+		{
+			name: "missing api key rejected",
+			provider: store.Provider{
+				Type: ProviderOpenAI,
+				Name: "OpenAI No Key",
+			},
+			wantErrIs: ErrProviderNotConfigured,
+		},
+		{
+			name: "unknown provider type rejected",
+			provider: store.Provider{
+				Type: "unknown-vendor",
+				Name: "Mystery",
+			},
+			wantErrIs: ErrProviderUnsupported,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := CheckTurnCapability(tt.provider, tt.model)
+			if tt.wantErrIs != nil {
+				require.Error(t, err)
+				require.ErrorIs(t, err, tt.wantErrIs)
+				if tt.wantErrSub != "" {
+					require.Contains(t, err.Error(), tt.wantErrSub)
+				}
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestOllamaGatingGranularity(t *testing.T) {
+	ollamaProvider := store.Provider{
+		Type:    ProviderOpenAICompatible,
+		BaseURL: "http://localhost:11434/v1",
+		Name:    "Ollama Local",
+	}
+
+	for _, model := range []string{"llama3.2", "llama3.2-vision", "llava", "qwen2.5"} {
+		err := CheckTurnCapability(ollamaProvider, model)
+		require.ErrorIs(t, err, ErrEndpointIncompatible)
+		require.Contains(t, err.Error(), "Ollama lacks native /v1/responses support")
+	}
+}
+
+func TestCatalogProviderModels_CarriesEfforts(t *testing.T) {
+	claudeModels := CatalogProviderModels("p1", ProviderAnthropic)
+	require.NotEmpty(t, claudeModels)
+	for _, m := range claudeModels {
+		require.Equal(t, []string{"low", "medium", "high"}, m.Efforts)
+	}
+
+	openaiModels := CatalogProviderModels("p2", ProviderOpenAI)
+	require.NotEmpty(t, openaiModels)
+	for _, m := range openaiModels {
+		if m.ModelID == "gpt-5" {
+			require.Equal(t, []string{"minimal", "low", "medium", "high"}, m.Efforts)
+		} else {
+			require.Empty(t, m.Efforts)
+		}
+	}
+
+	geminiModels := CatalogProviderModels("p3", ProviderGemini)
+	require.NotEmpty(t, geminiModels)
+	for _, m := range geminiModels {
+		require.True(t, m.VideoInput, "Gemini models declare video input capability")
+	}
 }

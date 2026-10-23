@@ -290,6 +290,7 @@ func TestCapabilityResolver(t *testing.T) {
 				Efforts:       baseEfforts,
 				ImageInput:    true,
 				PDFInput:      true,
+				VideoInput:    true,
 				Enabled:       true,
 			},
 			wantErr: nil,

@@ -39,6 +39,9 @@ type fsJailedBackend struct {
 	mu         sync.RWMutex
 }
 
+var _ einofs.Backend = (*fsJailedBackend)(nil)
+var _ einofs.MultiModalReader = (*fsJailedBackend)(nil)
+
 // NewFilesystemJail creates a new filesystem jail rooted at the given directory.
 // The root directory must exist and be an absolute path.
 // All filesystem operations through this backend are restricted to this directory tree.
@@ -284,7 +287,7 @@ func isWithinRoot(root, path string) bool {
 }
 
 // LsInfo lists file information under the given path.
-func (j *fsJailedBackend) LsInfo(ctx context.Context, req *einofs.LsInfoRequest) ([]einofs.FileInfo, error) {
+func (j *fsJailedBackend) LsInfo(_ context.Context, req *einofs.LsInfoRequest) ([]einofs.FileInfo, error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 
@@ -317,7 +320,7 @@ func (j *fsJailedBackend) LsInfo(ctx context.Context, req *einofs.LsInfoRequest)
 }
 
 // Read reads file content with support for line-based offset and limit.
-func (j *fsJailedBackend) Read(ctx context.Context, req *einofs.ReadRequest) (*einofs.FileContent, error) {
+func (j *fsJailedBackend) Read(_ context.Context, req *einofs.ReadRequest) (*einofs.FileContent, error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 
@@ -326,31 +329,89 @@ func (j *fsJailedBackend) Read(ctx context.Context, req *einofs.ReadRequest) (*e
 		return nil, err
 	}
 
-	content, err := os.ReadFile(resolved)
+	content, err := readTextWindow(resolved, req.Offset, req.Limit)
 	if err != nil {
-		return nil, fmt.Errorf("read file: %w", err)
+		return nil, err
+	}
+	return &einofs.FileContent{Content: content}, nil
+}
+
+// readTextWindow reads a file as text and applies the 1-based line offset and
+// the line limit.
+func readTextWindow(path string, offset, limit int) (string, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read file: %w", err)
 	}
 
-	// Apply offset and limit
 	lines := strings.Split(string(content), "\n")
-	if req.Offset > 1 {
-		if req.Offset > len(lines) {
-			return &einofs.FileContent{Content: ""}, nil
+	if offset > 1 {
+		if offset > len(lines) {
+			return "", nil
 		}
-		lines = lines[req.Offset-1:]
+		lines = lines[offset-1:]
 	}
 
-	if req.Limit > 0 && req.Limit < len(lines) {
-		lines = lines[:req.Limit]
+	if limit > 0 && limit < len(lines) {
+		lines = lines[:limit]
 	}
 
-	return &einofs.FileContent{
-		Content: strings.Join(lines, "\n"),
-	}, nil
+	return strings.Join(lines, "\n"), nil
+}
+
+// inlineMIMETypes maps the binary extensions MultiModalRead serves as inline
+// parts to their MIME type.
+var inlineMIMETypes = map[string]einofs.FileContentPart{
+	".png":  {Type: einofs.FileContentPartTypeImage, MIMEType: "image/png"},
+	".jpg":  {Type: einofs.FileContentPartTypeImage, MIMEType: "image/jpeg"},
+	".jpeg": {Type: einofs.FileContentPartTypeImage, MIMEType: "image/jpeg"},
+	".gif":  {Type: einofs.FileContentPartTypeImage, MIMEType: "image/gif"},
+	".webp": {Type: einofs.FileContentPartTypeImage, MIMEType: "image/webp"},
+	".pdf":  {Type: einofs.FileContentPartTypePDF, MIMEType: "application/pdf"},
+}
+
+// maxInlinePartBytes bounds one inline binary part: the bytes ride the model
+// request, so a larger file is refused rather than silently dropped.
+const maxInlinePartBytes = 20 << 20
+
+// MultiModalRead reads file content supporting multimodal results. Images and
+// PDFs come back as one inline binary part for the model to consume directly
+// — there is no server-side rendering, so a PDF page range is not honored and
+// the whole document rides along. Everything else reads as text like Read.
+func (j *fsJailedBackend) MultiModalRead(_ context.Context, req *einofs.MultiModalReadRequest) (*einofs.MultiFileContent, error) {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+
+	resolved, err := j.resolvePath(req.FilePath)
+	if err != nil {
+		return nil, err
+	}
+
+	if part, ok := inlineMIMETypes[strings.ToLower(filepath.Ext(resolved))]; ok {
+		info, err := os.Stat(resolved)
+		if err != nil {
+			return nil, fmt.Errorf("stat file: %w", err)
+		}
+		if info.Size() > maxInlinePartBytes {
+			return nil, fmt.Errorf("file is %d bytes; inline %s parts are capped at %d bytes", info.Size(), part.Type, maxInlinePartBytes)
+		}
+		data, err := os.ReadFile(resolved)
+		if err != nil {
+			return nil, fmt.Errorf("read file: %w", err)
+		}
+		part.Data = data
+		return &einofs.MultiFileContent{Parts: []einofs.FileContentPart{part}}, nil
+	}
+
+	content, err := readTextWindow(resolved, req.Offset, req.Limit)
+	if err != nil {
+		return nil, err
+	}
+	return &einofs.MultiFileContent{FileContent: &einofs.FileContent{Content: content}}, nil
 }
 
 // GrepRaw searches for content matching the specified pattern in files.
-func (j *fsJailedBackend) GrepRaw(ctx context.Context, req *einofs.GrepRequest) ([]einofs.GrepMatch, error) {
+func (j *fsJailedBackend) GrepRaw(_ context.Context, req *einofs.GrepRequest) ([]einofs.GrepMatch, error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 
@@ -365,7 +426,6 @@ func (j *fsJailedBackend) GrepRaw(ctx context.Context, req *einofs.GrepRequest) 
 		pathPrefix = req.Path + "/"
 	}
 
-	// Compile regex pattern
 	flags := 0
 	if req.CaseInsensitive {
 		flags |= regexFlagsCaseInsensitive
@@ -377,7 +437,7 @@ func (j *fsJailedBackend) GrepRaw(ctx context.Context, req *einofs.GrepRequest) 
 	}
 
 	var matches []einofs.GrepMatch
-	err = filepath.Walk(searchPath, func(path string, info os.FileInfo, err error) error {
+	_ = filepath.Walk(searchPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil // Skip files we can't access
 		}
@@ -386,7 +446,6 @@ func (j *fsJailedBackend) GrepRaw(ctx context.Context, req *einofs.GrepRequest) 
 			return nil
 		}
 
-		// Apply glob filter if specified
 		if req.Glob != "" {
 			matched, err := matchGlob(req.Glob, path, searchPath)
 			if err != nil || !matched {
@@ -394,7 +453,6 @@ func (j *fsJailedBackend) GrepRaw(ctx context.Context, req *einofs.GrepRequest) 
 			}
 		}
 
-		// Read file and search for pattern
 		content, err := os.ReadFile(path)
 		if err != nil {
 			return nil // Skip files we can't read
@@ -403,12 +461,9 @@ func (j *fsJailedBackend) GrepRaw(ctx context.Context, req *einofs.GrepRequest) 
 		lines := strings.Split(string(content), "\n")
 		for lineNum, line := range lines {
 			if re.MatchString(line) {
-				// Build path relative to jail root
 				relPath := strings.TrimPrefix(path, searchPath+"/")
-				fullPath := pathPrefix + relPath
-
 				matches = append(matches, einofs.GrepMatch{
-					Path:    fullPath,
+					Path:    pathPrefix + relPath,
 					Line:    lineNum + 1,
 					Content: strings.TrimSpace(line),
 				})
@@ -422,7 +477,7 @@ func (j *fsJailedBackend) GrepRaw(ctx context.Context, req *einofs.GrepRequest) 
 }
 
 // GlobInfo returns file information matching the glob pattern.
-func (j *fsJailedBackend) GlobInfo(ctx context.Context, req *einofs.GlobInfoRequest) ([]einofs.FileInfo, error) {
+func (j *fsJailedBackend) GlobInfo(_ context.Context, req *einofs.GlobInfoRequest) ([]einofs.FileInfo, error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 
@@ -437,9 +492,7 @@ func (j *fsJailedBackend) GlobInfo(ctx context.Context, req *einofs.GlobInfoRequ
 		pathPrefix = req.Path + "/"
 	}
 
-	pattern := filepath.Join(searchPath, req.Pattern)
-
-	matches, err := filepath.Glob(pattern)
+	matches, err := filepath.Glob(filepath.Join(searchPath, req.Pattern))
 	if err != nil {
 		return nil, fmt.Errorf("glob pattern: %w", err)
 	}
@@ -451,18 +504,14 @@ func (j *fsJailedBackend) GlobInfo(ctx context.Context, req *einofs.GlobInfoRequ
 			continue
 		}
 
-		// Verify the match is within jail
 		resolved, err := filepath.EvalSymlinks(match)
 		if err != nil || !j.isWithinAnyRoot(resolved) {
 			continue
 		}
 
-		// Build path relative to jail root
 		relPath := strings.TrimPrefix(match, searchPath+"/")
-		fullPath := pathPrefix + relPath
-
 		result = append(result, einofs.FileInfo{
-			Path:       fullPath,
+			Path:       pathPrefix + relPath,
 			IsDir:      info.IsDir(),
 			Size:       info.Size(),
 			ModifiedAt: timeFormat(info.ModTime()),
@@ -473,7 +522,7 @@ func (j *fsJailedBackend) GlobInfo(ctx context.Context, req *einofs.GlobInfoRequ
 }
 
 // Write creates or updates file content.
-func (j *fsJailedBackend) Write(ctx context.Context, req *einofs.WriteRequest) error {
+func (j *fsJailedBackend) Write(_ context.Context, req *einofs.WriteRequest) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
@@ -482,15 +531,11 @@ func (j *fsJailedBackend) Write(ctx context.Context, req *einofs.WriteRequest) e
 		return err
 	}
 
-	// Ensure parent directory exists
-	parentDir := filepath.Dir(resolved)
-	if _, err := os.Stat(parentDir); os.IsNotExist(err) {
-		if err := os.MkdirAll(parentDir, 0755); err != nil {
-			return fmt.Errorf("create parent directory: %w", err)
-		}
+	if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
+		return fmt.Errorf("create parent directory: %w", err)
 	}
 
-	if err := os.WriteFile(resolved, []byte(req.Content), 0644); err != nil {
+	if err := os.WriteFile(resolved, []byte(req.Content), 0o644); err != nil {
 		return fmt.Errorf("write file: %w", err)
 	}
 
@@ -498,7 +543,7 @@ func (j *fsJailedBackend) Write(ctx context.Context, req *einofs.WriteRequest) e
 }
 
 // Edit replaces string occurrences in a file.
-func (j *fsJailedBackend) Edit(ctx context.Context, req *einofs.EditRequest) error {
+func (j *fsJailedBackend) Edit(_ context.Context, req *einofs.EditRequest) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
@@ -513,19 +558,15 @@ func (j *fsJailedBackend) Edit(ctx context.Context, req *einofs.EditRequest) err
 	}
 
 	contentStr := string(content)
-
-	// Check if old string exists
 	if !strings.Contains(contentStr, req.OldString) {
 		return fmt.Errorf("old string not found in file")
 	}
 
-	// Count occurrences for ReplaceAll=false
 	count := strings.Count(contentStr, req.OldString)
 	if !req.ReplaceAll && count != 1 {
 		return fmt.Errorf("old string appears %d times; use ReplaceAll=true or provide a unique occurrence", count)
 	}
 
-	// Replace
 	var newContent string
 	if req.ReplaceAll {
 		newContent = strings.ReplaceAll(contentStr, req.OldString, req.NewString)
@@ -533,7 +574,7 @@ func (j *fsJailedBackend) Edit(ctx context.Context, req *einofs.EditRequest) err
 		newContent = strings.Replace(contentStr, req.OldString, req.NewString, 1)
 	}
 
-	if err := os.WriteFile(resolved, []byte(newContent), 0644); err != nil {
+	if err := os.WriteFile(resolved, []byte(newContent), 0o644); err != nil {
 		return fmt.Errorf("write file: %w", err)
 	}
 

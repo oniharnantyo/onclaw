@@ -58,6 +58,48 @@ func TestBuildModel_UnknownTypeUnsupported(t *testing.T) {
 	require.ErrorIs(t, err, ErrProviderUnsupported)
 }
 
+func TestBuildAgenticModel_MapsEveryKnownType(t *testing.T) {
+	tests := []struct {
+		name         string
+		providerType string
+		baseURL      string
+		effort       string
+	}{
+		{name: "anthropic", providerType: ProviderAnthropic, effort: EffortLow},
+		{name: "openai", providerType: ProviderOpenAI, effort: EffortHigh},
+		{name: "gemini", providerType: ProviderGemini, effort: EffortMedium},
+		{name: "openrouter", providerType: ProviderOpenRouter},
+		{name: "openai-compatible with user base", providerType: ProviderOpenAICompatible, baseURL: "https://relay.example.internal/v1"},
+		{name: "anthropic-compatible with user base", providerType: ProviderAnthropicCompatible, baseURL: "https://relay.example.internal"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, err := buildAgenticModel(context.Background(), tt.providerType, store.Provider{
+				Name:    "p",
+				Type:    tt.providerType,
+				APIKey:  "k",
+				BaseURL: tt.baseURL,
+			}, "some-model", DefaultMaxTokens, tt.effort)
+			require.NoError(t, err)
+			require.NotNil(t, m)
+		})
+	}
+}
+
+func TestBuildAgenticModel_OpenRouterBlankBaseGetsFixedBase(t *testing.T) {
+	m, err := buildAgenticModel(context.Background(), ProviderOpenRouter, store.Provider{
+		Name: "p", Type: ProviderOpenRouter, APIKey: "k",
+	}, "some-model", DefaultMaxTokens, "")
+	require.NoError(t, err)
+	require.NotNil(t, m)
+}
+
+func TestBuildAgenticModel_UnknownTypeUnsupported(t *testing.T) {
+	_, err := buildAgenticModel(context.Background(), "mystery", store.Provider{Name: "p", Type: "mystery", APIKey: "k"}, "some-model", DefaultMaxTokens, "")
+	require.ErrorIs(t, err, ErrProviderUnsupported)
+}
+
 // captureChatServer returns a test endpoint that records one request's JSON
 // body and replies with a minimal successful streaming completion for the
 // provider type (SSE — the shape the turn path runs with). The openai-style
@@ -96,9 +138,15 @@ func captureChatServer(t *testing.T, providerType string, body *map[string]any) 
 // drainStream generates one trivial completion through the built model's
 // streaming path (the path turns run with) so the provider request lands on
 // the capture server.
-func drainStream(t *testing.T, m model.BaseChatModel) {
+func drainStream(t *testing.T, m model.BaseModel[*schema.AgenticMessage]) {
 	t.Helper()
-	sr, err := m.Stream(context.Background(), []*schema.Message{schema.UserMessage("hi")})
+	msg := &schema.AgenticMessage{
+		Role: schema.AgenticRoleTypeUser,
+		ContentBlocks: []*schema.ContentBlock{
+			schema.NewContentBlock(&schema.UserInputText{Text: "hi"}),
+		},
+	}
+	sr, err := m.Stream(context.Background(), []*schema.AgenticMessage{msg})
 	require.NoError(t, err)
 	for {
 		if _, err := sr.Recv(); errors.Is(err, io.EOF) {

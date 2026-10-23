@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -30,64 +31,97 @@ type fakeReply struct {
 // concurrent use (turn goroutine plus test assertions).
 type fakeModel struct {
 	mu     sync.Mutex
-	inputs [][]*schema.Message
+	inputs [][]*schema.AgenticMessage
 	// toolsPerCall records the tool names bound via model options on each
 	// call, aligned with inputs.
 	toolsPerCall [][]string
 
 	// reply builds the response for one call from its input messages.
-	reply func(input []*schema.Message) fakeReply
+	// Can be func([]*schema.AgenticMessage) fakeReply or func([]*schema.Message) fakeReply.
+	reply any
 	// midStream, when set, blocks each Stream call after its first chunk is
 	// sent — a deterministic mid-turn pause for disconnect tests. The
 	// hook's own synchronization is the caller's responsibility.
 	midStream func()
 }
 
-func (f *fakeModel) Generate(_ context.Context, input []*schema.Message, opts ...model.Option) (*schema.Message, error) {
+func (f *fakeModel) Generate(_ context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.AgenticMessage, error) {
 	f.record(input, toolNamesOf(opts))
-	r := f.reply(input)
+	r := adaptReply(f.reply)(input)
 	if r.err != nil {
 		return nil, r.err
 	}
-	msg := schema.AssistantMessage(r.text, r.toolCalls)
-	msg.ResponseMeta = &schema.ResponseMeta{Usage: tokenUsage(r)}
+	blocks := make([]*schema.ContentBlock, 0, len(r.toolCalls)+2)
+	if r.reasoning != "" {
+		blocks = append(blocks, schema.NewContentBlock(&schema.Reasoning{Text: r.reasoning}))
+	}
+	if r.text != "" {
+		blocks = append(blocks, schema.NewContentBlock(&schema.AssistantGenText{Text: r.text}))
+	}
+	for _, call := range r.toolCalls {
+		blocks = append(blocks, schema.NewContentBlock(&schema.FunctionToolCall{
+			CallID:    call.ID,
+			Name:      call.Function.Name,
+			Arguments: call.Function.Arguments,
+		}))
+	}
+	msg := &schema.AgenticMessage{
+		Role:          schema.AgenticRoleTypeAssistant,
+		ContentBlocks: blocks,
+		ResponseMeta:  &schema.AgenticResponseMeta{TokenUsage: tokenUsage(r)},
+	}
 	return msg, nil
 }
 
-func (f *fakeModel) Stream(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+func (f *fakeModel) Stream(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.StreamReader[*schema.AgenticMessage], error) {
 	f.record(input, toolNamesOf(opts))
-	r := f.reply(input)
+	r := adaptReply(f.reply)(input)
 	if r.err != nil {
 		return nil, r.err
 	}
 
-	chunks := make([]*schema.Message, 0, 8)
+	// Streamed blocks carry StreamingMeta the way real providers emit them:
+	// eino concatenates a stream by block index, so every text chunk shares
+	// one index and merges back into a single text block, while reasoning and
+	// each tool call keep their own.
+	chunks := make([]*schema.AgenticMessage, 0, 8)
+	nextIndex := 0
+	streamed := func(block *schema.ContentBlock, index int) *schema.AgenticMessage {
+		block.StreamingMeta = &schema.StreamingMeta{Index: index}
+		return &schema.AgenticMessage{
+			Role:          schema.AgenticRoleTypeAssistant,
+			ContentBlocks: []*schema.ContentBlock{block},
+		}
+	}
 	if r.reasoning != "" {
-		reasoningChunk := schema.AssistantMessage("", nil)
-		reasoningChunk.ReasoningContent = r.reasoning
-		chunks = append(chunks, reasoningChunk)
+		chunks = append(chunks, streamed(schema.NewContentBlock(&schema.Reasoning{Text: r.reasoning}), nextIndex))
+		nextIndex++
 	}
 	for _, call := range r.toolCalls {
-		// Tool calls ride their own chunk, the provider convention.
-		chunks = append(chunks, schema.AssistantMessage("", []schema.ToolCall{call}))
+		chunks = append(chunks, streamed(schema.NewContentBlock(&schema.FunctionToolCall{
+			CallID:    call.ID,
+			Name:      call.Function.Name,
+			Arguments: call.Function.Arguments,
+		}), nextIndex))
+		nextIndex++
 	}
 	words := strings.Fields(r.text)
+	textIndex := nextIndex
 	for i, word := range words {
-		// Whitespace between words rides each chunk; the final word carries
-		// none, so the concatenated text equals the scripted text.
 		suffix := " "
 		if i == len(words)-1 {
 			suffix = ""
 		}
-		chunks = append(chunks, schema.AssistantMessage(word+suffix, nil))
+		chunks = append(chunks, streamed(schema.NewContentBlock(&schema.AssistantGenText{Text: word + suffix}), textIndex))
 	}
 	if len(chunks) == 0 {
-		chunks = append(chunks, schema.AssistantMessage("", nil))
+		chunks = append(chunks, &schema.AgenticMessage{
+			Role: schema.AgenticRoleTypeAssistant,
+		})
 	}
-	// Providers report usage on the final frame of a stream.
-	chunks[len(chunks)-1].ResponseMeta = &schema.ResponseMeta{Usage: tokenUsage(r)}
+	chunks[len(chunks)-1].ResponseMeta = &schema.AgenticResponseMeta{TokenUsage: tokenUsage(r)}
 
-	sr, sw := schema.Pipe[*schema.Message](len(chunks))
+	sr, sw := schema.Pipe[*schema.AgenticMessage](len(chunks))
 	go func() {
 		defer sw.Close()
 		for i, chunk := range chunks {
@@ -95,9 +129,6 @@ func (f *fakeModel) Stream(ctx context.Context, input []*schema.Message, opts ..
 				return
 			}
 			if i == 0 && f.midStream != nil {
-				// The pause is interruptible like a real provider stream:
-				// a cancelled request context aborts the stream with the
-				// cancellation error.
 				paused := make(chan struct{})
 				go func() { defer close(paused); f.midStream() }()
 				select {
@@ -120,7 +151,7 @@ func tokenUsage(r fakeReply) *schema.TokenUsage {
 	}
 }
 
-func (f *fakeModel) record(input []*schema.Message, toolNames []string) {
+func (f *fakeModel) record(input []*schema.AgenticMessage, toolNames []string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.inputs = append(f.inputs, input)
@@ -140,11 +171,22 @@ func toolNamesOf(opts []model.Option) []string {
 	return names
 }
 
-// calls returns a copy of every recorded call's input.
+// calls returns a copy of every recorded call's input as legacy schema.Message.
 func (f *fakeModel) calls() [][]*schema.Message {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([][]*schema.Message, len(f.inputs))
+	for i, inp := range f.inputs {
+		out[i] = agenticSliceToLegacy(inp)
+	}
+	return out
+}
+
+// agenticCalls returns a copy of every recorded call's input as schema.AgenticMessage.
+func (f *fakeModel) agenticCalls() [][]*schema.AgenticMessage {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([][]*schema.AgenticMessage, len(f.inputs))
 	copy(out, f.inputs)
 	return out
 }
@@ -161,6 +203,22 @@ func (f *fakeModel) toolsOf(i int) []string {
 	return out
 }
 
+// toolsOfCallWhere returns the tool names offered on the first recorded call
+// whose input satisfies pred; nil when no call matches. Background children
+// run concurrently with the parent, so call order is not a stable handle.
+func (f *fakeModel) toolsOfCallWhere(pred func([]*schema.Message) bool) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, inp := range f.inputs {
+		if pred(agenticSliceToLegacy(inp)) {
+			out := make([]string, len(f.toolsPerCall[i]))
+			copy(out, f.toolsPerCall[i])
+			return out
+		}
+	}
+	return nil
+}
+
 // fakeRegistry returns the fake model for every Build, recording the agents
 // and overrides it was asked to build for.
 type fakeRegistry struct {
@@ -171,7 +229,7 @@ type fakeRegistry struct {
 	overrides []ModelOverride
 }
 
-func (r *fakeRegistry) Build(_ context.Context, agent store.Agent, override ModelOverride) (model.BaseChatModel, error) {
+func (r *fakeRegistry) Build(_ context.Context, agent store.Agent, override ModelOverride) (model.BaseModel[*schema.AgenticMessage], error) {
 	r.mu.Lock()
 	r.agents = append(r.agents, agent)
 	r.overrides = append(r.overrides, override)
@@ -238,7 +296,142 @@ type fixture struct {
 	agent    store.Agent
 }
 
-func newFixture(t *testing.T, reply func(input []*schema.Message) fakeReply, opts ...Option) *fixture {
+func agenticToLegacy(am *schema.AgenticMessage) *schema.Message {
+	if am == nil {
+		return nil
+	}
+	var role schema.RoleType
+	switch am.Role {
+	case schema.AgenticRoleTypeUser:
+		role = schema.User
+	case schema.AgenticRoleTypeAssistant:
+		role = schema.Assistant
+	case schema.AgenticRoleTypeSystem:
+		role = schema.System
+	default:
+		role = schema.RoleType(am.Role)
+	}
+	var content string
+	var multiContent []schema.MessageInputPart
+	var toolCalls []schema.ToolCall
+	var toolCallID string
+
+	for _, block := range am.ContentBlocks {
+		if block == nil {
+			continue
+		}
+		switch block.Type {
+		case schema.ContentBlockTypeUserInputText:
+			if block.UserInputText != nil {
+				content += block.UserInputText.Text
+				multiContent = append(multiContent, schema.MessageInputPart{
+					Type: schema.ChatMessagePartTypeText,
+					Text: block.UserInputText.Text,
+				})
+			}
+		case schema.ContentBlockTypeUserInputImage:
+			if block.UserInputImage != nil {
+				b64 := block.UserInputImage.Base64Data
+				multiContent = append(multiContent, schema.MessageInputPart{
+					Type: schema.ChatMessagePartTypeImageURL,
+					Image: &schema.MessageInputImage{
+						MessagePartCommon: schema.MessagePartCommon{
+							Base64Data: &b64,
+							MIMEType:   block.UserInputImage.MIMEType,
+						},
+					},
+				})
+			}
+		case schema.ContentBlockTypeUserInputFile:
+			if block.UserInputFile != nil {
+				b64 := block.UserInputFile.Base64Data
+				multiContent = append(multiContent, schema.MessageInputPart{
+					Type: schema.ChatMessagePartTypeFileURL,
+					File: &schema.MessageInputFile{
+						MessagePartCommon: schema.MessagePartCommon{
+							Base64Data: &b64,
+							MIMEType:   block.UserInputFile.MIMEType,
+						},
+						Name: block.UserInputFile.Name,
+					},
+				})
+			}
+		case schema.ContentBlockTypeUserInputVideo:
+			if block.UserInputVideo != nil {
+				b64 := block.UserInputVideo.Base64Data
+				multiContent = append(multiContent, schema.MessageInputPart{
+					Type: schema.ChatMessagePartTypeVideoURL,
+					Video: &schema.MessageInputVideo{
+						MessagePartCommon: schema.MessagePartCommon{
+							Base64Data: &b64,
+							MIMEType:   block.UserInputVideo.MIMEType,
+						},
+					},
+				})
+			}
+		case schema.ContentBlockTypeAssistantGenText:
+			if block.AssistantGenText != nil {
+				content += block.AssistantGenText.Text
+			}
+		case schema.ContentBlockTypeFunctionToolCall:
+			if block.FunctionToolCall != nil {
+				toolCalls = append(toolCalls, schema.ToolCall{
+					ID: block.FunctionToolCall.CallID,
+					Function: schema.FunctionCall{
+						Name:      block.FunctionToolCall.Name,
+						Arguments: block.FunctionToolCall.Arguments,
+					},
+				})
+			}
+		case schema.ContentBlockTypeFunctionToolResult:
+			if block.FunctionToolResult != nil {
+				role = schema.Tool
+				toolCallID = block.FunctionToolResult.CallID
+				for _, c := range block.FunctionToolResult.Content {
+					if c != nil && c.Type == schema.FunctionToolResultContentBlockTypeText && c.Text != nil {
+						content += c.Text.Text
+					}
+				}
+			}
+		}
+	}
+	return &schema.Message{
+		Role:                  role,
+		Content:               content,
+		UserInputMultiContent: multiContent,
+		ToolCalls:             toolCalls,
+		ToolCallID:            toolCallID,
+	}
+}
+
+func agenticSliceToLegacy(in []*schema.AgenticMessage) []*schema.Message {
+	if in == nil {
+		return nil
+	}
+	out := make([]*schema.Message, len(in))
+	for i, m := range in {
+		out[i] = agenticToLegacy(m)
+	}
+	return out
+}
+
+func adaptReply(r any) func([]*schema.AgenticMessage) fakeReply {
+	if r == nil {
+		return func(_ []*schema.AgenticMessage) fakeReply { return fakeReply{} }
+	}
+	switch fn := r.(type) {
+	case func([]*schema.AgenticMessage) fakeReply:
+		return fn
+	case func([]*schema.Message) fakeReply:
+		return func(input []*schema.AgenticMessage) fakeReply {
+			return fn(agenticSliceToLegacy(input))
+		}
+	default:
+		panic(fmt.Sprintf("unsupported reply function type: %T", r))
+	}
+}
+
+func newFixture(t *testing.T, reply any, opts ...Option) *fixture {
 	t.Helper()
 
 	fs := fake.New()

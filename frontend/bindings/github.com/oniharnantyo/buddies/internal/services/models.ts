@@ -351,6 +351,16 @@ export interface ToolEntry {
 }
 
 /**
+ * TurnStateResult is the in-flight turn status of a session (design D1):
+ * Busy reports whether a turn is running or parked on an approval, and
+ * TurnID identifies that in-flight turn for re-adoption by the frontend.
+ */
+export interface TurnStateResult {
+    "busy": boolean;
+    "turn_id": string;
+}
+
+/**
  * VerifyResult is the outcome of one provider credential verification:
  * whether the endpoint accepted the credential and, on failure, the
  * endpoint's (truncated) reason. Verification failures land here, not in a

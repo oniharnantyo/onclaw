@@ -11,6 +11,8 @@ export type {
     Attachment,
     Compaction,
     Event,
+    PlanSnapshot,
+    PlanTask,
     TaskActivity,
     ToolActivity,
     Usage

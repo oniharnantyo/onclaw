@@ -86,9 +86,9 @@ func (tc turnComposer) supportsImageInput() bool {
 // multi-part when the message carries attachments. (The agent config carries
 // the instruction so capability middlewares can append their own guidance to
 // it.)
-func assembleTurnInput(p persona, checkpoint sessions.Checkpoint, events []sessions.Event, req turnRequest, tc turnComposer) (string, []*schema.Message, error) {
+func assembleTurnInput(p persona, checkpoint sessions.Checkpoint, events []sessions.Event, req turnRequest, tc turnComposer) (string, []*schema.AgenticMessage, error) {
 	instruction := composeSystem(p.text(), checkpoint.Summary)
-	msgs := make([]*schema.Message, 0, 2)
+	msgs := make([]*schema.AgenticMessage, 0, 2)
 	for _, ev := range events {
 		if ev.Seq <= checkpoint.UpToSeq {
 			continue
@@ -104,7 +104,12 @@ func assembleTurnInput(p persona, checkpoint sessions.Checkpoint, events []sessi
 			}
 			msgs = append(msgs, msg)
 		case sessions.KindAssistantMessage:
-			msgs = append(msgs, schema.AssistantMessage(ev.Text, nil))
+			msgs = append(msgs, &schema.AgenticMessage{
+				Role: schema.AgenticRoleTypeAssistant,
+				ContentBlocks: []*schema.ContentBlock{
+					schema.NewContentBlock(&schema.AssistantGenText{Text: ev.Text}),
+				},
+			})
 		}
 	}
 	fresh, err := buildUserTurnMessage(tc, req.message, req.attachments)
@@ -121,97 +126,82 @@ func assembleTurnInput(p persona, checkpoint sessions.Checkpoint, events []sessi
 // content parts when the effective model's capability flags (and the
 // provider's connector) allow, and every other attachment degrades to a
 // reference pointer note. Sending never fails because of a capability gap.
-func buildUserTurnMessage(tc turnComposer, text string, atts []sessions.Attachment) (*schema.Message, error) {
-	if len(atts) == 0 {
-		return schema.UserMessage(text), nil
-	}
-
-	parts := make([]schema.MessageInputPart, 0, len(atts)+1)
+func buildUserTurnMessage(tc turnComposer, text string, atts []sessions.Attachment) (*schema.AgenticMessage, error) {
+	blocks := make([]*schema.ContentBlock, 0, len(atts)+1)
 	if text != "" {
-		parts = append(parts, schema.MessageInputPart{Type: schema.ChatMessagePartTypeText, Text: text})
+		blocks = append(blocks, schema.NewContentBlock(&schema.UserInputText{Text: text}))
 	}
 	for _, att := range atts {
-		part, err := attachmentPart(tc, att)
+		block, err := attachmentBlock(tc, att)
 		if err != nil {
 			return nil, err
 		}
-		parts = append(parts, part)
+		blocks = append(blocks, block)
 	}
-	return &schema.Message{Role: schema.User, UserInputMultiContent: parts}, nil
+	if len(blocks) == 0 {
+		blocks = append(blocks, schema.NewContentBlock(&schema.UserInputText{Text: ""}))
+	}
+	return &schema.AgenticMessage{
+		Role:          schema.AgenticRoleTypeUser,
+		ContentBlocks: blocks,
+	}, nil
 }
 
-// attachmentPart builds one attachment's model-input part: the content part
+// attachmentBlock builds one attachment's model-input block: the content block
 // when the model and connector can carry it, the reference pointer note
 // otherwise (spec chat-attachments: the agent can still mention the file but
 // is never sent input it cannot process).
-func attachmentPart(tc turnComposer, att sessions.Attachment) (schema.MessageInputPart, error) {
+func attachmentBlock(tc turnComposer, att sessions.Attachment) (*schema.ContentBlock, error) {
 	data, err := tc.readAttachment(att)
 	if err != nil {
 		// A lost file must not fail the send: the pointer note stands in.
-		return pointerPart(att, "the stored file could not be read"), nil
+		return pointerBlock(att, "the stored file could not be read"), nil
 	}
 	b64 := base64.StdEncoding.EncodeToString(data)
 
 	switch {
 	case att.Mime == "application/pdf":
 		if tc.supportsPDFInput() && carriesPDFParts(tc.providerType) {
-			return schema.MessageInputPart{
-				Type: schema.ChatMessagePartTypeFileURL,
-				File: &schema.MessageInputFile{
-					MessagePartCommon: schema.MessagePartCommon{
-						Base64Data: &b64,
-						MIMEType:   att.Mime,
-					},
-					Name: att.Name,
-				},
-			}, nil
+			return schema.NewContentBlock(&schema.UserInputFile{
+				Base64Data: b64,
+				MIMEType:   att.Mime,
+				Name:       att.Name,
+			}), nil
 		}
 	case strings.HasPrefix(att.Mime, "image/"):
 		if tc.supportsImageInput() {
-			return schema.MessageInputPart{
-				Type: schema.ChatMessagePartTypeImageURL,
-				Image: &schema.MessageInputImage{
-					MessagePartCommon: schema.MessagePartCommon{
-						Base64Data: &b64,
-						MIMEType:   att.Mime,
-					},
-				},
-			}, nil
+			return schema.NewContentBlock(&schema.UserInputImage{
+				Base64Data: b64,
+				MIMEType:   att.Mime,
+			}), nil
 		}
 	case strings.HasPrefix(att.Mime, "video/"):
 		if tc.supportsVideoInput() && carriesVideoParts(tc.providerType) {
-			return schema.MessageInputPart{
-				Type: schema.ChatMessagePartTypeVideoURL,
-				Video: &schema.MessageInputVideo{
-					MessagePartCommon: schema.MessagePartCommon{
-						Base64Data: &b64,
-						MIMEType:   att.Mime,
-					},
-				},
-			}, nil
+			return schema.NewContentBlock(&schema.UserInputVideo{
+				Base64Data: b64,
+				MIMEType:   att.Mime,
+			}), nil
 		}
 	case strings.HasPrefix(att.Mime, "text/"):
 		// Every model reads text: the content rides inline as a text part —
 		// no capability gate (uploads are capped at 1 MB; spec
 		// chat-attachments "Multi-part user messages").
-		return schema.MessageInputPart{
-			Type: schema.ChatMessagePartTypeText,
+		return schema.NewContentBlock(&schema.UserInputText{
 			Text: string(data),
-		}, nil
+		}), nil
 	}
-	return pointerPart(att, fmt.Sprintf("the active model cannot read %s input", laneName(att.Mime))), nil
+	return pointerBlock(att, fmt.Sprintf("the active model cannot read %s input", laneName(att.Mime))), nil
 }
 
-// pointerPart is the reference pointer note standing in for content the
+// pointerBlock is the reference pointer note standing in for content the
 // model cannot (or could not) receive: the attachment's name and capability
 // key so the agent can mention the file (spec: "a reference pointer (name
 // and capability link)").
-func pointerPart(att sessions.Attachment, reason string) schema.MessageInputPart {
-	return schema.MessageInputPart{
-		Type: schema.ChatMessagePartTypeText,
+func pointerBlock(att sessions.Attachment, reason string) *schema.ContentBlock {
+	return schema.NewContentBlock(&schema.UserInputText{
 		Text: fmt.Sprintf("[attached file not sent: %s (%s, %d bytes) — %s; attachment key %s]",
 			att.Name, att.Mime, att.Size, reason, att.Key),
-	}
+	})
 }
 
 // carriesPDFParts reports whether the provider's connector can carry a PDF

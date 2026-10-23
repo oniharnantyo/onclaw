@@ -2,18 +2,21 @@ package subagents
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/cloudwego/eino/adk"
 	bgtask "github.com/cloudwego/eino/adk/backgroundtask"
 	backgroundlocal "github.com/cloudwego/eino/adk/backgroundtask/local"
 	bgmiddleware "github.com/cloudwego/eino/adk/middlewares/backgroundtask"
 	"github.com/cloudwego/eino/adk/middlewares/subagent"
+	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 
+	"github.com/oniharnantyo/buddies/internal/agents/backend"
+	"github.com/oniharnantyo/buddies/internal/agents/compaction"
+	"github.com/oniharnantyo/buddies/internal/agents/compose"
 	"github.com/oniharnantyo/buddies/internal/workspaces"
 )
 
@@ -21,231 +24,169 @@ const (
 	ToolAgent      = "agent"
 	ToolTaskOutput = "task_output"
 	ToolTaskStop   = "task_stop"
+
+	GeneralPurposeSubagentName = "general-purpose"
+	ChildIterationCap          = 15
 )
 
-// SubagentCapabilities carries the initialized middlewares and runner for delegation.
-type SubagentCapabilities struct {
-	SubagentMiddleware       adk.ChatModelAgentMiddleware
-	BackgroundTaskMiddleware adk.ChatModelAgentMiddleware
+// Config configures the subagent and backgroundtask stack for one turn.
+type Config struct {
+	Instruction      string
+	Model            model.BaseModel[*schema.AgenticMessage]
+	Tools            []tool.BaseTool
+	MCPTools         []tool.BaseTool
+	AgentDir         string
+	ExtraRoots       []string
+	Shell            bool
+	FSDisabled       []string
+	PlantaskDisabled []string
+	ContextLimit     int64
+
+	TasksDir      string
+	OutputBaseDir string
+	TurnID        string
+
+	Skills      *compose.SkillsCapability
+	Hooks       *compose.HooksCapability
+	Checkpoints backend.ShellOption
+	Registry    *TaskRegistry
+}
+
+// Capabilities carries the initialized middlewares and background manager.
+type Capabilities struct {
+	SubagentMiddleware adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage]
+	// DelegationArgsMiddleware must ride the same handler chain as
+	// SubagentMiddleware: it normalizes the agent tool's arguments (always
+	// background) before the tool parses them.
+	DelegationArgsMiddleware adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage]
+	BackgroundTaskMiddleware adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage]
 	Manager                  *bgtask.Manager
 	LocalRunner              *backgroundlocal.Runner
 }
 
-// BuildSubagentCapabilities constructs the eino subagent and backgroundtask middlewares.
-func BuildSubagentCapabilities(
-	ctx context.Context,
-	turnID string,
-	tasksDir string,
-	outputBaseDir string,
-	childAgent adk.Agent,
-	registry *TaskRegistry,
-) (*SubagentCapabilities, error) {
-	if registry == nil {
-		return nil, fmt.Errorf("registry is required")
+// New constructs the eino subagent and backgroundtask middlewares deep-shaped.
+func New(ctx context.Context, cfg *Config) (*Capabilities, error) {
+	if cfg == nil {
+		return nil, errors.New("subagents: config is required")
+	}
+	if cfg.Model == nil {
+		return nil, errors.New("subagents: model is required")
+	}
+	if cfg.Registry == nil {
+		return nil, errors.New("subagents: registry is required")
 	}
 
-	inMemStore := bgtask.NewInMemoryStore(nil)
-	bridgedStore := NewBridgingTaskStore(inMemStore, registry, turnID, tasksDir)
-	executors := bgtask.NewExecutorRegistry()
+	// 1. Compose child agent without delegation tools (no self-delegation).
+	childTools := append([]tool.BaseTool(nil), cfg.Tools...)
+	childTools = append(childTools, cfg.MCPTools...)
 
-	idGen := func(_ context.Context, _ *bgtask.AllocateTaskIDRequest) (string, error) {
-		return registry.AllocateTask(tasksDir), nil
+	childCfg := &compose.ComposeConfig{
+		Name:          GeneralPurposeSubagentName,
+		Instruction:   cfg.Instruction,
+		ChatModel:     cfg.Model,
+		Tools:         childTools,
+		MaxIterations: ChildIterationCap,
 	}
 
-	mgr, err := bgtask.New(ctx, &bgtask.Config{
-		Tasks:      bridgedStore,
-		TaskEvents: bridgedStore,
-		Executors:  executors,
-		IDGen:      idGen,
-		SendTaskCreatedEvent: func(context.Context, *bgtask.Task) error {
-			return nil
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("build background task manager: %w", err)
-	}
-
-	localRunner, err := backgroundlocal.New(&backgroundlocal.Config{
-		Manager:   mgr,
-		Executors: executors,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("build background local runner: %w", err)
-	}
-
-	formatFn := func(_ context.Context, _ string, message *schema.Message) (string, error) {
-		if message == nil {
-			return "", nil
+	if cfg.AgentDir != "" {
+		fsCap := &compose.FilesystemCapability{
+			AgentDir:      cfg.AgentDir,
+			DisabledTools: cfg.FSDisabled,
+			ExtraRoots:    cfg.ExtraRoots,
 		}
-		var entry TranscriptEntry
-		switch message.Role {
-		case schema.User:
-			entry = TranscriptEntry{Step: StepTask, Content: message.Content}
-		case schema.Assistant:
-			entry = TranscriptEntry{Step: StepText, Content: message.Content}
-		case schema.Tool:
-			entry = TranscriptEntry{Step: StepTool, Content: message.Content}
-		default:
-			entry = TranscriptEntry{Step: StepText, Content: message.Content}
+		if cfg.Shell {
+			var opts []backend.ShellOption
+			if cfg.Checkpoints != nil {
+				opts = append(opts, cfg.Checkpoints)
+			}
+			fsCap.Shell = backend.NewJailedShell(cfg.AgentDir, opts...)
 		}
-		b, err := json.Marshal(entry)
-		return string(b), err
+		childCfg.Filesystem = fsCap
+
+		childCfg.Reduction = &compose.ReductionCapability{
+			AgentDir:     cfg.AgentDir,
+			ExtraRoots:   cfg.ExtraRoots,
+			ContextLimit: cfg.ContextLimit,
+		}
+		childCfg.Plantask = &compose.PlantaskCapability{
+			AgentDir:      cfg.AgentDir,
+			ExtraRoots:    cfg.ExtraRoots,
+			DisabledTools: cfg.PlantaskDisabled,
+		}
+		childCfg.DisabledPlantaskTools = cfg.PlantaskDisabled
 	}
 
+	if cfg.ContextLimit > 0 {
+		childCfg.Summarization = &compaction.SummarizationCapability{
+			Model:        cfg.Model,
+			ContextLimit: cfg.ContextLimit,
+		}
+	}
+
+	if cfg.Skills != nil {
+		childCfg.Skills = cfg.Skills
+	}
+	if cfg.Hooks != nil {
+		childCfg.Hooks = cfg.Hooks
+	}
+
+	childAgent, _, err := compose.ComposeTurnAgent(ctx, childCfg)
+	if err != nil {
+		return nil, fmt.Errorf("compose child subagent: %w", err)
+	}
+
+	// 2. The session-scoped background substrate: the registry owns the eino
+	// Manager and local Runner so tasks outlive the turn that launched them
+	// and a later turn's task_output still finds them. Transcripts land under
+	// the workspace (".tasks/<tool-call-id>.output", the path eino reserves
+	// and reports to the model).
+	outputBaseDir := cfg.OutputBaseDir
 	if outputBaseDir == "" {
-		outputBaseDir = tasksDir
+		outputBaseDir = cfg.AgentDir
+	}
+	if outputBaseDir == "" {
+		outputBaseDir = cfg.TasksDir
+	}
+	mgr, localRunner, err := cfg.Registry.Space(ctx, outputBaseDir, cfg.TurnID)
+	if err != nil {
+		return nil, err
 	}
 
-	subagentMW, err := subagent.New(ctx, &subagent.Config{
-		SubAgents: []adk.Agent{childAgent},
-		Background: &subagent.BackgroundConfig{
-			Local: &subagent.LocalBackgroundConfig{
+	formatFn := FormatAgenticTranscriptEntry
+
+	// 3. Native subagent middleware. Every delegation is a background task:
+	// DelegationArgs forces the flag on the way in, the agent tool returns the
+	// task id at once, the island tracks the child, and the parent keeps its
+	// turn.
+	subagentMW, err := subagent.NewTyped[*schema.AgenticMessage](ctx, &subagent.TypedConfig[*schema.AgenticMessage]{
+		SubAgents: []adk.TypedAgent[*schema.AgenticMessage]{childAgent},
+		Background: &subagent.TypedBackgroundConfig[*schema.AgenticMessage]{
+			Local: &subagent.TypedLocalBackgroundConfig[*schema.AgenticMessage]{
 				Runner:      localRunner,
 				OutputStore: &DiskAppendOpener{BaseDir: outputBaseDir},
 				OutputDir:   workspaces.DirTasks,
 			},
 			TranscriptFormat: formatFn,
 		},
+		ToolDescriptionGenerator: DelegationToolDescription,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("build subagent middleware: %w", err)
 	}
 
-	bgMW, err := bgmiddleware.New(ctx, &bgmiddleware.Config{
+	// 4. Native backgroundtask middleware.
+	bgMW, err := bgmiddleware.NewTyped[*schema.AgenticMessage](ctx, &bgmiddleware.TypedConfig[*schema.AgenticMessage]{
 		Manager: mgr,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("build backgroundtask middleware: %w", err)
 	}
 
-	wrappedSubagent := &wrappedSubagentMW{
-		ChatModelAgentMiddleware: subagentMW,
-		registry:                 registry,
-		tasksDir:                 tasksDir,
-		turnID:                   turnID,
-	}
-	wrappedBg := &wrappedBgMW{
-		ChatModelAgentMiddleware: bgMW,
-		manager:                  mgr,
-		registry:                 registry,
-		tasksDir:                 tasksDir,
-	}
-
-	return &SubagentCapabilities{
-		SubagentMiddleware:       wrappedSubagent,
-		BackgroundTaskMiddleware: wrappedBg,
+	return &Capabilities{
+		SubagentMiddleware:       subagentMW,
+		DelegationArgsMiddleware: NewDelegationArgs(ToolAgent, GeneralPurposeSubagentName),
+		BackgroundTaskMiddleware: bgMW,
 		Manager:                  mgr,
 		LocalRunner:              localRunner,
 	}, nil
-}
-
-type wrappedSubagentMW struct {
-	adk.ChatModelAgentMiddleware
-	registry *TaskRegistry
-	tasksDir string
-	turnID   string
-}
-
-func (w *wrappedSubagentMW) BeforeAgent(ctx context.Context, runCtx *adk.ChatModelAgentContext[*schema.Message]) (context.Context, *adk.ChatModelAgentContext[*schema.Message], error) {
-	ctx, runCtx, err := w.ChatModelAgentMiddleware.BeforeAgent(ctx, runCtx)
-	if err != nil {
-		return ctx, runCtx, err
-	}
-	if runCtx == nil {
-		return ctx, runCtx, nil
-	}
-	tools := make([]tool.BaseTool, len(runCtx.Tools))
-	copy(tools, runCtx.Tools)
-	for i, t := range tools {
-		info, err := t.Info(ctx)
-		if err == nil && info != nil && info.Name == ToolAgent {
-			tools[i] = &wrappedAgentTool{
-				inner:    t.(tool.InvokableTool),
-				registry: w.registry,
-				tasksDir: w.tasksDir,
-				turnID:   w.turnID,
-			}
-		}
-	}
-	runCtx.Tools = tools
-	return ctx, runCtx, nil
-}
-
-type wrappedAgentTool struct {
-	inner    tool.InvokableTool
-	registry *TaskRegistry
-	tasksDir string
-	turnID   string
-}
-
-func (t *wrappedAgentTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
-	return t.inner.Info(ctx)
-}
-
-func (t *wrappedAgentTool) InvokableRun(ctx context.Context, input string, opts ...tool.Option) (string, error) {
-	var raw map[string]any
-	if err := json.Unmarshal([]byte(input), &raw); err != nil {
-		return "", err
-	}
-	task, _ := raw["task"].(string)
-	prompt, _ := raw["prompt"].(string)
-	if task == "" && prompt != "" {
-		task = prompt
-	}
-	task = strings.TrimSpace(task)
-	subType, _ := raw["subagent_type"].(string)
-	if subType == "" {
-		subType = "general-purpose"
-	}
-	runInBg, _ := raw["run_in_background"].(bool)
-
-	adapted := map[string]any{
-		"prompt":            task,
-		"description":       task,
-		"subagent_type":     subType,
-		"run_in_background": runInBg,
-	}
-	adaptedJSON, err := json.Marshal(adapted)
-	if err != nil {
-		return "", err
-	}
-
-	out, err := t.inner.InvokableRun(ctx, string(adaptedJSON), opts...)
-	if err != nil {
-		return "", err
-	}
-
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(out), &parsed); err == nil {
-		if taskID, ok := parsed["task_id"].(string); ok {
-			status, _ := parsed["status"].(string)
-			result, _ := parsed["result"].(string)
-			desc, _ := parsed["description"].(string)
-			if desc == "" {
-				desc = task
-			}
-			t.registry.mu.Lock()
-			rec, exists := t.registry.tasks[taskID]
-			if exists {
-				if status == string(TaskStatusCompleted) {
-					rec.Status = TaskStatusCompleted
-					rec.Result = result
-				}
-			}
-			t.registry.mu.Unlock()
-			t.registry.EmitTask(taskID)
-		}
-	}
-	return out, nil
-}
-
-type wrappedBgMW struct {
-	adk.ChatModelAgentMiddleware
-	manager  *bgtask.Manager
-	registry *TaskRegistry
-	tasksDir string
-}
-
-func (w *wrappedBgMW) BeforeAgent(ctx context.Context, runCtx *adk.ChatModelAgentContext[*schema.Message]) (context.Context, *adk.ChatModelAgentContext[*schema.Message], error) {
-	return w.ChatModelAgentMiddleware.BeforeAgent(ctx, runCtx)
 }

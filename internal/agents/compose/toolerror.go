@@ -31,7 +31,7 @@ import (
 // text so the event drain can persist the terminal tool record as failed with
 // the real error, while the model reads the JSON error payload as the result.
 type ToolErrorResult struct {
-	adk.BaseChatModelAgentMiddleware
+	adk.TypedBaseChatModelAgentMiddleware[*schema.AgenticMessage]
 
 	mu       sync.Mutex
 	failures map[string]string // call id → error text
@@ -51,11 +51,19 @@ func (m *ToolErrorResult) FailureOf(callID string) (string, bool) {
 	return text, ok
 }
 
+func (m *ToolErrorResult) failureOf(callID string) (string, bool) {
+	return m.FailureOf(callID)
+}
+
 // RecordFailure notes one failed call for the drain's terminal record.
 func (m *ToolErrorResult) RecordFailure(callID, text string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.failures[callID] = text
+}
+
+func (m *ToolErrorResult) recordFailure(callID, text string) {
+	m.RecordFailure(callID, text)
 }
 
 func (m *ToolErrorResult) WrapInvokableToolCall(_ context.Context, endpoint adk.InvokableToolCallEndpoint, tCtx *adk.ToolContext) (adk.InvokableToolCallEndpoint, error) {

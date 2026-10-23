@@ -22,6 +22,7 @@ import (
 	"github.com/cloudwego/eino/components/tool/utils"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
+	"github.com/oniharnantyo/buddies/internal/agents/subagents"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -53,10 +54,21 @@ type probeAgent struct {
 
 func (p *probeAgent) Name(context.Context) string        { return "probe" }
 func (p *probeAgent) Description(context.Context) string { return "probe agent" }
-func (p *probeAgent) Run(ctx context.Context, _ *adk.AgentInput, _ ...adk.AgentRunOption) *adk.AsyncIterator[*adk.AgentEvent] {
+func (p *probeAgent) Run(ctx context.Context, _ *adk.TypedAgentInput[*schema.AgenticMessage], _ ...adk.AgentRunOption) *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]] {
 	p.captured = ctx
-	iter, gen := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
-	gen.Send(adk.EventFromMessage(schema.AssistantMessage("probe done", nil), nil, schema.Assistant, "probe"))
+	iter, gen := adk.NewAsyncIteratorPair[*adk.TypedAgentEvent[*schema.AgenticMessage]]()
+	gen.Send(&adk.TypedAgentEvent[*schema.AgenticMessage]{
+		Output: &adk.TypedAgentOutput[*schema.AgenticMessage]{
+			MessageOutput: &adk.TypedMessageVariant[*schema.AgenticMessage]{
+				Message: &schema.AgenticMessage{
+					Role: schema.AgenticRoleTypeAssistant,
+					ContentBlocks: []*schema.ContentBlock{
+						schema.NewContentBlock(&schema.AssistantGenText{Text: "probe done"}),
+					},
+				},
+			},
+		},
+	})
 	gen.Close()
 	return iter
 }
@@ -66,11 +78,11 @@ func (p *probeAgent) Run(ctx context.Context, _ *adk.AgentInput, _ ...adk.AgentR
 func runnerSessionContext(t *testing.T, sessionID string) context.Context {
 	t.Helper()
 	probe := &probeAgent{}
-	runner := adk.NewRunner(context.Background(), adk.RunnerConfig{
+	runner := adk.NewTypedRunner(adk.TypedRunnerConfig[*schema.AgenticMessage]{
 		Agent:     probe,
 		SessionID: sessionID,
 	})
-	iter := runner.Run(context.Background(), []*schema.Message{schema.UserMessage("init")})
+	iter := runner.Run(context.Background(), []*schema.AgenticMessage{schema.UserAgenticMessage("init")})
 	_ = drainRunnerIterator(iter)
 	require.NotNil(t, probe.captured)
 	return probe.captured
@@ -113,7 +125,7 @@ func TestSubagentSpike(t *testing.T) {
 			},
 		}
 
-		childAgent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
+		childAgent, err := adk.NewTypedChatModelAgent[*schema.AgenticMessage](ctx, &adk.TypedChatModelAgentConfig[*schema.AgenticMessage]{
 			Name:        "clone",
 			Description: "General purpose subagent clone",
 			Instruction: "You are the clone subagent.",
@@ -121,25 +133,26 @@ func TestSubagentSpike(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		subagentMW, err := subagent.New(ctx, &subagent.Config{
-			SubAgents: []adk.Agent{childAgent},
-			Background: &subagent.BackgroundConfig{
-				Local: &subagent.LocalBackgroundConfig{
+		subagentMW, err := subagent.NewTyped[*schema.AgenticMessage](ctx, &subagent.TypedConfig[*schema.AgenticMessage]{
+			SubAgents: []adk.TypedAgent[*schema.AgenticMessage]{childAgent},
+			Background: &subagent.TypedBackgroundConfig[*schema.AgenticMessage]{
+				Local: &subagent.TypedLocalBackgroundConfig[*schema.AgenticMessage]{
 					Runner:      localRunner,
-					OutputStore: &diskAppendOpener{baseDir: tmpDir},
+					OutputStore: &subagents.DiskAppendOpener{BaseDir: tmpDir},
 					OutputDir:   ".tasks",
 				},
+				TranscriptFormat: subagents.FormatAgenticTranscriptEntry,
 			},
 		})
 		require.NoError(t, err)
 
-		bgMW, err := bgmiddleware.New(ctx, &bgmiddleware.Config{
+		bgMW, err := bgmiddleware.NewTyped[*schema.AgenticMessage](ctx, &bgmiddleware.TypedConfig[*schema.AgenticMessage]{
 			Manager: mgr,
 		})
 		require.NoError(t, err)
 
 		// Check tools injected into run context
-		runCtx := &adk.ChatModelAgentContext[*schema.Message]{}
+		runCtx := &adk.ChatModelAgentContext[*schema.AgenticMessage]{}
 		_, runCtx, err = subagentMW.BeforeAgent(ctx, runCtx)
 		require.NoError(t, err)
 		_, runCtx, err = bgMW.BeforeAgent(ctx, runCtx)
@@ -201,7 +214,7 @@ func TestSubagentSpike(t *testing.T) {
 			},
 		}
 
-		childAgent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
+		childAgent, err := adk.NewTypedChatModelAgent[*schema.AgenticMessage](ctx, &adk.TypedChatModelAgentConfig[*schema.AgenticMessage]{
 			Name:        "clone",
 			Description: "General purpose subagent clone",
 			Instruction: "You are the clone subagent.",
@@ -209,24 +222,25 @@ func TestSubagentSpike(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		subagentMW, err := subagent.New(ctx, &subagent.Config{
-			SubAgents: []adk.Agent{childAgent},
-			Background: &subagent.BackgroundConfig{
-				Local: &subagent.LocalBackgroundConfig{
+		subagentMW, err := subagent.NewTyped[*schema.AgenticMessage](ctx, &subagent.TypedConfig[*schema.AgenticMessage]{
+			SubAgents: []adk.TypedAgent[*schema.AgenticMessage]{childAgent},
+			Background: &subagent.TypedBackgroundConfig[*schema.AgenticMessage]{
+				Local: &subagent.TypedLocalBackgroundConfig[*schema.AgenticMessage]{
 					Runner:      localRunner,
-					OutputStore: &diskAppendOpener{baseDir: tmpDir},
+					OutputStore: &subagents.DiskAppendOpener{BaseDir: tmpDir},
 					OutputDir:   ".tasks",
 				},
+				TranscriptFormat: subagents.FormatAgenticTranscriptEntry,
 			},
 		})
 		require.NoError(t, err)
 
-		bgMW, err := bgmiddleware.New(ctx, &bgmiddleware.Config{
+		bgMW, err := bgmiddleware.NewTyped[*schema.AgenticMessage](ctx, &bgmiddleware.TypedConfig[*schema.AgenticMessage]{
 			Manager: mgr,
 		})
 		require.NoError(t, err)
 
-		runCtx := &adk.ChatModelAgentContext[*schema.Message]{}
+		runCtx := &adk.ChatModelAgentContext[*schema.AgenticMessage]{}
 		_, runCtx, err = subagentMW.BeforeAgent(ctx, runCtx)
 		require.NoError(t, err)
 		_, runCtx, err = bgMW.BeforeAgent(ctx, runCtx)
@@ -319,7 +333,7 @@ func TestSubagentSpike(t *testing.T) {
 			},
 		}
 
-		childAgent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
+		childAgent, err := adk.NewTypedChatModelAgent[*schema.AgenticMessage](ctx, &adk.TypedChatModelAgentConfig[*schema.AgenticMessage]{
 			Name:        "clone",
 			Description: "Subagent clone for cancellation",
 			Instruction: "You are the subagent.",
@@ -327,24 +341,25 @@ func TestSubagentSpike(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		subagentMW, err := subagent.New(ctx, &subagent.Config{
-			SubAgents: []adk.Agent{childAgent},
-			Background: &subagent.BackgroundConfig{
-				Local: &subagent.LocalBackgroundConfig{
+		subagentMW, err := subagent.NewTyped[*schema.AgenticMessage](ctx, &subagent.TypedConfig[*schema.AgenticMessage]{
+			SubAgents: []adk.TypedAgent[*schema.AgenticMessage]{childAgent},
+			Background: &subagent.TypedBackgroundConfig[*schema.AgenticMessage]{
+				Local: &subagent.TypedLocalBackgroundConfig[*schema.AgenticMessage]{
 					Runner:      localRunner,
-					OutputStore: &diskAppendOpener{baseDir: tmpDir},
+					OutputStore: &subagents.DiskAppendOpener{BaseDir: tmpDir},
 					OutputDir:   ".tasks",
 				},
+				TranscriptFormat: subagents.FormatAgenticTranscriptEntry,
 			},
 		})
 		require.NoError(t, err)
 
-		bgMW, err := bgmiddleware.New(ctx, &bgmiddleware.Config{
+		bgMW, err := bgmiddleware.NewTyped[*schema.AgenticMessage](ctx, &bgmiddleware.TypedConfig[*schema.AgenticMessage]{
 			Manager: mgr,
 		})
 		require.NoError(t, err)
 
-		runCtx := &adk.ChatModelAgentContext[*schema.Message]{}
+		runCtx := &adk.ChatModelAgentContext[*schema.AgenticMessage]{}
 		_, runCtx, err = subagentMW.BeforeAgent(ctx, runCtx)
 		require.NoError(t, err)
 		_, runCtx, err = bgMW.BeforeAgent(ctx, runCtx)
@@ -408,7 +423,7 @@ func TestSubagentSpike(t *testing.T) {
 			},
 		}
 
-		childAgent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
+		childAgent, err := adk.NewTypedChatModelAgent[*schema.AgenticMessage](ctx, &adk.TypedChatModelAgentConfig[*schema.AgenticMessage]{
 			Name:        "clone",
 			Description: "Clone with custom transcript formatting",
 			Instruction: "You are the clone subagent.",
@@ -423,22 +438,28 @@ func TestSubagentSpike(t *testing.T) {
 			Text  string `json:"text"`
 		}
 
-		formatFn := func(_ context.Context, agentName string, message *schema.Message) (string, error) {
+		formatFn := func(_ context.Context, agentName string, message *schema.AgenticMessage) (string, error) {
+			var text string
+			for _, b := range message.ContentBlocks {
+				if b != nil && b.AssistantGenText != nil {
+					text += b.AssistantGenText.Text
+				}
+			}
 			record := jsonlStep{
 				Agent: agentName,
 				Role:  string(message.Role),
-				Text:  message.Content,
+				Text:  text,
 			}
 			b, err := json.Marshal(record)
 			return string(b), err
 		}
 
-		subagentMW, err := subagent.New(ctx, &subagent.Config{
-			SubAgents: []adk.Agent{childAgent},
-			Background: &subagent.BackgroundConfig{
-				Local: &subagent.LocalBackgroundConfig{
+		subagentMW, err := subagent.NewTyped[*schema.AgenticMessage](ctx, &subagent.TypedConfig[*schema.AgenticMessage]{
+			SubAgents: []adk.TypedAgent[*schema.AgenticMessage]{childAgent},
+			Background: &subagent.TypedBackgroundConfig[*schema.AgenticMessage]{
+				Local: &subagent.TypedLocalBackgroundConfig[*schema.AgenticMessage]{
 					Runner:      localRunner,
-					OutputStore: &diskAppendOpener{baseDir: tmpDir},
+					OutputStore: &subagents.DiskAppendOpener{BaseDir: tmpDir},
 					OutputDir:   ".tasks",
 				},
 				TranscriptFormat: formatFn,
@@ -446,7 +467,7 @@ func TestSubagentSpike(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		runCtx := &adk.ChatModelAgentContext[*schema.Message]{}
+		runCtx := &adk.ChatModelAgentContext[*schema.AgenticMessage]{}
 		_, runCtx, err = subagentMW.BeforeAgent(ctx, runCtx)
 		require.NoError(t, err)
 
@@ -482,8 +503,13 @@ func TestSubagentSpike(t *testing.T) {
 
 		// Parse the JSONL line
 		var parsed jsonlStep
-		err = json.Unmarshal([]byte(strings.TrimSpace(fileText)), &parsed)
-		require.NoError(t, err, "transcript line must be valid JSON matching custom format")
+		for _, line := range strings.Split(strings.TrimSpace(fileText), "\n") {
+			var step jsonlStep
+			if jsonErr := json.Unmarshal([]byte(line), &step); jsonErr == nil && step.Agent == "clone" {
+				parsed = step
+				break
+			}
+		}
 		assert.Equal(t, "clone", parsed.Agent)
 		assert.Equal(t, "assistant", parsed.Role)
 		assert.Contains(t, parsed.Text, "streamed line 1 and line 2")
@@ -522,7 +548,7 @@ func TestSubagentSpike(t *testing.T) {
 			},
 		}
 
-		childAgent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
+		childAgent, err := adk.NewTypedChatModelAgent[*schema.AgenticMessage](ctx, &adk.TypedChatModelAgentConfig[*schema.AgenticMessage]{
 			Name:        "clone",
 			Description: "Clone agent with calculator",
 			Instruction: "You are the subagent.",
@@ -535,10 +561,10 @@ func TestSubagentSpike(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		subagentMW, err := subagent.New(ctx, &subagent.Config{
-			SubAgents: []adk.Agent{childAgent},
-			Background: &subagent.BackgroundConfig{
-				Local: &subagent.LocalBackgroundConfig{
+		subagentMW, err := subagent.NewTyped[*schema.AgenticMessage](ctx, &subagent.TypedConfig[*schema.AgenticMessage]{
+			SubAgents: []adk.TypedAgent[*schema.AgenticMessage]{childAgent},
+			Background: &subagent.TypedBackgroundConfig[*schema.AgenticMessage]{
+				Local: &subagent.TypedLocalBackgroundConfig[*schema.AgenticMessage]{
 					Runner:      localRunner,
 					OutputStore: filesystem.NewInMemoryBackend(),
 					OutputDir:   ".tasks",
@@ -547,13 +573,13 @@ func TestSubagentSpike(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		bgMW, err := bgmiddleware.New(ctx, &bgmiddleware.Config{
+		bgMW, err := bgmiddleware.NewTyped[*schema.AgenticMessage](ctx, &bgmiddleware.TypedConfig[*schema.AgenticMessage]{
 			Manager: mgr,
 		})
 		require.NoError(t, err)
 
 		// Parent context tools
-		parentRunCtx := &adk.ChatModelAgentContext[*schema.Message]{}
+		parentRunCtx := &adk.ChatModelAgentContext[*schema.AgenticMessage]{}
 		_, parentRunCtx, err = subagentMW.BeforeAgent(ctx, parentRunCtx)
 		require.NoError(t, err)
 		_, parentRunCtx, err = bgMW.BeforeAgent(ctx, parentRunCtx)
@@ -679,7 +705,7 @@ func TestSubagentSpike(t *testing.T) {
 			},
 		}
 
-		childAgent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
+		childAgent, err := adk.NewTypedChatModelAgent[*schema.AgenticMessage](ctx, &adk.TypedChatModelAgentConfig[*schema.AgenticMessage]{
 			Name:        "clone",
 			Description: "Clone agent for answering queries",
 			Instruction: "You are the subagent.",
@@ -687,19 +713,20 @@ func TestSubagentSpike(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		subagentMW, err := subagent.New(ctx, &subagent.Config{
-			SubAgents: []adk.Agent{childAgent},
-			Background: &subagent.BackgroundConfig{
-				Local: &subagent.LocalBackgroundConfig{
+		subagentMW, err := subagent.NewTyped[*schema.AgenticMessage](ctx, &subagent.TypedConfig[*schema.AgenticMessage]{
+			SubAgents: []adk.TypedAgent[*schema.AgenticMessage]{childAgent},
+			Background: &subagent.TypedBackgroundConfig[*schema.AgenticMessage]{
+				Local: &subagent.TypedLocalBackgroundConfig[*schema.AgenticMessage]{
 					Runner:      localRunner,
-					OutputStore: &diskAppendOpener{baseDir: tmpDir},
+					OutputStore: &subagents.DiskAppendOpener{BaseDir: tmpDir},
 					OutputDir:   ".tasks",
 				},
+				TranscriptFormat: subagents.FormatAgenticTranscriptEntry,
 			},
 		})
 		require.NoError(t, err)
 
-		bgMW, err := bgmiddleware.New(ctx, &bgmiddleware.Config{
+		bgMW, err := bgmiddleware.NewTyped[*schema.AgenticMessage](ctx, &bgmiddleware.TypedConfig[*schema.AgenticMessage]{
 			Manager: mgr,
 		})
 		require.NoError(t, err)
@@ -723,21 +750,21 @@ func TestSubagentSpike(t *testing.T) {
 			},
 		}
 
-		parentAgent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
+		parentAgent, err := adk.NewTypedChatModelAgent[*schema.AgenticMessage](ctx, &adk.TypedChatModelAgentConfig[*schema.AgenticMessage]{
 			Name:        "parent",
 			Instruction: "You are the main coordinator agent.",
 			Model:       parentModel,
-			Handlers:    []adk.ChatModelAgentMiddleware{subagentMW, bgMW},
+			Handlers:    []adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage]{subagentMW, bgMW},
 		})
 		require.NoError(t, err)
 
-		runner := adk.NewRunner(ctx, adk.RunnerConfig{
+		runner := adk.NewTypedRunner(adk.TypedRunnerConfig[*schema.AgenticMessage]{
 			Agent:           parentAgent,
 			SessionID:       "turn-session-1",
 			EnableStreaming: true,
 		})
 
-		iter := runner.Run(ctx, []*schema.Message{schema.UserMessage("check Paris weather")})
+		iter := runner.Run(ctx, []*schema.AgenticMessage{schema.UserAgenticMessage("check Paris weather")})
 		err = drainRunnerIterator(iter)
 		require.NoError(t, err)
 

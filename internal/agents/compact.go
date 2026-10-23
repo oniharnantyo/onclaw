@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/schema"
 
 	"github.com/oniharnantyo/buddies/internal/agents/compaction"
 	"github.com/oniharnantyo/buddies/internal/sessions"
@@ -30,7 +31,7 @@ func hasCompactableView(events []sessions.Event, upToSeq int64) bool {
 func (m *manager) runCompaction(
 	ctx context.Context,
 	sessionID, turnID string,
-	mdl model.BaseChatModel,
+	mdl model.BaseModel[*schema.AgenticMessage],
 	events []sessions.Event,
 	upToSeq int64,
 ) (sessions.Event, error) {

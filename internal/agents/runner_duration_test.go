@@ -92,10 +92,22 @@ func TestTurn_ToolDurationZeroWithoutAnnouncementOnRecord(t *testing.T) {
 	now = clock.now
 	t.Cleanup(func() { now = restore })
 
-	mo := &adk.MessageVariant{
-		Message:  schema.ToolMessage("14:00", "call-lost"),
-		Role:     schema.Tool,
-		ToolName: ToolCurrentTime,
+	msg := &schema.AgenticMessage{
+		ContentBlocks: []*schema.ContentBlock{
+			schema.NewContentBlock(&schema.FunctionToolResult{
+				CallID: "call-lost",
+				Name:   ToolCurrentTime,
+				Content: []*schema.FunctionToolResultContentBlock{
+					{
+						Type: schema.FunctionToolResultContentBlockTypeText,
+						Text: &schema.UserInputText{Text: "14:00"},
+					},
+				},
+			}),
+		},
+	}
+	mo := &adk.TypedMessageVariant[*schema.AgenticMessage]{
+		Message: msg,
 	}
 	var recorded *sessions.Event
 	record := func(ev *sessions.Event, _ bool) error {

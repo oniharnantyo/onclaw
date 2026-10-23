@@ -37,6 +37,7 @@ export type {
     ProviderView,
     SchedulesChangedEvent,
     ToolEntry,
+    TurnStateResult,
     VerifyResult,
     WebSearchChainEntry,
     WebSearchConfig,

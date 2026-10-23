@@ -7,16 +7,19 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/schema"
 
 	"github.com/oniharnantyo/buddies/internal/agents/backend"
 	"github.com/oniharnantyo/buddies/internal/agents/hooks"
 	"github.com/oniharnantyo/buddies/internal/agents/mcp"
+	"github.com/oniharnantyo/buddies/internal/agents/subagents"
 	"github.com/oniharnantyo/buddies/internal/attachments"
 	"github.com/oniharnantyo/buddies/internal/scheduler"
 	"github.com/oniharnantyo/buddies/internal/sessions"
@@ -89,7 +92,13 @@ type manager struct {
 	// independently of the turn that spawned them and stay addressable
 	// through task_output/task_stop in later turns, so the space lives as
 	// long as the session — not the turn.
-	sessionTasks map[string]*taskRegistry
+	sessionTasks map[string]*subagents.TaskRegistry
+}
+
+// inFlightTool captures a currently executing tool call for the catch-up snapshot.
+type inFlightTool struct {
+	Name      string
+	Arguments string
 }
 
 // runningTurn is one session's in-flight turn record (design D3): the two
@@ -103,7 +112,7 @@ type runningTurn struct {
 	// agent and toolErrors carry the composed turn surface so a live resume
 	// reuses it (design D4); nil after a process loss, where the resume
 	// rebuilds phases 4–9 from the store.
-	agent      adk.Agent
+	agent      adk.TypedAgent[*schema.AgenticMessage]
 	toolErrors *toolErrorResult
 	// usage accumulates the turn's token usage across the original run and
 	// its resumes; the terminal event carries the total.
@@ -130,6 +139,10 @@ type runningTurn struct {
 	// A second Cancel is a no-op; the drain consults it to record the
 	// cancelled terminal instead of an error.
 	cancelRequested atomic.Bool
+	// toolMu guards partial and runningTools against concurrent access
+	// between the drain and Subscribe catch-up snapshots.
+	toolMu       sync.Mutex
+	runningTools map[string]inFlightTool
 	// partial carries the in-flight model call's streamed text across an
 	// abrupt end (design D3: a cancelled turn keeps its partial output); the
 	// drain updates it, the cancelled terminal persists it.
@@ -140,6 +153,43 @@ type runningTurn struct {
 	variantOf string
 	// pending is non-nil while the run is parked on an unresolved approval.
 	pending *pendingApproval
+}
+
+func (rt *runningTurn) appendPartial(text string) {
+	rt.toolMu.Lock()
+	rt.partial += text
+	rt.toolMu.Unlock()
+}
+
+func (rt *runningTurn) resetPartial() {
+	rt.toolMu.Lock()
+	rt.partial = ""
+	rt.toolMu.Unlock()
+}
+
+func (rt *runningTurn) addTool(callID, name, args string) {
+	rt.toolMu.Lock()
+	if rt.runningTools == nil {
+		rt.runningTools = make(map[string]inFlightTool)
+	}
+	rt.runningTools[callID] = inFlightTool{Name: name, Arguments: args}
+	rt.toolMu.Unlock()
+}
+
+func (rt *runningTurn) removeTool(callID string) {
+	rt.toolMu.Lock()
+	delete(rt.runningTools, callID)
+	rt.toolMu.Unlock()
+}
+
+func (rt *runningTurn) snapshot() (string, map[string]inFlightTool) {
+	rt.toolMu.Lock()
+	defer rt.toolMu.Unlock()
+	toolsCopy := make(map[string]inFlightTool, len(rt.runningTools))
+	for k, v := range rt.runningTools {
+		toolsCopy[k] = v
+	}
+	return rt.partial, toolsCopy
 }
 
 // pendingApproval is a parked run's unresolved approval: the interrupt and
@@ -156,19 +206,23 @@ type pendingApproval struct {
 // on first use. record is installed for the calling turn (the per-session
 // busy guard serializes turns, so the install is race-free against other
 // turns of the same session).
-func (m *manager) sessionTaskRegistry(sessionID string, record recordFn) *taskRegistry {
+func (m *manager) sessionTaskRegistry(sessionID string, record recordFn) *subagents.TaskRegistry {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.sessionTasks == nil {
-		m.sessionTasks = make(map[string]*taskRegistry)
+		m.sessionTasks = make(map[string]*subagents.TaskRegistry)
 	}
 	reg, ok := m.sessionTasks[sessionID]
 	if !ok {
-		reg = newTaskRegistry(record)
+		reg = subagents.NewTaskRegistry("", func(ev sessions.Event, durable bool) {
+			_ = record(&ev, durable)
+		})
 		m.sessionTasks[sessionID] = reg
 		return reg
 	}
-	reg.setRecord(record)
+	reg.SetRecord(func(ev sessions.Event, durable bool) {
+		_ = record(&ev, durable)
+	})
 	return reg
 }
 
@@ -333,12 +387,13 @@ func (m *manager) startTurn(sessionID, origin string) (*runningTurn, error) {
 	turnCtx, cancel := context.WithCancel(m.baseCtx)
 	turn := &Turn{id: newTurnID(), done: make(chan struct{})}
 	rt := &runningTurn{
-		turn:      turn,
-		sessionID: sessionID,
-		origin:    origin,
-		ctx:       turnCtx,
-		cancel:    cancel,
-		usage:     &sessions.Usage{},
+		turn:         turn,
+		sessionID:    sessionID,
+		origin:       origin,
+		ctx:          turnCtx,
+		cancel:       cancel,
+		usage:        &sessions.Usage{},
+		runningTools: make(map[string]inFlightTool),
 	}
 	m.running[sessionID] = rt
 	return rt, nil
@@ -394,6 +449,17 @@ func (m *manager) Busy(_ context.Context, sessionID string) bool {
 	defer m.mu.Unlock()
 	_, inFlight := m.running[sessionID]
 	return inFlight
+}
+
+// TurnState reports whether the session has a turn in flight — running or
+// parked on a pending approval — and the in-flight turn's ID.
+func (m *manager) TurnState(_ context.Context, sessionID string) (bool, string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if rt, ok := m.running[sessionID]; ok && rt != nil && rt.turn != nil {
+		return true, rt.turn.id
+	}
+	return false, ""
 }
 
 // cancelEscalationDelay bounds the safe-point cancel (design D3): the ADK
@@ -500,6 +566,43 @@ func (m *manager) Subscribe(ctx context.Context, sessionID string) (Subscription
 		m.subs[sessionID] = make(map[int]*streamSub)
 	}
 	m.subs[sessionID][id] = sub
+
+	// Catch-up snapshot (design D5): emit in-flight state to the new subscription.
+	// Synthetic IDs ensure deduplication safety; direct channel send avoids persisting.
+	if rt, ok := m.running[sessionID]; ok && rt != nil && rt.turn != nil {
+		turnID := rt.turn.id
+		partial, runningTools := rt.snapshot()
+		if partial != "" {
+			sub.send(sessions.Event{
+				ID:         fmt.Sprintf("snap-%s-partial", turnID),
+				TurnID:     turnID,
+				Kind:       sessions.KindTextDelta,
+				Text:       partial,
+				OccurredAt: now(),
+			})
+		}
+		toolKeys := make([]string, 0, len(runningTools))
+		for callID := range runningTools {
+			toolKeys = append(toolKeys, callID)
+		}
+		sort.Strings(toolKeys)
+		for _, callID := range toolKeys {
+			t := runningTools[callID]
+			sub.send(sessions.Event{
+				ID:     fmt.Sprintf("snap-%s-tool-%s", turnID, callID),
+				TurnID: turnID,
+				Kind:   sessions.KindToolActivity,
+				Tool: &sessions.ToolActivity{
+					CallID:    callID,
+					Name:      t.Name,
+					Arguments: t.Arguments,
+					Status:    sessions.ToolStatusRunning,
+				},
+				OccurredAt: now(),
+			})
+		}
+	}
+
 	return &sessionSubscription{m: m, sessionID: sessionID, id: id, sub: sub}, nil
 }
 

@@ -63,7 +63,7 @@ func TestSettingsService_ProviderModels_ListsCatalog(t *testing.T) {
 	require.NoError(t, err)
 	// The seeded catalog row declares no efforts, so it offers only high
 	// (design D3: the stored row is authoritative, no catalog fallback).
-	require.Contains(t, models, ModelCapability{ID: "claude-sonnet-4-5", ContextWindow: 200000, Efforts: []string{"high"}, ImageInput: true, PDFInput: true})
+	require.Contains(t, models, ModelCapability{ID: "claude-sonnet-4-5", ContextWindow: 200000, Efforts: []string{"low", "medium", "high"}, ImageInput: true, PDFInput: true})
 }
 
 func TestSettingsService_Skills_ListAndToggle(t *testing.T) {

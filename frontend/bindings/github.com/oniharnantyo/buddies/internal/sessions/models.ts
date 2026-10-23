@@ -117,6 +117,11 @@ export interface Event {
      * request (KindApprovalRequired) or the decision (KindApprovalResolved).
      */
     "approval"?: Approval | null;
+
+    /**
+     * Plan carries the task-plan snapshot (KindPlanActivity).
+     */
+    "plan"?: PlanSnapshot | null;
 }
 
 /**
@@ -219,7 +224,37 @@ export enum Kind {
      * (persisted). The stored transcript is never truncated by compaction.
      */
     KindCompaction = "compaction",
+
+    /**
+     * KindPlanActivity carries a full snapshot of the agent's task plan (the
+     * plantask tools' tasks) after a plan tool changed it (persisted: replay
+     * folds to the newest snapshot).
+     */
+    KindPlanActivity = "plan_activity",
 };
+
+/**
+ * PlanSnapshot is the agent's whole task plan at one moment, in plan order.
+ * It mirrors the plantask tools' records so the UI can render the plan's
+ * progress without parsing tool results.
+ */
+export interface PlanSnapshot {
+    "tasks": PlanTask[] | null;
+}
+
+/**
+ * PlanTask is one plan item. Status is the plantask vocabulary ("pending",
+ * "in_progress", "completed"); deleted tasks are not snapshotted. A pending
+ * task with a non-empty BlockedBy is waiting on other tasks.
+ */
+export interface PlanTask {
+    "id": string;
+    "subject": string;
+    "description"?: string;
+    "status": string;
+    "active_form"?: string;
+    "blocked_by"?: string[] | null;
+}
 
 /**
  * TaskActivity is one delegated subagent task observed during a turn. The
@@ -262,6 +297,18 @@ export interface TaskActivity {
      * Background reports whether the delegation ran in the background lane.
      */
     "background"?: boolean;
+
+    /**
+     * Progress is the child's latest activity while running — one line derived
+     * from its most recent transcript record (a tool call, a text fragment).
+     * Live-only: it rides running snapshots and is empty on terminal records.
+     */
+    "progress"?: string;
+
+    /**
+     * Steps counts the transcript records the child has produced so far.
+     */
+    "steps"?: number;
 }
 
 /**

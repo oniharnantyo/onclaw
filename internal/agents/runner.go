@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/oniharnantyo/buddies/internal/agents/backend"
 	"github.com/oniharnantyo/buddies/internal/agents/hooks"
+	"github.com/oniharnantyo/buddies/internal/agents/subagents"
 	"github.com/oniharnantyo/buddies/internal/sessions"
 	"github.com/oniharnantyo/buddies/internal/store"
 )
@@ -291,8 +293,9 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 	// the agent tier lives inside the workspace already. It is also what the
 	// delegated child's jail mounts.
 	if skillBackend != nil {
-		skillsCap = &skillsCapability{Backend: skillBackend, GlobalDir: m.skillsDir}
+		skillsCap = &skillsCapability{Backend: skillBackend}
 	}
+	var extraRoots []string
 	if surface.agentDir != "" {
 		fsCap := &filesystemCapability{AgentDir: surface.agentDir, DisabledTools: surface.fsDisabled}
 		if surface.shell {
@@ -308,7 +311,7 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 		}
 		cfg.Filesystem = fsCap
 
-		extraRoots := fsCap.ExtraRoots
+		extraRoots = fsCap.ExtraRoots
 		cfg.Reduction = &reductionCapability{
 			AgentDir:     surface.agentDir,
 			ExtraRoots:   extraRoots,
@@ -340,13 +343,39 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 	if err != nil {
 		return failTurn(err)
 	}
-	delegationCap, err := m.resolveDelegation(ctx, agent, surface, tasks, mdl, instruction, skillsCap, hookCap, turnID, mcpTools)
-	if err != nil {
-		return failTurn(err)
-	}
-	if delegationCap != nil {
-		cfg.Subagent = delegationCap.subagentCap
-		cfg.BackgroundTask = delegationCap.bgCap
+	if agent.SubagentsEnabled {
+		tasksDir := ""
+		if surface.agentDir != "" && m.workspaces != nil && agent.Slug != "" {
+			dir, err := m.workspaces.TasksDir(agent.Slug)
+			if err != nil {
+				return failTurn(fmt.Errorf("resolve tasks directory for agent %q: %w", agent.Slug, err))
+			}
+			tasksDir = dir
+		}
+		tasks.SetTurnID(turnID)
+		subCaps, err := subagents.New(ctx, &subagents.Config{
+			Instruction:      instruction,
+			Model:            mdl,
+			Tools:            surface.tools,
+			MCPTools:         mcpTools,
+			AgentDir:         surface.agentDir,
+			ExtraRoots:       extraRoots,
+			Shell:            surface.shell,
+			FSDisabled:       surface.fsDisabled,
+			PlantaskDisabled: surface.plantaskDisabled,
+			ContextLimit:     int64(m.contextLimit(ctx, agent)),
+			TasksDir:         tasksDir,
+			TurnID:           turnID,
+			Skills:           skillsCap,
+			Hooks:            hookCap,
+			Checkpoints:      backend.WithApprovalGate(checkpointLedger{checkpoints: m.store.Checkpoints()}),
+			Registry:         tasks,
+		})
+		if err != nil {
+			return failTurn(err)
+		}
+		cfg.Subagent = &subagentCapability{Middleware: subCaps.SubagentMiddleware, ArgsMiddleware: subCaps.DelegationArgsMiddleware}
+		cfg.BackgroundTask = &backgroundTaskCapability{Middleware: subCaps.BackgroundTaskMiddleware}
 	}
 	if err := assertNoDelegationToolCollision(surface.tools); err != nil {
 		return failTurn(err)
@@ -367,6 +396,7 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 		toolErrors:   toolErrors,
 		input:        inputMsgs,
 		checkpointID: "adk_" + turnID,
+		planDir:      planDirFor(surface.agentDir),
 	})
 }
 
@@ -377,12 +407,32 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 // resumed run — the resume shape: which checkpoint to drive and, for a
 // denial, the resume data fed back to the interrupting tool.
 type turnRun struct {
-	agent        adk.Agent
+	agent        adk.TypedAgent[*schema.AgenticMessage]
 	toolErrors   *toolErrorResult
-	input        []*schema.Message
+	input        []*schema.AgenticMessage
 	checkpointID string
 	resume       bool
 	resumeData   map[string]any
+	// planDir is the agent's plan directory (the plantask tools' task files);
+	// empty when the turn has no rooted workspace. The drain snapshots it
+	// after each plan change.
+	planDir string
+}
+
+func assertNoDelegationToolCollision(tools []tool.BaseTool) error {
+	for _, t := range tools {
+		if t == nil {
+			continue
+		}
+		info, err := t.Info(context.Background())
+		if err != nil {
+			continue
+		}
+		if info.Name == subagents.ToolAgent || info.Name == subagents.ToolTaskOutput || info.Name == subagents.ToolTaskStop {
+			return fmt.Errorf("tool name %q collides with delegation tool", info.Name)
+		}
+	}
+	return nil
 }
 
 // executeTurnRun runs the composed agent through the checkpointed ADK Runner
@@ -392,7 +442,7 @@ type turnRun struct {
 // terminal event (the session stays busy, its checkpoint on disk), and a
 // clean end persists the turn's completion carrying the accumulated usage.
 func (m *manager) executeTurnRun(ctx context.Context, recordCtx context.Context, rt *runningTurn, record recordFn, failTurn func(error) error, hookChain *hooks.Resolved, hookBase hooks.Event, run turnRun) error {
-	runner := adk.NewRunner(ctx, adk.RunnerConfig{
+	runner := adk.NewTypedRunner[*schema.AgenticMessage](adk.TypedRunnerConfig[*schema.AgenticMessage]{
 		Agent:           run.agent,
 		SessionID:       rt.sessionID,
 		EnableStreaming: true,
@@ -424,7 +474,7 @@ func (m *manager) executeTurnRun(ctx context.Context, recordCtx context.Context,
 	// Result) as a persisted event whose broadcast is the live finish
 	// (design D10). Deltas stay live-only — the durable form of a response is
 	// the assistant message event persisted as each model call completes.
-	var iter *adk.AsyncIterator[*adk.AgentEvent]
+	var iter *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]]
 	if run.resume {
 		var rerr error
 		if run.resumeData != nil {
@@ -442,7 +492,7 @@ func (m *manager) executeTurnRun(ctx context.Context, recordCtx context.Context,
 	} else {
 		iter = runner.Run(ctx, run.input, runOpts...)
 	}
-	res, drainErr := drainTurn(iter, record, rt.usage, run.toolErrors, rt.args)
+	res, drainErr := drainTurn(iter, record, rt.usage, run.toolErrors, rt.args, rt, run.planDir)
 	// The drain's observations land on the record BEFORE any error takes the
 	// failure path: the partial output persists on a cancelled terminal
 	// (design D3) and the call-argument memory seeds a resumed run's terminal
@@ -584,7 +634,7 @@ type drainResult struct {
 // seedArgs primes the call-argument memory with the interrupted run's calls
 // on a resumed run: their announcements were live-only, and the resumed run's
 // terminal tool records still carry the full call.
-func drainTurn(iter *adk.AsyncIterator[*adk.AgentEvent], record recordFn, usage *sessions.Usage, toolErrors *toolErrorResult, seedArgs map[string]string) (drainResult, error) {
+func drainTurn(iter *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]], record recordFn, usage *sessions.Usage, toolErrors *toolErrorResult, seedArgs map[string]string, rt *runningTurn, planDir string) (drainResult, error) {
 	// args remembers each seen call's arguments so the terminal record
 	// carries the full call, not just the result.
 	args := make(map[string]string, len(seedArgs))
@@ -604,10 +654,25 @@ func drainTurn(iter *adk.AsyncIterator[*adk.AgentEvent], record recordFn, usage 
 		switch {
 		case ev.Kind == sessions.KindTextDelta:
 			partial.WriteString(ev.Text)
+			if rt != nil {
+				rt.appendPartial(ev.Text)
+			}
 		case ev.Kind == sessions.KindAssistantMessage && durable:
 			// The model call completed durably; only a later in-flight call
 			// can leave a partial behind.
 			partial.Reset()
+			if rt != nil {
+				rt.resetPartial()
+			}
+		case ev.Kind == sessions.KindToolActivity && ev.Tool != nil:
+			if rt != nil {
+				switch ev.Tool.Status {
+				case sessions.ToolStatusRunning:
+					rt.addTool(ev.Tool.CallID, ev.Tool.Name, ev.Tool.Arguments)
+				case sessions.ToolStatusCompleted, sessions.ToolStatusFailed:
+					rt.removeTool(ev.Tool.CallID)
+				}
+			}
 		}
 		return record(ev, durable)
 	}
@@ -644,17 +709,23 @@ func drainTurn(iter *adk.AsyncIterator[*adk.AgentEvent], record recordFn, usage 
 		}
 		mo := ev.Output.MessageOutput
 
-		switch mo.Role {
-		case schema.Assistant:
+		switch mo.AgenticRole {
+		case schema.AgenticRoleTypeAssistant:
 			if err := drainAssistantOutput(mo, tap, usage, args, started); err != nil {
 				drainToEOF(iter)
 				return drainResult{partialText: partial.String(), args: args}, err
 			}
-		case schema.Tool:
-			if err := recordToolResult(mo, tap, args, started, toolErrors); err != nil {
+		default:
+			msg, err := mo.GetMessage()
+			if err != nil {
+				drainToEOF(iter)
+				return drainResult{partialText: partial.String(), args: args}, fmt.Errorf("collect tool result: %w", err)
+			}
+			if err := recordToolResultMessage(msg, tap, args, started, toolErrors); err != nil {
 				drainToEOF(iter)
 				return drainResult{partialText: partial.String(), args: args}, err
 			}
+			recordPlanSnapshot(msg, planDir, tap, toolErrors)
 		}
 	}
 }
@@ -666,7 +737,7 @@ func drainTurn(iter *adk.AsyncIterator[*adk.AgentEvent], record recordFn, usage 
 // ToolActivity records — the model has committed to them, execution follows.
 // Usage rides the frames of the model call; only the last frame carrying
 // usage counts (providers report it once, on the final frame).
-func drainAssistantOutput(mo *adk.MessageVariant, record recordFn, usage *sessions.Usage, args map[string]string, started map[string]time.Time) error {
+func drainAssistantOutput(mo *adk.TypedMessageVariant[*schema.AgenticMessage], record recordFn, usage *sessions.Usage, args map[string]string, started map[string]time.Time) error {
 	var text, reasoning strings.Builder
 	calls := newToolCallAssembler()
 
@@ -683,30 +754,48 @@ func drainAssistantOutput(mo *adk.MessageVariant, record recordFn, usage *sessio
 			if frame == nil {
 				continue
 			}
-			if frame.ResponseMeta != nil {
-				frameUsage = frame.ResponseMeta.Usage
+			if frame.ResponseMeta != nil && frame.ResponseMeta.TokenUsage != nil {
+				frameUsage = frame.ResponseMeta.TokenUsage
 			}
-			if frame.ReasoningContent != "" {
-				reasoning.WriteString(frame.ReasoningContent)
-				// Delta tap: best-effort; a failed broadcast must never fail
-				// the turn.
-				_ = record(&sessions.Event{Kind: sessions.KindReasoningDelta, Text: frame.ReasoningContent}, false)
+			for _, b := range frame.ContentBlocks {
+				if b == nil {
+					continue
+				}
+				if b.Type == schema.ContentBlockTypeReasoning && b.Reasoning != nil && b.Reasoning.Text != "" {
+					reasoning.WriteString(b.Reasoning.Text)
+					// Delta tap: best-effort; a failed broadcast must never fail
+					// the turn.
+					_ = record(&sessions.Event{Kind: sessions.KindReasoningDelta, Text: b.Reasoning.Text}, false)
+				}
+				if b.Type == schema.ContentBlockTypeAssistantGenText && b.AssistantGenText != nil && b.AssistantGenText.Text != "" {
+					text.WriteString(b.AssistantGenText.Text)
+					_ = record(&sessions.Event{Kind: sessions.KindTextDelta, Text: b.AssistantGenText.Text}, false)
+				}
+				if b.Type == schema.ContentBlockTypeFunctionToolCall && b.FunctionToolCall != nil {
+					calls.observeBlock(b.FunctionToolCall)
+				}
 			}
-			if frame.Content != "" {
-				text.WriteString(frame.Content)
-				_ = record(&sessions.Event{Kind: sessions.KindTextDelta, Text: frame.Content}, false)
-			}
-			calls.observe(frame.ToolCalls)
 		}
 		accumulateTokenUsage(usage, frameUsage)
 	} else if mo.Message != nil {
 		msg := mo.Message
-		if msg.ResponseMeta != nil {
-			accumulateTokenUsage(usage, msg.ResponseMeta.Usage)
+		if msg.ResponseMeta != nil && msg.ResponseMeta.TokenUsage != nil {
+			accumulateTokenUsage(usage, msg.ResponseMeta.TokenUsage)
 		}
-		reasoning.WriteString(msg.ReasoningContent)
-		text.WriteString(msg.Content)
-		calls.observe(msg.ToolCalls)
+		for _, b := range msg.ContentBlocks {
+			if b == nil {
+				continue
+			}
+			if b.Type == schema.ContentBlockTypeReasoning && b.Reasoning != nil && b.Reasoning.Text != "" {
+				reasoning.WriteString(b.Reasoning.Text)
+			}
+			if b.Type == schema.ContentBlockTypeAssistantGenText && b.AssistantGenText != nil && b.AssistantGenText.Text != "" {
+				text.WriteString(b.AssistantGenText.Text)
+			}
+			if b.Type == schema.ContentBlockTypeFunctionToolCall && b.FunctionToolCall != nil {
+				calls.observeBlock(b.FunctionToolCall)
+			}
+		}
 	}
 
 	// Durable outputs of this model call, in transcript order.
@@ -747,36 +836,66 @@ func drainAssistantOutput(mo *adk.MessageVariant, record recordFn, usage *sessio
 // announcement to the terminal stamp. A resumed run's pre-interrupt calls
 // have no announcement time on record, so their terminal records carry none
 // — the runtime never fabricates a latency.
-func recordToolResult(mo *adk.MessageVariant, record recordFn, args map[string]string, started map[string]time.Time, toolErrors *toolErrorResult) error {
+func recordToolResult(mo *adk.TypedMessageVariant[*schema.AgenticMessage], record recordFn, args map[string]string, started map[string]time.Time, toolErrors *toolErrorResult) error {
 	msg, err := mo.GetMessage()
 	if err != nil {
 		return fmt.Errorf("collect tool result: %w", err)
 	}
+	return recordToolResultMessage(msg, record, args, started, toolErrors)
+}
+
+// recordToolResultMessage is recordToolResult over an already collected
+// message (a streaming variant can be read only once).
+func recordToolResultMessage(msg *schema.AgenticMessage, record recordFn, args map[string]string, started map[string]time.Time, toolErrors *toolErrorResult) error {
 	if msg == nil {
 		return nil
 	}
-	name := mo.ToolName
-	if name == "" {
-		name = msg.ToolName
-	}
-	callID := msg.ToolCallID
 
-	status := sessions.ToolStatusCompleted
-	result := msg.Content
-	if errText, failed := toolErrors.failureOf(callID); failed {
-		status = sessions.ToolStatusFailed
-		result = errText
+	for _, b := range msg.ContentBlocks {
+		if b == nil {
+			continue
+		}
+		var callID, name, result string
+		if b.Type == schema.ContentBlockTypeFunctionToolResult && b.FunctionToolResult != nil {
+			callID = b.FunctionToolResult.CallID
+			name = b.FunctionToolResult.Name
+			var resBuilder strings.Builder
+			for _, cb := range b.FunctionToolResult.Content {
+				if cb != nil && cb.Type == schema.FunctionToolResultContentBlockTypeText && cb.Text != nil {
+					resBuilder.WriteString(cb.Text.Text)
+				}
+			}
+			result = resBuilder.String()
+		} else if b.Type == schema.ContentBlockTypeToolSearchResult && b.ToolSearchFunctionToolResult != nil {
+			callID = b.ToolSearchFunctionToolResult.CallID
+			name = b.ToolSearchFunctionToolResult.Name
+			if b.ToolSearchFunctionToolResult.Result != nil {
+				resBytes, _ := json.Marshal(b.ToolSearchFunctionToolResult.Result)
+				result = string(resBytes)
+			}
+		} else {
+			continue
+		}
+
+		status := sessions.ToolStatusCompleted
+		if errText, failed := toolErrors.FailureOf(callID); failed {
+			status = sessions.ToolStatusFailed
+			result = errText
+		}
+		activity := &sessions.ToolActivity{
+			CallID:     callID,
+			Name:       name,
+			Arguments:  args[callID],
+			Status:     status,
+			Result:     result,
+			IsError:    status == sessions.ToolStatusFailed,
+			DurationMs: durationMsSince(started[callID]),
+		}
+		if err := record(&sessions.Event{Kind: sessions.KindToolActivity, Tool: activity}, true); err != nil {
+			return err
+		}
 	}
-	activity := &sessions.ToolActivity{
-		CallID:     callID,
-		Name:       name,
-		Arguments:  args[callID],
-		Status:     status,
-		Result:     result,
-		IsError:    status == sessions.ToolStatusFailed,
-		DurationMs: durationMsSince(started[callID]),
-	}
-	return record(&sessions.Event{Kind: sessions.KindToolActivity, Tool: activity}, true)
+	return nil
 }
 
 // durationMsSince reports the wall-clock milliseconds elapsed since start
@@ -807,7 +926,7 @@ func iterationCapNotice() string {
 // drainToEOF consumes and discards the remaining ADK events so the run's
 // asynchronous finalization lands before the turn goroutine moves on
 // (mirrors the donor's drain pattern).
-func drainToEOF(iter *adk.AsyncIterator[*adk.AgentEvent]) {
+func drainToEOF(iter *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]]) {
 	for {
 		if _, ok := iter.Next(); !ok {
 			return
@@ -895,6 +1014,26 @@ func (a *toolCallAssembler) observe(calls []schema.ToolCall) {
 		}
 		existing.Arguments += call.Function.Arguments
 	}
+}
+
+func (a *toolCallAssembler) observeBlock(call *schema.FunctionToolCall) {
+	if call == nil {
+		return
+	}
+	key := call.CallID
+	existing, ok := a.calls[key]
+	if !ok {
+		existing = &sessions.ToolActivity{}
+		a.calls[key] = existing
+		a.order = append(a.order, key)
+	}
+	if call.CallID != "" {
+		existing.CallID = call.CallID
+	}
+	if call.Name != "" {
+		existing.Name = call.Name
+	}
+	existing.Arguments += call.Arguments
 }
 
 // finish returns the assembled tool activities in first-appearance order.

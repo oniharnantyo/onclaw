@@ -202,6 +202,13 @@ export function TranscriptPage(sessionID: string, beforeSeq: number, limit: numb
 }
 
 /**
+ * TurnState reports whether the session has a turn in flight and its turn ID.
+ */
+export function TurnState(sessionID: string): $CancellablePromise<$models.TurnStateResult> {
+    return $Call.ByID(457546513, sessionID);
+}
+
+/**
  * Unsubscribe detaches the session's live event stream. It is a no-op when
  * the session is not subscribed.
  */

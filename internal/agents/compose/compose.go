@@ -55,7 +55,7 @@ type ReductionCapability struct {
 	MaxLengthForTrunc         int
 	ReadFileToolName          string
 	ClearRetentionSuffixLimit int
-	TokenCounter              func(ctx context.Context, msg []*schema.Message, tools []*schema.ToolInfo) (int64, error)
+	TokenCounter              func(ctx context.Context, msg []*schema.AgenticMessage, tools []*schema.ToolInfo) (int64, error)
 }
 
 // PlantaskCapability configures the structured task plan middleware.
@@ -79,19 +79,22 @@ type HooksCapability struct {
 
 // SubagentCapability carries the subagent middleware instance.
 type SubagentCapability struct {
-	Middleware adk.ChatModelAgentMiddleware
+	Middleware adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage]
+	// ArgsMiddleware optionally normalizes the agent tool's arguments before
+	// Middleware's tool parses them; it rides the chain right after it.
+	ArgsMiddleware adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage]
 }
 
 // BackgroundTaskCapability carries the backgroundtask middleware instance.
 type BackgroundTaskCapability struct {
-	Middleware adk.ChatModelAgentMiddleware
+	Middleware adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage]
 }
 
 // ComposeConfig is the complete input needed to compose one turn's executable agent.
 type ComposeConfig struct {
 	Name                  string
 	Instruction           string
-	ChatModel             model.BaseChatModel
+	ChatModel             model.BaseModel[*schema.AgenticMessage]
 	Tools                 []tool.BaseTool
 	MaxIterations         int
 	Filesystem            *FilesystemCapability
@@ -106,7 +109,7 @@ type ComposeConfig struct {
 }
 
 // ComposeTurnAgent constructs the turn's executable ADK agent from cfg.
-func ComposeTurnAgent(ctx context.Context, cfg *ComposeConfig) (adk.Agent, *ToolErrorResult, error) {
+func ComposeTurnAgent(ctx context.Context, cfg *ComposeConfig) (adk.TypedAgent[*schema.AgenticMessage], *ToolErrorResult, error) {
 	if cfg == nil {
 		return nil, nil, errors.New("compose: config is required")
 	}
@@ -122,32 +125,44 @@ func ComposeTurnAgent(ctx context.Context, cfg *ComposeConfig) (adk.Agent, *Tool
 		maxIter = DefaultMaxIterations
 	}
 
-	handlers, toolErrors, err := buildHandlers(ctx, cfg)
+	handlers, toolErrors, err := BuildHandlers(ctx, cfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("compose: handlers: %w", err)
 	}
 
-	agentCfg := &adk.ChatModelAgentConfig{
+	tools := append([]tool.BaseTool(nil), cfg.Tools...)
+	if cfg.Filesystem != nil && cfg.Filesystem.Shell != nil {
+		// Models primed by prompts that say "shell" reach for a tool of that
+		// name, and an unknown tool name fails the whole run — so the jailed
+		// shell answers to it beside the middleware's execute tool.
+		alias, err := NewShellAliasTool(cfg.Filesystem.Shell)
+		if err != nil {
+			return nil, nil, fmt.Errorf("compose: shell alias: %w", err)
+		}
+		tools = append(tools, alias)
+	}
+
+	agentCfg := &adk.TypedChatModelAgentConfig[*schema.AgenticMessage]{
 		Name:          cfg.Name,
 		Instruction:   cfg.Instruction,
 		Model:         cfg.ChatModel,
-		ToolsConfig:   adk.ToolsConfig{ToolsNodeConfig: einocompose.ToolsNodeConfig{Tools: cfg.Tools}},
+		ToolsConfig:   adk.ToolsConfig{ToolsNodeConfig: einocompose.ToolsNodeConfig{Tools: tools}},
 		MaxIterations: maxIter,
 		Handlers:      handlers,
 	}
 
-	agent, err := adk.NewChatModelAgent(ctx, agentCfg)
+	agent, err := adk.NewTypedChatModelAgent(ctx, agentCfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("compose: new agent: %w", err)
 	}
 	return agent, toolErrors, nil
 }
 
-func buildHandlers(ctx context.Context, cfg *ComposeConfig) ([]adk.ChatModelAgentMiddleware, *ToolErrorResult, error) {
-	handlers := make([]adk.ChatModelAgentMiddleware, 0, 8)
+func BuildHandlers(ctx context.Context, cfg *ComposeConfig) ([]adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage], *ToolErrorResult, error) {
+	handlers := make([]adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage], 0, 8)
 
 	// 1. patchtoolcalls: appended first so it is the outermost middleware.
-	patchMW, err := patchtoolcalls.New(ctx, &patchtoolcalls.Config{})
+	patchMW, err := patchtoolcalls.NewTyped[*schema.AgenticMessage](ctx, &patchtoolcalls.Config{})
 	if err != nil {
 		return nil, nil, fmt.Errorf("build middlewares: patchtoolcalls: %w", err)
 	}
@@ -192,7 +207,7 @@ func buildHandlers(ctx context.Context, cfg *ComposeConfig) ([]adk.ChatModelAgen
 			maxTokensForClear = 160000
 		}
 
-		redCfg := &reduction.Config{
+		redCfg := &reduction.TypedConfig[*schema.AgenticMessage]{
 			Backend:                   redBackend,
 			RootDir:                   backend.DefaultMountPoint,
 			ReadFileToolName:          readFileToolName,
@@ -201,7 +216,7 @@ func buildHandlers(ctx context.Context, cfg *ComposeConfig) ([]adk.ChatModelAgen
 			ClearRetentionSuffixLimit: retention,
 			TokenCounter:              cfg.Reduction.TokenCounter,
 		}
-		redMW, err := reduction.New(ctx, redCfg)
+		redMW, err := reduction.NewTyped[*schema.AgenticMessage](ctx, redCfg)
 		if err != nil {
 			return nil, nil, fmt.Errorf("build middlewares: reduction: %w", err)
 		}
@@ -219,7 +234,7 @@ func buildHandlers(ctx context.Context, cfg *ComposeConfig) ([]adk.ChatModelAgen
 
 	// 3. skill: attached when configured.
 	if cfg.Skills != nil {
-		skillMW, err := einoskill.NewMiddleware(ctx, &einoskill.Config{Backend: cfg.Skills.Backend})
+		skillMW, err := einoskill.NewTyped[*schema.AgenticMessage](ctx, &einoskill.TypedConfig[*schema.AgenticMessage]{Backend: cfg.Skills.Backend})
 		if err != nil {
 			return nil, nil, fmt.Errorf("build middlewares: skill: %w", err)
 		}
@@ -232,7 +247,11 @@ func buildHandlers(ctx context.Context, cfg *ComposeConfig) ([]adk.ChatModelAgen
 		if err != nil {
 			return nil, nil, fmt.Errorf("build middlewares: filesystem jail: %w", err)
 		}
-		fsConfig := &fsmw.MiddlewareConfig{Backend: jail, Shell: cfg.Filesystem.Shell}
+		fsConfig := &fsmw.MiddlewareConfig{
+			Backend:           jail,
+			Shell:             cfg.Filesystem.Shell,
+			UseMultiModalRead: true,
+		}
 		guidance := "Filesystem: your workspace is mounted at " + backend.DefaultMountPoint +
 			". File tool paths are absolute paths under " + backend.DefaultMountPoint +
 			" (e.g. " + backend.DefaultMountPoint + "/notes.md); relative paths and paths outside it fail."
@@ -253,7 +272,7 @@ func buildHandlers(ctx context.Context, cfg *ComposeConfig) ([]adk.ChatModelAgen
 				fsConfig.GrepToolConfig = &fsmw.ToolConfig{Disable: true}
 			}
 		}
-		fsMW, err := fsmw.New(ctx, fsConfig)
+		fsMW, err := fsmw.NewTyped[*schema.AgenticMessage](ctx, fsConfig)
 		if err != nil {
 			return nil, nil, fmt.Errorf("build middlewares: filesystem: %w", err)
 		}
@@ -284,7 +303,7 @@ func buildHandlers(ctx context.Context, cfg *ComposeConfig) ([]adk.ChatModelAgen
 			baseDir = DefaultPlantaskBaseDir
 		}
 
-		ptMW, err := plantask.New(ctx, &plantask.Config{
+		ptMW, err := plantask.NewTyped[*schema.AgenticMessage](ctx, &plantask.Config{
 			Backend: ptBackend,
 			BaseDir: baseDir,
 		})
@@ -311,6 +330,9 @@ func buildHandlers(ctx context.Context, cfg *ComposeConfig) ([]adk.ChatModelAgen
 	// 8. subagent: attached when configured.
 	if cfg.Subagent != nil && cfg.Subagent.Middleware != nil {
 		handlers = append(handlers, cfg.Subagent.Middleware)
+		if cfg.Subagent.ArgsMiddleware != nil {
+			handlers = append(handlers, cfg.Subagent.ArgsMiddleware)
+		}
 	}
 
 	// 9. backgroundtask: attached when configured.
@@ -326,11 +348,12 @@ func buildHandlers(ctx context.Context, cfg *ComposeConfig) ([]adk.ChatModelAgen
 }
 
 type safeReductionMiddleware struct {
-	adk.ChatModelAgentMiddleware
+	adk.TypedBaseChatModelAgentMiddleware[*schema.AgenticMessage]
+	inner adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage]
 }
 
-func newSafeReductionMiddleware(mw adk.ChatModelAgentMiddleware) *safeReductionMiddleware {
-	return &safeReductionMiddleware{ChatModelAgentMiddleware: mw}
+func newSafeReductionMiddleware(mw adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage]) *safeReductionMiddleware {
+	return &safeReductionMiddleware{inner: mw}
 }
 
 func (w *safeReductionMiddleware) WrapInvokableToolCall(ctx context.Context, endpoint adk.InvokableToolCallEndpoint, tCtx *adk.ToolContext) (adk.InvokableToolCallEndpoint, error) {
@@ -340,7 +363,7 @@ func (w *safeReductionMiddleware) WrapInvokableToolCall(ctx context.Context, end
 		origOutput, origErr = endpoint(ctx, argumentsInJSON, opts...)
 		return origOutput, origErr
 	}
-	wrapped, err := w.ChatModelAgentMiddleware.WrapInvokableToolCall(ctx, spyEndpoint, tCtx)
+	wrapped, err := w.inner.WrapInvokableToolCall(ctx, spyEndpoint, tCtx)
 	if err != nil {
 		return endpoint, nil
 	}
@@ -360,7 +383,7 @@ func (w *safeReductionMiddleware) WrapEnhancedInvokableToolCall(ctx context.Cont
 		origOutput, origErr = endpoint(ctx, toolArgument, opts...)
 		return origOutput, origErr
 	}
-	wrapped, err := w.ChatModelAgentMiddleware.WrapEnhancedInvokableToolCall(ctx, spyEndpoint, tCtx)
+	wrapped, err := w.inner.WrapEnhancedInvokableToolCall(ctx, spyEndpoint, tCtx)
 	if err != nil {
 		return endpoint, nil
 	}
@@ -373,8 +396,8 @@ func (w *safeReductionMiddleware) WrapEnhancedInvokableToolCall(ctx context.Cont
 	}, nil
 }
 
-func (w *safeReductionMiddleware) BeforeModelRewriteState(ctx context.Context, state *adk.ChatModelAgentState, mc *adk.ModelContext) (context.Context, *adk.ChatModelAgentState, error) {
-	newCtx, newState, err := w.ChatModelAgentMiddleware.BeforeModelRewriteState(ctx, state, mc)
+func (w *safeReductionMiddleware) BeforeModelRewriteState(ctx context.Context, state *adk.TypedChatModelAgentState[*schema.AgenticMessage], mc *adk.TypedModelContext[*schema.AgenticMessage]) (context.Context, *adk.TypedChatModelAgentState[*schema.AgenticMessage], error) {
+	newCtx, newState, err := w.inner.BeforeModelRewriteState(ctx, state, mc)
 	if err != nil {
 		return ctx, state, nil
 	}
@@ -400,24 +423,25 @@ func normalizePlantaskToolName(name string) string {
 }
 
 type plantaskGatedMiddleware struct {
-	adk.ChatModelAgentMiddleware
+	adk.TypedBaseChatModelAgentMiddleware[*schema.AgenticMessage]
+	inner    adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage]
 	disabled map[string]struct{}
 }
 
-func newPlantaskGatedMiddleware(mw adk.ChatModelAgentMiddleware, disabled []string) *plantaskGatedMiddleware {
+func newPlantaskGatedMiddleware(mw adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage], disabled []string) *plantaskGatedMiddleware {
 	m := make(map[string]struct{}, len(disabled)*2)
 	for _, name := range disabled {
 		m[name] = struct{}{}
 		m[normalizePlantaskToolName(name)] = struct{}{}
 	}
 	return &plantaskGatedMiddleware{
-		ChatModelAgentMiddleware: mw,
-		disabled:                 m,
+		inner:    mw,
+		disabled: m,
 	}
 }
 
-func (m *plantaskGatedMiddleware) BeforeAgent(ctx context.Context, runCtx *adk.ChatModelAgentContext[*schema.Message]) (context.Context, *adk.ChatModelAgentContext[*schema.Message], error) {
-	ctx, nRunCtx, err := m.ChatModelAgentMiddleware.BeforeAgent(ctx, runCtx)
+func (m *plantaskGatedMiddleware) BeforeAgent(ctx context.Context, runCtx *adk.ChatModelAgentContext[*schema.AgenticMessage]) (context.Context, *adk.ChatModelAgentContext[*schema.AgenticMessage], error) {
+	ctx, nRunCtx, err := m.inner.BeforeAgent(ctx, runCtx)
 	if err != nil || nRunCtx == nil {
 		return ctx, nRunCtx, err
 	}

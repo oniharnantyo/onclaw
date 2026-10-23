@@ -51,12 +51,12 @@ func TestPlantaskCompose_RegisteredAndRenamed(t *testing.T) {
 	require.NotNil(t, agent)
 	require.NotNil(t, toolErrors)
 
-	runner := adk.NewRunner(ctx, adk.RunnerConfig{
+	runner := adk.NewTypedRunner(adk.TypedRunnerConfig[*schema.AgenticMessage]{
 		Agent:           agent,
 		EnableStreaming: true,
 	})
 
-	iter := runner.Run(ctx, []*schema.Message{schema.UserMessage("please create a task")})
+	iter := runner.Run(ctx, []*schema.AgenticMessage{schema.UserAgenticMessage("please create a task")})
 	err = drainRunnerIterator(iter)
 	require.NoError(t, err)
 
@@ -106,12 +106,12 @@ func TestPlantaskCompose_DisabledToolsWithheld_SnakeCase(t *testing.T) {
 	agent, _, err := composeTurnAgent(ctx, cfg)
 	require.NoError(t, err)
 
-	runner := adk.NewRunner(ctx, adk.RunnerConfig{
+	runner := adk.NewTypedRunner(adk.TypedRunnerConfig[*schema.AgenticMessage]{
 		Agent:           agent,
 		EnableStreaming: true,
 	})
 
-	iter := runner.Run(ctx, []*schema.Message{schema.UserMessage("test gating")})
+	iter := runner.Run(ctx, []*schema.AgenticMessage{schema.UserAgenticMessage("test gating")})
 	err = drainRunnerIterator(iter)
 	require.NoError(t, err)
 
@@ -147,12 +147,12 @@ func TestPlantaskCompose_DisabledToolsWithheld_PascalCase(t *testing.T) {
 	agent, _, err := composeTurnAgent(ctx, cfg)
 	require.NoError(t, err)
 
-	runner := adk.NewRunner(ctx, adk.RunnerConfig{
+	runner := adk.NewTypedRunner(adk.TypedRunnerConfig[*schema.AgenticMessage]{
 		Agent:           agent,
 		EnableStreaming: true,
 	})
 
-	iter := runner.Run(ctx, []*schema.Message{schema.UserMessage("test gating")})
+	iter := runner.Run(ctx, []*schema.AgenticMessage{schema.UserAgenticMessage("test gating")})
 	err = drainRunnerIterator(iter)
 	require.NoError(t, err)
 
@@ -188,12 +188,12 @@ func TestPlantaskCompose_DisabledPlantaskTools_Config(t *testing.T) {
 	agent, _, err := composeTurnAgent(ctx, cfg)
 	require.NoError(t, err)
 
-	runner := adk.NewRunner(ctx, adk.RunnerConfig{
+	runner := adk.NewTypedRunner(adk.TypedRunnerConfig[*schema.AgenticMessage]{
 		Agent:           agent,
 		EnableStreaming: true,
 	})
 
-	iter := runner.Run(ctx, []*schema.Message{schema.UserMessage("hi")})
+	iter := runner.Run(ctx, []*schema.AgenticMessage{schema.UserAgenticMessage("hi")})
 	err = drainRunnerIterator(iter)
 	require.NoError(t, err)
 
@@ -230,12 +230,12 @@ func TestPlantaskCompose_WorkspaceInferredFromFilesystem(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, agent)
 
-	runner := adk.NewRunner(ctx, adk.RunnerConfig{
+	runner := adk.NewTypedRunner(adk.TypedRunnerConfig[*schema.AgenticMessage]{
 		Agent:           agent,
 		EnableStreaming: true,
 	})
 
-	iter := runner.Run(ctx, []*schema.Message{schema.UserMessage("hi")})
+	iter := runner.Run(ctx, []*schema.AgenticMessage{schema.UserAgenticMessage("hi")})
 	err = drainRunnerIterator(iter)
 	require.NoError(t, err)
 

@@ -14,12 +14,17 @@ import (
 )
 
 type fakeChatModel struct {
-	model.BaseChatModel
+	model.BaseModel[*schema.AgenticMessage]
 	reply string
 }
 
-func (m *fakeChatModel) Generate(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.Message, error) {
-	return schema.AssistantMessage(m.reply, nil), nil
+func (m *fakeChatModel) Generate(_ context.Context, _ []*schema.AgenticMessage, _ ...model.Option) (*schema.AgenticMessage, error) {
+	return &schema.AgenticMessage{
+		Role: schema.AgenticRoleTypeAssistant,
+		ContentBlocks: []*schema.ContentBlock{
+			schema.NewContentBlock(&schema.AssistantGenText{Text: m.reply}),
+		},
+	}, nil
 }
 
 func TestCompactionNeeded(t *testing.T) {

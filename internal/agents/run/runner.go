@@ -35,7 +35,7 @@ type DrainValues struct {
 type RunningTurn struct {
 	Turn       *Turn
 	SessionID  string
-	Agent      adk.Agent
+	Agent      adk.TypedAgent[*schema.AgenticMessage]
 	ToolErrors *compose.ToolErrorResult
 	Usage      *sessions.Usage
 	Args       map[string]string
@@ -85,14 +85,14 @@ func NewRunner(deps RunnerDependencies) *Runner {
 func (r *Runner) ExecuteTurn(
 	ctx context.Context,
 	rt *RunningTurn,
-	agent adk.Agent,
-	input []*schema.Message,
+	agent adk.TypedAgent[*schema.AgenticMessage],
+	input []*schema.AgenticMessage,
 ) error {
 	if rt == nil || agent == nil {
 		return errors.New("run: running turn and agent are required")
 	}
 
-	runner := adk.NewRunner(ctx, adk.RunnerConfig{
+	runner := adk.NewTypedRunner[*schema.AgenticMessage](adk.TypedRunnerConfig[*schema.AgenticMessage]{
 		Agent:           agent,
 		EnableStreaming: true,
 		SessionID:       rt.SessionID,

@@ -1,10 +1,20 @@
 package agents
 
 import (
+	"errors"
+	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/oniharnantyo/buddies/internal/store"
+)
+
+var (
+	// ErrEndpointIncompatible is returned when a provider endpoint lacks the
+	// required API surface (/v1/responses) needed by agentic model components.
+	ErrEndpointIncompatible = errors.New("endpoint does not support required API surface (/v1/responses)")
+	// ErrProviderUnavailable is returned when a provider is unavailable for an agentic turn.
+	ErrProviderUnavailable = errors.New("provider endpoint unavailable")
 )
 
 // Provider types the runtime has connectors for. The three canonical types
@@ -66,6 +76,89 @@ func RequiresAPIKey(providerType string) bool {
 	default:
 		return true
 	}
+}
+
+// SupportsResponsesAPI reports whether the provider endpoint implements
+// the OpenAI /v1/responses API required by agenticopenai (design D1, Task 2.2).
+// Hosted OpenAI supports it natively. OpenAI-compatible endpoints target custom
+// bases; known endpoints lacking /v1/responses (LM Studio, Poolside, Ollama local,
+// OpenRouter) resolve as unsupported with a named reason.
+func SupportsResponsesAPI(provider store.Provider) (bool, string) {
+	switch provider.Type {
+	case ProviderOpenAI:
+		// Canonical OpenAI hosted endpoint supports /v1/responses natively.
+		// If an explicit custom base is provided, check against known incompatible endpoints.
+		if provider.BaseURL == "" || provider.BaseURL == DefaultBaseURL(ProviderOpenAI) || strings.Contains(provider.BaseURL, "api.openai.com") {
+			return true, ""
+		}
+		return evaluateResponsesEndpoint(provider)
+	case ProviderOpenAICompatible:
+		return evaluateResponsesEndpoint(provider)
+	case ProviderOpenRouter:
+		return false, "endpoint does not implement /v1/responses (OpenRouter only supports /v1/chat/completions)"
+	default:
+		return false, fmt.Sprintf("provider type %q does not speak /v1/responses", provider.Type)
+	}
+}
+
+// evaluateResponsesEndpoint inspects an OpenAI-compatible endpoint URL and name
+// for known incompatible runtimes.
+func evaluateResponsesEndpoint(provider store.Provider) (bool, string) {
+	base := strings.ToLower(provider.BaseURL)
+	name := strings.ToLower(provider.Name)
+
+	// Explicit query or name indicators of missing /v1/responses
+	if strings.Contains(base, "responses=false") || strings.Contains(base, "responses=0") ||
+		strings.Contains(base, "responses_api=false") || strings.Contains(name, "without-responses") ||
+		strings.Contains(name, "no-responses") || strings.HasSuffix(base, "/chat/completions") {
+		return false, "endpoint does not implement required /v1/responses API"
+	}
+	// LM Studio (default port 1234 or "lmstudio" in host/name)
+	if strings.Contains(base, ":1234") || strings.Contains(base, "lmstudio") || strings.Contains(name, "lm studio") || strings.Contains(name, "lmstudio") {
+		return false, "endpoint does not implement /v1/responses (LM Studio only supports /v1/chat/completions)"
+	}
+	// Poolside (api.poolside.ai or "poolside" in host/name)
+	if strings.Contains(base, "poolside") || strings.Contains(name, "poolside") {
+		return false, "endpoint does not implement /v1/responses (Poolside only supports /v1/chat/completions)"
+	}
+	// Ollama local (default port 11434 or "ollama" in host/name)
+	// Task 2.4 decision: gated at family/endpoint level because Ollama HTTP server lacks /v1/responses route completely.
+	if strings.Contains(base, ":11434") || strings.Contains(base, "ollama") || strings.Contains(name, "ollama") {
+		return false, "endpoint does not implement /v1/responses (Ollama lacks native /v1/responses support; requires /v1/chat/completions)"
+	}
+	// OpenRouter when used under openai-compatible
+	if strings.Contains(base, "openrouter.ai") || strings.Contains(name, "openrouter") {
+		return false, "endpoint does not implement /v1/responses (OpenRouter only supports /v1/chat/completions)"
+	}
+
+	return true, ""
+}
+
+// CheckTurnCapability verifies whether the provider and model can serve an
+// agentic turn before any request is dispatched (design D1, Task 2.2).
+// Endpoints lacking required API surfaces (/v1/responses) are surfaced as
+// unavailable with a named explanation.
+func CheckTurnCapability(provider store.Provider, model string) error {
+	if !IsKnownProviderType(provider.Type) {
+		return fmt.Errorf("%w: %q", ErrProviderUnsupported, provider.Type)
+	}
+	if RequiresAPIKey(provider.Type) && provider.APIKey == "" {
+		return fmt.Errorf("%w: provider %q has no API key", ErrProviderNotConfigured, provider.Name)
+	}
+
+	switch provider.Type {
+	case ProviderOpenAI, ProviderOpenAICompatible, ProviderOpenRouter:
+		supported, reason := SupportsResponsesAPI(provider)
+		if !supported {
+			return fmt.Errorf("%w: provider %q: %s", ErrEndpointIncompatible, provider.Name, reason)
+		}
+	case ProviderAnthropic, ProviderAnthropicCompatible:
+		// agenticclaude uses native Anthropic Messages API content blocks.
+	case ProviderGemini:
+		// agenticgemini uses native Gemini content schema.
+	}
+
+	return nil
 }
 
 // DefaultBaseURL returns the provider type's canonical API base, applied when
@@ -144,8 +237,8 @@ var modelCatalog = map[string]map[string]modelSpec{
 		"gpt-4o-mini": {contextWindow: 128000, imageInput: true},
 	},
 	ProviderGemini: {
-		"gemini-2.5-pro":   {contextWindow: 1048576, efforts: baseEfforts, imageInput: true, pdfInput: true},
-		"gemini-2.5-flash": {contextWindow: 1048576, efforts: baseEfforts, imageInput: true, pdfInput: true},
+		"gemini-2.5-pro":   {contextWindow: 1048576, efforts: baseEfforts, imageInput: true, pdfInput: true, videoInput: true},
+		"gemini-2.5-flash": {contextWindow: 1048576, efforts: baseEfforts, imageInput: true, pdfInput: true, videoInput: true},
 	},
 }
 
@@ -264,10 +357,13 @@ func CatalogProviderModels(providerID, providerType string) []*store.ProviderMod
 	out := make([]*store.ProviderModel, 0, len(ids))
 	for _, id := range ids {
 		spec := models[id]
+		efforts := make([]string, len(spec.efforts))
+		copy(efforts, spec.efforts)
 		out = append(out, &store.ProviderModel{
 			ProviderID:    providerID,
 			ModelID:       id,
 			ContextWindow: spec.contextWindow,
+			Efforts:       efforts,
 			ImageInput:    spec.imageInput,
 			PDFInput:      spec.pdfInput,
 			VideoInput:    spec.videoInput,

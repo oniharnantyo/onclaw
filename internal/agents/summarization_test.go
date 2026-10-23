@@ -120,12 +120,12 @@ func TestSummarizationSafetyNet(t *testing.T) {
 	require.NotNil(t, turnAgent)
 	require.NotNil(t, toolErrors)
 
-	runner := adk.NewRunner(ctx, adk.RunnerConfig{
+	runner := adk.NewTypedRunner(adk.TypedRunnerConfig[*schema.AgenticMessage]{
 		Agent:           turnAgent,
 		EnableStreaming: true,
 	})
 
-	iter := runner.Run(ctx, []*schema.Message{schema.UserMessage("run bulky fetch")})
+	iter := runner.Run(ctx, []*schema.AgenticMessage{schema.UserAgenticMessage("run bulky fetch")})
 	err = drainRunnerIterator(iter)
 	require.NoError(t, err)
 

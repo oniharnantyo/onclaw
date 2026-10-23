@@ -298,9 +298,9 @@ func TestProviderModels_StoreReadOnly(t *testing.T) {
 	models, err := svc.ProviderModels(ctx, created.ID)
 	require.NoError(t, err)
 	require.Equal(t, []ModelCapability{
-		{ID: "claude-haiku-4-5", ContextWindow: 200000, Efforts: []string{"high"}, ImageInput: true, PDFInput: true},
-		{ID: "claude-opus-4-1", ContextWindow: 200000, Efforts: []string{"high"}, ImageInput: true, PDFInput: true},
-		{ID: "claude-sonnet-4-5", ContextWindow: 200000, Efforts: []string{"high"}, ImageInput: true, PDFInput: true},
+		{ID: "claude-haiku-4-5", ContextWindow: 200000, Efforts: []string{"low", "medium", "high"}, ImageInput: true, PDFInput: true},
+		{ID: "claude-opus-4-1", ContextWindow: 200000, Efforts: []string{"low", "medium", "high"}, ImageInput: true, PDFInput: true},
+		{ID: "claude-sonnet-4-5", ContextWindow: 200000, Efforts: []string{"low", "medium", "high"}, ImageInput: true, PDFInput: true},
 	}, models)
 
 	// Disabling a model excludes it from ProviderModels.

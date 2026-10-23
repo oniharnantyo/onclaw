@@ -15,10 +15,10 @@ const defaultInRunSummarizationFallbackTokens = compaction.DefaultInRunSummariza
 
 type summarizationCapability = compaction.SummarizationCapability
 
-func defaultSummarizationTokenCounter(ctx context.Context, input *einolens.TypedTokenCounterInput[*schema.Message]) (int, error) {
+func defaultSummarizationTokenCounter(ctx context.Context, input *einolens.TypedTokenCounterInput[*schema.AgenticMessage]) (int, error) {
 	return compaction.DefaultSummarizationTokenCounter(ctx, input)
 }
 
-func newSummarizationMiddleware(ctx context.Context, cap *summarizationCapability) (adk.ChatModelAgentMiddleware, error) {
+func newSummarizationMiddleware(ctx context.Context, cap *summarizationCapability) (adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage], error) {
 	return compaction.NewSummarizationMiddleware(ctx, cap)
 }
