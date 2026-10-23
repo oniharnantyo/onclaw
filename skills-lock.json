@@ -1,6 +1,34 @@
 {
   "version": 1,
   "skills": {
+    "eino-agent": {
+      "source": "cloudwego/eino-ext",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "skills/eino-agent/SKILL.md",
+      "computedHash": "8fc2d18f1f7df836817ca3b1248fa24325e5a92450814ae144d515bf33aa06ba"
+    },
+    "eino-component": {
+      "source": "cloudwego/eino-ext",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "skills/eino-component/SKILL.md",
+      "computedHash": "6f10ef68ccca529949f4af4b18e6b8e27a959e4dbc009c04010cb66365ab5d8e"
+    },
+    "eino-compose": {
+      "source": "cloudwego/eino-ext",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "skills/eino-compose/SKILL.md",
+      "computedHash": "0407f3496f4bc4f916745a44473205f73cd4090f397aef2b57cae72500e72eed"
+    },
+    "eino-guide": {
+      "source": "cloudwego/eino-ext",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "skills/eino-guide/SKILL.md",
+      "computedHash": "849dd1c50298a85ae774b13a74d421158b7c7a6dcc0530de013aeded59207329"
+    },
     "hallmark": {
       "source": "nutlope/hallmark",
       "sourceType": "github",
