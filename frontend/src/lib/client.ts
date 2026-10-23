@@ -30,6 +30,7 @@ import type {
   ProviderModelView,
   ProviderView,
   ToolEntry,
+  TurnStateResult,
   VerifyResult,
   WebSearchConfig,
   WebSearchProviderInfo,
@@ -96,6 +97,8 @@ function withoutTimestamps<T extends { CreatedAt: string; UpdatedAt: string }>(
 export type { BrowserScreenshotContent };
 
 export type { ProviderModelInput, ProviderModelView };
+
+export type { TurnStateResult };
 
 /** The generated scheduler binding types (add-scheduler D13), re-exported so
  * feature code imports one surface. */
@@ -217,12 +220,17 @@ export interface Client {
      * Attaches to the session's live event channel and invokes the handler
      * for each event (deltas, tool activity, turn completion, errors).
      * Resolves once the backend subscription is in place; the returned
-     * function detaches both locally and on the backend.
+     * function detaches the local listener only (use unsubscribe() to
+     * detach on the backend).
      */
     subscribe(
       sessionID: string,
       handler: SessionEventHandler
     ): Promise<Unsubscribe>;
+    /** Detaches the session's live event stream on the backend. */
+    unsubscribe(sessionID: string): Promise<void>;
+    /** Reports whether the session has a turn in flight and its turn ID. */
+    turnState(sessionID: string): Promise<TurnStateResult>;
     /** Context-window fill state (used vs the model's limit) for the session. */
     contextUsage(sessionID: string): Promise<ContextUsage>;
     /**
@@ -518,9 +526,12 @@ export function createClient(transport: Transport = wailsTransport): Client {
 
         return (): void => {
           off();
-          void transport.chat.Unsubscribe(sessionID);
         };
       },
+      unsubscribe: (sessionID: string): Promise<void> =>
+        transport.chat.Unsubscribe(sessionID),
+      turnState: (sessionID: string): Promise<TurnStateResult> =>
+        transport.chat.TurnState(sessionID),
       contextUsage: (sessionID: string): Promise<ContextUsage> =>
         transport.chat.ContextUsage(sessionID),
       setSessionOverrides: (

@@ -1,36 +1,63 @@
 "use client";
 
 import type { ComponentProps } from "react";
-import { CheckIcon, Loader2Icon } from "lucide-react";
+import { Ban, CheckIcon, Loader2Icon, XIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { mono, paper } from "./surfaces";
-import { pct } from "../utils/range";
+import { mono, ShimmerLabel } from "./surfaces";
+
+export type SubagentState = "running" | "completed" | "failed" | "stopped";
 
 export interface SubagentItem {
   name: string;
-  model: string;
+  state: SubagentState;
+  /** One muted line under a running row: the child's latest activity (with
+   * its step count); the row draws none when absent. */
+  detail?: string | undefined;
+  /** One muted line under a failed row: the first line of its result. */
+  error?: string | undefined;
+}
+
+function StateIcon({ state }: { state: SubagentState }) {
+  if (state === "completed") {
+    return (
+      <CheckIcon
+        aria-hidden
+        className="text-emerald-600 dark:text-emerald-400 size-3.5 stroke-[2.5]"
+      />
+    );
+  }
+  if (state === "failed") {
+    return (
+      <XIcon
+        aria-hidden
+        className="text-destructive size-3.5 stroke-[2.5]"
+      />
+    );
+  }
+  if (state === "stopped") {
+    return (
+      <Ban aria-hidden className="text-muted-foreground size-3.5" />
+    );
+  }
+  return (
+    <Loader2Icon
+      aria-hidden
+      className="text-foreground/90 size-3.5 animate-spin motion-reduce:animate-none"
+    />
+  );
 }
 
 export function SubagentList({
   agents,
-  completedCount,
-  progress,
   showSummary,
   summaryAgent,
   className,
   ...props
 }: Omit<
   ComponentProps<"div">,
-  | "children"
-  | "agents"
-  | "completedCount"
-  | "progress"
-  | "showSummary"
-  | "summaryAgent"
+  "children" | "agents" | "showSummary" | "summaryAgent"
 > & {
   agents: readonly SubagentItem[];
-  completedCount: number;
-  progress: readonly number[];
   showSummary: boolean;
   summaryAgent: SubagentItem;
 }) {
@@ -41,76 +68,65 @@ export function SubagentList({
 
       {...props}
     >
-      {agents.map((agent, index) => {
-        const done = index < completedCount;
-        const width = progress[index] ?? 0;
-        const percentage = pct(width, 100);
+      {agents.map((agent) => {
+        const terminal =
+          agent.state === "failed" || agent.state === "stopped";
+        const line =
+          agent.state === "running"
+            ? agent.detail
+            : agent.state === "failed"
+              ? agent.error
+              : undefined;
 
         return (
-          <div
-            key={agent.name}
-            className={cn(
-              paper,
-              "flex flex-col gap-2 rounded-2xl px-3.5 py-2.5",
-            )}
-          >
+          <div key={agent.name} className="flex flex-col gap-0.5">
             <div className="flex items-center gap-2">
-              {done ? (
-                <CheckIcon className="fade-in zoom-in-90 animate-in size-3.5 shrink-0 text-emerald-500 duration-200" />
-              ) : (
-                <Loader2Icon className="text-muted-foreground size-3.5 shrink-0 animate-spin motion-reduce:animate-none" />
-              )}
-              <span className="flex-1 truncate text-[13.5px]">
+              <span className="flex size-4 shrink-0 items-center justify-center">
+                <StateIcon state={agent.state} />
+              </span>
+              <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
                 {agent.name}
               </span>
-              <span className={cn(mono, "text-muted-foreground")}>
-                {agent.model}
-              </span>
+              {terminal ? (
+                <span
+                  className={cn(
+                    mono,
+                    "text-[11px] px-1.5 py-0.5 rounded font-medium",
+                    agent.state === "failed"
+                      ? "bg-destructive/10 text-destructive"
+                      : "text-muted-foreground"
+                  )}
+                >
+                  {agent.state}
+                </span>
+              ) : null}
             </div>
-            <span
-              role="progressbar"
-              aria-label={`${agent.name} progress`}
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={percentage}
-              className="bg-foreground/[0.06] inset-ring-border h-[3px] w-full overflow-hidden rounded-full inset-ring forced-colors:outline"
-            >
+            {line ? (
               <span
-                className={cn(
-                  "block h-full rounded-full transition-[width] duration-700 forced-color-adjust-none",
-                  done ? "bg-emerald-500/70" : "bg-foreground/60",
-                )}
-                style={{ width: `${percentage}%` }}
-              />
-            </span>
+                className="text-muted-foreground truncate pl-6 text-xs"
+                title={line}
+              >
+                {line}
+              </span>
+            ) : null}
           </div>
         );
       })}
       {showSummary && (
-        <div
-          className={cn(
-            paper,
-            "fade-in slide-in-from-bottom-2 animate-in flex flex-col gap-2 rounded-2xl px-3.5 py-2.5 duration-300",
-          )}
-        >
+        <div className="flex flex-col gap-0.5">
           <div className="flex items-center gap-2">
-            <Loader2Icon className="text-muted-foreground size-3.5 shrink-0 animate-spin motion-reduce:animate-none" />
-            <span className="flex-1 truncate text-[13.5px]">
+            <span className="flex size-4 shrink-0 items-center justify-center">
+              <Loader2Icon className="text-foreground/90 size-3.5 animate-spin motion-reduce:animate-none" />
+            </span>
+            <ShimmerLabel className="min-w-0 flex-1 truncate text-[13px] font-medium">
               {summaryAgent.name}
-            </span>
-            <span className={cn(mono, "text-muted-foreground")}>
-              {summaryAgent.model}
-            </span>
+            </ShimmerLabel>
           </div>
-          <span
-            role="progressbar"
-            aria-label={`${summaryAgent.name} progress`}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            className="bg-foreground/[0.06] inset-ring-border h-[3px] w-full overflow-hidden rounded-full inset-ring forced-colors:outline"
-          >
-            <span className="shimmer shimmer-bg block h-full w-full rounded-full motion-reduce:animate-none" />
-          </span>
+          {summaryAgent.detail ? (
+            <span className="text-muted-foreground truncate pl-6 text-xs">
+              {summaryAgent.detail}
+            </span>
+          ) : null}
         </div>
       )}
     </div>

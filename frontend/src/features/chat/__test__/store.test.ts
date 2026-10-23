@@ -107,6 +107,8 @@ let sessions: Session[];
 
 let liveHandler: ((e: SessionEvent) => void) | null = null;
 
+const liveHandlers = new Map<string, (e: SessionEvent) => void>();
+
 let turnSeq = 0;
 
 type MockFn = ReturnType<typeof vi.fn>;
@@ -119,6 +121,8 @@ type MockedClient = Client & {
     createSession: MockFn;
     send: MockFn;
     subscribe: MockFn;
+    unsubscribe: MockFn;
+    turnState: MockFn;
     transcript: MockFn;
     transcriptPage: MockFn;
     contextUsage: MockFn;
@@ -147,14 +151,18 @@ function makeClient(): MockedClient {
         return `turn-${turnSeq}`;
       }),
       subscribe: vi.fn(
-        async (_id: string, handler: (e: SessionEvent) => void) => {
+        async (id: string, handler: (e: SessionEvent) => void) => {
           liveHandler = handler;
+          liveHandlers.set(id, handler);
 
           return (): void => {
-            liveHandler = null;
+            if (liveHandler === handler) liveHandler = null;
+            liveHandlers.delete(id);
           };
         }
       ),
+      unsubscribe: vi.fn(async () => undefined),
+      turnState: vi.fn(async () => ({ busy: false, turn_id: "" })),
       transcript: vi.fn(async () => []),
       transcriptPage: vi.fn(
         async (
@@ -229,6 +237,7 @@ beforeEach(() => {
   window.localStorage.clear();
   sessions = [row("s1", "m-reasoning", "high"), row("s2")];
   liveHandler = null;
+  liveHandlers.clear();
   turnSeq = 0;
   resetStore();
 });
@@ -611,5 +620,340 @@ describe("refreshSessions (add-scheduler design D10)", () => {
     expect(useChatStore.getState().activeAgentID).toBe("a2");
     // The stale a1 write is dropped; a2's own (empty) list survives.
     expect(useChatStore.getState().sessions).toEqual([]);
+  });
+});
+
+describe("session subscription teardown and preservation (task 3.2)", () => {
+  it("switching away and back preserves the active event feed without unsubscribing", async () => {
+    // Select s1
+    await useChatStore.getState().selectSession("s1");
+    expect(mockedClient.chat.subscribe).toHaveBeenCalledWith(
+      "s1",
+      expect.any(Function)
+    );
+
+    // Switch to s2
+    await useChatStore.getState().selectSession("s2");
+    expect(mockedClient.chat.subscribe).toHaveBeenCalledWith(
+      "s2",
+      expect.any(Function)
+    );
+    expect(mockedClient.chat.unsubscribe).not.toHaveBeenCalled();
+
+    // Switch back to s1
+    await useChatStore.getState().selectSession("s1");
+    // Verify client.chat.unsubscribe was never called during session switching
+    expect(mockedClient.chat.unsubscribe).not.toHaveBeenCalled();
+
+    // Emitting on s1 feeds the active transcript
+    await emit(
+      ev(Kind.KindTextDelta, {
+        turn_id: "t-live",
+        text: "live delta on s1",
+      })
+    );
+
+    const entries = useChatStore.getState().entries;
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      kind: "assistant",
+      turnID: "t-live",
+      text: "live delta on s1",
+    });
+  });
+
+  it("pruning sessions on agent switch calls client.chat.unsubscribe", async () => {
+    await useChatStore.getState().selectSession("s1");
+    expect(mockedClient.chat.subscribe).toHaveBeenCalledWith(
+      "s1",
+      expect.any(Function)
+    );
+
+    // Switch to agent a2 (which has no sessions in mock setup)
+    await useChatStore.getState().selectAgent("a2");
+
+    expect(mockedClient.chat.unsubscribe).toHaveBeenCalledWith("s1");
+  });
+
+  it("deleting a session calls client.chat.unsubscribe", async () => {
+    await useChatStore.getState().selectSession("s1");
+    expect(mockedClient.chat.subscribe).toHaveBeenCalledWith(
+      "s1",
+      expect.any(Function)
+    );
+
+    await useChatStore.getState().deleteSession("s1");
+
+    expect(mockedClient.chat.deleteSession).toHaveBeenCalledWith("s1");
+    expect(mockedClient.chat.unsubscribe).toHaveBeenCalledWith("s1");
+  });
+});
+
+describe("initial load event buffering (task 4.1)", () => {
+  it("live events arriving during initial page load survive the page fold", async () => {
+    let resolveTranscriptPage: (
+      events: SessionEvent[]
+    ) => void = (): void => {};
+
+    mockedClient.chat.transcriptPage.mockImplementationOnce(
+      (): Promise<SessionEvent[]> =>
+        new Promise<SessionEvent[]>(
+          (resolve: (events: SessionEvent[]) => void): void => {
+            resolveTranscriptPage = resolve;
+          }
+        )
+    );
+
+    const selectPromise = useChatStore.getState().selectSession("s1");
+
+    // Wait until subscribe has completed and liveHandler is wired
+    await waitFor(() => {
+      expect(mockedClient.chat.subscribe).toHaveBeenCalledWith(
+        "s1",
+        expect.any(Function)
+      );
+    });
+
+    // While transcriptPage is still resolving, live events arrive (e.g. catch-up snapshot delta)
+    await emit(
+      ev(Kind.KindTextDelta, {
+        id: "snap-t1-partial",
+        turn_id: "t1",
+        text: "in-flight partial",
+      })
+    );
+
+    // Now transcriptPage lands with historical user message
+    resolveTranscriptPage([
+      ev(Kind.KindUserMessage, {
+        id: "e-user-1",
+        turn_id: "t1",
+        text: "hello world",
+      }),
+    ]);
+
+    await selectPromise;
+
+    // Both the durable page event and the buffered live delta survive
+    const entries = useChatStore.getState().entries;
+
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({
+      kind: "user",
+      text: "hello world",
+    });
+    expect(entries[1]).toMatchObject({
+      kind: "assistant",
+      text: "in-flight partial",
+      streaming: true,
+    });
+    expect(useChatStore.getState().loadingSession).toBe(false);
+  });
+
+  it("duplicate events between transcript page and buffer are deduped by event id", async () => {
+    let resolveTranscriptPage: (
+      events: SessionEvent[]
+    ) => void = (): void => {};
+
+    mockedClient.chat.transcriptPage.mockImplementationOnce(
+      (): Promise<SessionEvent[]> =>
+        new Promise<SessionEvent[]>(
+          (resolve: (events: SessionEvent[]) => void): void => {
+            resolveTranscriptPage = resolve;
+          }
+        )
+    );
+
+    const selectPromise = useChatStore.getState().selectSession("s1");
+
+    await waitFor(() => {
+      expect(mockedClient.chat.subscribe).toHaveBeenCalledWith(
+        "s1",
+        expect.any(Function)
+      );
+    });
+
+    // Buffered event with an ID
+    await emit(
+      ev(Kind.KindUserMessage, {
+        id: "e-shared-1",
+        turn_id: "t1",
+        text: "shared message",
+      })
+    );
+
+    // Transcript page also contains the same event ID
+    resolveTranscriptPage([
+      ev(Kind.KindUserMessage, {
+        id: "e-shared-1",
+        turn_id: "t1",
+        text: "shared message",
+      }),
+    ]);
+
+    await selectPromise;
+
+    const entries = useChatStore.getState().entries;
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      kind: "user",
+      text: "shared message",
+    });
+  });
+
+  it("superseded switch discards buffered events without writing state", async () => {
+    let resolveFirstPage: (events: SessionEvent[]) => void = (): void => {};
+
+    mockedClient.chat.transcriptPage.mockImplementationOnce(
+      (): Promise<SessionEvent[]> =>
+        new Promise<SessionEvent[]>(
+          (resolve: (events: SessionEvent[]) => void): void => {
+            resolveFirstPage = resolve;
+          }
+        )
+    );
+
+    const s1Promise = useChatStore.getState().selectSession("s1");
+
+    await waitFor(() => {
+      expect(mockedClient.chat.subscribe).toHaveBeenCalledWith(
+        "s1",
+        expect.any(Function)
+      );
+    });
+
+    // Buffer event for s1
+    const s1Handler = liveHandlers.get("s1");
+
+    s1Handler?.(
+      ev(Kind.KindTextDelta, {
+        id: "snap-s1",
+        turn_id: "t1",
+        text: "buffered for s1",
+      })
+    );
+
+    // Switch to s2 immediately
+    await useChatStore.getState().selectSession("s2");
+
+    // Late resolution of s1's transcriptPage
+    resolveFirstPage([
+      ev(Kind.KindUserMessage, { id: "e-s1", turn_id: "t1", text: "s1 msg" }),
+    ]);
+    await s1Promise;
+
+    // Active session is s2 and s1's events did not overwrite state
+    expect(useChatStore.getState().activeSessionID).toBe("s2");
+  });
+});
+
+describe("re-adopt in-flight turn on re-entry (task 4.2)", () => {
+  it("re-entering a busy session adopts activeTurnID and settles on turn_completed", async () => {
+    mockedClient.chat.turnState.mockResolvedValueOnce({
+      busy: true,
+      turn_id: "t-in-flight",
+    });
+
+    await useChatStore.getState().selectSession("s1");
+
+    expect(useChatStore.getState().activeTurnID).toBe("t-in-flight");
+    expect(useChatStore.getState().busy).toBe(true);
+    expect(useChatStore.getState().runningSessions.has("s1")).toBe(true);
+
+    // Terminal completion event arrives
+    await emit(
+      ev(Kind.KindTurnCompleted, {
+        turn_id: "t-in-flight",
+        id: "e-completed",
+      })
+    );
+
+    expect(useChatStore.getState().activeTurnID).toBeNull();
+    expect(useChatStore.getState().busy).toBe(false);
+    expect(useChatStore.getState().runningSessions.has("s1")).toBe(false);
+  });
+
+  it("re-entering a busy session settles on turn_cancelled", async () => {
+    mockedClient.chat.turnState.mockResolvedValueOnce({
+      busy: true,
+      turn_id: "t-cancel-flight",
+    });
+
+    await useChatStore.getState().selectSession("s1");
+
+    expect(useChatStore.getState().activeTurnID).toBe("t-cancel-flight");
+    expect(useChatStore.getState().busy).toBe(true);
+    expect(useChatStore.getState().runningSessions.has("s1")).toBe(true);
+
+    await emit(
+      ev(Kind.KindTurnCancelled, {
+        turn_id: "t-cancel-flight",
+        id: "e-cancelled",
+      })
+    );
+
+    expect(useChatStore.getState().activeTurnID).toBeNull();
+    expect(useChatStore.getState().busy).toBe(false);
+    expect(useChatStore.getState().runningSessions.has("s1")).toBe(false);
+  });
+
+  it("re-entering an idle session after terminal event adopts nothing", async () => {
+    mockedClient.chat.turnState.mockResolvedValueOnce({
+      busy: false,
+      turn_id: "",
+    });
+
+    await useChatStore.getState().selectSession("s1");
+
+    expect(useChatStore.getState().activeTurnID).toBeNull();
+    expect(useChatStore.getState().busy).toBe(false);
+    expect(useChatStore.getState().runningSessions.has("s1")).toBe(false);
+  });
+
+  it("terminal event arriving during load completes turn and does not adopt stale busy", async () => {
+    let resolveTranscriptPage: (
+      events: SessionEvent[]
+    ) => void = (): void => {};
+
+    mockedClient.chat.transcriptPage.mockImplementationOnce(
+      (): Promise<SessionEvent[]> =>
+        new Promise<SessionEvent[]>(
+          (resolve: (events: SessionEvent[]) => void): void => {
+            resolveTranscriptPage = resolve;
+          }
+        )
+    );
+
+    mockedClient.chat.turnState.mockResolvedValueOnce({
+      busy: true,
+      turn_id: "t-ended-mid-load",
+    });
+
+    const selectPromise = useChatStore.getState().selectSession("s1");
+
+    await waitFor(() => {
+      expect(mockedClient.chat.subscribe).toHaveBeenCalledWith(
+        "s1",
+        expect.any(Function)
+      );
+    });
+
+    // Terminal completion event arrives during load (buffered)
+    await emit(
+      ev(Kind.KindTurnCompleted, {
+        turn_id: "t-ended-mid-load",
+        id: "e-completed-mid-load",
+      })
+    );
+
+    resolveTranscriptPage([]);
+    await selectPromise;
+
+    // Because the turn terminal was folded, finishedTurnIDs prevented adopting stale busy state
+    expect(useChatStore.getState().activeTurnID).toBeNull();
+    expect(useChatStore.getState().busy).toBe(false);
+    expect(useChatStore.getState().runningSessions.has("s1")).toBe(false);
   });
 });

@@ -65,6 +65,20 @@ export interface CompactionEntry {
   at: string;
 }
 
+/**
+ * The agent's task plan (the plantask tools' tasks) as of its latest
+ * snapshot. A session holds at most one: each plan_activity event replaces
+ * the previous entry in place. Never rendered in the transcript — the run
+ * island reads it.
+ */
+export interface PlanEntry {
+  kind: "plan";
+  id: string;
+  turnID?: string;
+  plan: SessionEvent["plan"];
+  at: string;
+}
+
 export interface ErrorEntry {
   kind: "error";
   id: string;
@@ -79,6 +93,7 @@ export type Entry =
   | ReasoningEntry
   | ToolEntry
   | TaskEntry
+  | PlanEntry
   | CompactionEntry
   | ErrorEntry;
 

@@ -66,6 +66,9 @@ function FallbackTool(props: ToolCallMessagePartProps): ReactElement {
 
 export const toolRenderers = {
   execute: ExecuteTool,
+  // `shell` is the backend's alias of `execute` (the same jailed shell) —
+  // the same body renders both.
+  shell: ExecuteTool,
   edit_file: EditFileTool,
   write_file: WriteFileTool,
   read_file: ReadFileTool,
@@ -86,6 +89,9 @@ export const toolRenderers = {
   TaskUpdate: TaskUpdateTool,
   TaskList: TaskListTool,
   task: TaskTool,
+  agent: TaskTool,
+  task_output: TaskTool,
+  task_stop: TaskTool,
   http_get: HTTPGetTool,
   current_time: CurrentTimeTool,
   delete_file: DeleteFileTool,

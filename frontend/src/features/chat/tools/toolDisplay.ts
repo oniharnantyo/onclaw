@@ -276,7 +276,9 @@ function sentenceGrep(input: SentenceInput): string | null {
   return `Found ${matches} ${matches === 1 ? "match" : "matches"}`;
 }
 
-/** The `execute` special case (design D3): the command IS the sentence. */
+/** The `execute` special case (design D3): the command IS the sentence. The
+ * backend also registers the same jailed shell under the alias `shell`,
+ * which renders identically. */
 function sentenceExecute(input: SentenceInput): string | null {
   const command = str(input.args, "command").trim();
 
@@ -460,6 +462,42 @@ function sentenceTaskList(input: SentenceInput): string | null {
     : "Listed tasks";
 }
 
+function sentenceAgent(input: SentenceInput): string | null {
+  const { args, state } = input;
+
+  const target =
+    str(args, "description") ||
+    str(args, "prompt") ||
+    str(args, "subagent_type") ||
+    "task";
+
+  if (state === "running") {
+    return `Delegating '${target}'`;
+  }
+
+  return `Delegated '${target}'`;
+}
+
+function sentenceTaskOutput(input: SentenceInput): string | null {
+  const { args, state } = input;
+  const id = str(args, "task_id");
+  const target = id !== "" ? `#${id}` : "task";
+
+  return state === "running"
+    ? `Reading task output ${target}`
+    : `Read task output ${target}`;
+}
+
+function sentenceTaskStop(input: SentenceInput): string | null {
+  const { args, state } = input;
+  const id = str(args, "task_id");
+  const target = id !== "" ? `#${id}` : "task";
+
+  return state === "running"
+    ? `Stopping task ${target}`
+    : `Stopped task ${target}`;
+}
+
 /**
  * The sentence table (design D3): one entry per builtin tool. The running
  * form states intent; the completed one states the outcome — when an
@@ -473,6 +511,7 @@ const SENTENCES = new Map<string, SentenceFn>([
   ["glob", sentenceGlob],
   ["grep", sentenceGrep],
   ["execute", sentenceExecute],
+  ["shell", sentenceExecute],
   ["delete_file", sentenceDeleteFile],
   ["todo_write", sentenceTodoWrite],
   ["todo_read", sentenceTodoRead],
@@ -484,6 +523,9 @@ const SENTENCES = new Map<string, SentenceFn>([
   ["TaskGet", sentenceTaskGet],
   ["TaskUpdate", sentenceTaskUpdate],
   ["TaskList", sentenceTaskList],
+  ["agent", sentenceAgent],
+  ["task_output", sentenceTaskOutput],
+  ["task_stop", sentenceTaskStop],
   ["web_search", sentenceWebSearch],
   ["web_fetch", sentenceWebFetch],
   ["http_get", sentenceHttpGet],

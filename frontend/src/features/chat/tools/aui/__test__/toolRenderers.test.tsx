@@ -553,6 +553,28 @@ describe("task card (port of TaskCallCard's scenarios)", () => {
 
     await done.unmount();
   });
+
+  it("native agent tool call with prompt and background ID extraction", async () => {
+    const running = await renderUI(
+      <TaskTool
+        {...partProps({
+          toolCallId: "c-agent",
+          toolName: "agent",
+          argsText:
+            '{"prompt":"analyze dependencies","subagent_type":"researcher","run_in_background":true}',
+          result: "Agent running in background with ID: bg-task-42.",
+          status: { type: "running" },
+        })}
+      />
+    );
+
+    const card = document.querySelector('[data-slot="task-card"]');
+    expect(card?.getAttribute("data-state")).toBe("working");
+    expect(card?.textContent).toContain("analyze dependencies");
+    expect(card?.textContent).toContain("bg-task-42");
+
+    await running.unmount();
+  });
 });
 
 /** jsdom has no matchMedia; the stub mirrors the legacy suites' idiom. */
@@ -599,6 +621,9 @@ describe("the renderer catalogue", () => {
       "web_search",
       "browser",
       "task",
+      "agent",
+      "task_output",
+      "task_stop",
     ];
 
     for (const name of BUILTINS) {

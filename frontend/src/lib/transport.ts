@@ -123,6 +123,8 @@ export interface Transport {
       relPath: string
     ): Promise<serviceModels.WorkspaceEntry[] | null>;
     Unsubscribe(sessionID: string): Promise<void>;
+    /** Reports whether the session has a turn in flight and its turn ID. */
+    TurnState(sessionID: string): Promise<serviceModels.TurnStateResult>;
     ContextUsage(sessionID: string): Promise<agentsModels.ContextUsage>;
   };
   settings: {
@@ -251,14 +253,22 @@ export interface Transport {
   onEvent(name: string, handler: EventHandler): Unsubscribe;
 }
 
-export const wailsTransport: Transport = {
-  appInfo: appInfoBindings,
-  agents: agentsBindings,
-  chat: chatBindings,
-  settings: settingsBindings,
-  gateway: gatewayBindings,
-  schedules: scheduleBindings,
-  windowTheme: windowThemeModule,
-  onEvent: (name: string, handler: EventHandler): Unsubscribe =>
-    Events.On(name, (ev: Events.WailsEvent): void => handler(ev.data)),
-};
+export function createWailsTransport(): Transport {
+  return {
+    appInfo: appInfoBindings,
+    agents: agentsBindings,
+    chat: {
+      ...chatBindings,
+      TurnState: (sessionID: string): Promise<serviceModels.TurnStateResult> =>
+        chatBindings.TurnState(sessionID),
+    },
+    settings: settingsBindings,
+    gateway: gatewayBindings,
+    schedules: scheduleBindings,
+    windowTheme: windowThemeModule,
+    onEvent: (name: string, handler: EventHandler): Unsubscribe =>
+      Events.On(name, (ev: Events.WailsEvent): void => handler(ev.data)),
+  };
+}
+
+export const wailsTransport: Transport = createWailsTransport();

@@ -88,6 +88,15 @@ const CASES: {
     outcome: "`go test ./...`",
   },
   {
+    // The backend's alias of `execute` (the same jailed shell): identical
+    // sentence, both forms.
+    name: "shell",
+    args: { command: "go test ./..." },
+    result: "ok",
+    intent: "`go test ./...`",
+    outcome: "`go test ./...`",
+  },
+  {
     name: "delete_file",
     args: { file_path: "/workspace/old.md" },
     result: "deleted",
@@ -167,6 +176,27 @@ const CASES: {
     result: '{"ok":true,"url":"https://example.com","title":"Example"}',
     intent: "Performing 'click'",
     outcome: "Performed 'click'",
+  },
+  {
+    name: "agent",
+    args: { prompt: "research catalog", subagent_type: "researcher" },
+    result: "done",
+    intent: "Delegating 'research catalog'",
+    outcome: "Delegated 'research catalog'",
+  },
+  {
+    name: "task_output",
+    args: { task_id: "t-123" },
+    result: "ok",
+    intent: "Reading task output #t-123",
+    outcome: "Read task output #t-123",
+  },
+  {
+    name: "task_stop",
+    args: { task_id: "t-123" },
+    result: "stopped",
+    intent: "Stopping task #t-123",
+    outcome: "Stopped task #t-123",
   },
 ];
 

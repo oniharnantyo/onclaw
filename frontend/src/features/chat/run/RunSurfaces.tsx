@@ -1,184 +1,364 @@
 /**
  * Run surfaces (tasks 3.5, 9.1–9.2, design D8; spec chat-panels run card):
- * one floating card composing the vendored AgentPlan (the plan lane from
- * `latestPlanItems`) and SubagentList (the tasks lane from the session's
- * task entries) positioned top-right INSIDE the thread viewport's relative
- * wrapper — the wrapper, not the chat column, so the card can never reach
- * the composer, and it stays put while the transcript scrolls beneath it.
- * Both lanes are pure derivations of the store's `entries`, so live events
- * and a replayed transcript rebuild identical lanes, and the card renders
- * only while at least one lane has content.
+ * one floating island of two sections positioned top-right INSIDE the thread
+ * viewport's relative wrapper — the wrapper, not the chat column, so the
+ * island can never reach the composer, and it stays put while the transcript
+ * scrolls beneath it. Both sections are pure derivations of the store's
+ * `entries` (run/islandModel.ts), so live events and a replayed transcript
+ * rebuild identical sections, and the island renders only while at least one
+ * section has content.
  *
- * Element-state mapping (the elements carry simpler state models than the
- * lanes): AgentPlan marks everything before `activeIndex` done and shows the
- * item at it as in progress — the first not-done item is the active one,
- * and a failed item's state rides its label (the element has no failed
- * mark). SubagentList marks the first `completedCount` agents done, so
- * completed lanes sort first; a terminal failed/stopped task names its
- * state in the agent's model slot.
+ * Progress renders the agent's task plan (the newest plan_activity snapshot,
+ * one entry per session) as: a collapsed "N completed" group, the in-progress
+ * row (its active_form when set), the runnable pending rows, and a collapsed
+ * "N waiting" group for the pending tasks whose blocked_by is non-empty.
+ * Agents renders the session's delegated task entries: a running row carries
+ * the child's latest activity as a muted progress line, a failed row its
+ * result's first line, and terminal rows name their state in a chip.
+ *
+ * The island starts MINIMIZED: a small pill (spinner, the sections' summary
+ * — "3/7 · 1 running" — with done/failed/stopped tallies) like a toolbar
+ * badge; activating it expands the full card, activating again collapses it
+ * back. The expansion is view state only — the sections stay store-derived
+ * either way.
  */
-import type { ReactElement } from "react";
+import { useState } from "react";
+import type { ReactElement, ReactNode } from "react";
+import {
+  ArrowRightIcon,
+  CheckIcon,
+  ChevronRightIcon,
+  ListTodoIcon,
+  Loader2Icon,
+} from "lucide-react";
 
-import { AgentPlan } from "@/components/assistant-ui/elements/agent-plan";
 import {
   SubagentList,
   type SubagentItem,
 } from "@/components/assistant-ui/elements/subagent-list";
 
-import { ToolStatus } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/sessions/models";
-import { latestPlanItems, type PlanItem } from "../entries";
+import { cn } from "../../../lib/cn";
+import type { PlanTask } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/sessions/models";
+import {
+  agentCounts,
+  agentRows,
+  planGroups,
+  type AgentRow,
+} from "./islandModel";
 import { useChatStore, type ExtendedChatStore } from "../store";
-import type { Entry, TaskEntry } from "../types";
+import type { Entry, PlanEntry } from "../types";
 
-/** One AgentPlan row: a failed item's state rides its label. */
-type PlanStep = { label: string };
+/** One "N running" segment of the pill; zero tallies render nothing. */
+function CountSegment({
+  count,
+  label,
+  className,
+}: {
+  count: number;
+  label: string;
+  className?: string;
+}): ReactElement | null {
+  if (count === 0) return null;
 
-/** The plan lane AgentPlan consumes: rows plus the first not-done index. */
-type PlanLane = {
-  steps: readonly PlanStep[];
-  activeIndex: number;
-};
-
-/** The tasks lane SubagentList consumes: rows plus the completed prefix. */
-type TaskLanes = {
-  agents: readonly SubagentItem[];
-  completedCount: number;
-};
-
-/** The plan lane onto the AgentPlan model: the first not-done item is the
- * active one (all done ⇒ past the end, the element's all-done state), and a
- * failed item carries its state — with the reducer's reason — in the label. */
-function planSteps(plan: readonly PlanItem[]): PlanLane {
-  const steps = plan.map((item: PlanItem): PlanStep => {
-    if (item.status !== "failed") return { label: item.text };
-
-    const reason = item.reason === undefined ? "" : `: ${item.reason}`;
-
-    return { label: `${item.text} (failed${reason})` };
-  });
-
-  let activeIndex = steps.length;
-
-  for (let i = 0; i < plan.length; i += 1) {
-    const item = plan[i];
-
-    if (item !== undefined && item.status !== "done") {
-      activeIndex = i;
-
-      break;
-    }
-  }
-
-  return { steps, activeIndex };
+  return (
+    <span className={cn("font-mono text-[11.5px]", className)}>
+      {count} {label}
+    </span>
+  );
 }
 
-/** The task entries of a session, in transcript order. */
-function taskEntries(entries: readonly Entry[]): TaskEntry[] {
-  const tasks: TaskEntry[] = [];
+/** The marker + subject row of one plan task. The in-progress row shows the
+ * task's active_form when the agent set one, and a waiting row names its
+ * blockers; both subject and detail lines truncate in CSS. */
+function PlanTaskRow({
+  task,
+  variant,
+  blockedBy = [],
+}: {
+  task: PlanTask;
+  variant: "done" | "active" | "pending";
+  blockedBy?: readonly string[];
+}): ReactElement {
+  const label =
+    variant === "active" && task.active_form ? task.active_form : task.subject;
 
-  for (const entry of entries) {
-    if (
-      entry.kind === "task" &&
-      entry.task !== undefined &&
-      entry.task !== null
-    ) {
-      tasks.push(entry);
-    }
-  }
-
-  return tasks;
+  return (
+    <div className="flex items-center gap-2 text-[13px]">
+      <span className="flex size-4 shrink-0 items-center justify-center">
+        {variant === "done" ? (
+          <CheckIcon
+            aria-hidden={true}
+            className="text-muted-foreground size-3.5"
+          />
+        ) : variant === "active" ? (
+          <ArrowRightIcon
+            aria-hidden={true}
+            className="text-foreground/90 size-3.5"
+          />
+        ) : (
+          <span
+            aria-hidden={true}
+            className="bg-foreground/15 inset-ring-border size-1.5 rounded-full inset-ring"
+          />
+        )}
+      </span>
+      <span
+        title={label}
+        className={cn(
+          "min-w-0 flex-1 truncate",
+          variant === "active" ? "text-foreground/90" : "text-muted-foreground"
+        )}
+      >
+        {label}
+      </span>
+      {blockedBy.length > 0 ? (
+        <span className="text-muted-foreground shrink-0 font-mono text-[11px]">
+          blocked by{" "}
+          {blockedBy.map((id: string): string => `#${id}`).join(", ")}
+        </span>
+      ) : null}
+    </div>
+  );
 }
 
-/** The tasks lane onto the SubagentList model: completed lanes sort first so
- * the element's completed-count prefix lands on the right rows; the model
- * slot names a terminal failed/stopped state the element cannot draw. */
-function taskLanes(tasks: readonly TaskEntry[]): TaskLanes {
-  const completed: SubagentItem[] = [];
-  const active: SubagentItem[] = [];
+/** A collapsed-by-default plan group ("3 completed" / "1 waiting"): the
+ * chevron row toggles the group's rows; the state is local view state. */
+function PlanGroup({
+  label,
+  count,
+  testId,
+  children,
+}: {
+  label: string;
+  count: number;
+  testId: string;
+  children: ReactNode;
+}): ReactElement {
+  const [open, setOpen] = useState(false);
 
-  for (const entry of tasks) {
-    const task = entry.task;
-
-    if (task === undefined || task === null) continue;
-
-    const name =
-      task.description === undefined || task.description === ""
-        ? "Background task"
-        : task.description;
-
-    if (task.status === ToolStatus.ToolStatusCompleted) {
-      completed.push({ name, model: "" });
-
-      continue;
-    }
-
-    if (task.status === ToolStatus.ToolStatusFailed) {
-      active.push({ name, model: "failed" });
-
-      continue;
-    }
-
-    if (task.status === ToolStatus.ToolStatusStopped) {
-      active.push({ name, model: "stopped" });
-
-      continue;
-    }
-
-    active.push({ name, model: "" });
-  }
-
-  return {
-    agents: [...completed, ...active],
-    completedCount: completed.length,
-  };
+  return (
+    <div>
+      <button
+        type="button"
+        data-testid={`${testId}-toggle`}
+        aria-expanded={open}
+        aria-label={`${count} ${label}`}
+        onClick={(): void => setOpen((current: boolean): boolean => !current)}
+        className="text-muted-foreground hover:text-foreground -ml-0.5 flex items-center gap-1 py-0.5 text-[12.5px] transition-colors"
+      >
+        <ChevronRightIcon
+          aria-hidden={true}
+          className={cn(
+            "size-3 shrink-0 transition-transform duration-200 motion-reduce:transition-none",
+            open && "rotate-90"
+          )}
+        />
+        <span className="font-medium">
+          {count} {label}
+        </span>
+      </button>
+      {open ? (
+        <div
+          data-testid={`${testId}-items`}
+          className="mt-1 flex flex-col gap-1.5"
+        >
+          {children}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
-/** The floating run card. */
+/** The floating run island: a minimized pill by default, the full two-section
+ * card once expanded. Progress reads the plan snapshot, Agents the delegated
+ * task entries. */
 export function RunSurfaces(): ReactElement | null {
   const entries = useChatStore((s: ExtendedChatStore) => s.entries);
+  const [expanded, setExpanded] = useState(false);
 
-  const tasks = taskEntries(entries);
-  const plan = latestPlanItems(entries);
+  const rows = agentRows(entries);
+  const counts = agentCounts(rows);
 
-  if (tasks.length === 0 && plan.length === 0) return null;
+  const planEntry = entries.find(
+    (e: Entry): e is PlanEntry => e.kind === "plan"
+  );
 
-  const { agents, completedCount } = taskLanes(tasks);
-  const { steps, activeIndex } = planSteps(plan);
+  const groups = planGroups(planEntry?.plan?.tasks);
 
-  // The element reads a per-index percentage; completed lanes are done,
-  // everything else has no progress to show.
-  const progress: number[] = [];
+  const planVisible = groups.total > 0;
+  const tasksVisible = rows.length > 0;
 
-  for (let i = 0; i < agents.length; i += 1) {
-    progress.push(i < completedCount ? 100 : 0);
-  }
+  if (!planVisible && !tasksVisible) return null;
+
+  const isRunning = counts.running > 0;
+  const allTasksDone = tasksVisible && !isRunning;
+
+  const renderStatusIcon = (): ReactElement => {
+    if (isRunning) {
+      return (
+        <Loader2Icon
+          aria-hidden={true}
+          className="text-muted-foreground size-3.5 shrink-0 animate-spin motion-reduce:animate-none"
+        />
+      );
+    }
+
+    if (allTasksDone) {
+      return (
+        <CheckIcon
+          aria-hidden={true}
+          className="size-3.5 shrink-0 text-emerald-500"
+        />
+      );
+    }
+
+    return <ListTodoIcon aria-hidden={true} className="size-3.5 shrink-0" />;
+  };
 
   return (
     <div
-      className="absolute right-3 top-3 z-20 max-h-72 w-80 max-w-[calc(100%-1.5rem)] overflow-y-auto rounded-md border border-line bg-surface p-3 shadow-[var(--elev-raised)] lg:right-14"
+      className={cn(
+        "absolute right-3 top-3 z-20",
+        expanded &&
+          "max-h-[30rem] w-84 max-w-[calc(100%-1.5rem)] overflow-y-auto rounded-xl border border-line/80 bg-surface/95 backdrop-blur-xl p-3.5 shadow-xl transition-all"
+      )}
       data-testid="run-card"
     >
-      {tasks.length > 0 && (
-        <div data-testid="run-card-tasks">
-          <SubagentList
-            agents={agents}
-            completedCount={completedCount}
-            progress={progress}
-            showSummary={completedCount < agents.length}
-            summaryAgent={{ name: "Working", model: "" }}
-          />
-        </div>
-      )}
-      {plan.length > 0 && (
-        <div
-          data-testid="run-card-plan"
-          className={
-            tasks.length > 0 ? "mt-3 border-t border-line pt-3" : undefined
-          }
-        >
-          <AgentPlan steps={steps} activeIndex={activeIndex} title="Plan" />
-        </div>
-      )}
+      <button
+        type="button"
+        data-testid="run-card-pill"
+        aria-expanded={expanded}
+        title="Run activity"
+        onClick={(): void =>
+          setExpanded((current: boolean): boolean => !current)
+        }
+        className={cn(
+          "border-line bg-surface text-muted-foreground hover:text-foreground flex items-center gap-2 rounded-full border px-3 py-1.5 text-left shadow-[var(--elev-raised)] transition-colors",
+          expanded && "mb-3"
+        )}
+      >
+        {renderStatusIcon()}
+        {planVisible ? (
+          <>
+            <span className="text-foreground text-[13px] font-medium">
+              Progress
+            </span>
+            <span className="text-muted-foreground font-mono text-[11.5px]">
+              {groups.completed.length}/{groups.total}
+            </span>
+          </>
+        ) : null}
+        {planVisible && tasksVisible ? (
+          <span className="text-line mx-0.5">•</span>
+        ) : null}
+        {tasksVisible ? (
+          <>
+            <span className="text-foreground text-[13px] font-medium">
+              Agents
+            </span>
+            <CountSegment
+              count={counts.running}
+              label="running"
+              className="text-foreground/70"
+            />
+            <CountSegment
+              count={counts.completed}
+              label="done"
+              className="text-emerald-600 dark:text-emerald-400"
+            />
+            <CountSegment
+              count={counts.failed}
+              label="failed"
+              className="text-red-600 dark:text-red-400"
+            />
+            <CountSegment
+              count={counts.stopped}
+              label="stopped"
+              className="text-muted-foreground"
+            />
+          </>
+        ) : null}
+      </button>
+      {expanded ? (
+        <>
+          {planVisible ? (
+            <div
+              data-testid="run-card-plan"
+              className={cn(
+                tasksVisible && "mb-3.5 pb-3.5 border-b border-line/70"
+              )}
+            >
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center justify-between px-0.5">
+                  <span className="text-[13px] font-medium text-foreground">
+                    Progress
+                  </span>
+                  <span className="font-mono text-[11.5px] text-muted-foreground">
+                    {groups.completed.length}/{groups.total}
+                  </span>
+                </div>
+                {groups.completed.length > 0 ? (
+                  <PlanGroup
+                    testId="plan-completed"
+                    label="completed"
+                    count={groups.completed.length}
+                  >
+                    {groups.completed.map((task: PlanTask) => (
+                      <PlanTaskRow key={task.id} task={task} variant="done" />
+                    ))}
+                  </PlanGroup>
+                ) : null}
+                {groups.inProgress.map((task: PlanTask) => (
+                  <PlanTaskRow key={task.id} task={task} variant="active" />
+                ))}
+                {groups.pending.map((task: PlanTask) => (
+                  <PlanTaskRow key={task.id} task={task} variant="pending" />
+                ))}
+                {groups.waiting.length > 0 ? (
+                  <PlanGroup
+                    testId="plan-waiting"
+                    label="waiting"
+                    count={groups.waiting.length}
+                  >
+                    {groups.waiting.map((task: PlanTask) => (
+                      <PlanTaskRow
+                        key={task.id}
+                        task={task}
+                        variant="pending"
+                        blockedBy={task.blocked_by ?? []}
+                      />
+                    ))}
+                  </PlanGroup>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+          {tasksVisible ? (
+            <div data-testid="run-card-tasks" className="flex flex-col gap-2">
+              <div className="flex items-center justify-between px-0.5">
+                <span className="text-[13px] font-medium text-foreground">
+                  Agents
+                </span>
+                <span className="font-mono text-[11.5px] text-muted-foreground">
+                  {isRunning
+                    ? `${counts.running} running`
+                    : `${counts.completed} completed`}
+                </span>
+              </div>
+              <SubagentList
+                agents={rows.map((row: AgentRow): SubagentItem => ({
+                  name: row.name,
+                  state: row.state,
+                  detail: row.detail === "" ? undefined : row.detail,
+                  error: row.error === "" ? undefined : row.error,
+                }))}
+                showSummary={false}
+                summaryAgent={{ name: "Working", state: "running" }}
+              />
+            </div>
+          ) : null}
+        </>
+      ) : null}
     </div>
   );
 }

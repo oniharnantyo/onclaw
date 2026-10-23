@@ -42,6 +42,7 @@ export function toolVerb(toolName: string): string {
     glob: "Find",
     grep: "Search",
     execute: "Run",
+    shell: "Run",
     web_search: "Search",
     web_fetch: "Fetch",
     http_get: "Fetch",
@@ -58,6 +59,9 @@ export function toolVerb(toolName: string): string {
     TaskUpdate: "Task",
     TaskList: "Task",
     task: "Task",
+    agent: "Agent",
+    task_output: "Output",
+    task_stop: "Stop",
   } satisfies Record<string, string>;
 
   return VERBS[toolName] ?? toolName;
@@ -74,6 +78,7 @@ export function toolIcon(toolName: string): LucideIcon {
     glob: FolderTreeIcon,
     grep: SearchIcon,
     execute: SquareTerminalIcon,
+    shell: SquareTerminalIcon,
     web_search: GlobeIcon,
     web_fetch: LinkIcon,
     http_get: LinkIcon,
@@ -90,6 +95,9 @@ export function toolIcon(toolName: string): LucideIcon {
     TaskUpdate: ListTodoIcon,
     TaskList: ListTodoIcon,
     task: UsersIcon,
+    agent: UsersIcon,
+    task_output: ListTodoIcon,
+    task_stop: FileXIcon,
   } satisfies Record<string, LucideIcon>;
 
   return ICONS[toolName] ?? PlugIcon;
@@ -100,7 +108,13 @@ export function toolIcon(toolName: string): LucideIcon {
 export function toolChip(toolName: string, argsText: string): string {
   const args = parseArgs(argsText);
 
-  if (args === null) return "";
+  if (args === null) {
+    // A mapped task record rides a plain-text payload (the description),
+    // not a JSON args object — its first line is the chip.
+    if (toolName === "task") return firstLineChip(argsText);
+
+    return "";
+  }
 
   switch (toolName) {
     case "read_file":
@@ -115,6 +129,7 @@ export function toolChip(toolName: string, argsText: string): string {
     case "grep":
       return str(args, "pattern");
     case "execute":
+    case "shell":
       return firstToken(str(args, "command"));
     case "web_search":
       return str(args, "query");
@@ -139,6 +154,15 @@ export function toolChip(toolName: string, argsText: string): string {
       return "tasks";
     case "task":
       return str(args, "description") || str(args, "task_id");
+    case "agent":
+      return (
+        str(args, "description") ||
+        str(args, "prompt") ||
+        str(args, "subagent_type")
+      );
+    case "task_output":
+    case "task_stop":
+      return str(args, "task_id") ? `#${str(args, "task_id")}` : "";
     default:
       return "";
   }
@@ -149,6 +173,20 @@ function baseName(path: string): string {
   const cut = path.lastIndexOf("/");
 
   return cut === -1 ? path : path.slice(cut + 1);
+}
+
+/** The first non-empty line of a plain-text payload, chip-sized (the same
+ * 80/77 cut the backend's task summary applies). */
+function firstLineChip(text: string): string {
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+
+    if (trimmed === "") continue;
+
+    return trimmed.length > 80 ? trimmed.slice(0, 77) + "..." : trimmed;
+  }
+
+  return "";
 }
 
 /** The command's first token (the program run). */

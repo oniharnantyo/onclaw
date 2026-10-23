@@ -120,6 +120,7 @@ type MockedClient = Client & {
     subscribe: MockFn;
     transcript: MockFn;
     unsubscribe: MockFn;
+    turnState: MockFn;
     contextUsage: MockFn;
   };
   settings: {
@@ -155,7 +156,7 @@ function makeClient(): MockedClient {
           liveHandler = handler;
 
           return (): void => {
-            liveHandler = null;
+            if (liveHandler === handler) liveHandler = null;
           };
         }
       ),
@@ -166,6 +167,7 @@ function makeClient(): MockedClient {
         async (sessionID: string) => transcripts[sessionID] ?? []
       ),
       unsubscribe: vi.fn(async () => undefined),
+      turnState: vi.fn(async () => ({ busy: false, turn_id: "" })),
       contextUsage: vi.fn(async () => usageResult),
     },
     settings: {

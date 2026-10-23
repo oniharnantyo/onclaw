@@ -20,7 +20,7 @@ import {
   asRichUser,
   type Entry,
 } from "../../entries";
-import { entriesToMessages } from "../mapping";
+import { entriesToMessages, HIDDEN_DELEGATION_TOOLS } from "../mapping";
 
 function ev(
   kind: SessionEvent["kind"],
@@ -330,7 +330,8 @@ describe("entry → message mapping (task 2.1, design D2)", () => {
     ]);
   });
 
-  it("maps a delegated task to the registry's task tool-call part", () => {
+  it("never renders a delegated task's activity as transcript parts", () => {
+    // The run island owns subagent activity; the transcript mints nothing.
     const running = fold(
       ev(Kind.KindTaskActivity, {
         turn_id: "t1",
@@ -344,16 +345,7 @@ describe("entry → message mapping (task 2.1, design D2)", () => {
 
     const [runningTurn] = entriesToMessages(running);
 
-    expect(runningTurn?.content).toEqual([
-      {
-        type: "tool-call",
-        toolCallId: running[0].id,
-        toolName: "task",
-        args: { task_id: "task-1", description: "scan" },
-        argsText: "scan",
-        isError: false,
-      },
-    ]);
+    expect(runningTurn?.content).toEqual([]);
 
     const done = fold(
       ev(Kind.KindTaskActivity, {
@@ -370,21 +362,129 @@ describe("entry → message mapping (task 2.1, design D2)", () => {
 
     const [doneTurn] = entriesToMessages(done);
 
-    expect(doneTurn?.content).toEqual([
+    expect(doneTurn?.content).toEqual([]);
+  });
+
+  it("never renders subagent delegation calls or their bookkeeping as parts", () => {
+    // The constant names exactly the hidden calls, so a rename here is a
+    // conscious one.
+    expect([...HIDDEN_DELEGATION_TOOLS].sort()).toEqual([
+      "agent",
+      "task_output",
+      "task_stop",
+    ]);
+
+    const entries = fold(
+      ev(Kind.KindToolActivity, {
+        turn_id: "t1",
+        tool: {
+          call_id: "c1",
+          name: "agent",
+          arguments: JSON.stringify({
+            description: "Research self-improving agent harnesses",
+            subagent_type: "scout",
+          }),
+          status: ToolStatus.ToolStatusCompleted,
+          result: "Agent running in background with ID: task-1",
+        },
+      }),
+      ev(Kind.KindToolActivity, {
+        turn_id: "t1",
+        tool: {
+          call_id: "c2",
+          name: "task_output",
+          arguments: '{"task_id":"task-1"}',
+          status: ToolStatus.ToolStatusCompleted,
+          result: "working",
+        },
+      }),
+      ev(Kind.KindToolActivity, {
+        turn_id: "t1",
+        tool: {
+          call_id: "c3",
+          name: "task_stop",
+          arguments: '{"task_id":"task-1"}',
+          status: ToolStatus.ToolStatusCompleted,
+          result: "stopped",
+        },
+      }),
+      // An ordinary call in the same turn still renders.
+      ev(Kind.KindToolActivity, {
+        turn_id: "t1",
+        tool: {
+          call_id: "c4",
+          name: "grep",
+          arguments: '{"pattern":"TODO"}',
+          status: ToolStatus.ToolStatusCompleted,
+          result: "a.ts:1: TODO",
+        },
+      })
+    );
+
+    const [turn] = entriesToMessages(entries);
+
+    expect(turn?.content).toEqual([
       {
         type: "tool-call",
-        toolCallId: done[0].id,
-        toolName: "task",
-        args: {
-          task_id: "task-1",
-          description: "scan",
-          transcript_path: ".tasks/task-1.md",
-        },
-        argsText: "scan",
-        isError: true,
-        result: "no match",
+        toolCallId: entries[3].id,
+        toolName: "grep",
+        args: { pattern: "TODO" },
+        argsText: '{"pattern":"TODO"}',
+        isError: false,
+        result: "a.ts:1: TODO",
       },
     ]);
+  });
+
+  it("hides a delegation call and its task record when they arrive in either order", () => {
+    const agentCall = {
+      call_id: "c1",
+      name: "agent",
+      arguments: JSON.stringify({
+        description: "Research self-improving agent harnesses",
+        subagent_type: "scout",
+      }),
+      status: ToolStatus.ToolStatusCompleted,
+      result: "Agent running in background with ID: task-1",
+    };
+
+    const taskRecord = {
+      task_id: "task-1",
+      description: "Research self-improving agent harnesses",
+      status: ToolStatus.ToolStatusCompleted,
+      result: "Three findings.",
+      background: true,
+    };
+
+    const toolFirst = fold(
+      ev(Kind.KindToolActivity, { turn_id: "t1", tool: agentCall }),
+      ev(Kind.KindTaskActivity, { turn_id: "t1", task: taskRecord })
+    );
+
+    expect(entriesToMessages(toolFirst)[0]?.content).toEqual([]);
+
+    const taskFirst = fold(
+      ev(Kind.KindTaskActivity, { turn_id: "t1", task: taskRecord }),
+      ev(Kind.KindToolActivity, { turn_id: "t1", tool: agentCall })
+    );
+
+    expect(entriesToMessages(taskFirst)[0]?.content).toEqual([]);
+  });
+
+  it("never renders a plan snapshot entry in the transcript", () => {
+    const entries = fold(
+      ev(Kind.KindUserMessage, { text: "go", turn_id: "t1", id: "e1" }),
+      ev(Kind.KindPlanActivity, {
+        turn_id: "t1",
+        plan: {
+          tasks: [{ id: "p1", subject: "scan", status: "in_progress" }],
+        },
+      })
+    );
+
+    const [, turn] = entriesToMessages(entries);
+
+    expect(turn?.content).toEqual([]);
   });
 
   it("maps a pending approval onto the turn's tool-call part awaiting action", () => {

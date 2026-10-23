@@ -183,6 +183,7 @@ interface MockTransport {
     WorkspaceFile: MockFn;
     ListWorkspace: MockFn;
     Unsubscribe: MockFn;
+    TurnState: MockFn;
     ContextUsage: MockFn;
     BrowserScreenshot: MockFn;
   };
@@ -286,6 +287,14 @@ function makeTransport(): MockTransport {
     ListWorkspace: vi.fn(async () => []),
     Unsubscribe: vi.fn(async (sessionID: string) => {
       calls.push(`chat.Unsubscribe:${sessionID}`);
+    }),
+    TurnState: vi.fn(async (sessionID: string) => {
+      calls.push(`chat.TurnState:${sessionID}`);
+
+      return {
+        busy: false,
+        turn_id: "",
+      };
     }),
     ContextUsage: vi.fn(async () => ({
       used: 0,
@@ -593,6 +602,22 @@ describe("client wrapper", () => {
     expect(t.chat.SetSessionOverrides).toHaveBeenCalledWith("sess-1", "", "");
   });
 
+  it("routes chat.turnState and returns in-flight turn status", async () => {
+    t.chat.TurnState.mockResolvedValueOnce({
+      busy: true,
+      turn_id: "turn-abc",
+    });
+
+    const status = await client.chat.turnState("sess-1");
+    expect(status).toEqual({ busy: true, turn_id: "turn-abc" });
+    expect(t.chat.TurnState).toHaveBeenCalledWith("sess-1");
+  });
+
+  it("routes chat.unsubscribe verbatim", async () => {
+    await client.chat.unsubscribe("sess-1");
+    expect(t.chat.Unsubscribe).toHaveBeenCalledWith("sess-1");
+  });
+
   it("routes gateway state calls", async () => {
     await expect(client.gateway.state()).resolves.toBe("running");
     await client.gateway.pause();
@@ -623,8 +648,18 @@ describe("client wrapper", () => {
       expect(events.map((e: SessionEvent) => e.text)).toEqual(["he", "llo"]);
 
       off();
-      expect(t.calls).toContain("chat.Unsubscribe:sess-9");
+      expect(t.calls).not.toContain("chat.Unsubscribe:sess-9");
       expect(t.active(sessionEventName("sess-9"))).toBe(0);
+    });
+
+    it("subscribe cleanup detaches locally without calling chat.Unsubscribe", async () => {
+      const off = await client.chat.subscribe("sess-cleanup", () => undefined);
+      expect(t.chat.Subscribe).toHaveBeenCalledWith("sess-cleanup");
+      expect(t.active(sessionEventName("sess-cleanup"))).toBe(1);
+
+      off();
+      expect(t.active(sessionEventName("sess-cleanup"))).toBe(0);
+      expect(t.chat.Unsubscribe).not.toHaveBeenCalled();
     });
 
     it("scopes subscriptions per session", async () => {

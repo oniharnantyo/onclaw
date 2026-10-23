@@ -10,11 +10,11 @@
  *   the message's attachment list, keyed by its capability key;
  * - one assistant message per turn (turnID), content = the turn's entries in
  *   order: reasoning → reasoning part, assistant → text part, tool →
- *   tool-call part, task → a tool-call part under the registry's task
- *   convention (toolName "task", the delegation payload rides args — see
- *   components/assistant-ui/utils/task.ts + task-card.aui.tsx), error →
+ *   tool-call part, error →
  *   data-error part + message status incomplete/error, approval → the
- *   turn's tool-call part carrying the native `approval` seam;
+ *   turn's tool-call part carrying the native `approval` seam; subagent
+ *   activity — task and plan entries plus the HIDDEN_DELEGATION_TOOLS
+ *   calls — renders in the floating run island instead and is skipped here;
  * - a compaction entry becomes its own data-compaction message so the
  *   divider sits between turns;
  * - entries persisted before turn stamping group by adjacency: consecutive
@@ -41,7 +41,6 @@ import type {
   Attachment,
   Event as SessionEvent,
 } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/sessions/models";
-import { ToolStatus } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/sessions/models";
 import {
   asApproval,
   asEntry,
@@ -54,7 +53,6 @@ import type {
   CompactionEntry,
   ErrorEntry,
   ReasoningEntry,
-  TaskEntry,
   ToolEntry,
   UserEntry,
 } from "../types";
@@ -68,6 +66,15 @@ type JsonValue =
 
 /** The object shape parsed tool-call arguments carry. */
 type JsonObject = { readonly [key: string]: JsonValue };
+
+/** The tool names the transcript never renders (subagent delegation
+ * activity): the delegation call itself plus its output/stop bookkeeping
+ * calls. The floating run island shows this activity instead. */
+export const HIDDEN_DELEGATION_TOOLS: ReadonlySet<string> = new Set([
+  "agent",
+  "task_output",
+  "task_stop",
+]);
 
 /** The custom data parts this mapping emits (the `data-<name>` shapes the
  * runtime converts to DataMessagePart). */
@@ -278,28 +285,48 @@ function compactionMessage(entry: CompactionEntry): ThreadMessageLike {
   };
 }
 
+/** The content parts one turn maps to, in order. Subagent activity — task
+ * and plan entries plus the HIDDEN_DELEGATION_TOOLS calls — never renders in
+ * the transcript (the run island shows it) and is skipped entirely. */
+function turnContent(group: EntryGroup): ChatPart[] {
+  const content: ChatPart[] = [];
+
+  for (const entry of group.entries) {
+    if (entry.kind === "task" || entry.kind === "plan") continue;
+
+    if (
+      entry.kind === "tool" &&
+      HIDDEN_DELEGATION_TOOLS.has(entry.call?.name ?? "")
+    ) {
+      continue;
+    }
+
+    const part = turnPart(entry);
+
+    if (part !== null) content.push(part);
+  }
+
+  return content;
+}
+
 /** The assistant message for one turn group: the turn's entries become the
  * content parts, in order. A stamped turn's message id is the turn id — the
  * handle the branch tree and the branch switch resolve back through; a
  * legacy adjacency run keeps its lead entry id. */
 function turnMessage(group: EntryGroup): ThreadMessageLike {
-  const content: ChatPart[] = [];
-
-  for (const entry of group.entries) {
-    content.push(turnPart(entry));
-  }
-
   return {
     role: "assistant",
     id: group.turnID ?? group.id,
     createdAt: new Date(group.at),
-    content,
+    content: turnContent(group),
     status: turnStatus(group.entries),
   };
 }
 
-/** The content part one turn member maps to. */
-function turnPart(entry: ChatEntry): ChatPart {
+/** The content part one turn member maps to, or null for the kinds the
+ * transcript never renders (defensive: the content loop already skips
+ * them). */
+function turnPart(entry: ChatEntry): ChatPart | null {
   switch (entry.kind) {
     case "reasoning":
       return reasoningPart(entry);
@@ -308,7 +335,9 @@ function turnPart(entry: ChatEntry): ChatPart {
     case "tool":
       return toolPart(entry);
     case "task":
-      return taskPart(entry);
+    case "plan":
+      // Subagent activity renders in the run island, never the transcript.
+      return null;
     case "error":
       return errorPart(entry);
     case "approval":
@@ -402,48 +431,6 @@ function toolPart(entry: ToolEntry): ToolCallMessagePart {
   if (call.result === undefined || call.result === "") return part;
 
   return { ...part, result: call.result };
-}
-
-/** The tool-call part for one delegated task, under the registry's task
- * convention (utils/task.ts + task-card.aui.tsx): a tool call named "task"
- * whose args carry the delegation and whose result is the child's answer.
- * A still-running delegation maps to a result-less part. */
-function taskPart(entry: TaskEntry): ToolCallMessagePart {
-  const task = entry.task;
-
-  if (task === undefined || task === null) {
-    return {
-      type: "tool-call",
-      toolCallId: entry.id,
-      toolName: "task",
-      args: {},
-      argsText: "",
-    };
-  }
-
-  // The delegation payload rides args; only the fields the record carries
-  // are set (the spread form keeps the literal inference lint-clean).
-  const args = {
-    task_id: task.task_id,
-    ...(task.description !== undefined && { description: task.description }),
-    ...(task.transcript_path !== undefined && {
-      transcript_path: task.transcript_path,
-    }),
-    ...(task.background !== undefined && { background: task.background }),
-  };
-
-  const part: ToolCallMessagePart = {
-    type: "tool-call",
-    toolCallId: entry.id,
-    toolName: "task",
-    args,
-    argsText: task.description ?? task.task_id,
-    isError: task.status === ToolStatus.ToolStatusFailed,
-  };
-
-  if (task.result === undefined || task.result === "") return part;
-
-  return { ...part, result: task.result };
 }
 
 /** The data part for one inline error entry; the message carries the

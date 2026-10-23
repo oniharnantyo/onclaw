@@ -38,12 +38,12 @@
  */
 import {
   Kind,
-  ToolStatus,
   type Event as SessionEvent,
 } from "../../../bindings/github.com/oniharnantyo/buddies/internal/sessions/models";
 import type {
   AssistantEntry,
   Entry,
+  PlanEntry,
   ReasoningEntry,
   TaskEntry,
   ToolEntry,
@@ -55,6 +55,7 @@ export type {
   CompactionEntry,
   Entry,
   ErrorEntry,
+  PlanEntry,
   ReasoningEntry,
   TaskEntry,
   ToolEntry,
@@ -164,140 +165,6 @@ export function entryID(): string {
   nextEntryID += 1;
 
   return `entry-${nextEntryID}`;
-}
-
-/** One plan-lane checklist item (task 9.2): a todo_write item as persisted. */
-export interface PlanItem {
-  key: string;
-  text: string;
-  status: "pending" | "active" | "done" | "failed";
-  reason?: string;
-}
-
-/** The wire shape of one todo_write item before it is trusted. */
-interface RawPlanItem {
-  key?: string;
-  text?: string;
-  status?: string;
-  reason?: string;
-}
-
-const PLAN_STATUSES = new Set<string>(["pending", "active", "done", "failed"]);
-
-/** Parses a todo_write payload (the {items:[...]} result echo or the call
- * arguments) into plan items. Entries lacking a key/text or carrying an
- * unknown status are dropped; anything but a JSON object with an items array
- * returns null so the caller can fall through. */
-function parsePlanItems(raw: string | undefined): PlanItem[] | null {
-  if (!raw) return null;
-
-  let parsed: unknown;
-
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-
-  if (!parsed) return null;
-
-  // SAFETY: todo_write payloads are strict backend-validated JSON of this
-  // shape; malformed entries surface as undefined fields and are dropped by
-  // the checks below rather than trusted.
-  const items = (parsed as { items?: RawPlanItem[] }).items;
-
-  if (!Array.isArray(items)) return null;
-
-  const plan: PlanItem[] = [];
-
-  for (const item of items) {
-    if (!item?.key || !item?.text) continue;
-
-    if (item.status === undefined || !PLAN_STATUSES.has(item.status)) continue;
-
-    // SAFETY: the PLAN_STATUSES membership check above narrows the wire
-    // status to exactly the four values PlanItem.status admits.
-    const status = item.status as PlanItem["status"];
-    const planItem: PlanItem = { key: item.key, text: item.text, status };
-
-    if (item.reason) planItem.reason = item.reason;
-
-    plan.push(planItem);
-  }
-
-  return plan;
-}
-
-function parseTaskListText(raw: string | undefined): PlanItem[] | null {
-  if (!raw) return null;
-
-  const lines = raw
-    .split("\n")
-    .map((l: string): string => l.trim())
-    .filter(Boolean);
-
-  const items: PlanItem[] = [];
-
-  for (const line of lines) {
-    const match = /^#(\d+)\s+\[([^\]]+)\]\s+(.*?)(?:\s+\[.*\])?$/.exec(line);
-
-    if (!match) continue;
-
-    const [, id, statusRaw, subject] = match;
-    let status: PlanItem["status"] = "pending";
-
-    if (statusRaw === "completed") {
-      status = "done";
-    } else if (statusRaw === "in_progress") {
-      status = "active";
-    } else if (statusRaw === "deleted") {
-      status = "failed";
-    }
-
-    items.push({
-      key: id,
-      text: subject,
-      status,
-    });
-  }
-
-  return items.length > 0 ? items : null;
-}
-
-/** The run card's plan lane data (task 9.2, design D8): the persisted items of
- * the LATEST todo_write or TaskList tool activity — the validated result echo when the
- * terminal record landed, else the call arguments of a still-running call so
- * the checklist updates live mid-turn. A failed call persisted nothing, so it
- * yields no lane; with no plan tool activity at all the lane is absent. */
-export function latestPlanItems(entries: Entry[]): PlanItem[] {
-  for (let i = entries.length - 1; i >= 0; i -= 1) {
-    const entry = entries[i];
-
-    if (
-      entry.kind !== "tool" ||
-      (entry.call?.name !== "todo_write" &&
-        entry.call?.name !== "task_list" &&
-        entry.call?.name !== "TaskList")
-    ) {
-      continue;
-    }
-
-    if (
-      entry.call.status === ToolStatus.ToolStatusFailed ||
-      entry.call.is_error
-    ) {
-      return [];
-    }
-
-    const fromResult =
-      parsePlanItems(entry.call.result) ?? parseTaskListText(entry.call.result);
-
-    if (fromResult !== null) return fromResult;
-
-    return parsePlanItems(entry.call.arguments) ?? [];
-  }
-
-  return [];
 }
 
 /** True while the transcript holds an approval entry the backend has not
@@ -766,6 +633,24 @@ export function applyEvent(entries: Entry[], e: SessionEvent): Entry[] {
       const replaced: TaskEntry = { ...existing, task: e.task };
 
       return [...entries.slice(0, idx), replaced, ...entries.slice(idx + 1)];
+    }
+
+    case Kind.KindPlanActivity: {
+      if (!e.plan) return entries;
+
+      const idx = entries.findIndex((en: Entry) => en.kind === "plan");
+
+      const next: PlanEntry = {
+        kind: "plan",
+        id: idx === -1 ? entryID() : entries[idx].id,
+        turnID: e.turn_id,
+        plan: e.plan,
+        at: e.occurred_at,
+      };
+
+      if (idx === -1) return [...entries, next];
+
+      return [...entries.slice(0, idx), next, ...entries.slice(idx + 1)];
     }
 
     case Kind.KindCompaction:

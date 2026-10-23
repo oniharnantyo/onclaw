@@ -31,10 +31,31 @@ export function TaskTool(props: ToolCallMessagePartProps): ReactElement {
   const state = taskStateOf(props.status, isError);
 
   const description =
-    (args === null ? "" : str(args, "description")) || "Background task";
+    (args === null
+      ? ""
+      : str(args, "description") || str(args, "prompt") || str(args, "task")) ||
+    "Background task";
 
-  const taskID = args === null ? "" : str(args, "task_id");
-  const transcriptPath = args === null ? "" : str(args, "transcript_path");
+  let taskID = args === null ? "" : str(args, "task_id") || str(args, "taskId");
+
+  if (taskID === "" && resultText !== "") {
+    const match = /Agent running in background with ID:\s*([^\s.]+)/.exec(
+      resultText
+    );
+
+    if (match) {
+      taskID = match[1];
+    }
+  }
+
+  const explicitTranscript = args === null ? "" : str(args, "transcript_path");
+
+  const transcriptPath =
+    explicitTranscript !== ""
+      ? explicitTranscript
+      : taskID !== "" && state !== "working"
+        ? `.tasks/${taskID}.md`
+        : "";
 
   // The delegation args can be unreadable while the payload streams; the
   // fallback body carries the verbatim text instead of an empty card.

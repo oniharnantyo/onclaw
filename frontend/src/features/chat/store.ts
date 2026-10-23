@@ -138,6 +138,14 @@ let loadSeq = 0;
 /** Event ids already folded into the current session's entries. */
 let seenEventIDs = new Set<string>();
 
+/** Events buffered for the session currently loading its initial transcript
+ * page (task 4.1, design D4). Folded on top of the page once it lands. */
+let eventBuffer: {
+  sessionID: string;
+  seq: number;
+  events: SessionEvent[];
+} | null = null;
+
 let nextQueueID = 0;
 
 /** Minted right-panel tab ids (task 8.2). */
@@ -293,6 +301,12 @@ function makeIngest(sessionID: string): (e: SessionEvent) => void {
     else if (isTurnActivityKind(e.kind)) setSessionRunning(sessionID, true);
 
     if (useChatStore.getState().activeSessionID !== sessionID) return;
+
+    if (eventBuffer !== null && eventBuffer.sessionID === sessionID) {
+      eventBuffer.events.push(e);
+
+      return;
+    }
 
     ingest(e);
   };
@@ -494,6 +508,7 @@ export const useChatStore = create<ExtendedChatStore>(
 
     selectAgent: async (agentID: string, sessionID?: string): Promise<void> => {
       const seq = ++loadSeq;
+      eventBuffer = null;
       set({ activeAgentID: agentID, error: null });
       // The composer's model/effort pickers read the agent's provider
       // capabilities; a stale continuation must not overwrite a newer agent's.
@@ -523,6 +538,7 @@ export const useChatStore = create<ExtendedChatStore>(
       for (const [id, off] of subscriptions) {
         if (!keep.has(id)) {
           off();
+          void client.chat.unsubscribe(id);
           subscriptions.delete(id);
         }
       }
@@ -535,7 +551,11 @@ export const useChatStore = create<ExtendedChatStore>(
       if (next) {
         await get().selectSession(next);
       } else {
-        for (const [, off] of subscriptions) off();
+        for (const [id, off] of subscriptions) {
+          off();
+          void client.chat.unsubscribe(id);
+        }
+
         subscriptions.clear();
         set({
           activeSessionID: null,
@@ -553,15 +573,7 @@ export const useChatStore = create<ExtendedChatStore>(
 
     selectSession: async (sessionID: string): Promise<void> => {
       const seq = ++loadSeq;
-      // Re-subscribing the target replaces its previous listener pair first
-      // (the backend replaces the subscription too); every other session's
-      // subscription persists (session-row running state).
-      const previous = subscriptions.get(sessionID);
-
-      if (previous) {
-        previous();
-        subscriptions.delete(sessionID);
-      }
+      eventBuffer = { sessionID, seq, events: [] };
 
       seenEventIDs = new Set<string>();
       // The queue belongs to the session being left: dispatch always targets
@@ -598,7 +610,15 @@ export const useChatStore = create<ExtendedChatStore>(
         if (seq !== loadSeq) {
           off();
 
+          if (eventBuffer?.seq === seq) eventBuffer = null;
+
           return;
+        }
+
+        const previous = subscriptions.get(sessionID);
+
+        if (previous) {
+          previous();
         }
 
         subscriptions.set(sessionID, off);
@@ -612,7 +632,19 @@ export const useChatStore = create<ExtendedChatStore>(
           TRANSCRIPT_PAGE_SIZE
         );
 
-        if (seq !== loadSeq) return;
+        if (seq !== loadSeq) {
+          if (eventBuffer?.seq === seq) eventBuffer = null;
+
+          return;
+        }
+
+        const buffered =
+          eventBuffer?.seq === seq && eventBuffer.sessionID === sessionID
+            ? eventBuffer.events
+            : [];
+
+        eventBuffer = null;
+
         let entries: Entry[] = [];
 
         for (const e of events) {
@@ -624,13 +656,44 @@ export const useChatStore = create<ExtendedChatStore>(
           entries = applyEvent(entries, e);
         }
 
+        for (const e of buffered) {
+          if (e.id) {
+            if (seenEventIDs.has(e.id)) continue;
+            seenEventIDs.add(e.id);
+          }
+
+          entries = applyEvent(entries, e);
+
+          if (isTerminalKind(e.kind) && e.turn_id) {
+            get().finishedTurnIDs.add(e.turn_id);
+          }
+        }
+
         set({ entries, oldestSeq: oldestSeqOf(events), loadingSession: false });
+
+        const turnState = await client.chat.turnState(sessionID);
+
+        if (seq !== loadSeq) return;
+
+        if (turnState.busy && !get().finishedTurnIDs.has(turnState.turn_id)) {
+          const nextRunning = new Set(get().runningSessions);
+          nextRunning.add(sessionID);
+          set({
+            activeTurnID: turnState.turn_id,
+            runningSessions: nextRunning,
+          });
+          setBusy();
+        }
+
         const usage = await client.chat.contextUsage(sessionID);
 
         if (seq !== loadSeq) return;
         set({ usage });
       } catch (err: unknown) {
+        if (eventBuffer?.seq === seq) eventBuffer = null;
+
         if (seq !== loadSeq) return;
+
         set({
           error: errorMessage(err, "Failed to load session"),
           loadingSession: false,
@@ -705,6 +768,10 @@ export const useChatStore = create<ExtendedChatStore>(
         off();
         subscriptions.delete(sessionID);
       }
+
+      void client.chat.unsubscribe(sessionID);
+
+      if (eventBuffer?.sessionID === sessionID) eventBuffer = null;
 
       setSessionRunning(sessionID, false);
 

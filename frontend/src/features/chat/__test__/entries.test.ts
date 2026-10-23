@@ -193,6 +193,73 @@ describe("transcript reducer", () => {
     expect(entries).toHaveLength(0);
   });
 
+  it("plan activity mints one plan entry from the snapshot", () => {
+    const entries = fold(
+      ev(Kind.KindPlanActivity, {
+        turn_id: "t1",
+        plan: {
+          tasks: [
+            { id: "1", subject: "First step", status: "in_progress" },
+            {
+              id: "2",
+              subject: "Second step",
+              status: "pending",
+              blocked_by: ["1"],
+            },
+          ],
+        },
+      })
+    );
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      kind: "plan",
+      turnID: "t1",
+      plan: {
+        tasks: [
+          { id: "1", subject: "First step", status: "in_progress" },
+          { id: "2", subject: "Second step", status: "pending" },
+        ],
+      },
+    });
+  });
+
+  it("a second plan snapshot replaces the entry in place (same id, no duplicate)", () => {
+    const first = fold(
+      ev(Kind.KindPlanActivity, {
+        turn_id: "t1",
+        plan: {
+          tasks: [{ id: "1", subject: "First step", status: "pending" }],
+        },
+      })
+    );
+
+    const second = applyEvent(
+      first,
+      ev(Kind.KindPlanActivity, {
+        turn_id: "t1",
+        plan: {
+          tasks: [{ id: "1", subject: "First step", status: "completed" }],
+        },
+      })
+    );
+
+    expect(second).toHaveLength(1);
+    expect(second[0].id).toBe(first[0].id);
+    expect(second[0]).toMatchObject({
+      kind: "plan",
+      plan: {
+        tasks: [{ id: "1", subject: "First step", status: "completed" }],
+      },
+    });
+  });
+
+  it("plan activity without a plan payload is ignored", () => {
+    const entries = fold(ev(Kind.KindPlanActivity, { turn_id: "t1" }));
+
+    expect(entries).toHaveLength(0);
+  });
+
   it("compaction appends a marker entry", () => {
     const entries = fold(
       ev(Kind.KindCompaction, {

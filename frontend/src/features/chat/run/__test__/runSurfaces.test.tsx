@@ -1,20 +1,25 @@
 /**
- * Run surfaces tests (task 3.5, spec chat-panels run card): the card hides
- * with no lane content, the plan lane is absent without plan data, both
- * lanes rebuild from replayed events (they are pure derivations of the
- * store's entries), and the card anchors to the thread viewport's relative
- * wrapper — never the chat column — so it cannot reach the composer.
+ * Run surfaces tests (tasks 3.5, 9.1–9.2, design D8; spec chat-panels run
+ * card): the island hides with no content, starts as the minimized pill whose
+ * summary covers both sections ("1/4 · 1 running"), the Progress section
+ * groups the plan snapshot (collapsed completed/waiting groups, the
+ * in-progress row's active_form, free pending rows), the Agents section
+ * draws each delegated task's state (spinner + progress line, failed chip +
+ * error detail, completed check), both sections are pure derivations of the
+ * store's entries — a second snapshot or terminal record replaces in place —
+ * and the island anchors to the thread viewport's relative wrapper, never
+ * the chat column, so it cannot reach the composer.
  */
 import { act } from "react";
-import { screen } from "@testing-library/dom";
+import { fireEvent, screen } from "@testing-library/dom";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
   Kind,
   ToolStatus,
   type Event as SessionEvent,
+  type PlanTask,
   type TaskActivity,
-  type ToolActivity,
 } from "../../../../../bindings/github.com/oniharnantyo/buddies/internal/sessions/models";
 import { applyEvent, type Entry } from "../../entries";
 import { useChatStore } from "../../store";
@@ -30,30 +35,39 @@ function taskEvent(task: TaskActivity): SessionEvent {
   };
 }
 
-function todoWriteEvent(tool: Partial<ToolActivity>): SessionEvent {
+function planEvent(tasks: PlanTask[] | null): SessionEvent {
   return {
-    kind: Kind.KindToolActivity,
+    kind: Kind.KindPlanActivity,
     occurred_at: "2026-01-01T00:00:00Z",
-    tool: { call_id: "call-1", name: "todo_write", ...tool },
+    plan: { tasks },
   };
 }
 
-/** Plan payload exactly as todo_write persists it ({items, revision}). */
-function planJSON(
-  items: Array<{
-    key: string;
-    text: string;
-    status: string;
-    reason?: string;
-  }>
-): string {
-  return JSON.stringify({ items, revision: 1 });
-}
+/** One plan snapshot: a done item, an active one with an active_form, a
+ * runnable pending one, and a pending one blocked on the active task. */
+const planTasks: PlanTask[] = [
+  { id: "1", subject: "Create path: driver port", status: "completed" },
+  {
+    id: "2",
+    subject: "Write the driver port",
+    status: "in_progress",
+    active_form: "Creating path: driver port",
+  },
+  { id: "3", subject: "HTTP: creatorResponse", status: "pending" },
+  {
+    id: "4",
+    subject: "Docs: openapi.yaml",
+    status: "pending",
+    blocked_by: ["2"],
+  },
+];
 
 const runningTask = taskEvent({
   task_id: "task-1",
   description: "Research the provider catalog",
   status: ToolStatus.ToolStatusRunning,
+  progress: "call web_fetch https://docs.example.com",
+  steps: 12,
   background: true,
 });
 
@@ -65,13 +79,6 @@ const completedTask = taskEvent({
   background: true,
 });
 
-const fourItemPlan = planJSON([
-  { key: "a", text: "Read the config", status: "done" },
-  { key: "b", text: "Sweep the workspace", status: "active" },
-  { key: "c", text: "Draft the report", status: "pending" },
-  { key: "d", text: "Call the provider", status: "failed", reason: "offline" },
-]);
-
 function foldOf(...events: SessionEvent[]): Entry[] {
   return events.reduce<Entry[]>(
     (entries: Entry[], e: SessionEvent) => applyEvent(entries, e),
@@ -79,58 +86,202 @@ function foldOf(...events: SessionEvent[]): Entry[] {
   );
 }
 
+/** Expands the minimized pill into the full card. */
+function expandCard(): void {
+  act(() => {
+    fireEvent.click(screen.getByTestId("run-card-pill"));
+  });
+}
+
+/** Opens a collapsed plan group by its toggle. */
+function expandGroup(testId: string): void {
+  act(() => {
+    fireEvent.click(screen.getByTestId(`${testId}-toggle`));
+  });
+}
+
 beforeEach(() => {
   useChatStore.setState({ entries: [] });
 });
 
 describe("RunSurfaces (task 3.5)", () => {
-  it("renders nothing when no lane has content", async () => {
+  it("renders nothing when neither section has content", async () => {
     await renderUI(<RunSurfaces />);
 
     expect(screen.queryByTestId("run-card")).toBeNull();
   });
 
-  it("shows a running task until the terminal record lands, in place", async () => {
+  it("renders nothing when the plan snapshot holds no tasks", async () => {
+    await act(async () => {
+      useChatStore.setState({ entries: foldOf(planEvent([])) });
+    });
+    const { unmount } = await renderUI(<RunSurfaces />);
+
+    expect(screen.queryByTestId("run-card")).toBeNull();
+
+    await unmount();
+
+    await act(async () => {
+      useChatStore.setState({ entries: foldOf(planEvent(null)) });
+    });
+    const { unmount: unmount2 } = await renderUI(<RunSurfaces />);
+
+    expect(screen.queryByTestId("run-card")).toBeNull();
+
+    await unmount2();
+  });
+
+  it("starts minimized: the pill summarizes both sections, the sections stay hidden", async () => {
+    await act(async () => {
+      useChatStore.setState({
+        entries: foldOf(planEvent(planTasks), runningTask),
+      });
+    });
+    const { unmount } = await renderUI(<RunSurfaces />);
+
+    const pill = screen.getByTestId("run-card-pill");
+
+    expect(pill.textContent).toContain("Progress");
+    expect(pill.textContent).toContain("1/4");
+    expect(pill.textContent).toContain("Agents");
+    expect(pill.textContent).toContain("1 running");
+    expect(screen.queryByTestId("run-card-plan")).toBeNull();
+    expect(screen.queryByTestId("run-card-tasks")).toBeNull();
+
+    expandCard();
+
+    expect(screen.getByTestId("run-card-plan")).not.toBeNull();
+    expect(screen.getByTestId("run-card-tasks")).not.toBeNull();
+
+    // Activating the pill again collapses back to it.
+    expandCard();
+
+    expect(screen.queryByTestId("run-card-plan")).toBeNull();
+    expect(screen.queryByTestId("run-card-tasks")).toBeNull();
+
+    await unmount();
+  });
+
+  it("renders the Progress section: counts, the active form, pending rows, collapsed groups", async () => {
+    await act(async () => {
+      useChatStore.setState({ entries: foldOf(planEvent(planTasks)) });
+    });
+    const { unmount } = await renderUI(<RunSurfaces />);
+    expandCard();
+
+    const plan = screen.getByTestId("run-card-plan");
+
+    expect(plan.textContent).toContain("Progress");
+    expect(plan.textContent).toContain("1/4");
+    // The in-progress row shows the task's active_form, not its subject.
+    expect(plan.textContent).toContain("Creating path: driver port");
+    expect(plan.textContent).not.toContain("Write the driver port");
+    // Free pending rows render expanded; the blocked one stays folded.
+    expect(plan.textContent).toContain("HTTP: creatorResponse");
+    expect(plan.textContent).not.toContain("Docs: openapi.yaml");
+    expect(screen.queryByTestId("plan-completed-items")).toBeNull();
+    expect(screen.queryByTestId("plan-waiting-items")).toBeNull();
+
+    // The completed group expands to its checked rows.
+    expandGroup("plan-completed");
+
+    expect(screen.getByTestId("plan-completed-items").textContent).toContain(
+      "Create path: driver port"
+    );
+    expect(
+      screen.getByTestId("plan-completed-items").querySelector(".lucide-check")
+    ).not.toBeNull();
+
+    // The waiting group expands naming its blockers.
+    expandGroup("plan-waiting");
+
+    const waiting = screen.getByTestId("plan-waiting-items");
+
+    expect(waiting.textContent).toContain("Docs: openapi.yaml");
+    expect(waiting.textContent).toContain("blocked by #2");
+
+    await unmount();
+  });
+
+  it("hides the Progress section when no plan entry exists", async () => {
     await act(async () => {
       useChatStore.setState({ entries: foldOf(runningTask) });
     });
     const { unmount } = await renderUI(<RunSurfaces />);
 
-    const tasks = screen.getByTestId("run-card-tasks");
-
-    expect(tasks.textContent).toContain("Research the provider catalog");
-    expect(tasks.querySelector(".animate-spin")).not.toBeNull();
-
-    // The terminal record replaces the running row in place (the completed
-    // lane sorts first, so the element's done-mark lands on it).
-    await act(async () => {
-      useChatStore.setState({ entries: foldOf(runningTask, completedTask) });
-    });
-
-    expect(
-      screen.getByTestId("run-card-tasks").querySelector(".lucide-check")
-    ).not.toBeNull();
-    expect(screen.getByTestId("run-card-tasks").textContent).not.toContain(
-      "Working"
+    expect(screen.getByTestId("run-card-pill").textContent).not.toContain(
+      "Progress"
     );
+
+    expandCard();
+
+    expect(screen.queryByTestId("run-card-plan")).toBeNull();
+    expect(screen.getByTestId("run-card-tasks")).not.toBeNull();
 
     await unmount();
   });
 
-  it("rebuilds the terminal lane from a replayed transcript alone", async () => {
+  it("hides the Agents section when the session has no task entries", async () => {
     await act(async () => {
-      useChatStore.setState({ entries: foldOf(completedTask) });
+      useChatStore.setState({ entries: foldOf(planEvent(planTasks)) });
     });
     const { unmount } = await renderUI(<RunSurfaces />);
 
+    expect(screen.getByTestId("run-card-pill").textContent).not.toContain(
+      "Agents"
+    );
+
+    expandCard();
+
+    expect(screen.getByTestId("run-card-plan")).not.toBeNull();
+    expect(screen.queryByTestId("run-card-tasks")).toBeNull();
+
+    await unmount();
+  });
+
+  it("shows a running agent's spinner and progress line", async () => {
+    await act(async () => {
+      useChatStore.setState({ entries: foldOf(runningTask) });
+    });
+    const { unmount } = await renderUI(<RunSurfaces />);
+    expandCard();
+
+    const tasks = screen.getByTestId("run-card-tasks");
+
+    expect(tasks.textContent).toContain("Research the provider catalog");
+    expect(tasks.textContent).toContain(
+      "call web_fetch https://docs.example.com"
+    );
+    expect(tasks.textContent).toContain("· 12 steps");
+    expect(tasks.querySelector(".animate-spin")).not.toBeNull();
+
+    await unmount();
+  });
+
+  it("falls back to the Starting placeholder before the first progress report", async () => {
+    await act(async () => {
+      useChatStore.setState({
+        entries: foldOf(
+          taskEvent({
+            task_id: "task-1",
+            description: "Research",
+            status: ToolStatus.ToolStatusRunning,
+            background: true,
+          })
+        ),
+      });
+    });
+    const { unmount } = await renderUI(<RunSurfaces />);
+    expandCard();
+
     expect(screen.getByTestId("run-card-tasks").textContent).toContain(
-      "Research the provider catalog"
+      "Starting…"
     );
 
     await unmount();
   });
 
-  it("names a terminal failed or stopped state in the lane", async () => {
+  it("shows a failed agent's chip and the first line of its result", async () => {
     await act(async () => {
       useChatStore.setState({
         entries: foldOf(
@@ -138,8 +289,28 @@ describe("RunSurfaces (task 3.5)", () => {
             task_id: "task-2",
             description: "Audit",
             status: ToolStatus.ToolStatusFailed,
-            result: "provider unreachable",
-          }),
+            result: "provider unreachable\n    at fetch (index.js:1)",
+          })
+        ),
+      });
+    });
+    const { unmount } = await renderUI(<RunSurfaces />);
+    expandCard();
+
+    const tasks = screen.getByTestId("run-card-tasks");
+
+    expect(tasks.textContent).toContain("failed");
+    expect(tasks.textContent).toContain("provider unreachable");
+    expect(tasks.textContent).not.toContain("at fetch (index.js:1)");
+
+    await unmount();
+  });
+
+  it("marks a completed agent with a check and a stopped one with its chip", async () => {
+    await act(async () => {
+      useChatStore.setState({
+        entries: foldOf(
+          completedTask,
           taskEvent({
             task_id: "task-3",
             description: "Sweep",
@@ -150,109 +321,87 @@ describe("RunSurfaces (task 3.5)", () => {
     });
     const { unmount } = await renderUI(<RunSurfaces />);
 
+    expect(screen.getByTestId("run-card-pill").textContent).toContain("1 done");
+    expect(screen.getByTestId("run-card-pill").textContent).toContain(
+      "1 stopped"
+    );
+
+    expandCard();
+
     const tasks = screen.getByTestId("run-card-tasks");
 
-    expect(tasks.textContent).toContain("failed");
+    expect(tasks.querySelector(".lucide-check")).not.toBeNull();
     expect(tasks.textContent).toContain("stopped");
 
     await unmount();
   });
 
-  it("shows the plan lane with the failed item's state in its label", async () => {
+  it("a terminal record replaces the running row in place", async () => {
     await act(async () => {
-      useChatStore.setState({
-        entries: foldOf(
-          todoWriteEvent({
-            status: ToolStatus.ToolStatusCompleted,
-            result: fourItemPlan,
-          })
-        ),
-      });
+      useChatStore.setState({ entries: foldOf(runningTask) });
     });
     const { unmount } = await renderUI(<RunSurfaces />);
+    expandCard();
 
-    const plan = screen.getByTestId("run-card-plan");
+    expect(
+      screen.getByTestId("run-card-tasks").querySelector(".animate-spin")
+    ).not.toBeNull();
 
-    expect(plan.textContent).toContain("Read the config");
-    // The element cannot draw a failed mark: the state rides the label.
-    expect(plan.textContent).toContain("Call the provider (failed: offline)");
-    expect(plan.textContent).toContain("1 of 4");
+    await act(async () => {
+      useChatStore.setState({
+        entries: foldOf(runningTask, completedTask),
+      });
+    });
+
+    const tasks = screen.getByTestId("run-card-tasks");
+
+    expect(tasks.querySelector(".lucide-check")).not.toBeNull();
+    expect(tasks.querySelector(".animate-spin")).toBeNull();
+    expect(screen.getByTestId("run-card-pill").textContent).toContain("1 done");
 
     await unmount();
   });
 
-  it("updates the checklist live mid-turn, latest write wins", async () => {
-    const runningWrite = todoWriteEvent({
-      call_id: "call-1",
-      status: ToolStatus.ToolStatusRunning,
-      arguments: planJSON([
-        { key: "a", text: "Old step", status: "pending" },
-        { key: "b", text: "Other step", status: "active" },
-      ]),
-    });
-
+  it("a second plan snapshot replaces the first in place", async () => {
     await act(async () => {
-      useChatStore.setState({ entries: foldOf(runningWrite) });
+      useChatStore.setState({ entries: foldOf(planEvent(planTasks)) });
     });
     const { unmount } = await renderUI(<RunSurfaces />);
+    expandCard();
 
-    expect(screen.getByTestId("run-card-plan").textContent).toContain(
-      "Old step"
-    );
+    expect(screen.getByTestId("run-card-plan").textContent).toContain("1/4");
 
     await act(async () => {
       useChatStore.setState({
         entries: foldOf(
-          runningWrite,
-          todoWriteEvent({
-            call_id: "call-1",
-            status: ToolStatus.ToolStatusCompleted,
-            result: fourItemPlan,
-          })
+          planEvent(planTasks),
+          planEvent([
+            {
+              id: "1",
+              subject: "Create path: driver port",
+              status: "completed",
+            },
+            { id: "2", subject: "Write the driver port", status: "completed" },
+            {
+              id: "3",
+              subject: "HTTP: creatorResponse",
+              status: "in_progress",
+            },
+            {
+              id: "4",
+              subject: "Docs: openapi.yaml",
+              status: "pending",
+              blocked_by: ["3"],
+            },
+            { id: "5", subject: "Ship it", status: "pending" },
+          ])
         ),
       });
     });
 
-    expect(screen.getByTestId("run-card-plan").textContent).toContain(
-      "Read the config"
-    );
-    expect(screen.queryByTestId("run-card-tasks")).toBeNull();
+    expect(screen.getByTestId("run-card-plan").textContent).toContain("2/5");
 
     await unmount();
-  });
-
-  it("hides entirely when the plan clears or the latest write failed", async () => {
-    await act(async () => {
-      useChatStore.setState({
-        entries: foldOf(
-          todoWriteEvent({
-            status: ToolStatus.ToolStatusCompleted,
-            result: planJSON([]),
-          })
-        ),
-      });
-    });
-    const { unmount } = await renderUI(<RunSurfaces />);
-
-    expect(screen.queryByTestId("run-card")).toBeNull();
-
-    await unmount();
-
-    await act(async () => {
-      useChatStore.setState({
-        entries: foldOf(
-          todoWriteEvent({
-            status: ToolStatus.ToolStatusFailed,
-            result: "todo_write: item 1: key is required",
-          })
-        ),
-      });
-    });
-    const { unmount: unmount2 } = await renderUI(<RunSurfaces />);
-
-    expect(screen.queryByTestId("run-card")).toBeNull();
-
-    await unmount2();
   });
 
   it("anchors to the viewport's relative wrapper, not the chat column", async () => {
