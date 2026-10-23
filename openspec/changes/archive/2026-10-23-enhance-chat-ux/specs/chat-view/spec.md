@@ -6,6 +6,12 @@
 
 The chat view SHALL render user messages, assistant messages, reasoning bubbles, tool-call cards (whose anatomy, states, bodies, and folding are specified by `chat-tool-cards`), and compaction markers in chronological order. Streaming output MUST be appended live during a turn.
 
+Assistant message text SHALL render as GitHub-flavored markdown: pipe tables render as tables, task-list items render with their checked state, strikethrough and autolinked addresses render as such, and ordered lists render with their numbers. Raw markdown syntax MUST NOT be shown for any of these constructs once the message has completed.
+
+While a turn is in flight the transcript SHALL show a turn-activity indicator at the tail of the running assistant message: a typing indicator before the first token arrives, and once a tool is running, a live status line naming the running tool and its elapsed time. The indicator SHALL disappear when the turn reaches a terminal outcome and MUST honor reduced motion by rendering as static text.
+
+The transcript SHALL present the agent's activity and its answer as one flat reading surface rather than as nested cards. Reasoning SHALL render as a single quiet disclosure line — a brain glyph, the word "Reasoning", the elapsed time when the group carries one, and a disclosure control — that opens into an indented aside with a bounded scroll region; a reasoning group MUST NOT be enclosed in a bordered or filled surface of its own. A run of fewer than four consecutive tool calls SHALL render each call as its own line in the transcript flow, in message order, and MUST NOT be collapsed behind a group disclosure. Every assistant turn SHALL be separated from the one before it by a horizontal rule, and the assistant's answer and the rows above it SHALL share one left edge and one column measure.
+
 The transcript SHALL follow its live tail: while the reader is at the bottom, newly appended entries and streaming text keep the transcript pinned to the bottom. A reader's own scroll away from the bottom SHALL pause following; following SHALL resume when the reader scrolls back to the bottom or activates a jump-to-latest control, which SHALL be visible only while following is paused. Programmatic scrolling MUST NOT change whether the reader is following. Sending a message SHALL bring the transcript to the bottom so the reply starts in view. Expanding or collapsing a card or bubble inside the transcript MUST NOT move the reader's viewport.
 
 #### Scenario: Tool call visible in transcript
@@ -17,6 +23,46 @@ The transcript SHALL follow its live tail: while the reader is at the bottom, ne
 
 - **WHEN** an agent is responding
 - **THEN** partial text appears in the transcript as it streams
+
+#### Scenario: Table renders as a table
+
+- **WHEN** a completed assistant message contains a pipe-delimited markdown table
+- **THEN** the transcript shows a table with header and body rows, not the raw pipe text
+
+#### Scenario: Ordered list keeps its numbers
+
+- **WHEN** a completed assistant message contains an ordered list
+- **THEN** each item renders with its number in sequence
+
+#### Scenario: Task list shows checked state
+
+- **WHEN** a completed assistant message contains task-list items, some checked
+- **THEN** each item renders with a checkbox reflecting its checked state
+
+#### Scenario: Typing indicator before the first token
+
+- **WHEN** the user has sent a message and the agent has not yet produced any output
+- **THEN** the transcript shows a typing indicator where the reply will appear
+
+#### Scenario: Status line names the running tool
+
+- **WHEN** a tool call is running during a turn
+- **THEN** the transcript shows a status line naming that tool with a live elapsed time, which disappears when the turn ends
+
+#### Scenario: Reasoning renders as a disclosure line
+
+- **WHEN** a turn contains reasoning
+- **THEN** the transcript shows the reasoning as one muted line carrying a brain glyph, the word "Reasoning", and a disclosure control, with no bordered surface around it, and activating the control reveals the reasoning indented beneath the line
+
+#### Scenario: Short tool run renders inline
+
+- **WHEN** a turn contains fewer than four consecutive tool calls
+- **THEN** each call appears in the transcript flow as its own line, in message order, with no group disclosure standing in for them
+
+#### Scenario: Turns are separated by a rule
+
+- **WHEN** the transcript renders more than one assistant turn
+- **THEN** a horizontal rule separates each assistant turn from the one before it, and the answer and the rows above it share one left edge and one column measure
 
 #### Scenario: Transcript follows a streaming reply
 
@@ -197,8 +243,6 @@ no usage has been reported.
 - **WHEN** the session has no reported usage yet
 - **THEN** no context indicator is shown and no popover can open
 
-## ADDED Requirements
-
 ### Requirement: Message copy action
 
 Each assistant message SHALL offer a copy action, revealed on hover or focus
@@ -225,6 +269,8 @@ toggle. Code SHALL be syntax highlighted once its message has finished
 streaming and SHALL render as plain monospace text while streaming. Both the
 plain and highlighted forms SHALL be legible in the light and dark themes.
 
+A fenced block whose language is `mermaid` SHALL render as a diagram once its message has finished streaming and SHALL show its source as plain text while streaming. When the diagram source does not parse, the block SHALL show the source with a quiet failure note rather than an empty or broken area. A rendered diagram SHALL re-render to match the active theme when the theme changes. Diagram rendering MUST NOT load its rendering code until the first diagram is shown.
+
 #### Scenario: Completed message highlights its code
 
 - **WHEN** an assistant message containing a fenced code block finishes
@@ -236,6 +282,26 @@ plain and highlighted forms SHALL be legible in the light and dark themes.
 
 - **WHEN** a fenced code block is still arriving
 - **THEN** it renders as plain monospace text without highlighting
+
+#### Scenario: Mermaid block renders as a diagram
+
+- **WHEN** an assistant message containing a fenced `mermaid` block finishes streaming
+- **THEN** the block renders the diagram in place of the source
+
+#### Scenario: Mermaid source while streaming
+
+- **WHEN** a fenced `mermaid` block is still arriving
+- **THEN** the block shows the source as plain text and no diagram is attempted
+
+#### Scenario: Unparseable diagram falls back
+
+- **WHEN** a completed `mermaid` block's source does not parse
+- **THEN** the block shows the source text with a quiet failure note and the rest of the message renders normally
+
+#### Scenario: Diagram follows the theme
+
+- **WHEN** the user switches theme while a rendered diagram is visible
+- **THEN** the diagram re-renders in the new theme's colors
 
 ### Requirement: Streaming-safe markdown
 

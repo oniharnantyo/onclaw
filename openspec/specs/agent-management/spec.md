@@ -116,7 +116,7 @@ confirmation and MUST NOT delete the agent's past session history.
 
 ### Requirement: Theme parity
 
-The agents menu SHALL render correctly in both the light and dark daisyUI themes, including cards, avatars, and all configuration sections.
+The agents menu SHALL render correctly in both the light and dark app themes, including cards, avatars, and all configuration sections.
 
 #### Scenario: Theme switch
 

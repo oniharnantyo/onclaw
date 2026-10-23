@@ -8,7 +8,7 @@ Let agents delegate work to a general-purpose subagent through the `agent` tool,
 
 ### Requirement: Delegation via the agent tool
 
-An agent with subagents enabled SHALL have an `agent` tool that delegates a task to a general-purpose subagent: a clone of the parent's persona documents, model, and tool surface with a fresh context, which cannot itself delegate. The subagent's final answer SHALL return to the parent as the tool result.
+An agent with subagents enabled SHALL have an `agent` tool that delegates a task to a general-purpose subagent: a clone of the parent's persona documents, model, and tool surface with a fresh context, which cannot itself delegate. The tool SHALL accept `subagent_type`, `prompt`, and `description` as its arguments, where `prompt` carries the delegated task text. A foreground delegation's tool result SHALL be the subagent's final answer; a background delegation's tool result SHALL acknowledge the started run and identify the created task.
 
 #### Scenario: Delegation returns a result
 
@@ -31,7 +31,7 @@ Users SHALL be able to enable or disable subagents per agent; a disabled agent's
 
 ### Requirement: Background lane
 
-When subagents are enabled, the `agent` tool SHALL support running a delegation in the background: the parent can continue its own work and later collect output via `task_output` or cancel via `task_stop`. Task identifiers SHALL be unique within the run.
+When subagents are enabled, the `agent` tool SHALL support running a delegation in the background via its `run_in_background` argument: the parent can continue its own work and later collect output via `task_output` or cancel via `task_stop`. Task identifiers SHALL be unique within the run. A delegation SHALL register its task record when its run starts, whether it executes in the foreground or the background lane.
 
 #### Scenario: Parent continues while a task runs
 
@@ -47,6 +47,11 @@ When subagents are enabled, the `agent` tool SHALL support running a delegation 
 
 - **WHEN** the parent calls task_stop for a running task
 - **THEN** the subagent run is cancelled and reported as stopped
+
+#### Scenario: Task record exists once the run starts
+
+- **WHEN** a delegation's run begins, in either lane
+- **THEN** its task record is present on the parent transcript from that moment, with the identifier the control tools address
 
 ### Requirement: Child transcripts
 

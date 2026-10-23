@@ -10,6 +10,8 @@ Execute agent conversations on the eino runtime: select a configured provider an
 
 The runtime SHALL execute turns through providers configured in settings (each with its API credential and available models). An agent MUST reference a configured provider and model to run. Selecting an unconfigured or unreachable provider MUST surface a clear error to the chat UI instead of silently failing.
 
+Each turn SHALL execute on the provider's native agentic message protocol — content blocks covering reasoning, multimodal input, and tool calls — rather than a legacy flat message schema. A provider whose endpoint does not implement the protocol its family requires SHALL be surfaced as unavailable for the turn with a clear reason, not attempted and failed mid-turn.
+
 Each turn SHALL resolve its effective model from the session's model override when one is set, otherwise the agent's configured model, and SHALL apply the session's effective reasoning effort — session override, else agent default, else none — through the provider's native reasoning parameter whenever the model supports one. A model override MUST be rejected with a clear per-turn error when the provider exposes a model listing that does not include it (providers that allow free-form ids may accept unknown models). An effort MUST be rejected with a clear per-turn error when the selected model's capability set does not include it, rather than being silently dropped or sent anyway.
 
 #### Scenario: Turn on a configured provider
@@ -36,6 +38,11 @@ Each turn SHALL resolve its effective model from the session's model override wh
 
 - **WHEN** a session's effort is not in the selected model's supported set
 - **THEN** the turn fails with a clear error event in the transcript instead of running at some other effort
+
+#### Scenario: Endpoint without the required protocol is unavailable
+
+- **WHEN** an agent's configured provider endpoint does not implement the agentic protocol its provider family requires
+- **THEN** the turn fails with a clear unavailability reason before any model request is made
 
 ### Requirement: Streamed turns
 
@@ -141,3 +148,67 @@ Checkpoint compaction remains the persisted cross-turn mechanism. Additionally, 
 
 - **WHEN** a session's context crosses the compaction threshold between turns
 - **THEN** the runtime compacts into a persisted checkpoint exactly as before, regardless of any in-run summary
+
+### Requirement: In-flight turn state query
+
+The runtime SHALL expose, per session, whether a turn is in flight and the
+in-flight turn's identifier, through a bound call the chat UI can consult. A
+turn parked on a pending approval SHALL report as in flight. A session with
+no turn in flight SHALL report not busy; reporting state for an unknown
+session SHALL be safe and read as not busy.
+
+#### Scenario: Query during a turn
+
+- **WHEN** the turn state of a session with a running turn is queried
+- **THEN** the answer reports the session busy and carries that turn's
+  identifier
+
+#### Scenario: Approval-parked turn reports in flight
+
+- **WHEN** the turn state of a session parked on a pending approval is
+  queried
+- **THEN** the answer reports the session busy with the parked turn's
+  identifier
+
+#### Scenario: Idle session reports not busy
+
+- **WHEN** the turn state of a session with no turn in flight is queried
+- **THEN** the answer reports the session not busy
+
+### Requirement: Subscribe-time live-state catch-up
+
+When a session's live event stream is subscribed while one of its turns is
+in flight, the runtime SHALL deliver the turn's in-flight state to the new
+subscriber before any subsequent live events: the model call's partial
+output streamed so far and the tool calls currently executing, announced
+with their identifiers and arguments. These catch-up events are live-only —
+MUST NOT be persisted to the transcript — and a reloaded transcript MUST
+show only the durable events. Catch-up state MUST reconcile with the
+turn's own records: a running tool's terminal record finalizes the
+reconstructed row, and the turn's durable assistant message lands exactly
+once. Subscribing to a session with no turn in flight SHALL deliver no
+catch-up events.
+
+#### Scenario: Late subscriber sees streamed-so-far text
+
+- **WHEN** a session is subscribed while a model call is mid-stream
+- **THEN** the new subscriber receives the partial output streamed so far
+  before the next live delta, and the turn's terminal transcript is not
+  duplicated by the reconstruction
+
+#### Scenario: Late subscriber sees the running tool
+
+- **WHEN** a session is subscribed while a tool call is executing
+- **THEN** the new subscriber receives that call as a running announcement
+  carrying its identifier, and the call's terminal record later finalizes it
+
+#### Scenario: Catch-up is not persisted
+
+- **WHEN** a session that received catch-up events is reloaded later
+- **THEN** the transcript contains only the durable events — no
+  reconstruction rows
+
+#### Scenario: Subscribe to an idle session
+
+- **WHEN** a session with no turn in flight is subscribed
+- **THEN** no catch-up events are delivered and the stream behaves as before

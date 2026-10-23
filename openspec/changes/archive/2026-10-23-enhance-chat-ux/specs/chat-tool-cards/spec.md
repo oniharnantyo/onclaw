@@ -4,11 +4,13 @@
 
 Render each tool call in the transcript as a card that says what the tool did in plain words, shows its arguments and result on demand, and — for the tools the app ships — presents an interactive body shaped to the tool: a file diff for edits, code previews for files, a terminal block for shell commands, result cards for searches, element tables and screenshots for the browser, and a plan checklist, with an honest fallback for anything unknown.
 
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Tool card anatomy
 
 A tool call SHALL render as a card with a collapsed header and an expandable body. The header SHALL show the tool's icon and display name (falling back to the raw tool name), a one-line sentence for tools the app ships — stating intent while the call runs and outcome once it ends — the call's latency when a duration is known, and a disclosure control. The expanded body SHALL present labeled arguments and result sections; output longer than ten lines SHALL be clamped behind a show-all control; and a raw toggle SHALL show the arguments and result exactly as delivered. A card MUST NOT show a sentence for a tool it does not know, MUST NOT show a latency it does not have, and SHALL render legibly in both the light and dark themes.
+
+The card's header SHALL carry no bordered or filled surface of its own: it renders as a quiet line whose tool name recedes behind the sentence, so the payload the sentence names is the brightest thing on the line. The expanded body SHALL be revealed beneath the header under a hairline rail on the column's left edge, with the body's content inset from that rail, and the card as a whole SHALL NOT be enclosed in a rounded, bordered, or filled panel. The header SHALL remain a disclosure control that opens and closes the body, and the body SHALL NOT be mounted while the card is collapsed.
 
 #### Scenario: Collapsed card for a known tool
 
@@ -35,9 +37,16 @@ A tool call SHALL render as a card with a collapsed header and an expandable bod
 - **WHEN** a tool record persisted before durations were recorded is displayed
 - **THEN** the header shows no latency
 
+#### Scenario: Card header is a quiet line
+
+- **WHEN** a tool call is displayed in the transcript
+- **THEN** its header carries no bordered or filled surface, its tool name recedes behind the sentence naming the target, and the body is absent until the disclosure control is activated
+
 ### Requirement: Tool call states
 
 A card SHALL reflect its call's state: while running it SHALL indicate activity on its label without a spinning icon, show a live elapsed time, and present the arguments already known; when completed it SHALL show the outcome and the result; when failed it SHALL carry failure styling with the error text available. A card SHALL update in place when the same call reaches its terminal state and MUST NOT be duplicated. Motion used to indicate activity MUST be disabled when the user prefers reduced motion.
+
+A failed call's failure styling SHALL be carried by the header's failure chip and by the danger treatment on the line, not by a bordered surface around the card.
 
 #### Scenario: Running card completes in place
 
@@ -58,13 +67,13 @@ A card SHALL reflect its call's state: while running it SHALL indicate activity 
 
 For the tools the app ships, the expanded body SHALL be shaped to the tool rather than a generic text dump:
 
-- An edit-file call SHALL show a unified line diff of the replaced text against its replacement, with line numbers, added and removed rows distinguished by color in both themes, unchanged runs collapsed to a few lines of context that can be expanded, and a marker when all occurrences were replaced.
+- An edit-file call SHALL show a header naming the edited file with the counts of added and removed lines, followed by a unified line diff of the replaced text against its replacement, with line numbers, added and removed rows distinguished by color in both themes, unchanged runs collapsed to a few lines of context that can be expanded, and a marker when all occurrences were replaced.
 - A write-file call SHALL show the written content as a code preview with its line count.
 - A read-file call SHALL show the lines that were read as a numbered code preview.
-- A shell call SHALL show the command as a terminal-styled block followed by its output, with a failed exit styled as a failure.
+- A shell call SHALL show the command and its output as a terminal block that states the exit status once the call ends — success, a failed exit with its code, a timeout, or truncated output — and the call's duration when known; the block SHALL offer a copy control for the output and SHALL show a cursor at the output's tail while the call is still running. A failed exit, a timeout, and truncation SHALL each be styled as a distinct state; a call that produced no output SHALL say so rather than show an empty block.
 - A grep call SHALL list matches grouped by file with the pattern highlighted in each line.
 - Glob and list-files calls SHALL show the returned paths as a file list.
-- A web-search call SHALL show each result as a card with its title as a link, the site's hostname, and the snippet.
+- A web-search call SHALL show the query as a pill, a searching state while the call runs, a line stating how many sources were read once results arrive, and each result as a card with its title as a link, the site's hostname, and the snippet, with results landing one after another rather than all at once; staggered arrival MUST be disabled under reduced motion.
 - A web-fetch call SHALL show the fetched address and the readable text, clamped.
 - A browser navigation or action call SHALL show the page address and title with the action's outcome; a snapshot SHALL render the page's elements as a table of reference, role, and name.
 - A browser screenshot call SHALL show the captured image as a thumbnail that can be enlarged.
@@ -76,7 +85,7 @@ Every file path shown in a body SHALL open that file's preview in the right pane
 #### Scenario: Edit renders a diff
 
 - **WHEN** an edit-file call completes
-- **THEN** its body shows removed and added lines with line numbers and color, and unchanged surrounding lines are collapsed to brief context that the user can expand
+- **THEN** its body shows a header with the file name and the added and removed counts, then removed and added lines with line numbers and color, with unchanged surrounding lines collapsed to brief context that the user can expand
 
 #### Scenario: Written file preview
 
@@ -85,8 +94,23 @@ Every file path shown in a body SHALL open that file's preview in the right pane
 
 #### Scenario: Shell command block
 
-- **WHEN** a shell call completes
-- **THEN** its body shows the command in a terminal-styled block followed by the command's output
+- **WHEN** a shell call completes successfully
+- **THEN** its body shows the command in a terminal block followed by the command's output, a success status, and the call's duration
+
+#### Scenario: Shell failure shows the exit code
+
+- **WHEN** a shell call ends with a non-zero exit
+- **THEN** the terminal block states the exit code in a failure state and the output remains readable
+
+#### Scenario: Shell timeout and truncation are distinct states
+
+- **WHEN** a shell call was stopped for exceeding its time limit, or its output was cut for size
+- **THEN** the terminal block states the timeout or the truncation as its own status, distinct from a failed exit
+
+#### Scenario: Shell block while running
+
+- **WHEN** a shell call is still running
+- **THEN** the terminal block shows the command with a cursor at the output's tail and no exit status yet
 
 #### Scenario: Grep matches grouped by file
 
@@ -96,7 +120,12 @@ Every file path shown in a body SHALL open that file's preview in the right pane
 #### Scenario: Search results as cards
 
 - **WHEN** a web-search call returns results
-- **THEN** each result renders as a card with a linked title, the hostname, and the snippet
+- **THEN** the body shows the query pill, a line stating how many sources were read, and each result as a card with a linked title, the hostname, and the snippet
+
+#### Scenario: Search shows a searching state
+
+- **WHEN** a web-search call is still running
+- **THEN** the body shows the query pill with a searching state and no results yet
 
 #### Scenario: Browser snapshot table
 
@@ -139,17 +168,22 @@ A tool the app does not ship, or a shipped tool whose arguments or result cannot
 
 ### Requirement: Heavy-turn folding
 
-When a turn produces four or more consecutive tool and task calls, the transcript SHALL fold them behind one summary row stating the number of steps and the number of distinct files changed by completed edit and write calls. While the turn is still running, the summary SHALL name the tool currently running. Activating the summary SHALL reveal the individual cards nested beneath it. A pending approval MUST NOT be folded — it splits the run so it stays actionable. A failed call inside a folded run SHALL tint the summary with failure styling and reveal the cards. Repeated plan-write calls within one turn SHALL collapse to a "plan updated" line except the last, which renders its snapshot.
+When a turn produces four or more consecutive tool and task calls, the transcript SHALL fold them behind one summary row stating the number of steps and the number of distinct files changed by completed edit and write calls. While the turn is still running, the summary SHALL name the tool currently running. Activating the summary SHALL reveal the run as compact trace rows — one per call, each with the tool's icon, its verb, and a chip naming its target — followed by a trailing row of per-file change statistics from the completed edit and write calls; while the turn is running the last trace row SHALL shimmer, disabled under reduced motion. Activating a trace row SHALL open that call's full card beneath it. A pending approval MUST NOT be folded — it splits the run so it stays actionable. A failed call inside a folded run SHALL tint the summary with failure styling and reveal the rows. Repeated plan-write calls within one turn SHALL collapse to a "plan updated" line except the last, which renders its snapshot.
 
 #### Scenario: Four calls fold
 
 - **WHEN** a turn completes with five consecutive tool calls, two of which edited distinct files
-- **THEN** the transcript shows one summary row reading five steps and two files changed, and activating it reveals the five cards
+- **THEN** the transcript shows one summary row reading five steps and two files changed, and activating it reveals five trace rows and a change-statistics row naming the two files
+
+#### Scenario: Trace row opens its card
+
+- **WHEN** the user activates a trace row in a revealed run
+- **THEN** that call's full card opens beneath the row with its arguments and result
 
 #### Scenario: Running turn names its current tool
 
 - **WHEN** a turn with four or more calls is still running
-- **THEN** the summary row names the tool currently running
+- **THEN** the summary row names the tool currently running, and when revealed the last trace row shimmers
 
 #### Scenario: Pending approval stays visible
 
@@ -159,7 +193,7 @@ When a turn produces four or more consecutive tool and task calls, the transcrip
 #### Scenario: Failure reveals the run
 
 - **WHEN** one call in a folded run fails
-- **THEN** the summary carries failure styling and the cards are revealed
+- **THEN** the summary carries failure styling and the trace rows are revealed with the failed row tinted
 
 ### Requirement: Collapse state persistence and auto-open
 

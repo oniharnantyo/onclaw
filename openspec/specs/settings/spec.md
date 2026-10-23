@@ -250,7 +250,7 @@ The settings menu SHALL let the user add, edit, and remove MCP server definition
 
 ### Requirement: Theme parity
 
-The settings menu SHALL render correctly in both the light and dark daisyUI themes across all panes, forms, and lists.
+The settings menu SHALL render correctly in both the light and dark app themes across all panes, forms, and lists.
 
 #### Scenario: Theme switch
 
