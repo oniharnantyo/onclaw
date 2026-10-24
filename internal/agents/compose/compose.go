@@ -24,7 +24,10 @@ import (
 )
 
 // DefaultMaxIterations caps how many tool-call iterations one turn may take.
-const DefaultMaxIterations = 25
+// High enough for deep serial research turns (dozens of single-call steps),
+// low enough that a stuck loop ends in the visible cap notice instead of
+// burning unbounded tokens.
+const DefaultMaxIterations = 100
 
 // DefaultMaxLengthForTrunc is the default maximum character length of a tool
 // result before truncation and offload occur (design D2).
