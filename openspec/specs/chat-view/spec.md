@@ -309,13 +309,16 @@ From any assistant message the user SHALL be able to regenerate the answer: a ne
 
 ### Requirement: Chat right sidebar
 
-The chat view SHALL provide a right sidebar showing the current session's
-identity: the agent (with its avatar) and the session's effective model — its
+The chat view SHALL provide a single right bar showing the current session's
+identity — the agent (with its avatar) and the session's effective model: its
 override when set, otherwise the agent's configured model, with its effort
-when set. The context-window usage indicator SHALL live on the composer's
-rail, not in the sidebar. Collapsing the sidebar MUST NOT interrupt an
-in-flight turn, and the docked sidebar SHALL be drag-resizable by its left
-edge with the width persisted across restarts.
+when set — whenever the bar holds no preview. Opening a preview SHALL replace
+the identity view in place: the identity and the preview MUST NOT render as
+separate columns, and closing the last preview SHALL restore the identity. The
+context-window usage indicator SHALL live on the composer's rail, not in the
+bar. Collapsing the bar MUST NOT interrupt an in-flight turn, and the docked
+bar SHALL be drag-resizable by its left edge with one width persisted across
+restarts.
 
 Activating the context indicator SHALL open a breakdown popover above the
 composer showing: the used total against the limit, a stacked bar and legend
@@ -338,7 +341,7 @@ no usage has been reported.
 
 - **WHEN** the user picks a session-level model different from the agent's
   default
-- **THEN** the sidebar shows the session's effective model, and the context
+- **THEN** the bar shows the session's effective model, and the context
   indicator uses that model's context limit
 
 #### Scenario: Context breakdown popover
