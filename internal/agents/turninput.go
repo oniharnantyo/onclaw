@@ -5,9 +5,11 @@ import (
 	"encoding/base64"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/cloudwego/eino/schema"
 
+	"github.com/oniharnantyo/buddies/internal/agents/hooks"
 	"github.com/oniharnantyo/buddies/internal/attachments"
 	"github.com/oniharnantyo/buddies/internal/sessions"
 )
@@ -79,7 +81,8 @@ func (tc turnComposer) supportsImageInput() bool {
 }
 
 // assembleTurnInput builds a turn's model input and system instruction: the
-// instruction is the composed persona plus the compaction summary — the ADK
+// instruction is the composed persona, the operating contract, the compaction
+// summary, and the environment block — the ADK
 // agent presents it as the system message — and the input messages are the
 // replayed user/assistant messages after the checkpoint boundary (cut at
 // req.replayBefore for a regeneration) followed by the new user input,
@@ -87,7 +90,8 @@ func (tc turnComposer) supportsImageInput() bool {
 // the instruction so capability middlewares can append their own guidance to
 // it.)
 func assembleTurnInput(p persona, checkpoint sessions.Checkpoint, events []sessions.Event, req turnRequest, tc turnComposer) (string, []*schema.AgenticMessage, error) {
-	instruction := composeSystem(p.text(), checkpoint.Summary)
+	instruction := composeSystem(p.text(), checkpoint.Summary) +
+		"\n\n" + environmentBlock(tc.providerType, tc.model, req.origin, now())
 	msgs := make([]*schema.AgenticMessage, 0, 2)
 	for _, ev := range events {
 		if ev.Seq <= checkpoint.UpToSeq {
@@ -118,6 +122,32 @@ func assembleTurnInput(p persona, checkpoint sessions.Checkpoint, events []sessi
 	}
 	msgs = append(msgs, fresh)
 	return instruction, msgs, nil
+}
+
+// environmentBlock composes the per-turn environment block (design D4; spec
+// agent-prompts "Turn environment block"): the effective provider and model,
+// the current date, the turn's origin, and whether the user is present. It
+// rides last in the system context, after the compaction summary — the mode
+// signal sits closest to the fresh user input, and the contract's "Operating
+// modes" section tells the model to pick its mode from it. It deliberately
+// does not restate the workspace mount: the filesystem middleware appends its
+// own guidance, and duplication would invite drift between two sources of the
+// same fact.
+func environmentBlock(providerType, model, origin string, at time.Time) string {
+	if origin == "" {
+		origin = hooks.OriginUser
+	}
+	presence := "the user is present (live chat)"
+	if origin != hooks.OriginUser {
+		presence = "the user is not present (autonomous run)"
+	}
+	return strings.Join([]string{
+		"# Environment",
+		"",
+		fmt.Sprintf("Provider/model: %s / %s", providerType, model),
+		"Current date: " + at.Format("2006-01-02"),
+		fmt.Sprintf("Origin: %s — %s", origin, presence),
+	}, "\n")
 }
 
 // buildUserTurnMessage builds one user message for the model: plain text

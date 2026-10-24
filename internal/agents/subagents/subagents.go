@@ -80,9 +80,12 @@ func New(ctx context.Context, cfg *Config) (*Capabilities, error) {
 	childTools := append([]tool.BaseTool(nil), cfg.Tools...)
 	childTools = append(childTools, cfg.MCPTools...)
 
+	// The child gets the caller's persona plus the reduced operating notes
+	// (design D5, spec agent-prompts "Subagent child operating notes") — never
+	// the full contract's user-facing mode guidance.
 	childCfg := &compose.ComposeConfig{
 		Name:          GeneralPurposeSubagentName,
-		Instruction:   cfg.Instruction,
+		Instruction:   childInstruction(cfg.Instruction),
 		ChatModel:     cfg.Model,
 		Tools:         childTools,
 		MaxIterations: ChildIterationCap,

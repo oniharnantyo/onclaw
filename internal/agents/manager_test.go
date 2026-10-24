@@ -74,7 +74,13 @@ func TestManager_Send_MultiTurnContext(t *testing.T) {
 	require.Len(t, calls, 1)
 	require.Len(t, calls[0], 2)
 	require.Equal(t, schema.System, calls[0][0].Role)
-	require.Equal(t, identity1+"\n\n"+soul1+"\n\n"+bootstrap1, calls[0][0].Content)
+	// The persona leads the system message and the operating contract follows
+	// it (design D2) — asserted by prefix/contains so later additions to the
+	// composed context do not break the pin.
+	sys := calls[0][0].Content
+	require.True(t, strings.HasPrefix(sys, identity1+"\n\n"+soul1+"\n\n"+bootstrap1+"\n\n"),
+		"the composed persona leads as the system message")
+	require.Contains(t, sys, operatingContract)
 	require.Equal(t, schema.User, calls[0][1].Role)
 	require.Equal(t, "hello", calls[0][1].Content)
 
@@ -97,8 +103,10 @@ func TestManager_Send_MultiTurnContext(t *testing.T) {
 	require.Equal(t, []string{
 		string(schema.System), string(schema.User), string(schema.Assistant), string(schema.User),
 	}, roles)
-	require.Equal(t, identity1+"\n\n"+soul2+"\n\n"+bootstrap1, calls[1][0].Content,
+	sys2 := calls[1][0].Content
+	require.True(t, strings.HasPrefix(sys2, identity1+"\n\n"+soul2+"\n\n"+bootstrap1+"\n\n"),
 		"the persona is composed fresh per turn")
+	require.Contains(t, sys2, operatingContract, "the operating contract composes on every turn")
 	require.Equal(t, "hello", calls[1][1].Content)
 	require.Equal(t, "first answer", calls[1][2].Content)
 	require.Equal(t, "did I say hello again?", calls[1][3].Content)
@@ -122,13 +130,16 @@ func TestManager_Send_MultiTurnContext(t *testing.T) {
 // TestManager_Send_MissingDocumentsStillChats covers the spec's degradation
 // scenario: an agent whose persona documents are absent (a failed
 // generation, an empty workspace) still runs turns — the model is called
-// with the bare session context and the transcript records it normally.
+// with the operating contract leading the system message, the environment
+// block behind it and no persona text anywhere (spec
+// agent-prompts "Contract present without persona documents") and the
+// transcript records it normally.
 func TestManager_Send_MissingDocumentsStillChats(t *testing.T) {
 	f := newFixture(t, func(input []*schema.Message) fakeReply {
-		// Reachable only when no system persona is composed from the absent
-		// documents.
+		// Reachable only when the absent documents compose no persona text:
+		// the system message leads with the operating contract.
 		for _, msg := range input {
-			if msg.Role == schema.System {
+			if msg.Role == schema.System && !strings.HasPrefix(msg.Content, operatingContract) {
 				return fakeReply{err: errors.New("persona must be absent")}
 			}
 		}
@@ -142,8 +153,17 @@ func TestManager_Send_MissingDocumentsStillChats(t *testing.T) {
 
 	calls := f.model.calls()
 	require.Len(t, calls, 1)
-	require.Len(t, calls[0], 1, "no system message may ride an absent persona")
-	require.Equal(t, schema.User, calls[0][0].Role)
+	require.Len(t, calls[0], 2, "the operating contract rides an absent persona as the system message")
+	require.Equal(t, schema.System, calls[0][0].Role)
+	// The contract leads and the environment block follows (design D4) —
+	// asserted by prefix/contains so later additions to the composed
+	// context do not break the pin.
+	sys := calls[0][0].Content
+	require.True(t, strings.HasPrefix(sys, operatingContract),
+		"the operating contract leads an absent persona's system message")
+	require.Contains(t, sys, "# Environment",
+		"the environment block follows the contract")
+	require.Equal(t, schema.User, calls[0][1].Role)
 
 	events, err := f.sessions.Events(t.Context(), sess.ID)
 	require.NoError(t, err)

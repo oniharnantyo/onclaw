@@ -61,12 +61,13 @@ func TestRegenerate_RunsANewTurnOnTheOriginalPrompt(t *testing.T) {
 	require.GreaterOrEqual(t, marked, 2, "the reply (assistant message + completion) is marked")
 
 	// The model re-received the original prompt as fresh input, and the
-	// replayed context cut before the old answer.
+	// replayed context cut before the old answer — no assistant message is
+	// replayed into a regeneration's input.
 	input := f.model.calls()[1]
 	require.Equal(t, schema.User, input[len(input)-1].Role)
 	require.Equal(t, "the original question", input[len(input)-1].Content)
 	for _, msg := range input {
-		require.NotContains(t, msg.Content, "answer", "the old answer is not in the fresh attempt's context")
+		require.NotEqual(t, schema.Assistant, msg.Role, "the old answer is not in the fresh attempt's context")
 	}
 }
 

@@ -258,8 +258,9 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 
 	// 8. Compose the ADK agent for this turn: system instruction + tools →
 	// ChatModelAgent with the tool loop (design D1). The instruction is the
-	// composed persona plus the compaction summary; capability middlewares
-	// append their own guidance (the fs workspace mount, the skills guidance)
+	// composed persona, the operating contract, and the compaction summary;
+	// capability middlewares append their own guidance (the fs workspace
+	// mount, the skills guidance)
 	// to it. The model input is assembled with the effective model's
 	// attachment capabilities (task 5.3): the override's model — or the
 	// agent's configured one — decides what rides as content.
@@ -353,8 +354,12 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 			tasksDir = dir
 		}
 		tasks.SetTurnID(turnID)
+		// The child gets persona-only text: the full instruction carries the
+		// contract's user-facing mode guidance, which never rides a child
+		// turn (spec agent-prompts "Subagent child operating notes"); the
+		// child's own reduced notes are composed in the subagents package.
 		subCaps, err := subagents.New(ctx, &subagents.Config{
-			Instruction:      instruction,
+			Instruction:      persona{identity: identity, soul: soul, bootstrap: bootstrap}.text(),
 			Model:            mdl,
 			Tools:            surface.tools,
 			MCPTools:         mcpTools,
@@ -965,14 +970,20 @@ func (p persona) text() string {
 	return strings.Join(parts, "\n\n")
 }
 
-// composeSystem joins the turn's persona text and the compaction summary.
+// composeSystem joins the turn's system context in composition order
+// (design D2): the persona documents, then the operating contract, then the
+// compaction summary. The contract composes on every call — an agent whose
+// persona generation failed still gets it (spec agent-prompts "Contract
+// present without persona documents").
 func composeSystem(personaText, summary string) string {
 	var sb strings.Builder
-	sb.WriteString(personaText)
+	if personaText != "" {
+		sb.WriteString(personaText)
+		sb.WriteString("\n\n")
+	}
+	sb.WriteString(operatingContract)
 	if summary != "" {
-		if sb.Len() > 0 {
-			sb.WriteString("\n\n")
-		}
+		sb.WriteString("\n\n")
 		sb.WriteString("# Earlier conversation summary\n\n")
 		sb.WriteString(summary)
 	}
