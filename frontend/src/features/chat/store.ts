@@ -464,6 +464,7 @@ export const useChatStore = create<ExtendedChatStore>(
     sidebarCollapsed: false,
 
     panelTabs: [],
+    activePanelTabID: null,
 
     toolCatalog: {},
 
@@ -563,6 +564,7 @@ export const useChatStore = create<ExtendedChatStore>(
           usage: null,
           loadingSession: false,
           panelTabs: [],
+          activePanelTabID: null,
           // No open session: the override state resets to inherit; a newly
           // created session is seeded from the sticky default instead.
           modelOverride: "",
@@ -598,6 +600,7 @@ export const useChatStore = create<ExtendedChatStore>(
         loadingEarlier: false,
         // Spec chat-panels: switching sessions resets the panel to closed.
         panelTabs: [],
+        activePanelTabID: null,
       });
       setBusy();
 
@@ -804,6 +807,7 @@ export const useChatStore = create<ExtendedChatStore>(
         activeTurnID: null,
         finishedTurnIDs: new Set<string>(),
         panelTabs: [],
+        activePanelTabID: null,
         modelOverride: "",
         effortOverride: "",
       });
@@ -1109,8 +1113,17 @@ export const useChatStore = create<ExtendedChatStore>(
     // touches nothing the turn lifecycle owns, so using the panel mid-turn
     // can never interrupt a streaming turn.
     openPanelTab: (tab: Omit<PanelTab, "id">): void => {
-      if (get().panelTabs.some((t: PanelTab) => t.identity === tab.identity))
+      const existing = get().panelTabs.find(
+        (t: PanelTab) => t.identity === tab.identity
+      );
+
+      // Re-activating a row whose tab is already open must raise it, not
+      // just no-op: the row click is the activation gesture.
+      if (existing !== undefined) {
+        set({ activePanelTabID: existing.id });
+
         return;
+      }
 
       nextPanelTabID += 1;
 
@@ -1122,13 +1135,29 @@ export const useChatStore = create<ExtendedChatStore>(
         id: `panel-${nextPanelTabID}`,
       } as PanelTab;
 
-      set((prev: ChatStore) => ({ panelTabs: [...prev.panelTabs, opened] }));
+      set((prev: ChatStore) => ({
+        panelTabs: [...prev.panelTabs, opened],
+        activePanelTabID: opened.id,
+      }));
+    },
+
+    activatePanelTab: (id: string): void => {
+      set({ activePanelTabID: id });
     },
 
     closePanelTab: (id: string): void => {
-      set((prev: ChatStore) => ({
-        panelTabs: prev.panelTabs.filter((t: PanelTab) => t.id !== id),
-      }));
+      set((prev: ChatStore) => {
+        const panelTabs = prev.panelTabs.filter((t: PanelTab) => t.id !== id);
+
+        return {
+          panelTabs,
+          // Closing the active tab raises the last remaining one.
+          activePanelTabID:
+            prev.activePanelTabID === id
+              ? (panelTabs[panelTabs.length - 1]?.id ?? null)
+              : prev.activePanelTabID,
+        };
+      });
     },
   })
 );

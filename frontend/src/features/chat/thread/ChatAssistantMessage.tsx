@@ -77,7 +77,7 @@ import { isNumber, isString, type JsonObject } from "../tools/parse";
 import { stabilizeMarkdown } from "../lib/markdownStream";
 import { useChatStore, type ExtendedChatStore } from "../store";
 import { toWorkspaceRel } from "../toolPaths";
-import { workspaceFileTab } from "../components/RightPanel";
+import { workspaceFileTab } from "../components/panelRenderers";
 import { ChatToolGroup, toolRenderers } from "../tools/aui";
 import { DayGate, MessageTime, useDayBoundary } from "./DayDivider";
 

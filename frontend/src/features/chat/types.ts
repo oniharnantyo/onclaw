@@ -130,12 +130,23 @@ export interface WorkspaceDirTabData {
   relPath: string;
 }
 
+/** Data carried by a delegated task's trajectory preview tab (design D3):
+ * the jailed reader address of the child's materialized transcript. */
+export interface TrajectoryTabData {
+  agentID: string;
+  taskID: string;
+  /** Workspace-relative transcript path (".tasks/<tool-call-id>.output") the
+   * jailed reader fetches; unresolvable paths render the read-error state. */
+  transcriptPath: string;
+}
+
 /**
  * One open right-panel tab (task 8.2). `kind` selects the renderer in the
  * panel's content registry; `identity` deduplicates re-opens of the same
  * content. Sources (task 8.3): prompt documents, workspace files (also
  * serving subagent trajectory files — those are workspace-relative paths in
- * `.tasks/`), and workspace directory listings.
+ * `.tasks/`), workspace directory listings, and delegated task trajectories
+ * (design D3, spec merge-right-bar-previews).
  */
 export type PanelTab =
   | {
@@ -158,6 +169,13 @@ export type PanelTab =
       identity: string;
       title: string;
       data: WorkspaceDirTabData;
+    }
+  | {
+      id: string;
+      kind: "trajectory";
+      identity: string;
+      title: string;
+      data: TrajectoryTabData;
     };
 
 export interface ChatStore {
@@ -201,6 +219,11 @@ export interface ChatStore {
    * switches so the panel reopens closed for the new session. */
   panelTabs: PanelTab[];
 
+  /** The raised tab's id; null falls back to the last open tab. Lives in
+   * the store because activations come from outside the bar too (a run-card
+   * row click raises its trajectory tab). */
+  activePanelTabID: string | null;
+
   /** Loads reference data and consumes the nav store's chat target. */
   init: () => Promise<void>;
   selectAgent: (agentID: string, sessionID?: string) => Promise<void>;
@@ -223,8 +246,11 @@ export interface ChatStore {
   stop: () => void;
   removeQueued: (id: string) => void;
   toggleSidebar: () => void;
-  /** Opens a preview tab (no-op when an identical tab is already open). */
+  /** Opens a preview tab, raising it; an identical open tab is raised, not
+   * duplicated. */
   openPanelTab: (tab: Omit<PanelTab, "id">) => void;
+  /** Raises an already-open tab. */
+  activatePanelTab: (id: string) => void;
   closePanelTab: (id: string) => void;
 }
 

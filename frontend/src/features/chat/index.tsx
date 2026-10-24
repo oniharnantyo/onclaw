@@ -1,12 +1,14 @@
 /**
  * Chat menu (tasks 9.1–9.5): transcript, queued-message stack, composer, the
- * collapsible right sidebar, the floating run card, and the right preview
- * panel. Layout is pure composition — all state
+ * floating run card, and the single collapsible right bar (design D1). The
+ * bar's empty state is the session identity (agent + effective model);
+ * opening a preview swaps the same column in place to the tabbed preview
+ * surface — never two columns. Layout is pure composition — all state
  * (sessions, entries, turn lifecycle, queue, usage) lives in the feature
- * store, so unmounting any part (e.g. collapsing the sidebar) can never
+ * store, so unmounting any part (e.g. collapsing the bar) can never
  * interrupt an in-flight turn. The session layer left the chat surface
  * (redesign-shell-layout) and now mounts INSIDE the content island as its
- * left column (the shell composes rail + this view); the right sidebar hides
+ * left column (the shell composes rail + this view); the right bar hides
  * entirely when minimized — its toggle lives in the chat header.
  *
  * Below md the Sessions island is hidden and a compact header (agent +
@@ -29,8 +31,7 @@ import type { ChatStore } from "./types";
 import { useChatStore } from "./store";
 import { ChatRuntimeProvider } from "./runtime/ChatRuntimeProvider";
 import { ChatHeader } from "./components/ChatHeader";
-import { RightPanel } from "./components/RightPanel";
-import { RightSidebar } from "./components/RightSidebar";
+import { RightBar } from "./components/RightBar";
 import { ChatComposer } from "./composer/ChatComposer";
 import { ChatThread } from "./thread/ChatThread";
 
@@ -134,8 +135,7 @@ export default function ChatView(): ReactElement {
           <ChatThread />
           <ChatComposer />
         </div>
-        <RightSidebar />
-        <RightPanel />
+        <RightBar />
       </ChatRuntimeProvider>
     </div>
   );

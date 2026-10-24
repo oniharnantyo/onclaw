@@ -397,14 +397,14 @@ describe("ChatView", () => {
 
   it("collapsing the sidebar hides the island entirely and keeps the turn state intact", async () => {
     await renderChat();
-    await screen.findByTestId("chat-sidebar");
-    // The toggle lives in the chat header now (the sidebar has no chrome of
+    await screen.findByTestId("chat-right-bar");
+    // The toggle lives in the chat header now (the bar has no chrome of
     // its own to host it).
     await act(async () => {
       fireEvent.click(screen.getByTestId("btn-toggle-sidebar"));
     });
     // Minimized means GONE — not a collapsed sliver.
-    expect(screen.queryByTestId("chat-sidebar")).toBeNull();
+    expect(screen.queryByTestId("chat-right-bar")).toBeNull();
     // The live handler is still attached; a turn still lands in the transcript.
     await emit(
       ev(Kind.KindUserMessage, { text: "still live", id: "evt-live" })

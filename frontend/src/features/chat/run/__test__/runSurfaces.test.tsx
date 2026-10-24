@@ -8,7 +8,9 @@
  * error detail, completed check), both sections are pure derivations of the
  * store's entries — a second snapshot or terminal record replaces in place —
  * and the island anchors to the thread viewport's relative wrapper, never
- * the chat column, so it cannot reach the composer.
+ * the chat column, so it cannot reach the composer. Activating an Agents
+ * row opens its trajectory as a tab in the right panel (design D3,
+ * spec merge-right-bar-previews); rows without a transcript path are inert.
  */
 import { act } from "react";
 import { fireEvent, screen } from "@testing-library/dom";
@@ -101,7 +103,11 @@ function expandGroup(testId: string): void {
 }
 
 beforeEach(() => {
-  useChatStore.setState({ entries: [] });
+  useChatStore.setState({
+    entries: [],
+    activeAgentID: null,
+    panelTabs: [],
+  });
 });
 
 describe("RunSurfaces (task 3.5)", () => {
@@ -191,6 +197,11 @@ describe("RunSurfaces (task 3.5)", () => {
     expect(
       screen.getByTestId("plan-completed-items").querySelector(".lucide-check")
     ).not.toBeNull();
+    // Completed rows strike through; the section's live rows do not.
+    expect(
+      screen.getByTestId("plan-completed-items").querySelector(".line-through")
+    ).not.toBeNull();
+    expect(plan.querySelectorAll(".line-through").length).toBe(1);
 
     // The waiting group expands naming its blockers.
     expandGroup("plan-waiting");
@@ -306,6 +317,45 @@ describe("RunSurfaces (task 3.5)", () => {
     await unmount();
   });
 
+  it("clips a failed row's long error to one line (truncate needs a block box)", async () => {
+    // The row renders inside the activating <button>; a bare span there stays
+    // inline, where overflow/text-overflow do not apply and the error line
+    // overflows the island sideways instead of clipping.
+    await act(async () => {
+      useChatStore.setState({
+        entries: foldOf(
+          taskEvent({
+            task_id: "task-2",
+            description: "Audit",
+            status: ToolStatus.ToolStatusFailed,
+            result:
+              "[NodeRunError] failed to stream tool call chatcmpl-tx9: connection reset while streaming the summary it generated",
+            transcript_path: ".tasks/call-2.output",
+          })
+        ),
+        activeAgentID: "agent-7",
+      });
+    });
+    const { unmount } = await renderUI(<RunSurfaces />);
+    expandCard();
+
+    const row = screen.getByTestId("run-agent-row-0");
+
+    expect(row.className).toContain("flex-col");
+
+    const errorSpan = Array.from(row.querySelectorAll("span")).find(
+      (span: Element): boolean =>
+        span.textContent?.startsWith("[NodeRunError]") === true
+    );
+
+    expect(errorSpan).toBeDefined();
+    expect(errorSpan?.className).toContain("truncate");
+    // The span blockifies as a flex child of the row button.
+    expect(errorSpan?.parentElement).toBe(row);
+
+    await unmount();
+  });
+
   it("marks a completed agent with a check and a stopped one with its chip", async () => {
     await act(async () => {
       useChatStore.setState({
@@ -400,6 +450,67 @@ describe("RunSurfaces (task 3.5)", () => {
     });
 
     expect(screen.getByTestId("run-card-plan").textContent).toContain("2/5");
+
+    await unmount();
+  });
+
+  it("activating an Agents row opens its trajectory tab (design D3)", async () => {
+    await act(async () => {
+      useChatStore.setState({
+        entries: foldOf(
+          taskEvent({
+            task_id: "task-9",
+            description: "Research the provider catalog",
+            status: ToolStatus.ToolStatusCompleted,
+            result: "Two providers fit.",
+            transcript_path: ".tasks/call-9.output",
+          })
+        ),
+        activeAgentID: "agent-7",
+      });
+    });
+    const { unmount } = await renderUI(<RunSurfaces />);
+    expandCard();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("run-agent-row-0"));
+    });
+
+    const tabs = useChatStore.getState().panelTabs;
+
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0]?.identity).toBe("trajectory:agent-7:task-9");
+    expect(tabs[0]?.kind).toBe("trajectory");
+    expect(tabs[0]?.title).toBe("Research the provider catalog");
+
+    // Re-activating the same row dedupes on the identity, not a new tab.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("run-agent-row-0"));
+    });
+
+    expect(useChatStore.getState().panelTabs).toHaveLength(1);
+
+    await unmount();
+  });
+
+  it("a row without a recorded transcript path stays inert", async () => {
+    // completedTask carries no transcript_path (legacy-shaped record).
+    await act(async () => {
+      useChatStore.setState({
+        entries: foldOf(completedTask),
+        activeAgentID: "agent-7",
+      });
+    });
+    const { unmount } = await renderUI(<RunSurfaces />);
+    expandCard();
+
+    expect(screen.getByTestId("run-agent-row-0")).not.toBeNull();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("run-agent-row-0"));
+    });
+
+    expect(useChatStore.getState().panelTabs).toEqual([]);
 
     await unmount();
   });

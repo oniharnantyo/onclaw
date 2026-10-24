@@ -13,7 +13,7 @@ import { cn } from "../../../../lib/cn";
 import { toWorkspaceRel } from "../../toolPaths";
 import { useChatStore } from "../../store";
 import type { ChatStore } from "../../types";
-import { workspaceFileTab } from "../../components/RightPanel";
+import { workspaceFileTab } from "../../components/panelRenderers";
 
 export interface FileChipProps {
   path: string;

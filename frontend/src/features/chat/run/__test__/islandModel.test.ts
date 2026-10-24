@@ -172,6 +172,7 @@ describe("agentRows", () => {
         state: "running",
         detail: "call web_fetch https://example.com · 12 steps",
         error: "",
+        transcriptPath: "",
       },
     ]);
   });
@@ -206,6 +207,48 @@ describe("agentRows", () => {
     expect(rows[0]?.name).toBe("Background task");
   });
 
+  it("trims a long description at a word boundary under the display cap", () => {
+    const rows = agentRows([
+      taskEntryOf({
+        task_id: "task-1",
+        description: "Read SOUL.md, BOOTSTRAP.md, list skills directory",
+        status: ToolStatus.ToolStatusRunning,
+      }),
+    ]);
+
+    expect(rows[0]?.name).toBe("Read SOUL.md, BOOTSTRAP.md, list…");
+  });
+
+  it("hard-cuts an over-cap description with no word boundary", () => {
+    const rows = agentRows([
+      taskEntryOf({
+        task_id: "task-1",
+        description: "x".repeat(50),
+        status: ToolStatus.ToolStatusRunning,
+      }),
+    ]);
+
+    expect(rows[0]?.name).toBe(`${"x".repeat(36)}…`);
+  });
+
+  it("keeps a description at the cap verbatim", () => {
+    const rows = agentRows([
+      taskEntryOf({
+        task_id: "task-1",
+        description: "a".repeat(36),
+        status: ToolStatus.ToolStatusRunning,
+      }),
+      taskEntryOf({
+        task_id: "task-2",
+        description: "b".repeat(37),
+        status: ToolStatus.ToolStatusRunning,
+      }),
+    ]);
+
+    expect(rows[0]?.name).toBe("a".repeat(36));
+    expect(rows[1]?.name).toBe(`${"b".repeat(36)}…`);
+  });
+
   it("extracts the first non-empty line of a failed task's result", () => {
     const rows = agentRows([
       taskEntryOf({
@@ -238,14 +281,43 @@ describe("agentRows", () => {
     ]);
 
     expect(rows).toEqual([
-      { id: "task-1", name: "Done", state: "completed", detail: "", error: "" },
+      {
+        id: "task-1",
+        name: "Done",
+        state: "completed",
+        detail: "",
+        error: "",
+        transcriptPath: "",
+      },
       {
         id: "task-2",
         name: "Stopped",
         state: "stopped",
         detail: "",
         error: "",
+        transcriptPath: "",
       },
+    ]);
+  });
+
+  it('projects the record\'s transcript_path, or "" when absent', () => {
+    const rows = agentRows([
+      taskEntryOf({
+        task_id: "task-1",
+        description: "Research",
+        status: ToolStatus.ToolStatusRunning,
+        transcript_path: ".tasks/call-1.output",
+      }),
+      taskEntryOf({
+        task_id: "task-2",
+        description: "Legacy",
+        status: ToolStatus.ToolStatusCompleted,
+      }),
+    ]);
+
+    expect(rows.map((r: AgentRow): string => r.transcriptPath)).toEqual([
+      ".tasks/call-1.output",
+      "",
     ]);
   });
 

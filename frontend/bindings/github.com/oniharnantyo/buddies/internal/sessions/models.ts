@@ -289,7 +289,8 @@ export interface TaskActivity {
 
     /**
      * TranscriptPath is the workspace-relative path of the task's materialized
-     * transcript (".tasks/task-1.md"), readable through the jailed file tools.
+     * transcript (".tasks/<task tool-call id>.output"), readable through the
+     * jailed file tools.
      */
     "transcript_path"?: string;
 

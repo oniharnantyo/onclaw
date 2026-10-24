@@ -15,6 +15,9 @@
  * Agents renders the session's delegated task entries: a running row carries
  * the child's latest activity as a muted progress line, a failed row its
  * result's first line, and terminal rows name their state in a chip.
+ * Activating a row opens its trajectory as a preview tab in the right panel
+ * (design D3, spec merge-right-bar-previews); a row whose record carries no
+ * transcript path is inert.
  *
  * The island starts MINIMIZED: a small pill (spinner, the sections' summary
  * — "3/7 · 1 running" — with done/failed/stopped tallies) like a toolbar
@@ -39,6 +42,7 @@ import {
 
 import { cn } from "../../../lib/cn";
 import type { PlanTask } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/sessions/models";
+import { trajectoryTab } from "../components/panelRenderers";
 import {
   agentCounts,
   agentRows,
@@ -106,7 +110,8 @@ function PlanTaskRow({
         title={label}
         className={cn(
           "min-w-0 flex-1 truncate",
-          variant === "active" ? "text-foreground/90" : "text-muted-foreground"
+          variant === "active" ? "text-foreground/90" : "text-muted-foreground",
+          variant === "done" && "line-through"
         )}
       >
         {label}
@@ -174,10 +179,27 @@ function PlanGroup({
  * task entries. */
 export function RunSurfaces(): ReactElement | null {
   const entries = useChatStore((s: ExtendedChatStore) => s.entries);
+  const activeAgentID = useChatStore((s: ExtendedChatStore) => s.activeAgentID);
+  const openPanelTab = useChatStore((s: ExtendedChatStore) => s.openPanelTab);
   const [expanded, setExpanded] = useState(false);
 
   const rows = agentRows(entries);
   const counts = agentCounts(rows);
+
+  /** Design D3: activating an Agents row opens its trajectory as a tab in
+   * the right panel — pure store state, the island itself never re-layouts.
+   * Rows whose record carries no transcript path (legacy rows) are inert. */
+  const activateAgentRow = (index: number): void => {
+    const row = rows[index];
+
+    if (row === undefined || row.transcriptPath === "") return;
+
+    if (activeAgentID === null) return;
+
+    openPanelTab(
+      trajectoryTab(activeAgentID, row.id, row.transcriptPath, row.name)
+    );
+  };
 
   const planEntry = entries.find(
     (e: Entry): e is PlanEntry => e.kind === "plan"
@@ -352,6 +374,7 @@ export function RunSurfaces(): ReactElement | null {
                   detail: row.detail === "" ? undefined : row.detail,
                   error: row.error === "" ? undefined : row.error,
                 }))}
+                onActivate={activateAgentRow}
                 showSummary={false}
                 summaryAgent={{ name: "Working", state: "running" }}
               />

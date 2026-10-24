@@ -486,7 +486,7 @@ describe("SessionRail delete (task 6.5)", () => {
 
 describe("SessionRail resize", () => {
   // jsdom's localStorage would leak state between tests; every test here
-  // stubs it against a Map instead (same fake as RightPanel.test.tsx).
+  // stubs it against a Map instead (same fake as RightBar.test.tsx).
   function stubLocalStorage(initial: Record<string, string> = {}): void {
     const map = new Map(Object.entries(initial));
 

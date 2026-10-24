@@ -133,9 +133,9 @@ describe("ChatHeader", () => {
     expect(el.className).toContain("border-line");
   });
 
-  // The sidebar hides entirely when minimized, so the header hosts its
+  // The right bar hides entirely when minimized, so the header hosts its
   // toggle: the accessible name states the CURRENT state and clicking flips
-  // the store flag the RightSidebar renders from.
+  // the store flag the RightBar renders from.
   it("hosts the sidebar toggle and flips the store state", async () => {
     await renderUI(<ChatHeader />);
     const button = screen.getByTestId("btn-toggle-sidebar");

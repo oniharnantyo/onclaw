@@ -51,6 +51,8 @@ export function planGroups(
 /** One Agents-section row: a delegated subagent task as the island shows it. */
 export interface AgentRow {
   id: string;
+  /** The task's description trimmed to the display cap (also the
+   * trajectory tab's title). */
   name: string;
   state: "running" | "completed" | "failed" | "stopped";
   /** A running child's latest activity with its step count ("· 12 steps"),
@@ -59,6 +61,9 @@ export interface AgentRow {
   detail: string;
   /** The first line of a failed task's result; "" otherwise. */
   error: string;
+  /** The record's workspace-relative transcript path (".tasks/<tool-call-id>.output");
+   * "" when the record carries none (legacy/persisted-before-layout rows). */
+  transcriptPath: string;
 }
 
 /** The task entries of a session, in transcript order. */
@@ -76,6 +81,25 @@ export function taskEntries(entries: readonly Entry[]): TaskEntry[] {
   }
 
   return tasks;
+}
+
+/** The display cap for a delegated task's description (the parent model
+ * writes it freely; the run card is a narrow island and the trajectory tab
+ * title repeats it verbatim). */
+const MAX_TASK_NAME = 36;
+
+/** Trims a task's description to the display cap, cutting at a word
+ * boundary when one sits past the cap's midpoint so the ellipsis never
+ * lands mid-word. */
+function trimTaskName(description: string): string {
+  if (description.length <= MAX_TASK_NAME) return description;
+
+  const cut = description.slice(0, MAX_TASK_NAME);
+  const wordEnd = cut.lastIndexOf(" ");
+
+  const trimmed = wordEnd > MAX_TASK_NAME / 2 ? cut.slice(0, wordEnd) : cut;
+
+  return `${trimmed.trimEnd()}…`;
 }
 
 /** Projects the session's task entries into Agents rows, in transcript
@@ -96,11 +120,12 @@ export function agentRows(entries: readonly Entry[]): AgentRow[] {
       name:
         task.description === undefined || task.description === ""
           ? "Background task"
-          : task.description,
+          : trimTaskName(task.description),
       state,
       detail:
         state === "running" ? runningDetail(task.progress, task.steps) : "",
       error: state === "failed" ? firstLine(task.result) : "",
+      transcriptPath: task.transcript_path ?? "",
     });
   }
 

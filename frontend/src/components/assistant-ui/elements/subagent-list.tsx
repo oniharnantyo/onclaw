@@ -49,15 +49,18 @@ function StateIcon({ state }: { state: SubagentState }) {
 
 export function SubagentList({
   agents,
+  onActivate,
   showSummary,
   summaryAgent,
   className,
   ...props
 }: Omit<
   ComponentProps<"div">,
-  "children" | "agents" | "showSummary" | "summaryAgent"
+  "children" | "agents" | "showSummary" | "summaryAgent" | "onActivate"
 > & {
   agents: readonly SubagentItem[];
+  /** When set, each row activates through it with its index in `agents`. */
+  onActivate?: ((index: number) => void) | undefined;
   showSummary: boolean;
   summaryAgent: SubagentItem;
 }) {
@@ -68,7 +71,7 @@ export function SubagentList({
 
       {...props}
     >
-      {agents.map((agent) => {
+      {agents.map((agent, index) => {
         const terminal =
           agent.state === "failed" || agent.state === "stopped";
         const line =
@@ -78,8 +81,8 @@ export function SubagentList({
               ? agent.error
               : undefined;
 
-        return (
-          <div key={agent.name} className="flex flex-col gap-0.5">
+        const row = (
+          <>
             <div className="flex items-center gap-2">
               <span className="flex size-4 shrink-0 items-center justify-center">
                 <StateIcon state={agent.state} />
@@ -109,6 +112,24 @@ export function SubagentList({
                 {line}
               </span>
             ) : null}
+          </>
+        );
+
+        return (
+          <div key={agent.name} className="flex flex-col gap-0.5">
+            {onActivate ? (
+              <button
+                type="button"
+                data-testid={`run-agent-row-${index}`}
+                aria-label={agent.name}
+                onClick={(): void => onActivate(index)}
+                className="flex w-full cursor-pointer flex-col gap-0.5 -mx-1 rounded-md px-1 text-left transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_5%,transparent)]"
+              >
+                {row}
+              </button>
+            ) : (
+              row
+            )}
           </div>
         );
       })}

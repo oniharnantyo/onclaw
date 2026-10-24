@@ -228,6 +228,7 @@ function resetStore(): void {
     queue: [],
     sidebarCollapsed: false,
     panelTabs: [],
+    activePanelTabID: null,
     runningSessions: new Set<string>(),
   });
 }
