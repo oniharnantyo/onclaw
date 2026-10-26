@@ -33,6 +33,7 @@ var workspaceTools = []string{
 	ToolLs, ToolReadFile, ToolWriteFile, ToolEditFile, ToolGlob, ToolGrep,
 	ToolExecute, ToolDeleteFile,
 	ToolTaskCreate, ToolTaskGet, ToolTaskUpdate, ToolTaskList,
+	ToolCreateDocument,
 }
 
 // fullCatalogNames is the expected catalog membership in display order.
@@ -43,6 +44,8 @@ var fullCatalogNames = []string{
 	ToolTaskCreate, ToolTaskGet, ToolTaskUpdate, ToolTaskList,
 	ToolWebFetch, ToolWebSearch, ToolBrowser,
 	ToolScheduler,
+	ToolSaveDocument,
+	ToolCreateDocument,
 }
 
 // TestCatalogTools pins the catalog membership in display order — the only
@@ -62,6 +65,18 @@ func TestCatalogTools(t *testing.T) {
 	require.False(t, ok)
 }
 
+// TestCatalogSaveDocumentMeta pins the save_document entry's display
+// metadata: the Tools pane card and the allowlist chips render it with no
+// bespoke wiring (spec add-knowledge-corpus "Save document tool in the
+// catalog").
+func TestCatalogSaveDocumentMeta(t *testing.T) {
+	meta, ok := CatalogToolByName(ToolSaveDocument)
+	require.True(t, ok)
+	require.Equal(t, "Save document", meta.DisplayName)
+	require.Equal(t, "file-plus", meta.IconKey)
+	require.Contains(t, meta.Description, "knowledge document")
+}
+
 // TestCatalogSchedulerMeta pins the Scheduler entry's display metadata: the
 // Tools pane card and the allowlist chips render it with no bespoke wiring
 // (spec add-scheduler "Scheduler appears in the catalog surfaces").
@@ -70,6 +85,18 @@ func TestCatalogSchedulerMeta(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "Scheduler", meta.DisplayName)
 	require.Equal(t, "calendar-clock", meta.IconKey)
+	require.NotEmpty(t, meta.Description)
+}
+
+// TestCatalogCreateDocumentMeta pins the create_document entry's display
+// metadata: the Tools pane card and the allowlist chips render it with no
+// bespoke wiring (spec add-create-document "Create document tool in the
+// catalog"). The icon key must exist in the frontend Icon map.
+func TestCatalogCreateDocumentMeta(t *testing.T) {
+	meta, ok := CatalogToolByName(ToolCreateDocument)
+	require.True(t, ok)
+	require.Equal(t, "Create Document", meta.DisplayName)
+	require.Equal(t, "file-text", meta.IconKey)
 	require.NotEmpty(t, meta.Description)
 }
 
@@ -119,7 +146,8 @@ func TestResolveOfferedTools(t *testing.T) {
 	t.Run("empty allowlist offers the full catalog with a workspace", func(t *testing.T) {
 		fs := fake.New()
 		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{},
-			WithWorkspaces(workspaces.NewManager(t.TempDir())), WithBrowserDir(t.TempDir()), WithScheduler(newTestSchedulerService(fs)))
+			WithWorkspaces(workspaces.NewManager(t.TempDir())), WithBrowserDir(t.TempDir()), WithScheduler(newTestSchedulerService(fs)),
+			WithKnowledge(t.TempDir()))
 		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a"})
 		require.NoError(t, err)
 		names, err := surface.names(ctx)
@@ -223,6 +251,55 @@ func TestResolveOfferedTools(t *testing.T) {
 		names, err := surface.names(ctx)
 		require.NoError(t, err)
 		require.Equal(t, []string{ToolCurrentTime, ToolHTTPGet}, names)
+	})
+
+	// The create_document tool's gate conditions (spec add-create-document
+	// "Create document tool in the catalog"): the standard three-way gate,
+	// plus the workspace scope — a slugless agent has it withheld, not
+	// failed.
+	t.Run("create_document with a workspace and an open allowlist is offered", func(t *testing.T) {
+		fs := fake.New()
+		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{}, WithWorkspaces(workspaces.NewManager(t.TempDir())), WithBrowserDir(t.TempDir()))
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a"})
+		require.NoError(t, err)
+		names, err := surface.names(ctx)
+		require.NoError(t, err)
+		require.Contains(t, names, ToolCreateDocument)
+		require.True(t, surface.createDocument, "the preset appendix rides an offered tool")
+	})
+
+	t.Run("create_document not in the agent's allowlist is not offered", func(t *testing.T) {
+		fs := fake.New()
+		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{}, WithWorkspaces(workspaces.NewManager(t.TempDir())), WithBrowserDir(t.TempDir()))
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a", Tools: []string{ToolReadFile, ToolHTTPGet}})
+		require.NoError(t, err)
+		names, err := surface.names(ctx)
+		require.NoError(t, err)
+		require.NotContains(t, names, ToolCreateDocument)
+		require.False(t, surface.createDocument, "no tool offered, no preset appendix")
+	})
+
+	t.Run("globally disabled create_document is not offered even when allowed", func(t *testing.T) {
+		fs := fake.New()
+		require.NoError(t, fs.ToolStates().SetEnabled(ctx, ToolCreateDocument, false))
+		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{}, WithWorkspaces(workspaces.NewManager(t.TempDir())), WithBrowserDir(t.TempDir()))
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a"})
+		require.NoError(t, err)
+		names, err := surface.names(ctx)
+		require.NoError(t, err)
+		require.NotContains(t, names, ToolCreateDocument)
+		require.False(t, surface.createDocument)
+	})
+
+	t.Run("slugless agent has create_document withheld, not failed", func(t *testing.T) {
+		fs := fake.New()
+		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{}, WithWorkspaces(workspaces.NewManager(t.TempDir())), WithBrowserDir(t.TempDir()))
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "legacy", Tools: []string{ToolCreateDocument, ToolHTTPGet}})
+		require.NoError(t, err)
+		names, err := surface.names(ctx)
+		require.NoError(t, err)
+		require.Equal(t, []string{ToolHTTPGet}, names)
+		require.False(t, surface.createDocument)
 	})
 }
 

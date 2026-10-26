@@ -1,6 +1,7 @@
 import {
   Bot,
   CalendarClock,
+  Library,
   MessagesSquare,
   PanelLeftClose,
   Settings,
@@ -13,6 +14,7 @@ import { Toasts } from "./components/ui/Toasts";
 import AgentsView from "./features/agents";
 import ChatView from "./features/chat";
 import { SessionRail } from "./features/chat/components/SessionRail";
+import KnowledgeView from "./features/knowledge";
 import SettingsView from "./features/settings";
 import SchedulesView from "./features/scheduler";
 import { cn } from "./lib/cn";
@@ -30,6 +32,7 @@ const menus: MenuItem[] = [
   { key: "chat", label: "Chat", icon: MessagesSquare },
   { key: "agents", label: "Agents", icon: Bot },
   { key: "schedules", label: "Schedules", icon: CalendarClock },
+  { key: "knowledge", label: "Knowledge", icon: Library },
 ];
 
 // Settings sits below the theme toggle in the desktop rail's bottom cluster;
@@ -319,6 +322,8 @@ function Shell(): ReactElement {
             <AgentsView />
           ) : menu === "schedules" ? (
             <SchedulesView />
+          ) : menu === "knowledge" ? (
+            <KnowledgeView />
           ) : (
             <SettingsView />
           )}
@@ -343,6 +348,9 @@ function Shell(): ReactElement {
           )}
           {menu === "schedules" && (
             <div className="font-display font-bold">Schedules</div>
+          )}
+          {menu === "knowledge" && (
+            <div className="font-display font-bold">Knowledge</div>
           )}
           {menu === "settings" && (
             <div className="font-display font-bold">Settings</div>

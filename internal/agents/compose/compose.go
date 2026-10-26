@@ -47,6 +47,11 @@ type FilesystemCapability struct {
 	AgentDir      string
 	ExtraRoots    []string
 	DisabledTools []string
+	// Knowledge mounts the read-only knowledge corpus as a second virtual
+	// mount at /knowledge (add-knowledge-corpus design D3); nil — the
+	// default — exposes no corpus. The plantask and reduction backends never
+	// see it: ExtraRoots stays skills-only for them.
+	Knowledge *backend.KnowledgeRoots
 }
 
 // ReductionCapability configures the tool-output reduction middleware.
@@ -246,7 +251,16 @@ func BuildHandlers(ctx context.Context, cfg *ComposeConfig) ([]adk.TypedChatMode
 
 	// 4. filesystem: attached when configured.
 	if cfg.Filesystem != nil {
-		jail, err := backend.NewFilesystemJailedWithRoots(cfg.Filesystem.AgentDir, cfg.Filesystem.ExtraRoots...)
+		var jail einofs.Backend
+		var err error
+		if cfg.Filesystem.Knowledge != nil {
+			// The read-only corpus mount rides the jail when the turn exposes
+			// it (add-knowledge-corpus design D3); extra roots stay
+			// skills-only.
+			jail, err = backend.NewFilesystemJailedWithKnowledge(cfg.Filesystem.AgentDir, *cfg.Filesystem.Knowledge, cfg.Filesystem.ExtraRoots...)
+		} else {
+			jail, err = backend.NewFilesystemJailedWithRoots(cfg.Filesystem.AgentDir, cfg.Filesystem.ExtraRoots...)
+		}
 		if err != nil {
 			return nil, nil, fmt.Errorf("build middlewares: filesystem jail: %w", err)
 		}
@@ -258,6 +272,10 @@ func BuildHandlers(ctx context.Context, cfg *ComposeConfig) ([]adk.TypedChatMode
 		guidance := "Filesystem: your workspace is mounted at " + backend.DefaultMountPoint +
 			". File tool paths are absolute paths under " + backend.DefaultMountPoint +
 			" (e.g. " + backend.DefaultMountPoint + "/notes.md); relative paths and paths outside it fail."
+		if cfg.Filesystem.Knowledge != nil {
+			guidance += " The read-only knowledge corpus is mounted at " + backend.KnowledgeMountPoint +
+				" (all agents' documents under " + backend.KnowledgeMountPoint + "/global, this agent's under " + backend.KnowledgeMountPoint + "/agent); it is never writable."
+		}
 		fsConfig.CustomSystemPrompt = &guidance
 		for _, name := range cfg.Filesystem.DisabledTools {
 			switch name {

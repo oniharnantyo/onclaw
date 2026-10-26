@@ -91,6 +91,19 @@ export function DeleteSession(sessionID: string): $CancellablePromise<void> {
 }
 
 /**
+ * GeneratedDocument reads one document the create_document tool wrote at the
+ * agent's workspace root: name must be a plain basename with no directory
+ * components — anything else, including traversal and absolute paths, is
+ * refused before any filesystem call. The agent is resolved exactly like the
+ * workspace preview surface (WorkspaceFile): by agent id, so the card can
+ * call this from a session context — not by session id. A well-formed name
+ * with no file behind it wraps store.ErrNotFound.
+ */
+export function GeneratedDocument(agentID: string, name: string): $CancellablePromise<$models.GeneratedDocumentContent> {
+    return $Call.ByID(4251336789, agentID, name);
+}
+
+/**
  * ListWorkspace lists one directory of the agent's workspace (design D8),
  * jailed like WorkspaceFile. relPath "" or "/" lists the workspace root; the
  * result is never nil.

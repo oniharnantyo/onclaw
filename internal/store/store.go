@@ -22,6 +22,8 @@ type Store interface {
 	HookExecutions() HookExecutionStore
 	ToolSettings() ToolSettingStore
 	Attachments() AttachmentStore
+	Documents() DocumentStore
+	DocumentPresets() DocumentPresetStore
 	ProviderModels() ProviderModelStore
 	ProviderModelStore
 	// WithTx runs fn atomically: every write fn makes through the Store it

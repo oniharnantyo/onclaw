@@ -98,6 +98,9 @@ func (a agentStore) Delete(_ context.Context, id string) error {
 	// Mirrors the sqlite FK cascade (add-scheduler design D9): the agent's
 	// schedules go too.
 	a.s.deleteSchedules(id)
+	// Mirrors the sqlite FK cascade (add-knowledge-corpus design D2): the
+	// agent's scoped knowledge documents go too.
+	a.s.deleteDocuments(id)
 	return nil
 }
 

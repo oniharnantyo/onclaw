@@ -45,7 +45,7 @@ VALUES ('legacy-1', 'Legacy', ?, ?)`, stamped, stamped)
 
 	var version int
 	require.NoError(t, db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version))
-	require.Equal(t, 13, version)
+	require.Equal(t, 15, version)
 
 	// The pre-v7 agent emerges with subagents enabled: the column default.
 	legacy, err := st.Agents().ByID(ctx, "legacy-1")
@@ -58,7 +58,7 @@ VALUES ('legacy-1', 'Legacy', ?, ?)`, stamped, stamped)
 	require.NoError(t, err)
 	require.NoError(t, st2.Close())
 	require.NoError(t, db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version))
-	require.Equal(t, 13, version, "re-opening must not re-apply migrations")
+	require.Equal(t, 15, version, "re-opening must not re-apply migrations")
 }
 
 // TestAgents_SubagentsEnabledRoundTrip covers the dedicated subagents

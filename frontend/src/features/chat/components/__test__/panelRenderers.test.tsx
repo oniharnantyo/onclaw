@@ -4,9 +4,11 @@
  * defaults to Raw and toggles to the standalone markdown body only for
  * `.md`/`.markdown` names, the trajectory tab renders each parsed step as
  * its transcript element through the jailed reader, the refused and failed
- * reads surface their own outcomes, and a running task's open tab polls the
+ * reads surface their own outcomes, a running task's open tab polls the
  * growing transcript file every ~2s — stopping for good once the task turns
- * terminal.
+ * terminal — and the knowledge document preview (add-knowledge-corpus)
+ * decodes its base64 bytes unicode-safely, toggles markdown, embeds PDFs,
+ * and surfaces read failures.
  */
 import { act } from "react";
 import { fireEvent, screen, waitFor } from "@testing-library/dom";
@@ -25,7 +27,8 @@ import type {
   PromptDocuments,
   WorkspaceEntry,
 } from "../../../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
-import type { Client } from "../../../../lib/client";
+import type { Client, KnowledgeDocument } from "../../../../lib/client";
+import { knowledgeDocTab } from "../../types";
 import {
   PANEL_RENDERERS,
   trajectoryTab,
@@ -52,6 +55,9 @@ type MockedClient = Client & {
     contextUsage: MockFn;
     workspaceFile: MockFn;
     listWorkspace: MockFn;
+  };
+  knowledge: {
+    content: MockFn;
   };
 };
 
@@ -82,6 +88,9 @@ vi.mock("../../../../lib/client", () => ({
       })),
       workspaceFile: vi.fn(async (): Promise<string> => "file body"),
       listWorkspace: vi.fn(async (): Promise<WorkspaceEntry[]> => []),
+    },
+    knowledge: {
+      content: vi.fn(async (): Promise<string> => ""),
     },
   },
 }));
@@ -249,6 +258,177 @@ describe("panelRenderers — markdown preview toggle (design D6)", () => {
     await waitFor(() => screen.getByTestId("panel-preview-content"));
 
     expect(screen.queryByTestId("panel-preview-modes")).toBeNull();
+
+    await unmount();
+  });
+});
+
+/** UTF-8 base64 of a text fixture: TextEncoder → binary string → atob's
+ * inverse. The renderer's decode is the reverse path, so unicode survives. */
+function b64Of(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+
+  let binary = "";
+
+  bytes.forEach((b: number): void => {
+    binary += String.fromCharCode(b);
+  });
+
+  return btoa(binary);
+}
+
+/** A knowledge-doc tab fixture with a stable id, mirroring the knowledgeDocTab
+ * builder's identity format (pinned by the builder test below). */
+function knowledgeTab(filename: string, mime: string): PanelTab {
+  return {
+    id: "t1",
+    kind: "knowledge-doc",
+    identity: "knowledge-doc:d1",
+    title: filename,
+    data: { docId: "d1", filename, mime },
+  };
+}
+
+describe("panelRenderers — knowledge document preview (add-knowledge-corpus)", () => {
+  it("pins the knowledge-doc tab's identity to the catalog id", () => {
+    const doc: KnowledgeDocument = {
+      id: "d1",
+      filename: "runbook.md",
+      mime: "text/markdown",
+      size: 8,
+      scope: "agent",
+      agentId: "a1",
+      agentSlug: "scout",
+      description: "",
+      source: "upload",
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+
+    expect(knowledgeDocTab(doc)).toEqual({
+      kind: "knowledge-doc",
+      identity: "knowledge-doc:d1",
+      title: "runbook.md",
+      data: { docId: "d1", filename: "runbook.md", mime: "text/markdown" },
+    });
+  });
+
+  it("renders text content decoded from base64, unicode-safe", async () => {
+    mockedClient.knowledge.content.mockImplementation(
+      async (): Promise<string> => b64Of("héllo ✓ — multi-byte")
+    );
+
+    const { unmount } = await renderTab(
+      knowledgeTab("notes.txt", "text/plain")
+    );
+
+    const raw = await waitFor(() =>
+      screen.getByTestId("panel-preview-content")
+    );
+
+    expect(raw.textContent).toBe("héllo ✓ — multi-byte");
+    expect(mockedClient.knowledge.content).toHaveBeenCalledWith("d1");
+    expect(screen.queryByTestId("panel-preview-modes")).toBeNull();
+
+    await unmount();
+  });
+
+  it("defaults a .md document to Raw and toggles to the markdown body", async () => {
+    mockedClient.knowledge.content.mockImplementation(
+      async (): Promise<string> => b64Of("# Title\n\nbody text")
+    );
+
+    const { unmount } = await renderTab(
+      knowledgeTab("runbook.md", "text/markdown")
+    );
+
+    // Raw is the default: the mono pre block, no markdown body.
+    const raw = await waitFor(() =>
+      screen.getByTestId("panel-preview-content")
+    );
+
+    expect(raw.textContent).toBe("# Title\n\nbody text");
+    expect(screen.queryByTestId("panel-preview-markdown")).toBeNull();
+    expect(screen.getByTestId("panel-preview-modes")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("panel-preview-mode-preview"));
+    });
+
+    const body = await waitFor(() =>
+      screen.getByTestId("panel-preview-markdown")
+    );
+
+    expect(body.querySelector("h1")?.textContent).toBe("Title");
+    expect(body.textContent).toContain("body text");
+
+    // And back.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("panel-preview-mode-raw"));
+    });
+
+    await waitFor(() => screen.getByTestId("panel-preview-content"));
+    expect(screen.queryByTestId("panel-preview-markdown")).toBeNull();
+
+    await unmount();
+  });
+
+  it("renders a PDF mime as the embedded document with its data URL", async () => {
+    const pdf = b64Of("%PDF-1.4 bytes");
+
+    mockedClient.knowledge.content.mockImplementation(
+      async (): Promise<string> => pdf
+    );
+
+    const { unmount } = await renderTab(
+      knowledgeTab("spec.pdf", "application/pdf")
+    );
+
+    const embed = await waitFor(() =>
+      screen.getByTestId("panel-knowledge-pdf")
+    );
+
+    expect(embed.getAttribute("type")).toBe("application/pdf");
+    expect(embed.getAttribute("data")).toBe(
+      `data:application/pdf;base64,${pdf}`
+    );
+    expect(screen.queryByTestId("panel-preview-content")).toBeNull();
+
+    await unmount();
+  });
+
+  it("surfaces a failed content read as an error", async () => {
+    mockedClient.knowledge.content.mockImplementation(
+      async (): Promise<string> => {
+        throw new Error('not found: "d1"');
+      }
+    );
+
+    const { unmount } = await renderTab(
+      knowledgeTab("notes.txt", "text/plain")
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("panel-preview-error").textContent).toBe(
+        'not found: "d1"'
+      )
+    );
+    expect(screen.queryByTestId("panel-preview-content")).toBeNull();
+
+    await unmount();
+  });
+
+  it("renders an empty document as empty", async () => {
+    mockedClient.knowledge.content.mockImplementation(
+      async (): Promise<string> => b64Of("")
+    );
+
+    const { unmount } = await renderTab(
+      knowledgeTab("notes.txt", "text/plain")
+    );
+
+    await waitFor(() => screen.getByTestId("panel-preview-empty"));
+
+    expect(screen.queryByTestId("panel-preview-content")).toBeNull();
 
     await unmount();
   });

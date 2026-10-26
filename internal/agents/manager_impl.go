@@ -20,7 +20,9 @@ import (
 	"github.com/oniharnantyo/buddies/internal/agents/hooks"
 	"github.com/oniharnantyo/buddies/internal/agents/mcp"
 	"github.com/oniharnantyo/buddies/internal/agents/subagents"
+	"github.com/oniharnantyo/buddies/internal/agents/tools/docgen"
 	"github.com/oniharnantyo/buddies/internal/attachments"
+	"github.com/oniharnantyo/buddies/internal/knowledge"
 	"github.com/oniharnantyo/buddies/internal/scheduler"
 	"github.com/oniharnantyo/buddies/internal/sessions"
 	"github.com/oniharnantyo/buddies/internal/store"
@@ -47,6 +49,10 @@ type manager struct {
 	// (design D5, see attachments.go); nil (the default) means turns reject
 	// attachment keys.
 	attachments *attachments.Store
+	// knowledge is the durable document corpus store turns save into through
+	// save_document and mount read-only at /knowledge (add-knowledge-corpus
+	// design D3/D4, see knowledge_tool.go); nil (the default) withholds both.
+	knowledge *knowledge.Store
 	// browserDir is the browser tool's home directory: profile user-data
 	// directories root at <browserDir>/profiles and screenshots at
 	// <browserDir>/screenshots (spec add-browser-tool D10); empty (the
@@ -56,6 +62,12 @@ type manager struct {
 	// add-scheduler D1/D8, see scheduler_tool.go); nil (the default) withholds
 	// the tool from the catalog.
 	scheduler *scheduler.Service
+	// docgen is the manager-held document converter the create_document tool
+	// renders through (add-create-document design D3): created with the
+	// manager — Chrome-free until the first conversion — serialized behind
+	// the converter's own mutex, and closed with the manager (Close). Never
+	// nil: the tool degrades no further than the library's defaults.
+	docgen *docgen.Converter
 	// mcpManager is the MCP connection cache the agent's opted-in servers'
 	// tools are drawn from (see mcp.go). Never nil: the default no-op source
 	// contributes zero MCP tools.
@@ -711,4 +723,15 @@ func newTurnID() string {
 		panic(fmt.Sprintf("agents: generate turn id: %v", err))
 	}
 	return hex.EncodeToString(b[:])
+}
+
+// Close tears the runtime's process resources down (add-create-document
+// design D3): today that is the document converter's headless Chrome, which
+// the converter closes idempotently — a converter that never converted
+// closes as a no-op. The application's shutdown path (internal/cli App
+// teardown) is where it is invoked; a converter that is never closed loses
+// only its idle Chrome at process exit, the same way the browser tool's
+// profiles are reaped by their own janitor.
+func (m *manager) Close() error {
+	return m.docgen.Close()
 }

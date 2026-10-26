@@ -12,6 +12,7 @@ import (
 	"github.com/oniharnantyo/buddies/internal/attachments"
 	"github.com/oniharnantyo/buddies/internal/config"
 	"github.com/oniharnantyo/buddies/internal/gateway"
+	"github.com/oniharnantyo/buddies/internal/knowledge"
 	"github.com/oniharnantyo/buddies/internal/promptgen"
 	"github.com/oniharnantyo/buddies/internal/scheduler"
 	"github.com/oniharnantyo/buddies/internal/services"
@@ -52,12 +53,13 @@ type App struct {
 
 // ServiceSet is the set of services bound to the host's frontend.
 type ServiceSet struct {
-	AppInfo  *services.AppInfo
-	Agents   *services.AgentsService
-	Chat     *services.ChatService
-	Settings *services.SettingsService
-	Gateway  *services.GatewayService
-	Schedule *services.ScheduleService
+	AppInfo   *services.AppInfo
+	Agents    *services.AgentsService
+	Chat      *services.ChatService
+	Settings  *services.SettingsService
+	Gateway   *services.GatewayService
+	Schedule  *services.ScheduleService
+	Knowledge *services.KnowledgeService
 }
 
 // Assemble builds the full application over the data layout resolved from
@@ -88,7 +90,14 @@ func Assemble(ctx context.Context, emitter services.Emitter, opener services.URL
 	// commits, document editors, delete cleanup).
 	wsMgr := workspaces.NewManager(layout.Workspaces)
 	promptGen := promptgen.NewService(promptgen.NewDefaultModelFactory(), services.NewWorkspaceDocStore(wsMgr))
-	agentsSvc := services.NewAgentsService(st, promptGen, wsMgr)
+
+	// The durable knowledge corpus store (add-knowledge-corpus design D2):
+	// raw document bytes under the layout's knowledge directory, cataloged
+	// through the store's documents table. It backs the runtime's
+	// save_document tool and /knowledge mount, the bound Knowledge service,
+	// and the agents service's delete cleanup.
+	knowStore := knowledge.NewStore(layout.Knowledge, st.Documents())
+	agentsSvc := services.NewAgentsService(st, promptGen, wsMgr, knowStore)
 
 	// Sweep crash-orphaned prompt generations before services accept calls
 	// (design D4): rows still in generating are moved to failed with the
@@ -120,6 +129,7 @@ func Assemble(ctx context.Context, emitter services.Emitter, opener services.URL
 		agents.WithWorkspaces(wsMgr),
 		agents.WithSkills(layout.Skills),
 		agents.WithAttachments(layout.Attachments),
+		agents.WithKnowledge(layout.Knowledge),
 		agents.WithBrowserDir(layout.Browser),
 		agents.WithMCPManager(mcpMgr),
 		agents.WithHooks(hooksDispatcher),
@@ -157,6 +167,14 @@ func Assemble(ctx context.Context, emitter services.Emitter, opener services.URL
 		slog.Warn("assemble: provider model seed failed", "error", err)
 	}
 
+	// Seed the knowledge-search skill into the global skills tier when
+	// missing (add-knowledge-corpus design D10, repair-if-deleted). Cosmetic
+	// to startup — the corpus works without the playbook — so it is logged,
+	// not fatal.
+	if err := knowledge.SeedSkill(layout.Skills); err != nil {
+		slog.Warn("assemble: knowledge skill seed failed", "error", err)
+	}
+
 	return &App{
 		Layout:  layout,
 		Store:   st,
@@ -172,9 +190,10 @@ func Assemble(ctx context.Context, emitter services.Emitter, opener services.URL
 				// browser directory (design D6) — the same root the
 				// runtime's browser tool was given above.
 				services.WithChatBrowserDir(layout.Browser)),
-			Settings: settingsSvc,
-			Gateway:  services.NewGatewayService(gw, emitter),
-			Schedule: services.NewScheduleService(sched, emitter),
+			Settings:  settingsSvc,
+			Gateway:   services.NewGatewayService(gw, emitter),
+			Schedule:  services.NewScheduleService(sched, emitter),
+			Knowledge: services.NewKnowledgeService(knowStore, st.Agents(), emitter),
 		},
 	}, nil
 }
@@ -194,6 +213,14 @@ func (a *App) Close() error {
 			}
 		}
 		a.mcpMgr.Close()
+		// The runtime's optional process-resource seam (add-create-document
+		// design D3): closes the document converter's headless Chrome before
+		// the store goes down.
+		if c, ok := a.Runtime.(interface{ Close() error }); ok {
+			if err := c.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("close runtime: %w", err))
+			}
+		}
 		if err := a.Store.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("close store: %w", err))
 		}

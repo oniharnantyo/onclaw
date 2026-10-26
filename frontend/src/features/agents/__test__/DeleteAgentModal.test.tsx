@@ -17,7 +17,7 @@ import {
 } from "vite-plus/test";
 
 import type { Agent } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
-import type { Client } from "../../../lib/client";
+import type { Client, KnowledgeDocument } from "../../../lib/client";
 
 vi.mock("../../../lib/client", () => ({ client: makeClient() }));
 
@@ -31,10 +31,14 @@ const mockedClient = client as MockedClient;
 
 type MockFn = ReturnType<typeof vi.fn>;
 
-/** The mocked client shape: only the delete call the modal makes. */
+/** The mocked client shape: the agent delete call plus the knowledge list
+ * the modal reads to state the scoped-documents consequence. */
 type MockedClient = Client & {
   agents: {
     delete: MockFn;
+  };
+  knowledge: {
+    list: MockFn;
   };
 };
 
@@ -43,12 +47,36 @@ function makeClient(): MockedClient {
     agents: {
       delete: vi.fn(async (): Promise<void> => undefined),
     },
+    knowledge: {
+      list: vi.fn(async (): Promise<KnowledgeDocument[]> => knowledgeDocs),
+    },
   };
 
   // SAFETY: the object literal above satisfies the Client surface with its
   // vi.fn members matching the MockedClient contract.
   return c as MockedClient;
 }
+
+/** One knowledge document row override for the list mock. */
+function makeDoc(
+  overrides: Partial<KnowledgeDocument> = {}
+): KnowledgeDocument {
+  return {
+    id: "d1",
+    filename: "runbook.txt",
+    mime: "text/plain",
+    size: 128,
+    scope: "agent",
+    agentId: "a1",
+    agentSlug: "scout",
+    description: "",
+    source: "user",
+    createdAt: "2026-01-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
+let knowledgeDocs: KnowledgeDocument[];
 
 function makeAgent(): Agent {
   return {
@@ -100,6 +128,7 @@ async function renderDelete(): Promise<void> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  knowledgeDocs = [];
 });
 
 afterEach(() => {
@@ -155,5 +184,46 @@ describe("DeleteAgentModal", () => {
     await waitFor(() =>
       expect(mockedClient.agents.delete).toHaveBeenCalledWith("a1")
     );
+  });
+
+  // add-knowledge-corpus D9: the confirmation states the knowledge
+  // consequence when the agent's scope holds documents.
+  it("names the scoped knowledge documents when the agent has some", async () => {
+    knowledgeDocs = [makeDoc(), makeDoc({ id: "d2", filename: "spec.md" })];
+    await renderDelete();
+
+    const note = await waitFor(() =>
+      screen.getByTestId("delete-agent-knowledge-note")
+    );
+
+    expect(note.textContent).toContain(
+      "2 knowledge documents saved to this agent will be deleted"
+    );
+    expect(mockedClient.knowledge.list).toHaveBeenCalled();
+  });
+
+  it("uses the singular when exactly one scoped document exists", async () => {
+    knowledgeDocs = [makeDoc()];
+    await renderDelete();
+
+    const note = await waitFor(() =>
+      screen.getByTestId("delete-agent-knowledge-note")
+    );
+
+    expect(note.textContent).toContain(
+      "1 knowledge document saved to this agent will be deleted"
+    );
+  });
+
+  it("stays silent when no documents are scoped to the agent", async () => {
+    knowledgeDocs = [
+      makeDoc({ scope: "global", agentId: "", agentSlug: "" }),
+      // Another agent's scoped document must not count either.
+      makeDoc({ id: "d2", agentId: "a2", agentSlug: "sentinel" }),
+    ];
+    await renderDelete();
+
+    await waitFor(() => expect(mockedClient.knowledge.list).toHaveBeenCalled());
+    expect(screen.queryByTestId("delete-agent-knowledge-note")).toBeNull();
   });
 });

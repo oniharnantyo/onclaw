@@ -45,6 +45,7 @@ func (s *Store) WithTx(ctx context.Context, fn func(store.Store) error) error {
 		hookExecs:   &hookExecutionStore{tx},
 		toolConfigs: &toolSettingStore{tx},
 		attachments: &attachmentStore{tx},
+		presets:     &documentPresetStore{tx},
 		models:      &providerModelStore{tx},
 	}
 

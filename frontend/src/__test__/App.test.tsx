@@ -53,6 +53,11 @@ vi.mock("../features/scheduler", () => ({
     createElement("div", { "data-testid": "scheduler-view-mock" }),
 }));
 
+vi.mock("../features/knowledge", () => ({
+  default: (): ReactElement =>
+    createElement("div", { "data-testid": "knowledge-view-mock" }),
+}));
+
 const agent: Agent = {
   ID: "a1",
   Name: "Scout",
@@ -179,6 +184,23 @@ describe("App shell", () => {
     expect(screen.getByTestId("scheduler-view-mock")).toBeTruthy();
     expect(screen.getByTestId("titlebar-strip").textContent).toContain(
       "Schedules"
+    );
+    await view.unmount();
+  });
+
+  it("renders the knowledge rail item and swaps the pane when activated", async () => {
+    const view = await renderUI(<App />);
+    expect(railAside().textContent).toContain("Knowledge");
+
+    await act(async () => {
+      useNavStore.setState({ menu: "knowledge" });
+    });
+
+    const main = document.querySelector("main");
+    expect(main?.getAttribute("data-active-menu")).toBe("knowledge");
+    expect(screen.getByTestId("knowledge-view-mock")).toBeTruthy();
+    expect(screen.getByTestId("titlebar-strip").textContent).toContain(
+      "Knowledge"
     );
     await view.unmount();
   });

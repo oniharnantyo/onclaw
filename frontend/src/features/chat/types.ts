@@ -13,6 +13,7 @@ import type {
   ModelCapability,
   ProviderView,
 } from "../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
+import type { KnowledgeDocument } from "../../lib/client";
 import type { Unsubscribe } from "../../lib/transport";
 
 export interface UserEntry {
@@ -140,13 +141,24 @@ export interface TrajectoryTabData {
   transcriptPath: string;
 }
 
+/** Data carried by a knowledge document preview tab (add-knowledge-corpus,
+ * spec chat-panels "Knowledge document opens preview"): the catalog id the
+ * knowledge-scoped reader fetches plus the display name and mime the tab
+ * renders from. */
+export interface KnowledgeDocTabData {
+  docId: string;
+  filename: string;
+  mime: string;
+}
+
 /**
  * One open right-panel tab (task 8.2). `kind` selects the renderer in the
  * panel's content registry; `identity` deduplicates re-opens of the same
  * content. Sources (task 8.3): prompt documents, workspace files (also
  * serving subagent trajectory files — those are workspace-relative paths in
- * `.tasks/`), workspace directory listings, and delegated task trajectories
- * (design D3, spec merge-right-bar-previews).
+ * `.tasks/`), workspace directory listings, delegated task trajectories
+ * (design D3, spec merge-right-bar-previews), and knowledge documents
+ * (add-knowledge-corpus, spec chat-panels).
  */
 export type PanelTab =
   | {
@@ -176,7 +188,27 @@ export type PanelTab =
       identity: string;
       title: string;
       data: TrajectoryTabData;
+    }
+  | {
+      id: string;
+      kind: "knowledge-doc";
+      identity: string;
+      title: string;
+      data: KnowledgeDocTabData;
     };
+
+/** Builds a knowledge-document preview tab (add-knowledge-corpus): the
+ * knowledge panel and the Knowledge menu open documents through this; the
+ * identity pins the catalog id, so re-activating the same document raises
+ * the open tab instead of duplicating it. */
+export function knowledgeDocTab(doc: KnowledgeDocument): Omit<PanelTab, "id"> {
+  return {
+    kind: "knowledge-doc",
+    identity: `knowledge-doc:${doc.id}`,
+    title: doc.filename,
+    data: { docId: doc.id, filename: doc.filename, mime: doc.mime },
+  };
+}
 
 export interface ChatStore {
   agents: Agent[];

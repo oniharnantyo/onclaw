@@ -30,7 +30,7 @@ import type {
   Agent,
   Hook,
 } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
-import type { Client } from "../../../lib/client";
+import type { Client, KnowledgeDocument } from "../../../lib/client";
 
 // The mutable payloads the mocked client hands out; tests re-point them to
 // simulate a regeneration's reloaded documents and refreshed row.
@@ -92,6 +92,9 @@ type MockedClient = Client & {
     getPromptDocuments: MockFn;
     savePromptDocument: MockFn;
     regeneratePrompts: MockFn;
+  };
+  knowledge: {
+    list: MockFn;
   };
   settings: {
     providers: MockFn;
@@ -167,6 +170,9 @@ function makeClient(): MockedClient {
           PromptsError: "",
         });
       }),
+    },
+    knowledge: {
+      list: vi.fn(async (): Promise<KnowledgeDocument[]> => []),
     },
     settings: {
       providers: vi.fn(async (): Promise<ProviderView[]> => providerList),

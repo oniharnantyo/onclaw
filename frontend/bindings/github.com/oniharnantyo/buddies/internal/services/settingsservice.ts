@@ -86,6 +86,16 @@ export function CreateBrowserProfile(name: string): $CancellablePromise<void> {
 }
 
 /**
+ * CreateDocumentPreset stores a new preset for the format (an empty format
+ * defaults to pdf, the v1-only format). The name must be non-empty and the
+ * config valid JSON; names are unique per format case-insensitively — a
+ * collision is store.ErrDuplicate.
+ */
+export function CreateDocumentPreset(format: string, name: string, configJSON: string): $CancellablePromise<$models.DocumentPresetEntry> {
+    return $Call.ByID(761483398, format, name, configJSON);
+}
+
+/**
  * CreateHook stores a new hook definition, assigning its ID and timestamps.
  * A duplicate hook name is an error; unknown events, unsupported handler
  * types, and invalid configs are rejected before the write.
@@ -123,6 +133,19 @@ export function CreateProvider(input: $models.ProviderInput): $CancellablePromis
 }
 
 /**
+ * DefaultDocumentPreset returns the stored default preset NAME — empty when
+ * none was ever set. The name is returned verbatim from storage: a default
+ * naming a since-deleted preset is left dangling and still reads back
+ * (the tool resolves a dangling default to "no default"; see
+ * DeleteDocumentPreset). The format parameter names the format the default
+ * applies to; v1 stores a single default per tool, and PDF is the only
+ * format.
+ */
+export function DefaultDocumentPreset(format: string): $CancellablePromise<string> {
+    return $Call.ByID(2754689611, format);
+}
+
+/**
  * DeleteBrowserProfile removes a profile: it closes the profile's live
  * browser (if any), deletes its directory, and — when the persisted config
  * named it the default profile — resets the config's default profile to
@@ -131,6 +154,19 @@ export function CreateProvider(input: $models.ProviderInput): $CancellablePromis
  */
 export function DeleteBrowserProfile(name: string): $CancellablePromise<void> {
     return $Call.ByID(1387225402, name);
+}
+
+/**
+ * DeleteDocumentPreset removes the preset's row only — generated documents
+ * are workspace files and are never touched. Unknown id is store.ErrNotFound.
+ * Deleting the preset named as the default intentionally leaves that stored
+ * default dangling: agents resolve presets by name and the create_document
+ * tool treats an unresolvable default as "no default" (spec: deleting the
+ * default resets the selection to none), so the service does not clear the
+ * tool_settings row transactionally.
+ */
+export function DeleteDocumentPreset(id: string): $CancellablePromise<void> {
+    return $Call.ByID(3823308581, id);
 }
 
 /**
@@ -179,6 +215,15 @@ export function DisconnectMCPServer(id: string): $CancellablePromise<store$0.MCP
 }
 
 /**
+ * DuplicateDocumentPreset copies the preset to newName within its format,
+ * config included. Unknown id is store.ErrNotFound; a colliding newName is
+ * store.ErrDuplicate.
+ */
+export function DuplicateDocumentPreset(id: string, newName: string): $CancellablePromise<$models.DocumentPresetEntry> {
+    return $Call.ByID(82822463, id, newName);
+}
+
+/**
  * Gateway returns the gateway settings singleton. When nothing was ever
  * saved the defaults are returned: the gateway enabled, no default agent.
  */
@@ -200,6 +245,14 @@ export function HookExecutions(): $CancellablePromise<store$0.HookExecution[] | 
  */
 export function Hooks(): $CancellablePromise<store$0.Hook[] | null> {
     return $Call.ByID(111503052);
+}
+
+/**
+ * ListDocumentPresets returns the format's presets, ordered by name. The
+ * result is never nil.
+ */
+export function ListDocumentPresets(format: string): $CancellablePromise<$models.DocumentPresetEntry[] | null> {
+    return $Call.ByID(1947546555, format);
 }
 
 /**
@@ -310,6 +363,17 @@ export function SeedCanonicalModels(): $CancellablePromise<void> {
 }
 
 /**
+ * SetDefaultDocumentPreset stores the format's default preset NAME; an empty
+ * name clears the default (the stored field becomes empty). A non-empty name
+ * must resolve to a preset of the format — store.ErrNotFound otherwise; the
+ * canonical spelling of the matched preset is stored. The document under the
+ * tool key is exactly {"defaultPreset":"<name>"}.
+ */
+export function SetDefaultDocumentPreset(format: string, name: string): $CancellablePromise<void> {
+    return $Call.ByID(2211022059, format, name);
+}
+
+/**
  * SetSkillEnabled toggles the global enable flag of the named skill;
  * store.ErrNotFound when absent.
  */
@@ -364,6 +428,16 @@ export function Tools(): $CancellablePromise<$models.ToolEntry[] | null> {
  */
 export function UnassignHook(agentID: string, hookID: string): $CancellablePromise<void> {
     return $Call.ByID(2763910749, agentID, hookID);
+}
+
+/**
+ * UpdateDocumentPreset rewrites the preset's name and config, preserving its
+ * format (an edit never moves a preset between formats). Unknown id is
+ * store.ErrNotFound; a name colliding with another preset of the same format
+ * case-insensitively is store.ErrDuplicate.
+ */
+export function UpdateDocumentPreset(id: string, name: string, configJSON: string): $CancellablePromise<$models.DocumentPresetEntry> {
+    return $Call.ByID(3868538575, id, name, configJSON);
 }
 
 /**

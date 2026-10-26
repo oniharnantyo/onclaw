@@ -42,8 +42,10 @@ export function Create(input: $models.CreateAgentInput): $CancellablePromise<sto
 /**
  * Delete removes the agent; store.ErrNotFound when absent. The agent's
  * session history is preserved (spec: deleting an agent keeps its sessions),
- * and the workspace directory is removed best-effort after the row delete —
- * a removal failure is logged and never fails the delete (design D11).
+ * the workspace directory is removed best-effort after the row delete, and
+ * the agent's knowledge scope follows it (the FK cascade removed its
+ * document rows; the files go best-effort — a removal failure is logged and
+ * never fails the delete, design D11 / add-knowledge-corpus D9).
  */
 export function Delete(id: string): $CancellablePromise<void> {
     return $Call.ByID(1602241156, id);

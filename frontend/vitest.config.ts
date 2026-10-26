@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { defineConfig } from "vite-plus";
 
 // Separate from vite.config.ts (which is a vite-plus config): tests run
 // through plain vitest so `npm run test` stays independent of the app build.

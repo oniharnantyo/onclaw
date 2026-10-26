@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/oniharnantyo/buddies/internal/agents"
+	"github.com/oniharnantyo/buddies/internal/knowledge"
 	"github.com/oniharnantyo/buddies/internal/promptgen"
 	"github.com/oniharnantyo/buddies/internal/store"
 	"github.com/oniharnantyo/buddies/internal/workspaces"
@@ -87,13 +88,18 @@ type AgentsService struct {
 	store      store.Store
 	prompts    PromptGenerator
 	workspaces *workspaces.Manager
+	// knowledge removes the agent's knowledge scope directory after the row
+	// delete cascaded its document rows (add-knowledge-corpus design D9);
+	// nil — a runtime built without a corpus — skips the cleanup.
+	knowledge *knowledge.Store
 }
 
 // NewAgentsService returns the agent management service over s, generating
 // prompt documents through prompts and keeping their files under ws. All
-// three dependencies are required.
-func NewAgentsService(s store.Store, prompts PromptGenerator, ws *workspaces.Manager) *AgentsService {
-	return &AgentsService{store: s, prompts: prompts, workspaces: ws}
+// three dependencies are required. knowledge is the durable corpus store
+// whose agent scopes Delete cleans up; nil skips that cleanup.
+func NewAgentsService(s store.Store, prompts PromptGenerator, ws *workspaces.Manager, k *knowledge.Store) *AgentsService {
+	return &AgentsService{store: s, prompts: prompts, workspaces: ws, knowledge: k}
 }
 
 // Create stores a new agent and generates its prompt documents synchronously
@@ -233,8 +239,10 @@ func (s *AgentsService) Update(ctx context.Context, agent store.Agent) (store.Ag
 
 // Delete removes the agent; store.ErrNotFound when absent. The agent's
 // session history is preserved (spec: deleting an agent keeps its sessions),
-// and the workspace directory is removed best-effort after the row delete —
-// a removal failure is logged and never fails the delete (design D11).
+// the workspace directory is removed best-effort after the row delete, and
+// the agent's knowledge scope follows it (the FK cascade removed its
+// document rows; the files go best-effort — a removal failure is logged and
+// never fails the delete, design D11 / add-knowledge-corpus D9).
 func (s *AgentsService) Delete(ctx context.Context, id string) error {
 	stored, err := s.store.Agents().ByID(ctx, id)
 	if err != nil {
@@ -249,6 +257,13 @@ func (s *AgentsService) Delete(ctx context.Context, id string) error {
 	}
 	if err := s.workspaces.Remove(stored.Slug); err != nil {
 		slog.Warn("delete agent: workspace removal failed", "slug", stored.Slug, "error", err)
+	}
+	if s.knowledge != nil {
+		// The corpus lives outside the workspace (add-knowledge-corpus D2),
+		// so the workspace removal above never touches it.
+		if err := s.knowledge.RemoveAgentScope(ctx, stored.Slug); err != nil {
+			slog.Warn("delete agent: knowledge scope removal failed", "slug", stored.Slug, "error", err)
+		}
 	}
 	return nil
 }

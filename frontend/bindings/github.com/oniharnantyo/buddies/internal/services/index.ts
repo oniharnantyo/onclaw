@@ -6,6 +6,7 @@ import * as AppInfo from "./appinfo.js";
 import * as ChatService from "./chatservice.js";
 import * as ClipboardService from "./clipboardservice.js";
 import * as GatewayService from "./gatewayservice.js";
+import * as KnowledgeService from "./knowledgeservice.js";
 import * as ScheduleService from "./scheduleservice.js";
 import * as SettingsService from "./settingsservice.js";
 export {
@@ -14,6 +15,7 @@ export {
     ChatService,
     ClipboardService,
     GatewayService,
+    KnowledgeService,
     ScheduleService,
     SettingsService
 };
@@ -25,8 +27,12 @@ export type {
     BrowserProfile,
     BrowserScreenshotContent,
     CreateAgentInput,
+    DocumentPresetEntry,
     GatewayStateEvent,
+    GeneratedDocumentContent,
     HookTestResult,
+    KnowledgeChangedEvent,
+    KnowledgeDocument,
     MCPOAuthCompletedEvent,
     Metadata,
     ModelCapability,

@@ -6,7 +6,9 @@ import (
 	"github.com/oniharnantyo/buddies/internal/agents/hooks"
 	"github.com/oniharnantyo/buddies/internal/agents/mcp"
 	"github.com/oniharnantyo/buddies/internal/agents/subagents"
+	"github.com/oniharnantyo/buddies/internal/agents/tools/docgen"
 	"github.com/oniharnantyo/buddies/internal/attachments"
+	"github.com/oniharnantyo/buddies/internal/knowledge"
 	"github.com/oniharnantyo/buddies/internal/scheduler"
 	"github.com/oniharnantyo/buddies/internal/sessions"
 	"github.com/oniharnantyo/buddies/internal/store"
@@ -172,6 +174,19 @@ func WithAttachments(dir string) Option {
 	}
 }
 
+// WithKnowledge supplies the knowledge corpus store turns save documents
+// into through save_document and mount read-only at /knowledge
+// (add-knowledge-corpus design D3/D4). Unset — the default — the save_document
+// tool is withheld and no turn exposes the corpus: agents keep chatting
+// without knowledge.
+func WithKnowledge(dir string) Option {
+	return func(m *manager) {
+		if dir != "" {
+			m.knowledge = knowledge.NewStore(dir, m.store.Documents())
+		}
+	}
+}
+
 // WithBrowserDir supplies the browser tool's home directory (spec
 // add-browser-tool D10): profile user-data directories root at
 // <browserDir>/profiles and screenshots at <browserDir>/screenshots. Unset —
@@ -228,6 +243,7 @@ func newManager(s store.Store, svc sessions.Service, registry modelRegistry, opt
 		resolver:     NewCapabilityResolver(s),
 		mcpManager:   noopMCPServer{},
 		hooks:        hooks.NewNoopDispatcher(),
+		docgen:       docgen.NewConverter(),
 		baseCtx:      context.Background(),
 		subs:         make(map[string]map[int]*streamSub),
 		running:      make(map[string]*runningTurn),

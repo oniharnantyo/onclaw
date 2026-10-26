@@ -21,7 +21,10 @@ import type {
   BrowserProfile,
   BrowserScreenshotContent,
   CreateAgentInput,
+  DocumentPresetEntry,
   GatewayStateEvent,
+  GeneratedDocumentContent,
+  KnowledgeDocument,
   Metadata,
   ModelCapability,
   PromptDocuments,
@@ -52,10 +55,12 @@ import type {
 
 import {
   GATEWAY_STATE_EVENT,
+  KNOWLEDGE_CHANGED_EVENT,
   MCP_OAUTH_COMPLETED_EVENT,
   SCHEDULES_CHANGED_EVENT,
   SETTINGS_OPEN_EVENT,
   sessionEventName,
+  type KnowledgeChangedEvent,
   type MCPOAuthCompletedEvent,
   type SchedulesChangedEvent,
 } from "./events";
@@ -96,6 +101,20 @@ function withoutTimestamps<T extends { CreatedAt: string; UpdatedAt: string }>(
  */
 export type { BrowserScreenshotContent };
 
+/**
+ * One generated document served through the bound read (add-create-document
+ * D7): base64 bytes plus the byte size, addressed by the plain file name the
+ * create_document tool reported. The generated binding's own type,
+ * re-exported so callers keep one import surface.
+ */
+export type { GeneratedDocumentContent };
+
+/**
+ * One saved document preset (add-create-document D4), re-exported so feature
+ * code imports one surface.
+ */
+export type { DocumentPresetEntry };
+
 export type { ProviderModelInput, ProviderModelView };
 
 export type { TurnStateResult };
@@ -103,6 +122,16 @@ export type { TurnStateResult };
 /** The generated scheduler binding types (add-scheduler D13), re-exported so
  * feature code imports one surface. */
 export type { Preview, ScheduleInput, ScheduleView };
+
+/** The generated knowledge document view (add-knowledge-corpus D8),
+ * re-exported so feature code imports one surface. */
+export type { KnowledgeDocument };
+
+/** A document's scope: every agent, or one agent (add-knowledge-corpus D6). */
+export type KnowledgeScope = "global" | "agent";
+
+/** Handler receiving one knowledge corpus change notification (design D8). */
+export type KnowledgeChangedHandler = (event: KnowledgeChangedEvent) => void;
 
 /** Handler receiving one schedules change notification (design D10). */
 export type SchedulesChangedHandler = (event: SchedulesChangedEvent) => void;
@@ -212,6 +241,17 @@ export interface Client {
      * rejects.
      */
     browserScreenshot(name: string): Promise<BrowserScreenshotContent>;
+    /**
+     * Serves one generated document's bytes by the file name the
+     * create_document tool reported (add-create-document D7): base64 plus
+     * the byte size. The backend refuses any name carrying directory
+     * components before touching the filesystem and resolves it solely
+     * inside the agent's workspace; a refused or missing file rejects.
+     */
+    generatedDocument(
+      agentID: string,
+      name: string
+    ): Promise<GeneratedDocumentContent>;
     /** Reads one jailed workspace file of the agent (design D8). */
     workspaceFile(agentID: string, relPath: string): Promise<string>;
     /** Lists one jailed workspace directory of the agent (design D8). */
@@ -322,6 +362,37 @@ export interface Client {
      * deleted one.
      */
     deleteBrowserProfile(name: string): Promise<void>;
+    /** The format's document presets, ordered by name (add-create-document D4). */
+    documentPresets(format: string): Promise<DocumentPresetEntry[]>;
+    /**
+     * Stores a new document preset for the format; a name colliding with
+     * another preset of the format (case-insensitively) rejects.
+     */
+    createDocumentPreset(
+      format: string,
+      name: string,
+      configJSON: string
+    ): Promise<DocumentPresetEntry>;
+    /** Rewrites a preset's name and config; its format is preserved. */
+    updateDocumentPreset(
+      id: string,
+      name: string,
+      configJSON: string
+    ): Promise<DocumentPresetEntry>;
+    /** Copies a preset to a new name within its format, config included. */
+    duplicateDocumentPreset(
+      id: string,
+      newName: string
+    ): Promise<DocumentPresetEntry>;
+    /**
+     * Removes the preset. A stored default naming it dangles by design —
+     * the tool resolves an unresolvable default to "no default".
+     */
+    deleteDocumentPreset(id: string): Promise<void>;
+    /** The format's default preset name; empty when none is set. */
+    defaultDocumentPreset(format: string): Promise<string>;
+    /** Stores the default preset name (canonicalized); empty clears it. */
+    setDefaultDocumentPreset(format: string, name: string): Promise<void>;
     hooks(): Promise<Hook[]>;
     createHook(hook: Hook): Promise<Hook>;
     updateHook(hook: Hook): Promise<Hook>;
@@ -401,6 +472,36 @@ export interface Client {
      */
     preview(expr: string): Promise<Preview>;
   };
+  knowledge: {
+    /** Every cataloged document, in the store's name order. */
+    list(): Promise<KnowledgeDocument[]>;
+    /**
+     * Uploads one document (base64 content, the chat-attachments pattern);
+     * an agent scope targets the agent resolved from agentID. The corpus
+     * gate's rejections (unsupported kind, oversize, duplicate name in the
+     * scope) reject with the backend's reason.
+     */
+    upload(
+      filename: string,
+      mime: string,
+      data: string,
+      scope: KnowledgeScope,
+      agentID: string,
+      description: string
+    ): Promise<KnowledgeDocument>;
+    /** Removes one document from the list, catalog, and disk. */
+    delete(id: string): Promise<void>;
+    /** Promotes to global or demotes to the agent resolved from agentID. */
+    setScope(
+      id: string,
+      scope: KnowledgeScope,
+      agentID: string
+    ): Promise<KnowledgeDocument>;
+    /** Rewrites one document's description. */
+    setDescription(id: string, description: string): Promise<KnowledgeDocument>;
+    /** One document's base64-encoded bytes, for previews. */
+    content(id: string): Promise<string>;
+  };
   events: {
     /**
      * Subscribes to the native menu's Settings… signal (`settings:open`,
@@ -419,6 +520,13 @@ export interface Client {
      * emitted for every mutation, fire, and miss.
      */
     onSchedulesChanged(handler: SchedulesChangedHandler): Unsubscribe;
+    /**
+     * Subscribes to knowledge corpus changes (`knowledge:changed`,
+     * add-knowledge-corpus D8): emitted for every mutation — upload, agent
+     * save, scope change, description edit, delete — with an empty payload,
+     * so surfaces re-list.
+     */
+    onKnowledgeChanged(handler: KnowledgeChangedHandler): Unsubscribe;
   };
   windowTheme: {
     /** Forces the native window appearance to match the app theme. */
@@ -503,6 +611,11 @@ export function createClient(transport: Transport = wailsTransport): Client {
         name: string
       ): Promise<BrowserScreenshotContent> =>
         unwrap(await transport.chat.BrowserScreenshot(name)),
+      generatedDocument: async (
+        agentID: string,
+        name: string
+      ): Promise<GeneratedDocumentContent> =>
+        unwrap(await transport.chat.GeneratedDocument(agentID, name)),
       workspaceFile: (agentID: string, relPath: string): Promise<string> =>
         transport.chat.WorkspaceFile(agentID, relPath),
       listWorkspace: async (
@@ -647,6 +760,40 @@ export function createClient(transport: Transport = wailsTransport): Client {
         transport.settings.CreateBrowserProfile(name),
       deleteBrowserProfile: (name: string): Promise<void> =>
         transport.settings.DeleteBrowserProfile(name),
+      // The bridge maps an empty Go slice to null; the preset list iterates
+      // the result, so normalize it once here.
+      documentPresets: async (
+        format: string
+      ): Promise<DocumentPresetEntry[]> => {
+        const presets = unwrap(
+          await transport.settings.ListDocumentPresets(format)
+        );
+
+        return Array.isArray(presets) ? presets : [];
+      },
+      createDocumentPreset: (
+        format: string,
+        name: string,
+        configJSON: string
+      ): Promise<DocumentPresetEntry> =>
+        transport.settings.CreateDocumentPreset(format, name, configJSON),
+      updateDocumentPreset: (
+        id: string,
+        name: string,
+        configJSON: string
+      ): Promise<DocumentPresetEntry> =>
+        transport.settings.UpdateDocumentPreset(id, name, configJSON),
+      duplicateDocumentPreset: (
+        id: string,
+        newName: string
+      ): Promise<DocumentPresetEntry> =>
+        transport.settings.DuplicateDocumentPreset(id, newName),
+      deleteDocumentPreset: (id: string): Promise<void> =>
+        transport.settings.DeleteDocumentPreset(id),
+      defaultDocumentPreset: (format: string): Promise<string> =>
+        transport.settings.DefaultDocumentPreset(format),
+      setDefaultDocumentPreset: (format: string, name: string): Promise<void> =>
+        transport.settings.SetDefaultDocumentPreset(format, name),
       hooks: async (): Promise<Hook[]> =>
         unwrap(await transport.settings.Hooks()),
       createHook: (hook: Hook): Promise<Hook> =>
@@ -714,6 +861,39 @@ export function createClient(transport: Transport = wailsTransport): Client {
       preview: (expr: string): Promise<Preview> =>
         transport.schedules.Preview(expr),
     },
+    knowledge: {
+      list: async (): Promise<KnowledgeDocument[]> =>
+        unwrap(await transport.knowledge.List()),
+      upload: (
+        filename: string,
+        mime: string,
+        data: string,
+        scope: KnowledgeScope,
+        agentID: string,
+        description: string
+      ): Promise<KnowledgeDocument> =>
+        transport.knowledge.Upload(
+          filename,
+          mime,
+          data,
+          scope,
+          agentID,
+          description
+        ),
+      delete: (id: string): Promise<void> => transport.knowledge.Delete(id),
+      setScope: (
+        id: string,
+        scope: KnowledgeScope,
+        agentID: string
+      ): Promise<KnowledgeDocument> =>
+        transport.knowledge.SetScope(id, scope, agentID),
+      setDescription: (
+        id: string,
+        description: string
+      ): Promise<KnowledgeDocument> =>
+        transport.knowledge.SetDescription(id, description),
+      content: (id: string): Promise<string> => transport.knowledge.Content(id),
+    },
     events: {
       onSettingsOpen: (handler: () => void): Unsubscribe =>
         transport.onEvent(SETTINGS_OPEN_EVENT, (): void => {
@@ -739,6 +919,12 @@ export function createClient(transport: Transport = wailsTransport): Client {
             handler(data as SchedulesChangedEvent);
           }
         ),
+      onKnowledgeChanged: (handler: KnowledgeChangedHandler): Unsubscribe =>
+        transport.onEvent(KNOWLEDGE_CHANGED_EVENT, (): void => {
+          // SAFETY: KNOWLEDGE_CHANGED_EVENT carries an empty payload; the
+          // event object itself is the whole notification.
+          handler({} as KnowledgeChangedEvent);
+        }),
     },
     windowTheme: {
       setLight: (light: boolean): Promise<void> =>

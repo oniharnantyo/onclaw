@@ -15,6 +15,10 @@ type Layout struct {
 	// Attachments is the directory holding stored chat-attachment files,
 	// named by capability key (design D5).
 	Attachments string
+	// Knowledge is the root of the durable knowledge corpus
+	// (add-knowledge-corpus design D2): global documents under global/,
+	// agent-scoped documents under agents/<agent-slug>/.
+	Knowledge string
 	// Browser is the root for the browser tool's on-disk state: each named
 	// profile's Chromium user-data directory lives under profiles/, and
 	// screenshots under screenshots/.

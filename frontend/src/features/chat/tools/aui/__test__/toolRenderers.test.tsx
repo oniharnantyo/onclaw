@@ -624,6 +624,7 @@ describe("the renderer catalogue", () => {
       "agent",
       "task_output",
       "task_stop",
+      "create_document",
     ];
 
     for (const name of BUILTINS) {

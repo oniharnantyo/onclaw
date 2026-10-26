@@ -460,6 +460,9 @@ func (m *manager) composeResumeRun(ctx context.Context, rt *runningTurn, sess se
 		if skillsCap != nil && m.skillsDir != "" {
 			fsCap.ExtraRoots = []string{m.skillsDir}
 		}
+		// The read-only corpus mount rides the jail when the gate exposed it
+		// (add-knowledge-corpus design D7), matching the fresh-turn shape.
+		fsCap.Knowledge = surface.knowledge
 		cfg.Filesystem = fsCap
 
 		extraRoots = fsCap.ExtraRoots
@@ -511,6 +514,7 @@ func (m *manager) composeResumeRun(ctx context.Context, rt *runningTurn, sess se
 			MCPTools:         mcpTools,
 			AgentDir:         surface.agentDir,
 			ExtraRoots:       extraRoots,
+			Knowledge:        surface.knowledge,
 			Shell:            surface.shell,
 			FSDisabled:       surface.fsDisabled,
 			PlantaskDisabled: surface.plantaskDisabled,

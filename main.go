@@ -48,6 +48,7 @@ func init() {
 	application.RegisterEvent[services.GatewayStateEvent](services.EventGatewayState)
 	application.RegisterEvent[services.MCPOAuthCompletedEvent](services.EventMCPOAuthCompleted)
 	application.RegisterEvent[services.SchedulesChangedEvent](services.EventSchedulesChanged)
+	application.RegisterEvent[services.KnowledgeChangedEvent](services.EventKnowledgeChanged)
 }
 
 // wailsEmitter adapts services.Emitter onto the Wails event bus. The app
@@ -124,6 +125,7 @@ func runDesktop(ctx context.Context, app *cli.App, emitter *wailsEmitter, opener
 			application.NewService(app.Services.Settings),
 			application.NewService(app.Services.Gateway),
 			application.NewService(app.Services.Schedule),
+			application.NewService(app.Services.Knowledge),
 			application.NewService(services.NewClipboardService()),
 			application.NewService(windowTheme),
 		},

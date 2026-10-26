@@ -18,6 +18,11 @@ const (
 	// (add-scheduler design D10) so the frontend refetches instead of
 	// polling. The payload is a SchedulesChangedEvent.
 	EventSchedulesChanged = "schedules:changed"
+	// EventKnowledgeChanged announces a knowledge-corpus mutation — upload,
+	// delete, scope change, or description edit (add-knowledge-corpus
+	// design D8) — so open knowledge surfaces re-list. The payload is a
+	// KnowledgeChangedEvent.
+	EventKnowledgeChanged = "knowledge:changed"
 )
 
 // GatewayStateEvent is the payload of EventGatewayState. State mirrors
@@ -43,6 +48,11 @@ type SchedulesChangedEvent struct {
 	SessionID  string `json:"sessionId"`
 	AgentID    string `json:"agentId"`
 }
+
+// KnowledgeChangedEvent is the payload of EventKnowledgeChanged. It carries
+// no fields: the change is corpus-wide from the surfaces' point of view, so
+// they simply re-list (add-knowledge-corpus design D8).
+type KnowledgeChangedEvent struct{}
 
 // SessionEventName returns the event name carrying one session's live turn
 // events: "session:<id>:event". The payload is a sessions.Event. The name is

@@ -18,6 +18,7 @@ import type { ReactElement } from "react";
 import { ToolFallback } from "@/components/assistant-ui/elements/tool-fallback.aui";
 
 import { BrowserTool } from "./BrowserTool";
+import { CreateDocumentTool } from "./CreateDocumentTool";
 import { prettyOrVerbatim } from "./fallbackBody";
 import { ExecuteTool } from "./ExecuteTool";
 import { EditFileTool, ReadFileTool, WriteFileTool } from "./FileTools";
@@ -95,5 +96,6 @@ export const toolRenderers = {
   http_get: HTTPGetTool,
   current_time: CurrentTimeTool,
   delete_file: DeleteFileTool,
+  create_document: CreateDocumentTool,
   fallback: FallbackTool,
 } satisfies ToolRendererMap;

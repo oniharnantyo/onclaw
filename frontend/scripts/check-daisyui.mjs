@@ -42,7 +42,10 @@ const FAMILIES = [
   ["steps", /^(steps|step)$/],
   ["fieldset", /^(fieldset|fieldset-[a-z0-9-]+)$/],
   ["avatar", /^(avatar|avatar-[a-z0-9-]+)$/],
-  ["chat", /^(chat|chat-(?:start|end|bubble(?:-[a-z0-9-]+)?|row|header|footer|image))$/],
+  [
+    "chat",
+    /^(chat|chat-(?:start|end|bubble(?:-[a-z0-9-]+)?|row|header|footer|image))$/,
+  ],
   ["swap", /^swap$/],
   ["join", /^(join|join-item)$/],
   // daisyUI UTILITY classes that retire with the theme tokens (design.md D1).
@@ -52,9 +55,15 @@ const FAMILIES = [
   // utilities Tailwind emits under the same names daisyUI used; the family
   // cannot tell them apart. primary/secondary/neutral/info/warning/error stay:
   // they remain daisyUI-only names with no contract counterpart.
-  ["base-content", /^(text-base-content|bg-base-(?:100|200|300)|border-base-(?:100|200|300))$/],
+  [
+    "base-content",
+    /^(text-base-content|bg-base-(?:100|200|300)|border-base-(?:100|200|300))$/,
+  ],
   ["rounded", /^(rounded-box|rounded-field|rounded-selector)$/],
-  ["theme-colors", /^(?:text|bg|border)-(?:primary|secondary|neutral|info|warning|error)(?:-content)?$/],
+  [
+    "theme-colors",
+    /^(?:text|bg|border)-(?:primary|secondary|neutral|info|warning|error)(?:-content)?$/,
+  ],
 ];
 
 // A token is a daisyUI hit only in a class-string context: className/class
@@ -67,6 +76,7 @@ const CLASS_STRING_PATTERNS = [
   /(?:className|class)\s*=\s*\{?`([^`]*)`/g,
   /querySelector(?:All)?\(\s*['"`]\.([^'"`\s]+)/g,
 ];
+
 const QUOTED_IN_TEMPLATE = /"([^"]*)"|'([^']*)'/g;
 
 const isSourceFile = (name) => /\.(ts|tsx)$/.test(name);
@@ -74,6 +84,7 @@ const isSourceFile = (name) => /\.(ts|tsx)$/.test(name);
 function* walk(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const path = join(dir, entry.name);
+
     if (entry.isDirectory()) yield* walk(path);
     else if (isSourceFile(entry.name)) yield path;
   }
@@ -83,9 +94,12 @@ function* walk(dir) {
 function* classTokens(line) {
   for (const re of CLASS_STRING_PATTERNS) {
     re.lastIndex = 0;
+
     for (const m of line.matchAll(re)) {
       const body = m[1] ?? "";
+
       for (const token of body.split(/[\s"'`]+/).filter(Boolean)) yield token;
+
       // Conditional classes quoted inside a template body.
       for (const q of body.matchAll(QUOTED_IN_TEMPLATE)) {
         for (const token of (q[1] ?? q[2] ?? "").split(/\s+/).filter(Boolean)) {
@@ -103,30 +117,38 @@ for (const file of walk(root)) {
   const lines = readFileSync(file, "utf8").split("\n");
   lines.forEach((line, i) => {
     const seen = new Set();
+
     for (const token of classTokens(line)) {
       if (seen.has(token)) continue;
       seen.add(token);
+
       for (const [family, re] of FAMILIES) {
-        if (re.test(token)) hits.push({ file: rel, line: i + 1, token, family });
+        if (re.test(token))
+          hits.push({ file: rel, line: i + 1, token, family });
       }
     }
   });
 }
 
 const byFamily = new Map();
-for (const hit of hits) byFamily.set(hit.family, (byFamily.get(hit.family) ?? 0) + 1);
+
+for (const hit of hits)
+  byFamily.set(hit.family, (byFamily.get(hit.family) ?? 0) + 1);
 
 for (const hit of hits) {
   console.log(`${hit.file}:${hit.line}: ${hit.token} (${hit.family})`);
 }
 
 console.log("");
+
 console.log("per-family breakdown (desc):");
+
 for (const [family, count] of [...byFamily].sort((a, b) => b[1] - a[1])) {
   console.log(`  ${family}: ${count}`);
 }
 
 console.log("");
+
 console.log(`daisyUI usage: ${hits.length}`);
 
 if (process.argv.includes("--strict") && hits.length > 0) process.exit(1);

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactElement } from "react";
 
 import type { ToolEntry } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
@@ -10,6 +10,7 @@ import { Toggle } from "../../../components/ui/Toggle";
 import { client } from "../../../lib/client";
 import { cn } from "../../../lib/cn";
 import BrowserConfigDialog from "./BrowserConfigDialog";
+import DocumentConfigDialog from "./DocumentConfigDialog";
 import WebSearchConfigDialog from "./WebSearchConfigDialog";
 
 /** The tools with structured configuration; each one's gear opens its
@@ -19,6 +20,8 @@ import WebSearchConfigDialog from "./WebSearchConfigDialog";
 const WEB_SEARCH_TOOL = "web_search";
 
 const BROWSER_TOOL = "browser";
+
+const DOCUMENT_TOOL = "create_document";
 
 /** Kit glyph per row, from the backend catalog's IconKey. */
 function toolIcon(entry: ToolEntry): IconName {
@@ -37,8 +40,9 @@ function toolLabel(entry: ToolEntry): string {
  * ToolsPane: the catalog listing with a global enable/disable per tool
  * (task 11.3), rendered in onclaw-v2's card anatomy — an accent icon tile,
  * the display name, the muted description, and a toggle; a disabled tool
- * dims to 70%. The web_search and browser rows carry gears opening their
- * configuration dialogs. Disabled tools are simply toggled off here; agent
+ * dims to 70%. The web_search, browser, and create_document rows carry
+ * gears opening their configuration dialogs. Disabled tools are simply
+ * toggled off here; agent
  * turns read the same catalog. The empty state offers a next step (task
  * 4.8): rescan the tool catalog.
  */
@@ -48,23 +52,27 @@ export default function ToolsPane(): ReactElement {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [configOpen, setConfigOpen] = useState(false);
   const [browserConfigOpen, setBrowserConfigOpen] = useState(false);
+  const [documentConfigOpen, setDocumentConfigOpen] = useState(false);
 
-  const load = useCallback(async (): Promise<void> => {
-    setLoading(true);
-    setLoadError(null);
-
-    try {
-      setTools(await client.settings.tools());
-    } catch (err) {
-      setLoadError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  /** Bumped by the rescan button to re-run the catalog fetch; mount is
+   * tick 0. The fetch itself lives in the effect (the dialog pattern) so no
+   * setState is synchronously reachable from it. */
+  const [reloadTick, setReloadTick] = useState(0);
 
   useEffect(() => {
+    const load = async (): Promise<void> => {
+      try {
+        const list = await client.settings.tools();
+        setTools(list);
+      } catch (err) {
+        setLoadError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setLoading(false);
+      }
+    };
+
     void load();
-  }, [load]);
+  }, [reloadTick]);
 
   const toggle = async (tool: ToolEntry, enabled: boolean): Promise<void> => {
     await client.settings.setToolEnabled(tool.Name, enabled);
@@ -105,7 +113,11 @@ export default function ToolsPane(): ReactElement {
               variant="ghost"
               size="sm"
               data-testid="tools-reload"
-              onClick={() => void load()}
+              onClick={() => {
+                setLoading(true);
+                setLoadError(null);
+                setReloadTick((n: number) => n + 1);
+              }}
             >
               Rescan catalog
             </Button>
@@ -115,6 +127,7 @@ export default function ToolsPane(): ReactElement {
         <div className="space-y-3" data-testid="tool-list">
           {tools.map((tool: ToolEntry) => {
             const isBrowser = tool.Name === BROWSER_TOOL;
+            const isDocument = tool.Name === DOCUMENT_TOOL;
 
             return (
               <div
@@ -139,17 +152,25 @@ export default function ToolsPane(): ReactElement {
                 </div>
 
                 <div className="flex items-center gap-2">
-                  {(tool.Name === WEB_SEARCH_TOOL || isBrowser) && (
+                  {(tool.Name === WEB_SEARCH_TOOL ||
+                    isBrowser ||
+                    isDocument) && (
                     <button
                       type="button"
                       aria-label={
-                        isBrowser ? "Configure Browser" : "Configure Web Search"
+                        isBrowser
+                          ? "Configure Browser"
+                          : isDocument
+                            ? "Configure Create Document"
+                            : "Configure Web Search"
                       }
                       data-testid={`btn-tool-config-${tool.Name}`}
                       onClick={() =>
                         isBrowser
                           ? setBrowserConfigOpen(true)
-                          : setConfigOpen(true)
+                          : isDocument
+                            ? setDocumentConfigOpen(true)
+                            : setConfigOpen(true)
                       }
                       className="flex h-8 w-8 items-center justify-center rounded-md border border-line text-muted transition-colors hover:border-accent hover:text-fg"
                     >
@@ -174,6 +195,9 @@ export default function ToolsPane(): ReactElement {
       )}
       {browserConfigOpen && (
         <BrowserConfigDialog onClose={() => setBrowserConfigOpen(false)} />
+      )}
+      {documentConfigOpen && (
+        <DocumentConfigDialog onClose={() => setDocumentConfigOpen(false)} />
       )}
     </div>
   );

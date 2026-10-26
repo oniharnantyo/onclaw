@@ -5,10 +5,12 @@
  * `getPromptDocuments` binding — design D8: persona docs keep using
  * GetPromptDocuments), one workspace file through the jailed
  * `workspaceFile` reader (with a Preview|Raw markdown toggle, design D6),
- * one workspace directory listing through `listWorkspace`, and a delegated
+ * one workspace directory listing through `listWorkspace`, a delegated
  * task's trajectory (designs D3–D5), read through the same jailed reader at
- * the task's recorded transcript path. A path the jail refuses renders the
- * refused outcome, never file content. Fetches run only while a tab shows.
+ * the task's recorded transcript path, and one knowledge document
+ * (add-knowledge-corpus) through the knowledge-scoped `content` reader. A
+ * path the jail refuses renders the refused outcome, never file content.
+ * Fetches run only while a tab shows.
  */
 import { useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
@@ -832,6 +834,181 @@ function TrajectoryPreview({ tab }: { tab: PanelTab }): ReactElement | null {
   );
 }
 
+/** True when a preview names a PDF document (add-knowledge-corpus): the
+ * corpus gate admits only text and PDF, so the mime decides the renderer. */
+function isPdfMime(mime: string): boolean {
+  return mime === "application/pdf";
+}
+
+/** Decodes base64 bytes to UTF-8 text unicode-safely: atob yields a binary
+ * string one byte per char, so the bytes round-trip through a Uint8Array
+ * before the TextDecoder sees them (multi-byte characters survive). */
+function decodeBase64ToText(base64: string): string {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+
+  return new TextDecoder().decode(bytes);
+}
+
+interface KnowledgeDocState {
+  loading: boolean;
+  /** Decoded text of a text document (null for PDFs). */
+  text: string | null;
+  /** Raw base64 bytes of a PDF document (null for text). */
+  pdfBase64: string | null;
+  error: string | null;
+}
+
+/** One knowledge document (add-knowledge-corpus, spec "Knowledge document
+ * opens preview"): the bytes fetched base64 through the knowledge-scoped
+ * `content` reader when the tab shows — text renders as read-only mono
+ * text, `.md`/`.markdown` names grow the workspace preview's Raw|Preview
+ * toggle (raw stays the default, design D6 parity), and PDFs render as an
+ * embedded document. Fetches run only while a tab shows. */
+function KnowledgeDocPreview({ tab }: { tab: PanelTab }): ReactElement | null {
+  const [state, setState] = useState<KnowledgeDocState>({
+    loading: true,
+    text: null,
+    pdfBase64: null,
+    error: null,
+  });
+
+  const [preview, setPreview] = useState(false);
+
+  useEffect(() => {
+    if (tab.kind !== "knowledge-doc") return;
+
+    // The panel keys each renderer by tab id, so a mount is always a fresh
+    // fetch: state only ever moves in the callbacks below, never inline.
+    let mounted = true;
+    client.knowledge
+      .content(tab.data.docId)
+      .then((base64: string): void => {
+        if (!mounted) return;
+
+        if (isPdfMime(tab.data.mime)) {
+          setState({
+            loading: false,
+            text: null,
+            pdfBase64: base64,
+            error: null,
+          });
+
+          return;
+        }
+
+        setState({
+          loading: false,
+          text: decodeBase64ToText(base64),
+          pdfBase64: null,
+          error: null,
+        });
+      })
+      .catch((err: Error): void => {
+        if (!mounted) return;
+
+        setState({
+          loading: false,
+          text: null,
+          pdfBase64: null,
+          error:
+            err instanceof Error
+              ? err.message
+              : "Failed to read the knowledge document",
+        });
+      });
+
+    return (): void => {
+      mounted = false;
+    };
+  }, [tab]);
+
+  if (tab.kind !== "knowledge-doc") return null;
+
+  return (
+    <div data-testid="panel-knowledge-doc">
+      {state.loading ? (
+        <p className="text-sm text-muted" data-testid="panel-preview-loading">
+          Loading…
+        </p>
+      ) : state.error !== null ? (
+        <p
+          className="text-sm text-dangertext"
+          data-testid="panel-preview-error"
+        >
+          {state.error}
+        </p>
+      ) : state.pdfBase64 !== null ? (
+        <object
+          className="h-[60vh] w-full rounded-md border border-line"
+          type="application/pdf"
+          aria-label={tab.data.filename}
+          data={`data:application/pdf;base64,${state.pdfBase64}`}
+          data-testid="panel-knowledge-pdf"
+        >
+          <p className="text-sm text-muted">
+            This view cannot display the PDF inline.
+          </p>
+        </object>
+      ) : state.text !== null && state.text !== "" ? (
+        <div>
+          {isMarkdownName(tab.data.filename) ? (
+            <div
+              className="mb-2 inline-flex items-center gap-0.5 rounded-md border border-line p-0.5"
+              data-testid="panel-preview-modes"
+            >
+              <button
+                type="button"
+                className={cn(
+                  "cursor-pointer rounded px-1.5 py-0.5 text-[11px]",
+                  preview
+                    ? "text-muted"
+                    : "bg-[color-mix(in_oklab,var(--fg)_5%,transparent)] text-fg"
+                )}
+                data-testid="panel-preview-mode-raw"
+                onClick={() => setPreview(false)}
+              >
+                Raw
+              </button>
+              <button
+                type="button"
+                className={cn(
+                  "cursor-pointer rounded px-1.5 py-0.5 text-[11px]",
+                  preview
+                    ? "bg-[color-mix(in_oklab,var(--fg)_5%,transparent)] text-fg"
+                    : "text-muted"
+                )}
+                data-testid="panel-preview-mode-preview"
+                onClick={() => setPreview(true)}
+              >
+                Preview
+              </button>
+            </div>
+          ) : null}
+          {preview ? (
+            <div data-testid="panel-preview-markdown">
+              <MarkdownBody text={state.text} />
+            </div>
+          ) : (
+            <pre
+              className="whitespace-pre-wrap break-words font-mono text-xs text-fg2"
+              data-testid="panel-preview-content"
+            >
+              {state.text}
+            </pre>
+          )}
+        </div>
+      ) : (
+        <p className="text-sm text-muted" data-testid="panel-preview-empty">
+          Empty document
+        </p>
+      )}
+    </div>
+  );
+}
+
 /** Per-tab content registry: kind → renderer. */
 export const PANEL_RENDERERS: Record<
   PanelTab["kind"],
@@ -841,4 +1018,5 @@ export const PANEL_RENDERERS: Record<
   "workspace-file": WorkspaceFilePreview,
   "workspace-dir": WorkspaceDirPreview,
   trajectory: TrajectoryPreview,
+  "knowledge-doc": KnowledgeDocPreview,
 };

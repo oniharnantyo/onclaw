@@ -152,12 +152,46 @@ export interface CreateAgentInput {
 }
 
 /**
+ * DocumentPresetEntry is one saved document preset as the Tools pane's
+ * configuration dialog renders and edits it. Config is the preset's opaque
+ * JSON document — the dialog owns its schema; the service stores it
+ * verbatim.
+ */
+export interface DocumentPresetEntry {
+    "id": string;
+    "name": string;
+    "format": string;
+    "config": string;
+    "createdAt": string;
+    "updatedAt": string;
+}
+
+/**
  * GatewayStateEvent is the payload of EventGatewayState. State mirrors
  * gateway.State's String form ("stopped", "running", "paused") so the
  * gateway package's types stay out of the binding surface.
  */
 export interface GatewayStateEvent {
     "state": string;
+}
+
+/**
+ * GeneratedDocumentContent is one generated document's served content: the
+ * name it was addressed by, its byte size, and the base64-encoded bytes.
+ * The on-disk path never crosses the boundary.
+ */
+export interface GeneratedDocumentContent {
+    "name": string;
+
+    /**
+     * SizeBytes is the document's size in bytes.
+     */
+    "sizeBytes": number;
+
+    /**
+     * Data is the base64-encoded document content.
+     */
+    "data": string;
 }
 
 /**
@@ -174,6 +208,32 @@ export interface HookTestResult {
     "Err": string;
     "ConsoleLines": string[] | null;
     "DurationMS": number;
+}
+
+/**
+ * KnowledgeChangedEvent is the payload of EventKnowledgeChanged. It carries
+ * no fields: the change is corpus-wide from the surfaces' point of view, so
+ * they simply re-list (add-knowledge-corpus design D8).
+ */
+export interface KnowledgeChangedEvent {
+}
+
+/**
+ * KnowledgeDocument is one knowledge document's bound view (add-knowledge-
+ * corpus design D8): the catalog row the Knowledge menu and the chat right
+ * bar's knowledge panel list, preview, and manage.
+ */
+export interface KnowledgeDocument {
+    "id": string;
+    "filename": string;
+    "mime": string;
+    "size": number;
+    "scope": string;
+    "agentId": string;
+    "agentSlug": string;
+    "description": string;
+    "source": string;
+    "createdAt": string;
 }
 
 /**

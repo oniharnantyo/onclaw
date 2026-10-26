@@ -6,6 +6,7 @@ import (
 
 	"github.com/cloudwego/eino/components/tool"
 
+	"github.com/oniharnantyo/buddies/internal/agents/backend"
 	"github.com/oniharnantyo/buddies/internal/store"
 )
 
@@ -32,6 +33,15 @@ type resolvedTools struct {
 	fsDisabled []string
 	// plantaskDisabled lists the plantask middleware tool names the gate withholds.
 	plantaskDisabled []string
+	// knowledge is the read-only corpus mount exposed through the filesystem
+	// capability (add-knowledge-corpus design D7): non-nil only when a
+	// knowledge store is wired, the agent is workspace-rootable, and at
+	// least one filesystem tool is offered to read the corpus with.
+	knowledge *backend.KnowledgeRoots
+	// createDocument reports whether the create_document tool is offered to
+	// the turn (add-create-document design D6): the composed context's
+	// document-preset appendix rides it — no tool offered, no appendix.
+	createDocument bool
 }
 
 // names returns every offered tool name in catalog order. It exists for
@@ -137,13 +147,21 @@ func (m *manager) resolveTurnTools(ctx context.Context, agent store.Agent) (*res
 		if entry.meta.Name == ToolScheduler && m.scheduler == nil {
 			continue // no schedule service: withheld, not a failure (spec add-scheduler)
 		}
+		if entry.meta.Name == ToolSaveDocument && m.knowledge == nil {
+			continue // no knowledge store: withheld, not a failure (spec add-knowledge-corpus)
+		}
 		switch entry.kind {
 		case toolMiddleware:
 			// offered: stays out of fsDisabled and plantaskDisabled (computed below).
 		case toolShell:
 			res.shell = true
 		case toolDirect:
-			t, err := m.buildDirectTool(entry.meta.Name, toolScope{AgentID: agent.ID, Workspace: res.agentDir})
+			if entry.meta.Name == ToolCreateDocument {
+				// The gate admitted the workspace-scoped tool: the turn's
+				// composed context may carry the preset appendix (design D6).
+				res.createDocument = true
+			}
+			t, err := m.buildDirectTool(entry.meta.Name, toolScope{AgentID: agent.ID, Slug: agent.Slug, Workspace: res.agentDir})
 			if err != nil {
 				return nil, fmt.Errorf("resolve tool %s: %w", entry.meta.Name, err)
 			}
@@ -163,6 +181,13 @@ func (m *manager) resolveTurnTools(ctx context.Context, agent store.Agent) (*res
 			if !offered[name] {
 				res.plantaskDisabled = append(res.plantaskDisabled, name)
 			}
+		}
+		// Knowledge corpus exposure (add-knowledge-corpus design D7): the
+		// /knowledge mount rides the jail only when there is a corpus to
+		// expose and at least one filesystem tool offered to read it with.
+		if m.knowledge != nil && len(res.fsDisabled) < len(filesystemToolNames) {
+			roots := m.knowledge.Roots()
+			res.knowledge = &backend.KnowledgeRoots{GlobalDir: roots.Global, AgentDir: m.knowledge.AgentDir(agent.Slug)}
 		}
 	}
 	return res, nil

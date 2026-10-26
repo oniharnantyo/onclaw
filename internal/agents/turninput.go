@@ -57,6 +57,15 @@ type turnComposer struct {
 	atts         *attachments.Store
 	caps         ModelCapabilities
 	hasCaps      bool
+	// knowledge reports whether this turn exposes the /knowledge corpus
+	// mount (add-knowledge-corpus design D7): true composes the corpus
+	// guidance after the operating contract, false keeps the instruction
+	// guidance-free.
+	knowledge bool
+	// presets is the turn's composed document-preset appendix
+	// (add-create-document design D6), riding directly after the operating
+	// contract; empty keeps the instruction appendix-free.
+	presets string
 }
 
 func (tc turnComposer) supportsPDFInput() bool {
@@ -90,7 +99,11 @@ func (tc turnComposer) supportsImageInput() bool {
 // the instruction so capability middlewares can append their own guidance to
 // it.)
 func assembleTurnInput(p persona, checkpoint sessions.Checkpoint, events []sessions.Event, req turnRequest, tc turnComposer) (string, []*schema.AgenticMessage, error) {
-	instruction := composeSystem(p.text(), checkpoint.Summary) +
+	guidance := ""
+	if tc.knowledge {
+		guidance = knowledgeGuidance
+	}
+	instruction := composeSystem(p.text(), tc.presets, guidance, checkpoint.Summary) +
 		"\n\n" + environmentBlock(tc.providerType, tc.model, req.origin, now())
 	msgs := make([]*schema.AgenticMessage, 0, 2)
 	for _, ev := range events {

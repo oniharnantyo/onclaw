@@ -32,6 +32,7 @@ func TestResolve_PlacesLayoutUnderHome(t *testing.T) {
 	require.Equal(t, filepath.Join(root, "skills"), layout.Skills)
 	require.Equal(t, filepath.Join(root, "workspaces"), layout.Workspaces)
 	require.Equal(t, filepath.Join(root, "attachments"), layout.Attachments)
+	require.Equal(t, filepath.Join(root, "knowledge"), layout.Knowledge)
 	require.Equal(t, filepath.Join(root, "browser"), layout.Browser)
 	require.Equal(t, filepath.Join(root, "logs"), layout.Logs)
 }
@@ -55,7 +56,7 @@ func TestEnsure_FirstRunCreatesLayout(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, layout.Ensure())
 
-	for _, dir := range []string{layout.Root, layout.Skills, layout.Workspaces, layout.Attachments, layout.Browser, layout.Logs} {
+	for _, dir := range []string{layout.Root, layout.Skills, layout.Workspaces, layout.Attachments, layout.Knowledge, layout.Browser, layout.Logs} {
 		info, err := os.Stat(dir)
 		require.NoError(t, err, "directory %s must exist after first run", dir)
 		require.True(t, info.IsDir(), "%s must be a directory", dir)

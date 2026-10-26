@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/oniharnantyo/buddies/internal/knowledge"
 	"github.com/oniharnantyo/buddies/internal/promptgen"
 	"github.com/oniharnantyo/buddies/internal/store"
 	"github.com/oniharnantyo/buddies/internal/store/fake"
@@ -74,12 +75,14 @@ func (f *fakeGenerator) lastParams() promptgen.Params {
 }
 
 // agentsFixture bundles the service with its collaborators so each test
-// starts from an isolated store, fake generator, and workspace root.
+// starts from an isolated store, fake generator, workspace root, and
+// knowledge corpus.
 type agentsFixture struct {
-	svc *AgentsService
-	st  *fake.Store
-	gen *fakeGenerator
-	ws  *workspaces.Manager
+	svc  *AgentsService
+	st   *fake.Store
+	gen  *fakeGenerator
+	ws   *workspaces.Manager
+	know *knowledge.Store
 }
 
 func newAgentsFixture(t *testing.T) *agentsFixture {
@@ -87,11 +90,13 @@ func newAgentsFixture(t *testing.T) *agentsFixture {
 	st := fake.New()
 	gen := &fakeGenerator{}
 	ws := workspaces.NewManager(t.TempDir())
+	know := knowledge.NewStore(t.TempDir(), st.Documents())
 	return &agentsFixture{
-		svc: NewAgentsService(st, gen, ws),
-		st:  st,
-		gen: gen,
-		ws:  ws,
+		svc:  NewAgentsService(st, gen, ws, know),
+		st:   st,
+		gen:  gen,
+		ws:   ws,
+		know: know,
 	}
 }
 
@@ -507,6 +512,56 @@ func TestAgentsService_Delete_NotFound(t *testing.T) {
 
 	err := f.svc.Delete(context.Background(), "missing")
 	require.ErrorIs(t, err, store.ErrNotFound)
+}
+
+// TestAgentsService_Delete_RemovesKnowledgeScope pins the delete cascade's
+// file half (add-knowledge-corpus design D9, spec data-store "Agent deletion
+// removes scoped rows"): the row delete cascades the agent's document rows,
+// the agent's knowledge scope directory goes best-effort with it, and global
+// and other-agent documents survive untouched.
+func TestAgentsService_Delete_RemovesKnowledgeScope(t *testing.T) {
+	f := newAgentsFixture(t)
+	ctx := context.Background()
+	agent := f.seedAgent(t, "scout", store.PromptsStatusReady)
+	other := f.seedAgent(t, "rival", store.PromptsStatusReady)
+
+	_, err := f.know.Save(ctx, knowledge.SaveInput{
+		Filename: "shared.md", MIME: "text/plain", Data: []byte("shared"),
+		Scope: knowledge.ScopeGlobal, Source: knowledge.SourceUser,
+	})
+	require.NoError(t, err)
+	_, err = f.know.Save(ctx, knowledge.SaveInput{
+		Filename: "mine.md", MIME: "text/plain", Data: []byte("mine"),
+		Scope: knowledge.ScopeAgent, AgentID: agent.ID, AgentSlug: agent.Slug, Source: knowledge.SourceUser,
+	})
+	require.NoError(t, err)
+	_, err = f.know.Save(ctx, knowledge.SaveInput{
+		Filename: "theirs.md", MIME: "text/plain", Data: []byte("theirs"),
+		Scope: knowledge.ScopeAgent, AgentID: other.ID, AgentSlug: other.Slug, Source: knowledge.SourceUser,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, f.svc.Delete(ctx, agent.ID))
+
+	// The deleted agent's scope directory is gone.
+	_, err = os.Stat(f.know.AgentDir("scout"))
+	require.True(t, os.IsNotExist(err), "the agent's knowledge scope directory must be removed")
+	// Global and other-agent documents survive on disk.
+	_, err = os.Stat(filepath.Join(f.know.Roots().Global, "shared.md"))
+	require.NoError(t, err)
+	_, err = os.Stat(filepath.Join(f.know.AgentDir("rival"), "theirs.md"))
+	require.NoError(t, err)
+
+	// Rows: the FK cascade removed the agent's documents; the others remain.
+	docs, err := f.know.List(ctx)
+	require.NoError(t, err)
+	byName := make(map[string]bool, len(docs))
+	for _, doc := range docs {
+		byName[doc.Filename] = true
+	}
+	require.NotContains(t, byName, "mine.md", "the agent's document rows cascade")
+	require.Contains(t, byName, "shared.md")
+	require.Contains(t, byName, "theirs.md")
 }
 
 func TestAgentsService_Delete_KeepsSessionsRemovesWorkspace(t *testing.T) {

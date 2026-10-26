@@ -8,7 +8,10 @@
  * Opening a preview replaces the identity in the same aside with the tab
  * strip + active renderer (the old right panel's machinery; the per-kind
  * renderers live in panelRenderers.tsx), and closing the last tab returns
- * the identity.
+ * the identity. A third in-place state (add-knowledge-corpus): the identity
+ * view's Knowledge opener swaps the island for the knowledge browsing panel
+ * (KnowledgePanel.tsx); activating a document opens its preview tab, which
+ * leaves the browsing state behind.
  *
  * State grammar:
  * - Collapse (`sidebarCollapsed`) hides the whole bar — nothing remains
@@ -31,7 +34,7 @@
  * turn. Tabs are reset by the store on session switch, which returns the bar
  * to its identity state.
  */
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   CSSProperties,
   PointerEvent as ReactPointerEvent,
@@ -46,9 +49,12 @@ import type {
 import type { ProviderView } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
 import { AgentAvatar } from "../../../components";
 import { cn } from "../../../lib/cn";
+import type { KnowledgeDocument } from "../../../lib/client";
 import { useLocalNumberPreference } from "../../../lib/useLocalPreference";
 import { useChatStore } from "../store";
 import type { ChatStore, PanelTab } from "../types";
+import { knowledgeDocTab } from "../types";
+import { KnowledgePanel } from "./KnowledgePanel";
 import { PANEL_RENDERERS } from "./panelRenderers";
 
 const SIDEBAR_WIDTH_KEY = "buddies.chatSidebarWidth";
@@ -65,11 +71,23 @@ export function RightBar(): ReactElement | null {
   const activeStoreID = useChatStore((s: ChatStore) => s.activePanelTabID);
   const activatePanelTab = useChatStore((s: ChatStore) => s.activatePanelTab);
   const closePanelTab = useChatStore((s: ChatStore) => s.closePanelTab);
+  const openPanelTab = useChatStore((s: ChatStore) => s.openPanelTab);
   const agents = useChatStore((s: ChatStore) => s.agents);
   const providers = useChatStore((s: ChatStore) => s.providers);
   const sessions = useChatStore((s: ChatStore) => s.sessions);
   const activeAgentID = useChatStore((s: ChatStore) => s.activeAgentID);
   const activeSessionID = useChatStore((s: ChatStore) => s.activeSessionID);
+
+  // The knowledge browsing state (add-knowledge-corpus): local view state
+  // of the identity view only. Any tab open — a document activation here or
+  // a file link elsewhere — yields the bar to the tabs view, and closing
+  // the last tab returns the identity view with the opener, never the
+  // browsing state (it does not persist across that boundary).
+  const [browsingKnowledge, setBrowsingKnowledge] = useState(false);
+
+  useEffect((): void => {
+    if (tabs.length > 0) setBrowsingKnowledge(false);
+  }, [tabs.length]);
 
   // One width preference for both states (design D2).
   const [width, setWidth] = useLocalNumberPreference(
@@ -134,6 +152,41 @@ export function RightBar(): ReactElement | null {
   if (tabs.length === 0) {
     if (!agent) return null;
 
+    // Knowledge browsing state (add-knowledge-corpus): the same aside shell,
+    // the identity island swapped for the panel in place. Activating a
+    // document opens its preview tab, which leaves this branch entirely.
+    if (browsingKnowledge) {
+      return (
+        <aside
+          ref={asideRef}
+          className="glass-panel relative m-2 hidden w-[var(--sidebar-width)] shrink-0 flex-col items-center gap-3 rounded-lg border border-line bg-surface p-4 xl:flex"
+          style={
+            // SAFETY: the bar reads its width through the CSS custom property
+            // in the width class; React's style typing does not model
+            // custom properties, so the record is asserted once here.
+            { "--sidebar-width": `${width}px` } as CSSProperties
+          }
+          data-testid="chat-right-bar"
+        >
+          <KnowledgePanel
+            agentID={agent.ID}
+            onOpenDoc={(doc: KnowledgeDocument): void =>
+              openPanelTab(knowledgeDocTab(doc))
+            }
+            onBack={(): void => setBrowsingKnowledge(false)}
+          />
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize panel"
+            onPointerDown={onResizeStart}
+            className="absolute inset-y-0 left-0 z-10 hidden w-1.5 cursor-col-resize hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] xl:block"
+            data-testid="sidebar-resize"
+          />
+        </aside>
+      );
+    }
+
     return (
       <aside
         ref={asideRef}
@@ -161,6 +214,14 @@ export function RightBar(): ReactElement | null {
             {modelLine || "No model selected"}
           </p>
         </div>
+        <button
+          type="button"
+          className="mt-1 cursor-pointer rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-fg2 hover:bg-[color-mix(in_oklab,var(--fg)_6%,transparent)] hover:text-fg"
+          data-testid="knowledge-opener"
+          onClick={(): void => setBrowsingKnowledge(true)}
+        >
+          Knowledge
+        </button>
         <div
           role="separator"
           aria-orientation="vertical"

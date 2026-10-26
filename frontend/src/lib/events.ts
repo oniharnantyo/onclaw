@@ -5,6 +5,7 @@
  */
 
 import type {
+  KnowledgeChangedEvent,
   MCPOAuthCompletedEvent,
   SchedulesChangedEvent,
 } from "../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
@@ -31,6 +32,17 @@ export const SCHEDULES_CHANGED_EVENT = "schedules:changed";
 /** The generated payload of SCHEDULES_CHANGED_EVENT, re-exported so
  * callers keep one import surface beside the constant. */
 export type { SchedulesChangedEvent };
+
+/**
+ * Event announcing any knowledge corpus change (add-knowledge-corpus design
+ * D8): every mutation — upload, agent save, scope change, description edit,
+ * delete — emits it; the payload is empty, so surfaces simply re-list.
+ */
+export const KNOWLEDGE_CHANGED_EVENT = "knowledge:changed";
+
+/** The generated payload of KNOWLEDGE_CHANGED_EVENT, re-exported so
+ * callers keep one import surface beside the constant. */
+export type { KnowledgeChangedEvent };
 
 /**
  * Untyped signal emitted by the native application menu's Settings… item

@@ -41,6 +41,8 @@ type Store struct {
 	hookExecs   *hookExecutionStore
 	toolConfigs *toolSettingStore
 	attachments *attachmentStore
+	documents   *documentStore
+	presets     *documentPresetStore
 	models      *providerModelStore
 }
 
@@ -125,6 +127,8 @@ func newStore(db *sql.DB) *Store {
 	s.hookExecs = &hookExecutionStore{db}
 	s.toolConfigs = &toolSettingStore{db}
 	s.attachments = &attachmentStore{db}
+	s.documents = &documentStore{db}
+	s.presets = &documentPresetStore{db}
 	s.models = &providerModelStore{db}
 	return s
 }
@@ -145,6 +149,8 @@ func (s *Store) AgentHooks() store.AgentHookStore            { return s.agentHoo
 func (s *Store) HookExecutions() store.HookExecutionStore    { return s.hookExecs }
 func (s *Store) ToolSettings() store.ToolSettingStore        { return s.toolConfigs }
 func (s *Store) Attachments() store.AttachmentStore          { return s.attachments }
+func (s *Store) Documents() store.DocumentStore              { return s.documents }
+func (s *Store) DocumentPresets() store.DocumentPresetStore  { return s.presets }
 func (s *Store) ProviderModels() store.ProviderModelStore    { return s.models }
 
 func (s *Store) Create(ctx context.Context, model *store.ProviderModel) error {

@@ -590,3 +590,32 @@ func textOfMessages(input []*schema.Message, role schema.RoleType) string {
 	}
 	return sb.String()
 }
+
+// TestSubagent_ChildInheritsKnowledgeMount covers the corpus inheritance
+// (add-knowledge-corpus design D7): the parent surface's knowledge roots
+// thread into the child's fs capability, so the child's system context —
+// like the parent's — names the read-only /knowledge mount.
+func TestSubagent_ChildInheritsKnowledgeMount(t *testing.T) {
+	f, _ := newWorkspaceFixture(t, delegateOnceReply(
+		"summarize the saved corpus", "the corpus summary is ready", "Delegated: the corpus is summarized."),
+		WithKnowledge(t.TempDir()))
+
+	ctx := t.Context()
+	sess := f.newSession(t)
+	turn, err := f.mgr.Send(ctx, sess.ID, "start the delegation")
+	require.NoError(t, err)
+	require.NoError(t, turn.Wait())
+
+	var parentSys, childSys string
+	for _, call := range f.model.calls() {
+		sys := textOfMessages(call, schema.System)
+		if _, ok := childCall(call, "summarize the saved corpus"); ok {
+			childSys = sys
+		} else if sys != "" && parentSys == "" {
+			parentSys = sys
+		}
+	}
+	require.Contains(t, parentSys, "/knowledge", "the parent's system context names the mount")
+	require.Contains(t, childSys, "/knowledge", "the child inherits the parent's corpus mount")
+	require.Contains(t, childSys, "never writable", "the child sees the corpus read-only")
+}

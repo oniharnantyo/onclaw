@@ -31,12 +31,16 @@ const (
 
 // Config configures the subagent and backgroundtask stack for one turn.
 type Config struct {
-	Instruction      string
-	Model            model.BaseModel[*schema.AgenticMessage]
-	Tools            []tool.BaseTool
-	MCPTools         []tool.BaseTool
-	AgentDir         string
-	ExtraRoots       []string
+	Instruction string
+	Model       model.BaseModel[*schema.AgenticMessage]
+	Tools       []tool.BaseTool
+	MCPTools    []tool.BaseTool
+	AgentDir    string
+	ExtraRoots  []string
+	// Knowledge mounts the parent's read-only knowledge corpus into the
+	// child's jail (add-knowledge-corpus design D7): children inherit the
+	// parent-visible corpus. nil — the default — exposes none.
+	Knowledge        *backend.KnowledgeRoots
 	Shell            bool
 	FSDisabled       []string
 	PlantaskDisabled []string
@@ -96,6 +100,7 @@ func New(ctx context.Context, cfg *Config) (*Capabilities, error) {
 			AgentDir:      cfg.AgentDir,
 			DisabledTools: cfg.FSDisabled,
 			ExtraRoots:    cfg.ExtraRoots,
+			Knowledge:     cfg.Knowledge,
 		}
 		if cfg.Shell {
 			var opts []backend.ShellOption

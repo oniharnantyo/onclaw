@@ -133,6 +133,7 @@ func RunServerHost(ctx context.Context, host *App, emitter services.Emitter, ass
 			application.NewService(host.Services.Settings),
 			application.NewService(host.Services.Gateway),
 			application.NewService(host.Services.Schedule),
+			application.NewService(host.Services.Knowledge),
 			application.NewService(services.NewClipboardService()),
 		},
 		Server: application.ServerOptions{

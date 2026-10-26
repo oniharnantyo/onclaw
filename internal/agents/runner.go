@@ -279,6 +279,8 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 			atts:         m.attachments,
 			caps:         caps,
 			hasCaps:      true,
+			knowledge:    surface.knowledge != nil,
+			presets:      m.presetGuidance(ctx, surface.createDocument),
 		})
 	if err != nil {
 		return failTurn(err)
@@ -310,6 +312,9 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 		if skillsCap != nil && m.skillsDir != "" {
 			fsCap.ExtraRoots = []string{m.skillsDir}
 		}
+		// The read-only corpus mount rides the jail when the gate exposed it
+		// (add-knowledge-corpus design D7): rootable agent, fs tools enabled.
+		fsCap.Knowledge = surface.knowledge
 		cfg.Filesystem = fsCap
 
 		extraRoots = fsCap.ExtraRoots
@@ -365,6 +370,7 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 			MCPTools:         mcpTools,
 			AgentDir:         surface.agentDir,
 			ExtraRoots:       extraRoots,
+			Knowledge:        surface.knowledge,
 			Shell:            surface.shell,
 			FSDisabled:       surface.fsDisabled,
 			PlantaskDisabled: surface.plantaskDisabled,
@@ -970,18 +976,76 @@ func (p persona) text() string {
 	return strings.Join(parts, "\n\n")
 }
 
+// knowledgeGuidance is the corpus guidance composed after the operating
+// contract on turns exposing the /knowledge mount (add-knowledge-corpus
+// design D7): where the scopes live, how to search the corpus with the
+// filesystem tools the turn already has (D1 — raw corpus, no retriever), the
+// directed skill activation (D10), and the save path (D4). Agents whose turns
+// expose no mount never see it — no orphan guidance.
+const knowledgeGuidance = `## Knowledge corpus
+
+Saved documents live under /knowledge: /knowledge/global holds the documents every agent shares, /knowledge/agent holds this agent's own. Before answering a question that saved documents may cover, search them with the filesystem tools — list and read each scope's INDEX.md first, grep for anchors, and read around the hits (PDFs by page range). Activate the knowledge-search skill whenever a request may concern saved documents. Save new durable documents with the save_document tool.`
+
+// presetGuidance renders the document-preset appendix for one turn
+// (add-create-document design D6; spec document-generation "Preset awareness
+// in turns"): when the create_document tool is offered and at least one PDF
+// preset exists, the preset names — the default marked — so the model can
+// reference one without asking. Every other state composes nothing: the
+// appendix-free composition stays byte-identical. A store read failure
+// degrades to no appendix (logged, not fatal — the appendix is informational
+// and the tool resolves presets per call).
+func (m *manager) presetGuidance(ctx context.Context, offered bool) string {
+	if !offered {
+		return ""
+	}
+	presets, err := m.store.DocumentPresets().List(ctx, store.DocumentPresetFormatPDF)
+	if err != nil {
+		slog.Warn("compose document preset guidance", "error", err)
+		return ""
+	}
+	if len(presets) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(presets))
+	for _, p := range presets {
+		names = append(names, p.Name)
+	}
+	// The default marking is best-effort: an unreadable settings row leaves
+	// the list unmarked rather than dropping it.
+	def, err := readDefaultPresetName(ctx, m.store.ToolSettings())
+	if err != nil {
+		slog.Warn("compose document preset guidance: read default", "error", err)
+		def = ""
+	}
+	return presetAppendix(names, def)
+}
+
 // composeSystem joins the turn's system context in composition order
 // (design D2): the persona documents, then the operating contract, then the
-// compaction summary. The contract composes on every call — an agent whose
-// persona generation failed still gets it (spec agent-prompts "Contract
-// present without persona documents").
-func composeSystem(personaText, summary string) string {
+// document-preset appendix when the turn offers create_document and presets
+// exist (add-create-document design D6), then the knowledge corpus guidance
+// when the turn exposes the corpus (spec add-knowledge-corpus design D7),
+// then the compaction summary. The contract composes on every call — an
+// agent whose persona generation failed still gets it (spec agent-prompts
+// "Contract present without persona documents"). Empty presetText and
+// knowledgeText keep the output byte-identical to the
+// appendix-and-guidance-free composition, so the pinned contract ordering
+// holds.
+func composeSystem(personaText, presetText, knowledgeText, summary string) string {
 	var sb strings.Builder
 	if personaText != "" {
 		sb.WriteString(personaText)
 		sb.WriteString("\n\n")
 	}
 	sb.WriteString(operatingContract)
+	if presetText != "" {
+		sb.WriteString("\n\n")
+		sb.WriteString(presetText)
+	}
+	if knowledgeText != "" {
+		sb.WriteString("\n\n")
+		sb.WriteString(knowledgeText)
+	}
 	if summary != "" {
 		sb.WriteString("\n\n")
 		sb.WriteString("# Earlier conversation summary\n\n")

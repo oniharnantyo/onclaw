@@ -22,6 +22,7 @@ func Resolve() (Layout, error) {
 		Skills:      filepath.Join(root, "skills"),
 		Workspaces:  filepath.Join(root, "workspaces"),
 		Attachments: filepath.Join(root, "attachments"),
+		Knowledge:   filepath.Join(root, "knowledge"),
 		Browser:     filepath.Join(root, "browser"),
 		Logs:        filepath.Join(root, "logs"),
 	}, nil

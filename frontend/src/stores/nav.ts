@@ -8,7 +8,7 @@
  */
 import { create, type StoreApi } from "zustand";
 
-export type Menu = "chat" | "agents" | "schedules" | "settings";
+export type Menu = "chat" | "agents" | "schedules" | "knowledge" | "settings";
 
 export interface ChatTarget {
   agentID: string;

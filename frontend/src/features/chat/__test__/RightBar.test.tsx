@@ -9,9 +9,13 @@
  * resets the tabs (identity returns), collapsing hides the bar entirely in
  * either state, and the single width preference persists under
  * `buddies.chatSidebarWidth` (default 280, drag clamped to 220–560) through
- * the same CSS var in both states. Renderer internals (markdown modes,
- * refusal/empty states, trajectory) live with the renderers in
- * panelRenderers — this suite owns the container contract.
+ * the same CSS var in both states. The knowledge browsing state
+ * (add-knowledge-corpus) rides the container too: the identity view's opener
+ * swaps in the panel, a document activation opens its preview tab, and
+ * closing the last tab returns the identity — never the browsing state.
+ * Renderer internals (markdown modes, refusal/empty states, trajectory) live
+ * with the renderers in panelRenderers — this suite owns the container
+ * contract.
  */
 import { act } from "react";
 import { fireEvent, screen, waitFor } from "@testing-library/dom";
@@ -24,12 +28,12 @@ import type {
   Session,
 } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
 import type { ProviderView } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
-import type { Client } from "../../../lib/client";
+import type { Client, KnowledgeDocument } from "../../../lib/client";
 import { applyEvent } from "../entries";
 import { RightBar } from "../components/RightBar";
 import { workspaceFileTab } from "../components/panelRenderers";
+import { type ChatStore } from "../types";
 import { TRANSCRIPT_PAGE_SIZE, useChatStore } from "../store";
-import type { ChatStore } from "../types";
 import { renderUI } from "./test-utils";
 
 const agent: Agent = {
@@ -77,6 +81,19 @@ const provider: ProviderView = {
   UpdatedAt: "2026-01-01T00:00:00Z",
 };
 
+const knowledgeDoc: KnowledgeDocument = {
+  id: "d1",
+  filename: "runbook.md",
+  mime: "text/plain",
+  size: 20,
+  scope: "agent",
+  agentId: "a1",
+  agentSlug: "scout",
+  description: "the runbook",
+  source: "upload",
+  createdAt: "2026-01-01T00:00:00Z",
+};
+
 type MockFn = ReturnType<typeof vi.fn>;
 
 /** The mocked client shape: the Client surface with vi.fn mock members. */
@@ -87,6 +104,13 @@ type MockedClient = Client & {
     turnState: MockFn;
     contextUsage: MockFn;
     workspaceFile: MockFn;
+  };
+  knowledge: {
+    list: MockFn;
+    content: MockFn;
+  };
+  events: {
+    onKnowledgeChanged: MockFn;
   };
 };
 
@@ -112,6 +136,17 @@ vi.mock("../../../lib/client", () => ({
       workspaceFile: vi.fn(
         async (_agentID: string, relPath: string): Promise<string> =>
           `content of ${relPath}`
+      ),
+    },
+    knowledge: {
+      list: vi.fn(async (): Promise<never[]> => []),
+      content: vi.fn(async (): Promise<string> => btoa("knowledge body of d1")),
+    },
+    events: {
+      onKnowledgeChanged: vi.fn(
+        (_handler: () => void): (() => void) =>
+          () =>
+            undefined
       ),
     },
   },
@@ -576,5 +611,111 @@ describe("RightBar", () => {
     }
 
     delete document.documentElement.dataset.theme;
+  });
+});
+
+describe("RightBar — knowledge panel (add-knowledge-corpus)", () => {
+  it("swaps the identity island for the knowledge panel on the opener", async () => {
+    const { unmount } = await renderUI(<RightBar />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("knowledge-opener"));
+    });
+
+    // Still one bar: the panel replaced the identity in place.
+    expect(screen.getAllByTestId("chat-right-bar")).toHaveLength(1);
+    expect(screen.getByTestId("knowledge-panel")).toBeTruthy();
+    expect(screen.queryByTestId("sidebar-agent-name")).toBeNull();
+    expect(mockedClient.knowledge.list).toHaveBeenCalled();
+
+    await unmount();
+    await clearTabs();
+  });
+
+  it("returns to the identity view with Back", async () => {
+    const { unmount } = await renderUI(<RightBar />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("knowledge-opener"));
+    });
+
+    expect(screen.getByTestId("knowledge-panel")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("knowledge-back"));
+    });
+
+    expect(screen.getByTestId("sidebar-agent-name")).toBeTruthy();
+    expect(screen.queryByTestId("knowledge-panel")).toBeNull();
+
+    await unmount();
+    await clearTabs();
+  });
+
+  it("activating a knowledge document opens its preview tab", async () => {
+    mockedClient.knowledge.list.mockImplementation(
+      async (): Promise<KnowledgeDocument[]> => [knowledgeDoc]
+    );
+
+    const { unmount } = await renderUI(<RightBar />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("knowledge-opener"));
+    });
+
+    await waitFor(() => screen.getByTestId("knowledge-doc-d1"));
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("knowledge-doc-d1"));
+    });
+
+    // The browsing state yields to the tabs view; the store holds the
+    // knowledge-doc tab built from the catalog row.
+    expect(screen.getByTestId("panel-tabs")).toBeTruthy();
+    expect(screen.queryByTestId("knowledge-panel")).toBeNull();
+    expect(useChatStore.getState().panelTabs).toHaveLength(1);
+    expect(useChatStore.getState().panelTabs[0]?.kind).toBe("knowledge-doc");
+    expect(useChatStore.getState().panelTabs[0]?.identity).toBe(
+      "knowledge-doc:d1"
+    );
+
+    // The renderer decoded the document's bytes into the tab body.
+    await waitFor(() =>
+      expect(screen.getByTestId("panel-content").textContent).toContain(
+        "knowledge body of d1"
+      )
+    );
+
+    await unmount();
+    await clearTabs();
+  });
+
+  it("an externally opened tab leaves the browsing state, and closing returns the identity view", async () => {
+    const { unmount } = await renderUI(<RightBar />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("knowledge-opener"));
+    });
+
+    expect(screen.getByTestId("knowledge-panel")).toBeTruthy();
+
+    // A tab opened from outside the panel (a tool-card link) yields the bar
+    // to the tabs view.
+    await openFileTab("notes.md");
+
+    expect(screen.getByTestId("panel-tabs")).toBeTruthy();
+    expect(screen.queryByTestId("knowledge-panel")).toBeNull();
+
+    // Closing the last tab returns the IDENTITY view — the opener, never
+    // the browsing state (it does not persist across that boundary).
+    await act(async () => {
+      fireEvent.click(closeButton(0));
+    });
+
+    expect(screen.getByTestId("sidebar-agent-name")).toBeTruthy();
+    expect(screen.queryByTestId("knowledge-panel")).toBeNull();
+
+    await unmount();
+    await clearTabs();
   });
 });

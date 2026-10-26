@@ -18,6 +18,7 @@ import * as agentsBindings from "../../bindings/github.com/oniharnantyo/buddies/
 import * as appInfoBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/appinfo";
 import * as chatBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/chatservice";
 import * as gatewayBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/gatewayservice";
+import * as knowledgeBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/knowledgeservice";
 import * as scheduleBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/scheduleservice";
 import * as settingsBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/settingsservice";
 import * as windowThemeModule from "../../bindings/github.com/oniharnantyo/buddies/windowthemeservice";
@@ -36,6 +37,7 @@ export type Unsubscribe = () => void;
 export type EventPayload =
   | sessionModels.Event
   | serviceModels.GatewayStateEvent
+  | serviceModels.KnowledgeChangedEvent
   | serviceModels.MCPOAuthCompletedEvent
   | serviceModels.SchedulesChangedEvent;
 
@@ -115,6 +117,17 @@ export interface Transport {
     BrowserScreenshot(
       name: string
     ): Promise<serviceModels.BrowserScreenshotContent>;
+    /**
+     * Serves one generated document's bytes by the file name the
+     * create_document tool reported (add-create-document D7): base64 plus
+     * the byte size. The backend refuses any name carrying directory
+     * components before touching the filesystem and resolves it solely
+     * inside the agent's workspace; a refused or missing file rejects.
+     */
+    GeneratedDocument(
+      agentID: string,
+      name: string
+    ): Promise<serviceModels.GeneratedDocumentContent>;
     /** Reads one jailed workspace file of the agent. */
     WorkspaceFile(agentID: string, relPath: string): Promise<string>;
     /** Lists one jailed workspace directory of the agent. */
@@ -172,6 +185,33 @@ export interface Transport {
     BrowserProfiles(): Promise<serviceModels.BrowserProfile[] | null>;
     CreateBrowserProfile(name: string): Promise<void>;
     DeleteBrowserProfile(name: string): Promise<void>;
+    /** The format's document presets, ordered by name (add-create-document D4). */
+    ListDocumentPresets(
+      format: string
+    ): Promise<serviceModels.DocumentPresetEntry[] | null>;
+    /** Stores a new document preset; a name collision in the format rejects. */
+    CreateDocumentPreset(
+      format: string,
+      name: string,
+      configJSON: string
+    ): Promise<serviceModels.DocumentPresetEntry>;
+    /** Rewrites a preset's name and config; the format is preserved. */
+    UpdateDocumentPreset(
+      id: string,
+      name: string,
+      configJSON: string
+    ): Promise<serviceModels.DocumentPresetEntry>;
+    /** Copies a preset to a new name within its format. */
+    DuplicateDocumentPreset(
+      id: string,
+      newName: string
+    ): Promise<serviceModels.DocumentPresetEntry>;
+    /** Removes the preset; a dangling stored default resolves to none. */
+    DeleteDocumentPreset(id: string): Promise<void>;
+    /** The format's default preset name, empty when none is set. */
+    DefaultDocumentPreset(format: string): Promise<string>;
+    /** Stores the default preset name; empty clears it. */
+    SetDefaultDocumentPreset(format: string, name: string): Promise<void>;
     Hooks(): Promise<storeModels.Hook[] | null>;
     CreateHook(hook: storeModels.Hook): Promise<storeModels.Hook>;
     UpdateHook(hook: storeModels.Hook): Promise<storeModels.Hook>;
@@ -243,6 +283,41 @@ export interface Transport {
     RunNow(id: string): Promise<schedulerModels.ScheduleView>;
     Preview(expr: string): Promise<schedulerModels.Preview>;
   };
+  knowledge: {
+    /** Every cataloged document in name order; scope indexes are never listed. */
+    List(): Promise<serviceModels.KnowledgeDocument[] | null>;
+    /**
+     * Stores one upload (add-knowledge-corpus D8): base64 data, scope
+     * "global" or "agent" (an agent scope resolves agentID to its slug);
+     * the corpus gate's rejections carry the reason.
+     */
+    Upload(
+      filename: string,
+      mime: string,
+      data: string,
+      scope: string,
+      agentID: string,
+      description: string
+    ): Promise<serviceModels.KnowledgeDocument>;
+    /** Removes one document — catalog row and stored file. */
+    Delete(id: string): Promise<void>;
+    /**
+     * Promotes ("global") or demotes ("agent" + target agentID) one
+     * document; the file move and catalog flip are one store operation.
+     */
+    SetScope(
+      id: string,
+      scope: string,
+      agentID: string
+    ): Promise<serviceModels.KnowledgeDocument>;
+    /** Rewrites one document's description. */
+    SetDescription(
+      id: string,
+      description: string
+    ): Promise<serviceModels.KnowledgeDocument>;
+    /** One document's base64-encoded bytes, for previews. */
+    Content(id: string): Promise<string>;
+  };
   windowTheme: {
     SetLight(light: boolean): Promise<void>;
   };
@@ -264,6 +339,7 @@ export function createWailsTransport(): Transport {
     },
     settings: settingsBindings,
     gateway: gatewayBindings,
+    knowledge: knowledgeBindings,
     schedules: scheduleBindings,
     windowTheme: windowThemeModule,
     onEvent: (name: string, handler: EventHandler): Unsubscribe =>

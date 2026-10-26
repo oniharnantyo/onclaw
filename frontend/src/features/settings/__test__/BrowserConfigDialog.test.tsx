@@ -203,7 +203,7 @@ describe("BrowserConfigDialog", () => {
     expect(mockedClient.settings.deleteBrowserProfile).toHaveBeenCalledWith(
       "work"
     );
-    expect(await queryByTestId("browser-profile-row-work")).toBeNull();
+    expect(queryByTestId("browser-profile-row-work")).toBeNull();
     expect(getByTestId("browser-profile-row-default")).toBeTruthy();
   });
 

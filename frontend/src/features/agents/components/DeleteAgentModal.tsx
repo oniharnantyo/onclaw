@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactElement } from "react";
 
 import { ConfirmDialog } from "../../../components";
 import { Input } from "../../../components/ui/Input";
-import { client } from "../../../lib/client";
+import { client, type KnowledgeDocument } from "../../../lib/client";
 import type { DeleteAgentModalProps } from "../types";
 
 /**
@@ -11,7 +11,9 @@ import type { DeleteAgentModalProps } from "../types";
  * is irreversible, so the confirm button stays disabled until the agent's
  * name is typed exactly. The call fires only on explicit confirm. The red
  * confirm lives in ConfirmDialog alone — the body stays neutral until the
- * dialog itself commits to the destructive tone (tasks.md 4.7).
+ * dialog itself commits to the destructive tone (tasks.md 4.7). When the
+ * agent has knowledge documents in its scope (add-knowledge-corpus D9), the
+ * copy names that consequence — confirming removes them with the agent.
  */
 export function DeleteAgentModal({
   agent,
@@ -20,6 +22,33 @@ export function DeleteAgentModal({
 }: DeleteAgentModalProps): ReactElement {
   const [typed, setTyped] = useState("");
   const [deleting, setDeleting] = useState(false);
+  // The agent-scoped document count, fetched once on open; null while the
+  // lookup is in flight or failed — the line is informational (the backend
+  // cascades regardless), so a failed lookup degrades to no line.
+  const [scopedDocs, setScopedDocs] = useState<number | null>(null);
+
+  const agentID = agent.ID;
+
+  useEffect((): (() => void) => {
+    let live = true;
+
+    client.knowledge
+      .list()
+      .then((docs: KnowledgeDocument[]): void => {
+        if (!live) return;
+        setScopedDocs(
+          docs.filter(
+            (d: KnowledgeDocument): boolean =>
+              d.scope === "agent" && d.agentId === agentID
+          ).length
+        );
+      })
+      .catch((): void => undefined);
+
+    return (): void => {
+      live = false;
+    };
+  }, [agentID]);
 
   const matches = typed.trim() === agent.Name;
 
@@ -51,6 +80,17 @@ export function DeleteAgentModal({
         Delete <span className="font-semibold text-fg">{agent.Name}</span>? Past
         sessions are kept. This cannot be undone.
       </p>
+      {scopedDocs !== null && scopedDocs > 0 && (
+        <p
+          className="mt-2 text-[13px] text-fg2"
+          data-testid="delete-agent-knowledge-note"
+        >
+          {scopedDocs === 1
+            ? "1 knowledge document"
+            : `${scopedDocs} knowledge documents`}{" "}
+          saved to this agent will be deleted.
+        </p>
+      )}
       <div className="mt-4 flex flex-col gap-1.5">
         <label
           className="text-[12px] font-medium text-fg2"

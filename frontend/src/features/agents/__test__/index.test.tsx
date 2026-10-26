@@ -20,7 +20,7 @@ import type {
   CreateAgentInput,
   ModelCapability,
 } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
-import type { Client } from "../../../lib/client";
+import type { Client, KnowledgeDocument } from "../../../lib/client";
 import { useNavStore } from "../../../stores/nav";
 
 vi.mock("../../../lib/client", () => ({ client: makeClient() }));
@@ -76,6 +76,9 @@ type MockedClient = Client & {
     savePromptDocument: MockFn;
     regeneratePrompts: MockFn;
   };
+  knowledge: {
+    list: MockFn;
+  };
   settings: {
     providers: MockFn;
     providerModels: MockFn;
@@ -109,6 +112,9 @@ function makeClient(): MockedClient {
       })),
       savePromptDocument: vi.fn(async () => undefined),
       regeneratePrompts: vi.fn(async () => undefined),
+    },
+    knowledge: {
+      list: vi.fn(async (): Promise<KnowledgeDocument[]> => []),
     },
     settings: {
       providers: vi.fn(async () => [

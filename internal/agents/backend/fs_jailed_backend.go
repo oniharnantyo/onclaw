@@ -19,6 +19,19 @@ import (
 // prefix into the primary root instead of rejecting them as host paths.
 const DefaultMountPoint = "/workspace"
 
+// KnowledgeMountPoint is the absolute prefix the model is told the read-only
+// knowledge corpus is mounted at (design D3). Paths under it resolve
+// read-only against the knowledge roots as /knowledge/global and
+// /knowledge/agent; the mount root itself is virtual and write operations
+// never reach it.
+const KnowledgeMountPoint = "/knowledge"
+
+// Knowledge scope names presented as subdirectories of KnowledgeMountPoint.
+const (
+	knowledgeScopeGlobal = "global"
+	knowledgeScopeAgent  = "agent"
+)
+
 // extraRoot is one non-primary jail root: a read-only extension of absolute
 // path reachability (the workspace-external skills tree, design D6). Reads
 // may land in any root; writes stay confined to the primary root.
@@ -26,15 +39,27 @@ type extraRoot struct {
 	dir string // resolved absolute host directory
 }
 
+// knowledgeRoot is one scope of the read-only knowledge corpus mount
+// (design D3): a named subdirectory of KnowledgeMountPoint backed by a host
+// directory. A root with an empty dir was configured but is absent on disk;
+// it is neither listed nor reachable, and construction still succeeds.
+type knowledgeRoot struct {
+	name string // scope name under /knowledge ("global" or "agent")
+	dir  string // resolved absolute host directory ("" when absent)
+}
+
 // fsJailedBackend is a filesystem backend that restricts all operations to a
 // root directory. It prevents path escape via .., absolute paths, or
 // symlinks pointing outside the jail. Optional extra roots extend read-only
 // reachability by absolute path (design D6); writes always resolve against
-// the primary root alone.
+// the primary root alone. An optional second, read-only virtual mount
+// (KnowledgeMountPoint) exposes the knowledge corpus scopes read-only
+// (design D3).
 type fsJailedBackend struct {
 	root       string
 	rootAbs    string
 	extraRoots []extraRoot
+	knowledge  []knowledgeRoot
 	mount      string
 	mu         sync.RWMutex
 }
@@ -54,6 +79,67 @@ func NewFilesystemJail(root string) (einofs.Backend, error) {
 // exist yet are skipped: the skills tree is absent on fresh workspaces and
 // must not break agent composition.
 func NewFilesystemJailedWithRoots(primary string, extra ...string) (einofs.Backend, error) {
+	return newFilesystemJailedBackend(primary, extra, nil)
+}
+
+// KnowledgeRoots names the two read-only knowledge corpus directories exposed
+// under /knowledge.
+type KnowledgeRoots struct {
+	GlobalDir string // presented as /knowledge/global
+	AgentDir  string // presented as /knowledge/agent
+}
+
+// NewFilesystemJailedWithKnowledge creates a filesystem jail like
+// NewFilesystemJailedWithRoots and additionally exposes the knowledge corpus
+// as a second, read-only virtual mount at KnowledgeMountPoint: GlobalDir is
+// presented as /knowledge/global and AgentDir as /knowledge/agent. A
+// knowledge directory that does not exist (or is not a directory) is skipped:
+// its scope is neither listed under /knowledge nor reachable through it, and
+// construction still succeeds.
+func NewFilesystemJailedWithKnowledge(primary string, knowledge KnowledgeRoots, extra ...string) (einofs.Backend, error) {
+	roots := make([]knowledgeRoot, 0, 2)
+	for _, k := range []knowledgeRoot{
+		{name: knowledgeScopeGlobal, dir: knowledge.GlobalDir},
+		{name: knowledgeScopeAgent, dir: knowledge.AgentDir},
+	} {
+		if k.dir == "" {
+			continue
+		}
+		absDir, err := filepath.Abs(k.dir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve knowledge %s directory: %w", k.name, err)
+		}
+		info, err := os.Stat(absDir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				// Optional root: absent on fresh installs. Keep the named
+				// entry with an empty dir so the scope reports not-found
+				// instead of unknown.
+				roots = append(roots, knowledgeRoot{name: k.name})
+				continue
+			}
+			return nil, fmt.Errorf("stat knowledge %s directory: %w", k.name, err)
+		}
+		if !info.IsDir() {
+			roots = append(roots, knowledgeRoot{name: k.name})
+			continue
+		}
+		resolved, err := filepath.EvalSymlinks(absDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve symlinks in knowledge %s directory: %w", k.name, err)
+		}
+		roots = append(roots, knowledgeRoot{
+			name: k.name,
+			dir:  strings.TrimSuffix(resolved, string(filepath.Separator)),
+		})
+	}
+	return newFilesystemJailedBackend(primary, extra, roots)
+}
+
+// newFilesystemJailedBackend validates and normalizes the primary and extra
+// roots, then builds the jailed backend over them plus the already-normalized
+// knowledge roots.
+func newFilesystemJailedBackend(primary string, extra []string, knowledge []knowledgeRoot) (einofs.Backend, error) {
 	if primary == "" {
 		return nil, fmt.Errorf("root directory cannot be empty")
 	}
@@ -114,6 +200,7 @@ func NewFilesystemJailedWithRoots(primary string, extra ...string) (einofs.Backe
 		root:       primary,
 		rootAbs:    resolvedRoot,
 		extraRoots: extraRoots,
+		knowledge:  knowledge,
 		mount:      DefaultMountPoint,
 	}, nil
 }
@@ -130,12 +217,54 @@ func (j *fsJailedBackend) unmount(userPath string) (string, bool) {
 	return "", false
 }
 
+// unmountKnowledge maps a knowledge-mount path ("/knowledge/global/doc.pdf")
+// to its mount-relative path ("global/doc.pdf"). ok is false for paths
+// outside the knowledge mount prefix.
+func (j *fsJailedBackend) unmountKnowledge(userPath string) (string, bool) {
+	if userPath == KnowledgeMountPoint {
+		return ".", true
+	}
+	if rel := strings.TrimPrefix(userPath, KnowledgeMountPoint+"/"); rel != userPath && rel != "" {
+		return rel, true
+	}
+	return "", false
+}
+
+// resolveKnowledgePath resolves a knowledge-mount-relative path
+// ("global/doc.pdf", or "." for the mount root itself) against the knowledge
+// corpus roots. The mount root is virtual — it has no host directory of its
+// own (its host parent holds other agents' scopes), so only LsInfo addresses
+// it, synthesizing the listing; every other operation on it fails. Scope
+// paths resolve read-only under their scope's root, with symlinks required
+// to stay within the knowledge roots.
+func (j *fsJailedBackend) resolveKnowledgePath(rel string) (string, error) {
+	if rel == "." {
+		return "", fmt.Errorf("%s is a virtual root; address %s/global or %s/agent", KnowledgeMountPoint, KnowledgeMountPoint, KnowledgeMountPoint)
+	}
+
+	scope, rest, _ := strings.Cut(rel, "/")
+	for _, k := range j.knowledge {
+		if k.name != scope {
+			continue
+		}
+		if k.dir == "" {
+			return "", fmt.Errorf("knowledge scope %q not found (its directory is absent)", scope)
+		}
+		if rest == "" {
+			rest = "."
+		}
+		return j.resolveUnder(k.dir, rest, j.isWithinAnyKnowledgeRoot)
+	}
+	return "", fmt.Errorf("unknown knowledge scope %q; address %s/global or %s/agent", scope, KnowledgeMountPoint, KnowledgeMountPoint)
+}
+
 // resolvePath resolves a user-provided path for read operations. Relative
 // paths resolve under the primary root; absolute paths are accepted when they
 // resolve (EvalSymlinks) under the primary or any extra root. Mount-scoped
 // paths ("/workspace/...") resolve under the primary root no matter where the
-// jail lives on the host. Returns the absolute, normalized path within the
-// jail roots.
+// jail lives on the host, and knowledge-mount paths ("/knowledge/...") resolve
+// read-only against the knowledge corpus roots. Returns the absolute,
+// normalized path within the jail roots.
 func (j *fsJailedBackend) resolvePath(userPath string) (string, error) {
 	if userPath == "" {
 		return "", fmt.Errorf("path cannot be empty")
@@ -151,6 +280,13 @@ func (j *fsJailedBackend) resolvePath(userPath string) (string, error) {
 	// absolute paths, and this is the mount the model is told about.
 	if rel, ok := j.unmount(userPath); ok {
 		return j.resolveUnder(j.rootAbs, rel, j.isWithinAnyRoot)
+	}
+
+	// Knowledge-mount paths ("/knowledge/...") resolve read-only against the
+	// knowledge corpus roots (design D3); the mount root itself is virtual
+	// and only LsInfo addresses it.
+	if rel, ok := j.unmountKnowledge(userPath); ok {
+		return j.resolveKnowledgePath(rel)
 	}
 
 	// Absolute paths: resolve symlinks and accept when under any root.
@@ -171,7 +307,9 @@ func (j *fsJailedBackend) resolvePath(userPath string) (string, error) {
 
 // resolveWritablePath resolves a user-provided path for write operations:
 // relative paths and mount-scoped paths under the primary root only, raw
-// host absolute paths rejected, read-only extra roots unreachable.
+// host absolute paths rejected (the read-only knowledge mount included —
+// its paths are absolute and outside the primary root), read-only extra
+// roots unreachable.
 func (j *fsJailedBackend) resolveWritablePath(userPath string) (string, error) {
 	if userPath == "" {
 		return "", fmt.Errorf("path cannot be empty")
@@ -254,13 +392,31 @@ func (j *fsJailedBackend) resolveUnder(rootAbs, userPath string, within func(str
 	return resolved, nil
 }
 
-// isWithinAnyRoot checks if a path is within the primary root or any extra root.
+// isWithinAnyRoot checks if a path is within the primary root, any extra
+// root, or any knowledge corpus root (reads only — writes use
+// isWithinPrimary).
 func (j *fsJailedBackend) isWithinAnyRoot(path string) bool {
 	if j.isWithinPrimary(path) {
 		return true
 	}
 	for _, x := range j.extraRoots {
 		if isWithinRoot(x.dir, path) {
+			return true
+		}
+	}
+	for _, k := range j.knowledge {
+		if k.dir != "" && isWithinRoot(k.dir, path) {
+			return true
+		}
+	}
+	return false
+}
+
+// isWithinAnyKnowledgeRoot checks if a path is within one of the knowledge
+// corpus roots — the only host directories the /knowledge mount may reach.
+func (j *fsJailedBackend) isWithinAnyKnowledgeRoot(path string) bool {
+	for _, k := range j.knowledge {
+		if k.dir != "" && isWithinRoot(k.dir, path) {
 			return true
 		}
 	}
@@ -291,6 +447,13 @@ func (j *fsJailedBackend) LsInfo(_ context.Context, req *einofs.LsInfoRequest) (
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 
+	// The knowledge mount root is virtual: it must never resolve to a host
+	// directory (its host parent holds other agents' scopes), so its listing
+	// is synthesized from the configured knowledge roots.
+	if rel, ok := j.unmountKnowledge(req.Path); ok && rel == "." {
+		return j.lsKnowledgeRoot(), nil
+	}
+
 	resolved, err := j.resolvePath(req.Path)
 	if err != nil {
 		return nil, err
@@ -317,6 +480,24 @@ func (j *fsJailedBackend) LsInfo(_ context.Context, req *einofs.LsInfoRequest) (
 	}
 
 	return result, nil
+}
+
+// lsKnowledgeRoot synthesizes the /knowledge listing: one directory entry per
+// knowledge scope whose host directory exists. Absent scopes are omitted.
+func (j *fsJailedBackend) lsKnowledgeRoot() []einofs.FileInfo {
+	var result []einofs.FileInfo
+	for _, k := range j.knowledge {
+		if k.dir == "" {
+			continue
+		}
+		entry := einofs.FileInfo{Path: k.name, IsDir: true}
+		if info, err := os.Stat(k.dir); err == nil {
+			entry.Size = info.Size()
+			entry.ModifiedAt = info.ModTime().Format(time.RFC3339Nano)
+		}
+		result = append(result, entry)
+	}
+	return result
 }
 
 // Read reads file content with support for line-based offset and limit.

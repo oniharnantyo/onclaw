@@ -13,6 +13,7 @@ declare module "@wailsio/runtime" {
     namespace Events {
         interface CustomEvents {
             "gateway:state": services$0.GatewayStateEvent;
+            "knowledge:changed": services$0.KnowledgeChangedEvent;
             "mcp:oauth:completed": services$0.MCPOAuthCompletedEvent;
             "schedules:changed": services$0.SchedulesChangedEvent;
         }

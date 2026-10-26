@@ -30,12 +30,14 @@ type Store struct {
 	gatewaySettings *store.GatewaySettings
 	sessionEvents   map[string][]store.SessionEvent // key: sessionID, kept in Seq order
 	checkpoints     map[string][]byte
-	skills          map[string]store.Skill      // key: name
-	toolStates      map[string]store.ToolState  // key: name
-	agentHooks      map[agentHookKey]int        // key: (agentID, hookID), value: position
-	hookExecutions  []store.HookExecution       // append-only audit trail
-	toolSettings    map[string]string           // key: tool, value: opaque JSON
-	attachments     map[string]store.Attachment // key: capability key
+	skills          map[string]store.Skill          // key: name
+	toolStates      map[string]store.ToolState      // key: name
+	agentHooks      map[agentHookKey]int            // key: (agentID, hookID), value: position
+	hookExecutions  []store.HookExecution           // append-only audit trail
+	toolSettings    map[string]string               // key: tool, value: opaque JSON
+	attachments     map[string]store.Attachment     // key: capability key
+	documents       map[string]store.Document       // key: document id
+	documentPresets map[string]store.DocumentPreset // key: preset id
 	providerModels  map[int64]store.ProviderModel
 	nextModelID     int64
 }
@@ -43,22 +45,24 @@ type Store struct {
 // New returns an empty in-memory store.
 func New() *Store {
 	return &Store{
-		agents:         make(map[string]store.Agent),
-		sessions:       make(map[string]store.Session),
-		providers:      make(map[string]store.Provider),
-		mcpServers:     make(map[string]store.MCPServer),
-		mcpOAuthTokens: make(map[string]store.MCPOAuthToken),
-		schedules:      make(map[string]store.Schedule),
-		hooks:          make(map[string]store.Hook),
-		sessionEvents:  make(map[string][]store.SessionEvent),
-		checkpoints:    make(map[string][]byte),
-		skills:         make(map[string]store.Skill),
-		toolStates:     make(map[string]store.ToolState),
-		agentHooks:     make(map[agentHookKey]int),
-		toolSettings:   make(map[string]string),
-		attachments:    make(map[string]store.Attachment),
-		providerModels: make(map[int64]store.ProviderModel),
-		nextModelID:    1,
+		agents:          make(map[string]store.Agent),
+		sessions:        make(map[string]store.Session),
+		providers:       make(map[string]store.Provider),
+		mcpServers:      make(map[string]store.MCPServer),
+		mcpOAuthTokens:  make(map[string]store.MCPOAuthToken),
+		schedules:       make(map[string]store.Schedule),
+		hooks:           make(map[string]store.Hook),
+		sessionEvents:   make(map[string][]store.SessionEvent),
+		checkpoints:     make(map[string][]byte),
+		skills:          make(map[string]store.Skill),
+		toolStates:      make(map[string]store.ToolState),
+		agentHooks:      make(map[agentHookKey]int),
+		toolSettings:    make(map[string]string),
+		attachments:     make(map[string]store.Attachment),
+		documents:       make(map[string]store.Document),
+		documentPresets: make(map[string]store.DocumentPreset),
+		providerModels:  make(map[int64]store.ProviderModel),
+		nextModelID:     1,
 	}
 }
 
@@ -78,6 +82,8 @@ func (s *Store) AgentHooks() store.AgentHookStore            { return &agentHook
 func (s *Store) HookExecutions() store.HookExecutionStore    { return &hookExecutionStore{s} }
 func (s *Store) ToolSettings() store.ToolSettingStore        { return &toolSettingStore{s} }
 func (s *Store) Attachments() store.AttachmentStore          { return &attachmentStore{s} }
+func (s *Store) Documents() store.DocumentStore              { return &documentStore{s} }
+func (s *Store) DocumentPresets() store.DocumentPresetStore  { return &documentPresetStore{s} }
 func (s *Store) ProviderModels() store.ProviderModelStore    { return &providerModelStore{s} }
 
 func (s *Store) Create(ctx context.Context, model *store.ProviderModel) error {

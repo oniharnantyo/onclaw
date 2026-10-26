@@ -17,8 +17,10 @@ import (
 
 // The built-in tool catalog: the tools every agent turn may draw on — the
 // two workspace-free utilities, the jailed workspace filesystem and shell,
-// the plantask tools, web access, the browser, and the scheduler (spec
-// agent-tools; spec add-browser-tool; spec add-scheduler). A tool reaches
+// the plantask tools, web access, the browser, the scheduler, the
+// knowledge save_document tool, and the create_document PDF renderer (spec
+// agent-tools; spec add-browser-tool; spec add-scheduler; spec
+// add-knowledge-corpus; spec add-create-document). A tool reaches
 // the model only when all three gate conditions hold
 // (resolveTurnTools in gate.go): it is in the catalog, it is globally enabled
 // (store.ToolStates — absence of a row means enabled), and the agent opted in
@@ -74,6 +76,19 @@ var plantaskToolNames = []string{ToolTaskCreate, ToolTaskGet, ToolTaskUpdate, To
 // the runtime was built with a schedule service (WithScheduler).
 const ToolScheduler = "scheduler"
 
+// ToolSaveDocument saves a chat attachment or inline text as a durable
+// knowledge document in the calling agent's scope (spec add-knowledge-corpus
+// "Save document tool in the catalog"). Offered only when the runtime was
+// built with a knowledge store (WithKnowledge).
+const ToolSaveDocument = "save_document"
+
+// ToolCreateDocument renders markdown into a styled PDF document written at
+// the agent's workspace root (spec add-create-document). Presentation comes
+// from the user's named presets; the tool input carries only content, file
+// name, and an optional preset name (design D2). Workspace-scoped: an agent
+// without a rootable workspace has it withheld.
+const ToolCreateDocument = "create_document"
+
 // toolKind discriminates how a catalog entry reaches the model.
 type toolKind int
 
@@ -122,6 +137,8 @@ var catalogEntries = []catalogEntry{
 	{meta: ToolMeta{Name: ToolWebSearch, DisplayName: "Web Search", IconKey: "search", Description: "Search the web through the configured provider chain (configured in Tools settings)."}},
 	{meta: ToolMeta{Name: ToolBrowser, DisplayName: "Browser", IconKey: "globe", Description: "Drive a real Chromium browser with persistent named profiles: navigate, snapshot, click, type, screenshot, manage cookies. Logins persist across sessions."}},
 	{meta: ToolMeta{Name: ToolScheduler, DisplayName: "Scheduler", IconKey: "calendar-clock", Description: "Create, list, update and delete cron schedules that run an agent on a prompt unattended; times are local."}},
+	{meta: ToolMeta{Name: ToolSaveDocument, DisplayName: "Save document", IconKey: "file-plus", Description: "Save a chat attachment or inline text as a durable knowledge document in this agent's scope; a descriptive filename and description help future discovery."}},
+	{meta: ToolMeta{Name: ToolCreateDocument, DisplayName: "Create Document", IconKey: "file-text", Description: "Render markdown into a styled PDF document in your workspace; presentation comes from the user's presets, referenced by name."}, workspaceScoped: true},
 }
 
 // ToolMeta is the plain-Go catalog record crossing the package boundary for
@@ -162,8 +179,12 @@ func CatalogToolByName(name string) (ToolMeta, bool) {
 // directory. Workspace-free tools ignore it.
 type toolScope struct {
 	// AgentID is the id of the agent whose turn is being composed — the
-	// scheduler tool's `create` defaults its target agent to it.
+	// scheduler tool's `create` defaults its target agent to it, and the
+	// save_document tool's catalog rows carry it.
 	AgentID string
+	// Slug is the calling agent's slug — the directory name of its knowledge
+	// scope (add-knowledge-corpus D2); "" for a slugless agent.
+	Slug string
 	// Workspace is the agent's workspace directory; "" for a turn without a
 	// rootable workspace (workspace-free tools never read it).
 	Workspace string
@@ -201,6 +222,17 @@ func (m *manager) buildDirectTool(name string, scope toolScope) (tool.BaseTool, 
 		// A thin client over the runtime's schedule service (add-scheduler
 		// design D1), defaulted to the calling agent (D8).
 		return newSchedulerTool(m.scheduler, m.store.Agents(), scope.AgentID)
+	case ToolSaveDocument:
+		// The one write path into the agent's knowledge scope
+		// (add-knowledge-corpus design D4): chat attachments copy in, inline
+		// text saves directly.
+		return newSaveDocumentTool(m.knowledge, m.attachments, scope.AgentID, scope.Slug)
+	case ToolCreateDocument:
+		// The manager-held converter (add-create-document design D3): created
+		// with the manager, Chrome-free until the first conversion, closed
+		// with it. Presets resolve through the store; the default rides the
+		// tool_settings row.
+		return newCreateDocumentTool(m.docgen, m.store.DocumentPresets(), m.store.ToolSettings(), scope.Workspace)
 	default:
 		return nil, fmt.Errorf("tool %s is not directly constructible", name)
 	}

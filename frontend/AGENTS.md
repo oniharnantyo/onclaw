@@ -51,6 +51,7 @@ re-apply the `surfaces.tsx` retarget, then re-run the suite — the VENDORED.md 
 have to be re-applied by hand.
 
 **The rules that bite:**
+
 - The runtime adapter holds **no state of its own**: derive from the store, mutate only through store actions.
 - A message's id is the turn id and a part's id is the entry id — component state survives reorders.
 - The streaming text path still renders through `react-markdown` (the vendored `MarkdownText` hardcodes `defer`,

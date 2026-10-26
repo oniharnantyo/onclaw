@@ -10,6 +10,7 @@ import userEvent from "@testing-library/user-event";
 import type {
   BrowserConfig,
   BrowserProfile,
+  DocumentPresetEntry,
   ToolEntry,
   WebSearchChainEntry,
   WebSearchConfig,
@@ -48,6 +49,12 @@ const providers: WebSearchProviderInfo[] = [
 /** The persisted web_search chain fixture the mocked config read returns. */
 let chain: WebSearchConfig = { entries: [] };
 
+/** The document preset fixtures the mocked dialog read returns. */
+let documentPresets: DocumentPresetEntry[] = [];
+
+/** The stored default document preset name; "" when none. */
+let documentDefault = "";
+
 vi.mock("../../../lib/client", () => ({
   client: {
     settings: {
@@ -71,6 +78,8 @@ vi.mock("../../../lib/client", () => ({
       }),
       browserConfig: vi.fn(async () => browserSettings),
       browserProfiles: vi.fn(async () => [...browserProfiles]),
+      documentPresets: vi.fn(async () => [...documentPresets]),
+      defaultDocumentPreset: vi.fn(async () => documentDefault),
     },
   },
 }));
@@ -89,6 +98,8 @@ type MockedClient = Client & {
     saveWebSearchConfig: MockFn;
     browserConfig: MockFn;
     browserProfiles: MockFn;
+    documentPresets: MockFn;
+    defaultDocumentPreset: MockFn;
   };
 };
 
@@ -107,6 +118,8 @@ describe("ToolsPane", () => {
       allowPrivate: false,
     };
     browserProfiles = [{ name: "default", modified_at: "", size_bytes: 0 }];
+    documentPresets = [];
+    documentDefault = "";
     vi.clearAllMocks();
   });
 
@@ -289,6 +302,53 @@ describe("ToolsPane", () => {
     expect(getByTestId("browser-profile-row-default").textContent).toContain(
       "default"
     );
+  });
+
+  it("opens the Document preset manager from the create_document row's gear", async () => {
+    tools.push(
+      {
+        Name: "read_file",
+        DisplayName: "Read File",
+        IconKey: "file",
+        Description: "",
+        Enabled: true,
+      },
+      {
+        Name: "create_document",
+        DisplayName: "Create Document",
+        IconKey: "file-text",
+        Description: "Render markdown into a styled PDF",
+        Enabled: true,
+      }
+    );
+    documentPresets = [
+      {
+        id: "preset-1",
+        name: "Client Report",
+        format: "pdf",
+        config: JSON.stringify({ schema_version: 1 }),
+        createdAt: "2026-10-01T12:00:00Z",
+        updatedAt: "2026-10-01T12:00:00Z",
+      },
+    ];
+    const user = userEvent.setup();
+
+    const { getByTestId, findByTestId, queryByTestId } = await renderUI(
+      <ToolsPane />
+    );
+
+    // Only create_document carries the gear among this catalog's rows.
+    expect(queryByTestId("btn-tool-config-read_file")).toBeNull();
+    const gear = await findByTestId("btn-tool-config-create_document");
+    expect(gear.getAttribute("aria-label")).toBe("Configure Create Document");
+
+    await user.click(gear);
+
+    await findByTestId("document-config-dialog");
+    expect(getByTestId("document-tab-pdf").getAttribute("aria-selected")).toBe(
+      "true"
+    );
+    expect(getByTestId("document-preset-row-Client Report")).toBeTruthy();
   });
 
   it("adds providers with credentials and persists the ordered chain", async () => {

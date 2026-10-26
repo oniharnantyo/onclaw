@@ -1,5 +1,10 @@
 package agents
 
+import (
+	"fmt"
+	"strings"
+)
+
 // operatingContract is the virtual AGENTS.md every turn composes into its
 // system instruction, positioned after the persona documents and before the
 // compaction summary (design D1/D2; spec agent-prompts "Virtual operating
@@ -101,3 +106,26 @@ on permission is not.
   when the task is complete or you're blocked on input only the user can
   provide.
 `
+
+// presetAppendix renders the document-preset appendix composed directly
+// after the operating contract (add-create-document design D6; spec
+// document-generation "Preset awareness in turns"): the available preset
+// names — the default marked — so the model can reference one in the
+// create_document tool's preset argument without asking. The caller composes
+// nothing when the tool is not offered or no preset exists; names is never
+// empty here, and an empty def renders the list unmarked (no default
+// configured or it no longer resolves).
+func presetAppendix(names []string, def string) string {
+	var sb strings.Builder
+	sb.WriteString("## Document presets\n\n")
+	sb.WriteString("The create_document tool styles its PDF output with presentation presets the user owns. Available presets:\n\n")
+	for _, name := range names {
+		if def != "" && strings.EqualFold(name, def) {
+			sb.WriteString(fmt.Sprintf("- %s (default)\n", name))
+			continue
+		}
+		sb.WriteString(fmt.Sprintf("- %s\n", name))
+	}
+	sb.WriteString("\nPass one of these names in the tool's preset argument to use it; omit the argument to use the default.")
+	return sb.String()
+}

@@ -21,7 +21,10 @@ import type {
   AgentHookAssignment,
   BrowserConfig,
   BrowserProfile,
+  DocumentPresetEntry,
   GatewayStateEvent,
+  GeneratedDocumentContent,
+  KnowledgeDocument,
   ModelCapability,
   ProviderInput,
   ProviderModelView,
@@ -155,6 +158,42 @@ function makeScheduleView(): ScheduleView {
 
 type MockFn = ReturnType<typeof vi.fn>;
 
+/** The read shape the backend returns for one knowledge document
+ * (add-knowledge-corpus D8). */
+function makeKnowledgeDocument(): KnowledgeDocument {
+  return {
+    id: "doc-1",
+    filename: "notes.md",
+    mime: "text/markdown",
+    size: 128,
+    scope: "agent",
+    agentId: "a1",
+    agentSlug: "scout",
+    description: "Scout's field notes",
+    source: "user",
+    createdAt: "2026-10-25T00:00:00Z",
+  };
+}
+
+/** The read shape the backend returns for one document preset
+ * (add-create-document D4). */
+function makeDocumentPreset(): DocumentPresetEntry {
+  return {
+    id: "preset-1",
+    name: "Client Report",
+    format: "pdf",
+    config: '{"schema_version":1,"theme":"corporate"}',
+    createdAt: "2026-10-26T00:00:00Z",
+    updatedAt: "2026-10-26T00:00:00Z",
+  };
+}
+
+/** The read shape the backend returns for one generated document
+ * (add-create-document D7). */
+function makeGeneratedDocument(): GeneratedDocumentContent {
+  return { name: "report.pdf", sizeBytes: 9, data: "cG5mLWJ5dGVz" };
+}
+
 /** Guard for mock-transport members the cases under test never reach. */
 function unreachable(what: string): never {
   throw new Error(`${what} is not stubbed in this mock transport`);
@@ -186,6 +225,7 @@ interface MockTransport {
     TurnState: MockFn;
     ContextUsage: MockFn;
     BrowserScreenshot: MockFn;
+    GeneratedDocument: MockFn;
   };
   appInfo: { Get: MockFn };
   settings: Transport["settings"];
@@ -199,6 +239,14 @@ interface MockTransport {
     Delete: MockFn;
     RunNow: MockFn;
     Preview: MockFn;
+  };
+  knowledge: {
+    List: MockFn;
+    Upload: MockFn;
+    Delete: MockFn;
+    SetScope: MockFn;
+    SetDescription: MockFn;
+    Content: MockFn;
   };
   unsubscribe: Unsubscribe;
 }
@@ -308,6 +356,11 @@ function makeTransport(): MockTransport {
       height: 1,
       data: "cG5nLWJ5dGVz",
     })),
+    GeneratedDocument: vi.fn(async (agentID: string, name: string) => ({
+      name,
+      sizeBytes: 9,
+      data: "cG5mLWJ5dGVz",
+    })),
   };
 
   const appInfo = {
@@ -369,6 +422,33 @@ function makeTransport(): MockTransport {
       unreachable("settings.CreateBrowserProfile"),
     DeleteBrowserProfile: (_name: string): Promise<void> =>
       unreachable("settings.DeleteBrowserProfile"),
+    ListDocumentPresets: (
+      _format: string
+    ): Promise<DocumentPresetEntry[] | null> =>
+      unreachable("settings.ListDocumentPresets"),
+    CreateDocumentPreset: (
+      _format: string,
+      _name: string,
+      _configJSON: string
+    ): Promise<DocumentPresetEntry> =>
+      unreachable("settings.CreateDocumentPreset"),
+    UpdateDocumentPreset: (
+      _id: string,
+      _name: string,
+      _configJSON: string
+    ): Promise<DocumentPresetEntry> =>
+      unreachable("settings.UpdateDocumentPreset"),
+    DuplicateDocumentPreset: (
+      _id: string,
+      _newName: string
+    ): Promise<DocumentPresetEntry> =>
+      unreachable("settings.DuplicateDocumentPreset"),
+    DeleteDocumentPreset: (_id: string): Promise<void> =>
+      unreachable("settings.DeleteDocumentPreset"),
+    DefaultDocumentPreset: (_format: string): Promise<string> =>
+      unreachable("settings.DefaultDocumentPreset"),
+    SetDefaultDocumentPreset: (_format: string, _name: string): Promise<void> =>
+      unreachable("settings.SetDefaultDocumentPreset"),
     Hooks: (): Promise<Hook[]> => unreachable("settings.Hooks"),
     CreateHook: (hook: Hook): Promise<Hook> =>
       unreachable(`settings.CreateHook:${hook.Name}`),
@@ -444,6 +524,35 @@ function makeTransport(): MockTransport {
     SetLight: vi.fn(async () => undefined),
   };
 
+  const knowledge = {
+    List: vi.fn(async (): Promise<KnowledgeDocument[] | null> => [
+      makeKnowledgeDocument(),
+    ]),
+    Upload: vi.fn(
+      async (
+        _filename: string,
+        _mime: string,
+        _data: string,
+        _scope: string,
+        _agentID: string,
+        _description: string
+      ): Promise<KnowledgeDocument> => makeKnowledgeDocument()
+    ),
+    Delete: vi.fn(async (_id: string): Promise<void> => undefined),
+    SetScope: vi.fn(
+      async (
+        _id: string,
+        _scope: string,
+        _agentID: string
+      ): Promise<KnowledgeDocument> => makeKnowledgeDocument()
+    ),
+    SetDescription: vi.fn(
+      async (_id: string, _description: string): Promise<KnowledgeDocument> =>
+        makeKnowledgeDocument()
+    ),
+    Content: vi.fn(async (_id: string): Promise<string> => "aGVsbG8="),
+  };
+
   const unsubscribe: Unsubscribe = () => {
     calls.push("off");
   };
@@ -457,6 +566,7 @@ function makeTransport(): MockTransport {
     settings,
     gateway,
     schedules,
+    knowledge,
     windowTheme,
     onEvent: (name: string, handler: EventHandler) => {
       calls.push(`onEvent:${name}`);
@@ -497,6 +607,7 @@ function makeTransport(): MockTransport {
     settings,
     gateway,
     schedules,
+    knowledge,
     unsubscribe,
   };
 }
@@ -616,6 +727,19 @@ describe("client wrapper", () => {
   it("routes chat.unsubscribe verbatim", async () => {
     await client.chat.unsubscribe("sess-1");
     expect(t.chat.Unsubscribe).toHaveBeenCalledWith("sess-1");
+  });
+
+  it("routes chat.generatedDocument and returns the served content", async () => {
+    const content = makeGeneratedDocument();
+
+    const read = vi
+      .spyOn(t.transport.chat, "GeneratedDocument")
+      .mockResolvedValue(content);
+
+    await expect(
+      client.chat.generatedDocument("agent-1", "report.pdf")
+    ).resolves.toBe(content);
+    expect(read).toHaveBeenCalledWith("agent-1", "report.pdf");
   });
 
   it("routes gateway state calls", async () => {
@@ -897,6 +1021,100 @@ describe("client wrapper", () => {
       );
       expect(authorize).toHaveBeenCalledWith("m1");
       expect(disconnect).toHaveBeenCalledWith("m1");
+    });
+  });
+
+  describe("document preset surface", () => {
+    it("routes settings.documentPresets and normalizes a null list", async () => {
+      const presets = [makeDocumentPreset()];
+
+      const list = vi
+        .spyOn(t.transport.settings, "ListDocumentPresets")
+        .mockResolvedValue(presets);
+
+      await expect(client.settings.documentPresets("pdf")).resolves.toEqual(
+        presets
+      );
+      expect(list).toHaveBeenCalledWith("pdf");
+
+      // SAFETY: the bridge maps a nil Go slice to null on the wire; this
+      // cast recovers the transport's declared payload for the regression.
+      const nilList = null as never;
+      vi.spyOn(t.transport.settings, "ListDocumentPresets").mockResolvedValue(
+        nilList
+      );
+      await expect(client.settings.documentPresets("pdf")).resolves.toEqual([]);
+    });
+
+    it("routes the preset CRUD calls verbatim", async () => {
+      const preset = makeDocumentPreset();
+
+      const create = vi
+        .spyOn(t.transport.settings, "CreateDocumentPreset")
+        .mockResolvedValue(preset);
+
+      const update = vi
+        .spyOn(t.transport.settings, "UpdateDocumentPreset")
+        .mockResolvedValue(preset);
+
+      const duplicate = vi
+        .spyOn(t.transport.settings, "DuplicateDocumentPreset")
+        .mockResolvedValue(preset);
+
+      const del = vi
+        .spyOn(t.transport.settings, "DeleteDocumentPreset")
+        .mockResolvedValue(undefined);
+
+      await expect(
+        client.settings.createDocumentPreset(
+          "pdf",
+          "Client Report",
+          preset.config
+        )
+      ).resolves.toBe(preset);
+      expect(create).toHaveBeenCalledWith(
+        "pdf",
+        "Client Report",
+        preset.config
+      );
+
+      await expect(
+        client.settings.updateDocumentPreset(
+          "preset-1",
+          "Client Report v2",
+          "{}"
+        )
+      ).resolves.toBe(preset);
+      expect(update).toHaveBeenCalledWith("preset-1", "Client Report v2", "{}");
+
+      await expect(
+        client.settings.duplicateDocumentPreset("preset-1", "Copy")
+      ).resolves.toBe(preset);
+      expect(duplicate).toHaveBeenCalledWith("preset-1", "Copy");
+
+      await client.settings.deleteDocumentPreset("preset-1");
+      expect(del).toHaveBeenCalledWith("preset-1");
+    });
+
+    it("routes the default preset selector (empty clears)", async () => {
+      const get = vi
+        .spyOn(t.transport.settings, "DefaultDocumentPreset")
+        .mockResolvedValue("Client Report");
+
+      const set = vi
+        .spyOn(t.transport.settings, "SetDefaultDocumentPreset")
+        .mockResolvedValue(undefined);
+
+      await expect(client.settings.defaultDocumentPreset("pdf")).resolves.toBe(
+        "Client Report"
+      );
+      expect(get).toHaveBeenCalledWith("pdf");
+
+      await client.settings.setDefaultDocumentPreset("pdf", "Client Report");
+      expect(set).toHaveBeenCalledWith("pdf", "Client Report");
+
+      await client.settings.setDefaultDocumentPreset("pdf", "");
+      expect(set).toHaveBeenLastCalledWith("pdf", "");
     });
   });
 
