@@ -374,12 +374,12 @@ The built-in tool catalog SHALL include a `create_document` tool (display name "
 
 ### Requirement: Create document tool
 
-The `create_document` tool SHALL render markdown into a PDF document using an embedded rendering library (no external binary) and write the result into the agent's workspace. Input SHALL be exactly the markdown content, a target file name, and an optional preset name. The file name SHALL be a plain name written at the workspace root; directory components, path traversal, and names resolving outside the workspace SHALL return an error result with no file written. The result SHALL carry the written file's workspace-relative name and size. A named preset that does not exist SHALL return a readable error with no file written. A call without a preset name SHALL use the configured default preset, falling back to the rendering library's built-in defaults when none is configured. Rendering failures, including a conversion exceeding its timeout, SHALL be returned as readable tool errors rather than failing the turn. Regenerating to an existing file name SHALL overwrite it.
+The `create_document` tool SHALL render markdown into a PDF document using an embedded rendering library (no external binary) and write the result into the agent's workspace under its `artifacts/` directory, creating that directory on demand. Input SHALL be exactly the markdown content, a target file name, and an optional preset name. The file name SHALL be a plain name; directory components, path traversal, and names resolving outside `artifacts/` SHALL return an error result with no file written. The result SHALL carry the written file's plain name and size. The tool's model-facing description SHALL state that output lands under `artifacts/`. A named preset that does not exist SHALL return a readable error with no file written. A call without a preset name SHALL use the configured default preset, falling back to the rendering library's built-in defaults when none is configured. Rendering failures, including a conversion exceeding its timeout, SHALL be returned as readable tool errors rather than failing the turn. Regenerating to an existing file name SHALL overwrite it.
 
 #### Scenario: Markdown renders to a workspace PDF
 
 - **WHEN** the model calls create_document with markdown content and file name "q3-report.pdf"
-- **THEN** a PDF exists at that workspace-relative path and the tool result carries the name and size
+- **THEN** a PDF exists at `artifacts/q3-report.pdf` inside the workspace and the tool result carries the plain name and size
 
 #### Scenario: Unknown preset is a readable error
 
@@ -398,5 +398,24 @@ The `create_document` tool SHALL render markdown into a PDF document using an em
 
 #### Scenario: Regenerating overwrites the earlier file
 
-- **WHEN** the model calls create_document with a file name that already exists in the workspace
+- **WHEN** the model calls create_document with a file name that already exists under `artifacts/`
 - **THEN** the new document replaces the old file and the result reports the fresh size
+
+### Requirement: Memory search tool in the catalog
+
+The built-in tool catalog SHALL include a `memory_search` tool (display name "Memory search") that is gated exactly like every other catalog tool: offered to a turn only when enabled globally in the Tools pane and permitted by the agent's tool allowlist. The tool SHALL accept a query and an optional result limit, SHALL search only the session agent's own workspace memory, SHALL make no model call, and SHALL return ranked results or a readable error result that lets the turn continue. It SHALL be offered to subagent child turns under the same gate, and every invocation SHALL be recorded as a recall trace carrying the turn's origin. The tool is read-only: writing memory remains the workspace filesystem tools' job.
+
+#### Scenario: Agent searches its memory
+
+- **WHEN** the model calls `memory_search` with a query that matches one of the agent's notes
+- **THEN** the tool result lists the note with its description, path, score, and excerpt, and a recall trace is recorded for the turn
+
+#### Scenario: Other agents' memory is invisible
+
+- **WHEN** the model calls `memory_search` for an agent while another agent holds a note matching the query
+- **THEN** the result contains only the session agent's own notes
+
+#### Scenario: Disabled tool is not offered
+
+- **WHEN** `memory_search` is disabled in the Tools pane
+- **THEN** subsequent turns of every agent are offered no such tool

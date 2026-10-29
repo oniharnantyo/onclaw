@@ -1,0 +1,23 @@
+# Tasks
+
+## 1. Store — `null` becomes the pinned identity tab (design D1)
+
+- [x] 1.1 In `frontend/src/features/chat/types.ts` and `frontend/src/features/chat/store.ts`, widen `activatePanelTab` to `(id: string | null) => void` with the doc comment stating `null` = the pinned identity tab (no other reducer, field, or reset path changes), and verify `cd frontend && npx tsc --noEmit` still passes with `RightBar.tsx` unchanged
+- [x] 1.2 Extend `frontend/src/features/chat/__test__/store.test.ts`: `activatePanelTab(null)` with tabs present leaves `panelTabs` intact and sets `activePanelTabID: null`; `closePanelTab` of a non-active tab while `null` stays `null`; closing the last tab from a preview still yields `null` — run `npx vitest run src/features/chat/__test__/store.test.ts` green (42/42; a fourth case covers close-active-raises-last, confirmed previously uncovered)
+
+## 2. RightBar — pinned tab and the shared identity element (design D2, D3, D4)
+
+- [x] 2.1 Extract the identity island's inner content (live 64 px `AgentAvatar`, name + model paragraphs with their test ids, Knowledge opener) into a local element shared by both shells; the `tabs.length === 0` branch keeps its exact markup and classes, and `npx vitest run src/features/chat/__test__/RightBar.test.tsx` still passes unchanged (`identityContent(agent)`; verifier-confirmed byte-identical island vs the pre-run baseline)
+- [x] 2.2 Derive `identityActive = activeStoreID === null && agent !== null`, compute `active` only when `!identityActive` (keep the `find ?? last` fallback), and render the shared identity element — or the `KnowledgePanel` when browsing — in `panel-content` when active; a stale non-null id still falls back to the last tab, verified by the existing RightBar cases (implemented as `identityAgent = activeStoreID === null ? agent : null` so TS narrows `agent` in the identity branches)
+- [x] 2.3 Render the pinned tab as the strip's first entry before `tabs.map`: `data-testid="panel-identity-tab"` (renamed from the planned `panel-tab-identity` — the original id collided with the `panel-tab-` prefix the existing test helpers enumerate), a static `AgentAvatar size={18}` label (no `live`), `aria-label`/`title` = agent name, `aria-current="true"` + the strip's active token classes when `identityActive`, `onClick={() => activatePanelTab(null)}`, and no close button; omit it when no agent matches and let `null` fall through to the last-tab fallback
+- [x] 2.4 Change the knowledge browsing reset's trigger from `tabs.length > 0` to `!identityActive` (the opener and `onOpenDoc`/`onBack` wiring unchanged), so the browsing state never survives leaving the identity surface
+
+## 3. Tests — the new grammar (design D8)
+
+- [x] 3.1 In `__test__/RightBar.test.tsx`: with a tab open the strip's first child is `panel-identity-tab` with no close control; activating it shows `sidebar-agent-name` and a `[data-avatar-state]` wrapper while the preview tab stays listed and `panel-content` stops rendering the preview; a preview opened or re-activated from the identity tab takes over; closing a non-active tab keeps the identity and the remaining tab; the Knowledge opener works from the identity tab and resets when a document tab takes over; both themes cover the pinned tab's active and inactive classes — `npx vitest run src/features/chat/__test__/RightBar.test.tsx` green (27/27: 20 existing untouched + 7 new)
+- [x] 3.2 Run the full frontend suite (`npx vitest run`) and `vp check src`, confirming every pre-existing RightBar and store case passed unchanged (111 files / 1077 tests; vp 0 errors, 37 pre-existing `!`-warnings)
+
+## 4. Integration and live smoke
+
+- [x] 4.1 `task build` exits 0 last so bindings are not stripped
+- [x] 4.2 Live smoke in the dev app: open a subagent trajectory tab (or a file chip), tap the pinned identity tab — the live face returns with every tab still listed and the in-flight turn's state on it; open another preview from there — it takes over; close tabs down to none — the island returns with no strip; check both themes and the `xl`-boundary overlay by hand (server-mode smoke at 1280×800 + 1000×700: an artifact chip opened the workspace-file tab; pinned tab first in strip in both docked and overlay states; identity returned live — the completed turn's reaction was dropped, face rested idle; takeover both ways; last close → island; light + dark. Not exercised live: a subagent trajectory tab specifically (the clone's knowledge docs were empty and no delegation was attempted — any tab kind drives the same grammar, and the store/RightBar tests cover trajectory tabs via `workspaceFileTab`), and the in-flight live state on return (verified as its complement: reaction dropped + idle rest))
