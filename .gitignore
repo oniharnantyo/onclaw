@@ -19,3 +19,6 @@ build/android/gen/
 
 # hallmark design-memory
 .hallmark/
+
+# impeccable runtime state (hook cache, critique records)
+.impeccable/

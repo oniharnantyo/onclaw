@@ -16,6 +16,35 @@
     }
   },
   "hooks": {
-    "events": {}
+    "enabled": true,
+    "events": {
+      "PostToolUse": [
+        {
+          "matcher": "Edit|Write",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "\"${ZCODE_PROJECT_DIR}/.zcode/skills/impeccable/scripts/impeccable\" hook",
+              "enabled": true,
+              "statusMessage": "Checking UI changes",
+              "timeout": 5
+            }
+          ]
+        }
+      ],
+      "Stop": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "command": "\"${ZCODE_PROJECT_DIR}/.zcode/skills/impeccable/scripts/impeccable\" hook",
+              "enabled": true,
+              "statusMessage": "Design deep pass",
+              "timeout": 30
+            }
+          ]
+        }
+      ]
+    }
   }
 }
