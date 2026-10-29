@@ -11,6 +11,7 @@ import (
 	"github.com/oniharnantyo/buddies/internal/agents/mcp"
 	"github.com/oniharnantyo/buddies/internal/agents/tools/documents"
 	"github.com/oniharnantyo/buddies/internal/attachments"
+	"github.com/oniharnantyo/buddies/internal/channels/telegram"
 	"github.com/oniharnantyo/buddies/internal/config"
 	"github.com/oniharnantyo/buddies/internal/gateway"
 	"github.com/oniharnantyo/buddies/internal/knowledge"
@@ -53,6 +54,11 @@ type App struct {
 	// loop before the gateway and the store go down.
 	memTicker *memory.Ticker
 
+	// tg is the attached Telegram channel; Close stops its goroutines
+	// (bounded join, add-telegram-channel design D1) before the gateway and
+	// the store go down.
+	tg *telegram.Service
+
 	closeOnce sync.Once
 	closeErr  error
 }
@@ -66,6 +72,7 @@ type ServiceSet struct {
 	Gateway   *services.GatewayService
 	Schedule  *services.ScheduleService
 	Knowledge *services.KnowledgeService
+	Channels  *services.ChannelService
 }
 
 // Assemble builds the full application over the data layout resolved from
@@ -167,6 +174,34 @@ func Assemble(ctx context.Context, emitter services.Emitter, opener services.URL
 	// attachments feature from the layout's attachments directory.
 	attStore := attachments.NewStore(layout.Attachments, st.Attachments())
 
+	// The Telegram channel (add-telegram-channel design D1): the bot token's
+	// poll loop, authorization, chat-to-session mapping, and outbound
+	// delivery over the store's channel row. Construction is wiring only —
+	// nothing polls until Attach observes a Running gateway below, and a
+	// disabled channel row boots as a clean no-op (design D10).
+	tg := telegram.New(telegramRuntime{runtime}, sessionSvc, st.Channels(), st.GatewaySettings(), attStore,
+		// Turn artifacts resolve to bytes for sendDocument delivery (design
+		// D12): the agent store names the workspace's owner, the workspace
+		// manager reads the file jailed to that workspace.
+		telegram.WithArtifacts(telegramArtifacts{agents: st.Agents(), ws: wsMgr}),
+		// Connection-state transitions announce app-wide (design D10): the
+		// channel's State* strings are the services' ChannelState* values.
+		telegram.WithStateSink(func(channelID, state, detail string) {
+			emitter.Emit(services.EventChannelState, services.ChannelStateEvent{
+				ChannelID: channelID,
+				State:     state,
+				Detail:    detail,
+			})
+		}))
+	// Run completions announce to the home chat (add-telegram-channel design
+	// D13), bound into the schedule adapter the same late-bound way as
+	// runs.runtime above.
+	runs.announcer = tg
+	// The channel runtime starts on the gateway's first Running transition
+	// (design D1, the scheduler ticker's attach pattern); both hosts start
+	// the gateway after Assemble.
+	tg.Attach(gw)
+
 	// Index the on-disk skill library into the registry. Cosmetic to
 	// startup: the skills directory may be empty, and one broken skill
 	// directory is logged and skipped inside the scan — never fatal.
@@ -231,6 +266,7 @@ func Assemble(ctx context.Context, emitter services.Emitter, opener services.URL
 		mcpMgr:    mcpMgr,
 		sched:     sched,
 		memTicker: memTicker,
+		tg:        tg,
 		Services: ServiceSet{
 			AppInfo: services.NewAppInfo(),
 			Agents:  agentsSvc,
@@ -243,19 +279,64 @@ func Assemble(ctx context.Context, emitter services.Emitter, opener services.URL
 			Gateway:   services.NewGatewayService(gw, emitter),
 			Schedule:  services.NewScheduleService(sched, emitter),
 			Knowledge: services.NewKnowledgeService(knowStore, st.Agents(), emitter),
+			Channels:  services.NewChannelService(st, emitter),
 		},
 	}, nil
 }
 
-// Close shuts the application down: it stops the scheduler's tick loop (so
-// no tick races the teardown below), stops the gateway (unless already
-// stopped), tears down the MCP connection cache (reaping any stdio
-// children), and closes the store. It is idempotent; the first call's result
-// is returned on every call.
+// telegramRuntime adapts the agent runtime onto the Telegram channel's
+// Runtime seam (add-telegram-channel design D5/D6). Every method delegates to
+// the manager unchanged except Submit, whose concrete *agents.Turn satisfies
+// the channel's TurnView structurally (telegram deps.go) but needs the
+// interface-shape bridge Go requires.
+type telegramRuntime struct {
+	agents.Manager
+}
+
+// Submit adapts the manager's *agents.Turn onto telegram.TurnView.
+func (t telegramRuntime) Submit(ctx context.Context, req agents.SendRequest) (telegram.TurnView, error) {
+	return t.Manager.Submit(ctx, req)
+}
+
+// telegramArtifacts adapts the agent store and the workspace manager onto the
+// Telegram channel's Artifacts seam (add-telegram-channel design D12): the
+// turn's agent id resolves to its workspace slug, and the artifact's
+// workspace-relative path reads through the jailed workspace reader — the
+// same reader the chat service serves workspace files with, so traversal and
+// symlink escapes are refused before anything leaves the machine.
+type telegramArtifacts struct {
+	agents store.AgentStore
+	ws     *workspaces.Manager
+}
+
+var _ telegram.Artifacts = (*telegramArtifacts)(nil)
+
+// Read returns one artifact's bytes from the agent's workspace.
+func (t telegramArtifacts) Read(ctx context.Context, agentID, relPath string) ([]byte, error) {
+	agent, err := t.agents.ByID(ctx, agentID)
+	if err != nil {
+		return nil, fmt.Errorf("telegram artifacts: agent %s: %w", agentID, err)
+	}
+	content, err := t.ws.ReadFile(agent.Slug, relPath)
+	if err != nil {
+		return nil, fmt.Errorf("telegram artifacts: read %s: %w", relPath, err)
+	}
+	return []byte(content), nil
+}
+
+// Close shuts the application down: it stops the scheduler's tick loop and
+// the Telegram channel's goroutines (so no tick or channel goroutine races
+// the teardown below), stops the gateway (unless already stopped), tears down
+// the MCP connection cache (reaping any stdio children), and closes the
+// store. It is idempotent; the first call's result is returned on every call.
 func (a *App) Close() error {
 	a.closeOnce.Do(func() {
 		var errs []error
 		a.sched.Stop()
+		// The Telegram channel stops with its bounded join (add-telegram-
+		// channel design D1): a hung API call must not block the gateway or
+		// store teardown below.
+		a.tg.Stop()
 		// The memory sweep ticker's loop stops first too, so no sweep races
 		// the gateway or store teardown below (an in-flight sweep completes
 		// before Stop returns).

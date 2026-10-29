@@ -464,7 +464,7 @@ func TestOpen_MigratesFromPreviousVersion(t *testing.T) {
 
 	var version int
 	require.NoError(t, db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version))
-	require.Equal(t, 17, version, "the latest migration must be recorded as applied")
+	require.Equal(t, 18, version, "the latest migration must be recorded as applied")
 
 	for _, table := range []string{"memory_traces", "memory_note_state", "memory_staging", "memory_sweeps"} {
 		require.True(t, tableExists(t, db, table), "table %s must exist after the upgrade", table)

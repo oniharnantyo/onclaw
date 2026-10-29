@@ -20,10 +20,26 @@ vi.mock("../../../lib/client", () => ({
       webSearchProviders: vi.fn(async () => []),
       webSearchConfig: vi.fn(async () => ({ entries: [] })),
     },
+    channels: {
+      channel: vi.fn(async () => ({
+        id: "telegram",
+        enabled: false,
+        tokenSet: false,
+        tokenHint: "",
+        proxyUrl: "",
+        createdAt: "",
+        updatedAt: "",
+      })),
+      chats: vi.fn(async () => []),
+      pendingPairings: vi.fn(async () => []),
+    },
     // The integrations pane subscribes to OAuth completions on mount (the
-    // MCP pane's refetch pattern); no SettingsView test drives the flow.
+    // MCP pane's refetch pattern); no SettingsView test drives the flow. The
+    // channels pane subscribes to its change/state events the same way.
     events: {
       onMcpOAuthCompleted: vi.fn((): (() => void) => (): void => undefined),
+      onChannelsChanged: vi.fn((): (() => void) => (): void => undefined),
+      onChannelsState: vi.fn((): (() => void) => (): void => undefined),
     },
   },
 }));
@@ -51,11 +67,12 @@ type MockedClient = Client & {
 // SAFETY: the client module is mocked with vi.fn members above.
 const mockedClient = client as MockedClient;
 
-/** Sidebar order is the grouped nav order: Providers, Integrations, then
- * the AUTOMATION panes (Skills, Tools, Hooks, MCP). */
+/** Sidebar order is the grouped nav order: Providers, Integrations, Channels,
+ * then the AUTOMATION panes (Skills, Tools, Hooks, MCP). */
 const navItemIds = [
   "settings-nav-item-providers",
   "settings-nav-item-integrations",
+  "settings-nav-item-channels",
   "settings-nav-item-skills",
   "settings-nav-item-tools",
   "settings-nav-item-hooks",
@@ -99,6 +116,19 @@ describe("SettingsView", () => {
     ]) {
       expect(getByTestId(id)).toBeTruthy();
     }
+
+    // The INTEGRATIONS section carries its panes in nav order: Integrations,
+    // Channels (add-telegram-channel task 9.1).
+    const integrationItems = Array.from(
+      getByTestId("settings-nav-section-integrations").querySelectorAll(
+        "[data-testid^='settings-nav-item-']"
+      )
+    ).map((el: Element): string => el.getAttribute("data-testid") ?? "");
+
+    expect(integrationItems).toEqual([
+      "settings-nav-item-integrations",
+      "settings-nav-item-channels",
+    ]);
 
     // The AUTOMATION section carries its panes in nav order: Skills, Tools,
     // Hooks, MCP.
@@ -156,6 +186,20 @@ describe("SettingsView", () => {
     ).toBe("true");
     expect(await findByTestId("integrations-pane")).toBeTruthy();
     expect(getByTestId("settings-pane-title").textContent).toBe("Integrations");
+  });
+
+  it("selects the Channels pane from the INTEGRATIONS section", async () => {
+    const user = userEvent.setup();
+
+    const { getByTestId, findByTestId } = await renderUI(<SettingsView />);
+
+    await user.click(getByTestId("settings-nav-item-channels"));
+
+    expect(
+      getByTestId("settings-nav-item-channels").getAttribute("aria-selected")
+    ).toBe("true");
+    expect(await findByTestId("channels-pane")).toBeTruthy();
+    expect(getByTestId("settings-pane-title").textContent).toBe("Channels");
   });
 
   it("filters the pane list by label from the search input and restores it on clear", async () => {

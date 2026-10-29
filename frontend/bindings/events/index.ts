@@ -9,6 +9,16 @@ import type {} from "../github.com/wailsapp/wails/v3/internal/eventdata.js";
 import "../github.com/wailsapp/wails/v3/internal/eventcreate.js";
 
 /**
+ * Name of the custom event "channels:changed".
+ */
+export const ChannelsChanged = "channels:changed";
+
+/**
+ * Name of the custom event "channels:state".
+ */
+export const ChannelsState = "channels:state";
+
+/**
  * Name of the custom event "gateway:state".
  */
 export const GatewayState = "gateway:state";
@@ -32,4 +42,3 @@ export const SchedulesChanged = "schedules:changed";
  * Name of the custom event "turns:changed".
  */
 export const TurnsChanged = "turns:changed";
-

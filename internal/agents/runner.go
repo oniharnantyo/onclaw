@@ -139,14 +139,17 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 
 	// 2. Persist the user message before anything can fail on the provider
 	// path; an errored turn still shows what was asked. The payload carries
-	// the send's attachment metadata for replay (design D5). A regeneration
-	// suppresses the persist (design D7 — the log keeps exactly one user
-	// message per prompt) and broadcasts the marker instead.
+	// the send's attachment metadata for replay (design D5) and the resolved
+	// dispatch origin (add-telegram-channel 9.2) so a replayed transcript
+	// names who started the turn. A regeneration suppresses the persist
+	// (design D7 — the log keeps exactly one user message per prompt) and
+	// broadcasts the marker instead.
 	userMsg := sessions.Event{
 		Kind:        sessions.KindUserMessage,
 		Text:        req.message,
 		Attachments: req.attachments,
 		VariantOf:   req.variantOf,
+		Origin:      dispatchOrigin(req.origin),
 	}
 	if req.suppressUserPersist {
 		userMsg.TurnID = turnID
@@ -429,6 +432,16 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 		checkpointID: "adk_" + turnID,
 		planDir:      planDirFor(surface.agentDir),
 	})
+}
+
+// dispatchOrigin resolves the origin a turn's user_message event records
+// (design D6): an empty dispatch origin reads as the user default — the same
+// normalization the hook base event and the environment block apply.
+func dispatchOrigin(origin string) string {
+	if origin == "" {
+		return hooks.OriginUser
+	}
+	return origin
 }
 
 // turnRun carries the execute phase's composed inputs (design D4): the

@@ -5,6 +5,8 @@
  */
 
 import type {
+  ChannelChangedEvent,
+  ChannelStateEvent,
   KnowledgeChangedEvent,
   MCPOAuthCompletedEvent,
   SchedulesChangedEvent,
@@ -13,6 +15,27 @@ import type {
 
 /** Event carrying gateway lifecycle changes; payload is GatewayStateEvent. */
 export const GATEWAY_STATE_EVENT = "gateway:state";
+
+/**
+ * Event announcing any channel mutation (add-telegram-channel task 1.4):
+ * every channel configuration and pairing change emits it; payload is
+ * ChannelChangedEvent, so the Channels pane refetches.
+ */
+export const CHANNELS_CHANGED_EVENT = "channels:changed";
+
+/** The generated payload of CHANNELS_CHANGED_EVENT, re-exported so callers
+ * keep one import surface beside the constant. */
+export type { ChannelChangedEvent };
+
+/**
+ * Event announcing one channel's live connection state (add-telegram-channel
+ * design D10); payload is ChannelStateEvent.
+ */
+export const CHANNELS_STATE_EVENT = "channels:state";
+
+/** The generated payload of CHANNELS_STATE_EVENT, re-exported so callers
+ * keep one import surface beside the constant. */
+export type { ChannelStateEvent };
 
 /**
  * Event announcing the end of an MCP server's OAuth authorization flow

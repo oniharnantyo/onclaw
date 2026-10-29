@@ -5,79 +5,90 @@
  * Agent is one chat agent definition.
  */
 export interface Agent {
-    "ID": string;
-    "Name": string;
+  ID: string;
+  Name: string;
 
-    /**
-     * Slug is the DNS-label identifier (see the workspaces package) that
-     * names the agent's workspace directory. It is unique among agents and
-     * immutable after create; empty only on rows not yet backfilled.
-     */
-    "Slug": string;
+  /**
+   * Slug is the DNS-label identifier (see the workspaces package) that
+   * names the agent's workspace directory. It is unique among agents and
+   * immutable after create; empty only on rows not yet backfilled.
+   */
+  Slug: string;
 
-    /**
-     * Description is the optional multi-line card summary.
-     */
-    "Description": string;
+  /**
+   * Description is the optional multi-line card summary.
+   */
+  Description: string;
 
-    /**
-     * Brief is the persona instruction prompt generation runs from.
-     */
-    "Brief": string;
+  /**
+   * Brief is the persona instruction prompt generation runs from.
+   */
+  Brief: string;
 
-    /**
-     * Avatar is the agent's stored procedural-avatar config — the wizard's
-     * AvatarPicker output, persisted verbatim as a JSON object (opaque JSON,
-     * the Hook.Config pattern). A nil map means "no stored avatar": surfaces
-     * derive the face from the agent id instead.
-     */
-    "Avatar": { [_ in string]?: any } | null;
+  /**
+   * Avatar is the agent's stored procedural-avatar config — the wizard's
+   * AvatarPicker output, persisted verbatim as a JSON object (opaque JSON,
+   * the Hook.Config pattern). A nil map means "no stored avatar": surfaces
+   * derive the face from the agent id instead.
+   */
+  Avatar: { [_ in string]?: any } | null;
 
-    /**
-     * PromptsStatus is the prompt-document lifecycle state (one of the
-     * PromptsStatus* constants); PromptsError carries the last failure's
-     * reason and is empty otherwise.
-     */
-    "PromptsStatus": string;
-    "PromptsError": string;
-    "ProviderID": string;
-    "Model": string;
+  /**
+   * PromptsStatus is the prompt-document lifecycle state (one of the
+   * PromptsStatus* constants); PromptsError carries the last failure's
+   * reason and is empty otherwise.
+   */
+  PromptsStatus: string;
+  PromptsError: string;
+  ProviderID: string;
+  Model: string;
 
-    /**
-     * Effort is the agent's default reasoning effort ("" = provider default).
-     * Its options are the selected model's capability set (see the agents
-     * package catalog).
-     */
-    "Effort": string;
-    "Temperature": number;
+  /**
+   * Effort is the agent's default reasoning effort ("" = provider default).
+   * Its options are the selected model's capability set (see the agents
+   * package catalog).
+   */
+  Effort: string;
+  Temperature: number;
 
-    /**
-     * MaxTokens is the per-turn output cap; 0 means the provider default.
-     */
-    "MaxTokens": number;
+  /**
+   * MaxTokens is the per-turn output cap; 0 means the provider default.
+   */
+  MaxTokens: number;
 
-    /**
-     * ContextWindow overrides the model catalog's context window when
-     * non-zero; 0 means use the catalog value.
-     */
-    "ContextWindow": number;
+  /**
+   * ContextWindow overrides the model catalog's context window when
+   * non-zero; 0 means use the catalog value.
+   */
+  ContextWindow: number;
 
-    /**
-     * Tools, Skills, and MCPServers are allowlists of identifiers the agent's
-     * turns may use; an empty list permits every enabled one (design D3).
-     */
-    "Tools": string[] | null;
-    "Skills": string[] | null;
-    "MCPServers": string[] | null;
+  /**
+   * Tools, Skills, and MCPServers are allowlists of identifiers the agent's
+   * turns may use; an empty list permits every enabled one (design D3).
+   */
+  Tools: string[] | null;
+  Skills: string[] | null;
+  MCPServers: string[] | null;
 
-    /**
-     * SubagentsEnabled turns the agent tool on for this agent's turns
-     * (design D3: a dedicated column, not an allowlist entry). The column
-     * defaults on; callers set the flag explicitly.
-     */
-    "SubagentsEnabled": boolean;
-    "CreatedAt": string;
-    "UpdatedAt": string;
+  /**
+   * SubagentsEnabled turns the agent tool on for this agent's turns
+   * (design D3: a dedicated column, not an allowlist entry). The column
+   * defaults on; callers set the flag explicitly.
+   */
+  SubagentsEnabled: boolean;
+  CreatedAt: string;
+  UpdatedAt: string;
+}
+
+/**
+ * ChannelPairing is one pending authorization request (add-telegram-channel
+ * design D4): an unknown sender offered for approval. The pending cap is a
+ * service concern; the store keeps one row per user.
+ */
+export interface ChannelPairing {
+  TelegramUserID: number;
+  DisplayName: string;
+  RequestedAt: string;
 }
 
 /**
@@ -85,9 +96,9 @@ export interface Agent {
  * row is a normal state: Get returns (nil, nil) and callers apply defaults.
  */
 export interface GatewaySettings {
-    "Enabled": boolean;
-    "DefaultAgentID": string;
-    "UpdatedAt": string;
+  Enabled: boolean;
+  DefaultAgentID: string;
+  UpdatedAt: string;
 }
 
 /**
@@ -95,20 +106,20 @@ export interface GatewaySettings {
  * documents owned by the settings service; the store persists them verbatim.
  */
 export interface Hook {
-    "ID": string;
-    "Name": string;
-    "Event": string;
-    "Matcher": string;
-    "HandlerType": string;
-    "Config": string;
-    "TimeoutMS": number;
-    "OnFailure": string;
-    "Enabled": boolean;
-    "Position": number;
-    "Status": string;
-    "StatusError": string;
-    "CreatedAt": string;
-    "UpdatedAt": string;
+  ID: string;
+  Name: string;
+  Event: string;
+  Matcher: string;
+  HandlerType: string;
+  Config: string;
+  TimeoutMS: number;
+  OnFailure: string;
+  Enabled: boolean;
+  Position: number;
+  Status: string;
+  StatusError: string;
+  CreatedAt: string;
+  UpdatedAt: string;
 }
 
 /**
@@ -117,35 +128,35 @@ export interface Hook {
  * is deleted.
  */
 export interface HookExecution {
-    "ID": string;
-    "HookID": string;
+  ID: string;
+  HookID: string;
 
-    /**
-     * AgentID, SessionID, and TurnID locate the turn the evaluation ran in;
-     * empty when there is no session context (e.g. a dry-run).
-     */
-    "AgentID": string;
-    "SessionID": string;
-    "TurnID": string;
+  /**
+   * AgentID, SessionID, and TurnID locate the turn the evaluation ran in;
+   * empty when there is no session context (e.g. a dry-run).
+   */
+  AgentID: string;
+  SessionID: string;
+  TurnID: string;
 
-    /**
-     * Event is the lifecycle point that fired the hook (the Hook.Event
-     * value).
-     */
-    "Event": string;
+  /**
+   * Event is the lifecycle point that fired the hook (the Hook.Event
+   * value).
+   */
+  Event: string;
 
-    /**
-     * Outcome is one of the HookOutcome* constants (allowed, blocked,
-     * error); Error carries the failure reason when the outcome is error.
-     */
-    "Outcome": string;
-    "Error": string;
-    "DurationMS": number;
+  /**
+   * Outcome is one of the HookOutcome* constants (allowed, blocked,
+   * error); Error carries the failure reason when the outcome is error.
+   */
+  Outcome: string;
+  Error: string;
+  DurationMS: number;
 
-    /**
-     * OccurredAt is stamped by the store (UTC) when empty.
-     */
-    "OccurredAt": string;
+  /**
+   * OccurredAt is stamped by the store (UTC) when empty.
+   */
+  OccurredAt: string;
 }
 
 /**
@@ -153,43 +164,43 @@ export interface HookExecution {
  * last connection probe outcome and MAY be stale between probes.
  */
 export interface MCPServer {
-    "ID": string;
-    "Name": string;
-    "Transport": string;
-    "Command": string;
-    "Args": string[] | null;
-    "Env": { [_ in string]?: string } | null;
-    "URL": string;
-    "Headers": { [_ in string]?: string } | null;
+  ID: string;
+  Name: string;
+  Transport: string;
+  Command: string;
+  Args: string[] | null;
+  Env: { [_ in string]?: string } | null;
+  URL: string;
+  Headers: { [_ in string]?: string } | null;
 
-    /**
-     * Auth is the server's authentication settings (design D4); the zero
-     * value means static headers only.
-     */
-    "Auth": MCPServerAuth;
+  /**
+   * Auth is the server's authentication settings (design D4); the zero
+   * value means static headers only.
+   */
+  Auth: MCPServerAuth;
 
-    /**
-     * Service is the optional integration catalog tag; empty for raw MCP
-     * servers (add-integrations design D1: an integration is a tagged
-     * MCPServer row, not a separate entity).
-     */
-    "Service": string;
+  /**
+   * Service is the optional integration catalog tag; empty for raw MCP
+   * servers (add-integrations design D1: an integration is a tagged
+   * MCPServer row, not a separate entity).
+   */
+  Service: string;
 
-    /**
-     * CredentialSet and CredentialHint are computed/redacted views for
-     * listings (add-integrations design D4): only whether an integration
-     * credential exists and its last four characters. Plain row fields —
-     * never persisted (no column, never part of the auth JSON document);
-     * the store populates them on read.
-     */
-    "CredentialSet": boolean;
-    "CredentialHint": string;
-    "Enabled": boolean;
-    "Status": string;
-    "StatusError": string;
-    "ToolCount": number;
-    "CreatedAt": string;
-    "UpdatedAt": string;
+  /**
+   * CredentialSet and CredentialHint are computed/redacted views for
+   * listings (add-integrations design D4): only whether an integration
+   * credential exists and its last four characters. Plain row fields —
+   * never persisted (no column, never part of the auth JSON document);
+   * the store populates them on read.
+   */
+  CredentialSet: boolean;
+  CredentialHint: string;
+  Enabled: boolean;
+  Status: string;
+  StatusError: string;
+  ToolCount: number;
+  CreatedAt: string;
+  UpdatedAt: string;
 }
 
 /**
@@ -199,36 +210,36 @@ export interface MCPServer {
  * never re-registers.
  */
 export interface MCPServerAuth {
-    "mode"?: string;
-    "client_id"?: string;
-    "client_secret"?: string;
-    "issuer"?: string;
-    "resource_metadata_url"?: string;
-    "auth_server_metadata_url"?: string;
-    "redirect_uri"?: string;
-    "scopes"?: string[] | null;
+  mode?: string;
+  client_id?: string;
+  client_secret?: string;
+  issuer?: string;
+  resource_metadata_url?: string;
+  auth_server_metadata_url?: string;
+  redirect_uri?: string;
+  scopes?: string[] | null;
 
-    /**
-     * IntegrationCredential is the token/API key entered through the
-     * connect sheet (add-integrations design D4). Stored in the auth JSON,
-     * never in Headers (credential secrecy).
-     */
-    "integration_credential"?: string;
+  /**
+   * IntegrationCredential is the token/API key entered through the
+   * connect sheet (add-integrations design D4). Stored in the auth JSON,
+   * never in Headers (credential secrecy).
+   */
+  integration_credential?: string;
 
-    /**
-     * CredentialHeaderStyle declares how to render the credential at dial
-     * time: one of the MCPAuthHeaderStyle* values, including the "custom:"
-     * and "header:" prefixed forms. Empty means bearer. Catalog-declared
-     * per service (design D3).
-     */
-    "credential_header_style"?: string;
+  /**
+   * CredentialHeaderStyle declares how to render the credential at dial
+   * time: one of the MCPAuthHeaderStyle* values, including the "custom:"
+   * and "header:" prefixed forms. Empty means bearer. Catalog-declared
+   * per service (design D3).
+   */
+  credential_header_style?: string;
 
-    /**
-     * ExtraAuthParams are extra query parameters appended to the authorize
-     * URL by the OAuth flow (add-integrations design D3): Google needs
-     * access_type=offline and prompt=consent to hand back a refresh token.
-     */
-    "extra_auth_params"?: { [_ in string]?: string } | null;
+  /**
+   * ExtraAuthParams are extra query parameters appended to the authorize
+   * URL by the OAuth flow (add-integrations design D3): Google needs
+   * access_type=offline and prompt=consent to hand back a refresh token.
+   */
+  extra_auth_params?: { [_ in string]?: string } | null;
 }
 
 /**
@@ -239,27 +250,27 @@ export interface MCPServerAuth {
  * configuration).
  */
 export interface Session {
-    "ID": string;
-    "AgentID": string;
-    "Title": string;
+  ID: string;
+  AgentID: string;
+  Title: string;
 
-    /**
-     * Model and Effort are the session's per-conversation overrides over the
-     * agent's configuration; empty inherits.
-     */
-    "Model": string;
+  /**
+   * Model and Effort are the session's per-conversation overrides over the
+   * agent's configuration; empty inherits.
+   */
+  Model: string;
 
-    /**
-     * Effort is the session's reasoning-effort override ("" = inherit).
-     */
-    "Effort": string;
+  /**
+   * Effort is the session's reasoning-effort override ("" = inherit).
+   */
+  Effort: string;
 
-    /**
-     * LastActivityAt is advanced by the store layer whenever events are
-     * appended to the session.
-     */
-    "CreatedAt": string;
-    "LastActivityAt": string;
+  /**
+   * LastActivityAt is advanced by the store layer whenever events are
+   * appended to the session.
+   */
+  CreatedAt: string;
+  LastActivityAt: string;
 }
 
 /**
@@ -267,11 +278,11 @@ export interface Session {
  * natural key and matches the directory name under ~/.buddies/skills/.
  */
 export interface Skill {
-    "Name": string;
-    "Description": string;
-    "Version": string;
-    "Source": string;
-    "Enabled": boolean;
-    "CreatedAt": string;
-    "UpdatedAt": string;
+  Name: string;
+  Description: string;
+  Version: string;
+  Source: string;
+  Enabled: boolean;
+  CreatedAt: string;
+  UpdatedAt: string;
 }

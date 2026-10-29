@@ -51,6 +51,7 @@ func (s *service) Append(ctx context.Context, sessionID string, events []Event) 
 			Text:               ev.Text,
 			Attachments:        ev.Attachments,
 			VariantOf:          ev.VariantOf,
+			Origin:             ev.Origin,
 			Tool:               ev.Tool,
 			Task:               ev.Task,
 			Usage:              ev.Usage,
@@ -137,6 +138,7 @@ func decodeEvents(rows []store.SessionEvent) ([]Event, error) {
 			Text:               payload.Text,
 			Attachments:        payload.Attachments,
 			VariantOf:          payload.VariantOf,
+			Origin:             payload.Origin,
 			Tool:               payload.Tool,
 			Task:               payload.Task,
 			Usage:              payload.Usage,
@@ -155,12 +157,16 @@ func decodeEvents(rows []store.SessionEvent) ([]Event, error) {
 // kind-specific fields of an Event, without the identity the row columns
 // already carry.
 type eventPayload struct {
-	Text        string        `json:"text,omitempty"`
-	Attachments []Attachment  `json:"attachments,omitempty"`
-	VariantOf   string        `json:"variant_of,omitempty"`
-	Tool        *ToolActivity `json:"tool,omitempty"`
-	Task        *TaskActivity `json:"task,omitempty"`
-	Usage       *Usage        `json:"usage,omitempty"`
+	Text        string       `json:"text,omitempty"`
+	Attachments []Attachment `json:"attachments,omitempty"`
+	VariantOf   string       `json:"variant_of,omitempty"`
+	// Origin carries the user_message turn's resolved send origin
+	// (add-telegram-channel 9.2); a payload persisted before the field
+	// existed decodes with the zero value, which reads as a user turn.
+	Origin string        `json:"origin,omitempty"`
+	Tool   *ToolActivity `json:"tool,omitempty"`
+	Task   *TaskActivity `json:"task,omitempty"`
+	Usage  *Usage        `json:"usage,omitempty"`
 	// Artifacts carries the turn_completed artifacts list (add-turn-artifacts
 	// design D4), beside its truncation flag; a payload persisted before the
 	// fields existed decodes with the zero values.

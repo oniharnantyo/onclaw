@@ -236,3 +236,64 @@ func TestSessionEvents_TaskActivityRoundTrip(t *testing.T) {
 	require.Empty(t, task.Result)
 	require.False(t, task.Background)
 }
+
+// TestSessionEvents_UserMessageOriginRoundTrip covers add-telegram-channel
+// task 9.2's persistence requirement: the user_message payload's origin —
+// who started the turn — survives the database byte for byte across a
+// reopened store, and a legacy payload persisted before the field existed
+// replays with the key absent (the zero value reads as a user turn). The
+// payload is opaque JSON here, exactly as the store treats it; the sessions
+// layer owns its shape.
+func TestSessionEvents_UserMessageOriginRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	path := t.TempDir() + "/origins.db"
+
+	telegram := store.SessionEvent{
+		EventID: "msg-1", TurnID: "turn-1", Kind: "user_message",
+		Payload: []byte(`{"text":"hello from the channel","origin":"telegram"}`),
+	}
+	legacy := store.SessionEvent{
+		EventID: "msg-2", TurnID: "turn-2", Kind: "user_message",
+		Payload: []byte(`{"text":"plain chat"}`),
+	}
+
+	first, err := Open(ctx, path)
+	require.NoError(t, err)
+	require.NoError(t, first.SessionEvents().AppendEvents(ctx, "sess-1", []store.SessionEvent{telegram, legacy}))
+	// In-store replay before restart: the written rows read back as written.
+	live, err := first.SessionEvents().LoadEvents(ctx, "sess-1")
+	require.NoError(t, err)
+	require.Len(t, live, 2)
+	require.NoError(t, first.Close())
+
+	second, err := Open(ctx, path)
+	require.NoError(t, err)
+	defer second.Close()
+
+	replayed, err := second.SessionEvents().LoadEvents(ctx, "sess-1")
+	require.NoError(t, err)
+	require.Len(t, replayed, len(live), "replay must yield the same transcript")
+	for i := range replayed {
+		require.Equal(t, live[i].EventID, replayed[i].EventID)
+		require.Equal(t, "user_message", replayed[i].Kind)
+		require.JSONEq(t, string(live[i].Payload), string(replayed[i].Payload))
+	}
+
+	// Spot-check the origin field the sessions layer decodes.
+	var msg struct {
+		Text   string `json:"text"`
+		Origin string `json:"origin"`
+	}
+	require.NoError(t, json.Unmarshal(replayed[0].Payload, &msg))
+	require.Equal(t, "hello from the channel", msg.Text)
+	require.Equal(t, "telegram", msg.Origin)
+
+	// The legacy payload carries no origin key, so it decodes empty.
+	msg = struct {
+		Text   string `json:"text"`
+		Origin string `json:"origin"`
+	}{}
+	require.NoError(t, json.Unmarshal(replayed[1].Payload, &msg))
+	require.Equal(t, "plain chat", msg.Text)
+	require.Empty(t, msg.Origin)
+}

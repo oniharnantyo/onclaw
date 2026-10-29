@@ -31,6 +31,7 @@ type Store struct {
 	mcp         *mcpServerStore
 	mcpTokens   *mcpOAuthTokenStore
 	schedules   *scheduleStore
+	channels    *channelStore
 	hooks       *hookStore
 	gateway     *gatewaySettingsStore
 	events      *sessionEventStore
@@ -128,6 +129,7 @@ func newStore(db *sql.DB, dataDir string) *Store {
 	s.mcp = &mcpServerStore{db}
 	s.mcpTokens = &mcpOAuthTokenStore{e: db, locks: locks}
 	s.schedules = &scheduleStore{db}
+	s.channels = &channelStore{db}
 	s.hooks = &hookStore{db}
 	s.gateway = &gatewaySettingsStore{db}
 	s.events = &sessionEventStore{db}
@@ -152,6 +154,7 @@ func (s *Store) Providers() store.ProviderStore                 { return s.provi
 func (s *Store) MCPServers() store.MCPServerStore               { return s.mcp }
 func (s *Store) MCPOAuthTokens() store.MCPOAuthTokenStore       { return s.mcpTokens }
 func (s *Store) Schedules() store.ScheduleStore                 { return s.schedules }
+func (s *Store) Channels() store.ChannelStore                   { return s.channels }
 func (s *Store) Hooks() store.HookStore                         { return s.hooks }
 func (s *Store) GatewaySettings() store.GatewaySettingsStore    { return s.gateway }
 func (s *Store) SessionEvents() store.SessionEventStore         { return s.events }

@@ -28,6 +28,15 @@ const (
 	// D2) — so the frontend keeps the busy markers without a per-session
 	// subscription. The payload is a TurnsChangedEvent.
 	EventTurnsChanged = "turns:changed"
+	// EventChannelChanged announces a channel mutation — configuration
+	// change, enable/disable, allowlist or chat-state edit, pairing
+	// resolved (add-telegram-channel task 1.4) — so the Channels pane
+	// refetches instead of polling. The payload is a ChannelChangedEvent.
+	EventChannelChanged = "channels:changed"
+	// EventChannelState announces the channel connection's live state
+	// (add-telegram-channel design D10): connected, degraded, error, or
+	// disabled. The payload is a ChannelStateEvent.
+	EventChannelState = "channels:state"
 )
 
 // GatewayStateEvent is the payload of EventGatewayState. State mirrors
@@ -66,6 +75,37 @@ type KnowledgeChangedEvent struct{}
 type TurnsChangedEvent struct {
 	SessionID string `json:"sessionId"`
 	Busy      bool   `json:"busy"`
+}
+
+// Channel connection states — the ChannelStateEvent.State vocabulary
+// (add-telegram-channel design D10).
+const (
+	// ChannelStateConnected marks a healthy poll loop.
+	ChannelStateConnected = "connected"
+	// ChannelStateDegraded marks a working poll loop under retries or a
+	// cooldown.
+	ChannelStateDegraded = "degraded"
+	// ChannelStateError marks a failed connection; Detail carries the
+	// reason.
+	ChannelStateError = "error"
+	// ChannelStateDisabled marks the channel switched off by its row.
+	ChannelStateDisabled = "disabled"
+)
+
+// ChannelChangedEvent is the payload of EventChannelChanged. ChannelID names
+// the mutated channel (add-telegram-channel task 1.4).
+type ChannelChangedEvent struct {
+	ChannelID string `json:"channelId"`
+}
+
+// ChannelStateEvent is the payload of EventChannelState: the channel's live
+// connection state, one of the ChannelState* values, with Detail carrying
+// the failure reason when the state is error (add-telegram-channel design
+// D10).
+type ChannelStateEvent struct {
+	ChannelID string `json:"channelId"`
+	State     string `json:"state"`
+	Detail    string `json:"detail,omitempty"`
 }
 
 // SessionEventName returns the event name carrying one session's live turn

@@ -17,6 +17,7 @@ import type * as storeModels from "../../bindings/github.com/oniharnantyo/buddie
 import * as agentsBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/agentsservice";
 import * as appInfoBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/appinfo";
 import * as chatBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/chatservice";
+import * as channelBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/channelservice";
 import * as gatewayBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/gatewayservice";
 import * as knowledgeBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/knowledgeservice";
 import * as scheduleBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/scheduleservice";
@@ -30,13 +31,16 @@ export type Unsubscribe = () => void;
  * One decoded event payload at the transport boundary: the session channel
  * carries SessionEvents, the gateway channel carries GatewayStateEvents, the
  * MCP OAuth channel carries MCPOAuthCompletedEvents, the schedules channel
- * carries SchedulesChangedEvents, and the turns channel carries
- * TurnsChangedEvents. The runtime hands all of them to `onEvent`, so this is
+ * carries SchedulesChangedEvents, the turns channel carries
+ * TurnsChangedEvents, and the channels channels carry the channel change and
+ * state events. The runtime hands all of them to `onEvent`, so this is
  * the single documented place where the domains meet before the client
  * narrows them.
  */
 export type EventPayload =
   | sessionModels.Event
+  | serviceModels.ChannelChangedEvent
+  | serviceModels.ChannelStateEvent
   | serviceModels.GatewayStateEvent
   | serviceModels.KnowledgeChangedEvent
   | serviceModels.MCPOAuthCompletedEvent
@@ -338,6 +342,31 @@ export interface Transport {
     RunNow(id: string): Promise<schedulerModels.ScheduleView>;
     Preview(expr: string): Promise<schedulerModels.Preview>;
   };
+  /** The Channels pane's backend surface (add-telegram-channel task 1.4). */
+  channels: {
+    GetChannel(id: string): Promise<serviceModels.ChannelView>;
+    SaveChannel(
+      id: string,
+      input: serviceModels.ChannelInput
+    ): Promise<serviceModels.ChannelView>;
+    SetEnabled(
+      id: string,
+      enabled: boolean
+    ): Promise<serviceModels.ChannelView>;
+    ListChats(): Promise<serviceModels.ChannelChatView[] | null>;
+    ListPendingPairings(): Promise<storeModels.ChannelPairing[] | null>;
+    ApprovePairing(telegramUserID: number): Promise<void>;
+    DismissPairing(telegramUserID: number): Promise<void>;
+    SetChatPinnedAgent(
+      chatID: number,
+      agentID: string
+    ): Promise<serviceModels.ChannelChatView>;
+    SetHomeChat(chatID: number): Promise<serviceModels.ChannelChatView>;
+    SetChatFreeResponse(
+      chatID: number,
+      free: boolean
+    ): Promise<serviceModels.ChannelChatView>;
+  };
   knowledge: {
     /** Every cataloged document in name order; scope indexes are never listed. */
     List(): Promise<serviceModels.KnowledgeDocument[] | null>;
@@ -396,6 +425,7 @@ export function createWailsTransport(): Transport {
     gateway: gatewayBindings,
     knowledge: knowledgeBindings,
     schedules: scheduleBindings,
+    channels: channelBindings,
     windowTheme: windowThemeModule,
     onEvent: (name: string, handler: EventHandler): Unsubscribe =>
       Events.On(name, (ev: Events.WailsEvent): void => handler(ev.data)),

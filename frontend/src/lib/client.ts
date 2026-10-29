@@ -20,6 +20,11 @@ import type {
   BrowserConfig,
   BrowserProfile,
   BrowserScreenshotContent,
+  ChannelChangedEvent,
+  ChannelChatView,
+  ChannelInput,
+  ChannelStateEvent,
+  ChannelView,
   CreateAgentInput,
   DocumentPresetEntry,
   GatewayStateEvent,
@@ -44,6 +49,7 @@ import type {
 } from "../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
 import type {
   Agent,
+  ChannelPairing,
   GatewaySettings,
   Hook,
   HookExecution,
@@ -57,6 +63,8 @@ import type {
 } from "../../bindings/github.com/oniharnantyo/buddies/internal/sessions/models";
 
 import {
+  CHANNELS_CHANGED_EVENT,
+  CHANNELS_STATE_EVENT,
   GATEWAY_STATE_EVENT,
   KNOWLEDGE_CHANGED_EVENT,
   MCP_OAUTH_COMPLETED_EVENT,
@@ -158,6 +166,12 @@ export type TurnsChangedHandler = (event: TurnsChangedEvent) => void;
 
 /** Handler receiving one gateway state change. */
 export type GatewayStateHandler = (event: GatewayStateEvent) => void;
+
+/** Handler receiving one channel mutation notification (task 1.4). */
+export type ChannelsChangedHandler = (event: ChannelChangedEvent) => void;
+
+/** Handler receiving one channel connection-state update (design D10). */
+export type ChannelsStateHandler = (event: ChannelStateEvent) => void;
 
 export interface Client {
   appInfo: {
@@ -553,6 +567,40 @@ export interface Client {
      */
     preview(expr: string): Promise<Preview>;
   };
+  channels: {
+    /**
+     * One channel's secret-free view; an absent row reads as the
+     * not-configured default (disabled, no token) rather than rejecting.
+     */
+    channel(id: string): Promise<ChannelView>;
+    /**
+     * Upserts the channel's configuration; a blank BotToken keeps the stored
+     * token (task 1.4: the token field is write-only).
+     */
+    saveChannel(id: string, input: ChannelInput): Promise<ChannelView>;
+    /** Toggles the channel without touching the stored token or proxy. */
+    setEnabled(id: string, enabled: boolean): Promise<ChannelView>;
+    /** Every chat's state row, ordered by chat id; empty when none is known. */
+    chats(): Promise<ChannelChatView[]>;
+    /** The pending authorization requests, ordered by request time. */
+    pendingPairings(): Promise<ChannelPairing[]>;
+    /** Allowlists one pending request's user and drops the pairing. */
+    approvePairing(telegramUserID: number): Promise<void>;
+    /** Drops one pending request without allowlisting its user. */
+    dismissPairing(telegramUserID: number): Promise<void>;
+    /** Pins (or, with an empty agentID, unpins) the chat's agent override. */
+    setChatPinnedAgent(
+      chatID: number,
+      agentID: string
+    ): Promise<ChannelChatView>;
+    /** Marks the chat the announcement target; the store clears the rest. */
+    setHomeChat(chatID: number): Promise<ChannelChatView>;
+    /** Toggles the group chat's unaddressed-message gate. */
+    setChatFreeResponse(
+      chatID: number,
+      free: boolean
+    ): Promise<ChannelChatView>;
+  };
   knowledge: {
     /** Every cataloged document, in the store's name order. */
     list(): Promise<KnowledgeDocument[]>;
@@ -614,6 +662,18 @@ export interface Client {
      * so surfaces re-list.
      */
     onKnowledgeChanged(handler: KnowledgeChangedHandler): Unsubscribe;
+    /**
+     * Subscribes to channel mutations (`channels:changed`, add-telegram-
+     * channel task 1.4): emitted for every channel configuration and pairing
+     * change, so the Channels pane refetches.
+     */
+    onChannelsChanged(handler: ChannelsChangedHandler): Unsubscribe;
+    /**
+     * Subscribes to channel connection states (`channels:state`, design
+     * D10): emitted on every state transition with the state and the failure
+     * detail when the state is error.
+     */
+    onChannelsState(handler: ChannelsStateHandler): Unsubscribe;
   };
   windowTheme: {
     /** Forces the native window appearance to match the app theme. */
@@ -978,6 +1038,34 @@ export function createClient(transport: Transport = wailsTransport): Client {
       preview: (expr: string): Promise<Preview> =>
         transport.schedules.Preview(expr),
     },
+    channels: {
+      channel: (id: string): Promise<ChannelView> =>
+        transport.channels.GetChannel(id),
+      saveChannel: (id: string, input: ChannelInput): Promise<ChannelView> =>
+        transport.channels.SaveChannel(id, input),
+      setEnabled: (id: string, enabled: boolean): Promise<ChannelView> =>
+        transport.channels.SetEnabled(id, enabled),
+      chats: async (): Promise<ChannelChatView[]> =>
+        unwrap(await transport.channels.ListChats()),
+      pendingPairings: async (): Promise<ChannelPairing[]> =>
+        unwrap(await transport.channels.ListPendingPairings()),
+      approvePairing: (telegramUserID: number): Promise<void> =>
+        transport.channels.ApprovePairing(telegramUserID),
+      dismissPairing: (telegramUserID: number): Promise<void> =>
+        transport.channels.DismissPairing(telegramUserID),
+      setChatPinnedAgent: (
+        chatID: number,
+        agentID: string
+      ): Promise<ChannelChatView> =>
+        transport.channels.SetChatPinnedAgent(chatID, agentID),
+      setHomeChat: (chatID: number): Promise<ChannelChatView> =>
+        transport.channels.SetHomeChat(chatID),
+      setChatFreeResponse: (
+        chatID: number,
+        free: boolean
+      ): Promise<ChannelChatView> =>
+        transport.channels.SetChatFreeResponse(chatID, free),
+    },
     knowledge: {
       list: async (): Promise<KnowledgeDocument[]> =>
         unwrap(await transport.knowledge.List()),
@@ -1046,6 +1134,19 @@ export function createClient(transport: Transport = wailsTransport): Client {
           // SAFETY: KNOWLEDGE_CHANGED_EVENT carries an empty payload; the
           // event object itself is the whole notification.
           handler({} as KnowledgeChangedEvent);
+        }),
+      onChannelsChanged: (handler: ChannelsChangedHandler): Unsubscribe =>
+        transport.onEvent(
+          CHANNELS_CHANGED_EVENT,
+          (data: EventPayload): void => {
+            // SAFETY: CHANNELS_CHANGED_EVENT only carries ChannelChangedEvents.
+            handler(data as ChannelChangedEvent);
+          }
+        ),
+      onChannelsState: (handler: ChannelsStateHandler): Unsubscribe =>
+        transport.onEvent(CHANNELS_STATE_EVENT, (data: EventPayload): void => {
+          // SAFETY: CHANNELS_STATE_EVENT only carries ChannelStateEvents.
+          handler(data as ChannelStateEvent);
         }),
     },
     windowTheme: {

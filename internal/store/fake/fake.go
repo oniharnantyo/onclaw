@@ -26,6 +26,11 @@ type Store struct {
 	mcpServers      map[string]store.MCPServer
 	mcpOAuthTokens  map[string]store.MCPOAuthToken // key: serverID
 	schedules       map[string]store.Schedule
+	channels        map[string]store.Channel       // key: slug id ("telegram" today)
+	channelUsers    map[int64]store.ChannelUser    // key: telegram user id
+	channelChats    map[int64]store.ChannelChat    // key: telegram chat id
+	channelPairings map[int64]store.ChannelPairing // key: telegram user id
+	channelReceipts map[channelReceiptKey]store.ChannelUpdateReceipt
 	hooks           map[string]store.Hook
 	gatewaySettings *store.GatewaySettings
 	sessionEvents   map[string][]store.SessionEvent // key: sessionID, kept in Seq order
@@ -59,6 +64,11 @@ func New() *Store {
 		mcpServers:      make(map[string]store.MCPServer),
 		mcpOAuthTokens:  make(map[string]store.MCPOAuthToken),
 		schedules:       make(map[string]store.Schedule),
+		channels:        make(map[string]store.Channel),
+		channelUsers:    make(map[int64]store.ChannelUser),
+		channelChats:    make(map[int64]store.ChannelChat),
+		channelPairings: make(map[int64]store.ChannelPairing),
+		channelReceipts: make(map[channelReceiptKey]store.ChannelUpdateReceipt),
 		hooks:           make(map[string]store.Hook),
 		sessionEvents:   make(map[string][]store.SessionEvent),
 		checkpoints:     make(map[string][]byte),
@@ -84,6 +94,7 @@ func (s *Store) Providers() store.ProviderStore              { return &providerS
 func (s *Store) MCPServers() store.MCPServerStore            { return &mcpServerStore{s} }
 func (s *Store) MCPOAuthTokens() store.MCPOAuthTokenStore    { return &mcpOAuthTokenStore{s} }
 func (s *Store) Schedules() store.ScheduleStore              { return &scheduleStore{s} }
+func (s *Store) Channels() store.ChannelStore                { return &channelStore{s} }
 func (s *Store) Hooks() store.HookStore                      { return &hookStore{s} }
 func (s *Store) GatewaySettings() store.GatewaySettingsStore { return &gatewaySettingsStore{s} }
 func (s *Store) SessionEvents() store.SessionEventStore      { return &sessionEventStore{s} }

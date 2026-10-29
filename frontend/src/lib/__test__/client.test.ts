@@ -595,6 +595,9 @@ function makeTransport(): MockTransport {
     gateway,
     schedules,
     knowledge,
+    // SAFETY: no case drives the Channels pane's backend surface; the empty
+    // stub satisfies the transport contract like agents above.
+    channels: {} as Transport["channels"],
     windowTheme,
     onEvent: (name: string, handler: EventHandler) => {
       calls.push(`onEvent:${name}`);

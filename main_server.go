@@ -34,6 +34,8 @@ var assets embed.FS
 // are dynamic and intentionally unregistered).
 func init() {
 	application.RegisterEvent[services.GatewayStateEvent](services.EventGatewayState)
+	application.RegisterEvent[services.ChannelChangedEvent](services.EventChannelChanged)
+	application.RegisterEvent[services.ChannelStateEvent](services.EventChannelState)
 }
 
 func main() {

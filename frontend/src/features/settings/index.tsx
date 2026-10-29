@@ -7,6 +7,7 @@ import { MicroLabel } from "../../components/ui/MicroLabel";
 import { cn } from "../../lib/cn";
 import { useNavStore } from "../../stores/nav";
 import IntegrationsPane from "../integrations/IntegrationsPane";
+import ChannelsPane from "./components/ChannelsPane";
 import HooksPane from "./components/HooksPane";
 import McpPane from "./components/McpPane";
 import ProvidersPane from "./components/ProvidersPane";
@@ -42,6 +43,13 @@ export const settingsPaneSections: SettingsPaneSection[] = [
         icon: "globe",
         description:
           "Connect external services — GitLab, GitHub, Google Workspace, and more.",
+      },
+      {
+        key: "channels",
+        label: "Channels",
+        icon: "message",
+        description:
+          "Connect the Telegram bot — token, pairing approvals, and per-chat behavior.",
       },
     ],
   },
@@ -89,6 +97,7 @@ const paneComponents: Record<
 > = {
   providers: ProvidersPane,
   integrations: IntegrationsPane,
+  channels: ChannelsPane,
   skills: SkillsPane,
   tools: ToolsPane,
   hooks: HooksPane,

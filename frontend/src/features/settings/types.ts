@@ -15,6 +15,7 @@ import type { IconName } from "../../components/ui/Icon";
 export type PaneKey =
   | "providers"
   | "integrations"
+  | "channels"
   | "skills"
   | "tools"
   | "hooks"

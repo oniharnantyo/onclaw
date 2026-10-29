@@ -12,6 +12,7 @@ type Store interface {
 	MCPServers() MCPServerStore
 	MCPOAuthTokens() MCPOAuthTokenStore
 	Schedules() ScheduleStore
+	Channels() ChannelStore
 	Hooks() HookStore
 	GatewaySettings() GatewaySettingsStore
 	SessionEvents() SessionEventStore

@@ -77,6 +77,10 @@ export interface RichUserEntry extends UserEntry {
   /** Attachment metadata persisted with the message (design D5); replay
    * reconstructs the chips/thumbnails from it. */
   attachments?: SessionAttachment[];
+  /** Who started the turn (add-telegram-channel 9.2): the resolved send
+   * origin — user, scheduler, or telegram. Absent on rows persisted before
+   * origins were recorded, which read as a user turn. */
+  origin?: string;
   /** The variant slot (task 7.2): turn ids of this prompt's alternative
    * answers in creation order — index 0 is the original turn, every
    * regeneration appends. Absent while the turn has no alternatives. */
@@ -510,6 +514,7 @@ export function applyEvent(entries: Entry[], e: SessionEvent): Entry[] {
         turnID: e.turn_id,
         text: e.text ?? "",
         attachments,
+        origin: e.origin,
         at: e.occurred_at,
       };
 

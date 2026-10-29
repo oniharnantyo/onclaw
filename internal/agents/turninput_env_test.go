@@ -88,6 +88,34 @@ func TestTurnInput_CompositionOrder(t *testing.T) {
 		"the summary comes before the environment block")
 }
 
+// TestEnvironmentBlock_TelegramOrigin covers the channels spec' scenario
+// (add-telegram-channel "Channel turn is origin-stamped"): a turn whose
+// request carries hooks.OriginTelegram — a Telegram channel message —
+// renders the telegram origin line in the environment block, never the user
+// origin, and its presence line reads as the generic non-user (autonomous)
+// form, like every other trigger surface.
+func TestEnvironmentBlock_TelegramOrigin(t *testing.T) {
+	block := environmentBlock("gemini", "some-model", hooks.OriginTelegram, time.Date(2026, 10, 24, 9, 30, 0, 0, time.UTC))
+	require.Contains(t, block, "Origin: "+hooks.OriginTelegram, "the block names the telegram origin")
+	require.Contains(t, block, "Origin: telegram — ", "the origin line carries its presence designation")
+	require.Contains(t, block, "the user is not present", "the telegram presence line is the autonomous-run form")
+	require.NotContains(t, block, "Origin: "+hooks.OriginUser, "the block never reports the user origin for a telegram turn")
+}
+
+// TestTurnInput_TelegramOriginRequest covers the real seam for the same
+// scenario: a turn request stamped with hooks.OriginTelegram composes the
+// instruction with the telegram origin line in its environment block.
+func TestTurnInput_TelegramOriginRequest(t *testing.T) {
+	stubClock(t, time.Date(2026, 10, 24, 9, 30, 0, 0, time.UTC))
+
+	instruction, _, err := assembleTurnInput(persona{}, sessions.Checkpoint{}, nil,
+		turnRequest{message: "hi", origin: hooks.OriginTelegram},
+		turnComposer{providerType: "gemini", model: "some-model"})
+	require.NoError(t, err)
+	require.Contains(t, instruction, "Origin: telegram — the user is not present",
+		"a telegram-origin turn request renders the telegram presence line")
+}
+
 // TestEnvironmentBlock_NoMountGuidance pins design D4's exclusion: the
 // environment block never restates the workspace mount or jail — the
 // filesystem middleware appends its own guidance, and duplication would

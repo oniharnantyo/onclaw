@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/oniharnantyo/buddies/internal/agents/hooks"
+	"github.com/oniharnantyo/buddies/internal/sessions"
 	"github.com/oniharnantyo/buddies/internal/store"
 )
 
@@ -118,4 +119,58 @@ func TestSubmit_EmptyOrigin_ReadsAsUser(t *testing.T) {
 	evs := hookEventsFrom(t, markers)
 	require.Len(t, evs, 1)
 	require.Equal(t, hooks.OriginUser, evs[0].Origin)
+}
+
+// TestSubmit_TelegramOrigin_UserMessageEventCarriesOrigin pins the transcript
+// seam (add-telegram-channel task 9.2): the persisted user_message event
+// records the resolved dispatch origin — a telegram Submit persists
+// "telegram", a plain Send "user", an origin-less Submit the user default —
+// so a replayed transcript names who started each turn and the UI can badge
+// channel prompts.
+func TestSubmit_TelegramOrigin_UserMessageEventCarriesOrigin(t *testing.T) {
+	f := newFixture(t, func(_ []*schema.Message) fakeReply {
+		return fakeReply{text: "done", promptTokens: 1, completionTokens: 1}
+	})
+	sess := f.newSession(t)
+
+	telegram, err := f.mgr.Submit(t.Context(), SendRequest{
+		SessionID: sess.ID,
+		Message:   "hello from the channel",
+		Origin:    hooks.OriginTelegram,
+	})
+	require.NoError(t, err)
+	require.NoError(t, telegram.Wait())
+
+	user, err := f.mgr.Send(t.Context(), sess.ID, "plain chat")
+	require.NoError(t, err)
+	require.NoError(t, user.Wait())
+
+	// An origin-less dispatch normalizes to the user default on the persisted
+	// prompt, exactly as the hook events read it.
+	empty, err := f.mgr.Submit(t.Context(), SendRequest{SessionID: sess.ID, Message: "no origin named"})
+	require.NoError(t, err)
+	require.NoError(t, empty.Wait())
+
+	evs, err := f.sessions.Events(t.Context(), sess.ID)
+	require.NoError(t, err)
+
+	var origins []string
+	for _, ev := range evs {
+		if ev.Kind == sessions.KindUserMessage {
+			origins = append(origins, ev.Origin)
+		}
+	}
+	require.Equal(t, []string{
+		hooks.OriginTelegram,
+		hooks.OriginUser,
+		hooks.OriginUser,
+	}, origins, "each turn's persisted prompt carries its resolved origin")
+
+	// Non-user events carry no origin: the field names who started the turn,
+	// and only the prompt event records it.
+	for _, ev := range evs {
+		if ev.Kind != sessions.KindUserMessage {
+			require.Empty(t, ev.Origin, "%s must not carry an origin", ev.Kind)
+		}
+	}
 }

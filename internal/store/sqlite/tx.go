@@ -35,6 +35,7 @@ func (s *Store) WithTx(ctx context.Context, fn func(store.Store) error) error {
 		mcp:         &mcpServerStore{tx},
 		mcpTokens:   &mcpOAuthTokenStore{e: tx, locks: s.mcpTokens.locks},
 		schedules:   &scheduleStore{tx},
+		channels:    &channelStore{tx},
 		hooks:       &hookStore{tx},
 		gateway:     &gatewaySettingsStore{tx},
 		events:      &sessionEventStore{tx},

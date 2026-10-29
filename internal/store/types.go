@@ -406,3 +406,84 @@ type ProviderModel struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
+
+// Channel is one messaging-channel configuration row (add-telegram-channel
+// design D3): a slug ID ("telegram" today) and its connection settings. The
+// bot token is stored in the clear per the providers API-key precedent
+// (single-user local app); surfaces never echo it back — readers project it
+// to presence plus a last-four hint.
+type Channel struct {
+	ID string
+	// Enabled gates the channel's poll loop; a disabled row stays inert.
+	Enabled bool
+	// BotToken is the Telegram Bot API token. Write-only by convention: a
+	// blank save keeps the stored token (handled by the service layer).
+	BotToken string
+	// ProxyURL is the optional HTTP(S)/SOCKS proxy the Bot API client dials
+	// through; empty connects directly.
+	ProxyURL  string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// ChannelUser is one allowlisted Telegram user (add-telegram-channel design
+// D4): the DM allowlist. Only allowlisted users may open DM turns.
+type ChannelUser struct {
+	// TelegramUserID is the sender's numeric Telegram user id; unique.
+	TelegramUserID int64
+	DisplayName    string
+	CreatedAt      time.Time
+}
+
+// Channel chat kinds — the ChannelChat.Kind vocabulary.
+const (
+	// ChannelChatKindDM marks a private chat with one user.
+	ChannelChatKindDM = "dm"
+	// ChannelChatKindGroup marks a group chat.
+	ChannelChatKindGroup = "group"
+)
+
+// ChannelChat is one Telegram chat's persisted state (add-telegram-channel
+// design D3/D5): the session binding, the agent override, the single-home
+// marker, and the group free-response gate.
+type ChannelChat struct {
+	// ChatID is the numeric Telegram chat id; unique.
+	ChatID int64
+	// Kind is one of the ChannelChatKind* values.
+	Kind string
+	// Title is the chat's display title at last contact.
+	Title string
+	// SessionID pins the chat's persistent session (design D5); empty until
+	// the first message creates one. /new clears it.
+	SessionID string
+	// PinnedAgentID overrides the chat's agent (design D7's resolution
+	// order); nil inherits the default. Storing nil also normalizes a
+	// pointer to the empty string: both read as "no override".
+	PinnedAgentID *string
+	// IsHome marks the announcement target (design D13): at most one row
+	// carries it — saving a row with it set clears every other (single
+	// home).
+	IsHome bool
+	// FreeResponse lets a group chat's unaddressed messages trigger turns
+	// (design D4); meaningful for kind=group only.
+	FreeResponse bool
+}
+
+// ChannelPairing is one pending authorization request (add-telegram-channel
+// design D4): an unknown sender offered for approval. The pending cap is a
+// service concern; the store keeps one row per user.
+type ChannelPairing struct {
+	TelegramUserID int64
+	DisplayName    string
+	RequestedAt    time.Time
+}
+
+// ChannelUpdateReceipt marks one Bot API update as processed
+// (add-telegram-channel design D9): the Bot API redelivers unacked updates
+// for 24h, so the (bot username, update id) pair is the dedupe marker across
+// polls and restarts. Receipts are pruned after a retention window.
+type ChannelUpdateReceipt struct {
+	BotUsername string
+	UpdateID    int64
+	CreatedAt   time.Time
+}

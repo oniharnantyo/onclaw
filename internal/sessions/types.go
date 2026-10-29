@@ -265,6 +265,13 @@ type Event struct {
 	// place of a persisted duplicate prompt.
 	VariantOf string `json:"variant_of,omitempty"`
 
+	// Origin names who started the turn (KindUserMessage only): the resolved
+	// send origin — user, scheduler, or telegram per internal/agents/hooks —
+	// stamped when the prompt persisted. Empty on records persisted before
+	// origins were recorded and on every other kind; an empty origin reads
+	// as a user turn.
+	Origin string `json:"origin,omitempty"`
+
 	// Tool carries the kind's tool-call payload (KindToolActivity); Task the
 	// delegated-task payload (KindTaskActivity).
 	Tool  *ToolActivity `json:"tool,omitempty"`

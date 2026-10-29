@@ -15,6 +15,10 @@
  * attachment adapter supplies the `file` (design D13: vendored sources are
  * never edited). The message id is the user entry's id (the D2 mapping), so
  * the store entry stays the source of truth for the chip metadata.
+ *
+ * A persisted telegram origin (add-telegram-channel 9.2) badges the row with
+ * a small paper-plane chip — channel prompts are visually distinguishable in
+ * the transcript; user-origin and legacy rows (empty origin) render bare.
  */
 import type { ReactElement } from "react";
 
@@ -25,6 +29,7 @@ import {
   type TextMessagePartProps,
   useAuiState,
 } from "@assistant-ui/react";
+import { Send } from "lucide-react";
 
 import type { Attachment as SessionAttachment } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/sessions/models";
 import { AttachmentView } from "../components/AttachmentView";
@@ -70,6 +75,12 @@ export function ChatUserMessage(): ReactElement {
       ? NO_ATTACHMENTS
       : (asRichUser(entry).attachments ?? NO_ATTACHMENTS);
 
+  // The Telegram-origin badge (add-telegram-channel 9.2): only a persisted
+  // telegram origin badges the row — user turns and legacy rows persisted
+  // before origins were recorded (empty origin) render bare.
+  const isTelegram =
+    entry !== undefined && asRichUser(entry).origin === "telegram";
+
   // An attachment-only prompt renders its chips without an empty bubble.
   const hasText = entry === undefined || entry.text.trim() !== "";
 
@@ -81,6 +92,16 @@ export function ChatUserMessage(): ReactElement {
         data-testid="entry-user"
         className="flex max-w-[85%] flex-col items-end gap-1.5"
       >
+        {isTelegram && (
+          <div
+            data-testid="origin-telegram"
+            title="Sent from Telegram"
+            className="border-line text-foreground/70 flex items-center gap-1 rounded-[6px] border px-1.5 py-0.5 text-[10px] leading-4"
+          >
+            <Send size={10} aria-hidden="true" />
+            Telegram
+          </div>
+        )}
         {attachments.length > 0 && (
           <div
             className="flex flex-wrap justify-end gap-1.5"
