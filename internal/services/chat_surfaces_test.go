@@ -68,9 +68,16 @@ func TestChatService_SaveAttachmentAndContentRoundTrip(t *testing.T) {
 	require.Equal(t, int64(len(payload)), content.Size)
 	require.Equal(t, payload, decodeBase64(t, content.Data))
 
-	// The rejection reason rides the bound error.
-	_, err = svc.SaveAttachment(ctx, "x.bin", "application/octet-stream", base64.StdEncoding.EncodeToString([]byte("no")))
+	// Unknown mimes take the catch-all file lane and save under the cap.
+	bin, err := svc.SaveAttachment(ctx, "x.bin", "application/octet-stream", base64.StdEncoding.EncodeToString([]byte("no")))
+	require.NoError(t, err)
+	require.Regexp(t, `^[0-9a-f]{32}$`, bin.Key)
+
+	// Only oversize rejects, and the rejection reason rides the bound error.
+	huge := make([]byte, attachments.MaxFileBytes+1)
+	_, err = svc.SaveAttachment(ctx, "big.bin", "application/octet-stream", base64.StdEncoding.EncodeToString(huge))
 	require.ErrorIs(t, err, attachments.ErrRejected)
+	require.ErrorContains(t, err, "20 MB")
 
 	// An unknown capability key is refused.
 	_, err = svc.AttachmentContent(ctx, "ffffffffffffffffffffffffffffffff")

@@ -22,7 +22,8 @@ func newTestStore(t *testing.T) *Store {
 // TestSave_AcceptsPerLane caps the accept path per lane (spec chat-attachments
 // "Attachment selection and limits"; office lane per add-document-editing
 // task 5.5): images, PDFs, videos, text files, and OOXML office documents
-// store and round-trip through their capability key.
+// store and round-trip through their capability key — and a mime in no lane
+// rides the catch-all file lane (add-all-file-attachments design D1).
 func TestSave_AcceptsPerLane(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -39,6 +40,7 @@ func TestSave_AcceptsPerLane(t *testing.T) {
 		{"report.docx", MimeDOCX, []byte("docx-bytes")},
 		{"sheet.xlsx", MimeXLSX, []byte("xlsx-bytes")},
 		{"deck.pptx", MimePPTX, []byte("pptx-bytes")},
+		{"x.bin", "application/octet-stream", []byte("bin-bytes")},
 	}
 	for _, tc := range cases {
 		att, err := s.Save(ctx, tc.name, tc.mime, tc.data)
@@ -87,6 +89,7 @@ func TestSave_RejectsOverCap(t *testing.T) {
 		{"big.pdf", "application/pdf", MaxPDFBytes + 1, "20 MB"},
 		{"big.mp4", "video/mp4", MaxVideoBytes + 1, "20 MB"},
 		{"big.txt", "text/plain", MaxTextBytes + 1, "1 MB"},
+		{"x.bin", "application/octet-stream", MaxFileBytes + 1, "20 MB"},
 	}
 	for _, tc := range cases {
 		_, err := s.Save(context.Background(), tc.name, tc.mime, make([]byte, tc.size))
@@ -95,19 +98,24 @@ func TestSave_RejectsOverCap(t *testing.T) {
 	}
 }
 
-// TestSave_RejectsUnknownLane pins the lane classifier: a mime in no lane is
-// rejected with the reason and leaves nothing behind.
-func TestSave_RejectsUnknownLane(t *testing.T) {
+// TestSave_UnknownMimesTakeFileLane pins the catch-all file lane
+// (add-all-file-attachments design D1): a mime in no lane saves within the
+// 20 MB cap — the empty mime included — and an over-cap unknown mime is
+// rejected with the reason, leaving nothing behind.
+func TestSave_UnknownMimesTakeFileLane(t *testing.T) {
 	s := newTestStore(t)
+	ctx := context.Background()
 
-	att, err := s.Save(context.Background(), "x.bin", "application/octet-stream", []byte("nope"))
-	require.ErrorIs(t, err, ErrRejected)
-	require.ErrorContains(t, err, "application/octet-stream")
-	require.ErrorContains(t, err, "office documents are accepted", "the rejection names the office lane among the supported kinds")
-	require.Empty(t, att.Key)
+	empty, err := s.Save(ctx, "mimeless", "", []byte("mimeless-bytes"))
+	require.NoError(t, err, "an empty mime takes the file lane too")
+	require.NotEmpty(t, empty.Key)
+
+	_, err = s.Save(ctx, "big.bin", "application/octet-stream", make([]byte, MaxFileBytes+1))
+	require.ErrorIs(t, err, ErrRejected, "an unknown mime over the cap is rejected")
+	require.ErrorContains(t, err, "file attachments are limited to 20 MB", "the rejection names the file lane and the limit")
 
 	// Nothing was registered and no file landed.
-	_, err = s.Read(context.Background(), att.Key)
+	_, err = s.Read(ctx, "")
 	require.Error(t, err)
 }
 

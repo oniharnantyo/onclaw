@@ -24,7 +24,9 @@ import type {
 import type { Client } from "../../../lib/client";
 import {
   laneRejection,
+  MAX_FILE_BYTES,
   MAX_MESSAGE_FILES,
+  MAX_OFFICE_BYTES,
   MAX_VIDEO_BYTES,
   useAttachmentStore,
   type AttachmentChip,
@@ -76,6 +78,10 @@ const capabilities: ModelCapability[] = [
     VideoParts: true,
   },
 ];
+
+/** The .docx mime — the office lane's member the tests exercise. */
+const docxMime =
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
 type MockFn = ReturnType<typeof vi.fn>;
 
@@ -187,11 +193,27 @@ describe("lane caps (task 5.4)", () => {
     );
   });
 
-  it("rejects a mime in no lane as unsupported", () => {
-    const reason = laneRejection("a.bin", "application/octet-stream", 10);
+  it("accepts office documents within their cap and rejects over it", () => {
+    expect(laneRejection("r.docx", docxMime, MAX_OFFICE_BYTES)).toBeNull();
+    const over = laneRejection("r.docx", docxMime, MAX_OFFICE_BYTES + 1);
 
-    expect(reason).toContain("Unsupported");
-    expect(reason).toContain("videos");
+    expect(over).toContain("20 MB");
+    expect(over).toContain("office document");
+  });
+
+  it("routes a mime in no lane through the catch-all file lane", () => {
+    expect(laneRejection("a.bin", "application/octet-stream", 10)).toBeNull();
+
+    const file = laneRejection(
+      "a.bin",
+      "application/octet-stream",
+      MAX_FILE_BYTES + 1
+    );
+
+    expect(file).toContain("20 MB");
+    expect(file).toContain("file");
+    // WebKit reports an empty mime for some files; the file lane covers it.
+    expect(laneRejection("blob", "", 10)).toBeNull();
   });
 });
 
@@ -236,6 +258,64 @@ describe("the chip store (task 5.4)", () => {
     expect(useAttachmentStore.getState().chips[0]?.key).toBe("cap-key-1");
   });
 
+  it("a zip file uploads to ready through the file lane", async () => {
+    await useAttachmentStore
+      .getState()
+      .addFiles([new File(["data"], "arc.zip", { type: "application/zip" })]);
+
+    await waitFor(() =>
+      expect(mockedClient.chat.saveAttachment).toHaveBeenCalledWith(
+        "arc.zip",
+        "application/zip",
+        "ZGF0YQ=="
+      )
+    );
+    await waitFor(() =>
+      expect(
+        useAttachmentStore.getState().chips.map((c: AttachmentChip) => c.status)
+      ).toEqual(["ready"])
+    );
+    expect(useAttachmentStore.getState().chips[0]?.key).toBe("cap-key-1");
+  });
+
+  it("a file with no reported mime uploads to ready like any other lane", async () => {
+    await useAttachmentStore.getState().addFiles([new File(["data"], "blob")]);
+
+    await waitFor(() =>
+      expect(mockedClient.chat.saveAttachment).toHaveBeenCalledWith(
+        "blob",
+        "",
+        "ZGF0YQ=="
+      )
+    );
+    await waitFor(() =>
+      expect(
+        useAttachmentStore.getState().chips.map((c: AttachmentChip) => c.status)
+      ).toEqual(["ready"])
+    );
+    expect(useAttachmentStore.getState().chips[0]?.key).toBe("cap-key-1");
+  });
+
+  it("an office document uploads to ready within its cap", async () => {
+    await useAttachmentStore
+      .getState()
+      .addFiles([new File(["data"], "r.docx", { type: docxMime })]);
+
+    await waitFor(() =>
+      expect(mockedClient.chat.saveAttachment).toHaveBeenCalledWith(
+        "r.docx",
+        docxMime,
+        "ZGF0YQ=="
+      )
+    );
+    await waitFor(() =>
+      expect(
+        useAttachmentStore.getState().chips.map((c: AttachmentChip) => c.status)
+      ).toEqual(["ready"])
+    );
+    expect(useAttachmentStore.getState().chips[0]?.key).toBe("cap-key-1");
+  });
+
   it("rejects an over-cap file with the reason and never uploads", async () => {
     const big = new File([new Uint8Array(10).fill(0)], "big.png", {
       type: "image/png",
@@ -252,6 +332,26 @@ describe("the chip store (task 5.4)", () => {
     expect(chips).toHaveLength(1);
     expect(chips[0]).toMatchObject({ status: "rejected" });
     expect(chips[0]?.reason).toContain("5 MB");
+    expect(mockedClient.chat.saveAttachment).not.toHaveBeenCalled();
+  });
+
+  it("rejects a file outside known lanes over the file cap without uploading", async () => {
+    const big = new File([new Uint8Array(10).fill(0)], "big.bin", {
+      type: "application/octet-stream",
+    });
+
+    // SAFETY: jsdom derives size from content; pin the size the lane check
+    // sees to the over-cap case directly.
+    Object.defineProperty(big, "size", { value: MAX_FILE_BYTES + 1 });
+
+    await useAttachmentStore.getState().addFiles([big]);
+
+    const chips = useAttachmentStore.getState().chips;
+
+    expect(chips).toHaveLength(1);
+    expect(chips[0]).toMatchObject({ status: "rejected" });
+    expect(chips[0]?.reason).toContain("20 MB");
+    expect(chips[0]?.reason).toContain("file");
     expect(mockedClient.chat.saveAttachment).not.toHaveBeenCalled();
   });
 

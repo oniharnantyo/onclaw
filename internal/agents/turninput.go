@@ -269,8 +269,12 @@ func attachmentBlock(tc turnComposer, att sessions.Attachment) (*schema.ContentB
 		// handing off to the uploads mirror, where read_file presents the
 		// document's structured view.
 		return pointerBlock(att, reasonOfficeBytesWithheld, tc.uploads), nil
+	default:
+		// The catch-all file lane (add-all-file-attachments design D2): its
+		// bytes never ride, whatever the model's capabilities or the
+		// provider family — the filesystem tools are the readable route.
+		return pointerBlock(att, reasonFileBytesWithheld, tc.uploads), nil
 	}
-	return pointerBlock(att, modelGapReason(att.Mime), tc.uploads), nil
 }
 
 // The pointer-note reason texts (fix-pdf-attachment-carriage design D3): the
@@ -284,6 +288,10 @@ const (
 	// reasonOfficeBytesWithheld explains the office lane: the bytes never
 	// ride the message; read_file's structured view is the readable route.
 	reasonOfficeBytesWithheld = "its bytes are not sent; read_file presents it as a structured view"
+	// reasonFileBytesWithheld is the file lane's always-pointer reason
+	// (add-all-file-attachments design D2): unlike office there is no
+	// structured view, so the note points at the filesystem tools.
+	reasonFileBytesWithheld = "its bytes are not sent; inspect it with the filesystem tools"
 	// reasonConnectorPDFParts and reasonConnectorVideoParts name the
 	// connector gap: the model reads the kind but this provider family's
 	// connector cannot carry it as a message part.

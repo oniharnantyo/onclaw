@@ -6,9 +6,10 @@
  *
  * Caps mirror the backend's lane classifier exactly (internal/attachments:
  * at most 4 files per message; images 5 MB, PDFs 20 MB, videos 20 MB
- * (design D6), text 1 MB; a mime in no lane is unsupported). The client-side check runs BEFORE the upload so an
- * over-cap or unsupported file rejects with the reason without a round trip;
- * the backend stays the authority. Upload progress rides the base64 binding
+ * (design D6), text 1 MB, office documents 20 MB, and a catch-all file lane
+ * at 20 MB). The client-side check runs BEFORE the upload so an over-cap
+ * file rejects with the reason without a round trip; the backend stays the
+ * authority. Upload progress rides the base64 binding
  * call, which exposes no progress callback — the chip shows an honest
  * indeterminate uploading state, with cancel (drop before resolution) and
  * retry (re-attempt after failure).
@@ -59,21 +60,45 @@ export const MAX_VIDEO_BYTES = 20 << 20;
 
 export const MAX_TEXT_BYTES = 1 << 20;
 
-/** The lane's label in the over-cap reason ("PDF", "image", "video",
- * "text-file") — a helper because four branches outgrew the ternary. */
+export const MAX_OFFICE_BYTES = 20 << 20;
+
+export const MAX_FILE_BYTES = 20 << 20;
+
+/** The OOXML office-document mimes (internal/attachments): the office
+ * lane's members — the modern Word, Excel, and PowerPoint formats. */
+function isOfficeMime(mime: string): boolean {
+  return (
+    mime ===
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    mime ===
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+    mime ===
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+  );
+}
+
+/** The lane's label in the over-cap reason ("PDF", "office document",
+ * "image", "video", "text-file", "file") — a helper because six branches
+ * outgrew the ternary. */
 function laneLabel(mime: string): string {
   if (mime === "application/pdf") return "PDF";
+
+  if (isOfficeMime(mime)) return "office document";
 
   if (mime.startsWith("image/")) return "image";
 
   if (mime.startsWith("video/")) return "video";
 
-  return "text-file";
+  if (mime.startsWith("text/")) return "text-file";
+
+  return "file";
 }
 
-/** The lane classification the backend applies: application/pdf, image/*,
- * video/*, text/*; anything else is unsupported. Returns the rejection
- * reason or null when the file would pass the size cap. */
+/** The lane classification the backend applies: application/pdf, the OOXML
+ * office documents, image/*, video/*, text/*, and a catch-all file lane for
+ * anything else (including the empty mime WebKit reports for some files).
+ * Returns the rejection reason or null when the file would pass the size
+ * cap. */
 export function laneRejection(
   name: string,
   mime: string,
@@ -83,6 +108,8 @@ export function laneRejection(
 
   if (mime === "application/pdf") {
     limit = MAX_PDF_BYTES;
+  } else if (isOfficeMime(mime)) {
+    limit = MAX_OFFICE_BYTES;
   } else if (mime.startsWith("image/")) {
     limit = MAX_IMAGE_BYTES;
   } else if (mime.startsWith("video/")) {
@@ -90,7 +117,7 @@ export function laneRejection(
   } else if (mime.startsWith("text/")) {
     limit = MAX_TEXT_BYTES;
   } else {
-    return `Unsupported file type "${mime || name}" — images, PDFs, videos, and text files are accepted`;
+    limit = MAX_FILE_BYTES;
   }
 
   if (size > limit) {

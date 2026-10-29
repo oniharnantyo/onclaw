@@ -27,9 +27,6 @@ import { asRichUser } from "../entries";
 import { useChatStore, type ExtendedChatStore } from "../store";
 import { entriesToRepository } from "./branches";
 
-/** The mime lanes the backend accepts (attachments.ts mirrors them). */
-const ATTACHMENT_ACCEPT = "image/*,application/pdf,video/*,text/*";
-
 /** The attachment lane a mime sorts into — the same lanes the transcript's
  * message attachments show. */
 function attachmentLane(mime: string): "image" | "document" | "file" {
@@ -64,9 +61,13 @@ function chipAttachment(chip: AttachmentChip, file: File): PendingAttachment {
 
 /** The composer's attachment adapter over the attachment chip store: add
  * mints a chip (and its upload), remove drops it, send resolves the stored
- * capability key — which rides the complete attachment's id into `onNew`. */
+ * capability key — which rides the complete attachment's id into `onNew`.
+ *
+ * The picker stays unfiltered (design D3): accept is the library's
+ * match-all token, which renders no accept attribute on the file input
+ * and gates no file before the store's lane caps. */
 export const attachmentAdapter: AttachmentAdapter = {
-  accept: ATTACHMENT_ACCEPT,
+  accept: "*",
 
   add: async (state: { file: File }): Promise<PendingAttachment> => {
     const store = useAttachmentStore.getState();

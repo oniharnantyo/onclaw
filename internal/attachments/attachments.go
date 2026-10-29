@@ -20,9 +20,10 @@ import (
 	"github.com/oniharnantyo/buddies/internal/store"
 )
 
-// Attachment lanes (spec chat-attachments "Attachment selection and limits"):
-// the per-message file count cap and each lane's size cap. A file whose mime
-// falls in no lane is rejected.
+// Attachment lanes (spec chat-attachments "Attachment selection and limits";
+// widened by add-all-file-attachments design D1 with the catch-all file lane):
+// the per-message file count cap and each lane's size cap. A mime in no lane
+// takes the catch-all file lane.
 const (
 	// MaxPerMessage caps the attachments one message may carry; enforced on
 	// the send path (the runtime), not per upload.
@@ -39,6 +40,10 @@ const (
 	// .pptx) at 20 MB — the same cap the knowledge gate and the document
 	// engines apply (add-document-editing task 5.5).
 	MaxOfficeBytes = 20 << 20
+	// MaxFileBytes caps the catch-all file lane (add-all-file-attachments
+	// design D1) at 20 MB — the same cap as PDF/video/office, so one "big
+	// files" mental model covers them.
+	MaxFileBytes = 20 << 20
 )
 
 // Lane names the attachment kinds the store accepts.
@@ -48,6 +53,7 @@ const (
 	LaneVideo  = "video"
 	LaneText   = "text"
 	LaneOffice = "office"
+	LaneFile   = "file"
 )
 
 // The OOXML office-document MIME types (add-document-editing task 5.5): the
@@ -69,8 +75,8 @@ func IsOfficeMime(mime string) bool {
 // files (internal/config).
 const filePerm os.FileMode = 0600
 
-// ErrRejected wraps every upload rejection: oversize, unknown lane, or a
-// send over the per-message cap. Callers surface the wrapped reason.
+// ErrRejected wraps every upload rejection: oversize or a send over the
+// per-message cap. Callers surface the wrapped reason.
 var ErrRejected = errors.New("attachment rejected")
 
 // keyShape matches exactly the keys this store issues: 32 lowercase hex
@@ -94,8 +100,8 @@ func NewStore(dir string, rows store.AttachmentStore) *Store {
 
 // Save stores one upload: the bytes land at <dir>/<key> and the metadata row
 // is registered under the same capability key. Lane classification and size
-// caps run first — an over-cap or unknown-lane file is rejected with the
-// reason (spec: rejected WITH a reason), leaving nothing behind.
+// caps run first — an over-cap file is rejected with the reason (spec:
+// rejected WITH a reason), leaving nothing behind.
 func (s *Store) Save(ctx context.Context, name, mime string, data []byte) (sessions.Attachment, error) {
 	lane, limit, err := laneOf(mime)
 	if err != nil {
@@ -170,8 +176,9 @@ func (s *Store) Resolve(ctx context.Context, key string) (sessions.Attachment, e
 
 // laneOf classifies an upload's mime into its lane and size cap (spec
 // chat-attachments "Attachment selection and limits"; widened by
-// add-document-editing task 5.5 with the OOXML office lane). An unknown lane
-// is a rejection with the reason.
+// add-document-editing task 5.5 with the OOXML office lane and
+// add-all-file-attachments design D1 with the catch-all file lane). Unknown
+// mimes — the empty mime included — take the file lane.
 func laneOf(mime string) (lane string, limit int64, err error) {
 	switch mime {
 	case "application/pdf":
@@ -189,7 +196,7 @@ func laneOf(mime string) (lane string, limit int64, err error) {
 			return LaneText, MaxTextBytes, nil
 		}
 	}
-	return "", 0, fmt.Errorf("%w: unsupported file type %q (images, PDFs, videos, text files, and office documents are accepted)", ErrRejected, mime)
+	return LaneFile, MaxFileBytes, nil
 }
 
 // mimePrefix splits "type/subtype" at the slash.

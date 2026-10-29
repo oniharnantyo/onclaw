@@ -531,6 +531,77 @@ func TestTurn_OfficeAttachmentRidesByReference(t *testing.T) {
 		pointerNoteOf(t, f), "the office note hands off to read_file's structured view, not the knowledge corpus")
 }
 
+// TestTurn_FileAttachmentRidesByReference pins the file lane's turn semantics
+// (add-all-file-attachments tasks 1.3–1.4; uploads handoff per
+// fix-pdf-attachment-carriage design D3): an unknown-mime attachment never
+// rides its bytes — every model gets the same pointer note handing off to the
+// uploads mirror — and the send never fails, whatever the model's
+// capabilities. An empty mime takes the same lane.
+func TestTurn_FileAttachmentRidesByReference(t *testing.T) {
+	// newSessionWithFile builds one fixture per cell: the workspaces manager
+	// wires the uploads mirror, the agent gets the slug "tester", and the
+	// model sits outside the catalog — the note must be
+	// capability-independent. The second return is the mirrored uploads
+	// directory.
+	newSessionWithFile := func(t *testing.T, name, mime, content string) (*fixture, string, sessions.Session, sessions.Attachment) {
+		t.Helper()
+		wsRoot := t.TempDir()
+		f, atts := newAttachmentFixture(t, func(input []*schema.Message) fakeReply {
+			last := input[len(input)-1]
+			if len(last.UserInputMultiContent) == 0 {
+				return fakeReply{err: errString("the multi-part message never reached the model")}
+			}
+			for _, part := range last.UserInputMultiContent {
+				if part.Type == schema.ChatMessagePartTypeFileURL {
+					return fakeReply{err: errString("file bytes rode as a file part")}
+				}
+				if part.Type == schema.ChatMessagePartTypeVideoURL {
+					return fakeReply{err: errString("file bytes rode as a video part")}
+				}
+			}
+			for _, part := range last.UserInputMultiContent {
+				if part.Type == schema.ChatMessagePartTypeText && strings.Contains(part.Text, "attached file not sent") {
+					return fakeReply{text: "noted", promptTokens: 10, completionTokens: 2}
+				}
+			}
+			return fakeReply{err: errString("the file reference note never reached the model")}
+		}, WithWorkspaces(workspaces.NewManager(wsRoot)))
+		agent := f.agent
+		agent.Slug = "tester"
+		agent.Model = "totally-unknown-model"
+		require.NoError(t, f.store.Agents().Update(t.Context(), &agent))
+		f.agent = agent
+		sess, err := f.mgr.CreateSession(t.Context(), agent.ID)
+		require.NoError(t, err)
+		att := saveUpload(t, atts, name, mime, content)
+		return f, filepath.Join(wsRoot, "tester", workspaces.DirUploads), sess, att
+	}
+
+	// An unknown mime rides the note, and the mirror lands the copy.
+	f, uploadsDir, sess, att := newSessionWithFile(t, "archive.zip", "application/zip", "zip-bytes")
+	turn, err := f.mgr.Send(t.Context(), sess.ID, "unpack this", att.Key)
+	require.NoError(t, err)
+	require.NoError(t, turn.Wait(), "sending must not fail because file bytes never ride the message")
+	require.Equal(t,
+		"[attached file not sent: archive.zip (application/zip, 9 bytes) — "+reasonFileBytesWithheld+
+			"; read it at /workspace/uploads/archive.zip (fallback: attachment key "+att.Key+")]",
+		pointerNoteOf(t, f), "the file note hands off to the filesystem tools via the uploads mirror")
+	data, err := os.ReadFile(filepath.Join(uploadsDir, "archive.zip"))
+	require.NoError(t, err, "the mirror lands the file even when the bytes never ride")
+	require.Equal(t, "zip-bytes", string(data))
+
+	// An empty mime takes the same lane: the same note shape, the same mirror.
+	f, uploadsDir, sess, att = newSessionWithFile(t, "mimeless", "", "mimeless-bytes")
+	turn, err = f.mgr.Send(t.Context(), sess.ID, "open this", att.Key)
+	require.NoError(t, err)
+	require.NoError(t, turn.Wait(), "sending must not fail because the mime is empty")
+	require.Equal(t,
+		"[attached file not sent: mimeless (, 14 bytes) — "+reasonFileBytesWithheld+
+			"; read it at /workspace/uploads/mimeless (fallback: attachment key "+att.Key+")]",
+		pointerNoteOf(t, f), "the empty-mime note takes the file lane's shape")
+	require.FileExists(t, filepath.Join(uploadsDir, "mimeless"), "the mirror lands the empty-mime file too")
+}
+
 // TestTurn_MirrorFailureFallsBackToKey pins the mirror's never-fail
 // degradation (spec chat-attachments "Mirror failure does not fail the
 // turn"): an uploads path blocked by a regular file turns the mirror off,
