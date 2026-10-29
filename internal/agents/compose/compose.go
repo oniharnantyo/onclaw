@@ -156,11 +156,24 @@ func ComposeTurnAgent(ctx context.Context, cfg *ComposeConfig) (adk.TypedAgent[*
 		tools = append(tools, alias)
 	}
 
+	// Unknown tool names are turn data, not graph errors (spec agent-tools
+	// "Tool execution loop", design D1): the ToolsNode answers a call outside
+	// its indexes through this handler instead of failing the whole run. The
+	// handler only ever returns an error — a raw return would bypass the
+	// error-result shape — so ToolErrorResult converts it like any tool
+	// failure and records it for the terminal transcript record.
+	toolsNodeConfig := einocompose.ToolsNodeConfig{
+		Tools: tools,
+		UnknownToolsHandler: func(_ context.Context, name, _ string) (string, error) {
+			return "", fmt.Errorf("unknown tool %q; use one of the tools offered in this request", name)
+		},
+	}
+
 	agentCfg := &adk.TypedChatModelAgentConfig[*schema.AgenticMessage]{
 		Name:          cfg.Name,
 		Instruction:   cfg.Instruction,
 		Model:         cfg.ChatModel,
-		ToolsConfig:   adk.ToolsConfig{ToolsNodeConfig: einocompose.ToolsNodeConfig{Tools: tools}},
+		ToolsConfig:   adk.ToolsConfig{ToolsNodeConfig: toolsNodeConfig},
 		MaxIterations: maxIter,
 		Handlers:      handlers,
 	}
