@@ -501,6 +501,9 @@ func (j *fsJailedBackend) lsKnowledgeRoot() []einofs.FileInfo {
 }
 
 // Read reads file content with support for line-based offset and limit.
+// Office documents (DOCX, PPTX, XLSX) are presented as structured views
+// instead of raw bytes (design D4): the file is never modified and the view
+// is paginated like a text read.
 func (j *fsJailedBackend) Read(_ context.Context, req *einofs.ReadRequest) (*einofs.FileContent, error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
@@ -508,6 +511,13 @@ func (j *fsJailedBackend) Read(_ context.Context, req *einofs.ReadRequest) (*ein
 	resolved, err := j.resolvePath(req.FilePath)
 	if err != nil {
 		return nil, err
+	}
+
+	if view, ok, err := renderOfficeView(resolved, req.Offset, req.Limit); ok {
+		if err != nil {
+			return nil, err
+		}
+		return &einofs.FileContent{Content: view}, nil
 	}
 
 	content, err := readTextWindow(resolved, req.Offset, req.Limit)
@@ -558,7 +568,9 @@ const maxInlinePartBytes = 20 << 20
 // MultiModalRead reads file content supporting multimodal results. Images and
 // PDFs come back as one inline binary part for the model to consume directly
 // — there is no server-side rendering, so a PDF page range is not honored and
-// the whole document rides along. Everything else reads as text like Read.
+// the whole document rides along. Office documents (DOCX, PPTX, XLSX) come
+// back as their structured text view (design D4) like Read. Everything else
+// reads as text like Read.
 func (j *fsJailedBackend) MultiModalRead(_ context.Context, req *einofs.MultiModalReadRequest) (*einofs.MultiFileContent, error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
@@ -566,6 +578,13 @@ func (j *fsJailedBackend) MultiModalRead(_ context.Context, req *einofs.MultiMod
 	resolved, err := j.resolvePath(req.FilePath)
 	if err != nil {
 		return nil, err
+	}
+
+	if view, ok, err := renderOfficeView(resolved, req.Offset, req.Limit); ok {
+		if err != nil {
+			return nil, err
+		}
+		return &einofs.MultiFileContent{FileContent: &einofs.FileContent{Content: view}}, nil
 	}
 
 	if part, ok := inlineMIMETypes[strings.ToLower(filepath.Ext(resolved))]; ok {

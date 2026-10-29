@@ -17,11 +17,14 @@
  * duplicate rows. Older history pages on demand through `loadEarlier`, which
  * folds the older page through the same applyEvent and prepends it.
  *
- * Session subscriptions persist across session switches (session-row running
- * state, spec chat-view "Sessions organized per agent"): a turn in flight in
- * a background session keeps its rail indicator until a terminal event
+ * Session subscriptions persist across session and agent switches
+ * (spec chat-view "Sessions organized per agent"): a turn in flight in a
+ * background session keeps its rail indicator until a terminal event
  * retires it, so the per-session running set folds terminals for EVERY
  * subscribed session while the transcript folding stays active-session-only.
+ * add-grouped-session-rail design D3: the running dots no longer DEPEND on
+ * these subscriptions — the backend's turns:changed channel and the boot/
+ * focus re-queries drive the same set for any session, subscribed or not.
  */
 import { create, type StoreApi } from "zustand";
 
@@ -35,6 +38,7 @@ import type {
   Skill,
 } from "../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
 import type { ModelCapability } from "../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
+import type { TurnsChangedEvent } from "../../lib/events";
 import type { Unsubscribe } from "../../lib/transport";
 import { client } from "../../lib/client";
 import { useNavStore } from "../../stores/nav";
@@ -50,6 +54,20 @@ import type { ChatStore, Entry, PanelTab, QueuedMessage } from "./types";
 
 export type { ChatStore, QueuedMessage } from "./types";
 
+/** A live terminal outcome of the viewed session (add-live-agent-avatar
+ * design D4): reactions are edges, never derivable from a replayed
+ * transcript, so each terminal mints a fresh object and the avatar hook
+ * reacts to changes of the object's IDENTITY, not its value. */
+export interface TurnOutcome {
+  /** The terminal event's turn id; "" when the event carries none. */
+  turnID: string;
+  /** Which terminal ended the turn. */
+  kind: Kind.KindTurnCompleted | Kind.KindTurnError | Kind.KindTurnCancelled;
+  /** The event's timestamp as the entries fold reads it (applyEvent stamps
+   * entries with occurred_at), else now. */
+  at: string;
+}
+
 /**
  * Store state this wave adds (tasks 6.1, 6.5, 7.2, session-row running
  * state). The shared types file sits outside this wave's file scope, so the
@@ -63,8 +81,14 @@ export interface ChatStoreExtras {
   oldestSeq: number | null;
   /** True while an older transcript page is being fetched. */
   loadingEarlier: boolean;
-  /** Sessions with a turn in flight (including approval-paused) — the rail's
-   * running indicator source, tracked for every subscribed session. */
+  /**
+   * Sessions with a turn in flight (including approval-paused) — the rail's
+   * running indicator source. Three idempotent sources fold into it
+   * (add-grouped-session-rail design D2/D3): the per-session live ingest
+   * path, the backend's turns:changed channel, and the boot/focus
+   * re-queries that replace the set wholesale — dots no longer depend on
+   * subscriptions.
+   */
   runningSessions: Set<string>;
   /** Fetches the next older transcript page and prepends it (task 6.1). */
   loadEarlier: () => Promise<void>;
@@ -92,12 +116,24 @@ export interface ChatStoreExtras {
    * failed load is retryable by the next call. */
   ensureToolCatalog: () => Promise<void>;
   /**
-   * Refetches the active agent's session list when `agentID` matches it
-   * (add-scheduler design D10): a schedule firing in the background creates
-   * a session, and this makes it appear without a reload. A mismatched id,
-   * a superseded agent switch, or a failed fetch keeps the current list.
+   * Refetches EVERY agent's sessions when any agent's schedules:changed
+   * fires (add-scheduler design D10 + add-grouped-session-rail design D1):
+   * a background fire creates a session, and the `agentID` argument is kept
+   * for caller compatibility but ignored — the refetched all-agents list
+   * updates every group's count in the rail without a reload. A superseded
+   * store load or a failed fetch keeps the current list (keep-going).
    */
   refreshSessions: (agentID: string) => Promise<void>;
+  /**
+   * The viewed session's latest live terminal outcome (add-live-agent-avatar
+   * design D4). Invariants: set only on the live ingest path for the ACTIVE
+   * (viewed) session — a background session's terminal never sets it, and
+   * the transcript replay folds in selectSession/loadEarlier never mint one
+   * (a reloaded transcript must never react); null on load/init; reset to
+   * null whenever the session switches or clears, beside the panelTabs
+   * resets. Readers react to the object's identity, not its value.
+   */
+  lastTurnOutcome: TurnOutcome | null;
 }
 
 export type ExtendedChatStore = ChatStore & ChatStoreExtras;
@@ -288,6 +324,52 @@ function setSessionRunning(sessionID: string, running: boolean): void {
   useChatStore.setState({ runningSessions: next });
 }
 
+/**
+ * Replaces the running set with the backend's authoritative answer
+ * (add-grouped-session-rail design D2): the boot-time seed and the window-
+ * focus re-query (the design risk table's "dots self-heal") both ride this.
+ * Keep-going: a failed query leaves the current set for the turns:changed
+ * stream to keep honest.
+ */
+async function syncRunningSessions(): Promise<void> {
+  try {
+    const running = await client.chat.runningSessions();
+
+    useChatStore.setState({ runningSessions: new Set(running) });
+  } catch {
+    // Keep the last known set; the next turn flip or focus re-query retries.
+  }
+}
+
+/**
+ * Wires the running-dot sources that live outside the per-session ingest
+ * path (add-grouped-session-rail design D2/D3): the backend's turns:changed
+ * channel — one event per in-flight flip for ANY session, subscribed or not
+ * — plus the window-focus re-query. Returns the combined unsubscribe.
+ *
+ * Called once from the chat feature root's mount effect (index.tsx), beside
+ * the schedules:changed subscription: the store module must stay free of
+ * import-time side effects, and the view is the feature's mounting surface.
+ */
+export function connectRunningSessions(): Unsubscribe {
+  const offTurns = client.events.onTurnsChanged(
+    (event: TurnsChangedEvent): void => {
+      setSessionRunning(event.sessionId, event.busy);
+    }
+  );
+
+  const refetch = (): void => {
+    void syncRunningSessions();
+  };
+
+  window.addEventListener("focus", refetch);
+
+  return (): void => {
+    offTurns();
+    window.removeEventListener("focus", refetch);
+  };
+}
+
 /** The live handler factory: one closure per subscribed session. Turn
  * lifecycle events drive that session's rail flag for EVERY subscriber —
  * any turn-activity event marks it in flight (trigger-started turns
@@ -323,6 +405,26 @@ function ingest(e: SessionEvent): void {
   useChatStore.setState((prev: ExtendedChatStore) => ({
     entries: applyEvent(prev.entries, e),
   }));
+
+  // add-live-agent-avatar design D4: record the terminal as an edge for the
+  // avatar hook. ingest runs only on the live path behind makeIngest's
+  // active-session guard — a background session's terminal never lands here
+  // — and the replay folds in selectSession / loadEarlier apply events
+  // directly, so a reloaded transcript can never mint an outcome. A fresh
+  // object per terminal: the hook reacts to the outcome's identity.
+  if (
+    e.kind === Kind.KindTurnCompleted ||
+    e.kind === Kind.KindTurnError ||
+    e.kind === Kind.KindTurnCancelled
+  ) {
+    useChatStore.setState({
+      lastTurnOutcome: {
+        turnID: e.turn_id ?? "",
+        kind: e.kind,
+        at: e.occurred_at || new Date().toISOString(),
+      },
+    });
+  }
 
   if (e.kind === Kind.KindTurnCompleted) {
     void refreshUsage();
@@ -466,6 +568,10 @@ export const useChatStore = create<ExtendedChatStore>(
     panelTabs: [],
     activePanelTabID: null,
 
+    // add-live-agent-avatar design D4: no outcome until a live terminal of
+    // the viewed session arrives.
+    lastTurnOutcome: null,
+
     toolCatalog: {},
 
     init: async (): Promise<void> => {
@@ -486,6 +592,12 @@ export const useChatStore = create<ExtendedChatStore>(
 
         return;
       }
+
+      // Boot-time sync of the rail's running dots (add-grouped-session-rail
+      // design D2): the backend's authoritative answer replaces the empty
+      // set while the first selection loads. Keep-going: a failed seed
+      // leaves the empty set for turns:changed and the focus re-query.
+      void syncRunningSessions();
 
       const target = useNavStore.getState().chatTarget;
 
@@ -517,7 +629,10 @@ export const useChatStore = create<ExtendedChatStore>(
       let sessions: Session[] = [];
 
       try {
-        sessions = sortSessions(await client.chat.sessions(agentID));
+        // One all-agents listing replaces the per-agent fetch (add-grouped-
+        // session-rail design D1): the store holds every agent's sessions
+        // and the rail groups the rows by their AgentID.
+        sessions = sortSessions(await client.chat.allSessions());
       } catch (err: unknown) {
         if (seq === loadSeq)
           set({
@@ -531,9 +646,11 @@ export const useChatStore = create<ExtendedChatStore>(
       if (seq !== loadSeq) return;
       set({ sessions });
 
-      // Subscriptions of sessions no longer in the new agent's list are
-      // torn down (task 6.5 hygiene); the rest persist so background turns
-      // keep their rail indicators.
+      // add-grouped-session-rail design D3: the keep-set now spans every
+      // agent's sessions, so this teardown loop no longer fires on agent
+      // switches — subscriptions persist across them, and the running dots
+      // no longer depend on subscriptions (turns:changed drives the dots
+      // for any unsubscribed session).
       const keep = new Set(sessions.map((s: Session): string => s.ID));
 
       for (const [id, off] of subscriptions) {
@@ -544,10 +661,17 @@ export const useChatStore = create<ExtendedChatStore>(
         }
       }
 
+      // The opened session must belong to the agent being selected — with
+      // the all-agents list in the store, the plain newest row could belong
+      // to another agent.
+      const agentSessions = sessions.filter(
+        (s: Session): boolean => s.AgentID === agentID
+      );
+
       const next =
-        sessionID && sessions.some((s: Session) => s.ID === sessionID)
+        sessionID && agentSessions.some((s: Session) => s.ID === sessionID)
           ? sessionID
-          : sessions[0]?.ID;
+          : agentSessions[0]?.ID;
 
       if (next) {
         await get().selectSession(next);
@@ -565,6 +689,8 @@ export const useChatStore = create<ExtendedChatStore>(
           loadingSession: false,
           panelTabs: [],
           activePanelTabID: null,
+          // No session to react for (add-live-agent-avatar design D4).
+          lastTurnOutcome: null,
           // No open session: the override state resets to inherit; a newly
           // created session is seeded from the sticky default instead.
           modelOverride: "",
@@ -601,6 +727,10 @@ export const useChatStore = create<ExtendedChatStore>(
         // Spec chat-panels: switching sessions resets the panel to closed.
         panelTabs: [],
         activePanelTabID: null,
+        // Reactions are edges (add-live-agent-avatar design D4): the session
+        // being opened starts with no live outcome — replaying its
+        // transcript below must never fire a gesture.
+        lastTurnOutcome: null,
       });
       setBusy();
 
@@ -780,6 +910,14 @@ export const useChatStore = create<ExtendedChatStore>(
 
       const state = get();
 
+      // The follow-up selection stays inside the deleted session's agent
+      // (add-grouped-session-rail design D1: the store now holds every
+      // agent's sessions, so the plain newest remaining row could belong to
+      // another agent's group). Read the row's AgentID before the delete.
+      const agentID = state.sessions.find(
+        (s: Session): boolean => s.ID === sessionID
+      )?.AgentID;
+
       const remaining = state.sessions.filter(
         (s: Session): boolean => s.ID !== sessionID
       );
@@ -788,7 +926,11 @@ export const useChatStore = create<ExtendedChatStore>(
 
       if (state.activeSessionID !== sessionID) return;
 
-      const next = remaining[0]?.ID;
+      const agentRows = agentID
+        ? remaining.filter((s: Session): boolean => s.AgentID === agentID)
+        : [];
+
+      const next = agentRows[0]?.ID;
 
       if (next) {
         await get().selectSession(next);
@@ -808,6 +950,8 @@ export const useChatStore = create<ExtendedChatStore>(
         finishedTurnIDs: new Set<string>(),
         panelTabs: [],
         activePanelTabID: null,
+        // Nothing left to react for (add-live-agent-avatar design D4).
+        lastTurnOutcome: null,
         modelOverride: "",
         effortOverride: "",
       });
@@ -875,17 +1019,23 @@ export const useChatStore = create<ExtendedChatStore>(
       }));
     },
 
-    newSession: async (): Promise<void> => {
-      const agentID = get().activeAgentID;
+    // Creation routes through selectAgent for BOTH same-agent and
+    // cross-agent creation (add-grouped-session-rail design D6): the
+    // refetched all-agents listing returns the persisted row — with the
+    // seeded overrides already applied — so no optimistic insert is needed.
+    // Bare calls (the composer's send-path auto-create, the rail's active-
+    // group button) default to the active agent.
+    newSession: async (agentID?: string): Promise<void> => {
+      const target = agentID ?? get().activeAgentID;
 
-      if (!agentID) return;
+      if (!target) return;
 
       try {
-        let session = await client.chat.createSession(agentID);
+        const session = await client.chat.createSession(target);
         // Seed the new session with the agent's last-used composer override
         // (task 2.1, design D9); with no sticky default the row stays empty
         // and simply inherits the agent's configuration.
-        const seed = storedOverride(agentID);
+        const seed = storedOverride(target);
 
         if (seed) {
           try {
@@ -894,7 +1044,6 @@ export const useChatStore = create<ExtendedChatStore>(
               seed.model,
               seed.effort
             );
-            session = { ...session, Model: seed.model, Effort: seed.effort };
           } catch (err: unknown) {
             // The session stays usable unseeded (it inherits); the failure
             // still surfaces instead of silently dropping the default.
@@ -902,13 +1051,7 @@ export const useChatStore = create<ExtendedChatStore>(
           }
         }
 
-        set((prev: ChatStore) => ({
-          sessions: sortSessions([
-            session,
-            ...prev.sessions.filter((s: Session) => s.ID !== session.ID),
-          ]),
-        }));
-        await get().selectSession(session.ID);
+        await get().selectAgent(target, session.ID);
       } catch (err: unknown) {
         set({ error: errorMessage(err, "Failed to create session") });
       }
@@ -1091,18 +1234,21 @@ export const useChatStore = create<ExtendedChatStore>(
     },
 
     // Background-created sessions (add-scheduler design D10): a schedule
-    // firing for the active agent emits schedules:changed, and the chat
-    // feature refetches through this action so the session appears in the
-    // rail without a reload. The double activeAgentID check mirrors
-    // loadModels: a superseded continuation must not write a newer agent's
-    // list, and a failed fetch keeps the current list (keep-going).
-    refreshSessions: async (agentID: string): Promise<void> => {
-      if (get().activeAgentID !== agentID) return;
+    // firing for ANY agent emits schedules:changed, and the chat feature
+    // refetches the all-agents listing through this action so the session
+    // appears in the rail without a reload (add-grouped-session-rail design
+    // D1). The `agentID` argument is kept for the caller's signature and
+    // ignored — the refetch updates every group's count. The loadSeq guard
+    // mirrors selectAgent: a store load that superseded this fire must not
+    // be overwritten, and a failed fetch keeps the current list
+    // (keep-going).
+    refreshSessions: async (_agentID: string): Promise<void> => {
+      const seq = loadSeq;
 
       try {
-        const sessions = sortSessions(await client.chat.sessions(agentID));
+        const sessions = sortSessions(await client.chat.allSessions());
 
-        if (get().activeAgentID !== agentID) return;
+        if (seq !== loadSeq) return;
         set({ sessions });
       } catch {
         // Keep the last known list; the next schedules:changed retries.
@@ -1141,7 +1287,10 @@ export const useChatStore = create<ExtendedChatStore>(
       }));
     },
 
-    activatePanelTab: (id: string): void => {
+    // `null` is the pinned identity tab (design D1): the existing reducers
+    // already read it correctly — closing a non-active tab leaves it, the
+    // last close yields it, and every reset path writes it.
+    activatePanelTab: (id: string | null): void => {
       set({ activePanelTabID: id });
     },
 

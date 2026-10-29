@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -311,4 +313,437 @@ func TestProbeMCPServerAuthRequiredOAuthMode(t *testing.T) {
 	after, err := fs.MCPServers().ByID(ctx, created.ID)
 	require.NoError(t, err)
 	require.Equal(t, before.Auth, after.Auth)
+}
+
+// ---------------------------------------------------------------------------
+// Integration connect, redaction, and disconnect (add-integrations tasks 3,
+// design D1/D3/D4, spec "Connect flow", "Integration credential secrecy",
+// "Family entries").
+// ---------------------------------------------------------------------------
+
+// newCredentialGuardedStub builds a streamable MCP endpoint guarded by a
+// plain bearer check: a wrong or missing credential gets a bare 401, the
+// right one reaches a real one-tool MCP server.
+func newCredentialGuardedStub(credential string) http.Handler {
+	inner := newFlowStubHandler()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+credential {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		inner.ServeHTTP(w, r)
+	})
+}
+
+// TestConnectIntegrationTokenCreatesTaggedServer is the token-method
+// acceptance path (spec scenarios "Connect creates a tagged server
+// definition" and "Credential never round-trips"): the credential rides the
+// row's auth JSON — never Headers — the connect probes it connected, and no
+// service read or listing returns the credential, only key-set state and the
+// last-four hint.
+func TestConnectIntegrationTokenCreatesTaggedServer(t *testing.T) {
+	ctx := context.Background()
+	fs := fake.New()
+	svc := NewSettingsService(fs)
+
+	credential := "glpat-secret-9999"
+	guard := httptest.NewServer(newCredentialGuardedStub(credential))
+	defer guard.Close()
+
+	connected, err := svc.ConnectIntegration(ctx, IntegrationConnectInput{
+		Service:    "gitlab",
+		Endpoint:   guard.URL + "/mcp",
+		AuthMethod: IntegrationAuthMethodToken,
+		Credential: credential,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "gitlab", connected.Service, "the row is tagged with the service id")
+	require.Equal(t, "gitlab", connected.Name)
+	require.Equal(t, mcp.StatusConnected, connected.Status, "the connect probe flips the tile")
+	require.Positive(t, connected.ToolCount)
+	// The returned row is redacted: hint and key-set state, no secret.
+	require.Empty(t, connected.Auth.IntegrationCredential)
+	require.True(t, connected.CredentialSet)
+	require.Equal(t, "9999", connected.CredentialHint)
+
+	// The credential lives in the stored auth JSON, never in Headers.
+	stored, err := fs.MCPServers().ByID(ctx, connected.ID)
+	require.NoError(t, err)
+	require.Equal(t, credential, stored.Auth.IntegrationCredential)
+	require.Empty(t, stored.Headers)
+
+	// No service read or listing returns it.
+	read, err := svc.MCPServer(ctx, connected.ID)
+	require.NoError(t, err)
+	require.Empty(t, read.Auth.IntegrationCredential)
+	require.True(t, read.CredentialSet)
+	require.Equal(t, "9999", read.CredentialHint)
+	listed, err := svc.MCPServers(ctx)
+	require.NoError(t, err)
+	require.Len(t, listed, 1)
+	require.Empty(t, listed[0].Auth.IntegrationCredential)
+}
+
+// TestConnectIntegrationOAuthConnectMarksAuthRequired pins the OAuth branch
+// of the connect probe (spec scenario "Authorization required after
+// connect"): a freshly connected oauth_dcr row has no tokens yet, so its
+// probe lands auth_required with the Authorize call-to-action — the call
+// itself still succeeds.
+func TestConnectIntegrationOAuthConnectMarksAuthRequired(t *testing.T) {
+	ctx := context.Background()
+	svc := NewSettingsService(fake.New())
+	fx := newOAuthFlowFixture(t)
+
+	connected, err := svc.ConnectIntegration(ctx, IntegrationConnectInput{
+		Service:    "linear",
+		Endpoint:   fx.URL + "/mcp",
+		AuthMethod: IntegrationAuthMethodDCR,
+	})
+	require.NoError(t, err, "an authorization-required outcome reports on the row, it does not fail the connect")
+	require.Equal(t, mcp.StatusAuthRequired, connected.Status)
+	require.Equal(t, MCPOAuthRequiredMessage, connected.StatusError)
+	require.Equal(t, store.MCPAuthModeOAuth, connected.Auth.Mode)
+	require.Equal(t, "linear", connected.Service)
+}
+
+// TestConnectIntegrationFailedProbeShowsReason pins the failure branch (spec
+// "any other failure shows the reason"): a rejected credential is a plain
+// error state carrying the reason, not an authorization-required one.
+func TestConnectIntegrationFailedProbeShowsReason(t *testing.T) {
+	ctx := context.Background()
+	svc := NewSettingsService(fake.New())
+	guard := httptest.NewServer(newCredentialGuardedStub("right-credential"))
+	defer guard.Close()
+
+	connected, err := svc.ConnectIntegration(ctx, IntegrationConnectInput{
+		Service:    "gitlab",
+		Endpoint:   guard.URL + "/mcp",
+		AuthMethod: IntegrationAuthMethodToken,
+		Credential: "wrong-credential",
+	})
+	require.NoError(t, err)
+	require.Equal(t, mcp.StatusError, connected.Status)
+	require.NotEmpty(t, connected.StatusError)
+	require.Equal(t, 0, connected.ToolCount)
+}
+
+// TestConnectIntegrationValidatesInput pins the sheet-payload gates: service
+// and endpoint are required, the auth method must be a known kind, and each
+// kind requires its own inputs.
+func TestConnectIntegrationValidatesInput(t *testing.T) {
+	ctx := context.Background()
+	svc := NewSettingsService(fake.New())
+
+	_, err := svc.ConnectIntegration(ctx, IntegrationConnectInput{
+		Endpoint: "https://mcp.example/mcp", AuthMethod: IntegrationAuthMethodToken, Credential: "t",
+	})
+	require.ErrorContains(t, err, "service is required")
+
+	_, err = svc.ConnectIntegration(ctx, IntegrationConnectInput{
+		Service: "gitlab", AuthMethod: IntegrationAuthMethodToken, Credential: "t",
+	})
+	require.ErrorContains(t, err, "endpoint is required")
+
+	_, err = svc.ConnectIntegration(ctx, IntegrationConnectInput{
+		Service: "gitlab", Endpoint: "https://mcp.example/mcp", AuthMethod: "hmac",
+	})
+	require.ErrorContains(t, err, `unknown auth method "hmac"`)
+
+	_, err = svc.ConnectIntegration(ctx, IntegrationConnectInput{
+		Service: "gitlab", Endpoint: "https://mcp.example/mcp", AuthMethod: IntegrationAuthMethodToken,
+	})
+	require.ErrorContains(t, err, "token method requires a credential")
+
+	_, err = svc.ConnectIntegration(ctx, IntegrationConnectInput{
+		Service: "slack", Endpoint: "https://mcp.example/mcp",
+		AuthMethod: IntegrationAuthMethodConfidential, ClientID: "client-1",
+	})
+	require.ErrorContains(t, err, "requires a client id and secret")
+}
+
+// TestMCPServerReadsRedactIntegrationCredential pins the redaction contract
+// across the whole service surface (design D4): create, read, listing, and
+// probe returns carry only CredentialSet plus the last-four hint; the stored
+// row keeps the credential. A blank-credential update — what a redacted
+// read round-trips — preserves the stored one; a non-blank value replaces it
+// (spec scenario "Edit keeps the stored credential").
+func TestMCPServerReadsRedactIntegrationCredential(t *testing.T) {
+	ctx := context.Background()
+	fs := fake.New()
+	svc := NewSettingsService(fs)
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer dead.Close()
+
+	created, err := svc.CreateMCPServer(ctx, store.MCPServer{
+		Name:      "gitlab",
+		Transport: mcp.TransportStreamableHTTP,
+		URL:       dead.URL + "/mcp",
+		Auth:      store.MCPServerAuth{IntegrationCredential: "glpat-secret-9999"},
+		Enabled:   true,
+	})
+	require.NoError(t, err)
+	require.Empty(t, created.Auth.IntegrationCredential, "the create return is redacted")
+	require.True(t, created.CredentialSet)
+	require.Equal(t, "9999", created.CredentialHint)
+
+	read, err := svc.MCPServer(ctx, created.ID)
+	require.NoError(t, err)
+	require.Empty(t, read.Auth.IntegrationCredential)
+	listed, err := svc.MCPServers(ctx)
+	require.NoError(t, err)
+	require.Empty(t, listed[0].Auth.IntegrationCredential)
+	probed, err := svc.ProbeMCPServer(ctx, created.ID)
+	require.NoError(t, err)
+	require.Empty(t, probed.Auth.IntegrationCredential)
+	require.True(t, probed.CredentialSet, "the probe's redaction keeps the key-set state")
+
+	// The store layer still holds the secret: only the service reads are
+	// redacted.
+	stored, err := fs.MCPServers().ByID(ctx, created.ID)
+	require.NoError(t, err)
+	require.Equal(t, "glpat-secret-9999", stored.Auth.IntegrationCredential)
+
+	// A blank credential — everything a redacted read can resubmit — keeps
+	// the stored one.
+	read.Name = "gitlab-renamed"
+	updated, err := svc.UpdateMCPServer(ctx, read)
+	require.NoError(t, err)
+	require.Empty(t, updated.Auth.IntegrationCredential)
+	stored, err = fs.MCPServers().ByID(ctx, created.ID)
+	require.NoError(t, err)
+	require.Equal(t, "glpat-secret-9999", stored.Auth.IntegrationCredential, "the blank update preserved the credential")
+	require.Equal(t, "gitlab-renamed", stored.Name)
+
+	// A non-blank credential replaces it.
+	updated.Auth.IntegrationCredential = "new-token-1234"
+	_, err = svc.UpdateMCPServer(ctx, updated)
+	require.NoError(t, err)
+	stored, err = fs.MCPServers().ByID(ctx, created.ID)
+	require.NoError(t, err)
+	require.Equal(t, "new-token-1234", stored.Auth.IntegrationCredential)
+}
+
+// TestDisconnectIntegrationDeletesRow pins design D1's remove path (spec
+// "removing an integration deletes its server definition"): the tagged row
+// goes; an absent row is store.ErrNotFound.
+func TestDisconnectIntegrationDeletesRow(t *testing.T) {
+	ctx := context.Background()
+	fs := fake.New()
+	svc := NewSettingsService(fs)
+	guard := httptest.NewServer(newCredentialGuardedStub("glpat-1234"))
+	defer guard.Close()
+
+	created, err := svc.ConnectIntegration(ctx, IntegrationConnectInput{
+		Service:    "gitlab",
+		Endpoint:   guard.URL + "/mcp",
+		AuthMethod: IntegrationAuthMethodToken,
+		Credential: "glpat-1234",
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, svc.DisconnectIntegration(ctx, created.ID))
+	_, err = fs.MCPServers().ByID(ctx, created.ID)
+	require.ErrorIs(t, err, store.ErrNotFound)
+
+	require.ErrorIs(t, svc.DisconnectIntegration(ctx, "srv-missing"), store.ErrNotFound)
+}
+
+// TestConnectIntegrationFamilyCreatesProductRows is the family acceptance
+// path (design D6, spec scenarios "Family connect creates product
+// definitions"): one sheet submission creates one tagged row per product,
+// each probed into its own state, with the shared confidential client and
+// the extra authorization params stored on every row — ExtraAuthParams
+// round-trips through the store.
+func TestConnectIntegrationFamilyCreatesProductRows(t *testing.T) {
+	ctx := context.Background()
+	fs := fake.New()
+	svc := NewSettingsService(fs)
+	fx := newOAuthFlowFixture(t)
+
+	extras := map[string]string{"access_type": "offline", "prompt": "consent"}
+	first, err := svc.ConnectIntegration(ctx, IntegrationConnectInput{
+		Service:          "google-workspace",
+		Endpoint:         fx.URL + "/mcp",
+		AuthMethod:       IntegrationAuthMethodConfidential,
+		ClientID:         "google-client",
+		ClientSecret:     "google-secret",
+		ExtraAuthParams:  extras,
+		Products:         []string{"gmail", "calendar"},
+		ProductEndpoints: map[string]string{"gmail": fx.URL + "/gmail", "calendar": fx.URL + "/calendar"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "gmail", first.Service, "the first product's row is returned")
+
+	listed, err := svc.MCPServers(ctx)
+	require.NoError(t, err)
+	require.Len(t, listed, 2)
+	byService := make(map[string]store.MCPServer, len(listed))
+	for _, row := range listed {
+		byService[row.Service] = row
+	}
+	for _, service := range []string{"gmail", "calendar"} {
+		row, ok := byService[service]
+		require.True(t, ok, "a row tagged %s must exist", service)
+		require.Equal(t, service, row.Name)
+		require.Equal(t, fx.URL+"/"+service, row.URL, "each product dials its own endpoint")
+		require.Equal(t, store.MCPAuthModeOAuth, row.Auth.Mode)
+		require.Equal(t, "google-client", row.Auth.ClientID, "the family's shared client is on every product row")
+		require.Equal(t, "google-secret", row.Auth.ClientSecret)
+		require.Equal(t, extras, row.Auth.ExtraAuthParams, "ExtraAuthParams round-trips through the store")
+		require.Equal(t, mcp.StatusAuthRequired, row.Status, "each product is probed into its own state")
+	}
+}
+
+// TestConnectIntegrationEditKeepsStoredCredential pins the edit path (spec
+// scenarios "Edit keeps the stored credential"): resubmitting a service that
+// already has its row updates it in place — same row id, no duplicate — and
+// a blank credential adopts the stored one while a non-blank value replaces
+// it. The probe outcome refreshes on the returned row.
+func TestConnectIntegrationEditKeepsStoredCredential(t *testing.T) {
+	ctx := context.Background()
+	fs := fake.New()
+	svc := NewSettingsService(fs)
+
+	credential := "glpat-secret-9999"
+	guard := httptest.NewServer(newCredentialGuardedStub(credential))
+	defer guard.Close()
+
+	created, err := svc.ConnectIntegration(ctx, IntegrationConnectInput{
+		Service:    "gitlab",
+		Endpoint:   guard.URL + "/mcp",
+		AuthMethod: IntegrationAuthMethodToken,
+		Credential: credential,
+	})
+	require.NoError(t, err)
+
+	// The edit sheet round-trips no secret (design D4): a blank credential
+	// keeps the stored one.
+	edited, err := svc.ConnectIntegration(ctx, IntegrationConnectInput{
+		Service:    "gitlab",
+		Endpoint:   guard.URL + "/mcp-gitlab",
+		AuthMethod: IntegrationAuthMethodToken,
+		Credential: "",
+	})
+	require.NoError(t, err)
+	require.Equal(t, created.ID, edited.ID, "the edit reuses the row in place")
+	listed, err := svc.MCPServers(ctx)
+	require.NoError(t, err)
+	require.Len(t, listed, 1, "no duplicate row")
+	stored, err := fs.MCPServers().ByID(ctx, edited.ID)
+	require.NoError(t, err)
+	require.Equal(t, credential, stored.Auth.IntegrationCredential, "blank keeps the stored credential")
+	require.Equal(t, guard.URL+"/mcp-gitlab", stored.URL, "the endpoint is rewritten")
+	require.True(t, edited.CredentialSet)
+	require.Equal(t, "9999", edited.CredentialHint)
+
+	// A non-blank credential replaces the stored one.
+	replaced, err := svc.ConnectIntegration(ctx, IntegrationConnectInput{
+		Service:    "gitlab",
+		Endpoint:   guard.URL + "/mcp",
+		AuthMethod: IntegrationAuthMethodToken,
+		Credential: credential + "-2",
+	})
+	require.NoError(t, err)
+	require.Equal(t, created.ID, replaced.ID)
+	stored, err = fs.MCPServers().ByID(ctx, replaced.ID)
+	require.NoError(t, err)
+	require.Equal(t, credential+"-2", stored.Auth.IntegrationCredential)
+}
+
+// TestConnectIntegrationEditKeepsStoredClient pins the confidential-client
+// edit path: a resubmission whose secret field is blank (the redacted read
+// round-trips nothing) keeps the stored client and still lands exactly one
+// row.
+func TestConnectIntegrationEditKeepsStoredClient(t *testing.T) {
+	ctx := context.Background()
+	fs := fake.New()
+	svc := NewSettingsService(fs)
+	fx := newOAuthFlowFixture(t)
+
+	created, err := svc.ConnectIntegration(ctx, IntegrationConnectInput{
+		Service:      "slack",
+		Endpoint:     fx.URL + "/mcp",
+		AuthMethod:   IntegrationAuthMethodConfidential,
+		ClientID:     "slack-client",
+		ClientSecret: "slack-secret",
+	})
+	require.NoError(t, err)
+
+	edited, err := svc.ConnectIntegration(ctx, IntegrationConnectInput{
+		Service:      "slack",
+		Endpoint:     fx.URL + "/mcp-slack",
+		AuthMethod:   IntegrationAuthMethodConfidential,
+		ClientID:     "slack-client",
+		ClientSecret: "",
+	})
+	require.NoError(t, err)
+	require.Equal(t, created.ID, edited.ID)
+	listed, err := svc.MCPServers(ctx)
+	require.NoError(t, err)
+	require.Len(t, listed, 1, "no duplicate row")
+	stored, err := fs.MCPServers().ByID(ctx, edited.ID)
+	require.NoError(t, err)
+	require.Equal(t, "slack-secret", stored.Auth.ClientSecret, "blank keeps the stored secret")
+	require.Equal(t, fx.URL+"/mcp-slack", stored.URL)
+}
+
+// TestConnectIntegrationFamilySkipsConnectedProducts pins the family
+// resubmission (spec scenario "Adding a product later reuses the setup"):
+// products that already have their rows are skipped — no duplicate — and the
+// missing product is created and probed.
+func TestConnectIntegrationFamilySkipsConnectedProducts(t *testing.T) {
+	ctx := context.Background()
+	fs := fake.New()
+	svc := NewSettingsService(fs)
+	fx := newOAuthFlowFixture(t)
+
+	_, err := svc.ConnectIntegration(ctx, IntegrationConnectInput{
+		Service:          "google-workspace",
+		Endpoint:         fx.URL + "/gmail",
+		AuthMethod:       IntegrationAuthMethodConfidential,
+		ClientID:         "google-client",
+		ClientSecret:     "google-secret",
+		Products:         []string{"gmail", "calendar"},
+		ProductEndpoints: map[string]string{"gmail": fx.URL + "/gmail", "calendar": fx.URL + "/calendar"},
+	})
+	require.NoError(t, err)
+
+	// Resubmit with calendar already connected: only drive is created, and
+	// the shared setup is adopted from the stored rows (blank secret).
+	created, err := svc.ConnectIntegration(ctx, IntegrationConnectInput{
+		Service:          "google-workspace",
+		Endpoint:         fx.URL + "/drive",
+		AuthMethod:       IntegrationAuthMethodConfidential,
+		ClientID:         "google-client",
+		ClientSecret:     "",
+		Products:         []string{"calendar", "drive"},
+		ProductEndpoints: map[string]string{"drive": fx.URL + "/drive"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "drive", created.Service, "the newly created product's row is returned")
+
+	listed, err := svc.MCPServers(ctx)
+	require.NoError(t, err)
+	require.Len(t, listed, 3, "gmail, calendar, drive — no duplicates")
+	drive, err := fs.MCPServers().ByID(ctx, created.ID)
+	require.NoError(t, err)
+	require.Equal(t, "google-secret", drive.Auth.ClientSecret, "the family's stored client is adopted")
+	require.Equal(t, fx.URL+"/drive", drive.URL)
+}
+
+// TestConnectIntegrationBlankCredentialFreshConnectErrors pins the gate: the
+// blank-keeps-stored rule only has something to keep on an existing row — a
+// fresh connect without a credential is still rejected.
+func TestConnectIntegrationBlankCredentialFreshConnectErrors(t *testing.T) {
+	ctx := context.Background()
+	svc := NewSettingsService(fake.New())
+
+	_, err := svc.ConnectIntegration(ctx, IntegrationConnectInput{
+		Service:    "gitlab",
+		Endpoint:   "https://gitlab.com/api/v4/mcp",
+		AuthMethod: IntegrationAuthMethodToken,
+	})
+	require.ErrorContains(t, err, "token method requires a credential")
 }

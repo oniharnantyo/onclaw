@@ -48,16 +48,18 @@ func (s *service) Append(ctx context.Context, sessionID string, events []Event) 
 			ev.OccurredAt = now
 		}
 		payload, err := json.Marshal(eventPayload{
-			Text:        ev.Text,
-			Attachments: ev.Attachments,
-			VariantOf:   ev.VariantOf,
-			Tool:        ev.Tool,
-			Task:        ev.Task,
-			Usage:       ev.Usage,
-			Error:       ev.Error,
-			Compaction:  ev.Compaction,
-			Approval:    ev.Approval,
-			Plan:        ev.Plan,
+			Text:               ev.Text,
+			Attachments:        ev.Attachments,
+			VariantOf:          ev.VariantOf,
+			Tool:               ev.Tool,
+			Task:               ev.Task,
+			Usage:              ev.Usage,
+			Artifacts:          ev.Artifacts,
+			ArtifactsTruncated: ev.ArtifactsTruncated,
+			Error:              ev.Error,
+			Compaction:         ev.Compaction,
+			Approval:           ev.Approval,
+			Plan:               ev.Plan,
 		})
 		if err != nil {
 			return fmt.Errorf("append session events: marshal %s: %w", ev.Kind, err)
@@ -127,21 +129,23 @@ func decodeEvents(rows []store.SessionEvent) ([]Event, error) {
 			return nil, fmt.Errorf("load session events: decode %s: %w", row.EventID, err)
 		}
 		events = append(events, Event{
-			ID:          row.EventID,
-			Seq:         row.Seq,
-			TurnID:      row.TurnID,
-			Kind:        kind,
-			OccurredAt:  row.OccurredAt,
-			Text:        payload.Text,
-			Attachments: payload.Attachments,
-			VariantOf:   payload.VariantOf,
-			Tool:        payload.Tool,
-			Task:        payload.Task,
-			Usage:       payload.Usage,
-			Error:       payload.Error,
-			Compaction:  payload.Compaction,
-			Approval:    payload.Approval,
-			Plan:        payload.Plan,
+			ID:                 row.EventID,
+			Seq:                row.Seq,
+			TurnID:             row.TurnID,
+			Kind:               kind,
+			OccurredAt:         row.OccurredAt,
+			Text:               payload.Text,
+			Attachments:        payload.Attachments,
+			VariantOf:          payload.VariantOf,
+			Tool:               payload.Tool,
+			Task:               payload.Task,
+			Usage:              payload.Usage,
+			Artifacts:          payload.Artifacts,
+			ArtifactsTruncated: payload.ArtifactsTruncated,
+			Error:              payload.Error,
+			Compaction:         payload.Compaction,
+			Approval:           payload.Approval,
+			Plan:               payload.Plan,
 		})
 	}
 	return events, nil
@@ -157,10 +161,15 @@ type eventPayload struct {
 	Tool        *ToolActivity `json:"tool,omitempty"`
 	Task        *TaskActivity `json:"task,omitempty"`
 	Usage       *Usage        `json:"usage,omitempty"`
-	Error       string        `json:"error,omitempty"`
-	Compaction  *Compaction   `json:"compaction,omitempty"`
-	Approval    *Approval     `json:"approval,omitempty"`
-	Plan        *PlanSnapshot `json:"plan,omitempty"`
+	// Artifacts carries the turn_completed artifacts list (add-turn-artifacts
+	// design D4), beside its truncation flag; a payload persisted before the
+	// fields existed decodes with the zero values.
+	Artifacts          []Artifact    `json:"artifacts,omitempty"`
+	ArtifactsTruncated bool          `json:"artifacts_truncated,omitempty"`
+	Error              string        `json:"error,omitempty"`
+	Compaction         *Compaction   `json:"compaction,omitempty"`
+	Approval           *Approval     `json:"approval,omitempty"`
+	Plan               *PlanSnapshot `json:"plan,omitempty"`
 }
 
 func knownKind(k Kind) bool {

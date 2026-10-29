@@ -81,11 +81,14 @@ func StartAuthorization(ctx context.Context, req AuthorizeRequest) (*Authorizati
 	if err != nil {
 		return nil, err
 	}
-	if rebind {
+	if rebind && !req.OAuth.PreRegistered {
 		// The configured callback port was taken: the stored registration's
 		// redirect URI no longer matches what is listening, so force a fresh
 		// registration against the rewritten redirect (design D4's one-time
-		// fallback).
+		// fallback). A pre-registered confidential client is exempt (design
+		// D3's oauth_confidential): its ClientID/Secret are fixed by the
+		// provider's console and must not be discarded — the rewritten
+		// redirect simply has to match what the console registered.
 		clientID, clientSecret = "", ""
 	}
 	return startAuthorization(ctx, req, listener, bound, clientID, clientSecret)
@@ -135,6 +138,11 @@ func startAuthorization(ctx context.Context, req AuthorizeRequest, listener net.
 		listener.Close()
 		return nil, fmt.Errorf("mcp oauth authorization url: %w", err)
 	}
+	authorizationURL, err = withExtraAuthParams(authorizationURL, req.OAuth.ExtraAuthParams)
+	if err != nil {
+		listener.Close()
+		return nil, fmt.Errorf("mcp oauth authorization url: %w", err)
+	}
 
 	done := make(chan error, 1)
 	var once sync.Once
@@ -171,6 +179,28 @@ func startAuthorization(ctx context.Context, req AuthorizeRequest, listener net.
 			send(errors.New("mcp oauth authorization canceled"))
 		},
 	}, nil
+}
+
+// withExtraAuthParams appends the request's extra authorization parameters
+// onto the authorization URL (design D3): Google needs access_type=offline and
+// prompt=consent to issue a refresh token. A parameter the URL already carries
+// wins — the extras only fill in what mcp-go did not set.
+func withExtraAuthParams(rawURL string, extras map[string]string) (string, error) {
+	if len(extras) == 0 {
+		return rawURL, nil
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("parse %q: %w", rawURL, err)
+	}
+	query := parsed.Query()
+	for name, value := range extras {
+		if query.Get(name) == "" {
+			query.Set(name, value)
+		}
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed.String(), nil
 }
 
 // callbackHandler serves the redirect URI once: it validates the OAuth

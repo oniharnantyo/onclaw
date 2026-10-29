@@ -114,6 +114,41 @@ func TestService_ToolTerminalRecordsReplay(t *testing.T) {
 	require.Equal(t, "found", tool.Result)
 }
 
+// TestService_TurnCompletedArtifactsReplay covers the artifacts persistence
+// rule (add-turn-artifacts spec "Artifacts persist on the turn's terminal
+// event"): the turn_completed event's artifact list and truncation flag
+// append and replay intact through the store payload, and a terminal event
+// without artifacts replays with none.
+func TestService_TurnCompletedArtifactsReplay(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newService(t)
+
+	sess, err := svc.CreateSession(ctx, "agent-1", "")
+	require.NoError(t, err)
+
+	artifacts := []sessions.Artifact{
+		{Path: "artifacts/report.md", Size: 1200, Change: sessions.ArtifactCreated},
+		{Path: "artifacts/summary.pdf", Size: 34000},
+	}
+	require.NoError(t, svc.Append(ctx, sess.ID, []sessions.Event{
+		{Kind: sessions.KindUserMessage, Text: "go"},
+		{Kind: sessions.KindTurnCompleted, Usage: &sessions.Usage{TotalTokens: 10},
+			Artifacts: artifacts, ArtifactsTruncated: true},
+		{Kind: sessions.KindUserMessage, Text: "again"},
+		{Kind: sessions.KindTurnCompleted, Usage: &sessions.Usage{TotalTokens: 4}},
+	}))
+
+	events, err := svc.Events(ctx, sess.ID)
+	require.NoError(t, err)
+	require.Len(t, events, 4)
+
+	require.Equal(t, artifacts, events[1].Artifacts)
+	require.True(t, events[1].ArtifactsTruncated)
+
+	require.Nil(t, events[3].Artifacts, "a turn without artifacts replays with none")
+	require.False(t, events[3].ArtifactsTruncated)
+}
+
 // TestService_AppendRejectsRunningToolActivity pins the live-only rule of the
 // running state (design D10): Append refuses to persist a running tool
 // record, and nothing from the rejected batch lands in the transcript.

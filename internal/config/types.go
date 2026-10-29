@@ -1,5 +1,15 @@
 package config
 
+// Workspace memory subtree names (add-agent-memory design D1): every agent
+// workspace gains a memory/ directory — the curated index MEMORY.md, the
+// fact notes, the daily notes — with an archive/ subdirectory inside it.
+// Both are created on demand (the first turn for the agent), not at first
+// run, so existing workspaces need nothing.
+const (
+	MemoryDirName        = "memory"
+	MemoryArchiveDirName = "archive"
+)
+
 // Layout describes the on-disk data directory layout: everything the app
 // persists lives under one root (normally ~/.buddies).
 type Layout struct {

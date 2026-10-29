@@ -27,12 +27,15 @@ const (
 	SourceAgent = "agent"
 )
 
-// Ingestion caps (design D5): text documents at 1 MiB, PDFs at 20 MiB — the
-// existing multimodal-read ceiling, so a larger PDF could be stored but never
-// read and is rejected at every ingestion path instead.
+// Ingestion caps (design D5): text documents at 1 MiB, PDFs and OOXML office
+// documents at 20 MiB — the existing multimodal-read ceiling, so a larger PDF
+// could be stored but never read and is rejected at every ingestion path
+// instead. The OOXML cap matches the document engines' input cap
+// (add-document-editing design D9).
 const (
-	MaxTextBytes = 1 << 20
-	MaxPDFBytes  = 20 << 20
+	MaxTextBytes  = 1 << 20
+	MaxPDFBytes   = 20 << 20
+	MaxOOXMLBytes = 20 << 20
 )
 
 // IndexFileName is the store-maintained per-scope index file (design D11).
@@ -40,8 +43,21 @@ const (
 // reserved as a filename.
 const IndexFileName = "INDEX.md"
 
-// PDFMime is the only non-text kind accepted (design D5).
+// PDFMime is the PDF document kind (design D5).
 const PDFMime = "application/pdf"
+
+// The OOXML office-document kinds (add-document-editing task 5.4): the modern
+// Word, Excel, and PowerPoint formats, accepted alongside text and PDF.
+const (
+	DocxMime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	XlsxMime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	PptxMime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+)
+
+// isOOXMLMime reports whether kind is one of the OOXML office-document kinds.
+func isOOXMLMime(kind string) bool {
+	return kind == DocxMime || kind == XlsxMime || kind == PptxMime
+}
 
 // filePerm and dirPerm mirror the app layout's private-to-user files
 // (internal/config, attachments).
@@ -376,16 +392,18 @@ func cleanFilename(name string) (string, error) {
 	return name, nil
 }
 
-// ValidateIncoming applies the ingestion gate (D5): only plain text (text/*,
-// up to MaxTextBytes) and PDF (up to MaxPDFBytes) are accepted; anything else
-// is rejected with a one-line reason naming the supported kinds. An empty
-// declared MIME falls back to the filename's extension.
+// ValidateIncoming applies the ingestion gate (D5, widened by
+// add-document-editing task 5.4): plain text (text/*, up to MaxTextBytes),
+// PDF (up to MaxPDFBytes), and OOXML office documents — .docx, .xlsx, .pptx
+// (up to MaxOOXMLBytes) — are accepted; anything else is rejected with a
+// one-line reason naming the supported kinds. An empty declared MIME falls
+// back to the filename's extension.
 func ValidateIncoming(filename, mime string, size int64) error {
 	kind := resolveMime(filename, mime)
 	limit, ok := kindLimit(kind)
 	if !ok {
-		return fmt.Errorf("%w: unsupported document kind %q: only plain text (text/*, up to %s) and PDF (up to %s) are supported",
-			ErrRejected, kind, humanBytes(MaxTextBytes), humanBytes(MaxPDFBytes))
+		return fmt.Errorf("%w: unsupported document kind %q: only plain text (text/*, up to %s), PDF (up to %s), and OOXML office documents (.docx, .xlsx, .pptx, up to %s) are supported",
+			ErrRejected, kind, humanBytes(MaxTextBytes), humanBytes(MaxPDFBytes), humanBytes(MaxOOXMLBytes))
 	}
 	if size > limit {
 		return fmt.Errorf("%w: %s documents are limited to %s (got %s)",
@@ -400,6 +418,8 @@ func kindLimit(kind string) (int64, bool) {
 	switch {
 	case kind == PDFMime:
 		return MaxPDFBytes, true
+	case isOOXMLMime(kind):
+		return MaxOOXMLBytes, true
 	case strings.HasPrefix(kind, "text/"):
 		return MaxTextBytes, true
 	default:
@@ -409,16 +429,21 @@ func kindLimit(kind string) (int64, bool) {
 
 // kindLabel names a kind for size reasons.
 func kindLabel(kind string) string {
-	if kind == PDFMime {
+	switch {
+	case kind == PDFMime:
 		return "PDF"
+	case isOOXMLMime(kind):
+		return "OOXML"
 	}
 	return "text"
 }
 
 // resolveMime determines a document's MIME kind: the declared value when
-// present, otherwise the filename's extension — .pdf is a PDF, known
-// word-processing/media/archive extensions resolve to their real kind (so the
-// rejection names them), and everything else is attempted as plain text.
+// present, otherwise the filename's extension — .pdf is a PDF, the OOXML
+// extensions resolve to their office-document kinds (add-document-editing
+// task 5.4), known word-processing/media/archive extensions resolve to their
+// real kind (so the rejection names them), and everything else is attempted
+// as plain text.
 func resolveMime(filename, declared string) string {
 	if declared != "" {
 		return declared
@@ -426,11 +451,17 @@ func resolveMime(filename, declared string) string {
 	switch strings.ToLower(filepath.Ext(filename)) {
 	case ".pdf":
 		return PDFMime
-	case ".doc", ".docx":
+	case ".docx":
+		return DocxMime
+	case ".xlsx":
+		return XlsxMime
+	case ".pptx":
+		return PptxMime
+	case ".doc":
 		return "application/msword"
-	case ".ppt", ".pptx":
+	case ".ppt":
 		return "application/vnd.ms-powerpoint"
-	case ".xls", ".xlsx":
+	case ".xls":
 		return "application/vnd.ms-excel"
 	case ".png":
 		return "image/png"

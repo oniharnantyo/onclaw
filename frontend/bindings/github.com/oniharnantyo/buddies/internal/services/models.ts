@@ -155,13 +155,17 @@ export interface CreateAgentInput {
  * DocumentPresetEntry is one saved document preset as the Tools pane's
  * configuration dialog renders and edits it. Config is the preset's opaque
  * JSON document — the dialog owns its schema; the service stores it
- * verbatim.
+ * verbatim. HasTemplate and TemplateName mirror the template-document
+ * metadata (add-document-editing design D6): whether the preset's uploaded
+ * skeleton is in place and what it was uploaded as.
  */
 export interface DocumentPresetEntry {
     "id": string;
     "name": string;
     "format": string;
     "config": string;
+    "hasTemplate": boolean;
+    "templateName"?: string;
     "createdAt": string;
     "updatedAt": string;
 }
@@ -208,6 +212,71 @@ export interface HookTestResult {
     "Err": string;
     "ConsoleLines": string[] | null;
     "DurationMS": number;
+}
+
+/**
+ * IntegrationConnectInput is the catalog-driven connect sheet payload
+ * (add-integrations): the frontend catalog owns labels, endpoints, and the
+ * auth-method declarations; the backend stores the service tag opaquely
+ * (design D2).
+ */
+export interface IntegrationConnectInput {
+    /**
+     * Service is the catalog service id (e.g. "gitlab") naming the connect
+     * submission; required.
+     */
+    "Service": string;
+
+    /**
+     * Endpoint is the instance URL — the catalog default or the user-edited
+     * template fill; required.
+     */
+    "Endpoint": string;
+
+    /**
+     * AuthMethod is one of the IntegrationAuthMethod* kinds; required.
+     */
+    "AuthMethod": string;
+
+    /**
+     * Credential is the token/API key, required for the token method and
+     * ignored otherwise. It is stored in the auth JSON, never in Headers
+     * (design D4).
+     */
+    "Credential": string;
+
+    /**
+     * ClientID and ClientSecret are the pre-registered confidential
+     * client's credentials, required for oauth_confidential.
+     */
+    "ClientID": string;
+    "ClientSecret": string;
+
+    /**
+     * ExtraAuthParams are extra query parameters appended to the authorize
+     * URL (e.g. Google's access_type=offline&prompt=consent).
+     */
+    "ExtraAuthParams": { [_ in string]?: string } | null;
+
+    /**
+     * CredentialHeaderStyle is the catalog-declared header style for the
+     * token method (design D3): one of the MCPAuthHeaderStyle* values
+     * including the "custom:"/"header:" prefixed forms. Empty means bearer.
+     */
+    "CredentialHeaderStyle": string;
+
+    /**
+     * Products, when non-empty, turns the input into a family connect
+     * (design D6): one tagged row per product id instead of a single row.
+     */
+    "Products": string[] | null;
+
+    /**
+     * ProductEndpoints maps each family product id to its endpoint (design
+     * D6: products dial different hosts). Required for every product when
+     * Products is non-empty; Endpoint then only validates non-empty.
+     */
+    "ProductEndpoints": { [_ in string]?: string } | null;
 }
 
 /**
@@ -421,6 +490,17 @@ export interface TurnStateResult {
 }
 
 /**
+ * TurnsChangedEvent is the payload of EventTurnsChanged: SessionID names the
+ * session whose in-flight state flipped and Busy reports the new state —
+ * true when a turn claimed the session, false when it reached a terminal
+ * outcome (add-grouped-session-rail design D2).
+ */
+export interface TurnsChangedEvent {
+    "sessionId": string;
+    "busy": boolean;
+}
+
+/**
  * VerifyResult is the outcome of one provider credential verification:
  * whether the endpoint accepted the credential and, on failure, the
  * endpoint's (truncated) reason. Verification failures land here, not in a
@@ -511,4 +591,36 @@ export interface WorkspaceEntry {
      * Size is the file's byte size (0 for directories).
      */
     "size": number;
+}
+
+/**
+ * WorkspaceFileBinaryContent is one workspace file's served binary content:
+ * its mime (picked by extension), its byte size, and the base64-encoded
+ * bytes. The on-disk path never crosses the boundary.
+ */
+export interface WorkspaceFileBinaryContent {
+    /**
+     * Mime is the content type the preview renders by; only `.pdf` is
+     * distinguished — everything else is application/octet-stream.
+     */
+    "mime": string;
+
+    /**
+     * SizeBytes is the file's size in bytes.
+     */
+    "sizeBytes": number;
+
+    /**
+     * Data is the base64-encoded file content.
+     */
+    "data": string;
+}
+
+/**
+ * WorkspaceSkill is one workspace-tier skill as bound to the frontend: the
+ * skill's directory name plus the description parsed from its SKILL.md.
+ */
+export interface WorkspaceSkill {
+    "Name": string;
+    "Description": string;
 }

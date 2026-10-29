@@ -32,3 +32,16 @@ func (l Layout) Ensure() error {
 	}
 	return nil
 }
+
+// EnsureMemory creates one agent's workspace memory directory and its
+// archive subdirectory on demand (spec agent-memory: created the first time
+// a turn runs for the agent, so existing workspaces need no migration). It
+// is idempotent — existing content is never modified or removed.
+func (l Layout) EnsureMemory(slug string) error {
+	for _, dir := range []string{l.MemoryDir(slug), l.MemoryArchiveDir(slug)} {
+		if err := os.MkdirAll(dir, dirPerm); err != nil {
+			return fmt.Errorf("create directory %s: %w", dir, err)
+		}
+	}
+	return nil
+}

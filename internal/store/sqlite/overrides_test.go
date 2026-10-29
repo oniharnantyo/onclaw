@@ -52,7 +52,7 @@ VALUES ('legacy-session', 'legacy-agent', '', ?, ?)`, stamped, stamped)
 
 	var version int
 	require.NoError(t, db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version))
-	require.Equal(t, 15, version)
+	require.Equal(t, 17, version)
 
 	// The pre-v8 rows emerge with empty overrides: the columns' defaults.
 	sess, err := st.Sessions().ByID(ctx, "legacy-session")
@@ -68,7 +68,7 @@ VALUES ('legacy-session', 'legacy-agent', '', ?, ?)`, stamped, stamped)
 	require.NoError(t, err)
 	require.NoError(t, st2.Close())
 	require.NoError(t, db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version))
-	require.Equal(t, 15, version, "re-opening must not re-apply migrations")
+	require.Equal(t, 17, version, "re-opening must not re-apply migrations")
 }
 
 // TestSessions_OverridesRoundTrip covers the per-session model/effort

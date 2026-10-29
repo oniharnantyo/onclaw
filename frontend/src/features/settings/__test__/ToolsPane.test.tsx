@@ -327,6 +327,7 @@ describe("ToolsPane", () => {
         name: "Client Report",
         format: "pdf",
         config: JSON.stringify({ schema_version: 1 }),
+        hasTemplate: false,
         createdAt: "2026-10-01T12:00:00Z",
         updatedAt: "2026-10-01T12:00:00Z",
       },
@@ -349,6 +350,15 @@ describe("ToolsPane", () => {
       "true"
     );
     expect(getByTestId("document-preset-row-Client Report")).toBeTruthy();
+
+    // All three format tabs are live in the tabbed layout
+    // (add-document-editing): PDF, DOCX, PPTX.
+    expect(getByTestId("document-tab-docx").hasAttribute("disabled")).toBe(
+      false
+    );
+    expect(getByTestId("document-tab-pptx").hasAttribute("disabled")).toBe(
+      false
+    );
   });
 
   it("adds providers with credentials and persists the ordered chain", async () => {

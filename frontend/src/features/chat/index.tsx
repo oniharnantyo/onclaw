@@ -28,7 +28,7 @@ import { client } from "../../lib/client";
 import type { SchedulesChangedEvent } from "../../lib/events";
 import { useNavStore } from "../../stores/nav";
 import type { ChatStore } from "./types";
-import { useChatStore } from "./store";
+import { connectRunningSessions, useChatStore } from "./store";
 import { ChatRuntimeProvider } from "./runtime/ChatRuntimeProvider";
 import { ChatHeader } from "./components/ChatHeader";
 import { RightBar } from "./components/RightBar";
@@ -97,10 +97,12 @@ export default function ChatView(): ReactElement {
   }, [init, chatTarget]);
 
   // A background schedule fire creates a session for its agent (add-scheduler
-  // design D10); the event refetches the active agent's list through the
-  // store so the session appears in the rail without a reload. The
-  // subscription rides the chat feature's root component — the store itself
-  // is module-level, and the view is the feature's mounting surface.
+  // design D10); the event refetches the all-agents list through the store
+  // (add-grouped-session-rail design D1: the argument only labels the fire —
+  // every group's count updates) so the session appears in the rail without
+  // a reload. The subscription rides the chat feature's root component — the
+  // store itself is module-level, and the view is the feature's mounting
+  // surface.
   useEffect(
     (): (() => void) =>
       client.events.onSchedulesChanged((event: SchedulesChangedEvent): void => {
@@ -108,6 +110,13 @@ export default function ChatView(): ReactElement {
       }),
     []
   );
+
+  // The rail's running dots fold the backend's turns:changed channel and a
+  // window-focus re-query (add-grouped-session-rail design D2/D3, risk
+  // table "dots self-heal"). Like the schedules subscription above, this
+  // wiring rides the feature root: the store module stays free of
+  // import-time side effects.
+  useEffect((): (() => void) => connectRunningSessions(), []);
 
   if (agents.length === 0) {
     return (

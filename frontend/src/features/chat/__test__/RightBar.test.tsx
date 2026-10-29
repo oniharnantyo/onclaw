@@ -6,10 +6,14 @@
  * a preview swaps the SAME aside in place to the old right panel's tab
  * strip + content — exactly one bar in the document, identity gone — and
  * closing the last tab returns the identity. The store's session switch
- * resets the tabs (identity returns), collapsing hides the bar entirely in
- * either state, and the single width preference persists under
- * `buddies.chatSidebarWidth` (default 280, drag clamped to 220–560) through
- * the same CSS var in both states. The knowledge browsing state
+ * resets the tabs (identity returns), collapsing (refine-chat-surface-
+ * identity D8) folds the bar to zero inline size while it stays mounted —
+ * nothing paints, the transition stands down only while a drag is live —
+ * and the restore animates from the same nodes, and the single width
+ * preference persists under `buddies.chatSidebarWidth` (default 280, drag
+ * clamped to 220–560) through the same CSS var in both states. The model
+ * line distills to provider + family (D4) with the full id on hover. The
+ * knowledge browsing state
  * (add-knowledge-corpus) rides the container too: the identity view's opener
  * swaps in the panel, a document activation opens its preview tab, and
  * closing the last tab returns the identity — never the browsing state.
@@ -272,6 +276,34 @@ describe("RightBar", () => {
     );
   });
 
+  it("shows provider + model family in the line with the full id on hover (D4)", async () => {
+    useChatStore.setState({
+      sessions: [{ ...session, Model: "openai/gpt-4o-mini", Effort: "high" }],
+    });
+
+    await renderUI(<RightBar />);
+
+    const line = screen.getByTestId("sidebar-model");
+
+    // Family label — the last `/`-delimited segment — next to the provider
+    // display name; the full id moves to the hover title.
+    expect(line.textContent).toBe("Prov Co/gpt-4o-mini · high");
+    expect(line.getAttribute("title")).toBe("openai/gpt-4o-mini");
+  });
+
+  it("truncates the model line instead of breaking it (D4)", async () => {
+    useChatStore.setState({
+      sessions: [{ ...session, Model: "openai/gpt-4o-mini" }],
+    });
+
+    await renderUI(<RightBar />);
+
+    const line = screen.getByTestId("sidebar-model");
+
+    expect(line.className).toContain("truncate");
+    expect(line.className).not.toContain("break-all");
+  });
+
   it("falls back to 'No model selected' when nothing configures a model", async () => {
     useChatStore.setState({
       agents: [{ ...agent, ProviderID: "", Model: "" }],
@@ -410,25 +442,155 @@ describe("RightBar", () => {
     await clearTabs();
   });
 
-  it("renders nothing at all while collapsed — with tabs or without", async () => {
-    useChatStore.setState({ sidebarCollapsed: true });
-
+  it("folds keep-mounted to zero size while collapsed and restores in place", async () => {
     const { unmount } = await renderUI(<RightBar />);
+    const bar = screen.getByTestId("chat-right-bar");
 
-    expect(screen.queryByTestId("chat-right-bar")).toBeNull();
-    expect(screen.queryByTestId("sidebar-agent-name")).toBeNull();
+    await act(async () => {
+      useChatStore.setState({ sidebarCollapsed: true });
+    });
+
+    // Keep-mounted fold (refine-chat-surface-identity D8): the SAME aside
+    // stays in the document at zero inline size — painting nothing,
+    // intercepting no pointers, transition armed for the restore — and the
+    // identity content survives inside it.
+    expect(screen.getByTestId("chat-right-bar")).toBe(bar);
+    expect(bar.style.width).toBe("0px");
+    expect(bar.style.pointerEvents).toBe("none");
+    expect(bar.style.overflow).toBe("hidden");
+    expect(bar.style.transition).toContain("var(--motion-base)");
+    expect(screen.getByTestId("sidebar-agent-name").textContent).toBe("Scout");
+
+    await act(async () => {
+      useChatStore.setState({ sidebarCollapsed: false });
+    });
+
+    // Restored from the same nodes — not a remount.
+    expect(screen.getByTestId("chat-right-bar")).toBe(bar);
+    expect(screen.getByTestId("sidebar-agent-name").textContent).toBe("Scout");
+    expect(bar.style.width).toBe("");
 
     await unmount();
 
-    // Even with a preview open, minimizing hides the whole bar.
+    // Even with a preview open, the fold swallows the whole bar.
     await openFileTab("notes.md");
 
-    const second = await renderUI(<RightBar />);
+    await act(async () => {
+      useChatStore.setState({ sidebarCollapsed: true });
+    });
 
-    expect(second.queryByTestId("chat-right-bar")).toBeNull();
-    expect(second.queryByTestId("panel-tabs")).toBeNull();
+    const second = await renderUI(<RightBar />);
+    const tabBar = second.getByTestId("chat-right-bar");
+
+    expect(tabBar.style.width).toBe("0px");
+    expect(tabBar.style.pointerEvents).toBe("none");
+    expect(second.getByTestId("panel-tabs")).toBeTruthy();
+    expect(second.queryByTestId("sidebar-agent-name")).toBeNull();
 
     await second.unmount();
+    await clearTabs();
+  });
+
+  it("makes the collapsed bar inert and drops it on restore (D8)", async () => {
+    const { unmount } = await renderUI(<RightBar />);
+    const bar = screen.getByTestId("chat-right-bar");
+
+    // Extended: focusable while visible.
+    expect(bar.hasAttribute("inert")).toBe(false);
+
+    await act(async () => {
+      useChatStore.setState({ sidebarCollapsed: true });
+    });
+
+    // Keep-mounted fold (refine-chat-surface-identity D8): the same aside
+    // stays mounted, but `inert` removes its whole subtree from the
+    // interaction tree — nothing focusable in the invisible fold.
+    expect(screen.getByTestId("chat-right-bar")).toBe(bar);
+    expect(bar.hasAttribute("inert")).toBe(true);
+
+    await act(async () => {
+      useChatStore.setState({ sidebarCollapsed: false });
+    });
+
+    // Restored from the same nodes — inert drops, and the controls are
+    // focusable again.
+    expect(screen.getByTestId("chat-right-bar")).toBe(bar);
+    expect(bar.hasAttribute("inert")).toBe(false);
+
+    await unmount();
+  });
+
+  it("stands the width transition down while dragging and re-arms on release (D8)", async () => {
+    const { unmount } = await renderUI(<RightBar />);
+    const bar = screen.getByTestId("chat-right-bar");
+
+    expect(bar.style.transition).toContain("var(--motion-base)");
+
+    await act(async () => {
+      fireEvent.pointerDown(screen.getByTestId("sidebar-resize"));
+      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 400 }));
+    });
+
+    // 1:1 pointer tracking: no transition during the drag.
+    expect(bar.style.transition).toBe("none");
+
+    await act(async () => {
+      window.dispatchEvent(new MouseEvent("pointerup"));
+    });
+
+    expect(bar.style.transition).toContain("var(--motion-base)");
+
+    await unmount();
+  });
+
+  it("re-arms the width transition when the drag is cancelled (D8)", async () => {
+    const { unmount } = await renderUI(<RightBar />);
+    const bar = screen.getByTestId("chat-right-bar");
+
+    await act(async () => {
+      fireEvent.pointerDown(screen.getByTestId("sidebar-resize"));
+      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 400 }));
+    });
+
+    // 1:1 pointer tracking: no transition during the drag.
+    expect(bar.style.transition).toBe("none");
+
+    await act(async () => {
+      window.dispatchEvent(new MouseEvent("pointercancel"));
+    });
+
+    // Cancelled — the transition re-arms (same observable as the release
+    // test above; SessionRail's drag contract mirrored).
+    expect(bar.style.transition).toContain("var(--motion-base)");
+
+    await unmount();
+  });
+
+  it("replays the od-fade on the shared motion grammar when the surface swaps (D8)", async () => {
+    const { unmount } = await renderUI(<RightBar />);
+    await openFileTab("notes.md");
+
+    const preview = screen.getByTestId("panel-surface");
+
+    expect(preview.className).toContain("od-fade");
+    // One motion grammar (refine-chat-surface-identity ui-conventions): the
+    // class carries the base duration + standard ease — no per-instance
+    // fast-duration override on the node.
+    expect(preview.style.animationDuration).toBe("");
+
+    // Preview → identity (the pinned tab) swaps the surface node, so the
+    // fade replays on every identity↔preview swap.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("panel-identity-tab"));
+    });
+
+    const identity = screen.getByTestId("panel-surface");
+
+    expect(identity).not.toBe(preview);
+    expect(identity.className).toContain("od-fade");
+    expect(identity.style.animationDuration).toBe("");
+
+    await unmount();
     await clearTabs();
   });
 
@@ -717,5 +879,243 @@ describe("RightBar — knowledge panel (add-knowledge-corpus)", () => {
 
     await unmount();
     await clearTabs();
+  });
+});
+
+describe("RightBar — pinned identity tab (add-pinned-identity-tab)", () => {
+  it("leads the strip with an uncloseable pinned tab, absent at zero tabs", async () => {
+    const { unmount } = await renderUI(<RightBar />);
+
+    // No strip, no pinned tab.
+    expect(screen.queryByTestId("panel-identity-tab")).toBeNull();
+
+    await openFileTab("notes.md");
+
+    const pinned = screen.getByTestId("panel-identity-tab");
+
+    // First entry of the strip, named for the agent, no close affordance —
+    // the strip's close buttons all belong to preview tabs.
+    expect(screen.getByTestId("panel-tabs").firstElementChild).toBe(pinned);
+    expect(pinned.getAttribute("aria-label")).toBe("Scout");
+    expect(
+      pinned.querySelectorAll("[data-testid^='panel-tab-close-']")
+    ).toHaveLength(0);
+    expect(openTabCount()).toBe(1);
+
+    // The preview is still the active surface; the pinned tab reads inactive.
+    await waitFor(() =>
+      expect(screen.getByTestId("panel-content").textContent).toContain(
+        "content of notes.md"
+      )
+    );
+    expect(pinned.getAttribute("aria-current")).toBeNull();
+
+    await unmount();
+    await clearTabs();
+  });
+
+  it("activating the pinned tab returns the identity view, tabs still open", async () => {
+    const { unmount } = await renderUI(<RightBar />);
+    await openFileTab("notes.md");
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("panel-identity-tab"));
+    });
+
+    // The identity content renders inside the tab shell — the name and the
+    // live 64 px face (the strip's label avatar carries no state attribute).
+    expect(screen.getByTestId("sidebar-agent-name").textContent).toBe("Scout");
+    expect(
+      screen.getByTestId("panel-content").querySelector("[data-avatar-state]")
+    ).toBeTruthy();
+    expect(
+      screen
+        .getByTestId("panel-identity-tab")
+        .querySelector("[data-avatar-state]")
+    ).toBeNull();
+
+    // Every open tab stays listed; the preview text is gone from the body.
+    expect(openTabCount()).toBe(1);
+    expect(screen.getByTestId("panel-content").textContent).not.toContain(
+      "content of notes.md"
+    );
+
+    // The pinned tab reads active; the preview tab's wrapper reads inactive.
+    const pinned = screen.getByTestId("panel-identity-tab");
+
+    expect(pinned.getAttribute("aria-current")).toBe("true");
+    expect(pinned.className).toContain("border-line");
+    expect(tabButton(0).closest("div")?.className).toContain(
+      "border-transparent"
+    );
+
+    await unmount();
+    await clearTabs();
+  });
+
+  it("a preview opened or re-activated from the identity tab takes over", async () => {
+    const { unmount } = await renderUI(<RightBar />);
+    await openFileTab("notes.md");
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("panel-identity-tab"));
+    });
+
+    // Opening a new file from the identity tab activates it in place.
+    await openFileTab("todo.md");
+
+    await waitFor(() =>
+      expect(screen.getByTestId("panel-content").textContent).toContain(
+        "content of todo.md"
+      )
+    );
+    expect(screen.getByTestId("panel-content").textContent).not.toContain(
+      "content of notes.md"
+    );
+
+    // Back to the identity, then re-activate the FIRST preview by its tab.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("panel-identity-tab"));
+    });
+    await act(async () => {
+      fireEvent.click(tabButton(0));
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("panel-content").textContent).toContain(
+        "content of notes.md"
+      )
+    );
+
+    await unmount();
+    await clearTabs();
+  });
+
+  it("closing a background tab while the identity is active keeps the identity", async () => {
+    const { unmount } = await renderUI(<RightBar />);
+    await openFileTab("notes.md");
+    await openFileTab("todo.md");
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("panel-identity-tab"));
+    });
+
+    expect(screen.getByTestId("sidebar-agent-name")).toBeTruthy();
+
+    // The closed tab was not the active surface, so the identity stays.
+    await act(async () => {
+      fireEvent.click(closeButton(0));
+    });
+
+    expect(screen.getByTestId("sidebar-agent-name")).toBeTruthy();
+    expect(openTabCount()).toBe(1);
+
+    const pinned = screen.getByTestId("panel-identity-tab");
+
+    expect(pinned.getAttribute("aria-current")).toBe("true");
+
+    await unmount();
+    await clearTabs();
+  });
+
+  it("closing the last tab from the identity tab returns the island", async () => {
+    const { unmount } = await renderUI(<RightBar />);
+    await openFileTab("notes.md");
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("panel-identity-tab"));
+    });
+
+    await act(async () => {
+      fireEvent.click(closeButton(0));
+    });
+
+    expect(screen.queryByTestId("panel-tabs")).toBeNull();
+    expect(screen.getByTestId("sidebar-agent-name").textContent).toBe("Scout");
+    expect(screen.queryByTestId("panel-identity-tab")).toBeNull();
+
+    await unmount();
+    await clearTabs();
+  });
+
+  it("opens knowledge from the identity tab and resets it when a doc opens", async () => {
+    mockedClient.knowledge.list.mockImplementation(
+      async (): Promise<KnowledgeDocument[]> => [knowledgeDoc]
+    );
+
+    const { unmount } = await renderUI(<RightBar />);
+    await openFileTab("notes.md");
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("panel-identity-tab"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("knowledge-opener"));
+    });
+
+    // The browser renders inside the tab shell's content area.
+    expect(
+      screen
+        .getByTestId("panel-content")
+        .contains(screen.getByTestId("knowledge-panel"))
+    ).toBe(true);
+
+    // Activating a document opens its preview tab — the browsing state ends.
+    await waitFor(() => screen.getByTestId("knowledge-doc-d1"));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("knowledge-doc-d1"));
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("panel-content").textContent).toContain(
+        "knowledge body of d1"
+      )
+    );
+    expect(useChatStore.getState().panelTabs).toHaveLength(2);
+    expect(useChatStore.getState().panelTabs[1]?.kind).toBe("knowledge-doc");
+
+    // Returning via the pinned tab shows the identity content, never the
+    // browser (the browsing state does not survive leaving the surface).
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("panel-identity-tab"));
+    });
+
+    expect(screen.getByTestId("sidebar-agent-name")).toBeTruthy();
+    expect(screen.queryByTestId("knowledge-panel")).toBeNull();
+
+    await unmount();
+    await clearTabs();
+  });
+
+  it("renders the pinned tab's inactive and active tokens under both themes", async () => {
+    for (const theme of ["light", "dark"] as const) {
+      document.documentElement.dataset.theme = theme;
+
+      const { unmount } = await renderUI(<RightBar />);
+      await openFileTab("notes.md");
+
+      // Inactive: muted and borderless, no aria-current.
+      const pinned = screen.getByTestId("panel-identity-tab");
+
+      expect(pinned.className).toContain("border-transparent");
+      expect(pinned.className).toContain("text-muted");
+      expect(pinned.getAttribute("aria-current")).toBeNull();
+
+      await act(async () => {
+        fireEvent.click(pinned);
+      });
+
+      // Active: the strip's active tokens plus the aria-current flag.
+      const active = screen.getByTestId("panel-identity-tab");
+
+      expect(active.className).toContain("border-line");
+      expect(active.className).toContain("text-fg");
+      expect(active.getAttribute("aria-current")).toBe("true");
+
+      await unmount();
+      await clearTabs();
+    }
+
+    delete document.documentElement.dataset.theme;
   });
 });

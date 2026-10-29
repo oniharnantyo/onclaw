@@ -123,7 +123,7 @@ func TestOpen_BackfillsLegacySystemPrompts(t *testing.T) {
 	require.False(t, legacy, "system_prompt must be dropped after the backfill")
 	var version int
 	require.NoError(t, db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version))
-	require.Equal(t, 15, version)
+	require.Equal(t, 17, version)
 
 	// Second open is a no-op. IDENTITY.md is made read-only first: a
 	// rewrite attempt would fail the open, so success proves the backfill

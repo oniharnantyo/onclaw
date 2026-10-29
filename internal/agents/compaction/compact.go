@@ -19,9 +19,12 @@ const CompactionThreshold = 0.8
 // uses for compaction before/after estimates. Never billing or trigger math.
 const CharsPerToken = 4
 
-// SummarizeSystemPrompt instructs the summarizer call of a compaction.
+// SummarizeSystemPrompt instructs the summarizer call of a compaction. It
+// carries the memory-flush instruction (add-agent-memory design D2): durable
+// facts ride the existing summarizer call instead of a separate model turn.
 const SummarizeSystemPrompt = "You summarize conversation history so an assistant can continue the work with less context. " +
 	"Produce a dense factual summary: the user's goals, decisions made, names, numbers, and open threads. " +
+	"Record the conversation's durable facts — the user's preferences, decisions, and corrections — to memory before summarizing. " +
 	"Output only the summary text."
 
 // CompactionNeeded reports whether the session's used tokens crossed the

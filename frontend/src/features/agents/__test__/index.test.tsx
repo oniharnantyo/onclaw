@@ -75,6 +75,9 @@ type MockedClient = Client & {
     getPromptDocuments: MockFn;
     savePromptDocument: MockFn;
     regeneratePrompts: MockFn;
+    listWorkspaceSkills: MockFn;
+    promoteWorkspaceSkill: MockFn;
+    deleteWorkspaceSkill: MockFn;
   };
   knowledge: {
     list: MockFn;
@@ -112,6 +115,9 @@ function makeClient(): MockedClient {
       })),
       savePromptDocument: vi.fn(async () => undefined),
       regeneratePrompts: vi.fn(async () => undefined),
+      listWorkspaceSkills: vi.fn(async () => []),
+      promoteWorkspaceSkill: vi.fn(async () => undefined),
+      deleteWorkspaceSkill: vi.fn(async () => undefined),
     },
     knowledge: {
       list: vi.fn(async (): Promise<KnowledgeDocument[]> => []),

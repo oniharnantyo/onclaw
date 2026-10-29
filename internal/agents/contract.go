@@ -59,6 +59,10 @@ conflict: those say who you are, these say how you operate.
 - Your workspace is your home. Keep it tidy: don't proactively create
   report, summary, or notes files — findings go in your reply unless the
   task explicitly calls for a file.
+- When a task does call for a file the user should find — a report, a
+  generated document, exported data — write it under artifacts/ at the
+  workspace root. Files that appear or change there during the turn are
+  shown to the user with the reply.
 - Before deleting or overwriting, look at the target. If what you find
   contradicts how it was described, or you didn't create it, surface that
   instead of proceeding.
@@ -107,25 +111,43 @@ on permission is not.
   provide.
 `
 
+// presetFormatSummary is one format's slice of the document-preset
+// appendix (add-document-editing design D6): the format's available preset
+// names with its configured default — the one a preset-less tool call
+// falls back to.
+type presetFormatSummary struct {
+	Label   string // the failure copy's and appendix's name for the format: "PDF", "DOCX", "PPTX"
+	Names   []string
+	Default string
+}
+
 // presetAppendix renders the document-preset appendix composed directly
 // after the operating contract (add-create-document design D6; spec
 // document-generation "Preset awareness in turns"): the available preset
-// names — the default marked — so the model can reference one in the
-// create_document tool's preset argument without asking. The caller composes
-// nothing when the tool is not offered or no preset exists; names is never
-// empty here, and an empty def renders the list unmarked (no default
-// configured or it no longer resolves).
-func presetAppendix(names []string, def string) string {
+// names per format — each format's default marked — so the model can
+// reference one in the create_document tool's preset argument without
+// asking, and knows which format each name belongs to. The caller composes
+// nothing when the tool is not offered or no preset exists in any format;
+// formats with no presets are skipped, and an empty Default renders that
+// format's list unmarked (no default configured or it no longer resolves).
+func presetAppendix(formats []presetFormatSummary) string {
 	var sb strings.Builder
 	sb.WriteString("## Document presets\n\n")
-	sb.WriteString("The create_document tool styles its PDF output with presentation presets the user owns. Available presets:\n\n")
-	for _, name := range names {
-		if def != "" && strings.EqualFold(name, def) {
-			sb.WriteString(fmt.Sprintf("- %s (default)\n", name))
+	sb.WriteString("The create_document tool picks its output format from the file name's extension — .pdf, .docx, .pptx — and styles the result with presentation presets the user owns, one set per format. Available presets:\n\n")
+	for _, f := range formats {
+		if len(f.Names) == 0 {
 			continue
 		}
-		sb.WriteString(fmt.Sprintf("- %s\n", name))
+		list := make([]string, 0, len(f.Names))
+		for _, name := range f.Names {
+			if f.Default != "" && strings.EqualFold(name, f.Default) {
+				list = append(list, name+" (default)")
+				continue
+			}
+			list = append(list, name)
+		}
+		sb.WriteString(fmt.Sprintf("- %s presets: %s\n", f.Label, strings.Join(list, ", ")))
 	}
-	sb.WriteString("\nPass one of these names in the tool's preset argument to use it; omit the argument to use the default.")
+	sb.WriteString("\nPass one of these names in the tool's preset argument to use it; omit the argument to use the format's default.")
 	return sb.String()
 }

@@ -10,7 +10,7 @@ import (
 type mcpServerStore struct{ e executor }
 
 const mcpServerColumns = `id, name, transport, command, args, env, url, headers, auth,
-enabled, status, status_error, tool_count, created_at, updated_at`
+service, enabled, status, status_error, tool_count, created_at, updated_at`
 
 func (m *mcpServerStore) Create(ctx context.Context, server *store.MCPServer) error {
 	if server.ID == "" {
@@ -29,10 +29,11 @@ func (m *mcpServerStore) Create(ctx context.Context, server *store.MCPServer) er
 
 	_, err = m.e.ExecContext(ctx, `
 INSERT INTO mcp_servers (`+mcpServerColumns+`)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		server.ID, server.Name, server.Transport, server.Command, args, env, server.URL,
-		headers, auth, boolInt(server.Enabled), server.Status, server.StatusError,
-		server.ToolCount, formatTime(server.CreatedAt), formatTime(server.UpdatedAt),
+		headers, auth, server.Service, boolInt(server.Enabled), server.Status,
+		server.StatusError, server.ToolCount, formatTime(server.CreatedAt),
+		formatTime(server.UpdatedAt),
 	)
 	if err != nil {
 		return fmt.Errorf("create mcp server: %w", err)
@@ -80,11 +81,11 @@ func (m *mcpServerStore) Update(ctx context.Context, server *store.MCPServer) er
 
 	res, err := m.e.ExecContext(ctx, `
 UPDATE mcp_servers SET name = ?, transport = ?, command = ?, args = ?, env = ?, url = ?,
-headers = ?, auth = ?, enabled = ?, status = ?, status_error = ?, tool_count = ?, updated_at = ?
+headers = ?, auth = ?, service = ?, enabled = ?, status = ?, status_error = ?, tool_count = ?, updated_at = ?
 WHERE id = ?`,
 		server.Name, server.Transport, server.Command, args, env, server.URL, headers,
-		auth, boolInt(server.Enabled), server.Status, server.StatusError, server.ToolCount,
-		formatTime(server.UpdatedAt), server.ID,
+		auth, server.Service, boolInt(server.Enabled), server.Status, server.StatusError,
+		server.ToolCount, formatTime(server.UpdatedAt), server.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("update mcp server: %w", err)
@@ -128,8 +129,8 @@ func scanMCPServer(row scanner) (*store.MCPServer, error) {
 	var createdAt, updatedAt, args, env, headers, auth string
 
 	err := row.Scan(&server.ID, &server.Name, &server.Transport, &server.Command, &args,
-		&env, &server.URL, &headers, &auth, &server.Enabled, &server.Status,
-		&server.StatusError, &server.ToolCount, &createdAt, &updatedAt)
+		&env, &server.URL, &headers, &auth, &server.Service, &server.Enabled,
+		&server.Status, &server.StatusError, &server.ToolCount, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -150,6 +151,17 @@ func scanMCPServer(row scanner) (*store.MCPServer, error) {
 	}
 	if err := jsonUnmarshal(auth, &server.Auth); err != nil {
 		return nil, err
+	}
+	// Computed/redacted credential views (add-integrations design D4):
+	// listings expose only whether a credential is set and its last four
+	// characters — never the credential itself.
+	if cred := server.Auth.IntegrationCredential; cred != "" {
+		server.CredentialSet = true
+		if len(cred) <= 4 {
+			server.CredentialHint = cred
+		} else {
+			server.CredentialHint = cred[len(cred)-4:]
+		}
 	}
 	return &server, nil
 }

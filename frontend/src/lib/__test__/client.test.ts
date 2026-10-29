@@ -24,6 +24,7 @@ import type {
   DocumentPresetEntry,
   GatewayStateEvent,
   GeneratedDocumentContent,
+  IntegrationConnectInput,
   KnowledgeDocument,
   ModelCapability,
   ProviderInput,
@@ -115,6 +116,9 @@ function makeMCPServer(): MCPServer {
     URL: "",
     Headers: {},
     Auth: {},
+    Service: "",
+    CredentialSet: false,
+    CredentialHint: "",
     Enabled: true,
     Status: "",
     StatusError: "",
@@ -183,6 +187,7 @@ function makeDocumentPreset(): DocumentPresetEntry {
     name: "Client Report",
     format: "pdf",
     config: '{"schema_version":1,"theme":"corporate"}',
+    hasTemplate: false,
     createdAt: "2026-10-26T00:00:00Z",
     updatedAt: "2026-10-26T00:00:00Z",
   };
@@ -211,6 +216,8 @@ interface MockTransport {
     Cancel: MockFn;
     Regenerate: MockFn;
     Sessions: MockFn;
+    AllSessions: MockFn;
+    RunningSessions: MockFn;
     SetSessionOverrides: MockFn;
     ResolveApproval: MockFn;
     Subscribe: MockFn;
@@ -220,6 +227,7 @@ interface MockTransport {
     SaveAttachment: MockFn;
     AttachmentContent: MockFn;
     WorkspaceFile: MockFn;
+    WorkspaceFileBinary: MockFn;
     ListWorkspace: MockFn;
     Unsubscribe: MockFn;
     TurnState: MockFn;
@@ -286,6 +294,8 @@ function makeTransport(): MockTransport {
       return "turn-2";
     }),
     Sessions: vi.fn(async () => []),
+    AllSessions: vi.fn(async () => []),
+    RunningSessions: vi.fn(async () => []),
     SetSessionOverrides: vi.fn(
       async (sessionID: string, model: string, effort: string) => {
         calls.push(`chat.SetSessionOverrides:${sessionID}:${model}:${effort}`);
@@ -331,6 +341,15 @@ function makeTransport(): MockTransport {
       calls.push(`chat.WorkspaceFile:${agentID}:${relPath}`);
 
       return "workspace notes";
+    }),
+    WorkspaceFileBinary: vi.fn(async (agentID: string, relPath: string) => {
+      calls.push(`chat.WorkspaceFileBinary:${agentID}:${relPath}`);
+
+      return {
+        mime: "application/pdf",
+        sizeBytes: 9,
+        data: "cG5mLWJ5dGVz",
+      };
     }),
     ListWorkspace: vi.fn(async () => []),
     Unsubscribe: vi.fn(async (sessionID: string) => {
@@ -449,6 +468,11 @@ function makeTransport(): MockTransport {
       unreachable("settings.DefaultDocumentPreset"),
     SetDefaultDocumentPreset: (_format: string, _name: string): Promise<void> =>
       unreachable("settings.SetDefaultDocumentPreset"),
+    SetDocumentPresetTemplate: (
+      _presetID: string,
+      _filename: string,
+      _base64Data: string
+    ): Promise<void> => unreachable("settings.SetDocumentPresetTemplate"),
     Hooks: (): Promise<Hook[]> => unreachable("settings.Hooks"),
     CreateHook: (hook: Hook): Promise<Hook> =>
       unreachable(`settings.CreateHook:${hook.Name}`),
@@ -477,6 +501,10 @@ function makeTransport(): MockTransport {
       unreachable(`settings.AuthorizeMCPServer:${id}`),
     DisconnectMCPServer: (id: string): Promise<MCPServer> =>
       unreachable(`settings.DisconnectMCPServer:${id}`),
+    ConnectIntegration: (_input: IntegrationConnectInput): Promise<MCPServer> =>
+      unreachable("settings.ConnectIntegration"),
+    DisconnectIntegration: (id: string): Promise<void> =>
+      unreachable(`settings.DisconnectIntegration:${id}`),
     Gateway: (): Promise<GatewaySettings> => unreachable("settings.Gateway"),
     SaveGateway: (_settings: GatewaySettings): Promise<void> =>
       unreachable("settings.SaveGateway"),
@@ -1002,6 +1030,39 @@ describe("client wrapper", () => {
       expect(sent.Name).toBe("fetch");
       expect(sent).not.toHaveProperty("CreatedAt");
       expect(sent).not.toHaveProperty("UpdatedAt");
+    });
+
+    it("routes the integration connect/disconnect calls verbatim (add-integrations)", async () => {
+      const row = makeMCPServer();
+
+      const input: IntegrationConnectInput = {
+        Service: "gitlab",
+        Endpoint: "https://gitlab.com",
+        AuthMethod: "token",
+        Credential: "tok",
+        ClientID: "",
+        ClientSecret: "",
+        ExtraAuthParams: null,
+        CredentialHeaderStyle: "bearer",
+        Products: ["issues"],
+        ProductEndpoints: null,
+      };
+
+      const connect = vi
+        .spyOn(t.transport.settings, "ConnectIntegration")
+        .mockResolvedValue(row);
+
+      const disconnect = vi
+        .spyOn(t.transport.settings, "DisconnectIntegration")
+        .mockResolvedValue(undefined);
+
+      await expect(client.settings.connectIntegration(input)).resolves.toBe(
+        row
+      );
+      await client.settings.disconnectIntegration("m1");
+
+      expect(connect).toHaveBeenCalledWith(input);
+      expect(disconnect).toHaveBeenCalledWith("m1");
     });
 
     it("routes the mcp oauth actions verbatim (design D2/D9)", async () => {

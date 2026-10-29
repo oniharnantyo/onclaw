@@ -24,6 +24,7 @@
   --color-accenttext: var(--accent-text);
   --color-success: var(--success);
   --color-warn: var(--warn);
+  --color-warntext: var(--warn-text);
   --color-danger: var(--danger);
   --color-dangertext: var(--danger-text);
 

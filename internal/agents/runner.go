@@ -107,6 +107,24 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 		return err
 	}
 
+	// Turn-boundary artifact detection (add-turn-artifacts design D3): the
+	// start record rides the running turn — the same lifetime as usage — so
+	// a live approval resume keeps it and the completion site diffs against
+	// it. A record already held (a re-entered run) or a cold-resume
+	// predicate skips the fresh snapshot. Any failure here logs and leaves
+	// the record empty: the turn runs with detection disabled, never fails
+	// (spec chat-artifacts "Artifacts path blocked by a regular file").
+	if rt.artifactsBefore == nil && rt.artifactsSince.IsZero() && m.workspaces != nil {
+		dir, err := m.workspaces.ArtifactsDir(agent.Slug)
+		if err != nil {
+			slog.Warn("artifacts: resolve artifacts directory", "session", rt.sessionID, "agent", agent.Slug, "error", err)
+		} else if before, err := snapshotArtifacts(dir); err != nil {
+			slog.Warn("artifacts: snapshot at turn start", "session", rt.sessionID, "agent", agent.Slug, "error", err)
+		} else {
+			rt.artifactsBefore = before
+		}
+	}
+
 	// 1. Load persisted state: the full log decides compaction and context.
 	// The compaction boundary is the log position before this turn's input.
 	events, err := m.sessions.Events(ctx, sess.ID)
@@ -280,7 +298,9 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 			caps:         caps,
 			hasCaps:      true,
 			knowledge:    surface.knowledge != nil,
+			skills:       skillBackend != nil,
 			presets:      m.presetGuidance(ctx, surface.createDocument),
+			memory:       m.memoryBlock(ctx, agent),
 		})
 	if err != nil {
 		return failTurn(err)
@@ -402,7 +422,7 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 	// terminal outcome (design D4: the Runner is the interrupt/resume
 	// substrate; the drain mapping and the terminal recording are the
 	// runTurn contract).
-	return m.executeTurnRun(ctx, recordCtx, rt, record, failTurn, hookChain, hookBase, turnRun{
+	return m.executeTurnRun(ctx, recordCtx, rt, record, failTurn, hookChain, hookBase, agent, turnRun{
 		agent:        turnAgent,
 		toolErrors:   toolErrors,
 		input:        inputMsgs,
@@ -452,7 +472,9 @@ func assertNoDelegationToolCollision(tools []tool.BaseTool) error {
 // error takes the failure path, a tool interrupt parks the run WITHOUT a
 // terminal event (the session stays busy, its checkpoint on disk), and a
 // clean end persists the turn's completion carrying the accumulated usage.
-func (m *manager) executeTurnRun(ctx context.Context, recordCtx context.Context, rt *runningTurn, record recordFn, failTurn func(error) error, hookChain *hooks.Resolved, hookBase hooks.Event, run turnRun) error {
+// agent is the turn's agent row — the artifacts directory resolves through
+// its slug at the terminal (add-turn-artifacts design D3).
+func (m *manager) executeTurnRun(ctx context.Context, recordCtx context.Context, rt *runningTurn, record recordFn, failTurn func(error) error, hookChain *hooks.Resolved, hookBase hooks.Event, agent store.Agent, run turnRun) error {
 	runner := adk.NewTypedRunner[*schema.AgenticMessage](adk.TypedRunnerConfig[*schema.AgenticMessage]{
 		Agent:           run.agent,
 		SessionID:       rt.sessionID,
@@ -530,6 +552,12 @@ func (m *manager) executeTurnRun(ctx context.Context, recordCtx context.Context,
 		usageCopy = *rt.usage
 	}
 	completed := sessions.Event{Kind: sessions.KindTurnCompleted, Usage: &usageCopy}
+	// The artifact delta rides the terminal event (add-turn-artifacts
+	// design D4): a live start record diffs against a fresh listing, a cold
+	// resume falls back to the mtime predicate, a disabled detection carries
+	// none. A listing failure reports no artifacts — it never fails the
+	// turn.
+	completed.Artifacts, completed.ArtifactsTruncated = m.turnArtifacts(agent, rt)
 	if err := record(&completed, true); err != nil {
 		return failTurn(err)
 	}
@@ -537,6 +565,47 @@ func (m *manager) executeTurnRun(ctx context.Context, recordCtx context.Context,
 		hookChain.RunFinished(recordCtx, hookBase, hookRunStatusCompleted)
 	}
 	return nil
+}
+
+// turnArtifacts computes the artifact list a turn_completed event carries
+// (add-turn-artifacts design D3/D4): with the start record held — a fresh
+// turn or a live approval resume — the completion re-lists and diffs;
+// after a process loss the mtime predicate (the persisted user message's
+// occurrence time) takes over with the change kind omitted; detection that
+// was disabled carries nothing. A listing failure logs and reports nothing:
+// detection must never fail the turn.
+func (m *manager) turnArtifacts(agent store.Agent, rt *runningTurn) ([]sessions.Artifact, bool) {
+	if m.workspaces == nil {
+		return nil, false
+	}
+	switch {
+	case rt.artifactsBefore != nil:
+		dir, err := m.workspaces.ArtifactsDir(agent.Slug)
+		if err != nil {
+			slog.Warn("artifacts: resolve artifacts directory", "session", rt.sessionID, "agent", agent.Slug, "error", err)
+			return nil, false
+		}
+		after, err := snapshotArtifacts(dir)
+		if err != nil {
+			slog.Warn("artifacts: listing at turn completion", "session", rt.sessionID, "agent", agent.Slug, "error", err)
+			return nil, false
+		}
+		return diffArtifacts(rt.artifactsBefore, after)
+	case !rt.artifactsSince.IsZero():
+		dir, err := m.workspaces.ArtifactsDir(agent.Slug)
+		if err != nil {
+			slog.Warn("artifacts: resolve artifacts directory", "session", rt.sessionID, "agent", agent.Slug, "error", err)
+			return nil, false
+		}
+		arts, truncated, err := listArtifactsSince(dir, rt.artifactsSince)
+		if err != nil {
+			slog.Warn("artifacts: listing at turn completion", "session", rt.sessionID, "agent", agent.Slug, "error", err)
+			return nil, false
+		}
+		return arts, truncated
+	default:
+		return nil, false
+	}
 }
 
 // recordCancelledTerminal lands the cancelled terminal (design D3, spec
@@ -986,38 +1055,63 @@ const knowledgeGuidance = `## Knowledge corpus
 
 Saved documents live under /knowledge: /knowledge/global holds the documents every agent shares, /knowledge/agent holds this agent's own. Before answering a question that saved documents may cover, search them with the filesystem tools — list and read each scope's INDEX.md first, grep for anchors, and read around the hits (PDFs by page range). Activate the knowledge-search skill whenever a request may concern saved documents. Save new durable documents with the save_document tool.`
 
+// skillsGuidance is the skills-authoring guidance composed after the
+// knowledge guidance on turns whose skill backend resolved
+// (add-agent-created-skills design D1 — authoring is taught, not tooled):
+// where authored skills live, the directory and frontmatter conventions (the
+// DNS-label name, the description later turns see), when saving is worth it,
+// the personal-until-promoted boundary, and the directed activation of the
+// seeded create-skill skill — authoring rides the jailed write tools the
+// turn already has, so it names no new tool. Agents whose turns resolve no
+// skill backend never see it — no orphan guidance.
+const skillsGuidance = `## Skills you can save
+
+Durable, reusable workflows are saved as skills in this agent's own workspace skills directory: one directory per skill under /workspace/skills/, the directory name is the skill's name and must be a DNS label (lowercase letters, digits, hyphens), and the directory holds a SKILL.md whose frontmatter declares a description — that description is what the skill listings on later turns show. Save a skill when a multi-step workflow has repeated or a correction has produced a procedure that will recur; one-off steps do not need one. Skills you save are personal to this agent until the user promotes them to the global library. Activate the create-skill skill ($create-skill) whenever you save a skill — it carries the full authoring playbook.`
+
 // presetGuidance renders the document-preset appendix for one turn
-// (add-create-document design D6; spec document-generation "Preset awareness
-// in turns"): when the create_document tool is offered and at least one PDF
-// preset exists, the preset names — the default marked — so the model can
-// reference one without asking. Every other state composes nothing: the
-// appendix-free composition stays byte-identical. A store read failure
-// degrades to no appendix (logged, not fatal — the appendix is informational
-// and the tool resolves presets per call).
+// (add-create-document design D6; spec document-generation "Preset
+// awareness in turns"): when the create_document tool is offered and at
+// least one preset exists in any format, the preset names per format —
+// each format's default marked (add-document-editing design D6) — so the
+// model can reference one without asking. Every other state composes
+// nothing: the appendix-free composition stays byte-identical. A store read
+// failure degrades to no appendix (logged, not fatal — the appendix is
+// informational and the tool resolves presets per call).
 func (m *manager) presetGuidance(ctx context.Context, offered bool) string {
 	if !offered {
 		return ""
 	}
-	presets, err := m.store.DocumentPresets().List(ctx, store.DocumentPresetFormatPDF)
-	if err != nil {
-		slog.Warn("compose document preset guidance", "error", err)
+	var formats []presetFormatSummary
+	for _, f := range []struct{ format, label string }{
+		{store.DocumentPresetFormatPDF, "PDF"},
+		{store.DocumentPresetFormatDOCX, "DOCX"},
+		{store.DocumentPresetFormatPPTX, "PPTX"},
+	} {
+		presets, err := m.store.DocumentPresets().List(ctx, f.format)
+		if err != nil {
+			slog.Warn("compose document preset guidance", "error", err)
+			return ""
+		}
+		if len(presets) == 0 {
+			continue
+		}
+		names := make([]string, 0, len(presets))
+		for _, p := range presets {
+			names = append(names, p.Name)
+		}
+		// The default marking is best-effort: an unreadable settings row leaves
+		// the list unmarked rather than dropping it.
+		def, err := readDefaultPresetName(ctx, m.store.ToolSettings(), f.format)
+		if err != nil {
+			slog.Warn("compose document preset guidance: read default", "error", err)
+			def = ""
+		}
+		formats = append(formats, presetFormatSummary{Label: f.label, Names: names, Default: def})
+	}
+	if len(formats) == 0 {
 		return ""
 	}
-	if len(presets) == 0 {
-		return ""
-	}
-	names := make([]string, 0, len(presets))
-	for _, p := range presets {
-		names = append(names, p.Name)
-	}
-	// The default marking is best-effort: an unreadable settings row leaves
-	// the list unmarked rather than dropping it.
-	def, err := readDefaultPresetName(ctx, m.store.ToolSettings())
-	if err != nil {
-		slog.Warn("compose document preset guidance: read default", "error", err)
-		def = ""
-	}
-	return presetAppendix(names, def)
+	return presetAppendix(formats)
 }
 
 // composeSystem joins the turn's system context in composition order
@@ -1025,13 +1119,15 @@ func (m *manager) presetGuidance(ctx context.Context, offered bool) string {
 // document-preset appendix when the turn offers create_document and presets
 // exist (add-create-document design D6), then the knowledge corpus guidance
 // when the turn exposes the corpus (spec add-knowledge-corpus design D7),
-// then the compaction summary. The contract composes on every call — an
-// agent whose persona generation failed still gets it (spec agent-prompts
-// "Contract present without persona documents"). Empty presetText and
-// knowledgeText keep the output byte-identical to the
-// appendix-and-guidance-free composition, so the pinned contract ordering
-// holds.
-func composeSystem(personaText, presetText, knowledgeText, summary string) string {
+// then the skills-authoring guidance when the turn's skill backend resolved
+// (add-agent-created-skills design D1), then the memory block when the agent
+// has a workspace (add-agent-memory design D3), then the compaction summary.
+// The contract composes on every call — an agent whose persona generation
+// failed still gets it (spec agent-prompts "Contract present without persona
+// documents"). Empty presetText, knowledgeText, skillsText, and memoryText
+// keep the output byte-identical to the appendix-, guidance-, and block-free
+// composition, so the pinned contract ordering holds.
+func composeSystem(personaText, presetText, knowledgeText, skillsText, memoryText, summary string) string {
 	var sb strings.Builder
 	if personaText != "" {
 		sb.WriteString(personaText)
@@ -1045,6 +1141,14 @@ func composeSystem(personaText, presetText, knowledgeText, summary string) strin
 	if knowledgeText != "" {
 		sb.WriteString("\n\n")
 		sb.WriteString(knowledgeText)
+	}
+	if skillsText != "" {
+		sb.WriteString("\n\n")
+		sb.WriteString(skillsText)
+	}
+	if memoryText != "" {
+		sb.WriteString("\n\n")
+		sb.WriteString(memoryText)
 	}
 	if summary != "" {
 		sb.WriteString("\n\n")

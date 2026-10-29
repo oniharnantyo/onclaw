@@ -30,6 +30,15 @@ import * as store$0 from "../store/models.js";
 import * as $models from "./models.js";
 
 /**
+ * AllSessions returns every agent's sessions, most recent activity first
+ * (add-grouped-session-rail design D1: one all-sessions listing replaces the
+ * per-agent fetch). The result is never nil.
+ */
+export function AllSessions(): $CancellablePromise<store$0.Session[] | null> {
+    return $Call.ByID(1969927607);
+}
+
+/**
  * AttachmentContent resolves one capability key to its metadata and content.
  * An unknown key is refused; the on-disk path is never exposed.
  */
@@ -91,13 +100,15 @@ export function DeleteSession(sessionID: string): $CancellablePromise<void> {
 }
 
 /**
- * GeneratedDocument reads one document the create_document tool wrote at the
- * agent's workspace root: name must be a plain basename with no directory
- * components — anything else, including traversal and absolute paths, is
- * refused before any filesystem call. The agent is resolved exactly like the
- * workspace preview surface (WorkspaceFile): by agent id, so the card can
- * call this from a session context — not by session id. A well-formed name
- * with no file behind it wraps store.ErrNotFound.
+ * GeneratedDocument reads one document the create_document tool wrote under
+ * the agent's workspace artifacts/ directory (and, for cards recorded before
+ * that move — add-turn-artifacts design D6 — at the workspace root): name
+ * must be a plain basename with no directory components — anything else,
+ * including traversal and absolute paths, is refused before any filesystem
+ * call. The agent is resolved exactly like the workspace preview surface
+ * (WorkspaceFile): by agent id, so the card can call this from a session
+ * context — not by session id. A well-formed name with no file in either
+ * location wraps store.ErrNotFound.
  */
 export function GeneratedDocument(agentID: string, name: string): $CancellablePromise<$models.GeneratedDocumentContent> {
     return $Call.ByID(4251336789, agentID, name);
@@ -135,6 +146,15 @@ export function Regenerate(sessionID: string, turnID: string): $CancellablePromi
  */
 export function ResolveApproval(sessionID: string, interruptID: string, approved: boolean): $CancellablePromise<void> {
     return $Call.ByID(1097902642, sessionID, interruptID, approved);
+}
+
+/**
+ * RunningSessions reports the sessions with a turn in flight — running or
+ * parked on a pending approval (add-grouped-session-rail design D2) — for
+ * the frontend's boot-time sync. The result is never nil.
+ */
+export function RunningSessions(): $CancellablePromise<string[] | null> {
+    return $Call.ByID(2157916803);
 }
 
 /**
@@ -237,4 +257,16 @@ export function Unsubscribe(sessionID: string): $CancellablePromise<void> {
  */
 export function WorkspaceFile(agentID: string, relPath: string): $CancellablePromise<string> {
     return $Call.ByID(975489858, agentID, relPath);
+}
+
+/**
+ * WorkspaceFileBinary reads one file from the agent's workspace as binary
+ * (add-turn-artifacts design D8): relPath is workspace-relative and jailed
+ * exactly like WorkspaceFile — traversal, absolute paths, and symlink
+ * escapes are refused before the open. The mime is picked by extension:
+ * `.pdf` (case-insensitive) is application/pdf, everything else
+ * application/octet-stream.
+ */
+export function WorkspaceFileBinary(agentID: string, relPath: string): $CancellablePromise<$models.WorkspaceFileBinaryContent> {
+    return $Call.ByID(2189896627, agentID, relPath);
 }

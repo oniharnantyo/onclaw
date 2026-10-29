@@ -55,6 +55,17 @@ type OAuth struct {
 	// Tokens stores the exchanged and refreshed tokens; required when
 	// Enabled (dial fails fast otherwise — a wiring bug, not a runtime state).
 	Tokens TokenStore
+	// PreRegistered marks a confidential client (design D3's
+	// oauth_confidential): the ClientID/ClientSecret were minted by the
+	// provider's developer console, not by dynamic registration, so the flow
+	// must never re-register them — not even when the callback port rebinds.
+	// Google, Slack, Asana, Box, and Dropbox all work this way.
+	PreRegistered bool
+	// ExtraAuthParams are extra query parameters appended to the
+	// authorization URL (design D3). Google requires access_type=offline and
+	// prompt=consent to hand back a refresh token; a parameter already in the
+	// URL wins.
+	ExtraAuthParams map[string]string
 }
 
 // errNoTokenStore marks the wiring bug of an OAuth-enabled connection without

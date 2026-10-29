@@ -31,6 +31,7 @@ export type {
     GatewayStateEvent,
     GeneratedDocumentContent,
     HookTestResult,
+    IntegrationConnectInput,
     KnowledgeChangedEvent,
     KnowledgeDocument,
     MCPOAuthCompletedEvent,
@@ -44,9 +45,12 @@ export type {
     SchedulesChangedEvent,
     ToolEntry,
     TurnStateResult,
+    TurnsChangedEvent,
     VerifyResult,
     WebSearchChainEntry,
     WebSearchConfig,
     WebSearchProviderInfo,
-    WorkspaceEntry
+    WorkspaceEntry,
+    WorkspaceFileBinaryContent,
+    WorkspaceSkill
 } from "./models.js";

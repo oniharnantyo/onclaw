@@ -10,6 +10,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   Kind,
+  ToolStatus,
   type Event as SessionEvent,
 } from "../../../../../bindings/github.com/oniharnantyo/buddies/internal/sessions/models";
 import { applyEvent, asEntry, asRichUser, type Entry } from "../../entries";
@@ -80,6 +81,36 @@ describe("variant branch tree (task 2.2, design D3)", () => {
     // Each assistant hangs off its own prompt; the turns chain through them.
     expect(parents.get("t1")).toBe(firstPrompt);
     expect(parents.get("t2")).toBe(secondPrompt);
+  });
+
+  it("merges late background-task activity into the old turn's message", () => {
+    // A background subagent finishing after a NEWER turn re-uses the old
+    // turn id; a second message for that turn would carry a duplicate id
+    // and the repository import rejects it — the boot-blanking app-killer.
+    const repository = entriesToRepository(
+      fold(
+        ...turn("t1", "one"),
+        ...turn("t2", "two"),
+        ev(Kind.KindTaskActivity, {
+          turn_id: "t1",
+          task: {
+            task_id: "task-1",
+            description: "research",
+            status: ToolStatus.ToolStatusFailed,
+            result: "boom",
+          },
+        })
+      )
+    );
+
+    expect(repository.messages).toHaveLength(4);
+    expect(repository.headId).toBe("t2");
+
+    const ids = repository.messages.map(
+      (m: { message: { id?: string } }): string | undefined => m.message.id
+    );
+
+    expect(new Set(ids).size).toBe(ids.length);
   });
 
   it("makes a regenerated turn a sibling of the original under the anchor", () => {

@@ -2,11 +2,14 @@ package services
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/oniharnantyo/buddies/internal/agents/tools/docgen"
 	"github.com/oniharnantyo/buddies/internal/store"
 	"github.com/oniharnantyo/buddies/internal/store/fake"
 )
@@ -200,4 +203,201 @@ func TestSettingsDocumentPresets_DeleteDefaultLeavesItDangling(t *testing.T) {
 	got, err := svc.DefaultDocumentPreset(ctx, store.DocumentPresetFormatPDF)
 	require.NoError(t, err)
 	require.Equal(t, "Client Report", got, "the stored default dangles by design")
+}
+
+// templateFixture wires the settings service with a real on-disk template
+// store over a temporary data dir — the composition root's wiring.
+type templateFixture struct {
+	dataDir   string
+	svc       *SettingsService
+	store     *fake.Store
+	templates store.DocumentTemplateStore
+}
+
+func newTemplateFixture(t *testing.T) *templateFixture {
+	t.Helper()
+	st := fake.New()
+	dataDir := t.TempDir()
+	templates := store.NewDocumentTemplateStore(dataDir)
+	return &templateFixture{
+		dataDir:   dataDir,
+		svc:       NewSettingsService(st, WithDocumentTemplates(templates)),
+		store:     st,
+		templates: templates,
+	}
+}
+
+// b64Of is the base64 of the given literal — the upload's wire shape.
+func b64Of(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+
+// TestSettingsDocumentPresetTemplate_UploadRoundTrip covers the spec's
+// round-trip scenario (document-generation "Preset round-trips"): a DOCX
+// template preset's uploaded skeleton lands in the template store, the
+// entry reports it, and a fresh store over the same data dir — the app
+// restart — still finds the file.
+func TestSettingsDocumentPresetTemplate_UploadRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	f := newTemplateFixture(t)
+	created, err := f.svc.CreateDocumentPreset(ctx, store.DocumentPresetFormatDOCX,
+		"Branded Letter", `{"schema_version":1,"flavor":"template"}`)
+	require.NoError(t, err)
+
+	require.NoError(t, f.svc.SetDocumentPresetTemplate(ctx, created.ID, "Branded.docx", b64Of("DOCX-BYTES")))
+
+	list, err := f.svc.ListDocumentPresets(ctx, store.DocumentPresetFormatDOCX)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	require.True(t, list[0].HasTemplate, "the entry reports the uploaded skeleton")
+	require.Equal(t, "Branded.docx", list[0].TemplateName)
+	require.Contains(t, list[0].Config, `"has_template":true`, "the preset row records the upload")
+
+	// The skeleton is on disk under the data dir, keyed by the preset ID.
+	path, err := f.templates.Path(ctx, created.ID)
+	require.NoError(t, err)
+	onDisk, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, "DOCX-BYTES", string(onDisk))
+
+	// The restart: a fresh store over the same data dir finds the file, and
+	// the row still carries the metadata.
+	reopened := store.NewDocumentTemplateStore(f.dataDir)
+	again, err := reopened.Path(ctx, created.ID)
+	require.NoError(t, err)
+	require.Equal(t, path, again)
+	row, err := f.store.DocumentPresets().ByID(ctx, created.ID)
+	require.NoError(t, err)
+	meta := docgen.ParseTemplateMeta([]byte(row.Config))
+	require.True(t, meta.HasTemplate)
+	require.Equal(t, "Branded.docx", meta.TemplateName)
+}
+
+// TestSettingsDocumentPresetTemplate_UploadValidation pins the upload's
+// guards: the extension must match the preset's format, PDF presets take no
+// template, and the payload must decode.
+func TestSettingsDocumentPresetTemplate_UploadValidation(t *testing.T) {
+	ctx := context.Background()
+	f := newTemplateFixture(t)
+	docx, err := f.svc.CreateDocumentPreset(ctx, store.DocumentPresetFormatDOCX,
+		"Branded Letter", `{"schema_version":1,"flavor":"template"}`)
+	require.NoError(t, err)
+	pptx, err := f.svc.CreateDocumentPreset(ctx, store.DocumentPresetFormatPPTX,
+		"Company Deck", `{"schema_version":1,"flavor":"template"}`)
+	require.NoError(t, err)
+	pdf, err := f.svc.CreateDocumentPreset(ctx, store.DocumentPresetFormatPDF, "Client Report", "{}")
+	require.NoError(t, err)
+
+	// A .pptx skeleton on a DOCX preset and the reverse are refused.
+	err = f.svc.SetDocumentPresetTemplate(ctx, docx.ID, "Deck.pptx", b64Of("x"))
+	require.ErrorContains(t, err, "takes a .docx skeleton")
+	err = f.svc.SetDocumentPresetTemplate(ctx, pptx.ID, "Letter.docx", b64Of("x"))
+	require.ErrorContains(t, err, "takes a .pptx skeleton")
+
+	// A PDF preset is config-only.
+	err = f.svc.SetDocumentPresetTemplate(ctx, pdf.ID, "Report.pdf", b64Of("x"))
+	require.ErrorContains(t, err, "not")
+
+	// Undecodable payloads are refused before the store is touched.
+	err = f.svc.SetDocumentPresetTemplate(ctx, docx.ID, "Letter.docx", "!!!not base64")
+	require.ErrorContains(t, err, "decode")
+
+	// An unknown preset is the store's not-found.
+	err = f.svc.SetDocumentPresetTemplate(ctx, "no-such-id", "Letter.docx", b64Of("x"))
+	require.ErrorIs(t, err, store.ErrNotFound)
+}
+
+// TestSettingsDocumentPresetTemplate_DeleteCleansTemplate covers the
+// delete path (add-document-editing design D6): deleting the preset removes
+// its skeleton file; deleting a preset without an upload succeeds.
+func TestSettingsDocumentPresetTemplate_DeleteCleansTemplate(t *testing.T) {
+	ctx := context.Background()
+	f := newTemplateFixture(t)
+	created, err := f.svc.CreateDocumentPreset(ctx, store.DocumentPresetFormatDOCX,
+		"Branded Letter", `{"schema_version":1,"flavor":"template"}`)
+	require.NoError(t, err)
+	require.NoError(t, f.svc.SetDocumentPresetTemplate(ctx, created.ID, "Branded.docx", b64Of("DOCX")))
+
+	require.NoError(t, f.svc.DeleteDocumentPreset(ctx, created.ID))
+	_, err = f.templates.Path(ctx, created.ID)
+	require.ErrorIs(t, err, store.ErrNotFound, "the skeleton went with the preset")
+
+	// A preset with no upload deletes cleanly.
+	noUpload, err := f.svc.CreateDocumentPreset(ctx, store.DocumentPresetFormatDOCX,
+		"Other Letter", `{"schema_version":1,"flavor":"template"}`)
+	require.NoError(t, err)
+	require.NoError(t, f.svc.DeleteDocumentPreset(ctx, noUpload.ID))
+}
+
+// TestSettingsDocumentPresetTemplate_DuplicateCopiesTemplate covers the
+// duplicate action on a template preset: the copy's skeleton file exists
+// under the copy's own ID, so the copy generates like the source.
+func TestSettingsDocumentPresetTemplate_DuplicateCopiesTemplate(t *testing.T) {
+	ctx := context.Background()
+	f := newTemplateFixture(t)
+	source, err := f.svc.CreateDocumentPreset(ctx, store.DocumentPresetFormatPPTX,
+		"Company Deck", `{"schema_version":1,"flavor":"template"}`)
+	require.NoError(t, err)
+	require.NoError(t, f.svc.SetDocumentPresetTemplate(ctx, source.ID, "Deck.pptx", b64Of("PPTX")))
+
+	copyEntry, err := f.svc.DuplicateDocumentPreset(ctx, source.ID, "Deck Copy")
+	require.NoError(t, err)
+	require.True(t, copyEntry.HasTemplate, "the copy claims the skeleton")
+
+	path, err := f.templates.Path(ctx, copyEntry.ID)
+	require.NoError(t, err)
+	onDisk, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, "PPTX", string(onDisk))
+}
+
+// TestSettingsDocumentPresets_PerFormatDefaults covers the per-format
+// default selection (add-document-editing design D6): each format's default
+// stores and clears independently, the PDF selection keeps riding the v1
+// flat field, and a default must name a preset of its own format.
+func TestSettingsDocumentPresets_PerFormatDefaults(t *testing.T) {
+	ctx := context.Background()
+	fs := fake.New()
+	templates := store.NewDocumentTemplateStore(t.TempDir())
+	svc := NewSettingsService(fs, WithDocumentTemplates(templates))
+	pdf, err := svc.CreateDocumentPreset(ctx, store.DocumentPresetFormatPDF, "Client Report", "{}")
+	require.NoError(t, err)
+	docx, err := svc.CreateDocumentPreset(ctx, store.DocumentPresetFormatDOCX, "Branded Letter", "{}")
+	require.NoError(t, err)
+
+	// Defaults set per format.
+	require.NoError(t, svc.SetDefaultDocumentPreset(ctx, store.DocumentPresetFormatPDF, "Client Report"))
+	require.NoError(t, svc.SetDefaultDocumentPreset(ctx, store.DocumentPresetFormatDOCX, "Branded Letter"))
+	got, err := svc.DefaultDocumentPreset(ctx, store.DocumentPresetFormatPDF)
+	require.NoError(t, err)
+	require.Equal(t, "Client Report", got)
+	got, err = svc.DefaultDocumentPreset(ctx, store.DocumentPresetFormatDOCX)
+	require.NoError(t, err)
+	require.Equal(t, "Branded Letter", got)
+	got, err = svc.DefaultDocumentPreset(ctx, store.DocumentPresetFormatPPTX)
+	require.NoError(t, err)
+	require.Empty(t, got, "a format never set reads as none")
+
+	// The PDF selection rides the v1 flat field for the tool's v1 readers.
+	raw, ok, err := fs.ToolSettings().Get(ctx, "create_document")
+	require.NoError(t, err)
+	require.True(t, ok)
+	var stored storedDocumentDefault
+	require.NoError(t, json.Unmarshal([]byte(raw), &stored))
+	require.Equal(t, "Client Report", stored.DefaultPreset)
+	require.Equal(t, "Client Report", stored.DefaultPresets["pdf"])
+	require.Equal(t, "Branded Letter", stored.DefaultPresets["docx"])
+
+	// Clearing the DOCX default leaves the PDF one standing.
+	require.NoError(t, svc.SetDefaultDocumentPreset(ctx, store.DocumentPresetFormatDOCX, ""))
+	got, err = svc.DefaultDocumentPreset(ctx, store.DocumentPresetFormatDOCX)
+	require.NoError(t, err)
+	require.Empty(t, got)
+	got, err = svc.DefaultDocumentPreset(ctx, store.DocumentPresetFormatPDF)
+	require.NoError(t, err)
+	require.Equal(t, "Client Report", got)
+
+	// A default must name a preset of its own format.
+	err = svc.SetDefaultDocumentPreset(ctx, store.DocumentPresetFormatPPTX, pdf.Name)
+	require.ErrorIs(t, err, store.ErrNotFound)
+	err = svc.SetDefaultDocumentPreset(ctx, store.DocumentPresetFormatDOCX, docx.Name)
+	require.NoError(t, err)
 }

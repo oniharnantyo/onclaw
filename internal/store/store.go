@@ -24,8 +24,15 @@ type Store interface {
 	Attachments() AttachmentStore
 	Documents() DocumentStore
 	DocumentPresets() DocumentPresetStore
+	// DocumentTemplates returns the on-disk template store holding the
+	// uploaded skeletons of template-document presets
+	// (add-document-editing design D6). It is filesystem-backed — it needs
+	// the data directory, not the database — so implementations root it at
+	// the aggregate's data directory and it takes no part in WithTx.
+	DocumentTemplates() DocumentTemplateStore
 	ProviderModels() ProviderModelStore
 	ProviderModelStore
+	Memory() MemoryStore
 	// WithTx runs fn atomically: every write fn makes through the Store it
 	// receives commits together, or — when fn returns an error — rolls
 	// back, leaving no partial rows.

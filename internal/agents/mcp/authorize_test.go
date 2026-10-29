@@ -216,6 +216,73 @@ func TestStartAuthorizationPortTakenFallsBackAndReregisters(t *testing.T) {
 	require.Contains(t, auth.URL, url.QueryEscape(auth.RedirectURI))
 }
 
+func TestStartAuthorizationPreRegisteredClientSurvivesPortRebind(t *testing.T) {
+	as := newFakeAuthServer(t)
+	ctx, cancel := authorizeCtx(t)
+	defer cancel()
+
+	// Occupy the configured callback port and ask for exactly it.
+	squatter, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer squatter.Close()
+	squatted := squatter.Addr().(*net.TCPAddr).Port
+
+	auth, err := StartAuthorization(ctx, AuthorizeRequest{
+		OAuth: OAuth{
+			ClientID:      "google-console-client",
+			ClientSecret:  "google-console-secret",
+			RedirectURI:   fmt.Sprintf("http://127.0.0.1:%d/callback", squatted),
+			PreRegistered: true,
+			Tokens:        transport.NewMemoryTokenStore(),
+		},
+		Discovery: authorizeDiscovery(as),
+	})
+	require.NoError(t, err)
+	defer auth.Cancel()
+
+	// A pre-registered confidential client is fixed (design D3's
+	// oauth_confidential): the rewritten redirect is used as-is, the console
+	// client is never discarded, and no dynamic registration runs.
+	parsed, err := url.Parse(auth.RedirectURI)
+	require.NoError(t, err)
+	require.NotEqual(t, strconv.Itoa(squatted), parsed.Port())
+	require.Equal(t, "google-console-client", auth.ClientID)
+	require.Equal(t, "google-console-secret", auth.ClientSecret)
+	require.Equal(t, 0, as.registrationsSeen())
+	require.Contains(t, auth.URL, "client_id=google-console-client")
+}
+
+func TestStartAuthorizationExtraAuthParams(t *testing.T) {
+	as := newFakeAuthServer(t)
+	ctx, cancel := authorizeCtx(t)
+	defer cancel()
+
+	auth, err := StartAuthorization(ctx, AuthorizeRequest{
+		OAuth: OAuth{
+			Tokens: transport.NewMemoryTokenStore(),
+			// Google's refresh-token requirement (design D3). The scope key
+			// collides with mcp-go's own scope parameter on purpose: the
+			// flow's own parameter must win.
+			ExtraAuthParams: map[string]string{
+				"access_type": "offline",
+				"prompt":      "consent",
+				"scope":       "overridden",
+			},
+		},
+		Discovery: authorizeDiscovery(as),
+	})
+	require.NoError(t, err)
+	defer auth.Cancel()
+
+	parsed, err := url.Parse(auth.URL)
+	require.NoError(t, err)
+	query := parsed.Query()
+	require.Equal(t, "offline", query.Get("access_type"))
+	require.Equal(t, "consent", query.Get("prompt"))
+	// The URL's own parameters win over the extras.
+	require.Equal(t, "read write", query.Get("scope"))
+}
+
 func TestStartAuthorizationTimeout(t *testing.T) {
 	as := newFakeAuthServer(t)
 

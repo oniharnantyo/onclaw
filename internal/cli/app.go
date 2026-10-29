@@ -9,10 +9,12 @@ import (
 
 	"github.com/oniharnantyo/buddies/internal/agents"
 	"github.com/oniharnantyo/buddies/internal/agents/mcp"
+	"github.com/oniharnantyo/buddies/internal/agents/tools/documents"
 	"github.com/oniharnantyo/buddies/internal/attachments"
 	"github.com/oniharnantyo/buddies/internal/config"
 	"github.com/oniharnantyo/buddies/internal/gateway"
 	"github.com/oniharnantyo/buddies/internal/knowledge"
+	"github.com/oniharnantyo/buddies/internal/memory"
 	"github.com/oniharnantyo/buddies/internal/promptgen"
 	"github.com/oniharnantyo/buddies/internal/scheduler"
 	"github.com/oniharnantyo/buddies/internal/services"
@@ -46,6 +48,10 @@ type App struct {
 	// sched is the attached scheduler; Close stops its tick loop before the
 	// gateway and the store go down.
 	sched *scheduler.Service
+
+	// memTicker is the attached memory sweep ticker; Close stops its tick
+	// loop before the gateway and the store go down.
+	memTicker *memory.Ticker
 
 	closeOnce sync.Once
 	closeErr  error
@@ -97,7 +103,7 @@ func Assemble(ctx context.Context, emitter services.Emitter, opener services.URL
 	// save_document tool and /knowledge mount, the bound Knowledge service,
 	// and the agents service's delete cleanup.
 	knowStore := knowledge.NewStore(layout.Knowledge, st.Documents())
-	agentsSvc := services.NewAgentsService(st, promptGen, wsMgr, knowStore)
+	agentsSvc := services.NewAgentsService(st, promptGen, wsMgr, knowStore, layout.Skills)
 
 	// Sweep crash-orphaned prompt generations before services accept calls
 	// (design D4): rows still in generating are moved to failed with the
@@ -133,12 +139,29 @@ func Assemble(ctx context.Context, emitter services.Emitter, opener services.URL
 		agents.WithBrowserDir(layout.Browser),
 		agents.WithMCPManager(mcpMgr),
 		agents.WithHooks(hooksDispatcher),
-		agents.WithScheduler(sched))
+		agents.WithScheduler(sched),
+		// Turn transitions announce app-wide (add-grouped-session-rail
+		// design D2): the runtime core is where UI dispatch, scheduler fire,
+		// and gateway trigger converge.
+		agents.WithTurnTransition(func(sessionID string, busy bool) {
+			emitter.Emit(services.EventTurnsChanged, services.TurnsChangedEvent{SessionID: sessionID, Busy: busy})
+		}))
 	sessionSvc := sessions.NewService(st)
 	runs.runtime, runs.sessions = runtime, sessionSvc
 	// The minute-aligned tick loop starts on the gateway's first Running
 	// transition (design D2); both hosts start the gateway after Assemble.
 	sched.Attach(gw)
+
+	// The memory consolidation sweep ticks hourly per agent while the
+	// gateway is Running (add-agent-memory design D7), skipping ticks while
+	// Paused; both hosts start the gateway after Assemble.
+	memTicker := memory.NewTicker(st, wsMgr)
+	memTicker.Attach(gw)
+	// The memory block's staleness check reads the same gateway the sweep
+	// ticker follows (add-agent-memory design D13): no successful sweep
+	// within two intervals while Running is the stale notice; while the
+	// gateway is down, cold is not dead.
+	agents.SetMemoryGatewayRunning(func() bool { return gw.State() == gateway.StateRunning })
 
 	// The capability-gated attachment store (design D5) serves the chat
 	// attachments feature from the layout's attachments directory.
@@ -175,13 +198,39 @@ func Assemble(ctx context.Context, emitter services.Emitter, opener services.URL
 		slog.Warn("assemble: knowledge skill seed failed", "error", err)
 	}
 
+	// Seed the documents skill into the global skills tier when missing
+	// (add-document-editing design D10, task 5.3 — the same
+	// repair-if-deleted pattern, mirroring the knowledge seed above).
+	// Cosmetic to startup — document work works without the playbook — so it
+	// is logged, not fatal.
+	if err := documents.SeedDocumentsSkill(layout.Skills); err != nil {
+		slog.Warn("assemble: documents skill seed failed", "error", err)
+	}
+
+	// Seed the memory skill into the global skills tier when missing
+	// (add-agent-memory tasks 3.1, repair-if-deleted — mirroring the
+	// knowledge seed above). Cosmetic to startup — curation works without
+	// the playbook — so it is logged, not fatal.
+	if err := memory.SeedSkill(layout.Skills); err != nil {
+		slog.Warn("assemble: memory skill seed failed", "error", err)
+	}
+
+	// Seed the create-skill skill into the global skills tier when missing
+	// (add-agent-created-skills design D1, repair-if-deleted — mirroring the
+	// knowledge seed above). Cosmetic to startup — skill authoring works
+	// without the playbook — so it is logged, not fatal.
+	if err := agents.SeedCreateSkill(layout.Skills); err != nil {
+		slog.Warn("assemble: create-skill seed failed", "error", err)
+	}
+
 	return &App{
-		Layout:  layout,
-		Store:   st,
-		Gateway: gw,
-		Runtime: runtime,
-		mcpMgr:  mcpMgr,
-		sched:   sched,
+		Layout:    layout,
+		Store:     st,
+		Gateway:   gw,
+		Runtime:   runtime,
+		mcpMgr:    mcpMgr,
+		sched:     sched,
+		memTicker: memTicker,
 		Services: ServiceSet{
 			AppInfo: services.NewAppInfo(),
 			Agents:  agentsSvc,
@@ -207,6 +256,10 @@ func (a *App) Close() error {
 	a.closeOnce.Do(func() {
 		var errs []error
 		a.sched.Stop()
+		// The memory sweep ticker's loop stops first too, so no sweep races
+		// the gateway or store teardown below (an in-flight sweep completes
+		// before Stop returns).
+		a.memTicker.Stop()
 		if a.Gateway.State() != gateway.StateStopped {
 			if err := a.Gateway.Stop(); err != nil {
 				errs = append(errs, fmt.Errorf("stop gateway: %w", err))

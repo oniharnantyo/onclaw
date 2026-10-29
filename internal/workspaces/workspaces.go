@@ -25,10 +25,13 @@ const (
 
 // Subdirectory names inside an agent workspace (design D6): skills/ holds
 // the agent-tier skill library (shadowing the global tier on name
-// conflict), .tasks/ is the reserved task-store directory.
+// conflict), .tasks/ is the reserved task-store directory, and artifacts/
+// holds the user-facing deliverables a turn produces (add-turn-artifacts
+// design D1) — not dot-prefixed because the user is meant to find them.
 const (
-	DirSkills = "skills"
-	DirTasks  = ".tasks"
+	DirSkills    = "skills"
+	DirTasks     = ".tasks"
+	DirArtifacts = "artifacts"
 )
 
 // maxSlugLen is the slug length cap (DNS label limit). The slug doubles as
@@ -106,6 +109,13 @@ func (m *Manager) SkillsDir(slug string) (string, error) {
 // (idempotent mkdir -p).
 func (m *Manager) TasksDir(slug string) (string, error) {
 	return m.ensureDir(slug, DirTasks)
+}
+
+// ArtifactsDir returns the workspace's artifacts directory — the deliverables
+// home that turn-boundary artifact detection watches (add-turn-artifacts
+// design D1) — creating it on demand (idempotent mkdir -p).
+func (m *Manager) ArtifactsDir(slug string) (string, error) {
+	return m.ensureDir(slug, DirArtifacts)
 }
 
 // ensureDir resolves the slug's workspace and creates the named

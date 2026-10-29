@@ -46,13 +46,16 @@ type Converter struct {
 	theme   string    // theme the live engine was built for ("" = library default)
 	closed  bool
 	newFunc func(theme string) (pdfEngine, error) // seam for tests
+	// pptx is the PPTX library seam (design D11); the real gopptx
+	// adapter, swappable in tests.
+	pptx pptxLibrary
 }
 
 // NewConverter constructs the manager-held converter. It never launches
 // Chrome and never fails: engine creation is deferred to the first Convert
 // and its errors surface there, per the lazy-lifecycle design.
 func NewConverter() *Converter {
-	return &Converter{newFunc: newPicoloomEngine}
+	return &Converter{newFunc: newPicoloomEngine, pptx: gopptxLibrary{}}
 }
 
 // Convert renders markdown to PDF at destPath using the preset's styling; a
@@ -61,14 +64,8 @@ func NewConverter() *Converter {
 // failure (missing or dead Chromium) is dropped and rebuilt on the next
 // call, the way the browser tool relaunches a profile.
 func (c *Converter) Convert(ctx context.Context, markdown, destPath string, preset *Preset) (Result, error) {
-	if err := ctx.Err(); err != nil {
-		return Result{}, fmt.Errorf("docgen: %w", err)
-	}
-	if markdown == "" {
-		return Result{}, errors.New("docgen: markdown is empty")
-	}
-	if destPath == "" {
-		return Result{}, errors.New("docgen: destination path is required")
+	if err := validateConvertInput(ctx, markdown, destPath); err != nil {
+		return Result{}, err
 	}
 
 	theme := engineTheme(preset)
@@ -92,10 +89,76 @@ func (c *Converter) Convert(ctx context.Context, markdown, destPath string, pres
 		}
 		return Result{}, fmt.Errorf("docgen: convert: %w", err)
 	}
-	if err := os.WriteFile(destPath, res.PDF, 0o644); err != nil {
-		return Result{}, fmt.Errorf("docgen: write PDF: %w", err)
+	return writeResult(destPath, res.PDF)
+}
+
+// ConvertDOCX renders markdown into a .docx document at destPath (design
+// D6): non-empty template selects the template flavor (the uploaded
+// skeleton is copied and filled), an empty template the config flavor (the
+// built-in default template with the preset's overrides; a nil preset is
+// the built-in defaults untouched). The output overwrites destPath, and
+// rendering is serialized behind the converter's mutex like the PDF path.
+func (c *Converter) ConvertDOCX(ctx context.Context, markdown, destPath string, preset *DOCXPreset, template []byte) (Result, error) {
+	if err := validateConvertInput(ctx, markdown, destPath); err != nil {
+		return Result{}, err
 	}
-	return Result{Path: destPath, SizeBytes: int64(len(res.PDF))}, nil
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return Result{}, errors.New("docgen: converter is closed")
+	}
+	data, err := renderDOCX(preset, template, markdown)
+	if err != nil {
+		return Result{}, err
+	}
+	return writeResult(destPath, data)
+}
+
+// ConvertPPTX renders markdown into a .pptx presentation at destPath by
+// filling the uploaded skeleton's placeholders (design D6: PPTX presets
+// are template-document presets only). An empty template is a caller
+// error — the create_document tool rejects it earlier with the preset's
+// name in the message — refused here too so the engine never invents a
+// deck.
+func (c *Converter) ConvertPPTX(ctx context.Context, markdown, destPath string, _ *PPTXPreset, template []byte) (Result, error) {
+	if err := validateConvertInput(ctx, markdown, destPath); err != nil {
+		return Result{}, err
+	}
+	if len(template) == 0 {
+		return Result{}, errors.New("docgen: PPTX output needs a template preset with an uploaded skeleton")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return Result{}, errors.New("docgen: converter is closed")
+	}
+	data, err := renderPPTX(c.pptx, template, markdown)
+	if err != nil {
+		return Result{}, err
+	}
+	return writeResult(destPath, data)
+}
+
+// validateConvertInput carries the three entry points' shared guards.
+func validateConvertInput(ctx context.Context, markdown, destPath string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("docgen: %w", err)
+	}
+	if markdown == "" {
+		return errors.New("docgen: markdown is empty")
+	}
+	if destPath == "" {
+		return errors.New("docgen: destination path is required")
+	}
+	return nil
+}
+
+// writeResult lands the rendered bytes and reports the tool-facing result.
+func writeResult(destPath string, data []byte) (Result, error) {
+	if err := os.WriteFile(destPath, data, 0o644); err != nil {
+		return Result{}, fmt.Errorf("docgen: write output: %w", err)
+	}
+	return Result{Path: destPath, SizeBytes: int64(len(data))}, nil
 }
 
 // Close releases the live engine (its headless Chrome). It is safe to call

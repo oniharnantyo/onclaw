@@ -17,7 +17,7 @@ import type {
   NoseStyle,
   Sex,
   ShirtStyle,
-} from "react-nice-avatar";
+} from "@oniharnantyo/react-nice-avatar";
 
 /** Small FNV-1a hash: stable string → 32-bit unsigned int. */
 function hashString(input: string): number {

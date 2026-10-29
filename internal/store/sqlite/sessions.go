@@ -84,6 +84,30 @@ ORDER BY last_activity_at DESC, created_at DESC, id ASC`, agentID)
 	return sessions, nil
 }
 
+func (s *sessionsStore) List(ctx context.Context) ([]store.Session, error) {
+	rows, err := s.e.QueryContext(ctx, `
+SELECT id, agent_id, title, model, effort, created_at, last_activity_at
+FROM sessions
+ORDER BY last_activity_at DESC, created_at DESC, id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	defer rows.Close()
+
+	sessions := make([]store.Session, 0)
+	for rows.Next() {
+		session, err := scanSession(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list sessions: %w", err)
+		}
+		sessions = append(sessions, *session)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	return sessions, nil
+}
+
 func (s *sessionsStore) Touch(ctx context.Context, id string, at time.Time) error {
 	res, err := s.e.ExecContext(ctx, `
 UPDATE sessions SET last_activity_at = ? WHERE id = ?`, formatTime(at), id)

@@ -24,6 +24,7 @@ import type {
   DocumentPresetEntry,
   GatewayStateEvent,
   GeneratedDocumentContent,
+  IntegrationConnectInput,
   KnowledgeDocument,
   Metadata,
   ModelCapability,
@@ -38,6 +39,8 @@ import type {
   WebSearchConfig,
   WebSearchProviderInfo,
   WorkspaceEntry,
+  WorkspaceFileBinaryContent,
+  WorkspaceSkill,
 } from "../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
 import type {
   Agent,
@@ -59,10 +62,12 @@ import {
   MCP_OAUTH_COMPLETED_EVENT,
   SCHEDULES_CHANGED_EVENT,
   SETTINGS_OPEN_EVENT,
+  TURNS_CHANGED_EVENT,
   sessionEventName,
   type KnowledgeChangedEvent,
   type MCPOAuthCompletedEvent,
   type SchedulesChangedEvent,
+  type TurnsChangedEvent,
 } from "./events";
 import {
   wailsTransport,
@@ -110,6 +115,15 @@ export type { BrowserScreenshotContent };
 export type { GeneratedDocumentContent };
 
 /**
+ * One workspace file's binary content served through the bound read
+ * (add-turn-artifacts design D8): base64 bytes plus the byte size and a mime
+ * picked by extension, addressed by the workspace-relative path under the
+ * same jail as the text reader. The generated binding's own type,
+ * re-exported so callers keep one import surface.
+ */
+export type { WorkspaceFileBinaryContent };
+
+/**
  * One saved document preset (add-create-document D4), re-exported so feature
  * code imports one surface.
  */
@@ -135,6 +149,12 @@ export type KnowledgeChangedHandler = (event: KnowledgeChangedEvent) => void;
 
 /** Handler receiving one schedules change notification (design D10). */
 export type SchedulesChangedHandler = (event: SchedulesChangedEvent) => void;
+
+/**
+ * Handler receiving one session's in-flight turn flip (add-grouped-session-
+ * rail design D2).
+ */
+export type TurnsChangedHandler = (event: TurnsChangedEvent) => void;
 
 /** Handler receiving one gateway state change. */
 export type GatewayStateHandler = (event: GatewayStateEvent) => void;
@@ -171,9 +191,40 @@ export interface Client {
      * already in flight.
      */
     regeneratePrompts(agentID: string, instruction: string): Promise<void>;
+    /**
+     * Lists the skills in the agent's own workspace skills directory (spec
+     * agent-management "Agent workspace skills management"): one entry per
+     * skill directory with the description parsed from its SKILL.md. Reads
+     * only the workspace tier; an agent without skills lists empty.
+     */
+    listWorkspaceSkills(agentID: string): Promise<WorkspaceSkill[]>;
+    /**
+     * Copies one workspace skill into the global skills library and
+     * registers it enabled; the workspace copy stays and keeps shadowing the
+     * promoted skill. A name that already exists in the library rejects with
+     * an error naming the collision and changes nothing.
+     */
+    promoteWorkspaceSkill(agentID: string, name: string): Promise<void>;
+    /**
+     * Removes one workspace-tier skill directory; the global library is
+     * untouched. A nonexistent skill name rejects.
+     */
+    deleteWorkspaceSkill(agentID: string, name: string): Promise<void>;
   };
   chat: {
     sessions(agentID: string): Promise<Session[]>;
+    /**
+     * Every agent's sessions, most recent activity first (add-grouped-
+     * session-rail design D1): the one listing the grouped rail renders
+     * from; each row carries its AgentID for the grouping.
+     */
+    allSessions(): Promise<Session[]>;
+    /**
+     * The sessions with a turn in flight — running or parked on a pending
+     * approval (add-grouped-session-rail design D2) — for the frontend's
+     * boot-time and focus-time sync of the rail's running dots.
+     */
+    runningSessions(): Promise<string[]>;
     createSession(agentID: string): Promise<Session>;
     /**
      * Submits one user message and resolves with the turn's ID promptly
@@ -254,6 +305,16 @@ export interface Client {
     ): Promise<GeneratedDocumentContent>;
     /** Reads one jailed workspace file of the agent (design D8). */
     workspaceFile(agentID: string, relPath: string): Promise<string>;
+    /**
+     * Serves one jailed workspace file's binary content (add-turn-artifacts
+     * design D8): base64 bytes plus the byte size and a mime picked by
+     * extension (`application/pdf` for `.pdf`, otherwise
+     * `application/octet-stream`). The jail matches `workspaceFile` exactly.
+     */
+    workspaceFileBinary(
+      agentID: string,
+      relPath: string
+    ): Promise<WorkspaceFileBinaryContent>;
     /** Lists one jailed workspace directory of the agent (design D8). */
     listWorkspace(agentID: string, relPath: string): Promise<WorkspaceEntry[]>;
     /**
@@ -393,6 +454,18 @@ export interface Client {
     defaultDocumentPreset(format: string): Promise<string>;
     /** Stores the default preset name (canonicalized); empty clears it. */
     setDefaultDocumentPreset(format: string, name: string): Promise<void>;
+    /**
+     * Stores one preset's uploaded skeleton document (add-document-editing
+     * D6): the base64 bytes land in the template store under the preset's id
+     * and the preset row records the upload. The file name's extension must
+     * match the preset's format (.docx / .pptx); PDF presets take no
+     * template.
+     */
+    setDocumentPresetTemplate(
+      presetID: string,
+      filename: string,
+      base64Data: string
+    ): Promise<void>;
     hooks(): Promise<Hook[]>;
     createHook(hook: Hook): Promise<Hook>;
     updateHook(hook: Hook): Promise<Hook>;
@@ -436,6 +509,14 @@ export interface Client {
      * returning the row in the authorization-required state.
      */
     disconnectMCPServer(id: string): Promise<MCPServer>;
+    /**
+     * Creates the service-tagged MCP server row(s) for one catalog connect
+     * submission; the returned row is the redacted first created row
+     * (family: one row per product).
+     */
+    connectIntegration(input: IntegrationConnectInput): Promise<MCPServer>;
+    /** Removes an integration's server definition. */
+    disconnectIntegration(id: string): Promise<void>;
     gateway(): Promise<GatewaySettings>;
     saveGateway(settings: GatewaySettings): Promise<void>;
   };
@@ -521,6 +602,12 @@ export interface Client {
      */
     onSchedulesChanged(handler: SchedulesChangedHandler): Unsubscribe;
     /**
+     * Subscribes to one session's in-flight turn flip (`turns:changed`,
+     * add-grouped-session-rail design D2): emitted when a turn claims the
+     * session and again when it reaches a terminal outcome.
+     */
+    onTurnsChanged(handler: TurnsChangedHandler): Unsubscribe;
+    /**
      * Subscribes to knowledge corpus changes (`knowledge:changed`,
      * add-knowledge-corpus D8): emitted for every mutation — upload, agent
      * save, scope change, description edit, delete — with an empty payload,
@@ -565,10 +652,20 @@ export function createClient(transport: Transport = wailsTransport): Client {
         instruction: string
       ): Promise<void> =>
         transport.agents.RegeneratePrompts(agentID, instruction),
+      listWorkspaceSkills: async (agentID: string): Promise<WorkspaceSkill[]> =>
+        unwrap(await transport.agents.ListWorkspaceSkills(agentID)),
+      promoteWorkspaceSkill: (agentID: string, name: string): Promise<void> =>
+        transport.agents.PromoteWorkspaceSkill(agentID, name),
+      deleteWorkspaceSkill: (agentID: string, name: string): Promise<void> =>
+        transport.agents.DeleteWorkspaceSkill(agentID, name),
     },
     chat: {
       sessions: async (agentID: string): Promise<Session[]> =>
         unwrap(await transport.chat.Sessions(agentID)),
+      allSessions: async (): Promise<Session[]> =>
+        unwrap(await transport.chat.AllSessions()),
+      runningSessions: async (): Promise<string[]> =>
+        unwrap(await transport.chat.RunningSessions()),
       createSession: (agentID: string): Promise<Session> =>
         transport.chat.CreateSession(agentID),
       send: (
@@ -618,6 +715,11 @@ export function createClient(transport: Transport = wailsTransport): Client {
         unwrap(await transport.chat.GeneratedDocument(agentID, name)),
       workspaceFile: (agentID: string, relPath: string): Promise<string> =>
         transport.chat.WorkspaceFile(agentID, relPath),
+      workspaceFileBinary: async (
+        agentID: string,
+        relPath: string
+      ): Promise<WorkspaceFileBinaryContent> =>
+        unwrap(await transport.chat.WorkspaceFileBinary(agentID, relPath)),
       listWorkspace: async (
         agentID: string,
         relPath: string
@@ -794,6 +896,16 @@ export function createClient(transport: Transport = wailsTransport): Client {
         transport.settings.DefaultDocumentPreset(format),
       setDefaultDocumentPreset: (format: string, name: string): Promise<void> =>
         transport.settings.SetDefaultDocumentPreset(format, name),
+      setDocumentPresetTemplate: (
+        presetID: string,
+        filename: string,
+        base64Data: string
+      ): Promise<void> =>
+        transport.settings.SetDocumentPresetTemplate(
+          presetID,
+          filename,
+          base64Data
+        ),
       hooks: async (): Promise<Hook[]> =>
         unwrap(await transport.settings.Hooks()),
       createHook: (hook: Hook): Promise<Hook> =>
@@ -830,6 +942,11 @@ export function createClient(transport: Transport = wailsTransport): Client {
         transport.settings.AuthorizeMCPServer(id),
       disconnectMCPServer: (id: string): Promise<MCPServer> =>
         transport.settings.DisconnectMCPServer(id),
+      connectIntegration: (
+        input: IntegrationConnectInput
+      ): Promise<MCPServer> => transport.settings.ConnectIntegration(input),
+      disconnectIntegration: (id: string): Promise<void> =>
+        transport.settings.DisconnectIntegration(id),
       gateway: (): Promise<GatewaySettings> => transport.settings.Gateway(),
       saveGateway: (settings: GatewaySettings): Promise<void> =>
         transport.settings.SaveGateway(settings),
@@ -919,6 +1036,11 @@ export function createClient(transport: Transport = wailsTransport): Client {
             handler(data as SchedulesChangedEvent);
           }
         ),
+      onTurnsChanged: (handler: TurnsChangedHandler): Unsubscribe =>
+        transport.onEvent(TURNS_CHANGED_EVENT, (data: EventPayload): void => {
+          // SAFETY: TURNS_CHANGED_EVENT only carries TurnsChangedEvents.
+          handler(data as TurnsChangedEvent);
+        }),
       onKnowledgeChanged: (handler: KnowledgeChangedHandler): Unsubscribe =>
         transport.onEvent(KNOWLEDGE_CHANGED_EVENT, (): void => {
           // SAFETY: KNOWLEDGE_CHANGED_EVENT carries an empty payload; the

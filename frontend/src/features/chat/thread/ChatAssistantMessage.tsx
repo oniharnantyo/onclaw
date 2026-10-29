@@ -6,9 +6,17 @@
  * panel), consecutive tool calls group through the wave-2B ChatToolGroup
  * contract, text renders through the vendored
  * MarkdownText with the shiki highlighter and the mermaid wrapper
- * registered as props, `data-error` parts render the inline error card, and
- * a `data-compaction` message renders the divider. The turn opens with a
- * hairline rule, and the message root carries no width cap and no inset, so
+ * registered as props, `data-error` parts render the human error card
+ * (refine-chat-surface-identity design D3: the classified plain-language
+ * headline, the raw error behind a collapsed details disclosure, Retry on
+ * the reload path), a
+ * `data-compaction` message renders the divider, and a turn's trailing
+ * `data-artifacts` part renders the artifacts chips row (add-turn-artifacts
+ * design D7). The turn opens with a
+ * hairline rule and the session agent's static attribution stub
+ * (refine-chat-surface-identity design D2 — the right bar's live face stays
+ * the transcript's only live avatar), and the message root carries no width
+ * cap and no inset, so
  * the answer, the reasoning line and the tool rows share one left edge and
  * one measure. The footer carries the
  * `n / total` branch picker (offline through the runtime's branch switch)
@@ -70,6 +78,8 @@ import {
 import { useCopyToClipboard } from "@/components/assistant-ui/hooks/use-copy-to-clipboard";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 
+import type { Artifact } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/sessions/models";
+import type { Agent } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
 import { formatTokens } from "../format";
 import { toast } from "../../../lib/toasts";
 import { copyText } from "../lib/copyText";
@@ -78,7 +88,9 @@ import { stabilizeMarkdown } from "../lib/markdownStream";
 import { useChatStore, type ExtendedChatStore } from "../store";
 import { toWorkspaceRel } from "../toolPaths";
 import { workspaceFileTab } from "../components/panelRenderers";
+import { ArtifactsView } from "../components/ArtifactsView";
 import { ChatToolGroup, toolRenderers } from "../tools/aui";
+import { AgentAvatar } from "../../../components";
 import { DayGate, MessageTime, useDayBoundary } from "./DayDivider";
 
 /** Adjacent reasoning parts fold behind one disclosure; adjacent tool calls
@@ -347,18 +359,121 @@ function compactionTokens(
   );
 }
 
-/** The inline error card (the old ErrorEntry's anatomy): danger hairline,
- * tinted surface, alert semantics. */
+/** The classified failure the error card speaks (refine-chat-surface-identity
+ * design D3): the plain-language headline and, when the failure class is
+ * recognized, its recovery hint. */
+interface TurnErrorClass {
+  /** The card's headline — never the raw error string. */
+  headline: string;
+  /** The recovery path; present only for a recognized failure class. */
+  hint?: string;
+}
+
+/** The failure classes the card recognizes (refine-chat-surface-identity
+ * design D3): a conservative case-insensitive scan of the raw error string,
+ * mapped to the plain-language headline and, where the class has one, the
+ * recovery hint. Anything unrecognized falls to the honest generic — no
+ * invented cause — with the raw string one disclosure away. The classifier
+ * is a named bridge: `classify-turn-errors` (backend, typed ErrorKind at
+ * the turn loop terminal via the codebase's `errors.As` idiom) retires it. */
+function classifyTurnError(message: string): TurnErrorClass {
+  const raw = message.toLowerCase();
+
+  if (/connection refused|dial tcp|no such host/.test(raw)) {
+    return {
+      headline: "The agent couldn't reach the model provider.",
+      hint: "Check the network connection and the provider's status, then retry.",
+    };
+  }
+
+  if (/\b401\b|\b403\b|api key|unauthorized/.test(raw)) {
+    return {
+      headline: "The model provider rejected the credentials.",
+      hint: "Check the provider API key in Settings, then retry.",
+    };
+  }
+
+  if (/context length|token limit|maximum context|too many tokens/.test(raw)) {
+    return {
+      headline: "The conversation doesn't fit the model's context window.",
+      hint: "Start a new session, then retry.",
+    };
+  }
+
+  return { headline: "This turn failed." };
+}
+
+/** The inline error card (the old ErrorEntry's danger hairline anatomy,
+ * re-voiced — refine-chat-surface-identity design D3): the classified
+ * plain-language headline (never the raw string), the recovery hint when
+ * the failure class is recognized, the complete raw error verbatim behind
+ * the collapsed mono details disclosure, and Retry riding the message's
+ * existing reload path — the same regeneration the footer's action and the
+ * branch picker compose with (failed regeneration keeps the prior variant).
+ * Alert semantics stay on the card; Retry stands down while the turn runs. */
 function ErrorLine({ message }: { message: string }): ReactElement {
+  const aui = useAui();
+
+  const messageRunning = useAuiState(
+    (s: AssistantState) => s.message.status?.type === "running"
+  );
+
+  // The adapter maps a failed turn to incomplete/error — never running —
+  // so the message-status gate alone is unreachable for this card. The
+  // store's busy flag is the honest "turn is running" signal reachable
+  // from it: the same turn lifecycle the retry path itself sets (and the
+  // store refuses regeneration under).
+  const turnBusy = useChatStore((s: ExtendedChatStore) => s.busy);
+
+  const running = messageRunning || turnBusy;
+
+  const [detailsOpen, setDetailsOpen] = useState(false);
+
+  const { headline, hint } = classifyTurnError(message);
+
   return (
     <div
-      className="flex items-start gap-2 rounded-md border border-danger/35 bg-danger/5 px-3 py-2"
+      className="flex flex-col gap-1.5 rounded-md border border-danger/35 bg-danger/5 px-3 py-2"
       data-testid="entry-error"
       role="alert"
     >
-      <p className="break-words text-[13px] leading-5 text-dangertext">
-        {message}
+      <p className="break-words text-[13px] font-medium leading-5 text-dangertext">
+        {headline}
       </p>
+      {hint !== undefined && (
+        <p className="break-words text-xs leading-4 text-muted">{hint}</p>
+      )}
+      <div className="flex items-center gap-2">
+        {!running && (
+          <button
+            type="button"
+            title="Retry this turn"
+            data-testid="btn-retry-turn"
+            onClick={() => aui.message.reload()}
+            className={ACTION_CLASS}
+          >
+            <RefreshCw aria-hidden="true" className="size-3" />
+            Retry
+          </button>
+        )}
+        <button
+          type="button"
+          aria-expanded={detailsOpen}
+          data-testid="entry-error-details-toggle"
+          onClick={() => setDetailsOpen((open: boolean): boolean => !open)}
+          className={ACTION_CLASS}
+        >
+          {detailsOpen ? "Hide technical details" : "Technical details"}
+        </button>
+      </div>
+      {detailsOpen && (
+        <pre
+          className="text-fg2 max-h-40 overflow-auto rounded-md border border-danger/20 bg-[color-mix(in_oklab,var(--fg)_4%,transparent)] p-2 font-mono text-[12px] leading-4 break-words whitespace-pre-wrap"
+          data-testid="entry-error-details"
+        >
+          {message}
+        </pre>
+      )}
     </div>
   );
 }
@@ -380,6 +495,50 @@ function CompactionLine({ data }: { data: unknown }): ReactElement | null {
       </span>
       <span className="h-px flex-1 bg-line" />
     </div>
+  );
+}
+
+/** The artifact record a chip renders from: the generated binding's shape
+ * (workspace-relative path, byte size, change kind). */
+function isArtifact(value: unknown): value is Artifact {
+  return isRecord(value) && isString(value.path) && isNumber(value.size);
+}
+
+/** Reads an artifacts part's payload: the record shape the D2 mapping mints
+ * for data-artifacts parts ({ artifacts, truncated }); a degraded payload
+ * renders nothing rather than nonsense (the compaction guard's rule). */
+function artifactsPayload(
+  data: unknown
+): data is { artifacts: Artifact[]; truncated?: boolean } {
+  return (
+    isRecord(data) &&
+    Array.isArray(data.artifacts) &&
+    data.artifacts.every(isArtifact)
+  );
+}
+
+/** The turn's artifacts chips row (add-turn-artifacts design D7): renders
+ * from the data-artifacts payload the D2 mapping appends after every other
+ * part — outside the tool-call fold by construction. Activation opens the
+ * workspace-file preview tab, the same call ChatMarkdownLink makes; with no
+ * active agent the chips render non-interactive. */
+function ArtifactsLine({ data }: { data: unknown }): ReactElement | null {
+  const activeAgentID = useChatStore((s: ExtendedChatStore) => s.activeAgentID);
+  const openPanelTab = useChatStore((s: ExtendedChatStore) => s.openPanelTab);
+
+  if (!artifactsPayload(data)) return null;
+
+  return (
+    <ArtifactsView
+      artifacts={data.artifacts}
+      truncated={data.truncated}
+      onOpen={
+        activeAgentID === null
+          ? undefined
+          : (path: string): void =>
+              openPanelTab(workspaceFileTab(activeAgentID, path))
+      }
+    />
   );
 }
 
@@ -416,6 +575,35 @@ function TurnRule(): ReactElement | null {
   );
 }
 
+/** The turn's attribution stub (refine-chat-surface-identity design D2):
+ * the session agent's face and name opening every assistant turn. The
+ * avatar is deliberately STATIC — `useLiveAvatar` is architected as the
+ * right bar's single live face (one imperative handle owns the nod/shake
+ * reactions; a second instance would make two faces fight over them) — so
+ * the stub renders the shared AgentAvatar with no live props under every
+ * motion setting. Subagent work stays attributed to the session agent: a
+ * subagent's identity lives inside its task tool card, never here. */
+function TurnAttribution(): ReactElement | null {
+  const agents = useChatStore((s: ExtendedChatStore) => s.agents);
+  const activeAgentID = useChatStore((s: ExtendedChatStore) => s.activeAgentID);
+
+  const agent = agents.find((a: Agent) => a.ID === activeAgentID) ?? null;
+
+  if (agent === null) return null;
+
+  return (
+    <div
+      className="mb-1.5 flex items-center gap-1.5"
+      data-testid="turn-attribution"
+    >
+      <AgentAvatar id={agent.ID} avatar={agent.Avatar} size={16} />
+      <span className="text-xs font-medium text-muted">
+        {agent.Name || agent.ID}
+      </span>
+    </div>
+  );
+}
+
 /** One assistant turn. A compaction message renders as the divider alone. */
 export function ChatAssistantMessage(): ReactElement {
   const content = useAuiState((s: AssistantState) => s.message.content);
@@ -438,6 +626,7 @@ export function ChatAssistantMessage(): ReactElement {
     <div className="group/msg group/answer relative">
       <DayGate />
       <TurnRule />
+      <TurnAttribution />
       <MessagePrimitive.Root
         data-testid="entry-assistant"
         data-role="assistant"
@@ -523,6 +712,8 @@ export function ChatAssistantMessage(): ReactElement {
                         : "Turn failed"
                     }
                   />
+                ) : part.name === "artifacts" ? (
+                  <ArtifactsLine data={part.data} />
                 ) : null;
               // Tail activity (typing dots / running-tool status line) is
               // owned by the thread's TurnActivity slot; the synthetic

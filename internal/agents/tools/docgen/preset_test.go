@@ -159,3 +159,116 @@ func TestMarshalPreset_StampsSchemaVersion(t *testing.T) {
 	require.Empty(t, warning)
 	require.Equal(t, Preset{SchemaVersion: PresetSchemaVersion, Theme: "technical"}, p)
 }
+
+// TestParseDOCXPreset_RoundTripAndValidation covers the DOCX preset schema
+// (add-document-editing design D6): config and template flavors round-trip
+// verbatim, invalid fields fail at parse time with readable errors, and the
+// flavor enum is enforced.
+func TestParseDOCXPreset_RoundTripAndValidation(t *testing.T) {
+	t.Run("config flavor round-trips", func(t *testing.T) {
+		data := rawPreset(t, DOCXPreset{
+			SchemaVersion: 1,
+			Flavor:        PresetFlavorConfig,
+			Fonts:         &DOCXFonts{BodyFamily: "Georgia", BodySize: 12, HeadingFamily: "Helvetica", HeadingSize: 18},
+			Heading:       &DOCXHeadingStyle{Color: "#AA11BB", Bold: boolPtr(false)},
+			Page:          &DOCXPageSetup{Size: "a4", Orientation: "landscape", MarginInches: 1.25},
+			Footer:        &DOCXFooterStyle{Text: "ACME", ShowPageNumber: true},
+		})
+		p, warning, err := ParseDOCXPreset(data)
+		require.NoError(t, err)
+		require.Empty(t, warning)
+		require.Equal(t, PresetSchemaVersion, p.SchemaVersion)
+		require.Equal(t, PresetFlavorConfig, p.Flavor)
+		require.Equal(t, "Georgia", p.Fonts.BodyFamily)
+		require.Equal(t, 12.0, p.Fonts.BodySize)
+		require.True(t, p.Footer.ShowPageNumber)
+	})
+
+	t.Run("template flavor carries only metadata", func(t *testing.T) {
+		p, warning, err := ParseDOCXPreset(rawPreset(t, DOCXPreset{
+			Flavor: PresetFlavorTemplate, HasTemplate: true, TemplateName: "Branded.docx",
+		}))
+		require.NoError(t, err)
+		require.Empty(t, warning)
+		require.True(t, p.HasTemplate)
+		require.Equal(t, "Branded.docx", p.TemplateName)
+	})
+
+	t.Run("invalid fields are readable parse errors", func(t *testing.T) {
+		cases := []struct {
+			name   string
+			preset DOCXPreset
+			want   string
+		}{
+			{"unknown flavor", DOCXPreset{Flavor: "hybrid"}, "invalid flavor"},
+			{"tiny font", DOCXPreset{Flavor: PresetFlavorConfig, Fonts: &DOCXFonts{BodySize: 3}}, "between 6 and 72"},
+			{"huge font", DOCXPreset{Flavor: PresetFlavorConfig, Fonts: &DOCXFonts{HeadingSize: 99}}, "between 6 and 72"},
+			{"bad color", DOCXPreset{Flavor: PresetFlavorConfig, Heading: &DOCXHeadingStyle{Color: "red"}}, "#RRGGBB"},
+			{"bad page size", DOCXPreset{Flavor: PresetFlavorConfig, Page: &DOCXPageSetup{Size: "a3"}}, "letter, a4, or legal"},
+			{"bad orientation", DOCXPreset{Flavor: PresetFlavorConfig, Page: &DOCXPageSetup{Orientation: "diagonal"}}, "portrait or landscape"},
+			{"bad margin", DOCXPreset{Flavor: PresetFlavorConfig, Page: &DOCXPageSetup{MarginInches: 9}}, "between 0 and 4 inches"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				_, _, err := ParseDOCXPreset(rawPreset(t, tc.preset))
+				require.ErrorContains(t, err, tc.want)
+			})
+		}
+	})
+
+	t.Run("unknown version still parses but is flagged", func(t *testing.T) {
+		p, warning, err := ParseDOCXPreset([]byte(`{"schema_version":9,"flavor":"config"}`))
+		require.NoError(t, err)
+		require.Contains(t, warning, "not supported")
+		require.Equal(t, 9, p.SchemaVersion)
+	})
+
+	t.Run("missing version reads as current", func(t *testing.T) {
+		p, warning, err := ParseDOCXPreset([]byte(`{"flavor":"template"}`))
+		require.NoError(t, err)
+		require.Empty(t, warning)
+		require.Equal(t, PresetSchemaVersion, p.SchemaVersion)
+	})
+}
+
+// TestParsePPTXPreset_TemplateOnly covers the PPTX preset schema: template
+// flavor is the only valid one — PPTX generation has no built-in default
+// template to parametrize.
+func TestParsePPTXPreset_TemplateOnly(t *testing.T) {
+	p, warning, err := ParsePPTXPreset(rawPreset(t, PPTXPreset{
+		Flavor: PresetFlavorTemplate, HasTemplate: true, TemplateName: "Deck.pptx",
+	}))
+	require.NoError(t, err)
+	require.Empty(t, warning)
+	require.True(t, p.HasTemplate)
+	require.Equal(t, "Deck.pptx", p.TemplateName)
+
+	_, _, err = ParsePPTXPreset(rawPreset(t, PPTXPreset{Flavor: PresetFlavorConfig}))
+	require.ErrorContains(t, err, "PPTX presets are")
+
+	// Marshal stamps the schema version.
+	data, err := MarshalPPTXPreset(PPTXPreset{Flavor: PresetFlavorTemplate})
+	require.NoError(t, err)
+	require.JSONEq(t, `{"schema_version":1,"flavor":"template"}`, string(data))
+}
+
+// TestTemplateMeta_AndApply cover the metadata helpers the preset service
+// rides: the peek is lenient (an unparseable config reads as no template),
+// and the stamp preserves the rest of the document.
+func TestTemplateMeta_AndApply(t *testing.T) {
+	require.False(t, ParseTemplateMeta([]byte("{not json")).HasTemplate, "a corrupt config reads as no template")
+	meta := ParseTemplateMeta([]byte(`{"flavor":"template","has_template":true,"template_name":"D.pptx"}`))
+	require.True(t, meta.HasTemplate)
+	require.Equal(t, "D.pptx", meta.TemplateName)
+
+	stamped, err := ApplyTemplateMeta([]byte(`{"flavor":"template","theme":"x"}`), true, "D.pptx")
+	require.NoError(t, err)
+	require.JSONEq(t, `{"flavor":"template","theme":"x","has_template":true,"template_name":"D.pptx"}`, string(stamped))
+
+	cleared, err := ApplyTemplateMeta(stamped, false, "")
+	require.NoError(t, err)
+	require.JSONEq(t, `{"flavor":"template","theme":"x","has_template":false}`, string(cleared))
+}
+
+// boolPtr is the table cases' shorthand for the heading weight override.
+func boolPtr(b bool) *bool { return &b }

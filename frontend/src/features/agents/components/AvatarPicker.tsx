@@ -8,8 +8,11 @@
  */
 import { useMemo, useState } from "react";
 import type { ReactElement } from "react";
-import NiceAvatar, { genConfig } from "react-nice-avatar";
-import type { AvatarFullConfig, NiceAvatarProps } from "react-nice-avatar";
+import NiceAvatar, { genConfig } from "@oniharnantyo/react-nice-avatar";
+import type {
+  AvatarFullConfig,
+  NiceAvatarProps,
+} from "@oniharnantyo/react-nice-avatar";
 
 import { Icon } from "../../../components/ui/Icon";
 import { cn } from "../../../lib/cn";

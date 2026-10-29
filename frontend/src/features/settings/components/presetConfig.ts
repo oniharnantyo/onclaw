@@ -5,9 +5,35 @@ import {
   type Json,
 } from "../../chat/tools/parse";
 
-/** The v1 preset config JSON's schema_version stamp (add-create-document
- * D5); every save re-stamps it. */
+/** The preset config JSON's schema_version stamp (add-create-document D5,
+ * carried into the DOCX/PPTX schemas); every save re-stamps it. */
 const SCHEMA_VERSION = 1;
+
+/** The preset flavors a DOCX or PPTX preset may carry (docgen's
+ * PresetFlavorConfig / PresetFlavorTemplate): a config preset parametrizes
+ * the built-in default template; a template preset references a
+ * user-uploaded skeleton. PDF presets carry no flavor (the v1 schema). */
+export const FLAVOR_CONFIG = "config";
+
+export const FLAVOR_TEMPLATE = "template";
+
+/** DOCX config bounds, from docgen's validateDOCXPreset — the form fails
+ * typos here before the round trip. */
+export const DOCX_FONT_SIZE_MIN = 6;
+
+export const DOCX_FONT_SIZE_MAX = 72;
+
+export const DOCX_MARGIN_MAX = 4;
+
+/** The DOCX heading color must be six hex digits with an optional # (docgen
+ * isHexColor). */
+export const DOCX_COLOR_RE = /^#?[0-9a-fA-F]{6}$/;
+
+/** The file extension a format's template upload must carry (the service
+ * validates the same rule — .docx for DOCX, .pptx for PPTX). */
+export function templateExtension(format: string): string {
+  return format === "docx" ? ".docx" : ".pptx";
+}
 
 /** Backend save-time bounds, from picoloom's validators via docgen's
  * validatePreset — the form fails typos here before the round trip. */
@@ -398,4 +424,313 @@ export function buildConfigJSON(form: PresetForm): string {
   }
 
   return JSON.stringify(payload);
+}
+
+/** The DOCX config preset's font selection (docgen's DOCXFonts JSON): the
+ * body and heading families and sizes, in points. */
+export interface DOCXFontsConfig {
+  body_family?: string;
+  body_size?: number;
+  heading_family?: string;
+  heading_size?: number;
+}
+
+/** The DOCX config preset's heading treatment (docgen's DOCXHeadingStyle
+ * JSON): color and weight; bold absent keeps the built-in template's bold
+ * headings. */
+export interface DOCXHeadingConfig {
+  color?: string;
+  bold?: boolean;
+}
+
+/** The DOCX config preset's page geometry (docgen's DOCXPageSetup JSON);
+ * the size vocabulary is the PDF presets'. */
+export interface DOCXPageConfig {
+  size?: string;
+  orientation?: string;
+  margin_inches?: number;
+}
+
+/** The DOCX config preset's footer (docgen's DOCXFooterStyle JSON). */
+export interface DOCXFooterConfig {
+  text?: string;
+  show_page_number?: boolean;
+}
+
+/** One DOCX preset config document (docgen's DOCXPreset JSON): one of the
+ * two flavors; template presets carry only the has-template metadata. */
+export interface DOCXConfig {
+  schema_version?: number;
+  flavor?: string;
+  has_template?: boolean;
+  template_name?: string;
+  fonts?: DOCXFontsConfig;
+  heading?: DOCXHeadingConfig;
+  page?: DOCXPageConfig;
+  footer?: DOCXFooterConfig;
+}
+
+/** One PPTX preset config document (docgen's PPTXPreset JSON): template
+ * flavor only — the uploaded skeleton is the whole preset. */
+export interface PPTXConfig {
+  schema_version?: number;
+  flavor?: string;
+  has_template?: boolean;
+  template_name?: string;
+}
+
+/** The DOCX config editor's form state. Numeric fields stay text until save
+ * (the PresetForm pattern); every empty field means the built-in default
+ * template's value. */
+export interface DOCXForm {
+  /** The preset's id; "" while creating. */
+  id: string;
+  name: string;
+  fontsBodyFamily: string;
+  fontsBodySize: string;
+  fontsHeadingFamily: string;
+  fontsHeadingSize: string;
+  headingColor: string;
+  /** "" keeps the built-in bold; "bold"/"regular" map to true/false. */
+  headingBold: string;
+  pageSize: string;
+  pageOrientation: string;
+  pageMargin: string;
+  footerText: string;
+  footerPageNumber: boolean;
+}
+
+/** A fresh DOCX config form: every field at the built-in default. */
+export function emptyDOCXForm(): DOCXForm {
+  return {
+    id: "",
+    name: "",
+    fontsBodyFamily: "",
+    fontsBodySize: "",
+    fontsHeadingFamily: "",
+    fontsHeadingSize: "",
+    headingColor: "",
+    headingBold: "",
+    pageSize: "",
+    pageOrientation: "",
+    pageMargin: "",
+    footerText: "",
+    footerPageNumber: false,
+  };
+}
+
+/** Leniently reads a stored config's flavor; "" when unreadable (a PDF
+ * preset's v1 config, or a corrupt document). */
+export function presetFlavor(configJSON: string): string {
+  try {
+    // SAFETY: the try/catch bounds the parse; only the flavor field is read
+    // and a wrong-typed flavor reads as absent.
+    const raw = JSON.parse(configJSON) as { flavor?: Json };
+
+    return isString(raw.flavor) ? raw.flavor : "";
+  } catch {
+    return "";
+  }
+}
+
+/** Decodes a stored DOCX preset config into the schema type; null when the
+ * text is not JSON or not an object. Wrong-typed fields drop to absent. */
+export function decodeDOCXConfig(configJSON: string): DOCXConfig | null {
+  let raw: Json;
+
+  try {
+    // SAFETY: the try/catch bounds the parse; the isObject guard establishes
+    // the object contract before any field is read.
+    raw = JSON.parse(configJSON) as Json;
+  } catch {
+    return null;
+  }
+
+  if (!isObject(raw)) return null;
+
+  const config: DOCXConfig = {};
+
+  if (isNumber(raw.schema_version)) config.schema_version = raw.schema_version;
+
+  if (isString(raw.flavor)) config.flavor = raw.flavor;
+
+  if (raw.has_template === true) config.has_template = true;
+
+  if (isString(raw.template_name)) config.template_name = raw.template_name;
+
+  if (isObject(raw.fonts)) {
+    config.fonts = {
+      body_family: readString(raw.fonts.body_family),
+      body_size: isNumber(raw.fonts.body_size)
+        ? raw.fonts.body_size
+        : undefined,
+      heading_family: readString(raw.fonts.heading_family),
+      heading_size: isNumber(raw.fonts.heading_size)
+        ? raw.fonts.heading_size
+        : undefined,
+    };
+  }
+
+  if (isObject(raw.heading)) {
+    config.heading = {
+      color: readString(raw.heading.color),
+      bold:
+        raw.heading.bold === true || raw.heading.bold === false
+          ? raw.heading.bold
+          : undefined,
+    };
+  }
+
+  if (isObject(raw.page)) {
+    config.page = {
+      size: readString(raw.page.size),
+      orientation: readString(raw.page.orientation),
+      margin_inches: isNumber(raw.page.margin_inches)
+        ? raw.page.margin_inches
+        : undefined,
+    };
+  }
+
+  if (isObject(raw.footer)) {
+    config.footer = {
+      text: readString(raw.footer.text),
+      show_page_number: raw.footer.show_page_number === true,
+    };
+  }
+
+  return config;
+}
+
+/** A DOCX config parse result: the form plus its drift warning. */
+export interface ParsedDOCX {
+  form: DOCXForm;
+  warn: string | null;
+}
+
+/** Decodes a stored DOCX config into form state, mirroring parsePresetConfig's
+ * drift contract: unreadable or foreign-version configs still open, flagged. */
+export function parseDOCXConfig(configJSON: string): ParsedDOCX {
+  const form = emptyDOCXForm();
+  const config = decodeDOCXConfig(configJSON);
+
+  if (config === null) {
+    return {
+      form,
+      warn: "The preset's stored settings could not be read; saving replaces them.",
+    };
+  }
+
+  let warn: string | null = null;
+
+  const version = config.schema_version ?? SCHEMA_VERSION;
+
+  if (version !== SCHEMA_VERSION) {
+    warn = `This preset uses schema version ${version}; saving upgrades it to version ${SCHEMA_VERSION}.`;
+  }
+
+  if (config.fonts) {
+    form.fontsBodyFamily = readString(config.fonts.body_family);
+    form.fontsBodySize = readDecimal(config.fonts.body_size);
+    form.fontsHeadingFamily = readString(config.fonts.heading_family);
+    form.fontsHeadingSize = readDecimal(config.fonts.heading_size);
+  }
+
+  if (config.heading) {
+    form.headingColor = readString(config.heading.color);
+    form.headingBold =
+      config.heading.bold === true
+        ? "bold"
+        : config.heading.bold === false
+          ? "regular"
+          : "";
+  }
+
+  if (config.page) {
+    form.pageSize = readString(config.page.size);
+    form.pageOrientation = readString(config.page.orientation);
+    form.pageMargin = readDecimal(config.page.margin_inches);
+  }
+
+  if (config.footer) {
+    form.footerText = readString(config.footer.text);
+    form.footerPageNumber = config.footer.show_page_number === true;
+  }
+
+  return { form, warn };
+}
+
+/** Serializes the DOCX config form into the config JSON. Section presence
+ * follows the schema's semantics: every parameter maps only when it carries
+ * a value; the footer maps only with text or a page number. Callers validate
+ * numeric fields first. */
+export function buildDOCXConfigJSON(form: DOCXForm): string {
+  const payload: DOCXConfig = {
+    schema_version: SCHEMA_VERSION,
+    flavor: FLAVOR_CONFIG,
+  };
+
+  if (
+    form.fontsBodyFamily.trim() ||
+    form.fontsBodySize.trim() ||
+    form.fontsHeadingFamily.trim() ||
+    form.fontsHeadingSize.trim()
+  ) {
+    const fonts: DOCXFontsConfig = {};
+
+    if (form.fontsBodyFamily.trim())
+      fonts.body_family = form.fontsBodyFamily.trim();
+
+    if (form.fontsBodySize.trim())
+      fonts.body_size = Number(form.fontsBodySize.trim());
+
+    if (form.fontsHeadingFamily.trim())
+      fonts.heading_family = form.fontsHeadingFamily.trim();
+
+    if (form.fontsHeadingSize.trim())
+      fonts.heading_size = Number(form.fontsHeadingSize.trim());
+    payload.fonts = fonts;
+  }
+
+  if (form.headingColor.trim() || form.headingBold) {
+    const heading: DOCXHeadingConfig = {};
+
+    if (form.headingColor.trim()) heading.color = form.headingColor.trim();
+
+    if (form.headingBold === "bold") heading.bold = true;
+
+    if (form.headingBold === "regular") heading.bold = false;
+    payload.heading = heading;
+  }
+
+  if (form.pageSize || form.pageOrientation || form.pageMargin.trim()) {
+    const page: DOCXPageConfig = {};
+
+    if (form.pageSize) page.size = form.pageSize;
+
+    if (form.pageOrientation) page.orientation = form.pageOrientation;
+
+    if (form.pageMargin.trim())
+      page.margin_inches = Number(form.pageMargin.trim());
+    payload.page = page;
+  }
+
+  if (form.footerText.trim() || form.footerPageNumber) {
+    const footer: DOCXFooterConfig = {};
+
+    if (form.footerText.trim()) footer.text = form.footerText.trim();
+
+    if (form.footerPageNumber) footer.show_page_number = true;
+    payload.footer = footer;
+  }
+
+  return JSON.stringify(payload);
+}
+
+/** A fresh template preset's config JSON: template flavor, no metadata yet —
+ * the service stamps has_template/template_name over the upload. */
+export function buildTemplateConfigJSON(): string {
+  return JSON.stringify({
+    schema_version: SCHEMA_VERSION,
+    flavor: FLAVOR_TEMPLATE,
+  });
 }

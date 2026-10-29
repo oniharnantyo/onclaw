@@ -167,6 +167,23 @@ export interface MCPServer {
      * value means static headers only.
      */
     "Auth": MCPServerAuth;
+
+    /**
+     * Service is the optional integration catalog tag; empty for raw MCP
+     * servers (add-integrations design D1: an integration is a tagged
+     * MCPServer row, not a separate entity).
+     */
+    "Service": string;
+
+    /**
+     * CredentialSet and CredentialHint are computed/redacted views for
+     * listings (add-integrations design D4): only whether an integration
+     * credential exists and its last four characters. Plain row fields —
+     * never persisted (no column, never part of the auth JSON document);
+     * the store populates them on read.
+     */
+    "CredentialSet": boolean;
+    "CredentialHint": string;
     "Enabled": boolean;
     "Status": string;
     "StatusError": string;
@@ -190,6 +207,28 @@ export interface MCPServerAuth {
     "auth_server_metadata_url"?: string;
     "redirect_uri"?: string;
     "scopes"?: string[] | null;
+
+    /**
+     * IntegrationCredential is the token/API key entered through the
+     * connect sheet (add-integrations design D4). Stored in the auth JSON,
+     * never in Headers (credential secrecy).
+     */
+    "integration_credential"?: string;
+
+    /**
+     * CredentialHeaderStyle declares how to render the credential at dial
+     * time: one of the MCPAuthHeaderStyle* values, including the "custom:"
+     * and "header:" prefixed forms. Empty means bearer. Catalog-declared
+     * per service (design D3).
+     */
+    "credential_header_style"?: string;
+
+    /**
+     * ExtraAuthParams are extra query parameters appended to the authorize
+     * URL by the OAuth flow (add-integrations design D3): Google needs
+     * access_type=offline and prompt=consent to hand back a refresh token.
+     */
+    "extra_auth_params"?: { [_ in string]?: string } | null;
 }
 
 /**

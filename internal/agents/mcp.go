@@ -47,6 +47,12 @@ func MCPServerRef(server store.MCPServer, tokens store.MCPOAuthTokenStore) mcp.R
 			Env:       maps.Clone(server.Env),
 			URL:       server.URL,
 			Headers:   maps.Clone(server.Headers),
+
+			// The integration credential rides the auth JSON (design D4) and
+			// is injected into the request only at dial time (design D3) —
+			// never into Headers, so it never reaches the frontend.
+			IntegrationCredential: server.Auth.IntegrationCredential,
+			CredentialHeaderStyle: server.Auth.CredentialHeaderStyle,
 		},
 	}
 	if server.Auth.IsOAuth() {

@@ -23,6 +23,11 @@ const (
 	// design D8) — so open knowledge surfaces re-list. The payload is a
 	// KnowledgeChangedEvent.
 	EventKnowledgeChanged = "knowledge:changed"
+	// EventTurnsChanged announces an in-flight turn transition — a turn
+	// started or reached a terminal outcome (add-grouped-session-rail design
+	// D2) — so the frontend keeps the busy markers without a per-session
+	// subscription. The payload is a TurnsChangedEvent.
+	EventTurnsChanged = "turns:changed"
 )
 
 // GatewayStateEvent is the payload of EventGatewayState. State mirrors
@@ -53,6 +58,15 @@ type SchedulesChangedEvent struct {
 // no fields: the change is corpus-wide from the surfaces' point of view, so
 // they simply re-list (add-knowledge-corpus design D8).
 type KnowledgeChangedEvent struct{}
+
+// TurnsChangedEvent is the payload of EventTurnsChanged: SessionID names the
+// session whose in-flight state flipped and Busy reports the new state —
+// true when a turn claimed the session, false when it reached a terminal
+// outcome (add-grouped-session-rail design D2).
+type TurnsChangedEvent struct {
+	SessionID string `json:"sessionId"`
+	Busy      bool   `json:"busy"`
+}
 
 // SessionEventName returns the event name carrying one session's live turn
 // events: "session:<id>:event". The payload is a sessions.Event. The name is

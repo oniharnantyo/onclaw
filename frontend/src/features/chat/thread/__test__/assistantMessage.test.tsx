@@ -6,9 +6,12 @@
  * mermaid shows source while streaming and a diagram (or the quiet fallback)
  * when complete, streaming code stays plain and completed code highlights
  * under its language label, the copy action carries the refusal toast,
- * regenerate and the variant picker ride the store without requests, and the
+ * regenerate and the variant picker ride the store without requests, the
  * turn activity shows the typing dots before the first token and a status
- * line naming a running tool.
+ * line naming a running tool, and the error card classifies the failure
+ * into its plain-language headline with the raw string behind the details
+ * disclosure and Retry riding the regenerate path
+ * (refine-chat-surface-identity tasks 3.1–3.3).
  *
  * The heavy renderers are mocked at their module boundaries
  * (beautiful-mermaid, the vendored shiki element, the Wails clipboard
@@ -83,6 +86,14 @@ function settledTurn(text: string): ReturnType<typeof fold> {
     ev(Kind.KindUserMessage, { text: "ask", turn_id: "t1" }),
     ev(Kind.KindAssistantMessage, { text, turn_id: "t1" }),
     ev(Kind.KindTurnCompleted, { turn_id: "t1" })
+  );
+}
+
+/** A failed turn carrying the given raw error string. */
+function failedTurn(error: string): ReturnType<typeof fold> {
+  return fold(
+    ev(Kind.KindUserMessage, { text: "ask", turn_id: "t1" }),
+    ev(Kind.KindTurnError, { turn_id: "t1", error })
   );
 }
 
@@ -612,5 +623,162 @@ describe("the code block's wrap toggle (spec chat-view 'Code block presentation'
     expect(
       document.querySelector("[data-code-wrap]")?.getAttribute("data-code-wrap")
     ).toBe("true");
+  });
+});
+
+describe("the error card (refine-chat-surface-identity tasks 3.1–3.3, design D3)", () => {
+  const RAW = "dial tcp 10.0.0.1:443: connect: connection refused";
+
+  it("renders the classified headline, the hint, and Retry; the details stay collapsed", async () => {
+    await mount(failedTurn(RAW));
+
+    const card = screen.getByTestId("entry-error");
+
+    expect(card.getAttribute("role")).toBe("alert");
+    expect(card.textContent).toContain(
+      "The agent couldn't reach the model provider."
+    );
+    expect(card.textContent).toContain(
+      "Check the network connection and the provider's status"
+    );
+    expect(screen.getByTestId("btn-retry-turn")).not.toBeNull();
+
+    // Collapsed by default: the raw string is on no page until the reader
+    // opens the disclosure.
+    expect(screen.queryByTestId("entry-error-details")).toBeNull();
+    expect(document.body.textContent).not.toContain(RAW);
+  });
+
+  it("keeps the raw string out of the headline and verbatim in the disclosure", async () => {
+    await mount(failedTurn(RAW));
+
+    const card = screen.getByTestId("entry-error");
+
+    // The headline never carries the raw string (the card, collapsed, has
+    // no trace of it — the classifier's voice only).
+    expect(card.textContent).not.toContain(RAW);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("entry-error-details-toggle"));
+    });
+
+    expect(screen.getByTestId("entry-error-details").textContent).toBe(RAW);
+  });
+
+  it("wires Retry to the store's regenerate action", async () => {
+    const regenerate = vi.fn<(turnID: string) => Promise<void>>();
+    regenerate.mockResolvedValue(undefined);
+
+    useChatStore.setState({ regenerate });
+
+    const mounted = await mount(failedTurn(RAW));
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("btn-retry-turn"));
+    });
+
+    expect(regenerate).toHaveBeenCalledWith("t1");
+
+    await mounted.unmount();
+    h = null;
+  });
+
+  it("stays honest on an unrecognized failure: the generic headline, no invented cause", async () => {
+    await mount(failedTurn("eino: upstream exploded mid-stream"));
+
+    const card = screen.getByTestId("entry-error");
+
+    expect(card.textContent).toContain("This turn failed.");
+    expect(card.textContent).not.toContain("provider");
+    expect(card.textContent).not.toContain("credentials");
+    expect(card.textContent).not.toContain("context window");
+
+    // The raw string still survives in the disclosure.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("entry-error-details-toggle"));
+    });
+
+    expect(screen.getByTestId("entry-error-details").textContent).toBe(
+      "eino: upstream exploded mid-stream"
+    );
+  });
+
+  it("stands Retry down while the turn is running and restores it when the turn settles", async () => {
+    useChatStore.setState({ busy: true });
+
+    const mounted = await mount(failedTurn(RAW));
+
+    const card = screen.getByTestId("entry-error");
+
+    expect(card.getAttribute("role")).toBe("alert");
+    expect(screen.queryByTestId("btn-retry-turn")).toBeNull();
+    // The details disclosure stays available while the stand-down holds.
+    expect(screen.getByTestId("entry-error-details-toggle")).not.toBeNull();
+
+    await mounted.setStore({ busy: false });
+
+    expect(screen.getByTestId("btn-retry-turn")).not.toBeNull();
+
+    await mounted.unmount();
+    h = null;
+  });
+
+  it("classifies a credentials failure and keeps the raw string out of the headline", async () => {
+    const RAW_CREDENTIALS =
+      "403 forbidden: the api key is unauthorized for this model";
+
+    await mount(failedTurn(RAW_CREDENTIALS));
+
+    const card = screen.getByTestId("entry-error");
+
+    expect(card.getAttribute("role")).toBe("alert");
+    expect(card.textContent).toContain(
+      "The model provider rejected the credentials."
+    );
+    expect(card.textContent).toContain(
+      "Check the provider API key in Settings, then retry."
+    );
+
+    // Collapsed by default, and the classified voice only: the raw string
+    // is on no page until the reader opens the disclosure.
+    expect(screen.queryByTestId("entry-error-details")).toBeNull();
+    expect(document.body.textContent).not.toContain(RAW_CREDENTIALS);
+    expect(card.textContent).not.toContain(RAW_CREDENTIALS);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("entry-error-details-toggle"));
+    });
+
+    expect(screen.getByTestId("entry-error-details").textContent).toBe(
+      RAW_CREDENTIALS
+    );
+  });
+
+  it("classifies a context-window failure and keeps the raw string out of the headline", async () => {
+    const RAW_CONTEXT =
+      "error: prompt exceeds the model's token limit (context length 131072 tokens)";
+
+    await mount(failedTurn(RAW_CONTEXT));
+
+    const card = screen.getByTestId("entry-error");
+
+    expect(card.getAttribute("role")).toBe("alert");
+    expect(card.textContent).toContain(
+      "The conversation doesn't fit the model's context window."
+    );
+    expect(card.textContent).toContain("Start a new session, then retry.");
+
+    // Collapsed by default, and the classified voice only.
+    expect(screen.queryByTestId("entry-error-details")).toBeNull();
+    expect(document.body.textContent).not.toContain(RAW_CONTEXT);
+    expect(card.textContent).not.toContain(RAW_CONTEXT);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("entry-error-details-toggle"));
+    });
+
+    expect(screen.getByTestId("entry-error-details").textContent).toBe(
+      RAW_CONTEXT
+    );
   });
 });

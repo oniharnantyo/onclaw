@@ -187,3 +187,29 @@ func TestService_CheckpointPersistence(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, ok)
 }
+
+// TestService_AllSessions lists every agent's sessions, most recent activity
+// first (add-grouped-session-rail design D1); the empty result is non-nil.
+func TestService_AllSessions(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newService(t)
+
+	none, err := svc.AllSessions(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, none)
+	require.Empty(t, none)
+
+	first, err := svc.CreateSession(ctx, "agent-1", "")
+	require.NoError(t, err)
+	second, err := svc.CreateSession(ctx, "agent-2", "")
+	require.NoError(t, err)
+
+	// Activity on the first lifts it above the second across agents.
+	require.NoError(t, svc.Append(ctx, first.ID, []sessions.Event{{Kind: sessions.KindUserMessage, Text: "hi"}}))
+
+	list, err := svc.AllSessions(ctx)
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+	require.Equal(t, first.ID, list[0].ID, "latest activity first")
+	require.Equal(t, second.ID, list[1].ID)
+}

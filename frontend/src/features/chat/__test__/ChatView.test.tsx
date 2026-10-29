@@ -22,6 +22,7 @@ import type {
   Skill,
 } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
 import type { Client } from "../../../lib/client";
+import type { TurnsChangedEvent } from "../../../lib/events";
 import { useNavStore } from "../../../stores/nav";
 import ChatView from "../index";
 import { SessionRail } from "../components/SessionRail";
@@ -115,6 +116,8 @@ type MockedClient = Client & {
   };
   chat: {
     sessions: MockFn;
+    allSessions: MockFn;
+    runningSessions: MockFn;
     createSession: MockFn;
     send: MockFn;
     subscribe: MockFn;
@@ -129,6 +132,7 @@ type MockedClient = Client & {
   };
   events: {
     onSchedulesChanged: MockFn;
+    onTurnsChanged: MockFn;
   };
 };
 
@@ -145,6 +149,10 @@ function makeClient(): MockedClient {
       sessions: vi.fn(async (agentID: string) =>
         agentID === "a1" ? sessions : []
       ),
+      // selectAgent reads the all-agents listing (add-grouped-session-rail
+      // design D1); the mock serves the same per-test session set.
+      allSessions: vi.fn(async (): Promise<Session[]> => sessions),
+      runningSessions: vi.fn(async (): Promise<string[]> => []),
       createSession: vi.fn(),
       send: vi.fn(async (_sessionID: string, _message: string) => {
         turnSeq += 1;
@@ -179,11 +187,15 @@ function makeClient(): MockedClient {
         { Name: "hidden", Description: "", Enabled: false },
       ]),
     },
-    // The view subscribes to schedules:changed on mount (design D10); the
-    // suite never fires it.
+    // The view subscribes to schedules:changed and wires the running dots
+    // on mount (design D10, add-grouped-session-rail D2); neither suite
+    // fires them.
     events: {
       onSchedulesChanged: vi.fn(
         (_handler: () => void) => (): void => undefined
+      ),
+      onTurnsChanged: vi.fn(
+        (_handler: (event: TurnsChangedEvent) => void) => (): void => undefined
       ),
     },
   };
@@ -395,16 +407,19 @@ describe("ChatView", () => {
     );
   });
 
-  it("collapsing the sidebar hides the island entirely and keeps the turn state intact", async () => {
+  it("collapsing the sidebar folds the island to zero size and keeps the turn state intact", async () => {
     await renderChat();
-    await screen.findByTestId("chat-right-bar");
+    const bar = await screen.findByTestId("chat-right-bar");
     // The toggle lives in the chat header now (the bar has no chrome of
     // its own to host it).
     await act(async () => {
       fireEvent.click(screen.getByTestId("btn-toggle-sidebar"));
     });
-    // Minimized means GONE — not a collapsed sliver.
-    expect(screen.queryByTestId("chat-right-bar")).toBeNull();
+    // Minimized keep-mounts as a zero-size fold (refine D8) — invisible,
+    // non-interactive, and the same node that restores.
+    expect(screen.getByTestId("chat-right-bar")).toBe(bar);
+    expect(bar.style.width).toBe("0px");
+    expect(bar.style.pointerEvents).toBe("none");
     // The live handler is still attached; a turn still lands in the transcript.
     await emit(
       ev(Kind.KindUserMessage, { text: "still live", id: "evt-live" })
@@ -463,10 +478,17 @@ describe("ChatView", () => {
     };
 
     mockedClient.chat.createSession.mockImplementation(async () => fresh);
+    // newSession opens the created row through selectAgent's all-agents
+    // refetch (add-grouped-session-rail design D6); the listing must carry
+    // it — mount-time init and the rail click both land here, and the
+    // following "empty state" test never reaches allSessions (no agents).
+    mockedClient.chat.allSessions.mockResolvedValue([fresh, ...sessions]);
     await renderChatWithRail();
-    await screen.findByTestId("btn-new-session");
+    // The grouped rail's per-agent control (add-grouped-session-rail D6):
+    // the flat header "+" is gone, and a1 is the active agent's group.
+    await screen.findByTestId("group-new-session-a1");
     await act(async () => {
-      fireEvent.click(screen.getByTestId("btn-new-session"));
+      fireEvent.click(screen.getByTestId("group-new-session-a1"));
     });
     await waitFor(() =>
       expect(mockedClient.chat.createSession).toHaveBeenCalledWith("a1")

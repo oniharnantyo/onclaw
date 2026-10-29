@@ -21,9 +21,10 @@ import type {
   Skill,
 } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
 import type { ModelCapability } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
+import type { TurnsChangedEvent } from "../../../lib/events";
 import type { Client } from "../../../lib/client";
-import { useChatStore } from "../store";
-import type { Entry } from "../types";
+import { connectRunningSessions, useChatStore } from "../store";
+import type { Entry, PanelTab } from "../types";
 
 const agents: Agent[] = [
   {
@@ -109,6 +110,10 @@ let liveHandler: ((e: SessionEvent) => void) | null = null;
 
 const liveHandlers = new Map<string, (e: SessionEvent) => void>();
 
+/** The turns:changed handler the client mock captured from the store's
+ * connectRunningSessions wiring (add-grouped-session-rail D2). */
+let turnsHandler: ((event: TurnsChangedEvent) => void) | null = null;
+
 let turnSeq = 0;
 
 type MockFn = ReturnType<typeof vi.fn>;
@@ -118,6 +123,8 @@ type MockedClient = Client & {
   agents: { list: MockFn };
   chat: {
     sessions: MockFn;
+    allSessions: MockFn;
+    runningSessions: MockFn;
     createSession: MockFn;
     send: MockFn;
     subscribe: MockFn;
@@ -135,6 +142,9 @@ type MockedClient = Client & {
     skills: MockFn;
     providerModels: MockFn;
   };
+  events: {
+    onTurnsChanged: MockFn;
+  };
 };
 
 function makeClient(): MockedClient {
@@ -144,6 +154,8 @@ function makeClient(): MockedClient {
       sessions: vi.fn(async (agentID: string) =>
         agentID === "a1" ? sessions : []
       ),
+      allSessions: vi.fn(async (): Promise<Session[]> => sessions),
+      runningSessions: vi.fn(async (): Promise<string[]> => []),
       createSession: vi.fn(),
       send: vi.fn(async () => {
         turnSeq += 1;
@@ -180,6 +192,18 @@ function makeClient(): MockedClient {
       providers: vi.fn(async () => []),
       skills: vi.fn(async (): Promise<Skill[]> => []),
       providerModels: vi.fn(async () => capabilities),
+    },
+    // The store's connectRunningSessions wiring subscribes to turns:changed
+    // (add-grouped-session-rail D2); the mock captures the handler so tests
+    // can fire it.
+    events: {
+      onTurnsChanged: vi.fn((handler: (event: TurnsChangedEvent) => void) => {
+        turnsHandler = handler;
+
+        return (): void => {
+          if (turnsHandler === handler) turnsHandler = null;
+        };
+      }),
     },
   };
 
@@ -230,6 +254,7 @@ function resetStore(): void {
     panelTabs: [],
     activePanelTabID: null,
     runningSessions: new Set<string>(),
+    lastTurnOutcome: null,
   });
 }
 
@@ -239,6 +264,7 @@ beforeEach(() => {
   sessions = [row("s1", "m-reasoning", "high"), row("s2")];
   liveHandler = null;
   liveHandlers.clear();
+  turnsHandler = null;
   turnSeq = 0;
   resetStore();
 });
@@ -343,6 +369,13 @@ describe("chat store overrides (task 2.1)", () => {
     window.localStorage.setItem("buddies.chatDefaultModel.a1", "m-reasoning");
     window.localStorage.setItem("buddies.chatDefaultEffort.a1", "low");
     mockedClient.chat.createSession.mockResolvedValue(row("s-new"));
+    // The opened row comes back through selectAgent's all-agents refetch
+    // (design D6); the backend row carries the overrides that were just
+    // persisted onto it.
+    mockedClient.chat.allSessions.mockResolvedValueOnce([
+      { ...row("s-new"), Model: "m-reasoning", Effort: "low" },
+      ...sessions,
+    ]);
 
     await useChatStore.getState().newSession();
 
@@ -365,6 +398,10 @@ describe("chat store overrides (task 2.1)", () => {
 
   it("creates an unseeded session when no sticky default exists", async () => {
     mockedClient.chat.createSession.mockResolvedValue(row("s-new"));
+    mockedClient.chat.allSessions.mockResolvedValueOnce([
+      row("s-new"),
+      ...sessions,
+    ]);
 
     await useChatStore.getState().newSession();
 
@@ -373,6 +410,46 @@ describe("chat store overrides (task 2.1)", () => {
       useChatStore.getState().sessions.find((s: Session) => s.ID === "s-new")
         ?.Model
     ).toBe("");
+  });
+
+  it("creates and opens a session for a non-active agent through selectAgent (design D6)", async () => {
+    const created = {
+      ...row("s-a2"),
+      AgentID: "a2",
+      LastActivityAt: "2026-02-01T00:00:00Z",
+    };
+
+    mockedClient.chat.createSession.mockResolvedValue(created);
+    mockedClient.chat.allSessions.mockResolvedValueOnce([created, ...sessions]);
+
+    await useChatStore.getState().newSession("a2");
+
+    expect(mockedClient.chat.createSession).toHaveBeenCalledWith("a2");
+    // The context swaps: the created session's agent becomes active and the
+    // session opens through the same selectAgent path as a rail click.
+    expect(useChatStore.getState().activeAgentID).toBe("a2");
+    expect(useChatStore.getState().activeSessionID).toBe("s-a2");
+  });
+
+  it("selectAgent populates the all-agents list (add-grouped-session-rail design D1)", async () => {
+    const a2row = {
+      ...row("s-a2"),
+      AgentID: "a2",
+      LastActivityAt: "2026-02-01T00:00:00Z",
+    };
+
+    mockedClient.chat.allSessions.mockResolvedValueOnce([row("s1"), a2row]);
+
+    await useChatStore.getState().selectAgent("a1");
+
+    expect(mockedClient.chat.allSessions).toHaveBeenCalled();
+    // Rows from two agents, most recent activity first...
+    expect(
+      useChatStore.getState().sessions.map((s: Session): string => s.ID)
+    ).toEqual(["s-a2", "s1"]);
+    // ...and the opened session belongs to the selected agent, not to the
+    // globally newest row.
+    expect(useChatStore.getState().activeSessionID).toBe("s1");
   });
 
   it("loads the active agent's provider model capabilities on selectAgent", async () => {
@@ -485,6 +562,50 @@ describe("chat store session delete (task 6.5)", () => {
     expect(useChatStore.getState().runningSessions.has("s1")).toBe(false);
   });
 
+  it("deleting the active session keeps the follow-up inside the same agent (add-grouped-session-rail design D1)", async () => {
+    // The a2 session is globally newer than a1's remaining one — the old
+    // plain-newest pick would cross the agent boundary.
+    sessions = [
+      { ...row("s-active"), LastActivityAt: "2026-03-01T00:00:00Z" },
+      {
+        ...row("s-a2"),
+        AgentID: "a2",
+        LastActivityAt: "2026-02-01T00:00:00Z",
+      },
+      { ...row("s-a1-old"), LastActivityAt: "2026-01-02T00:00:00Z" },
+    ];
+    resetStore();
+    await useChatStore.getState().selectSession("s-active");
+
+    await useChatStore.getState().deleteSession("s-active");
+
+    expect(useChatStore.getState().activeSessionID).toBe("s-a1-old");
+    expect(useChatStore.getState().activeAgentID).toBe("a1");
+    expect(
+      useChatStore.getState().sessions.map((s: Session): string => s.ID)
+    ).toEqual(["s-a2", "s-a1-old"]);
+  });
+
+  it("deleting the agent's last session clears the view but keeps the agent", async () => {
+    sessions = [
+      { ...row("s-only"), LastActivityAt: "2026-01-01T00:00:00Z" },
+      {
+        ...row("s-a2"),
+        AgentID: "a2",
+        LastActivityAt: "2026-02-01T00:00:00Z",
+      },
+    ];
+    resetStore();
+    await useChatStore.getState().selectSession("s-only");
+
+    await useChatStore.getState().deleteSession("s-only");
+
+    // Nothing left for the agent: the "nothing left" clearing branch keeps
+    // activeAgentID (design D1).
+    expect(useChatStore.getState().activeSessionID).toBeNull();
+    expect(useChatStore.getState().activeAgentID).toBe("a1");
+  });
+
   it("a refused delete (turn in flight) surfaces the reason and keeps the session", async () => {
     await useChatStore.getState().selectSession("s1");
     mockedClient.chat.deleteSession.mockRejectedValueOnce(
@@ -559,6 +680,57 @@ describe("chat store per-session running state (task 6.5)", () => {
   });
 });
 
+describe("running dots backend sources (add-grouped-session-rail design D2)", () => {
+  it("init seeds the running set from the backend's runningSessions", async () => {
+    mockedClient.chat.runningSessions.mockResolvedValue(["s2", "s9"]);
+    useChatStore.setState({
+      activeAgentID: null,
+      sessions: [],
+      runningSessions: new Set<string>(),
+    });
+
+    await useChatStore.getState().init();
+
+    await waitFor(() => {
+      expect(useChatStore.getState().runningSessions.has("s9")).toBe(true);
+    });
+    expect(useChatStore.getState().runningSessions.has("s2")).toBe(true);
+  });
+
+  it("a failed seed leaves the running set as it was (keep-going)", async () => {
+    mockedClient.chat.runningSessions.mockRejectedValueOnce(new Error("boom"));
+    useChatStore.setState({
+      activeAgentID: null,
+      sessions: [],
+      runningSessions: new Set<string>(["s-keep"]),
+    });
+
+    await useChatStore.getState().init();
+
+    await waitFor(() => {
+      expect(mockedClient.chat.runningSessions).toHaveBeenCalled();
+    });
+    expect(useChatStore.getState().runningSessions.has("s-keep")).toBe(true);
+    expect(useChatStore.getState().error).toBeNull();
+  });
+
+  it("a turns:changed delivery flips the set through the captured handler", async () => {
+    const off = connectRunningSessions();
+
+    expect(mockedClient.events.onTurnsChanged).toHaveBeenCalled();
+    expect(turnsHandler).not.toBeNull();
+
+    turnsHandler?.({ sessionId: "s2", busy: true });
+    expect(useChatStore.getState().runningSessions.has("s2")).toBe(true);
+
+    turnsHandler?.({ sessionId: "s2", busy: false });
+    expect(useChatStore.getState().runningSessions.has("s2")).toBe(false);
+
+    off();
+    expect(turnsHandler).toBeNull();
+  });
+});
+
 function ev(
   kind: SessionEvent["kind"],
   extra: Partial<SessionEvent> = {}
@@ -566,8 +738,8 @@ function ev(
   return { kind, occurred_at: "2026-01-01T00:00:00Z", ...extra };
 }
 
-describe("refreshSessions (add-scheduler design D10)", () => {
-  it("refetches the active agent's sessions when the agent matches", async () => {
+describe("refreshSessions (add-scheduler D10 + add-grouped-session-rail D1)", () => {
+  it("refetches every agent's sessions on a background fire", async () => {
     // Distinct activity stamps so the assertion also pins sortSessions' order.
     sessions = [
       row("s1"),
@@ -576,20 +748,33 @@ describe("refreshSessions (add-scheduler design D10)", () => {
 
     await useChatStore.getState().refreshSessions("a1");
 
-    expect(mockedClient.chat.sessions).toHaveBeenCalledWith("a1");
+    expect(mockedClient.chat.allSessions).toHaveBeenCalled();
     expect(
       useChatStore.getState().sessions.map((s: Session): string => s.ID)
     ).toEqual(["s-new", "s1"]);
   });
 
-  it("ignores an event for a non-active agent", async () => {
+  it("refetches even when the fire names a non-active agent (design D1)", async () => {
+    // The argument only labels the fire: a background fire for ANY agent
+    // must update that agent's group count in the rail.
+    const a2row = {
+      ...row("s-a2"),
+      AgentID: "a2",
+      LastActivityAt: "2026-02-01T00:00:00Z",
+    };
+
+    mockedClient.chat.allSessions.mockResolvedValueOnce([...sessions, a2row]);
+
     await useChatStore.getState().refreshSessions("a2");
 
-    expect(mockedClient.chat.sessions).not.toHaveBeenCalled();
+    expect(mockedClient.chat.allSessions).toHaveBeenCalled();
+    expect(
+      useChatStore.getState().sessions.map((s: Session): string => s.ID)
+    ).toEqual(["s-a2", "s1", "s2"]);
   });
 
   it("keeps the current list when the refetch fails", async () => {
-    mockedClient.chat.sessions.mockImplementationOnce(
+    mockedClient.chat.allSessions.mockImplementationOnce(
       async (): Promise<Session[]> => {
         throw new Error("boom");
       }
@@ -603,7 +788,7 @@ describe("refreshSessions (add-scheduler design D10)", () => {
 
   it("does not write a superseded fetch after the agent switched", async () => {
     let resolveFetch: ((value: Session[]) => void) | null = null;
-    mockedClient.chat.sessions.mockImplementationOnce(
+    mockedClient.chat.allSessions.mockImplementationOnce(
       (): Promise<Session[]> =>
         new Promise<Session[]>((resolve: (value: Session[]) => void) => {
           resolveFetch = resolve;
@@ -619,8 +804,11 @@ describe("refreshSessions (add-scheduler design D10)", () => {
     await pending;
 
     expect(useChatStore.getState().activeAgentID).toBe("a2");
-    // The stale a1 write is dropped; a2's own (empty) list survives.
-    expect(useChatStore.getState().sessions).toEqual([]);
+    // The stale write is dropped; the all-agents list the switch itself
+    // fetched survives (the default mock lists both a1 rows).
+    expect(
+      useChatStore.getState().sessions.map((s: Session): string => s.ID)
+    ).toEqual(["s1", "s2"]);
   });
 });
 
@@ -956,5 +1144,163 @@ describe("re-adopt in-flight turn on re-entry (task 4.2)", () => {
     expect(useChatStore.getState().activeTurnID).toBeNull();
     expect(useChatStore.getState().busy).toBe(false);
     expect(useChatStore.getState().runningSessions.has("s1")).toBe(false);
+  });
+});
+
+describe("lastTurnOutcome (add-live-agent-avatar design D4)", () => {
+  it("starts null before any live terminal arrives", () => {
+    expect(useChatStore.getState().lastTurnOutcome).toBeNull();
+  });
+
+  it("a live turn_completed for the active session records the outcome", async () => {
+    await useChatStore.getState().selectSession("s1");
+
+    await emit(
+      ev(Kind.KindTurnCompleted, {
+        turn_id: "t-done",
+        id: "e-done",
+        occurred_at: "2026-02-01T12:00:00Z",
+      })
+    );
+
+    expect(useChatStore.getState().lastTurnOutcome).toEqual({
+      turnID: "t-done",
+      kind: Kind.KindTurnCompleted,
+      at: "2026-02-01T12:00:00Z",
+    });
+  });
+
+  it("turn_error and turn_cancelled likewise record their kinds", async () => {
+    await useChatStore.getState().selectSession("s1");
+
+    await emit(ev(Kind.KindTurnError, { turn_id: "t-err", id: "e-err" }));
+    expect(useChatStore.getState().lastTurnOutcome).toMatchObject({
+      turnID: "t-err",
+      kind: Kind.KindTurnError,
+    });
+
+    await emit(
+      ev(Kind.KindTurnCancelled, { turn_id: "t-cancel", id: "e-cancel" })
+    );
+    expect(useChatStore.getState().lastTurnOutcome).toMatchObject({
+      turnID: "t-cancel",
+      kind: Kind.KindTurnCancelled,
+    });
+  });
+
+  it("a non-terminal event leaves the last outcome unchanged", async () => {
+    await useChatStore.getState().selectSession("s1");
+
+    await emit(ev(Kind.KindTurnCompleted, { turn_id: "t-1", id: "e-done" }));
+    const outcome = useChatStore.getState().lastTurnOutcome;
+
+    expect(outcome).not.toBeNull();
+    await emit(
+      ev(Kind.KindTextDelta, { turn_id: "t-1", text: "streaming", id: "e-d1" })
+    );
+
+    expect(useChatStore.getState().lastTurnOutcome).toBe(outcome);
+  });
+
+  it("a terminal for a background session never moves the viewed outcome", async () => {
+    await useChatStore.getState().selectSession("s1");
+    // SAFETY: subscribe's mock captured the handler; s1's survives the
+    // switch (subscriptions persist across session switches).
+    const s1Handler = liveHandler;
+    await useChatStore.getState().selectSession("s2");
+
+    s1Handler?.(ev(Kind.KindTurnCompleted, { turn_id: "t-bg", id: "e-bg" }));
+
+    expect(useChatStore.getState().lastTurnOutcome).toBeNull();
+  });
+
+  it("two consecutive completions mint two different outcome identities", async () => {
+    await useChatStore.getState().selectSession("s1");
+
+    await emit(ev(Kind.KindTurnCompleted, { turn_id: "t-1", id: "e-c1" }));
+    const first = useChatStore.getState().lastTurnOutcome;
+
+    await emit(ev(Kind.KindTurnCompleted, { turn_id: "t-2", id: "e-c2" }));
+    const second = useChatStore.getState().lastTurnOutcome;
+
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    expect(second).not.toBe(first);
+  });
+
+  it("selectSession resets the outcome to null for the session being opened", async () => {
+    await useChatStore.getState().selectSession("s1");
+    await emit(ev(Kind.KindTurnCompleted, { turn_id: "t-1", id: "e-done" }));
+    expect(useChatStore.getState().lastTurnOutcome).not.toBeNull();
+
+    await useChatStore.getState().selectSession("s2");
+    expect(useChatStore.getState().lastTurnOutcome).toBeNull();
+  });
+});
+
+describe("panel tabs — pinned identity tab (add-pinned-identity-tab)", () => {
+  /** A workspace-file preview tab literal: the reducers only touch
+   * id/identity, so the panelRenderers builder is not needed here. */
+  function fileTab(relPath: string): Omit<PanelTab, "id"> {
+    return {
+      kind: "workspace-file",
+      identity: `workspace-file:a1:${relPath}`,
+      title: relPath,
+      data: { agentID: "a1", relPath, name: relPath },
+    };
+  }
+
+  function tabIDs(): string[] {
+    return useChatStore.getState().panelTabs.map((t: PanelTab) => t.id);
+  }
+
+  it("activatePanelTab(null) keeps the open tabs and raises the identity", () => {
+    useChatStore.getState().openPanelTab(fileTab("notes.md"));
+    useChatStore.getState().openPanelTab(fileTab("plan.md"));
+    const ids = tabIDs();
+
+    useChatStore.getState().activatePanelTab(null);
+
+    expect(tabIDs()).toEqual(ids);
+    expect(useChatStore.getState().activePanelTabID).toBeNull();
+  });
+
+  it("closing a background tab while the identity is active keeps it", () => {
+    useChatStore.getState().openPanelTab(fileTab("notes.md"));
+    useChatStore.getState().openPanelTab(fileTab("plan.md"));
+    const ids = tabIDs();
+    useChatStore.getState().activatePanelTab(null);
+
+    useChatStore.getState().closePanelTab(ids[0]);
+
+    expect(tabIDs()).toEqual([ids[1]]);
+    expect(useChatStore.getState().activePanelTabID).toBeNull();
+  });
+
+  it("a preview from the identity takes over; the last close returns null", () => {
+    useChatStore.getState().openPanelTab(fileTab("notes.md"));
+    useChatStore.getState().activatePanelTab(null);
+
+    // Opening from the identity tab makes the new preview the active surface.
+    useChatStore.getState().openPanelTab(fileTab("plan.md"));
+    const openedID = tabIDs()[1];
+    expect(useChatStore.getState().activePanelTabID).toBe(openedID);
+
+    useChatStore.getState().closePanelTab(openedID);
+    useChatStore.getState().closePanelTab(tabIDs()[0]);
+
+    expect(useChatStore.getState().panelTabs).toEqual([]);
+    expect(useChatStore.getState().activePanelTabID).toBeNull();
+  });
+
+  it("closing the active tab of two raises the last remaining one", () => {
+    useChatStore.getState().openPanelTab(fileTab("notes.md"));
+    useChatStore.getState().openPanelTab(fileTab("plan.md"));
+    const ids = tabIDs();
+
+    useChatStore.getState().closePanelTab(ids[1]);
+
+    expect(useChatStore.getState().activePanelTabID).toBe(ids[0]);
+    expect(tabIDs()).toEqual([ids[0]]);
   });
 });

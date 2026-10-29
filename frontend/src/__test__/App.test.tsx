@@ -112,16 +112,22 @@ const sessions: Session[] = [
 ];
 
 function railAside(): HTMLElement {
-  // SAFETY: the shell's rail is the only glass-chrome aside (the sessions
-  // rail renders without it); located by class because the collapse toggle
-  // no longer lives inside the rail when it is collapsed.
-  return document.querySelector("aside.glass-chrome") as HTMLElement;
+  // SAFETY: the shell's nav rail is the aside carrying data-testid nav-rail
+  // (design D7: the rail is a flat canvas column without a glass-chrome
+  // card, so class-based lookup no longer applies).
+  return document.querySelector('[data-testid="nav-rail"]') as HTMLElement;
 }
 
 function mobileBar(): HTMLElement {
   // SAFETY: the shell's mobile top bar hosts the only nav element in the
   // header island; the desktop rail is an aside, so the query cannot hit it.
   return document.querySelector("header nav") as HTMLElement;
+}
+
+function railNav(): HTMLElement {
+  // SAFETY: the rail aside hosts the only nav descendant (the bar's nav
+  // lives in the header), so the query cannot hit the mobile bar.
+  return railAside().querySelector("nav") as HTMLElement;
 }
 
 async function clickToggle(): Promise<void> {
@@ -270,9 +276,36 @@ describe("App shell", () => {
     await view.unmount();
   });
 
+  it("reveals the session column on the shared motion grammar without gating the rail", async () => {
+    const view = await renderUI(<App />);
+
+    // ui-conventions (structural chrome): the session column rides the
+    // existing od-fade onset — the shared grammar (--motion-base +
+    // --ease-standard) — as the chat view mounts.
+    const reveal = screen.getByTestId("session-column-reveal");
+    expect(reveal.className).toContain("od-fade");
+    // Opacity only: no transition on inline-size that could fight the
+    // rail's own 1:1 drag resize.
+    expect(reveal.className).not.toContain("transition-[width]");
+    // Structural, not lazy: the rail's content is queryable immediately —
+    // no delayed mount behind the reveal.
+    expect(screen.getByTestId("chat-session-rail")).toBeTruthy();
+    expect(screen.getByTestId("session-search")).toBeTruthy();
+
+    await view.unmount();
+  });
+
   it("collapses the rail to icons and persists the preference", async () => {
     const view = await renderUI(<App />);
     expect(window.localStorage.getItem("buddies.railCollapsed")).toBeNull();
+
+    // Design D8: the w-20 ↔ w-56 collapse animates the rail's inline width
+    // on the shared motion grammar (--motion-base 200ms, --ease-standard)
+    // instead of snapping; reduced motion collapses it globally, so no
+    // branch is asserted here.
+    expect(railAside().className).toContain("transition-[width]");
+    expect(railAside().className).toContain("duration-[var(--motion-base)]");
+    expect(railAside().className).toContain("ease-[var(--ease-standard)]");
 
     await clickToggle();
     // Collapsed width fits the macOS traffic lights that overlay the rail's
@@ -347,5 +380,123 @@ describe("App shell", () => {
       "buddies"
     );
     await desktop.unmount();
+  });
+});
+
+// The expanded rail's island pins the SideRow grammar (openspec
+// replace-menu-island-git-helper, app-shell): a flat menu where selection is
+// an accent-tint pill + aria-current — not a text-color/weight change — and
+// the bottom cluster reads as menu rows, not a footer.
+describe("App shell nav grammar", () => {
+  it("renders the rail as a flat canvas column with no card of its own", async () => {
+    const view = await renderUI(<App />);
+    const rail = railAside();
+
+    // Design D7 (git-helper's sidebar): the island is flush on the window
+    // canvas — the content island stays the carded surface, not the rail.
+    expect(rail.className).not.toContain("glass-chrome");
+    expect(rail.className).not.toContain("border-line");
+    expect(rail.className).not.toContain("bg-surface");
+    expect(rail.className).not.toContain("rounded-lg");
+
+    await view.unmount();
+  });
+
+  it("renders the expanded island as four flat icon rows with no headings", async () => {
+    const view = await renderUI(<App />);
+    const rows = within(railNav()).getAllByRole("button");
+
+    // Exactly the four destinations: a group heading would be a non-button
+    // child, so the exact count pins the flat grammar structurally.
+    expect(rows).toHaveLength(4);
+    expect(rows.map((row: HTMLElement) => row.textContent)).toEqual([
+      "Chat",
+      "Agents",
+      "Schedules",
+      "Knowledge",
+    ]);
+
+    for (const row of rows) {
+      // SideRow geometry: 30px row, leading icon, truncated label span.
+      expect(row.className).toContain("h-[30px]");
+      expect(row.querySelector("svg")).toBeTruthy();
+      const label = row.querySelector("span.truncate");
+      expect(label).toBeTruthy();
+      expect(label?.textContent?.length ?? 0).toBeGreaterThan(0);
+    }
+
+    await view.unmount();
+  });
+
+  it("marks the active destination with the accent pill, not ink changes", async () => {
+    const view = await renderUI(<App />);
+    const chatRow = within(railNav()).getByRole("button", { name: "Chat" });
+
+    expect(chatRow.getAttribute("aria-current")).toBe("page");
+    // The 15% accent pill carries selection; \b guards against the
+    // text-fg/text-fg2 substring trap.
+    expect(chatRow.className).toContain("color-mix(in_oklab,var(--accent)_15%");
+    expect(chatRow.className).toMatch(/\btext-fg\b/);
+    expect(chatRow.className).not.toContain("text-accenttext");
+    expect(chatRow.className).not.toContain("font-semibold");
+
+    const agentsRow = within(railNav()).getByRole("button", {
+      name: "Agents",
+    });
+
+    expect(agentsRow.getAttribute("aria-current")).toBeNull();
+    expect(agentsRow.className).not.toContain("var(--accent)_15%");
+    // Idle rows only tint on hover.
+    expect(agentsRow.className).toContain(
+      "hover:bg-[color-mix(in_oklab,var(--fg)_6%"
+    );
+    await view.unmount();
+  });
+
+  it("styles the bottom cluster as menu rows and swaps the pane on Settings", async () => {
+    const view = await renderUI(<App />);
+    const theme = screen.getByTestId("rail-theme");
+    const settings = screen.getByTestId("rail-settings");
+
+    // Same 30px row geometry as the destination rows above.
+    expect(theme.className).toContain("h-[30px]");
+    expect(settings.className).toContain("h-[30px]");
+    expect(settings.className).toContain("rounded-md");
+
+    await act(async () => {
+      fireEvent.click(settings);
+    });
+
+    expect(
+      document.querySelector('main[data-active-menu="settings"]')
+    ).toBeTruthy();
+    expect(screen.getByTestId("settings-view-mock")).toBeTruthy();
+    await view.unmount();
+  });
+
+  it("keeps knowledge and settings operable in the collapsed rail", async () => {
+    const view = await renderUI(<App />);
+    await clickToggle();
+
+    // Collapsed rows are icon-only: the names move onto the buttons.
+    expect(railAside().textContent).not.toContain("Knowledge");
+    expect(railAside().textContent).not.toContain("Settings");
+
+    const knowledge = within(railAside()).getByRole("button", {
+      name: "Knowledge",
+    });
+
+    expect(
+      within(railAside()).getByRole("button", { name: "Settings" })
+    ).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(knowledge);
+    });
+
+    expect(
+      document.querySelector("main")?.getAttribute("data-active-menu")
+    ).toBe("knowledge");
+    await view.unmount();
   });
 });

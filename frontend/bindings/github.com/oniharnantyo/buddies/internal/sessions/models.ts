@@ -33,6 +33,33 @@ export interface Approval {
 }
 
 /**
+ * Artifact is one file the turn produced for the user under the workspace's
+ * artifacts/ directory (add-turn-artifacts design D4): the workspace-relative
+ * path (so a chip opens the preview directly), its byte size, and the change
+ * kind when known.
+ */
+export interface Artifact {
+    "path": string;
+    "size": number;
+    "change"?: ArtifactChange;
+}
+
+/**
+ * ArtifactChange is how a turn changed one artifact against its
+ * start-of-turn record: created or modified. Empty on a cold resume, where
+ * the record was lost and only the modification time is known.
+ */
+export enum ArtifactChange {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    ArtifactCreated = "created",
+    ArtifactModified = "modified",
+};
+
+/**
  * Attachment is the transcript metadata of one stored upload (design D5,
  * spec chat-attachments "Multi-part user messages"): what a user_message
  * event persists so replay reconstructs the attachment chips. Key is the
@@ -109,6 +136,15 @@ export interface Event {
     "tool"?: ToolActivity | null;
     "task"?: TaskActivity | null;
     "usage"?: Usage | null;
+
+    /**
+     * Artifacts carries the files the turn produced under the workspace's
+     * artifacts/ directory (KindTurnCompleted only; add-turn-artifacts design
+     * D4): path-sorted, capped at MaxArtifacts, with ArtifactsTruncated
+     * reporting a hit cap.
+     */
+    "artifacts"?: Artifact[] | null;
+    "artifacts_truncated"?: boolean;
     "error"?: string;
     "compaction"?: Compaction | null;
 

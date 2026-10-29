@@ -3,7 +3,8 @@
  * menu" + "Live catalog updates"): rows render with scope markers, size, and
  * creation date; the scope filter narrows to all/global/one agent; the
  * upload modal calls upload with base64 + the picked scope and pre-gates a
- * .docx client-side with the named-kinds reason; delete promotes through the
+ * video client-side with the named-kinds reason while a .docx passes the
+ * widened gate; delete promotes through the
  * confirm dialog; promote/demote call setScope with the right args; the
  * description editor calls setDescription; a markdown document grows the
  * Raw|Preview toggle; and `knowledge:changed` triggers a coalesced refetch.
@@ -380,7 +381,30 @@ describe("KnowledgeView", () => {
     );
   });
 
-  it("rejects a .docx client-side with the named-kinds reason", async () => {
+  it("rejects a video client-side with the named-kinds reason", async () => {
+    await renderView();
+    await waitFor(() => screen.getByTestId("knowledge-row-d1"));
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("btn-upload-knowledge"));
+    });
+    await chooseFile(new File(["zz"], "clip.mp4", { type: "video/mp4" }));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("btn-confirm-upload"));
+    });
+
+    const error = screen.getByTestId("knowledge-upload-error");
+
+    expect(error.textContent).toContain('Unsupported file type "video/mp4"');
+    // The refusal names text, PDF, and OOXML as the supported kinds
+    // (add-document-editing widened the gate).
+    expect(error.textContent).toContain(
+      "only text, PDF, and OOXML documents are accepted"
+    );
+    expect(mockedClient.knowledge.upload).not.toHaveBeenCalled();
+  });
+
+  it("uploads a .docx office document through the gate", async () => {
     await renderView();
     await waitFor(() => screen.getByTestId("knowledge-row-d1"));
 
@@ -396,15 +420,17 @@ describe("KnowledgeView", () => {
       fireEvent.click(screen.getByTestId("btn-confirm-upload"));
     });
 
-    const error = screen.getByTestId("knowledge-upload-error");
-
-    expect(error.textContent).toContain(
-      'Unsupported file type "application/vnd.openxmlformats-officedocument.wordprocessingml.document"'
+    await waitFor(() =>
+      expect(mockedClient.knowledge.upload).toHaveBeenCalledTimes(1)
     );
-    expect(error.textContent).toContain(
-      "only text and PDF documents are accepted"
+    expect(mockedClient.knowledge.upload).toHaveBeenCalledWith(
+      "report.docx",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      expect.any(String),
+      "global",
+      "",
+      ""
     );
-    expect(mockedClient.knowledge.upload).not.toHaveBeenCalled();
   });
 
   it("rejects an oversize text file client-side with the size reason", async () => {

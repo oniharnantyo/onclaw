@@ -55,18 +55,22 @@ type defaultModelFactory struct{}
 // connector takes origins (https://host), Gemini takes the bare origin.
 func NewDefaultModelFactory() ModelFactory { return defaultModelFactory{} }
 
-// Build implements ModelFactory.
-func (defaultModelFactory) Build(ctx context.Context, provider store.Provider, modelName string) (model.BaseChatModel, error) {
+// Build implements ModelFactory. structured requests the provider's native
+// structured-output constraint; when false the model answers free-form and the
+// prompts JSON contract rides on the system prompt alone.
+func (defaultModelFactory) Build(ctx context.Context, provider store.Provider, modelName string, structured bool) (model.BaseChatModel, error) {
 	temp := GenerationTemperature
 	maxTokens := GenerationMaxTokens
 
 	switch strings.TrimSpace(provider.Type) {
 	case providerOpenAI:
 		cfg := &openai.ChatModelConfig{
-			APIKey:         provider.APIKey,
-			Model:          modelName,
-			Temperature:    &temp,
-			ResponseFormat: structuredOutputFormat(),
+			APIKey:      provider.APIKey,
+			Model:       modelName,
+			Temperature: &temp,
+		}
+		if structured {
+			cfg.ResponseFormat = structuredOutputFormat()
 		}
 		if provider.BaseURL != "" {
 			cfg.BaseURL = provider.BaseURL
@@ -79,11 +83,13 @@ func (defaultModelFactory) Build(ctx context.Context, provider store.Provider, m
 
 	case providerAnthropic:
 		cfg := &claude.Config{
-			APIKey:         provider.APIKey,
-			Model:          modelName,
-			MaxTokens:      maxTokens,
-			Temperature:    &temp,
-			ResponseFormat: &claude.ResponseFormat{Schema: promptsJSONSchema()},
+			APIKey:      provider.APIKey,
+			Model:       modelName,
+			MaxTokens:   maxTokens,
+			Temperature: &temp,
+		}
+		if structured {
+			cfg.ResponseFormat = &claude.ResponseFormat{Schema: promptsJSONSchema()}
 		}
 		if provider.BaseURL != "" {
 			baseURL := provider.BaseURL
@@ -125,26 +131,32 @@ func (defaultModelFactory) Build(ctx context.Context, provider store.Provider, m
 		if baseURL == "" {
 			baseURL = "https://openrouter.ai/api/v1"
 		}
-		m, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
-			APIKey:         provider.APIKey,
-			BaseURL:        baseURL,
-			Model:          modelName,
-			Temperature:    &temp,
-			ResponseFormat: structuredOutputFormat(),
-		})
+		cfg := &openai.ChatModelConfig{
+			APIKey:      provider.APIKey,
+			BaseURL:     baseURL,
+			Model:       modelName,
+			Temperature: &temp,
+		}
+		if structured {
+			cfg.ResponseFormat = structuredOutputFormat()
+		}
+		m, err := openai.NewChatModel(ctx, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("build openrouter model %q: %w", modelName, err)
 		}
 		return m, nil
 
 	case providerOpenAICompatible:
-		m, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
-			APIKey:         provider.APIKey,
-			BaseURL:        provider.BaseURL,
-			Model:          modelName,
-			Temperature:    &temp,
-			ResponseFormat: structuredOutputFormat(),
-		})
+		cfg := &openai.ChatModelConfig{
+			APIKey:      provider.APIKey,
+			BaseURL:     provider.BaseURL,
+			Model:       modelName,
+			Temperature: &temp,
+		}
+		if structured {
+			cfg.ResponseFormat = structuredOutputFormat()
+		}
+		m, err := openai.NewChatModel(ctx, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("build openai-compatible model %q: %w", modelName, err)
 		}
@@ -152,11 +164,13 @@ func (defaultModelFactory) Build(ctx context.Context, provider store.Provider, m
 
 	case providerAnthropicCompatible:
 		cfg := &claude.Config{
-			APIKey:         provider.APIKey,
-			Model:          modelName,
-			MaxTokens:      maxTokens,
-			Temperature:    &temp,
-			ResponseFormat: &claude.ResponseFormat{Schema: promptsJSONSchema()},
+			APIKey:      provider.APIKey,
+			Model:       modelName,
+			MaxTokens:   maxTokens,
+			Temperature: &temp,
+		}
+		if structured {
+			cfg.ResponseFormat = &claude.ResponseFormat{Schema: promptsJSONSchema()}
 		}
 		if provider.BaseURL != "" {
 			baseURL := provider.BaseURL

@@ -20,6 +20,7 @@ import {
   Kind,
   type Event as SessionEvent,
 } from "../../../../../bindings/github.com/oniharnantyo/buddies/internal/sessions/models";
+import { useAttachmentStore } from "../../attachments";
 import { useChatStore } from "../../store";
 import { composerInput, renderComposer, seedStore } from "./harness";
 
@@ -218,6 +219,57 @@ describe("the composer (task 5.1)", () => {
     expect(hints.textContent).toContain("@");
     expect(hints.textContent).toContain("$");
     expect(composerInput().getAttribute("placeholder")).not.toContain("/");
+  });
+
+  it("the hint row yields to the draft and returns when it clears (design D4)", async () => {
+    const user = userEvent.setup();
+    await renderComposer();
+
+    // Empty draft: the discoverability row is up.
+    expect(screen.getByTestId("composer-hints")).toBeTruthy();
+
+    await user.type(composerInput(), "hello");
+    expect(screen.queryByTestId("composer-hints")).toBeNull();
+
+    // Clearing the draft brings it back.
+    await user.clear(composerInput());
+    expect(screen.getByTestId("composer-hints")).toBeTruthy();
+  });
+
+  it("the hint row yields to a chip-only draft too (task 4.2)", async () => {
+    await renderComposer();
+
+    // Empty draft: the discoverability row is up.
+    expect(screen.getByTestId("composer-hints")).toBeTruthy();
+
+    // A chip alone is a non-empty draft: the tray rides the composer and the
+    // hints yield. The chip is seeded straight into the tray store — the
+    // visibility folds on tray presence, not on the upload pipeline.
+    await act(async () => {
+      useAttachmentStore.setState({
+        chips: [
+          {
+            id: "chip-1",
+            name: "notes.txt",
+            mime: "text/plain",
+            size: 12,
+            status: "ready",
+            key: "cap-key-1",
+            file: new File(["notes"], "notes.txt", { type: "text/plain" }),
+          },
+        ],
+      });
+    });
+
+    expect(screen.getByTestId("attachment-tray")).toBeTruthy();
+    expect(screen.queryByTestId("composer-hints")).toBeNull();
+
+    // The draft clears (no text, no chip): the hints return.
+    await act(async () => {
+      useAttachmentStore.setState({ chips: [] });
+    });
+
+    expect(screen.getByTestId("composer-hints")).toBeTruthy();
   });
 
   it("with no active agent the send control is disabled and Enter sends nothing", async () => {

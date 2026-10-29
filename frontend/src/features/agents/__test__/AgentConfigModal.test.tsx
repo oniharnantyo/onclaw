@@ -25,12 +25,14 @@ import type {
   ModelCapability,
   PromptDocuments,
   ProviderView,
+  WorkspaceSkill,
 } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
 import type {
   Agent,
   Hook,
 } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
 import type { Client, KnowledgeDocument } from "../../../lib/client";
+import { dismissToast, getToasts, type Toast } from "../../../lib/toasts";
 
 // The mutable payloads the mocked client hands out; tests re-point them to
 // simulate a regeneration's reloaded documents and refreshed row.
@@ -46,6 +48,10 @@ let hookAssignments: AgentHookAssignment[] = [];
 // The provider's model capabilities, re-pointed per test (task 2.4's suites
 // need a second model whose effort set is empty).
 let models: ModelCapability[];
+
+// The agent's own workspace skills, re-pointed per test (add-agent-created-
+// skills task 4.2); promote/delete mocks mutate it to simulate the backend.
+let workspaceSkills: WorkspaceSkill[];
 
 const providerList: ProviderView[] = [
   {
@@ -92,6 +98,9 @@ type MockedClient = Client & {
     getPromptDocuments: MockFn;
     savePromptDocument: MockFn;
     regeneratePrompts: MockFn;
+    listWorkspaceSkills: MockFn;
+    promoteWorkspaceSkill: MockFn;
+    deleteWorkspaceSkill: MockFn;
   };
   knowledge: {
     list: MockFn;
@@ -170,6 +179,11 @@ function makeClient(): MockedClient {
           PromptsError: "",
         });
       }),
+      listWorkspaceSkills: vi.fn(
+        async (): Promise<WorkspaceSkill[]> => workspaceSkills
+      ),
+      promoteWorkspaceSkill: vi.fn(async (): Promise<void> => undefined),
+      deleteWorkspaceSkill: vi.fn(async (): Promise<void> => undefined),
     },
     knowledge: {
       list: vi.fn(async (): Promise<KnowledgeDocument[]> => []),
@@ -225,6 +239,10 @@ beforeEach(() => {
   agentRow = makeAgent();
   hookDefs = [];
   hookAssignments = [];
+  workspaceSkills = [];
+  // Toasts live in a module store; drop leftovers so per-test assertions
+  // only see this test's outcomes.
+  getToasts().forEach((t: Toast): void => dismissToast(t.id));
   models = [
     {
       ID: "gpt-test",
@@ -1046,5 +1064,229 @@ describe("AgentConfigModal default effort (task 2.4)", () => {
 
     expect(saved.Model).toBe("gpt-test");
     expect(saved.Effort).toBe("high");
+  });
+});
+
+describe("AgentConfigModal workspace skills section", () => {
+  function wsRow(name: string, description: string): WorkspaceSkill {
+    return { Name: name, Description: description };
+  }
+
+  /** True when a toast with this kind carrying this text is on the stack. */
+  function hasToast(kind: Toast["kind"], needle: string): boolean {
+    return getToasts().some(
+      (t: Toast): boolean => t.kind === kind && t.text.includes(needle)
+    );
+  }
+
+  it("lists the agent's workspace skills with name and description", async () => {
+    workspaceSkills = [
+      wsRow("deploy-note", "Posts a deployment note to the log."),
+      wsRow("triage", "Triages incoming reports."),
+    ];
+    await renderModal(makeAgent());
+
+    await waitFor(() =>
+      expect(screen.getByTestId("config-section-workspace-skills")).toBeTruthy()
+    );
+
+    const first = screen.getByTestId(
+      "config-workspace-skill-deploy-note"
+    ).textContent;
+
+    expect(first).toContain("deploy-note");
+    expect(first).toContain("Posts a deployment note to the log.");
+
+    const second = screen.getByTestId(
+      "config-workspace-skill-triage"
+    ).textContent;
+
+    expect(second).toContain("triage");
+    expect(second).toContain("Triages incoming reports.");
+
+    // Each row carries its Promote and Delete actions.
+    expect(
+      screen.getByTestId("config-workspace-skill-promote-deploy-note")
+    ).toBeTruthy();
+    expect(
+      screen.getByTestId("config-workspace-skill-delete-deploy-note")
+    ).toBeTruthy();
+    expect(
+      screen.getByTestId("config-workspace-skill-promote-triage")
+    ).toBeTruthy();
+    expect(
+      screen.getByTestId("config-workspace-skill-delete-triage")
+    ).toBeTruthy();
+  });
+
+  it("shows the empty state when the workspace has no skills", async () => {
+    await renderModal(makeAgent());
+
+    await waitFor(() =>
+      expect(screen.getByTestId("config-workspace-skills-empty")).toBeTruthy()
+    );
+
+    expect(screen.queryByTestId("config-workspace-skill-list")).toBeNull();
+  });
+
+  it("promotes, fires the success toast, and re-fetches the list", async () => {
+    workspaceSkills = [wsRow("deploy-note", "Posts a deployment note.")];
+    await renderModal(makeAgent());
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("config-workspace-skill-promote-deploy-note")
+      ).toBeTruthy()
+    );
+    expect(mockedClient.agents.listWorkspaceSkills).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByTestId("config-workspace-skill-promote-deploy-note")
+      );
+    });
+
+    await waitFor(() =>
+      expect(mockedClient.agents.promoteWorkspaceSkill).toHaveBeenCalledWith(
+        "a1",
+        "deploy-note"
+      )
+    );
+    // The list refreshes after every successful action (load + refresh).
+    await waitFor(() =>
+      expect(mockedClient.agents.listWorkspaceSkills).toHaveBeenCalledTimes(2)
+    );
+    await waitFor(() =>
+      expect(hasToast("info", "promoted to the global library")).toBe(true)
+    );
+  });
+
+  it("surfaces the collision rejection and changes nothing", async () => {
+    workspaceSkills = [wsRow("deploy-note", "Posts a deployment note.")];
+    mockedClient.agents.promoteWorkspaceSkill.mockRejectedValueOnce(
+      new Error('a skill named "deploy-note" already exists in the library')
+    );
+    await renderModal(makeAgent());
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("config-workspace-skill-promote-deploy-note")
+      ).toBeTruthy()
+    );
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByTestId("config-workspace-skill-promote-deploy-note")
+      );
+    });
+
+    // The backend's rejection message — it names the colliding skill — is
+    // what surfaces.
+    await waitFor(() =>
+      expect(hasToast("danger", "already exists in the library")).toBe(true)
+    );
+    // A rejection does not refresh the list.
+    expect(mockedClient.agents.listWorkspaceSkills).toHaveBeenCalledTimes(1);
+    expect(
+      screen.getByTestId("config-workspace-skill-deploy-note")
+    ).toBeTruthy();
+  });
+
+  it("deletes the workspace skill and refreshes the list", async () => {
+    workspaceSkills = [
+      wsRow("deploy-note", "Posts a deployment note."),
+      wsRow("triage", "Triages incoming reports."),
+    ];
+    // Mimic the backend: the directory is gone when the refresh reads it.
+    mockedClient.agents.deleteWorkspaceSkill.mockImplementation(
+      async (): Promise<void> => {
+        workspaceSkills = workspaceSkills.filter(
+          (s: WorkspaceSkill): boolean => s.Name !== "deploy-note"
+        );
+      }
+    );
+    await renderModal(makeAgent());
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("config-workspace-skill-deploy-note")
+      ).toBeTruthy()
+    );
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByTestId("config-workspace-skill-delete-deploy-note")
+      );
+    });
+
+    await waitFor(() =>
+      expect(mockedClient.agents.deleteWorkspaceSkill).toHaveBeenCalledWith(
+        "a1",
+        "deploy-note"
+      )
+    );
+    await waitFor(() =>
+      expect(mockedClient.agents.listWorkspaceSkills).toHaveBeenCalledTimes(2)
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("config-workspace-skill-deploy-note")
+      ).toBeNull()
+    );
+    // The untouched row stays.
+    expect(screen.getByTestId("config-workspace-skill-triage")).toBeTruthy();
+  });
+
+  it("keeps the row actions inert while a request is in flight", async () => {
+    workspaceSkills = [wsRow("deploy-note", "Posts a deployment note.")];
+    mockedClient.agents.promoteWorkspaceSkill.mockReturnValueOnce(
+      new Promise<void>(() => undefined)
+    );
+    await renderModal(makeAgent());
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("config-workspace-skill-promote-deploy-note")
+      ).toBeTruthy()
+    );
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByTestId("config-workspace-skill-promote-deploy-note")
+      );
+    });
+
+    // SAFETY: these test ids render button elements.
+    expect(
+      (
+        screen.getByTestId(
+          "config-workspace-skill-promote-deploy-note"
+        ) as HTMLButtonElement
+      ).disabled
+    ).toBe(true);
+    // SAFETY: this test id renders the row's IconButton, a button element.
+    expect(
+      (
+        screen.getByTestId(
+          "config-workspace-skill-delete-deploy-note"
+        ) as HTMLButtonElement
+      ).disabled
+    ).toBe(true);
+  });
+
+  it("degrades a rejected initial load to an inline error line", async () => {
+    mockedClient.agents.listWorkspaceSkills.mockRejectedValueOnce(
+      new Error("workspace unreadable")
+    );
+    await renderModal(makeAgent());
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("config-section-workspace-skills").textContent
+      ).toContain("Couldn't load this agent's skills.")
+    );
+
+    // No rows and no crash.
+    expect(screen.queryByTestId("config-workspace-skill-list")).toBeNull();
   });
 });

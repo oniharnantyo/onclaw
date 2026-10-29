@@ -214,6 +214,125 @@ func TestService_Regenerate_ModelErrorIsSanitized(t *testing.T) {
 	require.Zero(t, docs.commitCalls)
 }
 
+// poolsideRejection is the observed shape of a structured-output refusal: an
+// OpenAI-compatible endpoint (here Poolside) that only accepts free-form or
+// json_object response_format types answering a json_schema request with a
+// 400 validation error.
+const poolsideRejection = `error, status code: 400, status: 400 Bad Request, message: Invalid request: ["response_format.ResponseFormatText.type (json_schema): Input should be 'text'"]`
+
+// TestService_Regenerate_RetriesFreeFormWhenStructuredOutputRejected pins the
+// fallback for endpoints without native structured-output support: the first
+// attempt builds with the constraint, and a response_format/json_schema
+// refusal triggers exactly one free-form retry whose plain-JSON content the
+// parser still recovers.
+func TestService_Regenerate_RetriesFreeFormWhenStructuredOutputRejected(t *testing.T) {
+	ctx := context.Background()
+
+	calls := 0
+	rejectingModel := &fakeChatModel{
+		generateFunc: func(ctx context.Context, input []*schema.Message) (*schema.Message, error) {
+			calls++
+			return nil, errors.New(poolsideRejection)
+		},
+	}
+	freeFormModel := &fakeChatModel{
+		generateFunc: func(ctx context.Context, input []*schema.Message) (*schema.Message, error) {
+			calls++
+			return &schema.Message{Content: "Here are the documents:\n```json\n" +
+				`{"identity":"free identity","soul":"free soul","bootstrap":"free bootstrap"}` +
+				"\n```"}, nil
+		},
+	}
+	factory := &fakeFactory{models: []*fakeChatModel{rejectingModel, freeFormModel}}
+	docs := newFakeDocStore()
+	svc := NewService(factory, docs)
+
+	got, err := svc.Regenerate(ctx, "scout", testParams())
+	require.NoError(t, err)
+	require.Equal(t, 2, calls, "exactly one free-form retry after the refusal")
+
+	// The first build carried the constraint, the retry did not.
+	require.Equal(t, []bool{true, false}, factory.buildStructured)
+
+	require.Equal(t, Documents{Identity: "free identity", Soul: "free soul", Bootstrap: "free bootstrap"}, got)
+	require.Equal(t, 1, docs.commitCalls)
+}
+
+func TestService_Regenerate_NoRetryForUnrelatedErrors(t *testing.T) {
+	ctx := context.Background()
+
+	factory := &fakeFactory{model: &fakeChatModel{
+		generateFunc: func(ctx context.Context, input []*schema.Message) (*schema.Message, error) {
+			return nil, errors.New("error, status code: 401, status: 401 Unauthorized")
+		},
+	}}
+	docs := newFakeDocStore()
+	svc := NewService(factory, docs)
+
+	_, err := svc.Regenerate(ctx, "scout", testParams())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "provider authentication failed")
+	require.Equal(t, 1, factory.builds, "only a structured-output refusal earns a retry")
+	require.Equal(t, []bool{true}, factory.buildStructured)
+	require.Zero(t, docs.commitCalls)
+}
+
+func TestService_Regenerate_RetryRefusedAgainFailsSanitized(t *testing.T) {
+	ctx := context.Background()
+
+	factory := &fakeFactory{models: []*fakeChatModel{
+		{generateFunc: func(ctx context.Context, input []*schema.Message) (*schema.Message, error) {
+			return nil, errors.New(poolsideRejection)
+		}},
+		{generateFunc: func(ctx context.Context, input []*schema.Message) (*schema.Message, error) {
+			return nil, errors.New(poolsideRejection)
+		}},
+	}}
+	docs := newFakeDocStore()
+	svc := NewService(factory, docs)
+
+	_, err := svc.Regenerate(ctx, "scout", testParams())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "400 Bad Request")
+	require.NotContains(t, err.Error(), "\n", "the reason must stay single-line")
+	require.Equal(t, 2, factory.builds)
+	require.Zero(t, docs.commitCalls)
+}
+
+func TestStructuredOutputRejected(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", err: nil, want: false},
+		{
+			name: "pydantic field-path refusal",
+			err:  errors.New(poolsideRejection),
+			want: true,
+		},
+		{
+			name: "prose refusal",
+			err:  errors.New("400 response_format is not supported by this model"),
+			want: true,
+		},
+		{
+			name: "json schema mention",
+			err:  errors.New("json schema outputs are unavailable for this model"),
+			want: true,
+		},
+		{name: "auth failure", err: errors.New("401 Unauthorized: invalid api key"), want: false},
+		{name: "rate limit", err: errors.New("429 Too Many Requests"), want: false},
+		{name: "timeout", err: context.DeadlineExceeded, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, structuredOutputRejected(tt.err))
+		})
+	}
+}
+
 func TestService_Regenerate_ParseFailureCommitsNothing(t *testing.T) {
 	ctx := context.Background()
 	factory := &fakeFactory{model: &fakeChatModel{

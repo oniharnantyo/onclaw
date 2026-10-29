@@ -16,6 +16,7 @@ declare module "@wailsio/runtime" {
             "knowledge:changed": services$0.KnowledgeChangedEvent;
             "mcp:oauth:completed": services$0.MCPOAuthCompletedEvent;
             "schedules:changed": services$0.SchedulesChangedEvent;
+            "turns:changed": services$0.TurnsChangedEvent;
         }
     }
 }

@@ -54,3 +54,46 @@ func TestToolActivityTerminalWithStampedDuration(t *testing.T) {
 	stamped := ToolActivity{CallID: "call-1", Status: ToolStatusCompleted, DurationMs: 42}
 	require.True(t, stamped.Terminal())
 }
+
+// The turn_completed artifacts payload (add-turn-artifacts design D4): the
+// list rides the terminal event like Usage does, is omitted when empty, and a
+// payload recorded before the field existed decodes with no artifacts.
+
+// TestEventArtifactsRoundTrip pins the wire shape: path, size, and change
+// kind marshal under artifacts and read back unchanged, with the truncation
+// flag beside them; an entry without a known change kind omits it.
+func TestEventArtifactsRoundTrip(t *testing.T) {
+	ev := Event{
+		Kind:  KindTurnCompleted,
+		Usage: &Usage{TotalTokens: 10},
+		Artifacts: []Artifact{
+			{Path: "artifacts/report.md", Size: 1200, Change: ArtifactCreated},
+			{Path: "artifacts/summary.pdf", Size: 34000},
+		},
+		ArtifactsTruncated: true,
+	}
+	data, err := json.Marshal(ev)
+	require.NoError(t, err)
+	require.Contains(t, string(data), `"artifacts":[{"path":"artifacts/report.md","size":1200,"change":"created"},{"path":"artifacts/summary.pdf","size":34000}]`)
+	require.Contains(t, string(data), `"artifacts_truncated":true`)
+
+	var got Event
+	require.NoError(t, json.Unmarshal(data, &got))
+	require.Equal(t, ev.Artifacts, got.Artifacts)
+	require.True(t, got.ArtifactsTruncated)
+}
+
+// TestEventWithoutArtifactsOmitsField pins omitempty: a turn with no
+// artifacts carries no artifacts key, and a payload persisted before the
+// field existed decodes to a nil list with the flag clear.
+func TestEventWithoutArtifactsOmitsField(t *testing.T) {
+	data, err := json.Marshal(Event{Kind: KindTurnCompleted, Usage: &Usage{}})
+	require.NoError(t, err)
+	require.NotContains(t, string(data), "artifacts")
+
+	legacy := `{"kind":"turn_completed","occurred_at":"2026-10-26T00:00:00Z","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`
+	var got Event
+	require.NoError(t, json.Unmarshal([]byte(legacy), &got))
+	require.Nil(t, got.Artifacts)
+	require.False(t, got.ArtifactsTruncated)
+}

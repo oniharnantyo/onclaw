@@ -15,7 +15,11 @@ import { act } from "react";
 import { fireEvent, screen, waitFor } from "@testing-library/dom";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { Kind } from "../../../../../bindings/github.com/oniharnantyo/buddies/internal/sessions/models";
+import {
+  ArtifactChange,
+  Kind,
+} from "../../../../../bindings/github.com/oniharnantyo/buddies/internal/sessions/models";
+import type { Agent } from "../../../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
 import { applyEvent } from "../../entries";
 import { useChatStore } from "../../store";
 import {
@@ -72,6 +76,31 @@ function messageIDs(): string[] {
   return ids;
 }
 
+/** The session agent the attribution suite selects (the SessionRail
+ * fixture's shape). */
+const agent: Agent = {
+  ID: "a1",
+  Name: "Scout",
+  ProviderID: "prov",
+  Model: "gpt-test",
+  Effort: "",
+  Slug: "scout",
+  Description: "",
+  Brief: "",
+  Avatar: null,
+  SubagentsEnabled: true,
+  PromptsStatus: "ready",
+  PromptsError: "",
+  ContextWindow: 0,
+  Temperature: 0.7,
+  MaxTokens: 0,
+  Tools: null,
+  Skills: null,
+  MCPServers: null,
+  CreatedAt: "2026-01-01T00:00:00Z",
+  UpdatedAt: "2026-01-01T00:00:00Z",
+};
+
 async function bottomed(harness: ThreadHarness, height: number): Promise<void> {
   harness.pinLayout(height);
   harness.viewport.scrollTop = height;
@@ -85,7 +114,13 @@ async function bottomed(harness: ThreadHarness, height: number): Promise<void> {
 afterEach(() => {
   rectSpy.mockClear();
   scrollPos = 0;
-  useChatStore.setState({ busy: false, activeSessionID: "s1", entries: [] });
+  useChatStore.setState({
+    busy: false,
+    activeSessionID: "s1",
+    entries: [],
+    agents: [],
+    activeAgentID: null,
+  });
 });
 
 describe("ChatThread (task 3.1)", () => {
@@ -232,16 +267,6 @@ describe("ChatThread (task 3.1)", () => {
     // The controller's scroll bookkeeping lands on an animation frame: settle
     // it, then wait for the pill.
     await h.settle();
-    console.log(
-      "DEBUG scrollTop",
-      h.viewport.scrollTop,
-      "scrollHeight",
-      h.viewport.scrollHeight,
-      "calls",
-      JSON.stringify(h.scrollToCalls),
-      "pill",
-      document.querySelector('[data-testid="btn-jump-latest"]') !== null
-    );
     await waitFor(() =>
       expect(screen.getByTestId("btn-jump-latest")).toBeTruthy()
     );
@@ -414,8 +439,80 @@ describe("ChatThread (task 3.1)", () => {
 
     const el = screen.getByTestId("entry-error");
 
+    // The card announces itself with alert semantics and speaks the
+    // honest generic for an unrecognized failure — the raw string is NOT
+    // the headline.
     expect(el.getAttribute("role")).toBe("alert");
-    expect(el.textContent).toContain("provider exploded");
+    expect(el.textContent).toContain("This turn failed.");
+    expect(el.textContent).not.toContain("provider exploded");
+
+    // The raw string survives verbatim behind the collapsed disclosure.
+    expect(screen.queryByTestId("entry-error-details")).toBeNull();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("entry-error-details-toggle"));
+    });
+
+    expect(screen.getByTestId("entry-error-details").textContent).toBe(
+      "provider exploded"
+    );
+
+    await h.unmount();
+  });
+
+  it("renders the artifacts chips row after the reply, outside the tool-call fold (add-turn-artifacts design D7)", async () => {
+    useChatStore.setState({ activeAgentID: "a1", panelTabs: [] });
+
+    // Five tool calls: the cards fold, the chips row must not fold with them.
+    const entries = fold(
+      ev(Kind.KindUserMessage, { text: "go", turn_id: "t1" }),
+      toolEvent("c1", "a.md"),
+      toolEvent("c2", "b.md"),
+      toolEvent("c3", "c.md"),
+      toolEvent("c4", "d.md"),
+      toolEvent("c5", "e.md"),
+      ev(Kind.KindAssistantMessage, {
+        text: "the report is ready",
+        turn_id: "t1",
+      }),
+      ev(Kind.KindTurnCompleted, {
+        turn_id: "t1",
+        artifacts: [
+          {
+            path: "artifacts/report.md",
+            size: 2048,
+            change: ArtifactChange.ArtifactCreated,
+          },
+        ],
+      })
+    );
+
+    const h = await renderThread(entries);
+    await h.settle();
+
+    const row = screen.getByTestId("entry-artifacts");
+
+    expect(row.textContent).toContain("report.md");
+
+    // In message order: the row renders after the reply text, not inside it.
+    const answer = screen.getByText("the report is ready");
+
+    expect(
+      answer.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+
+    // Activation opens the workspace-file preview tab — the same call the
+    // markdown links make (spec "Chip opens the preview").
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "report.md" }));
+    });
+
+    expect(useChatStore.getState().panelTabs[0]).toMatchObject({
+      kind: "workspace-file",
+      data: { agentID: "a1", relPath: "artifacts/report.md" },
+    });
+
+    useChatStore.setState({ activeAgentID: null, panelTabs: [] });
 
     await h.unmount();
   });
@@ -447,6 +544,65 @@ describe("the user prompt (port of the legacy Transcript suite)", () => {
     expect(row?.className).toContain("justify-end");
     expect(prompt.getAttribute("data-role")).toBe("user");
     expect(prompt.textContent).toContain("hello there");
+
+    await h.unmount();
+  });
+});
+
+describe("turn attribution (refine-chat-surface-identity task 2.2, design D2)", () => {
+  it("opens an assistant turn with the session agent's static stub, and user turns carry none", async () => {
+    useChatStore.setState({ agents: [agent], activeAgentID: "a1" });
+
+    const h = await renderThread(
+      fold(
+        ev(Kind.KindUserMessage, { text: "hello", turn_id: "t1" }),
+        ev(Kind.KindAssistantMessage, { text: "hi there", turn_id: "t1" }),
+        ev(Kind.KindTurnCompleted, { turn_id: "t1" })
+      )
+    );
+
+    // Exactly one stub in the transcript: the assistant turn's.
+    const stubs = screen.getAllByTestId("turn-attribution");
+
+    expect(stubs).toHaveLength(1);
+    expect(stubs[0]?.textContent).toContain("Scout");
+
+    // The face renders small — the 16px square the stub passes AgentAvatar.
+    // SAFETY: the stub's first child is AgentAvatar's wrapper div; the
+    // assertion reads the inline size style off it.
+    const face = stubs[0]?.firstElementChild as HTMLElement | null;
+
+    expect(face?.style.width).toBe("16px");
+    expect(face?.style.height).toBe("16px");
+
+    // The stub's avatar is the STATIC render: no live-animation state
+    // attribute anywhere inside it (the live face is the right bar's only).
+    expect(stubs[0]?.querySelector("[data-avatar-state]")).toBeNull();
+
+    await h.unmount();
+  });
+
+  it("renders no attribution on a compaction marker", async () => {
+    useChatStore.setState({ agents: [agent], activeAgentID: "a1" });
+
+    const entries = fold(
+      ev(Kind.KindUserMessage, { text: "before", turn_id: "t1" }),
+      {
+        kind: Kind.KindCompaction,
+        occurred_at: "2026-01-01T00:01:00Z",
+        compaction: {
+          checkpoint_id: "cp1",
+          tokens_before: 154000,
+          tokens_after: 9200,
+        },
+      },
+      ev(Kind.KindUserMessage, { text: "after", turn_id: "t2" })
+    );
+
+    const h = await renderThread(entries);
+
+    expect(screen.getByTestId("entry-compaction")).not.toBeNull();
+    expect(screen.queryByTestId("turn-attribution")).toBeNull();
 
     await h.unmount();
   });

@@ -46,7 +46,20 @@ func cloneMCPServer(in store.MCPServer) store.MCPServer {
 	in.Env = cloneStringMap(in.Env)
 	in.Headers = cloneStringMap(in.Headers)
 	in.Auth.Scopes = cloneStrings(in.Auth.Scopes)
+	in.Auth.ExtraAuthParams = cloneStringMap(in.Auth.ExtraAuthParams)
+	// Computed/redacted credential views, mirroring the sqlite store's
+	// read path (add-integrations design D4).
+	in.CredentialSet = in.Auth.IntegrationCredential != ""
+	in.CredentialHint = credentialHint(in.Auth.IntegrationCredential)
 	return in
+}
+
+// credentialHint returns the redacted last-four view of a credential.
+func credentialHint(cred string) string {
+	if len(cred) <= 4 {
+		return cred
+	}
+	return cred[len(cred)-4:]
 }
 
 func cloneEvent(in store.SessionEvent) store.SessionEvent {

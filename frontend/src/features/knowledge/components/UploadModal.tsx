@@ -145,7 +145,7 @@ export function UploadModal({
             onChange={handleFileChange}
           />
           <p className="text-[11px] text-muted">
-            Text documents up to 1 MB and PDFs up to 20 MB.
+            Text documents up to 1 MB; PDFs and OOXML documents up to 20 MB.
           </p>
         </div>
 

@@ -22,17 +22,38 @@ import { client } from "../../../lib/client";
 const REFETCH_COALESCE_MS = 100;
 
 /** Lane caps for the knowledge corpus, mirroring the chat-attachments
- * shape: PDFs 20 MB, text 1 MB; a mime in no lane is unsupported. */
+ * shape: PDFs and OOXML office documents 20 MB, text 1 MB; a mime in no
+ * lane is unsupported. */
 const MAX_KNOWLEDGE_PDF_BYTES = 20 << 20;
+
+const MAX_KNOWLEDGE_OOXML_BYTES = 20 << 20;
 
 const MAX_KNOWLEDGE_TEXT_BYTES = 1 << 20;
 
+/** The OOXML office-document kinds (the backend's DocxMime/XlsxMime/PptxMime
+ * in internal/knowledge). */
+const DOCX_MIME =
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+const XLSX_MIME =
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+const PPTX_MIME =
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+
 /** The corpus pre-gate the panel applies before the upload round trip:
- * application/pdf and text/* only, at the lane caps. Returns the rejection
- * reason or null when the file may go up. */
+ * application/pdf, the OOXML office kinds, and text/* — at the lane caps.
+ * Returns the rejection reason or null when the file may go up. */
 export function knowledgeRejection(mime: string, size: number): string | null {
   if (mime === "application/pdf") {
     if (size > MAX_KNOWLEDGE_PDF_BYTES) return "Exceeds the 20 MB PDF limit";
+
+    return null;
+  }
+
+  if (mime === DOCX_MIME || mime === XLSX_MIME || mime === PPTX_MIME) {
+    if (size > MAX_KNOWLEDGE_OOXML_BYTES)
+      return "Exceeds the 20 MB OOXML limit";
 
     return null;
   }
@@ -44,7 +65,7 @@ export function knowledgeRejection(mime: string, size: number): string | null {
     return null;
   }
 
-  return `Unsupported file type "${mime}" — text and PDF documents are accepted`;
+  return `Unsupported file type "${mime}" — text, PDF, and OOXML documents are accepted`;
 }
 
 /** File → base64 (without the data-URL prefix) for the upload binding call;
@@ -300,7 +321,7 @@ export function KnowledgePanel({
           <input
             type="file"
             className="hidden"
-            accept="text/*,application/pdf,.md,.markdown,.txt"
+            accept="text/*,application/pdf,.docx,.xlsx,.pptx,.md,.markdown,.txt"
             disabled={uploading}
             data-testid="knowledge-upload-input"
             onChange={handleFile}

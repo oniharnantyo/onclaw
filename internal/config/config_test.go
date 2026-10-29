@@ -90,3 +90,45 @@ func TestEnsure_SecondRunIsNoOp(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, os.FileMode(0700), info.Mode().Perm())
 }
+
+// TestResolve_MemorySubpaths covers the add-agent-memory home layout: each
+// agent's memory directory resolves to workspaces/<slug>/memory with its
+// archive subdirectory at workspaces/<slug>/memory/archive.
+func TestResolve_MemorySubpaths(t *testing.T) {
+	home := isolateHome(t)
+
+	layout, err := Resolve()
+	require.NoError(t, err)
+
+	slug := "my-agent"
+	require.Equal(t, filepath.Join(home, ".buddies", "workspaces", slug, "memory"), layout.MemoryDir(slug))
+	require.Equal(t, filepath.Join(home, ".buddies", "workspaces", slug, "memory", "archive"), layout.MemoryArchiveDir(slug))
+}
+
+// TestEnsureMemory_CreatesOnDemand covers the add-agent-memory ensure
+// contract: the first call creates memory/ and memory/archive/ (mode 0700),
+// a second call is a no-op that survives content placed inside the tree.
+func TestEnsureMemory_CreatesOnDemand(t *testing.T) {
+	isolateHome(t)
+
+	layout, err := Resolve()
+	require.NoError(t, err)
+
+	require.NoError(t, layout.EnsureMemory("my-agent"))
+
+	for _, dir := range []string{layout.MemoryDir("my-agent"), layout.MemoryArchiveDir("my-agent")} {
+		info, err := os.Stat(dir)
+		require.NoError(t, err, "directory %s must exist after EnsureMemory", dir)
+		require.True(t, info.IsDir(), "%s must be a directory", dir)
+		require.Equal(t, os.FileMode(0700), info.Mode().Perm(), "%s must be mode 0700", dir)
+	}
+
+	// Idempotent: existing content survives a re-run unchanged.
+	noteFile := filepath.Join(layout.MemoryDir("my-agent"), "prefers-dark-mode.md")
+	require.NoError(t, os.WriteFile(noteFile, []byte("---\nname: prefers-dark-mode\n---\n"), 0600))
+
+	require.NoError(t, layout.EnsureMemory("my-agent"))
+
+	_, err = os.Stat(noteFile)
+	require.NoError(t, err, "existing memory content must survive a re-run")
+}

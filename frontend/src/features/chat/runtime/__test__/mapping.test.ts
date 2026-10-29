@@ -8,7 +8,10 @@
  */
 import { describe, expect, it } from "vite-plus/test";
 
+import type { ThreadMessageLike } from "@assistant-ui/react";
+
 import {
+  ArtifactChange,
   Kind,
   ToolStatus,
   type Event as SessionEvent,
@@ -139,6 +142,61 @@ describe("entry → message mapping (task 2.1, design D2)", () => {
       },
       { type: "text", id: entries[3].id, text: "Done — a.txt" },
     ]);
+  });
+
+  it("merges late task activity for an earlier turn into that turn's message", () => {
+    // A background subagent finishing after a NEWER turn re-uses the old
+    // turn id; a second group would mint a second message with the same id
+    // and the branch repository rejects duplicate ids (blank app at boot).
+    const entries = fold(
+      ev(Kind.KindUserMessage, { text: "do it", turn_id: "t1", id: "e1" }),
+      ev(Kind.KindAssistantMessage, {
+        text: "launching",
+        turn_id: "t1",
+        id: "e2",
+      }),
+      ev(Kind.KindTurnCompleted, { turn_id: "t1" }),
+      ev(Kind.KindUserMessage, {
+        text: "do it again",
+        turn_id: "t2",
+        id: "e3",
+      }),
+      ev(Kind.KindAssistantMessage, {
+        text: "launching again",
+        turn_id: "t2",
+        id: "e4",
+      }),
+      ev(Kind.KindTurnCompleted, { turn_id: "t2" }),
+      ev(Kind.KindTaskActivity, {
+        turn_id: "t1",
+        task: {
+          task_id: "task-1",
+          description: "research node",
+          status: ToolStatus.ToolStatusFailed,
+          result: "boom",
+        },
+      }),
+      ev(Kind.KindTaskActivity, {
+        turn_id: "t1",
+        task: {
+          task_id: "task-2",
+          description: "research php",
+          status: ToolStatus.ToolStatusFailed,
+          result: "boom",
+        },
+      })
+    );
+
+    const messages = entriesToMessages(entries);
+
+    // Four messages: two prompts and ONE assistant message per turn id —
+    // the prompt ids are reducer-minted, the assistant ids the turn ids.
+    const ids = messages.map(
+      (m: ThreadMessageLike): string | undefined => m.id
+    );
+
+    expect(ids).toEqual([entries[0].id, "t1", entries[2].id, "t2"]);
+    expect(new Set(ids).size).toBe(ids.length);
   });
 
   it("groups legacy turn-less entries by adjacency, never into a stamped turn", () => {
@@ -696,5 +754,70 @@ describe("entry → message mapping (task 2.1, design D2)", () => {
     ];
 
     expect(entriesToMessages(replayed)).toEqual(entriesToMessages(direct));
+  });
+});
+
+describe("trailing data-artifacts part (add-turn-artifacts tasks 6.2, design D7)", () => {
+  it("appends the stamped artifacts as the LAST part of the assistant message", () => {
+    const artifacts = [
+      {
+        path: "artifacts/report.md",
+        size: 1200,
+        change: ArtifactChange.ArtifactCreated,
+      },
+      {
+        path: "artifacts/data.csv",
+        size: 64,
+        change: ArtifactChange.ArtifactModified,
+      },
+    ];
+
+    const entries = fold(
+      ev(Kind.KindUserMessage, { text: "go", turn_id: "t1", id: "e1" }),
+      ev(Kind.KindToolActivity, {
+        turn_id: "t1",
+        tool: {
+          call_id: "c1",
+          name: "execute",
+          arguments: "{}",
+          status: ToolStatus.ToolStatusCompleted,
+          result: "ok",
+        },
+      }),
+      ev(Kind.KindAssistantMessage, { text: "done", turn_id: "t1", id: "e2" }),
+      ev(Kind.KindTurnCompleted, {
+        turn_id: "t1",
+        id: "e3",
+        artifacts,
+        artifacts_truncated: true,
+      })
+    );
+
+    const [, turn] = entriesToMessages(entries);
+    const content = turn?.content ?? [];
+
+    expect(content[content.length - 1]).toEqual({
+      type: "data-artifacts",
+      id: `${entries[2].id}-artifacts`,
+      data: { artifacts, truncated: true },
+    });
+    // It trails every other part — after the text, past the tool call.
+    expect(content[content.length - 2]).toMatchObject({ type: "text" });
+    expect(content[0]).toMatchObject({ type: "tool-call" });
+  });
+
+  it("mints no artifacts part when the entry carries none", () => {
+    const entries = fold(
+      ev(Kind.KindUserMessage, { text: "go", turn_id: "t1", id: "e1" }),
+      ev(Kind.KindAssistantMessage, { text: "done", turn_id: "t1", id: "e2" }),
+      ev(Kind.KindTurnCompleted, { turn_id: "t1", id: "e3" })
+    );
+
+    const [, turn] = entriesToMessages(entries);
+
+    // The turn's parts are the text alone — no trailing artifacts part.
+    expect(turn?.content).toEqual([
+      { type: "text", id: entries[1].id, text: "done" },
+    ]);
   });
 });

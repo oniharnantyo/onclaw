@@ -9,7 +9,7 @@
 import { act } from "react";
 import { fireEvent, screen } from "@testing-library/dom";
 import { describe, expect, it, vi } from "vite-plus/test";
-import type { AvatarFullConfig } from "react-nice-avatar";
+import type { AvatarFullConfig } from "@oniharnantyo/react-nice-avatar";
 
 import { renderUI } from "../../../__test__/test-utils";
 import { AvatarPicker } from "../components/AvatarPicker";

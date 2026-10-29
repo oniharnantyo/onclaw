@@ -144,9 +144,14 @@ func structuredOutputFormat() *openai.ChatCompletionResponseFormat {
 	}
 }
 
-// generationOptions are the ChatModel options applied to every generation call:
+// generationOptions are the ChatModel options applied to a generation call:
 // bind the prompts JSON schema for adapters that take it at call time (Gemini).
-func generationOptions() []model.Option {
+// An unstructured call — the retry path for providers that rejected the native
+// structured-output request — binds no schema.
+func generationOptions(structured bool) []model.Option {
+	if !structured {
+		return nil
+	}
 	return []model.Option{
 		gemini.WithResponseJSONSchema(promptsJSONSchema()),
 	}

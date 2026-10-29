@@ -2,7 +2,9 @@
  * SideRow tests (task 2.1): a type=button row that renders icon/label/sub/
  * right nodes, defaults its title to a string label, tints the active row
  * with the accent color-mix and the inactive row with the hover chain, and
- * reports clicks plus the odId.
+ * reports clicks plus the odId. State is semantic as well as tinted
+ * (refine-chat-surface-identity design D6): `active` emits aria-current and
+ * the optional `expanded` emits aria-expanded, omitted on plain rows.
  */
 import { act } from "react";
 import { fireEvent } from "@testing-library/dom";
@@ -41,6 +43,22 @@ describe("SideRow", () => {
     expect(getByTestId("row-right")).not.toBeNull();
     // String labels become the fallback title, like onclaw's `title || label`.
     expect(row.title).toBe("Atlas");
+    // The optional test hook is absent when omitted (replace-menu-island-
+    // git-helper D2): plain rows carry no data-testid attribute at all.
+    expect(row.getAttribute("data-testid")).toBeNull();
+
+    await unmount();
+  });
+
+  it("carries the optional testId and ariaCurrent page marker when given", async () => {
+    const { container, unmount } = await renderUI(
+      <SideRow label="Settings" testId="rail-settings" ariaCurrent />
+    );
+
+    const row = rowEl(container);
+
+    expect(row.getAttribute("data-testid")).toBe("rail-settings");
+    expect(row.getAttribute("aria-current")).toBe("page");
 
     await unmount();
   });
@@ -61,6 +79,29 @@ describe("SideRow", () => {
 
     await active.unmount();
     await inactive.unmount();
+  });
+
+  it("emits aria-current from active and aria-expanded only when expanded is passed", async () => {
+    const active = await renderUI(<SideRow label="On" active />);
+    const inactive = await renderUI(<SideRow label="Off" />);
+    const open = await renderUI(<SideRow label="Group" expanded />);
+    const closed = await renderUI(<SideRow label="Group" expanded={false} />);
+    const plain = await renderUI(<SideRow label="Plain" />);
+
+    // The active row is the current one — semantic state, not just the
+    // tint; accordion headers report their open state (both boolean states
+    // render, so the attribute flips), and plain rows omit the attribute.
+    expect(rowEl(active.container).getAttribute("aria-current")).toBe("true");
+    expect(rowEl(inactive.container).getAttribute("aria-current")).toBeNull();
+    expect(rowEl(open.container).getAttribute("aria-expanded")).toBe("true");
+    expect(rowEl(closed.container).getAttribute("aria-expanded")).toBe("false");
+    expect(rowEl(plain.container).getAttribute("aria-expanded")).toBeNull();
+
+    await active.unmount();
+    await inactive.unmount();
+    await open.unmount();
+    await closed.unmount();
+    await plain.unmount();
   });
 
   it("prefers the explicit title and reports clicks", async () => {

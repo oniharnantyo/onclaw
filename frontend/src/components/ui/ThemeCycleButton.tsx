@@ -72,7 +72,7 @@ export function ThemeCycleButton({
         className={cn(
           "flex items-center rounded-[12px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_7%,transparent)]",
           showLabel
-            ? "h-11 w-[calc(100%-16px)] mx-2 gap-3 px-3 text-left hover:text-fg2"
+            ? "h-[30px] w-[calc(100%-16px)] mx-2 gap-2 px-3 text-left hover:text-fg2"
             : variant === "rail"
               ? "h-11 w-11 justify-center hover:text-fg2"
               : "h-9 w-9 justify-center rounded-md hover:text-fg"

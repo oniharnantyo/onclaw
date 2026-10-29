@@ -278,7 +278,7 @@ select:focus-visible {
   }
 }
 .od-fade {
-  animation: od-fade var(--motion-base) ease-out;
+  animation: od-fade var(--motion-base) var(--ease-standard);
 }
 @keyframes od-blink {
   50% {

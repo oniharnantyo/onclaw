@@ -12,18 +12,38 @@ import type {
 } from "../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
 import type { IconName } from "../../components/ui/Icon";
 
-export type PaneKey = "providers" | "skills" | "tools" | "hooks" | "mcp";
+export type PaneKey =
+  | "providers"
+  | "integrations"
+  | "skills"
+  | "tools"
+  | "hooks"
+  | "mcp";
 
 /**
  * One static sidebar entry of the settings nav: which pane it opens plus
- * the label, kit icon, and one-line description. The sidebar is onclaw-v2's
- * flat section list — no grouping.
+ * the label, kit icon, and one-line description. Entries are grouped into
+ * sections (see SettingsPaneSection).
  */
 export interface SettingsPaneConfig {
   key: PaneKey;
   label: string;
   icon: IconName;
   description: string;
+}
+
+/**
+ * One grouped sidebar section of the settings nav (add-integrations
+ * "Settings navigation layout"): a small uppercase label plus the panes
+ * under it, in nav order.
+ */
+export interface SettingsPaneSection {
+  /** Section id: "models" | "integrations" | "automation". */
+  id: string;
+  /** Uppercase section label: MODELS | INTEGRATIONS | AUTOMATION. */
+  label: string;
+  /** The panes in the section, in nav order. */
+  panes: SettingsPaneConfig[];
 }
 
 export interface DialogState<T> {

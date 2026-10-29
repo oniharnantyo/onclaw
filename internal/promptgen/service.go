@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/cloudwego/eino/schema"
 )
 
 // DefaultTimeout is the default duration allocated to a synchronous prompt
@@ -131,9 +133,12 @@ func validateRequest(slug string, p Params) error {
 	return nil
 }
 
-// generateDocuments builds the model, invokes it bounded by the service timeout
-// (3 minutes by default) so a slow or hung provider surfaces a timeout reason
-// instead of hanging the request, and parses the three documents. The current
+// generateDocuments invokes the generation and parses the three documents. The
+// first attempt asks for the provider's native structured output; when the
+// provider rejects that request (a response_format/json_schema refusal, as
+// several OpenAI-compatible endpoints emit), the generation retries once
+// free-form — the JSON contract still rides in the system prompt, and
+// ParseGenerationOutput recovers the documents from plain content. The current
 // documents, when non-nil, switch the call to enhance mode. Model and adapter
 // errors are sanitized before returning: the provider's API key is redacted and
 // the raw provider error is replaced by a safe, single-line reason, never
@@ -150,14 +155,10 @@ func (s *Service) generateDocuments(ctx context.Context, p Params, current *Docu
 		return SanitizeErrorString(redactKey(err.Error(), p.Provider.APIKey))
 	}
 
-	chatModel, err := s.factory.Build(ctx, p.Provider, p.Model)
-	if err != nil {
-		return Documents{}, fmt.Errorf("failed to initialize model adapter: %s", sanitizeReason(err))
+	resp, err := s.invoke(ctx, p, current, true)
+	if structuredOutputRejected(err) {
+		resp, err = s.invoke(ctx, p, current, false)
 	}
-
-	genCtx, cancel := context.WithTimeout(ctx, s.timeout)
-	defer cancel()
-	resp, err := chatModel.Generate(genCtx, BuildGenerationMessages(p, current), generationOptions()...)
 	if err != nil {
 		return Documents{}, errors.New(sanitizeReason(err))
 	}
@@ -174,6 +175,38 @@ func (s *Service) generateDocuments(ctx context.Context, p Params, current *Docu
 	}
 
 	return docs, nil
+}
+
+// invoke builds the model for one attempt and runs the generation bounded by
+// the service timeout (3 minutes by default) so a slow or hung provider
+// surfaces a timeout reason instead of hanging the request. structured requests
+// the provider's native structured-output constraint; when false the model
+// answers free-form.
+func (s *Service) invoke(ctx context.Context, p Params, current *Documents, structured bool) (*schema.Message, error) {
+	chatModel, err := s.factory.Build(ctx, p.Provider, p.Model, structured)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize model adapter: %s", SanitizeErrorString(redactKey(err.Error(), p.Provider.APIKey)))
+	}
+
+	genCtx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+	return chatModel.Generate(genCtx, BuildGenerationMessages(p, current), generationOptions(structured)...)
+}
+
+// structuredOutputRejected reports whether a generation attempt failed because
+// the provider refused the request's structured-output constraint — a
+// response_format or json_schema rejection, as OpenAI-compatible endpoints emit
+// when they only accept free-form or json_object responses. Such a failure is
+// the trigger for one free-form retry.
+func structuredOutputRejected(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "response_format") ||
+		strings.Contains(msg, "response format") ||
+		strings.Contains(msg, "json_schema") ||
+		strings.Contains(msg, "json schema")
 }
 
 // redactKey removes the provider's API key from an error message so the

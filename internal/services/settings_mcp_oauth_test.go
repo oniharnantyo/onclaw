@@ -438,6 +438,59 @@ func TestAuthorizeMCPServerIssuerChangeClearsRegistration(t *testing.T) {
 	require.True(t, awaitOAuthCompleted(t, emitter, len(emitter.recorded())).OK)
 }
 
+// TestAuthorizeMCPServerConfidentialClient pins design D3's
+// oauth_confidential path (add-integrations): a row carrying a
+// console-minted client authorizes without dynamic registration — the stored
+// client id and secret are used as-is and never re-registered, the
+// catalog-declared extra authorization parameters ride the browser URL, and
+// the exchanged tokens connect the row while the extras persist.
+func TestAuthorizeMCPServerConfidentialClient(t *testing.T) {
+	ctx := context.Background()
+	fs := fake.New()
+	emitter := &recordingEmitter{}
+	opener := &recordingOpener{}
+	svc := NewSettingsService(fs, WithEmitter(emitter), WithURLOpener(opener))
+	fx := newOAuthFlowFixture(t)
+
+	extras := map[string]string{"access_type": "offline", "prompt": "consent"}
+	created, err := svc.ConnectIntegration(ctx, IntegrationConnectInput{
+		Service:         "slack",
+		Endpoint:        fx.URL + "/mcp",
+		AuthMethod:      IntegrationAuthMethodConfidential,
+		ClientID:        "console-client",
+		ClientSecret:    "console-secret",
+		ExtraAuthParams: extras,
+	})
+	require.NoError(t, err)
+	require.Equal(t, mcp.StatusAuthRequired, created.Status)
+	created.Auth.RedirectURI = freeCallbackURI(t)
+	require.NoError(t, fs.MCPServers().Update(ctx, &created))
+
+	require.NoError(t, svc.AuthorizeMCPServer(ctx, created.ID))
+
+	// No dynamic registration happened: the console client authorizes as-is.
+	require.Equal(t, 0, fx.registrationsSeen())
+	require.Contains(t, opener.urls[0], "client_id=console-client")
+	require.Contains(t, opener.urls[0], "access_type=offline")
+	require.Contains(t, opener.urls[0], "prompt=consent")
+
+	// The registration persisted before the browser opened is the console
+	// client, untouched.
+	stored, err := fs.MCPServers().ByID(ctx, created.ID)
+	require.NoError(t, err)
+	require.Equal(t, "console-client", stored.Auth.ClientID)
+	require.Equal(t, "console-secret", stored.Auth.ClientSecret)
+
+	finishAuthorization(t, opener, stored.Auth.RedirectURI)
+	require.True(t, awaitOAuthCompleted(t, emitter, len(emitter.recorded())).OK)
+
+	// The row connected with the exchanged tokens; the extras persisted.
+	stored, err = fs.MCPServers().ByID(ctx, created.ID)
+	require.NoError(t, err)
+	require.Equal(t, mcp.StatusConnected, stored.Status)
+	require.Equal(t, extras, stored.Auth.ExtraAuthParams)
+}
+
 // TestAuthorizeMCPServerStdioUnsupported pins the transport gate: stdio has
 // no OAuth (design D1's scope).
 func TestAuthorizeMCPServerStdioUnsupported(t *testing.T) {

@@ -3,14 +3,38 @@
  * in that order. All tones ride the ported tokens (`color-mix` over
  * `var(--accent)` / `var(--fg)` / `var(--bg)`), so both themes re-skin
  * without a re-render. `kind` picks the initials tone; `size` is square
- * pixels and also drives the initials font size.
+ * pixels and also drives the initials font size. With `live` (design D2,
+ * spec chat-panels "Identity view live avatar") the generated face animates
+ * and the wrapper stops clipping; absent, the render is the static one.
  */
 import { useState, useMemo } from "react";
 import type { ReactElement } from "react";
-import NiceAvatar, { genConfig } from "react-nice-avatar";
-import type { AvatarFullConfig, NiceAvatarProps } from "react-nice-avatar";
+import NiceAvatar, { genConfig } from "@oniharnantyo/react-nice-avatar";
+import type {
+  AgentState,
+  AvatarFullConfig,
+  AvatarRefHandle,
+  EmoteFxName,
+  LookAtMode,
+  NiceAvatarProps,
+} from "@oniharnantyo/react-nice-avatar";
 
 import { cn } from "../../lib/cn";
+
+/**
+ * The live-animation props the identity view passes (design D2, spec
+ * chat-panels "Identity view live avatar"). Present, the fork element arms
+ * its timers, badges and gaze; absent, the render is exactly the static
+ * one — the fork injects no style and arms no timer.
+ */
+export interface LiveAvatarProps {
+  agentState: AgentState;
+  fx?: EmoteFxName | null;
+  lookAt?: LookAtMode;
+  sleepAfter?: number;
+  /** Receives the fork's imperative handle (nod/shake/showFx/wake…) on mount and null on unmount. */
+  onHandle?: (handle: AvatarRefHandle | null) => void;
+}
 
 export interface AvatarProps {
   name?: string;
@@ -22,6 +46,8 @@ export interface AvatarProps {
   kind?: "agent" | "you" | "other" | "user";
   size?: number;
   className?: string;
+  /** Live-animation pass-through (design D2); absent keeps the static render. */
+  live?: LiveAvatarProps;
 }
 
 export function Avatar({
@@ -32,6 +58,7 @@ export function Avatar({
   kind = "other",
   size = 28,
   className,
+  live,
 }: AvatarProps): ReactElement {
   const [imgError, setImgError] = useState(false);
 
@@ -64,15 +91,39 @@ export function Avatar({
 
     niceProps.shape = "rounded";
 
+    // Live path (design D2): the fork's keys land AFTER the config spread so
+    // they always win, and none of them touch the element when `live` is
+    // absent — the fork gates its timers and injected styles on
+    // `animated`/`idle`/`fx`/a non-idle state, so a static surface pays
+    // nothing. `expression`/`idle` are never set.
+    if (live) {
+      niceProps.animated = true;
+      niceProps.secondaryMotion = true;
+      niceProps.agentState = live.agentState;
+      niceProps.fx = live.fx ?? null;
+      niceProps.lookAt = live.lookAt;
+
+      if (live.sleepAfter !== undefined) {
+        niceProps.sleepAfter = live.sleepAfter;
+      }
+    }
+
     return (
       <div
         className={cn(
-          "flex shrink-0 overflow-hidden rounded-md items-center justify-center",
+          live
+            ? "flex shrink-0 rounded-md items-center justify-center"
+            : "flex shrink-0 overflow-hidden rounded-md items-center justify-center",
           className
         )}
         style={{ width: size, height: size }}
+        data-avatar-state={live?.agentState}
+        data-avatar-fx={live?.fx ?? undefined}
       >
-        <NiceAvatar {...niceProps} />
+        {/* The handle is a callback ref: the fork's default export is a class
+         * implementing AvatarRefHandle, so the instance satisfies it on mount
+         * and the ref fires with null on unmount (design D2). */}
+        <NiceAvatar {...niceProps} ref={live?.onHandle} />
       </div>
     );
   }

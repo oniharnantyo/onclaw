@@ -205,10 +205,25 @@ func (m *manager) ResolveApproval(ctx context.Context, sessionID, interruptID st
 		// origin (design D6). A cold resume leaves it empty — the process
 		// lost the record, and the resume reads as a user run.
 		resumed.origin = rt.origin
+		// The start-of-turn artifact record — or a prior cold resume's mtime
+		// predicate — survives the resume exactly like usage (add-turn-artifacts
+		// design D3): a turn can pause and resume more than once.
+		resumed.artifactsBefore = rt.artifactsBefore
+		resumed.artifactsSince = rt.artifactsSince
 	} else {
 		for _, ev := range events {
 			if ev.TurnID == pend.turnID && ev.VariantOf != "" {
 				resumed.variantOf = ev.VariantOf
+				break
+			}
+		}
+		// Cold resume (add-turn-artifacts design D3): the start record is
+		// gone with the process, so the terminal listing falls back to the
+		// mtime predicate — the turn's persisted user message's occurrence
+		// time.
+		for _, ev := range events {
+			if ev.Kind == sessions.KindUserMessage && ev.TurnID == pend.turnID {
+				resumed.artifactsSince = ev.OccurredAt
 				break
 			}
 		}
@@ -227,8 +242,15 @@ func (m *manager) ResolveApproval(ctx context.Context, sessionID, interruptID st
 	resumed.cancel = cancel
 	resumed.ctx = runCtx
 	m.mu.Lock()
+	// The resume is not an in-flight transition (the parked turn was already
+	// busy); the cold path is the exception — the restart lost the record,
+	// so the install re-enters the busy set and is announced.
+	_, wasInFlight := m.running[sessionID]
 	m.running[sessionID] = resumed
 	m.mu.Unlock()
+	if !wasInFlight {
+		m.notifyTransition(sessionID, true)
+	}
 
 	go m.resumeTurn(runCtx, resumed, pend, approved)
 	return nil
@@ -246,6 +268,23 @@ func outcomeOf(approved bool) string {
 // composition: ChatModelAgent's resume restores the checkpointed
 // instruction, so the placeholder never reaches the model.
 const resumedInstruction = "Resumed turn: continuing from a stored checkpoint."
+
+// resumedTurnInstruction composes the cold-resumed run's placeholder system
+// instruction (add-agent-memory task 2.2): the persona documents, the
+// operating contract, and the memory block in the pinned composition order,
+// so the placeholder degrades to the shape the checkpointed instruction had.
+// ChatModelAgent's resume restores the checkpointed instruction, so the
+// placeholder never reaches the model; a persona read failure degrades to
+// the bare placeholder.
+func (m *manager) resumedTurnInstruction(ctx context.Context, agent store.Agent) string {
+	identity, soul, bootstrap, err := m.documents(ctx, agent)
+	if err != nil {
+		return resumedInstruction
+	}
+	return composeSystem(
+		persona{identity: identity, soul: soul, bootstrap: bootstrap}.text(),
+		"", "", "", m.memoryBlock(ctx, agent), "")
+}
 
 // resumeTurn drives the parked turn's continuation from its checkpoint
 // (design D4): with the composed agent still held, reuse it; after a loss,
@@ -328,7 +367,7 @@ func (m *manager) resumeTurn(ctx context.Context, rt *runningTurn, pend *pending
 		rt.turn.finish(fail(err))
 		return
 	}
-	err = m.executeTurnRun(ctx, recordCtx, rt, record, fail, hookChain, hookBase, run)
+	err = m.executeTurnRun(ctx, recordCtx, rt, record, fail, hookChain, hookBase, *agent, run)
 	if errors.Is(err, errTurnParked) {
 		// The resumed run parked on another approval: the session stays busy
 		// and the Turn stays open, exactly like the first pause.
@@ -356,11 +395,13 @@ func (m *manager) failResume(rt *runningTurn, recordCtx context.Context, hookCha
 	rt.turn.finish(err)
 }
 
-// clearBusy removes the session's busy record.
+// clearBusy removes the session's busy record and announces the transition
+// out of the in-flight state (add-grouped-session-rail design D2).
 func (m *manager) clearBusy(rt *runningTurn) {
 	m.mu.Lock()
 	delete(m.running, rt.sessionID)
 	m.mu.Unlock()
+	m.notifyTransition(rt.sessionID, false)
 }
 
 // composeResumeRun builds the resumed run's execute inputs. With the parked
@@ -406,10 +447,7 @@ func (m *manager) composeResumeRun(ctx context.Context, rt *runningTurn, sess se
 	// restored from the checkpoint (ChatModelAgent resume), so a read
 	// failure only degrades the placeholder — the checkpoint's instruction
 	// is what the model sees.
-	instruction := resumedInstruction
-	if identity, soul, bootstrap, derr := m.documents(ctx, agent); derr == nil {
-		instruction = persona{identity: identity, soul: soul, bootstrap: bootstrap}.text()
-	}
+	instruction := m.resumedTurnInstruction(ctx, agent)
 
 	// Phase 6: the tool surface through the three-way gate.
 	surface, err := m.resolveTurnTools(ctx, agent)

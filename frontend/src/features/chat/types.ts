@@ -31,6 +31,13 @@ export interface AssistantEntry {
   text: string;
   /** True while the turn is still appending deltas to this entry. */
   streaming: boolean;
+  /** The files the turn produced under the workspace's artifacts/ directory
+   * (add-turn-artifacts design D4): stamped from the turn's turn_completed
+   * event when it carries a non-empty list; absent otherwise. */
+  artifacts?: SessionEvent["artifacts"];
+  /** True when the backend hit the artifact cap and the list is truncated
+   * (add-turn-artifacts design D4); stamped beside artifacts. */
+  artifactsTruncated?: boolean;
   at: string;
 }
 
@@ -217,7 +224,8 @@ export interface ChatStore {
   skills: Skill[];
 
   activeAgentID: string | null;
-  /** Active agent's sessions, latest activity first. */
+  /** Every agent's sessions, latest activity first (add-grouped-session-rail
+   * design D1); the rail groups the rows by each row's AgentID. */
   sessions: Session[];
   activeSessionID: string | null;
 
@@ -251,16 +259,25 @@ export interface ChatStore {
    * switches so the panel reopens closed for the new session. */
   panelTabs: PanelTab[];
 
-  /** The raised tab's id; null falls back to the last open tab. Lives in
-   * the store because activations come from outside the bar too (a run-card
-   * row click raises its trajectory tab). */
+  /** The raised tab's id. `null` is the pinned identity tab
+   * (add-pinned-identity-tab, design D1): with no tabs open it is the
+   * identity island, with tabs open it shows the identity view inside the
+   * tab shell while every tab stays listed. Lives in the store because
+   * activations come from outside the bar too (a run-card row click raises
+   * its trajectory tab). */
   activePanelTabID: string | null;
 
   /** Loads reference data and consumes the nav store's chat target. */
   init: () => Promise<void>;
   selectAgent: (agentID: string, sessionID?: string) => Promise<void>;
   selectSession: (sessionID: string) => Promise<void>;
-  newSession: () => Promise<void>;
+  /**
+   * Creates a session for `agentID` — the active agent when omitted (the
+   * composer's send-path auto-create calls it bare) — and opens it through
+   * the same selectAgent path for same- and cross-agent creation
+   * (add-grouped-session-rail design D6).
+   */
+  newSession: (agentID?: string) => Promise<void>;
   /** Sends now, queues while a turn is in flight, or — with no open session
    * (task 3.4) — first creates the active agent's session, then sends. */
   send: (text: string) => Promise<void>;
@@ -281,8 +298,9 @@ export interface ChatStore {
   /** Opens a preview tab, raising it; an identical open tab is raised, not
    * duplicated. */
   openPanelTab: (tab: Omit<PanelTab, "id">) => void;
-  /** Raises an already-open tab. */
-  activatePanelTab: (id: string) => void;
+  /** Raises an already-open tab; `null` raises the pinned identity tab
+   * (design D1). */
+  activatePanelTab: (id: string | null) => void;
   closePanelTab: (id: string) => void;
 }
 

@@ -31,6 +31,10 @@ type SettingsService struct {
 	// authorization page (design D8). Never nil: the constructor installs
 	// NoBrowser{} (headless hosts fail the flow with ErrNoBrowser).
 	urlOpener URLOpener
+	// templates holds the uploaded skeletons of template-document presets
+	// (add-document-editing design D6). Nil until WithDocumentTemplates
+	// wires it: template uploads refuse with a readable error.
+	templates store.DocumentTemplateStore
 }
 
 // SettingsOption configures the settings service.
@@ -77,6 +81,19 @@ func WithURLOpener(o URLOpener) SettingsOption {
 	return func(s *SettingsService) {
 		if o != nil {
 			s.urlOpener = o
+		}
+	}
+}
+
+// WithDocumentTemplates supplies the store holding the uploaded skeletons
+// of template-document presets (add-document-editing design D6): the
+// template upload and the delete-cleans-template paths need it. Unset —
+// the default — template uploads are refused with a readable error; the
+// composition root always wires it rooted at the layout's data directory.
+func WithDocumentTemplates(templates store.DocumentTemplateStore) SettingsOption {
+	return func(s *SettingsService) {
+		if templates != nil {
+			s.templates = templates
 		}
 	}
 }

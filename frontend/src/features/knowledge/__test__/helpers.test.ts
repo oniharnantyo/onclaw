@@ -1,13 +1,15 @@
 /**
- * Knowledge helpers unit tests (add-knowledge-corpus): the upload
- * pre-gates mirror the corpus gate byte-for-byte (PDF 20 MiB, text 1 MiB,
- * text+PDF kinds only, the rejection names the supported kinds), the
- * base64 text decode survives multi-byte UTF-8, and the row formatting
- * helpers stay human-readable.
+ * Knowledge helpers unit tests (add-knowledge-corpus, widened by
+ * add-document-editing): the upload pre-gates mirror the corpus gate
+ * byte-for-byte (PDF and OOXML 20 MiB, text 1 MiB, text+PDF+OOXML kinds
+ * only, the rejection names the supported kinds), the base64 text decode
+ * survives multi-byte UTF-8, and the row formatting helpers stay
+ * human-readable.
  */
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  MAX_OOXML_BYTES,
   MAX_PDF_BYTES,
   MAX_TEXT_BYTES,
   decodeBase64ToText,
@@ -18,28 +20,61 @@ import {
 } from "../helpers";
 
 describe("knowledge helpers", () => {
-  it("gates kinds: only text and PDF pass, the rejection names them", () => {
+  it("admits text, PDF, and OOXML documents", () => {
+    expect(gateRejection("notes.txt", "text/plain", 10)).toBeNull();
+    expect(gateRejection("doc.pdf", "application/pdf", 10)).toBeNull();
     expect(
       gateRejection(
         "report.docx",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         10
       )
-    ).toBe(
-      'Unsupported file type "application/vnd.openxmlformats-officedocument.wordprocessingml.document" — only text and PDF documents are accepted'
-    );
+    ).toBeNull();
+    expect(
+      gateRejection(
+        "book.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        10
+      )
+    ).toBeNull();
+    expect(
+      gateRejection(
+        "deck.pptx",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        10
+      )
+    ).toBeNull();
+  });
+
+  it("resolves an office document by extension when the mime is empty", () => {
+    expect(gateRejection("report.docx", "", 10)).toBeNull();
+    expect(gateRejection("book.XLSX", "", 10)).toBeNull();
+    expect(gateRejection("deck.pptx", "", 10)).toBeNull();
+    expect(gateRejection("doc.pdf", "", 10)).toBeNull();
+  });
+
+  it("rejects other kinds with a reason naming text, PDF, and OOXML", () => {
     expect(gateRejection("clip.mp4", "video/mp4", 10)).toBe(
-      'Unsupported file type "video/mp4" — only text and PDF documents are accepted'
+      'Unsupported file type "video/mp4" — only text, PDF, and OOXML documents are accepted'
     );
     expect(gateRejection("archive.zip", "application/zip", 10)).toContain(
-      "only text and PDF documents are accepted"
+      "only text, PDF, and OOXML documents are accepted"
+    );
+    // Legacy word-processing stays rejected, named by the file name when no
+    // mime was declared.
+    expect(gateRejection("memo.doc", "", 10)).toContain(
+      "only text, PDF, and OOXML documents are accepted"
     );
   });
 
-  it("gates sizes: PDFs 20 MiB and text 1 MiB, with the size reason", () => {
-    expect(gateRejection("doc.pdf", "application/pdf", 10)).toBeNull();
-    expect(gateRejection("notes.txt", "text/plain", 10)).toBeNull();
-
+  it("gates sizes: PDFs and OOXML 20 MiB and text 1 MiB, with the size reason", () => {
+    expect(
+      gateRejection(
+        "big.docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        MAX_OOXML_BYTES + 1
+      )
+    ).toBe("Exceeds the 20 MB OOXML limit");
     expect(gateRejection("big.pdf", "application/pdf", MAX_PDF_BYTES + 1)).toBe(
       "Exceeds the 20 MB PDF limit"
     );

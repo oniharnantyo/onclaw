@@ -17,6 +17,10 @@
  *   calls — renders in the floating run island instead and is skipped here;
  * - a compaction entry becomes its own data-compaction message so the
  *   divider sits between turns;
+ * - a turn whose stamped entry carries artifacts appends ONE trailing
+ *   data-artifacts part after every other part (add-turn-artifacts design
+ *   D7): grouping folds only consecutive tool-call/reasoning parts, so the
+ *   trailing data part can never be swallowed by heavy-turn folding;
  * - entries persisted before turn stamping group by adjacency: consecutive
  *   turn-less entries form one message, and a turn-less run never merges
  *   into a stamped turn;
@@ -88,6 +92,14 @@ type ChatDataPart =
       readonly type: "data-error";
       readonly id: string;
       readonly data: { readonly message: string };
+    }
+  | {
+      readonly type: "data-artifacts";
+      readonly id: string;
+      readonly data: {
+        readonly artifacts: SessionEvent["artifacts"];
+        readonly truncated: boolean;
+      };
     };
 
 type ChatPart =
@@ -96,10 +108,11 @@ type ChatPart =
   | ToolCallMessagePart
   | ChatDataPart;
 
-/** One render group: a lone user or compaction entry, or the consecutive run
- * of entries sharing one turn id (or, for legacy records persisted before
- * stamping, one adjacency run of turn-less entries) that forms one assistant
- * message. */
+/** One render group: a lone user or compaction entry, or the run of entries
+ * sharing one turn id (or, for legacy records persisted before stamping, one
+ * adjacency run of turn-less entries) that forms one assistant message. Late
+ * activity for an earlier turn — a background subagent finishing after newer
+ * turns ran — merges into that turn's existing group. */
 export interface EntryGroup {
   readonly kind: "user" | "compaction" | "turn";
   /** The message id: the entry id for singletons, the lead entry's id for
@@ -140,6 +153,12 @@ function parseJsonObject(raw: string | undefined): JsonObject {
  * Exported for the branch tree, which re-walks the same groups. */
 export function groupEntries(entries: readonly ChatEntry[]): EntryGroup[] {
   const groups: EntryGroup[] = [];
+  // Turn id → its group: a stamped turn whose run is no longer open (a
+  // later turn started in between) still joins its one existing group, so
+  // late task_activity from a background subagent re-using the old turn id
+  // never mints a second message with the same id — the branch repository
+  // rejects duplicate ids and the app would blank at boot.
+  const groupByTurn = new Map<string, EntryGroup>();
 
   for (const entry of entries) {
     if (entry.kind === "user") {
@@ -181,13 +200,27 @@ export function groupEntries(entries: readonly ChatEntry[]): EntryGroup[] {
       continue;
     }
 
-    groups.push({
+    if (entry.turnID !== undefined) {
+      const existing = groupByTurn.get(entry.turnID);
+
+      if (existing !== undefined) {
+        existing.entries.push(entry);
+
+        continue;
+      }
+    }
+
+    const group: EntryGroup = {
       kind: "turn",
       id: entry.id,
       at: entry.at,
       turnID: entry.turnID,
       entries: [entry],
-    });
+    };
+
+    groups.push(group);
+
+    if (entry.turnID !== undefined) groupByTurn.set(entry.turnID, group);
   }
 
   return groups;
@@ -287,7 +320,9 @@ function compactionMessage(entry: CompactionEntry): ThreadMessageLike {
 
 /** The content parts one turn maps to, in order. Subagent activity — task
  * and plan entries plus the HIDDEN_DELEGATION_TOOLS calls — never renders in
- * the transcript (the run island shows it) and is skipped entirely. */
+ * the transcript (the run island shows it) and is skipped entirely. A turn
+ * whose stamped entry carries artifacts appends one trailing data-artifacts
+ * part after every other part (add-turn-artifacts design D7). */
 function turnContent(group: EntryGroup): ChatPart[] {
   const content: ChatPart[] = [];
 
@@ -306,7 +341,34 @@ function turnContent(group: EntryGroup): ChatPart[] {
     if (part !== null) content.push(part);
   }
 
+  const artifacts = artifactsPart(group);
+
+  if (artifacts !== null) content.push(artifacts);
+
   return content;
+}
+
+/** The trailing data-artifacts part of a turn group (add-turn-artifacts
+ * design D7): the stamped entry's list and truncation flag; null when the
+ * turn produced none. The id derives from the stamped entry's id, so the
+ * part's identity is stable across reorders. */
+function artifactsPart(group: EntryGroup): ChatDataPart | null {
+  for (const entry of group.entries) {
+    if (entry.kind !== "assistant") continue;
+
+    if (entry.artifacts !== undefined && entry.artifacts !== null) {
+      return {
+        type: "data-artifacts",
+        id: `${entry.id}-artifacts`,
+        data: {
+          artifacts: entry.artifacts,
+          truncated: entry.artifactsTruncated === true,
+        },
+      };
+    }
+  }
+
+  return null;
 }
 
 /** The assistant message for one turn group: the turn's entries become the

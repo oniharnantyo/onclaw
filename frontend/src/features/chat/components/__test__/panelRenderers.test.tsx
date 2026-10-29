@@ -8,7 +8,9 @@
  * growing transcript file every ~2s — stopping for good once the task turns
  * terminal — and the knowledge document preview (add-knowledge-corpus)
  * decodes its base64 bytes unicode-safely, toggles markdown, embeds PDFs,
- * and surfaces read failures.
+ * and surfaces read failures. The workspace-file tab picks its preview by
+ * extension (add-turn-artifacts design D8): `.pdf` names fetch the jailed
+ * binary read and embed the document, every other name keeps the text path.
  */
 import { act } from "react";
 import { fireEvent, screen, waitFor } from "@testing-library/dom";
@@ -26,6 +28,7 @@ import type { ContextUsage } from "../../../../../bindings/github.com/oniharnant
 import type {
   PromptDocuments,
   WorkspaceEntry,
+  WorkspaceFileBinaryContent,
 } from "../../../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
 import type { Client, KnowledgeDocument } from "../../../../lib/client";
 import { knowledgeDocTab } from "../../types";
@@ -54,6 +57,7 @@ type MockedClient = Client & {
     transcript: MockFn;
     contextUsage: MockFn;
     workspaceFile: MockFn;
+    workspaceFileBinary: MockFn;
     listWorkspace: MockFn;
   };
   knowledge: {
@@ -87,6 +91,13 @@ vi.mock("../../../../lib/client", () => ({
         last_output: 0,
       })),
       workspaceFile: vi.fn(async (): Promise<string> => "file body"),
+      workspaceFileBinary: vi.fn(
+        async (): Promise<WorkspaceFileBinaryContent> => ({
+          mime: "application/pdf",
+          sizeBytes: 0,
+          data: "",
+        })
+      ),
       listWorkspace: vi.fn(async (): Promise<WorkspaceEntry[]> => []),
     },
     knowledge: {
@@ -276,6 +287,81 @@ function b64Of(text: string): string {
 
   return btoa(binary);
 }
+
+describe("panelRenderers — workspace PDF preview (add-turn-artifacts design D8)", () => {
+  it("previews a .pdf file through the binary reader as the document embed", async () => {
+    const pdf = b64Of("%PDF-1.4 bytes");
+
+    mockedClient.chat.workspaceFileBinary.mockImplementation(
+      async (): Promise<WorkspaceFileBinaryContent> => ({
+        mime: "application/pdf",
+        sizeBytes: 15,
+        data: pdf,
+      })
+    );
+
+    const { unmount } = await renderTab(fileTab("artifacts/report.pdf"));
+
+    const embed = await waitFor(() =>
+      screen.getByTestId("panel-workspace-pdf")
+    );
+
+    expect(embed.getAttribute("type")).toBe("application/pdf");
+    expect(embed.getAttribute("data")).toBe(
+      `data:application/pdf;base64,${pdf}`
+    );
+    expect(mockedClient.chat.workspaceFileBinary).toHaveBeenCalledWith(
+      "a1",
+      "artifacts/report.pdf"
+    );
+    expect(mockedClient.chat.workspaceFile).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("panel-preview-content")).toBeNull();
+
+    await unmount();
+  });
+
+  it("surfaces a failed binary read as an error", async () => {
+    mockedClient.chat.workspaceFileBinary.mockImplementation(
+      async (): Promise<WorkspaceFileBinaryContent> => {
+        throw new Error("not found: artifacts/report.PDF");
+      }
+    );
+
+    const { unmount } = await renderTab(fileTab("artifacts/report.PDF"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("panel-preview-error").textContent).toBe(
+        "not found: artifacts/report.PDF"
+      )
+    );
+    expect(screen.queryByTestId("panel-workspace-pdf")).toBeNull();
+
+    await unmount();
+  });
+
+  it("keeps text files on the text reader with the toggle behaviour unchanged", async () => {
+    mockedClient.chat.workspaceFile.mockImplementation(
+      async (): Promise<string> => "# Title\n\nbody text"
+    );
+
+    const { unmount } = await renderTab(fileTab("artifacts/notes.md"));
+
+    // Raw is the default: the mono pre block, with the toggle above it.
+    const raw = await waitFor(() =>
+      screen.getByTestId("panel-preview-content")
+    );
+
+    expect(raw.textContent).toBe("# Title\n\nbody text");
+    expect(screen.getByTestId("panel-preview-modes")).toBeTruthy();
+    expect(mockedClient.chat.workspaceFile).toHaveBeenCalledWith(
+      "a1",
+      "artifacts/notes.md"
+    );
+    expect(mockedClient.chat.workspaceFileBinary).not.toHaveBeenCalled();
+
+    await unmount();
+  });
+});
 
 /** A knowledge-doc tab fixture with a stable id, mirroring the knowledgeDocTab
  * builder's identity format (pinned by the builder test below). */

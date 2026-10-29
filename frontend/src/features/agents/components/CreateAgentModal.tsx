@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ReactElement } from "react";
-import type { AvatarFullConfig } from "react-nice-avatar";
+import type { AvatarFullConfig } from "@oniharnantyo/react-nice-avatar";
 
 import type {
   MCPServer,

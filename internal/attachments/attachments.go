@@ -35,15 +35,35 @@ const (
 	MaxVideoBytes = 20 << 20
 	// MaxTextBytes caps inline text/* uploads at 1 MB.
 	MaxTextBytes = 1 << 20
+	// MaxOfficeBytes caps OOXML office-document uploads (.docx, .xlsx,
+	// .pptx) at 20 MB — the same cap the knowledge gate and the document
+	// engines apply (add-document-editing task 5.5).
+	MaxOfficeBytes = 20 << 20
 )
 
 // Lane names the attachment kinds the store accepts.
 const (
-	LaneImage = "image"
-	LanePDF   = "pdf"
-	LaneVideo = "video"
-	LaneText  = "text"
+	LaneImage  = "image"
+	LanePDF    = "pdf"
+	LaneVideo  = "video"
+	LaneText   = "text"
+	LaneOffice = "office"
 )
+
+// The OOXML office-document MIME types (add-document-editing task 5.5): the
+// office lane's members — the modern Word, Excel, and PowerPoint formats.
+const (
+	MimeDOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	MimeXLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	MimePPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+)
+
+// IsOfficeMime reports whether mime is one of the OOXML office-document
+// kinds. The turn path uses it to give office attachments their
+// non-multimodal reference note (see turninput.go in internal/agents).
+func IsOfficeMime(mime string) bool {
+	return mime == MimeDOCX || mime == MimeXLSX || mime == MimePPTX
+}
 
 // filePerm is the stored file mode, matching the app layout's private-to-user
 // files (internal/config).
@@ -149,12 +169,15 @@ func (s *Store) Resolve(ctx context.Context, key string) (sessions.Attachment, e
 }
 
 // laneOf classifies an upload's mime into its lane and size cap (spec
-// chat-attachments "Attachment selection and limits"). An unknown lane is a
-// rejection with the reason.
+// chat-attachments "Attachment selection and limits"; widened by
+// add-document-editing task 5.5 with the OOXML office lane). An unknown lane
+// is a rejection with the reason.
 func laneOf(mime string) (lane string, limit int64, err error) {
 	switch mime {
 	case "application/pdf":
 		return LanePDF, MaxPDFBytes, nil
+	case MimeDOCX, MimeXLSX, MimePPTX:
+		return LaneOffice, MaxOfficeBytes, nil
 	}
 	if prefix, ok := mimePrefix(mime); ok {
 		switch prefix {
@@ -166,7 +189,7 @@ func laneOf(mime string) (lane string, limit int64, err error) {
 			return LaneText, MaxTextBytes, nil
 		}
 	}
-	return "", 0, fmt.Errorf("%w: unsupported file type %q (images, PDFs, videos, and text files are accepted)", ErrRejected, mime)
+	return "", 0, fmt.Errorf("%w: unsupported file type %q (images, PDFs, videos, text files, and office documents are accepted)", ErrRejected, mime)
 }
 
 // mimePrefix splits "type/subtype" at the slash.

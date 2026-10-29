@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import { ArrowDown, ArrowUp, Trash2 } from "lucide-react";
-import type { AvatarFullConfig } from "react-nice-avatar";
+import type { AvatarFullConfig } from "@oniharnantyo/react-nice-avatar";
 
 import type {
   Hook,
@@ -13,6 +13,7 @@ import type {
   ModelCapability,
   ProviderView,
   ToolEntry,
+  WorkspaceSkill,
 } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
 import { AgentAvatar, FormField, IconButton } from "../../../components";
 import { Alert } from "../../../components/ui/Alert";
@@ -33,6 +34,7 @@ import { Textarea } from "../../../components/ui/Textarea";
 import { Toggle } from "../../../components/ui/Toggle";
 import { cn } from "../../../lib/cn";
 import { client } from "../../../lib/client";
+import { toast } from "../../../lib/toasts";
 import { catalogContextWindow } from "../modelContextWindow";
 import { parseOptionalInt } from "../parseOptionalInt";
 import { PROMPTS_STATUS } from "../types";
@@ -71,6 +73,11 @@ type ParamName = "temperature" | "maxTokens" | "contextWindow";
 
 type ParamErrors = Partial<Record<ParamName, string>>;
 
+/** The backend's rejection message when it is one; a fallback otherwise. */
+function errorMessage(cause: unknown, fallback: string): string {
+  return cause instanceof Error ? cause.message : fallback;
+}
+
 export function AgentConfigPane({
   agent,
   onClose,
@@ -86,6 +93,20 @@ export function AgentConfigPane({
   }>({ providerID: "", models: [] });
 
   const [skills, setSkills] = useState<Skill[]>([]);
+
+  // The agent's own workspace skills (add-agent-created-skills task 4.1):
+  // listed beside the allowlist; Promote copies one into the global library,
+  // Delete removes the workspace copy only. promotingSkill/removingSkill hold
+  // the in-flight skill name so the row actions stay inert per request.
+  const [workspaceSkills, setWorkspaceSkills] = useState<WorkspaceSkill[]>([]);
+
+  const [workspaceSkillsError, setWorkspaceSkillsError] = useState<
+    string | null
+  >(null);
+
+  const [promotingSkill, setPromotingSkill] = useState<string | null>(null);
+  const [removingSkill, setRemovingSkill] = useState<string | null>(null);
+
   const [tools, setTools] = useState<ToolEntry[]>([]);
   const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
   const [hooks, setHooks] = useState<Hook[]>([]);
@@ -176,6 +197,17 @@ export function AgentConfigPane({
     void client.settings.hooks().then((h: Hook[]): void => {
       if (mounted) setHooks(h);
     });
+    // The workspace skills list rejects only when the backend cannot read
+    // the workspace at all; the section degrades to an inline error line.
+    void client.agents
+      .listWorkspaceSkills(agent.ID)
+      .then((ws: WorkspaceSkill[]): void => {
+        if (mounted) setWorkspaceSkills(ws);
+      })
+      .catch((): void => {
+        if (mounted)
+          setWorkspaceSkillsError("Couldn't load this agent's skills.");
+      });
     // The agent's assigned hooks arrive in evaluation order (assigned tier
     // before the global tier), so the list renders top-down as the dispatcher
     // will run them.
@@ -313,6 +345,49 @@ export function AgentConfigPane({
     setAssignedHooks((prev: AgentHookAssignment[]): AgentHookAssignment[] =>
       prev.filter((a: AgentHookAssignment): boolean => a.HookID !== hookID)
     );
+  };
+
+  /** Copies one workspace skill into the global library (design D2): the
+   * workspace copy stays and keeps shadowing the promoted one. A collision
+   * rejects with the backend's message naming the skill; nothing changes. */
+  const handlePromoteWorkspaceSkill = (name: string): void => {
+    setPromotingSkill(name);
+    client.agents
+      .promoteWorkspaceSkill(agent.ID, name)
+      .then((): Promise<WorkspaceSkill[]> =>
+        client.agents.listWorkspaceSkills(agent.ID)
+      )
+      .then((ws: WorkspaceSkill[]): void => {
+        setWorkspaceSkills(ws);
+        toast("Skill promoted to the global library");
+      })
+      .catch((err: Error): void => {
+        toast(errorMessage(err, "Failed to promote the skill"), "danger");
+      })
+      .finally((): void => {
+        setPromotingSkill(null);
+      });
+  };
+
+  /** Removes the workspace skill directory only; the global library is
+   * untouched (spec agent-skills "Delete removes only the workspace copy"). */
+  const handleDeleteWorkspaceSkill = (name: string): void => {
+    setRemovingSkill(name);
+    client.agents
+      .deleteWorkspaceSkill(agent.ID, name)
+      .then((): Promise<WorkspaceSkill[]> =>
+        client.agents.listWorkspaceSkills(agent.ID)
+      )
+      .then((ws: WorkspaceSkill[]): void => {
+        setWorkspaceSkills(ws);
+        toast("Skill deleted");
+      })
+      .catch((err: Error): void => {
+        toast(errorMessage(err, "Failed to delete the skill"), "danger");
+      })
+      .finally((): void => {
+        setRemovingSkill(null);
+      });
   };
 
   const handleSave = async (): Promise<void> => {
@@ -916,6 +991,77 @@ export function AgentConfigPane({
                     ?.Enabled === false
                 }
               />
+            )}
+          </div>
+
+          {/* The agent's own workspace skills (add-agent-created-skills
+              task 4.1): promote copies into the global library, delete
+              removes the workspace copy only — the library is untouched. */}
+          <div data-testid="config-section-workspace-skills">
+            <h4 className="mb-1.5 block text-[12px] font-medium text-fg2">
+              This agent&apos;s skills
+            </h4>
+            <p className="mb-2 text-xs text-muted">
+              Promoting copies a skill into the global library; the agent keeps
+              its personal copy, which still shadows the promoted one.
+            </p>
+            {workspaceSkillsError !== null ? (
+              <p className="text-xs text-muted" role="alert">
+                {workspaceSkillsError}
+              </p>
+            ) : workspaceSkills.length === 0 ? (
+              <p
+                className="text-xs text-muted"
+                data-testid="config-workspace-skills-empty"
+              >
+                No skills saved yet. This agent can save the workflows it builds
+                as skills while it works.
+              </p>
+            ) : (
+              <ul
+                className="divide-y divide-linesoft rounded-md border border-line"
+                data-testid="config-workspace-skill-list"
+              >
+                {workspaceSkills.map((skill: WorkspaceSkill): ReactElement => (
+                  <li
+                    key={skill.Name}
+                    className="flex items-center gap-2 px-3 py-2"
+                    data-testid={`config-workspace-skill-${skill.Name}`}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-mono text-[13px] text-fg">
+                        {skill.Name}
+                      </p>
+                      {skill.Description && (
+                        <p className="truncate text-[11px] leading-4 text-muted">
+                          {skill.Description}
+                        </p>
+                      )}
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      data-testid={`config-workspace-skill-promote-${skill.Name}`}
+                      disabled={
+                        promotingSkill !== null || removingSkill !== null
+                      }
+                      onClick={() => handlePromoteWorkspaceSkill(skill.Name)}
+                    >
+                      Promote
+                    </Button>
+                    <IconButton
+                      size="sm"
+                      label={`Delete ${skill.Name}`}
+                      testId={`config-workspace-skill-delete-${skill.Name}`}
+                      disabled={
+                        promotingSkill !== null || removingSkill !== null
+                      }
+                      icon={<Trash2 aria-hidden="true" className="size-4" />}
+                      onClick={() => handleDeleteWorkspaceSkill(skill.Name)}
+                    />
+                  </li>
+                ))}
+              </ul>
             )}
           </div>
 

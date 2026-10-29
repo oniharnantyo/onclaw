@@ -52,6 +52,16 @@ export function Delete(id: string): $CancellablePromise<void> {
 }
 
 /**
+ * DeleteWorkspaceSkill removes one workspace-tier skill directory (spec
+ * agent-skills "Delete removes only the workspace copy"): the global library
+ * is untouched. A nonexistent skill name is a not-found error. The runtime
+ * must have a skills capability; the skill name must be a DNS label.
+ */
+export function DeleteWorkspaceSkill(agentID: string, name: string): $CancellablePromise<void> {
+    return $Call.ByID(797806666, agentID, name);
+}
+
+/**
  * Get returns the agent with the given ID; store.ErrNotFound when absent.
  */
 export function Get(id: string): $CancellablePromise<store$0.Agent> {
@@ -73,6 +83,32 @@ export function GetPromptDocuments(agentID: string): $CancellablePromise<$models
  */
 export function List(): $CancellablePromise<store$0.Agent[] | null> {
     return $Call.ByID(1080143935);
+}
+
+/**
+ * ListWorkspaceSkills lists the skills in the agent's own workspace skills
+ * directory (spec agent-management "Agent workspace skills management"): one
+ * entry per subdirectory carrying a SKILL.md, sorted by name, each with the
+ * description parsed exactly the way the skill backend parses it. The result
+ * is never nil; a workspace without skills (or an agent row without a
+ * workspace) lists empty. Unlike promote and delete this only reads the
+ * workspace tier, so it needs no skills capability.
+ */
+export function ListWorkspaceSkills(agentID: string): $CancellablePromise<$models.WorkspaceSkill[] | null> {
+    return $Call.ByID(3613308014, agentID);
+}
+
+/**
+ * PromoteWorkspaceSkill copies one workspace-tier skill into the global
+ * skills library and registers it enabled (spec agent-skills "Skill
+ * promotion", design D2): the workspace copy is never modified and keeps
+ * shadowing the promoted skill for its creator. A name that already exists
+ * in the library is rejected with an error naming the collision and the
+ * library stays untouched (design D3). The runtime must have a skills
+ * capability; the skill name must be a DNS label.
+ */
+export function PromoteWorkspaceSkill(agentID: string, name: string): $CancellablePromise<void> {
+    return $Call.ByID(3808501743, agentID, name);
 }
 
 /**

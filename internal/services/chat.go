@@ -78,6 +78,24 @@ func (s *ChatService) Sessions(ctx context.Context, agentID string) ([]store.Ses
 	return sessions, nil
 }
 
+// AllSessions returns every agent's sessions, most recent activity first
+// (add-grouped-session-rail design D1: one all-sessions listing replaces the
+// per-agent fetch). The result is never nil.
+func (s *ChatService) AllSessions(ctx context.Context) ([]store.Session, error) {
+	sessions, err := s.sessions.AllSessions(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	return sessions, nil
+}
+
+// RunningSessions reports the sessions with a turn in flight — running or
+// parked on a pending approval (add-grouped-session-rail design D2) — for
+// the frontend's boot-time sync. The result is never nil.
+func (s *ChatService) RunningSessions(ctx context.Context) ([]string, error) {
+	return s.turns.RunningSessions(ctx), nil
+}
+
 // Transcript replays the session's persisted events in log order. Live-only
 // events (text and reasoning deltas) are absent; the durable forms
 // (assistant message, reasoning) stand in for them.

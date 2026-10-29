@@ -1,15 +1,17 @@
 /**
  * Knowledge menu helpers (add-knowledge-corpus): the client-side pre-gates
  * for the menu's upload (byte-identical to the corpus gate's limits — PDFs
- * 20 MiB, text 1 MiB, text+PDF kinds only, mirrors the chat-attachments
- * lane pattern so an over-cap or unsupported file rejects with the reason
- * without a round trip; the backend stays the authority), the FileReader →
- * base64 read the upload rides, and the small formatting/decoding helpers
- * the list rows and preview pane need.
+ * and OOXML office documents 20 MiB, text 1 MiB, text+PDF+OOXML kinds only,
+ * mirrors the chat-attachments lane pattern so an over-cap or unsupported
+ * file rejects with the reason without a round trip; the backend stays the
+ * authority), the FileReader → base64 read the upload rides, and the small
+ * formatting/decoding helpers the list rows and preview pane need.
  */
 
 /** Lane caps, byte-identical to the backend's corpus gate. */
 export const MAX_PDF_BYTES = 20 << 20;
+
+export const MAX_OOXML_BYTES = 20 << 20;
 
 export const MAX_TEXT_BYTES = 1 << 20;
 
@@ -19,10 +21,47 @@ export function isMarkdownName(name: string): boolean {
   return /\.(md|markdown)$/i.test(name);
 }
 
-/** The corpus gate's classification: application/pdf and text/* pass; any
- * other kind (word-processing, spreadsheets, video, images, archives) is
- * rejected with a one-line reason naming the supported kinds. Returns the
- * rejection reason, or null when the file would pass the size cap. */
+/** The OOXML office-document kinds (the backend's DocxMime/XlsxMime/PptxMime
+ * in internal/knowledge). */
+const DOCX_MIME =
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+const XLSX_MIME =
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+const PPTX_MIME =
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+
+/** Resolves a document's kind: the declared value when present, otherwise
+ * the filename's extension for the accepted office/PDF kinds (the backend's
+ * resolveMime; some clients declare no type for these). */
+function resolveKind(name: string, mime: string): string {
+  if (mime) return mime;
+
+  switch (name.slice(name.lastIndexOf(".")).toLowerCase()) {
+    case ".pdf":
+      return "application/pdf";
+    case ".docx":
+      return DOCX_MIME;
+    case ".xlsx":
+      return XLSX_MIME;
+    case ".pptx":
+      return PPTX_MIME;
+    default:
+      return mime;
+  }
+}
+
+/** True when kind is one of the OOXML office-document kinds. */
+function isOOXML(kind: string): boolean {
+  return kind === DOCX_MIME || kind === XLSX_MIME || kind === PPTX_MIME;
+}
+
+/** The corpus gate's classification: application/pdf, the OOXML office kinds,
+ * and text/* pass; any other kind (legacy word-processing, video, images,
+ * archives) is rejected with a one-line reason naming the supported kinds.
+ * Returns the rejection reason, or null when the file would pass the size
+ * cap. */
 export function gateRejection(
   name: string,
   mime: string,
@@ -32,14 +71,19 @@ export function gateRejection(
 
   let label: string;
 
-  if (mime === "application/pdf") {
+  const kind = resolveKind(name, mime);
+
+  if (kind === "application/pdf") {
     limit = MAX_PDF_BYTES;
     label = "PDF";
-  } else if (mime.startsWith("text/")) {
+  } else if (isOOXML(kind)) {
+    limit = MAX_OOXML_BYTES;
+    label = "OOXML";
+  } else if (kind.startsWith("text/")) {
     limit = MAX_TEXT_BYTES;
     label = "text-file";
   } else {
-    return `Unsupported file type "${mime || name}" — only text and PDF documents are accepted`;
+    return `Unsupported file type "${mime || name}" — only text, PDF, and OOXML documents are accepted`;
   }
 
   if (size > limit) {

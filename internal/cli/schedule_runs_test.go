@@ -76,6 +76,10 @@ func (m *fakeAgentsManager) TurnState(context.Context, string) (bool, string) {
 	panicUnexpected()
 	return false, ""
 }
+func (m *fakeAgentsManager) RunningSessions(context.Context) []string {
+	panicUnexpected()
+	return nil
+}
 
 func panicUnexpected() error {
 	panic("unexpected call")

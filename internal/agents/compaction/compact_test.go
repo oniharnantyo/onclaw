@@ -84,3 +84,59 @@ func TestRunCompaction(t *testing.T) {
 	assert.Equal(t, "A condensed summary of the conversation.", cp.Summary)
 	assert.Equal(t, int64(3), cp.UpToSeq)
 }
+
+func TestSummarizeSystemPromptCarriesMemoryFlush(t *testing.T) {
+	// add-agent-memory task 7.1 / design D2: the memory-flush instruction
+	// rides the existing compaction summarizer prompt, adding no model call.
+	assert.Contains(t, SummarizeSystemPrompt, "durable facts")
+	assert.Contains(t, SummarizeSystemPrompt, "memory before summarizing")
+}
+
+type callCountingModel struct {
+	model.BaseModel[*schema.AgenticMessage]
+	calls      int
+	systemText string
+}
+
+func (m *callCountingModel) Generate(_ context.Context, msgs []*schema.AgenticMessage, _ ...model.Option) (*schema.AgenticMessage, error) {
+	m.calls++
+	for _, msg := range msgs {
+		if msg == nil || msg.Role != schema.AgenticRoleTypeSystem {
+			continue
+		}
+		for _, b := range msg.ContentBlocks {
+			if b != nil && b.UserInputText != nil {
+				m.systemText += b.UserInputText.Text
+			}
+		}
+	}
+	return &schema.AgenticMessage{
+		Role: schema.AgenticRoleTypeAssistant,
+		ContentBlocks: []*schema.ContentBlock{
+			schema.NewContentBlock(&schema.AssistantGenText{Text: "summary"}),
+		},
+	}, nil
+}
+
+func TestRunCompactionSingleSummarizerCall(t *testing.T) {
+	ctx := t.Context()
+	fs := fake.New()
+	svc := sessions.NewService(fs)
+	sess, err := svc.CreateSession(ctx, "agent-1", "Test")
+	require.NoError(t, err)
+
+	events := []sessions.Event{
+		{Seq: 1, Kind: sessions.KindUserMessage, Text: "hello"},
+		{Seq: 2, Kind: sessions.KindAssistantMessage, Text: "hi"},
+	}
+	require.NoError(t, svc.Append(ctx, sess.ID, events))
+
+	mdl := &callCountingModel{}
+	_, err = RunCompaction(ctx, sess.ID, "turn-1", mdl, events, 2, svc)
+	require.NoError(t, err)
+
+	// The memory-flush instruction adds no model call: compaction still
+	// makes exactly one summarizer call, and its prompt carries it.
+	assert.Equal(t, 1, mdl.calls)
+	assert.Contains(t, mdl.systemText, "memory before summarizing")
+}

@@ -1,6 +1,7 @@
 package docgen
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -11,6 +12,9 @@ import (
 	"time"
 
 	picoloom "github.com/alnah/picoloom/v2"
+	gopptx "github.com/kenny-not-dead/gopptx"
+	docx "github.com/mmonterroca/docxgo/v2"
+	"github.com/mmonterroca/docxgo/v2/domain"
 	"github.com/stretchr/testify/require"
 )
 
@@ -351,4 +355,95 @@ func TestConverter_Live(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, data, int(res.SizeBytes), "result size must match the file on disk")
 	require.Equal(t, "%PDF", string(data[:4]), "the destination must hold a real PDF")
+}
+
+// TestConverter_OfficeEntryPoints covers the DOCX and PPTX entry points'
+// shared plumbing (add-document-editing task 4.2): the guards, the closed
+// check, the serialized write, and — through the real renderers — a file on
+// disk that re-reads as the right kind of document.
+func TestConverter_OfficeEntryPoints(t *testing.T) {
+	t.Run("guards match the PDF path", func(t *testing.T) {
+		c := NewConverter()
+		t.Cleanup(func() { _ = c.Close() })
+		_, err := c.ConvertDOCX(context.Background(), "", "/tmp/never.docx", nil, nil)
+		require.ErrorContains(t, err, "markdown is empty")
+		_, err = c.ConvertPPTX(context.Background(), "# H", "", nil, []byte("x"))
+		require.ErrorContains(t, err, "destination path is required")
+		_, err = c.ConvertPPTX(context.Background(), "# H", "/tmp/never.pptx", nil, nil)
+		require.ErrorContains(t, err, "needs a template preset")
+	})
+
+	t.Run("closed converter refuses office output", func(t *testing.T) {
+		c := NewConverter()
+		require.NoError(t, c.Close())
+		_, err := c.ConvertDOCX(context.Background(), "# H", "/tmp/never.docx", nil, nil)
+		require.ErrorContains(t, err, "converter is closed")
+		_, err = c.ConvertPPTX(context.Background(), "# H", "/tmp/never.pptx", nil, []byte("x"))
+		require.ErrorContains(t, err, "converter is closed")
+	})
+
+	t.Run("renders land on disk and re-read as office documents", func(t *testing.T) {
+		dir := t.TempDir()
+		c := NewConverter()
+		t.Cleanup(func() { _ = c.Close() })
+
+		docxPath := filepath.Join(dir, "letter.docx")
+		res, err := c.ConvertDOCX(context.Background(), "# Q3 Report\n\nBody.", docxPath,
+			&DOCXPreset{Flavor: PresetFlavorConfig, Fonts: &DOCXFonts{BodyFamily: "Georgia"}}, nil)
+		require.NoError(t, err)
+		require.Equal(t, docxPath, res.Path)
+		require.Greater(t, res.SizeBytes, int64(0))
+		doc, err := docx.OpenDocumentFromBytes(mustRead(t, docxPath))
+		require.NoError(t, err)
+		require.Equal(t, []string{"Q3 Report", "Body."}, docxTexts(t, doc))
+
+		pptxPath := filepath.Join(dir, "deck.pptx")
+		skeleton := gopptxSkel(t)
+		res, err = c.ConvertPPTX(context.Background(), "# Q3 Review", pptxPath,
+			&PPTXPreset{Flavor: PresetFlavorTemplate}, skeleton)
+		require.NoError(t, err)
+		require.Equal(t, pptxPath, res.Path)
+		require.Greater(t, res.SizeBytes, int64(0))
+		deck, err := gopptx.OpenReader(bytes.NewReader(mustRead(t, pptxPath)))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = deck.Close() })
+		require.Equal(t, []int{256}, deck.GetSlideList())
+	})
+}
+
+// gopptxSkel authors a one-token skeleton, the same fixture pattern the
+// pptx engine tests use.
+func gopptxSkel(t *testing.T) []byte {
+	t.Helper()
+	f := gopptx.NewFile()
+	body := gopptx.DecodeTextBody{
+		BodyProperties: &gopptx.DecodeBodyProperties{},
+		Paragraph: []gopptx.DecodeParagraph{
+			{Runs: []gopptx.DecodeRuns{{Text: "{{title}}"}}},
+		},
+	}
+	_, err := f.CreateShape(256, gopptx.DecodeShapeProperties{}, body)
+	require.NoError(t, err)
+	var buf bytes.Buffer
+	_, err = f.WriteTo(&buf)
+	require.NoError(t, err)
+	return buf.Bytes()
+}
+
+// docxTexts re-reads the generated DOCX and returns the paragraph texts.
+func docxTexts(t *testing.T, doc domain.Document) []string {
+	t.Helper()
+	var texts []string
+	for _, p := range doc.Paragraphs() {
+		texts = append(texts, p.Text())
+	}
+	return texts
+}
+
+// mustRead is the disk read every round-trip assertion rides.
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return data
 }

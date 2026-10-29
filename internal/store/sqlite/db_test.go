@@ -26,20 +26,21 @@ func TestOpen_MigratesFreshV0Database(t *testing.T) {
 		"mcp_oauth_tokens", "schedules", "hooks", "gateway_settings", "session_events", "checkpoints",
 		"skills", "tool_states", "agent_hooks", "hook_executions", "tool_settings",
 		"attachments", "documents", "document_presets", "provider_models",
+		"memory_traces", "memory_note_state", "memory_staging", "memory_sweeps",
 	} {
 		require.True(t, tableExists(t, db, table), "table %s must exist after migration", table)
 	}
 
 	var version int
 	require.NoError(t, db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version))
-	require.Equal(t, 15, version, "the latest embedded schema version must be recorded as applied")
+	require.Equal(t, 17, version, "the latest embedded schema version must be recorded as applied")
 
 	// Second open: idempotent, still fully applied.
 	st2, err := Open(ctx, path)
 	require.NoError(t, err)
 	require.NoError(t, st2.Close())
 	require.NoError(t, db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version))
-	require.Equal(t, 15, version, "re-opening must not re-apply migrations")
+	require.Equal(t, 17, version, "re-opening must not re-apply migrations")
 }
 
 // TestOpen_EnablesWALAndBusyTimeout covers design D2's concurrency
@@ -70,13 +71,13 @@ func TestOpen_FailingMigrationPreventsStartup(t *testing.T) {
 	// migration: its first statement succeeds, the second is invalid SQL —
 	// both must roll back together (one transaction per migration).
 	broken := append(mustEmbeddedMigrations(t), migration{
-		Version: 16,
-		Name:    "000016_broken",
+		Version: 17,
+		Name:    "000017_broken",
 		SQL:     `CREATE TABLE never_committed (id TEXT); THIS IS NOT VALID SQL;`,
 	})
 	_, err := openWith(ctx, path, broken)
 	require.Error(t, err, "a failing migration must block the open (startup)")
-	require.Contains(t, err.Error(), "000016_broken", "the error must name the failing migration")
+	require.Contains(t, err.Error(), "000017_broken", "the error must name the failing migration")
 
 	db := openRaw(t, path)
 	require.True(t, tableExists(t, db, "agents"),
@@ -86,7 +87,7 @@ func TestOpen_FailingMigrationPreventsStartup(t *testing.T) {
 
 	var version int
 	require.NoError(t, db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version))
-	require.Equal(t, 15, version,
+	require.Equal(t, 17, version,
 		"the embedded migrations commit; the failed migration's version must not be recorded")
 
 	// A corrected run — the embedded list only — opens cleanly against the

@@ -20,7 +20,8 @@ func newTestStore(t *testing.T) *Store {
 }
 
 // TestSave_AcceptsPerLane caps the accept path per lane (spec chat-attachments
-// "Attachment selection and limits"): images, PDFs, videos, and text files
+// "Attachment selection and limits"; office lane per add-document-editing
+// task 5.5): images, PDFs, videos, text files, and OOXML office documents
 // store and round-trip through their capability key.
 func TestSave_AcceptsPerLane(t *testing.T) {
 	s := newTestStore(t)
@@ -35,6 +36,9 @@ func TestSave_AcceptsPerLane(t *testing.T) {
 		{"doc.pdf", "application/pdf", []byte("%PDF-1.4")},
 		{"clip.mp4", "video/mp4", []byte("mp4-bytes")},
 		{"notes.txt", "text/plain", []byte("hello")},
+		{"report.docx", MimeDOCX, []byte("docx-bytes")},
+		{"sheet.xlsx", MimeXLSX, []byte("xlsx-bytes")},
+		{"deck.pptx", MimePPTX, []byte("pptx-bytes")},
 	}
 	for _, tc := range cases {
 		att, err := s.Save(ctx, tc.name, tc.mime, tc.data)
@@ -50,6 +54,22 @@ func TestSave_AcceptsPerLane(t *testing.T) {
 		require.Equal(t, tc.data, content.Data, "content round-trips")
 		require.Equal(t, att, content.Meta)
 	}
+}
+
+// TestSave_OfficeLaneCaps pins the office lane's 20 MB cap (add-document-editing
+// task 5.5): a .docx is accepted at the limit and rejected beyond it, with the
+// rejection carrying the limit.
+func TestSave_OfficeLaneCaps(t *testing.T) {
+	s := newTestStore(t)
+
+	att, err := s.Save(context.Background(), "report.docx", MimeDOCX, make([]byte, MaxOfficeBytes))
+	require.NoError(t, err, "a .docx at the cap is accepted")
+	require.NotEmpty(t, att.Key)
+
+	_, err = s.Save(context.Background(), "big.docx", MimeDOCX, make([]byte, MaxOfficeBytes+1))
+	require.ErrorIs(t, err, ErrRejected, "a .docx beyond the cap is rejected")
+	require.ErrorContains(t, err, "20 MB", "the rejection carries the limit")
+	require.ErrorContains(t, err, "office", "the rejection names the lane")
 }
 
 // TestSave_RejectsOverCap pins each lane's size cap with its reason (spec:
@@ -83,6 +103,7 @@ func TestSave_RejectsUnknownLane(t *testing.T) {
 	att, err := s.Save(context.Background(), "x.bin", "application/octet-stream", []byte("nope"))
 	require.ErrorIs(t, err, ErrRejected)
 	require.ErrorContains(t, err, "application/octet-stream")
+	require.ErrorContains(t, err, "office documents are accepted", "the rejection names the office lane among the supported kinds")
 	require.Empty(t, att.Key)
 
 	// Nothing was registered and no file landed.

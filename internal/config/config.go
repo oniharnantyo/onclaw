@@ -27,3 +27,17 @@ func Resolve() (Layout, error) {
 		Logs:        filepath.Join(root, "logs"),
 	}, nil
 }
+
+// MemoryDir returns one agent's workspace memory directory
+// (workspaces/<slug>/memory): the curated index MEMORY.md, the fact notes,
+// and the daily notes live here (add-agent-memory design D1).
+func (l Layout) MemoryDir(slug string) string {
+	return filepath.Join(l.Workspaces, slug, MemoryDirName)
+}
+
+// MemoryArchiveDir returns the archive subdirectory of one agent's workspace
+// memory directory (workspaces/<slug>/memory/archive) — where below-floor
+// and superseded notes are moved, never deleted.
+func (l Layout) MemoryArchiveDir(slug string) string {
+	return filepath.Join(l.MemoryDir(slug), MemoryArchiveDirName)
+}

@@ -37,6 +37,14 @@ func (s *service) SessionsByAgent(ctx context.Context, agentID string) ([]Sessio
 	return sessions, nil
 }
 
+func (s *service) AllSessions(ctx context.Context) ([]Session, error) {
+	sessions, err := s.store.Sessions().List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	return sessions, nil
+}
+
 func (s *service) SetTitle(ctx context.Context, id, title string) error {
 	if err := s.store.Sessions().SetTitle(ctx, id, title); err != nil {
 		return fmt.Errorf("set session title: %w", err)

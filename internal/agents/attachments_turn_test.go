@@ -416,6 +416,57 @@ func TestTurn_TextAttachmentRidesInline(t *testing.T) {
 	require.Contains(t, note, "could not be read", "the lost-file pointer note reaches the model")
 }
 
+// TestTurn_OfficeAttachmentRidesByReference pins the office lane's turn
+// semantics (add-document-editing task 5.5, mirroring the text lane's
+// non-multimodal behavior): an OOXML attachment never rides its bytes —
+// every model gets the same reference note pointing at the save_document
+// copy path — and the send never fails, whatever the model's capabilities.
+func TestTurn_OfficeAttachmentRidesByReference(t *testing.T) {
+	// A model outside the catalog reads no attachment content: the office
+	// note must be capability-independent, like the text lane's inline ride.
+	f, atts := newAttachmentFixture(t, func(input []*schema.Message) fakeReply {
+		last := input[len(input)-1]
+		if len(last.UserInputMultiContent) == 0 {
+			return fakeReply{err: errString("the multi-part message never reached the model")}
+		}
+		for _, part := range last.UserInputMultiContent {
+			if part.Type == schema.ChatMessagePartTypeFileURL {
+				return fakeReply{err: errString("office bytes rode as a file part")}
+			}
+		}
+		for _, part := range last.UserInputMultiContent {
+			if part.Type == schema.ChatMessagePartTypeText && strings.Contains(part.Text, "save_document") {
+				return fakeReply{text: "I will save it", promptTokens: 10, completionTokens: 2}
+			}
+		}
+		return fakeReply{err: errString("the office reference note never reached the model")}
+	})
+
+	agent := f.agent
+	agent.Model = "totally-unknown-model"
+	require.NoError(t, f.store.Agents().Update(t.Context(), &agent))
+	f.agent = agent
+
+	sess, err := f.mgr.CreateSession(t.Context(), agent.ID)
+	require.NoError(t, err)
+	att := saveUpload(t, atts, "report.docx", attachments.MimeDOCX, "docx-bytes")
+
+	turn, err := f.mgr.Send(t.Context(), sess.ID, "edit this report", att.Key)
+	require.NoError(t, err)
+	require.NoError(t, turn.Wait(), "sending must not fail because office bytes never ride the message")
+
+	note := f.model.calls()[0][len(f.model.calls()[0])-1]
+	var text string
+	for _, part := range note.UserInputMultiContent {
+		if part.Type == schema.ChatMessagePartTypeText {
+			text += part.Text
+		}
+	}
+	require.Contains(t, text, "save_document", "the note names the knowledge-scope copy path")
+	require.Contains(t, text, att.Key, "the note carries the attachment key")
+	require.NotContains(t, text, "docx-bytes", "the bytes never ride the message")
+}
+
 // decodeB64 decodes a base64 part payload for assertions.
 func decodeB64(t *testing.T, raw string) string {
 	t.Helper()

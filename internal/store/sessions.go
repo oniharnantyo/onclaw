@@ -18,6 +18,9 @@ type SessionsStore interface {
 	// ListByAgent returns the agent's sessions, most recent activity first.
 	// The result is never nil.
 	ListByAgent(ctx context.Context, agentID string) ([]Session, error)
+	// List returns every session, most recent activity first. The result is
+	// never nil.
+	List(ctx context.Context) ([]Session, error)
 	// Touch advances the session's LastActivityAt; ErrNotFound when absent.
 	Touch(ctx context.Context, id string, at time.Time) error
 	// SetTitle rewrites the session's title; ErrNotFound when absent.

@@ -37,7 +37,7 @@ import {
 } from "@/components/assistant-ui/elements/reasoning-effort";
 
 import { useNavStore } from "../../../stores/nav";
-import { formatTokens } from "../format";
+import { formatTokens, shortModelName } from "../format";
 import { useChatStore } from "../store";
 import type { ChatStore } from "../types";
 
@@ -115,20 +115,32 @@ function rowHandlers(
 }
 
 /** Shared rail popover: a ComposerModelTrigger opening a ComposerMenu above
- * the rail, dismissed by a pick, Escape, or an outside click. */
+ * the rail, dismissed by a pick, Escape, or an outside click. `absorb`
+ * marks the picker whose label yields first under squeeze (the model family
+ * name — the designed distill): the others carry a near-zero shrink weight
+ * so short labels ("Scout", "high") keep their text and only the long one
+ * ellipsizes; in extremis every trigger still truncates (truncate zeroes
+ * the automatic minimum), never overflows. */
 function RailPicker({
   testId,
   ariaLabel,
   label,
+  title,
   inherited,
+  absorb = false,
   children,
 }: {
   testId: string;
   ariaLabel: string;
   label: string;
+  /** The trigger's tooltip (the model picker shows the family name and keeps
+   * the full id here, design D4); omitted when there is nothing to show. */
+  title?: string;
   /** Shows the "default" marker: the value is inherited, not an explicit
    * choice (spec chat-view "Composer affordances"). */
   inherited: boolean;
+  /** This picker's container yields its width first under squeeze. */
+  absorb?: boolean;
   children: (close: () => void) => ReactNode;
 }): ReactElement {
   const [open, setOpen] = useState(false);
@@ -164,13 +176,32 @@ function RailPicker({
   }, [open]);
 
   return (
-    <div ref={containerRef} className="relative flex items-center gap-1">
+    <div
+      ref={containerRef}
+      className={
+        absorb
+          ? "relative flex min-w-0 items-center gap-1"
+          : "relative flex min-w-0 shrink-[0.01] items-center gap-1"
+      }
+    >
+      {/* Squeeze contract: the vendored trigger is a flex pill whose bare
+          text node wraps mid-token when the rail is squeezed (live 1100px:
+          `laguna-s-2.1` broke onto two lines). The className prop is the
+          sanctioned styling seam (the vendored file is frozen), and twMerge
+          lets `block` override the vendored `flex` — only a block box can
+          ellipsize its own text; a flex container cannot. The chevron is
+          pinned absolute in a pe-6 reserve so the ellipsis can never eat it
+          (inline it shared the truncatable line: Chrome swapped a 0.1px
+          overflow for "…" and dropped the chevron). leading-8 re-centers the
+          single line the block layout lost. */}
       <ComposerModelTrigger
         model={label}
+        title={title}
         open={open}
         data-testid={testId}
         aria-label={ariaLabel}
         aria-haspopup="true"
+        className="relative block min-w-0 max-w-full truncate leading-8 pe-6 [&>svg]:absolute [&>svg]:end-3 [&>svg]:top-1/2 [&>svg]:-translate-y-1/2"
         onClick={() => setOpen((current: boolean) => !current)}
         onKeyDown={(event: ReactKeyboardEvent<HTMLButtonElement>): void => {
           if (event.key === "Escape") setOpen(false);
@@ -178,7 +209,7 @@ function RailPicker({
       />
       {inherited && (
         <span
-          className="text-[10px] text-muted"
+          className="shrink-0 text-[10px] text-muted"
           data-testid={`${testId}-default`}
         >
           default
@@ -259,8 +290,10 @@ function ModelPicker(): ReactElement {
     <RailPicker
       testId="composer-model-picker"
       ariaLabel="Session model"
-      label={model || "Model"}
+      label={shortModelName(model) || "Model"}
+      title={model || undefined}
       inherited={model !== "" && modelOverride === ""}
+      absorb
     >
       {(close: () => void) => (
         <>
@@ -337,10 +370,16 @@ function EffortPicker(): ReactElement | null {
   );
 }
 
-/** The three rail controls in rail order (design D9). */
+/** The three rail controls in rail order (design D9). min-w-0 keeps the
+ * squeeze chain unbroken from the composer toolbar down to each trigger, so
+ * the labels truncate instead of wrapping the rail (live 1100px regression:
+ * the rail's content overflowed its box by 212px). */
 export function ComposerPickers(): ReactElement {
   return (
-    <div className="flex items-center gap-1" data-testid="composer-pickers">
+    <div
+      className="flex min-w-0 items-center gap-1"
+      data-testid="composer-pickers"
+    >
       <AgentPicker />
       <ModelPicker />
       <EffortPicker />

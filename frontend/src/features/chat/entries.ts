@@ -19,7 +19,10 @@
  *   record with the child's answer.
  * - turn_completed / turn_error finalize every streaming entry; empty ones
  *   (a turn that died before producing output) are dropped, and turn_error
- *   additionally appends an inline error entry for that turn.
+ *   additionally appends an inline error entry for that turn. turn_completed
+ *   carrying a non-empty artifacts list (add-turn-artifacts design D4)
+ *   stamps the list and its truncation flag onto the turn's trailing
+ *   assistant entry; each regenerated variant's own terminal stamps its own.
  * - turn_cancelled (task 3.3) is the cancellation terminal: streaming entries
  *   finalize KEEPING their partial text. Live, the trailing assistant entry
  *   already holds the streamed deltas; on replay no delta was persisted, so
@@ -262,6 +265,36 @@ function finalize(entries: Entry[]): Entry[] {
 
     return [isStreamingEntry(e) ? { ...e, streaming: false } : e];
   });
+}
+
+/** Stamps the turn_completed event's artifacts onto that turn's trailing
+ * assistant entry (add-turn-artifacts design D4): the list and the
+ * truncation flag ride the entry the mapping later mints the trailing chips
+ * part from. An empty or absent list stamps nothing; regenerated variants
+ * are keyed by turn id, so each variant's own turn_completed stamps its own
+ * entry. */
+function stampArtifacts(entries: Entry[], e: SessionEvent): Entry[] {
+  const artifacts = e.artifacts;
+
+  if (e.turn_id === undefined || !artifacts || artifacts.length === 0) {
+    return entries;
+  }
+
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const entry = entries[i];
+
+    if (entry.kind !== "assistant" || entry.turnID !== e.turn_id) continue;
+
+    const stamped: AssistantEntry = {
+      ...entry,
+      artifacts,
+      artifactsTruncated: e.artifacts_truncated === true,
+    };
+
+    return [...entries.slice(0, i), stamped, ...entries.slice(i + 1)];
+  }
+
+  return entries;
 }
 
 /** The user entry anchoring the variant slot `turnID` belongs to, with the
@@ -756,7 +789,7 @@ export function applyEvent(entries: Entry[], e: SessionEvent): Entry[] {
     }
 
     case Kind.KindTurnCompleted:
-      return finalize(entries);
+      return stampArtifacts(finalize(entries), e);
     case Kind.KindTurnCancelled: {
       // The partial output stays (task 3.3): live, the trailing streaming
       // assistant entry keeps its accumulated deltas; with none — a replay,

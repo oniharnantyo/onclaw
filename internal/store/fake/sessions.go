@@ -68,6 +68,28 @@ func (x sessionsStore) ListByAgent(_ context.Context, agentID string) ([]store.S
 	return out, nil
 }
 
+func (x sessionsStore) List(_ context.Context) ([]store.Session, error) {
+	x.s.mu.Lock()
+	defer x.s.mu.Unlock()
+
+	out := make([]store.Session, 0, len(x.s.sessions))
+	for _, session := range x.s.sessions {
+		out = append(out, cloneSession(session))
+	}
+	// Most recent activity first; created_at DESC then ID break ties
+	// deterministically, mirroring the sqlite adapter's ORDER BY.
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].LastActivityAt.Equal(out[j].LastActivityAt) {
+			return out[i].LastActivityAt.After(out[j].LastActivityAt)
+		}
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.After(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
 func (x sessionsStore) Touch(_ context.Context, id string, at time.Time) error {
 	x.s.mu.Lock()
 	defer x.s.mu.Unlock()

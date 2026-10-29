@@ -62,10 +62,20 @@ type turnComposer struct {
 	// guidance after the operating contract, false keeps the instruction
 	// guidance-free.
 	knowledge bool
+	// skills reports whether this turn resolved a skill backend
+	// (add-agent-created-skills design D1): true composes the
+	// skills-authoring guidance after the knowledge guidance, false keeps
+	// the instruction guidance-free.
+	skills bool
 	// presets is the turn's composed document-preset appendix
 	// (add-create-document design D6), riding directly after the operating
 	// contract; empty keeps the instruction appendix-free.
 	presets string
+	// memory is the turn's composed memory block (add-agent-memory design
+	// D3), riding after the knowledge guidance and before the compaction
+	// summary; empty keeps the instruction block-free — child turns never
+	// carry it (spec agent-memory "Subagent turns receive no memory block").
+	memory string
 }
 
 func (tc turnComposer) supportsPDFInput() bool {
@@ -103,7 +113,11 @@ func assembleTurnInput(p persona, checkpoint sessions.Checkpoint, events []sessi
 	if tc.knowledge {
 		guidance = knowledgeGuidance
 	}
-	instruction := composeSystem(p.text(), tc.presets, guidance, checkpoint.Summary) +
+	skillsText := ""
+	if tc.skills {
+		skillsText = skillsGuidance
+	}
+	instruction := composeSystem(p.text(), tc.presets, guidance, skillsText, tc.memory, checkpoint.Summary) +
 		"\n\n" + environmentBlock(tc.providerType, tc.model, req.origin, now())
 	msgs := make([]*schema.AgenticMessage, 0, 2)
 	for _, ev := range events {
@@ -232,6 +246,14 @@ func attachmentBlock(tc turnComposer, att sessions.Attachment) (*schema.ContentB
 		return schema.NewContentBlock(&schema.UserInputText{
 			Text: string(data),
 		}), nil
+	case attachments.IsOfficeMime(att.Mime):
+		// Office documents are binary — their bytes never ride the message
+		// (a 20 MB package is not context). Like the text lane, no model
+		// capability gate applies: every model gets the same reference note,
+		// pointing at the one tool path that makes the content readable
+		// (save_document copies it into the knowledge scope, where read_file
+		// renders the office view).
+		return pointerBlock(att, "its bytes are not sent; save_document can copy it into your knowledge scope, where read_file presents it as a view"), nil
 	}
 	return pointerBlock(att, fmt.Sprintf("the active model cannot read %s input", laneName(att.Mime))), nil
 }
@@ -272,6 +294,8 @@ func laneName(mime string) string {
 	switch {
 	case mime == "application/pdf":
 		return "PDF"
+	case attachments.IsOfficeMime(mime):
+		return "office document"
 	case strings.HasPrefix(mime, "image/"):
 		return "image"
 	case strings.HasPrefix(mime, "video/"):

@@ -78,6 +78,36 @@ export function BrowserProfiles(): $CancellablePromise<$models.BrowserProfile[] 
 }
 
 /**
+ * ConnectIntegration creates the service-tagged MCP server row(s) for one
+ * catalog-declared connect submission and probes each (spec add-integrations
+ * "Connect flow"): a token credential rides the row's auth JSON — never
+ * Headers (design D4) — an oauth_confidential row stores its pre-registered
+ * client, and an oauth_dcr row is left for Authorize to register. A family
+ * input (design D6) creates one row per product, each named and tagged with
+ * its product id, sharing the input's auth settings. Resubmitting a service
+ * that already has its row is the edit path (spec "Connect flow": editing
+ * reopens the same sheet): the single service's row is updated in place —
+ * only the endpoint and the auth settings are rewritten; name, service tag,
+ * enabled flag, transport, and timestamps stay stored — and the row is
+ * re-probed. A family resubmission skips its already-connected products (spec
+ * "Adding a product later reuses the setup") and creates only the missing
+ * ones. Blank write-only inputs — the token credential, the confidential
+ * client id and secret — adopt the stored auth of an existing row of the same
+ * service or family (spec scenario "Edit keeps the stored credential"); on a
+ * fresh connect the blanks stay blank and are rejected as before. Every
+ * created or updated row is probed immediately, so the returned row carries
+ * its tile's initial state — connected, authorization-required, or failed
+ * with the reason; a probe outcome never fails the call. The first created
+ * row is returned (family callers find the rest through MCPServers by tag);
+ * when nothing was created, the first existing row is re-probed and
+ * returned. An unknown auth method, a method missing its inputs, an empty
+ * service, endpoint, or product id is an error; so is a duplicate row name.
+ */
+export function ConnectIntegration(input: $models.IntegrationConnectInput): $CancellablePromise<store$0.MCPServer> {
+    return $Call.ByID(2590097584, input);
+}
+
+/**
  * CreateBrowserProfile creates a profile's directory (mode 0700). An error
  * naming the profile when it already exists.
  */
@@ -106,7 +136,10 @@ export function CreateHook(hook: store$0.Hook): $CancellablePromise<store$0.Hook
 
 /**
  * CreateMCPServer stores a new MCP server definition, assigning its ID and
- * timestamps. A duplicate server name is an error.
+ * timestamps. A duplicate server name is an error. The returned definition is
+ * redacted (add-integrations design D4): an integration credential entered
+ * through the sheet is stored but never returned — only its key-set state and
+ * last-four hint.
  */
 export function CreateMCPServer(server: store$0.MCPServer): $CancellablePromise<store$0.MCPServer> {
     return $Call.ByID(847961307, server);
@@ -133,13 +166,13 @@ export function CreateProvider(input: $models.ProviderInput): $CancellablePromis
 }
 
 /**
- * DefaultDocumentPreset returns the stored default preset NAME — empty when
- * none was ever set. The name is returned verbatim from storage: a default
- * naming a since-deleted preset is left dangling and still reads back
- * (the tool resolves a dangling default to "no default"; see
- * DeleteDocumentPreset). The format parameter names the format the default
- * applies to; v1 stores a single default per tool, and PDF is the only
- * format.
+ * DefaultDocumentPreset returns the format's stored default preset NAME —
+ * empty when none was ever set. The name is returned verbatim from storage:
+ * a default naming a since-deleted preset is left dangling and still reads
+ * back (the tool resolves a dangling default to "no default"; see
+ * DeleteDocumentPreset). The pdf format falls back to the v1 flat field
+ * when the per-format map has no entry, so rows written before the
+ * per-format map keep working.
  */
 export function DefaultDocumentPreset(format: string): $CancellablePromise<string> {
     return $Call.ByID(2754689611, format);
@@ -157,9 +190,11 @@ export function DeleteBrowserProfile(name: string): $CancellablePromise<void> {
 }
 
 /**
- * DeleteDocumentPreset removes the preset's row only — generated documents
- * are workspace files and are never touched. Unknown id is store.ErrNotFound.
- * Deleting the preset named as the default intentionally leaves that stored
+ * DeleteDocumentPreset removes the preset's row and its uploaded skeleton —
+ * a template preset's file is the preset's payload, so it goes with it
+ * (add-document-editing design D6). Generated documents are workspace files
+ * and are never touched. Unknown id is store.ErrNotFound. Deleting the
+ * preset named as a format's default intentionally leaves that stored
  * default dangling: agents resolve presets by name and the create_document
  * tool treats an unresolvable default as "no default" (spec: deleting the
  * default resets the selection to none), so the service does not clear the
@@ -201,6 +236,16 @@ export function DeleteProvider(id: string): $CancellablePromise<void> {
 }
 
 /**
+ * DisconnectIntegration removes an integration's server definition
+ * (add-integrations design D1: an integration is a tagged MCPServer row, so
+ * removing one is a delete): the row goes and its cached connection is
+ * invalidated. store.ErrNotFound when absent.
+ */
+export function DisconnectIntegration(id: string): $CancellablePromise<void> {
+    return $Call.ByID(3047730948, id);
+}
+
+/**
  * DisconnectMCPServer revokes and clears one server's OAuth session (design
  * D9; spec scenario "Disconnect revokes and clears"): a best-effort
  * revocation at the authorization server's advertised revocation endpoint —
@@ -216,8 +261,12 @@ export function DisconnectMCPServer(id: string): $CancellablePromise<store$0.MCP
 
 /**
  * DuplicateDocumentPreset copies the preset to newName within its format,
- * config included. Unknown id is store.ErrNotFound; a colliding newName is
- * store.ErrDuplicate.
+ * config included — and, for a template-document preset, the uploaded
+ * skeleton with it, so the copy generates like the source (the template
+ * files are keyed by preset ID, which the copy changes). Unknown id is
+ * store.ErrNotFound; a colliding newName is store.ErrDuplicate. A source
+ * whose skeleton file has gone missing fails the copy rather than produce a
+ * preset claiming a template it cannot render with.
  */
 export function DuplicateDocumentPreset(id: string, newName: string): $CancellablePromise<$models.DocumentPresetEntry> {
     return $Call.ByID(82822463, id, newName);
@@ -265,14 +314,16 @@ export function ListProviderModels(providerID: string): $CancellablePromise<($mo
 
 /**
  * MCPServer returns the MCP server with the given ID; store.ErrNotFound when
- * absent.
+ * absent. The integration credential is redacted (design D4): only
+ * CredentialSet and the last-four CredentialHint are exposed.
  */
 export function MCPServer(id: string): $CancellablePromise<store$0.MCPServer> {
     return $Call.ByID(3024141407, id);
 }
 
 /**
- * MCPServers returns all MCP servers, oldest first. The result is never nil.
+ * MCPServers returns all MCP servers, oldest first, with integration
+ * credentials redacted (design D4). The result is never nil.
  */
 export function MCPServers(): $CancellablePromise<store$0.MCPServer[] | null> {
     return $Call.ByID(3991419204);
@@ -363,14 +414,28 @@ export function SeedCanonicalModels(): $CancellablePromise<void> {
 }
 
 /**
- * SetDefaultDocumentPreset stores the format's default preset NAME; an empty
- * name clears the default (the stored field becomes empty). A non-empty name
- * must resolve to a preset of the format — store.ErrNotFound otherwise; the
- * canonical spelling of the matched preset is stored. The document under the
- * tool key is exactly {"defaultPreset":"<name>"}.
+ * SetDefaultDocumentPreset stores the format's default preset NAME; an
+ * empty name clears the format's default. A non-empty name must resolve to
+ * a preset of the format — store.ErrNotFound otherwise; the canonical
+ * spelling of the matched preset is stored. The pdf format's selection also
+ * rides the v1 flat field, so the stored document keeps every reader
+ * working; the other formats' entries live only in the per-format map.
  */
 export function SetDefaultDocumentPreset(format: string, name: string): $CancellablePromise<void> {
     return $Call.ByID(2211022059, format, name);
+}
+
+/**
+ * SetDocumentPresetTemplate stores the preset's uploaded skeleton document
+ * (add-document-editing design D6): the base64 document lands in the
+ * template store under the preset's ID, and the preset row records the
+ * upload (has_template, the file's name) in its config. The file name's
+ * extension must match the preset's format — .docx for a DOCX preset,
+ * .pptx for a PPTX preset; PDF presets are config-only and take no
+ * template. Unknown id is store.ErrNotFound.
+ */
+export function SetDocumentPresetTemplate(presetID: string, filename: string, base64Data: string): $CancellablePromise<void> {
+    return $Call.ByID(2287111156, presetID, filename, base64Data);
 }
 
 /**
@@ -452,9 +517,12 @@ export function UpdateHook(hook: store$0.Hook): $CancellablePromise<store$0.Hook
  * UpdateMCPServer rewrites an existing MCP server definition, addressed by
  * server.ID; store.ErrNotFound when absent. Connection status fields
  * (Status, StatusError, ToolCount) persist the last probe outcome and are
- * rewritten as given. A successful update invalidates the server's cached
- * connection so the new definition takes effect on the next use (design D7);
- * invalidation never fails the write.
+ * rewritten as given. A blank integration credential preserves the stored one
+ * — the redacted reads mean an edit round-trips no credential — while a
+ * non-blank value replaces it (design D4). A successful update invalidates
+ * the server's cached connection so the new definition takes effect on the
+ * next use (design D7); invalidation never fails the write. The returned
+ * definition is redacted.
  */
 export function UpdateMCPServer(server: store$0.MCPServer): $CancellablePromise<store$0.MCPServer> {
     return $Call.ByID(2502306300, server);

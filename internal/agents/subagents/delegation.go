@@ -17,6 +17,12 @@ import (
 // to the one agent type on offer; and a model that sends the task text under
 // `task` (or omits description) still delegates instead of failing validation.
 //
+// Every delegated call's context is also stamped as a child turn: the marker
+// rides the delegation context into the detached child run, so tools the child
+// invokes — the shared instances it inherits from the parent's surface — can
+// tell a child call from a parent one (add-agent-memory design D12: a child's
+// memory_search traces carry the subagent origin).
+//
 // Both endpoint flavors are wrapped: the ADK executes tool calls through the
 // streamable chain (invokable-only tools are auto-wrapped), so an
 // invokable-only wrapper would never see the call.
@@ -38,7 +44,7 @@ func (m *DelegationArgs) WrapInvokableToolCall(_ context.Context, endpoint adk.I
 		return endpoint, nil
 	}
 	return func(ctx context.Context, args string, opts ...tool.Option) (string, error) {
-		return endpoint(ctx, normalizeDelegationArgs(args, m.defaultType), opts...)
+		return endpoint(WithChildTurn(ctx, runnerSessionOf(ctx)), normalizeDelegationArgs(args, m.defaultType), opts...)
 	}, nil
 }
 
@@ -47,8 +53,52 @@ func (m *DelegationArgs) WrapStreamableToolCall(_ context.Context, endpoint adk.
 		return endpoint, nil
 	}
 	return func(ctx context.Context, args string, opts ...tool.Option) (*schema.StreamReader[string], error) {
-		return endpoint(ctx, normalizeDelegationArgs(args, m.defaultType), opts...)
+		return endpoint(WithChildTurn(ctx, runnerSessionOf(ctx)), normalizeDelegationArgs(args, m.defaultType), opts...)
 	}, nil
+}
+
+// runnerSessionOf reads the parent run's session id off the delegation call's
+// context while it is still readable: the detached background lane that runs
+// the child drops the value downstream, so the child-turn marker carries it.
+func runnerSessionOf(ctx context.Context) string {
+	sessionID, _ := adk.RunnerSessionID(ctx)
+	return sessionID
+}
+
+// childTurnKey is the delegation marker's context key: set exactly once, on
+// the agent tool call that dispatches a child, and read through IsChildTurn.
+type childTurnKey struct{}
+
+// childTurnContext is the marker's payload: the parent run's session id, the
+// coordinates the child's tool calls report when the lane drops the runner
+// session value.
+type childTurnContext struct {
+	sessionID string
+}
+
+// WithChildTurn stamps a context as a child-turn context: everything the
+// delegated run does — including the tool calls it makes through the shared
+// tool instances — happens inside it. Background child runs keep the marker:
+// the detached execution context derives its values from the delegation call's.
+// sessionID is the parent run's session id ("" when unknown).
+func WithChildTurn(ctx context.Context, sessionID string) context.Context {
+	return context.WithValue(ctx, childTurnKey{}, childTurnContext{sessionID: sessionID})
+}
+
+// IsChildTurn reports whether the context carries the delegation marker — the
+// call runs inside a subagent child turn, not the parent's own tool loop.
+func IsChildTurn(ctx context.Context) bool {
+	_, ok := ctx.Value(childTurnKey{}).(childTurnContext)
+	return ok
+}
+
+// ChildTurnSessionID returns the parent run's session id the delegation
+// stamped beside the marker; "" when absent.
+func ChildTurnSessionID(ctx context.Context) string {
+	if payload, ok := ctx.Value(childTurnKey{}).(childTurnContext); ok {
+		return payload.sessionID
+	}
+	return ""
 }
 
 // normalizeDelegationArgs rewrites one agent-tool argument payload. Arguments

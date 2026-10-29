@@ -44,11 +44,13 @@ import { useReducedMotion } from "../tools/useReducedMotion";
 import type { ChatStore } from "../types";
 
 /** Severity ladder for the ring (task 9.3): accent below 65%, warning
- * 65–85%, error above 85% — token classes, so both themes re-skin. */
+ * 65–85%, error above 85% — token classes, so both themes re-skin. The
+ * percentage label rides the lifted text variants (design D6), the same
+ * grammar the links and error rows use; the strokes stay as they were. */
 const TIER_CLASSES: { stroke: string; text: string }[] = [
-  { stroke: "stroke-accent", text: "text-accent" },
-  { stroke: "stroke-warn", text: "text-warn" },
-  { stroke: "stroke-danger", text: "text-danger" },
+  { stroke: "stroke-accent", text: "text-accenttext" },
+  { stroke: "stroke-warn", text: "text-warntext" },
+  { stroke: "stroke-danger", text: "text-dangertext" },
 ];
 
 /** Legend/bar color per segment — token mixes, so both themes stay legible. */

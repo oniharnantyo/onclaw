@@ -92,14 +92,24 @@ type AgentsService struct {
 	// delete cascaded its document rows (add-knowledge-corpus design D9);
 	// nil — a runtime built without a corpus — skips the cleanup.
 	knowledge *knowledge.Store
+	// skillsDir is the global skills library directory (layout.Skills,
+	// normally ~/.buddies/skills) backing the workspace-skills bindings
+	// (add-agent-created-skills task 2). An empty string means the runtime
+	// has no skills capability: PromoteWorkspaceSkill and
+	// DeleteWorkspaceSkill reject with errSkillsCapabilityOff, while
+	// ListWorkspaceSkills still reads the agent's workspace tier — the same
+	// capability-off posture resolveSkills takes on an empty skillsDir.
+	skillsDir string
 }
 
 // NewAgentsService returns the agent management service over s, generating
 // prompt documents through prompts and keeping their files under ws. All
-// three dependencies are required. knowledge is the durable corpus store
-// whose agent scopes Delete cleans up; nil skips that cleanup.
-func NewAgentsService(s store.Store, prompts PromptGenerator, ws *workspaces.Manager, k *knowledge.Store) *AgentsService {
-	return &AgentsService{store: s, prompts: prompts, workspaces: ws, knowledge: k}
+// four dependencies are required. knowledge is the durable corpus store
+// whose agent scopes Delete cleans up; nil skips that cleanup. skillsDir is
+// the global skills library directory; empty means the runtime has no
+// skills capability and the workspace-skill promote/delete bindings reject.
+func NewAgentsService(s store.Store, prompts PromptGenerator, ws *workspaces.Manager, k *knowledge.Store, skillsDir string) *AgentsService {
+	return &AgentsService{store: s, prompts: prompts, workspaces: ws, knowledge: k, skillsDir: skillsDir}
 }
 
 // Create stores a new agent and generates its prompt documents synchronously

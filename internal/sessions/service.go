@@ -20,6 +20,9 @@ type Service interface {
 	// SessionsByAgent returns the agent's sessions, most recent activity
 	// first. The result is never nil.
 	SessionsByAgent(ctx context.Context, agentID string) ([]Session, error)
+	// AllSessions returns every agent's sessions, most recent activity first
+	// (add-grouped-session-rail design D1). The result is never nil.
+	AllSessions(ctx context.Context) ([]Session, error)
 	// SetTitle rewrites the session's title; store.ErrNotFound when absent.
 	SetTitle(ctx context.Context, id, title string) error
 	// SetOverrides rewrites the session's model and reasoning-effort

@@ -385,15 +385,21 @@ function ComposerSurface(): ReactElement {
                     pasted files land on the same adapter path. */}
                 <ComposerAddAttachment />
                 {/* Trigger-token discoverability, out of the placeholder — one
-                    quiet mono row that never competes with the prompt. */}
-                <div
-                  className="flex items-center gap-3"
-                  data-testid="composer-hints"
-                >
-                  <Hint token="/" label="commands" />
-                  <Hint token="@" label="agents" />
-                  <Hint token="$" label="skills" />
-                </div>
+                    quiet mono row that never competes with the prompt. It
+                    yields to the draft (design D4): visible only while the
+                    draft is empty — a chip alone counts as a draft (task
+                    4.2), so the attachment tray hides it too — and back the
+                    moment it clears. */}
+                {text.trim().length === 0 && chips.length === 0 && (
+                  <div
+                    className="flex items-center gap-3"
+                    data-testid="composer-hints"
+                  >
+                    <Hint token="/" label="commands" />
+                    <Hint token="@" label="agents" />
+                    <Hint token="$" label="skills" />
+                  </div>
+                )}
               </div>
               <ComposerActions className="shrink-0 gap-3">
                 {/* Context ring on the bubble's rail, at its right end beside

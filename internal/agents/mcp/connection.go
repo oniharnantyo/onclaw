@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"maps"
@@ -61,6 +62,15 @@ type Connection struct {
 	// OAuth holds the HTTP transports' OAuth 2.1 client settings; the zero
 	// value keeps today's static-header behavior (design D1).
 	OAuth OAuth
+	// IntegrationCredential is the token/API key of a non-OAuth integration
+	// (design D3/D4): injected into the request headers at dial time per
+	// CredentialHeaderStyle. It lives in the stored auth JSON, never in the
+	// Headers map, so it never round-trips to the frontend.
+	IntegrationCredential string
+	// CredentialHeaderStyle declares how IntegrationCredential is rendered:
+	// the store's MCPAuthHeaderStyle* vocabulary — "bearer" (the empty
+	// default), "token=", "basic", "custom:<scheme>", or "header:<name>".
+	CredentialHeaderStyle string
 }
 
 // connection is a ready-to-use MCP connection: the initialized client plus
@@ -149,7 +159,7 @@ func dial(ctx context.Context, conn Connection) (client.MCPClient, error) {
 		}
 		return cli, nil
 	case TransportStreamableHTTP:
-		opts := []transport.StreamableHTTPCOption{transport.WithHTTPHeaders(headerMap(conn.Headers))}
+		opts := []transport.StreamableHTTPCOption{transport.WithHTTPHeaders(requestHeaders(conn))}
 		var (
 			cli *client.Client
 			err error
@@ -170,7 +180,7 @@ func dial(ctx context.Context, conn Connection) (client.MCPClient, error) {
 		}
 		return cli, nil
 	case TransportSSE:
-		opts := []transport.ClientOption{transport.WithHeaders(headerMap(conn.Headers))}
+		opts := []transport.ClientOption{transport.WithHeaders(requestHeaders(conn))}
 		var (
 			cli *client.Client
 			err error
@@ -259,6 +269,59 @@ func constructChildEnv(parent []string, rows map[string]string) []string {
 		out = append(out, name+"="+values[name])
 	}
 	return out
+}
+
+// Credential header styles — the mcp-level mirror of the store's
+// MCPServerAuth.CredentialHeaderStyle vocabulary (add-integrations design D3;
+// the package accepts narrow data, not the store). Each style declares how an
+// integration credential is rendered into a request at dial time.
+const (
+	// CredentialStyleBearer sends "Authorization: Bearer <credential>". The
+	// empty style means the same.
+	CredentialStyleBearer = "bearer"
+	// CredentialStyleTokenEq sends "Authorization: Token token=<credential>"
+	// (PagerDuty's form).
+	CredentialStyleTokenEq = "token="
+	// CredentialStyleBasic sends "Authorization: Basic <base64(credential)>";
+	// the credential carries "email:api_token" (Atlassian's form).
+	CredentialStyleBasic = "basic"
+	// CredentialStyleCustomPrefix marks a "<scheme> <credential>"
+	// Authorization value; the scheme follows the "custom:" prefix (Sentry's
+	// "custom:Sentry-Bearer").
+	CredentialStyleCustomPrefix = "custom:"
+	// CredentialStyleHeaderPrefix marks a named header carrying the
+	// credential verbatim; the header name follows the "header:" prefix
+	// (Google Maps' "header:X-Goog-Api-Key").
+	CredentialStyleHeaderPrefix = "header:"
+)
+
+// requestHeaders renders a connection's dial-time headers: the configured
+// headers plus, when an integration credential is set, the credential rendered
+// per its catalog-declared style (design D3/D4). The returned map is fresh —
+// the caller's Headers map, the stored row's view, is never mutated with the
+// credential. An unknown style falls back to bearer: a catalog misdeclaration
+// degrades to the most common rendering, never to a dropped credential.
+func requestHeaders(conn Connection) map[string]string {
+	headers := headerMap(conn.Headers)
+	cred := conn.IntegrationCredential
+	if cred == "" {
+		return headers
+	}
+	switch style := conn.CredentialHeaderStyle; {
+	case style == CredentialStyleBasic:
+		// The credential is "email:api_token"; Basic auth carries the pair
+		// base64-encoded (RFC 7617).
+		headers["Authorization"] = "Basic " + base64.StdEncoding.EncodeToString([]byte(cred))
+	case strings.HasPrefix(style, CredentialStyleCustomPrefix):
+		headers["Authorization"] = strings.TrimPrefix(style, CredentialStyleCustomPrefix) + " " + cred
+	case strings.HasPrefix(style, CredentialStyleHeaderPrefix):
+		headers[strings.TrimSpace(strings.TrimPrefix(style, CredentialStyleHeaderPrefix))] = cred
+	case style == CredentialStyleTokenEq:
+		headers["Authorization"] = "Token token=" + cred
+	default: // CredentialStyleBearer and anything unrecognized.
+		headers["Authorization"] = "Bearer " + cred
+	}
+	return headers
 }
 
 // headerMap flattens the configured headers (trimmed names) for the HTTP

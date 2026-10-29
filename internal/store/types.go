@@ -106,13 +106,24 @@ type MCPServer struct {
 	Headers   map[string]string
 	// Auth is the server's authentication settings (design D4); the zero
 	// value means static headers only.
-	Auth        MCPServerAuth
-	Enabled     bool
-	Status      string
-	StatusError string
-	ToolCount   int
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	Auth MCPServerAuth
+	// Service is the optional integration catalog tag; empty for raw MCP
+	// servers (add-integrations design D1: an integration is a tagged
+	// MCPServer row, not a separate entity).
+	Service string
+	// CredentialSet and CredentialHint are computed/redacted views for
+	// listings (add-integrations design D4): only whether an integration
+	// credential exists and its last four characters. Plain row fields —
+	// never persisted (no column, never part of the auth JSON document);
+	// the store populates them on read.
+	CredentialSet  bool
+	CredentialHint string
+	Enabled        bool
+	Status         string
+	StatusError    string
+	ToolCount      int
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 // MCP server authentication modes — the MCPServerAuth.Mode vocabulary.
@@ -122,6 +133,25 @@ const (
 	MCPAuthModeNone = "none"
 	// MCPAuthModeOAuth marks a server that authenticates with OAuth 2.1.
 	MCPAuthModeOAuth = "oauth"
+)
+
+// Credential header styles — the MCPServerAuth.CredentialHeaderStyle
+// vocabulary (add-integrations design D3). Each style declares how the
+// integration credential is rendered into a request at dial time.
+const (
+	// MCPAuthHeaderStyleBearer sends "Authorization: Bearer <credential>".
+	// The empty style means the same.
+	MCPAuthHeaderStyleBearer = "bearer"
+	// MCPAuthHeaderStyleTokenEq sends "Authorization: token <credential>".
+	MCPAuthHeaderStyleTokenEq = "token="
+	// MCPAuthHeaderStyleBasic sends "Authorization: Basic <base64(credential)>".
+	MCPAuthHeaderStyleBasic = "basic"
+	// MCPAuthHeaderStyleCustomPrefix marks a "<custom>: <credential>"
+	// Authorization scheme; the scheme follows the "custom:" prefix.
+	MCPAuthHeaderStyleCustomPrefix = "custom:"
+	// MCPAuthHeaderStyleHeaderPrefix marks a named header carrying the
+	// credential verbatim; the header name follows the "header:" prefix.
+	MCPAuthHeaderStyleHeaderPrefix = "header:"
 )
 
 // MCPServerAuth is an MCP server's authentication settings, persisted as
@@ -137,6 +167,20 @@ type MCPServerAuth struct {
 	AuthServerMetadataURL string   `json:"auth_server_metadata_url,omitempty"`
 	RedirectURI           string   `json:"redirect_uri,omitempty"`
 	Scopes                []string `json:"scopes,omitempty"`
+
+	// IntegrationCredential is the token/API key entered through the
+	// connect sheet (add-integrations design D4). Stored in the auth JSON,
+	// never in Headers (credential secrecy).
+	IntegrationCredential string `json:"integration_credential,omitempty"`
+	// CredentialHeaderStyle declares how to render the credential at dial
+	// time: one of the MCPAuthHeaderStyle* values, including the "custom:"
+	// and "header:" prefixed forms. Empty means bearer. Catalog-declared
+	// per service (design D3).
+	CredentialHeaderStyle string `json:"credential_header_style,omitempty"`
+	// ExtraAuthParams are extra query parameters appended to the authorize
+	// URL by the OAuth flow (add-integrations design D3): Google needs
+	// access_type=offline and prompt=consent to hand back a refresh token.
+	ExtraAuthParams map[string]string `json:"extra_auth_params,omitempty"`
 }
 
 // IsOAuth reports whether the server authenticates with OAuth 2.1.

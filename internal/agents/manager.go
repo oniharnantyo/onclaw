@@ -114,6 +114,12 @@ type Manager interface {
 	// parked on an approval) and its turn ID. When idle or unknown, reports
 	// false and empty turnID.
 	TurnState(ctx context.Context, sessionID string) (busy bool, turnID string)
+	// RunningSessions reports the session IDs with a turn in flight —
+	// running or parked on a pending approval (add-grouped-session-rail
+	// design D2) — so the UI can reconstruct the busy set without a
+	// per-session subscription. The result is empty, never nil, when no turn
+	// is in flight.
+	RunningSessions(ctx context.Context) []string
 }
 
 // Option configures the agent runtime at construction.
@@ -220,6 +226,23 @@ func WithHooks(d *hooks.Dispatcher) Option {
 	return func(m *manager) {
 		if d != nil {
 			m.hooks = d
+		}
+	}
+}
+
+// WithTurnTransition supplies the callback fired on every in-flight
+// transition (add-grouped-session-rail design D2): busy=true when a turn
+// claims the session's busy slot (Send, Submit, Regenerate), busy=false when
+// the record clears on a terminal outcome (completed, error, cancelled —
+// including a cancel of a turn parked on an approval). Parking on a pending
+// approval and resolving it are not transitions — the turn stays in flight
+// throughout. Production wires it to the host's event emitter; the runtime
+// core is where UI dispatch, scheduler fire, and gateway trigger converge.
+// Unset — the default — transitions go unobserved.
+func WithTurnTransition(cb func(sessionID string, busy bool)) Option {
+	return func(m *manager) {
+		if cb != nil {
+			m.onTransition = cb
 		}
 	}
 }

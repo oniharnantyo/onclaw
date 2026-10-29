@@ -24,6 +24,8 @@ export type MockedClient = Client & {
   agents: { list: MockFn };
   chat: {
     sessions: MockFn;
+    allSessions: MockFn;
+    runningSessions: MockFn;
     createSession: MockFn;
     send: MockFn;
     subscribe: MockFn;
@@ -153,6 +155,15 @@ export function makeClient(): MockedClient {
       sessions: vi.fn(async (agentID: string): Promise<Session[]> =>
         agentID === "a1" ? [session] : [{ ...session, ID: "s2", AgentID: "a2" }]
       ),
+      // selectAgent reads the all-agents listing (add-grouped-session-rail
+      // design D1); the mock serves the same sessions the per-agent member
+      // does, both agents together.
+      allSessions: vi.fn(async (): Promise<Session[]> => [
+        session,
+        { ...session, ID: "s2", AgentID: "a2" },
+      ]),
+      // No turn in flight in these suites (add-grouped-session-rail D2).
+      runningSessions: vi.fn(async (): Promise<string[]> => []),
       createSession: vi.fn(async (): Promise<Session> => ({
         ...session,
         ID: "s-new",

@@ -29,17 +29,19 @@ export type Unsubscribe = () => void;
 /**
  * One decoded event payload at the transport boundary: the session channel
  * carries SessionEvents, the gateway channel carries GatewayStateEvents, the
- * MCP OAuth channel carries MCPOAuthCompletedEvents, and the schedules
- * channel carries SchedulesChangedEvents. The runtime hands all of them to
- * `onEvent`, so this is the single documented place where the domains meet
- * before the client narrows them.
+ * MCP OAuth channel carries MCPOAuthCompletedEvents, the schedules channel
+ * carries SchedulesChangedEvents, and the turns channel carries
+ * TurnsChangedEvents. The runtime hands all of them to `onEvent`, so this is
+ * the single documented place where the domains meet before the client
+ * narrows them.
  */
 export type EventPayload =
   | sessionModels.Event
   | serviceModels.GatewayStateEvent
   | serviceModels.KnowledgeChangedEvent
   | serviceModels.MCPOAuthCompletedEvent
-  | serviceModels.SchedulesChangedEvent;
+  | serviceModels.SchedulesChangedEvent
+  | serviceModels.TurnsChangedEvent;
 
 /** Handler receiving the payload data of one emitted event. */
 export type EventHandler = (data: EventPayload) => void;
@@ -61,6 +63,22 @@ export interface Transport {
       content: string
     ): Promise<void>;
     RegeneratePrompts(agentID: string, instruction: string): Promise<void>;
+    /**
+     * Lists the agent's own workspace skills (add-agent-created-skills task
+     * 2.1): name plus the SKILL.md description per skill directory. Only
+     * reads the workspace tier; an agent without skills lists empty.
+     */
+    ListWorkspaceSkills(
+      agentID: string
+    ): Promise<serviceModels.WorkspaceSkill[] | null>;
+    /**
+     * Copies one workspace skill into the global skills library and
+     * registers it enabled; the workspace copy stays. A name already in the
+     * library rejects with an error naming the collision and changes nothing.
+     */
+    PromoteWorkspaceSkill(agentID: string, name: string): Promise<void>;
+    /** Removes one workspace-tier skill directory; the library is untouched. */
+    DeleteWorkspaceSkill(agentID: string, name: string): Promise<void>;
   };
   chat: {
     CreateSession(agentID: string): Promise<storeModels.Session>;
@@ -75,6 +93,10 @@ export interface Transport {
     /** Re-runs a turn's prompt as a new variant; resolves with the new turn id. */
     Regenerate(sessionID: string, turnID: string): Promise<string>;
     Sessions(agentID: string): Promise<storeModels.Session[] | null>;
+    /** Lists every agent's sessions (add-grouped-session-rail D1). */
+    AllSessions(): Promise<storeModels.Session[] | null>;
+    /** Reports the sessions with a turn in flight (add-grouped-session-rail D2). */
+    RunningSessions(): Promise<string[] | null>;
     /** Rewrites the session's model/effort overrides; empty clears to inherit. */
     SetSessionOverrides(
       sessionID: string,
@@ -130,6 +152,17 @@ export interface Transport {
     ): Promise<serviceModels.GeneratedDocumentContent>;
     /** Reads one jailed workspace file of the agent. */
     WorkspaceFile(agentID: string, relPath: string): Promise<string>;
+    /**
+     * Serves one jailed workspace file's binary content (add-turn-artifacts
+     * design D8): base64 bytes plus the byte size and a mime picked by
+     * extension (`application/pdf` for `.pdf`, otherwise
+     * `application/octet-stream`). The jail matches `WorkspaceFile` exactly;
+     * a refused or missing path rejects.
+     */
+    WorkspaceFileBinary(
+      agentID: string,
+      relPath: string
+    ): Promise<serviceModels.WorkspaceFileBinaryContent>;
     /** Lists one jailed workspace directory of the agent. */
     ListWorkspace(
       agentID: string,
@@ -212,6 +245,18 @@ export interface Transport {
     DefaultDocumentPreset(format: string): Promise<string>;
     /** Stores the default preset name; empty clears it. */
     SetDefaultDocumentPreset(format: string, name: string): Promise<void>;
+    /**
+     * Stores one preset's uploaded skeleton document (add-document-editing
+     * design D6): the base64 bytes land in the template store under the
+     * preset's id and the row records the upload. The file name's extension
+     * must match the preset's format (.docx / .pptx); PDF presets take no
+     * template.
+     */
+    SetDocumentPresetTemplate(
+      presetID: string,
+      filename: string,
+      base64Data: string
+    ): Promise<void>;
     Hooks(): Promise<storeModels.Hook[] | null>;
     CreateHook(hook: storeModels.Hook): Promise<storeModels.Hook>;
     UpdateHook(hook: storeModels.Hook): Promise<storeModels.Hook>;
@@ -256,6 +301,16 @@ export interface Transport {
      * returning the row in the authorization-required state.
      */
     DisconnectMCPServer(id: string): Promise<storeModels.MCPServer>;
+    /**
+     * Creates the service-tagged MCP server row(s) for one catalog connect
+     * submission (add-integrations); the response is the redacted first
+     * created row (family: one row per product).
+     */
+    ConnectIntegration(
+      input: serviceModels.IntegrationConnectInput
+    ): Promise<storeModels.MCPServer>;
+    /** Removes an integration's server definition (a tagged MCPServer row). */
+    DisconnectIntegration(id: string): Promise<void>;
     Gateway(): Promise<storeModels.GatewaySettings>;
     SaveGateway(settings: storeModels.GatewaySettings): Promise<void>;
   };

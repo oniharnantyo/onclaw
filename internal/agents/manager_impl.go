@@ -76,6 +76,10 @@ type manager struct {
 	// (see hooks.go). Never nil: the default no-op dispatcher resolves an
 	// empty chain, so turns run without hooks.
 	hooks *hooks.Dispatcher
+	// onTransition is the in-flight transition callback (WithTurnTransition,
+	// add-grouped-session-rail design D2); nil (the default) means
+	// transitions go unobserved.
+	onTransition func(sessionID string, busy bool)
 
 	// baseCtx parents turn goroutines: turns survive the Send call and any
 	// subscriber disconnect (design D7 — a disconnected client never loses
@@ -133,6 +137,17 @@ type runningTurn struct {
 	// tool records still carry the full call (the interrupted run's call
 	// announcement was live-only).
 	args map[string]string
+	// artifactsBefore is the start-of-turn listing of the workspace's
+	// artifacts directory (add-turn-artifacts design D3): the same lifetime
+	// as usage, so a live approval resume keeps it and the terminal event
+	// diffs against it. Nil when detection is disabled for the turn (the
+	// artifacts path is unusable) — the turn still runs.
+	artifactsBefore artifactRecord
+	// artifactsSince is the cold-resume fallback predicate (add-turn-artifacts
+	// design D3): with the process — and the start record — lost, the
+	// terminal listing reports files whose mtime is at or after the turn's
+	// persisted user-message time. Zero when a live record exists.
+	artifactsSince time.Time
 	// origin is the dispatch's run origin (design D6): stamped on the hook
 	// events of the original run and of any approval resume of it. Empty on
 	// a cold resume (process lost) — the resume reads as a user run.
@@ -389,8 +404,8 @@ func (m *manager) Regenerate(ctx context.Context, sessionID, turnID string) (*Tu
 // resume stamps the same origin.
 func (m *manager) startTurn(sessionID, origin string) (*runningTurn, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if _, inFlight := m.running[sessionID]; inFlight {
+		m.mu.Unlock()
 		return nil, ErrTurnInProgress
 	}
 	// The per-turn cancel surface (design D3): the run rides turnCtx so the
@@ -408,6 +423,8 @@ func (m *manager) startTurn(sessionID, origin string) (*runningTurn, error) {
 		runningTools: make(map[string]inFlightTool),
 	}
 	m.running[sessionID] = rt
+	m.mu.Unlock()
+	m.notifyTransition(sessionID, true)
 	return rt, nil
 }
 
@@ -425,6 +442,7 @@ func (m *manager) finishTurn(sessionID string, rt *runningTurn, err error) {
 	m.mu.Lock()
 	delete(m.running, sessionID)
 	m.mu.Unlock()
+	m.notifyTransition(sessionID, false)
 	rt.turn.finish(err)
 }
 
@@ -472,6 +490,29 @@ func (m *manager) TurnState(_ context.Context, sessionID string) (bool, string) 
 		return true, rt.turn.id
 	}
 	return false, ""
+}
+
+// RunningSessions reports the session IDs with a turn in flight — running or
+// parked on a pending approval (parked records stay in the busy map, so they
+// are included). The result is empty, never nil.
+func (m *manager) RunningSessions(_ context.Context) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, 0, len(m.running))
+	for sessionID := range m.running {
+		out = append(out, sessionID)
+	}
+	return out
+}
+
+// notifyTransition fires the WithTurnTransition callback for one in-flight
+// transition (add-grouped-session-rail design D2), outside the manager lock.
+// A no-op when no callback was configured.
+func (m *manager) notifyTransition(sessionID string, busy bool) {
+	cb := m.onTransition
+	if cb != nil {
+		cb(sessionID, busy)
+	}
 }
 
 // cancelEscalationDelay bounds the safe-point cancel (design D3): the ADK
@@ -560,6 +601,7 @@ func (m *manager) discardPending(sessionID string, rt *runningTurn) error {
 	m.mu.Lock()
 	delete(m.running, sessionID)
 	m.mu.Unlock()
+	m.notifyTransition(sessionID, false)
 	rt.turn.finish(ErrTurnCancelled)
 	return nil
 }

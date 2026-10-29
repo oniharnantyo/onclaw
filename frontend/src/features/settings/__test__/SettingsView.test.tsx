@@ -20,6 +20,11 @@ vi.mock("../../../lib/client", () => ({
       webSearchProviders: vi.fn(async () => []),
       webSearchConfig: vi.fn(async () => ({ entries: [] })),
     },
+    // The integrations pane subscribes to OAuth completions on mount (the
+    // MCP pane's refetch pattern); no SettingsView test drives the flow.
+    events: {
+      onMcpOAuthCompleted: vi.fn((): (() => void) => (): void => undefined),
+    },
   },
 }));
 
@@ -46,13 +51,15 @@ type MockedClient = Client & {
 // SAFETY: the client module is mocked with vi.fn members above.
 const mockedClient = client as MockedClient;
 
-/** Sidebar order is onclaw-v2's flat section order — no grouping. */
+/** Sidebar order is the grouped nav order: Providers, Integrations, then
+ * the AUTOMATION panes (Skills, Tools, Hooks, MCP). */
 const navItemIds = [
   "settings-nav-item-providers",
-  "settings-nav-item-mcp",
+  "settings-nav-item-integrations",
   "settings-nav-item-skills",
   "settings-nav-item-tools",
   "settings-nav-item-hooks",
+  "settings-nav-item-mcp",
 ];
 
 describe("SettingsView", () => {
@@ -62,7 +69,7 @@ describe("SettingsView", () => {
     useNavStore.setState({ settingsPaneLabel: "Providers" });
   });
 
-  it("opens on Providers: page title, flat sidebar, and only that pane mounted", async () => {
+  it("opens on Providers: page title, grouped sidebar, and only that pane mounted", async () => {
     const { findByTestId, queryByTestId, getByTestId } = await renderUI(
       <SettingsView />
     );
@@ -70,7 +77,7 @@ describe("SettingsView", () => {
     expect(await findByTestId("providers-pane")).toBeTruthy();
     expect(getByTestId("settings-pane-title").textContent).toBe("Providers");
 
-    // The page chrome: Back header is retired; flat section list remains.
+    // The page chrome: Back header is retired; the grouped section list remains.
     expect(queryByTestId("settings-back")).toBeNull();
 
     for (const id of navItemIds) {
@@ -80,6 +87,33 @@ describe("SettingsView", () => {
     // Only the active pane mounts.
     expect(queryByTestId("skills-pane")).toBeNull();
     expect(mockedClient.settings.providers).toHaveBeenCalled();
+  });
+
+  it("groups the sidebar into MODELS, INTEGRATIONS, and AUTOMATION sections", async () => {
+    const { getByTestId } = await renderUI(<SettingsView />);
+
+    for (const id of [
+      "settings-nav-section-models",
+      "settings-nav-section-integrations",
+      "settings-nav-section-automation",
+    ]) {
+      expect(getByTestId(id)).toBeTruthy();
+    }
+
+    // The AUTOMATION section carries its panes in nav order: Skills, Tools,
+    // Hooks, MCP.
+    const automationItems = Array.from(
+      getByTestId("settings-nav-section-automation").querySelectorAll(
+        "[data-testid^='settings-nav-item-']"
+      )
+    ).map((el: Element): string => el.getAttribute("data-testid") ?? "");
+
+    expect(automationItems).toEqual([
+      "settings-nav-item-skills",
+      "settings-nav-item-tools",
+      "settings-nav-item-hooks",
+      "settings-nav-item-mcp",
+    ]);
   });
 
   it("switches the content pane when a sidebar entry is selected", async () => {
@@ -106,6 +140,44 @@ describe("SettingsView", () => {
     expect(queryByTestId("providers-pane")).toBeNull();
     expect(getByTestId("settings-pane-title").textContent).toBe("Skills");
     expect(mockedClient.settings.skills).toHaveBeenCalled();
+  });
+
+  it("selects the Integrations pane from the INTEGRATIONS section", async () => {
+    const user = userEvent.setup();
+
+    const { getByTestId, findByTestId } = await renderUI(<SettingsView />);
+
+    await user.click(getByTestId("settings-nav-item-integrations"));
+
+    expect(
+      getByTestId("settings-nav-item-integrations").getAttribute(
+        "aria-selected"
+      )
+    ).toBe("true");
+    expect(await findByTestId("integrations-pane")).toBeTruthy();
+    expect(getByTestId("settings-pane-title").textContent).toBe("Integrations");
+  });
+
+  it("filters the pane list by label from the search input and restores it on clear", async () => {
+    const user = userEvent.setup();
+
+    const { getByTestId, queryByTestId } = await renderUI(<SettingsView />);
+
+    const search = getByTestId("settings-nav-search");
+
+    await user.type(search, "tool");
+
+    // Only the label match survives; the other sections drop out.
+    expect(getByTestId("settings-nav-item-tools")).toBeTruthy();
+    expect(queryByTestId("settings-nav-item-providers")).toBeNull();
+    expect(queryByTestId("settings-nav-item-skills")).toBeNull();
+
+    await user.clear(search);
+
+    // Clearing restores the full grouped list.
+    for (const id of navItemIds) {
+      expect(getByTestId(id)).toBeTruthy();
+    }
   });
 
   it("publishes the active pane label to the nav store", async () => {

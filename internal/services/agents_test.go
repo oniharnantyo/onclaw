@@ -83,6 +83,9 @@ type agentsFixture struct {
 	gen  *fakeGenerator
 	ws   *workspaces.Manager
 	know *knowledge.Store
+	// skills is the global skills library directory backing the
+	// workspace-skill bindings (add-agent-created-skills task 2).
+	skills string
 }
 
 func newAgentsFixture(t *testing.T) *agentsFixture {
@@ -91,12 +94,14 @@ func newAgentsFixture(t *testing.T) *agentsFixture {
 	gen := &fakeGenerator{}
 	ws := workspaces.NewManager(t.TempDir())
 	know := knowledge.NewStore(t.TempDir(), st.Documents())
+	skills := t.TempDir()
 	return &agentsFixture{
-		svc:  NewAgentsService(st, gen, ws, know),
-		st:   st,
-		gen:  gen,
-		ws:   ws,
-		know: know,
+		svc:    NewAgentsService(st, gen, ws, know, skills),
+		st:     st,
+		gen:    gen,
+		ws:     ws,
+		know:   know,
+		skills: skills,
 	}
 }
 

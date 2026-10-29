@@ -46,7 +46,9 @@ func (s *Store) WithTx(ctx context.Context, fn func(store.Store) error) error {
 		toolConfigs: &toolSettingStore{tx},
 		attachments: &attachmentStore{tx},
 		presets:     &documentPresetStore{tx},
+		templates:   s.templates,
 		models:      &providerModelStore{tx},
+		memory:      &memoryStore{tx},
 	}
 
 	if err := fn(txStore); err != nil {

@@ -28,22 +28,36 @@ func (m *fakeChatModel) Stream(ctx context.Context, input []*schema.Message, opt
 }
 
 // fakeFactory is a scripted ModelFactory that records what it was asked to
-// build, so tests can pin the provider/model plumbing.
+// build, so tests can pin the provider/model plumbing — including the
+// structured flag across the retry's two builds.
 type fakeFactory struct {
-	model    *fakeChatModel
+	model *fakeChatModel
+	// models, when non-empty, hands out one model per Build in order; the
+	// retry test uses it to script a rejecting model followed by a working
+	// one. When exhausted (or empty) it falls back to model.
+	models   []*fakeChatModel
 	buildErr error
 
-	gotProvider  store.Provider
-	gotModelName string
-	builds       int
+	gotProvider     store.Provider
+	gotModelName    string
+	builds          int
+	buildStructured []bool
 }
 
-func (f *fakeFactory) Build(ctx context.Context, provider store.Provider, modelName string) (model.BaseChatModel, error) {
+func (f *fakeFactory) Build(ctx context.Context, provider store.Provider, modelName string, structured bool) (model.BaseChatModel, error) {
 	f.builds++
+	f.buildStructured = append(f.buildStructured, structured)
 	f.gotProvider = provider
 	f.gotModelName = modelName
 	if f.buildErr != nil {
 		return nil, f.buildErr
+	}
+	if len(f.models) > 0 {
+		m := f.models[0]
+		f.models = f.models[1:]
+		if m != nil {
+			return m, nil
+		}
 	}
 	if f.model != nil {
 		return f.model, nil

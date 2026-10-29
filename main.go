@@ -49,6 +49,7 @@ func init() {
 	application.RegisterEvent[services.MCPOAuthCompletedEvent](services.EventMCPOAuthCompleted)
 	application.RegisterEvent[services.SchedulesChangedEvent](services.EventSchedulesChanged)
 	application.RegisterEvent[services.KnowledgeChangedEvent](services.EventKnowledgeChanged)
+	application.RegisterEvent[services.TurnsChangedEvent](services.EventTurnsChanged)
 }
 
 // wailsEmitter adapts services.Emitter onto the Wails event bus. The app
@@ -91,6 +92,14 @@ func main() {
 		log.Fatal(err)
 	}
 }
+
+// Measured window floor (design D5); the arithmetic lives with the window
+// options below, where the floor is enforced, and applySavedFrame clamps
+// restores to it.
+const (
+	minWindowWidth  = 1040
+	minWindowHeight = 600
+)
 
 // runDesktop builds the Wails app: bound services, the main window
 // (hide-on-close), and the system tray. It returns when the application
@@ -152,6 +161,30 @@ func runDesktop(ctx context.Context, app *cli.App, emitter *wailsEmitter, opener
 		// The webview is an app shell, not a browser: no right-click
 		// context menu (D4).
 		DefaultContextMenuDisabled: true,
+		// Window floor (design D5), measured rather than guessed. The
+		// narrowest supported layout is the nav rail collapsed (80px, w-20)
+		// + the sessions column at its minimum drag width (176px,
+		// MIN_RAIL_WIDTH in SessionRail.tsx) + the right bar at its minimum
+		// (220px, MIN_SIDEBAR_WIDTH in RightBar.tsx, plus its m-2 margins
+		// and border, 238px) + a usable composer: the pre-distill composer
+		// rail already wrapped at a ~1440px window (default columns
+		// 224+224+280 leave ~667px of conversation column) and the distill
+		// removes ~150px of resting chrome (design D4), so the distilled
+		// rail bottoms out at ~517px. The remaining shell chrome (p-2
+		// padding, gap-2, island border) adds ~26px:
+		// 80 + 177 + 238 + 517 + 26 ≈ 1038 → 1040. Below xl (1280px) the
+		// right bar overlays instead of docking, which only frees width, so
+		// the floor holds there too. Height has no measured wrap point;
+		// 600 keeps the header + thread + composer stack usable.
+		MinWidth:  minWindowWidth,
+		MinHeight: minWindowHeight,
+		// A cold launch has nothing to restore, and the platform default
+		// (Wails' 800x600) sits below the floor — MinWidth/MinHeight only
+		// constrain later resizes, they do not resize the window at birth.
+		// Start at the floor; applySavedFrame overrides this when a frame
+		// was stored.
+		Width:  minWindowWidth,
+		Height: minWindowHeight,
 		Mac: application.MacWindow{
 			InvisibleTitleBarHeight: 25,
 			// Window-level Liquid Glass (native NSGlassEffectView on macOS
@@ -243,6 +276,11 @@ func applySavedFrame(app *cli.App, wailsApp *application.App, options *applicati
 		}}
 	}
 	frame = desktop.Clamp(frame, bounds)
+	// The floor (D5) bounds restores as well: frames persisted before the
+	// floor existed must come back at the floor, never smaller — otherwise a
+	// relaunch after an upgrade could reopen an unusably narrow window.
+	frame.Width = max(frame.Width, minWindowWidth)
+	frame.Height = max(frame.Height, minWindowHeight)
 	options.Width, options.Height = frame.Width, frame.Height
 	options.X, options.Y = frame.X, frame.Y
 	// X/Y are only honored with WindowXY; the default (zero) value centers.

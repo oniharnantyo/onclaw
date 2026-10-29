@@ -5,11 +5,15 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/cloudwego/eino/schema"
+	"github.com/mmonterroca/docxgo/v2"
 	"github.com/stretchr/testify/require"
 
+	"github.com/oniharnantyo/buddies/internal/agents/tools/docgen"
 	"github.com/oniharnantyo/buddies/internal/scheduler"
 	"github.com/oniharnantyo/buddies/internal/sessions"
 	"github.com/oniharnantyo/buddies/internal/store"
@@ -33,7 +37,8 @@ var workspaceTools = []string{
 	ToolLs, ToolReadFile, ToolWriteFile, ToolEditFile, ToolGlob, ToolGrep,
 	ToolExecute, ToolDeleteFile,
 	ToolTaskCreate, ToolTaskGet, ToolTaskUpdate, ToolTaskList,
-	ToolCreateDocument,
+	ToolCreateDocument, ToolEditDocument,
+	ToolMemorySearch,
 }
 
 // fullCatalogNames is the expected catalog membership in display order.
@@ -45,7 +50,8 @@ var fullCatalogNames = []string{
 	ToolWebFetch, ToolWebSearch, ToolBrowser,
 	ToolScheduler,
 	ToolSaveDocument,
-	ToolCreateDocument,
+	ToolCreateDocument, ToolEditDocument,
+	ToolMemorySearch,
 }
 
 // TestCatalogTools pins the catalog membership in display order — the only
@@ -301,6 +307,140 @@ func TestResolveOfferedTools(t *testing.T) {
 		require.Equal(t, []string{ToolHTTPGet}, names)
 		require.False(t, surface.createDocument)
 	})
+}
+
+// TestCatalogDocumentEditingMeta pins the document-editing entries' display
+// metadata: the Tools pane cards and allowlist chips render them with no
+// bespoke wiring (add-document-editing task 5.2).
+func TestCatalogDocumentEditingMeta(t *testing.T) {
+	cases := []struct {
+		name        string
+		displayName string
+		iconKey     string
+	}{
+		{ToolEditDocument, "Edit Document", "edit"},
+	}
+	for _, tc := range cases {
+		meta, ok := CatalogToolByName(tc.name)
+		require.True(t, ok, "lookup %s", tc.name)
+		require.Equal(t, tc.displayName, meta.DisplayName)
+		require.Equal(t, tc.iconKey, meta.IconKey)
+		require.NotEmpty(t, meta.Description)
+	}
+	meta, _ := CatalogToolByName(ToolEditDocument)
+	require.Contains(t, meta.Description, "never rewritten", "the merged entry carries the PDF no-text-rewrite rule")
+}
+
+// newDocumentToolsManager builds a manager over the fake store with a
+// workspace, the attachments store, and the knowledge store wired — the full
+// document story (create_document, edit_document offered). The fake store
+// rides along for seeding.
+func newDocumentToolsManager(t *testing.T) (*manager, *fake.Store) {
+	t.Helper()
+	fs := fake.New()
+	m := newManager(fs, sessions.NewService(fs), &fakeRegistry{},
+		WithWorkspaces(workspaces.NewManager(t.TempDir())),
+		WithAttachments(t.TempDir()),
+		WithKnowledge(t.TempDir()),
+		WithBrowserDir(t.TempDir()))
+	return m, fs
+}
+
+// TestGate_DocumentEditingTools covers the document tools' gate conditions
+// (add-document-editing task 5.2): the standard three-way gate and the
+// workspace scope.
+func TestGate_DocumentEditingTools(t *testing.T) {
+	ctx := context.Background()
+
+	documentTools := []string{ToolCreateDocument, ToolEditDocument}
+
+	t.Run("rootable agent with sources is offered the full document story", func(t *testing.T) {
+		m, _ := newDocumentToolsManager(t)
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a"})
+		require.NoError(t, err)
+		names, err := surface.names(ctx)
+		require.NoError(t, err)
+		for _, name := range documentTools {
+			require.Contains(t, names, name)
+		}
+	})
+
+	t.Run("edit_document rides the workspace alone, no source stores needed", func(t *testing.T) {
+		fs := fake.New()
+		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{},
+			WithWorkspaces(workspaces.NewManager(t.TempDir())), WithBrowserDir(t.TempDir()))
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a"})
+		require.NoError(t, err)
+		names, err := surface.names(ctx)
+		require.NoError(t, err)
+		require.Contains(t, names, ToolEditDocument, "the edit tool rides the workspace alone")
+	})
+
+	t.Run("slugless agent has the document tools withheld, not failed", func(t *testing.T) {
+		m, _ := newDocumentToolsManager(t)
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "legacy", Tools: []string{ToolEditDocument, ToolHTTPGet}})
+		require.NoError(t, err)
+		names, err := surface.names(ctx)
+		require.NoError(t, err)
+		require.Equal(t, []string{ToolHTTPGet}, names)
+	})
+
+	t.Run("globally disabled edit_document is not offered even when allowed", func(t *testing.T) {
+		m, _ := newDocumentToolsManager(t)
+		require.NoError(t, m.store.ToolStates().SetEnabled(ctx, ToolEditDocument, false))
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a"})
+		require.NoError(t, err)
+		names, err := surface.names(ctx)
+		require.NoError(t, err)
+		require.NotContains(t, names, ToolEditDocument)
+	})
+
+	t.Run("edit_document outside the allowlist is not offered", func(t *testing.T) {
+		m, _ := newDocumentToolsManager(t)
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a", Tools: []string{ToolReadFile, ToolHTTPGet}})
+		require.NoError(t, err)
+		names, err := surface.names(ctx)
+		require.NoError(t, err)
+		require.NotContains(t, names, ToolEditDocument)
+	})
+}
+
+// TestCreateDocumentTemplateWiring pins the create_document production wiring
+// (add-document-editing task 5.2): the tool built through the manager's
+// factory reaches the store aggregate's template store, so template-flavor
+// DOCX generation renders through the uploaded skeleton instead of the
+// readable "templates not available" degradation.
+func TestCreateDocumentTemplateWiring(t *testing.T) {
+	m, fs := newDocumentToolsManager(t)
+	ws := t.TempDir()
+
+	seedDOCXPreset(t, fs, "Branded Letter", docgen.DOCXPreset{Flavor: docgen.PresetFlavorTemplate, HasTemplate: true})
+	_, err := fs.DocumentTemplates().Save(t.Context(), presetID(t, fs, store.DocumentPresetFormatDOCX, "Branded Letter"), "Branded.docx", buildTemplateDocx(t))
+	require.NoError(t, err)
+
+	base, err := m.buildDirectTool(ToolCreateDocument, toolScope{Workspace: ws})
+	require.NoError(t, err)
+	res := runDocgenTool(t, base, `{"markdown":"# Branded Letter\n\nHello.","filename":"letter.docx","preset":"Branded Letter"}`)
+	require.True(t, res.OK, "the wired template store must let template-flavor generation run: %s", res.Error)
+	require.FileExists(t, filepath.Join(ws, "artifacts", "letter.docx"))
+}
+
+// buildTemplateDocx authors a minimal valid DOCX skeleton with docxgo — the
+// user's uploaded template in miniature.
+func buildTemplateDocx(t *testing.T) []byte {
+	t.Helper()
+	doc := docx.NewDocument()
+	para, err := doc.AddParagraph()
+	require.NoError(t, err)
+	run, err := para.AddRun()
+	require.NoError(t, err)
+	require.NoError(t, run.SetText("{{title}}"))
+	dir := t.TempDir()
+	path := filepath.Join(dir, "skeleton.docx")
+	require.NoError(t, doc.SaveAs(path))
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return raw
 }
 
 // newTestSchedulerService wires a minimal scheduler service over the test

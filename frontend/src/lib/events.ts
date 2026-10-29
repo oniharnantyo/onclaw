@@ -8,6 +8,7 @@ import type {
   KnowledgeChangedEvent,
   MCPOAuthCompletedEvent,
   SchedulesChangedEvent,
+  TurnsChangedEvent,
 } from "../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
 
 /** Event carrying gateway lifecycle changes; payload is GatewayStateEvent. */
@@ -32,6 +33,17 @@ export const SCHEDULES_CHANGED_EVENT = "schedules:changed";
 /** The generated payload of SCHEDULES_CHANGED_EVENT, re-exported so
  * callers keep one import surface beside the constant. */
 export type { SchedulesChangedEvent };
+
+/**
+ * Event announcing one session's in-flight turn flip (add-grouped-session-
+ * rail design D2): emitted when a turn claims the session and again when it
+ * reaches a terminal outcome; payload is TurnsChangedEvent.
+ */
+export const TURNS_CHANGED_EVENT = "turns:changed";
+
+/** The generated payload of TURNS_CHANGED_EVENT, re-exported so
+ * callers keep one import surface beside the constant. */
+export type { TurnsChangedEvent };
 
 /**
  * Event announcing any knowledge corpus change (add-knowledge-corpus design

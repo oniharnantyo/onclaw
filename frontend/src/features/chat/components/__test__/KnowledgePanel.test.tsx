@@ -270,8 +270,8 @@ describe("KnowledgePanel — upload", () => {
 
     await waitFor(() => screen.getByTestId("knowledge-upload-input"));
 
-    const file = new File(["x"], "report.docx", {
-      type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    const file = new File(["x"], "archive.zip", {
+      type: "application/zip",
     });
 
     await act(async () => {
@@ -286,6 +286,38 @@ describe("KnowledgePanel — upload", () => {
       ).toContain("Unsupported file type")
     );
     expect(mockedClient.knowledge.upload).not.toHaveBeenCalled();
+
+    await unmount();
+  });
+
+  it("uploads a .docx office document past the pre-gate", async () => {
+    const { unmount } = await renderUI(
+      <KnowledgePanel agentID="a1" onOpenDoc={vi.fn()} onBack={vi.fn()} />
+    );
+
+    await waitFor(() => screen.getByTestId("knowledge-upload-input"));
+
+    const file = new File(["x"], "report.docx", {
+      type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    });
+
+    await act(async () => {
+      fireEvent.change(screen.getByTestId("knowledge-upload-input"), {
+        target: { files: [file] },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mockedClient.knowledge.upload).toHaveBeenCalledTimes(1)
+    );
+    expect(mockedClient.knowledge.upload).toHaveBeenCalledWith(
+      "report.docx",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      expect.any(String),
+      "agent",
+      "a1",
+      ""
+    );
 
     await unmount();
   });
@@ -468,21 +500,49 @@ describe("KnowledgePanel — live updates", () => {
 });
 
 describe("knowledgeRejection — the corpus pre-gate", () => {
-  it("admits text under 1 MiB and PDFs under 20 MiB", () => {
+  it("admits text under 1 MiB, PDFs and OOXML office documents under 20 MiB", () => {
     expect(knowledgeRejection("text/plain", 512)).toBeNull();
     expect(knowledgeRejection("text/markdown", 1 << 20)).toBeNull();
     expect(knowledgeRejection("application/pdf", 19 << 20)).toBeNull();
+    expect(
+      knowledgeRejection(
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        19 << 20
+      )
+    ).toBeNull();
+    expect(
+      knowledgeRejection(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        19 << 20
+      )
+    ).toBeNull();
+    expect(
+      knowledgeRejection(
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        19 << 20
+      )
+    ).toBeNull();
   });
 
-  it("rejects oversize and unsupported files with the reason", () => {
+  it("rejects oversize files with the size reason and other kinds with the named kinds", () => {
     expect(knowledgeRejection("text/plain", (1 << 20) + 1)).toBe(
       "Exceeds the 1 MB text-file limit"
     );
     expect(knowledgeRejection("application/pdf", (20 << 20) + 1)).toBe(
       "Exceeds the 20 MB PDF limit"
     );
+    expect(
+      knowledgeRejection(
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        (20 << 20) + 1
+      )
+    ).toBe("Exceeds the 20 MB OOXML limit");
     expect(knowledgeRejection("application/zip", 10)).toContain(
       "Unsupported file type"
+    );
+    // The refusal names text, PDF, and OOXML as the supported kinds.
+    expect(knowledgeRejection("video/mp4", 10)).toContain(
+      "text, PDF, and OOXML documents are accepted"
     );
   });
 });

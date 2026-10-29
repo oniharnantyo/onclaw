@@ -9,6 +9,7 @@ import {
 import { useEffect, type ReactElement } from "react";
 
 import { IconButton } from "./components";
+import { SideRow } from "./components/ui/SideRow";
 import { ThemeCycleButton } from "./components/ui/ThemeCycleButton";
 import { Toasts } from "./components/ui/Toasts";
 import AgentsView from "./features/agents";
@@ -42,14 +43,13 @@ const barMenus: MenuItem[] = [
   { key: "settings", label: "Settings", icon: Settings },
 ];
 
-// Rail row grammar, lifted from onclaw-v2's web/src/components/nav/Rail.tsx:
-// flat rows whose active state is an accent tint + weight — the ink-black
-// slab stays retired (design D1). The collapsed rail is narrower than
-// onclaw's icon rail, so rows fill the width instead of fixing at w-11.
+// Collapsed-rail and below-lg bar row grammar, lifted from onclaw-v2's
+// web/src/components/nav/Rail.tsx: flat rows whose active state is an accent
+// tint + weight — the ink-black slab stays retired (design D1). The collapsed
+// rail is narrower than onclaw's icon rail, so rows fill the width instead of
+// fixing at w-11. (The expanded rail rows use the shared SideRow kit.)
 const RAIL_ROW =
   "relative flex h-11 items-center rounded-[12px] transition-colors";
-
-const RAIL_ROW_EXPANDED = "w-[calc(100%-16px)] mx-2 px-3 gap-3 text-left";
 
 const RAIL_ROW_COLLAPSED = "w-full justify-center";
 
@@ -88,32 +88,46 @@ function NavItems({
         {menus.map((m: MenuItem) => {
           const active = menu === m.key;
 
+          // Icon-only when collapsed, so the name moves onto the button.
+          if (collapsed) {
+            return (
+              <button
+                key={m.key}
+                type="button"
+                aria-current={active ? "page" : undefined}
+                aria-label={m.label}
+                title={m.label}
+                className={cn(
+                  RAIL_ROW,
+                  RAIL_ROW_COLLAPSED,
+                  active ? RAIL_ROW_ACTIVE : RAIL_ROW_IDLE
+                )}
+                onClick={() => setMenu(m.key)}
+              >
+                <m.icon
+                  aria-hidden="true"
+                  strokeWidth={1.7}
+                  className="size-[19px] shrink-0"
+                />
+              </button>
+            );
+          }
+
           return (
-            <button
+            <SideRow
               key={m.key}
-              type="button"
-              aria-current={active ? "page" : undefined}
-              // Icon-only when collapsed, so the name moves onto the button.
-              aria-label={collapsed ? m.label : undefined}
-              title={collapsed ? m.label : undefined}
-              className={cn(
-                RAIL_ROW,
-                collapsed ? RAIL_ROW_COLLAPSED : RAIL_ROW_EXPANDED,
-                active ? RAIL_ROW_ACTIVE : RAIL_ROW_IDLE
-              )}
+              active={active}
+              label={m.label}
               onClick={() => setMenu(m.key)}
-            >
-              <m.icon
-                aria-hidden="true"
-                strokeWidth={1.7}
-                className="size-[19px] shrink-0"
-              />
-              {!collapsed && (
-                <span className="min-w-0 flex-1 truncate text-[13px]">
-                  {m.label}
-                </span>
-              )}
-            </button>
+              ariaCurrent={active}
+              icon={
+                <m.icon
+                  aria-hidden="true"
+                  strokeWidth={1.7}
+                  className="size-4 shrink-0"
+                />
+              }
+            />
           );
         })}
       </div>
@@ -168,29 +182,46 @@ function RailSettingsItem({
 
   const active = menu === "settings";
 
+  // Icon-only when collapsed, so the name moves onto the button.
+  if (collapsed) {
+    return (
+      <button
+        type="button"
+        aria-current={active ? "page" : undefined}
+        aria-label="Settings"
+        title="Settings"
+        data-testid="rail-settings"
+        className={cn(
+          RAIL_ROW,
+          RAIL_ROW_COLLAPSED,
+          active ? RAIL_ROW_ACTIVE : RAIL_ROW_IDLE
+        )}
+        onClick={() => setMenu("settings")}
+      >
+        <Settings
+          aria-hidden="true"
+          strokeWidth={1.7}
+          className="size-[19px] shrink-0"
+        />
+      </button>
+    );
+  }
+
   return (
-    <button
-      type="button"
-      aria-current={active ? "page" : undefined}
-      aria-label={collapsed ? "Settings" : undefined}
-      title={collapsed ? "Settings" : undefined}
-      data-testid="rail-settings"
-      className={cn(
-        RAIL_ROW,
-        collapsed ? RAIL_ROW_COLLAPSED : RAIL_ROW_EXPANDED,
-        active ? RAIL_ROW_ACTIVE : RAIL_ROW_IDLE
-      )}
+    <SideRow
+      active={active}
+      label="Settings"
+      testId="rail-settings"
+      ariaCurrent={active}
+      icon={
+        <Settings
+          aria-hidden="true"
+          strokeWidth={1.7}
+          className="size-4 shrink-0"
+        />
+      }
       onClick={() => setMenu("settings")}
-    >
-      <Settings
-        aria-hidden="true"
-        strokeWidth={1.7}
-        className="size-[19px] shrink-0"
-      />
-      {!collapsed && (
-        <span className="min-w-0 flex-1 truncate text-[13px]">Settings</span>
-      )}
-    </button>
+    />
   );
 }
 
@@ -259,16 +290,25 @@ function Shell(): ReactElement {
         {/* Desktop rail (design D2): collapsible to an icon-only 80px —
          * wide enough that the macOS traffic lights, which overlay its
          * top-left corner, stay inside the island. The preference rides
-         * the nav store (buddies.railCollapsed). Surface/ring grammar: a
-         * flat bg-surface panel with a hairline border. Its header clears
-         * the native invisible-titlebar band (pt-6: the first 25px of the
-         * window drag); the collapse toggle sits on the rail header's
-         * right, and when collapsed the row stays as
+         * the nav store (buddies.railCollapsed). Presentation (design D7,
+         * git-helper's sidebar): a flat column on the window canvas — no
+         * card of its own; the content island stays the carded surface. Its
+         * header clears the native invisible-titlebar band (pt-6: the first
+         * 25px of the window drag); the collapse toggle sits on the rail
+         * header's right, and when collapsed the row stays as
          * a quiet spacer — the expand control moves above the sessions
          * rail's SESSIONS label (SessionRail hosts it). */}
         <aside
+          data-testid="nav-rail"
           className={cn(
-            "glass-chrome hidden shrink-0 flex-col rounded-lg border border-line bg-surface lg:flex",
+            "hidden shrink-0 flex-col overflow-hidden lg:flex",
+            // Design D8: the w-20 ↔ w-56 collapse animates one layout
+            // property (the rail's inline width) on the shared motion
+            // grammar — 200ms, standard easing; overflow-hidden keeps the
+            // reflowing rows from smearing outside the shrinking edge.
+            // Reduced motion needs no branch: the global contract collapses
+            // every transition to opacity-only, which snaps this move.
+            "transition-[width] duration-[var(--motion-base)] ease-[var(--ease-standard)]",
             railCollapsed ? "w-20" : "w-56"
           )}
         >
@@ -315,7 +355,21 @@ function Shell(): ReactElement {
         >
           {menu === "chat" ? (
             <div className="flex h-full min-w-0">
-              <SessionRail />
+              {/* Session column reveal (ui-conventions, structural chrome):
+                  the column fades in on mount through the existing od-fade
+                  utility — the shared grammar (--motion-base +
+                  --ease-standard); opacity only, so it never adds a
+                  transition on inline-size that could fight the rail's own
+                  1:1 drag resize, and it gates nothing (pointer events stay
+                  live for the fade). Reduced motion needs no branch: the
+                  global contract collapses the animation to a ≤150ms
+                  opacity fade. */}
+              <div
+                className="od-fade flex shrink-0"
+                data-testid="session-column-reveal"
+              >
+                <SessionRail />
+              </div>
               <ChatView />
             </div>
           ) : menu === "agents" ? (

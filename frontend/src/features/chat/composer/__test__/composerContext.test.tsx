@@ -4,10 +4,14 @@
  * first turn, the ring reads the reported used value against the limit (the
  * model override's window when one is set), and the popover shows the total,
  * the stacked bar, the legend with its estimate captions, the headroom and
- * the last turn's tokens. The opening animation is off under reduced motion.
+ * the last turn's tokens. The opening animation is off under reduced motion,
+ * and the ring's percentage label rides the lifted tier text variants
+ * (design D6).
  */
 import { act } from "react";
 import { fireEvent, screen, waitFor } from "@testing-library/dom";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 // The client mock factory is imported FIRST on purpose: the hoisted
@@ -99,6 +103,31 @@ describe("the context meter (task 5.4)", () => {
 
     expect(ring.getAttribute("title")).toBe("50k / 8k tokens");
     expect(screen.getByTestId("context-ring-pct").textContent).toBe("100%");
+  });
+
+  it("the percentage label rides the lifted tier text variants (design D6)", async () => {
+    useChatStore.setState({ usage: usage() });
+    await renderComposer();
+
+    // Below 65% the label is the lifted accent.
+    expect(screen.getByTestId("context-ring-pct").className).toContain(
+      "text-accenttext"
+    );
+
+    // 65–85% warns, above 85% errors — the strokes never move.
+    useChatStore.setState({ usage: usage({ used: 150000 }) });
+    await waitFor(() =>
+      expect(screen.getByTestId("context-ring-pct").className).toContain(
+        "text-warntext"
+      )
+    );
+
+    useChatStore.setState({ usage: usage({ used: 190000 }) });
+    await waitFor(() =>
+      expect(screen.getByTestId("context-ring-pct").className).toContain(
+        "text-dangertext"
+      )
+    );
   });
 
   it("opens the popover with the total, the bar, the legend and the headroom", async () => {
@@ -245,5 +274,29 @@ describe("the context meter (task 5.4)", () => {
         });
       }
     }
+  });
+});
+
+describe("the warn text tier's token contract", () => {
+  // jsdom never compiles Tailwind, so the class-string assertions above can
+  // only pin that the tier emits `text-warntext` — a source-level guard
+  // reads the token files directly (the theme.test.ts drift-guard pattern):
+  // the mapping that class rides must resolve to a real --warn-text defined
+  // in BOTH themes (the ring's 65–85% label, the ExecuteTool badge).
+  const themeCss = readFileSync(
+    resolve(import.meta.dirname, "../../../../styles/theme.css"),
+    "utf8"
+  );
+
+  const tokensCss = readFileSync(
+    resolve(import.meta.dirname, "../../../../styles/tokens.css"),
+    "utf8"
+  );
+
+  it("maps text-warntext onto a warn text token defined in both themes", () => {
+    expect(themeCss).toContain("--color-warntext: var(--warn-text);");
+
+    // One definition in :root (light), one in the dark override.
+    expect((tokensCss.match(/--warn-text:/g) ?? []).length).toBe(2);
   });
 });

@@ -22,27 +22,50 @@ func newTestStore(t *testing.T) *Store {
 }
 
 // TestValidateIncoming_RejectsUnsupportedKinds pins the D5 gate's kind
-// verdict: everything but text and PDF is rejected with the reason naming the
-// supported kinds.
+// verdict: everything but text, PDF, and OOXML office documents is rejected
+// with the reason naming the supported kinds (add-document-editing task 5.4:
+// the reason names text, PDF, and OOXML documents).
 func TestValidateIncoming_RejectsUnsupportedKinds(t *testing.T) {
 	cases := []struct {
 		name     string
 		filename string
 		mime     string
 	}{
-		{"word processor", "report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
-		{"spreadsheet", "sheet.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
-		{"presentation", "deck.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"},
 		{"video", "clip.mp4", "video/mp4"},
 		{"image", "shot.png", "image/png"},
 		{"archive", "bundle.zip", "application/zip"},
 		{"opaque binary", "blob.bin", "application/octet-stream"},
+		{"legacy word processor", "report.doc", "application/msword"},
+		{"legacy spreadsheet", "sheet.xls", "application/vnd.ms-excel"},
+		{"legacy presentation", "deck.ppt", "application/vnd.ms-powerpoint"},
 	}
 	for _, tc := range cases {
 		err := ValidateIncoming(tc.filename, tc.mime, 10)
 		require.ErrorIs(t, err, ErrRejected, "%s must be rejected", tc.name)
-		require.ErrorContains(t, err, "only plain text (text/*, up to 1 MB) and PDF (up to 20 MB) are supported",
+		require.ErrorContains(t, err,
+			"only plain text (text/*, up to 1 MB), PDF (up to 20 MB), and OOXML office documents (.docx, .xlsx, .pptx, up to 20 MB) are supported",
 			"the rejection names the supported kinds")
+	}
+}
+
+// TestValidateIncoming_AcceptsOOXML covers the widened gate (add-document-editing
+// task 5.4): the three OOXML kinds are accepted, both by declared MIME and by
+// the filename extension when the declared MIME is empty.
+func TestValidateIncoming_AcceptsOOXML(t *testing.T) {
+	cases := []struct {
+		name     string
+		filename string
+		mime     string
+	}{
+		{"declared docx", "report.docx", DocxMime},
+		{"declared xlsx", "sheet.xlsx", XlsxMime},
+		{"declared pptx", "deck.pptx", PptxMime},
+		{"extension-resolved docx", "report.docx", ""},
+		{"extension-resolved xlsx", "sheet.xlsx", ""},
+		{"extension-resolved pptx", "deck.pptx", ""},
+	}
+	for _, tc := range cases {
+		require.NoError(t, ValidateIncoming(tc.filename, tc.mime, 10), "%s must be accepted", tc.name)
 	}
 }
 
@@ -55,24 +78,31 @@ func TestValidateIncoming_RejectsOversize(t *testing.T) {
 	err = ValidateIncoming("big.pdf", PDFMime, MaxPDFBytes+1)
 	require.ErrorIs(t, err, ErrRejected)
 	require.ErrorContains(t, err, "limited to 20 MB")
+
+	err = ValidateIncoming("big.xlsx", XlsxMime, MaxOOXMLBytes+1)
+	require.ErrorIs(t, err, ErrRejected)
+	require.ErrorContains(t, err, "limited to 20 MB")
 }
 
 // TestValidateIncoming_BoundarySizesAccepted pins the caps as inclusive.
 func TestValidateIncoming_BoundarySizesAccepted(t *testing.T) {
 	require.NoError(t, ValidateIncoming("notes.txt", "text/plain", MaxTextBytes))
 	require.NoError(t, ValidateIncoming("big.pdf", PDFMime, MaxPDFBytes))
+	require.NoError(t, ValidateIncoming("big.docx", DocxMime, MaxOOXMLBytes))
 }
 
 // TestValidateIncoming_EmptyMimeFallsBackByExtension covers the extension
-// fallback: PDFs and text extensions resolve, known binary extensions are
-// still rejected.
+// fallback: PDF, text, and OOXML extensions resolve; the legacy
+// word-processing extensions resolve to their real kind and are still
+// rejected.
 func TestValidateIncoming_EmptyMimeFallsBackByExtension(t *testing.T) {
 	require.NoError(t, ValidateIncoming("paper.pdf", "", 10), ".pdf resolves to a PDF")
 	for _, ext := range []string{".txt", ".md", ".markdown", ".json", ".csv", ".yaml"} {
 		require.NoError(t, ValidateIncoming("notes"+ext, "", 10), "%s resolves to text", ext)
 	}
-	err := ValidateIncoming("report.docx", "", 10)
-	require.ErrorIs(t, err, ErrRejected, "a known binary extension is rejected despite the empty MIME")
+	require.NoError(t, ValidateIncoming("report.docx", "", 10), ".docx resolves to an OOXML document")
+	err := ValidateIncoming("report.doc", "", 10)
+	require.ErrorIs(t, err, ErrRejected, "a legacy binary extension is rejected despite the empty MIME")
 	require.ErrorContains(t, err, "application/msword")
 }
 
@@ -84,6 +114,7 @@ func TestSave_RejectionLeavesNothingBehind(t *testing.T) {
 
 	_, err := s.Save(ctx, SaveInput{Filename: "clip.mp4", MIME: "video/mp4", Scope: ScopeGlobal, Data: []byte("x")})
 	require.ErrorIs(t, err, ErrRejected)
+	require.ErrorContains(t, err, "OOXML office documents", "the rejection names the supported kinds")
 
 	docs, err := s.List(ctx)
 	require.NoError(t, err)
@@ -91,6 +122,31 @@ func TestSave_RejectionLeavesNothingBehind(t *testing.T) {
 
 	_, statErr := os.Stat(filepath.Join(s.Roots().Global, "clip.mp4"))
 	require.True(t, os.IsNotExist(statErr), "no file may be written")
+}
+
+// TestSave_AcceptsOOXML covers the widened gate through the save path
+// (add-document-editing task 5.4, spec knowledge "Office document is accepted
+// at upload"): a .docx is stored raw, cataloged with its kind, and readable.
+func TestSave_AcceptsOOXML(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	data := []byte("PK\x03\x04 docx-bytes")
+	doc, err := s.Save(ctx, SaveInput{
+		Filename: "report.docx", MIME: DocxMime, Data: data,
+		Scope: ScopeGlobal, Source: SourceUser, Description: "quarterly report",
+	})
+	require.NoError(t, err)
+	require.Equal(t, DocxMime, doc.MIME, "the declared OOXML kind is stored")
+	require.Equal(t, int64(len(data)), doc.Size)
+
+	stored, err := os.ReadFile(filepath.Join(s.Roots().Global, "report.docx"))
+	require.NoError(t, err)
+	require.Equal(t, data, stored, "raw bytes are stored unmodified")
+
+	content, err := s.Content(ctx, doc.ID)
+	require.NoError(t, err)
+	require.Equal(t, data, content, "the document is readable like any other")
 }
 
 // TestSave_WritesFileAndRow pins the happy path: bytes at the scope path, the

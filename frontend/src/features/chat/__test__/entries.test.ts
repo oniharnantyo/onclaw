@@ -7,6 +7,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  ArtifactChange,
   Kind,
   ToolStatus,
   type Event as SessionEvent,
@@ -411,5 +412,120 @@ describe("transcript reducer", () => {
 
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({ text: "ab", streaming: true });
+  });
+});
+
+describe("artifact stamping (add-turn-artifacts tasks 6.1, design D4)", () => {
+  it("a completed turn carries the terminal event's artifacts on its assistant entry", () => {
+    const artifacts = [
+      {
+        path: "artifacts/report.md",
+        size: 1200,
+        change: ArtifactChange.ArtifactCreated,
+      },
+    ];
+
+    const entries = fold(
+      ev(Kind.KindUserMessage, { text: "go", turn_id: "t1", id: "e1" }),
+      ev(Kind.KindAssistantMessage, {
+        text: "done",
+        turn_id: "t1",
+        id: "e2",
+      }),
+      ev(Kind.KindTurnCompleted, {
+        turn_id: "t1",
+        id: "e3",
+        artifacts,
+        artifacts_truncated: true,
+      })
+    );
+
+    expect(entries[1]).toMatchObject({
+      kind: "assistant",
+      artifacts,
+      artifactsTruncated: true,
+    });
+  });
+
+  it("an empty or absent artifacts list stamps nothing", () => {
+    const empty = fold(
+      ev(Kind.KindUserMessage, { text: "go", turn_id: "t1", id: "e1" }),
+      ev(Kind.KindAssistantMessage, { text: "done", turn_id: "t1", id: "e2" }),
+      ev(Kind.KindTurnCompleted, {
+        turn_id: "t1",
+        id: "e3",
+        artifacts: [],
+        artifacts_truncated: false,
+      })
+    );
+
+    expect(empty[1]).not.toHaveProperty("artifacts");
+    expect(empty[1]).not.toHaveProperty("artifactsTruncated");
+
+    const absent = fold(
+      ev(Kind.KindUserMessage, { text: "go", turn_id: "t1", id: "e1" }),
+      ev(Kind.KindAssistantMessage, { text: "done", turn_id: "t1", id: "e2" }),
+      ev(Kind.KindTurnCompleted, { turn_id: "t1", id: "e3" })
+    );
+
+    expect(absent[1]).not.toHaveProperty("artifacts");
+    expect(absent[1]).not.toHaveProperty("artifactsTruncated");
+  });
+
+  it("a regenerated variant carries its own list separately from the original", () => {
+    const original = [
+      {
+        path: "artifacts/first.md",
+        size: 10,
+        change: ArtifactChange.ArtifactCreated,
+      },
+    ];
+
+    const variant = [
+      {
+        path: "artifacts/second.md",
+        size: 20,
+        change: ArtifactChange.ArtifactModified,
+      },
+    ];
+
+    const entries = fold(
+      ev(Kind.KindUserMessage, { text: "ask", turn_id: "t1", id: "e1" }),
+      ev(Kind.KindAssistantMessage, {
+        text: "original",
+        turn_id: "t1",
+        id: "e2",
+      }),
+      ev(Kind.KindTurnCompleted, {
+        turn_id: "t1",
+        id: "e3",
+        artifacts: original,
+      }),
+      ev(Kind.KindUserMessage, { turn_id: "t2", variant_of: "t1", id: "e4" }),
+      ev(Kind.KindAssistantMessage, {
+        text: "variant",
+        turn_id: "t2",
+        variant_of: "t1",
+        id: "e5",
+      }),
+      ev(Kind.KindTurnCompleted, {
+        turn_id: "t2",
+        variant_of: "t1",
+        id: "e6",
+        artifacts: variant,
+      })
+    );
+
+    const originalEntry = entries.find(
+      (en: Entry): boolean => en.kind === "assistant" && en.turnID === "t1"
+    );
+
+    const variantEntry = entries.find(
+      (en: Entry): boolean => en.kind === "assistant" && en.turnID === "t2"
+    );
+
+    expect(originalEntry).toMatchObject({ artifacts: original });
+    expect(variantEntry).toMatchObject({ artifacts: variant });
+    expect(originalEntry).not.toBe(variantEntry);
   });
 });

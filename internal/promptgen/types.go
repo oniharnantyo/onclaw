@@ -45,7 +45,12 @@ type Params struct {
 
 // ModelFactory builds the eino chat model one generation runs on.
 type ModelFactory interface {
-	Build(ctx context.Context, provider store.Provider, modelName string) (model.BaseChatModel, error)
+	// Build returns the chat model for one generation on the provider's
+	// configured endpoint. structured requests the provider's native
+	// structured-output constraint (a JSON-schema response format or the
+	// adapter's equivalent); false leaves the model free-form, with the JSON
+	// contract carried by the system prompt alone.
+	Build(ctx context.Context, provider store.Provider, modelName string, structured bool) (model.BaseChatModel, error)
 }
 
 // DocStore persists documents for an agent slug. Implemented over the

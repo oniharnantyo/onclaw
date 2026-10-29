@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
-import type { AvatarFullConfig } from "react-nice-avatar";
+import type { AvatarFullConfig } from "@oniharnantyo/react-nice-avatar";
+
+import type { LiveAvatarProps } from "./ui/Avatar";
 
 export interface ModalShellProps {
   /** Heading of the dialog box. */
@@ -104,6 +106,8 @@ export interface AgentAvatarProps {
    */
   avatar?: AvatarFullConfig | null;
   size?: number;
+  /** Live-animation pass-through to the kit Avatar (design D2). */
+  live?: LiveAvatarProps;
 }
 
 export interface SettingsListProps {

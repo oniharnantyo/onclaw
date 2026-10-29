@@ -127,7 +127,15 @@ func (s *SettingsService) startMCPOAuth(ctx context.Context, stored *store.MCPSe
 			RedirectURI:           auth.RedirectURI,
 			Scopes:                auth.Scopes,
 			AuthServerMetadataURL: auth.AuthServerMetadataURL,
-			Tokens:                agents.NewMCPTokenStore(stored.ID, s.store.MCPOAuthTokens()),
+			// A stored client id is never re-registered (design D3's
+			// oauth_confidential for console-minted clients; design D4's
+			// persisted registration for retried DCR flows) — not even when
+			// the callback port rebinds.
+			PreRegistered: auth.ClientID != "",
+			// Catalog-declared extras ride the row (design D3): Google's
+			// access_type=offline&prompt=consent.
+			ExtraAuthParams: auth.ExtraAuthParams,
+			Tokens:          agents.NewMCPTokenStore(stored.ID, s.store.MCPOAuthTokens()),
 		},
 		Discovery:  *d,
 		ClientName: "buddies",
@@ -232,6 +240,7 @@ func (s *SettingsService) DisconnectMCPServer(ctx context.Context, id string) (s
 	if err := s.store.MCPServers().Update(ctx, stored); err != nil {
 		return store.MCPServer{}, fmt.Errorf("disconnect mcp server: %w", err)
 	}
+	redactIntegrationCredential(stored)
 	return *stored, nil
 }
 

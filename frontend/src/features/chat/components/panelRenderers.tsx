@@ -4,7 +4,9 @@
  * Sources: the agent's three prompt documents (via the existing
  * `getPromptDocuments` binding — design D8: persona docs keep using
  * GetPromptDocuments), one workspace file through the jailed
- * `workspaceFile` reader (with a Preview|Raw markdown toggle, design D6),
+ * `workspaceFile` reader (with a Preview|Raw markdown toggle, design D6) —
+ * a `.pdf` name instead rides the jailed binary `workspaceFileBinary` read
+ * into the knowledge tab's document embed (add-turn-artifacts design D8) —
  * one workspace directory listing through `listWorkspace`, a delegated
  * task's trajectory (designs D3–D5), read through the same jailed reader at
  * the task's recorded transcript path, and one knowledge document
@@ -27,6 +29,7 @@ import {
 import { ThinkingIndicator } from "@/components/assistant-ui/elements/thinking-indicator";
 import type { PromptDocuments } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
 import type { WorkspaceEntry } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
+import type { WorkspaceFileBinaryContent } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
 import { ToolStatus } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/sessions/models";
 import { cn } from "../../../lib/cn";
 import { client } from "../../../lib/client";
@@ -230,18 +233,159 @@ interface FilePreviewState {
   error: string | null;
 }
 
+/** A PDF preview's fetch state (add-turn-artifacts design D8): the raw
+ * base64 bytes ride the same jail-refusal and error handling as the text
+ * read. */
+interface PdfPreviewState {
+  loading: boolean;
+  base64: string | null;
+  refused: boolean;
+  error: string | null;
+}
+
+/** The knowledge tab's themed PDF embed (add-knowledge-corpus), shared with
+ * the workspace-file tab's PDF branch (add-turn-artifacts design D8): the
+ * base64 bytes ride a data URL on the already-themed `<object>` element —
+ * no new colours. `testid` distinguishes the two callers in tests. */
+function PdfEmbed({
+  base64,
+  filename,
+  testid,
+}: {
+  base64: string;
+  filename: string;
+  testid: string;
+}): ReactElement {
+  return (
+    <object
+      className="h-[60vh] w-full rounded-md border border-line"
+      type="application/pdf"
+      aria-label={filename}
+      data={`data:application/pdf;base64,${base64}`}
+      data-testid={testid}
+    >
+      <p className="text-sm text-muted">
+        This view cannot display the PDF inline.
+      </p>
+    </object>
+  );
+}
+
 /** True when a file name previews as markdown (design D6): `.md` or
  * `.markdown`, case-insensitive. */
 function isMarkdownName(name: string): boolean {
   return /\.(md|markdown)$/i.test(name);
 }
 
+/** True when a file name previews as a PDF document (add-turn-artifacts
+ * design D8): `.pdf`, case-insensitive — the extension decides the read,
+ * before any bytes are fetched. */
+function isPdfName(name: string): boolean {
+  return /\.pdf$/i.test(name);
+}
+
+/** Chooses a workspace-file tab's preview by extension (add-turn-artifacts
+ * design D8, spec "Workspace PDF opens as a document"): a `.pdf` name
+ * previews as the knowledge tab's document embed through the jailed binary
+ * reader; every other file keeps the existing text path, untouched. */
+function WorkspaceFilePreview({ tab }: { tab: PanelTab }): ReactElement | null {
+  if (tab.kind !== "workspace-file") return null;
+
+  if (isPdfName(tab.data.name)) return <WorkspacePdfPreview tab={tab} />;
+
+  return <WorkspaceFileTextPreview tab={tab} />;
+}
+
+/** One workspace PDF (add-turn-artifacts design D8): its bytes fetched
+ * base64 through the jailed `workspaceFileBinary` reader when the tab shows
+ * and embedded as the knowledge tab's document renderer. Loading, refused,
+ * and error states mirror the text preview's. Fetches run only while a tab
+ * shows. */
+function WorkspacePdfPreview({ tab }: { tab: PanelTab }): ReactElement | null {
+  const [state, setState] = useState<PdfPreviewState>({
+    loading: true,
+    base64: null,
+    refused: false,
+    error: null,
+  });
+
+  useEffect(() => {
+    if (tab.kind !== "workspace-file") return;
+
+    // The panel keys each renderer by tab id, so a mount is always a fresh
+    // fetch: state only ever moves in the callbacks below, never inline.
+    let mounted = true;
+    client.chat
+      .workspaceFileBinary(tab.data.agentID, tab.data.relPath)
+      .then((content: WorkspaceFileBinaryContent): void => {
+        if (mounted)
+          setState({
+            loading: false,
+            base64: content.data,
+            refused: false,
+            error: null,
+          });
+      })
+      .catch((err: Error): void => {
+        if (!mounted) return;
+
+        const message =
+          err instanceof Error
+            ? err.message
+            : "Failed to read the workspace file";
+
+        setState({
+          loading: false,
+          base64: null,
+          refused: isRefusal(message),
+          error: message,
+        });
+      });
+
+    return (): void => {
+      mounted = false;
+    };
+  }, [tab]);
+
+  if (tab.kind !== "workspace-file") return null;
+
+  return (
+    <div data-testid="panel-workspace-file">
+      {state.loading ? (
+        <p className="text-sm text-muted" data-testid="panel-preview-loading">
+          Loading…
+        </p>
+      ) : state.refused ? (
+        <RefusedNotice relPath={tab.data.relPath} />
+      ) : state.error !== null ? (
+        <p
+          className="text-sm text-dangertext"
+          data-testid="panel-preview-error"
+        >
+          {state.error}
+        </p>
+      ) : (
+        <PdfEmbed
+          base64={state.base64 ?? ""}
+          filename={tab.data.name}
+          testid="panel-workspace-pdf"
+        />
+      )}
+    </div>
+  );
+}
+
 /** One workspace file (or subagent trajectory file) as read-only mono text,
  * fetched through the jailed `workspaceFile` reader when the tab shows.
  * Markdown files (design D6) grow a Preview|Raw segmented toggle above the
  * body — Raw stays the default; the toggle state is local and resets per
- * mount. */
-function WorkspaceFilePreview({ tab }: { tab: PanelTab }): ReactElement | null {
+ * mount. PDF names never reach this component (add-turn-artifacts design
+ * D8). */
+function WorkspaceFileTextPreview({
+  tab,
+}: {
+  tab: PanelTab;
+}): ReactElement | null {
   const [state, setState] = useState<FilePreviewState>({
     loading: true,
     content: null,
@@ -835,7 +979,8 @@ function TrajectoryPreview({ tab }: { tab: PanelTab }): ReactElement | null {
 }
 
 /** True when a preview names a PDF document (add-knowledge-corpus): the
- * corpus gate admits only text and PDF, so the mime decides the renderer. */
+ * corpus gate admits text, PDF, and OOXML documents, so the mime decides
+ * the renderer. */
 function isPdfMime(mime: string): boolean {
   return mime === "application/pdf";
 }
@@ -941,17 +1086,11 @@ function KnowledgeDocPreview({ tab }: { tab: PanelTab }): ReactElement | null {
           {state.error}
         </p>
       ) : state.pdfBase64 !== null ? (
-        <object
-          className="h-[60vh] w-full rounded-md border border-line"
-          type="application/pdf"
-          aria-label={tab.data.filename}
-          data={`data:application/pdf;base64,${state.pdfBase64}`}
-          data-testid="panel-knowledge-pdf"
-        >
-          <p className="text-sm text-muted">
-            This view cannot display the PDF inline.
-          </p>
-        </object>
+        <PdfEmbed
+          base64={state.pdfBase64}
+          filename={tab.data.filename}
+          testid="panel-knowledge-pdf"
+        />
       ) : state.text !== null && state.text !== "" ? (
         <div>
           {isMarkdownName(tab.data.filename) ? (

@@ -5,10 +5,16 @@ import (
 	"time"
 )
 
-// DocumentPresetFormatPDF is the document format presets apply to; only PDF
-// exists in v1 (add-create-document design D4) — the format column's
-// default. The column exists so later format engines need no reshaping.
-const DocumentPresetFormatPDF = "pdf"
+// The DocumentPresetFormat* vocabulary is the document format a preset
+// applies to. PDF is the v1 format (add-create-document design D4) and the
+// format column's default; DOCX and PPTX join it with the OOXML generation
+// engines (add-document-editing design D6). The column existed from day one,
+// so the new formats are rows, not schema changes.
+const (
+	DocumentPresetFormatPDF  = "pdf"
+	DocumentPresetFormatDOCX = "docx"
+	DocumentPresetFormatPPTX = "pptx"
+)
 
 // DocumentPreset is one saved presentation configuration for the
 // create_document tool (add-create-document design D4/D5). Config is the
@@ -20,8 +26,7 @@ type DocumentPreset struct {
 	ID   string
 	Name string
 	// Format is the document format the preset applies to (the
-	// DocumentPresetFormat* vocabulary — only DocumentPresetFormatPDF in
-	// v1).
+	// DocumentPresetFormat* vocabulary).
 	Format string
 	// Config is the preset's presentation configuration as opaque JSON,
 	// persisted verbatim (the Hook.Config pattern).

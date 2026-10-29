@@ -74,6 +74,7 @@ type fakeAgentManager struct {
 	resolvedIDs     []string
 	regenerated     []string
 	busy            map[string]bool
+	running         []string
 }
 
 func newFakeAgentManager() *fakeAgentManager {
@@ -124,6 +125,12 @@ func (m *fakeAgentManager) TurnState(_ context.Context, sessionID string) (bool,
 		return true, "turn-" + sessionID
 	}
 	return false, ""
+}
+
+func (m *fakeAgentManager) RunningSessions(_ context.Context) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.running...)
 }
 
 func (m *fakeAgentManager) Subscribe(_ context.Context, sessionID string) (agents.Subscription, error) {
@@ -210,6 +217,18 @@ func (s *fakeSessionsService) Session(ctx context.Context, id string) (sessions.
 
 func (s *fakeSessionsService) SessionsByAgent(ctx context.Context, agentID string) ([]sessions.Session, error) {
 	return s.store.Sessions().ListByAgent(ctx, agentID)
+}
+
+func (s *fakeSessionsService) AllSessions(ctx context.Context) ([]sessions.Session, error) {
+	rows, err := s.store.Sessions().List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]sessions.Session, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, row)
+	}
+	return out, nil
 }
 
 func (s *fakeSessionsService) SetTitle(ctx context.Context, id, title string) error {
@@ -475,4 +494,29 @@ func TestChatService_TurnState_RunningAndIdle(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, idleRes.Busy)
 	require.Empty(t, idleRes.TurnID)
+}
+
+func TestChatService_AllSessions_ListsEveryAgent(t *testing.T) {
+	st := fake.New()
+	first := &store.Session{AgentID: "agent1"}
+	require.NoError(t, st.Sessions().Create(context.Background(), first))
+	second := &store.Session{AgentID: "agent2"}
+	require.NoError(t, st.Sessions().Create(context.Background(), second))
+
+	svc := newTestChatService(t, newFakeAgentManager(), &fakeSessionsService{store: st}, &recordingEmitter{})
+
+	list, err := svc.AllSessions(context.Background())
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+	require.NotNil(t, list)
+}
+
+func TestChatService_RunningSessions_ReturnsBusySet(t *testing.T) {
+	turns := newFakeAgentManager()
+	turns.running = []string{"s1", "s2"}
+	svc := newTestChatService(t, turns, &fakeSessionsService{store: fake.New()}, &recordingEmitter{})
+
+	running, err := svc.RunningSessions(context.Background())
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"s1", "s2"}, running)
 }

@@ -234,3 +234,24 @@ func TestManager_SkillsDirAndTasksDir(t *testing.T) {
 	_, err = m.TasksDir("")
 	require.Error(t, err)
 }
+
+// TestManager_ArtifactsDir pins the deliverables home (add-turn-artifacts
+// design D1): ArtifactsDir mkdir -p's artifacts/ inside the workspace, is
+// idempotent, and refuses an invalid slug like the other subdirectories.
+func TestManager_ArtifactsDir(t *testing.T) {
+	m := NewManager(t.TempDir())
+
+	artifacts, err := m.ArtifactsDir("scout")
+	require.NoError(t, err)
+	require.DirExists(t, artifacts, "ArtifactsDir must create the directory on demand")
+	require.Equal(t, filepath.Join(m.Root(), "scout", DirArtifacts), artifacts)
+
+	again, err := m.ArtifactsDir("scout")
+	require.NoError(t, err)
+	require.Equal(t, artifacts, again)
+
+	_, err = m.ArtifactsDir("../escape")
+	require.Error(t, err)
+	_, err = m.ArtifactsDir("")
+	require.Error(t, err)
+}

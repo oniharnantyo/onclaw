@@ -82,12 +82,30 @@ const ToolScheduler = "scheduler"
 // built with a knowledge store (WithKnowledge).
 const ToolSaveDocument = "save_document"
 
-// ToolCreateDocument renders markdown into a styled PDF document written at
-// the agent's workspace root (spec add-create-document). Presentation comes
-// from the user's named presets; the tool input carries only content, file
-// name, and an optional preset name (design D2). Workspace-scoped: an agent
-// without a rootable workspace has it withheld.
+// ToolCreateDocument renders markdown into a styled PDF document written
+// under the agent's workspace artifacts/ directory (spec add-create-document;
+// add-turn-artifacts design D6). Presentation comes from the user's named
+// presets; the tool input carries only content, file name, and an optional
+// preset name (design D2). Workspace-scoped: an agent without a rootable
+// workspace has it withheld.
 const ToolCreateDocument = "create_document"
+
+// ToolEditDocument edits workspace documents: targeted, element-level
+// operations revise a DOCX, XLSX, or PPTX file in place, preserving every
+// other aspect of the original (add-document-editing design D5), and PDF
+// files take structural operations (merge, extract, rotate, stamp, form
+// fill); PDF text is never rewritten — the tool redirects to create_document
+// (design D7). Workspace-scoped: an agent without a rootable workspace has
+// it withheld.
+const ToolEditDocument = "edit_document"
+
+// ToolMemorySearch searches the session agent's workspace memory lexically and
+// records a recall trace per call (add-agent-memory design D6 — the traces are
+// the consolidation sweep's signal source). Workspace-scoped: an agent without
+// a rootable workspace has it withheld. Offered to child turns too: a child
+// may search memory even though it composes no memory block, and its traces
+// carry the subagent origin (design D12).
+const ToolMemorySearch = "memory_search"
 
 // toolKind discriminates how a catalog entry reaches the model.
 type toolKind int
@@ -138,7 +156,9 @@ var catalogEntries = []catalogEntry{
 	{meta: ToolMeta{Name: ToolBrowser, DisplayName: "Browser", IconKey: "globe", Description: "Drive a real Chromium browser with persistent named profiles: navigate, snapshot, click, type, screenshot, manage cookies. Logins persist across sessions."}},
 	{meta: ToolMeta{Name: ToolScheduler, DisplayName: "Scheduler", IconKey: "calendar-clock", Description: "Create, list, update and delete cron schedules that run an agent on a prompt unattended; times are local."}},
 	{meta: ToolMeta{Name: ToolSaveDocument, DisplayName: "Save document", IconKey: "file-plus", Description: "Save a chat attachment or inline text as a durable knowledge document in this agent's scope; a descriptive filename and description help future discovery."}},
-	{meta: ToolMeta{Name: ToolCreateDocument, DisplayName: "Create Document", IconKey: "file-text", Description: "Render markdown into a styled PDF document in your workspace; presentation comes from the user's presets, referenced by name."}, workspaceScoped: true},
+	{meta: ToolMeta{Name: ToolCreateDocument, DisplayName: "Create Document", IconKey: "file-text", Description: "Render markdown into a styled PDF document under artifacts/ in your workspace; presentation comes from the user's presets, referenced by name."}, workspaceScoped: true},
+	{meta: ToolMeta{Name: ToolEditDocument, DisplayName: "Edit Document", IconKey: "edit", Description: "Edit documents in your workspace: in-place targeted revisions for DOCX, XLSX, and PPTX (replace paragraphs, set cells, rewrite slide text, fill placeholders) and structural operations for PDFs (merge, extract, rotate, stamp, fill form fields). PDF text is never rewritten."}, workspaceScoped: true},
+	{meta: ToolMeta{Name: ToolMemorySearch, DisplayName: "Memory search", IconKey: "brain", Description: "Search this agent's long-term memory notes (preferences, decisions, earlier work) and get the matching notes back; every search is recorded as a recall trace."}, workspaceScoped: true},
 }
 
 // ToolMeta is the plain-Go catalog record crossing the package boundary for
@@ -227,12 +247,26 @@ func (m *manager) buildDirectTool(name string, scope toolScope) (tool.BaseTool, 
 		// (add-knowledge-corpus design D4): chat attachments copy in, inline
 		// text saves directly.
 		return newSaveDocumentTool(m.knowledge, m.attachments, scope.AgentID, scope.Slug)
+	case ToolEditDocument:
+		// Document edits (add-document-editing designs D5 and D7): office
+		// revisions in place through the documents engines, PDF structural
+		// operations through the pdfops engine — dispatched on the file
+		// name's extension, all paths resolved inside the workspace jail.
+		return newEditDocumentTool(scope.Workspace)
 	case ToolCreateDocument:
 		// The manager-held converter (add-create-document design D3): created
 		// with the manager, Chrome-free until the first conversion, closed
 		// with it. Presets resolve through the store; the default rides the
-		// tool_settings row.
-		return newCreateDocumentTool(m.docgen, m.store.DocumentPresets(), m.store.ToolSettings(), scope.Workspace)
+		// tool_settings row, and the template store — the uploaded skeletons
+		// of template-document presets (add-document-editing design D6) —
+		// comes off the store aggregate.
+		return newCreateDocumentTool(m.docgen, m.store.DocumentPresets(), m.store.ToolSettings(), scope.Workspace,
+			WithDocumentTemplates(m.store.DocumentTemplates()))
+	case ToolMemorySearch:
+		// The lexical recall path over the agent's workspace memory
+		// (add-agent-memory design D5/D6): ranked hits, no model call, and a
+		// recall trace per call carrying the calling turn's origin.
+		return newMemorySearchTool(scope.Workspace, scope.AgentID, m.store.Memory(), m.memoryTurnContext)
 	default:
 		return nil, fmt.Errorf("tool %s is not directly constructible", name)
 	}

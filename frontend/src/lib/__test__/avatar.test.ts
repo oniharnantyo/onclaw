@@ -1,4 +1,4 @@
-import { genConfig } from "react-nice-avatar";
+import { genConfig } from "@oniharnantyo/react-nice-avatar";
 import { describe, expect, it } from "vite-plus/test";
 
 import { avatarProps } from "../avatar";

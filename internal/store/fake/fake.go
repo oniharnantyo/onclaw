@@ -40,6 +40,14 @@ type Store struct {
 	documentPresets map[string]store.DocumentPreset // key: preset id
 	providerModels  map[int64]store.ProviderModel
 	nextModelID     int64
+	memoryTraces    map[string]store.MemoryTrace // key: trace id, append-only
+	memoryNotes     map[memoryNoteKey]store.MemoryNoteState
+	memoryStaging   map[memoryStagingKey]store.MemoryStaging
+	memorySweeps    map[string]store.MemorySweep // key: agent id
+	// templateDir is the lazily created directory the filesystem-backed
+	// template store roots at (see documenttemplates.go); empty until a
+	// template is first stored or looked up through the aggregate.
+	templateDir string
 }
 
 // New returns an empty in-memory store.
@@ -63,6 +71,10 @@ func New() *Store {
 		documentPresets: make(map[string]store.DocumentPreset),
 		providerModels:  make(map[int64]store.ProviderModel),
 		nextModelID:     1,
+		memoryTraces:    make(map[string]store.MemoryTrace),
+		memoryNotes:     make(map[memoryNoteKey]store.MemoryNoteState),
+		memoryStaging:   make(map[memoryStagingKey]store.MemoryStaging),
+		memorySweeps:    make(map[string]store.MemorySweep),
 	}
 }
 
@@ -85,6 +97,7 @@ func (s *Store) Attachments() store.AttachmentStore          { return &attachmen
 func (s *Store) Documents() store.DocumentStore              { return &documentStore{s} }
 func (s *Store) DocumentPresets() store.DocumentPresetStore  { return &documentPresetStore{s} }
 func (s *Store) ProviderModels() store.ProviderModelStore    { return &providerModelStore{s} }
+func (s *Store) Memory() store.MemoryStore                   { return &memoryStore{s} }
 
 func (s *Store) Create(ctx context.Context, model *store.ProviderModel) error {
 	return (&providerModelStore{s}).Create(ctx, model)

@@ -79,3 +79,33 @@ func TestSessions_WithTxJoinsTransaction(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, list, "rolled-back create must leave no rows")
 }
+
+// TestSessions_ListAcrossAgents covers the all-sessions listing: one query
+// returns every agent's sessions, most recent activity first, and the empty
+// result is non-nil.
+func TestSessions_ListAcrossAgents(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	first := &store.Session{AgentID: "agent-1"}
+	require.NoError(t, s.Sessions().Create(ctx, first))
+	second := &store.Session{AgentID: "agent-2"}
+	require.NoError(t, s.Sessions().Create(ctx, second))
+
+	// Advance the second session's activity so it sorts ahead of the first.
+	later := first.LastActivityAt.Add(2 * time.Minute)
+	require.NoError(t, s.Sessions().Touch(ctx, second.ID, later))
+
+	list, err := s.Sessions().List(ctx)
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+	require.Equal(t, second.ID, list[0].ID, "most recent activity first")
+	require.Equal(t, first.ID, list[1].ID)
+
+	require.NoError(t, s.Sessions().Delete(ctx, first.ID))
+	require.NoError(t, s.Sessions().Delete(ctx, second.ID))
+	list, err = s.Sessions().List(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, list)
+	require.Empty(t, list)
+}

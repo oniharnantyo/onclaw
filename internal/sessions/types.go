@@ -190,6 +190,30 @@ type Attachment struct {
 	Size int64  `json:"size"`
 }
 
+// ArtifactChange is how a turn changed one artifact against its
+// start-of-turn record: created or modified. Empty on a cold resume, where
+// the record was lost and only the modification time is known.
+type ArtifactChange string
+
+const (
+	ArtifactCreated  ArtifactChange = "created"
+	ArtifactModified ArtifactChange = "modified"
+)
+
+// MaxArtifacts bounds the artifact list one turn_completed event carries;
+// ArtifactsTruncated reports a turn that produced more.
+const MaxArtifacts = 50
+
+// Artifact is one file the turn produced for the user under the workspace's
+// artifacts/ directory (add-turn-artifacts design D4): the workspace-relative
+// path (so a chip opens the preview directly), its byte size, and the change
+// kind when known.
+type Artifact struct {
+	Path   string         `json:"path"`
+	Size   int64          `json:"size"`
+	Change ArtifactChange `json:"change,omitempty"`
+}
+
 // Usage is one turn's provider-reported token usage. InputTokens/OutputTokens/
 // TotalTokens sum every model call of the turn; FinalInputTokens is the input
 // size of the last call — what the model's context last held.
@@ -243,11 +267,17 @@ type Event struct {
 
 	// Tool carries the kind's tool-call payload (KindToolActivity); Task the
 	// delegated-task payload (KindTaskActivity).
-	Tool       *ToolActivity `json:"tool,omitempty"`
-	Task       *TaskActivity `json:"task,omitempty"`
-	Usage      *Usage        `json:"usage,omitempty"`
-	Error      string        `json:"error,omitempty"`
-	Compaction *Compaction   `json:"compaction,omitempty"`
+	Tool  *ToolActivity `json:"tool,omitempty"`
+	Task  *TaskActivity `json:"task,omitempty"`
+	Usage *Usage        `json:"usage,omitempty"`
+	// Artifacts carries the files the turn produced under the workspace's
+	// artifacts/ directory (KindTurnCompleted only; add-turn-artifacts design
+	// D4): path-sorted, capped at MaxArtifacts, with ArtifactsTruncated
+	// reporting a hit cap.
+	Artifacts          []Artifact  `json:"artifacts,omitempty"`
+	ArtifactsTruncated bool        `json:"artifacts_truncated,omitempty"`
+	Error              string      `json:"error,omitempty"`
+	Compaction         *Compaction `json:"compaction,omitempty"`
 	// Approval carries the approval payload: the pending dangerous-command
 	// request (KindApprovalRequired) or the decision (KindApprovalResolved).
 	Approval *Approval `json:"approval,omitempty"`
