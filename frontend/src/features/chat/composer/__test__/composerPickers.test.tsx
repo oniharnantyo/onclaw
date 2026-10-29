@@ -115,6 +115,8 @@ describe("the composer pickers (task 5.3)", () => {
           ImageInput: true,
           PDFInput: false,
           VideoInput: false,
+          PDFParts: true,
+          VideoParts: false,
         },
       ],
       modelOverride: "anthropic/claude-sonnet-4-5",

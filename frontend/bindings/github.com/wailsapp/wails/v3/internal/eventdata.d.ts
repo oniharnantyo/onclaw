@@ -10,15 +10,15 @@ import type { Events } from "@wailsio/runtime";
 import type * as services$0 from "../../../../oniharnantyo/buddies/internal/services/models.js";
 
 declare module "@wailsio/runtime" {
-  namespace Events {
-    interface CustomEvents {
-      "channels:changed": services$0.ChannelChangedEvent;
-      "channels:state": services$0.ChannelStateEvent;
-      "gateway:state": services$0.GatewayStateEvent;
-      "knowledge:changed": services$0.KnowledgeChangedEvent;
-      "mcp:oauth:completed": services$0.MCPOAuthCompletedEvent;
-      "schedules:changed": services$0.SchedulesChangedEvent;
-      "turns:changed": services$0.TurnsChangedEvent;
+    namespace Events {
+        interface CustomEvents {
+            "channels:changed": services$0.ChannelChangedEvent;
+            "channels:state": services$0.ChannelStateEvent;
+            "gateway:state": services$0.GatewayStateEvent;
+            "knowledge:changed": services$0.KnowledgeChangedEvent;
+            "mcp:oauth:completed": services$0.MCPOAuthCompletedEvent;
+            "schedules:changed": services$0.SchedulesChangedEvent;
+            "turns:changed": services$0.TurnsChangedEvent;
+        }
     }
-  }
 }

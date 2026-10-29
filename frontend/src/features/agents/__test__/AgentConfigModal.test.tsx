@@ -251,6 +251,8 @@ beforeEach(() => {
       ImageInput: false,
       PDFInput: false,
       VideoInput: false,
+      PDFParts: true,
+      VideoParts: true,
     },
   ];
 });
@@ -971,6 +973,8 @@ describe("AgentConfigModal default effort (task 2.4)", () => {
         ImageInput: false,
         PDFInput: false,
         VideoInput: false,
+        PDFParts: true,
+        VideoParts: true,
       },
       {
         ID: "plain-model",
@@ -979,6 +983,8 @@ describe("AgentConfigModal default effort (task 2.4)", () => {
         ImageInput: false,
         PDFInput: false,
         VideoInput: false,
+        PDFParts: true,
+        VideoParts: true,
       },
     ];
   }

@@ -135,6 +135,8 @@ function makeClient(): MockedClient {
           ImageInput: false,
           PDFInput: false,
           VideoInput: false,
+          PDFParts: true,
+          VideoParts: true,
         },
         {
           ID: "gpt-4o",
@@ -143,6 +145,8 @@ function makeClient(): MockedClient {
           ImageInput: false,
           PDFInput: false,
           VideoInput: false,
+          PDFParts: true,
+          VideoParts: true,
         },
         {
           ID: "custom-model",
@@ -151,6 +155,8 @@ function makeClient(): MockedClient {
           ImageInput: false,
           PDFInput: false,
           VideoInput: false,
+          PDFParts: true,
+          VideoParts: true,
         },
       ]),
       skills: vi.fn(async () => [

@@ -255,3 +255,25 @@ func TestManager_ArtifactsDir(t *testing.T) {
 	_, err = m.ArtifactsDir("")
 	require.Error(t, err)
 }
+
+// TestManager_UploadsDir pins the uploads mirror home
+// (fix-pdf-attachment-carriage design D2): UploadsDir mkdir -p's uploads/
+// inside the workspace, is idempotent, and refuses an invalid slug like the
+// other subdirectories.
+func TestManager_UploadsDir(t *testing.T) {
+	m := NewManager(t.TempDir())
+
+	uploads, err := m.UploadsDir("scout")
+	require.NoError(t, err)
+	require.DirExists(t, uploads, "UploadsDir must create the directory on demand")
+	require.Equal(t, filepath.Join(m.Root(), "scout", DirUploads), uploads)
+
+	again, err := m.UploadsDir("scout")
+	require.NoError(t, err)
+	require.Equal(t, uploads, again)
+
+	_, err = m.UploadsDir("../escape")
+	require.Error(t, err)
+	_, err = m.UploadsDir("")
+	require.Error(t, err)
+}

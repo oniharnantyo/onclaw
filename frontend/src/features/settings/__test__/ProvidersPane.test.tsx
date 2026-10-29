@@ -115,6 +115,8 @@ vi.mock("../../../lib/client", () => ({
           ImageInput: true,
           PDFInput: true,
           VideoInput: true,
+          PDFParts: true,
+          VideoParts: false,
         },
       ]),
       listProviderModels: vi.fn(

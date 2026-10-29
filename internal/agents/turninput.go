@@ -11,6 +11,7 @@ import (
 
 	"github.com/oniharnantyo/buddies/internal/agents/hooks"
 	"github.com/oniharnantyo/buddies/internal/attachments"
+	"github.com/oniharnantyo/buddies/internal/carriage"
 	"github.com/oniharnantyo/buddies/internal/sessions"
 )
 
@@ -76,6 +77,11 @@ type turnComposer struct {
 	// summary; empty keeps the instruction block-free — child turns never
 	// carry it (spec agent-memory "Subagent turns receive no memory block").
 	memory string
+	// uploads is the turn-time uploads mirror (fix-pdf-attachment-carriage
+	// design D2): attachment key → final mirrored filename under the agent
+	// workspace's uploads/ directory. A nil map — or a key the mirror could
+	// not place — degrades the pointer note to the capability key alone.
+	uploads map[string]string
 }
 
 func (tc turnComposer) supportsPDFInput() bool {
@@ -205,40 +211,50 @@ func buildUserTurnMessage(tc turnComposer, text string, atts []sessions.Attachme
 }
 
 // attachmentBlock builds one attachment's model-input block: the content block
-// when the model and connector can carry it, the reference pointer note
-// otherwise (spec chat-attachments: the agent can still mention the file but
-// is never sent input it cannot process).
+// when the model and the connector's carriage matrix (fix-pdf-attachment-
+// carriage design D1) can carry it, the reference pointer note otherwise
+// (spec chat-attachments: the agent can still reach the file, but is never
+// sent input it cannot process — and sending never fails over the gap).
 func attachmentBlock(tc turnComposer, att sessions.Attachment) (*schema.ContentBlock, error) {
 	data, err := tc.readAttachment(att)
 	if err != nil {
 		// A lost file must not fail the send: the pointer note stands in.
-		return pointerBlock(att, "the stored file could not be read"), nil
+		return pointerBlock(att, reasonStoredFileUnreadable, tc.uploads), nil
 	}
 	b64 := base64.StdEncoding.EncodeToString(data)
 
 	switch {
 	case att.Mime == "application/pdf":
-		if tc.supportsPDFInput() && carriesPDFParts(tc.providerType) {
-			return schema.NewContentBlock(&schema.UserInputFile{
-				Base64Data: b64,
-				MIMEType:   att.Mime,
-				Name:       att.Name,
-			}), nil
+		if !tc.supportsPDFInput() {
+			return pointerBlock(att, modelGapReason(att.Mime), tc.uploads), nil
 		}
+		if !carriage.CarriesPDFParts(tc.providerType) {
+			return pointerBlock(att, reasonConnectorPDFParts, tc.uploads), nil
+		}
+		return schema.NewContentBlock(&schema.UserInputFile{
+			Base64Data: b64,
+			MIMEType:   att.Mime,
+			Name:       att.Name,
+		}), nil
 	case strings.HasPrefix(att.Mime, "image/"):
-		if tc.supportsImageInput() {
-			return schema.NewContentBlock(&schema.UserInputImage{
-				Base64Data: b64,
-				MIMEType:   att.Mime,
-			}), nil
+		if !tc.supportsImageInput() {
+			return pointerBlock(att, modelGapReason(att.Mime), tc.uploads), nil
 		}
+		return schema.NewContentBlock(&schema.UserInputImage{
+			Base64Data: b64,
+			MIMEType:   att.Mime,
+		}), nil
 	case strings.HasPrefix(att.Mime, "video/"):
-		if tc.supportsVideoInput() && carriesVideoParts(tc.providerType) {
-			return schema.NewContentBlock(&schema.UserInputVideo{
-				Base64Data: b64,
-				MIMEType:   att.Mime,
-			}), nil
+		if !tc.supportsVideoInput() {
+			return pointerBlock(att, modelGapReason(att.Mime), tc.uploads), nil
 		}
+		if !carriage.CarriesVideoParts(tc.providerType) {
+			return pointerBlock(att, reasonConnectorVideoParts, tc.uploads), nil
+		}
+		return schema.NewContentBlock(&schema.UserInputVideo{
+			Base64Data: b64,
+			MIMEType:   att.Mime,
+		}), nil
 	case strings.HasPrefix(att.Mime, "text/"):
 		// Every model reads text: the content rides inline as a text part —
 		// no capability gate (uploads are capped at 1 MB; spec
@@ -250,43 +266,52 @@ func attachmentBlock(tc turnComposer, att sessions.Attachment) (*schema.ContentB
 		// Office documents are binary — their bytes never ride the message
 		// (a 20 MB package is not context). Like the text lane, no model
 		// capability gate applies: every model gets the same reference note,
-		// pointing at the one tool path that makes the content readable
-		// (save_document copies it into the knowledge scope, where read_file
-		// renders the office view).
-		return pointerBlock(att, "its bytes are not sent; save_document can copy it into your knowledge scope, where read_file presents it as a view"), nil
+		// handing off to the uploads mirror, where read_file presents the
+		// document's structured view.
+		return pointerBlock(att, reasonOfficeBytesWithheld, tc.uploads), nil
 	}
-	return pointerBlock(att, fmt.Sprintf("the active model cannot read %s input", laneName(att.Mime))), nil
+	return pointerBlock(att, modelGapReason(att.Mime), tc.uploads), nil
+}
+
+// The pointer-note reason texts (fix-pdf-attachment-carriage design D3): the
+// reason names the true gap — a model that cannot read the kind, or a
+// connector family that cannot carry it. These constants are the exact test
+// fixtures the matrix tests assert; wording changes are contract changes.
+const (
+	// reasonStoredFileUnreadable stands in for a lost or unreadable store
+	// file — the one failure-shaped reason.
+	reasonStoredFileUnreadable = "the stored file could not be read"
+	// reasonOfficeBytesWithheld explains the office lane: the bytes never
+	// ride the message; read_file's structured view is the readable route.
+	reasonOfficeBytesWithheld = "its bytes are not sent; read_file presents it as a structured view"
+	// reasonConnectorPDFParts and reasonConnectorVideoParts name the
+	// connector gap: the model reads the kind but this provider family's
+	// connector cannot carry it as a message part.
+	reasonConnectorPDFParts   = "the provider connector cannot carry PDF parts"
+	reasonConnectorVideoParts = "the provider connector cannot carry video parts"
+)
+
+// modelGapReason names the model-capability gap for one attachment's lane.
+func modelGapReason(mime string) string {
+	return fmt.Sprintf("the active model cannot read %s input", laneName(mime))
 }
 
 // pointerBlock is the reference pointer note standing in for content the
-// model cannot (or could not) receive: the attachment's name and capability
-// key so the agent can mention the file (spec: "a reference pointer (name
-// and capability link)").
-func pointerBlock(att sessions.Attachment, reason string) *schema.ContentBlock {
+// model cannot (or could not) receive (design D3): the attachment's name,
+// kind, and size, the true reason, and — when the turn's uploads mirror
+// holds the file — the workspace path the filesystem tools read it at, with
+// the capability key kept as the fallback for a missing mirror entry.
+func pointerBlock(att sessions.Attachment, reason string, uploads map[string]string) *schema.ContentBlock {
+	if name := uploads[att.Key]; name != "" {
+		return schema.NewContentBlock(&schema.UserInputText{
+			Text: fmt.Sprintf("[attached file not sent: %s (%s, %d bytes) — %s; read it at /workspace/uploads/%s (fallback: attachment key %s)]",
+				att.Name, att.Mime, att.Size, reason, name, att.Key),
+		})
+	}
 	return schema.NewContentBlock(&schema.UserInputText{
 		Text: fmt.Sprintf("[attached file not sent: %s (%s, %d bytes) — %s; attachment key %s]",
 			att.Name, att.Mime, att.Size, reason, att.Key),
 	})
-}
-
-// carriesPDFParts reports whether the provider's connector can carry a PDF
-// file part at all (design D5): today only the gemini connector maps
-// file_url parts (inline data); the claude connector and the OpenAI-shaped
-// endpoints reject them, so their PDFs degrade to the pointer note even when
-// the model itself reads PDFs — sending would fail the turn, and the spec
-// forbids failing a send over an input gap.
-func carriesPDFParts(providerType string) bool {
-	return providerType == ProviderGemini
-}
-
-// carriesVideoParts reports whether the provider's connector can carry a
-// video part at all (design D6): today only the gemini connector maps
-// video_url parts (inline data); the claude connector and the OpenAI-shaped
-// endpoints reject them, so their videos degrade to the pointer note even
-// when the model itself reads video — sending would fail the turn, and the
-// spec forbids failing a send over an input gap.
-func carriesVideoParts(providerType string) bool {
-	return providerType == ProviderGemini
 }
 
 // laneName names an attachment's lane for the pointer note.

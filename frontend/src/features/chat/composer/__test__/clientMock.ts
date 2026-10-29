@@ -122,6 +122,8 @@ export const capabilities: ModelCapability[] = [
     ImageInput: false,
     PDFInput: false,
     VideoInput: false,
+    PDFParts: true,
+    VideoParts: true,
   },
   {
     ID: "m-pro",
@@ -130,6 +132,8 @@ export const capabilities: ModelCapability[] = [
     ImageInput: true,
     PDFInput: false,
     VideoInput: false,
+    PDFParts: true,
+    VideoParts: true,
   },
 ];
 

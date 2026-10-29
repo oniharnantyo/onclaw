@@ -61,7 +61,13 @@ type fsJailedBackend struct {
 	extraRoots []extraRoot
 	knowledge  []knowledgeRoot
 	mount      string
-	mu         sync.RWMutex
+	// toolResultPDFParts reports whether the turn's provider connector
+	// carries PDF file parts inside tool results (fix-pdf-attachment-carriage
+	// design D4): false degrades a MultiModalRead on a PDF to the document's
+	// extracted text. Set once at construction; read under mu.RLock like the
+	// rest of the state.
+	toolResultPDFParts bool
+	mu                 sync.RWMutex
 }
 
 var _ einofs.Backend = (*fsJailedBackend)(nil)
@@ -77,9 +83,20 @@ func NewFilesystemJail(root string) (einofs.Backend, error) {
 // NewFilesystemJailedWithRoots creates a filesystem jail with a primary root
 // (read-write) and optional extra read-only roots. Extra roots that do not
 // exist yet are skipped: the skills tree is absent on fresh workspaces and
-// must not break agent composition.
+// must not break agent composition. PDF reads are served inline — today's
+// behavior; turn-scoped construction that knows the connector's PDF carriage
+// uses NewFilesystemJailedWithRootsForTurn.
 func NewFilesystemJailedWithRoots(primary string, extra ...string) (einofs.Backend, error) {
-	return newFilesystemJailedBackend(primary, extra, nil)
+	return NewFilesystemJailedWithRootsForTurn(primary, true, extra...)
+}
+
+// NewFilesystemJailedWithRootsForTurn creates a filesystem jail like
+// NewFilesystemJailedWithRoots and additionally fixes the turn's tool-result
+// PDF carriage (fix-pdf-attachment-carriage design D4): toolResultPDFParts
+// true serves a read_file on a PDF as the native file part, false degrades
+// the read to the document's extracted text.
+func NewFilesystemJailedWithRootsForTurn(primary string, toolResultPDFParts bool, extra ...string) (einofs.Backend, error) {
+	return newFilesystemJailedBackend(primary, extra, nil, toolResultPDFParts)
 }
 
 // KnowledgeRoots names the two read-only knowledge corpus directories exposed
@@ -95,8 +112,17 @@ type KnowledgeRoots struct {
 // presented as /knowledge/global and AgentDir as /knowledge/agent. A
 // knowledge directory that does not exist (or is not a directory) is skipped:
 // its scope is neither listed under /knowledge nor reachable through it, and
-// construction still succeeds.
+// construction still succeeds. PDF reads are served inline — today's
+// behavior; turn-scoped construction uses NewFilesystemJailedWithKnowledgeForTurn.
 func NewFilesystemJailedWithKnowledge(primary string, knowledge KnowledgeRoots, extra ...string) (einofs.Backend, error) {
+	return NewFilesystemJailedWithKnowledgeForTurn(primary, knowledge, true, extra...)
+}
+
+// NewFilesystemJailedWithKnowledgeForTurn creates a filesystem jail like
+// NewFilesystemJailedWithKnowledge and additionally fixes the turn's
+// tool-result PDF carriage (fix-pdf-attachment-carriage design D4), exactly
+// as NewFilesystemJailedWithRootsForTurn does.
+func NewFilesystemJailedWithKnowledgeForTurn(primary string, knowledge KnowledgeRoots, toolResultPDFParts bool, extra ...string) (einofs.Backend, error) {
 	roots := make([]knowledgeRoot, 0, 2)
 	for _, k := range []knowledgeRoot{
 		{name: knowledgeScopeGlobal, dir: knowledge.GlobalDir},
@@ -133,13 +159,14 @@ func NewFilesystemJailedWithKnowledge(primary string, knowledge KnowledgeRoots, 
 			dir:  strings.TrimSuffix(resolved, string(filepath.Separator)),
 		})
 	}
-	return newFilesystemJailedBackend(primary, extra, roots)
+	return newFilesystemJailedBackend(primary, extra, roots, toolResultPDFParts)
 }
 
 // newFilesystemJailedBackend validates and normalizes the primary and extra
 // roots, then builds the jailed backend over them plus the already-normalized
-// knowledge roots.
-func newFilesystemJailedBackend(primary string, extra []string, knowledge []knowledgeRoot) (einofs.Backend, error) {
+// knowledge roots. toolResultPDFParts fixes the turn's tool-result PDF
+// carriage (fix-pdf-attachment-carriage design D4).
+func newFilesystemJailedBackend(primary string, extra []string, knowledge []knowledgeRoot, toolResultPDFParts bool) (einofs.Backend, error) {
 	if primary == "" {
 		return nil, fmt.Errorf("root directory cannot be empty")
 	}
@@ -197,11 +224,12 @@ func newFilesystemJailedBackend(primary string, extra []string, knowledge []know
 	}
 
 	return &fsJailedBackend{
-		root:       primary,
-		rootAbs:    resolvedRoot,
-		extraRoots: extraRoots,
-		knowledge:  knowledge,
-		mount:      DefaultMountPoint,
+		root:               primary,
+		rootAbs:            resolvedRoot,
+		extraRoots:         extraRoots,
+		knowledge:          knowledge,
+		mount:              DefaultMountPoint,
+		toolResultPDFParts: toolResultPDFParts,
 	}, nil
 }
 
@@ -565,13 +593,24 @@ var inlineMIMETypes = map[string]einofs.FileContentPart{
 // request, so a larger file is refused rather than silently dropped.
 const maxInlinePartBytes = 20 << 20
 
+// pdfBytesWithheldNote opens a degraded PDF read (fix-pdf-attachment-carriage
+// design D4): the turn's connector cannot carry PDF file parts in tool
+// results, so the bytes were withheld and the extracted text follows.
+const pdfBytesWithheldNote = "[PDF bytes not attached: the active provider connector cannot carry file parts in tool results; extracted text follows]"
+
 // MultiModalRead reads file content supporting multimodal results. Images and
 // PDFs come back as one inline binary part for the model to consume directly
 // — there is no server-side rendering, so a PDF page range is not honored and
 // the whole document rides along. Office documents (DOCX, PPTX, XLSX) come
 // back as their structured text view (design D4) like Read. Everything else
 // reads as text like Read.
-func (j *fsJailedBackend) MultiModalRead(_ context.Context, req *einofs.MultiModalReadRequest) (*einofs.MultiFileContent, error) {
+//
+// When the turn's connector cannot carry PDF file parts in tool results
+// (fix-pdf-attachment-carriage design D4), a PDF read degrades to a readable
+// text result: the bytes are withheld and the document's extracted text is
+// returned instead, so the read never fails the turn on carriage alone. A
+// document with no extractable text returns a clear error result.
+func (j *fsJailedBackend) MultiModalRead(ctx context.Context, req *einofs.MultiModalReadRequest) (*einofs.MultiFileContent, error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 
@@ -595,6 +634,27 @@ func (j *fsJailedBackend) MultiModalRead(_ context.Context, req *einofs.MultiMod
 		if info.Size() > maxInlinePartBytes {
 			return nil, fmt.Errorf("file is %d bytes; inline %s parts are capped at %d bytes", info.Size(), part.Type, maxInlinePartBytes)
 		}
+
+		// The turn's connector cannot carry PDF file parts in tool results
+		// (fix-pdf-attachment-carriage design D4): degrade the read to the
+		// document's extracted text behind a withheld-bytes note. The size
+		// cap above bounds this path too — the document is read whole for
+		// extraction, and an oversize document is refused with a clear error
+		// either way.
+		if part.Type == einofs.FileContentPartTypePDF && !j.toolResultPDFParts {
+			data, err := os.ReadFile(resolved)
+			if err != nil {
+				return nil, fmt.Errorf("read file: %w", err)
+			}
+			text, err := extractPDFText(ctx, data)
+			if err != nil {
+				return nil, err
+			}
+			return &einofs.MultiFileContent{FileContent: &einofs.FileContent{
+				Content: pdfBytesWithheldNote + "\n" + text,
+			}}, nil
+		}
+
 		data, err := os.ReadFile(resolved)
 		if err != nil {
 			return nil, fmt.Errorf("read file: %w", err)

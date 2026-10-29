@@ -16,8 +16,12 @@ import (
 
 // saveDocumentToolDescription is the model-facing description of the
 // save_document tool; the settings surfaces render the catalog entry's
-// shorter one (builtin_tools.go).
+// shorter one (builtin_tools.go). Pure opt-in curation
+// (fix-pdf-attachment-carriage design D5): chat attachments are already
+// readable from the workspace's uploads/ mirror, so no degradation route
+// runs through the corpus — saving is for durable promotion, not access.
 const saveDocumentToolDescription = "Save a document into this agent's durable knowledge corpus so later turns can search it with the filesystem tools. " +
+	"Chat attachments are already readable from /workspace/uploads, so saving one is for durable curation, not for access. " +
 	"Provide exactly one content source: attachment_key (the capability key of a chat attachment, saved under its original filename unless filename says otherwise) " +
 	"or text (inline content saved under the required filename). " +
 	"Prefer a descriptive filename and fill description — both are what future searches have to go on. " +

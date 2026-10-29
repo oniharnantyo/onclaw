@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/oniharnantyo/buddies/internal/agents"
+	"github.com/oniharnantyo/buddies/internal/carriage"
 	"github.com/oniharnantyo/buddies/internal/store"
 )
 
@@ -261,6 +262,18 @@ type ModelCapability struct {
 	ImageInput bool
 	PDFInput   bool
 	VideoInput bool
+	// PDFParts reports whether the provider family's connector can carry
+	// PDF file parts to the model in a user message; the composer renders
+	// the connector-gap warning from it (fix-pdf-attachment-carriage
+	// design D6). Derived from the provider type via the carriage matrix,
+	// never stored on the model row.
+	PDFParts bool
+	// VideoParts reports whether the provider family's connector can carry
+	// video parts to the model in a user message; the same connector-gap
+	// warning covers a video part that will degrade (fix-pdf-attachment-
+	// carriage design D6). Derived from the provider type via the carriage
+	// matrix, never stored on the model row.
+	VideoParts bool
 }
 
 // ProviderModelInput carries the write shape for a provider model row.
@@ -346,13 +359,16 @@ func normalizeEfforts(in []string) []string {
 // tier every connector family understands — with no catalog or heuristic
 // fallback for stored rows.
 func (s *SettingsService) ProviderModels(ctx context.Context, id string) ([]ModelCapability, error) {
-	if _, err := s.store.Providers().ByID(ctx, id); err != nil {
+	provider, err := s.store.Providers().ByID(ctx, id)
+	if err != nil {
 		return nil, fmt.Errorf("get provider: %w", err)
 	}
 	rows, err := s.store.ProviderModels().ByProvider(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("list provider models: %w", err)
 	}
+	pdfParts := carriage.CarriesPDFParts(provider.Type)
+	videoParts := carriage.CarriesVideoParts(provider.Type)
 	out := make([]ModelCapability, 0, len(rows))
 	for _, row := range rows {
 		if !row.Enabled {
@@ -373,6 +389,8 @@ func (s *SettingsService) ProviderModels(ctx context.Context, id string) ([]Mode
 			ImageInput:    row.ImageInput,
 			PDFInput:      row.PDFInput,
 			VideoInput:    row.VideoInput,
+			PDFParts:      pdfParts,
+			VideoParts:    videoParts,
 		})
 	}
 	return out, nil

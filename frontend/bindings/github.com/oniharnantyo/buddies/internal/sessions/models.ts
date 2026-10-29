@@ -7,29 +7,29 @@
  * (KindApprovalResolved). Exactly the fields matching the kind are set.
  */
 export interface Approval {
-  /**
-   * InterruptID is the runtime-assigned identity of the tool interrupt —
-   * the resume target key.
-   */
-  interrupt_id: string;
+    /**
+     * InterruptID is the runtime-assigned identity of the tool interrupt —
+     * the resume target key.
+     */
+    "interrupt_id": string;
 
-  /**
-   * Command is the requested shell command, as the model issued it (mount
-   * prefixes already translated).
-   */
-  command?: string;
+    /**
+     * Command is the requested shell command, as the model issued it (mount
+     * prefixes already translated).
+     */
+    "command"?: string;
 
-  /**
-   * CheckpointID is the persisted run checkpoint the approval pauses on;
-   * resumption restores the run from it.
-   */
-  checkpoint_id?: string;
+    /**
+     * CheckpointID is the persisted run checkpoint the approval pauses on;
+     * resumption restores the run from it.
+     */
+    "checkpoint_id"?: string;
 
-  /**
-   * Outcome is the decision (KindApprovalResolved only): approved, denied,
-   * or cancelled.
-   */
-  outcome?: string;
+    /**
+     * Outcome is the decision (KindApprovalResolved only): approved, denied,
+     * or cancelled.
+     */
+    "outcome"?: string;
 }
 
 /**
@@ -39,9 +39,9 @@ export interface Approval {
  * kind when known.
  */
 export interface Artifact {
-  path: string;
-  size: number;
-  change?: ArtifactChange;
+    "path": string;
+    "size": number;
+    "change"?: ArtifactChange;
 }
 
 /**
@@ -50,14 +50,14 @@ export interface Artifact {
  * the record was lost and only the modification time is known.
  */
 export enum ArtifactChange {
-  /**
-   * The Go zero value for the underlying type of the enum.
-   */
-  $zero = "",
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
 
-  ArtifactCreated = "created",
-  ArtifactModified = "modified",
-}
+    ArtifactCreated = "created",
+    ArtifactModified = "modified",
+};
 
 /**
  * Attachment is the transcript metadata of one stored upload (design D5,
@@ -67,10 +67,10 @@ export enum ArtifactChange {
  * bytes are fetched separately through the capability-gated content call.
  */
 export interface Attachment {
-  key: string;
-  name: string;
-  mime: string;
-  size: number;
+    "key": string;
+    "name": string;
+    "mime": string;
+    "size": number;
 }
 
 /**
@@ -78,10 +78,10 @@ export interface Attachment {
  * summary, and the display-grade token estimates around the replacement.
  */
 export interface Compaction {
-  checkpoint_id: string;
-  summary?: string;
-  tokens_before: number;
-  tokens_after: number;
+    "checkpoint_id": string;
+    "summary"?: string;
+    "tokens_before": number;
+    "tokens_after": number;
 }
 
 /**
@@ -91,82 +91,82 @@ export interface Compaction {
  * Exactly the payload fields matching Kind are set.
  */
 export interface Event {
-  /**
-   * ID is the store-assigned event id; empty for live-only events that are
-   * never persisted (text and reasoning deltas). Persisted events carry it
-   * on their live form too, so consumers can correlate the live stream
-   * with the replay.
-   */
-  id?: string;
+    /**
+     * ID is the store-assigned event id; empty for live-only events that are
+     * never persisted (text and reasoning deltas). Persisted events carry it
+     * on their live form too, so consumers can correlate the live stream
+     * with the replay.
+     */
+    "id"?: string;
 
-  /**
-   * Seq is the store-assigned per-session sequence. It is filled on
-   * replay (Events) and always zero on the live stream — the store does
-   * not report sequences back on append.
-   */
-  seq?: number;
-  turn_id?: string;
-  kind: Kind;
-  occurred_at: string;
+    /**
+     * Seq is the store-assigned per-session sequence. It is filled on
+     * replay (Events) and always zero on the live stream — the store does
+     * not report sequences back on append.
+     */
+    "seq"?: number;
+    "turn_id"?: string;
+    "kind": Kind;
+    "occurred_at": string;
 
-  /**
-   * Text carries the kind's text payload: the user message text, a text
-   * delta, the final assistant message, or the reasoning text.
-   */
-  text?: string;
+    /**
+     * Text carries the kind's text payload: the user message text, a text
+     * delta, the final assistant message, or the reasoning text.
+     */
+    "text"?: string;
 
-  /**
-   * Attachments carries the user message's attachment metadata
-   * (KindUserMessage only); persisted for replay (design D5).
-   */
-  attachments?: Attachment[] | null;
+    /**
+     * Attachments carries the user message's attachment metadata
+     * (KindUserMessage only); persisted for replay (design D5).
+     */
+    "attachments"?: Attachment[] | null;
 
-  /**
-   * VariantOf marks a regenerated turn's events with the original turn's id
-   * (design D7): reply events carry it so replay reconstructs the branch
-   * picker, and the regeneration's live user_message marker carries it in
-   * place of a persisted duplicate prompt.
-   */
-  variant_of?: string;
+    /**
+     * VariantOf marks a regenerated turn's events with the original turn's id
+     * (design D7): reply events carry it so replay reconstructs the branch
+     * picker, and the regeneration's live user_message marker carries it in
+     * place of a persisted duplicate prompt.
+     */
+    "variant_of"?: string;
 
-  /**
-   * Origin names who started the turn (KindUserMessage only): the resolved
-   * send origin — user, scheduler, or telegram per internal/agents/hooks —
-   * stamped when the prompt persisted. Empty on records persisted before
-   * origins were recorded and on every other kind; an empty origin reads
-   * as a user turn.
-   */
-  origin?: string;
+    /**
+     * Origin names who started the turn (KindUserMessage only): the resolved
+     * send origin — user, scheduler, or telegram per internal/agents/hooks —
+     * stamped when the prompt persisted. Empty on records persisted before
+     * origins were recorded and on every other kind; an empty origin reads
+     * as a user turn.
+     */
+    "origin"?: string;
 
-  /**
-   * Tool carries the kind's tool-call payload (KindToolActivity); Task the
-   * delegated-task payload (KindTaskActivity).
-   */
-  tool?: ToolActivity | null;
-  task?: TaskActivity | null;
-  usage?: Usage | null;
+    /**
+     * Tool carries the kind's tool-call payload (KindToolActivity); Task the
+     * delegated-task payload (KindTaskActivity).
+     */
+    "tool"?: ToolActivity | null;
+    "task"?: TaskActivity | null;
+    "usage"?: Usage | null;
 
-  /**
-   * Artifacts carries the files the turn produced under the workspace's
-   * artifacts/ directory (KindTurnCompleted only; add-turn-artifacts design
-   * D4): path-sorted, capped at MaxArtifacts, with ArtifactsTruncated
-   * reporting a hit cap.
-   */
-  artifacts?: Artifact[] | null;
-  artifacts_truncated?: boolean;
-  error?: string;
-  compaction?: Compaction | null;
+    /**
+     * Artifacts carries the files the turn produced under the workspace's
+     * artifacts/ directory (KindTurnCompleted only; add-turn-artifacts design
+     * D4): path-sorted, capped at MaxArtifacts, with ArtifactsTruncated
+     * reporting a hit cap.
+     */
+    "artifacts"?: Artifact[] | null;
+    "artifacts_truncated"?: boolean;
+    "error"?: string;
+    "compaction"?: Compaction | null;
 
-  /**
-   * Approval carries the approval payload: the pending dangerous-command
-   * request (KindApprovalRequired) or the decision (KindApprovalResolved).
-   */
-  approval?: Approval | null;
+    /**
+     * Approval carries the approval payload: the pending dangerous-command
+     * request (KindApprovalRequired) or the decision (KindApprovalResolved).
+     */
+    "approval"?: Approval | null;
 
-  /**
-   * Plan carries the task-plan snapshot (KindPlanActivity).
-   */
-  plan?: PlanSnapshot | null;
+    /**
+     * Plan carries the task-plan snapshot (KindPlanActivity).
+     */
+    "plan"?: PlanSnapshot | null;
 }
 
 /**
@@ -175,108 +175,108 @@ export interface Event {
  * kinds) everything a subscriber can observe while a turn runs.
  */
 export enum Kind {
-  /**
-   * The Go zero value for the underlying type of the enum.
-   */
-  $zero = "",
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
 
-  /**
-   * KindUserMessage carries the user's turn input (persisted).
-   */
-  KindUserMessage = "user_message",
+    /**
+     * KindUserMessage carries the user's turn input (persisted).
+     */
+    KindUserMessage = "user_message",
 
-  /**
-   * KindTextDelta carries one incremental slice of assistant text.
-   * Live-only: the runtime persists the final assistant message instead,
-   * so replaying the log never depends on delta granularity.
-   */
-  KindTextDelta = "text_delta",
+    /**
+     * KindTextDelta carries one incremental slice of assistant text.
+     * Live-only: the runtime persists the final assistant message instead,
+     * so replaying the log never depends on delta granularity.
+     */
+    KindTextDelta = "text_delta",
 
-  /**
-   * KindReasoningDelta carries one incremental slice of reasoning output.
-   * Live-only, like KindTextDelta; the durable form is KindReasoning.
-   */
-  KindReasoningDelta = "reasoning_delta",
+    /**
+     * KindReasoningDelta carries one incremental slice of reasoning output.
+     * Live-only, like KindTextDelta; the durable form is KindReasoning.
+     */
+    KindReasoningDelta = "reasoning_delta",
 
-  /**
-   * KindAssistantMessage carries a completed assistant text message
-   * (persisted).
-   */
-  KindAssistantMessage = "assistant_message",
+    /**
+     * KindAssistantMessage carries a completed assistant text message
+     * (persisted).
+     */
+    KindAssistantMessage = "assistant_message",
 
-  /**
-   * KindReasoning carries completed reasoning output (persisted when the
-   * model produced any). Its live counterpart is KindTextDelta-shaped
-   * reasoning deltas on the stream.
-   */
-  KindReasoning = "reasoning",
+    /**
+     * KindReasoning carries completed reasoning output (persisted when the
+     * model produced any). Its live counterpart is KindTextDelta-shaped
+     * reasoning deltas on the stream.
+     */
+    KindReasoning = "reasoning",
 
-  /**
-   * KindToolActivity carries one observed tool call. The persisted form is
-   * the terminal record only (status completed/failed with its result,
-   * design D10); the running form is live-only, like the delta kinds — a
-   * replayed transcript always shows final states.
-   */
-  KindToolActivity = "tool_activity",
+    /**
+     * KindToolActivity carries one observed tool call. The persisted form is
+     * the terminal record only (status completed/failed with its result,
+     * design D10); the running form is live-only, like the delta kinds — a
+     * replayed transcript always shows final states.
+     */
+    KindToolActivity = "tool_activity",
 
-  /**
-   * KindTaskActivity carries one delegated subagent task's lifecycle: a
-   * running form while the child turn executes and a terminal form
-   * (completed/failed/stopped) once it ends. The persistence rule is the
-   * tool-activity rule (design D10): the running form is live-only and the
-   * terminal form — with the child's answer — is persisted.
-   */
-  KindTaskActivity = "task_activity",
+    /**
+     * KindTaskActivity carries one delegated subagent task's lifecycle: a
+     * running form while the child turn executes and a terminal form
+     * (completed/failed/stopped) once it ends. The persistence rule is the
+     * tool-activity rule (design D10): the running form is live-only and the
+     * terminal form — with the child's answer — is persisted.
+     */
+    KindTaskActivity = "task_activity",
 
-  /**
-   * KindTurnCompleted terminates a successful turn and carries its usage
-   * (persisted).
-   */
-  KindTurnCompleted = "turn_completed",
+    /**
+     * KindTurnCompleted terminates a successful turn and carries its usage
+     * (persisted).
+     */
+    KindTurnCompleted = "turn_completed",
 
-  /**
-   * KindTurnError terminates a failed turn and carries the failure message
-   * (persisted).
-   */
-  KindTurnError = "turn_error",
+    /**
+     * KindTurnError terminates a failed turn and carries the failure message
+     * (persisted).
+     */
+    KindTurnError = "turn_error",
 
-  /**
-   * KindTurnCancelled terminates a cancelled turn (persisted): streaming
-   * and tool activity stopped on the user's request. Text carries the
-   * in-flight model call's partial output, if any — the durable events of
-   * completed model calls landed before the cancellation and stay.
-   */
-  KindTurnCancelled = "turn_cancelled",
+    /**
+     * KindTurnCancelled terminates a cancelled turn (persisted): streaming
+     * and tool activity stopped on the user's request. Text carries the
+     * in-flight model call's partial output, if any — the durable events of
+     * completed model calls landed before the cancellation and stay.
+     */
+    KindTurnCancelled = "turn_cancelled",
 
-  /**
-   * KindApprovalRequired marks a turn paused on a dangerous-command gate
-   * (persisted). The turn has NO terminal event while the approval is
-   * pending: the payload names the interrupt, and pending state derives
-   * from the log (a KindApprovalRequired with no matching
-   * KindApprovalResolved). Survives restarts by replay.
-   */
-  KindApprovalRequired = "approval_required",
+    /**
+     * KindApprovalRequired marks a turn paused on a dangerous-command gate
+     * (persisted). The turn has NO terminal event while the approval is
+     * pending: the payload names the interrupt, and pending state derives
+     * from the log (a KindApprovalRequired with no matching
+     * KindApprovalResolved). Survives restarts by replay.
+     */
+    KindApprovalRequired = "approval_required",
 
-  /**
-   * KindApprovalResolved records one approval decision (persisted): the
-   * outcome (approved, denied, or cancelled) for the named interrupt. A
-   * cancelled outcome accompanies a discarded run's KindTurnCancelled.
-   */
-  KindApprovalResolved = "approval_resolved",
+    /**
+     * KindApprovalResolved records one approval decision (persisted): the
+     * outcome (approved, denied, or cancelled) for the named interrupt. A
+     * cancelled outcome accompanies a discarded run's KindTurnCancelled.
+     */
+    KindApprovalResolved = "approval_resolved",
 
-  /**
-   * KindCompaction marks a compaction of the session's working context
-   * (persisted). The stored transcript is never truncated by compaction.
-   */
-  KindCompaction = "compaction",
+    /**
+     * KindCompaction marks a compaction of the session's working context
+     * (persisted). The stored transcript is never truncated by compaction.
+     */
+    KindCompaction = "compaction",
 
-  /**
-   * KindPlanActivity carries a full snapshot of the agent's task plan (the
-   * plantask tools' tasks) after a plan tool changed it (persisted: replay
-   * folds to the newest snapshot).
-   */
-  KindPlanActivity = "plan_activity",
-}
+    /**
+     * KindPlanActivity carries a full snapshot of the agent's task plan (the
+     * plantask tools' tasks) after a plan tool changed it (persisted: replay
+     * folds to the newest snapshot).
+     */
+    KindPlanActivity = "plan_activity",
+};
 
 /**
  * PlanSnapshot is the agent's whole task plan at one moment, in plan order.
@@ -284,7 +284,7 @@ export enum Kind {
  * progress without parsing tool results.
  */
 export interface PlanSnapshot {
-  tasks: PlanTask[] | null;
+    "tasks": PlanTask[] | null;
 }
 
 /**
@@ -293,12 +293,12 @@ export interface PlanSnapshot {
  * task with a non-empty BlockedBy is waiting on other tasks.
  */
 export interface PlanTask {
-  id: string;
-  subject: string;
-  description?: string;
-  status: string;
-  active_form?: string;
-  blocked_by?: string[] | null;
+    "id": string;
+    "subject": string;
+    "description"?: string;
+    "status": string;
+    "active_form"?: string;
+    "blocked_by"?: string[] | null;
 }
 
 /**
@@ -309,84 +309,84 @@ export interface PlanTask {
  * surfacing"), the running form rides the live channel only.
  */
 export interface TaskActivity {
-  /**
-   * TaskID is the run-scoped task identifier ("task-1", ...).
-   */
-  task_id: string;
+    /**
+     * TaskID is the run-scoped task identifier ("task-1", ...).
+     */
+    "task_id": string;
 
-  /**
-   * Description is the delegated task's text, as the parent model asked for
-   * it (bounded to its first line for display).
-   */
-  description?: string;
+    /**
+     * Description is the delegated task's text, as the parent model asked for
+     * it (bounded to its first line for display).
+     */
+    "description"?: string;
 
-  /**
-   * Status is the task's lifecycle state. Empty on records persisted before
-   * statuses existed, which are terminal like completed.
-   */
-  status?: ToolStatus;
+    /**
+     * Status is the task's lifecycle state. Empty on records persisted before
+     * statuses existed, which are terminal like completed.
+     */
+    "status"?: ToolStatus;
 
-  /**
-   * Result is the child's final answer once the task reached a terminal
-   * state; empty while running and for a cancelled task that produced none.
-   */
-  result?: string;
+    /**
+     * Result is the child's final answer once the task reached a terminal
+     * state; empty while running and for a cancelled task that produced none.
+     */
+    "result"?: string;
 
-  /**
-   * TranscriptPath is the workspace-relative path of the task's materialized
-   * transcript (".tasks/<task tool-call id>.output"), readable through the
-   * jailed file tools.
-   */
-  transcript_path?: string;
+    /**
+     * TranscriptPath is the workspace-relative path of the task's materialized
+     * transcript (".tasks/<task tool-call id>.output"), readable through the
+     * jailed file tools.
+     */
+    "transcript_path"?: string;
 
-  /**
-   * Background reports whether the delegation ran in the background lane.
-   */
-  background?: boolean;
+    /**
+     * Background reports whether the delegation ran in the background lane.
+     */
+    "background"?: boolean;
 
-  /**
-   * Progress is the child's latest activity while running — one line derived
-   * from its most recent transcript record (a tool call, a text fragment).
-   * Live-only: it rides running snapshots and is empty on terminal records.
-   */
-  progress?: string;
+    /**
+     * Progress is the child's latest activity while running — one line derived
+     * from its most recent transcript record (a tool call, a text fragment).
+     * Live-only: it rides running snapshots and is empty on terminal records.
+     */
+    "progress"?: string;
 
-  /**
-   * Steps counts the transcript records the child has produced so far.
-   */
-  steps?: number;
+    /**
+     * Steps counts the transcript records the child has produced so far.
+     */
+    "steps"?: number;
 }
 
 /**
  * ToolActivity is one tool call observed during a turn.
  */
 export interface ToolActivity {
-  call_id: string;
-  name: string;
-  arguments?: string;
+    "call_id": string;
+    "name": string;
+    "arguments"?: string;
 
-  /**
-   * Status is the execution state. Transcripts hold terminal records only:
-   * the runtime broadcasts the running form live and persists the terminal
-   * record (completed/failed) with the real Result once execution ends
-   * (design D10). Empty on records persisted before statuses existed.
-   */
-  status?: ToolStatus;
+    /**
+     * Status is the execution state. Transcripts hold terminal records only:
+     * the runtime broadcasts the running form live and persists the terminal
+     * record (completed/failed) with the real Result once execution ends
+     * (design D10). Empty on records persisted before statuses existed.
+     */
+    "status"?: ToolStatus;
 
-  /**
-   * Result is the execution result. Empty until the terminal record lands
-   * — and, for completed calls, when the tool produced no output.
-   */
-  result?: string;
+    /**
+     * Result is the execution result. Empty until the terminal record lands
+     * — and, for completed calls, when the tool produced no output.
+     */
+    "result"?: string;
 
-  /**
-   * DurationMs is the call's wall-clock duration in milliseconds, measured
-   * by the runtime from the running announcement to the terminal record
-   * (design D5). Zero on records persisted before durations were recorded
-   * — such a record shows no latency rather than a fabricated one.
-   */
-  duration_ms?: number;
-  is_error?: boolean;
+    /**
+     * DurationMs is the call's wall-clock duration in milliseconds, measured
+     * by the runtime from the running announcement to the terminal record
+     * (design D5). Zero on records persisted before durations were recorded
+     * — such a record shows no latency rather than a fabricated one.
+     */
+    "duration_ms"?: number;
+    "is_error"?: boolean;
 }
 
 /**
@@ -395,39 +395,39 @@ export interface ToolActivity {
  * before statuses existed and is terminal like completed.
  */
 export enum ToolStatus {
-  /**
-   * The Go zero value for the underlying type of the enum.
-   */
-  $zero = "",
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
 
-  /**
-   * ToolStatusRunning marks a tool call that started executing. It is
-   * live-only: the runtime emits it on the turn stream so the UI can show
-   * a spinner, and persists the terminal record instead once the call
-   * finishes (design D10).
-   */
-  ToolStatusRunning = "running",
+    /**
+     * ToolStatusRunning marks a tool call that started executing. It is
+     * live-only: the runtime emits it on the turn stream so the UI can show
+     * a spinner, and persists the terminal record instead once the call
+     * finishes (design D10).
+     */
+    ToolStatusRunning = "running",
 
-  /**
-   * ToolStatusCompleted marks a tool call that finished successfully. Its
-   * record is persisted with the real Result.
-   */
-  ToolStatusCompleted = "completed",
+    /**
+     * ToolStatusCompleted marks a tool call that finished successfully. Its
+     * record is persisted with the real Result.
+     */
+    ToolStatusCompleted = "completed",
 
-  /**
-   * ToolStatusFailed marks a tool call that finished with an error. Its
-   * record is persisted with the error text as Result (and IsError set for
-   * older clients).
-   */
-  ToolStatusFailed = "failed",
+    /**
+     * ToolStatusFailed marks a tool call that finished with an error. Its
+     * record is persisted with the error text as Result (and IsError set for
+     * older clients).
+     */
+    ToolStatusFailed = "failed",
 
-  /**
-   * ToolStatusStopped marks a task whose subagent run was cancelled — by a
-   * task_stop call or by its parent turn ending. It is terminal: the task
-   * will never produce a different outcome.
-   */
-  ToolStatusStopped = "stopped",
-}
+    /**
+     * ToolStatusStopped marks a task whose subagent run was cancelled — by a
+     * task_stop call or by its parent turn ending. It is terminal: the task
+     * will never produce a different outcome.
+     */
+    ToolStatusStopped = "stopped",
+};
 
 /**
  * Usage is one turn's provider-reported token usage. InputTokens/OutputTokens/
@@ -435,8 +435,8 @@ export enum ToolStatus {
  * size of the last call — what the model's context last held.
  */
 export interface Usage {
-  input_tokens: number;
-  output_tokens: number;
-  total_tokens: number;
-  final_input_tokens?: number;
+    "input_tokens": number;
+    "output_tokens": number;
+    "total_tokens": number;
+    "final_input_tokens"?: number;
 }

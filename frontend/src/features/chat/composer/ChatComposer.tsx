@@ -15,7 +15,9 @@
  * vendored chips would spin forever), and send stays blocked while any upload
  * is in flight. Failed uploads are dropped from the runtime draft before a
  * send so one rejected file cannot reject the whole message; the capability
- * warning still names the kinds the effective model cannot read.
+ * warning still names the kinds the effective model cannot read, and a
+ * connector gap (the model reads the kind but the provider family cannot
+ * carry the part) renders its own warning beside it.
  */
 import { useEffect } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, ReactElement } from "react";
@@ -252,6 +254,40 @@ function ComposerSurface(): ReactElement {
     }
   }
 
+  // Connector-gap warnings (spec chat-attachments "Composer warns on a
+  // connector gap", design D6): the model reads the kind but the provider
+  // family's connector cannot carry the part, so the send still degrades to
+  // a reference note — a different gap, so its own warning line.
+  const connectorGaps: string[] = [];
+
+  if (capability) {
+    if (
+      capability.PDFInput &&
+      !capability.PDFParts &&
+      chips.some(
+        (chip: AttachmentChip) =>
+          chip.status !== "rejected" && chip.mime === "application/pdf"
+      )
+    ) {
+      connectorGaps.push(
+        "PDF will arrive as a reference note (this provider cannot carry PDF parts)"
+      );
+    }
+
+    if (
+      capability.VideoInput &&
+      !capability.VideoParts &&
+      chips.some(
+        (chip: AttachmentChip) =>
+          chip.status !== "rejected" && chip.mime.startsWith("video/")
+      )
+    ) {
+      connectorGaps.push(
+        "Video will arrive as a reference note (this provider cannot carry video parts)"
+      );
+    }
+  }
+
   const canSend =
     activeAgentID !== null &&
     !uploading &&
@@ -363,6 +399,15 @@ function ComposerSurface(): ReactElement {
               >
                 {effectiveModel} can't read {unsupported.join(" or ")} — the
                 files ride along as references only.
+              </p>
+            )}
+            {connectorGaps.length > 0 && (
+              <p
+                className="pb-1.5 text-[11px] leading-4 text-warn"
+                data-testid="attachment-connector-warning"
+                role="status"
+              >
+                {connectorGaps.join(" ")}
               </p>
             )}
             <ComposerPrimitive.Input

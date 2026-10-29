@@ -2,6 +2,8 @@ package agents
 
 import (
 	"encoding/base64"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -11,23 +13,41 @@ import (
 	"github.com/oniharnantyo/buddies/internal/attachments"
 	"github.com/oniharnantyo/buddies/internal/sessions"
 	"github.com/oniharnantyo/buddies/internal/store"
+	"github.com/oniharnantyo/buddies/internal/workspaces"
 )
 
 // The attachment turn-path tests (task 5.3, design D5, spec chat-attachments
 // "Multi-part user messages" and "Model capability degradation"): the send
 // persists attachment metadata for replay, the model input carries content
-// parts when the effective model can read them, and a reference pointer note
-// when it cannot.
+// parts when the effective model and the connector's carriage matrix can
+// carry them (fix-pdf-attachment-carriage design D1), and a reference pointer
+// note names the true gap and hands off to the uploads mirror (design D3)
+// when they cannot.
 
 // newAttachmentFixture builds a fixture with the attachment capability wired
 // and returns it with the attachment store (over the same fake registry and
-// directory the manager reads).
-func newAttachmentFixture(t *testing.T, reply func(input []*schema.Message) fakeReply) (*fixture, *attachments.Store) {
+// directory the manager reads). Extra options ride after the attachment
+// wiring (e.g. a workspaces manager for the uploads mirror).
+func newAttachmentFixture(t *testing.T, reply func(input []*schema.Message) fakeReply, opts ...Option) (*fixture, *attachments.Store) {
 	t.Helper()
 	dir := t.TempDir()
-	f := newFixture(t, reply, WithAttachments(dir))
+	f := newFixture(t, reply, append([]Option{WithAttachments(dir)}, opts...)...)
 	require.NotNil(t, f.mgr.attachments, "the fixture manager carries the attachment store")
 	return f, attachments.NewStore(dir, f.store.Attachments())
+}
+
+// pointerNoteOf returns the reference pointer note the first model call
+// received, failing the test when none did.
+func pointerNoteOf(t *testing.T, f *fixture) string {
+	t.Helper()
+	last := f.model.calls()[0][len(f.model.calls()[0])-1]
+	for _, part := range last.UserInputMultiContent {
+		if part.Type == schema.ChatMessagePartTypeText && strings.Contains(part.Text, "attached file not sent") {
+			return part.Text
+		}
+	}
+	t.Fatal("no pointer note reached the model")
+	return ""
 }
 
 // saveUpload stores one upload through the given store and returns its
@@ -205,63 +225,108 @@ func TestTurn_CapableModelReceivesContent(t *testing.T) {
 	require.Equal(t, "png-bytes", decodeB64(t, *replayed.Image.Base64Data))
 }
 
-// TestTurn_PDFRidesWhereTheConnectorCarriesIt pins the PDF lane: a PDF
-// degrades to the pointer note on providers whose connector cannot carry
-// file parts (claude, OpenAI-shaped), and rides a file part on gemini.
+// TestTurn_PDFRidesWhereTheConnectorCarriesIt pins the PDF lane on the
+// carriage matrix (fix-pdf-attachment-carriage design D1, spec
+// chat-attachments "PDF to an anthropic-family model with PDF input" and
+// "PDF on a connector that cannot carry it"): for a model whose row
+// advertises PDF input, the bytes ride a file part wherever the connector
+// carries PDF parts (the gemini and anthropic families) and a connector-gap
+// note stands in where it cannot (OpenAI); a model without the capability
+// degrades with the model-gap note whatever the family. The turn-time
+// uploads mirror lands a copy in every cell, so each note addresses
+// /workspace/uploads.
 func TestTurn_PDFRidesWhereTheConnectorCarriesIt(t *testing.T) {
-	newSessionWithPDF := func(t *testing.T, providerType, model string) (*fixture, sessions.Session, sessions.Attachment) {
+	// newSessionWithPDF builds one fixture per cell: the provider family,
+	// the effective model, and — when row is non-nil — a stored ProviderModel
+	// row (the resolver's tier 1, authoritative over the static catalog). The
+	// fixture wires a workspaces manager and gives the agent the slug
+	// "tester", so the uploads mirror is active and the notes can address it;
+	// the second return is the mirrored uploads directory.
+	newSessionWithPDF := func(t *testing.T, providerType, model string, row *store.ProviderModel) (*fixture, string, sessions.Session, sessions.Attachment) {
 		t.Helper()
+		wsRoot := t.TempDir()
 		f, atts := newAttachmentFixture(t, func(_ []*schema.Message) fakeReply {
 			return fakeReply{text: "got the doc", promptTokens: 10, completionTokens: 2}
-		})
+		}, WithWorkspaces(workspaces.NewManager(wsRoot)))
 		provider, err := f.store.Providers().ByID(t.Context(), f.agent.ProviderID)
 		require.NoError(t, err)
 		provider.Type = providerType
 		require.NoError(t, f.store.Providers().Update(t.Context(), provider))
 		agent := f.agent
+		agent.Slug = "tester"
 		agent.Model = model
 		require.NoError(t, f.store.Agents().Update(t.Context(), &agent))
 		f.agent = agent
+		if row != nil {
+			row.ProviderID = agent.ProviderID
+			require.NoError(t, f.store.ProviderModels().Create(t.Context(), row))
+		}
 		sess, err := f.mgr.CreateSession(t.Context(), agent.ID)
 		require.NoError(t, err)
 		pdf := saveUpload(t, atts, "doc.pdf", "application/pdf", "%PDF-1.4")
-		return f, sess, pdf
+		return f, filepath.Join(wsRoot, "tester", workspaces.DirUploads), sess, pdf
 	}
 
-	// claude reads PDFs by catalog but its pinned connector cannot carry
-	// file parts: the pointer note stands in, and the send must not fail.
-	f, sess, pdf := newSessionWithPDF(t, ProviderAnthropic, "claude-sonnet-4-5")
+	// PDF + capable model + a family whose connector carries PDF parts: the
+	// bytes ride a file part, and the mirror lands the copy either way.
+	for _, cell := range []struct{ providerType, model string }{
+		{ProviderAnthropic, "claude-sonnet-4-5"},
+		{ProviderGemini, "gemini-2.5-pro"},
+	} {
+		f, uploadsDir, sess, pdf := newSessionWithPDF(t, cell.providerType, cell.model, nil)
+		turn, err := f.mgr.Send(t.Context(), sess.ID, "read this", pdf.Key)
+		require.NoError(t, err)
+		require.NoError(t, turn.Wait())
+
+		last := f.model.calls()[0][len(f.model.calls()[0])-1]
+		var filePart *schema.MessageInputPart
+		for i := range last.UserInputMultiContent {
+			if last.UserInputMultiContent[i].Type == schema.ChatMessagePartTypeFileURL {
+				filePart = &last.UserInputMultiContent[i]
+			}
+		}
+		require.NotNil(t, filePart, "%s receives the PDF as a file part", cell.providerType)
+		require.NotNil(t, filePart.File.Base64Data)
+		require.Equal(t, "%PDF-1.4", decodeB64(t, *filePart.File.Base64Data))
+		require.Equal(t, "application/pdf", filePart.File.MIMEType)
+		for _, part := range last.UserInputMultiContent {
+			if part.Type == schema.ChatMessagePartTypeText {
+				require.NotContains(t, part.Text, "attached file not sent",
+					"no degradation note rides a carried PDF")
+			}
+		}
+
+		data, err := os.ReadFile(filepath.Join(uploadsDir, "doc.pdf"))
+		require.NoError(t, err, "%s mirrors the PDF into uploads/ even when it rides the message", cell.providerType)
+		require.Equal(t, "%PDF-1.4", string(data))
+	}
+
+	// PDF + capable model + a family whose connector cannot carry PDF parts
+	// (OpenAI): the connector-gap note stands in, exactly on the design D3
+	// contract, and the mirror still lands the file.
+	f, uploadsDir, sess, pdf := newSessionWithPDF(t, ProviderOpenAI, "gpt-5",
+		&store.ProviderModel{ModelID: "gpt-5", PDFInput: true, Enabled: true})
 	turn, err := f.mgr.Send(t.Context(), sess.ID, "read this", pdf.Key)
 	require.NoError(t, err)
-	require.NoError(t, turn.Wait())
-	last := f.model.calls()[0]
-	lastMsg := last[len(last)-1]
-	sawPointer := false
-	for _, part := range lastMsg.UserInputMultiContent {
-		if part.Type == schema.ChatMessagePartTypeText && strings.Contains(part.Text, "cannot read PDF input") {
-			sawPointer = true
-		}
-	}
-	require.True(t, sawPointer, "the claude connector receives the pointer note, not file bytes")
+	require.NoError(t, turn.Wait(), "sending must not fail because the connector lacks PDF carriage")
+	require.Equal(t,
+		"[attached file not sent: doc.pdf (application/pdf, 8 bytes) — "+reasonConnectorPDFParts+
+			"; read it at /workspace/uploads/doc.pdf (fallback: attachment key "+pdf.Key+")]",
+		pointerNoteOf(t, f), "the note names the connector gap and the workspace path")
+	require.FileExists(t, filepath.Join(uploadsDir, "doc.pdf"), "the mirror lands the file even when the part degrades")
 
-	// gemini's connector carries file parts and the model reads PDFs: the
-	// bytes ride as a file content part.
-	f, sess, pdf = newSessionWithPDF(t, ProviderGemini, "gemini-2.5-pro")
+	// PDF + incapable model + gemini (a family that carries PDFs): the
+	// model-gap note stands in — the model, not the connector, is the gap.
+	f, uploadsDir, sess, pdf = newSessionWithPDF(t, ProviderGemini, "pdf-less-model",
+		&store.ProviderModel{ModelID: "pdf-less-model", PDFInput: false, Enabled: true})
 	turn, err = f.mgr.Send(t.Context(), sess.ID, "read this", pdf.Key)
 	require.NoError(t, err)
-	require.NoError(t, turn.Wait())
-	last = f.model.calls()[0]
-	lastMsg = last[len(last)-1]
-	var filePart *schema.MessageInputPart
-	for i := range lastMsg.UserInputMultiContent {
-		if lastMsg.UserInputMultiContent[i].Type == schema.ChatMessagePartTypeFileURL {
-			filePart = &lastMsg.UserInputMultiContent[i]
-		}
-	}
-	require.NotNil(t, filePart, "gemini receives the PDF as a file part")
-	require.NotNil(t, filePart.File.Base64Data)
-	require.Equal(t, "%PDF-1.4", decodeB64(t, *filePart.File.Base64Data))
-	require.Equal(t, "application/pdf", filePart.File.MIMEType)
+	require.NoError(t, turn.Wait(), "sending must not fail because the model lacks PDF input")
+	require.Equal(t,
+		"[attached file not sent: doc.pdf (application/pdf, 8 bytes) — "+modelGapReason("application/pdf")+
+			"; read it at /workspace/uploads/doc.pdf (fallback: attachment key "+pdf.Key+")]",
+		pointerNoteOf(t, f), "the note names the model gap and the workspace path")
+	require.FileExists(t, filepath.Join(uploadsDir, "doc.pdf"))
 }
 
 // TestTurn_VideoRidesWhereTheConnectorCarriesIt pins the video lane (task
@@ -296,20 +361,18 @@ func TestTurn_VideoRidesWhereTheConnectorCarriesIt(t *testing.T) {
 		return f, sess, clip
 	}
 
-	sawPointerNote := func(t *testing.T, f *fixture) {
+	// note asserts the degraded video cell's pointer note exactly (design D3):
+	// this fixture carries no workspaces manager, so the key-only shape
+	// applies — the true reason, then the capability key.
+	note := func(t *testing.T, f *fixture, want string) {
 		t.Helper()
-		last := f.model.calls()[0]
-		lastMsg := last[len(last)-1]
-		sawPointer := false
-		for _, part := range lastMsg.UserInputMultiContent {
-			if part.Type == schema.ChatMessagePartTypeText && strings.Contains(part.Text, "cannot read video input") {
-				sawPointer = true
-			}
+		last := f.model.calls()[0][len(f.model.calls()[0])-1]
+		for _, part := range last.UserInputMultiContent {
 			if part.Type == schema.ChatMessagePartTypeVideoURL {
 				t.Fatal("video bytes reached a connector that cannot carry them")
 			}
 		}
-		require.True(t, sawPointer, "the connector receives the pointer note, not video bytes")
+		require.Equal(t, want, pointerNoteOf(t, f), "the pointer note matches the D3 contract exactly")
 	}
 
 	// gemini's connector carries video parts and the stored row declares
@@ -331,21 +394,25 @@ func TestTurn_VideoRidesWhereTheConnectorCarriesIt(t *testing.T) {
 	require.Equal(t, "mp4-bytes", decodeB64(t, *videoPart.Video.Base64Data))
 	require.Equal(t, "video/mp4", videoPart.Video.MIMEType)
 
-	// The stored row declares no video input: the pointer note stands in,
+	// The stored row declares no video input: the model-gap note stands in,
 	// and the send must not fail.
 	f, sess, clip = newSessionWithVideo(t, ProviderGemini, false)
 	turn, err = f.mgr.Send(t.Context(), sess.ID, "watch this", clip.Key)
 	require.NoError(t, err)
 	require.NoError(t, turn.Wait(), "sending must not fail because the model lacks video input")
-	sawPointerNote(t, f)
+	note(t, f,
+		"[attached file not sent: clip.mp4 (video/mp4, 9 bytes) — "+modelGapReason("video/mp4")+
+			"; attachment key "+clip.Key+"]")
 
 	// The row declares video input but the openai-shaped connector cannot
-	// carry video parts: the pointer note stands in all the same.
+	// carry video parts: the connector-gap note stands in all the same.
 	f, sess, clip = newSessionWithVideo(t, ProviderOpenAI, true)
 	turn, err = f.mgr.Send(t.Context(), sess.ID, "watch this", clip.Key)
 	require.NoError(t, err)
 	require.NoError(t, turn.Wait(), "sending must not fail because the connector lacks video support")
-	sawPointerNote(t, f)
+	note(t, f,
+		"[attached file not sent: clip.mp4 (video/mp4, 9 bytes) — "+reasonConnectorVideoParts+
+			"; attachment key "+clip.Key+"]")
 }
 
 // TestTurn_LostFileDegradesToPointer pins the read-failure degradation: a
@@ -417,10 +484,12 @@ func TestTurn_TextAttachmentRidesInline(t *testing.T) {
 }
 
 // TestTurn_OfficeAttachmentRidesByReference pins the office lane's turn
-// semantics (add-document-editing task 5.5, mirroring the text lane's
-// non-multimodal behavior): an OOXML attachment never rides its bytes —
-// every model gets the same reference note pointing at the save_document
-// copy path — and the send never fails, whatever the model's capabilities.
+// semantics (add-document-editing task 5.5; uploads handoff per
+// fix-pdf-attachment-carriage design D3): an OOXML attachment never rides its
+// bytes — every model gets the same reference note handing off to the
+// uploads mirror (or the capability key without one) — and the send never
+// fails, whatever the model's capabilities. No degradation route runs
+// through save_document (design D5).
 func TestTurn_OfficeAttachmentRidesByReference(t *testing.T) {
 	// A model outside the catalog reads no attachment content: the office
 	// note must be capability-independent, like the text lane's inline ride.
@@ -435,8 +504,8 @@ func TestTurn_OfficeAttachmentRidesByReference(t *testing.T) {
 			}
 		}
 		for _, part := range last.UserInputMultiContent {
-			if part.Type == schema.ChatMessagePartTypeText && strings.Contains(part.Text, "save_document") {
-				return fakeReply{text: "I will save it", promptTokens: 10, completionTokens: 2}
+			if part.Type == schema.ChatMessagePartTypeText && strings.Contains(part.Text, "attached file not sent") {
+				return fakeReply{text: "noted", promptTokens: 10, completionTokens: 2}
 			}
 		}
 		return fakeReply{err: errString("the office reference note never reached the model")}
@@ -455,16 +524,45 @@ func TestTurn_OfficeAttachmentRidesByReference(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, turn.Wait(), "sending must not fail because office bytes never ride the message")
 
-	note := f.model.calls()[0][len(f.model.calls()[0])-1]
-	var text string
-	for _, part := range note.UserInputMultiContent {
-		if part.Type == schema.ChatMessagePartTypeText {
-			text += part.Text
-		}
-	}
-	require.Contains(t, text, "save_document", "the note names the knowledge-scope copy path")
-	require.Contains(t, text, att.Key, "the note carries the attachment key")
-	require.NotContains(t, text, "docx-bytes", "the bytes never ride the message")
+	// No workspaces manager on this fixture: the key-only note shape applies.
+	require.Equal(t,
+		"[attached file not sent: report.docx ("+attachments.MimeDOCX+", 10 bytes) — "+reasonOfficeBytesWithheld+
+			"; attachment key "+att.Key+"]",
+		pointerNoteOf(t, f), "the office note hands off to read_file's structured view, not the knowledge corpus")
+}
+
+// TestTurn_MirrorFailureFallsBackToKey pins the mirror's never-fail
+// degradation (spec chat-attachments "Mirror failure does not fail the
+// turn"): an uploads path blocked by a regular file turns the mirror off,
+// the send still succeeds, and the note keeps the capability key without a
+// workspace path.
+func TestTurn_MirrorFailureFallsBackToKey(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "tester")
+	require.NoError(t, os.MkdirAll(workspace, 0o700))
+	f, atts := newAttachmentFixture(t, func(_ []*schema.Message) fakeReply {
+		return fakeReply{text: "noted", promptTokens: 5, completionTokens: 1}
+	}, WithWorkspaces(workspaces.NewManager(root)))
+	agent := f.agent
+	agent.Slug = "tester"
+	agent.Model = "totally-unknown-model" // image-incapable: rides the note path
+	require.NoError(t, f.store.Agents().Update(t.Context(), &agent))
+	f.agent = agent
+	sess, err := f.mgr.CreateSession(t.Context(), agent.ID)
+	require.NoError(t, err)
+	// The uploads path is blocked by a regular file: UploadsDir's mkdir -p
+	// fails, the mirror stays off, and nothing else about the turn changes.
+	require.NoError(t, os.WriteFile(filepath.Join(workspace, workspaces.DirUploads), []byte("blocked"), 0o600))
+
+	att := saveUpload(t, atts, "shot.png", "image/png", "png-bytes")
+	turn, err := f.mgr.Send(t.Context(), sess.ID, "look", att.Key)
+	require.NoError(t, err)
+	require.NoError(t, turn.Wait(), "a blocked uploads path must not fail the turn")
+
+	require.Equal(t,
+		"[attached file not sent: shot.png (image/png, 9 bytes) — "+modelGapReason("image/png")+
+			"; attachment key "+att.Key+"]",
+		pointerNoteOf(t, f), "the note falls back to the capability key without a workspace path")
 }
 
 // decodeB64 decodes a base64 part payload for assertions.

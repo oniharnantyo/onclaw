@@ -72,6 +72,8 @@ const capabilities: ModelCapability[] = [
     ImageInput: true,
     PDFInput: true,
     VideoInput: true,
+    PDFParts: true,
+    VideoParts: true,
   },
 ];
 

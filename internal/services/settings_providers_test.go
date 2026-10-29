@@ -298,9 +298,9 @@ func TestProviderModels_StoreReadOnly(t *testing.T) {
 	models, err := svc.ProviderModels(ctx, created.ID)
 	require.NoError(t, err)
 	require.Equal(t, []ModelCapability{
-		{ID: "claude-haiku-4-5", ContextWindow: 200000, Efforts: []string{"low", "medium", "high"}, ImageInput: true, PDFInput: true},
-		{ID: "claude-opus-4-1", ContextWindow: 200000, Efforts: []string{"low", "medium", "high"}, ImageInput: true, PDFInput: true},
-		{ID: "claude-sonnet-4-5", ContextWindow: 200000, Efforts: []string{"low", "medium", "high"}, ImageInput: true, PDFInput: true},
+		{ID: "claude-haiku-4-5", ContextWindow: 200000, Efforts: []string{"low", "medium", "high"}, ImageInput: true, PDFInput: true, PDFParts: true, VideoParts: false},
+		{ID: "claude-opus-4-1", ContextWindow: 200000, Efforts: []string{"low", "medium", "high"}, ImageInput: true, PDFInput: true, PDFParts: true, VideoParts: false},
+		{ID: "claude-sonnet-4-5", ContextWindow: 200000, Efforts: []string{"low", "medium", "high"}, ImageInput: true, PDFInput: true, PDFParts: true, VideoParts: false},
 	}, models)
 
 	// Disabling a model excludes it from ProviderModels.
@@ -364,6 +364,52 @@ func TestProviderModels_StoreReadOnly(t *testing.T) {
 	}, liveModelsAfter)
 }
 
+func TestProviderModels_PDFPartsFollowsProviderFamily(t *testing.T) {
+	tests := []struct {
+		name           string
+		providerType   string
+		wantPDFParts   bool
+		wantVideoParts bool
+	}{
+		{name: "gemini carries PDF and video parts", providerType: agents.ProviderGemini, wantPDFParts: true, wantVideoParts: true},
+		{name: "anthropic carries PDF parts only", providerType: agents.ProviderAnthropic, wantPDFParts: true, wantVideoParts: false},
+		{name: "anthropic-compatible carries PDF parts only", providerType: agents.ProviderAnthropicCompatible, wantPDFParts: true, wantVideoParts: false},
+		{name: "openai carries neither", providerType: agents.ProviderOpenAI, wantPDFParts: false, wantVideoParts: false},
+		{name: "openrouter carries neither", providerType: agents.ProviderOpenRouter, wantPDFParts: false, wantVideoParts: false},
+		{name: "openai-compatible carries neither", providerType: agents.ProviderOpenAICompatible, wantPDFParts: false, wantVideoParts: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := fake.New()
+			svc := NewSettingsService(st)
+			ctx := context.Background()
+
+			// Seed directly so non-canonical types (openrouter, the
+			// compatible endpoints) take the same path as canonical ones.
+			provider := store.Provider{Name: "p", Type: tt.providerType, Enabled: true}
+			require.NoError(t, st.Providers().Create(ctx, &provider))
+			require.NoError(t, st.ProviderModels().Create(ctx, &store.ProviderModel{
+				ProviderID: provider.ID,
+				ModelID:    "some-model",
+				Enabled:    true,
+			}))
+
+			models, err := svc.ProviderModels(ctx, provider.ID)
+			require.NoError(t, err)
+			require.Len(t, models, 1)
+			require.Equal(t, tt.wantPDFParts, models[0].PDFParts)
+			// Video carriage is gemini-only (the matrix): video parts ride
+			// nowhere else, so every non-gemini family reads false.
+			require.Equal(t, tt.wantVideoParts, models[0].VideoParts)
+
+			// Derived, never stored: the row itself stays untouched.
+			stored, err := st.ProviderModels().ByProvider(ctx, provider.ID)
+			require.NoError(t, err)
+			require.Len(t, stored, 1)
+		})
+	}
+}
+
 func TestProviderModels_UnknownTypeYieldsEmptyListing(t *testing.T) {
 	st := fake.New()
 	svc := NewSettingsService(st)
@@ -387,7 +433,7 @@ func TestProviderModels_UnknownTypeYieldsEmptyListing(t *testing.T) {
 	models, err = svc.ProviderModels(ctx, seeded.ID)
 	require.NoError(t, err)
 	require.Equal(t, []ModelCapability{
-		{ID: "mystery-model", ContextWindow: agents.DefaultContextWindow, Efforts: []string{"high"}},
+		{ID: "mystery-model", ContextWindow: agents.DefaultContextWindow, Efforts: []string{"high"}, PDFParts: false, VideoParts: false},
 	}, models)
 }
 

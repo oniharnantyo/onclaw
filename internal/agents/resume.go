@@ -13,6 +13,7 @@ import (
 	"github.com/oniharnantyo/buddies/internal/agents/backend"
 	"github.com/oniharnantyo/buddies/internal/agents/hooks"
 	"github.com/oniharnantyo/buddies/internal/agents/subagents"
+	"github.com/oniharnantyo/buddies/internal/carriage"
 	"github.com/oniharnantyo/buddies/internal/sessions"
 	"github.com/oniharnantyo/buddies/internal/store"
 )
@@ -479,6 +480,7 @@ func (m *manager) composeResumeRun(ctx context.Context, rt *runningTurn, sess se
 	// Phase 8: compose the ADK agent. The instruction is a placeholder (the
 	// checkpoint restores the real one); the capability middlewares and the
 	// tool surface must match the interrupted composition's structure.
+	providerType := m.providerTypeOf(ctx, agent)
 	cfg := &composeConfig{
 		Name:        agent.Name,
 		Instruction: instruction,
@@ -491,6 +493,11 @@ func (m *manager) composeResumeRun(ctx context.Context, rt *runningTurn, sess se
 	var extraRoots []string
 	if surface.agentDir != "" {
 		fsCap := &filesystemCapability{AgentDir: surface.agentDir, DisabledTools: surface.fsDisabled}
+		// Tool-result carriage (fix-pdf-attachment-carriage design D4): the
+		// same matrix that gates the message lane decides whether read_file
+		// serves a PDF as the native part or as extracted text — the cold
+		// resume mirrors the fresh turn's step-8 wiring.
+		fsCap.ToolResultPDFParts = carriage.CarriesPDFPartsInToolResults(providerType)
 		if surface.shell {
 			fsCap.Shell = backend.NewJailedShell(surface.agentDir,
 				backend.WithApprovalGate(checkpointLedger{checkpoints: m.store.Checkpoints()}))

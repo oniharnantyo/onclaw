@@ -3,7 +3,8 @@
  * selection and limits" + "Model capability degradation"): a send is blocked
  * while an upload is in flight and carries the capability keys once the
  * upload lands, and the composer warns when the effective model cannot read
- * the attached kind (images, PDFs, video).
+ * the attached kind (images, PDFs, video) or when the provider connector
+ * cannot carry a kind the model reads (fix-pdf-attachment-carriage D6).
  *
  * The ported scenarios from the legacy `features/chat/__test__/attachments.test.tsx`
  * (the old composer tray) — the store-side lanes and the chip store stay
@@ -134,6 +135,8 @@ describe("the composer's attachments (task 5.1)", () => {
           ImageInput: false,
           PDFInput: false,
           VideoInput: false,
+          PDFParts: true,
+          VideoParts: true,
         },
       ],
     });
@@ -157,6 +160,8 @@ describe("the composer's attachments (task 5.1)", () => {
           ImageInput: true,
           PDFInput: true,
           VideoInput: false,
+          PDFParts: true,
+          VideoParts: true,
         },
       ],
     });
@@ -168,6 +173,91 @@ describe("the composer's attachments (task 5.1)", () => {
     const warning = screen.getByTestId("attachment-capability-warning");
 
     expect(warning.textContent).toContain("can't read videos");
+  });
+
+  it("warns when the connector cannot carry a PDF the model reads (design D6)", async () => {
+    useChatStore.setState({
+      models: [
+        {
+          ID: "m-pro",
+          ContextWindow: 200000,
+          Efforts: [],
+          ImageInput: true,
+          PDFInput: true,
+          VideoInput: false,
+          PDFParts: false,
+          VideoParts: true,
+        },
+      ],
+    });
+
+    await renderComposer();
+
+    await attach(new File(["data"], "doc.pdf", { type: "application/pdf" }));
+
+    const warning = screen.getByTestId("attachment-connector-warning");
+
+    expect(warning.textContent).toContain(
+      "PDF will arrive as a reference note (this provider cannot carry PDF parts)"
+    );
+    // The model reads the PDF, so the model-gap warning stays quiet — the
+    // connector gap is its own distinct line (spec: "distinct from the
+    // model-capability warning").
+    expect(screen.queryByTestId("attachment-capability-warning")).toBeNull();
+  });
+
+  it("a connector that carries PDF parts warns nothing for a readable PDF", async () => {
+    useChatStore.setState({
+      models: [
+        {
+          ID: "m-pro",
+          ContextWindow: 200000,
+          Efforts: [],
+          ImageInput: true,
+          PDFInput: true,
+          VideoInput: false,
+          PDFParts: true,
+          VideoParts: false,
+        },
+      ],
+    });
+
+    await renderComposer();
+
+    await attach(new File(["data"], "doc.pdf", { type: "application/pdf" }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("attachment-tray")).toBeTruthy()
+    );
+    expect(screen.queryByTestId("attachment-connector-warning")).toBeNull();
+    expect(screen.queryByTestId("attachment-capability-warning")).toBeNull();
+  });
+
+  it("warns when the connector cannot carry a video the model reads", async () => {
+    useChatStore.setState({
+      models: [
+        {
+          ID: "m-pro",
+          ContextWindow: 200000,
+          Efforts: [],
+          ImageInput: true,
+          PDFInput: false,
+          VideoInput: true,
+          PDFParts: true,
+          VideoParts: false,
+        },
+      ],
+    });
+
+    await renderComposer();
+
+    await attach(new File(["data"], "clip.mp4", { type: "video/mp4" }));
+
+    const warning = screen.getByTestId("attachment-connector-warning");
+
+    expect(warning.textContent).toContain(
+      "Video will arrive as a reference note (this provider cannot carry video parts)"
+    );
   });
 
   it("a capable model warns nothing", async () => {

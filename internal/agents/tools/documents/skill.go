@@ -42,9 +42,9 @@ paragraph, cell, slide, style, and embedded object survives untouched.
    shapes, Sheet!Cell for cells). You target those addresses in edits.
 
 2. **Edit documents that live in your workspace.** The edit tool only
-   reaches workspace files. A chat attachment is not in your workspace —
-   save_document can copy one into your knowledge scope, where read_file
-   presents it as a view. Knowledge documents are read-only: to revise one,
+   reaches workspace files. Chat attachments are mirrored into your
+   workspace at /workspace/uploads when their turn runs — read them there
+   with read_file. Knowledge documents are read-only: to revise one,
    read it for content and generate a fresh document with create_document
    rather than editing it where it lives.
 

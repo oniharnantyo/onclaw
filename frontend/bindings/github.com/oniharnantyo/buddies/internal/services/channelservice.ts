@@ -11,10 +11,7 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import {
-  Call as $Call,
-  CancellablePromise as $CancellablePromise,
-} from "@wailsio/runtime";
+import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -30,20 +27,16 @@ import * as $models from "./models.js";
  * already allowlisted still resolves — the stale request is dropped; an
  * unknown request wraps store.ErrNotFound.
  */
-export function ApprovePairing(
-  telegramUserID: number
-): $CancellablePromise<void> {
-  return $Call.ByID(1093116197, telegramUserID);
+export function ApprovePairing(telegramUserID: number): $CancellablePromise<void> {
+    return $Call.ByID(1093116197, telegramUserID);
 }
 
 /**
  * DismissPairing drops one pending request without allowlisting its user;
  * an unknown request wraps store.ErrNotFound.
  */
-export function DismissPairing(
-  telegramUserID: number
-): $CancellablePromise<void> {
-  return $Call.ByID(1448207858, telegramUserID);
+export function DismissPairing(telegramUserID: number): $CancellablePromise<void> {
+    return $Call.ByID(1448207858, telegramUserID);
 }
 
 /**
@@ -51,10 +44,8 @@ export function DismissPairing(
  * fresh installs boot before any save (the GatewaySettings precedent) — and
  * reads as the not-configured default: disabled, no token.
  */
-export function GetChannel(
-  id: string
-): $CancellablePromise<$models.ChannelView> {
-  return $Call.ByID(4005095009, id);
+export function GetChannel(id: string): $CancellablePromise<$models.ChannelView> {
+    return $Call.ByID(4005095009, id);
 }
 
 /**
@@ -62,52 +53,40 @@ export function GetChannel(
  * configured rows appear — an id that was never saved does not exist yet.
  * The views are secret-free like GetChannel's.
  */
-export function ListChannels(): $CancellablePromise<
-  $models.ChannelView[] | null
-> {
-  return $Call.ByID(2546425910);
+export function ListChannels(): $CancellablePromise<$models.ChannelView[] | null> {
+    return $Call.ByID(2546425910);
 }
 
 /**
  * ListChats returns every chat's state ordered by chat id. The result is
  * empty (not nil) when no chat is known.
  */
-export function ListChats(): $CancellablePromise<
-  $models.ChannelChatView[] | null
-> {
-  return $Call.ByID(2908697713);
+export function ListChats(): $CancellablePromise<$models.ChannelChatView[] | null> {
+    return $Call.ByID(2908697713);
 }
 
 /**
  * ListPendingPairings returns the pending authorization requests ordered by
  * request time. The result is empty (not nil) when nothing pends.
  */
-export function ListPendingPairings(): $CancellablePromise<
-  store$0.ChannelPairing[] | null
-> {
-  return $Call.ByID(2298651240);
+export function ListPendingPairings(): $CancellablePromise<store$0.ChannelPairing[] | null> {
+    return $Call.ByID(2298651240);
 }
 
 /**
  * SaveChannel upserts one channel's configuration; a blank BotToken keeps the
  * stored token (task 1.4: the token field is write-only).
  */
-export function SaveChannel(
-  id: string,
-  $in: $models.ChannelInput
-): $CancellablePromise<$models.ChannelView> {
-  return $Call.ByID(3088266214, id, $in);
+export function SaveChannel(id: string, $in: $models.ChannelInput): $CancellablePromise<$models.ChannelView> {
+    return $Call.ByID(3088266214, id, $in);
 }
 
 /**
  * SetChatFreeResponse toggles the group chat's unaddressed-message gate
  * (design D4). store.ErrNotFound when the chat is absent.
  */
-export function SetChatFreeResponse(
-  chatID: number,
-  free: boolean
-): $CancellablePromise<$models.ChannelChatView> {
-  return $Call.ByID(2227888029, chatID, free);
+export function SetChatFreeResponse(chatID: number, free: boolean): $CancellablePromise<$models.ChannelChatView> {
+    return $Call.ByID(2227888029, chatID, free);
 }
 
 /**
@@ -115,22 +94,16 @@ export function SetChatFreeResponse(
  * the pin (the store normalizes both nil and empty to "no override").
  * store.ErrNotFound when the chat is absent.
  */
-export function SetChatPinnedAgent(
-  chatID: number,
-  agentID: string
-): $CancellablePromise<$models.ChannelChatView> {
-  return $Call.ByID(1984290051, chatID, agentID);
+export function SetChatPinnedAgent(chatID: number, agentID: string): $CancellablePromise<$models.ChannelChatView> {
+    return $Call.ByID(1984290051, chatID, agentID);
 }
 
 /**
  * SetEnabled toggles the channel's enabled flag without touching the stored
  * token or proxy.
  */
-export function SetEnabled(
-  id: string,
-  enabled: boolean
-): $CancellablePromise<$models.ChannelView> {
-  return $Call.ByID(2830140487, id, enabled);
+export function SetEnabled(id: string, enabled: boolean): $CancellablePromise<$models.ChannelView> {
+    return $Call.ByID(2830140487, id, enabled);
 }
 
 /**
@@ -138,8 +111,6 @@ export function SetEnabled(
  * clears the marker on every other row, so at most one chat is home.
  * store.ErrNotFound when the chat is absent.
  */
-export function SetHomeChat(
-  chatID: number
-): $CancellablePromise<$models.ChannelChatView> {
-  return $Call.ByID(605078523, chatID);
+export function SetHomeChat(chatID: number): $CancellablePromise<$models.ChannelChatView> {
+    return $Call.ByID(605078523, chatID);
 }

@@ -52,6 +52,12 @@ type FilesystemCapability struct {
 	// default — exposes no corpus. The plantask and reduction backends never
 	// see it: ExtraRoots stays skills-only for them.
 	Knowledge *backend.KnowledgeRoots
+	// ToolResultPDFParts reports whether the turn's connector family carries
+	// PDF file parts inside tool results (fix-pdf-attachment-carriage design
+	// D4): true serves a read_file on a PDF as the native file part, false
+	// degrades the read to the document's extracted text. The runner sets it
+	// from the carriage matrix.
+	ToolResultPDFParts bool
 }
 
 // ReductionCapability configures the tool-output reduction middleware.
@@ -253,13 +259,17 @@ func BuildHandlers(ctx context.Context, cfg *ComposeConfig) ([]adk.TypedChatMode
 	if cfg.Filesystem != nil {
 		var jail einofs.Backend
 		var err error
+		// The turn's tool-result PDF carriage rides the jail
+		// (fix-pdf-attachment-carriage design D4): false degrades a
+		// read_file on a PDF to the document's extracted text, true serves
+		// the native file part.
 		if cfg.Filesystem.Knowledge != nil {
 			// The read-only corpus mount rides the jail when the turn exposes
 			// it (add-knowledge-corpus design D3); extra roots stay
 			// skills-only.
-			jail, err = backend.NewFilesystemJailedWithKnowledge(cfg.Filesystem.AgentDir, *cfg.Filesystem.Knowledge, cfg.Filesystem.ExtraRoots...)
+			jail, err = backend.NewFilesystemJailedWithKnowledgeForTurn(cfg.Filesystem.AgentDir, *cfg.Filesystem.Knowledge, cfg.Filesystem.ToolResultPDFParts, cfg.Filesystem.ExtraRoots...)
 		} else {
-			jail, err = backend.NewFilesystemJailedWithRoots(cfg.Filesystem.AgentDir, cfg.Filesystem.ExtraRoots...)
+			jail, err = backend.NewFilesystemJailedWithRootsForTurn(cfg.Filesystem.AgentDir, cfg.Filesystem.ToolResultPDFParts, cfg.Filesystem.ExtraRoots...)
 		}
 		if err != nil {
 			return nil, nil, fmt.Errorf("build middlewares: filesystem jail: %w", err)

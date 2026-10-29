@@ -17,6 +17,7 @@ import (
 	"github.com/oniharnantyo/buddies/internal/agents/backend"
 	"github.com/oniharnantyo/buddies/internal/agents/hooks"
 	"github.com/oniharnantyo/buddies/internal/agents/subagents"
+	"github.com/oniharnantyo/buddies/internal/carriage"
 	"github.com/oniharnantyo/buddies/internal/sessions"
 	"github.com/oniharnantyo/buddies/internal/store"
 )
@@ -291,11 +292,30 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 	}
 	effModel := effectiveModel(agent, override)
 	caps, _ := resolver.Resolve(ctx, agent.ProviderID, effModel)
+	providerType := m.providerTypeOf(ctx, agent)
+
+	// The turn-time uploads mirror (fix-pdf-attachment-carriage design D2):
+	// every attachment riding the turn — the fresh send's and every replayed
+	// user message's — is copied (if absent) into the agent workspace's
+	// uploads/ directory before the model input is built, so the filesystem
+	// tools can reach the bytes and the pointer notes can address the final
+	// (possibly collision-suffixed) name. Best-effort: a rootable agent
+	// without a writable uploads directory turns the mirror off and the
+	// notes keep the capability key alone — it never fails the turn.
+	var uploads map[string]string
+	if surface.agentDir != "" && m.workspaces != nil && agent.Slug != "" {
+		uploadsDir, err := m.workspaces.UploadsDir(agent.Slug)
+		if err != nil {
+			slog.Warn("attachments: resolve uploads directory", "session", rt.sessionID, "agent", agent.Slug, "error", err)
+		} else {
+			uploads = mirrorUploads(ctx, uploadsDir, m.attachments, turnAttachments(events, req.attachments))
+		}
+	}
 
 	instruction, inputMsgs, err := assembleTurnInput(
 		persona{identity: identity, soul: soul, bootstrap: bootstrap}, checkpoint, events, req,
 		turnComposer{
-			providerType: m.providerTypeOf(ctx, agent),
+			providerType: providerType,
 			model:        effModel,
 			atts:         m.attachments,
 			caps:         caps,
@@ -304,6 +324,7 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 			skills:       skillBackend != nil,
 			presets:      m.presetGuidance(ctx, surface.createDocument),
 			memory:       m.memoryBlock(ctx, agent),
+			uploads:      uploads,
 		})
 	if err != nil {
 		return failTurn(err)
@@ -324,6 +345,10 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 	var extraRoots []string
 	if surface.agentDir != "" {
 		fsCap := &filesystemCapability{AgentDir: surface.agentDir, DisabledTools: surface.fsDisabled}
+		// Tool-result carriage (fix-pdf-attachment-carriage design D4): the
+		// same matrix that gates the message lane decides whether read_file
+		// serves a PDF as the native part or as extracted text.
+		fsCap.ToolResultPDFParts = carriage.CarriesPDFPartsInToolResults(providerType)
 		if surface.shell {
 			// The dangerous-command gate rides the shell (design D4): a
 			// safety-pattern match interrupts the run for a human decision;
