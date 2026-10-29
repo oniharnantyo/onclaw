@@ -580,6 +580,8 @@ export interface Client {
     saveChannel(id: string, input: ChannelInput): Promise<ChannelView>;
     /** Toggles the channel without touching the stored token or proxy. */
     setEnabled(id: string, enabled: boolean): Promise<ChannelView>;
+    /** Every stored channel's secret-free view, ordered by id (task 9.3). */
+    list(): Promise<ChannelView[]>;
     /** Every chat's state row, ordered by chat id; empty when none is known. */
     chats(): Promise<ChannelChatView[]>;
     /** The pending authorization requests, ordered by request time. */
@@ -1045,6 +1047,8 @@ export function createClient(transport: Transport = wailsTransport): Client {
         transport.channels.SaveChannel(id, input),
       setEnabled: (id: string, enabled: boolean): Promise<ChannelView> =>
         transport.channels.SetEnabled(id, enabled),
+      list: async (): Promise<ChannelView[]> =>
+        unwrap(await transport.channels.ListChannels()),
       chats: async (): Promise<ChannelChatView[]> =>
         unwrap(await transport.channels.ListChats()),
       pendingPairings: async (): Promise<ChannelPairing[]> =>

@@ -25,6 +25,28 @@ func (s *channelStore) GetChannel(ctx context.Context, id string) (*store.Channe
 	return ch, nil
 }
 
+// ListChannels returns every channel row ordered by id.
+func (s *channelStore) ListChannels(ctx context.Context) ([]store.Channel, error) {
+	rows, err := s.e.QueryContext(ctx, `SELECT `+channelColumns+` FROM channels ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("list channels: %w", err)
+	}
+	defer rows.Close()
+
+	var out []store.Channel
+	for rows.Next() {
+		ch, err := scanChannel(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list channels: %w", err)
+		}
+		out = append(out, *ch)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list channels: %w", err)
+	}
+	return out, nil
+}
+
 // SaveChannel upserts the channel atomically: one INSERT ... ON CONFLICT
 // statement either inserts the row or rewrites the configuration columns,
 // keeping the original created_at (add-telegram-channel task 1.3).

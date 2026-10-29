@@ -54,6 +54,7 @@
 
 - [x] 9.1 Add the Channels pane: `PaneKey` += `"channels"`, INTEGRATIONS section entry, `ChannelsPane.tsx` with enable toggle, write-only token field + hint, connection-state chip fed by `channel:state`, pending-pairing allow/dismiss cards, per-chat rows (pinned agent select, home radio, free-response toggle); verify `cd frontend && npx vp check src` passes and component tests cover token-blank-keeps UX and pairing resolution.
 - [x] 9.2 Add the channel-origin affordance in the session UI (Telegram badge on channel turns, both themes); verify component test asserts presence for telegram-origin events and absence for user origin, plus theme snapshots.
+- [x] 9.3 Restructure the Channels pane around per-channel cards (brand mark + live state chip + enable toggle + per-channel body registry) fed by a new `ListChannels` store/service seam; drop the duplicated pane descriptions (shell owns title + description) and restyle the pane (quiet token save, guided empty states); verify `cd frontend && npx vp check src` passes and component tests cover the card header, disabled-state chip, and event-driven pairing refresh.
 
 ## 10. End-to-end verification
 

@@ -31,6 +31,20 @@ func (f channelStore) GetChannel(_ context.Context, id string) (*store.Channel, 
 	return &out, nil
 }
 
+// ListChannels returns every channel row ordered by id. The result is never
+// nil.
+func (f channelStore) ListChannels(_ context.Context) ([]store.Channel, error) {
+	f.s.mu.Lock()
+	defer f.s.mu.Unlock()
+
+	out := make([]store.Channel, 0, len(f.s.channels))
+	for _, ch := range f.s.channels {
+		out = append(out, ch)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
 // SaveChannel upserts the channel atomically, mirroring the sqlite adapter's
 // INSERT ... ON CONFLICT: an absent id inserts, a present id rewrites the
 // configuration columns in place, keeping the original CreatedAt.

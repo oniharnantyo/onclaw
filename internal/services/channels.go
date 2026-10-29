@@ -75,6 +75,21 @@ func (s *ChannelService) GetChannel(ctx context.Context, id string) (ChannelView
 	return newChannelView(*ch), nil
 }
 
+// ListChannels returns every stored channel's view ordered by id. Only
+// configured rows appear — an id that was never saved does not exist yet.
+// The views are secret-free like GetChannel's.
+func (s *ChannelService) ListChannels(ctx context.Context) ([]ChannelView, error) {
+	rows, err := s.store.Channels().ListChannels(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list channels: %w", err)
+	}
+	out := make([]ChannelView, 0, len(rows))
+	for _, ch := range rows {
+		out = append(out, newChannelView(ch))
+	}
+	return out, nil
+}
+
 // SaveChannel upserts one channel's configuration; a blank BotToken keeps the
 // stored token (task 1.4: the token field is write-only).
 func (s *ChannelService) SaveChannel(ctx context.Context, id string, in ChannelInput) (ChannelView, error) {

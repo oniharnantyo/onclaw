@@ -5,7 +5,6 @@ import type { Skill } from "../../../../bindings/github.com/oniharnantyo/buddies
 import {
   EmptyState,
   LoadingHint,
-  PaneHeader,
   SettingsList,
   SettingsRow,
 } from "../../../components";
@@ -21,9 +20,7 @@ import type { SettingsPaneConfig } from "../types";
  * toggle per skill (task 11.2). Directory-scanned rows carry source
  * "directory"; the chip renders whatever source the backend reports. The
  * empty state offers a next step (task 4.8): rescan the skills directory. */
-export default function SkillsPane({
-  pane,
-}: {
+export default function SkillsPane(_props: {
   pane: SettingsPaneConfig;
 }): ReactElement {
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -58,8 +55,6 @@ export default function SkillsPane({
 
   return (
     <div data-testid="skills-pane">
-      <PaneHeader description={pane.description} />
-
       {loading ? (
         <LoadingHint testId="skills-loading" />
       ) : loadError ? (

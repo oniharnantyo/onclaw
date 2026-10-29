@@ -14,6 +14,9 @@ type ChannelStore interface {
 	// GetChannel returns the channel with the given slug id; ErrNotFound
 	// when absent.
 	GetChannel(ctx context.Context, id string) (*Channel, error)
+	// ListChannels returns every channel row ordered by id. The result is
+	// never nil.
+	ListChannels(ctx context.Context) ([]Channel, error)
 	// SaveChannel upserts the channel atomically (add-telegram-channel task
 	// 1.3): an absent id inserts, a present id rewrites the configuration
 	// columns in place, keeping the original CreatedAt. Zero timestamps are

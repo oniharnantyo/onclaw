@@ -258,3 +258,25 @@ func TestChannelService_ApprovePairing_StaleRequest(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, pairings)
 }
+
+func TestChannelService_ListChannels(t *testing.T) {
+	f := newChannelFixture(t)
+	ctx := context.Background()
+
+	out, err := f.svc.ListChannels(ctx)
+	require.NoError(t, err)
+	require.Empty(t, out, "no configured rows list empty")
+
+	require.NoError(t, f.st.Channels().SaveChannel(ctx, &store.Channel{ID: "telegram", Enabled: true, BotToken: "123:ABCDEF"}))
+	require.NoError(t, f.st.Channels().SaveChannel(ctx, &store.Channel{ID: "xmpp", Enabled: false, BotToken: "secret-2"}))
+
+	out, err = f.svc.ListChannels(ctx)
+	require.NoError(t, err)
+	require.Len(t, out, 2)
+	require.Equal(t, "telegram", out[0].ID)
+	require.Equal(t, "xmpp", out[1].ID)
+	require.True(t, out[0].TokenSet, "TokenSet reports a stored token")
+	require.Equal(t, "CDEF", out[0].TokenHint, "the hint is last-four only")
+	require.True(t, out[1].TokenSet)
+	require.Equal(t, "et-2", out[1].TokenHint)
+}

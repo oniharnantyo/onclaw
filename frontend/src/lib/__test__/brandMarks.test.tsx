@@ -27,6 +27,17 @@ describe("BrandMark", () => {
     await unmount();
   });
 
+  it("renders the telegram glyph theme-following", async () => {
+    const { container, unmount } = await renderUI(
+      <BrandMark type="telegram" name="Telegram" />
+    );
+
+    expect(container.querySelector("svg")?.getAttribute("fill")).toBe(
+      "currentColor"
+    );
+    await unmount();
+  });
+
   it("falls back to the name's initial on an unknown type", async () => {
     const { container, getByText, unmount } = await renderUI(
       <BrandMark type="acme" name="acme" />

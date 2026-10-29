@@ -166,9 +166,7 @@ function StatusChip({ server }: { server: MCPServer }): ReactElement {
  * color: Authorize is the one labeled, accent-filled call to action,
  * Disconnect is warn-tinted, Remove is danger-tinted, Refresh and Edit stay
  * neutral; the confirm dialog still owns the destructive fill. */
-export default function McpPane({
-  pane,
-}: {
+export default function McpPane(_props: {
   pane: SettingsPaneConfig;
 }): ReactElement {
   const [servers, setServers] = useState<MCPServer[]>([]);
@@ -408,7 +406,6 @@ export default function McpPane({
   return (
     <div data-testid="mcp-pane">
       <PaneHeader
-        description={pane.description}
         actions={
           <>
             <Button

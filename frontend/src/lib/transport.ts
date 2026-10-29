@@ -353,6 +353,8 @@ export interface Transport {
       id: string,
       enabled: boolean
     ): Promise<serviceModels.ChannelView>;
+    /** Every stored channel's secret-free view, ordered by id (task 9.3). */
+    ListChannels(): Promise<serviceModels.ChannelView[] | null>;
     ListChats(): Promise<serviceModels.ChannelChatView[] | null>;
     ListPendingPairings(): Promise<storeModels.ChannelPairing[] | null>;
     ApprovePairing(telegramUserID: number): Promise<void>;

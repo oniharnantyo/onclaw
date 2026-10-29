@@ -10,8 +10,7 @@ import type {
   ChannelStateEvent,
   ChannelView,
 } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
-import type { Client } from "../../../lib/client";
-import type { ChannelsStateHandler } from "../../../lib/client";
+import type { Client, ChannelsStateHandler } from "../../../lib/client";
 
 import ChannelsPane from "../components/ChannelsPane";
 import type { SettingsPaneConfig } from "../types";
@@ -33,11 +32,11 @@ let pairings: ChannelPairing[];
 
 let agents: Agent[];
 
-/** State handlers captured from onChannelsState subscriptions; a test fires
- * one to simulate the backend's channels:state push (design D10). */
-const stateHandlers: ChannelsStateHandler[] = [];
+/** Handlers captured from the event subscriptions; a test fires them to
+ * simulate the backend's channels:changed / channels:state pushes. */
+const changedHandlers: (() => void)[] = [];
 
-const unsubscribe = vi.fn();
+const stateHandlers: ChannelsStateHandler[] = [];
 
 vi.mock("../../../lib/client", () => ({
   client: {
@@ -45,7 +44,7 @@ vi.mock("../../../lib/client", () => ({
       list: vi.fn(async (): Promise<Agent[]> => [...agents]),
     },
     channels: {
-      channel: vi.fn(async (): Promise<ChannelView> => ({ ...channel })),
+      list: vi.fn(async (): Promise<ChannelView[]> => [{ ...channel }]),
       saveChannel: vi.fn(
         async (
           _id: string,
@@ -108,11 +107,15 @@ vi.mock("../../../lib/client", () => ({
       ),
     },
     events: {
-      onChannelsChanged: vi.fn((): (() => void) => (): void => undefined),
+      onChannelsChanged: vi.fn((handler: () => void) => {
+        changedHandlers.push(handler);
+
+        return (): void => undefined;
+      }),
       onChannelsState: vi.fn((handler: ChannelsStateHandler) => {
         stateHandlers.push(handler);
 
-        return unsubscribe;
+        return (): void => undefined;
       }),
     },
   },
@@ -126,7 +129,7 @@ type MockFn = ReturnType<typeof vi.fn>;
 type MockedClient = Client & {
   agents: { list: MockFn };
   channels: {
-    channel: MockFn;
+    list: MockFn;
     saveChannel: MockFn;
     setEnabled: MockFn;
     chats: MockFn;
@@ -208,6 +211,13 @@ function makeChat(patch: Partial<ChannelChatView>): ChannelChatView {
   };
 }
 
+/** Fires the backend's channels:changed push (every mutation announces). */
+async function emitChanged(): Promise<void> {
+  await act(async () => {
+    for (const handler of changedHandlers) handler();
+  });
+}
+
 /** Fires one channels:state push through the captured subscription. */
 async function emitState(event: ChannelStateEvent): Promise<void> {
   await act(async () => {
@@ -221,8 +231,29 @@ describe("ChannelsPane", () => {
     chats = [];
     pairings = [];
     agents = [];
+    changedHandlers.length = 0;
     stateHandlers.length = 0;
     vi.clearAllMocks();
+  });
+
+  it("renders the channel card with its brand mark, name, and enable toggle", async () => {
+    const { findByTestId } = await renderUI(<ChannelsPane pane={pane} />);
+
+    expect(await findByTestId("channel-card-telegram")).toBeTruthy();
+    expect((await findByTestId("channel-name-telegram")).textContent).toBe(
+      "Telegram"
+    );
+    expect(await findByTestId("channel-enabled-telegram")).toBeTruthy();
+  });
+
+  it("shows the disabled chip for a disabled channel before any state event", async () => {
+    channel = makeChannel({ enabled: false });
+
+    const { findByTestId } = await renderUI(<ChannelsPane pane={pane} />);
+
+    expect((await findByTestId("channel-state-chip")).textContent).toBe(
+      "disabled"
+    );
   });
 
   it("renders the write-only token field blank with the stored-token hint line", async () => {
@@ -289,7 +320,7 @@ describe("ChannelsPane", () => {
 
     const { findByTestId } = await renderUI(<ChannelsPane pane={pane} />);
 
-    const toggle = await findByTestId("channel-enabled");
+    const toggle = await findByTestId("channel-enabled-telegram");
     await user.click(toggle);
 
     expect(mockedClient.channels.setEnabled).toHaveBeenCalledWith(
@@ -320,7 +351,7 @@ describe("ChannelsPane", () => {
     );
   });
 
-  it("allows a pending pairing and refetches the pane", async () => {
+  it("allows a pending pairing and refetches on the changed event", async () => {
     pairings = [{ TelegramUserID: 42, DisplayName: "Dana", RequestedAt: "" }];
     const user = userEvent.setup();
 
@@ -335,8 +366,9 @@ describe("ChannelsPane", () => {
     await user.click(getByTestId("pairing-allow-42"));
 
     expect(mockedClient.channels.approvePairing).toHaveBeenCalledWith(42);
-    // The refresh: the channel read runs again after the resolution.
-    expect(mockedClient.channels.channel).toHaveBeenCalledTimes(2);
+    // The refresh rides channels:changed: the list read runs again.
+    await emitChanged();
+    expect(mockedClient.channels.list).toHaveBeenCalledTimes(2);
     expect(await findByTestId("channels-pairings-empty")).toBeTruthy();
   });
 
@@ -353,6 +385,8 @@ describe("ChannelsPane", () => {
 
     expect(mockedClient.channels.dismissPairing).toHaveBeenCalledWith(42);
     expect(mockedClient.channels.approvePairing).not.toHaveBeenCalled();
+
+    await emitChanged();
     expect(await findByTestId("channels-pairings-empty")).toBeTruthy();
   });
 

@@ -126,9 +126,7 @@ function resultTone(result: {
  * binding directly and renders its decision, reason, and handler detail.
  * Rows keep the kit hierarchy: quiet ghost actions and a neutral ghost
  * Remove — red appears only in the confirm. */
-export default function HooksPane({
-  pane,
-}: {
+export default function HooksPane(_props: {
   pane: SettingsPaneConfig;
 }): ReactElement {
   const [hooks, setHooks] = useState<Hook[]>([]);
@@ -242,7 +240,6 @@ export default function HooksPane({
   return (
     <div data-testid="hooks-pane">
       <PaneHeader
-        description={pane.description}
         actions={
           <Button size="sm" data-testid="hook-add" onClick={openAdd}>
             Add hook

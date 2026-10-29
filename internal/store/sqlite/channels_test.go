@@ -322,3 +322,26 @@ func TestChannels_VisibleThroughTx(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, got.Enabled)
 }
+
+func TestChannels_ListChannels(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	channels := s.Channels()
+
+	out, err := channels.ListChannels(ctx)
+	require.NoError(t, err)
+	require.Empty(t, out, "an empty table lists empty (never nil)")
+
+	first := &store.Channel{ID: "telegram", Enabled: true, BotToken: "123:ABC"}
+	require.NoError(t, channels.SaveChannel(ctx, first))
+	second := &store.Channel{ID: "discord", Enabled: false}
+	require.NoError(t, channels.SaveChannel(ctx, second))
+
+	out, err = channels.ListChannels(ctx)
+	require.NoError(t, err)
+	require.Len(t, out, 2)
+	require.Equal(t, "discord", out[0].ID, "rows order by id")
+	require.Equal(t, "telegram", out[1].ID)
+	require.True(t, out[1].Enabled)
+	require.Equal(t, "123:ABC", out[1].BotToken)
+}

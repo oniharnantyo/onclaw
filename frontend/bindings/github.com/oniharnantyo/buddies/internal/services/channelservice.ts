@@ -58,6 +58,17 @@ export function GetChannel(
 }
 
 /**
+ * ListChannels returns every stored channel's view ordered by id. Only
+ * configured rows appear — an id that was never saved does not exist yet.
+ * The views are secret-free like GetChannel's.
+ */
+export function ListChannels(): $CancellablePromise<
+  $models.ChannelView[] | null
+> {
+  return $Call.ByID(2546425910);
+}
+
+/**
  * ListChats returns every chat's state ordered by chat id. The result is
  * empty (not nil) when no chat is known.
  */
