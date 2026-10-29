@@ -37,7 +37,9 @@ The composer SHALL accept multiple files through an attach button, drag-and-drop
 
 ### Requirement: Capability-gated storage
 
-Uploaded attachment files SHALL be stored under the application home on the local disk, named by an opaque random capability key rather than the original filename. The file SHALL be retrievable only through its capability URL — a raw filesystem path MUST NOT be exposed to the frontend or rendered in the transcript. In server mode with a bearer token configured, fetching an attachment SHALL require the token like every other HTTP surface. Stored attachments MUST remain retrievable across app restarts.
+Uploaded attachment files SHALL be stored under the application home on the local disk, named by an opaque random capability key rather than the original filename. This store is canonical: the file SHALL be retrievable only through its capability URL — a raw filesystem path MUST NOT be exposed to or rendered by the frontend, whose attachment links reference the capability URL only. In server mode with a bearer token configured, fetching an attachment SHALL require the token like every other HTTP surface. Stored attachments MUST remain retrievable across app restarts.
+
+Every attachment that rides a sent message SHALL additionally be mirrored into the session agent's workspace at `uploads/` — host path `workspaces/<agent-slug>/uploads/`, model-visible `/workspace/uploads/<original name>` — when the turn that carries it is assembled. The mirror SHALL copy-if-absent from the canonical store, keep the original filename, and resolve name collisions with a numeric suffix. A mirror failure MUST NOT fail the turn: the degraded reference note falls back to the capability key alone. The model MAY be told the workspace-relative mirror path in a reference note; this is the only place a filesystem path for an attachment may appear, and the frontend surface is unchanged.
 
 #### Scenario: Attachment survives restart
 
@@ -48,6 +50,21 @@ Uploaded attachment files SHALL be stored under the application home on the loca
 
 - **WHEN** the transcript renders an attachment
 - **THEN** its download and preview links reference the capability URL only, never the on-disk path
+
+#### Scenario: Upload lands in the workspace
+
+- **WHEN** a turn carries an attachment for an agent whose workspace has no such file under `uploads/`
+- **THEN** the file exists at `workspaces/<agent-slug>/uploads/<original name>` before the model input is built, and the agent's filesystem tools can read it at `/workspace/uploads/<original name>`
+
+#### Scenario: Mirror name collision
+
+- **WHEN** an attachment whose filename already exists in the agent's `uploads/` is mirrored
+- **THEN** the copy lands under a numeric-suffixed name and the reference note addresses the suffixed path
+
+#### Scenario: Mirror failure does not fail the turn
+
+- **WHEN** the workspace mirror cannot be written for an attachment
+- **THEN** the turn still runs and the reference note falls back to the attachment key without a workspace path
 
 ### Requirement: Multi-part user messages
 
@@ -65,7 +82,7 @@ A sent message with attachments SHALL persist the attachment metadata (name, typ
 
 ### Requirement: Model capability degradation
 
-Every model SHALL advertise whether it accepts image, PDF, and video input. When the session's effective model cannot read an attached kind, the composer MUST warn before sending, and the turn SHALL deliver the attachment to the model as a reference pointer (name and capability link) instead of content bytes, so the agent can still mention the file but is never sent input the model cannot process. A video attachment SHALL be delivered as a video content part when the model advertises video input and the provider's connector can carry video parts; otherwise it degrades like any unreadable kind. Sending MUST NOT fail solely because the model lacks image, PDF, or video input.
+Every model SHALL advertise whether it accepts image, PDF, and video input. An attached kind SHALL be delivered to the model as a content part of the user message when the session's effective model advertises the kind AND the provider family's connector can carry that kind — image parts on every family, PDF file parts on the gemini and anthropic families, and video parts on the gemini family; the model's advertised capability remains the per-model gate, and for a compatible endpoint it is the user's assertion that the endpoint accepts the part. In every other case the turn SHALL deliver the attachment as a reference pointer instead of content bytes: the pointer names the true reason — that the model cannot read the kind, or that the provider's connector cannot carry it — and addresses the file at its workspace path (`/workspace/uploads/<name>`) so the agent can read it with its filesystem tools, including the capability key as a fallback when no mirror exists. The composer MUST warn before sending whenever a part will degrade, whether from a model gap or a connector gap. Sending MUST NOT fail solely because a model lacks an input capability or a connector lacks carriage.
 
 #### Scenario: Image with a text-only model
 
@@ -86,3 +103,18 @@ Every model SHALL advertise whether it accepts image, PDF, and video input. When
 
 - **WHEN** the user attaches a video while the session's model does not advertise video input, or its connector cannot carry video parts
 - **THEN** the composer shows a capability warning, the send still succeeds, and the model receives a reference note instead of video bytes
+
+#### Scenario: PDF to an anthropic-family model with PDF input
+
+- **WHEN** the user attaches a PDF while the session's model advertises PDF input and the provider is an anthropic-family connector
+- **THEN** the model receives the PDF as a document part of the user message and no degradation note is produced
+
+#### Scenario: PDF on a connector that cannot carry it
+
+- **WHEN** the user attaches a PDF while the session's model advertises PDF input but the provider family's connector cannot carry PDF parts
+- **THEN** the send succeeds and the model receives a reference note naming the connector gap and addressing the file at `/workspace/uploads/<name>`
+
+#### Scenario: Composer warns on a connector gap
+
+- **WHEN** the user attaches a PDF while the session's model advertises PDF input but the provider family cannot carry PDF parts
+- **THEN** the composer shows a capability warning before sending, distinct from the model-capability warning
