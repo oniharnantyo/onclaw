@@ -258,6 +258,13 @@ func Assemble(ctx context.Context, emitter services.Emitter, opener services.URL
 		slog.Warn("assemble: create-skill seed failed", "error", err)
 	}
 
+	// The Channels pane's mutations kick the Telegram runtime (design D3
+	// amendment: the loop re-reads its row only at (re)start, so a token
+	// saved or toggle flipped after boot must trigger one — otherwise a
+	// channel configured post-boot never begins polling).
+	channelsSvc := services.NewChannelService(st, emitter)
+	channelsSvc.OnChange = func(channelID string) { tg.ConfigChanged() }
+
 	return &App{
 		Layout:    layout,
 		Store:     st,
@@ -279,7 +286,7 @@ func Assemble(ctx context.Context, emitter services.Emitter, opener services.URL
 			Gateway:   services.NewGatewayService(gw, emitter),
 			Schedule:  services.NewScheduleService(sched, emitter),
 			Knowledge: services.NewKnowledgeService(knowStore, st.Agents(), emitter),
-			Channels:  services.NewChannelService(st, emitter),
+			Channels:  channelsSvc,
 		},
 	}, nil
 }

@@ -7,7 +7,9 @@ import (
 
 	"github.com/oniharnantyo/buddies/internal/channels/telegram/botapi"
 	"github.com/oniharnantyo/buddies/internal/gateway"
+	"github.com/oniharnantyo/buddies/internal/sessions"
 	"github.com/oniharnantyo/buddies/internal/store"
+	"github.com/oniharnantyo/buddies/internal/store/fake"
 	"github.com/stretchr/testify/require"
 )
 
@@ -185,6 +187,98 @@ func TestReconnectBackoffAndDegraded(t *testing.T) {
 	eventually(t, "the state to recover to connected", func() bool {
 		return fx.svc.currentState() == StateConnected
 	})
+}
+
+// TestConfigChangeStartsIdleLoop pins the configure-after-boot recovery: a
+// channel row saved after the runtime booted idle (absent, disabled, or
+// tokenless at connect) must begin polling on ConfigChanged without an app
+// restart.
+func TestConfigChangeStartsIdleLoop(t *testing.T) {
+	fx := newFixtureWith(t, func(t *testing.T, fx *fixture) {
+		require.NoError(t, fx.st.Channels().SaveChannel(context.Background(), &store.Channel{ID: DefaultChannelID, Enabled: false, BotToken: "tok"}))
+	})
+
+	fx.gw.transition(gateway.StateRunning)
+	fx.svc.Attach(fx.gw)
+	eventually(t, "the idle state at boot", func() bool { return fx.svc.currentState() == StateDisabled })
+	require.Zero(t, fx.bot.pollCount(), "an idle channel never polls")
+
+	// The operator saves the channel enabled (SaveChannel's write path).
+	require.NoError(t, fx.st.Channels().SaveChannel(context.Background(), &store.Channel{ID: DefaultChannelID, Enabled: true, BotToken: "tok"}))
+	fx.svc.ConfigChanged()
+
+	eventually(t, "the loop to start after the config kick", func() bool { return fx.bot.pollCount() > 0 })
+	eventually(t, "the connected state", func() bool { return fx.svc.currentState() == StateConnected })
+}
+
+// TestConfigChangeStopsDisabledLoop pins the toggle-off path: disabling a
+// live channel row stops polling at the next config kick.
+func TestConfigChangeStopsDisabledLoop(t *testing.T) {
+	fx := newFixture(t)
+	fx.gw.transition(gateway.StateRunning)
+	fx.svc.Attach(fx.gw)
+	eventually(t, "the poll loop to start", func() bool { return fx.bot.pollCount() >= 2 })
+
+	require.NoError(t, fx.st.Channels().SaveChannel(context.Background(), &store.Channel{ID: DefaultChannelID, Enabled: false, BotToken: "tok"}))
+	fx.svc.ConfigChanged()
+	eventually(t, "the disabled state", func() bool { return fx.svc.currentState() == StateDisabled })
+
+	polls := fx.bot.pollCount()
+	time.Sleep(80 * time.Millisecond)
+	require.LessOrEqual(t, fx.bot.pollCount(), polls+1, "a disabled channel stops polling")
+}
+
+// TestConfigChangeRecoversTerminalAuth pins the corrected-token path: an
+// explicit config change clears even a terminal failure (design D10's
+// no-retry-fight rule governs automatic restarts, not operator action).
+func TestConfigChangeRecoversTerminalAuth(t *testing.T) {
+	fx := newFixture(t)
+	fx.bot.errFor["getMe"] = errAuth401()
+
+	fx.gw.transition(gateway.StateRunning)
+	fx.svc.Attach(fx.gw)
+	eventually(t, "the terminal error state", func() bool { return fx.svc.currentState() == StateError })
+
+	// The operator pastes a working token.
+	fx.bot.mu.Lock()
+	delete(fx.bot.errFor, "getMe")
+	fx.bot.mu.Unlock()
+	require.NoError(t, fx.st.Channels().SaveChannel(context.Background(), &store.Channel{ID: DefaultChannelID, Enabled: true, BotToken: "fixed"}))
+	fx.svc.ConfigChanged()
+
+	eventually(t, "the loop to recover after the corrected token", func() bool { return fx.svc.currentState() == StateConnected })
+	require.Greater(t, fx.bot.pollCount(), 0, "the recovered runtime polls")
+}
+
+// TestConnectAbsentRowIsIdle pins the fresh-install connect: an absent
+// channel row is idle, never terminal (a store miss must not dead the
+// attachment before the first save ever lands).
+func TestConnectAbsentRowIsIdle(t *testing.T) {
+	st := fake.New() // no channel row
+	sessSvc := sessions.NewService(st)
+	bot := newFakeBot()
+	svc := New(newFakeRuntime(sessSvc), sessSvc, st.Channels(), st.GatewaySettings(), &fakeAttachments{},
+		WithBotFactory(func(string, string) (BotAPI, error) { return bot, nil }))
+	t.Cleanup(svc.Stop)
+
+	_, err := svc.connect(context.Background())
+	require.ErrorIs(t, err, errChannelDisabled, "an absent row is idle, not terminal")
+}
+
+// TestConnectBlankTokenIsIdle pins the tokenless connect: an enabled row
+// without a token is idle — building a client anyway would 401 terminally
+// on the GetMe probe.
+func TestConnectBlankTokenIsIdle(t *testing.T) {
+	st := fake.New()
+	require.NoError(t, st.Channels().SaveChannel(context.Background(), &store.Channel{ID: DefaultChannelID, Enabled: true, BotToken: ""}))
+	sessSvc := sessions.NewService(st)
+	bot := newFakeBot()
+	svc := New(newFakeRuntime(sessSvc), sessSvc, st.Channels(), st.GatewaySettings(), &fakeAttachments{},
+		WithBotFactory(func(string, string) (BotAPI, error) { return bot, nil }))
+	t.Cleanup(svc.Stop)
+
+	_, err := svc.connect(context.Background())
+	require.ErrorIs(t, err, errChannelDisabled, "a tokenless row is idle, not terminal")
 }
 
 // TestHeartbeatRestartsWedgedLoop pins the stall probe (design D10): a wedged

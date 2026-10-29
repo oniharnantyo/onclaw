@@ -9,6 +9,7 @@ import (
 
 	"github.com/oniharnantyo/buddies/internal/channels/telegram/botapi"
 	"github.com/oniharnantyo/buddies/internal/gateway"
+	"github.com/oniharnantyo/buddies/internal/store"
 )
 
 // attachment is one gateway attachment's live machinery (the scheduler
@@ -20,6 +21,7 @@ type attachment struct {
 	cancel context.CancelFunc // loop cancel; nil while no loop is running
 	wg     sync.WaitGroup     // tracks the loop + heartbeat goroutines
 	dead   bool               // terminal failure: no restarts (409/401/404)
+	gw     gateway.Manager    // the attached gateway, for state-gated restarts
 }
 
 // Attach subscribes to the gateway (subscribe-first, design D1) and starts
@@ -36,7 +38,7 @@ func (s *Service) Attach(gw gateway.Manager) {
 		prev.stop()
 	}
 
-	att := &attachment{}
+	att := &attachment{gw: gw}
 	cancel := gw.Subscribe(func(_, to gateway.State) { s.onGatewayState(att, to) })
 	att.mu.Lock()
 	att.sub = cancel
@@ -216,11 +218,14 @@ func (s *Service) runLoop(ctx context.Context, att *attachment) {
 }
 
 // connectFailed maps a connect failure onto its terminal state (design D10).
+// A disabled or not-yet-configured row is idle, not dead: the attachment
+// stays startable so a later config change can begin polling.
 func (s *Service) connectFailed(att *attachment, err error) {
 	var apiErr *botapi.Error
 	switch {
 	case errors.Is(err, errChannelDisabled):
-		s.setState(StateDisabled, "channel row disabled")
+		s.setState(StateDisabled, "channel not configured or disabled")
+		att.markIdle()
 	case errors.As(err, &apiErr) && terminalKind(apiErr.Kind):
 		s.setState(StateError, apiErr.Description)
 		att.markDead()
@@ -230,15 +235,30 @@ func (s *Service) connectFailed(att *attachment, err error) {
 	}
 }
 
+// markIdle records a recoverable connect failure (disabled or not-yet-
+// configured row): the loop goroutine has exited on its own, so the cancel
+// sentinel must be cleared for a later start to be possible — otherwise the
+// stale sentinel permanently blocks every startLoop.
+func (a *attachment) markIdle() {
+	a.mu.Lock()
+	a.cancel = nil
+	a.mu.Unlock()
+}
+
 // connect reads the channel row, builds the client, and proves the token with
 // GetMe — the send-path liveness proof and the username the group-mention
-// gates and update receipts need.
+// gates and update receipts need. A row that cannot poll yet (absent,
+// disabled, or tokenless — the fresh-install and pre-save states) reads as
+// errChannelDisabled: idle, recoverable, never terminal.
 func (s *Service) connect(ctx context.Context) (BotAPI, error) {
 	row, err := s.chans.GetChannel(ctx, s.channelID)
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, errChannelDisabled
+		}
 		return nil, wrapStore("read channel", err)
 	}
-	if !row.Enabled {
+	if !row.Enabled || row.BotToken == "" {
 		return nil, errChannelDisabled
 	}
 	s.mu.Lock()
@@ -404,6 +424,36 @@ func (s *Service) restartRuntime(ctx context.Context, att *attachment) {
 		return
 	}
 	att.stop()
+	s.startLoop(att)
+}
+
+// ConfigChanged re-evaluates the runtime after the channel row changed (a
+// saved token, a proxy edit, or the enabled toggle — design D3: the loop only
+// re-reads the row at (re)start, so an operator save must trigger one). A live
+// loop is restarted so the new settings take effect immediately; an idle one
+// (booted before the first save) starts when the gateway is Running. An
+// explicit save also clears a terminal failure: design D10's no-retry-fight
+// rule governs automatic restarts, not operator action — pasting a corrected
+// token after a 401 must recover without an app restart. The cold-boot
+// sync stays consumed: an in-process restart never re-drops backlog.
+func (s *Service) ConfigChanged() {
+	s.loopMu.Lock()
+	att := s.att
+	s.loopMu.Unlock()
+	if att == nil {
+		return
+	}
+
+	att.mu.Lock()
+	stopped := att.gw != nil && att.gw.State() == gateway.StateStopped
+	att.mu.Unlock()
+	att.stop()
+	if stopped {
+		return
+	}
+	att.mu.Lock()
+	att.dead = false
+	att.mu.Unlock()
 	s.startLoop(att)
 }
 

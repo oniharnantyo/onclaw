@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -133,6 +134,46 @@ func TestChannelService_SetEnabled(t *testing.T) {
 	events := drainEvents(t, f.emitter, before, 1)
 	require.Equal(t, EventChannelChanged, events[0].Name)
 	require.Equal(t, ChannelChangedEvent{ChannelID: "telegram"}, events[0].Data[0])
+}
+
+// TestChannelService_OnChangeFiresOnConnectionMutations pins the runtime
+// kick: SaveChannel and SetEnabled fire OnChange with the channel id (the
+// Telegram runtime re-reads its row only at (re)start), failures and chat or
+// pairing mutations do not.
+func TestChannelService_OnChangeFiresOnConnectionMutations(t *testing.T) {
+	f := newChannelFixture(t)
+	ctx := context.Background()
+	kicks := make(chan string, 8)
+	f.svc.OnChange = func(channelID string) { kicks <- channelID }
+
+	f.saveChannel(t, ChannelInput{Enabled: true, BotToken: "123456:tok"})
+	require.Equal(t, "telegram", awaitKick(t, kicks), "SaveChannel kicks the runtime")
+
+	_, err := f.svc.SetEnabled(ctx, "telegram", false)
+	require.NoError(t, err)
+	require.Equal(t, "telegram", awaitKick(t, kicks), "SetEnabled kicks the runtime")
+
+	// Non-connection mutations and failures stay silent.
+	_, err = f.svc.SetChatPinnedAgent(ctx, 999, "agt")
+	require.Error(t, err, "absent chat denies")
+	require.ErrorIs(t, f.svc.DismissPairing(ctx, 999), store.ErrNotFound)
+	select {
+	case id := <-kicks:
+		t.Fatalf("unexpected kick for %q", id)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// awaitKick reads one OnChange kick or fails the test.
+func awaitKick(t *testing.T, kicks <-chan string) string {
+	t.Helper()
+	select {
+	case id := <-kicks:
+		return id
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the OnChange kick")
+		return ""
+	}
 }
 
 func TestChannelService_Chats(t *testing.T) {

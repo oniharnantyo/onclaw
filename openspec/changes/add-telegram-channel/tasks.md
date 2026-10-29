@@ -32,6 +32,7 @@
 
 - [x] 5.1 Implement the hold queue for updates admitted during disconnect (bounded 64, dispatch on reconnect) and cold-boot backlog drop (first poll confirms current offset); verify with the fake Bot API: disconnect → enqueue → reconnect drains in order; cold start with pending updates acks and drops them.
 - [x] 5.2 Implement the liveness heartbeat per design D10 (90s `getMe` + pending_update_count probes, stall timer, poll-loop rebuild with 30s→300s backoff) and the terminal states (401/404 → error state; 409 → stop without retry), emitting `channel:state` transitions; verify with a fake Bot API that wedges getUpdates and asserts rebuild, and a 409/401 sequence asserting terminal states and event emission.
+- [x] 5.3 Make post-boot configuration reach the runtime (apply-time amendment to D3/D10): connect reads an absent or tokenless row as idle — never terminal — a disabled/idle connect exit clears the loop's start sentinel, and `Service.ConfigChanged` restarts the runtime (clearing even a terminal failure, since an operator save is not an automatic retry); `ChannelService.OnChange` fires on SaveChannel/SetEnabled and Assemble wires it to the kick; verify with lifecycle tests (idle→kick→polling, live→disable→stops, terminal-401→corrected token→recovers) and a service test asserting kicks fire on connection mutations only.
 
 ## 6. Rich inbound
 

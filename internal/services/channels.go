@@ -56,6 +56,13 @@ type ChannelChatView struct {
 type ChannelService struct {
 	store   store.Store
 	emitter Emitter
+	// OnChange, when set, fires after a connection-affecting mutation (a
+	// saved token, proxy, or the enabled toggle). The channel runtime only
+	// re-reads its row at (re)start, so without this kick a runtime that
+	// booted before the first save would never begin polling. Async, like
+	// the emitter. Chat and pairing mutations don't touch the connection
+	// and don't fire it.
+	OnChange func(channelID string)
 }
 
 // NewChannelService returns the channel service over st, announcing every
@@ -106,6 +113,7 @@ func (s *ChannelService) SaveChannel(ctx context.Context, id string, in ChannelI
 		return ChannelView{}, fmt.Errorf("save channel %s: %w", id, err)
 	}
 	s.changed(id)
+	s.onChange(id)
 	return newChannelView(*ch), nil
 }
 
@@ -121,6 +129,7 @@ func (s *ChannelService) SetEnabled(ctx context.Context, id string, enabled bool
 		return ChannelView{}, fmt.Errorf("set channel %s enabled: %w", id, err)
 	}
 	s.changed(id)
+	s.onChange(id)
 	return newChannelView(*ch), nil
 }
 
@@ -251,6 +260,15 @@ func (s *ChannelService) mutateChat(ctx context.Context, chatID int64, fn func(*
 // strings (the SchedulesChangedEvent precedent).
 func (s *ChannelService) changed(channelID string) {
 	go s.emitter.Emit(EventChannelChanged, ChannelChangedEvent{ChannelID: channelID})
+}
+
+// onChange kicks the channel runtime after a connection-affecting mutation,
+// on its own goroutine like changed (the runtime restart is a teardown plus
+// join that must not sit inside a binding call).
+func (s *ChannelService) onChange(channelID string) {
+	if s.OnChange != nil {
+		go s.OnChange(channelID)
+	}
 }
 
 // newChannelView projects a stored channel onto the read shape. The raw
