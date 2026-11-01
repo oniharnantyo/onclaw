@@ -8,6 +8,7 @@ import (
 	agenticclaude "github.com/cloudwego/eino-ext/components/model/agenticclaude"
 	agenticgemini "github.com/cloudwego/eino-ext/components/model/agenticgemini"
 	agenticopenai "github.com/cloudwego/eino-ext/components/model/agenticopenai"
+	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/oniharnantyo/buddies/internal/sessions"
@@ -28,6 +29,15 @@ func newRegistryFixture(t *testing.T) (*store.Provider, store.Agent, modelRegist
 func fakeStoreForRegistry(t *testing.T) *fake.Store {
 	t.Helper()
 	return fake.New()
+}
+
+// baseModelOf unwraps the sanitize decorator registry.Build applies, so type
+// assertions can pin the concrete connector beneath it.
+func baseModelOf(t *testing.T, mdl model.BaseModel[*schema.AgenticMessage]) model.BaseModel[*schema.AgenticMessage] {
+	t.Helper()
+	san, ok := mdl.(*sanitizeModel)
+	require.True(t, ok, "Build must wrap the connector in the sanitize decorator")
+	return san.base
 }
 
 func seedAgentOn(fs *fake.Store, providerType, model string) (*store.Provider, store.Agent) {
@@ -66,7 +76,7 @@ func TestRegistry_BuildAnthropicWiresClaude(t *testing.T) {
 
 	mdl, err := reg.Build(t.Context(), agent, ModelOverride{})
 	require.NoError(t, err)
-	require.IsType(t, &agenticclaude.Model{}, mdl, "the anthropic path must construct the eino-ext claude connector")
+	require.IsType(t, &agenticclaude.Model{}, baseModelOf(t, mdl), "the anthropic path must construct the eino-ext claude connector")
 }
 
 // TestRegistry_BuildOpenAIAndGeminiRegistered covers the other registered
@@ -87,7 +97,7 @@ func TestRegistry_BuildOpenAIAndGeminiRegistered(t *testing.T) {
 
 			mdl, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{})
 			require.NoError(t, err)
-			require.IsType(t, tc.wantType, mdl)
+			require.IsType(t, tc.wantType, baseModelOf(t, mdl))
 		})
 	}
 }
@@ -151,7 +161,7 @@ func TestRegistry_RejectsUnconfiguredProviders(t *testing.T) {
 
 		mdl, err := newModelRegistry(fs).Build(t.Context(), *agent, ModelOverride{})
 		require.NoError(t, err)
-		require.IsType(t, &agenticopenai.ChatModel{}, mdl)
+		require.IsType(t, &agenticopenai.ChatModel{}, baseModelOf(t, mdl))
 	})
 
 	t.Run("unsupported provider type", func(t *testing.T) {
@@ -235,7 +245,7 @@ func TestRegistry_OverrideModelReplacesAgentModel(t *testing.T) {
 
 		mdl, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{Model: "claude-opus-4-1"})
 		require.NoError(t, err)
-		require.IsType(t, &agenticclaude.Model{}, mdl)
+		require.IsType(t, &agenticclaude.Model{}, baseModelOf(t, mdl))
 	})
 
 	t.Run("empty override inherits the agent's model", func(t *testing.T) {
@@ -363,6 +373,99 @@ func TestRegistry_OverrideEffortValidation(t *testing.T) {
 		_, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{})
 		require.NoError(t, err)
 	})
+}
+
+// TestRegistry_MaxTokensReachesEveryFamily covers the per-turn output-cap
+// resolution (spec agent-runtime): the agent's raw configured cap rides every
+// family's native output-limit parameter untouched, an unset cap defers to
+// the provider default on the families where the parameter is optional, and
+// the Claude family substitutes its required-value default.
+func TestRegistry_MaxTokensReachesEveryFamily(t *testing.T) {
+	tests := []struct {
+		name         string
+		providerType string
+		agentModel   string
+		agentMax     int
+		assert       func(t *testing.T, body map[string]any)
+	}{
+		{
+			name:         "pinned cap rides the openai family raw",
+			providerType: ProviderOpenAI,
+			agentModel:   "gpt-4o",
+			agentMax:     1234,
+			assert: func(t *testing.T, body map[string]any) {
+				require.Equal(t, float64(1234), body["max_completion_tokens"])
+			},
+		},
+		{
+			name:         "pinned cap rides the gemini family raw",
+			providerType: ProviderGemini,
+			agentModel:   "gemini-2.5-flash",
+			agentMax:     2345,
+			assert: func(t *testing.T, body map[string]any) {
+				cfg := body["generationConfig"].(map[string]any)
+				require.Equal(t, float64(2345), cfg["maxOutputTokens"])
+			},
+		},
+		{
+			name:         "pinned cap rides the claude family raw",
+			providerType: ProviderAnthropic,
+			agentModel:   "claude-sonnet-4-5",
+			agentMax:     3333,
+			assert: func(t *testing.T, body map[string]any) {
+				require.Equal(t, float64(3333), body["max_tokens"])
+			},
+		},
+		{
+			name:         "unset cap defers to the provider default on openai",
+			providerType: ProviderOpenAI,
+			agentModel:   "gpt-4o",
+			agentMax:     0,
+			assert: func(t *testing.T, body map[string]any) {
+				require.NotContains(t, body, "max_completion_tokens")
+			},
+		},
+		{
+			name:         "unset cap defers to the provider default on gemini",
+			providerType: ProviderGemini,
+			agentModel:   "gemini-2.5-flash",
+			agentMax:     0,
+			assert: func(t *testing.T, body map[string]any) {
+				if cfg, ok := body["generationConfig"].(map[string]any); ok {
+					require.NotContains(t, cfg, "maxOutputTokens")
+				}
+			},
+		},
+		{
+			name:         "unset cap substitutes the claude family default",
+			providerType: ProviderAnthropic,
+			agentModel:   "claude-sonnet-4-5",
+			agentMax:     0,
+			assert: func(t *testing.T, body map[string]any) {
+				require.Equal(t, float64(DefaultMaxTokens), body["max_tokens"])
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body map[string]any
+			server := captureChatServer(t, tt.providerType, &body)
+			defer server.Close()
+
+			fs := fakeStoreForRegistry(t)
+			provider, agent := seedAgentOn(fs, tt.providerType, tt.agentModel)
+			provider.BaseURL = server.URL
+			require.NoError(t, fs.Providers().Update(t.Context(), provider))
+			agent.MaxTokens = tt.agentMax
+
+			mdl, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{})
+			require.NoError(t, err)
+
+			drainStream(t, mdl)
+			tt.assert(t, body)
+		})
+	}
 }
 
 // TestManager_ToolCallsSurfaceAsEvents covers the tool-activity event path:

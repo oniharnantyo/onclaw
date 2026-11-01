@@ -45,16 +45,22 @@ func buildAgenticModel(ctx context.Context, providerType string, provider store.
 		if providerType == ProviderOpenRouter && provider.BaseURL == "" {
 			provider.BaseURL = DefaultBaseURL(ProviderOpenRouter)
 		}
-		return buildAgenticOpenAIModel(ctx, provider, modelName, effort)
+		return buildAgenticOpenAIModel(ctx, provider, modelName, maxTokens, effort)
 	case ProviderGemini:
-		return buildAgenticGeminiModel(ctx, provider, modelName, effort)
+		return buildAgenticGeminiModel(ctx, provider, modelName, maxTokens, effort)
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrProviderUnsupported, providerType)
 	}
 }
 
-// buildAgenticClaudeModel wires the eino-ext agenticclaude connector.
+// buildAgenticClaudeModel wires the eino-ext agenticclaude connector. The
+// Claude API requires an explicit output cap, so an agent that pins none
+// (<= 0) substitutes DefaultMaxTokens here — the only family with a
+// required value.
 func buildAgenticClaudeModel(ctx context.Context, provider store.Provider, modelName string, maxTokens int, effort string) (model.BaseModel[*schema.AgenticMessage], error) {
+	if maxTokens <= 0 {
+		maxTokens = DefaultMaxTokens
+	}
 	cfg := &agenticclaude.Config{
 		APIKey:    provider.APIKey,
 		Model:     modelName,
@@ -81,12 +87,18 @@ func buildAgenticClaudeModel(ctx context.Context, provider store.Provider, model
 	return m, nil
 }
 
-// buildAgenticOpenAIModel wires the eino-ext agenticopenai connector.
-func buildAgenticOpenAIModel(ctx context.Context, provider store.Provider, modelName string, effort string) (model.BaseModel[*schema.AgenticMessage], error) {
+// buildAgenticOpenAIModel wires the eino-ext agenticopenai connector. The
+// agent's output cap rides max_completion_tokens (which counts reasoning plus
+// visible output); an unset cap (<= 0) stays nil so the provider default
+// applies.
+func buildAgenticOpenAIModel(ctx context.Context, provider store.Provider, modelName string, maxTokens int, effort string) (model.BaseModel[*schema.AgenticMessage], error) {
 	cfg := &agenticopenai.ChatConfig{
 		APIKey:  provider.APIKey,
 		BaseURL: provider.BaseURL,
 		Model:   modelName,
+	}
+	if maxTokens > 0 {
+		cfg.MaxCompletionTokens = &maxTokens
 	}
 	if effort != "" {
 		cfg.ExtraFields = map[string]any{
@@ -100,8 +112,12 @@ func buildAgenticOpenAIModel(ctx context.Context, provider store.Provider, model
 	return m, nil
 }
 
-// buildAgenticGeminiModel wires the eino-ext agenticgemini connector.
-func buildAgenticGeminiModel(ctx context.Context, provider store.Provider, modelName string, effort string) (model.BaseModel[*schema.AgenticMessage], error) {
+// buildAgenticGeminiModel wires the eino-ext agenticgemini connector. The
+// agent's output cap rides the connector's MaxTokens (the genai request's
+// maxOutputTokens, over reasoning plus visible output); an unset cap (<= 0)
+// stays nil so the provider default applies. The pinned genai ClientConfig
+// carries no output-cap field — the connector config is its carrier.
+func buildAgenticGeminiModel(ctx context.Context, provider store.Provider, modelName string, maxTokens int, effort string) (model.BaseModel[*schema.AgenticMessage], error) {
 	clientCfg := &genai.ClientConfig{
 		APIKey:  provider.APIKey,
 		Backend: genai.BackendGeminiAPI,
@@ -114,6 +130,9 @@ func buildAgenticGeminiModel(ctx context.Context, provider store.Provider, model
 		return nil, fmt.Errorf("build gemini client: %w", err)
 	}
 	cfg := &agenticgemini.Config{Client: client, Model: modelName}
+	if maxTokens > 0 {
+		cfg.MaxTokens = &maxTokens
+	}
 	if budget, ok := geminiThinkingBudgets[effort]; ok {
 		cfg.ThinkingConfig = &genai.ThinkingConfig{ThinkingBudget: genai.Ptr(budget)}
 	}

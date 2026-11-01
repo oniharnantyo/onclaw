@@ -11,9 +11,13 @@ import (
 	"github.com/oniharnantyo/buddies/internal/store"
 )
 
-// DefaultMaxTokens is the per-turn output cap applied when the agent pins
-// none (the claude connector requires a value).
-const DefaultMaxTokens = 4096
+// DefaultMaxTokens is the Claude-family required-value default: the claude
+// connector's API demands an explicit per-turn output cap, so an agent that
+// pins none (0) runs at this value there. Families whose output-limit
+// parameter is optional (openai, Gemini) omit it instead and the provider
+// default applies. 16384 keeps realistic document-producing tool calls from
+// truncating mid-arguments (design D3 of fix-truncated-toolcall-request).
+const DefaultMaxTokens = 16384
 
 // ModelOverride carries one turn's model and reasoning-effort overrides over
 // the agent's configuration (design D1: the session row's columns, resolved
@@ -88,11 +92,17 @@ func (r *storeModelRegistry) Build(ctx context.Context, agent store.Agent, overr
 		return nil, err
 	}
 
-	maxTokens := agent.MaxTokens
-	if maxTokens <= 0 {
-		maxTokens = DefaultMaxTokens
+	// Raw cap: each family decides its own unset semantics (design D1 —
+	// the Claude builder substitutes DefaultMaxTokens, whose API requires
+	// the value; openai/Gemini omit it so the provider default applies).
+	mdl, err := buildModel(ctx, provider.Type, *provider, modelName, agent.MaxTokens, override.Effort)
+	if err != nil {
+		return nil, err
 	}
-	return buildModel(ctx, provider.Type, *provider, modelName, maxTokens, override.Effort)
+	// Sanitize outbound history: a truncated tool-call arguments fragment
+	// must never reach the connector as raw JSON (design D2 of
+	// fix-truncated-toolcall-request).
+	return newSanitizeModel(mdl), nil
 }
 
 // checkModelEnabled rejects a model selection (from agent configuration or a

@@ -301,3 +301,152 @@ func TestBuildModel_EffortMapsToNativeKnob(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildModel_MaxTokensRidesEachFamilyNativeParam covers the output-cap
+// wiring end to end (spec agent-runtime): a pinned cap reaches the provider
+// request through each family's native output-limit parameter, counted over
+// reasoning plus visible output — max_completion_tokens for the openai
+// family, maxOutputTokens for Gemini, max_tokens for Claude.
+func TestBuildModel_MaxTokensRidesEachFamilyNativeParam(t *testing.T) {
+	tests := []struct {
+		name         string
+		providerType string
+		maxTokens    int
+		assert       func(t *testing.T, body map[string]any)
+	}{
+		{
+			name:         "openai pinned cap rides max_completion_tokens",
+			providerType: ProviderOpenAI,
+			maxTokens:    1234,
+			assert: func(t *testing.T, body map[string]any) {
+				require.Equal(t, float64(1234), body["max_completion_tokens"])
+			},
+		},
+		{
+			name:         "openai-compatible pinned cap rides max_completion_tokens",
+			providerType: ProviderOpenAICompatible,
+			maxTokens:    1234,
+			assert: func(t *testing.T, body map[string]any) {
+				require.Equal(t, float64(1234), body["max_completion_tokens"])
+			},
+		},
+		{
+			name:         "gemini pinned cap rides maxOutputTokens",
+			providerType: ProviderGemini,
+			maxTokens:    2345,
+			assert: func(t *testing.T, body map[string]any) {
+				cfg := body["generationConfig"].(map[string]any)
+				require.Equal(t, float64(2345), cfg["maxOutputTokens"])
+			},
+		},
+		{
+			name:         "claude pinned cap rides max_tokens verbatim",
+			providerType: ProviderAnthropic,
+			maxTokens:    3333,
+			assert: func(t *testing.T, body map[string]any) {
+				require.Equal(t, float64(3333), body["max_tokens"])
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body map[string]any
+			server := captureChatServer(t, tt.providerType, &body)
+			defer server.Close()
+
+			m, err := buildModel(context.Background(), tt.providerType, store.Provider{
+				Name: "p", Type: tt.providerType, APIKey: "k", BaseURL: server.URL,
+			}, "some-model", tt.maxTokens, "")
+			require.NoError(t, err)
+
+			drainStream(t, m)
+			tt.assert(t, body)
+		})
+	}
+}
+
+// TestBuildModel_UnsetMaxTokensDefersToProvider covers the unset half of the
+// cap wiring: 0 reaches the openai and Gemini builders unset (the optional
+// parameter is omitted, so the provider default applies) while the Claude
+// builder substitutes its required-value default.
+func TestBuildModel_UnsetMaxTokensDefersToProvider(t *testing.T) {
+	tests := []struct {
+		name         string
+		providerType string
+		assert       func(t *testing.T, body map[string]any)
+	}{
+		{
+			name:         "openai unset omits max_completion_tokens entirely",
+			providerType: ProviderOpenAI,
+			assert: func(t *testing.T, body map[string]any) {
+				require.NotContains(t, body, "max_completion_tokens")
+			},
+		},
+		{
+			name:         "gemini unset omits maxOutputTokens entirely",
+			providerType: ProviderGemini,
+			assert: func(t *testing.T, body map[string]any) {
+				cfg, ok := body["generationConfig"].(map[string]any)
+				if ok {
+					require.NotContains(t, cfg, "maxOutputTokens")
+				}
+			},
+		},
+		{
+			name:         "claude unset substitutes the required-value default",
+			providerType: ProviderAnthropic,
+			assert: func(t *testing.T, body map[string]any) {
+				require.Equal(t, float64(DefaultMaxTokens), body["max_tokens"])
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body map[string]any
+			server := captureChatServer(t, tt.providerType, &body)
+			defer server.Close()
+
+			m, err := buildModel(context.Background(), tt.providerType, store.Provider{
+				Name: "p", Type: tt.providerType, APIKey: "k", BaseURL: server.URL,
+			}, "some-model", 0, "")
+			require.NoError(t, err)
+
+			drainStream(t, m)
+			tt.assert(t, body)
+		})
+	}
+}
+
+// TestBuildAgenticClaudeModel_ThinkingHeadroomUnchanged pins the existing
+// thinking-budget headroom raise: the Claude builder keeps its default
+// substitution and raises a cap at or below the effort's budget to
+// budget + DefaultMaxTokens, while a generous pinned cap rides verbatim.
+func TestBuildAgenticClaudeModel_ThinkingHeadroomUnchanged(t *testing.T) {
+	tests := []struct {
+		name      string
+		maxTokens int
+		effort    string
+		want      float64
+	}{
+		{name: "unset substitutes the default", maxTokens: 0, effort: "", want: DefaultMaxTokens},
+		{name: "pinned below the budget raises to budget + default", maxTokens: DefaultMaxTokens, effort: EffortHigh, want: 32768 + DefaultMaxTokens},
+		{name: "generous pinned cap rides verbatim", maxTokens: 100000, effort: EffortHigh, want: 100000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body map[string]any
+			server := captureChatServer(t, ProviderAnthropic, &body)
+			defer server.Close()
+
+			m, err := buildAgenticClaudeModel(context.Background(), store.Provider{
+				Name: "p", Type: ProviderAnthropic, APIKey: "k", BaseURL: server.URL,
+			}, "some-model", tt.maxTokens, tt.effort)
+			require.NoError(t, err)
+
+			drainStream(t, m)
+			require.Equal(t, tt.want, body["max_tokens"])
+		})
+	}
+}
