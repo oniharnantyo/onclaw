@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -112,14 +114,65 @@ func defaultShellPath() string {
 }
 
 // scrubbedEnv builds a minimal environment: no provider keys, tokens, or
-// instance configuration leak into agent commands.
+// instance configuration leak into agent commands — the child env is built
+// from scratch, not inherited, so nothing else can slip through. PATH is the
+// one exception: it extends the process's own PATH (childPath) so
+// user-installed CLIs resolve by name, and HOME resolves to the real home so
+// their caches (~/.cache/…) are reachable; the jail is a cwd convention, not
+// a sandbox (see JailedShell), so this only fixes default resolution.
 func scrubbedEnv() []string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		home = os.TempDir()
+	}
 	return []string{
-		"PATH=/usr/local/bin:/usr/bin:/bin",
-		"HOME=" + os.TempDir(),
+		"PATH=" + childPath(home),
+		"HOME=" + home,
 		"TMPDIR=" + os.TempDir(),
 		"LANG=C.UTF-8",
 	}
+}
+
+// childPath assembles the jailed shell's PATH. The process's own PATH leads
+// — whatever launched buddies already resolved the user's tool homes (a
+// terminal, Explorer, a service manager), covering pipx/uv/npm/cargo installs
+// wherever they landed — and the platform's user-local tool directories are
+// appended, so even a spartan GUI-launch PATH (macOS launchd) still reaches
+// the well-known homes. Duplicates collapse; directories that do not exist
+// are simply skipped by the OS lookup. PATH carries no secrets — the
+// scrub's guarantee (a built-from-scratch env) is about everything else.
+func childPath(home string) string {
+	sep := string(os.PathListSeparator)
+	seen := make(map[string]bool)
+	var dirs []string
+	add := func(dirsToAdd ...string) {
+		for _, d := range dirsToAdd {
+			if d == "" || seen[d] {
+				continue
+			}
+			seen[d] = true
+			dirs = append(dirs, d)
+		}
+	}
+	add(filepath.SplitList(os.Getenv("PATH"))...)
+	switch runtime.GOOS {
+	case "windows":
+		// Explorer-launched processes carry the user's full PATH; unix
+		// system directories would be dead weight, and the shell
+		// resolution itself is still unix-only (defaultShellPath).
+		if len(dirs) > 0 {
+			return strings.Join(dirs, sep)
+		}
+		return filepath.Join(home, ".local", "bin")
+	case "darwin":
+		// Apple Silicon Homebrew; Intel installs into /usr/local/bin below.
+		add("/opt/homebrew/bin", "/opt/homebrew/sbin")
+	case "linux":
+		add("/home/linuxbrew/.linuxbrew/bin")
+	}
+	add(filepath.Join(home, ".local", "bin"))
+	add("/usr/local/bin", "/usr/bin", "/bin")
+	return strings.Join(dirs, sep)
 }
 
 // Execute implements einofs.Shell.

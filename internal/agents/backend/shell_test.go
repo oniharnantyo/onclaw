@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -55,6 +56,68 @@ func TestJailedShell_EnvScrubbing(t *testing.T) {
 	}
 	if code := *resp.ExitCode; code != 0 {
 		t.Errorf("expected PATH to allow basic commands, exit %d", code)
+	}
+}
+
+// TestJailedShell_UserToolResolution pins the scrubbed env's resolution
+// shape per platform: the child PATH extends the process's own PATH (the
+// launcher's full resolution — terminal, Explorer) with the user-local tool
+// directory and the platform's tool homes, and HOME is the real home — so
+// user-installed CLIs (docling et al.) resolve by name and their caches
+// under ~/.cache are reachable. The scrub itself (no inherited secrets) is
+// TestJailedShell_EnvScrubbing's concern.
+func TestJailedShell_UserToolResolution(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("no resolvable home directory on this host")
+	}
+	s := newTestShell(t)
+	resp, err := s.Execute(context.Background(), &einofs.ExecuteRequest{
+		Command: `printf 'HOME=%s\nPATH=%s\n' "$HOME" "$PATH"`,
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if code := *resp.ExitCode; code != 0 {
+		t.Fatalf("exit code %d, output %q", code, resp.Output)
+	}
+	if want := "HOME=" + home; !strings.Contains(resp.Output, want) {
+		t.Errorf("HOME missing %q: %q", want, resp.Output)
+	}
+	// The launcher's own PATH leads the child's: its first non-empty
+	// entry must survive into the child (the "full path" inheritance).
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if dir == "" {
+			continue
+		}
+		if !strings.Contains(resp.Output, dir) {
+			t.Errorf("child PATH dropped the launcher's first entry %q: %q", dir, resp.Output)
+		}
+		break
+	}
+	// The user-local tool directory rides PATH on every unix platform.
+	if !strings.Contains(resp.Output, filepath.Join(home, ".local", "bin")) {
+		t.Errorf("PATH missing user-local bin: %q", resp.Output)
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		for _, want := range []string{"/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"} {
+			if !strings.Contains(resp.Output, want) {
+				t.Errorf("PATH missing %q: %q", want, resp.Output)
+			}
+		}
+	case "linux":
+		for _, want := range []string{"/home/linuxbrew/.linuxbrew/bin", "/usr/local/bin", "/usr/bin"} {
+			if !strings.Contains(resp.Output, want) {
+				t.Errorf("PATH missing %q: %q", want, resp.Output)
+			}
+		}
+	case "windows":
+		// The inherited PATH must at least be present (the shell
+		// resolution is unix-only; this pins the env handoff only).
+		if !strings.Contains(resp.Output, "PATH=") {
+			t.Errorf("PATH not handed to the child: %q", resp.Output)
+		}
 	}
 }
 
