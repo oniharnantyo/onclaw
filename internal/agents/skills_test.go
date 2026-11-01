@@ -151,6 +151,20 @@ func TestInjectSkillInvocations(t *testing.T) {
 			"one instruction per distinct eligible skill")
 	})
 
+	t.Run("a generated workspace skill injects even when the allowlist omits it", func(t *testing.T) {
+		// The user-reported regression: $name on an agent-authored skill must
+		// turn into the blocking invocation exactly like a global skill — the
+		// workspace tier is always available, allowlist or not.
+		env := newSkillEnv(t)
+		seedSkill(t, env.globalDir, "documents", "Office documents", "Body.")
+		seedSkill(t, filepath.Join(env.wsRoot, "jono", "skills"), "akta-pendirian-pt", "PT founding deeds", "Body.")
+		b := backend.NewSkillBackend(env.globalDir, filepath.Join(env.wsRoot, "jono", "skills"), nil, []string{"documents"})
+
+		got := injectSkillInvocations(ctx, b, "$akta-pendirian-pt draft the deeds")
+		require.True(t, strings.HasPrefix(got, `The user explicitly invoked the skill "akta-pendirian-pt"`),
+			"the generated skill must be directly invocable via $name")
+	})
+
 	t.Run("nil backend and empty input are no-ops", func(t *testing.T) {
 		require.Equal(t, "hello", injectSkillInvocations(ctx, nil, "hello"))
 		env := newSkillEnv(t)

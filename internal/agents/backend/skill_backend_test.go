@@ -289,6 +289,49 @@ func TestSkillBackend_Allowlist(t *testing.T) {
 			t.Errorf("an allowlisted skill must load: %v", err)
 		}
 	})
+
+	t.Run("generated workspace skills are always available", func(t *testing.T) {
+		// The agent-authored skill is not registry-indexed, so it is not
+		// allowlistable in the first place: the allowlist curates the global
+		// library, and the agent's own skills are always available to it.
+		resolver := NewSkillBackend(globalDir, agentDir, nil, []string{"alpha"})
+
+		names, err := resolver.AvailableSkillNames(ctx)
+		if err != nil {
+			t.Fatalf("AvailableSkillNames failed: %v", err)
+		}
+		if len(names) != 2 || names[0] != "alpha" || names[1] != "gamma" {
+			t.Fatalf("expected [alpha gamma] (agent skill always available), got %v", names)
+		}
+		if _, err := resolver.Get(ctx, "gamma"); err != nil {
+			t.Errorf("the agent's own workspace skill must load: %v", err)
+		}
+		if _, err := resolver.Get(ctx, "beta"); err == nil {
+			t.Error("a non-allowlisted global skill must not load a body")
+		}
+	})
+
+	t.Run("agent tier shadows a non-allowlisted global name", func(t *testing.T) {
+		writeSkill(t, agentDir, "beta", "Agent beta")
+		defer os.RemoveAll(filepath.Join(agentDir, "beta"))
+
+		resolver := NewSkillBackend(globalDir, agentDir, nil, []string{"alpha"})
+
+		metadata, err := resolver.List(ctx)
+		if err != nil {
+			t.Fatalf("List failed: %v", err)
+		}
+		if len(metadata) != 3 || metadata[0].Name != "alpha" || metadata[1].Name != "beta" || metadata[2].Name != "gamma" {
+			t.Fatalf("expected [alpha beta gamma] with beta served from the agent tier, got %v", metadata)
+		}
+		body, err := resolver.Get(ctx, "beta")
+		if err != nil {
+			t.Fatalf("Get(beta) failed: %v", err)
+		}
+		if !strings.Contains(body.Content, "Agent beta") {
+			t.Errorf("expected the agent-tier body, got %q", body.Content)
+		}
+	})
 }
 
 func TestSkillBackend_Get(t *testing.T) {

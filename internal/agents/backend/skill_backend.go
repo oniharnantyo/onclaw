@@ -22,8 +22,11 @@ import (
 // The backend adapts the two tiers to the Eino skill middleware's
 // progressive-disclosure Backend (metadata list → body on demand) and owns
 // the eligibility gate (spec "Skill eligibility gate"): a skill is offered
-// only when it is enabled globally and permitted by the agent's skill
-// allowlist (an empty allowlist permits all discovered skills).
+// only when it is enabled globally and — for the global tier — permitted by
+// the agent's skill allowlist (an empty allowlist permits all discovered
+// skills). The agent tier never consults the allowlist: workspace skills are
+// not registry-indexed, so gating them would hide an agent's own authored
+// skills with no way to allowlist them.
 
 // Tier names a skill's source tier in the precedence hierarchy.
 type Tier string
@@ -125,7 +128,12 @@ func (b *SkillBackend) List(ctx context.Context) ([]einoskill.FrontMatter, error
 
 	names := make([]string, 0, len(byName))
 	for name, skill := range byName {
-		if !b.permitted(name, disabled) {
+		if _, off := disabled[name]; off {
+			continue
+		}
+		// The allowlist curates the global library only; the agent's own
+		// workspace skills are always offered.
+		if skill.Tier == TierGlobal && !b.allowlisted(name) {
 			continue
 		}
 		names = append(names, skill.Name)
@@ -143,19 +151,22 @@ func (b *SkillBackend) List(ctx context.Context) ([]einoskill.FrontMatter, error
 }
 
 // Get loads one skill's full body, resolving across the tiers with
-// precedence agent > global. A skill that fails the eligibility gate is not
-// found — a disabled or non-allowlisted name must never load a body. The
-// read is fresh: an edit on disk applies to the next call.
+// precedence agent > global. A globally disabled skill is never found, and a
+// global-tier skill that fails the allowlist is not found either — the
+// agent's own workspace skills load regardless of the allowlist. The read is
+// fresh: an edit on disk applies to the next call.
 func (b *SkillBackend) Get(ctx context.Context, name string) (einoskill.Skill, error) {
 	disabled, err := b.disabledSet(ctx)
 	if err != nil {
 		return einoskill.Skill{}, err
 	}
-	if !b.permitted(name, disabled) {
+	if _, off := disabled[name]; off {
 		return einoskill.Skill{}, fmt.Errorf("skillBackend.Get: skill not available: %s", name)
 	}
 
-	// Search tiers in precedence order: agent > global.
+	// Search tiers in precedence order: agent > global. The allowlist gates
+	// the global tier only, so a global-tier hit must additionally be
+	// allowlisted.
 	tiers := []struct {
 		dir  string
 		tier Tier
@@ -171,6 +182,9 @@ func (b *SkillBackend) Get(ctx context.Context, name string) (einoskill.Skill, e
 				continue
 			}
 			return einoskill.Skill{}, fmt.Errorf("skillBackend.Get: failed to read skill %s: %w", name, err)
+		}
+		if tier.tier == TierGlobal && !b.allowlisted(name) {
+			return einoskill.Skill{}, fmt.Errorf("skillBackend.Get: skill not available: %s", name)
 		}
 		return einoskill.Skill{
 			FrontMatter: einoskill.FrontMatter{
@@ -200,13 +214,11 @@ func (b *SkillBackend) AvailableSkillNames(ctx context.Context) ([]string, error
 	return names, nil
 }
 
-// permitted applies the eligibility gate: the name must be globally enabled
-// (absent from the disabled set) and, when an allowlist is configured,
-// listed on it.
-func (b *SkillBackend) permitted(name string, disabled map[string]struct{}) bool {
-	if _, off := disabled[name]; off {
-		return false
-	}
+// allowlisted reports whether a global-tier name passes the agent's skill
+// allowlist (an empty allowlist permits all). Only the global tier consults
+// it: the agent's workspace skills are not registry-indexed, so an allowlist
+// gate on them could never be satisfied from the UI.
+func (b *SkillBackend) allowlisted(name string) bool {
 	if len(b.allowlist) == 0 {
 		return true
 	}

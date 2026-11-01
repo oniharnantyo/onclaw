@@ -40,17 +40,17 @@ A `$skill-name` token in the user's message SHALL explicitly invoke that skill f
 
 ### Requirement: Skill eligibility gate
 
-A skill SHALL be eligible to an agent's turn only when it is enabled globally and permitted by the agent's skill allowlist (an empty allowlist permits all discovered skills). Disabled skills MUST NOT be offered to agents.
+A skill SHALL be eligible to an agent's turn only when it is enabled globally and — for the global library tier — permitted by the agent's skill allowlist (an empty allowlist permits all discovered skills). The agent's own workspace-tier skills SHALL always be eligible regardless of the allowlist (they are not registry-indexed, so an allowlist gate would hide them with no way to allowlist them). Disabled skills MUST NOT be offered to agents.
 
 #### Scenario: Disabled skill is not offered
 
 - **WHEN** a skill is disabled globally
 - **THEN** no agent's turns carry its metadata and `$`-invocation does not load it
 
-#### Scenario: Allowlist narrows skills
+#### Scenario: Allowlist narrows the global tier
 
-- **WHEN** an agent's skill allowlist lists a subset of skills
-- **THEN** only that subset is eligible on its turns
+- **WHEN** an agent's skill allowlist lists a subset of the global library's skills
+- **THEN** only that subset of the global tier is eligible on its turns, and a workspace-tier skill absent from the allowlist remains eligible
 
 ### Requirement: Agent skill authoring
 

@@ -15,7 +15,8 @@ import (
 // is a two-tier backend — the global skills library plus the agent's
 // workspace skills directory, agent tier winning on a name conflict, both
 // read fresh per turn — carrying the eligibility gate (global enable × the
-// agent's skill allowlist, empty = all). The backend feeds the Eino skill
+// agent's skill allowlist on the global tier, empty = all; the agent's own
+// workspace skills are always offered). The backend feeds the Eino skill
 // middleware, which advertises metadata only and loads bodies on demand
 // through its skill tool; $name tokens in the user's input are preprocessed
 // into explicit invocations ahead of composition (resolve → compose →
@@ -53,7 +54,9 @@ func (s storeSkillEligibility) DisabledSkillNames(ctx context.Context) ([]string
 // resolveSkills builds the turn's skill backend: the global library plus the
 // agent's workspace skills directory (created on demand so agents can author
 // skills into it through the jailed file tools), gated by the store-backed
-// eligibility and the agent's skill allowlist. A nil backend means the
+// eligibility and — global tier only — the agent's skill allowlist (the
+// agent's own workspace skills are not registry-indexed, so gating them
+// would hide them unallowlistably). A nil backend means the
 // capability is off and the turn composes without it. A real IO failure
 // while materializing the skills directory fails the turn, matching the
 // workspace materialization contract (gate.go).
