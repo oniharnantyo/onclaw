@@ -162,7 +162,7 @@ func (s *AgentsService) Create(ctx context.Context, input CreateAgentInput) (sto
 	// agent-management: options are limited to the model's set); the empty
 	// effort is the cleared/inherit state and always valid. The provider is
 	// already resolved above.
-	if err := validateAgentEffort(provider.Type, agent.Model, agent.Effort); err != nil {
+	if err := s.validateAgentEffort(ctx, provider.ID, provider.Type, agent.Model, agent.Effort); err != nil {
 		return store.Agent{}, fmt.Errorf("create agent: %w", err)
 	}
 	// A duplicate slug is rejected here by the store's UNIQUE index; the
@@ -233,7 +233,7 @@ func (s *AgentsService) Update(ctx context.Context, agent store.Agent) (store.Ag
 		if err != nil {
 			return store.Agent{}, fmt.Errorf("update agent: resolve provider %q: %w", agent.ProviderID, err)
 		}
-		if err := validateAgentEffort(provider.Type, agent.Model, agent.Effort); err != nil {
+		if err := s.validateAgentEffort(ctx, provider.ID, provider.Type, agent.Model, agent.Effort); err != nil {
 			return store.Agent{}, fmt.Errorf("update agent: %w", err)
 		}
 	}
@@ -380,11 +380,31 @@ func validateAgentName(name string) error {
 // validateAgentEffort rejects a default reasoning effort the selected model
 // does not support (spec agent-management: the effort control offers only
 // the model's supported options). The empty effort is the cleared/inherit
-// state and always valid.
-func validateAgentEffort(providerType, model, effort string) error {
+// state and always valid. Resolution is stored-first (design D3), matching
+// the turn-time checkEffort in the model registry: the provider's stored
+// model row is authoritative, so a declared set (e.g. low/high/max on a glm
+// row under an openai-compatible provider) is accepted exactly as turns
+// accept it — the static catalog only backs the check when no row resolves.
+func (s *AgentsService) validateAgentEffort(ctx context.Context, providerID, providerType, model, effort string) error {
 	if effort == "" {
 		return nil
 	}
+	caps, err := agents.NewCapabilityResolver(s.store).Resolve(ctx, providerID, model)
+	if err != nil && !errors.Is(err, agents.ErrModelDisabled) {
+		return validateStaticEffort(providerType, model, effort)
+	}
+	for _, supported := range caps.Efforts {
+		if supported == effort {
+			return nil
+		}
+	}
+	return fmt.Errorf("model %q does not support reasoning effort %q", model, effort)
+}
+
+// validateStaticEffort rejects an effort outside the static catalog's set
+// for the provider type and model — the fallback tier when the store
+// resolves no row.
+func validateStaticEffort(providerType, model, effort string) error {
 	for _, supported := range agents.Efforts(providerType, model) {
 		if supported == effort {
 			return nil
