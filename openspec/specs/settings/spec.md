@@ -1,5 +1,3 @@
-# settings Specification
-
 ## Purpose
 
 Provide the settings menu with panes for providers, skills, tools, hooks, and MCP servers — the shared configuration that agents draw on — ported from onclaw-v2's settings with the tenancy-related panes removed.
@@ -69,6 +67,7 @@ dialog.
 - **THEN** the detail view shows that provider's name header with its toggle,
   Base URL, type, key field, and model list, without any modal dialog
 
+
 ### Requirement: Provider credential secrecy
 
 The provider service MUST NOT return a provider's API key to any frontend.
@@ -98,6 +97,7 @@ only a non-blank key input replaces it.
 - **WHEN** the user toggles the key field's reveal control
 - **THEN** only the input typed in the current session is unmasked; the
   stored key is never returned to or displayed by the frontend
+
 
 ### Requirement: Provider connection verification
 
@@ -130,14 +130,15 @@ verification MUST NOT block saving.
 - **THEN** the outcome (success or failure with reason) is shown in the
   detail view without modifying the provider
 
+
 ### Requirement: Settings navigation layout
 
-The settings menu SHALL present a two-column layout: a left settings-nav sidebar and a right content pane. The sidebar SHALL list the settings panes grouped into sections — Providers under MODELS; Integrations under INTEGRATIONS; Skills, Tools, Hooks, and MCP under AUTOMATION — each with an icon and its label, and SHALL offer a search input that filters the pane list by label. The content pane SHALL show the active pane's title, a one-line description, and the pane body. Selecting a sidebar entry switches the content pane.
+The settings menu SHALL present a two-column layout: a left settings-nav sidebar and a right content pane. The sidebar SHALL list the settings panes grouped into sections — Providers under MODELS; Integrations and Channels under INTEGRATIONS; Skills, Tools, Hooks, and MCP under AUTOMATION — each with an icon and its label, and SHALL offer a search input that filters the pane list by label. The content pane SHALL show the active pane's title, a one-line description, and the pane body. Selecting a sidebar entry switches the content pane.
 
 #### Scenario: Open settings
 
 - **WHEN** the user opens the settings menu
-- **THEN** the sidebar shows the grouped pane list, including Integrations, and the content pane shows the first pane (Providers)
+- **THEN** the sidebar shows the grouped pane list, including Integrations and Channels, and the content pane shows the first pane (Providers)
 
 #### Scenario: Switch panes
 
@@ -163,6 +164,7 @@ The settings menu SHALL list skills discovered from the skills directory, showin
 - **WHEN** the user disables a skill
 - **THEN** that skill no longer appears as selectable in agent configuration or the composer's skill menu
 
+
 ### Requirement: Tools pane
 
 The settings menu SHALL list the available tools with their descriptions and SHALL allow enabling or disabling each tool. Disabled tools MUST NOT be offered to agents. The pane SHALL also configure the web_search provider chain: providers are chosen from the catalog (brave, exa, perplexity, and firecrawl, each requiring an API key; searxng requiring a base URL), ordered into a failover chain, and persisted for the runtime. Saving a chain provider without its required credential SHALL be rejected.
@@ -182,6 +184,7 @@ The settings menu SHALL list the available tools with their descriptions and SHA
 - **WHEN** the user adds a chain provider that requires an API key and submits without one
 - **THEN** the form rejects the submission and explains which credential is missing
 
+
 ### Requirement: Hooks pane
 
 The settings menu SHALL let the user view, add, edit, and remove global hooks — each bound to one of the supported events with a command or script handler type (other handler types are not offered) — and SHALL provide a test affordance that exercises the hook with a sample event and reports the outcome. Per-agent hook assignment lives in agent configuration, not here.
@@ -195,6 +198,7 @@ The settings menu SHALL let the user view, add, edit, and remove global hooks �
 
 - **WHEN** the user opens the add/edit hook form
 - **THEN** the handler-type choices are command and script only
+
 
 ### Requirement: MCP pane
 
@@ -248,6 +252,7 @@ The settings menu SHALL let the user add, edit, and remove MCP server definition
 - **WHEN** the user probes a server that cannot be reached
 - **THEN** its row shows the failed state with the underlying reason and the stored definition is unchanged
 
+
 ### Requirement: Theme parity
 
 The settings menu SHALL render correctly in both the light and dark app themes across all panes, forms, and lists.
@@ -256,6 +261,7 @@ The settings menu SHALL render correctly in both the light and dark app themes a
 
 - **WHEN** the user toggles between light and dark themes while in settings
 - **THEN** all panes render legibly in the selected theme
+
 
 ### Requirement: Pane header action row
 
@@ -270,6 +276,7 @@ themes.
 - **WHEN** the user opens the Providers pane
 - **THEN** the pane title row shows the title on the left and the "Add
   provider" action on the right
+
 
 ### Requirement: Provider row identity
 
@@ -296,6 +303,7 @@ SHALL render legibly in both themes.
 - **WHEN** the user selects a provider
 - **THEN** the detail view header shows the brand tile, the provider name,
   its type label, and the key-state hint
+
 
 ### Requirement: Provider model list
 

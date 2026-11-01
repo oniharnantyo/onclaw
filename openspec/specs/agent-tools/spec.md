@@ -1,5 +1,3 @@
-# agent-tools Specification
-
 ## Purpose
 
 Give agents real tool execution: turns invoke the built-in tool catalog — jailed workspace filesystem, shell, todos, and web access — and feed results back to the model until the turn concludes.
@@ -8,7 +6,7 @@ Give agents real tool execution: turns invoke the built-in tool catalog — jail
 
 ### Requirement: Tool execution loop
 
-A turn SHALL resolve the agent's tool surface, offer it to the model, execute the tool calls the model makes, feed each result back, and continue until the model answers without tool calls or an iteration cap is reached. Each tool call and its result SHALL be recorded on the session transcript as it happens, with the result content persisted. When the iteration cap is reached, the turn SHALL end with a visible notice instead of failing silently.
+A turn SHALL resolve the agent's tool surface, offer it to the model, execute the tool calls the model makes, feed each result back, and continue until the model answers without tool calls or an iteration cap is reached. Each tool call and its result SHALL be recorded on the session transcript as it happens, with the result content persisted. When the iteration cap is reached, the turn SHALL end with a visible notice instead of failing silently. A tool call naming a tool outside the offered surface SHALL be answered with an error tool result naming the unknown tool — the turn SHALL NOT end because of it, and the model SHALL be able to retry with a valid name. Each unknown call SHALL appear on the transcript exactly once, as a failed tool record.
 
 #### Scenario: Tool call round trip
 
@@ -25,6 +23,16 @@ A turn SHALL resolve the agent's tool surface, offer it to the model, execute th
 - **WHEN** a tool invocation fails
 - **THEN** the error is returned to the model as the tool result and the turn continues
 
+#### Scenario: Unknown tool name feeds back
+
+- **WHEN** the model calls a tool name that was not offered in the turn's tool surface — for example `list` instead of `ls`
+- **THEN** the send does not fail, the unknown call is answered with an error tool result naming it, the other calls in the same response execute normally, and the turn continues
+
+#### Scenario: Unknown call recorded once
+
+- **WHEN** a model response contains an unknown tool call
+- **THEN** the session transcript shows exactly one failed tool record for it, and no duplicate record for the same call id
+
 ### Requirement: Tool gate
 
 A built-in tool SHALL be offered to a turn only when it is in the catalog, enabled globally in the Tools pane, and permitted by the agent's tool allowlist (an empty allowlist permits all catalog tools). MCP tools are gated separately by their own capability.
@@ -38,6 +46,7 @@ A built-in tool SHALL be offered to a turn only when it is in the catalog, enabl
 
 - **WHEN** an agent's tool allowlist lists a subset of tools
 - **THEN** only that subset is offered on its turns
+
 
 ### Requirement: Workspace jail
 
@@ -63,6 +72,7 @@ The filesystem tools (`ls`, `read_file`, `write_file`, `edit_file`, `glob`, `gre
 - **WHEN** the model attempts `write_file`, `edit_file`, or `delete_file` under `/knowledge`
 - **THEN** the tool returns an error result, the corpus is unchanged, and the turn continues
 
+
 ### Requirement: Jailed shell
 
 The `execute` tool SHALL run shell commands with the workspace as the working directory, a bounded timeout, and a bounded output size; the child environment SHALL NOT leak the host app's credentials. Timeouts and output truncation SHALL be reported in the tool result.
@@ -76,6 +86,7 @@ The `execute` tool SHALL run shell commands with the workspace as the working di
 
 - **WHEN** a command exceeds the timeout
 - **THEN** the process is killed and the tool result reports the timeout
+
 
 ### Requirement: Task plan tools
 
@@ -96,6 +107,7 @@ The `task_create`, `task_get`, `task_update`, and `task_list` tools SHALL let th
 - **WHEN** the task tools are disabled in the Tools pane, or an agent's allowlist omits them
 - **THEN** that agent's turns are offered none of the four tools
 
+
 ### Requirement: Web fetch
 
 The `web_fetch` tool SHALL retrieve a URL and return its content as readable text. Fetch failures SHALL be returned as tool results.
@@ -109,6 +121,7 @@ The `web_fetch` tool SHALL retrieve a URL and return its content as readable tex
 
 - **WHEN** the model fetches a URL that cannot be reached
 - **THEN** the tool result reports the failure and the turn continues
+
 
 ### Requirement: Web search
 
@@ -129,6 +142,7 @@ The `web_search` tool SHALL resolve queries through a configurable provider chai
 - **WHEN** web_search runs with no provider configured
 - **THEN** the tool result explains that a search provider must be configured in Tools settings
 
+
 ### Requirement: Browser tool in the catalog
 
 The built-in tool catalog SHALL include a `browser` tool (display name "Browser") that is gated exactly like every other catalog tool: offered to a turn only when enabled globally in the Tools pane and permitted by the agent's tool allowlist. The agent create/edit allowlist chips and the Tools pane card list SHALL list it without bespoke wiring.
@@ -142,6 +156,7 @@ The built-in tool catalog SHALL include a `browser` tool (display name "Browser"
 
 - **WHEN** the browser tool is disabled in the Tools pane, or an agent's allowlist omits it
 - **THEN** that agent's turns are offered no `browser` tool
+
 
 ### Requirement: Browser actions
 
@@ -172,6 +187,7 @@ The `browser` tool SHALL expose a single `action` argument with the values `navi
 - **WHEN** the model calls `action: screenshot`
 - **THEN** a PNG is written under `~/.buddies/browser/screenshots/` and the result carries its path and pixel dimensions
 
+
 ### Requirement: Persistent browser profiles
 
 The browser tool SHALL run each named profile as its own Chromium process whose user-data directory is `~/.buddies/browser/profiles/<name>/`, so cookies, local storage, and login state persist across tool calls, turns, sessions, and application restarts. A profile named `default` SHALL be created automatically on first use. Every action MAY carry a `profile` argument; when absent the configured default profile SHALL be used, falling back to `default`. Profile names SHALL match `^[a-z0-9][a-z0-9_-]{0,31}$`; other names SHALL be rejected before any filesystem access.
@@ -196,6 +212,7 @@ The browser tool SHALL run each named profile as its own Chromium process whose 
 - **WHEN** an action passes `profile: "../etc"` or `profile: "My Profile"`
 - **THEN** the tool returns a validation error and touches no files
 
+
 ### Requirement: Cookie management
 
 The `cookies` action SHALL support `cookie_op` values `list`, `set`, `delete`, and `clear` against the profile's browser: `list` returns the cookies visible to the current page (or all cookies when no page is loaded) with name, value, domain, path, expiry, and flags; `set` stores a cookie from `cookie_name` and `cookie_value` scoped by `cookie_domain`/`cookie_path` (or the current page URL when omitted); `delete` removes a named cookie in that scope; `clear` removes every cookie in the profile.
@@ -209,6 +226,7 @@ The `cookies` action SHALL support `cookie_op` values `list`, `set`, `delete`, a
 
 - **WHEN** the model calls `cookies` with `cookie_op: clear` and then `cookie_op: list`
 - **THEN** the list result contains no cookies
+
 
 ### Requirement: Private-network guard
 
@@ -229,6 +247,7 @@ The `cookies` action SHALL support `cookie_op` values `list`, `set`, `delete`, a
 - **WHEN** the model calls `navigate` with a `file://` URL
 - **THEN** the tool returns a refusal error regardless of `allowPrivate`
 
+
 ### Requirement: Browser lifecycle
 
 A profile's browser SHALL launch lazily on its first action (headless by default), be reused by subsequent actions on that profile, serialize concurrent actions on the same profile, and be closed after it has been idle longer than the configured idle timeout. Each action SHALL be bounded by the configured action timeout. Closing an idle browser SHALL not lose profile state.
@@ -242,6 +261,7 @@ A profile's browser SHALL launch lazily on its first action (headless by default
 
 - **WHEN** a `navigate` to a page that never finishes loading exceeds the action timeout
 - **THEN** the tool returns a timeout error result and the browser remains usable for the next action
+
 
 ### Requirement: Browser settings and profile management
 
@@ -262,6 +282,7 @@ The Tools pane browser card SHALL offer a configuration action opening a Browser
 - **WHEN** the user attempts to delete the `default` profile
 - **THEN** the dialog refuses and the profile remains
 
+
 ### Requirement: Scheduler tool in the catalog
 
 The built-in tool catalog SHALL include a `scheduler` tool (display name "Scheduler") that is gated exactly like every other catalog tool: offered to a turn only when enabled globally in the Tools pane and permitted by the agent's tool allowlist. The agent create/edit allowlist chips and the Tools pane card list SHALL list it without bespoke wiring.
@@ -275,6 +296,7 @@ The built-in tool catalog SHALL include a `scheduler` tool (display name "Schedu
 
 - **WHEN** the scheduler tool is disabled in the Tools pane, or an agent's allowlist omits it
 - **THEN** that agent's turns are offered no `scheduler` tool
+
 
 ### Requirement: Scheduler actions
 
@@ -309,6 +331,7 @@ The `scheduler` tool SHALL expose a single `action` argument with the values `cr
 
 - **WHEN** the model calls `action: delete` with an id that does not exist
 - **THEN** the tool returns an error result saying so and the turn continues
+
 
 ### Requirement: Multimodal file reads
 
@@ -346,6 +369,7 @@ When the turn's provider connector cannot carry a PDF file part in tool results,
 - **WHEN** the model reads a scanned PDF that yields no extractable text while the connector cannot carry PDF file parts
 - **THEN** the tool returns a clear error result saying no text could be extracted, and the turn continues
 
+
 ### Requirement: Save document tool in the catalog
 
 The built-in tool catalog SHALL include a `save_document` tool (display name "Save document") that is gated exactly like every other catalog tool: offered to a turn only when enabled globally in the Tools pane and permitted by the agent's tool allowlist. The tool SHALL accept either a chat attachment identified by its capability key or inline text content with a filename, MAY accept a short description recorded with the document, and SHALL save into the session agent's scope. It SHALL enforce the knowledge corpus format and size gates (text and PDF only); unsupported or oversize input returns a readable error result and the turn continues. A successful save registers the document in the catalog and returns its path under `/knowledge`. The tool is the only write path into the corpus: filesystem tools cannot create or modify knowledge documents.
@@ -365,6 +389,7 @@ The built-in tool catalog SHALL include a `save_document` tool (display name "Sa
 - **WHEN** the model calls `save_document` with a video attachment's key
 - **THEN** the tool returns a readable error naming the supported kinds and no document is created
 
+
 ### Requirement: Create document tool in the catalog
 
 The built-in tool catalog SHALL include a `create_document` tool (display name "Create Document") that is gated exactly like every other catalog tool: offered to a turn only when enabled globally in the Tools pane and permitted by the agent's tool allowlist. The tool is workspace-scoped: an agent without a rootable workspace SHALL have it withheld. The agent create/edit allowlist chips and the Tools pane card list SHALL list it without bespoke wiring.
@@ -383,6 +408,7 @@ The built-in tool catalog SHALL include a `create_document` tool (display name "
 
 - **WHEN** an agent without a rootable workspace receives a turn
 - **THEN** the `create_document` tool is withheld and the turn does not fail
+
 
 ### Requirement: Create document tool
 
@@ -412,6 +438,7 @@ The `create_document` tool SHALL render markdown into a PDF document using an em
 
 - **WHEN** the model calls create_document with a file name that already exists under `artifacts/`
 - **THEN** the new document replaces the old file and the result reports the fresh size
+
 
 ### Requirement: Memory search tool in the catalog
 

@@ -1,5 +1,3 @@
-# document-editing Specification
-
 ## Purpose
 
 Lets agents read, revise, and produce real-world office documents with the original's formatting intact: see DOCX/XLSX/PPTX content, edit workspace files in place with targeted operations through one editing tool (office revisions and PDF structural operations), guided by a seeded `documents` playbook skill.
@@ -10,6 +8,8 @@ Lets agents read, revise, and produce real-world office documents with the origi
 
 The jailed filesystem read path SHALL present office documents as model-readable views: DOCX and PPTX as structured text views (paragraphs, headings, slide text in document order) and XLSX as a cell-grid view (sheet names with cell addresses and values). Reading SHALL NOT modify the underlying file in any way. Views SHALL identify their elements precisely enough for the model to target them in later edit operations.
 
+The read tool's model-facing description SHALL state that office documents (DOCX, XLSX, PPTX) present as structured views, so reads of those formats route through the read path rather than shell unpacking, independent of whether a documents playbook skill body is loaded that turn.
+
 #### Scenario: A DOCX reads as a text view
 
 - **WHEN** the model reads a DOCX file through the filesystem read path
@@ -19,6 +19,11 @@ The jailed filesystem read path SHALL present office documents as model-readable
 
 - **WHEN** the model reads an XLSX file through the filesystem read path
 - **THEN** the result presents each sheet's populated cells with their addresses
+
+#### Scenario: Reads steered without the playbook
+
+- **WHEN** a turn offers the read tool while no documents playbook skill body is loaded into the turn
+- **THEN** the read tool's description states that office documents present as structured views and should be read through it rather than unpacked with shell commands
 
 ### Requirement: In-place revision of office documents
 
@@ -39,6 +44,7 @@ A built-in tool SHALL apply targeted, element-level changes to a workspace DOCX,
 - **WHEN** the model targets a paragraph that does not exist
 - **THEN** the tool returns a readable not-found result and the turn continues
 
+
 ### Requirement: PDF structural operations
 
 A built-in tool SHALL apply structural operations to PDF files in the workspace: merging documents, splitting or extracting page ranges, rotating pages, applying stamps or watermarks, and filling form fields. The tool SHALL NOT rewrite PDF text content; when asked to change a PDF's wording it SHALL explain in its result that text changes are made by regenerating the document.
@@ -52,6 +58,7 @@ A built-in tool SHALL apply structural operations to PDF files in the workspace:
 
 - **WHEN** the model asks the tool to change the wording of a PDF page
 - **THEN** the result explains that PDF text is changed by regenerating the document and names the create_document path
+
 
 ### Requirement: Documents skill
 

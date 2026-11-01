@@ -1,5 +1,3 @@
-# chat-tool-cards Specification
-
 ## Purpose
 
 Render each tool call in the transcript as a card that says what the tool did in plain words, shows its arguments and result on demand, and — for the tools the app ships — presents an interactive body shaped to the tool: a file diff for edits, code previews for files, a terminal block for shell commands, result cards for searches, element tables and screenshots for the browser, and a plan checklist, with an honest fallback for anything unknown.
@@ -42,6 +40,7 @@ The card's header SHALL carry no bordered or filled surface of its own: it rende
 - **WHEN** a tool call is displayed in the transcript
 - **THEN** its header carries no bordered or filled surface, its tool name recedes behind the sentence naming the target, and the body is absent until the disclosure control is activated
 
+
 ### Requirement: Tool call states
 
 A card SHALL reflect its call's state: while running it SHALL indicate activity on its label without a spinning icon, show a live elapsed time, and present the arguments already known; when completed it SHALL show the outcome and the result; when failed it SHALL carry failure styling with the error text available. A card SHALL update in place when the same call reaches its terminal state and MUST NOT be duplicated. Motion used to indicate activity MUST be disabled when the user prefers reduced motion.
@@ -62,6 +61,7 @@ A failed call's failure styling SHALL be carried by the header's failure chip an
 
 - **WHEN** the user prefers reduced motion and a tool call is running
 - **THEN** the running indication renders as static text with no animation
+
 
 ### Requirement: Interactive tool bodies
 
@@ -147,6 +147,7 @@ Every file path shown in a body SHALL open that file's preview in the right pane
 - **WHEN** the user activates a file path shown in a tool body
 - **THEN** the right panel opens that file's preview, refusing paths outside the agent's workspace
 
+
 ### Requirement: Honest fallback
 
 A tool the app does not ship, or a shipped tool whose arguments or result cannot be interpreted, SHALL render a fallback body: the display name or raw name, the arguments and result pretty-printed when they are structured and verbatim otherwise, and no generated sentence. A failure inside any tool body's rendering MUST degrade to the fallback body for that card and MUST NOT blank the card or the transcript.
@@ -165,6 +166,7 @@ A tool the app does not ship, or a shipped tool whose arguments or result cannot
 
 - **WHEN** rendering a tool's shaped body fails on a malformed payload
 - **THEN** that card shows the fallback body and the rest of the transcript renders normally
+
 
 ### Requirement: Heavy-turn folding
 
@@ -195,6 +197,7 @@ When a turn produces four or more consecutive tool and task calls, the transcrip
 - **WHEN** one call in a folded run fails
 - **THEN** the summary carries failure styling and the trace rows are revealed with the failed row tinted
 
+
 ### Requirement: Collapse state persistence and auto-open
 
 A card's open or closed state SHALL persist for the duration of the app session when the card re-renders, is scrolled out of and back into the rendered window, or is shown again after a variant switch. Cards SHALL start collapsed. Edit-file and write-file cards SHALL open automatically once when they complete; a user's explicit close MUST NOT be reversed by a later automatic open.
@@ -214,6 +217,7 @@ A card's open or closed state SHALL persist for the duration of the app session 
 - **WHEN** the user closes an edit-file card and the same call later re-reports its terminal state
 - **THEN** the card stays closed
 
+
 ### Requirement: Browser screenshot access
 
 The webview SHALL obtain a browser screenshot's bytes only through a bound read addressed by the file name the browser tool wrote. The read MUST accept only names of that exact shape, MUST resolve them solely inside the browser tool's screenshots directory, and MUST refuse any name carrying directory components or not matching the shape before touching the filesystem. The on-disk path MUST NOT be exposed to the webview. A screenshot SHALL render in the card at the dimensions the tool reported so the transcript does not shift when the image arrives.
@@ -232,6 +236,7 @@ The webview SHALL obtain a browser screenshot's bytes only through a bound read 
 
 - **WHEN** the screenshot file no longer exists on disk
 - **THEN** the card shows an unavailable state in place of the thumbnail and the rest of the card renders normally
+
 
 ### Requirement: Generated document access
 
@@ -261,3 +266,28 @@ A `create_document` tool card SHALL present the generated PDF for viewing. The w
 
 - **WHEN** a card requests a name whose file exists neither under `artifacts/` nor at the workspace root
 - **THEN** the read fails with a readable error and the card shows the failure
+
+
+### Requirement: Artifact export
+
+A `create_document` tool card SHALL offer a Save As control for the generated document in every format the tool produces. The export SHALL resolve the source exactly like the card's view read — a plain file name with no directory components, resolved inside the calling agent's workspace `artifacts/` directory first and at the workspace root when absent, refused before touching the filesystem otherwise. The destination SHALL be chosen through the host's native save dialog, seeded with the artifact's file name; confirming the dialog copies the file to the chosen destination and the UI reports the outcome, while cancelling it is a silent no-op. The chosen destination path is the user's own dialog selection and MAY be reported to the UI; the workspace's on-disk paths remain internal as before. On a host without a native dialog service the export SHALL be reported unavailable and the card SHALL NOT offer the control.
+
+#### Scenario: Save As exports the generated document
+
+- **WHEN** the user picks Save As on a generated document's card and confirms a destination in the native dialog
+- **THEN** the file is copied to the chosen destination and the UI confirms the export
+
+#### Scenario: Export resolves the jailed source
+
+- **WHEN** an export is requested for a plain file name that exists under the calling agent's workspace `artifacts/` directory
+- **THEN** the copy sources that file, and the same request for a name with directory components or traversal is refused before any filesystem access
+
+#### Scenario: Cancel is a silent no-op
+
+- **WHEN** the user cancels the native save dialog
+- **THEN** no copy happens and the UI shows nothing
+
+#### Scenario: Host without dialogs
+
+- **WHEN** the app runs on a host without a native dialog service and the card renders
+- **THEN** the Save As control is not offered and an export attempt reports unavailable

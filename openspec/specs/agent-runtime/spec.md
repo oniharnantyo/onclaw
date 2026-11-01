@@ -1,5 +1,3 @@
-# agent-runtime Specification
-
 ## Purpose
 
 Execute agent conversations on the eino runtime: select a configured provider and model, stream each turn's output incrementally, account for context-window usage, and compact long sessions so chats can continue indefinitely.
@@ -13,6 +11,10 @@ The runtime SHALL execute turns through providers configured in settings (each w
 Each turn SHALL execute on the provider's native agentic message protocol — content blocks covering reasoning, multimodal input, and tool calls — rather than a legacy flat message schema. A provider whose endpoint does not implement the protocol its family requires SHALL be surfaced as unavailable for the turn with a clear reason, not attempted and failed mid-turn.
 
 Each turn SHALL resolve its effective model from the session's model override when one is set, otherwise the agent's configured model, and SHALL apply the session's effective reasoning effort — session override, else agent default, else none — through the provider's native reasoning parameter whenever the model supports one. A model override MUST be rejected with a clear per-turn error when the provider exposes a model listing that does not include it (providers that allow free-form ids may accept unknown models). An effort MUST be rejected with a clear per-turn error when the selected model's capability set does not include it, rather than being silently dropped or sent anyway.
+
+Each turn SHALL carry the agent's configured per-response output-token cap to the provider through that family's native output-limit parameter, counted over reasoning plus visible output: provider families that make the parameter optional SHALL omit it when the agent leaves the cap unset, deferring to the provider default; the Claude family, whose API requires an explicit value, SHALL substitute its built-in default when the cap is unset. A response truncated by the output cap is the provider's `length` outcome and the runtime SHALL surface it as a completed partial turn, not an error.
+
+Outbound model requests SHALL always be encodable: a conversation-history tool call whose arguments are not valid JSON (for instance after a provider truncated the call's output mid-stream) MUST be sent with structurally valid arguments instead of the raw fragment, so a truncated call degrades to the tool-level error the model already received rather than failing the whole request.
 
 #### Scenario: Turn on a configured provider
 
@@ -44,11 +46,33 @@ Each turn SHALL resolve its effective model from the session's model override wh
 - **WHEN** an agent's configured provider endpoint does not implement the agentic protocol its provider family requires
 - **THEN** the turn fails with a clear unavailability reason before any model request is made
 
+#### Scenario: Configured cap rides every family
+
+- **WHEN** an agent has an output-token cap configured and its turn runs on any provider family
+- **THEN** the provider request carries that cap through the family's native output-limit parameter covering reasoning plus visible output
+
+#### Scenario: Unset cap defers to the provider where optional
+
+- **WHEN** an agent leaves the output-token cap unset and its turn runs on a provider family whose output-limit parameter is optional
+- **THEN** the request omits the parameter and the provider's own default output budget applies
+
+#### Scenario: Claude family keeps a concrete default
+
+- **WHEN** an agent on the Claude family leaves the output-token cap unset
+- **THEN** the request carries the runtime's built-in default cap, raised above the thinking budget when reasoning effort is enabled
+
+#### Scenario: Truncated history call does not fail the request
+
+- **WHEN** a previous model response was truncated mid-tool-call and its arguments are not valid JSON
+- **THEN** the next model request sends that call with structurally valid arguments, the provider accepts the request, and the model recovers from the tool-level error instead of the turn dying on a request-decode failure
+
 ### Requirement: Streamed turns
 
 A turn's output SHALL be delivered incrementally to the UI as it is produced — assistant text deltas, reasoning, and tool activity — rather than appearing only at completion. The final transcript MUST be persisted regardless of whether the client stays connected.
 
 Each tool activity's terminal record SHALL carry the call's wall-clock duration, measured from the moment the call was announced as running to the moment its result landed, so a reloaded transcript shows the same latency the live view did. Records persisted before durations were recorded carry none, and the runtime MUST NOT fabricate one for them.
+
+Each tool activity's terminal record SHALL also carry the call's arguments exactly as the model delivered them, for every provider family and regardless of how the provider chunks a call across stream frames, so a reloaded transcript shows the same request the live view did. Records persisted before arguments were captured carry none, and the runtime MUST NOT fabricate ones for them.
 
 #### Scenario: Token-by-token rendering
 
@@ -64,6 +88,17 @@ Each tool activity's terminal record SHALL carry the call's wall-clock duration,
 
 - **WHEN** a tool call completes and the session is later reloaded
 - **THEN** the call's terminal record carries the duration observed by the runtime and the reloaded card shows the same latency as the live card did
+
+#### Scenario: Tool arguments persist across providers
+
+- **WHEN** a tool call completes on any provider family and the session is later reloaded
+- **THEN** the call's terminal record carries the arguments the model delivered and the reloaded card shows the call's request (for a shell call, its command) beside the result
+
+#### Scenario: Chunked call frames keep one record
+
+- **WHEN** a provider streams one tool call as several frames whose argument text arrives on frames that identify the call incompletely
+- **THEN** the frames merge into that call's single record with the full argument text, and no orphan record is persisted for the unidentifiable frames
+
 
 ### Requirement: Turn cancellation
 
@@ -84,6 +119,7 @@ The runtime SHALL support cancelling an in-flight turn for a session through a b
 - **WHEN** cancellation is invoked while the session has no turn in flight
 - **THEN** the call completes safely without altering the transcript or session state
 
+
 ### Requirement: Multi-turn context
 
 Within a session, each turn SHALL include the session's prior context so the agent can refer to earlier messages. Context MUST persist across app restarts.
@@ -92,6 +128,7 @@ Within a session, each turn SHALL include the session's prior context so the age
 
 - **WHEN** the user asks a follow-up that references an earlier message in the same session
 - **THEN** the agent's answer is consistent with that earlier message
+
 
 ### Requirement: Context-window accounting
 
@@ -107,6 +144,7 @@ The runtime SHALL track token usage for the session's current context and expose
 - **WHEN** a turn completes
 - **THEN** the exposed context usage includes that turn's input and output token counts alongside the used total and the limit
 
+
 ### Requirement: Compaction
 
 When a session's context approaches the model's limit, the runtime SHALL compact the session: summarize older history into a checkpoint, persist it, and continue the session within the limit. The user MUST NOT lose the visible transcript; compaction affects the model's working context, not the stored history.
@@ -115,6 +153,7 @@ When a session's context approaches the model's limit, the runtime SHALL compact
 
 - **WHEN** a session's context exceeds the compaction threshold
 - **THEN** the runtime compacts, the transcript in the UI shows a compaction marker, and the next turn succeeds within the context limit
+
 
 ### Requirement: Tool-output reduction
 
@@ -135,6 +174,7 @@ A turn SHALL bound the model-facing size of tool results. A tool output exceedin
 - **WHEN** storing an oversized output fails
 - **THEN** the original tool result stays on the transcript and the turn proceeds
 
+
 ### Requirement: In-run context safety net
 
 Checkpoint compaction remains the persisted cross-turn mechanism. Additionally, when a single turn's working state crosses a safety threshold of the model's context limit mid-turn, the runtime SHALL summarize that state and continue the turn within the limit. An in-run summary is ephemeral: it MUST NOT be persisted as the session checkpoint, MUST NOT advance the checkpoint boundary, and the stored transcript MUST NOT be truncated.
@@ -148,6 +188,7 @@ Checkpoint compaction remains the persisted cross-turn mechanism. Additionally, 
 
 - **WHEN** a session's context crosses the compaction threshold between turns
 - **THEN** the runtime compacts into a persisted checkpoint exactly as before, regardless of any in-run summary
+
 
 ### Requirement: In-flight turn state query
 
@@ -174,6 +215,7 @@ session SHALL be safe and read as not busy.
 
 - **WHEN** the turn state of a session with no turn in flight is queried
 - **THEN** the answer reports the session not busy
+
 
 ### Requirement: Subscribe-time live-state catch-up
 
@@ -212,6 +254,7 @@ catch-up events.
 
 - **WHEN** a session with no turn in flight is subscribed
 - **THEN** no catch-up events are delivered and the stream behaves as before
+
 
 ### Requirement: Turn in-flight state observable app-wide
 

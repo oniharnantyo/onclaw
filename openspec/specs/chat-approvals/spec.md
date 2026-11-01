@@ -1,5 +1,3 @@
-# chat-approvals Specification
-
 ## Purpose
 
 Pause a turn before a dangerous shell command executes, record the approval request durably, let the single user approve or deny it from the transcript, and resume or abort the same turn based on the decision — including across an app restart.
@@ -20,6 +18,7 @@ A shell tool command matching the runtime's safety patterns (forced recursive de
 - **WHEN** an identical command runs again after a previous approval was applied
 - **THEN** it interrupts again and requires a new decision
 
+
 ### Requirement: Durable approval requests
 
 While a decision is pending, the interrupt payload and its execution checkpoint SHALL be persisted in the database. The turn has no terminal outcome while pending: the session stays busy, and further sends SHALL queue as they do during any in-flight turn instead of conflicting with the paused run. Pending state MUST survive an app restart — reopening the session shows the pending approval, and no history is lost.
@@ -33,6 +32,7 @@ While a decision is pending, the interrupt payload and its execution checkpoint 
 
 - **WHEN** the user sends a message while an approval is pending
 - **THEN** the message queues and is delivered only after the approval resolves and the resumed turn finishes
+
 
 ### Requirement: Decision side-channel
 
@@ -53,6 +53,7 @@ The decision SHALL be submitted through a bound service call carrying the sessio
 - **WHEN** a decision arrives for an interrupt that was already resolved or belongs to another session
 - **THEN** the call fails with a conflict error and no run state changes
 
+
 ### Requirement: Approval card in transcript
 
 A pending approval SHALL render as a card in the transcript showing the requested command and Approve/Deny actions, with the actions available only on the pending card. The card persists after the decision with its approved or denied outcome and, once the resumed turn produces it, the command's result. Replay of the transcript MUST reconstruct pending cards and resolved cards from the stored events.
@@ -66,3 +67,23 @@ A pending approval SHALL render as a card in the transcript showing the requeste
 
 - **WHEN** the transcript is reloaded after a decision was made and the turn finished
 - **THEN** the card renders with its approved-or-denied outcome and the tool result below it
+
+
+### Requirement: Remote decision surface
+
+A pending approval SHALL be resolvable from an authorized external channel (per the channels capability): the channel renders the pending request with approve and deny actions that carry the session identity and the pending interrupt identity, and a decision taken there submits through the same bound decision path as the desktop UI. A decision from the channel resolves exactly once and obeys every conflict rule of the bound path: a stale or already-resolved interrupt MUST fail with a conflict rather than affecting any run. Only a sender authorized by the channel MAY act on the buttons; an unauthorized tap MUST NOT resolve anything. The transcript card SHALL record the decision the same way regardless of which surface submitted it.
+
+#### Scenario: Approve from the chat resumes the turn
+
+- **WHEN** an authorized user taps Approve on a pending approval in the channel
+- **THEN** the command executes and the turn continues to normal completion, identical to a desktop approval
+
+#### Scenario: Unauthorized tap cannot resolve
+
+- **WHEN** a sender not authorized by the channel taps the approval buttons
+- **THEN** no decision is recorded and the approval stays pending
+
+#### Scenario: Stale tap conflicts
+
+- **WHEN** the buttons are tapped after the approval was already resolved elsewhere
+- **THEN** the tap reports a conflict and no run state changes
