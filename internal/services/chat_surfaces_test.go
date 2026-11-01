@@ -53,7 +53,7 @@ func TestChatService_SaveAttachmentAndContentRoundTrip(t *testing.T) {
 	svc, _, _ := newSurfaceChatService(t)
 
 	payload := []byte("png-bytes-here")
-	att, err := svc.SaveAttachment(ctx, "shot.png", "image/png", base64.StdEncoding.EncodeToString(payload))
+	att, err := svc.SaveAttachment(ctx, "", "shot.png", "image/png", base64.StdEncoding.EncodeToString(payload))
 	require.NoError(t, err)
 	require.Regexp(t, `^[0-9a-f]{32}$`, att.Key)
 	require.Equal(t, "shot.png", att.Name)
@@ -69,13 +69,13 @@ func TestChatService_SaveAttachmentAndContentRoundTrip(t *testing.T) {
 	require.Equal(t, payload, decodeBase64(t, content.Data))
 
 	// Unknown mimes take the catch-all file lane and save under the cap.
-	bin, err := svc.SaveAttachment(ctx, "x.bin", "application/octet-stream", base64.StdEncoding.EncodeToString([]byte("no")))
+	bin, err := svc.SaveAttachment(ctx, "", "x.bin", "application/octet-stream", base64.StdEncoding.EncodeToString([]byte("no")))
 	require.NoError(t, err)
 	require.Regexp(t, `^[0-9a-f]{32}$`, bin.Key)
 
 	// Only oversize rejects, and the rejection reason rides the bound error.
 	huge := make([]byte, attachments.MaxFileBytes+1)
-	_, err = svc.SaveAttachment(ctx, "big.bin", "application/octet-stream", base64.StdEncoding.EncodeToString(huge))
+	_, err = svc.SaveAttachment(ctx, "", "big.bin", "application/octet-stream", base64.StdEncoding.EncodeToString(huge))
 	require.ErrorIs(t, err, attachments.ErrRejected)
 	require.ErrorContains(t, err, "20 MB")
 

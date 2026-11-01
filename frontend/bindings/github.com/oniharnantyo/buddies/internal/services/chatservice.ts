@@ -101,17 +101,19 @@ export function DeleteSession(sessionID: string): $CancellablePromise<void> {
 
 /**
  * GeneratedDocument reads one document the create_document tool wrote under
- * the agent's workspace artifacts/ directory (and, for cards recorded before
- * that move — add-turn-artifacts design D6 — at the workspace root): name
- * must be a plain basename with no directory components — anything else,
- * including traversal and absolute paths, is refused before any filesystem
- * call. The agent is resolved exactly like the workspace preview surface
- * (WorkspaceFile): by agent id, so the card can call this from a session
- * context — not by session id. A well-formed name with no file in either
- * location wraps store.ErrNotFound.
+ * the calling session's artifacts directory — sessions/<id>/artifacts/ —
+ * falling back to the legacy workspace-root artifacts/ (add-turn-artifacts
+ * design D6) and then the pre-D6 workspace root: name must be a plain
+ * basename with no directory components — anything else, including
+ * traversal and absolute paths, is refused before any filesystem call, and
+ * a non-conforming sessionID is refused the same way. The agent is resolved
+ * exactly like the workspace preview surface (WorkspaceFile): by agent id,
+ * so the card calls this from a session context — sessionID locates the
+ * generation's home, never the file itself. A well-formed name with no file
+ * in any location wraps store.ErrNotFound.
  */
-export function GeneratedDocument(agentID: string, name: string): $CancellablePromise<$models.GeneratedDocumentContent> {
-    return $Call.ByID(4251336789, agentID, name);
+export function GeneratedDocument(agentID: string, sessionID: string, name: string): $CancellablePromise<$models.GeneratedDocumentContent> {
+    return $Call.ByID(4251336789, agentID, sessionID, name);
 }
 
 /**
@@ -161,14 +163,34 @@ export function RunningSessions(): $CancellablePromise<string[] | null> {
  * SaveAttachment stores one uploaded file (design D5, spec chat-attachments
  * "Capability-gated storage"): the bytes land under the attachments
  * directory named by an unguessable capability key and the transcript
- * metadata is registered. data is the base64-encoded file content (explicit
- * on the bridge so the encoding is identical on both hosts). An over-cap or
- * unknown-type file is rejected with the reason (attachments caps: at most
- * 5 MB images, 20 MB PDFs, 1 MB text; the per-message count cap rides the
- * send path).
+ * metadata is registered. An upload made with sessionID's chat open is
+ * foldered under the attachments directory's per-session folder
+ * (attachments/<sessionID>/<key>, schema v19); an empty sessionID — the
+ * fresh-chat composer, where the send path creates the session — keeps the
+ * flat legacy layout; the row records which, so reads need only the key.
+ * data is the base64-encoded file content (explicit on the bridge so the
+ * encoding is identical on both hosts). An over-cap or unknown-type file is
+ * rejected with the reason (attachments caps: at most 5 MB images, 20 MB
+ * PDFs, 1 MB text; the per-message count cap rides the send path).
  */
-export function SaveAttachment(name: string, mime: string, data: string): $CancellablePromise<sessions$0.Attachment> {
-    return $Call.ByID(2747322311, name, mime, data);
+export function SaveAttachment(sessionID: string, name: string, mime: string, data: string): $CancellablePromise<sessions$0.Attachment> {
+    return $Call.ByID(2747322311, sessionID, name, mime, data);
+}
+
+/**
+ * SaveGeneratedDocumentAs exports one generated document to a destination the
+ * user picks in the host's native save dialog (add-artifact-save-as design
+ * D1): name is refused exactly like GeneratedDocument BEFORE any dialog or
+ * filesystem access, the agent is resolved by agent id, and the dialog is
+ * seeded with the artifact file name. The jailed source is read exactly like
+ * GeneratedDocument (the session's artifacts/ first, the legacy homes after)
+ * and copied byte-for-byte to the chosen destination, which the method
+ * returns. A user cancellation is ErrExportCancelled and no native dialog on
+ * this host is ErrExportUnavailable — both bare, their messages being the
+ * frontend contract. The workspace path never crosses the boundary.
+ */
+export function SaveGeneratedDocumentAs(agentID: string, sessionID: string, name: string): $CancellablePromise<string> {
+    return $Call.ByID(3879792746, agentID, sessionID, name);
 }
 
 /**

@@ -18,6 +18,8 @@ import { create, type StoreApi } from "zustand";
 
 import { client } from "../../lib/client";
 
+import { useChatStore } from "./store";
+
 /** One pending upload in the composer's tray. */
 export interface AttachmentChip {
   id: string;
@@ -195,7 +197,15 @@ async function upload(id: string, file: File): Promise<void> {
   if (!current || current.status !== "uploading") return;
 
   try {
+    // The session open at upload time folders the file on the backend
+    // (attachments/<sessionID>/<key>, schema v19); an upload in a fresh
+    // chat — the + flow, where the send path creates the session — sends
+    // the empty id and keeps the flat layout. Read resolves either from
+    // the key alone.
+    const sessionID = useChatStore.getState().activeSessionID ?? "";
+
     const stored = await client.chat.saveAttachment(
+      sessionID,
       file.name,
       file.type,
       base64

@@ -5,7 +5,11 @@
  * artifacts collapse to six inline chips behind a "+3 more" disclosure that
  * reveals the rest, a truncated list states the cap, activating a chip calls
  * onOpen with the full workspace-relative path, chips without an onOpen
- * render non-interactive, and zero artifacts render no row at all.
+ * render non-interactive, zero artifacts render no row at all, a Save As
+ * affordance rides beside each chip only when the caller wires onSaveAs
+ * (add-artifact-save-as design D4), and the per-session layout's
+ * sessions/<id>/artifacts/ prefix strips from the display name like the
+ * flat legacy one.
  */
 import { act } from "react";
 import { fireEvent, screen } from "@testing-library/dom";
@@ -132,3 +136,48 @@ describe("ArtifactsView (add-turn-artifacts task 6.3, design D7)", () => {
     expect(screen.queryByTestId("entry-artifacts")).toBeNull();
   });
 });
+
+  it("renders a Save As affordance per chip that exports with the full path", async () => {
+    const onSaveAs = vi.fn();
+
+    await renderUI(
+      <ArtifactsView
+        artifacts={[
+          artifact(
+            "sessions/0ae4aa0a3c954cbd9dfaf078ae573eae/artifacts/report.pdf",
+            2048
+          ),
+        ]}
+        onOpen={(): void => undefined}
+        onSaveAs={onSaveAs}
+      />
+    );
+
+    // The display name strips the per-session prefix exactly like the flat
+    // legacy one, and the affordance rides beside — never inside — the chip
+    // button.
+    expect(screen.getByRole("button", { name: "report.pdf" })).toBeTruthy();
+
+    const save = screen.getByTestId("artifact-save-as");
+
+    expect(save.getAttribute("aria-label")).toBe("Save report.pdf as");
+
+    await act(async () => {
+      fireEvent.click(save);
+    });
+
+    expect(onSaveAs).toHaveBeenCalledExactlyOnceWith(
+      "sessions/0ae4aa0a3c954cbd9dfaf078ae573eae/artifacts/report.pdf"
+    );
+  });
+
+  it("renders no Save As affordance without the onSaveAs wiring", async () => {
+    await renderUI(
+      <ArtifactsView
+        artifacts={[artifact("artifacts/report.md", 12)]}
+        onOpen={(): void => undefined}
+      />
+    );
+
+    expect(screen.queryByTestId("artifact-save-as")).toBeNull();
+  });

@@ -76,8 +76,11 @@ type BotAPI interface {
 // structurally.
 type AttachmentRegistry interface {
 	// Save stores the bytes and registers the metadata row, returning the
-	// capability key the turn's AttachmentKeys must name.
-	Save(ctx context.Context, name, mime string, data []byte) (sessions.Attachment, error)
+	// capability key the turn's AttachmentKeys must name. Media is admitted
+	// before any session exists (the queue maps chat → session on the turn
+	// path), so the channel always passes the empty session id — the flat
+	// legacy layout (schema v19).
+	Save(ctx context.Context, sessionID, name, mime string, data []byte) (sessions.Attachment, error)
 }
 
 // Artifacts is the seam that resolves one turn artifact (a workspace-relative

@@ -594,7 +594,7 @@ type fakeAttachments struct {
 	err         error
 }
 
-func (f *fakeAttachments) Save(_ context.Context, name, mime string, data []byte) (sessions.Attachment, error) {
+func (f *fakeAttachments) Save(_ context.Context, _, name, mime string, data []byte) (sessions.Attachment, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.saves = append(f.saves, fakeSave{Name: name, Mime: mime, Size: len(data)})

@@ -13,7 +13,10 @@ import type {
   Session,
   Skill,
 } from "../../../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
-import type { ModelCapability } from "../../../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
+import type {
+  ModelCapability,
+  WorkspaceSkill,
+} from "../../../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
 import type { Client } from "../../../../lib/client";
 import { mockedSurface } from "../../__test__/mockedSurface";
 
@@ -21,7 +24,7 @@ export type MockFn = ReturnType<typeof vi.fn>;
 
 /** The mocked client shape: the Client surface with its vi.fn members. */
 export type MockedClient = Client & {
-  agents: { list: MockFn };
+  agents: { list: MockFn; listWorkspaceSkills: MockFn };
   chat: {
     sessions: MockFn;
     allSessions: MockFn;
@@ -113,6 +116,10 @@ export const skills: Skill[] = [
   },
 ];
 
+/** The agent's workspace skills tier as the store's per-agent merge reads it
+ * (`listWorkspaceSkills`); the default suite lists none. */
+export const workspaceSkills: WorkspaceSkill[] = [];
+
 /** The provider's model capabilities: one model with efforts, one without. */
 export const capabilities: ModelCapability[] = [
   {
@@ -154,6 +161,9 @@ export function makeClient(): MockedClient {
   const c = {
     agents: {
       list: vi.fn(async (): Promise<Agent[]> => [scout, runner]),
+      listWorkspaceSkills: vi.fn(
+        async (): Promise<WorkspaceSkill[]> => workspaceSkills
+      ),
     },
     chat: {
       sessions: vi.fn(async (agentID: string): Promise<Session[]> =>

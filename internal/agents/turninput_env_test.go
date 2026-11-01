@@ -26,7 +26,7 @@ func stubClock(t *testing.T, at time.Time) {
 // the user origin and states that the user is present.
 func TestEnvironmentBlock_ChatOriginPresent(t *testing.T) {
 	for _, origin := range []string{"", hooks.OriginUser} {
-		block := environmentBlock("gemini", "some-model", origin, time.Date(2026, 10, 24, 9, 30, 0, 0, time.UTC))
+		block := environmentBlock("gemini", "some-model", origin, "", time.Date(2026, 10, 24, 9, 30, 0, 0, time.UTC))
 		require.Contains(t, block, "Origin: "+hooks.OriginUser, "the block names the user origin")
 		require.Contains(t, block, "the user is present", "the block states the user is present")
 		require.NotContains(t, block, "not present", "the user-origin block never denies presence")
@@ -39,7 +39,7 @@ func TestEnvironmentBlock_ChatOriginPresent(t *testing.T) {
 // present, so the model picks the autonomous-run mode.
 func TestEnvironmentBlock_AutonomousOriginAbsent(t *testing.T) {
 	for _, origin := range []string{hooks.OriginScheduler, "webhook", "channel"} {
-		block := environmentBlock("gemini", "some-model", origin, time.Date(2026, 10, 24, 9, 30, 0, 0, time.UTC))
+		block := environmentBlock("gemini", "some-model", origin, "", time.Date(2026, 10, 24, 9, 30, 0, 0, time.UTC))
 		require.Contains(t, block, "Origin: "+origin, "the block names the turn's origin")
 		require.Contains(t, block, "the user is not present", "the block states the user is absent")
 	}
@@ -95,7 +95,7 @@ func TestTurnInput_CompositionOrder(t *testing.T) {
 // origin, and its presence line reads as the generic non-user (autonomous)
 // form, like every other trigger surface.
 func TestEnvironmentBlock_TelegramOrigin(t *testing.T) {
-	block := environmentBlock("gemini", "some-model", hooks.OriginTelegram, time.Date(2026, 10, 24, 9, 30, 0, 0, time.UTC))
+	block := environmentBlock("gemini", "some-model", hooks.OriginTelegram, "", time.Date(2026, 10, 24, 9, 30, 0, 0, time.UTC))
 	require.Contains(t, block, "Origin: "+hooks.OriginTelegram, "the block names the telegram origin")
 	require.Contains(t, block, "Origin: telegram — ", "the origin line carries its presence designation")
 	require.Contains(t, block, "the user is not present", "the telegram presence line is the autonomous-run form")
@@ -121,8 +121,27 @@ func TestTurnInput_TelegramOriginRequest(t *testing.T) {
 // filesystem middleware appends its own guidance, and duplication would
 // invite drift between two sources of the same fact.
 func TestEnvironmentBlock_NoMountGuidance(t *testing.T) {
-	block := environmentBlock("gemini", "some-model", hooks.OriginScheduler, time.Date(2026, 10, 24, 9, 30, 0, 0, time.UTC))
+	block := environmentBlock("gemini", "some-model", hooks.OriginScheduler, "", time.Date(2026, 10, 24, 9, 30, 0, 0, time.UTC))
 	for _, fragment := range []string{"mount", "workspace", "jail"} {
 		require.NotContains(t, strings.ToLower(block), fragment)
 	}
+}
+
+// TestEnvironmentBlock_SessionDirectory covers the session-scoped layout:
+// a turn with a session workspace renders the session-directory line — the
+// one mount path the block names, since it is the fact the model cannot
+// derive (the per-session uploads mirror and artifacts home hang off it) —
+// and a turn without one keeps the block session-free.
+func TestEnvironmentBlock_SessionDirectory(t *testing.T) {
+	block := environmentBlock("gemini", "some-model", hooks.OriginUser,
+		"sessions/0ae4aa0a3c954cbd9dfaf078ae573eae", time.Date(2026, 10, 24, 9, 30, 0, 0, time.UTC))
+	require.Contains(t, block, "Session directory: /workspace/sessions/0ae4aa0a3c954cbd9dfaf078ae573eae",
+		"the block names the session directory")
+	require.Contains(t, block, "/workspace/sessions/0ae4aa0a3c954cbd9dfaf078ae573eae/uploads",
+		"the block names the session's uploads mirror")
+	require.Contains(t, block, "/workspace/sessions/0ae4aa0a3c954cbd9dfaf078ae573eae/artifacts",
+		"the block names the session's artifacts home")
+
+	plain := environmentBlock("gemini", "some-model", hooks.OriginUser, "", time.Date(2026, 10, 24, 9, 30, 0, 0, time.UTC))
+	require.NotContains(t, plain, "Session directory", "a turn without a session workspace renders no session line")
 }

@@ -9,7 +9,7 @@
  * an edit of a preset-shaped expression reconstructs that preset and
  * anything else opens in Advanced showing the expression verbatim.
  */
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { ChangeEvent, ReactElement } from "react";
 
 import {
@@ -80,22 +80,36 @@ export function RecurrenceBuilder({
   value,
   onChange,
 }: RecurrenceBuilderProps): ReactElement {
-  const [preset, setPreset] = useState<RecurrencePreset>(() =>
-    decomposeCron(value)
-  );
+  // The preset state carries the prop value it was derived from, so a value
+  // change the builder did not produce itself (a parent reset) is adapted
+  // during render — the React-documented pattern for following a controlled
+  // prop without a setState-in-effect round trip. The echo guard keeps user
+  // typing intact: when the incoming expression is exactly what the current
+  // preset would emit, the preset stands.
+  const [adapted, setAdapted] = useState<{
+    value: string;
+    preset: RecurrencePreset;
+  }>(() => ({ value, preset: decomposeCron(value) }));
 
-  // Follows value changes the builder did not produce itself (a parent
-  // reset): recompose only when the incoming expression diverges from what
-  // the current preset would emit, so user typing is never clobbered.
-  useEffect((): void => {
-    setPreset((prev: RecurrencePreset): RecurrencePreset =>
-      value === composeCron(prev) ? prev : decomposeCron(value)
-    );
-  }, [value]);
+  let preset = adapted.preset;
 
-  /** Applies a new preset and emits its canonical expression. */
+  if (adapted.value !== value) {
+    preset =
+      value === composeCron(adapted.preset)
+        ? adapted.preset
+        : decomposeCron(value);
+    setAdapted({ value, preset });
+  }
+
+  /** Applies a new preset and emits its canonical expression. Only the
+   * preset moves here — the last-seen prop value stands, so a parent that
+   * does not echo (or echoes later) never trips the adaptation guard above;
+   * an echoing parent re-enters it and the guard keeps the preset. */
   const apply = (next: RecurrencePreset): void => {
-    setPreset(next);
+    setAdapted((prev: { value: string; preset: RecurrencePreset }) => ({
+      value: prev.value,
+      preset: next,
+    }));
     onChange(composeCron(next));
   };
 

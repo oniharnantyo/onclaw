@@ -18,6 +18,7 @@ import { SessionRail } from "./features/chat/components/SessionRail";
 import KnowledgeView from "./features/knowledge";
 import SettingsView from "./features/settings";
 import SchedulesView from "./features/scheduler";
+import { subscribeFileDropGuard } from "./fileDropGuard";
 import { cn } from "./lib/cn";
 import { subscribeSettingsShortcut } from "./settingsShortcut";
 import { useNavStore, type Menu } from "./stores/nav";
@@ -262,6 +263,11 @@ function Shell(): ReactElement {
   // The native menu's Settings… item (⌘,) navigates here through the shared
   // nav store (design D5); the shell owns the subscription's lifetime.
   useEffect(() => subscribeSettingsShortcut(), []);
+
+  // Window-level file-drop navigation guard (design D4): drops outside the
+  // chat column can never navigate the webview to a file; Files-gated so
+  // text drops still insert.
+  useEffect(() => subscribeFileDropGuard(), []);
 
   // The rail preference re-syncs from storage on every shell mount, so the
   // rendered width always agrees with the stored frame.

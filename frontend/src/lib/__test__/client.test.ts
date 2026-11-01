@@ -234,6 +234,7 @@ interface MockTransport {
     ContextUsage: MockFn;
     BrowserScreenshot: MockFn;
     GeneratedDocument: MockFn;
+    SaveGeneratedDocumentAs: MockFn;
   };
   appInfo: { Get: MockFn };
   settings: Transport["settings"];
@@ -380,13 +381,17 @@ function makeTransport(): MockTransport {
       sizeBytes: 9,
       data: "cG5mLWJ5dGVz",
     })),
+    SaveGeneratedDocumentAs: vi.fn(
+      async (_agentID: string, _name: string): Promise<string> =>
+        "/tmp/report.pdf"
+    ),
   };
 
   const appInfo = {
     Get: vi.fn(async () => {
       calls.push("appInfo.Get");
 
-      return { name: "buddies", version: "0.0.0" };
+      return { name: "buddies", version: "0.0.0", nativeDialogs: true };
     }),
   };
 
@@ -654,7 +659,11 @@ describe("client wrapper", () => {
 
   it("routes app info calls through the transport", async () => {
     const meta = await client.appInfo.get();
-    expect(meta).toEqual({ name: "buddies", version: "0.0.0" });
+    expect(meta).toEqual({
+      name: "buddies",
+      version: "0.0.0",
+      nativeDialogs: true,
+    });
     expect(t.calls).toContain("appInfo.Get");
   });
 
@@ -688,6 +697,7 @@ describe("client wrapper", () => {
 
   it("routes chat.saveAttachment and chat.attachmentContent", async () => {
     const meta = await client.chat.saveAttachment(
+      "",
       "shot.png",
       "image/png",
       "cG5nLWJ5dGVz"
@@ -695,6 +705,7 @@ describe("client wrapper", () => {
 
     expect(meta.key).toBe("0123456789abcdef0123456789abcdef");
     expect(t.chat.SaveAttachment).toHaveBeenCalledWith(
+      "",
       "shot.png",
       "image/png",
       "cG5nLWJ5dGVz"
@@ -768,9 +779,9 @@ describe("client wrapper", () => {
       .mockResolvedValue(content);
 
     await expect(
-      client.chat.generatedDocument("agent-1", "report.pdf")
+      client.chat.generatedDocument("agent-1", "sess-1", "report.pdf")
     ).resolves.toBe(content);
-    expect(read).toHaveBeenCalledWith("agent-1", "report.pdf");
+    expect(read).toHaveBeenCalledWith("agent-1", "sess-1", "report.pdf");
   });
 
   it("routes gateway state calls", async () => {

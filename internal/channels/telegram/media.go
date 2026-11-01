@@ -60,7 +60,7 @@ func (s *Service) handleMedia(ctx context.Context, at inlet, msg *botapi.Message
 		return
 	}
 
-	att, err := s.atts.Save(ctx, name, mime, data)
+	att, err := s.atts.Save(ctx, "", name, mime, data)
 	if err != nil {
 		// Lane rejection (unsupported type, over the lane cap) lands here
 		// with its reason — the never-silent rule.

@@ -126,8 +126,11 @@ export interface Transport {
     ): Promise<sessionModels.Event[] | null>;
     /** Removes the session and its transcript; refused while a turn runs. */
     DeleteSession(sessionID: string): Promise<void>;
-    /** Stores one upload (base64 data); returns its capability metadata. */
+    /** Stores one upload (base64 data); sessionID folders the bytes under
+     * the per-session directory (empty = the flat legacy layout). Returns
+     * its capability metadata. */
     SaveAttachment(
+      sessionID: string,
       name: string,
       mime: string,
       data: string
@@ -147,13 +150,33 @@ export interface Transport {
      * Serves one generated document's bytes by the file name the
      * create_document tool reported (add-create-document D7): base64 plus
      * the byte size. The backend refuses any name carrying directory
-     * components before touching the filesystem and resolves it solely
-     * inside the agent's workspace; a refused or missing file rejects.
+     * components — and any non-conforming session id — before touching the
+     * filesystem, and resolves the name newest-home-first inside the
+     * agent's workspace: the calling session's artifacts directory
+     * (sessions/<id>/artifacts), then the legacy artifacts/, then the
+     * pre-artifacts workspace root; a refused or missing file rejects.
      */
     GeneratedDocument(
       agentID: string,
+      sessionID: string,
       name: string
     ): Promise<serviceModels.GeneratedDocumentContent>;
+    /**
+     * Exports one generated document to a destination the user picks in the
+     * host's native save dialog (add-artifact-save-as design D1); the name is
+     * refused exactly like GeneratedDocument before any dialog or filesystem
+     * access, and the chosen destination path is the resolution. sessionID
+     * locates the generation's session-scoped artifacts home exactly like
+     * GeneratedDocument. A user cancellation rejects with
+     * "save as: cancelled" and a host without a dialog service rejects with
+     * "save as: no native dialog on this host" — the messages the frontend
+     * matches on.
+     */
+    SaveGeneratedDocumentAs(
+      agentID: string,
+      sessionID: string,
+      name: string
+    ): Promise<string>;
     /** Reads one jailed workspace file of the agent. */
     WorkspaceFile(agentID: string, relPath: string): Promise<string>;
     /**
@@ -420,6 +443,14 @@ export function createWailsTransport(): Transport {
     agents: agentsBindings,
     chat: {
       ...chatBindings,
+      /** Exports one generated document through the host's native save dialog
+       * (add-artifact-save-as); resolves with the user-chosen destination. */
+      SaveGeneratedDocumentAs: (
+        agentID: string,
+        sessionID: string,
+        name: string
+      ): Promise<string> =>
+        chatBindings.SaveGeneratedDocumentAs(agentID, sessionID, name),
       TurnState: (sessionID: string): Promise<serviceModels.TurnStateResult> =>
         chatBindings.TurnState(sessionID),
     },

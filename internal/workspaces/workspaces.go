@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -25,17 +26,22 @@ const (
 
 // Subdirectory names inside an agent workspace (design D6): skills/ holds
 // the agent-tier skill library (shadowing the global tier on name
-// conflict), .tasks/ is the reserved task-store directory, artifacts/
-// holds the user-facing deliverables a turn produces (add-turn-artifacts
-// design D1) — not dot-prefixed because the user is meant to find them —
-// and uploads/ holds the turn-time mirror of chat attachments
-// (fix-pdf-attachment-carriage design D2), likewise model-visible through
-// the workspace mount.
+// conflict) and .tasks/ is the reserved task-store directory — both
+// agent-level, rooted at the workspace root. Everything a single
+// conversation produces instead lives under that session's directory
+// (sessions/<session id>/): its uploads/ mirror of chat attachments
+// (fix-pdf-attachment-carriage design D2), its artifacts/ deliverables
+// (add-turn-artifacts design D1) — not dot-prefixed because the user is
+// meant to find them — and the reduction middleware's trunc/ and clear/
+// offloads. The flat artifacts/ and uploads/ names remain the pre-session
+// layout's legacy locations; existing files are read where they were
+// recorded, new turns write only under their session.
 const (
 	DirSkills    = "skills"
 	DirTasks     = ".tasks"
 	DirArtifacts = "artifacts"
 	DirUploads   = "uploads"
+	DirSessions  = "sessions"
 )
 
 // maxSlugLen is the slug length cap (DNS label limit). The slug doubles as
@@ -134,6 +140,80 @@ func (m *Manager) UploadsDir(slug string) (string, error) {
 // subdirectory inside it.
 func (m *Manager) ensureDir(slug, name string) (string, error) {
 	dir, err := m.Dir(slug)
+	if err != nil {
+		return "", err
+	}
+	sub := filepath.Join(dir, name)
+	if err := os.MkdirAll(sub, dirPerm); err != nil {
+		return "", fmt.Errorf("workspaces: create %s: %w", sub, err)
+	}
+	return sub, nil
+}
+
+// sessionIDShape matches a minted session id: 32 lowercase hex characters —
+// the shape session ids carry, and the same predicate internal/attachments
+// jails its session-scoped attachment layout on.
+var sessionIDShape = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// ValidSessionID reports whether sessionID is a minted session id (32
+// lowercase hex). Session-scoped directory paths are built from the id, so
+// callers validate it before any filesystem call — a non-conforming id
+// never names a directory.
+func ValidSessionID(sessionID string) bool {
+	return sessionIDShape.MatchString(sessionID)
+}
+
+// SessionRel returns the workspace-relative facing path of one session's
+// directory — "sessions/<sessionID>", or "sessions/<sessionID>/<name>" for
+// a named subdirectory — with forward slashes, the form prompts, artifact
+// records, and the workspace mount use. An empty result (a non-conforming
+// id) means there is no session path to name.
+func SessionRel(sessionID, name string) string {
+	if !ValidSessionID(sessionID) {
+		return ""
+	}
+	if name == "" {
+		return DirSessions + "/" + sessionID
+	}
+	return DirSessions + "/" + sessionID + "/" + name
+}
+
+// SessionDir returns the session-scoped working directory for one session —
+// sessions/<sessionID>/ under the slug's workspace — validating the session
+// id before any filesystem call. It performs no filesystem access; the
+// per-session helpers below create their directories on demand.
+func (m *Manager) SessionDir(slug, sessionID string) (string, error) {
+	if !ValidSessionID(sessionID) {
+		return "", fmt.Errorf("workspaces: invalid session id %q", sessionID)
+	}
+	dir, err := m.Dir(slug)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, DirSessions, sessionID), nil
+}
+
+// SessionUploadsDir returns the session's uploads directory — the turn-time
+// mirror of the attachments riding that session's turns, model-visible at
+// /workspace/sessions/<id>/uploads — creating it on demand (idempotent
+// mkdir -p).
+func (m *Manager) SessionUploadsDir(slug, sessionID string) (string, error) {
+	return m.ensureSessionDir(slug, sessionID, DirUploads)
+}
+
+// SessionArtifactsDir returns the session's artifacts directory — the
+// deliverables home that turn-boundary artifact detection watches for that
+// session (add-turn-artifacts design D1) — creating it on demand (idempotent
+// mkdir -p). The turn-start snapshot walks it, so the directory must exist
+// by the time a turn runs.
+func (m *Manager) SessionArtifactsDir(slug, sessionID string) (string, error) {
+	return m.ensureSessionDir(slug, sessionID, DirArtifacts)
+}
+
+// ensureSessionDir resolves the session's directory and creates the named
+// subdirectory inside it.
+func (m *Manager) ensureSessionDir(slug, sessionID, name string) (string, error) {
+	dir, err := m.SessionDir(slug, sessionID)
 	if err != nil {
 		return "", err
 	}

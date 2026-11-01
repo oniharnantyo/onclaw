@@ -96,7 +96,9 @@ func (r *resolvedTools) names(ctx context.Context) ([]string, error) {
 // source, or a runtime built without a scheduler has those tools withheld
 // (null-object degradation, like absent persona documents) — only a real IO
 // failure while materializing the workspace directory fails the turn.
-func (m *manager) resolveTurnTools(ctx context.Context, agent store.Agent) (*resolvedTools, error) {
+// sessionID is the calling session's id, scoping the session-directory tools
+// (create_document, edit_document) to that conversation's artifacts.
+func (m *manager) resolveTurnTools(ctx context.Context, agent store.Agent, sessionID string) (*resolvedTools, error) {
 	allowed := make(map[string]struct{}, len(agent.Tools))
 	for _, name := range agent.Tools {
 		allowed[name] = struct{}{}
@@ -161,7 +163,7 @@ func (m *manager) resolveTurnTools(ctx context.Context, agent store.Agent) (*res
 				// composed context may carry the preset appendix (design D6).
 				res.createDocument = true
 			}
-			t, err := m.buildDirectTool(entry.meta.Name, toolScope{AgentID: agent.ID, Slug: agent.Slug, Workspace: res.agentDir})
+			t, err := m.buildDirectTool(entry.meta.Name, toolScope{AgentID: agent.ID, Slug: agent.Slug, Workspace: res.agentDir, SessionID: sessionID})
 			if err != nil {
 				return nil, fmt.Errorf("resolve tool %s: %w", entry.meta.Name, err)
 			}

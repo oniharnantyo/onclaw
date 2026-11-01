@@ -16,10 +16,10 @@ func (s *attachmentStore) Put(ctx context.Context, att store.Attachment) error {
 		return fmt.Errorf("put attachment: empty key")
 	}
 	_, err := s.e.ExecContext(ctx, `
-INSERT INTO attachments (key, name, mime, size)
-VALUES (?, ?, ?, ?)
-ON CONFLICT (key) DO UPDATE SET name = excluded.name, mime = excluded.mime, size = excluded.size`,
-		att.Key, att.Name, att.Mime, att.Size,
+INSERT INTO attachments (key, name, mime, size, session_id)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (key) DO UPDATE SET name = excluded.name, mime = excluded.mime, size = excluded.size, session_id = excluded.session_id`,
+		att.Key, att.Name, att.Mime, att.Size, att.SessionID,
 	)
 	if err != nil {
 		return fmt.Errorf("put attachment %s: %w", att.Key, err)
@@ -29,10 +29,10 @@ ON CONFLICT (key) DO UPDATE SET name = excluded.name, mime = excluded.mime, size
 
 func (s *attachmentStore) ByKey(ctx context.Context, key string) (*store.Attachment, error) {
 	row := s.e.QueryRowContext(ctx, `
-SELECT key, name, mime, size FROM attachments WHERE key = ?`, key)
+SELECT key, name, mime, size, session_id FROM attachments WHERE key = ?`, key)
 
 	var att store.Attachment
-	if err := row.Scan(&att.Key, &att.Name, &att.Mime, &att.Size); err != nil {
+	if err := row.Scan(&att.Key, &att.Name, &att.Mime, &att.Size, &att.SessionID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("attachment %s: %w", key, store.ErrNotFound)
 		}

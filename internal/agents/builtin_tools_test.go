@@ -94,6 +94,23 @@ func TestCatalogSchedulerMeta(t *testing.T) {
 	require.NotEmpty(t, meta.Description)
 }
 
+// TestCatalogReadFileMeta pins the read_file entry's display metadata and
+// the office-views clause (fix-document-tool-drift task 1.2): the catalog
+// description states that DOCX, XLSX, and PPTX present as structured views,
+// so reads of those formats route through the tool instead of shell
+// unpacking, while the pre-existing clause stays.
+func TestCatalogReadFileMeta(t *testing.T) {
+	meta, ok := CatalogToolByName(ToolReadFile)
+	require.True(t, ok)
+	require.Equal(t, "Read File", meta.DisplayName)
+	require.Equal(t, "file", meta.IconKey)
+	require.Contains(t, meta.Description, "line-based offset and limit",
+		"the pre-existing clause stays")
+	require.Contains(t, meta.Description, "DOCX, XLSX, PPTX")
+	require.Contains(t, meta.Description, "structured views")
+	require.Contains(t, meta.Description, "unpacking them with shell")
+}
+
 // TestCatalogCreateDocumentMeta pins the create_document entry's display
 // metadata: the Tools pane card and the allowlist chips render it with no
 // bespoke wiring (spec add-create-document "Create document tool in the
@@ -139,7 +156,7 @@ func TestResolveOfferedTools(t *testing.T) {
 	t.Run("empty allowlist offers all workspace-free tools", func(t *testing.T) {
 		fs := fake.New()
 		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{}, WithBrowserDir(t.TempDir()))
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a"})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a"}, "")
 		require.NoError(t, err)
 		names, err := surface.names(ctx)
 		require.NoError(t, err)
@@ -154,7 +171,7 @@ func TestResolveOfferedTools(t *testing.T) {
 		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{},
 			WithWorkspaces(workspaces.NewManager(t.TempDir())), WithBrowserDir(t.TempDir()), WithScheduler(newTestSchedulerService(fs)),
 			WithKnowledge(t.TempDir()))
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a"})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a"}, "")
 		require.NoError(t, err)
 		names, err := surface.names(ctx)
 		require.NoError(t, err)
@@ -165,7 +182,7 @@ func TestResolveOfferedTools(t *testing.T) {
 	t.Run("narrowed allowlist intersects the catalog", func(t *testing.T) {
 		fs := fake.New()
 		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{}, WithWorkspaces(workspaces.NewManager(t.TempDir())))
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a", Tools: []string{ToolReadFile, "nonexistent"}})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a", Tools: []string{ToolReadFile, "nonexistent"}}, "")
 		require.NoError(t, err)
 		names, err := surface.names(ctx)
 		require.NoError(t, err)
@@ -178,7 +195,7 @@ func TestResolveOfferedTools(t *testing.T) {
 		fs := fake.New()
 		require.NoError(t, fs.ToolStates().SetEnabled(ctx, ToolHTTPGet, false))
 		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{}, WithBrowserDir(t.TempDir()))
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a"})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a"}, "")
 		require.NoError(t, err)
 		names, err := surface.names(ctx)
 		require.NoError(t, err)
@@ -189,7 +206,7 @@ func TestResolveOfferedTools(t *testing.T) {
 		fs := fake.New()
 		require.NoError(t, fs.ToolStates().SetEnabled(ctx, ToolExecute, false))
 		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{}, WithWorkspaces(workspaces.NewManager(t.TempDir())), WithBrowserDir(t.TempDir()))
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a"})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a"}, "")
 		require.NoError(t, err)
 		require.False(t, surface.shell)
 	})
@@ -197,7 +214,7 @@ func TestResolveOfferedTools(t *testing.T) {
 	t.Run("unknown allowlist names never invent tools", func(t *testing.T) {
 		fs := fake.New()
 		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{})
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Tools: []string{"shell"}})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Tools: []string{"shell"}}, "")
 		require.NoError(t, err)
 		names, err := surface.names(ctx)
 		require.NoError(t, err)
@@ -207,7 +224,7 @@ func TestResolveOfferedTools(t *testing.T) {
 	t.Run("slugless agent has workspace tools withheld, not failed", func(t *testing.T) {
 		fs := fake.New()
 		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{}, WithWorkspaces(workspaces.NewManager(t.TempDir())))
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "legacy", Tools: []string{ToolReadFile, ToolHTTPGet}})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "legacy", Tools: []string{ToolReadFile, ToolHTTPGet}}, "")
 		require.NoError(t, err)
 		names, err := surface.names(ctx)
 		require.NoError(t, err)
@@ -221,7 +238,7 @@ func TestResolveOfferedTools(t *testing.T) {
 	t.Run("scheduler without a schedule service is withheld, not failed", func(t *testing.T) {
 		fs := fake.New()
 		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{}, WithBrowserDir(t.TempDir()))
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a"})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a"}, "")
 		require.NoError(t, err)
 		names, err := surface.names(ctx)
 		require.NoError(t, err)
@@ -231,7 +248,7 @@ func TestResolveOfferedTools(t *testing.T) {
 	t.Run("scheduler with a schedule service and an open allowlist is offered", func(t *testing.T) {
 		fs := fake.New()
 		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{}, WithBrowserDir(t.TempDir()), WithScheduler(newTestSchedulerService(fs)))
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a"})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a"}, "")
 		require.NoError(t, err)
 		names, err := surface.names(ctx)
 		require.NoError(t, err)
@@ -242,7 +259,7 @@ func TestResolveOfferedTools(t *testing.T) {
 		fs := fake.New()
 		require.NoError(t, fs.ToolStates().SetEnabled(ctx, ToolScheduler, false))
 		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{}, WithBrowserDir(t.TempDir()), WithScheduler(newTestSchedulerService(fs)))
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a"})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a"}, "")
 		require.NoError(t, err)
 		names, err := surface.names(ctx)
 		require.NoError(t, err)
@@ -252,7 +269,7 @@ func TestResolveOfferedTools(t *testing.T) {
 	t.Run("scheduler not in the agent's allowlist is not offered", func(t *testing.T) {
 		fs := fake.New()
 		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{}, WithBrowserDir(t.TempDir()), WithScheduler(newTestSchedulerService(fs)))
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Tools: []string{ToolCurrentTime, ToolHTTPGet}})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Tools: []string{ToolCurrentTime, ToolHTTPGet}}, "")
 		require.NoError(t, err)
 		names, err := surface.names(ctx)
 		require.NoError(t, err)
@@ -266,7 +283,7 @@ func TestResolveOfferedTools(t *testing.T) {
 	t.Run("create_document with a workspace and an open allowlist is offered", func(t *testing.T) {
 		fs := fake.New()
 		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{}, WithWorkspaces(workspaces.NewManager(t.TempDir())), WithBrowserDir(t.TempDir()))
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a"})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a"}, "")
 		require.NoError(t, err)
 		names, err := surface.names(ctx)
 		require.NoError(t, err)
@@ -277,7 +294,7 @@ func TestResolveOfferedTools(t *testing.T) {
 	t.Run("create_document not in the agent's allowlist is not offered", func(t *testing.T) {
 		fs := fake.New()
 		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{}, WithWorkspaces(workspaces.NewManager(t.TempDir())), WithBrowserDir(t.TempDir()))
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a", Tools: []string{ToolReadFile, ToolHTTPGet}})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a", Tools: []string{ToolReadFile, ToolHTTPGet}}, "")
 		require.NoError(t, err)
 		names, err := surface.names(ctx)
 		require.NoError(t, err)
@@ -289,7 +306,7 @@ func TestResolveOfferedTools(t *testing.T) {
 		fs := fake.New()
 		require.NoError(t, fs.ToolStates().SetEnabled(ctx, ToolCreateDocument, false))
 		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{}, WithWorkspaces(workspaces.NewManager(t.TempDir())), WithBrowserDir(t.TempDir()))
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a"})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a"}, "")
 		require.NoError(t, err)
 		names, err := surface.names(ctx)
 		require.NoError(t, err)
@@ -300,7 +317,7 @@ func TestResolveOfferedTools(t *testing.T) {
 	t.Run("slugless agent has create_document withheld, not failed", func(t *testing.T) {
 		fs := fake.New()
 		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{}, WithWorkspaces(workspaces.NewManager(t.TempDir())), WithBrowserDir(t.TempDir()))
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "legacy", Tools: []string{ToolCreateDocument, ToolHTTPGet}})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "legacy", Tools: []string{ToolCreateDocument, ToolHTTPGet}}, "")
 		require.NoError(t, err)
 		names, err := surface.names(ctx)
 		require.NoError(t, err)
@@ -356,7 +373,7 @@ func TestGate_DocumentEditingTools(t *testing.T) {
 
 	t.Run("rootable agent with sources is offered the full document story", func(t *testing.T) {
 		m, _ := newDocumentToolsManager(t)
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a"})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a"}, "")
 		require.NoError(t, err)
 		names, err := surface.names(ctx)
 		require.NoError(t, err)
@@ -369,7 +386,7 @@ func TestGate_DocumentEditingTools(t *testing.T) {
 		fs := fake.New()
 		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{},
 			WithWorkspaces(workspaces.NewManager(t.TempDir())), WithBrowserDir(t.TempDir()))
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a"})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a"}, "")
 		require.NoError(t, err)
 		names, err := surface.names(ctx)
 		require.NoError(t, err)
@@ -378,7 +395,7 @@ func TestGate_DocumentEditingTools(t *testing.T) {
 
 	t.Run("slugless agent has the document tools withheld, not failed", func(t *testing.T) {
 		m, _ := newDocumentToolsManager(t)
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "legacy", Tools: []string{ToolEditDocument, ToolHTTPGet}})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "legacy", Tools: []string{ToolEditDocument, ToolHTTPGet}}, "")
 		require.NoError(t, err)
 		names, err := surface.names(ctx)
 		require.NoError(t, err)
@@ -388,7 +405,7 @@ func TestGate_DocumentEditingTools(t *testing.T) {
 	t.Run("globally disabled edit_document is not offered even when allowed", func(t *testing.T) {
 		m, _ := newDocumentToolsManager(t)
 		require.NoError(t, m.store.ToolStates().SetEnabled(ctx, ToolEditDocument, false))
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a"})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a"}, "")
 		require.NoError(t, err)
 		names, err := surface.names(ctx)
 		require.NoError(t, err)
@@ -397,7 +414,7 @@ func TestGate_DocumentEditingTools(t *testing.T) {
 
 	t.Run("edit_document outside the allowlist is not offered", func(t *testing.T) {
 		m, _ := newDocumentToolsManager(t)
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a", Tools: []string{ToolReadFile, ToolHTTPGet}})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a", Tools: []string{ToolReadFile, ToolHTTPGet}}, "")
 		require.NoError(t, err)
 		names, err := surface.names(ctx)
 		require.NoError(t, err)

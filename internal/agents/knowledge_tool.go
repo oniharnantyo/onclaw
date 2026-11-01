@@ -21,7 +21,7 @@ import (
 // readable from the workspace's uploads/ mirror, so no degradation route
 // runs through the corpus — saving is for durable promotion, not access.
 const saveDocumentToolDescription = "Save a document into this agent's durable knowledge corpus so later turns can search it with the filesystem tools. " +
-	"Chat attachments are already readable from /workspace/uploads, so saving one is for durable curation, not for access. " +
+	"Chat attachments are already readable in your workspace (the session's uploads directory the environment block names), so saving one is for durable curation, not for access. " +
 	"Provide exactly one content source: attachment_key (the capability key of a chat attachment, saved under its original filename unless filename says otherwise) " +
 	"or text (inline content saved under the required filename). " +
 	"Prefer a descriptive filename and fill description — both are what future searches have to go on. " +

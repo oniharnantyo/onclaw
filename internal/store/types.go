@@ -316,12 +316,17 @@ type Session struct {
 // unguessable capability key naming both the row and the file on disk under
 // the attachments directory; Name, Mime, and Size are the transcript
 // metadata. Raw filesystem paths never live here — the key is the only
-// address any surface sees.
+// address any surface sees. SessionID records the upload's foldering
+// (schema v19): a 32-hex session id means the file lives at
+// <attachments>/<sessionID>/<key>; empty means the flat legacy layout
+// <attachments>/<key> (pre-convention rows and session-less fresh-chat
+// uploads alike).
 type Attachment struct {
-	Key  string
-	Name string
-	Mime string
-	Size int64
+	Key       string
+	Name      string
+	Mime      string
+	Size      int64
+	SessionID string
 }
 
 // ToolState is one stored global toggle of a built-in catalog tool. Rows

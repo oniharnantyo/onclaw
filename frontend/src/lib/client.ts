@@ -290,8 +290,13 @@ export interface Client {
     /**
      * Stores one upload (base64-encoded data) and returns its capability
      * metadata; over-cap or unsupported-type files reject with the reason.
+     * sessionID folders the file under the attachments directory's
+     * per-session folder (schema v19); an empty sessionID — the fresh-chat
+     * composer, where the send path creates the session — keeps the flat
+     * legacy layout. Reads resolve either from the key alone.
      */
     saveAttachment(
+      sessionID: string,
       name: string,
       mime: string,
       data: string
@@ -310,13 +315,31 @@ export interface Client {
      * Serves one generated document's bytes by the file name the
      * create_document tool reported (add-create-document D7): base64 plus
      * the byte size. The backend refuses any name carrying directory
-     * components before touching the filesystem and resolves it solely
-     * inside the agent's workspace; a refused or missing file rejects.
+     * components — and any non-conforming session id — before touching the
+     * filesystem, and resolves the name newest-home-first inside the
+     * agent's workspace: the calling session's artifacts directory
+     * (sessions/<id>/artifacts), then the legacy artifacts/, then the
+     * pre-artifacts workspace root; a refused or missing file rejects.
      */
     generatedDocument(
       agentID: string,
+      sessionID: string,
       name: string
     ): Promise<GeneratedDocumentContent>;
+    /**
+     * Exports one generated document through the host's native save dialog
+     * (add-artifact-save-as design D4); resolves with the user-chosen
+     * destination path. sessionID locates the generation's session-scoped
+     * artifacts home exactly like generatedDocument. Rejects with
+     * "save as: cancelled" when the user cancels the dialog (the UI stays
+     * silent) and with "save as: no native dialog on this host" where the
+     * host has no dialog service.
+     */
+    saveGeneratedDocumentAs(
+      agentID: string,
+      sessionID: string,
+      name: string
+    ): Promise<string>;
     /** Reads one jailed workspace file of the agent (design D8). */
     workspaceFile(agentID: string, relPath: string): Promise<string>;
     /**
@@ -759,11 +782,12 @@ export function createClient(transport: Transport = wailsTransport): Client {
       deleteSession: (sessionID: string): Promise<void> =>
         transport.chat.DeleteSession(sessionID),
       saveAttachment: (
+        sessionID: string,
         name: string,
         mime: string,
         data: string
       ): Promise<SessionAttachment> =>
-        transport.chat.SaveAttachment(name, mime, data),
+        transport.chat.SaveAttachment(sessionID, name, mime, data),
       attachmentContent: (key: string): Promise<AttachmentContent> =>
         transport.chat.AttachmentContent(key),
       browserScreenshot: async (
@@ -772,9 +796,18 @@ export function createClient(transport: Transport = wailsTransport): Client {
         unwrap(await transport.chat.BrowserScreenshot(name)),
       generatedDocument: async (
         agentID: string,
+        sessionID: string,
         name: string
       ): Promise<GeneratedDocumentContent> =>
-        unwrap(await transport.chat.GeneratedDocument(agentID, name)),
+        unwrap(
+          await transport.chat.GeneratedDocument(agentID, sessionID, name)
+        ),
+      saveGeneratedDocumentAs: (
+        agentID: string,
+        sessionID: string,
+        name: string
+      ): Promise<string> =>
+        transport.chat.SaveGeneratedDocumentAs(agentID, sessionID, name),
       workspaceFile: (agentID: string, relPath: string): Promise<string> =>
         transport.chat.WorkspaceFile(agentID, relPath),
       workspaceFileBinary: async (

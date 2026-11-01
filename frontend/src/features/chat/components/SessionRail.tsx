@@ -148,7 +148,7 @@ export function SessionRail(): ReactElement {
   );
 
   const selectAgent = useChatStore((s: ChatStore) => s.selectAgent);
-  const newSession = useChatStore((s: ChatStore) => s.newSession);
+  const newChat = useChatStore((s: ChatStore) => s.newChat);
   const deleteSession = useChatStore((s: ExtendedChatStore) => s.deleteSession);
   const [query, setQuery] = useState("");
   // The session whose delete confirmation is open (one at a time).
@@ -535,10 +535,10 @@ export function SessionRail(): ReactElement {
                 />
                 <button
                   type="button"
-                  aria-label={`New session for ${group.agent.Name || group.agent.ID}`}
-                  title="New session"
+                  aria-label={`New chat with ${group.agent.Name || group.agent.ID}`}
+                  title="New chat"
                   data-testid={`group-new-session-${group.agent.ID}`}
-                  onClick={() => void newSession(group.agent.ID)}
+                  onClick={() => void newChat(group.agent.ID)}
                   className="absolute end-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg"
                 >
                   <Plus aria-hidden="true" className="size-4" />

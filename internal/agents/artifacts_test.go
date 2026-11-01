@@ -46,7 +46,7 @@ func TestSnapshotArtifacts_WalkRules(t *testing.T) {
 	require.NoError(t, os.Symlink(filepath.Join(outside, "outer.md"), filepath.Join(dir, "link.md")))
 	require.NoError(t, os.Symlink(filepath.Join(outside, "outerdir"), filepath.Join(dir, "linkdir")))
 
-	record, err := snapshotArtifacts(dir)
+	record, err := snapshotArtifacts(dir, "artifacts")
 	require.NoError(t, err)
 	got := make([]string, 0, len(record))
 	for path := range record {
@@ -69,7 +69,7 @@ func TestSnapshotDiff_CreatedAndModified(t *testing.T) {
 	writeArtifact(t, dir, "kept.md", "kept")
 	writeArtifact(t, dir, "gone.md", "gone")
 	writeArtifact(t, dir, "untouched.md", "left alone")
-	before, err := snapshotArtifacts(dir)
+	before, err := snapshotArtifacts(dir, "artifacts")
 	require.NoError(t, err)
 
 	// The turn adds a report, rewrites kept.md (different size), deletes
@@ -77,7 +77,7 @@ func TestSnapshotDiff_CreatedAndModified(t *testing.T) {
 	writeArtifact(t, dir, "report.md", "report")
 	writeArtifact(t, dir, "kept.md", "kept, rewritten")
 	require.NoError(t, os.Remove(filepath.Join(dir, "gone.md")))
-	after, err := snapshotArtifacts(dir)
+	after, err := snapshotArtifacts(dir, "artifacts")
 	require.NoError(t, err)
 
 	arts, truncated := diffArtifacts(before, after)
@@ -96,12 +96,12 @@ func TestSnapshotDiff_CreatedAndModified(t *testing.T) {
 func TestSnapshotDiff_MtimeOnlyChange(t *testing.T) {
 	dir := t.TempDir()
 	writeArtifact(t, dir, "report.md", "abc")
-	before, err := snapshotArtifacts(dir)
+	before, err := snapshotArtifacts(dir, "artifacts")
 	require.NoError(t, err)
 
 	future := time.Now().Add(time.Hour)
 	require.NoError(t, os.Chtimes(filepath.Join(dir, "report.md"), future, future))
-	after, err := snapshotArtifacts(dir)
+	after, err := snapshotArtifacts(dir, "artifacts")
 	require.NoError(t, err)
 
 	arts, truncated := diffArtifacts(before, after)
@@ -149,14 +149,14 @@ func TestListArtifactsSince_Predicate(t *testing.T) {
 	require.NoError(t, os.Chtimes(filepath.Join(dir, "old.md"), past, past))
 	since := time.Now().Add(-time.Minute)
 
-	arts, truncated, err := listArtifactsSince(dir, since)
+	arts, truncated, err := listArtifactsSince(dir, "artifacts", since)
 	require.NoError(t, err)
 	require.False(t, truncated)
 	require.Equal(t, []sessions.Artifact{{Path: "artifacts/new.md", Size: 3}}, arts,
 		"the older file is omitted; the newer one carries no change kind")
 
 	// A predicate before everything lists both.
-	arts, truncated, err = listArtifactsSince(dir, time.Now().Add(-2*time.Hour))
+	arts, truncated, err = listArtifactsSince(dir, "artifacts", time.Now().Add(-2*time.Hour))
 	require.NoError(t, err)
 	require.False(t, truncated)
 	require.Len(t, arts, 2)

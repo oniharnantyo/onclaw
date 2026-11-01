@@ -122,7 +122,7 @@ func TestSaveDocumentTool_AttachmentCopy(t *testing.T) {
 	base, err := newSaveDocumentTool(f.know, f.atts, "agent-1", "scout")
 	require.NoError(t, err)
 
-	att, err := f.atts.Save(t.Context(), "meeting-notes.txt", "text/plain", []byte("decisions: ship friday"))
+	att, err := f.atts.Save(t.Context(), "", "meeting-notes.txt", "text/plain", []byte("decisions: ship friday"))
 	require.NoError(t, err)
 	res := runSaveDocumentTool(t, base, `{"attachment_key":`+quote(att.Key)+`,"description":"sync notes"}`)
 	require.True(t, res.OK, "error: %s", res.Error)
@@ -134,7 +134,7 @@ func TestSaveDocumentTool_AttachmentCopy(t *testing.T) {
 	require.Equal(t, "decisions: ship friday", string(saved), "the attachment's bytes copy verbatim")
 
 	// An explicit filename overrides the upload's original name.
-	att2, err := f.atts.Save(t.Context(), "raw.txt", "text/plain", []byte("renamed"))
+	att2, err := f.atts.Save(t.Context(), "", "raw.txt", "text/plain", []byte("renamed"))
 	require.NoError(t, err)
 	res = runSaveDocumentTool(t, base, `{"attachment_key":`+quote(att2.Key)+`,"filename":"decisions.md"}`)
 	require.True(t, res.OK, "error: %s", res.Error)
@@ -157,7 +157,7 @@ func TestSaveDocumentTool_Rejections(t *testing.T) {
 	require.NoError(t, err)
 	// Seed an unsupported upload (the attachments store takes video; the
 	// knowledge gate does not).
-	video, err := f.atts.Save(t.Context(), "clip.mp4", "video/mp4", []byte("bytes"))
+	video, err := f.atts.Save(t.Context(), "", "clip.mp4", "video/mp4", []byte("bytes"))
 	require.NoError(t, err)
 
 	cases := []struct {
@@ -205,7 +205,7 @@ func TestGate_SaveDocumentWithhold(t *testing.T) {
 	t.Run("without a knowledge store the tool is withheld", func(t *testing.T) {
 		fs := fake.New()
 		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{}, WithBrowserDir(t.TempDir()))
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a"})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a"}, "")
 		require.NoError(t, err)
 		names, err := surface.names(ctx)
 		require.NoError(t, err)
@@ -216,7 +216,7 @@ func TestGate_SaveDocumentWithhold(t *testing.T) {
 		fs := fake.New()
 		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{},
 			WithKnowledge(t.TempDir()), WithBrowserDir(t.TempDir()))
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a"})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a"}, "")
 		require.NoError(t, err)
 		names, err := surface.names(ctx)
 		require.NoError(t, err)
@@ -236,7 +236,7 @@ func TestGate_KnowledgeMountExposure(t *testing.T) {
 		fs := fake.New()
 		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{},
 			WithWorkspaces(workspaces.NewManager(t.TempDir())), WithKnowledge(root), WithBrowserDir(t.TempDir()))
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "scout", Slug: "scout"})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "scout", Slug: "scout"}, "")
 		require.NoError(t, err)
 		require.NotNil(t, surface.knowledge)
 		require.Equal(t, filepath.Join(root, "global"), surface.knowledge.GlobalDir)
@@ -247,7 +247,7 @@ func TestGate_KnowledgeMountExposure(t *testing.T) {
 		fs := fake.New()
 		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{},
 			WithWorkspaces(workspaces.NewManager(t.TempDir())), WithKnowledge(root), WithBrowserDir(t.TempDir()))
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "legacy"})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "legacy"}, "")
 		require.NoError(t, err)
 		require.Nil(t, surface.knowledge)
 	})
@@ -255,7 +255,7 @@ func TestGate_KnowledgeMountExposure(t *testing.T) {
 	t.Run("no workspaces source exposes none", func(t *testing.T) {
 		fs := fake.New()
 		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{}, WithKnowledge(root), WithBrowserDir(t.TempDir()))
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a"})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a"}, "")
 		require.NoError(t, err)
 		require.Nil(t, surface.knowledge)
 	})
@@ -264,7 +264,7 @@ func TestGate_KnowledgeMountExposure(t *testing.T) {
 		fs := fake.New()
 		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{},
 			WithWorkspaces(workspaces.NewManager(t.TempDir())), WithBrowserDir(t.TempDir()))
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a"})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a"}, "")
 		require.NoError(t, err)
 		require.Nil(t, surface.knowledge)
 	})
@@ -273,7 +273,7 @@ func TestGate_KnowledgeMountExposure(t *testing.T) {
 		fs := fake.New()
 		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{},
 			WithWorkspaces(workspaces.NewManager(t.TempDir())), WithKnowledge(root), WithBrowserDir(t.TempDir()))
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a", Tools: []string{ToolCurrentTime}})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "a", Slug: "a", Tools: []string{ToolCurrentTime}}, "")
 		require.NoError(t, err)
 		require.Nil(t, surface.knowledge)
 	})

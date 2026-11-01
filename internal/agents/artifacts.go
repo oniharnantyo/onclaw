@@ -25,16 +25,19 @@ type artifactFile struct {
 }
 
 // artifactRecord is a point-in-time listing of the artifacts directory:
-// workspace-relative path ("artifacts/report.md", forward slashes) → the
-// file's state.
+// workspace-relative path ("artifacts/report.md", or
+// "sessions/<id>/artifacts/report.md" for the per-session layout — forward
+// slashes either way) → the file's state.
 type artifactRecord map[string]artifactFile
 
 // snapshotArtifacts lists dir into a record (design D5): recursive under
 // dir, regular files only, dot-prefixed entries — files and directories —
-// skipped, symlinks never followed. Keys are "artifacts/" plus the path
-// relative to dir with forward slashes, so an entry feeds the frontend's
-// workspace-file preview directly.
-func snapshotArtifacts(dir string) (artifactRecord, error) {
+// skipped, symlinks never followed. prefix is the walked directory's
+// workspace-relative facing path (the flat legacy "artifacts", or
+// "sessions/<id>/artifacts"): keys are prefix plus the path relative to dir
+// with forward slashes, so an entry feeds the frontend's workspace-file
+// preview directly.
+func snapshotArtifacts(dir, prefix string) (artifactRecord, error) {
 	record := make(artifactRecord)
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -67,7 +70,7 @@ func snapshotArtifacts(dir string) (artifactRecord, error) {
 		if err != nil {
 			return fmt.Errorf("artifacts: stat %s: %w", path, err)
 		}
-		record[filepath.ToSlash(filepath.Join("artifacts", rel))] = artifactFile{size: info.Size(), mtime: info.ModTime()}
+		record[filepath.ToSlash(filepath.Join(prefix, rel))] = artifactFile{size: info.Size(), mtime: info.ModTime()}
 		return nil
 	})
 	if err != nil {
@@ -109,9 +112,10 @@ func diffArtifacts(before, after artifactRecord) (arts []sessions.Artifact, trun
 // (design D3): every regular file whose modification time is at or after
 // since — the turn's persisted user-message time — with the change kind
 // omitted, because created-versus-modified cannot be known. Same walk rules,
-// ordering, and cap as the diff.
-func listArtifactsSince(dir string, since time.Time) (arts []sessions.Artifact, truncated bool, err error) {
-	after, err := snapshotArtifacts(dir)
+// ordering, and cap as the diff; prefix keys the record exactly like
+// snapshotArtifacts.
+func listArtifactsSince(dir, prefix string, since time.Time) (arts []sessions.Artifact, truncated bool, err error) {
+	after, err := snapshotArtifacts(dir, prefix)
 	if err != nil {
 		return nil, false, err
 	}

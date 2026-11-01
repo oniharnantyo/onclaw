@@ -19,7 +19,6 @@ import {
 import type {
   Agent,
   Session,
-  Skill,
 } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
 import type { Client } from "../../../lib/client";
 import type { TurnsChangedEvent } from "../../../lib/events";
@@ -31,6 +30,7 @@ import {
   useChatStore,
   type QueuedMessage,
 } from "../store";
+import type { PickerSkill } from "../types";
 import { renderUI } from "./test-utils";
 
 const agents: Agent[] = [
@@ -401,9 +401,9 @@ describe("ChatView", () => {
       "Prov Co/gpt-test"
     );
     await waitFor(() =>
-      expect(useChatStore.getState().skills.map((s: Skill) => s.Name)).toEqual([
-        "search",
-      ])
+      expect(
+        useChatStore.getState().skills.map((s: PickerSkill) => s.Name)
+      ).toEqual(["search"])
     );
   });
 
@@ -466,44 +466,26 @@ describe("ChatView", () => {
     expect(screen.getByTestId("transcript").textContent).toContain("hello A");
   });
 
-  it("creates a new session from the rail and opens it empty", async () => {
-    const fresh: Session = {
-      ID: "sNEW",
-      AgentID: "a1",
-      Title: "",
-      Model: "",
-      Effort: "",
-      CreatedAt: "2026-01-03T00:00:00Z",
-      LastActivityAt: "2026-01-03T00:00:00Z",
-    };
-
-    mockedClient.chat.createSession.mockImplementation(async () => fresh);
-    // newSession opens the created row through selectAgent's all-agents
-    // refetch (add-grouped-session-rail design D6); the listing must carry
-    // it — mount-time init and the rail click both land here, and the
-    // following "empty state" test never reaches allSessions (no agents).
-    mockedClient.chat.allSessions.mockResolvedValue([fresh, ...sessions]);
+  it("opens a fresh composer from the rail's + without minting a session", async () => {
+    // The + no longer creates a session row — the Untitled session is gone;
+    // the view clears to the empty fresh-chat state and the send path
+    // mints the session on the first send.
+    mockedClient.chat.allSessions.mockResolvedValue([...sessions]);
     await renderChatWithRail();
     // The grouped rail's per-agent control (add-grouped-session-rail D6):
-    // the flat header "+" is gone, and a1 is the active agent's group.
+    // a1 is the active agent's group.
     await screen.findByTestId("group-new-session-a1");
     await act(async () => {
       fireEvent.click(screen.getByTestId("group-new-session-a1"));
     });
-    await waitFor(() =>
-      expect(mockedClient.chat.createSession).toHaveBeenCalledWith("a1")
-    );
-    expect(useChatStore.getState().activeSessionID).toBe("sNEW");
-    // The new session appears in the agent's session list...
-    expect(
-      screen
-        .getByTestId("chat-session-rail")
-        .querySelector('[data-od-id="chat-session-sNEW"]')
-    ).toBeTruthy();
-    // ...and the transcript opens empty for it.
-    expect(screen.getByTestId("transcript").textContent).toContain(
-      "No messages yet"
-    );
+    expect(mockedClient.chat.createSession).not.toHaveBeenCalled();
+    expect(useChatStore.getState().activeSessionID).toBeNull();
+    // The transcript opens in the empty fresh-chat state.
+    await waitFor((): void => {
+      expect(screen.getByTestId("transcript").textContent).toContain(
+        "No messages yet"
+      );
+    });
   });
 
   it("shows the empty state when no agents exist", async () => {

@@ -207,7 +207,7 @@ func TestGate_MemorySearchWithhold(t *testing.T) {
 		fs := fake.New()
 		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{},
 			WithWorkspaces(workspaces.NewManager(t.TempDir())), WithBrowserDir(t.TempDir()))
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "scout", Slug: "scout"})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "scout", Slug: "scout"}, "")
 		require.NoError(t, err)
 		names, err := surface.names(ctx)
 		require.NoError(t, err)
@@ -218,7 +218,7 @@ func TestGate_MemorySearchWithhold(t *testing.T) {
 		fs := fake.New()
 		m := newManager(fs, sessions.NewService(fs), &fakeRegistry{},
 			WithWorkspaces(workspaces.NewManager(t.TempDir())), WithBrowserDir(t.TempDir()))
-		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "legacy"})
+		surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "legacy"}, "")
 		require.NoError(t, err)
 		names, err := surface.names(ctx)
 		require.NoError(t, err)

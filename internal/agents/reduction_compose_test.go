@@ -121,6 +121,82 @@ func TestReductionCompose_OversizedOutputTruncated(t *testing.T) {
 	assert.Equal(t, oversizedPayload, string(data))
 }
 
+// TestReductionCompose_OffloadRootUnderSession pins the session-scoped
+// offload root: with OffloadRoot set to the turn's session directory, the
+// tool result names /workspace/sessions/<id>/trunc/<call> and the full
+// payload lands on disk under that same session path — never the flat
+// legacy trunc/ at the mount root.
+func TestReductionCompose_OffloadRootUnderSession(t *testing.T) {
+	ctx := t.Context()
+	tmpDir := t.TempDir()
+	const sessionID = "0ae4aa0a3c954cbd9dfaf078ae573eae"
+
+	oversizedPayload := strings.Repeat("A very large string payload for reduction testing. ", 20)
+	oversizedTool := &customTestTool{
+		name: "heavy_payload_tool",
+		desc: "Returns a very large payload",
+		run: func(ctx context.Context, args string) (string, error) {
+			return oversizedPayload, nil
+		},
+	}
+
+	callCount := 0
+	var receivedToolResultContent string
+
+	fakeMdl := &fakeModel{
+		reply: func(input []*schema.Message) fakeReply {
+			callCount++
+			if callCount == 1 {
+				return toolCallsReply("call-red-1", "heavy_payload_tool", `{}`)
+			}
+			for _, msg := range input {
+				if msg.Role == schema.Tool && msg.ToolCallID == "call-red-1" {
+					receivedToolResultContent = msg.Content
+				}
+			}
+			return fakeReply{text: "Reduction verified"}
+		},
+	}
+
+	cfg := &composeConfig{
+		Name:        "test-reduction-agent",
+		Instruction: "You are a test agent.",
+		ChatModel:   fakeMdl,
+		Tools:       []tool.BaseTool{oversizedTool},
+		Reduction: &reductionCapability{
+			AgentDir:          tmpDir,
+			MaxLengthForTrunc: 50,
+			OffloadRoot:       backend.DefaultMountPoint + "/sessions/" + sessionID,
+		},
+	}
+
+	agent, toolErrors, err := composeTurnAgent(ctx, cfg)
+	require.NoError(t, err)
+	require.NotNil(t, agent)
+	require.NotNil(t, toolErrors)
+
+	runner := adk.NewTypedRunner(adk.TypedRunnerConfig[*schema.AgenticMessage]{
+		Agent:           agent,
+		EnableStreaming: true,
+	})
+
+	iter := runner.Run(ctx, []*schema.AgenticMessage{schema.UserAgenticMessage("run heavy tool")})
+	err = drainRunnerIterator(iter)
+	require.NoError(t, err)
+
+	require.Equal(t, 2, callCount)
+	assert.Contains(t, receivedToolResultContent,
+		backend.DefaultMountPoint+"/sessions/"+sessionID+"/trunc/call-red-1",
+		"the truncation note names the session's offload path")
+
+	savedFilePath := filepath.Join(tmpDir, "sessions", sessionID, "trunc", "call-red-1")
+	data, err := os.ReadFile(savedFilePath)
+	require.NoError(t, err, "the full payload lands under the session's trunc directory")
+	assert.Equal(t, oversizedPayload, string(data))
+	_, err = os.Stat(filepath.Join(tmpDir, "trunc"))
+	require.True(t, os.IsNotExist(err), "the flat legacy trunc/ directory is never created")
+}
+
 // TestReductionCompose_WorkspaceInferredFromFilesystem verifies that if
 // Reduction.AgentDir is omitted, it defaults to Filesystem.AgentDir.
 func TestReductionCompose_WorkspaceInferredFromFilesystem(t *testing.T) {

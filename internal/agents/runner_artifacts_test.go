@@ -51,16 +51,20 @@ func completedOf(t *testing.T, f *fixture, sessionID string) []sessions.Event {
 func TestTurn_ArtifactsCreatedUnderArtifactsDir(t *testing.T) {
 	root := t.TempDir()
 	workspace := filepath.Join(root, "tester")
+	var sess sessions.Session
 	f, _ := artifactsFixture(t, root, func(_ []*schema.Message) fakeReply {
-		if err := os.MkdirAll(filepath.Join(workspace, workspaces.DirArtifacts), 0o700); err != nil {
+		// The session's artifacts directory: the deliverable lands under
+		// sessions/<id>/artifacts, the watched per-session home.
+		dir := filepath.Join(workspace, workspaces.DirSessions, sess.ID, workspaces.DirArtifacts)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return fakeReply{err: err}
 		}
-		if err := os.WriteFile(filepath.Join(workspace, workspaces.DirArtifacts, "report.md"), []byte("weekly report"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "report.md"), []byte("weekly report"), 0o600); err != nil {
 			return fakeReply{err: err}
 		}
 		return fakeReply{text: "done", promptTokens: 1, completionTokens: 1}
 	})
-	sess := f.newSession(t)
+	sess = f.newSession(t)
 
 	turn, err := f.mgr.Send(t.Context(), sess.ID, "write the report")
 	require.NoError(t, err)
@@ -69,11 +73,11 @@ func TestTurn_ArtifactsCreatedUnderArtifactsDir(t *testing.T) {
 	completed := completedOf(t, f, sess.ID)
 	require.Len(t, completed, 1)
 	require.Equal(t, []sessions.Artifact{
-		{Path: "artifacts/report.md", Size: int64(len("weekly report")), Change: sessions.ArtifactCreated},
+		{Path: "sessions/" + sess.ID + "/artifacts/report.md", Size: int64(len("weekly report")), Change: sessions.ArtifactCreated},
 	}, completed[0].Artifacts)
 	require.False(t, completed[0].ArtifactsTruncated)
-	require.DirExists(t, filepath.Join(workspace, workspaces.DirArtifacts),
-		"the artifacts directory is created on demand by the turn")
+	require.DirExists(t, filepath.Join(workspace, workspaces.DirSessions, sess.ID, workspaces.DirArtifacts),
+		"the session's artifacts directory is created on demand by the turn")
 }
 
 // TestTurn_RootLevelFileIsNotAnArtifact pins the boundary (design D2): only
@@ -122,11 +126,11 @@ func TestTurn_BlockedSubmissionCarriesNoArtifacts(t *testing.T) {
 		Config:      `{"command":"echo this prompt is not allowed >&2; exit 2"}`,
 		Enabled:     true,
 	})
-	// Artifacts from an earlier turn are on disk; the blocked submission
-	// must still report none.
-	require.NoError(t, os.MkdirAll(filepath.Join(workspace, workspaces.DirArtifacts), 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(workspace, workspaces.DirArtifacts, "old.md"), []byte("old"), 0o600))
+	// Artifacts from an earlier turn are on disk (the session's watched
+	// directory); the blocked submission must still report none.
 	sess := f.newSession(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(workspace, workspaces.DirSessions, sess.ID, workspaces.DirArtifacts), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(workspace, workspaces.DirSessions, sess.ID, workspaces.DirArtifacts, "old.md"), []byte("old"), 0o600))
 
 	turn, err := f.mgr.Send(t.Context(), sess.ID, "hello")
 	require.NoError(t, err)
@@ -149,9 +153,9 @@ func TestTurn_ArtifactsPathBlockedByRegularFile(t *testing.T) {
 	f, _ := artifactsFixture(t, root, func(_ []*schema.Message) fakeReply {
 		return fakeReply{text: "done", promptTokens: 1, completionTokens: 1}
 	})
-	require.NoError(t, os.MkdirAll(workspace, 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(workspace, workspaces.DirArtifacts), []byte("not a directory"), 0o600))
 	sess := f.newSession(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(workspace, workspaces.DirSessions, sess.ID), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(workspace, workspaces.DirSessions, sess.ID, workspaces.DirArtifacts), []byte("not a directory"), 0o600))
 
 	turn, err := f.mgr.Send(t.Context(), sess.ID, "hello")
 	require.NoError(t, err)

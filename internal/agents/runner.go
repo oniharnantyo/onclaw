@@ -20,6 +20,7 @@ import (
 	"github.com/oniharnantyo/buddies/internal/carriage"
 	"github.com/oniharnantyo/buddies/internal/sessions"
 	"github.com/oniharnantyo/buddies/internal/store"
+	"github.com/oniharnantyo/buddies/internal/workspaces"
 )
 
 // runTurn executes one turn end to end and returns its terminal outcome
@@ -116,10 +117,10 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 	// the record empty: the turn runs with detection disabled, never fails
 	// (spec chat-artifacts "Artifacts path blocked by a regular file").
 	if rt.artifactsBefore == nil && rt.artifactsSince.IsZero() && m.workspaces != nil {
-		dir, err := m.workspaces.ArtifactsDir(agent.Slug)
+		dir, err := m.workspaces.SessionArtifactsDir(agent.Slug, rt.sessionID)
 		if err != nil {
 			slog.Warn("artifacts: resolve artifacts directory", "session", rt.sessionID, "agent", agent.Slug, "error", err)
-		} else if before, err := snapshotArtifacts(dir); err != nil {
+		} else if before, err := snapshotArtifacts(dir, workspaces.SessionRel(rt.sessionID, workspaces.DirArtifacts)); err != nil {
 			slog.Warn("artifacts: snapshot at turn start", "session", rt.sessionID, "agent", agent.Slug, "error", err)
 		} else {
 			rt.artifactsBefore = before
@@ -234,7 +235,7 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 	// 6. Resolve the turn's tool surface through the three-way gate: catalog
 	// × global enable × agent allowlist (spec agent-tools "Tool gate"),
 	// workspace-rooted tools rooted at the agent's workspace.
-	surface, err := m.resolveTurnTools(ctx, agent)
+	surface, err := m.resolveTurnTools(ctx, agent, rt.sessionID)
 	if err != nil {
 		return failTurn(err)
 	}
@@ -304,7 +305,7 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 	// notes keep the capability key alone — it never fails the turn.
 	var uploads map[string]string
 	if surface.agentDir != "" && m.workspaces != nil && agent.Slug != "" {
-		uploadsDir, err := m.workspaces.UploadsDir(agent.Slug)
+		uploadsDir, err := m.workspaces.SessionUploadsDir(agent.Slug, rt.sessionID)
 		if err != nil {
 			slog.Warn("attachments: resolve uploads directory", "session", rt.sessionID, "agent", agent.Slug, "error", err)
 		} else {
@@ -325,6 +326,7 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 			presets:      m.presetGuidance(ctx, surface.createDocument),
 			memory:       m.memoryBlock(ctx, agent),
 			uploads:      uploads,
+			sessionRel:   workspaces.SessionRel(rt.sessionID, ""),
 		})
 	if err != nil {
 		return failTurn(err)
@@ -370,6 +372,13 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 			AgentDir:     surface.agentDir,
 			ExtraRoots:   extraRoots,
 			ContextLimit: int64(m.contextLimit(ctx, agent)),
+		}
+		// Truncated and cleared tool output offloads under the turn's session
+		// directory (the model reads them back at /workspace/sessions/<id>/
+		// trunc/<call>); a non-conforming session id keeps the flat legacy
+		// mount root.
+		if rel := workspaces.SessionRel(rt.sessionID, ""); rel != "" {
+			cfg.Reduction.OffloadRoot = backend.DefaultMountPoint + "/" + rel
 		}
 		cfg.Plantask = &plantaskCapability{
 			AgentDir:      surface.agentDir,
@@ -618,24 +627,24 @@ func (m *manager) turnArtifacts(agent store.Agent, rt *runningTurn) ([]sessions.
 	}
 	switch {
 	case rt.artifactsBefore != nil:
-		dir, err := m.workspaces.ArtifactsDir(agent.Slug)
+		dir, err := m.workspaces.SessionArtifactsDir(agent.Slug, rt.sessionID)
 		if err != nil {
 			slog.Warn("artifacts: resolve artifacts directory", "session", rt.sessionID, "agent", agent.Slug, "error", err)
 			return nil, false
 		}
-		after, err := snapshotArtifacts(dir)
+		after, err := snapshotArtifacts(dir, workspaces.SessionRel(rt.sessionID, workspaces.DirArtifacts))
 		if err != nil {
 			slog.Warn("artifacts: listing at turn completion", "session", rt.sessionID, "agent", agent.Slug, "error", err)
 			return nil, false
 		}
 		return diffArtifacts(rt.artifactsBefore, after)
 	case !rt.artifactsSince.IsZero():
-		dir, err := m.workspaces.ArtifactsDir(agent.Slug)
+		dir, err := m.workspaces.SessionArtifactsDir(agent.Slug, rt.sessionID)
 		if err != nil {
 			slog.Warn("artifacts: resolve artifacts directory", "session", rt.sessionID, "agent", agent.Slug, "error", err)
 			return nil, false
 		}
-		arts, truncated, err := listArtifactsSince(dir, rt.artifactsSince)
+		arts, truncated, err := listArtifactsSince(dir, workspaces.SessionRel(rt.sessionID, workspaces.DirArtifacts), rt.artifactsSince)
 		if err != nil {
 			slog.Warn("artifacts: listing at turn completion", "session", rt.sessionID, "agent", agent.Slug, "error", err)
 			return nil, false
@@ -1200,8 +1209,11 @@ func composeSystem(personaText, presetText, knowledgeText, skillsText, memoryTex
 // activities, in first-appearance order. Streamed frames split one call
 // across chunks: the first frame carries the identity, later frames append
 // argument text — chunks for one call merge by stream index, falling back to
-// the call id when the provider does not set one. One assembler serves one
-// model call; calls of different iterations never share keys.
+// the call id when the provider does not set one. Block frames without a
+// call id (providers that stream argument deltas on unidentifiable frames)
+// merge into the most recently observed call; any entry no call id ever
+// claims is dropped by finish. One assembler serves one model call; calls of
+// different iterations never share keys.
 type toolCallAssembler struct {
 	order []string
 	calls map[string]*sessions.ToolActivity
@@ -1238,6 +1250,17 @@ func (a *toolCallAssembler) observeBlock(call *schema.FunctionToolCall) {
 		return
 	}
 	key := call.CallID
+	if key == "" {
+		// Some providers stream argument deltas on frames that identify the
+		// call incompletely (empty call id). They continue the most recently
+		// observed call rather than opening an orphan "" entry — the same
+		// fallback observe makes with the stream index; calls of one model
+		// call arrive sequentially, so "most recent" is the call these
+		// frames belong to.
+		if n := len(a.order); n > 0 {
+			key = a.order[n-1]
+		}
+	}
 	existing, ok := a.calls[key]
 	if !ok {
 		existing = &sessions.ToolActivity{}
@@ -1253,14 +1276,23 @@ func (a *toolCallAssembler) observeBlock(call *schema.FunctionToolCall) {
 	existing.Arguments += call.Arguments
 }
 
-// finish returns the assembled tool activities in first-appearance order.
+// finish returns the assembled tool activities in first-appearance order. A
+// residual entry keyed "" — argument text that arrived before any
+// identifiable call — is dropped: it has no call id to stamp into args and
+// must not surface as a record.
 func (a *toolCallAssembler) finish() []*sessions.ToolActivity {
 	if len(a.order) == 0 {
 		return nil
 	}
 	out := make([]*sessions.ToolActivity, 0, len(a.order))
 	for _, key := range a.order {
+		if key == "" {
+			continue
+		}
 		out = append(out, a.calls[key])
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

@@ -5,10 +5,13 @@
  * PDF, fetched through the bound read by the reported name and the active
  * agent; a missing or refused read renders the readable failure state; a
  * rejected call shows the backend's readable error; and the name carries
- * through the result — two results render their own names. The renderer
- * mounts standalone through the registry map with the shared harness's
- * part props; the Wails client is mocked at the module seam (the
- * sanctioned pattern from toolBodies.test.tsx).
+ * through the result — two results render their own names. The Save As
+ * export (add-artifact-save-as design D4) shows only on the desktop build
+ * and drives the native save dialog through the client, with the backend's
+ * sentinel rejection messages as the UI's match keys. The renderer mounts
+ * standalone through the registry map with the shared harness's part props;
+ * the Wails client is mocked at the module seam (the sanctioned pattern
+ * from toolBodies.test.tsx).
  */
 import { act } from "react";
 import { fireEvent, screen, waitFor } from "@testing-library/dom";
@@ -16,10 +19,12 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { mockedSurface } from "../../../__test__/mockedSurface";
 import { renderUI } from "../../../__test__/test-utils";
+import type { Metadata } from "../../../../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
 import type {
   Client,
   GeneratedDocumentContent,
 } from "../../../../../lib/client";
+import { dismissToast, getToasts, type Toast } from "../../../../../lib/toasts";
 import { resetCollapseMap } from "../../collapse";
 import { useChatStore } from "../../../store";
 import { partProps } from "./harness";
@@ -28,10 +33,12 @@ import { toolRenderers } from "../renderers";
 type MockFn = ReturnType<typeof vi.fn>;
 
 /** The mocked client surface this suite drives: the catalog fetch every card
- * triggers on mount and the generated-document bytes read. */
+ * triggers on mount, the app metadata the Save As gate reads, and the
+ * generated-document bytes read plus the export call. */
 type MockedClient = Client & {
+  appInfo: { get: MockFn };
   settings: { tools: MockFn };
-  chat: { generatedDocument: MockFn };
+  chat: { generatedDocument: MockFn; saveGeneratedDocumentAs: MockFn };
 };
 
 /** A minimal PDF-shaped base64 payload (the "%PDF" header). */
@@ -44,17 +51,33 @@ const DOC_CONTENT: GeneratedDocumentContent = {
   data: PDF_B64,
 };
 
+/** The desktop metadata the Save As gate passes on (default). */
+const DESKTOP_METADATA: Metadata = {
+  name: "buddies",
+  version: "0.1.0",
+  nativeDialogs: true,
+};
+
+/** The export's default resolution: the user-chosen destination. */
+const SAVE_DESTINATION = "/Users/x/Client/report.pdf";
+
 /** The client the hoisted mock factory installs. */
 function makeClient(): MockedClient {
   // SAFETY: the literal covers the surface this suite drives; the Client
   // intersection defeats the structural check, so the conversion funnels
   // through the shared mockedSurface bridge (the audited conversion seam).
   return mockedSurface<MockedClient, object>({
+    appInfo: {
+      get: vi.fn(async (): Promise<Metadata> => ({ ...DESKTOP_METADATA })),
+    },
     settings: { tools: vi.fn(async (): Promise<never[]> => []) },
     chat: {
       generatedDocument: vi.fn(async (): Promise<GeneratedDocumentContent> => ({
         ...DOC_CONTENT,
       })),
+      saveGeneratedDocumentAs: vi.fn(
+        async (): Promise<string> => SAVE_DESTINATION
+      ),
     },
   });
 }
@@ -67,6 +90,13 @@ import { client } from "../../../../../lib/client";
 // runtime shape is exactly the mock object this suite drives.
 const mockGenerated = (client as MockedClient).chat.generatedDocument;
 
+// SAFETY: as above — the mock object carries the export call this suite drives.
+const mockSaveAs = (client as MockedClient).chat.saveGeneratedDocumentAs;
+
+// SAFETY: as above — the mock object carries the metadata probe this suite
+// drives.
+const mockAppInfo = (client as MockedClient).appInfo.get;
+
 beforeEach(async () => {
   vi.clearAllMocks();
   resetCollapseMap();
@@ -74,10 +104,18 @@ beforeEach(async () => {
   mockGenerated.mockImplementation(
     async (): Promise<GeneratedDocumentContent> => ({ ...DOC_CONTENT })
   );
+  mockAppInfo.mockImplementation(async (): Promise<Metadata> => ({
+    ...DESKTOP_METADATA,
+  }));
+  mockSaveAs.mockImplementation(async (): Promise<string> => SAVE_DESTINATION);
+
+  // Leftover toasts would leak into the save-as assertions.
+  getToasts().forEach((t: Toast): void => dismissToast(t.id));
 
   await act(async () => {
     useChatStore.setState({
       activeAgentID: "a1",
+      activeSessionID: "s1",
       panelTabs: [],
       entries: [],
     });
@@ -137,7 +175,7 @@ describe("generated document card (spec: Generated document access)", () => {
     // The bound read received the reported name with the active agent —
     // never a path.
     await waitFor((): void => {
-      expect(mockGenerated).toHaveBeenCalledWith("a1", "report.pdf");
+      expect(mockGenerated).toHaveBeenCalledWith("a1", "s1", "report.pdf");
     });
 
     await waitFor((): void => {
@@ -166,7 +204,7 @@ describe("generated document card (spec: Generated document access)", () => {
     );
 
     await waitFor((): void => {
-      expect(mockGenerated).toHaveBeenCalledWith("a1", "summary-2026.pdf");
+      expect(mockGenerated).toHaveBeenCalledWith("a1", "s1", "summary-2026.pdf");
     });
 
     expect(screen.getByTestId("create-doc-size").textContent).toBe("50 KB");
@@ -228,6 +266,191 @@ describe("generated document card (spec: Generated document access)", () => {
       'no PDF preset named "nope"'
     );
     expect(mockGenerated).not.toHaveBeenCalled();
+
+    await unmount();
+  });
+});
+
+describe("save as (add-artifact-save-as)", () => {
+  /** The Save As control, once the card body is open. */
+  function saveAsButton(): HTMLElement {
+    return screen.getByTestId("create-doc-save-as");
+  }
+
+  it("is hidden when the host reports no native dialogs, and never calls the export", async () => {
+    mockAppInfo.mockResolvedValueOnce({
+      name: "buddies",
+      version: "0.1.0",
+      nativeDialogs: false,
+    });
+
+    const { unmount } = await renderDoc("save-1", {
+      ok: true,
+      filename: "report.pdf",
+      size: 2048,
+    });
+
+    await open("save-1");
+
+    // The gate's probe ran and resolved; the control stays hidden.
+    await waitFor((): void => {
+      expect(mockAppInfo).toHaveBeenCalledTimes(1);
+    });
+    await act(async () => {});
+
+    expect(screen.queryByTestId("create-doc-save-as")).toBeNull();
+    expect(mockSaveAs).not.toHaveBeenCalled();
+
+    await unmount();
+  });
+
+  it("exports through the client with the active agent and reported name, and toasts the destination's base name", async () => {
+    const { unmount } = await renderDoc("save-2", {
+      ok: true,
+      filename: "report.pdf",
+      size: 2048,
+    });
+
+    await open("save-2");
+
+    await waitFor((): void => {
+      expect(saveAsButton()).toBeTruthy();
+    });
+
+    await act(async () => {
+      fireEvent.click(saveAsButton());
+    });
+
+    await waitFor((): void => {
+      expect(mockSaveAs).toHaveBeenCalledWith("a1", "s1", "report.pdf");
+    });
+    await waitFor((): void => {
+      expect(
+        getToasts().some(
+          (t: Toast): boolean =>
+            t.kind === "info" && t.text.includes("report.pdf")
+        )
+      ).toBe(true);
+    });
+
+    await unmount();
+  });
+
+  it("a user cancellation stays silent and re-enables the button", async () => {
+    mockSaveAs.mockRejectedValueOnce(new Error("save as: cancelled"));
+
+    const { unmount } = await renderDoc("save-3", {
+      ok: true,
+      filename: "report.pdf",
+      size: 2048,
+    });
+
+    await open("save-3");
+
+    await waitFor((): void => {
+      expect(saveAsButton()).toBeTruthy();
+    });
+
+    await act(async () => {
+      fireEvent.click(saveAsButton());
+    });
+
+    // The busy cycle ran: disabled while the dialog was open, re-enabled
+    // once the cancellation settled.
+    await waitFor((): void => {
+      // SAFETY: the test id targets the Save As <button> this suite rendered.
+      expect((saveAsButton() as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    expect(getToasts().length).toBe(0);
+
+    await unmount();
+  });
+
+  it("a host without a dialog service toasts the readable danger message", async () => {
+    mockSaveAs.mockRejectedValueOnce(
+      new Error("save as: no native dialog on this host")
+    );
+
+    const { unmount } = await renderDoc("save-4", {
+      ok: true,
+      filename: "report.pdf",
+      size: 2048,
+    });
+
+    await open("save-4");
+
+    await waitFor((): void => {
+      expect(saveAsButton()).toBeTruthy();
+    });
+
+    await act(async () => {
+      fireEvent.click(saveAsButton());
+    });
+
+    await waitFor((): void => {
+      expect(
+        getToasts().some(
+          (t: Toast): boolean =>
+            t.kind === "danger" && t.text === "Save As is not available here"
+        )
+      ).toBe(true);
+    });
+
+    await unmount();
+  });
+
+  it("a second click while the dialog is open does not double-invoke the export", async () => {
+    let resolve!: (path: string) => void;
+    mockSaveAs.mockImplementationOnce(
+      (): Promise<string> =>
+        new Promise<string>((res: (path: string) => void): void => {
+          resolve = res;
+        })
+    );
+
+    const { unmount } = await renderDoc("save-5", {
+      ok: true,
+      filename: "report.pdf",
+      size: 2048,
+    });
+
+    await open("save-5");
+
+    await waitFor((): void => {
+      expect(saveAsButton()).toBeTruthy();
+    });
+
+    await act(async () => {
+      fireEvent.click(saveAsButton());
+    });
+
+    // In flight: the button is busy, so the second click is a no-op.
+    // SAFETY: the test id targets the Save As <button> this suite rendered.
+    expect((saveAsButton() as HTMLButtonElement).disabled).toBe(true);
+
+    await act(async () => {
+      fireEvent.click(saveAsButton());
+    });
+
+    expect(mockSaveAs).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolve(SAVE_DESTINATION);
+    });
+
+    await waitFor((): void => {
+      expect(
+        getToasts().some(
+          (t: Toast): boolean =>
+            t.kind === "info" && t.text.includes("report.pdf")
+        )
+      ).toBe(true);
+    });
+    await waitFor((): void => {
+      // SAFETY: the test id targets the Save As <button> this suite rendered.
+      expect((saveAsButton() as HTMLButtonElement).disabled).toBe(false);
+    });
 
     await unmount();
   });

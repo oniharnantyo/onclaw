@@ -10,14 +10,19 @@
  * knowledge panel's data-URL `<object>` embed. A refused or missing read —
  * a file deleted from the workspace, no active agent — degrades to a
  * readable failure state, and a rejected call (`ok:false`) shows the
- * backend's readable error.
+ * backend's readable error. A Save As control (add-artifact-save-as D4)
+ * exports the same document through the host's native save dialog on the
+ * desktop build; the chosen destination path is only ever surfaced as its
+ * base name in the confirmation toast.
  */
 import { useEffect, useState } from "react";
 import type { ReactElement } from "react";
-import { FileX } from "lucide-react";
+import { Download, FileX } from "lucide-react";
 import type { ToolCallMessagePartProps } from "@assistant-ui/react";
 
 import { client, type GeneratedDocumentContent } from "../../../../lib/client";
+import { PLAIN_DOC_NAME, exportGeneratedDocument } from "../../exportDocument";
+import type { Metadata } from "../../../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
 
 import { isNumber, isObject, isString, parseJSONResult } from "../parse";
 import { ClampedText } from "../primitives/ClampedText";
@@ -30,11 +35,6 @@ import { ToolCard } from "./ToolCallFrame";
 function isTextResult(value: unknown): value is string {
   return typeof value === "string";
 }
-
-/** The plain-name shape the bound read accepts (spec: no directory
- * components) — mirrored before the call so a malformed name is refused
- * without touching the backend. */
-const PLAIN_DOC_NAME = /^[^/\\]+$/;
 
 /** The unavailable state: the read was refused or the file is gone. */
 function Unavailable(): ReactElement {
@@ -57,11 +57,14 @@ interface PdfState {
 }
 
 /** The generated PDF: fetched through the bound read by the reported file
- * name and the active agent's workspace, rendered inline through the
- * app's existing data-URL `<object>` embed (the knowledge panel's PDF
- * path). Fetches only while the card body is mounted. */
+ * name, the active agent's workspace, and the open session — the
+ * generation's session-scoped artifacts home (sessions/<id>/artifacts),
+ * legacy homes behind it — rendered inline through the app's existing
+ * data-URL `<object>` embed (the knowledge panel's PDF path). Fetches only
+ * while the card body is mounted. */
 function PdfDocument({ name }: { name: string }): ReactElement {
   const agentID = useChatStore((s: ChatStore) => s.activeAgentID);
+  const sessionID = useChatStore((s: ChatStore) => s.activeSessionID);
 
   // Without an active agent there is no workspace to read from, and a name
   // carrying directory components is refused before any call — both render
@@ -79,7 +82,7 @@ function PdfDocument({ name }: { name: string }): ReactElement {
     let mounted = true;
 
     client.chat
-      .generatedDocument(agentID, name)
+      .generatedDocument(agentID, sessionID ?? "", name)
       .then((content: GeneratedDocumentContent): void => {
         if (!mounted) return;
 
@@ -98,7 +101,7 @@ function PdfDocument({ name }: { name: string }): ReactElement {
     return (): void => {
       mounted = false;
     };
-  }, [agentID, name]);
+  }, [agentID, sessionID, name]);
 
   if (refused || (!state.loading && state.base64 === null)) {
     return <Unavailable />;
@@ -131,7 +134,8 @@ function PdfDocument({ name }: { name: string }): ReactElement {
 }
 
 /** The successful call's body: the reported file name and size above the
- * inline PDF. */
+ * inline PDF, with a Save As control (add-artifact-save-as design D4) that
+ * exports the document through the host's native save dialog. */
 function DocumentBody({
   filename,
   size,
@@ -139,6 +143,57 @@ function DocumentBody({
   filename: string;
   size: number | null;
 }): ReactElement {
+  const agentID = useChatStore((s: ChatStore) => s.activeAgentID);
+  const sessionID = useChatStore((s: ChatStore) => s.activeSessionID);
+
+  // The app metadata rides the client's appInfo probe (add-artifact-save-as
+  // D4): nativeDialogs is true only on the desktop build, so the Save As
+  // control exists only there. Fetched once when the body mounts; while
+  // unknown the control renders nothing (no flash-then-hide), and a failed
+  // probe hides it — the safe default.
+  const [nativeDialogs, setNativeDialogs] = useState<boolean | null>(null);
+
+  useEffect((): void | (() => void) => {
+    let mounted = true;
+
+    client.appInfo
+      .get()
+      .then((metadata: Metadata): void => {
+        if (mounted) setNativeDialogs(metadata.nativeDialogs);
+      })
+      .catch((): void => {
+        if (mounted) setNativeDialogs(false);
+      });
+
+    return (): void => {
+      mounted = false;
+    };
+  }, []);
+
+  // The export gate: desktop build, an active agent's workspace to read
+  // from, and a plain basename — the same PLAIN_DOC_NAME shape the bound
+  // read and the backend's export both refuse otherwise, mirrored here so a
+  // malformed name never reaches the dialog.
+  const canExport =
+    nativeDialogs === true && agentID !== null && PLAIN_DOC_NAME.test(filename);
+
+  // Busy state: while the native dialog is open the call is in flight, so
+  // the button disables and re-entry is guarded — a second click cannot
+  // double-invoke the backend.
+  const [saving, setSaving] = useState(false);
+
+  const onSaveAs = (): void => {
+    if (saving || agentID === null) return;
+
+    setSaving(true);
+
+    void exportGeneratedDocument(agentID, sessionID ?? "", filename).finally(
+      (): void => {
+        setSaving(false);
+      }
+    );
+  };
+
   return (
     <div className="space-y-1.5 px-3 pb-2" data-testid="create-doc-body">
       <div className="flex items-center gap-2">
@@ -155,6 +210,19 @@ function DocumentBody({
           >
             {formatBytes(size)}
           </span>
+        ) : null}
+        {canExport ? (
+          <button
+            type="button"
+            className="border-line text-muted-foreground hover:border-foreground/30 hover:text-foreground ml-auto inline-flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] disabled:cursor-not-allowed disabled:opacity-60"
+            data-testid="create-doc-save-as"
+            onClick={onSaveAs}
+            disabled={saving}
+            aria-busy={saving}
+          >
+            <Download aria-hidden="true" className="size-3" />
+            Save As
+          </button>
         ) : null}
       </div>
       <PdfDocument name={filename} />

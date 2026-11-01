@@ -23,6 +23,9 @@ type ChatService struct {
 	turns    agents.Manager
 	sessions sessions.Service
 	emitter  Emitter
+	// saves opens the host's native save dialog for the Save As export
+	// (add-artifact-save-as design D1); NoSaveDialog on hosts without one.
+	saves SaveDialog
 	// store resolves the agent rows the workspace reader jails against;
 	// attachments and workspaces back the attachment and preview surfaces.
 	store       store.Store
@@ -40,12 +43,14 @@ type ChatService struct {
 // service, forwarding runtime events through emitter. The store, attachment
 // store, and workspace manager back the attachment and workspace-preview
 // surfaces; all dependencies are required. Options carry the optional
-// surfaces (the browser-screenshot read's directory, design D6).
+// surfaces (the browser-screenshot read's directory, design D6; the Save As
+// dialog, add-artifact-save-as design D1).
 func NewChatService(turns agents.Manager, sessions sessions.Service, emitter Emitter, store store.Store, atts *attachments.Store, ws *workspaces.Manager, opts ...ChatOption) *ChatService {
 	s := &ChatService{
 		turns:       turns,
 		sessions:    sessions,
 		emitter:     emitter,
+		saves:       NoSaveDialog{},
 		store:       store,
 		attachments: atts,
 		workspaces:  ws,
@@ -140,17 +145,21 @@ func (s *ChatService) DeleteSession(ctx context.Context, sessionID string) error
 // SaveAttachment stores one uploaded file (design D5, spec chat-attachments
 // "Capability-gated storage"): the bytes land under the attachments
 // directory named by an unguessable capability key and the transcript
-// metadata is registered. data is the base64-encoded file content (explicit
-// on the bridge so the encoding is identical on both hosts). An over-cap or
-// unknown-type file is rejected with the reason (attachments caps: at most
-// 5 MB images, 20 MB PDFs, 1 MB text; the per-message count cap rides the
-// send path).
-func (s *ChatService) SaveAttachment(ctx context.Context, name, mime, data string) (sessions.Attachment, error) {
+// metadata is registered. An upload made with sessionID's chat open is
+// foldered under the attachments directory's per-session folder
+// (attachments/<sessionID>/<key>, schema v19); an empty sessionID — the
+// fresh-chat composer, where the send path creates the session — keeps the
+// flat legacy layout; the row records which, so reads need only the key.
+// data is the base64-encoded file content (explicit on the bridge so the
+// encoding is identical on both hosts). An over-cap or unknown-type file is
+// rejected with the reason (attachments caps: at most 5 MB images, 20 MB
+// PDFs, 1 MB text; the per-message count cap rides the send path).
+func (s *ChatService) SaveAttachment(ctx context.Context, sessionID, name, mime, data string) (sessions.Attachment, error) {
 	raw, err := base64.StdEncoding.DecodeString(data)
 	if err != nil {
 		return sessions.Attachment{}, fmt.Errorf("save attachment: decode payload: %w", err)
 	}
-	att, err := s.attachments.Save(ctx, name, mime, raw)
+	att, err := s.attachments.Save(ctx, sessionID, name, mime, raw)
 	if err != nil {
 		return sessions.Attachment{}, fmt.Errorf("save attachment: %w", err)
 	}

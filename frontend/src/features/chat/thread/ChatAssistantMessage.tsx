@@ -89,6 +89,7 @@ import { useChatStore, type ExtendedChatStore } from "../store";
 import { toWorkspaceRel } from "../toolPaths";
 import { workspaceFileTab } from "../components/panelRenderers";
 import { ArtifactsView } from "../components/ArtifactsView";
+import { PLAIN_DOC_NAME, exportGeneratedDocument } from "../exportDocument";
 import { ChatToolGroup, toolRenderers } from "../tools/aui";
 import { AgentAvatar } from "../../../components";
 import { DayGate, MessageTime, useDayBoundary } from "./DayDivider";
@@ -521,7 +522,10 @@ function artifactsPayload(
  * from the data-artifacts payload the D2 mapping appends after every other
  * part — outside the tool-call fold by construction. Activation opens the
  * workspace-file preview tab, the same call ChatMarkdownLink makes; with no
- * active agent the chips render non-interactive. */
+ * active agent the chips render non-interactive. A Save As affordance
+ * (add-artifact-save-as design D4) rides each chip when an active agent
+ * exists: the plain base name exports through the host's save dialog, the
+ * open session locating the generation's session-scoped artifacts home. */
 function ArtifactsLine({ data }: { data: unknown }): ReactElement | null {
   const activeAgentID = useChatStore((s: ExtendedChatStore) => s.activeAgentID);
   const openPanelTab = useChatStore((s: ExtendedChatStore) => s.openPanelTab);
@@ -537,6 +541,19 @@ function ArtifactsLine({ data }: { data: unknown }): ReactElement | null {
           ? undefined
           : (path: string): void =>
               openPanelTab(workspaceFileTab(activeAgentID, path))
+      }
+      onSaveAs={
+        activeAgentID === null
+          ? undefined
+          : (path: string): void => {
+              const name = path.slice(path.lastIndexOf("/") + 1);
+
+              if (name === "" || !PLAIN_DOC_NAME.test(name)) return;
+
+              const sessionID = useChatStore.getState().activeSessionID ?? "";
+
+              void exportGeneratedDocument(activeAgentID, sessionID, name);
+            }
       }
     />
   );
@@ -735,13 +752,23 @@ export function ChatAssistantMessage(): ReactElement {
  * goes through the runtime's branch switch — the adapter's setMessages →
  * setActiveVariant — so it is pure local state, no request) beside the
  * regenerate and copy actions. Copy rides the shared clipboard writer with
- * the danger-toast refusal path (design D12). */
+ * the danger-toast refusal path (design D12).
+ *
+ * Regenerate's gate is the turn's real liveness, not the message's: the
+ * derived message status only knows streaming text/reasoning entries, so a
+ * turn executing a tool (or between iterations) derives "complete"
+ * (mapping.ts turnStatus) and the status gate alone would offer a
+ * regeneration the store refuses under busy — the same gap ErrorLine works
+ * around. The store's busy flag closes it, and both actions stand down
+ * while the turn runs. */
 function MessageFooter(): ReactElement {
   const aui = useAui();
 
-  const running = useAuiState(
+  const messageRunning = useAuiState(
     (s: AssistantState) => s.message.status?.type === "running"
   );
+
+  const turnBusy = useChatStore((s: ExtendedChatStore) => s.busy);
 
   const [copied, setCopied] = useState(false);
   const resetRef = useRef<number | null>(null);
@@ -808,7 +835,7 @@ function MessageFooter(): ReactElement {
           </button>
         </BranchPickerPrimitive.Next>
       </BranchPickerPrimitive.Root>
-      {!running && (
+      {!messageRunning && !turnBusy && (
         <>
           <button
             type="button"

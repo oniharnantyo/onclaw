@@ -7,7 +7,6 @@ import type { Event as SessionEvent } from "../../../bindings/github.com/oniharn
 import type {
   Agent,
   Session,
-  Skill,
 } from "../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
 import type {
   ModelCapability,
@@ -217,11 +216,23 @@ export function knowledgeDocTab(doc: KnowledgeDocument): Omit<PanelTab, "id"> {
   };
 }
 
+/** One row of the composer's skill picker: the active agent's eligible skill
+ * surface, merged from the two tiers the skill backend serves — "global" for
+ * an enabled registry row that passes the agent's skill allowlist, "agent"
+ * for the agent's own workspace skills, which are always available to it and
+ * shadow a same-named global row. */
+export interface PickerSkill {
+  Name: string;
+  Description: string;
+  Tier: "global" | "agent";
+}
+
 export interface ChatStore {
   agents: Agent[];
   providers: ProviderView[];
-  /** Enabled skills only — the composer's skill picker source. */
-  skills: Skill[];
+  /** The active agent's eligible skills — the composer's skill picker
+   * source and the context meter's skills count. */
+  skills: PickerSkill[];
 
   activeAgentID: string | null;
   /** Every agent's sessions, latest activity first (add-grouped-session-rail
@@ -269,7 +280,12 @@ export interface ChatStore {
 
   /** Loads reference data and consumes the nav store's chat target. */
   init: () => Promise<void>;
-  selectAgent: (agentID: string, sessionID?: string) => Promise<void>;
+  /** Loads the agent and opens sessionID; without one, the agent's most
+   * recent session — or the fresh-chat empty state when the agent has none.
+   * An explicit null forces that fresh-chat state (no session picked or
+   * created): the rail's + button, so a session is minted only by the first
+   * send. */
+  selectAgent: (agentID: string, sessionID?: string | null) => Promise<void>;
   selectSession: (sessionID: string) => Promise<void>;
   /**
    * Creates a session for `agentID` — the active agent when omitted (the
@@ -278,6 +294,13 @@ export interface ChatStore {
    * (add-grouped-session-rail design D6).
    */
   newSession: (agentID?: string) => Promise<void>;
+  /**
+   * Opens a fresh composer for `agentID` — the active agent when omitted —
+   * WITHOUT creating a session row: the chat view clears to the empty
+   * state and the send path mints the session on the first send. The rail's
+   * + button, so pressing it never leaves an Untitled row behind.
+   */
+  newChat: (agentID?: string) => Promise<void>;
   /** Sends now, queues while a turn is in flight, or — with no open session
    * (task 3.4) — first creates the active agent's session, then sends. */
   send: (text: string) => Promise<void>;

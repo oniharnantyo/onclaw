@@ -84,6 +84,14 @@ var ErrRejected = errors.New("attachment rejected")
 // a key can never smuggle a path.
 var keyShape = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
+// sessionIDShape matches exactly the session ids the store assigns: the same
+// 128-bit hex convention as the capability keys. A session id names the
+// upload's folder under the attachments directory (schema v19), so it is
+// validated with the same jail discipline as the key itself — anything else
+// (traversal, separators, a short or foreign id) is refused before any
+// filesystem call.
+var sessionIDShape = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
 // Store manages the attachments directory and its registry rows. It is safe
 // for concurrent use: every method touches distinct key-derived paths.
 type Store struct {
@@ -98,11 +106,16 @@ func NewStore(dir string, rows store.AttachmentStore) *Store {
 	return &Store{dir: dir, rows: rows}
 }
 
-// Save stores one upload: the bytes land at <dir>/<key> and the metadata row
-// is registered under the same capability key. Lane classification and size
-// caps run first — an over-cap file is rejected with the reason (spec:
-// rejected WITH a reason), leaving nothing behind.
-func (s *Store) Save(ctx context.Context, name, mime string, data []byte) (sessions.Attachment, error) {
+// Save stores one upload: the bytes land at <dir>/<key>, or — when the
+// upload carries the id of the session it was made from (schema v19) — at
+// <dir>/<sessionID>/<key>, and the metadata row is registered under the same
+// capability key with that foldering recorded, so Read resolves the path
+// from the row. Lane classification and size caps run first — an over-cap
+// file is rejected with the reason (spec: rejected WITH a reason), leaving
+// nothing behind. An empty sessionID is the flat legacy layout: uploads made
+// before any session exists (the fresh-chat composer's send path creates the
+// session) and every pre-convention row read back.
+func (s *Store) Save(ctx context.Context, sessionID, name, mime string, data []byte) (sessions.Attachment, error) {
 	lane, limit, err := laneOf(mime)
 	if err != nil {
 		return sessions.Attachment{}, err
@@ -110,6 +123,9 @@ func (s *Store) Save(ctx context.Context, name, mime string, data []byte) (sessi
 	if int64(len(data)) > limit {
 		return sessions.Attachment{}, fmt.Errorf("%w: %s attachments are limited to %s (got %s)",
 			ErrRejected, lane, humanBytes(limit), humanBytes(int64(len(data))))
+	}
+	if sessionID != "" && !sessionIDShape.MatchString(sessionID) {
+		return sessions.Attachment{}, fmt.Errorf("save attachment: refused session id %q", sessionID)
 	}
 
 	key, err := newCapabilityKey()
@@ -121,10 +137,18 @@ func (s *Store) Save(ctx context.Context, name, mime string, data []byte) (sessi
 	// always resolves. (The inverse order would orphan a registered key with
 	// no content.)
 	path := filepath.Join(s.dir, key)
+	if sessionID != "" {
+		path = filepath.Join(s.dir, sessionID, key)
+		// The base directory exists (the home-layout bootstrap creates it);
+		// the per-session folder may not yet.
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return sessions.Attachment{}, fmt.Errorf("save attachment: %w", err)
+		}
+	}
 	if err := os.WriteFile(path, data, filePerm); err != nil {
 		return sessions.Attachment{}, fmt.Errorf("save attachment: %w", err)
 	}
-	att := store.Attachment{Key: key, Name: name, Mime: mime, Size: int64(len(data))}
+	att := store.Attachment{Key: key, Name: name, Mime: mime, Size: int64(len(data)), SessionID: sessionID}
 	if err := s.rows.Put(ctx, att); err != nil {
 		_ = os.Remove(path)
 		return sessions.Attachment{}, fmt.Errorf("save attachment: %w", err)
@@ -141,7 +165,10 @@ type Content struct {
 
 // Read resolves one capability key to its metadata and bytes. An unknown key
 // (or anything that is not a key this store issues) is refused; the on-disk
-// address is never exposed.
+// address is never exposed. The file's folder comes from the row's recorded
+// session id (schema v19): a session-scoped upload reads from
+// <dir>/<sessionID>/<key>, a flat one (empty session id — the legacy layout
+// and session-less uploads) from <dir>/<key>.
 func (s *Store) Read(ctx context.Context, key string) (Content, error) {
 	if !keyShape.MatchString(key) {
 		return Content{}, fmt.Errorf("read attachment: %w", store.ErrNotFound)
@@ -150,7 +177,11 @@ func (s *Store) Read(ctx context.Context, key string) (Content, error) {
 	if err != nil {
 		return Content{}, fmt.Errorf("read attachment: %w", err)
 	}
-	data, err := os.ReadFile(filepath.Join(s.dir, key))
+	path := filepath.Join(s.dir, key)
+	if row.SessionID != "" {
+		path = filepath.Join(s.dir, row.SessionID, key)
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return Content{}, fmt.Errorf("read attachment %s: %w", key, err)
 	}

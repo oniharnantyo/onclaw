@@ -215,7 +215,10 @@ const ComposerTriggerPopoverImpl: FC<ComposerTriggerPopoverProps> = ({
     <ComposerPrimitive.TriggerPopover
       data-slot="composer-trigger-popover"
       className={cn(
-        "aui-composer-trigger-popover bg-popover text-popover-foreground absolute start-0 bottom-full z-50 mb-2 w-64 overflow-hidden rounded-xl border",
+        // Full composer width: the trigger menus are anchored to the
+        // composer bubble (the relative Composer element), so w-full matches
+        // the chat input exactly.
+        "aui-composer-trigger-popover bg-popover text-popover-foreground absolute start-0 bottom-full z-50 mb-2 w-full overflow-hidden rounded-xl border",
         className,
       )}
       isLoading={isLoading}

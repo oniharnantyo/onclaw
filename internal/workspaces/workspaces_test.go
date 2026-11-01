@@ -277,3 +277,75 @@ func TestManager_UploadsDir(t *testing.T) {
 	_, err = m.UploadsDir("")
 	require.Error(t, err)
 }
+
+// TestValidSessionID pins the session-id jail: exactly 32 lowercase hex —
+// the minted shape — passes; traversal, separators, short ids, uppercase,
+// and overlong ids refuse, so a session id can never smuggle a path
+// element into a session-scoped directory.
+func TestValidSessionID(t *testing.T) {
+	require.True(t, ValidSessionID("0ae4aa0a3c954cbd9dfaf078ae573eae"))
+	for _, bad := range []string{
+		"../../evil",
+		"a/b",
+		"0ae4aa0a3c954cbd9dfaf078ae573ea",   // 31 chars
+		"0ae4aa0a3c954cbd9dfaf078ae573eae0", // 33 chars
+		"0AE4AA0A3C954CBD9DFAF078AE573EAE",  // uppercase
+		"gae4aa0a3c954cbd9dfaf078ae573eae",  // non-hex
+		"",                                  // empty
+	} {
+		require.False(t, ValidSessionID(bad), "session id %q must refuse", bad)
+	}
+}
+
+// TestSessionRel pins the facing-path form prompts and artifact records
+// carry: forward slashes under sessions/, the bare session dir for an empty
+// name, and empty for anything that fails the session-id jail.
+func TestSessionRel(t *testing.T) {
+	const id = "0ae4aa0a3c954cbd9dfaf078ae573eae"
+	require.Equal(t, "sessions/"+id, SessionRel(id, ""))
+	require.Equal(t, "sessions/"+id+"/artifacts", SessionRel(id, DirArtifacts))
+	require.Equal(t, "sessions/"+id+"/uploads", SessionRel(id, DirUploads))
+	require.Empty(t, SessionRel("../evil", DirArtifacts))
+	require.Empty(t, SessionRel("", DirArtifacts))
+}
+
+// TestManager_SessionDirs pins the per-session layout: SessionDir validates
+// the id and touches no filesystem, while the SessionUploadsDir and
+// SessionArtifactsDir helpers mkdir -p their subdirectory inside
+// sessions/<id>/ on demand, idempotently, and refuse a non-conforming id
+// before any filesystem call — nothing lands for a refused id.
+func TestManager_SessionDirs(t *testing.T) {
+	root := t.TempDir()
+	m := NewManager(root)
+	const id = "0ae4aa0a3c954cbd9dfaf078ae573eae"
+
+	dir, err := m.SessionDir("scout", id)
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(root, "scout", DirSessions, id), dir)
+	require.NoDirExists(t, dir, "SessionDir performs no filesystem access")
+
+	uploads, err := m.SessionUploadsDir("scout", id)
+	require.NoError(t, err)
+	require.DirExists(t, uploads, "SessionUploadsDir must create the directory on demand")
+	require.Equal(t, filepath.Join(root, "scout", DirSessions, id, DirUploads), uploads)
+
+	artifacts, err := m.SessionArtifactsDir("scout", id)
+	require.NoError(t, err)
+	require.DirExists(t, artifacts, "SessionArtifactsDir must create the directory on demand")
+	require.Equal(t, filepath.Join(root, "scout", DirSessions, id, DirArtifacts), artifacts)
+
+	again, err := m.SessionArtifactsDir("scout", id)
+	require.NoError(t, err)
+	require.Equal(t, artifacts, again, "the helpers are idempotent")
+
+	for _, bad := range []string{"../../evil", "a/b", "short", "0AE4AA0A3C954CBD9DFAF078AE573EAE", ""} {
+		_, err = m.SessionDir("scout", bad)
+		require.Error(t, err, "session id %q must refuse", bad)
+		_, err = m.SessionUploadsDir("scout", bad)
+		require.Error(t, err)
+		_, err = m.SessionArtifactsDir("scout", bad)
+		require.Error(t, err)
+	}
+	require.NoDirExists(t, filepath.Join(root, "scout", DirSessions, "../../evil"),
+		"a refused session id never names a directory")
+}

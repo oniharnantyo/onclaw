@@ -319,5 +319,7 @@ export async function renderThread(entries: Entry[]): Promise<ThreadHarness> {
 export function scrollToBottomOf(harness: ThreadHarness, height: number): void {
   harness.pinLayout(height);
   harness.viewport.scrollTop = height;
-  harness.settle();
+  // Fire-and-forget by contract: assertions below run after the scroll
+  // settles (or await settle() themselves when ordering matters).
+  void harness.settle();
 }

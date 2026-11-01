@@ -17,7 +17,10 @@
  * send so one rejected file cannot reject the whole message; the capability
  * warning still names the kinds the effective model cannot read, and a
  * connector gap (the model reads the kind but the provider family cannot
- * carry the part) renders its own warning beside it.
+ * carry the part) renders its own warning beside it. Files dragged over the
+ * chat column land through the same entry (the view's dropzone): the bubble
+ * picks up an accent ring from the dropzone's data-dragging latch
+ * (add-chat-drag-drop-attachments D3).
  */
 import { useEffect } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, ReactElement } from "react";
@@ -377,7 +380,10 @@ function ComposerSurface(): ReactElement {
           </div>
         </div>
       )}
-      <Composer className="mx-auto max-w-3xl">
+      {/* Drag-over ring (design D3, add-chat-drag-drop-attachments): the
+          dropzone wrapping the chat column is an ancestor, so the group's
+          data-dragging latch IS the state — no new state, no context. */}
+      <Composer className="mx-auto max-w-3xl rounded-[24px] group-data-[dragging=true]:ring-1 group-data-[dragging=true]:ring-accent/50">
         <ComposerTriggers />
         <ComposerPrimitive.Root>
           <ComposerBar className="gap-1.5">

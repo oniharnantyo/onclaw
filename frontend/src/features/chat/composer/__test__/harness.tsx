@@ -13,6 +13,7 @@ import type { Skill } from "../../../../../bindings/github.com/oniharnantyo/budd
 import { renderUI } from "../../__test__/test-utils";
 import { ChatRuntimeProvider } from "../../runtime/ChatRuntimeProvider";
 import { useChatStore } from "../../store";
+import type { PickerSkill } from "../../types";
 import { ChatComposer } from "../ChatComposer";
 import { capabilities, runner, scout, session, skills } from "./clientMock";
 
@@ -22,10 +23,18 @@ export { capabilities, runner, scout, session, skills };
 export function seedStore(
   overrides: Partial<ReturnType<typeof useChatStore.getState>> = {}
 ): void {
+  const pickerRows: PickerSkill[] = skills
+    .filter((s: Skill) => s.Enabled)
+    .map((s: Skill) => ({
+      Name: s.Name,
+      Description: s.Description,
+      Tier: "global" as const,
+    }));
+
   useChatStore.setState({
     agents: [scout, runner],
     providers: [],
-    skills: skills.filter((s: Skill) => s.Enabled),
+    skills: pickerRows,
     activeAgentID: "a1",
     sessions: [session],
     activeSessionID: "s1",

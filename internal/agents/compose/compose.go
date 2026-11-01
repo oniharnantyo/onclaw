@@ -69,7 +69,13 @@ type ReductionCapability struct {
 	MaxLengthForTrunc         int
 	ReadFileToolName          string
 	ClearRetentionSuffixLimit int
-	TokenCounter              func(ctx context.Context, msg []*schema.AgenticMessage, tools []*schema.ToolInfo) (int64, error)
+	// OffloadRoot is the workspace mount point truncated and cleared tool
+	// output offloads under (the middleware's RootDir): the turn's
+	// session-scoped directory — "/workspace/sessions/<id>", putting the
+	// offloads at .../trunc and .../clear — when set; empty falls back to
+	// the workspace mount root, the pre-session flat layout.
+	OffloadRoot  string
+	TokenCounter func(ctx context.Context, msg []*schema.AgenticMessage, tools []*schema.ToolInfo) (int64, error)
 }
 
 // PlantaskCapability configures the structured task plan middleware.
@@ -234,9 +240,15 @@ func BuildHandlers(ctx context.Context, cfg *ComposeConfig) ([]adk.TypedChatMode
 			maxTokensForClear = 160000
 		}
 
+		// The offload root (the session directory when the turn carries one,
+		// the workspace mount root — the flat legacy layout — otherwise).
+		offloadRoot := cfg.Reduction.OffloadRoot
+		if offloadRoot == "" {
+			offloadRoot = backend.DefaultMountPoint
+		}
 		redCfg := &reduction.TypedConfig[*schema.AgenticMessage]{
 			Backend:                   redBackend,
-			RootDir:                   backend.DefaultMountPoint,
+			RootDir:                   offloadRoot,
 			ReadFileToolName:          readFileToolName,
 			MaxLengthForTrunc:         maxLength,
 			MaxTokensForClear:         maxTokensForClear,

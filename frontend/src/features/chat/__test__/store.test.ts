@@ -20,11 +20,14 @@ import type {
   Session,
   Skill,
 } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
-import type { ModelCapability } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
+import type {
+  ModelCapability,
+  WorkspaceSkill,
+} from "../../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
 import type { TurnsChangedEvent } from "../../../lib/events";
 import type { Client } from "../../../lib/client";
 import { connectRunningSessions, useChatStore } from "../store";
-import type { Entry, PanelTab } from "../types";
+import type { Entry, PanelTab, PickerSkill } from "../types";
 
 const agents: Agent[] = [
   {
@@ -120,11 +123,15 @@ let turnsHandler: ((event: TurnsChangedEvent) => void) | null = null;
 
 let turnSeq = 0;
 
+/** The workspace skills tier the mocked `listWorkspaceSkills` serves (the
+ * skill picker's per-agent merge; the suites only select the first agent). */
+let workspaceSkills: WorkspaceSkill[] = [];
+
 type MockFn = ReturnType<typeof vi.fn>;
 
 /** The mocked client shape: the Client surface with vi.fn mock members. */
 type MockedClient = Client & {
-  agents: { list: MockFn };
+  agents: { list: MockFn; listWorkspaceSkills: MockFn };
   chat: {
     sessions: MockFn;
     allSessions: MockFn;
@@ -153,7 +160,14 @@ type MockedClient = Client & {
 
 function makeClient(): MockedClient {
   const c = {
-    agents: { list: vi.fn(async () => agents) },
+    agents: {
+      list: vi.fn(async () => agents),
+      // The skill picker's per-agent merge reads the workspace tier through
+      // this member; suites point workspaceSkills at it.
+      listWorkspaceSkills: vi.fn(
+        async (_agentID: string): Promise<WorkspaceSkill[]> => workspaceSkills
+      ),
+    },
     chat: {
       sessions: vi.fn(async (agentID: string) =>
         agentID === "a1" ? sessions : []
@@ -270,6 +284,7 @@ beforeEach(() => {
   liveHandlers.clear();
   turnsHandler = null;
   turnSeq = 0;
+  workspaceSkills = [];
   resetStore();
 });
 
@@ -435,6 +450,20 @@ describe("chat store overrides (task 2.1)", () => {
     expect(useChatStore.getState().activeSessionID).toBe("s-a2");
   });
 
+  it("newChat opens the fresh-chat state without minting a session", async () => {
+    // The agent has sessions; + must not pick one and must not create one —
+    // the view clears and the send path mints the session on the first send.
+    await useChatStore.getState().newChat();
+
+    expect(mockedClient.chat.createSession).not.toHaveBeenCalled();
+    expect(useChatStore.getState().activeSessionID).toBeNull();
+    expect(useChatStore.getState().entries).toEqual([]);
+    // The composer is immediately sendable: nothing in flight, nothing
+    // queued (the fresh-chat reset mirrors deleteSession's empty state).
+    expect(useChatStore.getState().busy).toBe(false);
+    expect(useChatStore.getState().queue).toEqual([]);
+  });
+
   it("selectAgent populates the all-agents list (add-grouped-session-rail design D1)", async () => {
     const a2row = {
       ...row("s-a2"),
@@ -462,6 +491,81 @@ describe("chat store overrides (task 2.1)", () => {
     expect(mockedClient.settings.providerModels).toHaveBeenCalledWith("prov");
     await waitFor(() =>
       expect(useChatStore.getState().models).toEqual(capabilities)
+    );
+  });
+
+  it("merges the agent's workspace skills into the picker list on selectAgent", async () => {
+    mockedClient.settings.skills.mockResolvedValueOnce([
+      {
+        Name: "search",
+        Description: "Web search",
+        Version: "",
+        Source: "",
+        Enabled: true,
+        CreatedAt: "",
+        UpdatedAt: "",
+      },
+      {
+        Name: "secret",
+        Description: "",
+        Version: "",
+        Source: "",
+        Enabled: false,
+        CreatedAt: "",
+        UpdatedAt: "",
+      },
+    ]);
+    await useChatStore.getState().init();
+
+    // The registry tier alone until an agent is selected (the boot-time
+    // auto-selection is skipped: the store already holds an active agent).
+    expect(
+      useChatStore.getState().skills.map((s: PickerSkill) => s.Name)
+    ).toEqual(["search"]);
+
+    workspaceSkills = [{ Name: "akta-pendirian-pt", Description: "Generated" }];
+
+    await useChatStore.getState().selectAgent("a1");
+
+    await waitFor(() =>
+      expect(useChatStore.getState().skills).toEqual([
+        { Name: "search", Description: "Web search", Tier: "global" },
+        { Name: "akta-pendirian-pt", Description: "Generated", Tier: "agent" },
+      ])
+    );
+  });
+
+  it("the workspace tier is always available and shadows a same-named global row", async () => {
+    mockedClient.settings.skills.mockResolvedValueOnce([
+      {
+        Name: "mine",
+        Description: "Global copy",
+        Version: "",
+        Source: "",
+        Enabled: true,
+        CreatedAt: "",
+        UpdatedAt: "",
+      },
+    ]);
+    await useChatStore.getState().init();
+
+    // The agent curates a global allowlist that excludes "mine": the global
+    // row is gated away…
+    useChatStore.setState({
+      agents: [{ ...agents[0], Skills: ["other"] }, agents[1]],
+    });
+    await useChatStore.getState().selectAgent("a1");
+    await waitFor(() => expect(useChatStore.getState().skills).toEqual([]));
+
+    // …but the agent's own workspace copy of that name is always available
+    // to it, and serves in the global row's place.
+    workspaceSkills = [{ Name: "mine", Description: "Personal copy" }];
+    await useChatStore.getState().selectAgent("a1");
+
+    await waitFor(() =>
+      expect(useChatStore.getState().skills).toEqual([
+        { Name: "mine", Description: "Personal copy", Tier: "agent" },
+      ])
     );
   });
 });

@@ -314,10 +314,12 @@ function seedStore(): void {
   });
 }
 
-// The store is module-level, so the new-session spy one test installs must
-// not leak into the next: the pristine action is captured once and restored
-// before every test.
+// The store is module-level, so the new-chat spy one test installs must
+// not leak into the next: the pristine actions are captured once and
+// restored before every test.
 const realNewSession = useChatStore.getState().newSession;
+
+const realNewChat = useChatStore.getState().newChat;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -329,6 +331,7 @@ beforeEach(() => {
     busy: false,
     runningSessions: new Set<string>(),
     newSession: realNewSession,
+    newChat: realNewChat,
   });
   // Two agents with sessions and one without (design D5: session-less
   // agents still render a collapsed row); a1 is active with sB open.
@@ -427,10 +430,10 @@ describe("SessionRail", () => {
     ).toBeTruthy();
   });
 
-  it("creates a session for a NON-active agent from its collapsed row's +", async () => {
-    const newSession = vi.fn(async (): Promise<void> => undefined);
+  it("opens a fresh chat for a NON-active agent from its collapsed row's + (minting nothing)", async () => {
+    const newChat = vi.fn(async (): Promise<void> => undefined);
 
-    useChatStore.setState({ newSession });
+    useChatStore.setState({ newChat });
     await renderIsland();
 
     await act(async () => {
@@ -438,37 +441,30 @@ describe("SessionRail", () => {
     });
 
     // The group's agent id rides the call, active or not (design D6).
-    expect(newSession).toHaveBeenCalledWith("a2");
+    expect(newChat).toHaveBeenCalledWith("a2");
     // The click is the control's alone: no context move, no expansion.
     expect(useChatStore.getState().activeAgentID).toBe("a1");
     expect(useChatStore.getState().activeSessionID).toBe("sB");
+    // Nothing minted: createSession stays untouched — the + no longer
+    // leaves an Untitled row behind.
+    expect(mockedClient.chat.createSession).not.toHaveBeenCalled();
     // a2's group stays collapsed — its rows frozen, not listed.
     expectCollapsedRows("a2");
   });
 
-  it("creates a session for the active agent from its expanded row's +", async () => {
-    const fresh = makeSession("sNEW", "a1", "", 0);
-
-    // The backend would list the new row immediately; seeding the mock's
-    // backing list keeps the store's open path (selectAgent refetch under
-    // the all-sessions model) able to find it.
-    mockedClient.chat.createSession.mockImplementation(async () => {
-      sessions = [fresh, ...sessions];
-
-      return fresh;
-    });
-
+  it("opens a fresh composer for the active agent's expanded row's + without minting a session", async () => {
     await renderIsland();
     await act(async () => {
       fireEvent.click(screen.getByTestId("group-new-session-a1"));
     });
+
+    // The + mints nothing — no Untitled row appears; the view clears to the
+    // empty fresh-chat state and the send path creates the session on send.
+    expect(mockedClient.chat.createSession).not.toHaveBeenCalled();
     await waitFor(() =>
-      expect(mockedClient.chat.createSession).toHaveBeenCalledWith("a1")
+      expect(useChatStore.getState().activeSessionID).toBeNull()
     );
-    await waitFor(() =>
-      expect(useChatStore.getState().activeSessionID).toBe("sNEW")
-    );
-    await waitFor(() => expect(row("sNEW")).toBeTruthy());
+    expect(useChatStore.getState().entries).toEqual([]);
   });
 
   it("shows the group running dot for a never-opened session of a collapsed agent", async () => {

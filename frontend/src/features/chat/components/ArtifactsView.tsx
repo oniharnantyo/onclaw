@@ -10,9 +10,10 @@
  * wires openPanelTab(workspaceFileTab(activeAgentID, path)); without an
  * onOpen the chips render non-interactive. Zero artifacts render nothing.
  */
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import type { ReactElement } from "react";
 import {
+  Download,
   FileCode,
   FileSpreadsheet,
   FileText,
@@ -28,9 +29,11 @@ import { formatBytes } from "./AttachmentView";
  * "Artifacts chips row": six). */
 const INLINE_COUNT = 6;
 
-/** The workspace prefix the display name strips; the open call and the
- * tooltip keep the full path. */
-const ARTIFACTS_PREFIX = "artifacts/";
+/** The workspace-relative artifacts prefixes the display name strips — the
+ * flat legacy `artifacts/` and the per-session
+ * `sessions/<id>/artifacts/` (the layout generated documents moved into);
+ * the open call and the tooltip keep the full path. */
+const ARTIFACTS_PREFIX = /^(?:sessions\/[0-9a-f]{32}\/)?artifacts\//;
 
 const CODE_EXTS: ReadonlySet<string> = new Set([
   "ts",
@@ -91,12 +94,11 @@ function extensionIcon(path: string): ReactElement {
   return <FileText aria-hidden="true" className={className} />;
 }
 
-/** The chip's display name: the path under artifacts/, so a nested file
- * stays identifiable; the full path rides the open call and the tooltip. */
+/** The chip's display name: the path under artifacts/ (the flat legacy
+ * form or the per-session form), so a nested file stays identifiable; the
+ * full path rides the open call and the tooltip. */
 function displayName(path: string): string {
-  return path.startsWith(ARTIFACTS_PREFIX)
-    ? path.slice(ARTIFACTS_PREFIX.length)
-    : path;
+  return path.replace(ARTIFACTS_PREFIX, "");
 }
 
 /** The chip's tooltip: the full path, the change kind when known
@@ -130,6 +132,32 @@ function ChipBody({ artifact }: { artifact: Artifact }): ReactElement {
         {formatBytes(artifact.size)}
       </span>
     </>
+  );
+}
+
+/** The chip's Save As affordance: a sibling icon button — never a child of
+ * the chip itself, which is a button — exporting the artifact through the
+ * host's native save dialog (add-artifact-save-as design D4). */
+function ChipSaveAs({
+  path,
+  onSaveAs,
+}: {
+  path: string;
+  onSaveAs: (path: string) => void;
+}): ReactElement {
+  const name = displayName(path);
+
+  return (
+    <button
+      type="button"
+      className="flex cursor-pointer items-center rounded-md border border-line px-1.5 py-1 text-[11px] text-muted hover:border-foreground/30 hover:text-fg"
+      data-testid="artifact-save-as"
+      aria-label={`Save ${name} as`}
+      title={`Save ${name} as`}
+      onClick={() => onSaveAs(path)}
+    >
+      <Download aria-hidden="true" className="size-3" />
+    </button>
   );
 }
 
@@ -177,10 +205,15 @@ export function ArtifactsView({
   artifacts,
   truncated,
   onOpen,
+  onSaveAs,
 }: {
   artifacts: Artifact[];
   truncated?: boolean;
   onOpen?: (path: string) => void;
+  /** Exports one artifact through the host's native save dialog; wired
+   * only where an active agent (and session) exists to read the bytes
+   * from. */
+  onSaveAs?: (path: string) => void;
 }): ReactElement | null {
   const [expanded, setExpanded] = useState(false);
 
@@ -195,7 +228,12 @@ export function ArtifactsView({
       data-testid="entry-artifacts"
     >
       {visible.map((artifact: Artifact): ReactElement => (
-        <ArtifactChip key={artifact.path} artifact={artifact} onOpen={onOpen} />
+        <Fragment key={artifact.path}>
+          <ArtifactChip artifact={artifact} onOpen={onOpen} />
+          {onSaveAs !== undefined ? (
+            <ChipSaveAs path={artifact.path} onSaveAs={onSaveAs} />
+          ) : null}
+        </Fragment>
       ))}
       {hidden > 0 && (
         <button

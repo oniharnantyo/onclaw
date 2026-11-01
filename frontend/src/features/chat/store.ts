@@ -37,6 +37,7 @@ import type {
   Session,
   Skill,
 } from "../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
+import type { WorkspaceSkill } from "../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
 import type { ModelCapability } from "../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
 import type { TurnsChangedEvent } from "../../lib/events";
 import type { Unsubscribe } from "../../lib/transport";
@@ -50,7 +51,13 @@ import {
   mergePrepended,
 } from "./entries";
 import type { ToolCatalog } from "./tools/toolDisplay";
-import type { ChatStore, Entry, PanelTab, QueuedMessage } from "./types";
+import type {
+  ChatStore,
+  Entry,
+  PanelTab,
+  PickerSkill,
+  QueuedMessage,
+} from "./types";
 
 export type { ChatStore, QueuedMessage } from "./types";
 
@@ -190,6 +197,75 @@ let nextPanelTabID = 0;
 /** The in-flight (or settled) catalog load, so `client.tools()` runs once
  * per app run (task 3.3). A failed load resets it — the next call retries. */
 let toolCatalogPromise: Promise<void> | null = null;
+
+/** The raw skill-registry rows (the global library tier) as loaded at boot;
+ * the per-agent merge in pickerSkills filters and appends the workspace
+ * tier, so the registry is kept instead of only its filtered projection. */
+let registrySkills: Skill[] = [];
+
+/**
+ * Merges the two skill tiers into the composer's picker list (spec
+ * agent-skills "Skill eligibility gate"): the enabled registry rows that
+ * pass the agent's skill allowlist (empty = all) form the global tier, and
+ * the agent's own workspace skills — always available to it, allowlist or
+ * not — form the agent tier and shadow a same-named global row, mirroring
+ * the skill backend's precedence.
+ */
+function pickerSkills(
+  agent: Agent | null,
+  workspace: WorkspaceSkill[]
+): PickerSkill[] {
+  const agentTier: PickerSkill[] = workspace.map(
+    (skill: WorkspaceSkill): PickerSkill => ({
+      Name: skill.Name,
+      Description: skill.Description,
+      Tier: "agent",
+    })
+  );
+
+  const shadowed = new Set(agentTier.map((skill: PickerSkill) => skill.Name));
+  const allowed = agent?.Skills ?? [];
+
+  const globalTier = registrySkills
+    .filter(
+      (row: Skill): boolean =>
+        row.Enabled &&
+        !shadowed.has(row.Name) &&
+        (allowed.length === 0 || allowed.includes(row.Name))
+    )
+    .map((row: Skill): PickerSkill => ({
+      Name: row.Name,
+      Description: row.Description,
+      Tier: "global",
+    }));
+
+  return [...globalTier, ...agentTier];
+}
+
+/**
+ * Loads the agent's workspace skills tier and re-merges the picker list.
+ * Fired on agent selection (the tier is per-agent) and at turn terminals (a
+ * turn can author skills into the workspace — the fresh skill must be
+ * invocable without an agent switch; the turn backend reads the tier fresh
+ * per turn, this keeps the picker aligned). A failed read leaves the
+ * current list; the next selection or terminal retries it.
+ */
+async function loadAgentSkills(agentID: string): Promise<void> {
+  let workspace: WorkspaceSkill[];
+
+  try {
+    workspace = await client.agents.listWorkspaceSkills(agentID);
+  } catch {
+    return;
+  }
+
+  if (useChatStore.getState().activeAgentID !== agentID) return;
+
+  const agent =
+    useChatStore.getState().agents.find((a: Agent) => a.ID === agentID) ?? null;
+
+  useChatStore.setState({ skills: pickerSkills(agent, workspace) });
+}
 
 type ChatSetState = StoreApi<ExtendedChatStore>["setState"];
 
@@ -424,6 +500,12 @@ function ingest(e: SessionEvent): void {
         at: e.occurred_at || new Date().toISOString(),
       },
     });
+    // A turn may have authored skills into its agent's workspace; the
+    // picker re-reads the tier at every terminal so a fresh skill is
+    // invocable without an agent switch.
+    const terminalAgentID = useChatStore.getState().activeAgentID;
+
+    if (terminalAgentID !== null) void loadAgentSkills(terminalAgentID);
   }
 
   if (e.kind === Kind.KindTurnCompleted) {
@@ -582,10 +664,13 @@ export const useChatStore = create<ExtendedChatStore>(
           client.settings.skills(),
         ]);
 
+        registrySkills = skills;
         set({
           agents,
           providers,
-          skills: skills.filter((s: Skill) => s.Enabled),
+          // The registry tier only: the workspace tier rides the agent
+          // selection that follows (loadAgentSkills).
+          skills: pickerSkills(null, []),
         });
       } catch (err: unknown) {
         set({ error: errorMessage(err, "Failed to load chat") });
@@ -619,13 +704,19 @@ export const useChatStore = create<ExtendedChatStore>(
       }
     },
 
-    selectAgent: async (agentID: string, sessionID?: string): Promise<void> => {
+    selectAgent: async (
+      agentID: string,
+      sessionID?: string | null
+    ): Promise<void> => {
       const seq = ++loadSeq;
       eventBuffer = null;
       set({ activeAgentID: agentID, error: null });
       // The composer's model/effort pickers read the agent's provider
       // capabilities; a stale continuation must not overwrite a newer agent's.
       void loadModels(agentID);
+      // The skill picker re-merges for the newly active agent: its workspace
+      // tier is per-agent (loadAgentSkills).
+      void loadAgentSkills(agentID);
       let sessions: Session[] = [];
 
       try {
@@ -667,6 +758,36 @@ export const useChatStore = create<ExtendedChatStore>(
       const agentSessions = sessions.filter(
         (s: Session): boolean => s.AgentID === agentID
       );
+
+      // An explicit null forces the fresh-chat state (the rail's + button):
+      // no session is picked, none is created — the composer starts empty
+      // and the send path mints the session on the first send. Subscriptions
+      // persist (the keep-set teardown above already closed orphans), so a
+      // background turn in the previously open session keeps streaming and
+      // its rail dot keeps working.
+      if (sessionID === null) {
+        set({
+          activeSessionID: null,
+          entries: [],
+          usage: null,
+          loadingSession: false,
+          queue: [],
+          dispatching: false,
+          activeTurnID: null,
+          finishedTurnIDs: new Set<string>(),
+          panelTabs: [],
+          activePanelTabID: null,
+          // Nothing to react for (add-live-agent-avatar design D4).
+          lastTurnOutcome: null,
+          // The override state resets to inherit; a newly created session is
+          // seeded from the sticky default instead.
+          modelOverride: "",
+          effortOverride: "",
+        });
+        setBusy();
+
+        return;
+      }
 
       const next =
         sessionID && agentSessions.some((s: Session) => s.ID === sessionID)
@@ -1055,6 +1176,18 @@ export const useChatStore = create<ExtendedChatStore>(
       } catch (err: unknown) {
         set({ error: errorMessage(err, "Failed to create session") });
       }
+    },
+
+    // Fresh chat without minting a session (the rail's + button): the view
+    // clears to the empty state and the send path auto-creates the session
+    // on the first send (task 3.4) — exactly the boot state of a
+    // session-less agent, so pressing + never leaves an Untitled row behind.
+    newChat: async (agentID?: string): Promise<void> => {
+      const target = agentID ?? get().activeAgentID;
+
+      if (!target) return;
+
+      await get().selectAgent(target, null);
     },
 
     // Attachment keys ride the send (task 5.4, design D5): ready uploads

@@ -25,12 +25,9 @@ import type {
 
 import { ComposerTriggerPopover } from "@/components/assistant-ui/elements/composer-trigger-popover.aui";
 
-import type {
-  Agent,
-  Skill,
-} from "../../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
+import type { Agent } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
 import { useChatStore } from "../store";
-import type { ChatStore } from "../types";
+import type { ChatStore, PickerSkill } from "../types";
 
 /** The three trigger characters the composer owns. */
 type TriggerChar = "/" | "@" | "$";
@@ -172,11 +169,15 @@ function agentItems(agents: Agent[], query: string): readonly TriggerItem[] {
   );
 }
 
-/** The enabled skills (store-filtered), prefix-filtered. */
-function skillItems(skills: Skill[], query: string): readonly TriggerItem[] {
+/** The eligible skills (registry tier allowlist-filtered plus the agent's
+ * own workspace tier, merged by the store), prefix-filtered. */
+function skillItems(
+  skills: PickerSkill[],
+  query: string
+): readonly TriggerItem[] {
   const needle = query.toLowerCase();
 
-  return skills.flatMap((skill: Skill): TriggerItem[] =>
+  return skills.flatMap((skill: PickerSkill): TriggerItem[] =>
     skill.Name.toLowerCase().startsWith(needle)
       ? [
           {

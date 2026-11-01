@@ -2,6 +2,8 @@ package attachments
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -43,7 +45,7 @@ func TestSave_AcceptsPerLane(t *testing.T) {
 		{"x.bin", "application/octet-stream", []byte("bin-bytes")},
 	}
 	for _, tc := range cases {
-		att, err := s.Save(ctx, tc.name, tc.mime, tc.data)
+		att, err := s.Save(ctx, "", tc.name, tc.mime, tc.data)
 		require.NoError(t, err, "%s must be accepted", tc.mime)
 		require.NotEmpty(t, att.Key)
 		require.Len(t, att.Key, 32, "the capability key is 128 bits of hex")
@@ -64,11 +66,11 @@ func TestSave_AcceptsPerLane(t *testing.T) {
 func TestSave_OfficeLaneCaps(t *testing.T) {
 	s := newTestStore(t)
 
-	att, err := s.Save(context.Background(), "report.docx", MimeDOCX, make([]byte, MaxOfficeBytes))
+	att, err := s.Save(context.Background(), "", "report.docx", MimeDOCX, make([]byte, MaxOfficeBytes))
 	require.NoError(t, err, "a .docx at the cap is accepted")
 	require.NotEmpty(t, att.Key)
 
-	_, err = s.Save(context.Background(), "big.docx", MimeDOCX, make([]byte, MaxOfficeBytes+1))
+	_, err = s.Save(context.Background(), "", "big.docx", MimeDOCX, make([]byte, MaxOfficeBytes+1))
 	require.ErrorIs(t, err, ErrRejected, "a .docx beyond the cap is rejected")
 	require.ErrorContains(t, err, "20 MB", "the rejection carries the limit")
 	require.ErrorContains(t, err, "office", "the rejection names the lane")
@@ -92,7 +94,7 @@ func TestSave_RejectsOverCap(t *testing.T) {
 		{"x.bin", "application/octet-stream", MaxFileBytes + 1, "20 MB"},
 	}
 	for _, tc := range cases {
-		_, err := s.Save(context.Background(), tc.name, tc.mime, make([]byte, tc.size))
+		_, err := s.Save(context.Background(), "", tc.name, tc.mime, make([]byte, tc.size))
 		require.ErrorIs(t, err, ErrRejected, "%s over the cap must be rejected", tc.mime)
 		require.ErrorContains(t, err, tc.want, "the rejection carries the limit")
 	}
@@ -106,11 +108,11 @@ func TestSave_UnknownMimesTakeFileLane(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	empty, err := s.Save(ctx, "mimeless", "", []byte("mimeless-bytes"))
+	empty, err := s.Save(ctx, "", "mimeless", "", []byte("mimeless-bytes"))
 	require.NoError(t, err, "an empty mime takes the file lane too")
 	require.NotEmpty(t, empty.Key)
 
-	_, err = s.Save(ctx, "big.bin", "application/octet-stream", make([]byte, MaxFileBytes+1))
+	_, err = s.Save(ctx, "", "big.bin", "application/octet-stream", make([]byte, MaxFileBytes+1))
 	require.ErrorIs(t, err, ErrRejected, "an unknown mime over the cap is rejected")
 	require.ErrorContains(t, err, "file attachments are limited to 20 MB", "the rejection names the file lane and the limit")
 
@@ -144,7 +146,7 @@ func TestResolve_RefusesUnknownKey(t *testing.T) {
 	_, err := s.Resolve(context.Background(), "ffffffffffffffffffffffffffffffff")
 	require.ErrorIs(t, err, store.ErrNotFound)
 
-	att, err := s.Save(context.Background(), "a.txt", "text/plain", []byte("x"))
+	att, err := s.Save(context.Background(), "", "a.txt", "text/plain", []byte("x"))
 	require.NoError(t, err)
 	got, err := s.Resolve(context.Background(), att.Key)
 	require.NoError(t, err)
@@ -156,7 +158,7 @@ func TestResolve_RefusesUnknownKey(t *testing.T) {
 func TestSave_RegistryFailureLeavesNothing(t *testing.T) {
 	s := NewStore(t.TempDir(), failingAttachmentRegistry{})
 
-	att, err := s.Save(context.Background(), "a.txt", "text/plain", []byte("x"))
+	att, err := s.Save(context.Background(), "", "a.txt", "text/plain", []byte("x"))
 	require.Error(t, err)
 	require.Empty(t, att.Key)
 
@@ -186,10 +188,70 @@ func (e errString) Error() string { return string(e) }
 func TestKeysAreUnguessable(t *testing.T) {
 	s := newTestStore(t)
 
-	first, err := s.Save(context.Background(), "a.txt", "text/plain", []byte("same"))
+	first, err := s.Save(context.Background(), "", "a.txt", "text/plain", []byte("same"))
 	require.NoError(t, err)
-	second, err := s.Save(context.Background(), "a.txt", "text/plain", []byte("same"))
+	second, err := s.Save(context.Background(), "", "a.txt", "text/plain", []byte("same"))
 	require.NoError(t, err)
 	require.NotEqual(t, first.Key, second.Key)
 	require.True(t, strings.Contains(first.Name, "a.txt"))
+}
+
+// TestSave_SessionFoldering pins the per-session layout (schema v19): an
+// upload carrying its session's id lands under
+// <dir>/<sessionID>/<key> on disk, the row records that foldering, and Read
+// resolves the bytes from the row — the capability key stays the only
+// address. The empty session id keeps the flat layout.
+func TestSave_SessionFoldering(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	const sessionID = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
+
+	sessioned, err := s.Save(ctx, sessionID, "shot.png", "image/png", []byte("png-bytes"))
+	require.NoError(t, err)
+	require.NotEmpty(t, sessioned.Key)
+
+	// The bytes live under the session's folder, keyed as usual.
+	data, err := os.ReadFile(filepath.Join(s.dir, sessionID, sessioned.Key))
+	require.NoError(t, err, "the file lands in the session's folder")
+	require.Equal(t, []byte("png-bytes"), data)
+
+	// Read resolves from the row, not from any caller-supplied path.
+	content, err := s.Read(ctx, sessioned.Key)
+	require.NoError(t, err)
+	require.Equal(t, []byte("png-bytes"), content.Data)
+	require.Equal(t, sessioned, content.Meta)
+
+	// A session-less upload in the same store keeps the flat layout.
+	flat, err := s.Save(ctx, "", "note.txt", "text/plain", []byte("txt"))
+	require.NoError(t, err)
+	_, err = os.Stat(filepath.Join(s.dir, flat.Key))
+	require.NoError(t, err, "the flat upload lands at the root")
+	flatContent, err := s.Read(ctx, flat.Key)
+	require.NoError(t, err)
+	require.Equal(t, []byte("txt"), flatContent.Data)
+}
+
+// TestSave_RefusesBadSessionIDs pins the foldering jail: the session id
+// names a directory component, so anything beyond the store's own 32-hex id
+// shape is refused before any filesystem call — no folder, no file, no row.
+func TestSave_RefusesBadSessionIDs(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	for _, sessionID := range []string{
+		"../../evil",
+		"a/b",
+		"short",
+		"A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6",  // uppercase: wrong shape
+		"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6x", // 33 chars
+		".",
+	} {
+		_, err := s.Save(ctx, sessionID, "x.txt", "text/plain", []byte("x"))
+		require.ErrorContains(t, err, "refused session id", "session id %q must be refused", sessionID)
+	}
+
+	// Nothing landed anywhere in the store root.
+	entries, err := os.ReadDir(s.dir)
+	require.NoError(t, err)
+	require.Empty(t, entries, "refused session ids create nothing")
 }

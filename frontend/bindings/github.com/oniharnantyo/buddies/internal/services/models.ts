@@ -390,6 +390,13 @@ export interface MCPOAuthCompletedEvent {
 export interface Metadata {
     "name": string;
     "version": string;
+
+    /**
+     * NativeDialogs reports whether this host can open native dialogs (the
+     * desktop build can; the server build cannot), so the frontend can hide
+     * host-dependent affordances such as Save As.
+     */
+    "nativeDialogs": boolean;
 }
 
 /**

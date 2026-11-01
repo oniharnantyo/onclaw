@@ -54,7 +54,7 @@ func pointerNoteOf(t *testing.T, f *fixture) string {
 // capability key.
 func saveUpload(t *testing.T, atts *attachments.Store, name, mime, content string) sessions.Attachment {
 	t.Helper()
-	att, err := atts.Save(t.Context(), name, mime, []byte(content))
+	att, err := atts.Save(t.Context(), "", name, mime, []byte(content))
 	require.NoError(t, err)
 	return att
 }
@@ -233,8 +233,8 @@ func TestTurn_CapableModelReceivesContent(t *testing.T) {
 // carries PDF parts (the gemini and anthropic families) and a connector-gap
 // note stands in where it cannot (OpenAI); a model without the capability
 // degrades with the model-gap note whatever the family. The turn-time
-// uploads mirror lands a copy in every cell, so each note addresses
-// /workspace/uploads.
+// uploads mirror lands a copy in every cell, so each note addresses the
+// session's /workspace/sessions/<id>/uploads.
 func TestTurn_PDFRidesWhereTheConnectorCarriesIt(t *testing.T) {
 	// newSessionWithPDF builds one fixture per cell: the provider family,
 	// the effective model, and — when row is non-nil — a stored ProviderModel
@@ -264,7 +264,7 @@ func TestTurn_PDFRidesWhereTheConnectorCarriesIt(t *testing.T) {
 		sess, err := f.mgr.CreateSession(t.Context(), agent.ID)
 		require.NoError(t, err)
 		pdf := saveUpload(t, atts, "doc.pdf", "application/pdf", "%PDF-1.4")
-		return f, filepath.Join(wsRoot, "tester", workspaces.DirUploads), sess, pdf
+		return f, filepath.Join(wsRoot, "tester", workspaces.DirSessions, sess.ID, workspaces.DirUploads), sess, pdf
 	}
 
 	// PDF + capable model + a family whose connector carries PDF parts: the
@@ -311,7 +311,7 @@ func TestTurn_PDFRidesWhereTheConnectorCarriesIt(t *testing.T) {
 	require.NoError(t, turn.Wait(), "sending must not fail because the connector lacks PDF carriage")
 	require.Equal(t,
 		"[attached file not sent: doc.pdf (application/pdf, 8 bytes) — "+reasonConnectorPDFParts+
-			"; read it at /workspace/uploads/doc.pdf (fallback: attachment key "+pdf.Key+")]",
+			"; read it at /workspace/sessions/"+sess.ID+"/uploads/doc.pdf (fallback: attachment key "+pdf.Key+")]",
 		pointerNoteOf(t, f), "the note names the connector gap and the workspace path")
 	require.FileExists(t, filepath.Join(uploadsDir, "doc.pdf"), "the mirror lands the file even when the part degrades")
 
@@ -324,7 +324,7 @@ func TestTurn_PDFRidesWhereTheConnectorCarriesIt(t *testing.T) {
 	require.NoError(t, turn.Wait(), "sending must not fail because the model lacks PDF input")
 	require.Equal(t,
 		"[attached file not sent: doc.pdf (application/pdf, 8 bytes) — "+modelGapReason("application/pdf")+
-			"; read it at /workspace/uploads/doc.pdf (fallback: attachment key "+pdf.Key+")]",
+			"; read it at /workspace/sessions/"+sess.ID+"/uploads/doc.pdf (fallback: attachment key "+pdf.Key+")]",
 		pointerNoteOf(t, f), "the note names the model gap and the workspace path")
 	require.FileExists(t, filepath.Join(uploadsDir, "doc.pdf"))
 }
@@ -574,7 +574,7 @@ func TestTurn_FileAttachmentRidesByReference(t *testing.T) {
 		sess, err := f.mgr.CreateSession(t.Context(), agent.ID)
 		require.NoError(t, err)
 		att := saveUpload(t, atts, name, mime, content)
-		return f, filepath.Join(wsRoot, "tester", workspaces.DirUploads), sess, att
+		return f, filepath.Join(wsRoot, "tester", workspaces.DirSessions, sess.ID, workspaces.DirUploads), sess, att
 	}
 
 	// An unknown mime rides the note, and the mirror lands the copy.
@@ -584,7 +584,7 @@ func TestTurn_FileAttachmentRidesByReference(t *testing.T) {
 	require.NoError(t, turn.Wait(), "sending must not fail because file bytes never ride the message")
 	require.Equal(t,
 		"[attached file not sent: archive.zip (application/zip, 9 bytes) — "+reasonFileBytesWithheld+
-			"; read it at /workspace/uploads/archive.zip (fallback: attachment key "+att.Key+")]",
+			"; read it at /workspace/sessions/"+sess.ID+"/uploads/archive.zip (fallback: attachment key "+att.Key+")]",
 		pointerNoteOf(t, f), "the file note hands off to the filesystem tools via the uploads mirror")
 	data, err := os.ReadFile(filepath.Join(uploadsDir, "archive.zip"))
 	require.NoError(t, err, "the mirror lands the file even when the bytes never ride")
@@ -597,7 +597,7 @@ func TestTurn_FileAttachmentRidesByReference(t *testing.T) {
 	require.NoError(t, turn.Wait(), "sending must not fail because the mime is empty")
 	require.Equal(t,
 		"[attached file not sent: mimeless (, 14 bytes) — "+reasonFileBytesWithheld+
-			"; read it at /workspace/uploads/mimeless (fallback: attachment key "+att.Key+")]",
+			"; read it at /workspace/sessions/"+sess.ID+"/uploads/mimeless (fallback: attachment key "+att.Key+")]",
 		pointerNoteOf(t, f), "the empty-mime note takes the file lane's shape")
 	require.FileExists(t, filepath.Join(uploadsDir, "mimeless"), "the mirror lands the empty-mime file too")
 }
@@ -621,9 +621,10 @@ func TestTurn_MirrorFailureFallsBackToKey(t *testing.T) {
 	f.agent = agent
 	sess, err := f.mgr.CreateSession(t.Context(), agent.ID)
 	require.NoError(t, err)
-	// The uploads path is blocked by a regular file: UploadsDir's mkdir -p
+	// The session uploads path is blocked by a regular file: the mkdir -p
 	// fails, the mirror stays off, and nothing else about the turn changes.
-	require.NoError(t, os.WriteFile(filepath.Join(workspace, workspaces.DirUploads), []byte("blocked"), 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Join(workspace, workspaces.DirSessions, sess.ID), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(workspace, workspaces.DirSessions, sess.ID, workspaces.DirUploads), []byte("blocked"), 0o600))
 
 	att := saveUpload(t, atts, "shot.png", "image/png", "png-bytes")
 	turn, err := f.mgr.Send(t.Context(), sess.ID, "look", att.Key)

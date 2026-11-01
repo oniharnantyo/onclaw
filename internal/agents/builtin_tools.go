@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 
 	"github.com/oniharnantyo/buddies/internal/agents/backend"
 	"github.com/oniharnantyo/buddies/internal/agents/tools"
+	"github.com/oniharnantyo/buddies/internal/workspaces"
 )
 
 // The built-in tool catalog: the tools every agent turn may draw on — the
@@ -140,7 +142,7 @@ var catalogEntries = []catalogEntry{
 	{meta: ToolMeta{Name: ToolCurrentTime, DisplayName: "Current Time", IconKey: "clock", Description: "Get the current date and time (UTC and local timezone)."}},
 	{meta: ToolMeta{Name: ToolHTTPGet, DisplayName: "HTTP Get", IconKey: "external-link", Description: "Fetch a URL over HTTP(S) and return the response body as text, with strict size and timeout limits."}},
 	{meta: ToolMeta{Name: ToolLs, DisplayName: "List Files", IconKey: "folder", Description: "List the files and directories under a path in your workspace."}, kind: toolMiddleware, workspaceScoped: true},
-	{meta: ToolMeta{Name: ToolReadFile, DisplayName: "Read File", IconKey: "file", Description: "Read a file's content from your workspace, with line-based offset and limit."}, kind: toolMiddleware, workspaceScoped: true},
+	{meta: ToolMeta{Name: ToolReadFile, DisplayName: "Read File", IconKey: "file", Description: "Read a file's content from your workspace, with line-based offset and limit. Office documents (DOCX, XLSX, PPTX) present as structured views — read them through this tool rather than unpacking them with shell commands."}, kind: toolMiddleware, workspaceScoped: true},
 	{meta: ToolMeta{Name: ToolWriteFile, DisplayName: "Write File", IconKey: "file-plus", Description: "Create or overwrite a file in your workspace."}, kind: toolMiddleware, workspaceScoped: true},
 	{meta: ToolMeta{Name: ToolEditFile, DisplayName: "Edit File", IconKey: "edit", Description: "Replace an exact string in an existing workspace file."}, kind: toolMiddleware, workspaceScoped: true},
 	{meta: ToolMeta{Name: ToolGlob, DisplayName: "Glob", IconKey: "scan", Description: "Find files in your workspace matching a glob pattern."}, kind: toolMiddleware, workspaceScoped: true},
@@ -195,8 +197,8 @@ func CatalogToolByName(name string) (ToolMeta, bool) {
 }
 
 // toolScope is what a direct tool may need from the turn it is constructed
-// for (add-scheduler design D8): the calling agent and the workspace
-// directory. Workspace-free tools ignore it.
+// for (add-scheduler design D8): the calling agent, the workspace
+// directory, and the calling session's id. Workspace-free tools ignore it.
 type toolScope struct {
 	// AgentID is the id of the agent whose turn is being composed — the
 	// scheduler tool's `create` defaults its target agent to it, and the
@@ -208,6 +210,11 @@ type toolScope struct {
 	// Workspace is the agent's workspace directory; "" for a turn without a
 	// rootable workspace (workspace-free tools never read it).
 	Workspace string
+	// SessionID is the calling session's id — the session-directory tools
+	// (create_document, edit_document) root their artifacts guidance and
+	// outputs at that conversation's sessions/<id>/artifacts. "" (an
+	// unrootable workspace) keeps the legacy workspace-root layout.
+	SessionID string
 }
 
 // buildDirectTool constructs one direct catalog tool for the turn described
@@ -252,7 +259,13 @@ func (m *manager) buildDirectTool(name string, scope toolScope) (tool.BaseTool, 
 		// revisions in place through the documents engines, PDF structural
 		// operations through the pdfops engine — dispatched on the file
 		// name's extension, all paths resolved inside the workspace jail.
-		return newEditDocumentTool(scope.Workspace)
+		// The artifacts guidance names the calling session's artifacts
+		// directory when the turn carries a session (the schema below).
+		opts := []editDocumentOption{}
+		if facing := workspaces.SessionRel(scope.SessionID, workspaces.DirArtifacts); facing != "" {
+			opts = append(opts, withEditSessionArtifacts(facing))
+		}
+		return newEditDocumentTool(scope.Workspace, opts...)
 	case ToolCreateDocument:
 		// The manager-held converter (add-create-document design D3): created
 		// with the manager, Chrome-free until the first conversion, closed
@@ -260,8 +273,19 @@ func (m *manager) buildDirectTool(name string, scope toolScope) (tool.BaseTool, 
 		// tool_settings row, and the template store — the uploaded skeletons
 		// of template-document presets (add-document-editing design D6) —
 		// comes off the store aggregate.
+		opts := []createDocumentOption{WithDocumentTemplates(m.store.DocumentTemplates())}
+		// The turn's session artifacts directory (sessions/<id>/artifacts)
+		// roots the outputs when the turn carries a session; no session —
+		// the legacy workspace-root artifacts/ layout stands. Resolved
+		// without filesystem access: the tool creates the directory on
+		// demand at first write.
+		if sdir, err := m.workspaces.SessionDir(scope.Slug, scope.SessionID); err == nil {
+			opts = append(opts, WithSessionArtifacts(
+				filepath.Join(sdir, workspaces.DirArtifacts),
+				workspaces.SessionRel(scope.SessionID, workspaces.DirArtifacts)))
+		}
 		return newCreateDocumentTool(m.docgen, m.store.DocumentPresets(), m.store.ToolSettings(), scope.Workspace,
-			WithDocumentTemplates(m.store.DocumentTemplates()))
+			opts...)
 	case ToolMemorySearch:
 		// The lexical recall path over the agent's workspace memory
 		// (add-agent-memory design D5/D6): ranked hits, no model call, and a

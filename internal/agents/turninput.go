@@ -82,6 +82,12 @@ type turnComposer struct {
 	// workspace's uploads/ directory. A nil map — or a key the mirror could
 	// not place — degrades the pointer note to the capability key alone.
 	uploads map[string]string
+	// sessionRel is the calling session's workspace-relative directory —
+	// "sessions/<id>" — the mount path every session-scoped surface hangs
+	// off (the uploads mirror the pointer notes address, the environment
+	// block's session line). Empty when the turn has no session-scoped
+	// workspace: the notes keep the flat legacy paths.
+	sessionRel string
 }
 
 func (tc turnComposer) supportsPDFInput() bool {
@@ -124,7 +130,7 @@ func assembleTurnInput(p persona, checkpoint sessions.Checkpoint, events []sessi
 		skillsText = skillsGuidance
 	}
 	instruction := composeSystem(p.text(), tc.presets, guidance, skillsText, tc.memory, checkpoint.Summary) +
-		"\n\n" + environmentBlock(tc.providerType, tc.model, req.origin, now())
+		"\n\n" + environmentBlock(tc.providerType, tc.model, req.origin, tc.sessionRel, now())
 	msgs := make([]*schema.AgenticMessage, 0, 2)
 	for _, ev := range events {
 		if ev.Seq <= checkpoint.UpToSeq {
@@ -159,14 +165,15 @@ func assembleTurnInput(p persona, checkpoint sessions.Checkpoint, events []sessi
 
 // environmentBlock composes the per-turn environment block (design D4; spec
 // agent-prompts "Turn environment block"): the effective provider and model,
-// the current date, the turn's origin, and whether the user is present. It
-// rides last in the system context, after the compaction summary — the mode
-// signal sits closest to the fresh user input, and the contract's "Operating
-// modes" section tells the model to pick its mode from it. It deliberately
-// does not restate the workspace mount: the filesystem middleware appends its
-// own guidance, and duplication would invite drift between two sources of the
-// same fact.
-func environmentBlock(providerType, model, origin string, at time.Time) string {
+// the current date, the turn's origin, whether the user is present, and —
+// for a session-scoped workspace — the conversation's session directory,
+// the one path the model cannot derive itself. It rides last in the system
+// context, after the compaction summary — the mode signal sits closest to
+// the fresh user input, and the contract's "Operating modes" section tells
+// the model to pick its mode from it. It deliberately does not restate the
+// workspace mount: the filesystem middleware appends its own guidance, and
+// duplication would invite drift between two sources of the same fact.
+func environmentBlock(providerType, model, origin, sessionRel string, at time.Time) string {
 	if origin == "" {
 		origin = hooks.OriginUser
 	}
@@ -174,13 +181,18 @@ func environmentBlock(providerType, model, origin string, at time.Time) string {
 	if origin != hooks.OriginUser {
 		presence = "the user is not present (autonomous run)"
 	}
-	return strings.Join([]string{
+	lines := []string{
 		"# Environment",
 		"",
 		fmt.Sprintf("Provider/model: %s / %s", providerType, model),
 		"Current date: " + at.Format("2006-01-02"),
 		fmt.Sprintf("Origin: %s — %s", origin, presence),
-	}, "\n")
+	}
+	if sessionRel != "" {
+		lines = append(lines, "",
+			fmt.Sprintf("Session directory: /workspace/%s — chat attachments mirror at /workspace/%s/uploads; files the user should find go under /workspace/%s/artifacts", sessionRel, sessionRel, sessionRel))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // buildUserTurnMessage builds one user message for the model: plain text
@@ -219,17 +231,17 @@ func attachmentBlock(tc turnComposer, att sessions.Attachment) (*schema.ContentB
 	data, err := tc.readAttachment(att)
 	if err != nil {
 		// A lost file must not fail the send: the pointer note stands in.
-		return pointerBlock(att, reasonStoredFileUnreadable, tc.uploads), nil
+		return tc.pointerBlock(att, reasonStoredFileUnreadable), nil
 	}
 	b64 := base64.StdEncoding.EncodeToString(data)
 
 	switch {
 	case att.Mime == "application/pdf":
 		if !tc.supportsPDFInput() {
-			return pointerBlock(att, modelGapReason(att.Mime), tc.uploads), nil
+			return tc.pointerBlock(att, modelGapReason(att.Mime)), nil
 		}
 		if !carriage.CarriesPDFParts(tc.providerType) {
-			return pointerBlock(att, reasonConnectorPDFParts, tc.uploads), nil
+			return tc.pointerBlock(att, reasonConnectorPDFParts), nil
 		}
 		return schema.NewContentBlock(&schema.UserInputFile{
 			Base64Data: b64,
@@ -238,7 +250,7 @@ func attachmentBlock(tc turnComposer, att sessions.Attachment) (*schema.ContentB
 		}), nil
 	case strings.HasPrefix(att.Mime, "image/"):
 		if !tc.supportsImageInput() {
-			return pointerBlock(att, modelGapReason(att.Mime), tc.uploads), nil
+			return tc.pointerBlock(att, modelGapReason(att.Mime)), nil
 		}
 		return schema.NewContentBlock(&schema.UserInputImage{
 			Base64Data: b64,
@@ -246,10 +258,10 @@ func attachmentBlock(tc turnComposer, att sessions.Attachment) (*schema.ContentB
 		}), nil
 	case strings.HasPrefix(att.Mime, "video/"):
 		if !tc.supportsVideoInput() {
-			return pointerBlock(att, modelGapReason(att.Mime), tc.uploads), nil
+			return tc.pointerBlock(att, modelGapReason(att.Mime)), nil
 		}
 		if !carriage.CarriesVideoParts(tc.providerType) {
-			return pointerBlock(att, reasonConnectorVideoParts, tc.uploads), nil
+			return tc.pointerBlock(att, reasonConnectorVideoParts), nil
 		}
 		return schema.NewContentBlock(&schema.UserInputVideo{
 			Base64Data: b64,
@@ -268,12 +280,12 @@ func attachmentBlock(tc turnComposer, att sessions.Attachment) (*schema.ContentB
 		// capability gate applies: every model gets the same reference note,
 		// handing off to the uploads mirror, where read_file presents the
 		// document's structured view.
-		return pointerBlock(att, reasonOfficeBytesWithheld, tc.uploads), nil
+		return tc.pointerBlock(att, reasonOfficeBytesWithheld), nil
 	default:
 		// The catch-all file lane (add-all-file-attachments design D2): its
 		// bytes never ride, whatever the model's capabilities or the
 		// provider family — the filesystem tools are the readable route.
-		return pointerBlock(att, reasonFileBytesWithheld, tc.uploads), nil
+		return tc.pointerBlock(att, reasonFileBytesWithheld), nil
 	}
 }
 
@@ -307,10 +319,17 @@ func modelGapReason(mime string) string {
 // pointerBlock is the reference pointer note standing in for content the
 // model cannot (or could not) receive (design D3): the attachment's name,
 // kind, and size, the true reason, and — when the turn's uploads mirror
-// holds the file — the workspace path the filesystem tools read it at, with
+// holds the file — the workspace path the filesystem tools read it at (the
+// session's uploads directory; the flat legacy path without a session), with
 // the capability key kept as the fallback for a missing mirror entry.
-func pointerBlock(att sessions.Attachment, reason string, uploads map[string]string) *schema.ContentBlock {
-	if name := uploads[att.Key]; name != "" {
+func (tc turnComposer) pointerBlock(att sessions.Attachment, reason string) *schema.ContentBlock {
+	if name := tc.uploads[att.Key]; name != "" {
+		if tc.sessionRel != "" {
+			return schema.NewContentBlock(&schema.UserInputText{
+				Text: fmt.Sprintf("[attached file not sent: %s (%s, %d bytes) — %s; read it at /workspace/%s/uploads/%s (fallback: attachment key %s)]",
+					att.Name, att.Mime, att.Size, reason, tc.sessionRel, name, att.Key),
+			})
+		}
 		return schema.NewContentBlock(&schema.UserInputText{
 			Text: fmt.Sprintf("[attached file not sent: %s (%s, %d bytes) — %s; read it at /workspace/uploads/%s (fallback: attachment key %s)]",
 				att.Name, att.Mime, att.Size, reason, name, att.Key),

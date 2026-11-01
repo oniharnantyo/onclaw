@@ -215,6 +215,10 @@ func Assemble(ctx context.Context, emitter services.Emitter, opener services.URL
 		// directory (spec add-browser-tool D10) — the same root the
 		// runtime's browser tool was given above.
 		services.WithBrowserDir(layout.Browser),
+		// Template-document preset uploads land in the store aggregate's
+		// on-disk template store (add-document-editing design D6); unwired,
+		// the settings service refuses every upload.
+		services.WithDocumentTemplates(st.DocumentTemplates()),
 		// The MCP OAuth flow announces completion through the host's event
 		// bus (design D2) and opens its authorization page through the
 		// host's browser seam (design D8).
@@ -281,7 +285,12 @@ func Assemble(ctx context.Context, emitter services.Emitter, opener services.URL
 				// The browser-screenshot read serves from the layout's
 				// browser directory (design D6) — the same root the
 				// runtime's browser tool was given above.
-				services.WithChatBrowserDir(layout.Browser)),
+				services.WithChatBrowserDir(layout.Browser),
+				// The generated-document Save As export opens the host's
+				// native save dialog (add-artifact-save-as design D2); the
+				// build-tag seam defaults the server build to the
+				// unavailable null object, so both hosts share this wiring.
+				services.WithSaveDialog(services.NewHostSaveDialog())),
 			Settings:  settingsSvc,
 			Gateway:   services.NewGatewayService(gw, emitter),
 			Schedule:  services.NewScheduleService(sched, emitter),

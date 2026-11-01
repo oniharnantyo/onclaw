@@ -25,9 +25,13 @@ func NewAppInfo() *AppInfo {
 type Metadata struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
+	// NativeDialogs reports whether this host can open native dialogs (the
+	// desktop build can; the server build cannot), so the frontend can hide
+	// host-dependent affordances such as Save As.
+	NativeDialogs bool `json:"nativeDialogs"`
 }
 
-// Get returns the application's name and version.
+// Get returns the application's name, version, and host capabilities.
 func (a *AppInfo) Get(_ context.Context) (Metadata, error) {
-	return Metadata{Name: AppName, Version: AppVersion}, nil
+	return Metadata{Name: AppName, Version: AppVersion, NativeDialogs: nativeDialogsAvailable()}, nil
 }

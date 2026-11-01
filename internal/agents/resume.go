@@ -451,7 +451,7 @@ func (m *manager) composeResumeRun(ctx context.Context, rt *runningTurn, sess se
 	instruction := m.resumedTurnInstruction(ctx, agent)
 
 	// Phase 6: the tool surface through the three-way gate.
-	surface, err := m.resolveTurnTools(ctx, agent)
+	surface, err := m.resolveTurnTools(ctx, agent, sess.ID)
 	if err != nil {
 		return turnRun{}, err
 	}

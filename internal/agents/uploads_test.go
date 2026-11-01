@@ -29,7 +29,7 @@ func newMirrorStore(t *testing.T) *attachments.Store {
 // upload saves one attachment through the store.
 func upload(t *testing.T, atts *attachments.Store, name, content string) sessions.Attachment {
 	t.Helper()
-	att, err := atts.Save(t.Context(), name, "application/pdf", []byte(content))
+	att, err := atts.Save(t.Context(), "", name, "application/pdf", []byte(content))
 	require.NoError(t, err)
 	return att
 }

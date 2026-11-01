@@ -291,7 +291,7 @@ func TestChannels_MigrateForwardFromV17(t *testing.T) {
 
 	var version int
 	require.NoError(t, db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version))
-	require.Equal(t, 18, version, "migration 000018 must be recorded as applied")
+	require.Equal(t, 19, version, "migration 000018 must be recorded as applied")
 
 	for _, table := range []string{"channels", "channel_users", "channel_chats", "channel_pairings", "channel_update_receipts"} {
 		require.True(t, tableExists(t, db, table), "table %s must exist after the upgrade", table)

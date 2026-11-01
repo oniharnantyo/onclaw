@@ -9,7 +9,10 @@
  * interrupt an in-flight turn. The session layer left the chat surface
  * (redesign-shell-layout) and now mounts INSIDE the content island as its
  * left column (the shell composes rail + this view); the right bar hides
- * entirely when minimized — its toggle lives in the chat header.
+ * entirely when minimized — its toggle lives in the chat header. The column
+ * itself is the drag-and-drop attachment surface: the assistant-ui dropzone
+ * wraps it (add-chat-drag-drop-attachments D1) and dropped files ride the
+ * same adapter lanes as the picker.
  *
  * Below md the Sessions island is hidden and a compact header (agent +
  * session select + new) takes over its job, so no fixed rail can push the
@@ -18,6 +21,8 @@
 import { useEffect } from "react";
 import type { ChangeEvent, ReactElement } from "react";
 import { Plus } from "lucide-react";
+
+import { ComposerPrimitive } from "@assistant-ui/react";
 
 import type {
   Agent,
@@ -138,12 +143,37 @@ export default function ChatView(): ReactElement {
       data-testid="chat-view"
     >
       <ChatRuntimeProvider>
-        <div className="relative flex min-w-0 flex-1 flex-col bg-bg">
-          <MobileSessionBar />
-          <ChatHeader />
-          <ChatThread />
-          <ChatComposer />
-        </div>
+        {/* The column wrapped in the library's dropzone (design D1/D3): the
+            primitive owns the dragenter/leave latch and maps dropped files
+            onto the same aui.composer.addAttachment entry the paperclip and
+            paste use — no bespoke handlers, and never Wails' native drag-drop
+            layer (its overlay swallows the HTML5 events; HTML5
+            dataTransfer.files is the carrier). The latch surfaces as
+            data-dragging on this element, which drives the hint pill below
+            and the composer's ring (ChatComposer) through the group class. */}
+        <ComposerPrimitive.AttachmentDropzone asChild>
+          <div
+            className="group relative flex min-w-0 flex-1 flex-col bg-bg"
+            data-testid="chat-dropzone"
+          >
+            <MobileSessionBar />
+            <ChatHeader />
+            <ChatThread />
+            <ChatComposer />
+            {/* Drag-over affordance: pointer-events-none in both states, so
+                it can never swallow the drop it announces; opacity-only
+                transition keeps the reduced-motion toggle a no-op. */}
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center"
+              data-testid="drop-hint"
+            >
+              <span className="rounded-full border border-line bg-surface px-4 py-2 text-sm text-fg2 shadow-lg opacity-0 transition-opacity group-data-[dragging=true]:opacity-100">
+                Drop files to attach
+              </span>
+            </div>
+          </div>
+        </ComposerPrimitive.AttachmentDropzone>
         <RightBar />
       </ChatRuntimeProvider>
     </div>

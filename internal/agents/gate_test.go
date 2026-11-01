@@ -21,7 +21,7 @@ func TestGate_PlantaskOfferedWithWorkspace(t *testing.T) {
 		WithWorkspaces(workspaces.NewManager(t.TempDir())),
 		WithBrowserDir(t.TempDir()))
 
-	surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "agent", Slug: "agent"})
+	surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "agent", Slug: "agent"}, "")
 	require.NoError(t, err)
 
 	names, err := surface.names(ctx)
@@ -43,7 +43,7 @@ func TestGate_PlantaskSluglessAgent(t *testing.T) {
 		WithWorkspaces(workspaces.NewManager(t.TempDir())),
 		WithBrowserDir(t.TempDir()))
 
-	surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "slugless"})
+	surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "slugless"}, "")
 	require.NoError(t, err)
 
 	names, err := surface.names(ctx)
@@ -69,7 +69,7 @@ func TestGate_PlantaskAllowlistGating(t *testing.T) {
 		Slug:  "custom",
 		Tools: []string{ToolTaskCreate, ToolTaskList},
 	}
-	surface, err := m.resolveTurnTools(ctx, agent)
+	surface, err := m.resolveTurnTools(ctx, agent, "")
 	require.NoError(t, err)
 
 	names, err := surface.names(ctx)
@@ -94,7 +94,7 @@ func TestGate_PlantaskGloballyDisabled(t *testing.T) {
 		WithWorkspaces(workspaces.NewManager(t.TempDir())),
 		WithBrowserDir(t.TempDir()))
 
-	surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "agent", Slug: "agent"})
+	surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "agent", Slug: "agent"}, "")
 	require.NoError(t, err)
 
 	names, err := surface.names(ctx)
@@ -120,7 +120,7 @@ func TestGate_PlantaskAllGloballyDisabled(t *testing.T) {
 		WithWorkspaces(workspaces.NewManager(t.TempDir())),
 		WithBrowserDir(t.TempDir()))
 
-	surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "agent", Slug: "agent"})
+	surface, err := m.resolveTurnTools(ctx, store.Agent{Name: "agent", Slug: "agent"}, "")
 	require.NoError(t, err)
 
 	names, err := surface.names(ctx)

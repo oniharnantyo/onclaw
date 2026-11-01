@@ -38,7 +38,10 @@ func (c *stepClock) now() time.Time {
 
 // TestTurn_ToolDurationStampedOnTerminalRecords drives a turn with one
 // failing and one completing tool call and asserts both terminal records
-// carry a positive duration measured from their announcements.
+// carry a positive duration measured from their announcements. The fake
+// model streams, so the records' arguments assertions also pin the streamed
+// path (tasks.md 2.2): the terminal record carries the call's arguments as
+// delivered, mirroring the duration assertions.
 func TestTurn_ToolDurationStampedOnTerminalRecords(t *testing.T) {
 	clock := &stepClock{cur: time.Now().UTC(), step: 5 * time.Millisecond}
 	restore := now
@@ -72,10 +75,14 @@ func TestTurn_ToolDurationStampedOnTerminalRecords(t *testing.T) {
 	require.Equal(t, sessions.ToolStatusFailed, tools[0].Tool.Status)
 	require.Equal(t, "call-fail", tools[0].Tool.CallID)
 	require.Positive(t, tools[0].Tool.DurationMs, "a failed record carries a positive duration")
+	require.Equal(t, `{"url":"not-a-url"}`, tools[0].Tool.Arguments,
+		"a streamed record carries the call's arguments beside its duration")
 
 	require.Equal(t, sessions.ToolStatusCompleted, tools[1].Tool.Status)
 	require.Equal(t, "call-ok", tools[1].Tool.CallID)
 	require.Positive(t, tools[1].Tool.DurationMs, "a completed record carries a positive duration")
+	require.Equal(t, `{}`, tools[1].Tool.Arguments,
+		"a streamed record carries the call's arguments beside its duration")
 }
 
 // TestTurn_ToolDurationZeroWithoutAnnouncementOnRecord drives the terminal

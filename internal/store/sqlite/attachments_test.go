@@ -35,3 +35,21 @@ func TestAttachmentStore_EmptyKeyRejected(t *testing.T) {
 	err := s.Attachments().Put(context.Background(), store.Attachment{Name: "x"})
 	require.Error(t, err)
 }
+
+// TestAttachmentStore_SessionIDRoundTrip pins the foldering record (schema
+// v19): the row carries the session id that scoped the file's directory, and
+// an empty one round-trips as the flat legacy layout.
+func TestAttachmentStore_SessionIDRoundTrip(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	att := store.Attachment{
+		Key: "0123456789abcdef0123456789abcdef", Name: "shot.png",
+		Mime: "image/png", Size: 1234, SessionID: "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6",
+	}
+	require.NoError(t, s.Attachments().Put(ctx, att))
+
+	got, err := s.Attachments().ByKey(ctx, att.Key)
+	require.NoError(t, err)
+	require.Equal(t, att, *got)
+}

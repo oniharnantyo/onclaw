@@ -15,7 +15,7 @@ import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wails
 import * as $models from "./models.js";
 
 /**
- * Get returns the application's name and version.
+ * Get returns the application's name, version, and host capabilities.
  */
 export function Get(): $CancellablePromise<$models.Metadata> {
     return $Call.ByID(3409163259);

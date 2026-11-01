@@ -354,6 +354,18 @@ describe("message actions (task 3.2)", () => {
     expect(screen.queryByTestId("btn-regenerate")).toBeNull();
   });
 
+  it("hides both actions during the tool-execution gap the status gate misses", async () => {
+    // The screenshot's state: every entry settled — the message derives
+    // "complete" (mapping.ts turnStatus ignores tool entries) — while the
+    // turn keeps running. The store's busy flag is the gate that holds.
+    useChatStore.setState({ busy: true });
+
+    await mount(settledTurn("an answer"));
+
+    expect(screen.queryByTestId("btn-regenerate")).toBeNull();
+    expect(screen.queryByTestId("btn-copy-message")).toBeNull();
+  });
+
   it("wires regenerate to the store's regenerate action", async () => {
     const regenerate = vi.fn<(turnID: string) => Promise<void>>();
     regenerate.mockResolvedValue(undefined);

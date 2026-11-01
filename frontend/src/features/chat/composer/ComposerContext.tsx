@@ -20,10 +20,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactElement } from "react";
 
 import type { ContextUsage } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/agents/models";
-import type {
-  Agent,
-  Skill,
-} from "../../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
+import type { Agent } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
 import type {
   ModelCapability,
   PromptDocuments,
@@ -41,7 +38,7 @@ import { cachedPromptDocuments, loadPromptDocuments } from "../lib/promptDocs";
 import { formatTokens } from "../format";
 import { useChatStore } from "../store";
 import { useReducedMotion } from "../tools/useReducedMotion";
-import type { ChatStore } from "../types";
+import type { ChatStore, PickerSkill } from "../types";
 
 /** Severity ladder for the ring (task 9.3): accent below 65%, warning
  * 65–85%, error above 85% — token classes, so both themes re-skin. The
@@ -374,12 +371,16 @@ export function ContextMeter(): ReactElement | null {
   }, [toolCatalog, agent?.Tools]);
 
   const enabledSkills = useMemo((): number => {
-    const allowed = agent?.Skills;
+    const allowed = agent?.Skills ?? [];
 
-    return allowed
-      ? skills.filter((skill: Skill): boolean => allowed.includes(skill.Name))
-          .length
-      : skills.length;
+    return skills.filter(
+      (skill: PickerSkill): boolean =>
+        // The agent tier is always available (the skill backend never
+        // allowlists it); the global tier follows the allowlist, empty = all.
+        skill.Tier === "agent" ||
+        allowed.length === 0 ||
+        allowed.includes(skill.Name)
+    ).length;
   }, [skills, agent?.Skills]);
 
   // The override's catalog window (design D1); an unknown or zero-window

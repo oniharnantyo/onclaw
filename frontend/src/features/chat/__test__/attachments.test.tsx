@@ -225,6 +225,7 @@ describe("the chip store (task 5.4)", () => {
 
     await waitFor(() =>
       expect(mockedClient.chat.saveAttachment).toHaveBeenCalledWith(
+        "s1",
         "shot.png",
         "image/png",
         "ZGF0YQ=="
@@ -245,6 +246,7 @@ describe("the chip store (task 5.4)", () => {
 
     await waitFor(() =>
       expect(mockedClient.chat.saveAttachment).toHaveBeenCalledWith(
+        "s1",
         "clip.mp4",
         "video/mp4",
         "ZGF0YQ=="
@@ -265,6 +267,7 @@ describe("the chip store (task 5.4)", () => {
 
     await waitFor(() =>
       expect(mockedClient.chat.saveAttachment).toHaveBeenCalledWith(
+        "s1",
         "arc.zip",
         "application/zip",
         "ZGF0YQ=="
@@ -283,6 +286,7 @@ describe("the chip store (task 5.4)", () => {
 
     await waitFor(() =>
       expect(mockedClient.chat.saveAttachment).toHaveBeenCalledWith(
+        "s1",
         "blob",
         "",
         "ZGF0YQ=="
@@ -303,6 +307,7 @@ describe("the chip store (task 5.4)", () => {
 
     await waitFor(() =>
       expect(mockedClient.chat.saveAttachment).toHaveBeenCalledWith(
+        "s1",
         "r.docx",
         docxMime,
         "ZGF0YQ=="
