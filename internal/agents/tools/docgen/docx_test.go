@@ -245,3 +245,99 @@ func TestParseBlocks_DegradedConstructs(t *testing.T) {
 	require.True(t, blocks[len(blocks)-1].isNumbered())
 	require.False(t, blocks[1].isList())
 }
+
+// TestSpansOf covers the inline emphasis parser: bold, italic, and code
+// spans come off with their markers; the flanking rule keeps arithmetic
+// literal; an unmatched marker stays literal text.
+func TestSpansOf(t *testing.T) {
+	require.Equal(t, []span{{Text: "plain text"}}, spansOf("plain text"))
+	require.Equal(t, []span{{Text: "NOMOR: …", Bold: true}}, spansOf("**NOMOR: …**"))
+	require.Equal(t, []span{
+		{Text: "named "},
+		{Text: "PT Kode Maju Sejahtera", Bold: true},
+		{Text: " (singkat)"},
+	}, spansOf("named **PT Kode Maju Sejahtera** (singkat)"))
+	require.Equal(t, []span{{Text: "terms", Italic: true}}, spansOf("*terms*"))
+	require.Equal(t, []span{{Text: "50 * 3 * 4"}}, spansOf("50 * 3 * 4"))
+	require.Equal(t, []span{{Text: "docling convert"}}, spansOf("`docling convert`"))
+	require.Equal(t, []span{{Text: "**unmatched"}}, spansOf("**unmatched"))
+	require.Equal(t, []span{{Text: "a", Bold: true}, {Text: "b", Italic: true}}, spansOf("**a***b*"))
+}
+
+// TestParseBlocks_Table covers the pipe-table mapping: header row, the
+// |---| separator (alignment colons allowed), body rows padded or trimmed
+// to the header's width, a digest line for the engines that cannot draw a
+// table, and a lone pipe line staying paragraph text.
+func TestParseBlocks_Table(t *testing.T) {
+	markdown := "| PENGHADAP, | SAKSI-SAKSI, | NOTARIS, |\n" +
+		"|---|:---:|---|\n" +
+		"| **( Oni )** | | |\n" +
+		"| a | b | c | extra |\n" +
+		"\nAfter paragraph."
+	blocks := parseBlocks(markdown)
+	require.Len(t, blocks, 2)
+	require.Equal(t, blockTable, blocks[0].Kind)
+	require.Equal(t, [][]string{
+		{"PENGHADAP,", "SAKSI-SAKSI,", "NOTARIS,"},
+		{"**( Oni )**", "", ""},
+		{"a", "b", "c"},
+	}, blocks[0].Rows)
+	require.Contains(t, blocks[0].Text, "PENGHADAP,", "the digest carries the cells")
+	require.Equal(t, blockParagraph, blocks[1].Kind)
+
+	// No separator row: the pipe line is plain paragraph text.
+	blocks = parseBlocks("| just a line\nnext")
+	require.Equal(t, []block{{Kind: blockParagraph, Text: "| just a line next"}}, blocks)
+}
+
+// TestRenderDOCX_EmphasisAndTable pins the rendered result end-to-end: an
+// emphasis paragraph becomes one run per span with no markdown residue,
+// and a markdown table becomes a real two-by-two DOCX table with a bold
+// header row and bold only where the markdown asked.
+func TestRenderDOCX_EmphasisAndTable(t *testing.T) {
+	markdown := "Para **bold** and *italic* and `code`.\n\n| H1 | H2 |\n|---|---|\n| a | **b** |\n"
+	data, err := renderDOCX(nil, nil, markdown)
+	require.NoError(t, err)
+	doc, err := docx.OpenDocumentFromBytes(data)
+	require.NoError(t, err)
+
+	type runView struct {
+		text   string
+		bold   bool
+		italic bool
+	}
+	var runs []runView
+	for _, r := range doc.Paragraphs()[0].Runs() {
+		runs = append(runs, runView{text: r.Text(), bold: r.Bold(), italic: r.Italic()})
+	}
+	require.Equal(t, []runView{
+		{text: "Para "},
+		{text: "bold", bold: true},
+		{text: " and "},
+		{text: "italic", italic: true},
+		{text: " and "},
+		{text: "code"},
+		{text: "."},
+	}, runs)
+
+	tables := doc.Tables()
+	require.Len(t, tables, 1, "the markdown table became a real DOCX table")
+	require.Equal(t, 2, tables[0].RowCount())
+	require.Equal(t, 2, tables[0].ColumnCount())
+	header, err := tables[0].Row(0)
+	require.NoError(t, err)
+	for _, c := range header.Cells() {
+		require.Len(t, c.Paragraphs(), 1)
+		for _, r := range c.Paragraphs()[0].Runs() {
+			require.True(t, r.Bold(), "header run %q is bold", r.Text())
+		}
+	}
+	body, err := tables[0].Row(1)
+	require.NoError(t, err)
+	first := body.Cells()[0].Paragraphs()[0].Runs()
+	require.Equal(t, "a", first[0].Text())
+	require.False(t, first[0].Bold())
+	second := body.Cells()[1].Paragraphs()[0].Runs()
+	require.Equal(t, "b", second[0].Text())
+	require.True(t, second[0].Bold(), "the cell's **b** bolded")
+}

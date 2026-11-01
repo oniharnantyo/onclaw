@@ -27,9 +27,11 @@ func TestSeedDocumentsSkill_CreatesWhenMissing(t *testing.T) {
 	require.Contains(t, content, "manipulate PDFs",
 		"the description covers PDF manipulation")
 	require.Contains(t, content, "read_file", "the playbook views a document before editing it")
-	require.Contains(t, content, "/workspace/uploads", "the playbook points chat attachments at the mirrored uploads directory")
+	require.Contains(t, content, "session directory (the uploads path",
+		"the playbook points chat attachments at the session-scoped uploads mirror")
 	require.NotContains(t, content, "save_document", "the playbook sheds the save-into-knowledge degradation framing (design D5)")
 	require.Contains(t, content, "create_document", "the playbook names the generation and PDF-regeneration path")
+	require.Contains(t, content, "dedicated skill", "the playbook composes with dedicated document skills instead of competing with them")
 }
 
 // TestSeedDocumentsSkill_DoesNotOverwriteExisting pins repair-if-deleted

@@ -128,7 +128,10 @@ func fillPPTXParagraphs(paragraphs []string, blocks []block, next int) ([]string
 			idx := next + consumed
 			consumed++
 			if idx < len(blocks) {
-				return blocks[idx].Text
+				// The token takes the block's plain text — the emphasis
+				// markers come off (spansOf), the paragraph's own runs
+				// carry the skeleton's styling.
+				return spansText(blocks[idx].Text)
 			}
 			return "" // content exhausted: the token is cleared, not leaked
 		})

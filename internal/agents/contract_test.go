@@ -166,14 +166,43 @@ func TestComposeSystem_EmptyGuidanceByteIdentical(t *testing.T) {
 // calls are claims the specs depend on — prose drift on them gets caught.
 func TestOperatingContract_ContentSpotChecks(t *testing.T) {
 	for _, fragment := range []string{
-		"A denial is a decision",  // approval-gate semantics (design D7)
-		"Hook output is feedback", // hook output is feedback, not a tool result
-		"run in parallel",         // independent tool calls may run in parallel
-		"under artifacts/",        // deliverable files go in artifacts/ (add-turn-artifacts D9)
-		"shown to the user",       // artifacts made during the turn surface with the reply
+		"A denial is a decision",                           // approval-gate semantics (design D7)
+		"Hook output is feedback",                          // hook output is feedback, not a tool result
+		"run in parallel",                                  // independent tool calls may run in parallel
+		"artifacts/ directory the environment block names", // deliverables go in the session's artifacts/ (add-turn-artifacts D9)
+		"never in uploads/",                                // scratch stays out of the attachment mirror
+		"never in artifacts/",                              // and out of the deliverables home
+		"shown to the user",                                // artifacts made during the turn surface with the reply
 	} {
 		require.Contains(t, operatingContract, fragment)
 	}
+}
+
+// TestOperatingContract_DocumentRouting pins the document-routing line
+// (fix-document-tool-drift design D2): the contract routes document-file
+// production through create_document and office-document reads through
+// read_file, naming the observed shell failure modes (scripted generators,
+// hand-assembled zip+XML containers, shell unpacking) and scoping both
+// formats explicitly — so the rule holds on turns where the invocation-gated
+// documents skill body never loads, without restricting shell for
+// non-document work.
+func TestOperatingContract_DocumentRouting(t *testing.T) {
+	for _, fragment := range []string{
+		"create_document",  // production routes through the tool
+		"PDF, DOCX, PPTX",  // the production formats, named
+		"python-docx",      // the scripted-generator failure mode
+		"zip+XML",          // the hand-assembled-container failure mode
+		"read_file",        // reads route through the read tool
+		"DOCX, XLSX, PPTX", // the read formats, named
+		"structured views", // office reads present as views, not unpacked
+	} {
+		require.Contains(t, operatingContract, fragment)
+	}
+
+	// The line rides the composed contract on every turn, playbook or not
+	// (spec document-generation "Routing stated without the playbook").
+	composed := composeSystem("PERSONA", "", "", "", "", "")
+	require.Contains(t, composed, "Produce document files (PDF, DOCX, PPTX) through create_document")
 }
 
 // TestComposeSystem_PresetAppendixOrder pins the document-preset appendix's

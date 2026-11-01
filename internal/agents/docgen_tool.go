@@ -20,13 +20,27 @@ import (
 
 // createDocumentToolDescription is the model-facing description of the
 // create_document tool; the settings surfaces render the catalog entry's
-// shorter one (builtin_tools.go).
-const createDocumentToolDescription = "Render markdown into a styled document — PDF, DOCX, or PPTX, chosen by the file name's extension (.pdf, .docx, .pptx; anything else renders PDF) — written under artifacts/ in your workspace. " +
-	"Supply the markdown content and a plain file name (no directories). " +
-	"Presentation comes from the user's presets, which are per format: pass a preset name from the Document presets list in your context, or omit preset to use the format's default. " +
-	"DOCX and PPTX render through the preset's template document when it has one; PPTX output always needs a template preset. " +
-	"Regenerating to an existing file name overwrites it. " +
-	"Rejections (bad file name, unknown preset) and rendering failures are reported in the result's error field; they do not fail the call."
+// shorter one (builtin_tools.go). The closing sentence is the production
+// route (fix-document-tool-drift design D2): document files come from this
+// tool, never from shell-scripted generation, stated here because the
+// seeded documents skill body that carries the same rule is invocation-gated
+// and may not be loaded the turn the model chooses. The output home varies
+// by turn: facing — the workspace-relative artifacts directory under the
+// mount (sessions/<id>/artifacts) — names the session-scoped home when the
+// turn carries a session; empty keeps the legacy workspace-root wording.
+func createDocumentToolDescription(facing string) string {
+	home := "written under artifacts/ in your workspace"
+	if facing != "" {
+		home = fmt.Sprintf("written under /workspace/%s/ — your session's artifacts directory", facing)
+	}
+	return "Render markdown into a styled document — PDF, DOCX, or PPTX, chosen by the file name's extension (.pdf, .docx, .pptx; anything else renders PDF) — " + home + ". " +
+		"Supply the markdown content and a plain file name (no directories). " +
+		"Presentation comes from the user's presets, which are per format: pass a preset name from the Document presets list in your context, or omit preset to use the format's default. " +
+		"DOCX and PPTX render through the preset's template document when it has one; PPTX output always needs a template preset. " +
+		"Regenerating to an existing file name overwrites it. " +
+		"Rejections (bad file name, unknown preset) and rendering failures are reported in the result's error field; they do not fail the call. " +
+		"Document files (PDF, DOCX, PPTX) are produced through this tool — not by scripting generators under the shell (a pip-installed python-docx) or hand-assembling the format's zip+XML container."
+}
 
 // docgenConvertTimeout bounds one conversion (add-create-document design D9):
 // Chrome startup plus rendering for a long document. A variable so tests can
@@ -78,11 +92,28 @@ func newCreateDocumentTool(engine docgenEngine, presets store.DocumentPresetStor
 	for _, opt := range opts {
 		opt(st)
 	}
-	return utils.InferTool(ToolCreateDocument, createDocumentToolDescription, st.run)
+	return utils.InferTool(ToolCreateDocument, createDocumentToolDescription(st.artifactsFacing), st.run)
 }
 
 // createDocumentOption configures the create_document tool.
 type createDocumentOption func(*createDocumentTool)
+
+// WithSessionArtifacts roots the tool's outputs at dir — the calling
+// session's artifacts directory (sessions/<id>/artifacts under the
+// workspace) — and names it in the model-facing description through facing,
+// the workspace-relative path under the mount. Unset — the default —
+// outputs land at the legacy workspace-root artifacts/ and the description
+// says so.
+func WithSessionArtifacts(dir, facing string) createDocumentOption {
+	return func(t *createDocumentTool) {
+		if dir != "" {
+			t.artifactsDir = dir
+		}
+		if facing != "" {
+			t.artifactsFacing = facing
+		}
+	}
+}
 
 // WithDocumentTemplates supplies the store holding the uploaded skeletons
 // of template-document presets (add-document-editing design D6). Unset —
@@ -102,13 +133,26 @@ func WithDocumentTemplates(templates store.DocumentTemplateStore) createDocument
 // against, the tool settings store holding the per-format defaults, the
 // optional template store for template-document presets, and the workspace
 // directory every output is rooted at (its artifacts/ subdirectory,
-// specifically — see run).
+// specifically — see run). artifactsDir overrides that root with the
+// calling session's artifacts directory when the turn carries one;
+// artifactsFacing is its workspace-relative path for the description.
 type createDocumentTool struct {
-	engine    docgenEngine
-	presets   store.DocumentPresetStore
-	settings  store.ToolSettingStore
-	templates store.DocumentTemplateStore
-	workspace string
+	engine          docgenEngine
+	presets         store.DocumentPresetStore
+	settings        store.ToolSettingStore
+	templates       store.DocumentTemplateStore
+	workspace       string
+	artifactsDir    string
+	artifactsFacing string
+}
+
+// outputDir resolves the directory outputs land in: the session artifacts
+// override, the legacy workspace-root artifacts/ without one.
+func (t *createDocumentTool) outputDir() string {
+	if t.artifactsDir != "" {
+		return t.artifactsDir
+	}
+	return filepath.Join(t.workspace, workspaces.DirArtifacts)
 }
 
 // createDocumentArgs is the tool's whole input (add-create-document design
@@ -155,7 +199,7 @@ func (t *createDocumentTool) run(ctx context.Context, in createDocumentArgs) (cr
 			Error: "markdown: markdown is required (the document's content)",
 		}, nil
 	}
-	filename, failure := validateDocFilename(t.workspace, in.Filename)
+	filename, failure := validateDocFilename(t.outputDir(), in.Filename)
 	if failure != "" {
 		return createDocumentOutput{OK: false, Error: failure}, nil
 	}
@@ -173,13 +217,13 @@ func (t *createDocumentTool) run(ctx context.Context, in createDocumentArgs) (cr
 
 	ctx, cancel := context.WithTimeout(ctx, docgenConvertTimeout)
 	defer cancel()
-	// The output roots at <workspace>/artifacts (add-turn-artifacts design
-	// D6), created on demand so the first create_document call brings the
-	// directory into being — no startup sweep (Migration Plan step 4); 0700
-	// matches the workspaces package's private-to-user dir mode. A failure
-	// (for example `artifacts` existing as a regular file) is a readable
-	// result, not fatal.
-	dir := filepath.Join(t.workspace, workspaces.DirArtifacts)
+	// The output roots at the session's artifacts directory (the turn's
+	// sessions/<id>/artifacts; add-turn-artifacts design D6), created on
+	// demand so the first create_document call brings the directory into
+	// being — no startup sweep (Migration Plan step 4); 0700 matches the
+	// workspaces package's private-to-user dir mode. A failure (for example
+	// a regular file squatting the path) is a readable result, not fatal.
+	dir := t.outputDir()
 	if err := os.MkdirAll(dir, docArtifactsDirPerm); err != nil {
 		return createDocumentOutput{OK: false,
 			Error: fmt.Sprintf("creating the artifacts directory failed: %s", err.Error()),
@@ -394,10 +438,11 @@ func readDefaultPresetName(ctx context.Context, settings store.ToolSettingStore,
 // components, no path separators, no traversal, no absolute paths — and a
 // final containment check on the joined destination mirroring the fs jail
 // backend's validation (backend.resolveWritablePath / isWithinRoot), now
-// against the artifacts directory. The failure text is empty when the name
-// is acceptable; nothing is ever written for a rejected name. A .pdf suffix
+// against the artifacts directory (the session-scoped one when the turn
+// carries a session). The failure text is empty when the name is
+// acceptable; nothing is ever written for a rejected name. A .pdf suffix
 // is conventional but not required.
-func validateDocFilename(workspace, name string) (clean, failure string) {
+func validateDocFilename(artifactsDir, name string) (clean, failure string) {
 	if name == "" {
 		return "", "filename: filename is required (a plain file name written under artifacts/)"
 	}
@@ -411,8 +456,8 @@ func validateDocFilename(workspace, name string) (clean, failure string) {
 	// jail's isWithinRoot: the joined path must stay strictly inside the
 	// artifacts directory (a name can only land on that root itself if it
 	// cleaned to ".", which isPlainDocName already refuses).
-	dest := filepath.Join(workspace, workspaces.DirArtifacts, name)
-	if !isWithinWorkspace(filepath.Join(workspace, workspaces.DirArtifacts), dest) {
+	dest := filepath.Join(artifactsDir, name)
+	if !isWithinWorkspace(artifactsDir, dest) {
 		return "", fmt.Sprintf("filename: %q resolves outside the artifacts directory", name)
 	}
 	return name, ""

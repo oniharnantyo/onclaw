@@ -258,18 +258,22 @@ func applyDOCXFooter(doc domain.Document, footer *DOCXFooterStyle) error {
 // items onto List Paragraph with per-level indentation and literal
 // markers (docxgo carries no numbering part of its own, and a template's
 // numbering definitions are unknowable, so markers stay visible text).
+// Every block's inline emphasis spans become one run each — bold, italic —
+// and a table block becomes a real DOCX table.
 func appendDOCXBlocks(doc domain.Document, blocks []block) error {
 	number := 0
 	for i, b := range blocks {
+		if b.Kind == blockTable {
+			if err := appendDOCXTable(doc, b); err != nil {
+				return fmt.Errorf("docgen: inject DOCX content: %w", err)
+			}
+			continue
+		}
 		para, err := doc.AddParagraph()
 		if err != nil {
 			return fmt.Errorf("docgen: inject DOCX content: %w", err)
 		}
-		run, err := para.AddRun()
-		if err != nil {
-			return fmt.Errorf("docgen: inject DOCX content: %w", err)
-		}
-		text := b.Text
+		spans := spansOf(b.Text)
 		switch b.Kind {
 		case blockHeading1:
 			err = para.SetStyle(domain.StyleIDHeading1)
@@ -281,20 +285,94 @@ func appendDOCXBlocks(doc domain.Document, blocks []block) error {
 			// Normal, the default.
 		case blockBullet:
 			err = applyDOCXList(para, b)
-			text = "• " + text
+			spans = append([]span{{Text: "• "}}, spans...)
 		case blockNumbered:
 			if i == 0 || !blocks[i-1].isNumbered() {
 				number = 0 // a fresh list renumbers from 1
 			}
 			number++
 			err = applyDOCXList(para, b)
-			text = fmt.Sprintf("%d. ", number) + text
+			spans = append([]span{{Text: fmt.Sprintf("%d. ", number)}}, spans...)
 		}
 		if err != nil {
 			return fmt.Errorf("docgen: inject DOCX content: %w", err)
 		}
-		if err := run.SetText(text); err != nil {
+		if err := writeDOCXSpans(para, spans, false); err != nil {
 			return fmt.Errorf("docgen: inject DOCX content: %w", err)
+		}
+	}
+	return nil
+}
+
+// writeDOCXSpans writes one paragraph's inline spans as runs — one run per
+// span, bold and italic from the span — with the header flag forcing bold
+// (a table's first row). Empty spans are skipped.
+func writeDOCXSpans(para domain.Paragraph, spans []span, header bool) error {
+	for _, sp := range spans {
+		if sp.Text == "" {
+			continue
+		}
+		run, err := para.AddRun()
+		if err != nil {
+			return err
+		}
+		if err := run.SetText(sp.Text); err != nil {
+			return err
+		}
+		if sp.Bold || header {
+			if err := run.SetBold(true); err != nil {
+				return err
+			}
+		}
+		if sp.Italic {
+			if err := run.SetItalic(true); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// appendDOCXTable injects one parsed markdown table as a real DOCX table:
+// a single-line grid bordering every cell, the header row's runs bold, and
+// every cell carrying the same inline spans a paragraph would. docxgo
+// creates the cells empty, so each takes exactly one paragraph.
+func appendDOCXTable(doc domain.Document, b block) error {
+	if len(b.Rows) == 0 || len(b.Rows[0]) == 0 {
+		return nil
+	}
+	table, err := doc.AddTable(len(b.Rows), len(b.Rows[0]))
+	if err != nil {
+		return err
+	}
+	border := domain.BorderStyle{Style: domain.BorderSingle, Width: 4}
+	if err := table.SetBorders(domain.TableLevelBorders{
+		Top:     border,
+		Left:    border,
+		Bottom:  border,
+		Right:   border,
+		InsideH: border,
+		InsideV: border,
+	}); err != nil {
+		return err
+	}
+	for r, row := range b.Rows {
+		tableRow, err := table.Row(r)
+		if err != nil {
+			return err
+		}
+		for c, cellText := range row {
+			cell, err := tableRow.Cell(c)
+			if err != nil {
+				return err
+			}
+			para, err := cell.AddParagraph()
+			if err != nil {
+				return err
+			}
+			if err := writeDOCXSpans(para, spansOf(cellText), r == 0); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

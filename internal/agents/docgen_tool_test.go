@@ -211,6 +211,33 @@ func TestCreateDocumentTool_Info(t *testing.T) {
 	require.NotEmpty(t, info.Desc)
 }
 
+// TestCreateDocumentTool_DescriptionStatesProductionRoute pins the routing
+// sentence (fix-document-tool-drift design D2): the model-facing description
+// states that document files are produced through this tool, naming the
+// observed shell failure modes (scripted generators, hand-assembled zip+XML
+// containers), and keeps every pre-existing sentence — the description is
+// the guidance guaranteed present the turn the model chooses how to produce
+// a file, playbook loaded or not.
+func TestCreateDocumentTool_DescriptionStatesProductionRoute(t *testing.T) {
+	f := newDocgenFixture(t)
+	info, err := f.tool.Info(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, createDocumentToolDescription(""), info.Desc,
+		"the generated schema carries the full description, routing sentence included")
+
+	for _, fragment := range []string{
+		"are produced through this tool",             // the production route, stated
+		"python-docx",                                // the scripted-generator failure mode
+		"zip+XML",                                    // the hand-assembled-container failure mode
+		"PDF, DOCX, PPTX",                            // the formats the route covers
+		"chosen by the file name's extension",        // pre-existing: format by extension
+		"Presentation comes from the user's presets", // pre-existing: presets
+		"overwrites it",                              // pre-existing: overwrite semantics
+	} {
+		require.Contains(t, createDocumentToolDescription(""), fragment)
+	}
+}
+
 // TestCreateDocumentTool_RendersToArtifacts covers the spec's happy path
 // (spec agent-tools "Markdown renders to a workspace PDF"): the PDF exists
 // at <workspace>/artifacts under the plain name and the result carries the
@@ -235,6 +262,35 @@ func TestCreateDocumentTool_RendersToArtifacts(t *testing.T) {
 	call := f.engine.recordedCall(t, 1)
 	require.Equal(t, "# Q3 Report\n\nHello.", call.markdown)
 	require.Equal(t, filepath.Join(f.workspace, "artifacts", "q3-report.pdf"), call.destPath)
+}
+
+// TestCreateDocumentTool_SessionArtifactsRoot pins the per-session layout:
+// WithSessionArtifacts roots the outputs at the calling session's
+// artifacts directory — the file and the engine destination both land
+// under sessions/<id>/artifacts, nothing at the workspace-root artifacts/
+// — and the description names the session's facing path.
+func TestCreateDocumentTool_SessionArtifactsRoot(t *testing.T) {
+	st := fake.New()
+	engine := &fakeDocgenEngine{}
+	ws := t.TempDir()
+	const sessionID = "0ae4aa0a3c954cbd9dfaf078ae573eae"
+	facing := "sessions/" + sessionID + "/" + "artifacts"
+	tl, err := newCreateDocumentTool(engine, st.DocumentPresets(), st.ToolSettings(), ws,
+		WithSessionArtifacts(filepath.Join(ws, "sessions", sessionID, "artifacts"), facing))
+	require.NoError(t, err)
+
+	info, err := tl.Info(t.Context())
+	require.NoError(t, err)
+	require.Contains(t, info.Desc, "/workspace/"+facing+"/",
+		"the description names the session's artifacts directory")
+
+	res := runDocgenTool(t, tl, `{"markdown":"# Session Doc","filename":"session-doc.pdf"}`)
+	require.True(t, res.OK, "error field: %s", res.Error)
+	data, err := os.ReadFile(filepath.Join(ws, "sessions", sessionID, "artifacts", "session-doc.pdf"))
+	require.NoError(t, err, "the output lands under the session's artifacts directory")
+	require.Equal(t, bytesOf(1), data)
+	_, err = os.Stat(filepath.Join(ws, "artifacts"))
+	require.True(t, os.IsNotExist(err), "the legacy workspace-root artifacts/ is never created")
 }
 
 // TestCreateDocumentTool_RegenerateOverwrites covers the spec's overwrite

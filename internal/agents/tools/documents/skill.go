@@ -20,12 +20,17 @@ const (
 const SkillName = "documents"
 
 // skillContent is the seeded SKILL.md: frontmatter whose description states
-// the directed activation trigger, then the document playbook — view before
-// edit, work on workspace files, targeted operations over regeneration,
-// presets for generation, and PDFs by regeneration only.
+// the directed activation trigger (broadened to any task that turns on a
+// document file, so template fills and file-type mentions activate it too),
+// then the document playbook — view before edit, work on workspace files,
+// targeted operations over regeneration, presets for generation, and PDFs by
+// regeneration only — plus the composition rule that makes this playbook the
+// substrate for dedicated document skills (a notarial-deed generator, a
+// reporting pack): their steps say what to do, this playbook governs how
+// every document step executes.
 const skillContent = `---
 name: documents
-description: Use whenever a request asks to read, revise, fill, or produce office documents (Word, Excel, PowerPoint) or to manipulate PDFs
+description: Use whenever a request asks to read, revise, fill, or produce office documents (Word, Excel, PowerPoint) or to manipulate PDFs — including filling or extracting from templates, and any task that turns on a .docx, .xlsx, .pptx, or .pdf file
 ---
 
 # Documents
@@ -33,6 +38,13 @@ description: Use whenever a request asks to read, revise, fill, or produce offic
 Office documents are edited in place with targeted operations, not
 regenerated: an edit touches only what it addresses and every other
 paragraph, cell, slide, style, and embedded object survives untouched.
+
+When a dedicated skill covers the document workflow at hand — a workspace
+skill with its own template, domain data, and steps — use the two together:
+follow the dedicated skill's steps for what to do, and let this playbook
+govern how every document step executes (view before edit, targeted
+operations, presets for generation). The dedicated skill never overrides
+these mechanics; it supplies the content and the order.
 
 ## Playbook
 
@@ -43,10 +55,11 @@ paragraph, cell, slide, style, and embedded object survives untouched.
 
 2. **Edit documents that live in your workspace.** The edit tool only
    reaches workspace files. Chat attachments are mirrored into your
-   workspace at /workspace/uploads when their turn runs — read them there
-   with read_file. Knowledge documents are read-only: to revise one,
-   read it for content and generate a fresh document with create_document
-   rather than editing it where it lives.
+   workspace under their turn's session directory (the uploads path the
+   environment block names) — read them there with read_file. Knowledge
+   documents are read-only: to revise one, read it for content and
+   generate a fresh document with create_document rather than editing it
+   where it lives.
 
 3. **Edit with targeted operations, not regeneration.** When fidelity
    matters — a document someone else authored, a template, anything with

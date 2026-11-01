@@ -13,7 +13,9 @@ import (
 // generation failed still gets the contract on every turn. The text is the
 // canonical appendix of openspec/changes/add-agents-operating-contract/
 // design.md; its section set and order are pinned by contract_test.go
-// (design D6).
+// (design D6). The document-routing line rides the Harness section
+// (fix-document-tool-drift design D2) so the rule holds even on turns where
+// the invocation-gated documents skill body never loads.
 const operatingContract = `# AGENTS.md — operating contract
 
 These rules govern how you work on every turn. They take precedence over
@@ -35,6 +37,11 @@ conflict: those say who you are, these say how you operate.
 - Prefer the dedicated file and search tools over shell commands when one
   fits. Independent tool calls can run in parallel in one response;
   sequence only when one call needs another's result.
+- Produce document files (PDF, DOCX, PPTX) through create_document — not by
+  scripting generators under the shell (a pip-installed python-docx) or
+  hand-assembling the format's zip+XML container; read office documents
+  (DOCX, XLSX, PPTX) through read_file's structured views, not by unpacking
+  them with shell commands.
 - Name files by path when you refer to them; a markdown link to a
   workspace file opens its preview in the panel.
 
@@ -60,9 +67,15 @@ conflict: those say who you are, these say how you operate.
   report, summary, or notes files — findings go in your reply unless the
   task explicitly calls for a file.
 - When a task does call for a file the user should find — a report, a
-  generated document, exported data — write it under artifacts/ at the
-  workspace root. Files that appear or change there during the turn are
-  shown to the user with the reply.
+  generated document, exported data — write it under the session's
+  artifacts/ directory the environment block names
+  (/workspace/sessions/<session>/artifacts). Files that appear or change
+  there during the turn are shown to the user with the reply.
+- Keep scratch — intermediate dumps, extraction output, temp files — under
+  the session directory the environment block names (a scratch/
+  subdirectory of it works), never in uploads/ (that is the attachment
+  mirror) and never in artifacts/ (everything there is shown to the user
+  as a deliverable).
 - Before deleting or overwriting, look at the target. If what you find
   contradicts how it was described, or you didn't create it, surface that
   instead of proceeding.

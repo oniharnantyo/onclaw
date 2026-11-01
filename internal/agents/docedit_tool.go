@@ -19,17 +19,28 @@ import (
 // editDocumentToolDescription is the model-facing description of the
 // edit_document tool; the settings surfaces render the catalog entry's
 // shorter one (builtin_tools.go).
-const editDocumentToolDescription = "Edit documents in your workspace. Office files (.docx, .xlsx, .pptx) are revised IN PLACE with targeted operations — only what an operation addresses changes, and every other paragraph, cell, slide, style, and embedded object is preserved. " +
-	"Supply path (a workspace file) and ops, a JSON array of operations addressed exactly as read_file printed them: " +
-	"DOCX — replace_paragraph {index,text}, insert_paragraph {afterIndex,text,style}, delete_paragraph {index}, fill_placeholders {values} at ¶n addresses; " +
-	"XLSX — set_cell {sheet,cell,text}, clear_cell {sheet,cell}, insert_row {sheet,index}, delete_row {sheet,index} at Sheet!Cell addresses; " +
-	"PPTX — replace_shape_text {slide,shape,text}, fill_placeholders {values} at slide n, shape m addresses. " +
-	"PDF files (.pdf) take structural operations in the same ops array — inputs are never modified, every operation writes an output file, so write outputs under artifacts/ (e.g. /workspace/artifacts/merged.pdf) to surface them as artifacts: " +
-	"merge {type,inputs,output}, extract {type,input,pages,output}, rotate {type,input,pages,angle,output}, stamp {type,input,text,output,pages?,position?,font_size?,rotation?,opacity?,on_top?}, fill_form {type,input,fields,output}, rewrite_text {type,input}. " +
-	"Page selections use pdfcpu syntax (\"1-3\", \"even\", \"2-8:odd\"). " +
-	"Read a file with read_file first to see its addresses. " +
-	"PDF text is never rewritten: rewrite_text answers with the regeneration path (create_document). " +
-	"Rejected operations (unknown target, malformed operation) and processing failures are reported in the result's error field; they do not fail the call."
+// editDocumentToolDescription is the model-facing description of the
+// edit_document tool; the settings surfaces render the catalog entry's
+// shorter one (builtin_tools.go). The PDF-output guidance names the turn's
+// session artifacts directory when facing — the workspace-relative path
+// under the mount — is set; empty keeps the legacy workspace-root wording.
+func editDocumentToolDescription(facing string) string {
+	home := "artifacts/ (e.g. /workspace/artifacts/merged.pdf)"
+	if facing != "" {
+		home = fmt.Sprintf("your session's artifacts directory /workspace/%s/ (e.g. /workspace/%s/merged.pdf)", facing, facing)
+	}
+	return "Edit documents in your workspace. Office files (.docx, .xlsx, .pptx) are revised IN PLACE with targeted operations — only what an operation addresses changes, and every other paragraph, cell, slide, style, and embedded object is preserved. " +
+		"Supply path (a workspace file) and ops, a JSON array of operations addressed exactly as read_file printed them: " +
+		"DOCX — replace_paragraph {index,text}, insert_paragraph {afterIndex,text,style}, delete_paragraph {index}, fill_placeholders {values} at ¶n addresses; " +
+		"XLSX — set_cell {sheet,cell,text}, clear_cell {sheet,cell}, insert_row {sheet,index}, delete_row {sheet,index} at Sheet!Cell addresses; " +
+		"PPTX — replace_shape_text {slide,shape,text}, fill_placeholders {values} at slide n, shape m addresses. " +
+		"PDF files (.pdf) take structural operations in the same ops array — inputs are never modified, every operation writes an output file, so write outputs under " + home + " to surface them as artifacts: " +
+		"merge {type,inputs,output}, extract {type,input,pages,output}, rotate {type,input,pages,angle,output}, stamp {type,input,text,output,pages?,position?,font_size?,rotation?,opacity?,on_top?}, fill_form {type,input,fields,output}, rewrite_text {type,input}. " +
+		"Page selections use pdfcpu syntax (\"1-3\", \"even\", \"2-8:odd\"). " +
+		"Read a file with read_file first to see its addresses. " +
+		"PDF text is never rewritten: rewrite_text answers with the regeneration path (create_document). " +
+		"Rejected operations (unknown target, malformed operation) and processing failures are reported in the result's error field; they do not fail the call."
+}
 
 // resolveWorkspaceRoot canonicalizes the workspace directory the workspace-
 // scoped document tools root at, mirroring the delete tool's construction:
@@ -127,7 +138,7 @@ func mountDisplay(rel string) string {
 // operations and processing failures come back as readable {ok:false} tool
 // results so the model can react and the turn continues; a Go error is
 // returned only for infrastructure failures (an unwritable destination).
-func newEditDocumentTool(workspace string) (tool.BaseTool, error) {
+func newEditDocumentTool(workspace string, opts ...editDocumentOption) (tool.BaseTool, error) {
 	if workspace == "" {
 		return nil, errors.New("edit_document: no workspace configured")
 	}
@@ -142,18 +153,49 @@ func newEditDocumentTool(workspace string) (tool.BaseTool, error) {
 		pptx: documents.NewPptxEngine(),
 		pdf:  pdfops.NewEngine(),
 	}
-	return utils.InferTool(ToolEditDocument, editDocumentToolDescription, st.run)
+	for _, opt := range opts {
+		opt(st)
+	}
+	return utils.InferTool(ToolEditDocument, editDocumentToolDescription(st.artifactsFacing), st.run)
+}
+
+// editDocumentOption configures the edit_document tool.
+type editDocumentOption func(*editDocumentTool)
+
+// withEditSessionArtifacts names the calling session's artifacts directory
+// (facing — the workspace-relative path under the mount) in the
+// model-facing description and the PDF-output error copy, so outputs the
+// user should see land where this turn's artifact detection watches. Unset —
+// the default — the copy keeps the legacy workspace-root artifacts/ wording.
+func withEditSessionArtifacts(facing string) editDocumentOption {
+	return func(t *editDocumentTool) {
+		if facing != "" {
+			t.artifactsFacing = facing
+		}
+	}
 }
 
 // editDocumentTool is the edit_document tool's closed-over dependencies: the
-// resolved workspace root every path resolves inside, and the four edit
-// engines dispatched by extension.
+// resolved workspace root every path resolves inside, the four edit engines
+// dispatched by extension, and the session artifacts path the output
+// guidance names (empty for the legacy layout).
 type editDocumentTool struct {
-	root string
-	docx *documents.DocxEngine
-	xlsx *documents.XlsxEngine
-	pptx *documents.PptxEngine
-	pdf  pdfops.Engine
+	root            string
+	docx            *documents.DocxEngine
+	xlsx            *documents.XlsxEngine
+	pptx            *documents.PptxEngine
+	pdf             pdfops.Engine
+	artifactsFacing string
+}
+
+// artifactsHint names where PDF outputs should land to surface as
+// artifacts: the session's artifacts directory under the mount, or the
+// flat legacy artifacts/.
+func (t *editDocumentTool) artifactsHint() string {
+	if t.artifactsFacing != "" {
+		return "/workspace/" + t.artifactsFacing + "/"
+	}
+	return "artifacts/"
 }
 
 // editOp is one operation of the tool's ops array: the documents package's
@@ -348,7 +390,7 @@ func (t *editDocumentTool) buildPDFOp(op editOp) (built pdfops.Op, outputDisplay
 			inputs = append(inputs, resolved)
 		}
 		if op.Output == "" {
-			return nil, "", "merge needs an output path — write it under artifacts/ so it surfaces as an artifact", nil
+			return nil, "", fmt.Sprintf("merge needs an output path — write it under %s so it surfaces as an artifact", t.artifactsHint()), nil
 		}
 		output := resolveOutput(op.Output)
 		if failure != "" {
@@ -362,7 +404,7 @@ func (t *editDocumentTool) buildPDFOp(op editOp) (built pdfops.Op, outputDisplay
 			return nil, "", failure, nil
 		}
 		if op.Output == "" {
-			return nil, "", "extract needs an output path — write it under artifacts/ so it surfaces as an artifact", nil
+			return nil, "", fmt.Sprintf("extract needs an output path — write it under %s so it surfaces as an artifact", t.artifactsHint()), nil
 		}
 		output := resolveOutput(op.Output)
 		if failure != "" {
@@ -376,7 +418,7 @@ func (t *editDocumentTool) buildPDFOp(op editOp) (built pdfops.Op, outputDisplay
 			return nil, "", failure, nil
 		}
 		if op.Output == "" {
-			return nil, "", "rotate needs an output path — write it under artifacts/ so it surfaces as an artifact", nil
+			return nil, "", fmt.Sprintf("rotate needs an output path — write it under %s so it surfaces as an artifact", t.artifactsHint()), nil
 		}
 		output := resolveOutput(op.Output)
 		if failure != "" {
@@ -390,7 +432,7 @@ func (t *editDocumentTool) buildPDFOp(op editOp) (built pdfops.Op, outputDisplay
 			return nil, "", failure, nil
 		}
 		if op.Output == "" {
-			return nil, "", "stamp needs an output path — write it under artifacts/ so it surfaces as an artifact", nil
+			return nil, "", fmt.Sprintf("stamp needs an output path — write it under %s so it surfaces as an artifact", t.artifactsHint()), nil
 		}
 		output := resolveOutput(op.Output)
 		if failure != "" {
@@ -416,7 +458,7 @@ func (t *editDocumentTool) buildPDFOp(op editOp) (built pdfops.Op, outputDisplay
 			return nil, "", failure, nil
 		}
 		if op.Output == "" {
-			return nil, "", "fill_form needs an output path — write it under artifacts/ so it surfaces as an artifact", nil
+			return nil, "", fmt.Sprintf("fill_form needs an output path — write it under %s so it surfaces as an artifact", t.artifactsHint()), nil
 		}
 		output := resolveOutput(op.Output)
 		if failure != "" {
